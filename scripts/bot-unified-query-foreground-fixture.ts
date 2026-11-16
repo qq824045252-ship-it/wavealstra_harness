@@ -76,16 +76,16 @@ export async function verifyUnifiedForegroundQueries(): Promise<void> {
     const delegatedRelation = relation("delegated-relation", "已委派的交付要求", delegated.workId);
     const noWorkRelation = relation("answer-only-relation", "尚未建Work的咨询");
     const now = Date.now();
-    cron.upsert({ id: "unified-reminder", name: "查看统一安排提醒", prompt: "查看结果", scheduleType: "every", scheduleExpr: "1h",
+    assert.throws(() => cron.upsert({ id: "unified-reminder", name: "查看统一安排提醒", prompt: "查看结果", scheduleType: "every", scheduleExpr: "1h",
       timezone: "Asia/Shanghai", enabled: true, createdAt: now, updatedAt: now, restartPolicy: "resume",
-      reminder: { state: "scheduled", kind: "bot-reminder", userId: LOCAL_USER_ID, botId: "query-a", conversationId: source.conversationId } });
+      reminder: { state: "scheduled", kind: "bot-reminder", userId: LOCAL_USER_ID, botId: "query-a", conversationId: source.conversationId } }), /Bot 提醒功能已移除/);
     const before = z.object({ n: z.number() }).parse(db.prepare("SELECT total_changes() n").get()).n;
     const firstPage = pageSchema.parse(await invoke("schedule_overview", { limit: 2 }));
     assert.equal(z.object({ n: z.number() }).parse(db.prepare("SELECT total_changes() n").get()).n, before, "overview performs no writes");
     const items = [...firstPage.items]; let page = firstPage;
     while (page.nextQuery) { page = pageSchema.parse(await invoke("schedule_overview", page.nextQuery)); items.push(...page.items); }
     assert.equal(items.length, firstPage.total); assert.equal(new Set(items.map(item => item.id)).size, items.length);
-    assert.deepEqual(new Set(items.map(item => item.kind)), new Set(["work", "reminder", "collaboration"]));
+    assert.deepEqual(new Set(items.map(item => item.kind)), new Set(["work", "collaboration"]));
     assert(items.some(item => item.workId === owned.workId)); assert(items.some(item => item.workId === delegated.workId));
     assert(!items.some(item => item.workId === privateWork.workId));
     assert(!JSON.stringify(items).includes("PRIVATE_B_")); assert.equal(schedules.length, 0);
@@ -234,7 +234,7 @@ export async function verifyUnifiedForegroundQueries(): Promise<void> {
       assert.equal(messages.receipt(LOCAL_USER_ID, source.botId, requestId), undefined, "an invalid reference is rejected before any request is persisted");
     }
     assert.equal(schedules.length, 0, "reference projection does not schedule or amend Work");
-    console.log("PASS unified foreground queries: delegated/no-Work/reminder pagination, exact reply association without changing user targets or delivery origin, public results only, no Work control grant, original collaboration guards, shared/team isolation");
+    console.log("PASS unified foreground queries: delegated/no-Work pagination with retired reminders rejected, exact reply association without changing user targets or delivery origin, public results only, no Work control grant, original collaboration guards, shared/team isolation");
     console.log("PASS explicit reply references: queued/complete/reload/replay, exact scoped receipt identity, unlinked user/control provenance, unknown/cross-Bot/conversation/team rejection");
   } finally {
     await conversationService.close(); collaborations.close(); app.close(); rmSync(root, { recursive: true, force: true });

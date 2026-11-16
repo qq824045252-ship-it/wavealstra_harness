@@ -166,14 +166,14 @@ export class BotConversationRepository {
       .get(conversationId, messageId, userId));
   }
 
-  history(userId: string, request: BotHistoryRequest): BotHistoryDto {
+  history(userId: string, request: BotHistoryRequest, options: { reconcile?: boolean } = {}): BotHistoryDto {
     let conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
     this.assertScope(conversation, request.teamId);
     if (!conversation) return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
     // Current-format completed delegations may predate source projection. Repair
     // at most one bounded batch on initial/catch-up reads, never on older-page or
     // exact-message navigation. This neither creates a turn nor reruns Work.
-    if (!request.teamId && request.before === undefined && !request.messageIds
+    if (options.reconcile !== false && !request.teamId && request.before === undefined && !request.messageIds
       && reconcileDelegatedFeedback(this.db, userId, conversation.conversation_id, value => workFeedbackSchema.parse(value))) {
       conversation = this.conversation(userId, request.botId, conversation.conversation_id)!;
     }

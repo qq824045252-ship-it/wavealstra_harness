@@ -35,7 +35,6 @@ import WeixinGatewaySettings from "./WeixinGatewaySettings";
 import QQGatewaySettings from "./QQGatewaySettings";
 import GatewayBlock from "./GatewayChannelSettings";
 import BusinessGatewayRegistration from "./BusinessGatewayRegistration";
-import GatewayBotBindings from "./GatewayBotBindings";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
@@ -932,7 +931,6 @@ function AssistantTab(): React.JSX.Element {
           { key: "encodingAESKey", label: "EncodingAESKey", type: "password", placeholder: "43 位密钥" },
         ]}
       />
-      <GatewayBotBindings />
     </>
   );
 }

@@ -1,13 +1,8 @@
-import { BotAvatarService } from "./work/BotAvatarService";
+import { BotConversationRepository } from "./work/BotConversationRepository";
+import { botHistorySchema } from "../../shared/bot-conversation";
+import { createBotComposerSkillAccess } from "./work/BotComposerSkillAccess";
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
-import { WorkWatchSupervision } from "./work/WorkWatchSupervision";
-import { botExecutionDiagnostics } from "./work/BotExecutionDiagnostics";
-import { BotDisplayGroupsService } from "./work/BotDisplayGroupsService";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
-import { readBotDirectoryActivity } from "./work/BotDirectoryActivity";
-import { BotWorkResultTurn } from "./work/BotWorkResultTurn";
-import { WorkCompletionCoordinator } from "./work/WorkCompletionCoordinator";
-import { BotConversationMemory } from "./work/BotConversationMemory";
 import { botMemorySource } from "../memory/BotMemorySource";
 import { z } from "zod";
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
@@ -20,18 +15,10 @@ import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
 import { BotWorkIpc } from "../../shared/bot-work-ipc";
-import { BotConversationService } from "./work/BotConversationService";
-import { gatewayBotOriginSchema } from "./work/BotTurnOrigins";
 import type { GatewayBotTurnRequest } from "../gateway/GatewayAgentTurn";
 import { botWorkHasSharedOrigin } from "../memory/BotMemorySource";
-import { BotWorkMethodFeedback } from "./work/BotWorkMethodFeedback";
 import { BotReportImageService } from "./work/BotReportImageService";
-import { WorkConversationFeedback } from "./work/WorkConversationFeedback";
-import { WorkDispatchQueue } from "./work/WorkDispatchQueue";
 import { resolveWorkContinuationCwd } from "./work/WorkContinuationWorkspace";
-import type { WorkTeamControlResult } from "../../shared/bot-work-team";
-import { WorkProjectionJournal } from "./work/WorkProjectionJournal";
-import { reviewWork } from "./work/WorkReviewControl";
 import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
@@ -40,17 +27,13 @@ import { createDurableReadOnlyTools, createDurableSubagentTools, durableSubagent
 import { guardSubagentWriteCall } from "../capabilities/subagent/write-conflict";
 import { openDurableAuxiliary, type DurableAuxiliaryBinding } from "./durable/DurableAuxiliaryRuntime";
 import { DurableSkillProjection, durableInputAuditSchema, type DurableInputAudit } from "./durable/DurableSkillProjection";
-import { createBotComposerSkillAccess } from "./work/BotComposerSkillAccess";
 import { homedir } from "node:os";
-import { prepareClosureReview } from "./work/WorkClosureReview";
-import { workClosureReviewRequestSchema } from "../../shared/work-closure-review";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { DurableBotRuntime, DurableBotOptions } from "./durable/DurableBotRuntime";
 import type { DurableBotSnapshot } from "../../shared/durable-bot";
 import { setSubagentIpcBackend } from "./subagent-ipc-host";
 import { createDurableToolPolicy } from "./durable/DurableToolPolicy";
 import { WorkCollaborationContext } from "./work/WorkCollaborationContext";
-import { workPhase3ControlSchema, type WorkPhase3ControlResult } from "../../shared/bot-work-phase3-control";
 import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
 import { currentDurableExecutionContext, currentDurableInvocation } from "./durable/DurableExecutionContext";
 import { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
@@ -308,22 +291,16 @@ import { ConversationInteractionRepository } from "./ConversationInteractionRepo
 import { ConversationInteractionService } from "./ConversationInteractionService";
 import { ConversationGoalService } from "./ConversationGoalService";
 import { BotRegistry } from "./work/BotRegistry";
-import { BotDeletionService } from "./work/BotDeletionService";
-import { BotCreationService } from "./work/BotCreationService";
 import { BotSettingsService } from "./work/BotSettingsService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
 import { BotWorkContextService } from "./work/BotWorkContextService";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
 import { workExecutionToolAllowed } from "./work/WorkExecutionToolPolicy";
 import { WorkHostAuthority } from "./work/WorkHostAuthority";
-import { WorkExecutionAdapter } from "./work/WorkExecutionAdapter";
 import {
   DEFAULT_BOT_ID,
   LOCAL_USER_ID,
-  type AttestCriteriaParams,
   type BotDto,
-  type BotExpertVersionDto,
-  type RecordUserFeedbackParams,
   type WorkActor,
   type WorkControlResult,
   type WorkProjectionDto,
@@ -361,7 +338,6 @@ import { createProjectPlanExtension } from "../project/project-plan-extension";
 import { browserHost } from "../browser/BrowserHost";
 import { BrowserAutomationService } from "../capabilities/BrowserAutomationService";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
-import { createBotCapabilityTools } from "./work/BotCapabilityTools";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
 import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
 import { VideoGenerationJobs } from "../capabilities/VideoGenerationJobs";
@@ -645,31 +621,15 @@ export class AgentService {
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
-  readonly botAvatars: BotAvatarService;
   private readonly botRegistry: BotRegistry;
   private readonly botSettings: BotSettingsService;
   private readonly botExpertBindings: BotExpertBindingService;
   private readonly botWorkContext: BotWorkContextService;
   private readonly workService: WorkService;
   private readonly workHostAuthority: WorkHostAuthority;
-  private workExecutions?: WorkExecutionAdapter;
-  private botConversations?: BotConversationService;
-  private botContinuationDelivery?: (origin: import("./work/BotTurnOrigins").GatewayBotOrigin, operationId: string, text: string) => Promise<void>;
-  setBotContinuationDelivery(deliver: NonNullable<AgentService["botContinuationDelivery"]>): void {
-    this.botContinuationDelivery = deliver;
-    this.botConversations?.collaborations.recover();
-  }
-  completeBotContinuation(operationId: string): void { this.botConversations?.collaborations.delivery?.acknowledge(operationId); }
-  canSendBotContinuation(operationId: string): boolean {
-    const row = z.object({ cancelled_at: z.number().nullable() }).optional().parse(this.db.connection.prepare(
-      "SELECT cancelled_at FROM bot_peer_deliveries WHERE user_id=? AND operation_id=?").get(LOCAL_USER_ID, operationId));
-    return Boolean(row && row.cancelled_at === null);
-  }
-  private workDispatchQueue?: WorkDispatchQueue;
-  private workConversationFeedback?: WorkConversationFeedback;
-  private workCompletion?: WorkCompletionCoordinator;
-  private workWatchSupervision?: WorkWatchSupervision;
-  private botResultTurns?: BotWorkResultTurn;
+  // Retired channel outbox records must never replay after removing Bot mode.
+  completeBotContinuation(_operationId: string): void {}
+  canSendBotContinuation(_operationId: string): boolean { return false; }
   private botReportImages?: BotReportImageService;
   private readonly executionFailures: ExecutionFailureRepository;
   private readonly executionAttempts: ExecutionAttemptRepository;
@@ -857,7 +817,6 @@ export class AgentService {
       },
     );
     this.botRegistry = new BotRegistry(db.connection);
-    this.botAvatars = new BotAvatarService(db.connection, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-avatars"));
     this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
     this.botExpertBindings = new BotExpertBindingService(this.botRegistry, this.expertsService, this.expertBindings, {
       resolveSkillDirectory: (id, botId) => {
@@ -874,21 +833,15 @@ export class AgentService {
         connectors: this.listConnectors().map(item => ({id: item.id, name: item.name, available: Boolean(item.installed && item.enabled !== false)})) };
     }, input => this.botExpertBindings.assembleSettings(input, LOCAL_USER_ID));
     this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`);
-    const previousWorkLease = this.workHostAuthority.snapshot();
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
       requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.workMessageSettings(work, botId)?.profile : undefined,
       emitProjection: (projection) => {
         this.emitPatch({ type: "work_projection_snapshot", projection });
-        this.botConversations?.collaborations.publishWork(projection.workId);
         if (this.settingsStore.read().memoryEnabled) {
           try { this.workMemoryCapture.capture(projection.workId); } catch (error) { console.warn("[Work] memory capture deferred", error); }
         }
-        // Delivery is a background obligation: a new card wakes the host drain.
-        this.workNotificationWake?.();
-        this.workCompletion?.wake();
-        try { this.workConversationFeedback?.drain(projection.workId); } catch (error) { console.warn("[Work] Bot 回写等待恢复", error); }
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
@@ -896,11 +849,6 @@ export class AgentService {
       && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
       .catch(error => console.warn("[Work] memory catch-up deferred", error));
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
-    this.workConversationFeedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works: this.workService, superviseWatch: true,
-      onReport: workId => this.botConversations?.collaborations.publishWork(workId),
-      isAuthority: () => this.workHostAuthority.isAuthority(), prepareImages: workId => this.botReportImages!.captureWork(workId) });
-    this.workConversationFeedback.start();
-    this.workService.scheduler.beginHostSession(previousWorkLease);
     this.conversationGoals = new ConversationGoalService(
       this.workService,
       (patch) => this.emitPatch(patch),
@@ -1213,14 +1161,6 @@ export class AgentService {
     this.conversationGoals.cloneLive(sourceTaskId, childTaskId);
   }
 
-  /** Host-injected bot identity for the foreground conversation surface. */
-  foregroundBotActor(botId = DEFAULT_BOT_ID): WorkActor {
-    return {
-      kind: "bot", botId, userId: LOCAL_USER_ID, host: "foreground",
-      grants: DESKTOP_USER_GRANTS,
-    };
-  }
-
   getConversationGoals(): ConversationGoalService {
     return this.conversationGoals;
   }
@@ -1229,82 +1169,29 @@ export class AgentService {
     return this.botRegistry.listBots(LOCAL_USER_ID);
   }
 
-  updateBotWorkspaceAuthorization(request: unknown) {
-    return new BotCreationService(this.db.connection, this.botRegistry, {
-      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
-    }).updateWorkspaceAuthorization(request);
-  }
-
-  deleteBot(request: unknown) {
-    const result = new BotDeletionService(this.db.connection, this.botRegistry, this.workService, {
-      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
-    }).delete(request);
-    if (result.ok) this.workDispatchQueue?.wake();
-    return result;
-  }
-
-  renameBot(request: unknown) {
-    return new BotCreationService(this.db.connection, this.botRegistry, {
-      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
-    }).renameBot(request);
-  }
-
-  createBot(request: unknown) {
-    return new BotCreationService(this.db.connection, this.botRegistry, {
-      userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority(),
-      setInitialAvatar: (botId, assetId) => { this.botAvatars.set(botId, assetId, 0); },
-    }).createBot(request);
-  }
-
-  teamWorkControl(request: unknown): WorkTeamControlResult {
-    // The trusted desktop form explicitly selects this Work's members. This does
-    // not change any Bot grant or allow an execution to redelegate further.
-    const result = this.workService.teams.handle({ kind: "user", userId: LOCAL_USER_ID,
-      entry: "desktop", grants: { ...DESKTOP_USER_GRANTS, allowRedelegation: true } }, request);
-    if (result.ok && result.work) this.workDispatchQueue?.wake();
-    return result;
-  }
-
-  queryWorkProjections(request: unknown) {
-    return this.workService.listQuery.query(LOCAL_USER_ID, request);
-  }
-
-  syncWorkProjections(request: unknown) {
-    return new WorkProjectionJournal(this.db.connection, this.workService).sync(LOCAL_USER_ID, request);
-  }
-  botDisplayGroups(request: unknown) { return new BotDisplayGroupsService(this.db.connection, LOCAL_USER_ID).execute(request); }
-  botDirectoryActivity() { return readBotDirectoryActivity(this.db.connection, LOCAL_USER_ID); }
-  botExecutionDiagnostics(request: unknown) { return botExecutionDiagnostics(this.db.connection, LOCAL_USER_ID, request, this.taskDiagnostics, this.workService, this.botRegistry); }
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
-  async sendBotMessage(request: unknown) {
-    const input = (await import("../../shared/bot-conversation")).botSendSchema.parse(request);
-    const service = this.requireBotConversations();
-    // A retry retains its original frozen selection even if defaults/catalog changed.
-    const prior = service.messages.receipt(LOCAL_USER_ID, input.botId, input.requestId);
-    const frozen = prior ? undefined : await this.botSettings.prepareMessage(input.botId, input.selection)
-      .catch(error => { throw new Error(`BOT_SELECTION_REJECTED: ${error instanceof Error ? error.message : String(error)}`); });
-    return service.send(input, frozen);
-  }
   botMessageForHtmlExport(request: import('../../shared/saved-artifact').MessageHtmlRequest) {
-    return this.requireBotConversations().messageForHtmlExport(request);
+    const bot = this.botRegistry.getBot(request.botId);
+    if (!bot || bot.userId !== LOCAL_USER_ID) throw new Error("Bot 不属于当前用户");
+    const messages = new BotConversationRepository(this.db.connection);
+    const conversation = messages.conversation(LOCAL_USER_ID, request.botId, request.conversationId);
+    const sourceKind = this.db.connection.prepare('SELECT source_kind FROM bot_conversations WHERE conversation_id=? AND user_id=?').pluck().get(request.conversationId, LOCAL_USER_ID);
+    if (!conversation || conversation.bot_id !== request.botId || sourceKind !== "user") throw new Error("消息不属于可导出的用户会话");
+    if (conversation.team_id && !this.workService.teams.foregroundTemplates(LOCAL_USER_ID, request.botId).some(team => team.templateId === conversation.team_id)) throw new Error("团队不存在或负责人已变化");
+    const message = messages.message(request.messageId);
+    if (!message || message.conversationId !== conversation.conversation_id || message.botId !== request.botId) throw new Error("消息不属于当前会话");
+    return message;
   }
-  botActiveRequests() { return this.requireBotConversations().activeRequests(); }
-  botIncomingMessages(request: unknown) { return this.requireBotConversations().collaborations.incomingMessages(request); }
-  botCollaborations(request: unknown) { return this.requireBotConversations().collaborations.list(request); }
-  botCollaborationHistory(request: unknown) { return this.requireBotConversations().collaborations.history(request); }
   async botMessageHistory(request: unknown) {
-    const history = this.requireBotConversations().history(request);
+    const input = botHistorySchema.parse(request);
+    const bot = this.botRegistry.getBot(input.botId);
+    if (!bot || bot.userId !== LOCAL_USER_ID) throw new Error("Bot 不属于当前用户");
+    if (input.teamId && !this.workService.teams.foregroundTemplates(LOCAL_USER_ID, input.botId).some(team => team.templateId === input.teamId))
+      throw new Error("团队不存在或负责人已变化");
+    if (input.teamId && input.inbox) throw new Error("团队历史不能读取个人收件箱");
+    // Historical navigation must not recreate runners or backfill new Bot messages.
+    const history = new BotConversationRepository(this.db.connection).history(LOCAL_USER_ID, input, { reconcile: false });
     return this.botReportImages ? this.botReportImages.hydrateHistory(history) : history;
-  }
-  cancelBotSend(botId: string, requestId: string) { return this.requireBotConversations().cancel(botId, requestId); }
-  archiveBotConversation(botId: string, conversationId: string) { return this.requireBotConversations().archive(botId, conversationId); }
-  private requireBotConversations(): BotConversationService {
-    if (!this.botConversations) throw new Error("Bot 前台尚未连接，请稍后重试");
-    return this.botConversations;
-  }
-
-  listWorkProjections(includeClosed = false): WorkProjectionDto[] {
-    return this.workService.listProjections(LOCAL_USER_ID, { includeClosed });
   }
 
   getWorkProjection(workId: string): WorkProjectionDto | undefined {
@@ -1314,129 +1201,6 @@ export class AgentService {
 
   getWorkService(): WorkService {
     return this.workService;
-  }
-
-  async reassessClosedWork(input: unknown): Promise<WorkControlResult> {
-    try {
-      const request = workClosureReviewRequestSchema.parse(input);
-      const work = this.workService.getWork(request.workId);
-      if (!work || work.userId !== LOCAL_USER_ID) return {ok:false,code:"not_found",message:"找不到事项"};
-      const actor = {kind:"user",userId:LOCAL_USER_ID,entry:"desktop",grants:DESKTOP_USER_GRANTS} as const;
-      if (this.workService.repo.getReceipt(LOCAL_USER_ID,`closure-review:${request.requestId}`))
-        return this.workService.correctAutomaticClosure(actor,request);
-      if (!this.workHostAuthority.isAuthority() || !this.botResultTurns) throw Error("当前宿主尚未准备好只读事实复核");
-      if (work.stateVersion !== request.versionGuard.expectedStateVersion || work.intentRevision !== request.versionGuard.expectedIntentRevision
-        || work.ownerEpoch !== request.versionGuard.expectedOwnerEpoch) return {ok:false,code:"version_conflict",message:"事项已变化，请刷新后复核"};
-      const evidence = prepareClosureReview(this.db.connection,this.workService,request);
-      const decision = await this.botResultTurns.review({eventId:`closure-review:${request.requestId}:${evidence.fingerprint}`,
-        botId:evidence.binding.botId,context:evidence.context});
-      const result = this.workService.correctAutomaticClosure(actor,request,{evidence,decision});
-      if (result.ok) this.workNotificationWake?.();
-      return result;
-    } catch (error) { return {ok:false,code:"invalid_request",message:error instanceof Error?error.message:String(error)}; }
-  }
-
-  private workNotificationWake?: () => void;
-
-  /** Set by the host once the real delivery channels exist. */
-  setWorkNotificationWake(wake: (() => void) | undefined): void {
-    this.workNotificationWake = wake;
-  }
-
-  getWorkHostStatus(): { online: boolean; isAuthority: boolean; authorityId: string } {
-    const status = this.workHostAuthority.status();
-    return { online: status.online, isAuthority: status.isAuthority, authorityId: status.authorityId };
-  }
-
-  attestWorkCriteria(request: AttestCriteriaParams): WorkControlResult {
-    return this.workService.attestCriteria({
-      kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
-    }, request);
-  }
-
-  recordWorkUserFeedback(request: RecordUserFeedbackParams): WorkControlResult {
-    return this.workService.recordUserFeedback({
-      kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
-    }, request);
-  }
-
-  reviewWork(request: unknown): WorkControlResult {
-    return reviewWork(this.workService, {
-      kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS,
-    }, request);
-  }
-
-  phase3WorkControl(request: unknown): WorkPhase3ControlResult {
-    const parsed = workPhase3ControlSchema.safeParse(request);
-    if (!parsed.success) return { ok: false, code: "invalid_request", message: "事项控制请求无效" };
-    const actor = { kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS } as const;
-    try {
-      const input = parsed.data;
-      if (input.kind === "prepare_handoff") return { ok: true,
-        preparation: this.workService.collaboration.prepareHandoff(actor, input.workId, input.targetBotId) };
-      if (input.kind === "collaborate") {
-        const result = this.workService.collaboration.send(actor, input.request);
-        return { ok: true, messageId: result.message.messageId, replayed: result.replayed };
-      }
-      const result = input.kind === "continue" ? this.workService.continueWork(actor, input.request)
-          : this.workService.handoffOwner(actor, input.request);
-      if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.work.workId); }
-      return result;
-    } catch (error) {
-      return { ok: false, code: "invalid_request", message: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  phase4WorkControl(request: unknown): import("../../shared/bot-work-phase4").WorkPhase4ControlResult {
-    const actor = { kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS } as const;
-    try {
-      const result = this.workService.phase4Control(actor, request);
-      if (result.ok) { this.workDispatchQueue?.wake(); this.workExecutions?.wakeWork(result.workId); }
-      return result;
-    } catch (error) {
-      return { ok: false, code: "invalid_request", message: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  async getBotSettings(botId: string) { return this.botSettings.view(botId); }
-  async saveBotSettings(request: unknown): Promise<import("../../shared/bot-settings").BotSettingsResult> {
-    try { return { ok: true, view: await this.botSettings.save(request) }; }
-    catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) }; }
-  }
-
-  /** R09: read the immutable expert versions so a human can review before adopting. */
-  listBotExpertVersions(botId: string): BotExpertVersionDto[] {
-    if (this.botRegistry.getBot(botId)?.userId !== LOCAL_USER_ID) return [];
-    return this.botRegistry.expertVersions(botId);
-  }
-
-  adoptBotExpertVersion(botId: string, expected: { pendingVersion?: number; snapshotId?: string }) {
-    const bot = this.botRegistry.getBot(botId);
-    if (!bot || bot.userId !== LOCAL_USER_ID) return { ok: false as const, code: "not_found" as const, message: "找不到 Bot" };
-    return this.botRegistry.adoptExpertVersion(botId, expected);
-  }
-
-  markWorkNotificationRead(notificationId: string): { ok: boolean; message?: string } {
-    return this.workService.markNotificationRead(notificationId);
-  }
-
-  /** Card reads and expanded diagnostics are user-scoped facts, never control operations. */
-  markWorkCardRead(request: unknown) {
-    return this.workService.markWorkCardRead({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, request);
-  }
-
-  getWorkSummary(workId: string) {
-    return this.workService.getWorkSummary(LOCAL_USER_ID, workId);
-  }
-
-  getWorkDiagnostics(request: unknown) {
-    return this.workService.getWorkDiagnostics(LOCAL_USER_ID, request);
-  }
-
-  resendWorkNotification(request: unknown) {
-    const result = this.workService.resendWorkNotification({ kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS }, request);
-    if (result.ok) this.workDispatchQueue?.wake();
-    return result;
   }
 
   async previewConversationBranch(request: CreateConversationBranchRequest): Promise<DurableBranchAnchor> {
@@ -1609,21 +1373,20 @@ export class AgentService {
         this.publishCompactionState(this.durableCompactionStatus(taskId, status, this.lastCompactionStatus.get(taskId))),
       prepareTask: request => this.prepareDurableTask(request),
       beforeSubmit: request => {
+        if (isGatewayBotTaskId(request.taskId) || this.workService.repo.bindingForTask(request.taskId))
+          throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
         const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
         if (blocked) throw new Error(blocked);
       },
       providerAuthorityGuarded: taskId => Boolean(this.workService.repo.bindingForTask(taskId)),
       beforeModelRequest: taskId => {
-        const binding = this.workService.repo.bindingForTask(taskId);
-        if (!binding) return;
-        const error = this.workService.checkTaskInput(taskId, binding.operationId);
-        if (error) throw new Error(error);
+        if (isGatewayBotTaskId(taskId) || this.workService.repo.bindingForTask(taskId))
+          throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
       },
       resumeAllowed: taskId => {
-        const binding = this.workService.repo.bindingForTask(taskId);
-        if (!binding) return true;
-        const work = this.workService.getWork(binding.workId);
-        return this.workHostAuthority.isAuthority() && work?.lifecycle === "active" && !binding.invalidatedAt;
+        // Keep Ordinary recovery, but do not resurrect the removed Bot mode's
+        // workers or legacy Gateway sessions through the shared Durable engine.
+        return !isGatewayBotTaskId(taskId) && !this.workService.repo.bindingForTask(taskId);
       },
       mcpSelection: task => this.durableAssembly(task).mcpFilter.enabled,
       toolAllowed: (task, name) => this.durableToolAllowed(task, name),
@@ -1636,7 +1399,6 @@ export class AgentService {
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
       onRelease: taskId => { this.durableSkills.release(taskId); computerUseRunCoordinator.endTask(taskId, "failed"); },
       onSettled: (taskId, snapshot) => {
-        if (this.workService.repo.bindingForTask(taskId)) this.workExecutions?.wake(taskId);
         computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
@@ -1661,7 +1423,6 @@ export class AgentService {
           resolvedInstructions: assembly.segments, resolvedCapabilities: assembly.capabilities ?? [], warnings: assembly.warnings });
       },
       onEntries: (taskId, entries, info) => {
-        if (this.workService.repo.bindingForTask(taskId)) this.workExecutions?.wake();
         if (info.sourceKind === "main") this.durableSkills.entries(taskId, info.conversationId, entries);
         for (const entry of [...entries].sort((a, b) => a.id - b.id)) {
           if (!entry.byTaskId) continue;
@@ -1757,157 +1518,9 @@ export class AgentService {
     return this.durableBots?.lastResumeReport;
   }
 
-  /** Bootstrap calls this after window-backed tools are attached, before accepting background work. */
+  /** Resume Ordinary task sessions only. Standalone Bot orchestration is retired. */
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    const nativeWork = this.durableBots.workExecutionPort();
-    this.workExecutions ??= new WorkExecutionAdapter(this.workService, nativeWork, LOCAL_USER_ID,
-      () => this.workHostAuthority.isAuthority(),
-      (bindingId, error) => console.warn("[Work] 原生执行核对未完成", bindingId, error));
-    this.workExecutions.start();
-    if (!this.durableModels) throw new Error("模型服务尚未初始化");
-    this.workDispatchQueue ??= new WorkDispatchQueue(this.db, this.workService, this.workExecutions,
-      () => this.workHostAuthority.isAuthority(), () => this.settingsStore.read().defaultModelId,
-      () => this.settingsStore.read().permissionMode ?? "default", undefined,
-      (work, memberId) => memberId ? this.botSettings.forMember(work.workId, work.ownerBotId, memberId, work.workspacePath) : this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath));
-    const botMemory = new BotConversationMemory({ db: this.db, userId: LOCAL_USER_ID,
-      memory: this.memoryService, pipeline: this.memoryPipeline,
-      enabled: () => !this.memoryDisposed && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority(),
-      extract: id => this.queuePendingMemoryExtraction([id]),
-      changed: () => this.notifyMemoryChanged({ scope: "settings" }),
-    });
-    const methodFeedback = new BotWorkMethodFeedback({ db: this.db, works: this.workService, userId: LOCAL_USER_ID, memory: this.memoryService,
-      skills: this.skillsService, effectiveness: this.skillEffectiveness, revisions: this.skillRevision });
-    this.botConversations ??= new BotConversationService({ reminders: () => this.localWorkflow?.cron, onTool: event => this.taskDiagnostics.observeTool(event), db: this.db.connection, userId: LOCAL_USER_ID,
-      organization: { settings: this.botSettings, creator: new BotCreationService(this.db.connection, this.botRegistry,
-        { userId: LOCAL_USER_ID, isAuthority: () => this.workHostAuthority.isAuthority() }) },
-      bots: this.botRegistry, works: this.workService, models: this.durableModels, directory: join(getMyBuddyDir(), "bot-conversations"),
-      botModel: botId => this.botSettings.get(botId).modelId || undefined,
-      // 前台 Bot 会话跟随设置页的压缩阈值（与 DurableBotService 同一 getter，改设置即时生效）。
-      productCompaction: () => this.productCompactionSettings(),
-      compactionEngine: () => this.compactionEngineSetting(),
-      thinking: (id, preference) => {
-        const slash = id.indexOf("/");
-        const model = this.durableModels!.getModel(id.slice(0, slash), id.slice(slash + 1));
-        if (!model) return undefined;
-        if (preference) {
-          const level = this.nativeReasoningLevel(model, preference);
-          if (level === undefined) throw new Error("当前模型不支持这组思考偏好，请重新选择");
-          return level;
-        }
-        const settings = createAgentSettingsManager(getMyBuddyDir(), getMyBuddyDir());
-        return settings.getModelThinkingLevel(model.provider, model.id) ?? settings.getDefaultThinkingLevel();
-      },
-      messageSettings: (messageId, botId) => this.botSettings.messageSettings(messageId, botId),
-      prepareMessageWorkspace: settings => this.botSettings.prepareMessageWorkspace(settings),
-      captureSettings: (messageId, botId, frozen) => this.botSettings.captureMessage(messageId, botId, frozen),
-      botWorkspace: (botId, prepareDefault) => this.botSettings.resolveWorkspace(botId, prepareDefault),
-      captureWorkSettings: work => { this.botSettings.forWork(work.workId, work.ownerBotId, work.workspacePath); },
-      composerTools: async (profile, cwd, resolveRequestScope, identity) => {
-        if (identity.shared) return { tools: [], instructions: "共享渠道未挂载个人 Bot 的私人技能、专家资料或连接器。", close: async () => {} };
-        const { openBotComposerRuntime } = await import("./work/BotComposerRuntime");
-        const skillAccess = createBotComposerSkillAccess({ identity: { botId: identity.botId, shared: identity.shared || Boolean(identity.teamId) },
-          current: id => this.skillsService.getLearnedSkillRevisionSource(id),
-          runnable: (id, sourceMemoryIds) => this.memoryService.learning.isInstalledSkillRunnable(id, sourceMemoryIds)
-            && this.skillsService.listInstalled(undefined, [], { botId: identity.botId }).some(skill => skill.id === id && skill.enabled),
-        });
-        return openBotComposerRuntime({ profile, cwd, models: this.durableModels!, skillAccess,
-          connectorSkillRoots: this.connectorsService.getPrivateSkillDirs(profile.allowedConnectorIds),
-          connectorContext: profile.allowedConnectorIds.length ? connectorRuntimeContext(profile.allowedConnectorIds, this.connectorsService.list(), "foreground") : "",
-          enabledMcpIds: this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled,
-          readOnly: () => false, resolveRequestScope });
-      },
-      selectedTools: async (selection, cwd, identity, onStatus) => {
-        const { selectedExternalAgentTool } = await import("./work/BotSelectedTools");
-        if (selection.externalAgentId) {
-          if (!this.externalAgentRuntime) throw new Error("External Agent Runtime 未初始化");
-          if (!selection.hostRequest) throw new Error("外部 Agent 缺少原始用户请求");
-          return [selectedExternalAgentTool({ hostRequest: selection.hostRequest, requestIdentity: identity, onStatus, agentId: selection.externalAgentId, runtime: this.externalAgentRuntime,
-            createTask: (id, title) => this.db.upsertTask({ id, title, cwd, updatedAt: Date.now(), welcomeMode: "working" }) })];
-        }
-        if (!selection.consultRequested) return [];
-        const config = this.builtinCapabilities.config().multiModelConsult;
-        if (!config.enabled || config.participants.length < 2) throw new Error("多模型会诊未启用或未配置至少两个参与者");
-        const { defineTool } = await import("@earendil-works/pi-durable");
-        const { Type } = await import("typebox");
-        const { withDurableExecution, durableExecutionContext } = await import("./durable/DurableExecutionContext");
-        const { consultToolResult } = await import("../capabilities/MultiModelConsult");
-        const policy = new TaskFileAccessPolicy({ taskId: identity, taskRoot: cwd, writeGrants: [] });
-        return [defineTool({ name: "multi_model_consult", description: "用户明确选择的多模型会诊：提交完整任务与事实，让已配置模型独立分析，再综合真实结果。",
-          parameters: Type.Object({ task: Type.String({ minLength: 1, maxLength: 100000 }), context: Type.Optional(Type.String({ maxLength: 100000 })) }), replay: "safe",
-          execute: async (input, native, context) => {
-            if (!this.builtinCapabilities.config().multiModelConsult.enabled) throw new Error("多模型会诊已关闭");
-            const execution = await durableExecutionContext(identity, native, context);
-            return withDurableExecution({ execution, cwd, runId: `bot-consult:${identity}:${native.taskId}`, native, context }, async () => {
-              const report = await runDurableMultiModelConsult({ id: native.callId, taskId: identity, input, config, signal: context.abortSignal,
-                createSession: (participant, signal, onToolLimit, stableConfig) => createDurableConsultSession({ participant, cwd, agentDir: getMyBuddyDir(), runtime: this.durableModels!,
-                  parentSettings: createAgentSettingsManager(cwd, getMyBuddyDir()), policy,
-                  readProjectFiles: stableConfig.readProjectFiles, maxToolCalls: stableConfig.maxToolCalls, timeoutMs: stableConfig.timeoutSeconds * 1000,
-                  signal, onToolLimit, isEnabled: () => this.builtinCapabilities.config().multiModelConsult.enabled }) });
-              const result = consultToolResult(report);
-              return { output: result.content, details: JSON.parse(JSON.stringify(result.details)), isError: result.isError };
-            });
-          } })];
-      },
-      webTools: async cwd => {
-        const { createWebAccessCapabilityExtension } = await import("../capabilities/web-access");
-        return durableDomainTools([createWebAccessCapabilityExtension], { cwd, models: this.durableModels! });
-      },
-      capabilityTools: async (cwd, messageId, inputFilePaths) => {
-        return createBotCapabilityTools({ cwd, messageId, models: this.durableModels!, runtime: this.builtinCapabilities,
-          browser: this.browserAutomation, artifactService: () => this.artifactService, getIsolationLevel: () => this.getShellIsolationLevel(), inputFilePaths });
-      },
-      defaultModel: () => this.settingsStore.read().defaultModelId, isAuthority: () => this.workHostAuthority.isAuthority(),
-      memory: botMemory, memorySearch: (botId, query) => botMemory.search(botId, query),
-      schedule: (work, operationId, retryBlocked) => this.workDispatchQueue!.enqueue(work, operationId, retryBlocked),
-      wake: workId => { if (workId) this.workExecutions?.wakeWork(workId); this.workDispatchQueue?.wake(); },
-      visionFallback: async (imagePaths, directory, requestId) => {
-        const result = await routeVisionForPaths({ model: undefined, provider: this.builtinCapabilities.visionProvider(), imagePaths,
-          prompt: "准确描述用户附带图片中的可见内容及文字。", context: { taskId: `bot-attachment-${requestId}`, taskRoot: directory, toolCallId: `bot-attachment-${requestId}` } });
-        if (result.route !== "delegated-vision" || !result.descriptions?.length) throw new Error(result.error ?? "未配置图片识别模型");
-        return result.descriptions.map(item => `${item.imagePath}\n${item.text}`).join("\n");
-      },
-      onMessage: event => broadcast(BotWorkIpc.messageChanged, event),
-      deliverPeerReturn: async (sourceUserMessageId, operationId, text) => {
-        const record = z.object({ origin_json: z.string() }).optional().parse(this.db.connection.prepare(
-          "SELECT origin_json FROM bot_turn_origins WHERE user_message_id=?").get(sourceUserMessageId));
-        if (!record) return;
-        const report = this.db.connection.prepare(`SELECT 1 FROM bot_peer_deliveries d
-          JOIN bot_collaboration_messages m ON m.message_id=d.journal_message_id
-          WHERE d.operation_id=? AND json_extract(m.value_json,'$.workFeedback.report') IS NOT NULL`).get(operationId);
-        if (report) {
-          this.workNotificationWake?.();
-          return "pending";
-        }
-        if (!this.botContinuationDelivery) throw new Error("原渠道回复服务尚未就绪");
-        await this.botContinuationDelivery(gatewayBotOriginSchema.parse(JSON.parse(record.origin_json)), operationId, text);
-      },
-      recordWorkFeedback: (source, work) => this.settingsStore.read().memoryEnabled ? methodFeedback.record(source, work) : undefined,
-    });
-    this.botResultTurns ??= new BotWorkResultTurn({ models: this.durableModels, directory: join(getMyBuddyDir(), "bot-result-turns"),
-      defaultModel: () => this.settingsStore.read().defaultModelId, botModel: botId => this.botSettings.get(botId).modelId || undefined,
-      // 结果整理回合使用同一产品阈值，避免它与前台/任务通道的压缩口径不一致。
-      productCompaction: () => this.productCompactionSettings(),
-      compactionEngine: () => this.compactionEngineSetting(),
-      isAuthority: () => this.workHostAuthority.isAuthority() });
-    const resultPreferences = (taskId: string): string => {
-      if (!this.settingsStore.read().memoryEnabled || !this.memoryService.allowsPersonalBotBaseline({ taskId })) return "";
-      return this.memoryService.resolveContext({ taskId, scopeTypes: ["bot"], kinds: ["preference", "identity", "constraint"],
-        statuses: ["active"], includeInherited: false, budgetChars: 3000, limit: 6 }).text;
-    };
-    this.workCompletion ??= new WorkCompletionCoordinator({ db: this.db.connection, works: this.workService, preferences: resultPreferences,
-      isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
-      deliver: input => this.workConversationFeedback!.deliverCompletion(input),
-      wake: () => queueMicrotask(() => this.workDispatchQueue?.wake()) });
-    this.workWatchSupervision ??= new WorkWatchSupervision({ db: this.db.connection, works: this.workService, preferences: resultPreferences,
-      isAuthority: () => this.workHostAuthority.isAuthority(), review: input => this.botResultTurns!.review(input),
-      deliver: input => this.workConversationFeedback!.deliverCompletion(input), wake: () => {} });
-    this.workWatchSupervision.start();
-    this.workService.scheduler.setExpiryReviewGate(workId => !this.workWatchSupervision!.hasPending(workId));
-    this.workCompletion.start();
-    this.workDispatchQueue.start();
-    this.workService.scheduler.start();
-    this.botConversations.recover();
     await this.durableBots.resumePersisted();
   }
 
@@ -2171,33 +1784,13 @@ export class AgentService {
     this.expertBindings.purge(taskId);
   }
   async closeDurableBots(): Promise<void> {
-    this.workWatchSupervision?.close();
-    this.workCompletion?.close(); await this.botResultTurns?.close();
-    this.workConversationFeedback?.close();
-    await this.botConversations?.close(); await this.workDispatchQueue?.close();
-    await this.workExecutions?.close(); await this.durableBots?.close();
+    await this.durableBots?.close();
   }
 
-  async runGatewayTurn(request: GatewayBotTurnRequest): Promise<string> {
-    const origin = gatewayBotOriginSchema.parse(request.gatewayOrigin);
-    const binding = this.settingsStore.read().gatewayBotBindings?.[origin.channelId];
-    const bot = this.botWorkContext.resolveGatewayBot(LOCAL_USER_ID, origin, binding);
-    const service = this.requireBotConversations();
-    const requestId = `gateway:${request.userMessageId}`;
-    const prior = service.messages.receipt(LOCAL_USER_ID, bot.botId, requestId);
-    const selected = prior ? undefined : await this.botSettings.prepareMessage(bot.botId);
-    const frozen = selected && origin.audience === "shared" ? { settings: { ...selected.settings,
-      expertId: "", skillIds: [], mcpIds: [], connectorIds: [] }, profile: { ...selected.profile,
-      allowedSkillIds: [], allowedMcpIds: [], allowedConnectorIds: [], skillPackages: [],
-      configuration: { revision: selected.profile.configuration?.revision ?? "gateway-shared", name: bot.displayName,
-        instructions: "你在共享渠道回答当前用户的本次请求，不得读取私人会话、私人记忆、私人技能或个人连接器。",
-        skillIds: [], mcpIds: [], connectorIds: [] } } } : selected;
-    const receipt = service.acceptGateway({ botId: bot.botId, requestId, text: request.displayText ?? request.text,
-      attachments: request.attachments, origin,
-      referenceContext: request.displayText !== undefined && request.displayText !== request.text ? request.text : undefined }, frozen);
-    return service.awaitReply(receipt);
+  async runGatewayTurn(_request: GatewayBotTurnRequest): Promise<string> {
+    // Do not silently turn a retired Bot-channel binding into an Ordinary task.
+    throw new Error("独立 Bot 模式已移除；原 Bot 渠道绑定不再执行任务。");
   }
-
 
   private async resolvePiModelScope(
     settingsManager: SettingsManager = createAgentSettingsManager(process.cwd(), getMyBuddyDir()),
@@ -3062,7 +2655,6 @@ export class AgentService {
       ).filter((value): value is string => Boolean(value)))],
     };
   }
-
 
   private skillImprovementBlockedReason(skill: SkillDto): string | null {
     if (!skill.filePath) return "Skill 缺少文件路径，不能安全修改";
@@ -5357,20 +4949,16 @@ export class AgentService {
   }
 
   onSystemSuspend(): void {
-    this.workService.scheduler.suspend();
+    // Ordinary runtime owns its own lifecycle; no retired Bot scheduler.
   }
 
   onSystemResume(): void {
-    for (const gap of this.workService.scheduler.resume()) this.workService.scheduler.applyGap(gap.gapId);
-    try { this.workService.scheduler.tick(); } catch (error) { console.warn("[Work] 系统恢复调度失败", error); }
-    this.workDispatchQueue?.wake();
-    this.workExecutions?.wake();
+    // Do not replay old Bot schedules after system resume.
   }
 
   dispose(): void {
     this.builtinCapabilities.speechStreams.close();
     this.workService.scheduler.stop();
-    this.workService.scheduler.markStopped();
     this.workHostAuthority.stop();
     this.stopDiagnosticObservation();
     this.memoryDisposed = true;

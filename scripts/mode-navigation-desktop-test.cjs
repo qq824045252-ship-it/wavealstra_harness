@@ -109,11 +109,7 @@ async function selection(mode, label) {
     await rpc('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false});
     await accountMenu('普通模式');
     await remainingAccountRoutes();
-    await clickText('.sidebar-mode-nav button','Bot 模式');await wait(600);assert(await evaluate(`Boolean(document.querySelector('.app--bot'))`));
-    await evaluate(`window.dispatchEvent(new Event('focus'))`);await wait(400);assert(await evaluate(`Boolean(document.querySelector('.app--bot'))`));
-    await accountMenu('Bot 模式');
-    await clickText('.sidebar-mode-nav button','普通模式');await wait(200);await selection('general','通用模式');
-    console.log('PASS actual Bot workspace navigation stays in Bot and returns to selected ordinary mode');
+    assert.equal(await evaluate(`Boolean(document.querySelector('.app--bot'))`), false);
     await rpc('Page.reload');await wait(1500);
     await clickText('.hero-categories button','通用模式');await selection('general','通用模式');
     await accountMenu('普通模式');

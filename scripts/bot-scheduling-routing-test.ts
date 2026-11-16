@@ -86,9 +86,9 @@ try {
  assert.deepEqual(new Set(tools.map(tool=>tool.name)),BOT_FOREGROUND_TOOLS);
  assert.equal(accepts('schedule_overview',{}),true);
  assert.equal(accepts('schedule_overview',{query:'x'}),false,'the overview is a fixed read-only query');
- cron.upsert({id:'reminder-plan',name:'看 PR 结果提醒',prompt:'该看今天的 PR 结果了',scheduleType:'cron',
+ assert.throws(()=>cron.upsert({id:'reminder-plan',name:'看 PR 结果提醒',prompt:'该看今天的 PR 结果了',scheduleType:'cron',
   scheduleExpr:'0 20 * * *',timezone:'Asia/Shanghai',enabled:true,createdAt:now,updatedAt:now,restartPolicy:'resume',
-  reminder:{state:'scheduled',kind:'bot-reminder',userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,conversationId:first.conversationId}});
+  reminder:{state:'scheduled',kind:'bot-reminder',userId:LOCAL_USER_ID,botId:DEFAULT_BOT_ID,conversationId:first.conversationId}}), /Bot 提醒功能已移除/);
  const onceCreated=works.createWork(user,{operationId:'routing-once-work',title:'明早查资料并回报结果',mode:'once',
   inputSnapshotId:'input-routing-once',authorization:DESKTOP_USER_GRANTS,conversationId:first.conversationId,
   sourceMessageId:first.userMessageId,deadlineAt:now+86_400_000});
@@ -114,13 +114,7 @@ try {
  assert.equal(scheduled.length,0,'schedule_overview never dispatches or schedules work');
  assert.equal(overview.readOnly,true);assert.equal(overview.hostMustBeRunning,true);
  assert.match(overview.hostBoundary,/宿主/);
- const reminderItem=overview.items.find((item:any)=>item.kind==='reminder'&&item.reminderId==='reminder-plan');
- assert(reminderItem,'reminder projection is included');
- assert.equal('workId' in reminderItem,false,'a reminder is never presented as a Work');
- assert.equal(reminderItem.timing.kind,'cron');assert.equal(reminderItem.timing.expression,'0 20 * * *');
- assert.equal(reminderItem.timing.nextAt,cron.list().find(job=>job.id==='reminder-plan')!.nextRunAt);
- assert.equal(reminderItem.enabled,true);assert.equal(reminderItem.resultReturnsTo.conversationId,first.conversationId);
- assert.match(reminderItem.whatWillHappen,/不调用模型/);assert.match(reminderItem.deliveryBoundary,/恢复后合并补发/);
+ assert.equal(overview.items.some((item:any)=>item.kind==='reminder'),false,'retired reminders are not scheduled');
  const onceItem=overview.items.find((item:any)=>item.kind==='work'&&item.workId===onceWork.workId);
  assert(onceItem,'once Work projection is included');
  assert.equal(onceItem.workMode,'once');assert.equal('reminderId' in onceItem,false,'a Work is never presented as a reminder');
@@ -140,10 +134,10 @@ try {
  const hookCursor=eventItem.cursors.find((item:any)=>item.targetKey==='pr:42');
  assert.equal(hookCursor.highestConsumedVersion,'40');assert.match(eventItem.trigger,/pr:42/);
  assert.match(watchItem.whatWillHappen,/仅在本轮来源证据变化时通知/);
- assert.equal(overview.counts.reminders,1);assert.equal(overview.counts.watchWorks,1);
+ assert.equal(overview.counts.reminders,0);assert.equal(overview.counts.watchWorks,1);
  assert.equal(overview.counts.onceWorks,1);assert.equal(overview.counts.eventSubscriptions,1);
  assert.equal(overview.truncated,false);
- console.log('PASS schedule_overview: reminder + once Work + watch/event Work merged with exact times/conditions and status, zero writes');
+ console.log('PASS schedule_overview: once Work + watch/event Work (Bot reminders retired) merged with exact times/conditions and status, zero writes');
 
  // ------------------------------------------- (c) interrupt/redirect target resolution
  // Live pause regression: a full title sharing 验收持续 with another Work is

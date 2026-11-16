@@ -58,7 +58,6 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
   const spaces = useAppStore((s) => s.spaces);
   const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
-  const bots = useAppStore((s) => s.botIdentities);
   const [layer, setLayer] = useState<MemoryLayer>("l1");
   const [l0FocusId, setL0FocusId] = useState<string | null>(null);
   const [l0ResetVersion, setL0ResetVersion] = useState(0);
@@ -473,7 +472,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
     if (s.scopeType === "workspace") return spaces.find((item) => item.id === s.scopeId)?.name ?? s.scopeId;
     if (s.scopeType === "project") return projects.find((item) => item.id === s.scopeId)?.name ?? s.scopeId;
     if (s.scopeType === "task") return tasks.find((item) => item.id === s.scopeId)?.title ?? s.scopeId;
-    if (s.scopeType === "bot") return bots.find((item) => item.botId === s.scopeId)?.displayName ?? s.scopeId;
+    if (s.scopeType === "bot") return s.scopeId;
     return s.scopeId;
   };
 
@@ -749,10 +748,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
               <option value="bot">Bot 私人记忆 · {stats?.byScope?.bot ?? 0}</option>
               {(["team", "conversation", "work"] as const).map(type => <option key={type} value={type}>{SCOPE_LABEL[type]} · {stats?.byScope?.[type] ?? 0}</option>)}
             </select>
-            {scope === "bot" && <select className="new-project-input" aria-label="筛选 Bot 记忆" value={botScopeId} onChange={(event) => setBotScopeId(event.target.value)}>
-              <option value="">全部 Bot</option>
-              {bots.map((bot) => <option key={bot.botId} value={bot.botId}>{bot.displayName}</option>)}
-            </select>}
+            {scope === "bot" && <input className="new-project-input" aria-label="筛选历史 Bot 记忆 ID" placeholder="历史 Bot ID（留空查看全部）" value={botScopeId} onChange={(event) => setBotScopeId(event.target.value)} />}
             <span>仅筛选列表，AI 整理始终覆盖全部范围</span>
           </div>}
           <div className="memory-filters">

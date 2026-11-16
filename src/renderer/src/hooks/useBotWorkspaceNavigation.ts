@@ -1,20 +1,15 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import type { BotWorkspaceNavigationDto, BotWorkspaceRequestDto, BotWorkspaceConversationDto } from '@shared/bot-workspace-navigation';
+import { activateWorkspaceRequest } from '@/lib/workspace-request-selection';
 import { useAppStore } from '@/store/appStore';
 
 const listeners = new Set<() => void>();
 let snapshot: { requests: BotWorkspaceRequestDto[]; conversations: BotWorkspaceConversationDto[]; error: string } = { requests: [], conversations: [], error: '' };
 let pending: Promise<void> | undefined;
-let selected: BotWorkspaceRequestDto | null = null;
 export function openWorkspaceRequest(request: BotWorkspaceRequestDto): void {
-  selected = request;
-  useAppStore.getState().openWorkspaceDetail(request.spaceId);
-  window.dispatchEvent(new CustomEvent('mybuddy:workspace-request', { detail: request }));
+  activateWorkspaceRequest(request, spaceId => useAppStore.getState().openWorkspaceDetail(spaceId));
 }
-export function selectedWorkspaceRequest(spaceId: string | null): BotWorkspaceRequestDto | null {
-  return selected?.spaceId === spaceId ? selected : null;
-}
-export function clearWorkspaceRequest(): void { selected = null; }
+export { clearWorkspaceRequest, selectedWorkspaceRequest } from "@/lib/workspace-request-selection";
 export const foregroundStatus = (status: BotWorkspaceRequestDto['status']): string => ({
   queued: '排队中', running: '回复中', completed: '已回复', failed: '失败', cancelled: '已停止', unknown: '状态待核实',
 })[status];

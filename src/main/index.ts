@@ -3,14 +3,9 @@ import { SpeechIpc } from "../shared/speech-stream";
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
 import { BotMessageHtmlService } from "./artifact/BotMessageHtmlService";
 import { WindowsNotificationActivation } from "./platform/notification-activation";
-import { normalizeBotAvatar } from "./agent/work/BotAvatarImageDecoder";
-import { BotAvatarIpc } from "../shared/bot-avatar";
-import { createBotAvatarIpcHandler } from "./agent/work/BotAvatarIpc";
 import { SavedArtifactIpc } from "../shared/saved-artifact";
 import { savedArtifactPreviewService } from "./artifact/SavedArtifactPreview";
 import { ResidentLifecycle, RESIDENT_HOST_ARGUMENT } from "./host/ResidentLifecycle";
-import { GatewayBotBindingIpc } from "../shared/gateway-bot-binding";
-import { createGatewayBotBindingUpdater } from "./gateway/GatewayBotBindingSettings";
 import { isMainAppWindowRequest } from "./AppWindowIpc";
 import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
@@ -85,9 +80,6 @@ import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import type { ConversationInteractionRespondRequest } from "../shared/conversation-interaction";
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
 import { BotWorkIpc } from "../shared/bot-work-ipc";
-import { createBotIpcHandler, createBotSettingsIpcHandler } from "./agent/work/BotCreationIpc";
-import { createWorkTeamIpcHandler } from "./agent/work/WorkTeamIpc";
-import type { AttestCriteriaParams, RecordUserFeedbackParams } from "../shared/bot-work";
 import {
   GadgetIpc,
   type GadgetConvertFromArtifactRequest,
@@ -180,10 +172,7 @@ import type {
 } from "../shared/artifact-ipc";
 import { AgentService } from "./agent/AgentService";
 import { armStartupReport, onStartupReport, startupMark, startupMarkEnabled } from "./perf/startupMarks";
-import { WorkNotificationHost } from "./agent/work/WorkNotificationHost";
 import { publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
-import { createDesktopWorkChannel } from "./agent/work/WorkDesktopNotificationChannel";
-import { WorkGatewayNotificationChannels } from "./agent/work/WorkGatewayNotificationChannel";
 import { ExternalAgentRuntime } from "./external-agent/ExternalAgentRuntime";
 import { ExternalAgentIpc, type ExternalAgentId, type ExternalAgentPromptRequest, type ExternalAgentResolvePermissionRequest, type ExternalAgentSetConfigOptionRequest } from "../shared/external-agent";
 import { ConversationBranchService } from "./agent/ConversationBranchService";
@@ -355,8 +344,6 @@ let projectEventPromoter: ProjectEventPromoter;
 let projectDocumentImporter: ProjectDocumentImporter;
 let projectContextResolver: ProjectContextResolver;
 let agentService: AgentService;
-let workNotificationHost: WorkNotificationHost | null = null;
-let workGatewayNotificationChannels: WorkGatewayNotificationChannels | null = null;
 let externalAgentRuntime: ExternalAgentRuntime;
 /** 对话分支（Branch in new task）服务 */
 let conversationBranchService: ConversationBranchService;
@@ -1148,86 +1135,10 @@ function registerIpc(): void {
   ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string) =>
     agentService.cancelConversationGoal(goalId));
 
-  ipcMain.handle(BotWorkIpc.phase3Control, (_e, request: unknown) => agentService.phase3WorkControl(request));
-  ipcMain.handle(BotWorkIpc.phase4Control, (_e, request: unknown) => agentService.phase4WorkControl(request));
-  ipcMain.handle(BotWorkIpc.hostStatus, () => agentService.getWorkHostStatus());
-  ipcMain.handle(BotWorkIpc.getSettings, (_e, botId: string) => agentService.getBotSettings(botId));
-  ipcMain.handle(BotWorkIpc.saveSettings, createBotSettingsIpcHandler({
-    getMainWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    save: request => agentService.saveBotSettings(request),
-  }));
-  ipcMain.handle(BotAvatarIpc, createBotAvatarIpcHandler({
-    service: agentService.botAvatars, getWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    pick: async () => {
-      const window = botManagementWindow;
-      if (!window || window.isDestroyed()) throw new Error("主窗口已关闭");
-      const result = await dialog.showOpenDialog(window, { title: "添加本地 Bot 头像", properties: ["openFile"],
-        filters: [{ name: "头像图片", extensions: ["png","jpg","jpeg","gif","webp"] }] });
-      return result.canceled ? undefined : result.filePaths[0];
-    },
-    normalize: normalizeBotAvatar,
-  }));
-  ipcMain.handle(BotWorkIpc.listBots, () => agentService.listBots());
-  ipcMain.handle(BotWorkIpc.updateWorkspaceAuthorization, createBotIpcHandler({
-    getMainWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    createBot: request => agentService.updateBotWorkspaceAuthorization(request),
-  }));
-  ipcMain.handle(BotWorkIpc.deleteBot, createBotIpcHandler({
-    getMainWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    createBot: request => agentService.deleteBot(request),
-  }));
-  ipcMain.handle(BotWorkIpc.renameBot, createBotIpcHandler({
-    getMainWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    createBot: request => agentService.renameBot(request),
-  }));
-  ipcMain.handle(BotWorkIpc.createBot, createBotIpcHandler({
-    getMainWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    createBot: request => agentService.createBot(request),
-  }));
-  ipcMain.handle(BotWorkIpc.teamControl, createWorkTeamIpcHandler({
-    getMainWindow: () => botManagementWindow,
-    rendererUrl: process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href,
-    control: request => agentService.teamWorkControl(request),
-  }));
-  ipcMain.handle(BotWorkIpc.listBotExpertVersions, (_e, botId: string) => agentService.listBotExpertVersions(botId));
-  ipcMain.handle(BotWorkIpc.adoptBotExpertVersion, (_e, botId: string, expected: { pendingVersion: number; snapshotId: string }) =>
-    agentService.adoptBotExpertVersion(botId, expected));
-  ipcMain.handle(BotWorkIpc.syncWorks, (_e, request: unknown) => agentService.syncWorkProjections(request));
-  ipcMain.handle(BotWorkIpc.sendMessage, (_e, request: unknown) => agentService.sendBotMessage(request));
+  // Read-only access for the existing workspace history; no standalone Bot commands.
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
-  ipcMain.handle(BotWorkIpc.incomingMessages, (_e, request: unknown) => agentService.botIncomingMessages(request));
-  ipcMain.handle(BotWorkIpc.collaborations, (_e, request: unknown) => agentService.botCollaborations(request));
-  ipcMain.handle(BotWorkIpc.collaborationHistory, (_e, request: unknown) => agentService.botCollaborationHistory(request));
-  ipcMain.handle(BotWorkIpc.activeRequests, () => agentService.botActiveRequests());
-  ipcMain.handle(BotWorkIpc.displayGroups, (_event, request) => agentService.botDisplayGroups(request));
   ipcMain.handle(BotWorkIpc.workspaceNavigation, () => agentService.botWorkspaceNavigation());
-  ipcMain.handle(BotWorkIpc.directoryActivity, () => agentService.botDirectoryActivity());
-  ipcMain.handle(BotWorkIpc.cancelSend, (_e, botId: string, requestId: string) => agentService.cancelBotSend(botId, requestId));
-  ipcMain.handle(BotWorkIpc.archiveConversation, (_e, botId: string, conversationId: string) => agentService.archiveBotConversation(botId, conversationId));
-  ipcMain.handle(BotWorkIpc.queryWorks, (_e, request: unknown) => agentService.queryWorkProjections(request));
-  ipcMain.handle(BotWorkIpc.listWorks, (_e, includeClosed?: boolean) => agentService.listWorkProjections(Boolean(includeClosed)));
   ipcMain.handle(BotWorkIpc.getWork, (_e, workId: string) => agentService.getWorkProjection(workId));
-  ipcMain.handle(BotWorkIpc.attestCriteria, (_e, request: AttestCriteriaParams) => agentService.attestWorkCriteria(request));
-  ipcMain.handle(BotWorkIpc.recordUserFeedback, (_e, request: RecordUserFeedbackParams) => agentService.recordWorkUserFeedback(request));
-  ipcMain.handle(BotWorkIpc.markNotificationRead, (_e, notificationId: string) => agentService.markWorkNotificationRead(notificationId));
-  ipcMain.handle(BotWorkIpc.markCardRead, (_e, request: unknown) => agentService.markWorkCardRead(request));
-  ipcMain.handle(BotWorkIpc.workSummary, (_e, workId: string) => agentService.getWorkSummary(workId));
-  ipcMain.handle(BotWorkIpc.executionDiagnostics, (_e, request: unknown) => agentService.botExecutionDiagnostics(request));
-  ipcMain.handle(BotWorkIpc.workDiagnostics, (_e, request: unknown) => agentService.getWorkDiagnostics(request));
-  ipcMain.handle(BotWorkIpc.resendNotification, (_e, request: unknown) => agentService.resendWorkNotification(request));
-  ipcMain.handle(BotWorkIpc.reviewControl, (_e, request: unknown) => agentService.reviewWork(request));
-  ipcMain.handle(BotWorkIpc.reassessClosedWork, (event, request: unknown) => {
-    if (!isMainAppWindowRequest(event, botManagementWindow,
-      process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href))
-      return { ok: false, code: "forbidden", message: "只能从应用主窗口复核结案结果" };
-    return agentService.reassessClosedWork(request);
-  });
 
   // BTW（临时上下文分支）：瞬时会话，与 Task Registry / agent:event 完全隔离
   ipcMain.handle(BtwIpc.start, async (_e, req: BtwStartRequest) => {
@@ -1432,7 +1343,7 @@ function registerIpc(): void {
   );
   ipcMain.handle(AgentIpc.getAppSettings, () => agentService.getAppSettings());
   ipcMain.handle(AgentIpc.updateAppSettings, async (_e, partial) => {
-    if (partial?.gatewayBotBindings !== undefined) throw new Error("请通过渠道个人助理绑定保存");
+    if (partial?.gatewayBotBindings !== undefined) throw new Error("渠道个人助理绑定已移除");
     const {
       memoryGatewayEnabled, memoryGatewayWriteEnabled, memoryGatewayPort,
       remoteAccessEnabled, remoteAccessPort, remoteAccessBaseUrl,
@@ -2359,19 +2270,6 @@ function registerIpc(): void {
   ipcMain.handle(GatewayIpc.weixinQrCancel, (_e, sessionId?: string) => gatewayService.cancelWeixinQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.qqQrCancel, (_e, sessionId?: string) => gatewayService.cancelQQQrLogin(sessionId));
   ipcMain.handle(GatewayIpc.status, () => gatewayService.status());
-  const updateGatewayBotBinding = createGatewayBotBindingUpdater({
-    readCurrent: () => agentService.getAppSettings().gatewayBotBindings ?? {},
-    writeCurrent: next => agentService.saveGatewayBotBindings(next),
-    connectedIdentity: id => gatewayService.connectedBindingIdentity(id),
-    ownsActiveBot: id => agentService.listBots().some(bot => bot.botId === id && bot.status === "active"),
-  });
-  ipcMain.handle(GatewayBotBindingIpc.configure, async (event, input) => {
-    if (!isMainAppWindowRequest(event, botManagementWindow,
-      process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) {
-      throw new Error("只能从应用主窗口绑定渠道个人助理");
-    }
-    return updateGatewayBotBinding(input);
-  });
   const guardRegistration = (event: Electron.IpcMainInvokeEvent) => {
     if (!isMainAppWindowRequest(event, botManagementWindow,
       process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("只能从应用主窗口配置扫码接入");
@@ -2982,16 +2880,6 @@ app.whenReady().then(async () => {
       botManagementWindow.webContents.send(SpeechIpc.audio, event);
     }
   });
-  // Cards remain available in-app. External effects use the same authority-owned ledger;
-  // an unqueryable desktop/Gateway receipt stays unknown across a restart.
-  workNotificationHost = new WorkNotificationHost(agentService.getWorkService(), {
-    isAuthority: () => agentService.getWorkHostStatus().isAuthority,
-    channels: () => notificationService ? [createDesktopWorkChannel(notificationService)] : [],
-    asyncChannels: () => workGatewayNotificationChannels?.channels() ?? [],
-    intervalMs: 15_000,
-    onError: (error) => console.warn("[Work] 通知投递失败", error),
-  });
-  agentService.setWorkNotificationWake(() => workNotificationHost?.wake());
   computerUseOverlayService.setAbortHandler(async (taskId) => {
     computerUseRunCoordinator.cancel(taskId);
   });
@@ -3526,13 +3414,6 @@ app.whenReady().then(async () => {
         dedupeKey: `automation:${summary.jobId}:run:${summary.runId}:terminal`,
       });
     },
-    delivery => {
-      broadcastToWindows(BotWorkIpc.messageChanged, delivery.event);
-      notificationService.publish({ type: "reminder.due", level: "info", title: `⏰ ${delivery.title}`,
-        body: delivery.body, sourceType: "automation", sourceId: delivery.jobId,
-        target: { kind: "botConversation", botId: delivery.event.botId, teamId: delivery.event.teamId, conversationId: delivery.event.conversationId },
-        dedupeKey: delivery.deliveryId });
-    },
   );
   // 外部输入适配器（首个：IM/Gateway 投递指令 `@项目 <名>：内容` → 项目事件；fail-open）
   gatewayService = new GatewayService(db, agentService, (msg) => {
@@ -3552,12 +3433,6 @@ app.whenReady().then(async () => {
       console.warn(`[index] 项目事件投递失败 ${project.id}：`, err);
     }
   });
-  workGatewayNotificationChannels = new WorkGatewayNotificationChannels(db.connection, agentService.getWorkService(), gatewayService, {
-    isAuthority: () => agentService.getWorkHostStatus().isAuthority,
-  });
-  agentService.setBotContinuationDelivery((origin, operationId, text) => gatewayService.sendBotContinuation(origin, operationId, text));
-  gatewayService.setWorkNotificationWake(() => workNotificationHost?.wake());
-  workNotificationHost.wake();
   gatewayService.setTrashedWorkspaceRestorer((taskId) => {
     taskLifecycle.restore(taskId);
   });
@@ -3618,7 +3493,7 @@ app.whenReady().then(async () => {
     notificationService?.setDesktopDelivery(presentDesktopNotification, () => false);
     console.log(`[ResidentHost] online pid=${process.pid} storage=${getMyBuddyDir()}`);
   }
-  workNotificationHost.start();
+
   await agentService.resumePersistedTasks();
   startupMark("restoreDelivered");
   cronService.start();
@@ -3688,9 +3563,6 @@ app.on("before-quit", (event) => {
     try { professionalToolService?.stopOwned(); } catch { /* best effort */ }
     try { externalAgentRuntime?.dispose(); } catch { /* best effort */ }
     try { computerUseOverlayService.dispose(); } catch { /* best effort */ }
-    try { await workNotificationHost?.close(); } catch { /* best effort */ }
-    try { agentService?.setWorkNotificationWake(undefined); } catch { /* best effort */ }
-    try { gatewayService?.setWorkNotificationWake(undefined); } catch { /* best effort */ }
     try { await gatewayService?.suspend(); } catch { /* best effort */ }
     try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }

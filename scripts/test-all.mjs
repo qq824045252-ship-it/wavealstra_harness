@@ -80,7 +80,6 @@ const GUI_TESTS = new Set([
   "test:resident-host",
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
-  "test:bot-collaboration-ui",
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
   "test:usage-dashboard-dev", // actual pnpm dev app, isolated synthetic usage ledger
   "test:browser-tabs-ui",
@@ -91,34 +90,12 @@ const GUI_TESTS = new Set([
   "test:gadget-menu-dev",
   "test:browser-builtin-electron",
   "test:browser-task-execution-electron",
-  "test:bot-add-menu-desktop",
   "test:diagnostics-cache-ui",
-  "test:bot-display-groups-ui",
   "test:model-menu-ui",
-  "test:bot-conversation-concurrent-desktop",
-  "test:bot-scroll-desktop",
-  "test:bot-history-paging-desktop",
-  "test:bot-activity-desktop",
-  "test:bot-rename-desktop",
   "test:bot-report-dedup-desktop",
   "test:bot-message-actions-desktop",
-  "test:bot-interface-desktop",
-  "test:bot-work-browser-desktop",
-  "test:bot-team-removal-desktop",
-  "test:bot-work-detail-desktop",
-  "test:work-record-archive-desktop",
-  "test:bot-work-conversation-desktop",
-  "test:bot-work-delivery-desktop",
-  "test:bot-work-browser-dev",
-  "test:work-artifact-desktop",
-  "test:bot-settings-dev",
   "test:acp-menu-dev", // actual pnpm dev Electron, isolated profile and seeded ACP catalog
-  "test:bot-work-recovery-dev",
-  "test:bot-work-phase5:dev",
-  "test:bot-work-phase3:dev",
   "test:bot-work-phase3-focus-desktop",
-  "test:bot-work-phase2:dev", // actual pnpm dev Electron renderer and isolated profile
-  "test:bot-task-reply:dev", // actual isolated pnpm dev, IPC, local model fixture and persisted reply stages
   "test:media-capabilities-ui",
   "test:computer-use-behavior",
   "test:computer-use-agent-desktop",
@@ -181,26 +158,11 @@ const GUI_TESTS = new Set([
 
 const NETWORK_TESTS = new Set([
   "test:bot-task-reply-harness", // loopback-only HTTP/WebSocket fixture and driver checks; no external account or desktop
-  "test:bot-avatar-browser",
-  "test:bot-cross-channel-model-live",
-  "test:bot-organization:live",
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
-  "test:bot-collaboration:live",
-  "test:bot-completion-evidence:live", // six registered text task types with real result review
-  "test:work-isolation-live", // isolated Electron + real model, six semantic tasks; not a headless substitute
-  "test:bot-scheduling-live", // real Electron + configured real model; at least six task types per batch
-  "test:google-workspace-write:live", // Real model/Electron with isolated local SDK fixture only.
-  "test:google-workspace:live", // Real Electron/model; isolated synthetic gws process, no real account.
   "test:gadget-browser-recovery-live",
-  "test:bot-history-context:live",
-  "test:bot-peer-calls:live",
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
   "test:browser-builtin-live",
   "test:browser-production-live",
-  "test:bot-result-delivery:live",
-  "test:bot-memory-live", // isolated pnpm dev desktop + configured live model
-  "test:bot-watch:live",
-  "test:bot-watch-intent:live",
   "test:gadget-agent-live",
   // 真实 Magpie 网关的缓存边界实验：要真凭据/网络/花费，缺 MYBUDDY_CACHE_LIVE=1 会自己 SKIP。
   "test:cache-live",
@@ -277,9 +239,7 @@ const GUI_WINDOWS_ONLY = new Set([
  */
 const PLATFORM_ONLY_TESTS = new Map([
   ["test:usage-dashboard-dev", ["linux"]], // real Linux dev app with owned-process cleanup
-  ["test:bot-work-phase3:dev", ["windows"]],
   ["test:bot-work-phase3-focus-desktop", ["windows"]],
-  ["test:bot-work-phase2:dev", ["windows"]], // Windows dev UI driver; Linux/Omarchy desktop acceptance remains separate.
   ["test:compaction-settings-dev", ["linux"]], // Exact-address native window acceptance on the Hyprland desktop.
   ["test:computer-use-linux", ["linux"]],
   ["test:computer-use-linux:packaged", ["linux"]],
@@ -316,7 +276,6 @@ const HEADLESS_TESTS = new Set([
   "test:deepseek-native",
   "test:deepseek-model-settings-ui",
   "test:bot-avatars",
-  "test:bot-avatar-ui",
   "test:bot-avatar-decoder",
   "test:bot-avatar-containers",
   "test:bot-avatar-assets",
@@ -335,7 +294,6 @@ const HEADLESS_TESTS = new Set([
   "test:business-gateway-registration-ui",
   "test:gateway-registration-card-ui",
   "test:business-gateway-registration-service",
-  "test:gateway-bot-binding-ui",
   "test:gateway-binding-slack-identity",
   "test:gateway-connected-ui",
   "test:gateway-channel-ui",
@@ -353,17 +311,11 @@ const HEADLESS_TESTS = new Set([
   "test:durable-storage-lease",
   "test:work-file-event-source", // Real local fs.watch + SQLite; no Electron or external source account.
   "test:gadget-save-copies",
-  "test:bot-call-thread",
   "test:bot-peer-calls",
-  "test:bot-reminders",
   "test:work-watch-goal",
   "test:bot-rename",
   "test:bot-team-conversation",
   "test:bot-create-avatar",
-  "test:bot-create-avatar-ui",
-  "test:bot-create-avatar-dialog",
-  "test:bot-team-recycle-ui",
-  "test:bot-task-reply-ui", // Actual React component events in linkedom; no Electron/display.
   "test:bot-task-reply-presentation",
   "test:bot-active-requests",
   "test:bot-activity-monitor",
@@ -373,7 +325,6 @@ const HEADLESS_TESTS = new Set([
   "test:web-access-extract-runtime", // Default fixture is local; real weather request is opt-in.
   "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.
   "test:cloudflared-cli-detect",
-  "test:bot-report-images-ui",
   "test:work-conversation-feedback",
   "test:durable-close-retry",
   "test:durable-sqlite-close-retry",
@@ -412,11 +363,9 @@ const HEADLESS_TESTS = new Set([
   "test:weixin-gateway",
   "test:weixin-qr-integration",
   "test:weixin-qr-ui",
-  "test:bot-summary-pagination",
   "test:bot-work-summary-query",
   "test:bot-work-phase5-owner-summary",
   "test:bot-work-phase5-review",
-  "test:bot-work-phase5-review-ui",
   "test:bot-work-phase5-native-story",
   "test:remote-work-sync",
 

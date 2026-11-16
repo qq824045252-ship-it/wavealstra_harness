@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { BotWorkspaceRequestDto } from '@shared/bot-workspace-navigation';
 import type { BotMessageDto } from '@shared/bot-conversation';
-import { BotMessage } from '@/components/pages/BotWorkspacePage';
-import { BotWorkDetails } from '@/components/pages/BotWorkDetails';
+import { BotMessage } from '@/components/pages/BotMessage';
+import { WorkFiles, generatedWorkFiles } from '@/components/pages/BotWorkResult';
+import ChatMarkdown from '@/components/pages/BotChatMarkdown';
 import type { WorkProjectionDto } from '@shared/bot-work';
 import './WorkspaceForeground.css';
 
@@ -51,9 +52,9 @@ export function WorkspaceForegroundConversation({ request, conversationTitle, sp
     <div className="workspace-foreground-messages">
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">正在读取原始对话…</p>}
-      {work ? <BotWorkDetails work={work} ownerName={spaceName} includeClosed /> : messages.map(message => <BotMessage key={message.messageId} message={message} workLinkSource={messages.find(item => item.role === 'user' && item.requestId === message.requestId)} botName={spaceName} works={[]} onOpenWork={id => {
+      {work ? <section aria-label="历史事项"><h3>{work.title}</h3><ChatMarkdown text={work.goalDescription ?? work.title} streaming={false} resolveTaskFiles={false} /><WorkFiles files={generatedWorkFiles(work)} /></section> : messages.map(message => <BotMessage key={message.messageId} message={message} workLinkSource={messages.find(item => item.role === 'user' && item.requestId === message.requestId)} botName={spaceName} works={[]} onOpenWork={id => {
         void window.api?.botWork.getWork(id).then(result => { if (result) setWork(result); else setError('找不到关联事项'); }).catch(cause => setError(String(cause)));
-      }} onCancel={() => { void window.api?.botWork.cancelSend(request.botId, request.requestId).catch(cause => setError(String(cause))); }} />)}
+      }} onCancel={() => {}} readOnly />)}
       {!loading && !error && messages.length === 0 && <p>没有找到此任务的原始消息。请返回工作空间刷新。</p>}
     </div>
   </section>;

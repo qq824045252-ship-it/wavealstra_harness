@@ -1,6 +1,5 @@
 import { mapTaskRowToTask } from "../tasks/taskMapper";
 import { historyMessageToChatMessage } from "../messages/historyMapper";
-import { mergeBotMessageEvent } from "../slices/botMessageStream";
 import type { ExternalAgentUiEvent } from "../../../../../shared/external-agent";
 import type { RuntimeBinding } from "./binding";
 import type { AgentDeltaBuffer } from "./deltaBuffer";
@@ -21,17 +20,7 @@ export function bindAgentEvents(
   addCleanup(api.speech?.onAudio(event => { if (isActive()) ingestSpeechAudio(event); }));
   addCleanup(stopSpeechPlayback);
 
-  addCleanup(api.botWork?.onMessageChanged?.(event => {
-    if (!isActive()) return;
-    const scopeKey = event.teamId ? `team:${event.teamId}` : Object.keys(get().botHistories).find(key => get().botHistories[key]?.conversationId === event.conversationId) ?? event.botId;
-    const history = get().botHistories[scopeKey];
-    const merged = mergeBotMessageEvent(history, event);
-    if (merged !== history && merged) {
-      set(state => ({ botHistories: { ...state.botHistories, [scopeKey]: merged } }));
-    } else if (!history || history.conversationId === event.conversationId && !history.messages.some(message => message.messageId === event.message.messageId)) {
-      void get().refreshBotHistory(event.botId, scopeKey.startsWith("team:") ? scopeKey.slice(5) : undefined);
-    }
-  }));
+
 
   addCleanup(
     api.agent.onEvent((patch) => {

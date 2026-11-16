@@ -40,6 +40,12 @@ try {
  const secondBot=bots.registerBot({botId:'another-bot',userId:LOCAL_USER_ID,displayName:'另一个Bot'});
  const other=messages.accept(LOCAL_USER_ID,{botId:secondBot.botId,requestId:'other-request',text:'另一Bot的问题'});
  ensureBotInbox(db.connection,LOCAL_USER_ID,bot.botId);
+ // Retired standalone mode still permits reading an archived request without writing any rows.
+ const getChanges=()=>Number((db.connection.prepare('SELECT total_changes() n').get() as {n:number}).n);
+ const historyChanges=getChanges();
+ const readonlyHistory=messages.history(LOCAL_USER_ID,{botId:bot.botId,conversationId:sent.conversationId},{reconcile:false});
+ assert.deepEqual(readonlyHistory.messages.map(m=>m.text),['天气如何','晴']);
+ assert.equal(getChanges(),historyChanges);
  const beforeTasks=db.listTasks().length;
  const snap=service.snapshot();
  assert.equal(snap.foregroundRequests.length,5);

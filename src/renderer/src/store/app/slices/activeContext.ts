@@ -204,7 +204,7 @@ export function createActiveContextActions(
           const selectedWorkId = "selectedWorkId" in restored ? restored.selectedWorkId : state.selectedWorkId;
           return {
             ...restored,
-            ...(invalidatedBot && state.page === "bot" ? { page: "chat" as const } : {}),
+            ...(invalidatedBot && (state.page as string) === "bot" ? { page: "chat" as const } : {}),
             botIdentities: bots,
             botWorks,
             botWorkCursor,

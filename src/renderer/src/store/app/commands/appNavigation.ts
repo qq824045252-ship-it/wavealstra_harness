@@ -8,11 +8,11 @@ export function createAppNavigationActions(
   return {
     setPage: (page) =>
       set((s) => ({
-        page,
+        page: (page as string) === "bot" ? "chat" : page,
         historicalTeamWork: null,
         botNavigationEpoch: s.botNavigationEpoch + 1,
-        // Bot 模式保留普通任务草稿，其他页面沿用原来的清理规则。
-        draft: page === "chat" || page === "bot" ? s.draft : null,
+        // Legacy navigation must preserve ordinary task drafts without reviving removed Bot mode.
+        draft: page === "chat" || (page as string) === "bot" ? s.draft : null,
         hubMcpFocusName: page === "mcp" ? s.hubMcpFocusName : null,
         ...(page !== "workspace" ? { activeWorkspaceId: null } : {}),
       })),

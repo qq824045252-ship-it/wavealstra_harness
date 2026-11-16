@@ -13,8 +13,6 @@ import AssistantPage from "@/components/pages/AssistantPage";
 import HubPage from "@/components/pages/HubPage";
 import ProjectsPage from "@/components/pages/ProjectsPage";
 import AutomationPage from "@/components/pages/AutomationPage";
-import BotWorkspacePage from "@/components/pages/BotWorkspacePage";
-import { BotCreateDialog } from "@/components/pages/BotCreateDialog";
 import FilesPage from "@/components/pages/FilesPage";
 import LibraryPage from "@/components/pages/library/LibraryPage";
 import MailboxPage from "@/components/pages/MailboxPage";
@@ -39,16 +37,12 @@ export default function App(): React.JSX.Element {
   const activeTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const theme = useAppStore((s) => s.theme);
   const searchOpen = useAppStore((s) => s.searchOpen);
-  const compactBotLayout = useMediaQuery("(max-width: 1180px)");
   const compactAutomationLayout = useMediaQuery("(max-width: 720px)");
-  const usesNavigationDrawer = (page === "bot" && compactBotLayout) || (page === "automation" && compactAutomationLayout);
+  const usesNavigationDrawer = page === "automation" && compactAutomationLayout;
   const [botNavigationOpen, setBotNavigationOpen] = useState(false);
-  const [botCreateOpen, setBotCreateOpen] = useState(false);
-  const openBotCreation = () => { setBotNavigationOpen(false); setBotCreateOpen(true); };
   const botNavigationRef = useRef<HTMLDialogElement>(null);
-  const botSidebarVisible = compactBotLayout ? botNavigationOpen : !sidebarCollapsed;
-  useEffect(() => { setBotNavigationOpen(false); }, [page, compactBotLayout, compactAutomationLayout]);
-  useEffect(() => { if (searchOpen || settingsOpen) { setBotNavigationOpen(false); setBotCreateOpen(false); } }, [searchOpen, settingsOpen]);
+  useEffect(() => { setBotNavigationOpen(false); }, [page, compactAutomationLayout]);
+  useEffect(() => { if (searchOpen || settingsOpen) { setBotNavigationOpen(false); } }, [searchOpen, settingsOpen]);
   useEffect(() => {
     const dialog = botNavigationRef.current;
     if (usesNavigationDrawer && botNavigationOpen) dialog?.showModal();
@@ -142,14 +136,14 @@ export default function App(): React.JSX.Element {
   }, [showArtifactPanel]);
 
   return (
-    <div className={`app ${page === "bot" ? "app--bot" : ""}`}>
+    <div className="app">
       {usesNavigationDrawer ? <dialog ref={botNavigationRef} className="bot-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setBotNavigationOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setBotNavigationOpen(false); }}>
-        <Sidebar onClose={() => setBotNavigationOpen(false)} onCreateBot={openBotCreation} />
-      </dialog> : !sidebarCollapsed && <Sidebar onCreateBot={openBotCreation} />}
+        <Sidebar onClose={() => setBotNavigationOpen(false)} />
+      </dialog> : !sidebarCollapsed && <Sidebar />}
       <div
         className={`main-area ${panelExpanded ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
       >
-        {sidebarCollapsed && !usesNavigationDrawer && page !== "chat" && page !== "bot" && (
+        {sidebarCollapsed && !usesNavigationDrawer && page !== "chat" && (
           <button className="icon-btn sidebar-expand-float" title="展开侧边栏" onClick={toggleSidebar}>
             <IconPanel size={15} />
           </button>
@@ -166,8 +160,6 @@ export default function App(): React.JSX.Element {
               </>
             )}
           </>
-        ) : page === "bot" ? (
-          <BotWorkspacePage onCreateBot={openBotCreation} navigationVisible={botSidebarVisible} onToggleNavigation={() => { if (compactBotLayout) setBotNavigationOpen(open => !open); else toggleSidebar(); }} />
         ) : page === "assistant" ? (
           <AssistantPage />
         ) : page === "projects" ? (
@@ -212,7 +204,6 @@ export default function App(): React.JSX.Element {
       <SubagentDrawer />
       <UsageStatsModal />
       <ApiAggregationModal />
-      <BotCreateDialog open={botCreateOpen} onClose={() => setBotCreateOpen(false)} />
     </div>
   );
 }

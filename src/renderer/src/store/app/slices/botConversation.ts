@@ -1,3 +1,4 @@
+import { activateWorkspaceRequest } from "@/lib/workspace-request-selection";
 import { mergeBotHistoryPage } from "./botMessageStream";
 import { buildTaskReferenceBlock, wrapReferenceContext } from "@/lib/taskReference";
 import { requestConsultForMessage } from "@shared/multi-model-consult";
@@ -51,27 +52,30 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
     openNotificationConversation: async (target, signal) => {
       signal?.throwIfAborted();
       const api = getApi()?.botWork;
-      if (!api) throw new Error("主机离线，无法打开通知来源");
-      const epoch = get().botNavigationEpoch + 1;
-      set({ botNavigationEpoch: epoch });
-      const bots = await api.listBots();
-      if (!bots.some(bot => bot.botId === target.botId)) throw new Error("通知对应的 Bot 已不可用");
-      let team: import("../../../../../shared/bot-work-team").WorkTeamTemplateDto | null = null;
-      if (target.teamId) {
-        const result = await api.teamControl({ kind: "list_templates" });
-        team = result.ok ? result.templates?.find(item => item.templateId === target.teamId && item.ownerBotId === target.botId) ?? null : null;
-        if (!team) throw new Error("通知对应的团队已不可用");
-      }
-      const history = await api.history({ botId: target.botId, teamId: target.teamId, conversationId: target.conversationId });
-      if (history.botId !== target.botId || history.teamId !== target.teamId || history.conversationId !== target.conversationId) throw new Error("通知来源会话已不可用");
+      if (!api?.workspaceNavigation) throw new Error("主机离线，无法打开历史通知");
+      const epoch = get().botNavigationEpoch;
+      const navigation = await api.workspaceNavigation();
       signal?.throwIfAborted();
-      if (get().botNavigationEpoch !== epoch) throw new Error("通知导航已被新的选择取代，请重新点击通知");
-      const key = botConversationScope(target.botId, target.teamId);
-      histories.set(key, (histories.get(key) ?? 0) + 1);
-      notificationConversations.set(key, target.conversationId);
-      set(state => ({ page: "bot", activeBotId: target.botId, activeTeam: team, selectedWorkId: null, historicalTeamWork: null,
-        botHistories: { ...state.botHistories, [key]: history }, botDraft: state.botDrafts[key] ?? "",
-        botHistoryPages: { ...state.botHistoryPages, [key]: { loading: false } } }));
+      let requestId: string | undefined;
+      if (target.messageId) {
+        let before: number | undefined;
+        do {
+          const history = await api.history({ botId: target.botId, teamId: target.teamId, conversationId: target.conversationId, before });
+          signal?.throwIfAborted();
+          if (history.botId !== target.botId || history.teamId !== target.teamId || history.conversationId !== target.conversationId) throw new Error("历史通知身份不匹配");
+          requestId = history.messages.find(message => message.messageId === target.messageId)?.requestId;
+          if (requestId || history.before === undefined || history.before === before) break;
+          before = history.before;
+        } while (before !== undefined);
+        if (!requestId) throw new Error("通知指定的历史消息未找到，未跳转到其他消息");
+      }
+      const request = navigation.foregroundRequests.filter(item => item.botId === target.botId
+        && item.teamId === target.teamId && item.conversationId === target.conversationId
+        && (!requestId || item.requestId === requestId)).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      if (!request) throw new Error("此历史会话尚无工作空间入口，记录未删除");
+      signal?.throwIfAborted();
+      if (get().botNavigationEpoch !== epoch) throw new Error("通知导航已被新的选择取代");
+      activateWorkspaceRequest(request, spaceId => get().openWorkspaceDetail(spaceId));
     },
     syncBotComposerDefaults: (settings, scope) => {
       set(state => {
@@ -135,7 +139,7 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
       try { if (team) localStorage.setItem("mybuddy.active-team", team.templateId); else localStorage.removeItem("mybuddy.active-team"); } catch {}
       if (!team) { set(state => ({ activeTeam: null, historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1 })); return; }
       const key = botConversationScope(team.ownerBotId, team.templateId);
-      set(state => ({ historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1, activeTeam: team, activeBotId: team.ownerBotId, selectedWorkId: null, botDraft: state.botDrafts[key] ?? "", botSubmissionNotice: false, page: "bot" }));
+      set(state => ({ historicalTeamWork: null, botNavigationEpoch: state.botNavigationEpoch + 1, activeTeam: team, activeBotId: team.ownerBotId, selectedWorkId: null, botDraft: state.botDrafts[key] ?? "", botSubmissionNotice: false, page: "chat" }));
       void get().refreshBotHistory(team.ownerBotId, team.templateId);
     },
     setActiveBotId: botId => {

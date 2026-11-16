@@ -1,9 +1,7 @@
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
-import { BotAvatarIpc } from "../shared/bot-avatar";
 import { SpeechIpc, type SpeechAudioEvent, type SpeechCancelRequest } from "../shared/speech-stream";
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
-import { GatewayBotBindingIpc, type GatewayBotBinding, type GatewayBotBindingRequest } from "../shared/gateway-bot-binding";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
@@ -681,52 +679,12 @@ const api = {
     cancelGoal: (goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.cancelGoal, goalId),
   } satisfies ConversationRuntimeApi,
 
+  // Read-only workspace history. The standalone Bot feature no longer exposes commands.
   botWork: {
-    phase3Control: request => ipcRenderer.invoke(BotWorkIpc.phase3Control, request),
-    phase4Control: request => ipcRenderer.invoke(BotWorkIpc.phase4Control, request),
-    hostStatus: () => ipcRenderer.invoke(BotWorkIpc.hostStatus),
-    avatars: request => ipcRenderer.invoke(BotAvatarIpc, request),
-    listBots: () => ipcRenderer.invoke(BotWorkIpc.listBots),
-    deleteBot: request => ipcRenderer.invoke(BotWorkIpc.deleteBot, request),
-    renameBot: request => ipcRenderer.invoke(BotWorkIpc.renameBot, request),
-    createBot: request => ipcRenderer.invoke(BotWorkIpc.createBot, request),
-    getSettings: botId => ipcRenderer.invoke(BotWorkIpc.getSettings, botId),
-    saveSettings: request => ipcRenderer.invoke(BotWorkIpc.saveSettings, request),
-    updateWorkspaceAuthorization: request => ipcRenderer.invoke(BotWorkIpc.updateWorkspaceAuthorization, request),
-    teamControl: request => ipcRenderer.invoke(BotWorkIpc.teamControl, request),
-    listBotExpertVersions: (botId: string) => ipcRenderer.invoke(BotWorkIpc.listBotExpertVersions, botId),
-    adoptBotExpertVersion: (botId: string, expected) => ipcRenderer.invoke(BotWorkIpc.adoptBotExpertVersion, botId, expected),
-    queryWorks: (request: import("../shared/bot-work-query").WorkQueryRequest) => ipcRenderer.invoke(BotWorkIpc.queryWorks, request),
-    directoryActivity: () => ipcRenderer.invoke(BotWorkIpc.directoryActivity),
-    listWorks: (includeClosed?: boolean) => ipcRenderer.invoke(BotWorkIpc.listWorks, includeClosed),
-    syncWorks: request => ipcRenderer.invoke(BotWorkIpc.syncWorks, request),
-    sendMessage: request => ipcRenderer.invoke(BotWorkIpc.sendMessage, request),
     history: request => ipcRenderer.invoke(BotWorkIpc.history, request),
-    incomingMessages: request => ipcRenderer.invoke(BotWorkIpc.incomingMessages, request),
-    collaborations: request => ipcRenderer.invoke(BotWorkIpc.collaborations, request),
-    collaborationHistory: request => ipcRenderer.invoke(BotWorkIpc.collaborationHistory, request),
-    activeRequests: () => ipcRenderer.invoke(BotWorkIpc.activeRequests),
-    displayGroups: request => ipcRenderer.invoke(BotWorkIpc.displayGroups, request),
     workspaceNavigation: () => ipcRenderer.invoke(BotWorkIpc.workspaceNavigation),
-    onMessageChanged: listener => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: import("../shared/bot-conversation").BotMessageEvent) => listener(payload);
-      ipcRenderer.on(BotWorkIpc.messageChanged, handler);
-      return () => ipcRenderer.removeListener(BotWorkIpc.messageChanged, handler);
-    },
-    cancelSend: (botId, requestId) => ipcRenderer.invoke(BotWorkIpc.cancelSend, botId, requestId),
-    archiveConversation: (botId, conversationId) => ipcRenderer.invoke(BotWorkIpc.archiveConversation, botId, conversationId),
     getWork: (workId: string) => ipcRenderer.invoke(BotWorkIpc.getWork, workId),
-    attestCriteria: (request) => ipcRenderer.invoke(BotWorkIpc.attestCriteria, request),
-    recordUserFeedback: (request) => ipcRenderer.invoke(BotWorkIpc.recordUserFeedback, request),
-    markNotificationRead: (notificationId: string) => ipcRenderer.invoke(BotWorkIpc.markNotificationRead, notificationId),
-    markCardRead: (request) => ipcRenderer.invoke(BotWorkIpc.markCardRead, request),
-    workSummary: (workId: string) => ipcRenderer.invoke(BotWorkIpc.workSummary, workId),
-    executionDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.executionDiagnostics, request),
-    workDiagnostics: (request) => ipcRenderer.invoke(BotWorkIpc.workDiagnostics, request),
-    resendNotification: (request) => ipcRenderer.invoke(BotWorkIpc.resendNotification, request),
-    reviewControl: (request) => ipcRenderer.invoke(BotWorkIpc.reviewControl, request),
-    reassessClosedWork: (request) => ipcRenderer.invoke(BotWorkIpc.reassessClosedWork, request),
-  } satisfies BotWorkApi,
+  } satisfies Pick<BotWorkApi, "history" | "workspaceNavigation" | "getWork">,
 
   notification: {
     activate: (id: string): Promise<void> => ipcRenderer.invoke(NotificationIpc.activate, id),
@@ -1057,8 +1015,6 @@ const api = {
   },
 
   gateway: {
-    configureBotBinding: (request: GatewayBotBindingRequest): Promise<Record<string, GatewayBotBinding>> =>
-      ipcRenderer.invoke(GatewayBotBindingIpc.configure, request),
     weixinQrStart: (approvedPersistentAccess: boolean): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrStart, approvedPersistentAccess),
     qqQrStart: (approvedPersistentAccess: boolean): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrStart, approvedPersistentAccess),
     weixinQrState: (): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrState),

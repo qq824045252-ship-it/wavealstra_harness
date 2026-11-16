@@ -36,7 +36,7 @@ export function createBotNavigationPersistence() {
       // over a delayed restore. Cover all navigation commands, not just setPage.
       if ("page" in patch || "activeBotId" in patch || "selectedWorkId" in patch || "historicalTeamWork" in patch) pending = null;
       if ("page" in patch && saved) {
-        saved = { ...saved, page: patch.page === "bot" ? "bot" : "chat" };
+        saved = { ...saved, page: "chat" };
         write();
       }
     },
@@ -47,8 +47,7 @@ export function createBotNavigationPersistence() {
       const bot = bots.find(item => item.botId === value.botId && item.userId === value.userId && navigableBot(item));
       if (!bot) return {};
       // The detail endpoint validates old IDs on demand; the first summary page is incomplete.
-      return { activeBotId: bot.botId, selectedWorkId: value.workId,
-        ...(value.page === "bot" ? { page: "bot" as const } : {}) };
+      return { activeBotId: bot.botId, selectedWorkId: value.workId };
     },
     persist(state: AppState) {
       // An error or an unfinished first load is not evidence of deletion.
@@ -56,7 +55,7 @@ export function createBotNavigationPersistence() {
       const bot = state.botIdentities.find(item => item.botId === state.activeBotId && navigableBot(item));
       const work = state.botWorks.find(item => item.workId === state.selectedWorkId && botParticipatesInWork(item, bot?.botId) && item.lifecycle !== "closed");
       saved = bot ? { version: 1, userId: bot.userId, botId: bot.botId,
-        page: state.page === "bot" ? "bot" : "chat", workId: work?.workId ?? state.selectedWorkId ?? null } : null;
+        page: "chat", workId: work?.workId ?? state.selectedWorkId ?? null } : null;
       write();
     },
   };

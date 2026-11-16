@@ -1,4 +1,3 @@
-import { CronReminderDelivery, type ReminderDelivery } from "./CronReminderDelivery";
 import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import { z } from "zod";
@@ -90,8 +89,6 @@ export class CronService {
   private readonly revisions = new Map<string, number>();
   private stopped = false;
   private started = false;
-  private readonly reminders: CronReminderDelivery;
-  private reminderRetry?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly db: AppDatabase,
@@ -107,9 +104,7 @@ export class CronService {
       status: "success" | "failed";
       error?: string;
     }) => void,
-    private readonly reminderSink?: (delivery: ReminderDelivery) => void,
   ) {
-    this.reminders = new CronReminderDelivery(db);
     db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
       run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL)`);
     try {
@@ -125,15 +120,13 @@ export class CronService {
     if (this.started) return;
     this.started = true;
     this.stopped = false;
-    this.flushReminders();
-    this.reminderRetry = setInterval(() => this.flushReminders(), 10000);
-    this.reminderRetry.unref();
     for (const run of this.db.listRunningCronRuns()) {
+      if (this.db.getCronJob(run.jobId)?.reminder) continue;
       this.runningJobs.add(run.jobId);
       void this.resumeRun(run);
     }
     for (const job of this.db.listCronJobs()) {
-      if (!job.enabled) continue;
+      if (!job.enabled || job.reminder) continue;
       const unavailable = this.unavailableReason(job);
       if (unavailable || job.restartPolicy === "pause") {
         this.db.setCronEnabled(job.id, false);
@@ -151,7 +144,6 @@ export class CronService {
   stop(): void {
     this.stopped = true;
     this.started = false;
-    if (this.reminderRetry) clearInterval(this.reminderRetry);
     for (const id of this.revisions.keys()) this.disarm(id);
   }
 
@@ -210,11 +202,7 @@ export class CronService {
     if (unavailable) throw new Error(unavailable);
     delete next.nextRunAt;
     delete next.runCount;
-    const timing = (value: CronJobDto) => JSON.stringify([value.scheduleType, value.scheduleExpr, value.timezone, value.effectiveFrom, value.effectiveTo, value.maxRuns]);
-    this.db.connection.transaction(() => {
-      this.db.upsertCronJob(next);
-      if (!existing || timing(existing) !== timing(next)) this.reminders.reset(this.db.getCronJob(next.id)!, now);
-    })();
+    this.db.upsertCronJob(next);
     this.disarm(next.id);
     if (next.enabled) this.arm(this.db.getCronJob(next.id) ?? next);
     const enriched = this.withNext(this.db.getCronJob(next.id) ?? next);
@@ -237,24 +225,13 @@ export class CronService {
     broadcast(CronIpc.event, { type: "upsert", job: this.withNext(this.db.getCronJob(id) ?? { ...job, enabled }) });
   }
 
-  snoozeReminder(id: string, dueAt: number): CronJobDto {
-    const job = this.db.getCronJob(id);
-    if (!job?.reminder || !Number.isSafeInteger(dueAt)) throw new Error("无效提醒");
-    this.db.upsertCronJob({ ...job, enabled: true, updatedAt: Date.now(), reminder: { ...job.reminder, state: "scheduled" } });
-    this.db.connection.prepare("UPDATE cron_reminder_state SET next_due_at=? WHERE job_id=?").run(dueAt, id);
-    this.reminders.clearRetry(id);
-    this.disarm(id);
-    const current = this.db.getCronJob(id)!;
-    this.arm(current);
-    const result = this.withNext(current);
-    broadcast(CronIpc.event, { type: "upsert", job: result });
-    return result;
+  snoozeReminder(_id: string, _dueAt: number): CronJobDto {
+    throw new Error("Bot 提醒功能已移除");
   }
 
   remove(id: string): void {
     this.disarm(id);
     this.db.removeCronJob(id);
-    this.reminders.clearRetry(id);
     broadcast(CronIpc.event, { type: "remove", id });
   }
 
@@ -297,8 +274,8 @@ export class CronService {
 
   private arm(job: CronJobDto): void {
     this.disarm(job.id);
-    if (this.stopped) return;
-    const nextRun = job.reminder ? this.reminders.nextAttemptAt(job) : computeNextRunAt(job);
+    if (this.stopped || job.reminder) return;
+    const nextRun = computeNextRunAt(job);
     if (nextRun === undefined) {
       this.setEnabled(job.id, false);
       return;
@@ -329,7 +306,6 @@ export class CronService {
     this.runningJobs.add(job.id);
     const revision = this.revisions.get(job.id);
     let run: CronRunDto | undefined;
-    let reminderDueAt: number | undefined;
     let latest = this.db.getCronJob(job.id);
     let newTask = false;
     try {
@@ -348,17 +324,6 @@ export class CronService {
       }
       if (!opts?.force && withinEffectiveRange(latest) === "before") return;
 
-      if (latest.reminder) {
-        const dueAt = opts?.force ? Date.now() : this.reminders.due(latest);
-        if (dueAt === undefined || (!opts?.force && dueAt > Date.now())) return;
-        if (!opts?.force && (this.reminders.nextAttemptAt(latest) ?? Infinity) > Date.now()) return;
-        reminderDueAt = dueAt;
-        // Manual preview is distinct from the scheduled occurrence; neither uses a model/Task.
-        this.reminders.deliver(latest, dueAt, Date.now(), !!opts?.force);
-        this.flushReminders();
-        broadcast(CronIpc.event, { type: "upsert", job: this.withNext(this.db.getCronJob(job.id)!) });
-        return;
-      }
       const targetId = latest.target?.kind === "task" ? latest.target.taskId : undefined;
       // 当前任务由 AgentService 读取自己的模型与上下文，不用计划的快照覆盖。
       const requestedModelId = targetId ? undefined : latest.modelId?.trim() || this.agent.getAppSettings().defaultModelId || undefined;
@@ -411,11 +376,6 @@ export class CronService {
       if (this.stopped && run) return;
       if (!latest) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      if (latest.reminder) {
-        const retryAt = !opts?.force && reminderDueAt !== undefined ? this.reminders.defer(latest, reminderDueAt) : undefined;
-        console.warn("[Cron] reminder delivery failed", { jobId: job.id, dueAt: reminderDueAt, retryAt, error: message });
-        return;
-      }
       if (!run && this.db.getCronJob(job.id)) {
         run = { id: randomUUID(), jobId: job.id, startedAt: Date.now(), status: "running" };
         this.db.insertCronRun(run);
@@ -484,16 +444,11 @@ export class CronService {
   }
 
   private withNext(job: CronJobDto): CronJobDto {
-    return job.reminder ? { ...job, nextRunAt: this.reminders.due(job) } : withNextRun(job);
-  }
-
-  private flushReminders(): void {
-    try { this.reminders.flush(this.reminderSink); }
-    catch (error) { console.warn("[Cron] reminder notification pending", error); }
+    return job.reminder ? { ...job, enabled: false, nextRunAt: undefined } : withNextRun(job);
   }
 
   private unavailableReason(job: CronJobDto): string | undefined {
-    if (job.reminder) return this.reminders.checkTarget(job);
+    if (job.reminder) return "Bot 提醒功能已移除";
     const project = this.projectUnavailableReason(job.projectId);
     if (project) return project;
     if (job.sourceTaskId) {

@@ -15,6 +15,7 @@ export async function avatarCommand(request: BotAvatarCommand) {
   return result;
 }
 export function loadBotAvatars(force = false): Promise<void> {
+  if (!window.api?.botWork?.avatars) return Promise.resolve();
   if (!force && useBotAvatarStore.getState().snapshot) return Promise.resolve();
   if (loading) return loading;
   if (force) useBotAvatarStore.setState({images:{}});

@@ -1,9 +1,7 @@
 import { deliverNotificationActivation } from "../lib/notificationActivationDelivery";
-import { BotDisplayGroups } from "./BotDisplayGroups";
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
 import type { BotWorkspaceRequestDto, BotWorkspaceConversationDto } from "@shared/bot-workspace-navigation";
-import { BotTeamsNavigation } from "./BotTeamsNavigation";
 import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -123,14 +121,13 @@ export function AccountNavigation({ go, openProjects }: { go: (page: Page) => vo
   </>;
 }
 
-export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void; onCreateBot?: () => void } = {}): React.JSX.Element {
+export default function Sidebar({ onClose }: { onClose?: () => void } = {}): React.JSX.Element {
   const tasks = useSidebarTasks();
   const { requests: foregroundRequests, conversations: foregroundConversations, error: foregroundError } = useBotWorkspaceNavigation();
   const [expandedConversations, setExpandedConversations] = useState<Record<string, boolean>>({});
   const [foregroundLimits, setForegroundLimits] = useState<Record<string, number>>({});
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
-  const botIdentities = useAppStore((s) => s.botIdentities);
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const draft = useAppStore((s) => s.draft);
@@ -431,10 +428,10 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
                   if (!work || work.workId !== target.workId || work.archive?.deletedAt !== undefined) throw new Error("通知对应的事项已不可用");
                   if (disposed) return;
                   if (useAppStore.getState().botNavigationEpoch !== epoch) throw new Error("通知导航已被新的选择取代，请重新点击通知");
-                  state.setActiveBotId(work.ownerBotId);
-                  useAppStore.getState().setSelectedWorkId(target.workId);
-                  if (work.team) useAppStore.getState().setHistoricalTeamWork(work);
-                  useAppStore.getState().setPage("bot");
+                  const navigation = await window.api?.botWork.workspaceNavigation();
+                  const request = navigation?.foregroundRequests.find(item => item.botId === work.ownerBotId && work.originalDelegation?.messages.some(message => message.messageId === item.messageId));
+                  if (!request) throw new Error("此历史事项尚无工作空间入口，记录未删除");
+                  openWorkspaceRequest(request);
                   break;
                 }
               }
@@ -927,17 +924,6 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
         </div>
       </div>
 
-      <nav className="sidebar-mode-nav" aria-label="工作模式">
-        <button type="button" aria-current={page === "chat" ? "page" : undefined} onClick={() => go("chat")}><IconMessageDashed size={16} />普通模式</button>
-        <button type="button" aria-current={page === "bot" ? "page" : undefined} onClick={() => go("bot")}><IconBot size={16} />Bot 模式</button>
-      </nav>
-      {page === "bot" ? (
-        <div className="sidebar-scroll" aria-label="Bot 导航">
-          <div className="sidebar-tree-header"><span className="section-title">我的 Bot</span><span className="sidebar-section-count">{botIdentities.length}</span>{onCreateBot && <button type="button" className="sidebar-bot-create" onClick={() => { onClose?.(); onCreateBot(); }}>+ 新建 Bot</button>}</div>
-          <BotDisplayGroups onSelect={() => onClose?.()} />
-          <BotTeamsNavigation onSelect={() => onClose?.()} />
-        </div>
-      ) : <>
       <div className="sidebar-primary-action">
         <button
           type="button"
@@ -1023,7 +1009,6 @@ export default function Sidebar({ onClose, onCreateBot }: { onClose?: () => void
           </div>
         );
       })()}
-      </>}
 
       <div className="sidebar-user nav-popup-anchor" ref={accountAnchorRef}>
         {popup === "account" && (

@@ -46,7 +46,8 @@ export function verifyResponsibilityQueries(): void {
     const linked = relation("delegated request"), unbound = relation("request without Work");
     messages.collaborations.linkWork(LOCAL_USER_ID, linked.collaborationId, delegated.workId);
     const now = Date.now();
-    cron.upsert({ id: self.workId, name: "Independent reminder", prompt: "Saved reminder text", scheduleType: "at",
+    // Seed a historical record directly; retired Bot reminders cannot be newly admitted.
+    db.upsertCronJob({ id: self.workId, name: "Independent reminder", prompt: "Saved reminder text", scheduleType: "at",
       scheduleExpr: new Date(now + 86_400_000).toISOString(), timezone: "UTC", enabled: true, createdAt: now, updatedAt: now, restartPolicy: "resume",
       reminder: { state: "scheduled", kind: "bot-reminder", userId: LOCAL_USER_ID, botId: "A", conversationId: source.conversationId } });
     assert.equal(query.page({}).total, 1, "control catalogue retains its original scope");
@@ -55,6 +56,7 @@ export function verifyResponsibilityQueries(): void {
     assert.equal(query.responsibilitiesPage({}).total, 2);
     assert.equal(query.outgoingCollaboration(unrelated.workId), undefined);
     const first = overview();
+    assert.equal(cron.list().find(job => job.id === self.workId)?.enabled, false, "legacy reminders remain disabled");
     assert.equal(first.total, 4); assert.equal(first.counts.total, 4);
     assert(first.items.some(item => item.kind === "collaboration" && item.collaborationId === unbound.collaborationId && item.status === "sent" && item.needsUserInput === null));
     assert.equal(new Set(first.items.map(item => item.id)).size, 4, "reminder and Work never share an item identity");
@@ -100,7 +102,8 @@ export function verifyResponsibilityQueries(): void {
     }
 
     works.repo.insertWork({ ...self, workId: "long-title", title: "x".repeat(250) + "FindWorkTitleTail" });
-    cron.upsert({ id: "long-reminder", name: "x".repeat(250) + "FindReminderTitleTail", prompt: "x".repeat(600) + "FindReminderBodyTail",
+    // Seed a historical record directly; retired Bot reminders cannot be newly admitted.
+    db.upsertCronJob({ id: "long-reminder", name: "x".repeat(250) + "FindReminderTitleTail", prompt: "x".repeat(600) + "FindReminderBodyTail",
       scheduleType: "at", scheduleExpr: new Date(now + 86_400_000).toISOString(), timezone: "UTC", enabled: true,
       createdAt: now, updatedAt: now, restartPolicy: "resume", reminder: { state: "scheduled", kind: "bot-reminder",
         userId: LOCAL_USER_ID, botId: "A", conversationId: source.conversationId } });
