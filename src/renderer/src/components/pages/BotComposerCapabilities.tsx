@@ -41,11 +41,13 @@ export function BotComposerCapabilities({ botId, scope, text, attach, attachment
       if (own !== epoch.current) return;
       setCatalog(next); setError("");
       void useAppStore.getState().refreshModelConfiguration();
-      if (!useAppStore.getState().botComposerDrafts[scope]) {
-        const { modelId, expertId, skillIds, mcpIds, connectorIds } = next.settings;
-        const reasoningPreference = useAppStore.getState().modelPreferences[modelId]?.reasoning;
-        setSelection(scope, { modelId, expertId, skillIds, mcpIds, connectorIds, ...(reasoningPreference ? { reasoningPreference } : {}) });
-      }
+      const state = useAppStore.getState();
+      const first = !state.botComposerDrafts[scope];
+      state.syncBotComposerDefaults(next.settings, scope);
+      const reasoningPreference = state.modelPreferences[next.settings.modelId]?.reasoning;
+      if (first && reasoningPreference) setSelection(scope, {
+        ...useAppStore.getState().botComposerDrafts[scope], reasoningPreference,
+      });
     } catch (cause) { if (own === epoch.current) setError(String(cause)); }
   };
   useEffect(() => { void refresh(); return () => { epoch.current++; }; }, [botId, scope]);

@@ -30,6 +30,7 @@ export function BotExecutionSettings({ botId, onManageModels }: { botId: string;
         workspacePath: draft.workspacePath, modelId: draft.modelId, expertId: draft.expertId,
         skillIds: draft.skillIds, mcpIds: draft.mcpIds, connectorIds: draft.connectorIds });
       if (!result.ok) throw new Error(result.message);
+      useAppStore.getState().syncBotComposerDefaults(result.view.settings);
       setView(result.view); setDraft(result.view.settings);
       await useAppStore.getState().refreshSpaces();
       setNotice("已保存。模型在下一条对话生效；工作空间和能力用于后续新任务，已有任务保持原配置。");

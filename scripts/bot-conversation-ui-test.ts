@@ -67,6 +67,7 @@ function fixture() {
 }
 
 async function main() {
+  await testComposerDefaults();
   const message = { messageId: "answer", conversationId: "conversation-a", botId: "a", requestId: "request-a", ordinal: 2,
     role: "assistant" as const, text: "", status: "running" as const, workIds: [], createdAt: 1, updatedAt: 1 };
   const initial: BotHistoryDto = { botId: "a", conversationId: "conversation-a", revision: 1, archived: false, messages: [message] };
@@ -318,6 +319,60 @@ async function main() {
   assert.equal(mergeWorkList([], cursor, { ...duplicate, cursor: { ...cursor, scope: "all" } }), undefined);
   await testNavigationRecovery(work);
   console.log("PASS Bot UI actual store sending: repeated clicks, per-Bot/Task draft isolation, lost acknowledgement identity, late history, cancel/archive, tombstone/gap/epoch");
+}
+
+async function testComposerDefaults() {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  } });
+  try {
+    const empty = { modelId: "", expertId: "", skillIds: [], mcpIds: [], connectorIds: [] };
+    const refs = [{ id: "ref", name: "evidence.txt", content: "reference", source: "artifact" as const }];
+    values.set("mybuddy.bot-conversation-drafts", JSON.stringify({ selections: { a: { ...empty, refFiles: refs } },
+      drafts: { a: "unsent text" }, requests: {}, attachments: { a: [{ name: "keep.txt", path: "/keep.txt" }] } }));
+    const state = fixture(); state.store.getState().setActiveBotId("a");
+    const defaults = { ...empty, botId: "a", revision: 1, workspacePath: "", effectiveWorkspacePath: "/workspace", spaceId: "space-a",
+      modelId: "test/a", connectorIds: ["gws"], mcpIds: ["github"], skillIds: ["office"] };
+    state.store.getState().botComposerDrafts.a.reasoningPreference = { effort: "high" };
+    state.store.getState().syncBotComposerDefaults(defaults, "a");
+    assert.equal(state.store.getState().botComposerDrafts.a.reasoningPreference, undefined, "new default model drops stale reasoning settings");
+    assert.deepEqual(state.store.getState().botComposerDrafts.a.connectorIds, ["gws"], "legacy empty composer rebases to saved GWS");
+    assert.deepEqual(state.store.getState().botComposerDrafts.a.refFiles, refs);
+    assert.equal(state.store.getState().botDrafts.a, "unsent text");
+    assert.equal(state.store.getState().botAttachmentDrafts.a[0].name, "keep.txt");
+    state.sender(async () => { throw new Error("receipt unavailable"); });
+    state.store.getState().setBotDraft("test configured connector"); await state.store.getState().submitBotDraft();
+    const pending = state.calls[0];
+    assert.deepEqual(pending.selection?.connectorIds, ["gws"], "saved connector reaches actual send payload");
+    assert(botSendSchema.safeParse(pending).success, "baseline metadata never leaks into IPC selection");
+    state.store.getState().setBotComposerSelection("a", { ...state.store.getState().botComposerDrafts.a, connectorIds: [] });
+    state.store.getState().syncBotComposerDefaults({ ...defaults, revision: 2, connectorIds: ["gws", "other"], mcpIds: ["github", "extra"] });
+    assert.deepEqual(state.store.getState().botComposerDrafts.a.connectorIds, [], "explicit removal is preserved after saving new defaults");
+    assert.deepEqual(state.store.getState().botComposerDrafts.a.mcpIds, ["github", "extra"], "unmodified defaults advance");
+    const restored = fixture(); restored.store.getState().setActiveBotId("a");
+    restored.store.getState().syncBotComposerDefaults({ ...defaults, revision: 3 });
+    assert.deepEqual(restored.store.getState().botComposerDrafts.a.connectorIds, [], "explicit empty persists through restart");
+    restored.store.getState().syncBotComposerDefaults({ ...defaults, revision: 2, mcpIds: ["stale"] });
+    assert.deepEqual(restored.store.getState().botComposerDrafts.a.mcpIds, ["github"], "late settings read cannot roll back latest revision");
+    await restored.store.getState().submitBotDraft({ retryRequestId: pending.requestId });
+    assert.deepEqual(restored.calls[0], JSON.parse(JSON.stringify(pending)), "retry retains captured GWS and original payload despite later edits");
+    restored.store.getState().setBotDraft("explicit no connectors"); await restored.store.getState().submitBotDraft();
+    assert.deepEqual(restored.calls[1].selection?.connectorIds, [], "explicit removal reaches next send");
+    restored.store.getState().syncBotComposerDefaults(defaults, "team:one");
+    restored.store.getState().syncBotComposerDefaults({ ...defaults, botId: "b", connectorIds: ["private-b"] }, "b");
+    restored.store.getState().syncBotComposerDefaults({ ...defaults, revision: 4, connectorIds: ["new-a"] });
+    assert.deepEqual(restored.store.getState().botComposerDrafts["team:one"].connectorIds, ["new-a"], "saved owner defaults update known team scope");
+    assert.deepEqual(restored.store.getState().botComposerDrafts.b.connectorIds, ["private-b"], "other Bot untouched");
+    assert.deepEqual(restored.store.getState().botComposerDrafts.a.connectorIds, [], "other scope update does not erase override");
+    console.log("PASS Bot composer defaults: legacy rebase, actual GWS send, explicit empty, persisted override, stale read, immutable retry and scope isolation");
+  } finally {
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
 }
 
 async function testNavigationRecovery(work: WorkProjectionDto) {

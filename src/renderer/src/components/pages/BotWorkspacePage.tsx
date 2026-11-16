@@ -184,7 +184,8 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   const reference = replyReference?.conversationId === histories[scopeKey]?.conversationId ? replyReference : null;
   const attachments = activeBotId ? attachmentDrafts[scopeKey] ?? [] : [];
   const composerSelection = useAppStore(state => state.botComposerDrafts[scopeKey]);
-  const canSend = Boolean(activeBotId && (botDraft.trim() || attachments.length || composerSelection?.refTasks?.length || composerSelection?.refFiles?.length) && !attachmentBusy);
+  const composerDefaults = useAppStore(state => state.botComposerDefaults[scopeKey]);
+  const canSend = Boolean(activeBotId && (!composerSelection || composerDefaults?.botId === activeBotId) && (botDraft.trim() || attachments.length || composerSelection?.refTasks?.length || composerSelection?.refFiles?.length) && !attachmentBusy);
   const addAttachments = async (source: File[] | "pick") => {
     const botId = activeBotId;
     if (!botId) return;

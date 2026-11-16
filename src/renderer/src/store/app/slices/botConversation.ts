@@ -7,9 +7,19 @@ import { botMessageDisplayText, botSendSchema, botComposerSelectionSchema, type 
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 
+const capabilityKeys = ["modelId", "expertId", "skillIds", "mcpIds", "connectorIds"] as const;
+const composerDefaultsSchema = z.object({
+  botId: z.string(), revision: z.number().int().nonnegative(),
+  defaults: botComposerSelectionSchema.pick({ modelId: true, expertId: true, skillIds: true, mcpIds: true, connectorIds: true }),
+  overrides: z.array(z.enum(capabilityKeys)).default([]),
+});
+type ComposerDefaults = z.infer<typeof composerDefaultsSchema>;
+const sameCapability = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+
 interface PendingSend { request: BotSendRequest; sending: boolean; error?: string }
 export interface BotConversationUiState {
   botComposerDrafts: Record<string, BotComposerSelection>;
+  botComposerDefaults: Record<string, ComposerDefaults>;
   botDrafts: Record<string, string>;
   botAttachmentDrafts: Record<string, Attachment[]>;
   botHistories: Record<string, BotHistoryDto>;
@@ -19,22 +29,22 @@ export interface BotConversationUiState {
 }
 export const botConversationScope = (botId: string, teamId?: string) => teamId ? `team:${teamId}` : botId;
 const storageKey = "mybuddy.bot-conversation-drafts";
-const savedSchema = z.object({ selections: z.record(z.string(), botComposerSelectionSchema).default({}), drafts: z.record(z.string(), z.string()), requests: z.record(z.string(), botSendSchema), attachments: z.record(z.string(), z.array(z.object({ name: z.string(), path: z.string().optional() }))).default({}) });
+const savedSchema = z.object({ defaults: z.record(z.string(), composerDefaultsSchema).default({}), selections: z.record(z.string(), botComposerSelectionSchema).default({}), drafts: z.record(z.string(), z.string()), requests: z.record(z.string(), botSendSchema), attachments: z.record(z.string(), z.array(z.object({ name: z.string(), path: z.string().optional() }))).default({}) });
 export function createBotConversationState(): BotConversationUiState {
-  let saved: z.infer<typeof savedSchema> = { drafts: {}, requests: {}, attachments: {}, selections: {} };
+  let saved: z.infer<typeof savedSchema> = { drafts: {}, requests: {}, attachments: {}, selections: {}, defaults: {} };
   try { saved = savedSchema.parse(JSON.parse(localStorage.getItem(storageKey) ?? "{}")); } catch { /* An absent/invalid cache is not an accepted send. */ }
-  return { botComposerDrafts: saved.selections, botDrafts: saved.drafts, botAttachmentDrafts: saved.attachments, botHistories: {}, botHistoryPages: {}, botConversationErrors: {},
+  return { botComposerDefaults: saved.defaults, botComposerDrafts: saved.selections, botDrafts: saved.drafts, botAttachmentDrafts: saved.attachments, botHistories: {}, botHistoryPages: {}, botConversationErrors: {},
     botPendingSends: Object.fromEntries(Object.entries(saved.requests).map(([, request]) => [request.requestId, { request, sending: false, error: "发送结果未确认，请按原请求重试" }])) };
 }
 
 export function createBotConversationActions({ get, set, getApi }: AppContext): Pick<AppActions,
-  "openNotificationConversation" | "setBotComposerSelection" | "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "loadOlderBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
+  "openNotificationConversation" | "syncBotComposerDefaults" | "setBotComposerSelection" | "forgetDeletedBot" | "setBotAttachments" | "setBotDraft" | "submitBotDraft" | "setActiveBotId" | "setActiveTeam" | "refreshBotHistory" | "loadOlderBotHistory" | "cancelBotSend" | "archiveBotConversation"> {
   const histories = new Map<string, number>();
   const notificationConversations = new Map<string, string>();
   const olderReads = new Map<string, symbol>();
   const pendingOffsets = new Map<string, number>();
   const persist = () => {
-    try { localStorage.setItem(storageKey, JSON.stringify({ selections: get().botComposerDrafts, drafts: get().botDrafts, attachments: get().botAttachmentDrafts,
+    try { localStorage.setItem(storageKey, JSON.stringify({ defaults: get().botComposerDefaults, selections: get().botComposerDrafts, drafts: get().botDrafts, attachments: get().botAttachmentDrafts,
       requests: Object.fromEntries(Object.entries(get().botPendingSends).map(([botId, pending]) => [botId, pending.request])) })); } catch { /* Host receipt remains authoritative. */ }
   };
   return {
@@ -63,12 +73,48 @@ export function createBotConversationActions({ get, set, getApi }: AppContext): 
         botHistories: { ...state.botHistories, [key]: history }, botDraft: state.botDrafts[key] ?? "",
         botHistoryPages: { ...state.botHistoryPages, [key]: { loading: false } } }));
     },
-    setBotComposerSelection: (scope, selection) => { set(state => ({ botComposerDrafts: {...state.botComposerDrafts, [scope]: selection} })); persist(); },
+    syncBotComposerDefaults: (settings, scope) => {
+      set(state => {
+        const drafts = { ...state.botComposerDrafts }, baselines = { ...state.botComposerDefaults };
+        const scopes = scope ? [scope] : [...new Set([settings.botId,
+          ...Object.keys(baselines).filter(key => baselines[key].botId === settings.botId),
+          ...(state.activeTeam?.ownerBotId === settings.botId ? [`team:${state.activeTeam.templateId}`] : [])])];
+        const defaults = composerDefaultsSchema.shape.defaults.parse(Object.fromEntries(capabilityKeys.map(key => [key, settings[key]])));
+        for (const key of scopes) {
+          const prior = baselines[key]?.botId === settings.botId ? baselines[key] : undefined;
+          if (prior && prior.revision > settings.revision) continue; // Late settings reads cannot undo a save.
+          const current = drafts[key];
+          const overrides = prior?.overrides ?? [];
+          // Unversioned cached defaults cannot identify deliberate overrides. Rebase
+          // capability fields only; text, attachments, references and sent requests stay intact.
+          drafts[key] = { ...current, ...defaults,
+            ...Object.fromEntries(overrides.filter(field => current && field in current).map(field => [field, current![field]])) };
+          if (current && current.modelId !== drafts[key].modelId) delete drafts[key].reasoningPreference;
+          baselines[key] = { botId: settings.botId, revision: settings.revision, defaults, overrides };
+        }
+        return { botComposerDrafts: drafts, botComposerDefaults: baselines };
+      });
+      persist();
+    },
+    setBotComposerSelection: (scope, selection) => {
+      set(state => {
+        const baseline = state.botComposerDefaults[scope], previous = state.botComposerDrafts[scope];
+        const overrides = new Set(baseline?.overrides ?? []);
+        if (baseline) for (const field of capabilityKeys) {
+          if (sameCapability(previous?.[field], selection[field])) continue;
+          if (sameCapability(baseline.defaults[field], selection[field])) overrides.delete(field);
+          else overrides.add(field); // Explicitly empty lists are real overrides, not missing defaults.
+        }
+        return { botComposerDrafts: { ...state.botComposerDrafts, [scope]: selection },
+          ...(baseline ? { botComposerDefaults: { ...state.botComposerDefaults, [scope]: { ...baseline, overrides: [...overrides] } } } : {}) };
+      });
+      persist();
+    },
     forgetDeletedBot: botId => {
       olderReads.delete(botId);
       histories.set(botId, (histories.get(botId) ?? 0) + 1);
       const omit = <T,>(values: Record<string, T>) => { const next = { ...values }; delete next[botId]; return next; };
-      set(state => ({ botComposerDrafts: omit(state.botComposerDrafts), botDrafts: omit(state.botDrafts), botAttachmentDrafts: omit(state.botAttachmentDrafts),
+      set(state => ({ botComposerDefaults: omit(state.botComposerDefaults), botComposerDrafts: omit(state.botComposerDrafts), botDrafts: omit(state.botDrafts), botAttachmentDrafts: omit(state.botAttachmentDrafts),
         botHistories: omit(state.botHistories), botHistoryPages: omit(state.botHistoryPages), botPendingSends: Object.fromEntries(Object.entries(state.botPendingSends).filter(([, item]) => item.request.botId !== botId)),
         botConversationErrors: omit(state.botConversationErrors),
         ...(state.activeBotId === botId ? { botDraft: "", activeBotId: null, selectedWorkId: null } : {}) }));
