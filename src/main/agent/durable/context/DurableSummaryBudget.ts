@@ -21,3 +21,18 @@ export function summaryOutputBudget(model: unknown, fallbackWindow: number, inpu
 export function nextSummaryOutputBudget(current: number, ceiling: number): number {
   return Math.min(ceiling, current * 2);
 }
+
+/** Responses can omit the reason even when generation hits the requested output cap. */
+export function classifySummaryStop(result: { stopReason?: string; rawStopReason?: string; errorMessage?: string; usage?: { output?: number } }, cap: number) {
+  const raw = result.rawStopReason;
+  if (result.stopReason === "length") return "length";
+  if (result.stopReason === "error" && (raw === "incomplete.max_output_tokens" || raw === "incomplete.length")) return "length";
+  if (result.stopReason !== "error") return result.stopReason ?? "unknown";
+  if (raw === "incomplete.content_filter") return "error:content_filter";
+  if (raw === "incomplete") {
+    const reasonMissing = result.errorMessage === undefined || result.errorMessage === "Response incomplete without a provider reason";
+    if (reasonMissing && Number.isFinite(cap) && cap > 0 && result.usage?.output === cap) return "length:incomplete-at-cap";
+    return "error:incomplete";
+  }
+  return raw?.startsWith("incomplete.") ? "error:incomplete-explicit-reason" : "error";
+}

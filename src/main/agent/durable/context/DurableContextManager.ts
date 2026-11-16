@@ -1,4 +1,4 @@
-import { summaryModelLimits, summaryOutputBudget, nextSummaryOutputBudget } from "./DurableSummaryBudget";
+import { classifySummaryStop, summaryModelLimits, summaryOutputBudget, nextSummaryOutputBudget } from "./DurableSummaryBudget";
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
@@ -101,6 +101,9 @@ export class DurableContextManager {
   private headEntryId: number | null = null;
   private rebaseNeeded = true;
   private consecutiveFailures = 0;
+  // Tentative results only: never stored as coverage or shared across conversations.
+  private readonly summaryMemo = new Map<string, string>();
+  private summaryMemoModels?: Models;
   private disposed = false;
   private status: ContextManagementStatusDto;
   private lastPublished = 0;
@@ -1189,6 +1192,22 @@ export class DurableContextManager {
     ];
     const inputTokens = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
     const budget = summaryOutputBudget(model, this.resolvePolicy().window, inputTokens);
+    if (this.summaryMemoModels !== models) {
+      this.summaryMemo.clear();
+      this.summaryMemoModels = models;
+    }
+    const resolved = model as { provider?: string; id?: string; api?: string; baseUrl?: string; compat?: unknown } | undefined;
+    const key = createHash("sha256").update(JSON.stringify([
+      this.persisted.sessionId, this.persisted.epoch, this.configDigest(),
+      resolved?.provider, resolved?.id, resolved?.api, resolved?.baseUrl, resolved?.compat,
+      budget, SUMMARIZER_SYSTEM, prompt,
+    ])).digest("hex");
+    const cached = this.summaryMemo.get(key);
+    if (cached !== undefined) {
+      this.summaryMemo.delete(key);
+      this.summaryMemo.set(key, cached);
+      return cached;
+    }
     let maxTokens = budget.initial;
     for (let attempt = 0; attempt < 3; attempt++) {
       signal?.throwIfAborted();
@@ -1197,12 +1216,19 @@ export class DurableContextManager {
       }) as AssistantMessage;
       signal?.throwIfAborted();
       const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
-      if (result.stopReason === "stop" && text) return text;
+      if (result.stopReason === "stop" && text) {
+        if (text.length <= 32_768) {
+          if (this.summaryMemo.size >= 16) this.summaryMemo.delete(this.summaryMemo.keys().next().value!);
+          this.summaryMemo.set(key, text);
+        }
+        return text;
+      }
+      const reason = classifySummaryStop(result, maxTokens);
       // Never commit a truncated summary or feed it back as authoritative history. Retry only
       // the same read-only summary request; model accounting remains on completeSimple.
       const next = nextSummaryOutputBudget(maxTokens, budget.ceiling);
-      if (result.stopReason !== "length" || attempt === 2 || next <= maxTokens) {
-        throw new Error(`摘要模型没有返回有效摘要（${result.stopReason ?? "unknown"}）；输出预算 ${maxTokens}/${budget.ceiling} tokens，尝试 ${attempt + 1} 次；原文和已提交摘要保留`);
+      if ((reason !== "length" && reason !== "length:incomplete-at-cap") || attempt === 2 || next <= maxTokens) {
+        throw new Error(`摘要模型没有返回有效摘要（${reason}）；输出预算 ${maxTokens}/${budget.ceiling} tokens，尝试 ${attempt + 1} 次；原文和已提交摘要保留`);
       }
       this.publish({ ...this.status, message: `摘要输出被截断，正在增加输出预算重试（${next} tokens）` });
       maxTokens = next;
@@ -1237,7 +1263,12 @@ export class DurableContextManager {
     this.publish({ ...this.status, phase: "failed", lastError: errorText(error), message, durable: false });
   }
 
-  dispose(): void { this.disposed = true; this.manualAbort?.abort(); }
+  dispose(): void {
+    this.disposed = true;
+    this.manualAbort?.abort();
+    this.summaryMemo.clear();
+    this.summaryMemoModels = undefined;
+  }
 }
 
 /** Retire complete original exchanges only. Signed/opaque reasoning may leave the active view

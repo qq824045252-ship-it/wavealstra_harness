@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
+import { processResponsesStream } from "@earendil-works/pi-ai/api/openai-responses-shared";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { Conversation, Harness, Storage } from "@earendil-works/pi-durable";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
 import { DurableContextManager } from "../src/main/agent/durable/context/DurableContextManager";
@@ -357,6 +359,77 @@ if (crashMode === "--crash") {
       manager.dispose(); await runtime.close();
     }
     console.log("PASS mid-summary config change rejects old coverage and a later operation recovers with a higher revision");
+
+    {
+      const source = fixture(128_000, 32_768);
+      const { models } = source;
+      const runtime = await open(join(root, "summary-retry-runtime"), source, seed());
+      const { conversation } = internals(runtime);
+      const manager = new DurableContextManager({ conversation, models, policy: () => ({ ratio: 0.8, absoluteTokens: null }), contextWindow: () => 128_000 });
+      const testManager = manager as unknown as { summarizeMessages: (messages: Message[], budget: number,
+        model: unknown, models: typeof source.models, context: typeof ctx) => Promise<string> };
+      const model: Parameters<typeof processResponsesStream>[3] = { id: "retry-fixture", name: "Retry fixture",
+        provider: "fixture", api: "openai-responses", baseUrl: "http://127.0.0.1", reasoning: false, input: ["text"],
+        contextWindow: 128_000, maxTokens: 32_768, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+      const seen: Array<{ prompt: string; cap: number }> = [];
+      let mode: "filter" | "below-cap" | "recover" | "gateway-length" = "filter";
+      let initialCap: number | undefined;
+      const stub = { ...models, completeSimple: async (_model: unknown, args: { messages: Message[] }, settings: { maxTokens: number }) => {
+        const message = args.messages[1] as { content: string };
+        seen.push({ prompt: message.content, cap: settings.maxTokens });
+        if (message.content.includes("SECOND_CHUNK")) {
+          initialCap ??= settings.maxTokens;
+          if ((mode !== "recover" && mode !== "gateway-length") || settings.maxTokens === initialCap) {
+            const partial = assistant("Partial output");
+            const outputTokens = settings.maxTokens - (mode === "below-cap" ? 1 : 0);
+            const terminal = {
+              type: "response.incomplete",
+              response: { status: "incomplete", output: [],
+                ...(mode === "filter" ? { incomplete_details: { reason: "content_filter" } }
+                  : mode === "gateway-length" ? { incomplete_details: { reason: "length" } } : {}),
+                usage: { input_tokens: 23_640, output_tokens: outputTokens, total_tokens: 23_640 + outputTokens } },
+            };
+            const events = (async function* () { yield terminal; })();
+            // Use the installed Responses parser; only the upstream stream is synthetic.
+            await processResponsesStream(events as unknown as Parameters<typeof processResponsesStream>[0],
+              partial, createAssistantMessageEventStream(), model);
+            return partial;
+          }
+        }
+        return assistant(message.content.includes("FIRST_CHUNK") ? "Verified first section" : "Verified continuation");
+      }} as typeof models;
+      const messages: Message[] = [
+        { role: "user", content: "FIRST_CHUNK " + "alpha ".repeat(400), timestamp: 1 },
+        { role: "user", content: "SECOND_CHUNK " + "beta ".repeat(450), timestamp: 2 },
+      ];
+      // One segment fits, both together don't. The first successful response is only tentative.
+      try {
+        await assert.rejects(testManager.summarizeMessages(messages, 850, model, stub, ctx), /content_filter.*尝试 1 次/);
+        assert.equal(seen.length, 2);
+        const first = seen[0]!.prompt;
+        const second = seen[1]!.prompt;
+        assert(first.includes("FIRST_CHUNK") && !first.includes("SECOND_CHUNK"));
+        const firstCap = seen[1]!.cap;
+        mode = "below-cap";
+        await assert.rejects(testManager.summarizeMessages(messages, 850, model, stub, ctx), /error:incomplete.*尝试 1 次/);
+        assert.equal(seen.length, 3);
+        mode = "recover";
+        const summary = await testManager.summarizeMessages(messages, 850, model, stub, ctx);
+        assert(!summary.includes("Partial output"));
+        assert.equal(seen.filter(call => call.prompt === first).length, 1, "do not re-send a successful identical segment");
+        assert.deepEqual(seen.filter(call => call.prompt === second).map(call => call.cap), [firstCap, firstCap, firstCap, firstCap * 2]);
+        mode = "gateway-length";
+        const beforeAlias = seen.length;
+        const aliasSummary = await testManager.summarizeMessages(messages, 850, { ...model, id: "different-model" }, stub, ctx);
+        assert(!aliasSummary.includes("Partial output"));
+        assert.deepEqual(seen.slice(beforeAlias).filter(call => call.prompt === second).map(call => call.cap), [firstCap, firstCap * 2]);
+        assert.equal(seen.filter(call => call.prompt === first).length, 2, "a different model must not reuse the summary");
+      } finally {
+        manager.dispose();
+        await runtime.close();
+      }
+    }
+    console.log("PASS Responses parser + manager: missing reason at cap and gateway length retry; below-cap and filter do not; successful chunk is reused");
 
     for (const exhaust of [false, true]) {
       const source = fixture(128_000, 32768);
