@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { botTaskTimeline } from "../src/renderer/src/lib/botWorkspacePresentation";
+import { botTaskReplyPresentation } from "../src/renderer/src/lib/botTaskReplyPresentation";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,16 +215,48 @@ try {
         { ref: "/saved/helper.py", name: "helper.py", openPath: "/saved/helper.py" },
       ], milestone: true as const,
       reviewStatus: "accepted" as const, current: true, notices: [] } };
+  const bindingFeedback = { workId, eventId: "source-binding", kind: "binding" as const, category: "progress" as const,
+    intentRevision: work.intentRevision, inputSnapshotId: work.inputSnapshotId };
+  const requestsBeforeProgress = count("SELECT COUNT(*) n FROM bot_send_receipts");
+  service.messages.appendWorkDelivery(LOCAL_USER_ID, workId, "source-binding", "v1", "PRIVATE_BINDING_LOG", bindingFeedback);
+  const sourceBinding = service.history({ botId: "a", conversationId: first.receipt.conversationId }).messages
+    .find(message => message.workFeedback?.eventId === "source-binding");
+  assert(sourceBinding, "the delegator receives structured execution progress before any model return");
+  assert(!sourceBinding.text.includes("PRIVATE_BINDING_LOG"));
+  assert.equal(count("SELECT COUNT(*) n FROM bot_send_receipts"), requestsBeforeProgress, "projecting progress creates no model turn");
+  db.prepare("DELETE FROM bot_work_feedback WHERE message_id=?").run(sourceBinding.messageId);
+  db.prepare("DELETE FROM bot_messages WHERE message_id=?").run(sourceBinding.messageId);
+  const repairedBinding = service.history({ botId: "a", conversationId: first.receipt.conversationId }).messages
+    .find(message => message.workFeedback?.eventId === "source-binding");
+  assert.equal(repairedBinding?.messageId, sourceBinding.messageId, "reload repairs pre-fix missing projection with the same identity");
+  assert.equal(count("SELECT COUNT(*) n FROM bot_send_receipts"), requestsBeforeProgress);
   const returnsBefore = count("SELECT COUNT(*) n FROM bot_peer_deliveries WHERE json_extract(origin_json,'$.kind')='return'");
   service.messages.appendWorkDelivery(LOCAL_USER_ID, workId, "public-report", "v1", "PRIVATE_TOOL_LOG: raw execution record", publicFeedback);
   service.collaborations.publishWork(workId);
   await wait(() => requests.some(item => item.model === "a" && item.tag === "public-result"), "A summarizes the public report");
+  await wait(() => service.history({ botId: "a", conversationId: first.receipt.conversationId }).messages
+    .some(message => message.status === "completed" && message.collaborationResult?.eventId === "public-report"), "A finishes its own report");
   const sourceReport = service.history({ botId: "a", conversationId: first.receipt.conversationId });
   assert(!sourceReport.messages.some(message => message.text.includes("PRIVATE_TOOL_LOG")), "raw tools stay in B/Work records");
   const returnedReport = sourceReport.messages.find(message => message.role === "assistant" && message.collaborationResult?.eventId === "public-report");
   assert(returnedReport?.peerOrigin?.kind === "return");
   assert.deepEqual(returnedReport.collaborationResult, publicFeedback, "A receives the exact report files, selected deliverables and preview manifest independently of model prose");
   assert.equal(returnedReport.workFeedback, undefined, "the worker report cannot replace A's own answer");
+  const sourceRows = botTaskTimeline(sourceReport.messages);
+  const sourceTask = sourceRows.find(row => row.message.messageId === first.receipt.assistantMessageId)?.tasks
+    .find(task => task.workId === workId);
+  assert(sourceTask, "the delegator's original reply owns the task, not a later return");
+  assert(sourceTask.messages.some(message => message.messageId === returnedReport.messageId));
+  assert(!sourceRows.some(row => row.message.messageId === returnedReport.messageId), "the return cannot open an independent outer reply");
+  const sourceStages = botTaskReplyPresentation(workId, works.getProjection(workId), sourceTask.messages, sourceTask.messageWorkIds);
+  assert.equal(sourceStages.stages.flatMap(stage => stage.messages).filter(message =>
+    (message.workFeedback ?? message.collaborationResult)?.eventId === "public-report").length, 1,
+    "a completed source answer replaces only its exact public fallback, not the durable record");
+  const receiverHistory = service.history({ botId: "b", conversationId: receiver.conversationId });
+  const receiverTask = botTaskTimeline(receiverHistory.messages).find(row => row.message.messageId === receiver.messageId)?.tasks
+    .find(task => task.workId === workId);
+  assert(receiverTask?.messages.some(message => message.workFeedback?.eventId === "public-report"),
+    "the executor also retains its complete report inside its own original task reply");
   assert.deepEqual(service.messages.message(returnedReport.messageId)?.collaborationResult, publicFeedback, "history reload restores delivery without replaying the task");
   for (const changed of [{ userId: "other-user" }, { botId: "b" }, { conversationId: "other-chat" },
     { origin: { ...returnedReport.peerOrigin, senderBotId: "c" } },

@@ -15,6 +15,7 @@ import { BotPeerIngress } from "./BotPeerIngress";
 import { projectBotMemoryHistory } from "./BotMemoryHistoryProjection";
 import { botDelegationSourceSchema, type BotDelegationSource } from "./BotDelegationSources";
 import { settleBotCapabilityTools } from "./BotCapabilityPresentation";
+import { delegatedFeedbackText, delegatedReplyWorkIds, reconcileDelegatedFeedback } from "./BotDelegatedTaskProjection";
 import type { ChatToolCallDto } from "../../../shared/agent-ipc";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
@@ -54,7 +55,10 @@ export class BotConversationRepository {
       question_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       goal_id TEXT NOT NULL, answer_message_id TEXT NOT NULL REFERENCES bot_messages(message_id) ON DELETE CASCADE,
       PRIMARY KEY(question_message_id,goal_id));
-    CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_ordinal ON bot_messages(conversation_id,ordinal);`);
+    CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_ordinal ON bot_messages(conversation_id,ordinal);
+    CREATE INDEX IF NOT EXISTS idx_bot_messages_conversation_request ON bot_messages(conversation_id,request_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_peer_inputs_assistant ON bot_peer_inputs(assistant_message_id);
+    CREATE INDEX IF NOT EXISTS idx_bot_collaboration_requests_assistant ON bot_collaboration_requests(assistant_message_id);`);
   }
 
   conversation(userId: string, botId: string, conversationId?: string, teamId?: string): BotConversation | undefined {
@@ -163,9 +167,16 @@ export class BotConversationRepository {
   }
 
   history(userId: string, request: BotHistoryRequest): BotHistoryDto {
-    const conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
+    let conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
     this.assertScope(conversation, request.teamId);
     if (!conversation) return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
+    // Current-format completed delegations may predate source projection. Repair
+    // at most one bounded batch on initial/catch-up reads, never on older-page or
+    // exact-message navigation. This neither creates a turn nor reruns Work.
+    if (!request.teamId && request.before === undefined && !request.messageIds
+      && reconcileDelegatedFeedback(this.db, userId, conversation.conversation_id, value => workFeedbackSchema.parse(value))) {
+      conversation = this.conversation(userId, request.botId, conversation.conversation_id)!;
+    }
     // Query each disjoint source using its conversation/ordinal index. A single
     // OR scans unrelated messages; a feedback-driven UNION instead scans/sorts
     // all feedback when an inbox is large. Each source contributes at most 101
@@ -365,10 +376,12 @@ export class BotConversationRepository {
   }
 
   private linkWorkMessages(receipt: BotMessageReceipt, workId: string, messageIds: readonly string[]): void {
+    const storedIds = this.db.prepare("SELECT work_ids_json FROM bot_messages WHERE message_id=?").pluck();
+    const update = this.db.prepare("UPDATE bot_messages SET work_ids_json=? WHERE message_id=?");
     for (const id of messageIds) {
-      const message = this.message(id)!;
-      this.db.prepare("UPDATE bot_messages SET work_ids_json=? WHERE message_id=?")
-        .run(JSON.stringify([...new Set([...message.workIds, workId])]), id);
+      // Display-only delegated associations must never become stored provenance.
+      const existing = z.array(z.string()).parse(JSON.parse(z.string().parse(storedIds.get(id))));
+      update.run(JSON.stringify([...new Set([...existing, workId])]), id);
     }
     this.touch(receipt.conversation_id);
   }
@@ -419,7 +432,8 @@ export class BotConversationRepository {
   appendWorkDelivery(userId: string, workId: string, event: string, version: string, text: string, metadata?: WorkFeedbackDto):
     { delivered: boolean; inserted: boolean; recorded?: boolean; conversationId?: string } {
     return this.db.transaction(() => {
-      let target = this.resolveWorkDelivery(userId, workId);
+      const sourceTarget = this.resolveWorkDelivery(userId, workId);
+      let target = sourceTarget;
       const collaboration = this.collaborations.byWork(userId, workId);
       const receiver = collaboration && this.db.prepare(`SELECT m.conversation_id FROM bot_peer_deliveries d
         JOIN bot_messages m ON m.message_id=d.accepted_message_id WHERE d.user_id=?
@@ -438,15 +452,22 @@ export class BotConversationRepository {
         if (binding?.settled_at != null) this.collaborations.event(userId, collaboration.collaborationId,
           { operationId: `execution-end:${metadata.executionId}`, exchangeId: metadata.executionId, kind: "ended", workId, createdAt: binding.settled_at });
         this.collaborations.event(userId, collaboration.collaborationId, { operationId, version: revision, kind: "returning", workId });
-        if (!target) this.collaborations.event(userId, collaboration.collaborationId,
+        if (!sourceTarget) this.collaborations.event(userId, collaboration.collaborationId,
           { operationId, version: revision, kind: "unknown", workId, detail: "原来源会话已删除，成果保留在协作记录中，未改投其他会话" });
       }
-      if (!target) return { delivered: false, inserted: false, recorded: Boolean(collaboration && metadata?.report) };
-      const inserted = this.appendWorkFeedback(target, workId, event, version, text, metadata);
+      if (!target || collaboration && !peerReceiver && !metadata)
+        return { delivered: false, inserted: false, recorded: Boolean(collaboration && metadata?.report) };
+      // Raw execution text remains at the receiver. Without a peer receiver,
+      // even the direct source fallback must contain only public host evidence.
+      const body = collaboration && !peerReceiver ? delegatedFeedbackText(metadata!) : text;
+      const inserted = this.appendWorkFeedback(target, workId, event, version, body, metadata);
+      const mirrored = collaboration && peerReceiver && sourceTarget
+        ? reconcileDelegatedFeedback(this.db, userId, sourceTarget.conversation_id, value => workFeedbackSchema.parse(value), workId) : 0;
       if (collaboration && metadata?.report && !peerReceiver) this.collaborations.event(userId, collaboration.collaborationId,
         { operationId: `work-feedback:${createHash("sha256").update(event).digest("hex")}`,
           version: createHash("sha256").update(version).digest("hex"), kind: "returned", workId });
-      return { delivered: true, inserted, conversationId: target.conversation_id };
+      return { delivered: true, inserted: inserted || mirrored > 0,
+        conversationId: sourceTarget?.conversation_id ?? target.conversation_id };
     })();
   }
 
@@ -581,7 +602,12 @@ export class BotConversationRepository {
         z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,
       metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
-      workIds: z.array(z.string()).parse(JSON.parse(row.work_ids_json)), error: row.error ?? undefined,
+      // A delegation's original answer and each authenticated return/request
+      // need the Work even when no result report exists or the anchor is paged
+      // out. Project only assistants; do not change user control provenance.
+      workIds: [...new Set([...z.array(z.string()).parse(JSON.parse(row.work_ids_json)),
+        ...(row.role === "assistant" && typeof organizationUser === "string"
+          ? delegatedReplyWorkIds(this.db, organizationUser, row.message_id) : [])])], error: row.error ?? undefined,
       createdAt: row.created_at, updatedAt: row.updated_at };
   }
 }

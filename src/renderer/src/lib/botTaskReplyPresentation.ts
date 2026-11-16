@@ -105,12 +105,44 @@ export function botTaskReplyAssociations(messages: readonly BotMessageDto[]): {
  * A worker result still needs review; a verified partial milestone is execution
  * progress. Keep previous versions in their original phase for later reading.
  */
-export function botTaskReplyMessageStage(feedback?: WorkFeedbackDto): BotTaskReplyStageId {
+export function botTaskReplyMessageStage(feedback?: WorkFeedbackDto, work?: WorkProjectionDto): BotTaskReplyStageId {
   if (!feedback) return "execution";
   if (feedback.report?.milestone) return "execution";
   if (feedback.kind === "closure" || feedback.report?.completion?.nextStep === "deliver") return "result";
+  // A host-confirmed successful closure can finalize the exact accepted result
+  // even when that immutable worker report predates the completion decision.
+  // Never promote partial, rejected, stale, unbound, or still-needs-input data.
+  if (work?.lifecycle === "closed" && work.closureConclusion === "succeeded"
+    && feedback.kind === "result" && feedback.report?.current && feedback.report.reviewStatus === "accepted"
+    && !feedback.report.completion && feedback.executionId
+    && feedback.intentRevision === work.intentRevision && feedback.inputSnapshotId === work.inputSnapshotId
+    && botTaskReplyFeedbackCurrent(feedback, work)) return "result";
   if (feedback.kind === "result" || feedback.report?.completion) return "review";
   return "execution";
+}
+
+/** Only a successful source-Bot answer can replace its exact public fallback.
+ * Keep both durable messages; this is a view fold, not deletion or a text-based
+ * guess. Distinct versions, files, scopes and incomplete replies never collide. */
+export function botTaskReplyVisibleMessages(messages: readonly BotMessageDto[]): BotMessageDto[] {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
+  const key = (message: BotMessageDto, feedback: WorkFeedbackDto) => JSON.stringify([
+    message.botId, message.teamId ?? null, message.conversationId, canonical(feedback),
+  ]);
+  const returned = new Set<string>();
+  for (const message of messages) {
+    const origin = message.peerOrigin;
+    if (message.role !== "assistant" || message.status !== "completed" || message.error
+      || origin?.kind !== "return" || origin.sourceBotId !== message.botId || origin.sourceConversationId !== message.conversationId
+      || !message.collaborationResult?.report || !(message.text.trim()
+        || message.segments?.some(segment => segment.kind !== "receipt" && segment.text.trim()))) continue;
+    returned.add(key(message, message.collaborationResult));
+  }
+  return messages.filter(message => !message.workFeedback?.report
+    || !message.requestId.startsWith("delegated-feedback:")
+    || !returned.has(key(message, message.workFeedback)));
 }
 
 export function botTaskReplyFeedbackCurrent(feedback: WorkFeedbackDto, work?: WorkProjectionDto | null): boolean {
@@ -253,7 +285,8 @@ export function botTaskReplyPresentation(workId: string, suppliedWork?: WorkProj
   const active = stages.find(stage => stage.id === currentStageId)!;
   active.state = succeeded ? "completed" : terminal ? "ended" : paused ? "paused" : attention ? "attention" : "current";
   if (!terminal) active.description = `${statusLabel}。${active.description}`;
-  for (const message of messages) stages.find(stage => stage.id === botTaskReplyMessageStage(botTaskReplyMessageFeedback(message)))!.messages.push(message);
+  for (const message of botTaskReplyVisibleMessages(messages))
+    stages.find(stage => stage.id === botTaskReplyMessageStage(botTaskReplyMessageFeedback(message), work))!.messages.push(message);
   return { title: work?.title || [...messages].reverse().map(botTaskReplyMessageFeedback).find(feedback => feedback?.report?.title)?.report?.title || "任务进度",
     statusLabel, currentStageId, stages };
 }

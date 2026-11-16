@@ -94,9 +94,13 @@ export async function verifyUnifiedForegroundQueries(): Promise<void> {
     assert(firstPage.nextQuery);
     await assert.rejects(invoke("schedule_overview", { ...firstPage.nextQuery, search: "different" }), /游标|筛选|cursor/);
 
-    const legacy = workRows.parse(await invoke("work_query_status", {}));
+    assert.deepEqual(messages.message(source.assistantMessageId)?.workIds, [delegated.workId],
+      "the original delegation projects only its own Work, not every visible responsibility");
+    const listTurn = messages.accept(LOCAL_USER_ID, { botId: source.botId, conversationId: source.conversationId,
+      requestId: "responsibilities-list", text: "List all responsibilities" });
+    const legacy = workRows.parse(await invoke("work_query_status", {}, listTurn));
     assert(legacy.some(item => item.workId === delegated.workId && item.delegation?.collaborationId === delegatedRelation.collaborationId));
-    assert.deepEqual(messages.message(source.assistantMessageId)?.workIds, [], "listing responsibilities does not assign the answer to every visible task");
+    assert.deepEqual(messages.message(listTurn.assistantMessageId)?.workIds, [], "listing responsibilities does not assign the answer to every visible task");
     const queryTurn = (requestId: string, selectedWorkId?: string) => messages.accept(LOCAL_USER_ID, {
       botId: source.botId, conversationId: source.conversationId, requestId, text: "查看事项进度", selectedWorkId });
     const linked = (turn: ReturnType<typeof queryTurn>) => messages.message(turn.assistantMessageId)?.workIds;
