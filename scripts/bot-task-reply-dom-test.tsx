@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { parseHTML } from "linkedom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
+import type { BotIncomingMessage } from "../src/shared/bot-collaboration";
 import type { BotMessageDto, BotHistoryDto } from "../src/shared/bot-conversation";
 import type { BotDto, WorkProjectionDto } from "../src/shared/bot-work";
 import { queryWorkFixture } from "./work-query-fixture";
@@ -80,6 +81,8 @@ async function main() {
   const { useAppStore } = await import("../src/renderer/src/store/appStore");
   const original = useAppStore.getState();
   let currentMessages = initialMessages;
+  let currentIncoming: BotIncomingMessage[] = [];
+  let incomingGate: Promise<void> | undefined;
   let sends = 0;
   const cancellations: { botId: string; requestId: string }[] = [];
   let root: Root | undefined;
@@ -87,7 +90,7 @@ async function main() {
   Object.defineProperty(testWindow, "api", { configurable: true, value: { botWork: {
     queryWorks: async (request: Parameters<typeof queryWorkFixture>[1]) => queryWorkFixture(useAppStore.getState().botWorks, request),
     getWork: async (id: string) => useAppStore.getState().botWorks.find(item => item.workId === id),
-    incomingMessages: async () => ({ items: [] }),
+    incomingMessages: async () => { await incomingGate; return { items: currentIncoming, nextCursor: null }; },
   } } });
   const card = (id: string) => {
     const node = container.querySelector<HTMLElement>(`.bot-task-reply[data-work-id="${id}"]`);
@@ -394,6 +397,61 @@ async function main() {
       assert.equal(historical.workFeedback!.report!.current, true);
       assert.equal(useAppStore.getState().botHistories[ownerId].messages.find(item => item.messageId === historical.messageId), historical);
       assert.equal(container.querySelector("textarea#bot-draft"), composer); assert.equal(composer.value, "还没发送的草稿");
+    });
+    await check("actual workspace keeps two same-title recipient boards separate and preserves the composer", async () => {
+      const sourceBotId = "source-bot";
+      type Peer = NonNullable<BotMessageDto["peerOrigin"]>;
+      const origin = (suffix: string): Peer => ({ kind: "request", collaborationId: `relation-${suffix}`, exchangeId: `exchange-${suffix}`,
+        senderBotId: sourceBotId, senderDisplayName: "Source Bot", sourceBotId, sourceConversationId: "original-thread",
+        sourceRequestId: `request-${suffix}`, sourceUserMessageId: `source-user-${suffix}`, sourceAssistantMessageId: `source-answer-${suffix}` });
+      const inbox = (suffix: string, time: number): BotIncomingMessage => ({
+        cursor: `cursor-${suffix}`, collaboration: {
+          ...origin(suffix), userId: "local-user", targetBotId: ownerId, sourceDisplayName: "Source Bot", targetDisplayName: "Test Bot",
+          workId: `received-${suffix}`, createdAt: time, updatedAt: time, messageCount: 1,
+          status: "started", originAvailable: true, times: { sentAt: time, deliveredAt: time, acceptedAt: time, startedAt: time, endedAt: null, returningAt: null, returnedAt: null },
+          work: { workId: `received-${suffix}`, title: "Same title", lifecycle: "active", executionStatus: "running", startedAt: time, endedAt: null },
+        },
+        message: { messageId: `journal-${suffix}`, collaborationId: `relation-${suffix}`, ordinal: time, senderBotId: sourceBotId,
+          senderDisplayName: "Source Bot", kind: "request", text: `Public request ${suffix}`, operationId: `exchange-${suffix}:request`,
+          exchangeId: `exchange-${suffix}`, createdAt: time },
+      });
+      currentIncoming = [inbox("a", 1), inbox("b", 3)];
+      const recipientMessages = [
+        message("internal-a", 1, "user", "peer-a", [], "Internal prompt should not be shown", { peerOrigin: origin("a") }),
+        message("received-a", 2, "assistant", "peer-a", ["received-a"], "Recipient execution A", { peerOrigin: origin("a") }),
+        message("received-b", 4, "assistant", "peer-b", ["received-b"], "Recipient execution B", { peerOrigin: origin("b") }),
+        message("unrelated", 5, "assistant", "ordinary", [], "Unrelated foreground reply"),
+      ];
+      await update(recipientMessages, []);
+      let ready!: () => void;
+      incomingGate = new Promise<void>(resolve => { ready = resolve; });
+      await act(async () => { root!.render(<BotWorkspacePage key="recipient-fixture" />); await delay(); });
+      await click(tab("received-a", "result"));
+      await act(async () => { incomingGate = undefined; ready(); await delay(); });
+      const a = container.querySelector<HTMLElement>('[data-incoming-collaboration="relation-a"]');
+      const b = container.querySelector<HTMLElement>('[data-incoming-collaboration="relation-b"]');
+      assert.ok(a && b);
+      assert.equal(container.querySelectorAll("[data-incoming-collaboration]").length, 2);
+      assert.equal(a.querySelectorAll('[role="tab"]').length, 4);
+      assert.equal(a.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-stage-id"), "delivery",
+        "a selected phase is preserved when late inbox data converts a Work card into a recipient board");
+      assert.equal(b.querySelectorAll('[role="tab"]').length, 4);
+      const executionA = Array.from(a.querySelectorAll<HTMLElement>('[role="tab"]')).find(item => item.textContent?.includes("执行"));
+      const intakeB = Array.from(b.querySelectorAll<HTMLElement>('[role="tab"]')).find(item => item.textContent?.includes("接单"));
+      assert.ok(executionA && intakeB);
+      await click(executionA); await click(intakeB);
+      assert.match(a.textContent ?? "", /Recipient execution A/);
+      assert.match(b.textContent ?? "", /Public request b/);
+      assert.doesNotMatch(a.textContent ?? "", /Recipient execution B|Internal prompt should not be shown/);
+      assert.equal(container.querySelector('article[data-message-id="received-a"]'), null);
+      assert.ok(container.querySelector('article[data-message-id="unrelated"]'));
+      const recipientComposer = container.querySelector<HTMLTextAreaElement>("textarea#bot-draft");
+      assert.ok(recipientComposer); assert.equal(recipientComposer.value, "还没发送的草稿"); assert.equal(container.querySelectorAll("textarea").length, 1);
+      await update(recipientMessages.map(item => item.messageId === "received-a" ? { ...item, text: "Recipient execution A updated" } : item), []);
+      assert.equal(container.querySelector('[data-incoming-collaboration="relation-a"]'), a);
+      assert.equal(executionA.getAttribute("aria-selected"), "true"); assert.equal(intakeB.getAttribute("aria-selected"), "true");
+      assert.match(a.textContent ?? "", /Recipient execution A updated/);
+      assert.equal(container.querySelector("textarea#bot-draft"), recipientComposer); assert.equal(sends, 0);
     });
     console.log(`PASS inline task reply: ${count} React DOM checks; no desktop layout or live-model claim`);
   } finally {

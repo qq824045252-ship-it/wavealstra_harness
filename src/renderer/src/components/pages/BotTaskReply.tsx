@@ -17,6 +17,11 @@ export function BotTaskReplyScope({ scope, onInspect, children }: { scope: strin
   return <ReplyContext.Provider value={value}>{children}</ReplyContext.Provider>;
 }
 
+export function useBotTaskReplySelection(): (key: string) => BotTaskReplyStageId | undefined {
+  const context = useContext(ReplyContext);
+  return key => context?.selections.get(key)?.selected;
+}
+
 const emptyStage: Record<BotTaskReplyStageId, string> = {
   request: "任务已关联到这条回复，后续进展会在这里更新。",
   execution: "执行进展和已核实的阶段成果会保留在这里。",

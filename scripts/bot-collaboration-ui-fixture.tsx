@@ -1,7 +1,7 @@
 /** Actual BotWorkspacePage/store/Markdown; controlled host data, not model acceptance. */
 import './bot-conversation-concurrent-desktop-fixture';
 import { useAppStore } from '../src/renderer/src/store/appStore';
-import type { BotCollaborationDto, BotCollaborationEventDto, BotCollaborationHistoryQuery, BotCollaborationMessageDto, BotCollaborationsQuery } from '../src/shared/bot-collaboration';
+import type { BotCollaborationDto, BotCollaborationEventDto, BotCollaborationHistoryQuery, BotCollaborationMessageDto, BotCollaborationsQuery, BotIncomingMessage, BotIncomingMessagesQuery } from '../src/shared/bot-collaboration';
 import type { BotHistoryDto, BotSendReceipt, BotSendRequest } from '../src/shared/bot-conversation';
 import type { WorkProjectionDto } from '../src/shared/bot-work';
 import { botOrganizationSummarySchema, type BotOrganizationSummaryDto } from '../src/shared/bot-organization';
@@ -47,6 +47,7 @@ const sourceHistory: BotHistoryDto = { botId: 'bot', conversationId: 'source-cha
         { ref: '/saved/helper.py', name: 'helper.py', openPath: '/saved/helper.py' }], reviewStatus: 'accepted' as const, current: true, notices: [] } } } : {}),
   ...(index === 29 ? { collaborations: [first, first, second] } : {}),
 })) };
+const incomingCalls: BotIncomingMessagesQuery[] = [];
 const historyCalls: BotCollaborationHistoryQuery[] = [], listCalls: BotCollaborationsQuery[] = [], sendCalls: BotSendRequest[] = [];
 const preparedFiles: Array<{ snapshotPath: string; manifestPath?: string | null }> = [];
 Object.assign(window.api!, { savedArtifact: {
@@ -86,6 +87,33 @@ Object.assign(window.api!.botWork, {
       && (request.direction !== 'outgoing' || item.sourceBotId === request.botId));
     const offset = Number(request.cursor ?? 0), items = available.slice(offset, offset + (request.limit ?? 50));
     return { items: structuredClone(items), total: available.length, nextCursor: offset + items.length < available.length ? String(offset + items.length) : null };
+  },
+  incomingMessages: async (request: BotIncomingMessagesQuery) => {
+    incomingCalls.push(request);
+    const journal: BotIncomingMessage[] = [];
+    for (const item of allRelations.filter(value => value.targetBotId === request.botId).slice(0, 6).reverse()) {
+      const order = journal.length + 1;
+      const exchange = item === first ? "target-peer-exchange" : `incoming-${item.collaborationId}`;
+      const requestText = item.requestPreview ?? "公开协作请求";
+      journal.push({ collaboration: item, cursor: String(order), message: {
+        messageId: `incoming-${item.collaborationId}-request`, collaborationId: item.collaborationId,
+        ordinal: order, senderBotId: item.sourceBotId, senderDisplayName: item.sourceDisplayName, kind: "request",
+        text: requestText, createdAt: item.createdAt, operationId: `${exchange}:request`, exchangeId: exchange,
+      } });
+    }
+    if (request.botId === "target" && incomingQuestion.replyPreview) {
+      const order = journal.length + 1;
+      journal.push({ collaboration: incomingQuestion, cursor: String(order), message: {
+        messageId: "incoming-question-reply", collaborationId: incomingQuestion.collaborationId, ordinal: order,
+        senderBotId: request.botId, senderDisplayName: incomingQuestion.targetDisplayName, kind: "reply",
+        text: incomingQuestion.replyPreview, createdAt: 20000, operationId: "question-reply-fixture",
+      } });
+    }
+    const eligible = request.refreshIds ? journal.filter(item => request.refreshIds?.includes(item.message.messageId))
+      : request.after ? journal.filter(item => Number(item.cursor) > Number(request.after))
+      : request.before ? journal.filter(item => Number(item.cursor) < Number(request.before)) : journal;
+    const items = request.after || request.refreshIds ? eligible : eligible.slice(request.before ? -4 : -2);
+    return structuredClone({ items, nextCursor: request.after || request.refreshIds || items.length === eligible.length ? null : items[0].cursor });
   },
   collaborationHistory: async (request: BotCollaborationHistoryQuery) => {
     historyCalls.push(request);
@@ -160,7 +188,7 @@ useAppStore.setState({ botHistories: { bot: sourceHistory }, botDraft: '尚未�
     { ...sourceBot, botId: 'idle', displayName: '新助理', organizationRole: 'ordinary' }],
 });
 Object.assign(window, { collaborationFixture: {
-  historyCalls, listCalls, sendCalls, getWorkCalls, organizationSchemaChecks,
+  historyCalls, listCalls, sendCalls, getWorkCalls, incomingCalls, organizationSchemaChecks,
   setInlineSource: (text: string, status: 'running' | 'completed', team: boolean) => {
     const teamId = team ? 'source-team' : undefined;
     const history: BotHistoryDto = { ...sourceHistory, teamId, messages: [{ ...sourceHistory.messages[29], teamId, text, status,
@@ -189,7 +217,7 @@ Object.assign(window, { collaborationFixture: {
   },
   acceptedCount: () => accepted.size,
   finishIncomingQuestion: () => { incomingQuestion.status = 'returned'; incomingQuestion.messageCount = 2;
-    incomingQuestion.replyPreview = '19 × 23 = 437'; incomingQuestion.times.returnedAt = 6500; },
+    incomingQuestion.updatedAt++; incomingQuestion.replyPreview = '19 × 23 = 437'; incomingQuestion.times.returnedAt = 6500; },
   hold: (id: string) => { heldRelation = id; },
   release: () => { heldRelation = undefined; releaseRead?.(); releaseRead = undefined; },
   sourceState: () => ({ draft: useAppStore.getState().botDraft, attachments: useAppStore.getState().botAttachmentDrafts.bot }),

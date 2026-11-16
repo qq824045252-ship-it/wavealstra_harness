@@ -343,13 +343,17 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
   // Draft edits and composer controls do not change the transcript. Keep its
   // elements stable; message/store/context updates still render their own content.
-  const messageTimeline = useMemo(() => botTaskTimeline(messages).map(row => ({
+  const buildMessageTimeline = useCallback((visible: readonly BotMessageDto[]) => botTaskTimeline(visible).map(row => ({
     key: row.key, createdAt: row.message.createdAt, ordinal: row.message.ordinal,
     value: <TimelineMessage key={row.key} message={row.message} taskReplies={row.tasks} messageInTask={row.messageInTask} botName={displayName} works={detailWorks}
       onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)}
       sourceQuestions={questionsByRequest}
       onReply={replyToMessage} onCancel={cancelMessage} onSearchFollowup={appendSearchFollowup} />,
-  })), [messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage, appendSearchFollowup]);
+  })), [displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage, appendSearchFollowup]);
+  const renderReceivedMessage = useCallback((message: BotMessageDto) => <TimelineMessage message={message} embedded botName={displayName}
+    works={detailWorks} onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(message.requestId)}
+    onReply={replyToMessage} onCancel={cancelMessage} onSearchFollowup={appendSearchFollowup} />,
+  [displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage, appendSearchFollowup]);
 
   const emptyConversation = <div className="bot-conversation-empty">
     <span className="bot-welcome-icon" aria-hidden="true"><IconBot size={30} /></span>
@@ -431,7 +435,7 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
           <BotIncomingCollaborations key={scopeKey} botId={!teamId ? activeBotId ?? undefined : undefined} onOpen={openCollaboration}
             representedMessageIds={messages.map(message => message.messageId)}
             representedReplies={messages.flatMap(message=>message.role==='assistant' && message.peerOrigin?.kind==='request' ? [{collaborationId:message.peerOrigin.collaborationId,exchangeId:message.peerOrigin.exchangeId}] : [])}
-            entries={messageTimeline} membershipKey={identities.map(bot=>bot.botId).sort().join('|')} onBeforeOlder={preserveHistoryPosition} empty={emptyConversation} />
+            conversationId={conversationId} messages={messages} buildEntries={buildMessageTimeline} renderReceivedMessage={renderReceivedMessage} works={detailWorks} membershipKey={identities.map(bot=>bot.botId).sort().join('|')} onBeforeOlder={preserveHistoryPosition} empty={emptyConversation} />
           </BotTaskReplyScope>
         </div>
       </> : <BotWorkBrowser key={`${scopeKey}-${view}`} hidden={Boolean(inlineWorkId)} scrollRef={browserRef} view={view} selectedWorkId={selected?.workId} onOpenWork={openWork} onConversation={() => { setView("conversation"); requestAnimationFrame(() => composerRef.current?.focus()); }} />}

@@ -1,7 +1,12 @@
 import { useBotIncomingMessages } from '@/hooks/useBotIncomingMessages';
 import { mergeBotTimeline, groupBotTimeline, unrepresentedIncomingMessages } from '@/lib/botMergedTimeline';
+import { botReceivedTasks } from '@/lib/botReceivedTasks';
+import type { BotMessageDto } from '@shared/bot-conversation';
+import type { WorkProjectionDto } from '@shared/bot-work';
+import { BotReceivedTaskCard } from './BotReceivedTaskCard';
+import { useBotTaskReplySelection } from './BotTaskReply';
 import { BotAvatar } from "../common/BotAvatar";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { useAppStore } from '@/store/appStore';
 import type {
@@ -255,14 +260,31 @@ function useCollaborations(botId: string, direction: NonNullable<BotCollaboratio
   return { page, error, loadingMore, more, retry: () => setRetry(value => value + 1) };
 }
 
-export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], onBeforeOlder, membershipKey = '', representedReplies = [], representedMessageIds = [] }: {
- botId?:string; representedMessageIds?:readonly string[]; representedReplies?:readonly {collaborationId:string;exchangeId:string}[]; membershipKey?:string; entries?:{key:string;createdAt:number;ordinal:number;value:React.ReactNode;foldKey?:string}[]; onBeforeOlder?:()=>void;onOpen:(id:string)=>void;empty?:React.ReactNode;
+type TimelineEntry = {key:string;createdAt:number;ordinal:number;value:React.ReactNode;foldKey?:string};
+const emptyEntries: TimelineEntry[] = [];
+export function BotIncomingCollaborations({ botId, onOpen, empty, entries = emptyEntries, onBeforeOlder, membershipKey = '', representedReplies = [], representedMessageIds = [],
+  messages, buildEntries, renderReceivedMessage, works, conversationId }: {
+  botId?:string; representedMessageIds?:readonly string[]; representedReplies?:readonly {collaborationId:string;exchangeId:string}[];
+  membershipKey?:string; entries?:TimelineEntry[]; onBeforeOlder?:()=>void;onOpen:(id:string)=>void;empty?:React.ReactNode;
+  messages?:readonly BotMessageDto[]; buildEntries?:(messages:readonly BotMessageDto[])=>TimelineEntry[];
+  renderReceivedMessage?:(message:BotMessageDto)=>React.ReactNode; works?:readonly WorkProjectionDto[]; conversationId?:string;
 }) {
  const {items,before,error,loading,initialLoading,more,retry,retrySummary}=useBotIncomingMessages(botId,membershipKey);
- const personalIds=new Set(entries.map(entry=>entry.key));
- const visibleItems=unrepresentedIncomingMessages(items,personalIds,representedReplies,representedMessageIds);
+ const previousStage = useBotTaskReplySelection();
+ const projected = useMemo(() => botId && messages && renderReceivedMessage ? botReceivedTasks(items, messages, botId) : undefined,
+   [botId, items, messages, renderReceivedMessage]);
+ const personal = useMemo(() => buildEntries && messages
+   ? buildEntries(projected?.absorbed.size ? messages.filter(message => !projected.absorbed.has(message.messageId)) : messages)
+   : entries, [buildEntries, messages, projected, entries]);
+ const personalIds=new Set(personal.map(entry=>entry.key));
+ const groupedIds = new Set(projected?.boards.flatMap(board => board.rows.map(row => row.message.messageId)));
+ const visibleItems=unrepresentedIncomingMessages(items.filter(item => !groupedIds.has(item.message.messageId)),personalIds,representedReplies,representedMessageIds);
  const byId=new Map(visibleItems.map(item=>[item.message.messageId,item]));
- const rows=mergeBotTimeline(entries,visibleItems.map(item=>({collaborationId:item.message.messageId,createdAt:item.message.createdAt})));
+ const boardsById = new Map(projected?.boards.map(board => ['received:'+board.key, board] as const));
+ const rows=mergeBotTimeline(personal,[
+   ...[...boardsById].map(([collaborationId,board])=>({collaborationId,createdAt:board.createdAt})),
+   ...visibleItems.map(item=>({collaborationId:item.message.messageId,createdAt:item.message.createdAt})),
+ ]);
  return <section className="bot-merged-timeline" aria-label="对话与协作时间线">
   {error && <p className="bot-alert" role="alert">{error}<button type="button" className="bot-icon-button" title="重试读取" aria-label="重试读取" onClick={()=>void retry()}><IconRefresh size={18}/></button></p>}
   {before && <button type="button" className="bot-icon-button" title="加载更早协作消息" aria-label="加载更早协作消息" disabled={loading} onClick={()=>{onBeforeOlder?.();void more();}}><IconChevronUp size={18}/></button>}
@@ -270,6 +292,18 @@ export function BotIncomingCollaborations({ botId, onOpen, empty, entries = [], 
    const row=group[0];
    if(row.kind==='personal' && row.foldKey)return <details key={row.key} className="bot-work-progress"><summary>{group.length} 条执行记录</summary>{group.map(item=>item.kind==='personal'?<div key={item.key}>{item.value}</div>:null)}</details>;
    if(row.kind==='personal')return <div key={row.key}>{row.value}</div>;
+   const board = boardsById.get(row.collaborationId);
+   if (board && renderReceivedMessage) {
+     const prior = board.collaboration.workId && conversationId
+       ? previousStage(JSON.stringify([botId, null, conversationId, board.collaboration.workId])) : undefined;
+     const initialStage = prior === "review" || prior === "result" ? "delivery" : prior;
+     return <article key={row.key} className="bot-message msg-row assistant"
+       data-message-id={row.key} data-incoming-collaboration={board.collaboration.collaborationId}>
+       <BotReceivedTaskCard key={conversationId} board={board} work={works?.find(work => work.workId === board.collaboration.workId)}
+         renderMessage={renderReceivedMessage} onOpen={onOpen} onRetrySummary={id => void retrySummary(id)}
+         onInspect={onBeforeOlder} loading={loading} initialStage={initialStage} />
+     </article>;
+   }
    const {message,collaboration,summary}=byId.get(row.collaborationId)!;
    return <article key={row.key} className="bot-message msg-row assistant" data-message-id={row.key} data-incoming-collaboration={collaboration.collaborationId}>
     <div className="bot-message-author"><BotAvatar botId={message.senderBotId} name={message.senderDisplayName}/><strong>{message.senderDisplayName}</strong>{recordedTime(message.createdAt)}</div>
