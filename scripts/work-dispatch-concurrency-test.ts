@@ -7,6 +7,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { WorkDispatchQueue, type WorkSourceDispatchOptions } from "../src/main/agent/work/WorkDispatchQueue";
+import { workWorkerTaskMode } from "../src/main/agent/work/WorkWorkerMode";
 import { WorkHostAuthority } from "../src/main/agent/work/WorkHostAuthority";
 import { WorkExecutionAdapter, type WorkExecutionPort } from "../src/main/agent/work/WorkExecutionAdapter";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkActor, type WorkControlResult, type WorkDto, type WorkSubscriptionDto } from "../src/shared/bot-work";
@@ -81,6 +82,11 @@ async function fixture(name: string, sourceOptions: WorkSourceDispatchOptions = 
       // Let any port fixture finish before closing SQLite, including the old implementation.
       await delay(20); if (db.connection.open) db.close();
     } };
+}
+function simulatePreUpgradeWork(f: Awaited<ReturnType<typeof fixture>>, work: WorkDto) {
+  const result = f.db.connection.prepare(`UPDATE work_events_outbox SET payload_json=json_remove(payload_json,'$.workerMode')
+    WHERE event_type='work.created' AND work_id=?`).run(work.workId);
+  assert.equal(result.changes, 1);
 }
 function sourceSnapshot(work: WorkDto) {
   const inputSnapshotId = `sha256:observed-${work.workId}`;
@@ -356,10 +362,29 @@ try {
         assert(result.ok && result.work && result.team, JSON.stringify(result)); return { work: result.work, team: result.team };
       };
       const a = team("A"), firstTask = a.team.executions[0].taskId;
+      simulatePreUpgradeWork(f, a.work);
       const gate = f.hold("prepare", firstTask); f.queue.wake();
       await until(() => f.entered.has(`prepare:${firstTask}`), "team A preparation hangs");
-      const b = team("B"), c = f.create("C"); f.enqueue(c, "dispatch:C");
+      assert.equal(f.db.getTask(firstTask)?.modePresetId, "native", "an old team with an unstarted member keeps its old runtime");
+      assert.notEqual(f.db.getTask(firstTask)?.welcomeMode, "general");
+      const b = team("B"), c = f.create("C"), old = f.create("old-personal");
+      simulatePreUpgradeWork(f, old);
+      f.enqueue(c, "dispatch:C"); f.enqueue(old, "dispatch:old");
+      await until(() => f.binding(old.workId)?.status === "running", "old personal Work starts");
+      const oldTask = f.db.getTask(f.binding(old.workId)!.taskId)!;
+      assert.equal(oldTask.modePresetId, "native");
+      assert.notEqual(oldTask.welcomeMode, "general");
+      assert.equal(workWorkerTaskMode(f.db.connection, c.workId, oldTask).modePresetId, "native",
+        "a continuation inherits the previous execution's saved runtime ahead of the Work default");
+      const newMode = { welcomeMode: "general", modePresetId: "codemode" };
+      assert.deepEqual(workWorkerTaskMode(f.db.connection, c.workId), newMode);
       await until(() => f.binding(b.work.workId)?.status === "running" && f.binding(c.workId)?.status === "running", "another team and normal Work start during team A preparation");
+      for (const work of [b.work, c]) {
+        const stored = f.db.getTask(f.binding(work.workId)!.taskId)!;
+        assert.deepEqual({ welcomeMode: stored.welcomeMode, modePresetId: stored.modePresetId }, newMode);
+        assert.deepEqual(workWorkerTaskMode(f.db.connection, work.workId, stored), newMode);
+      }
+      console.log("PASS new personal/team Work persists general + CodeMode; pre-upgrade and resumed modes are retained");
       unwrap(f.works.cancelWork(user, { operationId: "cancel:team-A", workId: a.work.workId })); gate.release();
       await delay(20);
       assert.equal(f.works.repo.listBindings(a.work.workId).length, 0, "cancelled team's late preparation cannot create a binding");

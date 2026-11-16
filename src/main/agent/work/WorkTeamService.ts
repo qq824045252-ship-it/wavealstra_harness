@@ -1,5 +1,6 @@
 import type { WorkResultDecision } from "./WorkResultDecision";
 import { WorkTeamWatchCycles } from "./WorkTeamWatchCycles";
+import { workWorkerTaskMode } from "./WorkWorkerMode";
 import { readTeamPlan, writeTeamPlan, type TeamPlanPredecessors } from "./WorkTeamPlanRevision";
 import { watchEndedByTime, watchTimeExpired } from "../../../shared/work-watch-expiry";
 import { ensureTeamConversation } from "./WorkDeliveryTargets";
@@ -767,7 +768,7 @@ export class WorkTeamService {
             app.upsertTask({ id: row.task_id, title: `${work.title} · ${row.role === "owner_summary" ? "负责人汇总" : bot.displayName}`,
               updatedAt: this.now(), cwd: previousTask?.cwd ?? work.workspacePath ?? settings?.effectiveWorkspacePath,
               spaceId: settings?.spaceId ?? previousTask?.spaceId, projectId: work.projectId,
-              modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), modePresetId: "native" });
+              modelId: previousTask?.modelId ?? (settings?.modelId || model()), permissionMode: permission(), ...workWorkerTaskMode(this.db, work.workId, previousTask) });
             const result = await adapter.dispatch({ kind: "bot", userId: work.userId, botId: work.ownerBotId, host: "background", grants: work.authorization }, {
               operationId, taskId: row.task_id, workId: work.workId, botId: identity, delegatedScope: scopes, inboxEventId: this.watchCycles.current(work.workId)?.inbox_event_id, versionGuard: guard(work) }, assignmentCurrent);
             if (!assignmentCurrent()) return;

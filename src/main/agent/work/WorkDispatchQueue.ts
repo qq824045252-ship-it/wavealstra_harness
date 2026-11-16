@@ -11,6 +11,7 @@ import { DESKTOP_USER_GRANTS } from "./WorkService";
 import { WorkSourceObserver,sourceSnapshot, type AuthoritativeWorkSource } from "./WorkSourceObserver";
 import { sameSourceReadbackClaim } from "./WorkPausedBacklog";
 import { workHostLeaseIdentity } from "./WorkHostAuthority";
+import { workWorkerTaskMode } from "./WorkWorkerMode";
 
 export interface WorkSourceDispatchOptions {
   /** Limits live source I/O only; all waiting obligations stay in the original Inbox. */
@@ -86,7 +87,7 @@ export class WorkDispatchQueue {
     const taskId = `work-execution-${randomUUID()}`;
     const settings = this.botSettings?.(work);
     this.db.upsertTask({ id: taskId, title: work.title, updatedAt: Date.now(), cwd: work.workspacePath ?? settings?.effectiveWorkspacePath, spaceId: settings?.spaceId,
-      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: "auto", modePresetId: "native" });
+      projectId: work.projectId, modelId: settings?.modelId || this.defaultModel(), permissionMode: "auto", ...workWorkerTaskMode(this.db.connection, work.workId) });
     this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,inbox_event_id)
       VALUES (?,?,?,?,?,?,'pending',?,?)`).run(operationId, work.workId, taskId, work.ownerBotId, work.intentRevision, work.inputSnapshotId, Date.now(), inboxEventId ?? null);
   }
@@ -475,7 +476,8 @@ export class WorkDispatchQueue {
       const taskId = `work-execution-${randomUUID()}`;
       const sourceBinding = this.works.repo.getBinding(plan.sourceBindingId);
       const sourceTask = sourceBinding && this.db.getTask(sourceBinding.taskId);
-      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:sourceBinding?.workspaceBinding ?? work.workspacePath,spaceId:sourceTask?.spaceId,projectId:work.projectId,modelId:sourceTask?.modelId ?? this.defaultModel(),permissionMode:"auto",modePresetId:"native"});
+      this.db.upsertTask({id:taskId,title:`补齐：${work.title}`,updatedAt:Date.now(),cwd:sourceBinding?.workspaceBinding ?? work.workspacePath,spaceId:sourceTask?.spaceId,projectId:work.projectId,modelId:sourceTask?.modelId ?? this.defaultModel(),permissionMode:"auto",
+        ...workWorkerTaskMode(this.db.connection,work.workId,sourceTask)});
       this.db.connection.prepare(`INSERT INTO work_dispatch_requests(operation_id,work_id,task_id,bot_id,intent_revision,input_snapshot_id,state,created_at,continuation_plan_id)
         VALUES (?,?,?,?,?,?,'pending',?,?)`).run(plan.planId,work.workId,taskId,work.ownerBotId,work.intentRevision,work.inputSnapshotId,Date.now(),plan.planId);
       this.works.repo.markOutboxStatus(`continuation-approved:${plan.planId}:${plan.ownerEpoch}`,"delivered");

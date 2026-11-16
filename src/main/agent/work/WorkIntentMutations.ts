@@ -7,6 +7,7 @@ import { checkWorkerProgress } from "./WorkControlGuards";
 import { watchRuleProblem, type WorkNextWake } from "./WorkSchedule";
 import { normalizeCriteria, normalizeTexts, normalizeSources, normalizeWatchRule, currentAcceptedDeliverableIds } from "./WorkControlNormalization";
 import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
+import { GENERAL_CODEMODE_WORKER } from "./WorkWorkerMode";
 
 interface IntentMutationDeps {
   repo: Pick<WorkRepository, "insertWork" | "insertIntentSnapshot" | "linkConversation" | "listBindings" | "getBinding" | "updateBinding" | "supersedeStaleDeliverables" | "listDeliverables" | "supersedeNotifications" | "updateWork" | "listEvidence">;
@@ -94,7 +95,7 @@ export class WorkIntentMutations {
     const outboxEventId = this.deps.outbox({
       work, eventType: "work.created", operationId: params.operationId,
       bindingId: undefined, causalEventId: params.causalEventId,
-      payload: { title: work.title, mode: work.mode },
+      payload: { title: work.title, mode: work.mode, workerMode: GENERAL_CODEMODE_WORKER },
     });
     return { ok: true, work, outboxEventId, now };
   }

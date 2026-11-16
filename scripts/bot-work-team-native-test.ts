@@ -181,6 +181,10 @@ try {
   const bindings = works.repo.listBindings(workId); assert.equal(bindings.length, 3);
   assert.equal(new Set(bindings.map(item => item.durableStoreKey)).size, 3);
   assert.equal(new Set(bindings.map(item => item.taskId)).size, 3);
+  assert(bindings.every(item => {
+    const task = db.getTask(item.taskId);
+    return task?.welcomeMode === "general" && task.modePresetId === "codemode";
+  }), "new member and owner summary rows retain their CodeMode default after reopening the database");
   assert(bindings.every(item => item.delegatedScope.length === 1 && item.delegatedScope[0] === "workspace:read"));
   assert.equal(works.getWork(workId)?.lifecycle, "active");
   assert(works.repo.listDeliverables(workId).every(item => item.status === "proposed"));

@@ -330,6 +330,7 @@ export function ensureBotWorkTables(db: Database.Database): void {
       delivered_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_work_outbox_pending ON work_events_outbox(delivery_status, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_work_outbox_created ON work_events_outbox(work_id) WHERE event_type='work.created';
 
     CREATE TABLE IF NOT EXISTS work_subscriptions (
       subscription_id TEXT PRIMARY KEY,
