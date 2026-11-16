@@ -12,6 +12,7 @@ function createModel({ seed, mode = 'fixture' }) {
   const modelId = live ? process.env.BOT_TASK_REPLY_LIVE_MODEL : 'task-reply-fixture';
   assert(!live || liveBase && modelId, 'Live mode requires explicit BOT_TASK_REPLY_LIVE_BASE_URL and BOT_TASK_REPLY_LIVE_MODEL; fixture is never a live fallback.');
   const tasks = ['A', 'B'].map(letter => ({ letter, marker: `BTR_${letter}_${seed}`, result: `RESULT_${letter}_${seed}`,
+    followup: `STATUS_${letter}_${seed}`, followupResult: `STATUS_REPLY_${letter}_${seed}`,
     title: `回复验收 ${letter} ${seed}` }));
   const ping = `PING_${seed}`;
   const gates = new Map();
@@ -46,11 +47,17 @@ function createModel({ seed, mode = 'fixture' }) {
       let context; try { context = JSON.parse(input); } catch {}
       const foreground = names.includes('work_create');
       const review = !foreground && context?.reviewTarget && context?.executionFacts;
-      const task = tasks.find(item => (review ? context.title : input)?.includes(review ? item.title : item.marker));
+      // Every fixture composer request is one line. The host appends time and
+      // frozen-source text after it; quoted older tasks cannot select this turn.
+      const foregroundInput = input.split(/\r?\n/, 1)[0];
+      const followupTask = foreground ? tasks.find(item => foregroundInput.includes(`[${item.followup}]`)) : undefined;
+      const task = followupTask ?? tasks.find(item => review ? context.title?.includes(item.title)
+        : (foreground ? foregroundInput : input).includes(item.marker));
+      const followup = Boolean(followupTask);
       const lane = foreground ? 'foreground' : review ? 'review' : 'execution';
       assert(foreground || task, 'native request must identify its own test task');
       record = { id: randomUUID(), lane, task: task?.letter, startedAt: new Date().toISOString(), model: body.model,
-        tools: names, mode, request: body };
+        tools: names, mode, request: body, followup: Boolean(followup) };
       records.push(record);
       assert(records.length <= 40, 'unexpected repeated model work; refusing a runaway test');
       if (live) {
@@ -69,16 +76,26 @@ function createModel({ seed, mode = 'fixture' }) {
         } finally { response.removeListener('close', disconnected); }
       } else {
         const afterUser = messages.slice(userIndex + 1);
-        const delegated = foreground && task && !afterUser.some(message => message.role === 'tool');
-        const tool = delegated ? { name: 'work_create', arguments: JSON.stringify({ requestedOutcome: 'one_time', mode: 'once',
-          title: task.title, goalDescription: `在后台独立回复 ${task.result}。`, sourceMessageIds: [], independentGoal: true }) } : undefined;
+        const needsTool = foreground && task && !afterUser.some(message => message.role === 'tool');
+        const requestedWorkId = followup ? foregroundInput.slice(foregroundInput.indexOf(`[${task.followup}]`) + task.followup.length + 2)
+          .match(/^\s+\[WORK_ID=([^\]\s]+)\]/)?.[1] : undefined;
+        if (followup) {
+          assert(requestedWorkId, 'status followup names an exact persisted Work ID');
+          assert(names.includes('work_query_status'), 'status followup requires the real query tool');
+          if (!needsTool) assert(afterUser.some(message => message.role === 'tool' && messageText(message).includes(requestedWorkId)),
+            'status followup requires a tool result for the requested Work');
+        }
+        const tool = needsTool ? followup ? { name: 'work_query_status', arguments: JSON.stringify({ workId: requestedWorkId }) }
+          : { name: 'work_create', arguments: JSON.stringify({ requestedOutcome: 'one_time', mode: 'once',
+            title: task.title, goalDescription: `在后台独立回复 ${task.result}。`, sourceMessageIds: [], independentGoal: true }) } : undefined;
         let text;
         if (review) {
           assert.equal(context.executionFacts.outputReceived, true, 'fixture review requires a real delivered native result');
           assert(context.results.some(result => result.summary.includes(task.result)), 'fixture review reads the matching result evidence');
           text = JSON.stringify({ decision: 'deliver', outcome: 'completed', reply: `已核对：${task.result}`, artifactRefs: [], missing: [] });
         } else if (foreground) {
-          text = input.includes(ping) ? `快答完成 ${ping}` : `已接收 ${task?.marker}，独立后台任务正在推进。\n\n`
+          text = followup ? `已读取原任务 ${requestedWorkId} 的执行状态。${task.followupResult}`
+            : foregroundInput.includes(ping) ? `快答完成 ${ping}` : `已接收 ${task?.marker}，独立后台任务正在推进。\n\n`
             + Array.from({ length: 12 }, (_, index) => `验收说明 ${index + 1}：这是本地模型夹具产生的对话正文，用于检查实际滚动和原回复归属。`).join('\n\n');
         } else text = `后台实际模型传输结果：${task.result}`;
         response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });

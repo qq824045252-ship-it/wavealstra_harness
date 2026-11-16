@@ -93,11 +93,20 @@ function inspectHistory(current: BotHistoryDto, works: ReadonlyMap<string, WorkP
   const groups = rows.flatMap(row => row.tasks.map(task => ({ row, task })));
   assert.equal(new Set(groups.map(({ task }) => task.workId)).size, groups.length, "one task has one panel in its conversation");
   for (const item of current.messages.filter(item => !item.workFeedback)) {
-    assert.equal(rows.filter(row => row.message === item).length, 1, "ordinary questions and replies remain in the transcript");
+    const attached = groups.filter(({ task }) => task.messages.includes(item));
+    if (item.role === "assistant" && item.workIds.length === 1) {
+      assert.equal(attached.length, 1, "a same-task foreground reply stays inside its original task container");
+      assert.equal(attached[0].task.workId, item.workIds[0]);
+      assert(rows.every(row => row.message !== item || row === attached[0].row), "a linked continuation cannot create a second outer reply");
+    } else {
+      assert.equal(rows.filter(row => row.message === item).length, 1, "questions, unlinked replies and ambiguous multi-task prose remain readable once");
+      assert.equal(attached.length, 0, "ambiguous multi-task prose cannot be copied into individual task panels");
+    }
   }
   for (const { row, task } of groups) {
-    const expected = current.messages.filter(item => item.role === "assistant" && item.workFeedback?.workId === task.workId);
-    assert.deepEqual(task.messages, expected, "every immutable feedback version remains attached exactly once");
+    const expected = current.messages.filter(item => item.role === "assistant"
+      && (item.workFeedback?.workId === task.workId || !item.workFeedback && item.workIds.length === 1 && item.workIds[0] === task.workId));
+    assert.deepEqual(task.messages, expected, "ordinary continuations and every immutable feedback version remain attached exactly once");
     assert.equal(scopeOf(row.message), scopeOf(current));
     for (const item of task.messages) assert.equal(scopeOf(item), scopeOf(current), "feedback must not cross a conversation, Bot or team");
     const anchor = current.messages.find(item => item.role === "assistant" && !item.workFeedback && item.workIds.includes(task.workId));
@@ -108,7 +117,7 @@ function inspectHistory(current: BotHistoryDto, works: ReadonlyMap<string, WorkP
     assert.equal(presentation.currentStageId, "execution");
     assert.equal(presentation.stages[3].state, "pending", "a late old result or one watch round cannot close the current task");
     assert.notEqual(presentation.statusLabel, "已完成");
-    for (const item of task.messages.filter(item => item.workFeedback!.intentRevision === 1)) {
+    for (const item of task.messages.filter(item => item.workFeedback?.intentRevision === 1)) {
       assert.equal(botTaskReplyFeedbackCurrent(item.workFeedback!, snapshot), false, "old input versions stay historical");
     }
   }
@@ -191,7 +200,8 @@ for (const outcome of outcomes) for (const [order, schedule] of permutations(pag
     assert.equal(new Set(task.messages.map(item => item.messageId)).size, task.messages.length);
   }, () => {
     const task = botTaskTimeline(current.messages)[0].tasks[0];
-    assert.equal(task.messages.length, 3, "reconnect deduplicates exact messages without dropping older result versions");
+    assert.equal(task.messages.length, 4, "reconnect retains the original answer and deduplicates exact messages without dropping older result versions");
+    assert(task.messages.includes(original));
     assert(task.messages.includes(staleResult));
     assert(task.messages.includes(currentResult));
   });
@@ -226,5 +236,120 @@ for (const seed of seeds) {
       if (item.messageId === b.messageId && item.status === "completed") assert.equal(item.text, "B result");
     }
   }, () => { assert.deepEqual(current.messages, [anchor, doneA, doneB], "both independent completions survive replay"); });
+}
+
+// Ordinary foreground replies are the path that used to escape task panels.
+// Exercise actual history/event merging with every persisted message status;
+// the message's prose must never act as a Work completion decision.
+const statuses: BotMessageDto["status"][] = ["queued", "running", "completed", "cancelled", "unknown", "failed"];
+for (const status of statuses) for (const seed of seeds) {
+  const anchorA = message(scope, "ordinary-original-a", 1, { workIds: ["task-a"], text: "A original" });
+  const anchorB = message(scope, "ordinary-original-b", 2, { workIds: ["task-b"], text: "B original" });
+  const a = message(scope, "ordinary-followup-a", 3, { workIds: ["task-a", "task-a"], status, text: "A partial",
+    segments: [{ id: "a-receipt", kind: "receipt", text: "A accepted", createdAt: 3, updatedAt: 3 },
+      { id: "a-answer", kind: "answer", text: "A partial", createdAt: 3, updatedAt: 3 }] });
+  const b = message(scope, "ordinary-followup-b", 4, { workIds: ["task-b"], status: "running", text: "B partial" });
+  const unrelated = message(scope, "unrelated-answer", 5, { text: "Independent quick answer" });
+  const question = message(scope, "ordinary-followup-question", 6, { role: "user", workIds: ["task-a"], text: "Continue A" });
+  const ambiguous = message(scope, "both-task-summary", 7, { workIds: ["task-a", "task-b"], text: "A and B summary" });
+  const revisedA = freeze<BotMessageDto>({ ...a, messageRevision: 3, text: "A continuation: 已完成", updatedAt: 10,
+    error: status === "failed" ? "delivery failed" : undefined,
+    segments: [{ id: "a-receipt", kind: "receipt", text: "A accepted", createdAt: 3, updatedAt: 3 },
+      { id: "a-commentary", kind: "commentary", text: "A tool round", createdAt: 4, updatedAt: 5 },
+      { id: "a-answer", kind: "answer", text: "A continuation: 已完成", createdAt: 6, updatedAt: 10 }],
+    attachments: [{ name: "a-result.txt", path: "/sequence-fixture/a-result.txt" }], toolTaskId: "a-tool-task",
+    activity: { tool: "work_query_status", status: "success" } });
+  const revisedB = freeze<BotMessageDto>({ ...b, messageRevision: 2, status: "completed", text: "B continuation", updatedAt: 9 });
+  let current = history(scope, [anchorA, anchorB, a, b, unrelated, question, ambiguous]);
+  const snapshots = new Map([["task-a", work("task-a")], ["task-b", work("task-b")]]);
+  const event = (name: string, frame: BotMessageDto, revision: number, extra: Partial<BotMessageEvent> = {}): Step => ({ name, run: () => {
+    current = mergeBotMessageEvent(current, freeze({ botId: scope.botId, conversationId: scope.conversationId,
+      revision, message: frame, ...extra }))!;
+  } });
+  const steps: Step[] = [event("B finishes at higher global revision", revisedB, 20),
+    event("A continuation changes all public segments", revisedA, 10),
+    event("duplicate A frame", revisedA, 10),
+    event("stale A cannot replace content or task ownership", { ...a, workIds: ["task-b"] }, 40),
+    event("wrong request cannot retarget A", { ...revisedA, requestId: "wrong-request", messageRevision: 4, workIds: ["task-b"] }, 50),
+    event("other conversation cannot retarget A", { ...revisedA, messageRevision: 4, conversationId: "other-chat" }, 60, { conversationId: "other-chat" }),
+    event("other Bot cannot retarget A", { ...revisedA, messageRevision: 4, botId: "bot-b" }, 70, { botId: "bot-b" }),
+    { name: "old page overlaps the live continuation", run: () => { current = mergeBotHistoryPage(current, history(scope, [a, b], 1)); } },
+    { name: "restore persisted history", run: () => { current = freeze(JSON.parse(JSON.stringify(current)) as BotHistoryDto); } },
+  ];
+  replay(`ordinary continuations status=${status}`, seed, shuffle(steps, seed), () => {
+    const before = JSON.stringify(current);
+    const rows = botTaskTimeline(freeze(current.messages));
+    assert.deepEqual(rows.map(row => row.message.messageId), [anchorA, anchorB, unrelated, question, ambiguous].map(item => item.messageId),
+      "progress, tool-round text and final foreground answers cannot add outer replies to their tasks");
+    const tasks = rows.flatMap(row => row.tasks);
+    assert.equal(tasks.length, 2);
+    for (const [workId, anchorId, continuationId] of [["task-a", anchorA.messageId, a.messageId], ["task-b", anchorB.messageId, b.messageId]]) {
+      const task = tasks.find(item => item.workId === workId)!;
+      assert.deepEqual(task.messages.map(item => item.messageId), [anchorId, continuationId]);
+      const presentation = botTaskReplyPresentation(workId, snapshots.get(workId), task.messages);
+      assert.equal(presentation.statusLabel, "正在执行", "untyped 已完成 text and foreground transport state cannot close a Work");
+      assert.equal(presentation.currentStageId, "execution");
+      assert.equal(presentation.stages[3].state, "pending");
+      assert.deepEqual(presentation.stages.flatMap(stage => stage.messages).map(item => item.messageId).sort(), [anchorId, continuationId].sort(),
+        "moving a reply into a task cannot drop its public content from all tabs");
+      const currentMessage = current.messages.find(item => item.messageId === continuationId)!;
+      assert.equal(task.messages[1], currentMessage, "task grouping preserves the full immutable current message, including status, segments, tools and files");
+    }
+    assert.equal(JSON.stringify(current), before, "presentation must not rewrite persistent history");
+  }, () => {
+    assert.equal(JSON.stringify(current.messages.find(item => item.messageId === a.messageId)), JSON.stringify(revisedA),
+      "all persisted A fields survive reload and stale frames");
+    assert.equal(JSON.stringify(current.messages.find(item => item.messageId === b.messageId)), JSON.stringify(revisedB),
+      "all persisted B fields survive reload and stale frames");
+  });
+}
+
+for (const seed of seeds) {
+  const anchorA = message(scope, "collaboration-original-a", 1, { workIds: ["task-a"] });
+  const anchorB = message(scope, "collaboration-original-b", 2, { workIds: ["task-b"] });
+  const returned = message(scope, "collaboration-return-a", 3, { workIds: ["task-b", "task-a"], text: "A reviewed answer",
+    collaborationResult: result("task-a") });
+  const historic = message(scope, "collaboration-old-a", 4, { workIds: ["task-b"], text: "A old result",
+    collaborationResult: result("task-a", 1) });
+  const exactFeedback = message(scope, "typed-feedback-b", 5, { workIds: ["task-a"], text: "B report",
+    workFeedback: result("task-b"), collaborationResult: result("task-a") });
+  const ordinary = message(scope, "collaboration-followup-a", 6, { workIds: ["task-a"], text: "A follow-up text" });
+  let current = history(scope);
+  const steps: Step[] = [
+    { name: "result page arrives before anchors", run: () => { current = mergeBotHistoryPage(current, history(scope, [returned, historic, exactFeedback, ordinary], 3)); } },
+    { name: "older task anchors arrive", run: () => { current = mergeBotHistoryPage(current, history(scope, [anchorA, anchorB], 1), true); } },
+    { name: "duplicate result reconnect", run: () => { current = mergeBotHistoryPage(current, history(scope, [returned, historic, exactFeedback], 3)); } },
+    { name: "serialized history restores exact identities", run: () => { current = freeze(JSON.parse(JSON.stringify(current)) as BotHistoryDto); } },
+  ];
+  replay("collaboration results retain exact Work and stage identity", seed, shuffle(steps, seed), () => {
+    const rows = botTaskTimeline(freeze(current.messages));
+    const tasks = rows.flatMap(row => row.tasks);
+    const ownA = new Set([anchorA.messageId, returned.messageId, historic.messageId, ordinary.messageId]);
+    const ownB = new Set([anchorB.messageId, exactFeedback.messageId]);
+    assert.equal(tasks.length, new Set(tasks.map(task => task.workId)).size);
+    for (const task of tasks) {
+      const expected = current.messages.filter(item => (task.workId === "task-a" ? ownA : ownB).has(item.messageId));
+      assert.deepEqual(task.messages, expected, "typed collaboration results override unrelated workIds, and workFeedback overrides any accompanying collaborationResult");
+      const snapshot = work(task.workId);
+      const presentation = botTaskReplyPresentation(task.workId, snapshot, task.messages);
+      assert.equal(presentation.statusLabel, "正在执行", "current execution remains authoritative over returned result prose");
+      const resultIds = task.workId === "task-a" ? [returned.messageId, historic.messageId] : [exactFeedback.messageId];
+      assert.deepEqual(presentation.stages.find(stage => stage.id === "result")!.messages.map(item => item.messageId),
+        expected.filter(item => resultIds.includes(item.messageId)).map(item => item.messageId),
+        "typed returned review and historical result evidence belongs to the result tab");
+      assert.deepEqual(presentation.stages.flatMap(stage => stage.messages).map(item => item.messageId).sort(), expected.map(item => item.messageId).sort());
+    }
+    for (const item of current.messages) {
+      assert.equal(tasks.filter(task => task.messages.includes(item)).length, 1, "every source answer appears in exactly one task");
+    }
+  }, () => {
+    const rows = botTaskTimeline(current.messages);
+    assert.deepEqual(rows.map(row => row.message.messageId), [anchorA.messageId, anchorB.messageId]);
+    assert.equal(current.messages.length, 6);
+    assert.equal(rows[0].tasks[0].messages.length, 4);
+    assert.equal(rows[1].tasks[0].messages.length, 2);
+    const restored = JSON.parse(JSON.stringify(current)) as BotHistoryDto;
+    assert.equal(JSON.stringify(botTaskTimeline(restored.messages)), JSON.stringify(botTaskTimeline(current.messages)));
+  });
 }
 console.log(`PASS bot task reply sequences: ${traces} replay traces, ${observations} intermediate observations; seeds=${seeds.join(",")}. Pure production merge/projection checks; no desktop or live-model claim.`);

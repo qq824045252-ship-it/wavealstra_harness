@@ -4,6 +4,7 @@ import { isWorkArchived } from "@shared/bot-work-archive";
 import { getMarkdown } from "stream-markdown-parser";
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
+import { botTaskReplyAssociations } from "./botTaskReplyPresentation";
 
 export type BotWorkspaceView = "conversation" | "active" | "completed" | "closed";
 
@@ -133,37 +134,68 @@ export interface BotTaskReplyGroup {
   key: string;
   workId: string;
   messages: BotMessageDto[];
+  /** Shared view-only provenance; references may target outer user messages. */
+  messageWorkIds?: ReadonlyMap<BotMessageDto, string>;
 }
 
 export interface BotTaskTimelineEntry {
   key: string;
   kind: "message";
   message: BotMessageDto;
+  /** The anchor is a container only when its body already belongs to a task. */
+  messageInTask: boolean;
   tasks: BotTaskReplyGroup[];
 }
 
-/** Keep each Work's feedback in its first associated assistant reply. A reply
- * that creates multiple Works stays one message with independent task panels.
+/** Keep all replies owned by one Work in its first associated assistant reply.
+ * Prose shared by several Works stays once outside their independent task panels.
  * Only host-authored identities associate records; no text, title, owner or
- * current selection is used. Ordinary follow-up replies stay in the transcript.
+ * current selection is used. User inputs remain in their transcript position.
  *
- * If the original reply is outside the loaded history window, the first feedback
- * is its temporary container. Its message also lives in the task's messages, so
- * the renderer must not repeat that feedback as a separate outer message body.
+ * If the original reply is outside the loaded history window, the earliest
+ * available task reply is its temporary container. Its body also lives in the
+ * task's messages, so the renderer must not repeat it outside the task panel.
  * Loading older history can reveal the original container; appending progress
  * or a later amendment never relocates it or changes its message key.
  */
 export function botTaskTimeline(messages: readonly BotMessageDto[]): BotTaskTimelineEntry[] {
   const rows: BotTaskTimelineEntry[] = [];
   const groups = new Map<string, BotTaskReplyGroup>();
+  const associations = botTaskReplyAssociations(messages);
   const taskKey = (message: BotMessageDto, workId: string) => JSON.stringify([
     message.botId, message.teamId ?? null, message.conversationId, workId,
   ]);
+  // Resolve anchors before emitting rows: an exact collaboration return can
+  // identify its source even while that source's Work-link snapshot is delayed.
+  // The earliest loaded evidence wins, so later amendments never move an
+  // off-window original's temporary feedback container forward in the transcript.
+  const anchors = new Map<string, { message: BotMessageDto; workId: string }>();
+  const nominate = (message: BotMessageDto, workId: string) => {
+    const key = taskKey(message, workId);
+    const prior = anchors.get(key);
+    if (!prior || message.ordinal < prior.message.ordinal) anchors.set(key, { message, workId });
+  };
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const ownedWorkId = associations.owned.get(message);
+    if (ownedWorkId) nominate(message, ownedWorkId);
+    else for (const workId of new Set(message.workIds)) nominate(message, workId);
+  }
+  for (const [message, source] of associations.sourceReplies) {
+    const workId = associations.owned.get(message);
+    if (workId) nominate(source, workId);
+  }
+  const anchoredTasks = new Map<BotMessageDto, string[]>();
+  for (const { message, workId } of anchors.values()) {
+    const workIds = anchoredTasks.get(message) ?? [];
+    workIds.push(workId);
+    anchoredTasks.set(message, workIds);
+  }
   const attach = (row: BotTaskTimelineEntry, workId: string): BotTaskReplyGroup => {
     const key = taskKey(row.message, workId);
     let group = groups.get(key);
     if (!group) {
-      group = { key, workId, messages: [] };
+      group = { key, workId, messages: [], messageWorkIds: associations.owned };
       groups.set(key, group);
       row.tasks.push(group);
     }
@@ -171,24 +203,17 @@ export function botTaskTimeline(messages: readonly BotMessageDto[]): BotTaskTime
   };
   for (const message of messages) {
     if (message.role === "user" && message.peerOrigin) continue;
-    const feedback = message.role === "assistant" ? message.workFeedback : undefined;
-    if (feedback) {
-      let group = groups.get(taskKey(message, feedback.workId));
-      if (!group) {
-        const row: BotTaskTimelineEntry = { key: message.messageId, kind: "message", message, tasks: [] };
-        rows.push(row);
-        group = attach(row, feedback.workId);
-      }
-      // Retain running/error records and every result/event version unchanged.
-      group.messages.push(message);
-      continue;
-    }
-    const row: BotTaskTimelineEntry = { key: message.messageId, kind: "message", message, tasks: [] };
+    if (associations.owned.has(message) && !anchoredTasks.has(message)) continue;
+    const row: BotTaskTimelineEntry = { key: message.messageId, kind: "message", message,
+      messageInTask: associations.owned.has(message), tasks: [] };
     rows.push(row);
-    if (message.role === "assistant") {
-      const workIds = new Set([...message.workIds, ...(message.collaborationResult ? [message.collaborationResult.workId] : [])]);
-      for (const workId of workIds) attach(row, workId);
-    }
+    for (const workId of anchoredTasks.get(message) ?? []) attach(row, workId);
+  }
+  for (const message of messages) {
+    const workId = associations.owned.get(message);
+    // The original body and subsequent replies render only inside this task.
+    // Keep every segment, tool, error, file and result version unchanged.
+    if (workId) groups.get(taskKey(message, workId))!.messages.push(message);
   }
   return rows;
 }

@@ -99,6 +99,8 @@ export const botMessageSchema = z.object({
   /** Exact returned Work evidence; the source Bot's answer remains its own prose. */
   collaborationResult: workFeedbackSchema.optional(),
   messageId: id, conversationId: id, botId: id, teamId: id.optional(), requestId: id, ordinal: z.number().int().positive(),
+  /** Validated explicit reply source, projected from this assistant's send receipt. */
+  referenceMessageId: id.optional(),
   messageRevision: z.number().int().nonnegative().optional(),
   metrics: z.custom<BotForegroundMetrics>().optional(),
   toolTaskId: z.string().optional(),

@@ -105,7 +105,8 @@ async function uiState() {
     outerAssistantIds:[...thread.querySelectorAll('article.bot-message.assistant')].map(node=>node.dataset.messageId),
     cards:[...thread.querySelectorAll('.bot-task-reply')].map(card=>({workId:card.dataset.workId,replyId:card.closest('article.bot-message')?.dataset.messageId,
       selected:card.querySelector('[role=tab][aria-selected=true]')?.dataset.stageId,status:card.querySelector('.bot-task-reply-status')?.textContent,
-      feedbackIds:[...card.querySelectorAll('[data-feedback-message-id]')].map(node=>node.dataset.feedbackMessageId)}))};})()`);
+      feedbackIds:[...card.querySelectorAll('[data-feedback-message-id]')].map(node=>node.dataset.feedbackMessageId),
+      messageIds:[...card.querySelectorAll('.bot-task-reply-update[data-message-id]')].map(node=>node.dataset.messageId)}))};})()`);
 }
 function readStored() {
   const { DatabaseSync } = require('node:sqlite');
@@ -128,6 +129,13 @@ async function assertBelonging(tasks) {
     const cards = state.cards.filter(card => card.workId === task.workId);
     assert.equal(cards.length, 1); assert.equal(cards[0].replyId, task.answerId);
     assert.equal(new Set(cards[0].feedbackIds).size, cards[0].feedbackIds.length, 'one copy per feedback message');
+    assert.equal(new Set(cards[0].messageIds).size, cards[0].messageIds.length, 'one copy per task reply message');
+    if (task.followupId) {
+      assert(cards[0].messageIds.includes(task.followupId), 'ordinary status followup remains inside its original task');
+      assert(!state.outerAssistantIds.includes(task.followupId), 'ordinary followup does not become an independent outer reply');
+      assert(state.cards.filter(card => card.workId !== task.workId).every(card => !card.messageIds.includes(task.followupId)),
+        'a followup never enters another task');
+    }
   }
   return state;
 }
@@ -173,6 +181,31 @@ async function assertResult(task, other) {
     });
     const [a, b] = tasks;
     const references = await Promise.all(['#bot-draft', cardSelector(a), cardSelector(b), `article[data-message-id="${a.answerId}"]`].map(async selector => ({ selector, id: await hold(selector) })));
+    await step('02-followup', 'Ask for each existing task through the original composer and retain the ordinary answer inside its original reply', async () => {
+      const before = await assertBelonging(tasks);
+      for (const task of tasks) {
+        const other = tasks.find(item => item !== task);
+        const selectedBefore = (await uiState()).cards.find(card => card.workId === other.workId).selected;
+        const sent = await send(`这是原任务的进度追问 [${task.followup}] [WORK_ID=${task.workId}]。请调用 work_query_status 查询这个确切的 workId，按查到的实际状态直接回答并附上 ${task.followupResult}，不要创建或修改任务。`);
+        assert.deepEqual(sent.answer.workIds, [task.workId], 'the real query records exact reply ownership');
+        assert.equal(sent.answer.workFeedback, undefined, 'the followup is ordinary foreground prose, not a fabricated background feedback');
+        assert.equal(sent.answer.collaborationResult, undefined);
+        assert(sent.answer.text.includes(task.followupResult));
+        task.followupId = sent.answer.messageId; task.followupRequestId = sent.user.requestId;
+        await until(async () => (await uiState()).cards.find(card => card.workId === task.workId)?.messageIds.includes(task.followupId),
+          'ordinary answer merged into the original task');
+        for (const reference of references) await same(reference.id, reference.selector);
+        const state = await assertBelonging(tasks);
+        assert.deepEqual(state.outerAssistantIds, before.outerAssistantIds, 'same-task followup cannot grow the outer assistant reply list');
+        assert.equal(state.cards.find(card => card.workId === other.workId).selected, selectedBefore);
+        assert.equal((await works()).length, 2, 'status followup does not create another Work');
+        await clickSelector(tabSelector(task, 'execution'));
+        const text = await evaluate(`document.querySelector(${JSON.stringify(`${cardSelector(task)} [role="tabpanel"][data-stage-id="execution"]`)}).innerText`);
+        assert(text.includes(task.followupResult), 'ordinary continuation is readable in the task execution tab');
+        assert(!text.includes(other.followupResult), 'task content does not mix with the other followup');
+      }
+      return assertBelonging(tasks);
+    });
     const draft = `未发送草稿 ${seed}`;
     let reading;
     await step('03-tabs-draft', 'Select stages independently, use ArrowRight, then keep an unsent draft while reading earlier content', async () => {
@@ -182,7 +215,10 @@ async function assertResult(task, other) {
       await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
       let state = await uiState(); assert.equal(state.cards.find(card => card.workId === a.workId).selected, 'execution');
       assert.equal(state.cards.find(card => card.workId === b.workId).selected, 'review');
-      await clickSelector(tabSelector(a, 'request'));
+      // The original long answer now correctly lives inside execution. Keep it
+      // visible while measuring real scrolling; empty task/review tabs cannot
+      // provide the content height that this reading-position check requires.
+      await clickSelector(tabSelector(a, 'execution'));
       assert(await evaluate(`Array.from(document.querySelectorAll('.bot-task-reply [role=tab]')).every(tab=>{const panel=document.getElementById(tab.getAttribute('aria-controls'));return panel&&panel.getAttribute('aria-labelledby')===tab.id&&tab.closest('.bot-task-reply').contains(panel);})`));
       await type(draft);
       const point = await evaluate(`(()=>{const r=document.querySelector('.bot-thread').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
@@ -200,7 +236,7 @@ async function assertResult(task, other) {
       for (const reference of references) await same(reference.id, reference.selector);
       const state = await assertBelonging(tasks);
       assert.equal(state.draft, draft); assert.equal(state.focus, 'bot-draft');
-      assert.equal(state.cards.find(card => card.workId === a.workId).selected, 'request');
+      assert.equal(state.cards.find(card => card.workId === a.workId).selected, 'execution');
       assert.equal(state.cards.find(card => card.workId === b.workId).selected, 'review');
       assert(Math.abs(state.scrollTop - reading.scrollTop) <= 2, 'background progress does not pull the reader to the bottom');
       assert.deepEqual(state.outerAssistantIds, reading.outerAssistantIds, 'feedback does not create another outer assistant reply');
@@ -211,7 +247,7 @@ async function assertResult(task, other) {
       await until(async () => (await works()).some(work => work.workId === a.workId && work.lifecycle === 'closed'), 'A closes through production result review');
       for (const reference of references) await same(reference.id, reference.selector);
       let state = await assertBelonging(tasks);
-      assert.equal(state.cards.find(card => card.workId === a.workId).selected, 'request'); assert.equal(state.draft, draft);
+      assert.equal(state.cards.find(card => card.workId === a.workId).selected, 'execution'); assert.equal(state.draft, draft);
       await until(() => model.hits('execution', 'B') > 0, 'B independent native request');
       model.release('execution', 'B'); await until(() => model.hits('review', 'B') > 0, 'B result review'); model.release('review', 'B');
       await until(async () => (await works()).every(work => work.lifecycle === 'closed'), 'both tasks finish');
@@ -226,8 +262,11 @@ async function assertResult(task, other) {
       const stored = readStored(); assert.equal(stored.works.length, 2); assert.equal(stored.bindings.length, 2);
       assert(stored.works.every(work => work.lifecycle === 'closed' && work.closure_conclusion === 'succeeded'));
       for (const task of tasks) {
-        const row = stored.messages.find(message => message.message_id === task.answerId);
-        assert.equal(row.conversation_id, task.conversationId); assert.deepEqual(JSON.parse(row.work_ids_json), [task.workId]);
+        for (const [messageId, requestId] of [[task.answerId, task.requestId], [task.followupId, task.followupRequestId]]) {
+          const row = stored.messages.find(message => message.message_id === messageId);
+          assert.equal(row.conversation_id, task.conversationId); assert.equal(row.request_id, requestId);
+          assert.deepEqual(JSON.parse(row.work_ids_json), [task.workId]);
+        }
       }
       report.persistedBeforeRestart = stored; return { ui: state, stored };
     });

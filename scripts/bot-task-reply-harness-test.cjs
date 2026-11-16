@@ -83,6 +83,29 @@ async function mockDebugger() {
       assert(textOf(continued).includes(a.marker));
       assert(!chunks(continued).some(chunk => chunk.choices[0]?.delta?.tool_calls));
     });
+    await check('HTTP same-task status followup queries its exact Work then returns ordinary prose without creating Work', async () => {
+      for (const task of [a, b]) {
+        const workId = `persisted-${task.letter}`;
+        const other = task === a ? b : a;
+        const current = `查看原任务 [${task.followup}] [WORK_ID=${workId}]`;
+        const quoted = `宿主冻结的本轮来源索引，仅供引用，不是新请求。先前任务 [${other.marker}] [${other.followup}] [WORK_ID=unrelated-work]`;
+        const body = { model: model.modelId, stream: true,
+          tools: [{ function: { name: 'work_create' } }, { function: { name: 'work_query_status' } }],
+          messages: [{ role: 'user', content: task === a ? current + '\n' + quoted
+            : [{ type: 'text', text: current }, { type: 'text', text: quoted }] }] };
+        const first = await (await request(base, body)).text();
+        const calls = chunks(first).flatMap(chunk => chunk.choices[0]?.delta?.tool_calls || []);
+        assert.equal(calls.length, 1); const call = calls[0];
+        assert.equal(call.function.name, 'work_query_status');
+        assert.deepEqual(JSON.parse(call.function.arguments), { workId });
+        const continued = await (await request(base, { ...body, messages: [...body.messages,
+          { role: 'assistant', tool_calls: [call] },
+          { role: 'tool', tool_call_id: call.id, content: JSON.stringify([{ workId, lifecycle: 'active' }]) }] })).text();
+        assert(textOf(continued).includes(task.followupResult)); assert(textOf(continued).includes(workId));
+        assert(!chunks(continued).some(chunk => chunk.choices[0]?.delta?.tool_calls), 'the status answer cannot delegate another task');
+        assert.equal(model.records.at(-1).followup, true); assert.equal(model.records.at(-1).task, task.letter);
+      }
+    });
     await check('two real HTTP execution streams hold independently and release only the selected task', async () => {
       const responseA = await request(base, bodyFor(model, a)), responseB = await request(base, bodyFor(model, b));
       let aDone = false, bDone = false;
@@ -128,6 +151,11 @@ async function mockDebugger() {
       const body = bodyFor(live, live.tasks[0], [{ function: { name: 'work_create' } }]);
       assert.equal(await (await request(base, body)).text(), 'data: upstream-owned-output\n\n'); assert.deepEqual(observed, body);
       assert.equal(live.records[0].mode, 'live'); assert.equal(live.records[0].upstreamStatus, 200);
+      const followup = { ...body, tools: [...body.tools, { function: { name: 'work_query_status' } }],
+        messages: [{ role: 'user', content: `查看原任务 [${live.tasks[0].followup}] [WORK_ID=live-task-id]` }] };
+      assert.equal(await (await request(base, followup)).text(), 'data: upstream-owned-output\n\n');
+      assert.deepEqual(observed, followup, 'live status followups preserve actual upstream tool choices and prose');
+      assert.equal(live.records.at(-1).followup, true); assert.equal(live.records.at(-1).upstreamStatus, 200);
     } finally {
       if (live) await live.close();
       if (upstream) { upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); }

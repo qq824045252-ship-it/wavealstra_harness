@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import type { BotMessageDto, WorkFeedbackDto } from "../src/shared/bot-conversation";
 import type { WorkProjectionDto } from "../src/shared/bot-work";
-import { botTaskReplyFeedbackCurrent, botTaskReplyPresentation } from "../src/renderer/src/lib/botTaskReplyPresentation";
+import { botTaskReplyAssociations, botTaskReplyFeedbackCurrent, botTaskReplyPresentation } from "../src/renderer/src/lib/botTaskReplyPresentation";
+import { botTaskTimeline } from "../src/renderer/src/lib/botWorkspacePresentation";
 
 const makeWork = (overrides: Partial<WorkProjectionDto> = {}): WorkProjectionDto => ({
   workId: "task-a", title: "接入 API", mode: "once", lifecycle: "active", ownerBotId: "bot-a", ownerEpoch: 1,
@@ -265,6 +266,104 @@ check(() => {
   const model = botTaskReplyPresentation("task-a", work, input);
   assert.equal(model.stages[1].state, "attention");
   assert.equal(JSON.stringify({ work, input }), before, "presentation must not rewrite durable messages or Work facts");
+});
+
+check(() => {
+  const original = message("original", {}, { workFeedback: undefined, text: "开始执行。", ordinal: 1 });
+  const followup = message("ordinary-followup", {}, { workFeedback: undefined, text: "全部完成并验收通过。", ordinal: 3,
+    segments: [{ id: "pre-tool", kind: "commentary", text: "先核对来源。", createdAt: 2, updatedAt: 2 },
+      { id: "final", kind: "answer", text: "全部完成并验收通过。", createdAt: 3, updatedAt: 3 }] });
+  const rows = botTaskTimeline([original, message("progress", {}, { ordinal: 2 }), followup]);
+  assert.equal(rows.length, 1, "ordinary follow-up replies do not create a second outer reply");
+  assert.equal(rows[0].messageInTask, true);
+  assert.equal(rows[0].tasks[0].messages[0], original, "the original body also belongs inside its task");
+  const group = rows[0].tasks[0];
+  const model = botTaskReplyPresentation(group.workId, undefined, group.messages, group.messageWorkIds);
+  assert.deepEqual(model.stages[1].messages, group.messages);
+  assert.equal(model.stages[1].messages[2].segments, followup.segments);
+  assert.equal(model.currentStageId, "execution");
+  assert.equal(model.stages[3].state, "pending", "ordinary completion prose cannot supply a reviewed outcome");
+});
+check(() => {
+  const source = message("source-reply", {}, { workFeedback: undefined, workIds: [], requestId: "source-request", ordinal: 1 });
+  const returned = message("source-return", {}, { workFeedback: undefined, workIds: ["unrelated-navigation"], ordinal: 3,
+    text: "源 Bot 对用户的完整回复，不应替换为工作报告。", collaborationResult: { workId: "task-a", eventId: "returned-result",
+      kind: "result", category: "result", report: report({ completion: { outcome: "completed", nextStep: "deliver" } }) },
+    peerOrigin: { kind: "return", collaborationId: "collaboration", exchangeId: "return", replyMessageId: "peer-result",
+      senderBotId: "worker", senderDisplayName: "工作 Bot", sourceBotId: "bot-a", sourceConversationId: "chat-a",
+      sourceRequestId: "source-request", sourceUserMessageId: "source-user", sourceAssistantMessageId: source.messageId } });
+  const before = JSON.stringify([source, returned]);
+  const rows = botTaskTimeline([source, returned]);
+  assert.equal(rows.length, 1, "typed returns find their original reply before its Work links arrive");
+  assert.equal(rows[0].message, source);
+  assert.equal(rows[0].messageInTask, true);
+  assert.deepEqual(rows[0].tasks[0].messages, [source, returned]);
+  const model = botTaskReplyPresentation("task-a", undefined, rows[0].tasks[0].messages, rows[0].tasks[0].messageWorkIds);
+  assert.deepEqual(model.stages[1].messages, [source]);
+  assert.deepEqual(model.stages[3].messages, [returned]);
+  assert.equal(model.currentStageId, "result");
+  assert.equal(JSON.stringify([source, returned]), before, "source association does not rewrite host DTOs");
+  const wrongScope = { ...returned, peerOrigin: { ...returned.peerOrigin!, sourceConversationId: "another-chat" } };
+  assert.equal(botTaskTimeline([source, wrongScope]).length, 2, "return provenance cannot cross conversations");
+});
+check(() => {
+  const source = message("shared-source", {}, { workFeedback: undefined, workIds: [], requestId: "shared-request", ordinal: 1 });
+  const returned = (workId: string, ordinal: number): BotMessageDto => message(`return-${workId}`, {}, {
+    workFeedback: undefined, workIds: [], ordinal, collaborationResult: { workId, eventId: workId, kind: "result", category: "result" },
+    peerOrigin: { kind: "return", collaborationId: workId, exchangeId: workId, replyMessageId: workId,
+      senderBotId: "worker", senderDisplayName: "工作 Bot", sourceBotId: "bot-a", sourceConversationId: "chat-a",
+      sourceRequestId: source.requestId, sourceUserMessageId: "source-user", sourceAssistantMessageId: source.messageId },
+  });
+  const a = returned("task-a", 2), b = returned("task-b", 3);
+  const rows = botTaskTimeline([source, a, b]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].messageInTask, false, "a source commissioning several tasks retains its shared prose once");
+  assert.deepEqual(rows[0].tasks.map(task => task.messages), [[a], [b]]);
+});
+check(() => {
+  const question = message("linked-user", {}, { role: "user", workFeedback: undefined, workIds: ["task-a"], ordinal: 1 });
+  const answer = message("referenced-answer", {}, { workFeedback: undefined, workIds: [], referenceMessageId: question.messageId, ordinal: 2 });
+  const followup = message("referenced-chain", {}, { workFeedback: undefined, workIds: [], referenceMessageId: answer.messageId, ordinal: 3,
+    status: "running", text: "继续在原任务内回答。" });
+  const rows = botTaskTimeline([question, answer, followup]);
+  assert.deepEqual(rows.map(row => row.message), [question, answer]);
+  const task = rows[1].tasks[0];
+  assert.deepEqual(task.messages, [answer, followup]);
+  const model = botTaskReplyPresentation(task.workId, undefined, task.messages, task.messageWorkIds);
+  assert.deepEqual(model.stages[1].messages, [answer, followup], "an outer referenced user question need not be copied into task content");
+  assert.equal(model.currentStageId, "execution");
+  assert.equal(model.stages[3].state, "pending");
+  const direct = { ...followup, workIds: ["task-b"] };
+  assert.equal(botTaskReplyAssociations([question, answer, direct]).owned.get(direct), "task-b", "direct host Work identity precedes references");
+});
+check(() => {
+  const original = message("reference-target", {}, { workFeedback: undefined, workIds: ["task-a", "task-b"] });
+  const followup = message("ambiguous-reference", {}, { workFeedback: undefined, workIds: [], referenceMessageId: original.messageId });
+  assert.equal(botTaskReplyAssociations([original, followup]).owned.has(followup), false, "references to shared multi-task prose cannot pick a task");
+  for (const overrides of [{ botId: "other-bot" }, { conversationId: "other-conversation" }, { teamId: "other-team" }]) {
+    const foreign = { ...original, ...overrides, workIds: ["task-a"] };
+    assert.equal(botTaskReplyAssociations([foreign, followup]).owned.has(followup), false, "references must match Bot, team and conversation");
+  }
+  assert.equal(botTaskReplyAssociations([followup]).owned.has(followup), false, "off-window reference identity is not invented");
+});
+check(() => {
+  const a = message("cycle-a", {}, { workFeedback: undefined, workIds: [], referenceMessageId: "cycle-b" });
+  const b = message("cycle-b", {}, { workFeedback: undefined, workIds: [], referenceMessageId: "cycle-a" });
+  const self = message("self-reference", {}, { workFeedback: undefined, workIds: [], referenceMessageId: "self-reference" });
+  const rows = botTaskTimeline([a, b, self]);
+  assert.equal(rows.length, 3);
+  assert(rows.every(row => !row.tasks.length), "cycles remain visible ordinary messages without fabricated ownership");
+});
+check(() => {
+  const original = message("long-reference-0", {}, { workFeedback: undefined });
+  const chain = Array.from({ length: 4000 }, (_, index) => message(`long-reference-${index + 1}`, {}, {
+    workFeedback: undefined, workIds: [], referenceMessageId: `long-reference-${index}`, ordinal: index + 2,
+  }));
+  const rows = botTaskTimeline([original, ...chain]);
+  assert.equal(rows.length, 1, "deep explicit reply chains remain a single task without recursive stack overflow");
+  assert.equal(rows[0].tasks[0].messages.length, chain.length + 1);
+  const reversedOwnership = botTaskReplyAssociations([...chain].reverse().concat(original));
+  assert.equal(reversedOwnership.owned.get(chain.at(-1)!), "task-a", "ownership resolution is independent of event arrival order");
 });
 
 console.log(`bot task reply presentation: ${cases} behavioral cases passed`);

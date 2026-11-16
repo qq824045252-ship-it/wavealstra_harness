@@ -354,7 +354,18 @@ export class BotConversationRepository {
   }
 
   linkWork(receipt: BotMessageReceipt, workId: string): void {
-    for (const id of [receipt.user_message_id, receipt.assistant_message_id]) {
+    this.linkWorkMessages(receipt, workId, [receipt.user_message_id, receipt.assistant_message_id]);
+  }
+
+  /** Exact status reads associate the answer for presentation only. Do not mark
+   * the user's input as a delegation or a selected mutation target, or make a
+   * query the Work's delivery origin. */
+  linkWorkReply(receipt: BotMessageReceipt, workId: string): void {
+    this.linkWorkMessages(receipt, workId, [receipt.assistant_message_id]);
+  }
+
+  private linkWorkMessages(receipt: BotMessageReceipt, workId: string, messageIds: readonly string[]): void {
+    for (const id of messageIds) {
       const message = this.message(id)!;
       this.db.prepare("UPDATE bot_messages SET work_ids_json=? WHERE message_id=?")
         .run(JSON.stringify([...new Set([...message.workIds, workId])]), id);
@@ -524,7 +535,12 @@ export class BotConversationRepository {
 
   private mapMessage(value: unknown): BotMessageDto {
     const row = messageRow.parse(value);
-    const scope = this.db.prepare("SELECT team_id FROM bot_conversations WHERE conversation_id=?").get(row.conversation_id) as { team_id: string | null };
+    const scope = this.db.prepare(`SELECT c.team_id,r.reference_message_id FROM bot_conversations c
+      LEFT JOIN bot_send_receipts r ON r.user_id=c.user_id AND r.conversation_id=c.conversation_id
+        AND r.bot_id=? AND r.request_id=? AND r.assistant_message_id=?
+      WHERE c.conversation_id=?`).get(row.bot_id, row.request_id, row.message_id, row.conversation_id) as {
+        team_id: string | null; reference_message_id: string | null;
+      };
     const version = this.db.prepare('SELECT revision FROM bot_message_revisions WHERE message_id=?').get(row.message_id) as { revision: number } | undefined;
     const attachmentRow = this.db.prepare("SELECT attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { attachments_json: string } | undefined;
     const attachments = attachmentRow ? z.array(botAttachmentSchema).parse(JSON.parse(attachmentRow.attachments_json)) : undefined;
@@ -559,6 +575,7 @@ export class BotConversationRepository {
       return goal.options ? [botClarificationSchema.parse({goalId:goal.goalId,question:goal.question,options:goal.options,answerText:answer?.text,status:goal.state==="pending"&&ownerChanged ? "expired" : answered ? "answered" : goal.state})] : [];
     });
     return { clarifications, peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+      referenceMessageId: row.role === "assistant" ? scope?.reference_message_id ?? undefined : undefined,
       segments, tools, toolTaskId: toolRow?.task_id, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
       collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
         z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,

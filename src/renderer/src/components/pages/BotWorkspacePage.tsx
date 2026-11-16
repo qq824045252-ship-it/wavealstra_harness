@@ -345,8 +345,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
   // elements stable; message/store/context updates still render their own content.
   const messageTimeline = useMemo(() => botTaskTimeline(messages).map(row => ({
     key: row.key, createdAt: row.message.createdAt, ordinal: row.message.ordinal,
-    value: <TimelineMessage key={row.key} message={row.message} taskReplies={row.tasks} botName={displayName} works={detailWorks}
+    value: <TimelineMessage key={row.key} message={row.message} taskReplies={row.tasks} messageInTask={row.messageInTask} botName={displayName} works={detailWorks}
       onOpenWork={openWork} onOpenCollaboration={openCollaboration} sourceQuestion={questionsByRequest.get(row.message.requestId)}
+      sourceQuestions={questionsByRequest}
       onReply={replyToMessage} onCancel={cancelMessage} onSearchFollowup={appendSearchFollowup} />,
   })), [messages, displayName, detailWorks, openWork, openCollaboration, questionsByRequest, replyToMessage, cancelMessage, appendSearchFollowup]);
 
@@ -395,8 +396,10 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
             requestAnimationFrame(() => requestAnimationFrame(() => {
               const node = Array.from(threadRef.current?.querySelectorAll<HTMLElement>("[data-feedback-message-id]") ?? [])
                 .find(item => item.dataset.feedbackMessageId === messageId)
+                ?? Array.from(threadRef.current?.querySelectorAll<HTMLElement>(".bot-task-reply-update[data-message-id]") ?? [])
+                  .find(item => item.dataset.messageId === messageId)
                 ?? Array.from(threadRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? []).find(item => item.dataset.messageId === messageId);
-              // A background record now lives in its original reply's stage.
+              // Task-owned foreground and background records live in a stage.
               // Explicit navigation reveals it without changing the composer.
               const panel = node?.closest<HTMLElement>('[role="tabpanel"]');
               if (panel?.hidden) document.getElementById(panel.getAttribute("aria-labelledby") ?? "")?.click();
@@ -464,10 +467,9 @@ export default function BotWorkspacePage(props: { onToggleNavigation?: () => voi
 
 // Default shallow memo compares every prop. Bind per-message actions inside
 // BotMessage, so unchanged rows need neither new callbacks nor another component.
-const ignoreMessageCancel = () => {};
 const TimelineMessage = memo(BotMessage);
 
-export function BotMessage({ message, botName, works, onOpenWork, onOpenCollaboration, onCancel, sourceQuestion, workLinkSource, onReply, onSearchFollowup, taskReplies, embedded = false }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onOpenCollaboration?: (id: string) => void; onCancel: (message: BotMessageDto) => void; onSearchFollowup?: (text: string) => void; taskReplies?: BotTaskReplyGroup[]; embedded?: boolean }): React.JSX.Element {
+export function BotMessage({ message, botName, works, onOpenWork, onOpenCollaboration, onCancel, sourceQuestion, sourceQuestions, workLinkSource, onReply, onSearchFollowup, taskReplies, messageInTask, embedded = false }: { workLinkSource?: BotMessageDto; sourceQuestion?: BotMessageDto; sourceQuestions?: ReadonlyMap<string, BotMessageDto>; onReply?: (message: BotMessageDto) => void; message: BotMessageDto; botName: string; works: WorkProjectionDto[]; onOpenWork: (id: string) => void; onOpenCollaboration?: (id: string) => void; onCancel: (message: BotMessageDto) => void; onSearchFollowup?: (text: string) => void; taskReplies?: BotTaskReplyGroup[]; messageInTask?: boolean; embedded?: boolean }): React.JSX.Element {
   const externalTask = useAppStore(state => state.tasks.find(task => task.id === botExternalAgentTaskId(message.messageId)));
   // Replace trusted image destinations before Markdown parsing: raw Windows
   // backslashes (e.g. \.mybuddy) otherwise become Markdown escapes.
@@ -478,11 +480,12 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
   })} streaming={streaming} /></ChatImageScope>;
   const linkedWorkIds = embedded ? [] : botMessageWorkLinks(message, workLinkSource ?? sourceQuestion)
     .filter(workId => !taskReplies?.some(task => task.workId === workId));
-  const feedbackInTask = Boolean(message.workFeedback && taskReplies?.length);
-  const renderTaskMessage = useCallback((feedback: BotMessageDto) => <TimelineMessage message={feedback} embedded botName={botName}
+  const contentInTask = !embedded && (messageInTask ?? Boolean(taskReplies?.some(task => task.messages.includes(message))));
+  const renderTaskMessage = useCallback((update: BotMessageDto) => <TimelineMessage message={update} embedded botName={botName}
     works={works} onOpenWork={onOpenWork} onOpenCollaboration={onOpenCollaboration} onReply={onReply}
-    onCancel={ignoreMessageCancel} onSearchFollowup={onSearchFollowup} />,
-  [botName, works, onOpenWork, onOpenCollaboration, onReply, onSearchFollowup]);
+    sourceQuestion={sourceQuestions?.get(update.requestId) ?? (sourceQuestion?.requestId === update.requestId ? sourceQuestion : undefined)}
+    onCancel={onCancel} onSearchFollowup={onSearchFollowup} />,
+  [botName, works, onOpenWork, onOpenCollaboration, onReply, onCancel, onSearchFollowup, sourceQuestions, sourceQuestion]);
   const result = message.role === "assistant" && message.status === "completed" && message.workFeedback?.report
     && (embedded || message.workFeedback.kind === "result" || (message.workFeedback.kind === "binding"
       && message.workFeedback.category === "progress" && message.workFeedback.report.milestone));
@@ -506,11 +509,11 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
   return <Container className={embedded ? "bot-task-reply-record" : `bot-message msg-row ${message.role}`} data-message-id={embedded ? undefined : message.messageId} data-streaming={message.role === "assistant" && message.status === "running" ? "true" : undefined} aria-label={`${author}的消息`}>
     {message.role === "user" && message.peerOrigin && <div className="bot-message-author"><strong>{author}</strong></div>}
     {message.role === "assistant" && !embedded && <div className="bot-message-author"><BotAvatar botId={message.botId} name={botName} /><strong>{botName}</strong></div>}
-    {delegation && <BotDelegationReference senderName={delegation.senderDisplayName} taskTitle={delegationTitle} />}
-    {message.role === "assistant" && sourceQuestion && !sourceQuestion.peerOrigin && !message.workFeedback && <BotReplyReference message={sourceQuestion} />}
+    {!contentInTask && delegation && <BotDelegationReference senderName={delegation.senderDisplayName} taskTitle={delegationTitle} />}
+    {!contentInTask && message.role === "assistant" && sourceQuestion && !sourceQuestion.peerOrigin && !message.workFeedback && <BotReplyReference message={sourceQuestion} />}
 
     {message.role === "user" ? <div className="user-bubble">{Boolean(message.attachments?.length) && <div className="input-attach-chips"><ComposerAttachmentChips attachments={message.attachments ?? []} /></div>}{message.text && <div className="user-bubble-text">{botMessageDisplayText(message.text)}</div>}</div> : <div className="bot-assistant-content">
-      {!feedbackInTask && <>
+      {!contentInTask && <>
       <BotToolResults tools={message.tools} taskId={message.toolTaskId} messageId={message.messageId} onSearchFollowup={onSearchFollowup} />
       {result ? <BotResultReport message={reportMessage} work={works.find(work => work.workId === message.workFeedback?.workId)} renderMarkdown={renderMarkdown} />
         : segments.length > 0 ? segments.map((segment, index) => <div key={segment.id} data-segment-id={segment.id} data-segment-kind={segment.kind} aria-label={segment.kind === "receipt" ? "消息回执" : undefined} className={`bot-reply-segment bot-reply-segment-${segment.kind}`}>
@@ -524,7 +527,7 @@ export function BotMessage({ message, botName, works, onOpenWork, onOpenCollabor
       {taskReplies?.map(task => <BotTaskReply key={task.key} task={task} work={works.find(work => work.workId === task.workId)} renderMessage={renderTaskMessage} />)}
     </div>}
     {linkedWorkIds.length > 0 && <div className="bot-message-work-links">{linkedWorkIds.map(workId => <button type="button" key={workId} onClick={() => onOpenWork(workId)}><IconListTodo size={14} /><span>{works.find(work => work.workId === workId)?.title ?? (message.workFeedback?.workId === workId ? message.workFeedback.report?.title : undefined) ?? "查看关联事项"}</span><IconChevronRight size={14} /></button>)}</div>}
-    {!feedbackInTask && <>
+    {!contentInTask && <>
     {externalTask && <div className="bot-message-work-links"><button type="button" onClick={() => useAppStore.getState().setActiveTask(externalTask.id)}><IconBot size={14} /><span>打开外部 Agent 任务</span><IconChevronRight size={14} /></button></div>}
     {message.role === "assistant" && <BotOrganizationActivity organizations={message.organizations} onOpenCollaboration={onOpenCollaboration} />}
     {message.role === "assistant" && <BotCallThread calls={message.botCalls} collaborations={message.collaborations} onOpenCollaboration={onOpenCollaboration} renderReply={renderMarkdown} />}

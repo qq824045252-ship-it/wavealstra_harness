@@ -2,7 +2,7 @@ import { createContext, useContext, useId, useMemo, useRef, useState, type Keybo
 import type { BotMessageDto } from "@shared/bot-conversation";
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { BotTaskReplyGroup } from "@/lib/botWorkspacePresentation";
-import { botTaskReplyFeedbackCurrent, botTaskReplyPresentation, type BotTaskReplyStageId } from "@/lib/botTaskReplyPresentation";
+import { botTaskReplyFeedbackCurrent, botTaskReplyMessageFeedback, botTaskReplyPresentation, type BotTaskReplyStageId } from "@/lib/botTaskReplyPresentation";
 import "./BotTaskReply.css";
 
 type ReplySelection = { selected: BotTaskReplyStageId; visited: Set<BotTaskReplyStageId> };
@@ -28,7 +28,8 @@ const stateLabels = { pending: "尚未到达", current: "当前阶段", complete
 export function BotTaskReply({ task, work, renderMessage }: {
   task: BotTaskReplyGroup; work?: WorkProjectionDto; renderMessage: (message: BotMessageDto) => ReactNode;
 }): React.JSX.Element {
-  const presentation = useMemo(() => botTaskReplyPresentation(task.workId, work, task.messages), [task.workId, work, task.messages]);
+  const presentation = useMemo(() => botTaskReplyPresentation(task.workId, work, task.messages, task.messageWorkIds),
+    [task.workId, work, task.messages, task.messageWorkIds]);
   const context = useContext(ReplyContext);
   const [local, setLocal] = useState<{ key: string; value: ReplySelection }>(() => ({ key: task.key,
     value: context?.selections.get(task.key) ?? { selected: presentation.currentStageId, visited: new Set([presentation.currentStageId]) } }));
@@ -79,12 +80,16 @@ export function BotTaskReply({ task, work, renderMessage }: {
         {stage.id === "request" && work?.goalDescription && <p className="bot-task-reply-goal">{work.goalDescription}</p>}
         {stage.messages.length === 0 && !(stage.id === "request" && work?.goalDescription) && <p className="bot-task-reply-empty">{stage.description || emptyStage[stage.id]}</p>}
       </>}
-      {stage.messages.map(message => <div key={message.messageId} className="bot-task-reply-update" data-message-id={message.messageId} data-feedback-message-id={message.messageId}>
+      {stage.messages.map(message => {
+        const feedback = botTaskReplyMessageFeedback(message);
+        return <div key={message.messageId} className="bot-task-reply-update" data-message-id={message.messageId} data-feedback-message-id={message.workFeedback ? message.messageId : undefined}>
         {selection.visited.has(stage.id) && <>
-          {!botTaskReplyFeedbackCurrent(message.workFeedback!, work) && <p className="bot-task-reply-historical">历史阶段记录 · 保留原版本内容</p>}
+          {feedback && !botTaskReplyFeedbackCurrent(feedback, work)
+            && <p className="bot-task-reply-historical">历史阶段记录 · 保留原版本内容</p>}
           {renderMessage(message)}
         </>}
-      </div>)}
+      </div>;
+      })}
     </div>)}
     <footer className="bot-task-reply-progress">
       <span>当前：{current.label} · {presentation.statusLabel}</span>

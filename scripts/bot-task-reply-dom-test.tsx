@@ -81,6 +81,7 @@ async function main() {
   const original = useAppStore.getState();
   let currentMessages = initialMessages;
   let sends = 0;
+  const cancellations: { botId: string; requestId: string }[] = [];
   let root: Root | undefined;
   const container = testDocument.body.appendChild(testDocument.createElement("div"));
   Object.defineProperty(testWindow, "api", { configurable: true, value: { botWork: {
@@ -112,7 +113,8 @@ async function main() {
     useAppStore.setState({ activeBotId: ownerId, activeTeam: null, botIdentities: [owner], selectedWorkId: null,
       historicalTeamWork: null, botWorks: [work("task-a"), work("task-b")], botHistories: { [ownerId]: history(initialMessages) },
       botHistoryPages: {}, botPendingSends: {}, botDraft: "还没发送的草稿", botDrafts: { [ownerId]: "还没发送的草稿" },
-      refreshBotHistory: async () => {}, refreshBotWork: async () => {}, submitBotDraft: async () => { sends++; } });
+      refreshBotHistory: async () => {}, refreshBotWork: async () => {}, submitBotDraft: async () => { sends++; },
+      cancelBotSend: async (botId: string, requestId: string) => { cancellations.push({ botId, requestId }); } });
     root = createRoot(container);
     await act(async () => { root!.render(<BotWorkspacePage />); await delay(); });
     const composer = container.querySelector<HTMLTextAreaElement>("textarea#bot-draft");
@@ -133,6 +135,8 @@ async function main() {
       assert.equal(composerForm?.hidden, false);
       assert.equal(container.querySelectorAll("article.bot-message.assistant").length, 2, "feedback updates do not create extra outer replies");
       assert.match(originalReply.textContent ?? "", /原有执行说明会保留/);
+      assert.equal(originalReply.querySelector('[data-segment-id="a-commentary"]')?.closest(".bot-task-reply"), firstCard,
+        "the original task reply content belongs inside its dynamic task, not beside it");
     });
 
     await check("stage clicks preserve independent task selection, native tab relationships and composer draft", async () => {
@@ -205,7 +209,7 @@ async function main() {
       assert.equal(container.querySelector("textarea#bot-draft"), composer); assert.equal(sends, 0);
     });
 
-    await check("linking a Work during foreground streaming retains the original reply and rendered segment", async () => {
+    await check("linking a Work during foreground streaming retains the original reply and moves its full content inside the task", async () => {
       const streaming = message("reply-c", 10, "assistant", "request-c", [], "正在读取第三个请求。", {
         status: "running", segments: [{ id: "c-answer", kind: "answer", text: "正在读取第三个请求。", createdAt: 10, updatedAt: 10 }],
       });
@@ -218,8 +222,10 @@ async function main() {
         ...(item.role === "assistant" ? { segments: [{ ...streaming.segments![0], text: "正在读取第三个请求。已经派发执行。", updatedAt: 11 }] } : {}) } : item),
       [...useAppStore.getState().botWorks, work("task-c")]);
       assert.equal(container.querySelector('article.bot-message[data-message-id="reply-c"]'), reply);
-      assert.equal(reply.querySelector('[data-segment-id="c-answer"]'), segment);
-      assert.match(segment.textContent ?? "", /已经派发执行/);
+      const groupedSegment = reply.querySelector('[data-segment-id="c-answer"]');
+      assert.equal(reply.querySelectorAll('[data-segment-id="c-answer"]').length, 1, "streamed content is retained once");
+      assert.equal(groupedSegment?.closest(".bot-task-reply"), card("task-c"));
+      assert.match(groupedSegment?.textContent ?? "", /已经派发执行/);
       assert.equal(card("task-c").closest("article.bot-message"), reply);
       assert.equal(container.querySelector("textarea#bot-draft"), composer); assert.equal(composer.value, "还没发送的草稿");
       assert.equal(testDocument.activeElement, composer); assert.equal(sends, 0);
@@ -236,6 +242,130 @@ async function main() {
       assert.equal(selected("task-a"), "review"); assert.equal(selected("task-b"), otherSelection);
       assert.equal(container.querySelectorAll('.bot-task-reply[data-work-id="task-a"]').length, 1);
       assert.equal(container.querySelector("textarea#bot-draft"), composer); assert.equal(composer.value, "还没发送的草稿");
+    });
+
+    await check("same-task foreground continuation stays in the original panel with segments, tools, question and stop control", async () => {
+      await click(tab("task-a", "execution"));
+      const anchor = card("task-a").closest("article.bot-message");
+      const ordinaryCount = container.querySelectorAll("article.bot-message.assistant").length;
+      const followupQuestion = message("followup-a-question", 13, "user", "followup-a", ["task-a"], "保留已完成内容，继续检查接口。");
+      const followup = message("followup-a-answer", 14, "assistant", "followup-a", ["task-a"], "正在检查接口。", {
+        status: "running", toolTaskId: "bot-media-followup-a-answer",
+        segments: [
+          { id: "followup-commentary", kind: "commentary", text: "先检查已有实现。", createdAt: 14, updatedAt: 14 },
+          { id: "followup-answer", kind: "answer", text: "正在检查接口。", createdAt: 14, updatedAt: 14 },
+        ],
+        tools: [{ id: "followup-tool", tool: "read_file", summary: "读取接口实现", output: "完整工具输出保留", status: "success" }],
+      });
+      composer.focus();
+      await update([...currentMessages, followupQuestion, followup]);
+      assert.equal(card("task-a").closest("article.bot-message"), anchor);
+      assert.equal(container.querySelectorAll("article.bot-message.assistant").length, ordinaryCount);
+      assert.equal(container.querySelector('article.bot-message[data-message-id="followup-a-answer"]'), null);
+      assert.ok(container.querySelector('article.bot-message.user[data-message-id="followup-a-question"]'), "the user's input stays in the transcript");
+      const record = card("task-a").querySelector<HTMLElement>('.bot-task-reply-update[data-message-id="followup-a-answer"]');
+      assert.ok(record, "the whole foreground response appears within its original task");
+      assert.match(record.textContent ?? "", /先检查已有实现/);
+      assert.match(record.textContent ?? "", /正在检查接口/);
+      assert.match(record.querySelector(".bot-capability-tools")?.textContent ?? "", /读取接口实现/);
+      assert.ok(record.querySelector('[data-source-message-id="followup-a-question"]'), "the embedded continuation quotes its own question");
+      const stop = record.querySelector<HTMLButtonElement>('button[aria-label="仅停止这条回复"]');
+      assert.ok(stop);
+      await click(stop);
+      assert.deepEqual(cancellations, [{ botId: ownerId, requestId: "followup-a" }], "stop retains the continuation's own request identity");
+      assert.equal(selected("task-a"), "execution");
+      assert.equal(testDocument.activeElement, composer); assert.equal(composer.value, "还没发送的草稿");
+      assert.doesNotMatch(card("task-b").textContent ?? "", /先检查已有实现|正在检查接口/);
+
+      const settled: BotMessageDto = { ...followup, status: "completed", text: "接口续写已完成。", updatedAt: 15,
+        segments: [followup.segments![0], { ...followup.segments![1], text: "接口续写已完成。", updatedAt: 15 }] };
+      await update(currentMessages.map(item => item.messageId === settled.messageId ? settled : item));
+      assert.equal(card("task-a").querySelector('.bot-task-reply-update[data-message-id="followup-a-answer"]'), record);
+      assert.match(record.textContent ?? "", /接口续写已完成/);
+      assert.equal(record.querySelector('button[aria-label="仅停止这条回复"]'), null);
+      assert.equal(container.querySelectorAll("article.bot-message.assistant").length, ordinaryCount);
+      assert.equal(container.querySelectorAll('[data-segment-id="followup-answer"]').length, 1);
+    });
+
+    await check("parallel task continuations and unrelated replies keep independent identities", async () => {
+      const ordinaryCount = container.querySelectorAll("article.bot-message.assistant").length;
+      await click(tab("task-b", "execution"));
+      const continuation = message("followup-b-answer", 17, "assistant", "followup-b", ["task-b"], "分页续写的独立内容", {
+        status: "failed", error: "本次分页回复连接中断。",
+      });
+      const unrelated = message("unrelated-answer", 19, "assistant", "unrelated", [], "这是普通闲聊，不属于任何任务。");
+      await update([...currentMessages,
+        message("followup-b-question", 16, "user", "followup-b", ["task-b"], "继续处理分页。"), continuation,
+        message("unrelated-question", 18, "user", "unrelated", [], "另聊一个话题。"), unrelated]);
+      const record = card("task-b").querySelector('.bot-task-reply-update[data-message-id="followup-b-answer"]');
+      assert.ok(record); assert.match(record.textContent ?? "", /分页续写的独立内容/);
+      assert.match(record.querySelector('[role="alert"]')?.textContent ?? "", /本次分页回复连接中断/);
+      assert.equal(container.querySelector('article.bot-message[data-message-id="followup-b-answer"]'), null);
+      assert.equal(container.querySelectorAll("article.bot-message.assistant").length, ordinaryCount + 1);
+      assert.ok(container.querySelector('article.bot-message[data-message-id="unrelated-answer"]'));
+      assert.doesNotMatch(card("task-a").textContent ?? "", /分页续写的独立内容|这是普通闲聊/);
+      assert.doesNotMatch(card("task-b").textContent ?? "", /接口续写已完成|这是普通闲聊/);
+      assert.equal(container.querySelector("textarea#bot-draft"), composer); assert.equal(composer.value, "还没发送的草稿");
+    });
+
+    await check("a source Bot's returned final prose and files expand the original result tab", async () => {
+      await click(tab("task-a", "execution"));
+      const ordinaryCount = container.querySelectorAll("article.bot-message.assistant").length;
+      const anchor = card("task-a").closest("article.bot-message");
+      const returnedFile = "/controlled-fixture/source-bot-result.md";
+      const returned = message("returned-a-answer", 21, "assistant", "returned-a", [], "来源助理整理后的最终结论。", {
+        peerOrigin: { kind: "return", collaborationId: "collaboration-a", exchangeId: "return-exchange-a",
+          senderBotId: "worker-bot", senderDisplayName: "执行助理", sourceBotId: ownerId, sourceConversationId: conversationId,
+          sourceRequestId: "request-a", sourceUserMessageId: "ask-a", sourceAssistantMessageId: "reply-a", replyMessageId: "worker-result-a" },
+        collaborationResult: { workId: "task-a", eventId: "returned-a-result", kind: "result", category: "result",
+          intentRevision: 1, inputSnapshotId: "task-a-input", report: { title: "API 接入", summary: "下游执行器自己的原始结果。",
+            artifactRefs: [returnedFile], files: [{ ref: returnedFile, name: "source-bot-result.md", openPath: returnedFile }],
+            reviewStatus: "accepted", current: true, notices: [], completion: { outcome: "completed", nextStep: "deliver" } } },
+      });
+      const peerInput: BotMessageDto = { ...returned, messageId: "returned-a-input", ordinal: 20, role: "user", text: "内部回传上下文。" };
+      composer.focus();
+      await update([...currentMessages, peerInput, returned]);
+      assert.equal(card("task-a").closest("article.bot-message"), anchor);
+      assert.equal(container.querySelectorAll("article.bot-message.assistant").length, ordinaryCount);
+      assert.equal(selected("task-a"), "execution", "a final answer does not switch away from the reader's chosen phase");
+      assert.equal(testDocument.activeElement, composer);
+      await click(tab("task-a", "result"));
+      const record = card("task-a").querySelector('.bot-task-reply-update[data-message-id="returned-a-answer"]');
+      assert.ok(record);
+      assert.equal(record.closest('[role="tabpanel"]')?.getAttribute("data-stage-id"), "result");
+      assert.match(record.textContent ?? "", /来源助理整理后的最终结论/);
+      assert.doesNotMatch(record.textContent ?? "", /下游执行器自己的原始结果|内部回传上下文/,
+        "task grouping preserves the source Bot's answer, not an invented feedback replacement");
+      assert.ok(record.querySelector('button[aria-label="预览 source-bot-result.md"]'), "returned file actions remain available in the result tab");
+      assert.ok(record.querySelector('[data-source-message-id="ask-a"]'), "a returned answer retains the original human commission");
+      assert.equal(container.querySelector('article.bot-message[data-message-id="returned-a-answer"]'), null);
+      assert.equal(container.querySelector('article.bot-message[data-message-id="returned-a-input"]'), null);
+      assert.doesNotMatch(card("task-b").textContent ?? "", /来源助理整理后的最终结论|source-bot-result/);
+      assert.equal(container.querySelector("textarea#bot-draft"), composer); assert.equal(composer.value, "还没发送的草稿");
+    });
+
+    await check("an explicit reply reference keeps a queued and streamed continuation in the referenced task", async () => {
+      await click(tab("task-a", "execution"));
+      const ordinaryCount = container.querySelectorAll("article.bot-message.assistant").length;
+      const referenced = message("referenced-a-answer", 23, "assistant", "referenced-a", [], "", {
+        referenceMessageId: "followup-a-answer", status: "queued",
+        segments: [{ id: "referenced-receipt", kind: "receipt", text: "已接收补充。", createdAt: 23, updatedAt: 23 }],
+      });
+      composer.focus();
+      await update([...currentMessages, message("referenced-a-question", 22, "user", "referenced-a", [], "请展开说明这条结果。"), referenced]);
+      const record = card("task-a").querySelector('.bot-task-reply-update[data-message-id="referenced-a-answer"]');
+      assert.ok(record, "the explicit referenced task owns the queued receipt before any tool runs");
+      assert.equal(container.querySelector('article.bot-message[data-message-id="referenced-a-answer"]'), null);
+      assert.equal(container.querySelectorAll("article.bot-message.assistant").length, ordinaryCount);
+      await update(currentMessages.map(item => item.messageId === referenced.messageId ? { ...referenced, status: "running", text: "这条任务结果的进一步解释。",
+        segments: [...referenced.segments!, { id: "referenced-answer", kind: "answer", text: "这条任务结果的进一步解释。", createdAt: 24, updatedAt: 24 }] } : item));
+      assert.equal(card("task-a").querySelector('.bot-task-reply-update[data-message-id="referenced-a-answer"]'), record);
+      assert.match(record.textContent ?? "", /这条任务结果的进一步解释/);
+      assert.ok(record.querySelector('[data-source-message-id="referenced-a-question"]'));
+      assert.doesNotMatch(card("task-b").textContent ?? "", /这条任务结果的进一步解释/);
+      assert.equal(container.querySelector("textarea#bot-draft"), composer);
+      assert.equal(composer.value, "还没发送的草稿"); assert.equal(testDocument.activeElement, composer);
+      assert.equal(sends, 0);
     });
 
     await check("replanned tasks retain historical reports and files without presenting old completion as current", async () => {

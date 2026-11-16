@@ -17,11 +17,96 @@ export interface BotTaskReplyPresentation {
   stages: BotTaskReplyStage[];
 }
 
+/** Exact host evidence takes precedence over navigation associations. A source
+ * Bot's collaboration return keeps its own prose, with the returned Work's phase. */
+export function botTaskReplyMessageFeedback(message: BotMessageDto): WorkFeedbackDto | undefined {
+  return message.role === "assistant" ? message.workFeedback ?? message.collaborationResult : undefined;
+}
+
+/** Only one unambiguous host-linked task owns ordinary prose. A reply discussing
+ * several Works stays shared rather than copying its contents into every task. */
+export function botTaskReplyMessageWorkId(message: BotMessageDto): string | undefined {
+  if (message.role !== "assistant") return undefined;
+  const feedback = botTaskReplyMessageFeedback(message);
+  if (feedback) return feedback.workId;
+  const workIds = [...new Set(message.workIds)];
+  return workIds.length === 1 ? workIds[0] : undefined;
+}
+
+/** Recover exact source/return ownership from immutable host provenance when a
+ * partial history page has not yet acquired the source reply's Work links.
+ * Scope and request checks are required even though message IDs are normally
+ * globally unique. No association can originate from user-supplied metadata. */
+export function botTaskReplyAssociations(messages: readonly BotMessageDto[]): {
+  owned: Map<BotMessageDto, string>; sourceReplies: Map<BotMessageDto, BotMessageDto>;
+} {
+  const owned = new Map<BotMessageDto, string>();
+  const sourceReplies = new Map<BotMessageDto, BotMessageDto>();
+  const key = (message: BotMessageDto, messageId = message.messageId) => JSON.stringify([
+    message.botId, message.teamId ?? null, message.conversationId, messageId,
+  ]);
+  const byId = new Map<string, BotMessageDto>();
+  const resolved = new Map<BotMessageDto, string | undefined>();
+  for (const message of messages) {
+    byId.set(key(message), message);
+    if (message.role === "user") {
+      const workIds = [...new Set(message.workIds)];
+      resolved.set(message, workIds.length === 1 ? workIds[0] : undefined);
+      continue;
+    }
+    const workId = botTaskReplyMessageWorkId(message);
+    if (workId) { owned.set(message, workId); resolved.set(message, workId); }
+    else if (message.workIds.length) resolved.set(message, undefined);
+  }
+  const sourceCandidates = new Map<BotMessageDto, Set<string>>();
+  for (const message of messages) {
+    const origin = message.role === "assistant" ? message.peerOrigin : undefined;
+    if (origin?.kind !== "return" || origin.sourceBotId !== message.botId
+      || origin.sourceConversationId !== message.conversationId) continue;
+    const source = byId.get(key(message, origin.sourceAssistantMessageId));
+    if (!source || source.role !== "assistant" || source === message || source.requestId !== origin.sourceRequestId) continue;
+    sourceReplies.set(message, source);
+    const workId = owned.get(message);
+    if (!workId || source.workIds.length || source.referenceMessageId || botTaskReplyMessageFeedback(source)) continue;
+    let candidates = sourceCandidates.get(source);
+    if (!candidates) sourceCandidates.set(source, candidates = new Set());
+    candidates.add(workId);
+  }
+  for (const [source, candidates] of sourceCandidates) if (candidates.size === 1) {
+    const workId = [...candidates][0];
+    owned.set(source, workId); resolved.set(source, workId);
+  }
+  const continuations = new Map<BotMessageDto, BotMessageDto>();
+  for (const message of messages) {
+    if (message.role !== "assistant" || resolved.has(message)) continue;
+    const source = message.referenceMessageId ? byId.get(key(message, message.referenceMessageId)) : sourceReplies.get(message);
+    if (source && source !== message) continuations.set(message, source);
+  }
+  // Memoize each traversed chain once. Missing targets, ambiguous references and
+  // cycles stay unowned; deep reply chains do not recurse or rescan the history.
+  for (const message of messages) {
+    if (message.role !== "assistant" || resolved.has(message)) continue;
+    const path: BotMessageDto[] = [];
+    const visiting = new Set<BotMessageDto>();
+    let source: BotMessageDto | undefined = message;
+    while (source && !resolved.has(source) && !visiting.has(source)) {
+      path.push(source); visiting.add(source); source = continuations.get(source);
+    }
+    const workId = source ? resolved.get(source) : undefined;
+    for (const item of path) {
+      resolved.set(item, workId);
+      if (workId) owned.set(item, workId);
+    }
+  }
+  return { owned, sourceReplies };
+}
+
 /** The phase is a host-authored fact, never a guess from the reply's wording.
  * A worker result still needs review; a verified partial milestone is execution
  * progress. Keep previous versions in their original phase for later reading.
  */
-export function botTaskReplyMessageStage(feedback: WorkFeedbackDto): BotTaskReplyStageId {
+export function botTaskReplyMessageStage(feedback?: WorkFeedbackDto): BotTaskReplyStageId {
+  if (!feedback) return "execution";
   if (feedback.report?.milestone) return "execution";
   if (feedback.kind === "closure" || feedback.report?.completion?.nextStep === "deliver") return "result";
   if (feedback.kind === "result" || feedback.report?.completion) return "review";
@@ -51,28 +136,37 @@ function currentExecution(executionId: string | undefined, work: WorkProjectionD
  * used as evidence that a task has never run or finished.
  */
 export function botTaskReplyPresentation(workId: string, suppliedWork?: WorkProjectionDto | null,
-  feedbackMessages: readonly BotMessageDto[] = []): BotTaskReplyPresentation {
+  taskMessages: readonly BotMessageDto[] = [], messageWorkIds?: ReadonlyMap<BotMessageDto, string>): BotTaskReplyPresentation {
   const work = suppliedWork?.workId === workId ? suppliedWork : undefined;
-  const messages = feedbackMessages.filter(message => message.role === "assistant" && message.workFeedback?.workId === workId);
-  const observations = messages.filter(message => botTaskReplyFeedbackCurrent(message.workFeedback!, work));
+  // The timeline's view-only map retains exact reference ownership when the
+  // referenced user question lives outside this task's assistant-message list.
+  const owned = messageWorkIds ?? botTaskReplyAssociations(taskMessages).owned;
+  const messages = taskMessages.filter(message => message.role === "assistant"
+    && (botTaskReplyMessageWorkId(message) ?? owned.get(message)) === workId);
+  // Ordinary task replies are content, not lifecycle observations. Retain their
+  // identity and all segments without treating a completed chat turn as success.
+  const observations = messages.flatMap(message => {
+    const feedback = botTaskReplyMessageFeedback(message);
+    return feedback && botTaskReplyFeedbackCurrent(feedback, work) ? [{ message, feedback }] : [];
+  });
   const lastObservation = observations.at(-1);
-  const currentMessages = observations.filter(message => message.status === "completed" && !message.error);
-  const latest = currentMessages.at(-1)?.workFeedback;
-  const reportMessage = [...currentMessages].reverse().find(message => message.workFeedback?.report
-    && !message.workFeedback.report.milestone);
+  const currentMessages = observations.filter(item => item.message.status === "completed" && !item.message.error);
+  const latest = currentMessages.at(-1)?.feedback;
+  const reportMessage = [...currentMessages].reverse().find(item => item.feedback.report
+    && !item.feedback.report.milestone);
   // Without a Work snapshot, newer attempts must not borrow an older attempt's
   // deliver/ask decision. A late receipt for the exact same execution can retain
   // its reviewed result; missing identity is insufficient to make that claim.
-  const supersededReport = !work && reportMessage && observations.slice(observations.indexOf(reportMessage) + 1).some(message => {
-    const previous = reportMessage.workFeedback!;
-    const next = message.workFeedback!;
+  const supersededReport = !work && reportMessage && observations.slice(observations.indexOf(reportMessage) + 1).some(item => {
+    const previous = reportMessage.feedback;
+    const next = item.feedback;
     if (next.kind === "closure") return false;
     return previous.intentRevision !== undefined && next.intentRevision !== undefined && previous.intentRevision !== next.intentRevision
       || previous.inputSnapshotId !== undefined && next.inputSnapshotId !== undefined && previous.inputSnapshotId !== next.inputSnapshotId
       || !previous.executionId || !next.executionId || previous.executionId !== next.executionId;
   });
-  const currentReport = supersededReport ? undefined : reportMessage?.workFeedback?.report;
-  const unsettledFeedback = !work && lastObservation && (lastObservation.status !== "completed" || lastObservation.error)
+  const currentReport = supersededReport ? undefined : reportMessage?.feedback.report;
+  const unsettledFeedback = !work && lastObservation && (lastObservation.message.status !== "completed" || lastObservation.message.error)
     ? lastObservation : undefined;
   const publication = work?.publishedReport;
   const published = work?.inputSnapshotBound && publication?.intentRevision === work.intentRevision
@@ -97,20 +191,20 @@ export function botTaskReplyPresentation(workId: string, suppliedWork?: WorkProj
   const expired = work?.mode === "watch" && work.lifecycle === "closed"
     && work.watchPlan?.termination?.reason === "schedule_expired" && work.watchPlan.termination.settledAt !== undefined;
   const terminal = work ? work.lifecycle === "closed" || Boolean(work.archive?.archivedAt)
-    : !unsettledFeedback && lastObservation?.workFeedback?.kind === "closure";
+    : !unsettledFeedback && lastObservation?.feedback.kind === "closure";
   const succeeded = work?.lifecycle === "closed" && work.closureConclusion === "succeeded" && !expired;
   const needsInput = blockers.some(blocker => blocker.waitingForUserInput) || !work && !unsettledFeedback
     && (completion?.nextStep === "ask" || latest?.kind === "blocker" && latest.category === "decision");
-  const feedbackInterrupted = Boolean(unsettledFeedback && (unsettledFeedback.error
-    || ["failed", "unknown", "cancelled"].includes(unsettledFeedback.status)));
+  const feedbackInterrupted = Boolean(unsettledFeedback && (unsettledFeedback.message.error
+    || ["failed", "unknown", "cancelled"].includes(unsettledFeedback.message.status)));
   const attention = summary ? summary.status.group === "attention" : blockers.length > 0 || !busy && (interrupted || gaps) || needsInput || feedbackInterrupted;
   const paused = work?.lifecycle === "paused";
 
-  let currentStageId: BotTaskReplyStageId = !work && lastObservation ? botTaskReplyMessageStage(lastObservation.workFeedback!) : "execution";
+  let currentStageId: BotTaskReplyStageId = !work && lastObservation ? botTaskReplyMessageStage(lastObservation.feedback) : "execution";
   if (terminal) currentStageId = "result";
   else if (work?.lifecycle === "closing") currentStageId = "review";
   else if (summary) currentStageId = summary.status.group === "results" ? "review" : "execution";
-  else if (unsettledFeedback) currentStageId = botTaskReplyMessageStage(unsettledFeedback.workFeedback!);
+  else if (unsettledFeedback) currentStageId = botTaskReplyMessageStage(unsettledFeedback.feedback);
   else if (busy || work?.mode === "watch" || interrupted) currentStageId = "execution";
   else if (executionComplete) currentStageId = "review";
   else if (completion?.nextStep === "continue") currentStageId = "execution";
@@ -135,9 +229,9 @@ export function botTaskReplyPresentation(workId: string, suppliedWork?: WorkProj
   else if (gaps) statusLabel = "尚有内容待补齐";
   else if (work?.mode === "watch") statusLabel = "持续跟踪中";
   else if (terminal) statusLabel = "已结束";
-  else if (unsettledFeedback) statusLabel = unsettledFeedback.error ? "进展回报失败" : {
+  else if (unsettledFeedback) statusLabel = unsettledFeedback.message.error ? "进展回报失败" : {
     queued: "等待进展回报", running: "正在更新进展", failed: "进展回报失败", unknown: "进展回报待核对", cancelled: "进展回报已停止", completed: "进展已更新",
-  }[unsettledFeedback.status];
+  }[unsettledFeedback.message.status];
   else if (executionComplete) statusLabel = "正在核对结果";
   else if (completion?.nextStep === "continue") statusLabel = "继续处理中";
   else if (completion?.nextStep === "deliver") statusLabel = completion.outcome === "completed" ? "结果已核对"
@@ -159,7 +253,7 @@ export function botTaskReplyPresentation(workId: string, suppliedWork?: WorkProj
   const active = stages.find(stage => stage.id === currentStageId)!;
   active.state = succeeded ? "completed" : terminal ? "ended" : paused ? "paused" : attention ? "attention" : "current";
   if (!terminal) active.description = `${statusLabel}。${active.description}`;
-  for (const message of messages) stages.find(stage => stage.id === botTaskReplyMessageStage(message.workFeedback!))!.messages.push(message);
-  return { title: work?.title || [...messages].reverse().find(message => message.workFeedback?.report?.title)?.workFeedback?.report?.title || "任务进度",
+  for (const message of messages) stages.find(stage => stage.id === botTaskReplyMessageStage(botTaskReplyMessageFeedback(message)))!.messages.push(message);
+  return { title: work?.title || [...messages].reverse().map(botTaskReplyMessageFeedback).find(feedback => feedback?.report?.title)?.report?.title || "任务进度",
     statusLabel, currentStageId, stages };
 }

@@ -409,6 +409,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           const delegation = catalogue.outgoingCollaboration(input.workId);
           if (!delegation) return [];
           const page = messages.collaborations.history(userId, { botId, collaborationId: delegation.collaborationId, limit: 30 });
+          messages.linkWorkReply(source, input.workId);
           return [{ ...page.collaboration.work, workId: input.workId, ownerBotId: delegation.targetBotId,
             readOnly: true, delegation, collaboration: page.collaboration, messages: page.messages, events: page.events,
             totalMessages: page.totalMessages, hasMore: page.nextCursor !== null,
@@ -423,6 +424,10 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
           .run(conversationId, source.request_id, work.workId, JSON.stringify(versionGuard));
         const projection = works.getProjection(work.workId);
         const visibleMessages = works.collaboration.list(actor(), work.workId);
+        // A verified exact read is task-related foreground prose as well as a
+        // status lookup. Retain its association for the original reply container;
+        // neither a stale UI selection nor an unrestricted list can supply it.
+        messages.linkWorkReply(source, work.workId);
         return [{ ...projection, methodFeedback: options.recordWorkFeedback?.(source, work), phase3: projection?.phase3 ? { ...projection.phase3,
           collaborationMessages: visibleMessages, handoffs: visibleMessages.filter(message => message.kind === "handoff") } : undefined,
           versionGuard }];
@@ -433,6 +438,7 @@ export function botForegroundTools(options: BotForegroundToolOptions) {
         ON CONFLICT(conversation_id,request_id,work_id) DO UPDATE SET guard_json=excluded.guard_json`);
       for (const item of page.items) if (!item.delegation || catalogue.canRead(item.workId))
         recordRead.run(conversationId, source.request_id, item.workId, JSON.stringify(item.versionGuard));
+      if (input.workId && page.items.some(item => item.workId === input.workId)) messages.linkWorkReply(source, input.workId);
       if (!legacy) return page;
       // Preserve the old list's array shape. Metadata belongs to an item because
       // JSON.stringify ignores non-index properties attached to an Array.

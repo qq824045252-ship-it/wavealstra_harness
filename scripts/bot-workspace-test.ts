@@ -678,28 +678,29 @@ const taskTranscript = [taskQuestion, taskReply, timeline[0], timeline[8], taskF
   failedFeedback, streamingFeedback];
 const taskTranscriptBefore = JSON.stringify(taskTranscript);
 const taskRows = botTaskTimeline(taskTranscript);
-assert.deepEqual(taskRows.map(row => row.message.messageId), [taskQuestion.messageId, taskReply.messageId, taskFollowup.messageId]);
+assert.deepEqual(taskRows.map(row => row.message.messageId), [taskQuestion.messageId, taskReply.messageId]);
 assert.equal(taskRows[0].tasks.length, 0, "user links do not turn the input into an assistant reply");
 assert.equal(taskRows[1].message, taskReply, "streamed text, tools and message identity stay on the original reply");
 assert.equal(taskRows[1].message.segments, taskReply.segments);
 assert.deepEqual(taskRows[1].tasks.map(task => task.workId), ["work-a", "work-b"], "multiple Works share their source message without copying its answer");
-assert.equal(taskRows[2].tasks.length, 0, "an amendment's ordinary prose remains visible without duplicating the task card");
-assert.deepEqual(taskRows[1].tasks[0].messages, [...timeline.slice(0, 8), failedFeedback], "decisions, results, errors and superseded event versions all remain reviewable");
+assert.equal(taskRows[1].messageInTask, false, "ambiguous shared prose stays once outside independent task panels");
+assert.deepEqual(taskRows[1].tasks[0].messages, [timeline[0], taskFollowup, ...timeline.slice(1, 8), failedFeedback],
+  "ordinary amendments, decisions, results, errors and superseded versions all stay inside the original task");
 assert.deepEqual(taskRows[1].tasks[1].messages, [timeline[8], streamingFeedback], "interleaved progress and running content cannot leak between tasks");
 assert.equal(JSON.stringify(taskTranscript), taskTranscriptBefore, "inline grouping does not change source data");
-const originalVisible = taskRows.flatMap(row => [row.message, ...row.tasks.flatMap(task => task.messages)]);
+const originalVisible = taskRows.flatMap(row => [...(row.messageInTask ? [] : [row.message]), ...row.tasks.flatMap(task => task.messages)]);
 assert.equal(originalVisible.length, taskTranscript.length);
 assert.deepEqual(new Set(originalVisible), new Set(taskTranscript), "every visible durable record is retained exactly once");
 const nextTaskRows = botTaskTimeline([...taskTranscript, feedbackMessage("next-progress", "work-a", "binding:next", "progress")]);
 assert.equal(nextTaskRows[1].key, taskRows[1].key, "new task progress cannot remount the original reply");
 assert.deepEqual(nextTaskRows[1].tasks.map(task => task.key), taskRows[1].tasks.map(task => task.key));
 
-// Paginated history starts at its first available feedback, and never attaches
-// that older progress to a later follow-up merely because it mentions the Work.
+// Paginated history starts at its first available feedback. A later amendment
+// joins that same container instead of moving the card down to a new reply.
 const partialTaskRows = botTaskTimeline([timeline[0], timeline[1], taskFollowup, timeline[2]]);
-assert.deepEqual(partialTaskRows.map(row => row.key), [timeline[0].messageId, taskFollowup.messageId]);
-assert.deepEqual(partialTaskRows[0].tasks[0].messages, timeline.slice(0, 3));
-assert.equal(partialTaskRows[1].tasks.length, 0);
+assert.deepEqual(partialTaskRows.map(row => row.key), [timeline[0].messageId]);
+assert.deepEqual(partialTaskRows[0].tasks[0].messages, [timeline[0], timeline[1], taskFollowup, timeline[2]]);
+assert.equal(partialTaskRows[0].messageInTask, true, "the temporary anchor body renders only inside the task panel");
 const prependedTaskRows = botTaskTimeline([taskQuestion, taskReply, timeline[0], timeline[1], taskFollowup, timeline[2]]);
 assert.equal(prependedTaskRows[1].key, taskReply.messageId);
 assert.equal(prependedTaskRows[1].tasks[0].key, partialTaskRows[0].tasks[0].key,
