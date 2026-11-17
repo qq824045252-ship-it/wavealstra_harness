@@ -62,6 +62,7 @@ const watchdog=setTimeout(()=>{console.error('accessibility test timed out');app
   const deepTree=await observer.snapshot(deep,scope);
   const deepButton=deepTree.nodes.find(node=>node.role==='button'&&node.name==='Deep confirm');assert(deepButton);
   const deepRef=await observer.resolveNodeRef(deep,deepButton,scope);
+  assert.match(deepRef.selector,/^\[data-mybuddy-ui-ref="mb-[a-zA-Z0-9-]+"\]$/,'AX references also round-trip without CSS backslash escapes');
   assert.equal(await deep.evaluate(`document.querySelector(${JSON.stringify(deepRef.selector)})?.id`),'deepButton');
   mark('recursive child attachment resolves nested return-to-origin frame AX and actionable node identity');
   const ref=await observer.resolveNodeRef(invoice,duplicates[0],scope);

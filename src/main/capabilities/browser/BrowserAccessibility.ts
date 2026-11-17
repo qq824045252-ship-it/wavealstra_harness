@@ -220,7 +220,7 @@ export class BrowserAccessibility {
           if(!ref||this.getAttribute('data-mybuddy-ui-ref')!==ref){ref=prefix+'-'+(++window.__mybuddyUiRefCounter||(window.__mybuddyUiRefCounter=1));refs.set(this,ref);this.setAttribute('data-mybuddy-ui-ref',ref);}
           return {selector:'[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]',tag:this.localName};
         }`,
-        arguments: [{ value: this.observationSlot }, { value: context.identity.documentId }, { value: randomUUID() }],
+        arguments: [{ value: this.observationSlot }, { value: context.identity.documentId }, { value: `mb-${randomUUID()}` }],
       }, mapped.sessionId || undefined));
       await context.evaluate("true"); this.check(context, scope);
       if (!record(response) || response.exceptionDetails || !record(response.result) || !record(response.result.value)

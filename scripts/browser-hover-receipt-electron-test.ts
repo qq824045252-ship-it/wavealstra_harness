@@ -13,6 +13,19 @@ void(async()=>{let host:BrowserHost|undefined,win:BrowserWindow|undefined;try{
 await app.whenReady();win=new BrowserWindow({show:false,width:1000,height:800});await win.loadURL("data:text/html,test");host=new BrowserHost();host.attach(win);const service=new BrowserAutomationService(()=>host??null);const context={taskId:"hover-fixture",taskRoot:root};const url=pathToFileURL(join(process.cwd(),"scripts/browser-hover-menu-fixture.html")).href;
 {
  const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
+ const wc=host.getTabHost(tabId)!.inspectionWebContents!;
+ await wc.executeJavaScript(`document.body.insertAdjacentHTML('beforeend','<div id="custom-login">登录</div>');window.loginClicks=0;document.querySelector('#custom-login').onclick=()=>{window.loginClicks++;};true`);
+ await service.execute({action:"read",tabId},undefined,context);
+ await assert.rejects(service.execute({action:"click",tabId,name:"登录",exact:true},undefined,context),error=>error instanceof BrowserAutomationError&&error.code==="SURFACE_CHANGED");
+ assert.equal(await wc.executeJavaScript("window.loginClicks"),0,"an unobserved custom control never receives input");
+ const found=await service.execute({action:"find",tabId,name:"登录",exact:true},undefined,context),login=found.elements?.[0];assert(login);
+ assert.match(login.selector,/^\[data-mybuddy-ui-ref="mb-[a-zA-Z0-9-]+"\]$/,"host references round-trip without CSS backslash escapes");
+ const copied=JSON.parse(JSON.stringify(login.selector));
+ const clicked=await service.execute({action:"click",tabId,selector:copied},undefined,context);
+ assert.equal(clicked.outcome?.effect,"confirmed");assert.equal(await wc.executeJavaScript("window.loginClicks"),1);
+}
+{
+ const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
  const wc=host.getTabHost(tabId)!.inspectionWebContents!;await wc.executeJavaScript(`document.querySelector('.nav').insertAdjacentHTML('beforeend','<div class="menu" id="duplicate">账簿</div>');true`);
  let ambiguous: BrowserAutomationError | undefined;
  try{await service.execute({action:"click",tabId,role:"link",name:"凭证汇总表",hover:[{name:"账簿"}]},undefined,context)}catch(error){if(error instanceof BrowserAutomationError)ambiguous=error;else throw error;}
@@ -45,5 +58,5 @@ for(let i=0;i<8;i++){
  finally{session.inputCommand=original;}
  assert(injected);assert.match(await wc.executeJavaScript("document.querySelector('#out').textContent"),/已点击：凭证汇总表/);
 }
-console.log("PASS original reported hover fixture: candidate-ref correction, 8 atomic hover/clicks and an unrelated trusted-event receipt");host.dispose();win.destroy();clearTimeout(guard);app.exit(0);
+console.log("PASS custom-control observe/find/click with escape-free refs; original hover fixture: candidate-ref correction, 8 atomic hover/clicks and an unrelated trusted-event receipt");host.dispose();win.destroy();clearTimeout(guard);app.exit(0);
 }catch(error){console.error(error);host?.dispose();win?.destroy();clearTimeout(guard);app.exit(1)}})();
