@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { build } from "esbuild";
+import type { CollectionResult } from "../src/main/capabilities/browser/BrowserCollection";
+
+const built = await build({stdin:{contents:`export {exportBrowserCollection} from './src/main/capabilities/browser/BrowserCollectionExport';export {AutomationScope} from './src/main/capabilities/AutomationScope';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,write:false,platform:'node',format:'esm'});
+const {exportBrowserCollection,AutomationScope}=await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].contents).toString('base64')}`);
+const taskRoot=mkdtempSync(join(tmpdir(),'collection-export-'));
+const rows=Array.from({length:480},(_,i)=>({key:`id-${i}`,cells:[`中文🙂第${i}行`,'long数值'.repeat(80)],index:i,sourceStep:1+Math.floor(i/10)}));
+const collection:CollectionResult={status:'complete',steps:48,expectedRows:480,rows};
+const scope=new AutomationScope(undefined,10000);
+const result=await exportBrowserCollection({taskRoot,collection,scope});
+const bytes=readFileSync(result.path);
+assert.equal(result.rootDir,realpathSync(taskRoot));assert.equal(dirname(dirname(result.path)),result.rootDir);
+assert.equal(result.bytes,bytes.length);assert.equal(result.sha256,createHash('sha256').update(bytes).digest('hex'));
+assert.deepEqual(JSON.parse(bytes.toString('utf8')),collection);assert.deepEqual(JSON.parse(bytes.toString('utf8')).rows.map((row:{key:string})=>row.key),rows.map(row=>row.key));
+assert(scope.dispatched&&scope.confirmed);
+const second=await exportBrowserCollection({taskRoot,collection,scope:new AutomationScope(undefined,10000)});assert.notEqual(second.path,result.path);
+const before=readdirSync(taskRoot).length,controller=new AbortController();controller.abort();
+await assert.rejects(exportBrowserCollection({taskRoot,collection,scope:new AutomationScope(controller.signal,10000)}));assert.equal(readdirSync(taskRoot).length,before);
+let checks=0;
+const interruptedScope=new AutomationScope(undefined,10000,()=>{if(++checks===8)throw new Error('injected post-write cancellation')});
+await assert.rejects(exportBrowserCollection({taskRoot,collection,scope:interruptedScope}),(error: unknown)=>{
+  assert(error instanceof Error&&'details' in error&&error.details&&typeof error.details==='object'&&'stage' in error.details&&'path' in error.details);
+  assert.equal(error.details.stage,'written');if(typeof error.details.path!=='string')throw new Error('missing retained path');
+  assert.deepEqual(JSON.parse(readFileSync(error.details.path,'utf8')),collection);return true;
+});
+console.log('PASS full Unicode collection JSON, canonical task-root, unique files, actual bytes/hash, cancellation and retained post-write evidence');

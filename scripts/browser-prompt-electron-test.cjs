@@ -1,0 +1,76 @@
+const assert=require('node:assert/strict');const {app,BrowserWindow}=require('electron');const {createServer}=require('node:http');const {mkdtempSync,mkdirSync,writeFileSync}=require('node:fs');const {join}=require('node:path');const {tmpdir}=require('node:os');const {buildSync}=require('esbuild');
+const output=join(process.cwd(),'out/tests/browser-prompt');mkdirSync(output,{recursive:true});
+buildSync({stdin:{contents:'export {BrowserHost} from "./src/main/browser/BrowserHost";export {BrowserPageEvents} from "./src/main/capabilities/browser/BrowserPageEvents";export {pageInspectionService} from "./src/main/artifact/PageInspectionService";',resolveDir:process.cwd(),loader:'ts',sourcefile:'browser-prompt-entry.ts'},bundle:true,platform:'node',format:'cjs',external:['electron'],outfile:join(output,'entry.cjs'),logLevel:'silent'});
+const {BrowserHost,BrowserPageEvents,pageInspectionService}=require(join(output,'entry.cjs'));
+const profile=mkdtempSync(join(tmpdir(),'mybuddy-native-prompt-'));app.setPath('userData',join(profile,'profile'));app.setPath('home',profile);app.on('window-all-closed',()=>{});
+let win,host,events,contents;const servers=[],checks=[];const evidence={electron:process.versions.electron,checks};const mark=value=>{checks.push(value);console.log('PASS',value);};
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function serve(address,body){const server=createServer((req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end(body(req));});servers.push(server);await new Promise(resolve=>server.listen(0,address,resolve));return `http://${address}:${server.address().port}`;}
+async function waitDialog(){for(let i=0;i<100;i++){const dialog=events.currentDialog();if(dialog)return dialog;await delay(10);}throw new Error('No pending native dialog');}
+const watchdog=setTimeout(()=>{console.error('prompt test timed out');app.exit(1);},60000);
+(async()=>{
+  await app.whenReady();
+  const child=await serve('127.0.0.2',()=>'<button id="child" onclick="window.childResult=prompt(\'Child prompt\',\'child default\')">Child</button>');
+  const origin=await serve('127.0.0.1',req=>req.url==='/onload'?'<script>try{window.loadAnswer=prompt("Load prompt","load default")}catch(e){window.loadError=String(e)}</script><p>Loaded</p>':`<button id="prompt" onclick="window.answer=prompt('姓名','默认')">Prompt</button><button id="confirm" onclick="window.confirmed=confirm('Confirm unchanged')">Confirm</button><iframe name="cross" src="${child}"></iframe>`);
+  win=new BrowserWindow({show:false,width:1000,height:800});await win.loadURL('data:text/html,Native prompt host');let nativeConfirmCalls=0;
+  host=new BrowserHost(()=>{nativeConfirmCalls++;return false;});host.attach(win);
+  const earlyTab=host.ensureTab({taskId:'prompt-task',key:'early-prompt',activate:false}),earlyPage=host.getTabHost(earlyTab.id),earlyContents=earlyPage.inspectionWebContents;
+  assert.equal(earlyContents.getURL(),'');
+  await earlyPage.navigateForAutomation('about:blank');
+  const earlySession=pageInspectionService.acquire(earlyContents,'browser-host');await earlySession.attach(earlyContents.debugger);
+  const earlyEvents=new BrowserPageEvents(earlySession,earlyContents,undefined);
+  try {
+    await Promise.race([earlyEvents.start(),delay(3000).then(()=>{throw new Error('Blank bootstrap document blocked prompt startup');})]);
+    earlyEvents.setDialogRules([{type:'prompt',answer:{action:'accept',promptText:'first navigation'}}]);
+    await earlyPage.navigateForAutomation(origin+'/onload');
+    assert.equal(await earlyContents.executeJavaScript('window.loadError||window.loadAnswer'),'first navigation');
+    mark('blank bootstrap arms prompt before the first requested navigation and initial inline script');
+  } finally {earlyEvents.dispose();}
+  const tab=host.ensureTab({taskId:'prompt-task',key:'prompt',activate:false}),page=host.getTabHost(tab.id);await page.navigateForAutomation(origin);contents=page.inspectionWebContents;
+  assert.match(await contents.executeJavaScript('(()=>{try{prompt("baseline");return "unexpected"}catch(e){return String(e)}})()',true),/prompt\(\) is not supported/);
+  mark('actual Electron webpage reproduces throwing prompt before adapter');
+  const original=contents.listeners('-run-dialog')[0];const session=pageInspectionService.acquire(contents,'browser-host');await session.attach(contents.debugger);
+  events=new BrowserPageEvents(session,contents,join(profile,'downloads'));await events.start();
+  evidence.dialogEvents=[];session.subscribeProtocol((method,params)=>{if(method.startsWith('Page.javascriptDialog'))evidence.dialogEvents.push({method,params});});
+  evidence.unloads=[];contents.on('will-prevent-unload',event=>evidence.unloads.push({prevented:event.defaultPrevented,url:contents.getURL(),dialog:events.currentDialog()}));
+  let resolved=false;const pending=contents.executeJavaScript('document.querySelector("#prompt").click();window.answer',true).then(value=>{resolved=true;return value;});
+  const dialog=await waitDialog();assert.equal(dialog.type,'prompt');assert.equal(dialog.defaultPrompt,'默认');assert.equal(dialog.native,true);
+  await delay(200);assert.equal(resolved,false,'Electron default must not cancel a manual prompt');
+  await events.answerDialog(dialog.id,{action:'accept',promptText:'中文🙂'});assert.equal(await pending,'中文🙂');
+  mark('manual native prompt remains pending and returns text synchronously after delayed answer');
+  events.setDialogRules([{type:'prompt',answer:{action:'accept',promptText:''}}]);assert.equal(await contents.executeJavaScript('prompt("Empty","default")',true),'');
+  events.setDialogRules([{type:'prompt',answer:{action:'dismiss'}}]);assert.equal(await contents.executeJavaScript('prompt("Cancel","default")',true),null);
+  events.setDialogRules([{type:'prompt',answer:{action:'accept'}}]);assert.equal(await contents.executeJavaScript('prompt("Default","默认文本")',true),'默认文本');
+  mark('empty answer, cancel null and accepted default retain native prompt semantics');
+  events.setDialogRules([{type:'prompt',answer:{action:'accept',promptText:'one'}},{type:'prompt',answer:{action:'accept',promptText:'two'}}]);
+  assert.deepEqual(await contents.executeJavaScript('[prompt("first"),prompt("second")]',true),['one','two']);
+  mark('two consecutive prompts use distinct ordered native callbacks');
+  events.setDialogRules([{type:'confirm',answer:{action:'accept'}}]);assert.equal(await contents.executeJavaScript('confirm("Confirm unchanged")',true),true);
+  mark('original confirm route remains functional');
+  const frame=contents.mainFrame.framesInSubtree.find(frame=>frame.name==='cross');assert(frame);assert.notEqual(frame.processId,contents.mainFrame.processId);
+  events.setDialogRules([{type:'prompt',answer:{action:'accept',promptText:'cross origin'}}]);
+  assert.equal(await frame.executeJavaScript('prompt("Child prompt","child default")',true),'cross origin');
+  mark('OOPIF native prompt returns answer in the actual child frame');
+  await contents.executeJavaScript('window.savedPrompt=window.prompt;window.prompt=function customPrompt(){return "site custom"};true');await events.preparePrompts();
+  assert.equal(await contents.executeJavaScript('prompt("preserve custom")'),'site custom');await contents.executeJavaScript('window.prompt=window.savedPrompt;true');
+  mark('site-owned prompt replacement is preserved');
+  events.setDialogRules([{type:'prompt',answer:{action:'accept',promptText:'early answer'}}]);await page.navigateForAutomation(origin+'/onload');
+  assert.equal(await contents.executeJavaScript('window.loadError||window.loadAnswer'),'early answer');
+  mark('new-document adapter supports prompt in initial inline page script');
+  await page.navigateForAutomation(origin);await events.preparePrompts();
+  await contents.executeJavaScript('window.onbeforeunload=()=>true;true',true);
+  events.setDialogRules([{type:'beforeunload',answer:{action:'dismiss'}}]);await assert.rejects(page.navigateForAutomation(origin+'/?denied'));assert.equal(contents.getURL(),origin+'/');assert.equal(nativeConfirmCalls,0);
+  await events.settleNavigationDialog({run:operation=>operation()});
+  events.setDialogRules([{type:'beforeunload',answer:{action:'accept'}}]);await page.navigateForAutomation(origin+'/?accepted');assert.equal(contents.getURL(),origin+'/?accepted');assert.equal(nativeConfirmCalls,0);
+  mark('prearmed beforeunload dismiss/accept rules control the actual tab without native blocking dialog');
+  await contents.executeJavaScript('window.onbeforeunload=()=>true;true',true);events.setDialogRules([]);
+  await assert.rejects(page.navigateForAutomation(origin+'/?manual'));const unload=events.currentDialog();assert.equal(unload.type,'beforeunload');
+  await events.settleNavigationDialog({run:operation=>operation()});
+  await assert.rejects(events.answerDialog(unload.id,{action:'accept'}),error=>error.code==='UNSUPPORTED_SCOPE');await events.answerDialog(unload.id,{action:'dismiss'});assert.equal(nativeConfirmCalls,0);
+  mark('unmatched beforeunload safely cancels and requires an explicit prearmed retry rather than guessing navigation');
+  await contents.executeJavaScript('window.onbeforeunload=null');
+  events.dispose();assert.equal(contents.listeners('-run-dialog')[0],original);await delay(30);
+  assert.match(await contents.executeJavaScript('(()=>{try{prompt("restored");return "unexpected"}catch(e){return String(e)}})()',true),/prompt\(\) is not supported/);
+  mark('disposal restores original native handler and Electron wrapper without changing site prototypes');
+})().catch(error=>{evidence.error=String(error.stack||error);console.error(error);process.exitCode=1;}).finally(()=>{clearTimeout(watchdog);events?.dispose();host?.dispose();win?.destroy();servers.forEach(server=>server.close());const dir=join(process.cwd(),'out/diagnostics/browser-p0p1');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'prompt.json'),JSON.stringify(evidence,null,2));app.exit(process.exitCode?1:0);});
+

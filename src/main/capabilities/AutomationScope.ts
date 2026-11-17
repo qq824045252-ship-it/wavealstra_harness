@@ -18,9 +18,10 @@ export class AutomationScope {
     for (const guard of this.guards) guard();
   }
 
-  dispatch(): void { this.check(); this.dispatched = true; }
+  dispatch(): void { this.check(); this.dispatched = true; this.confirmed = false; }
   guard(check: () => void): () => void { this.guards.add(check); return () => { this.guards.delete(check); }; }
   close(): void { this.finished = true; }
+  get active(): boolean { return !this.finished && !this.signal?.aborted && Date.now() < this.deadline; }
   get remaining(): number { return Math.max(1, this.deadline - Date.now()); }
 
   async run<T>(operation: () => Promise<T>): Promise<T> {

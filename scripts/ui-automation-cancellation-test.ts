@@ -6,7 +6,7 @@ function fixture() {
   let reject!: (reason: unknown) => void;
   const pending = new Promise<unknown>((yes, no) => { resolve = yes; reject = no; });
   const events: unknown[] = [];
-  const wc = { isDestroyed: () => false, getURL: () => "https://test.invalid", getTitle: () => "fixture", executeJavaScript: () => pending, sendInputEvent: (e: unknown) => events.push(e) };
+  const wc = { isDestroyed: () => false, getURL: () => "https://test.invalid", getTitle: () => "fixture", executeJavaScript: (script: string) => script.includes("for(const r of el.getClientRects())") ? Promise.resolve({ x: 50, y: 50 }) : pending, sendInputEvent: (e: unknown) => events.push(e) };
   let current: typeof wc | null = wc;
   return { service: new UiAutomationService({ app: () => null, browser: () => current as any, artifact: () => null }), events, resolve, reject, replace: () => { current = null; } };
 }

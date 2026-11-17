@@ -1,0 +1,68 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Module from "node:module";
+import { app, BrowserWindow } from "electron";
+import { build } from "esbuild";
+import type { BrowserExecInput } from "../src/main/capabilities/BrowserAutomationService";
+import type { BrowserHost as BrowserHostType } from "../src/main/browser/BrowserHost";
+
+const root = mkdtempSync(join(tmpdir(), "browser-runtime-integration-")), taskRoot = join(root,"task");
+mkdirSync(taskRoot); writeFileSync(join(taskRoot,"test.txt"),"uploaded bytes 你好");
+app.setPath("userData",join(root,"profile"));app.setPath("home",root);app.on("window-all-closed",()=>{});
+const html=`<!doctype html><meta charset=utf-8><style>body{margin:0}button,input{margin:10px;padding:12px}#visual{position:absolute;left:600px;top:380px;width:180px;height:80px}</style>
+<button id=visual onclick="window.visualClicks=(window.visualClicks||0)+1">Visual target</button><input id=file type=file><div id=result>Initial</div><div id=grid data-count=3><div class=row data-key=a data-index=0><span class=cell>Alpha</span></div></div><button id=next>Next</button><button id=fetch-a onclick="fetch('/response')">Fetch A</button><button id=fetch-b onclick="fetch('/response')">Fetch B</button><a id=download-a href="/download" download>Download A</a><a id=download-b href="/download" download>Download B</a><iframe name=dragframe src="__CHILD_URL__" style="display:block;width:420px;height:160px"></iframe><script>
+ window.page=0;window.rows=[['a','Alpha'],['b','Beta'],['c','Gamma']];next.onclick=()=>{page++;let row=rows[page];grid.innerHTML='<div class="row" data-key="'+row[0]+'" data-index="'+page+'"><span class="cell">'+row[1]+'</span></div>';next.disabled=page===2};</script>`;
+let childUrl='';
+const childServer=createServer((_req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end(`<style>#source,#destination{display:inline-block;width:140px;height:80px;background:#ccc;margin:10px}</style><div id=source>Source</div><div id=destination>Destination</div><script>destination.addEventListener('mouseup',e=>window.receipt={trusted:e.isTrusted,x:e.clientX,y:e.clientY})</script>`)});
+const server=createServer((req,res)=>{if(req.url==='/response'){res.end('OK');return;}if(req.url==='/download'){res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="report.txt"'});res.end('download payload');return;}res.setHeader("Content-Type","text/html; charset=utf-8");res.end(html.replace('__CHILD_URL__',childUrl))});
+const guard=setTimeout(()=>{console.error("browser runtime test timed out");app.exit(1)},45000);
+void (async()=>{let host: BrowserHostType|undefined, win:BrowserWindow|undefined;try{
+ await app.whenReady();await new Promise<void>(resolve=>childServer.listen(0,"127.0.0.2",resolve));const childAddress=childServer.address();assert(childAddress&&typeof childAddress!=="string");childUrl=`http://127.0.0.2:${childAddress.port}`;await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));const address=server.address();assert(address&&typeof address!=="string");const origin=`http://127.0.0.1:${address.port}`;
+ const bundle=await build({stdin:{contents:`export {BrowserHost} from './src/main/browser/BrowserHost';export {BrowserAutomationService} from './src/main/capabilities/BrowserAutomationService';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,write:false,platform:'node',format:'cjs',packages:'external'});
+ const module=new Module(join(process.cwd(),'runtime-probe.cjs'));module.filename=join(process.cwd(),'runtime-probe.cjs');module.paths=Reflect.get(Module,'_nodeModulePaths')(process.cwd());Reflect.get(module,'_compile').call(module,bundle.outputFiles[0].text,module.filename);
+ const {BrowserHost,BrowserAutomationService}=module.exports;
+ win=new BrowserWindow({show:false,width:1000,height:800});await win.loadURL('data:text/html,host');host=new BrowserHost();host!.attach(win);host!.setBounds({x:0,y:0,width:900,height:700});
+ const browser=new BrowserAutomationService(()=>host);const context={taskId:'runtime-a',taskRoot};
+ const opened=await browser.execute({action:'navigate',url:origin},undefined,context);assert(opened.tabId);const tabId=opened.tabId;
+ const wc=host!.getTabHost(tabId)!.inspectionWebContents!;
+ const run=(input:BrowserExecInput)=>browser.execute({...input,tabId},undefined,context);
+ const failed=await run({action:'assert',timeoutMs:600,expect:[{kind:'text',selector:'#result',value:'Not present'}]});
+ assert.equal(failed.businessResult?.status,'failed');assert.equal(failed.businessResult?.evidence[0].observed,'Initial');assert.equal(failed.businessResult?.evidence[0].matched,false);console.log('PASS failed assert retains final evidence');
+ const fileFind=await run({action:'find',selector:'#file'});assert.equal(fileFind.elements?.length,1);const fileRef=fileFind.elements![0].selector;
+ const upload=await run({action:'upload',selector:fileRef,files:['test.txt']});assert.deepEqual(upload.upload?.files,[{name:'test.txt',size:Buffer.byteLength('uploaded bytes 你好')}]);assert.equal(await wc.executeJavaScript("document.querySelector('#file').files[0].text()"),'uploaded bytes 你好');assert.deepEqual(upload.outcome,{dispatch:'dispatched',effect:'confirmed'});console.log('PASS public upload root and real file');
+ const beforeCapture=await run({action:'diagnostics'});const traceCursor=beforeCapture.diagnostics!.cursor;
+ host!.selectTab(tabId);const states:string[]=[];host!.onCaptureStateChanged=state=>states.push(state);
+ await host!.enterCapture();assert(states.includes('active'));host!.exitCapture();assert(states.includes('exited'));
+ await wc.executeJavaScript(`console.log('diagnostics after capture exit')`);
+ const afterCapture=await run({action:'diagnostics',traceCursor});assert(afterCapture.diagnostics?.events.some(event=>event.kind==='console'&&event.text.includes('diagnostics after capture exit')));console.log('PASS capture exit retains shared diagnostic session');
+ const collection=await run({action:'collect',collection:{scopeSelector:'#grid',rowSelector:'.row',cellSelector:'.cell',keyAttribute:'data-key',rowIndexAttribute:'data-index',expectedRows:{selector:'#grid',attribute:'data-count'},terminal:{kind:'disabled',target:{selector:'#next'}},advance:{kind:'next',target:{selector:'#next'}}},maxRows:10,maxSteps:10,timeoutMs:10000});
+ assert.equal(collection.collection?.status,'complete');assert.deepEqual(collection.collection?.rows.map(row=>[row.key,...row.cells]),[['a','Alpha'],['b','Beta'],['c','Gamma']]);console.log('PASS public paginated collection completeness');
+ const frames=await run({action:'frames'}),frame=frames.frames?.find(frame=>frame.name==='dragframe');assert(frame);
+ const nativeFrame=wc.mainFrame.framesInSubtree.find(item=>item.name==='dragframe');assert(nativeFrame);assert.notEqual(nativeFrame.processId,wc.mainFrame.processId);
+ const from=await run({action:'find',frameId:frame.frameId,selector:'#source'}),to=await run({action:'find',frameId:frame.frameId,selector:'#destination'});
+ await run({action:'drag',frameId:frame.frameId,selector:from.elements![0].selector,dragTo:to.elements![0].selector,timeoutMs:10000});
+ const drop=await nativeFrame.executeJavaScript('window.receipt');assert(drop&&typeof drop==='object'&&'trusted' in drop&&'x' in drop&&typeof drop.x==='number');assert.equal(drop.trusted,true);assert(drop.x>150);console.log('PASS cross-origin frame drag releases on destination');
+ const aFind=await run({action:'find',selector:'#fetch-a'}), bFind=await run({action:'find',selector:'#fetch-b'});
+ const [a,b]=await Promise.all([run({action:'click',selector:aFind.elements![0].selector,response:{urlIncludes:'/response'},timeoutMs:10000}),run({action:'click',selector:bFind.elements![0].selector,response:{urlIncludes:'/response'},timeoutMs:10000})]);
+ assert(a.response&&b.response);assert.notEqual(a.response.requestId,b.response.requestId);console.log('PASS concurrent response watchers belong to their actions');
+ const assertedClick=await run({action:'click',selector:aFind.elements![0].selector,expect:[{kind:'text',selector:'#result',value:'Wrong value'}],timeoutMs:800});
+ assert.equal(assertedClick.businessResult?.status,'failed');assert.equal(assertedClick.businessResult?.evidence[0].observed,'Initial');assert.deepEqual(assertedClick.outcome,{dispatch:'dispatched',effect:'confirmed'});console.log('PASS action receipt and failed business evidence remain distinct');
+ const daFind=await run({action:'find',selector:'#download-a'}),dbFind=await run({action:'find',selector:'#download-b'});
+ const [da,db]=await Promise.all([run({action:'click',selector:daFind.elements![0].selector,download:{filename:'report.txt'},timeoutMs:10000}),run({action:'click',selector:dbFind.elements![0].selector,download:{filename:'report.txt'},timeoutMs:10000})]);
+ assert(da.download?.state==='completed'&&db.download?.state==='completed');assert.notEqual(da.download.path,db.download.path);assert.equal(readFileSync(da.download.path,'utf8'),'download payload');assert.equal(readFileSync(db.download.path,'utf8'),'download payload');console.log('PASS concurrent downloads retain distinct action ownership');
+ await wc.executeJavaScript("history.pushState({n:1},'', '#one');history.pushState({n:2},'', '#two')");
+ const back=await run({action:'back',timeoutMs:2000});assert(back.url?.endsWith('#one'));assert.deepEqual(back.outcome,{dispatch:'dispatched',effect:'confirmed'});
+ const forward=await run({action:'forward',timeoutMs:2000});assert(forward.url?.endsWith('#two'));console.log('PASS same-document history back and forward');
+ const capture=await run({action:'screenshot',timeoutMs:10000});assert(capture.captureId&&capture.viewport&&capture.screenshot);
+ const rect=await wc.executeJavaScript(`(()=>{const r=document.querySelector('#visual').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+ const x=rect.x*capture.viewport.pixelWidth/capture.viewport.width,y=rect.y*capture.viewport.pixelHeight/capture.viewport.height;
+ const visual=await run({action:'click_at',captureId:capture.captureId,x,y,timeoutMs:10000});assert.equal(visual.outcome?.dispatch,'dispatched');assert.equal(await wc.executeJavaScript('window.visualClicks'),1);
+ const staleCapture=await run({action:'screenshot',timeoutMs:10000});assert(staleCapture.captureId);await wc.executeJavaScript("document.querySelector('#result').textContent='changed'");
+ await assert.rejects(run({action:'click_at',captureId:staleCapture.captureId,x,y,timeoutMs:10000}));assert.equal(await wc.executeJavaScript('window.visualClicks'),1);console.log('PASS screenshot coordinates and stale capture rejection');
+ const closed=await run({action:'close',timeoutMs:3000});assert(!host!.getTabHost(tabId));assert.deepEqual(closed.outcome,{dispatch:'dispatched',effect:'confirmed'});console.log('PASS close awaits actual tab destruction');
+ clearTimeout(guard);host!.dispose();win.destroy();server.close();childServer.close();app.exit(0);
+}catch(error){console.error(error);clearTimeout(guard);host?.dispose();win?.destroy();server.close();childServer.close();app.exit(1)}})();
+

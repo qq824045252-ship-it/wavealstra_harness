@@ -68,7 +68,7 @@ const wait = async (predicate: () => Promise<any> | any, label: string, ms = 180
 };
 void (async () => {
   await app.whenReady();
-  const model = await requireRoot(resolve("scripts/bot-live-model-config.cjs")).loadLiveModel(base, modelId);
+  const model = await requireRoot(resolve("scripts/live-model-config.cjs")).loadLiveModel(base, modelId);
   report.model = model.evidence;
   await new Promise<void>(done => proxy.listen(0, "127.0.0.1", done));
   await new Promise<void>(done => pages.listen(0, "127.0.0.1", done));
@@ -131,7 +131,6 @@ void (async () => {
     { id: "form", text: `打开 ${origin}/form，姓名填 ${fillValue}，城市填杭州，提交一次，读取确认结果。`, expected: fillValue },
     { id: "popup", text: `打开 ${origin}/popup，通过点击“打开目标页”链接打开新标签，读取新标签并回答唯一标记，不要绕过点击。`, expected: marker },
     { id: "non-browser", text: "计算31+16，只回复数字，不使用工具。", expected: "47" },
-    { id: "bot-work", text: `创建一个由你负责的一次性后台事项：在内置浏览器打开 ${origin}/short，实际读到唯一标记并在结果中返回这个标记，确认后完成事项。`, expected: marker },
     { id: "partial", text: `打开 ${origin}/form 并先观察控件。然后用同一次codemode顺序完成这四个已知步骤：1姓名填${fillValue}；2城市填杭州；3尝试点击不存在的#missing-step；4点击#submit。每步检查isError或异常，第三步失败必须立即停止，不能执行第四步。输出已完成步骤、失败位置，禁止重试。`, expected: fillValue },
   ];
   const selectedCases = process.env.BROWSER_BENCH_CASES?.split(",");
@@ -141,22 +140,6 @@ void (async () => {
     current = { id: test.id, taskId, prompt: test.text, startedAt: Date.now(), modelStart: report.calls.length, runtimeStart: report.runtimeCalls.length, browserStart: report.browserCalls.length };
     report.cases.push(current); save();
     try {
-      if (test.id === "bot-work") {
-        const created = agent.createBot({ requestId: randomUUID(), displayName: "浏览器验收", responsibilitySummary: "执行本地浏览器验证，依据实际页面返回结果" }); assert(created.ok);
-        const view = await agent.getBotSettings(created.bot.botId); const { revision, spaceId, effectiveWorkspacePath, ...settings } = view.settings;
-        const saved = await agent.saveBotSettings({ ...settings, modelId: `acceptance/${modelId}`, workspacePath: workspace, expectedRevision: revision });
-        current.settingsSave = saved;
-        assert(saved.ok, JSON.stringify(saved));
-        const receipt = await agent.sendBotMessage({ botId: created.bot.botId, requestId: randomUUID(), text: test.text,
-          selection: { modelId: `acceptance/${modelId}`, expertId: settings.expertId, skillIds: settings.skillIds, mcpIds: settings.mcpIds,
-            connectorIds: settings.connectorIds, ...(reasoningPreference ? { reasoningPreference } : {}) } }); current.receipt = receipt;
-        const work = await wait(() => db.connection.prepare("SELECT work_id FROM works WHERE owner_bot_id=?").get(created.bot.botId), "real Bot creates Work");
-        current.work = await wait(() => { const value = agent.getWorkService().getWork(work.work_id); return value?.lifecycle === "closed" && value; }, "Work closes");
-        current.history = await agent.botMessageHistory({ botId: created.bot.botId });
-        current.resultCards = db.connection.prepare("SELECT * FROM work_result_cards WHERE work_id=?").all(work.work_id);
-        assert.equal(current.work.closureConclusion, "succeeded");
-        assert(JSON.stringify([current.history, current.work, current.resultCards]).includes(test.expected));
-      } else {
       const prompt = test.id === "non-browser" ? test.text : `${test.text}\n浏览器交互仅用browser_exec，不用HTTP客户端、终端或源码读取绕过页面。已确定的连续动作可在codemode里顺序执行，逐步保留结果；遇错误立即停止并报告完成位置，不重复提交。不猜未知页面目标。`;
       const result = await agent.prompt({ taskId, text: prompt, assistantMessageId: randomUUID(), userMessageId: randomUUID(), permissionMode: "auto", modelId: `acceptance/${modelId}`, ...(reasoningPreference ? { reasoningPreference, reasoningPreferenceModelId: `acceptance/${modelId}` } : {}), welcomeMode: "working", modePresetId: "codemode" });
       if (result.error) throw Error(JSON.stringify(result.error));
@@ -178,7 +161,6 @@ void (async () => {
         assert.equal(current.partial.name, fillValue); assert.equal(current.partial.city, "杭州"); assert.equal(current.partial.submitted, undefined);
         const codeCalls = history.messages.flatMap((message: any) => message.tools ?? []).filter((tool: any) => tool.tool === "codemode").flatMap((tool: any) => { try { return [JSON.parse(tool.detail).calls]; } catch { return []; } });
         assert(codeCalls.some((calls: any[]) => calls.length === 3 && calls[0].status === "ok" && calls[1].status === "ok" && calls[2].status === "error"), "must retain two completed nested calls and stop at third failure");
-      }
       }
       current.status = "passed";
     } catch (error) { current.status = "failed"; current.error = String(error); }

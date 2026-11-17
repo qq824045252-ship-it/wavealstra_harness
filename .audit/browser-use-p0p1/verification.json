@@ -1,0 +1,99 @@
+{
+  "recordedAt": "2026-11-17T04:45:35.878145+00:00",
+  "scope": "focused source validation",
+  "requirements": {
+    "frames": [
+      "test:browser-document-context-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "shadow": [
+      "test:browser-accessibility-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "semantics": [
+      "test:browser-accessibility-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "assertions": [
+      "test:browser-conditions-electron",
+      "test:browser-runtime-integration-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "files": [
+      "test:browser-upload-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "dialogs": [
+      "test:browser-prompt-electron",
+      "test:browser-beforeunload-service-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "tables": [
+      "test:browser-collection-dom-electron",
+      "test:browser-runtime-integration-electron",
+      "test:browser-capabilities-electron",
+      "test:browser-collection-export"
+    ],
+    "gestures": [
+      "test:ui-gestures-integration-electron",
+      "test:browser-html-drag-electron",
+      "test:browser-capabilities-electron"
+    ],
+    "tabs": [
+      "test:browser-tabs-electron",
+      "test:browser-tabs-ui",
+      "test:browser-runtime-integration-electron"
+    ],
+    "diagnostics": [
+      "test:browser-page-events-electron",
+      "test:browser-runtime-integration-electron",
+      "test:browser-accessibility-electron"
+    ],
+    "vision": [
+      "test:browser-visual-input-electron",
+      "test:browser-runtime-integration-electron"
+    ],
+    "handoff": [
+      "test:browser-handoff",
+      "test:browser-handoff-tool-electron"
+    ]
+  },
+  "additionalPassed": [
+    "test:browser-task-execution-electron",
+    "test:browser-screenshot-electron",
+    "test:browser-refresh",
+    "test:capture-mode",
+    "test:browser-contract",
+    "test:browser-durable-composition",
+    "test:browser-automation-recovery",
+    "test:ui-automation-recovery",
+    "test:ui-automation-cancellation",
+    "test:browser-open-guard"
+  ],
+  "typecheck": "passed",
+  "fullHeadless": "not run",
+  "fullGUI": "not run",
+  "ARTIFACT": "not run; no product build authorized",
+  "models": "Code Mode fixture uses a scripted ModelRuntime; real tool registration, durable journal and Electron input run normally",
+  "limits": [
+    "closed shadow roots excluded",
+    "rotated or perspective frame owners and pinch-offset visual coordinates rejected",
+    "HTML source and target belong to the selected document",
+    "late beforeunload accept requires an explicit prearmed retry",
+    "prompt adapter uses guarded Electron internal handler",
+    "network response correlation is bounded by arming time, not proven causality",
+    "authenticated 柠檬云 was not exercised"
+  ],
+  "platform": "Windows, Electron 44.5.1; Linux desktop not exercised",
+  "testClassificationAudit": "passed; Electron tests remain outside headless",
+  "review": {
+    "model": "gpt-6-sol",
+    "materialFalseCompletionClaims": false,
+    "followUp": "source dragend tested after review; six native checks passed",
+    "attention": [
+      "guarded Electron internal prompt dependency",
+      "focused Windows fixtures only; no authenticated-site, Linux, full repository or release acceptance",
+      "scripted model proves deterministic tool-chain behavior, not autonomous planning quality"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+const {app,BrowserWindow}=require('electron');
+const {mkdtempSync,mkdirSync,writeFileSync}=require('node:fs');const {join}=require('node:path');const {tmpdir}=require('node:os');
+app.setPath('userData',mkdtempSync(join(tmpdir(),'browser-prompt-probe-')));app.on('window-all-closed',()=>{});
+let win;const evidence={events:[]};const guard=setTimeout(()=>{console.error('prompt probe timeout');app.exit(1);},20000);
+(async()=>{await app.whenReady();win=new BrowserWindow({show:false,webPreferences:{sandbox:true,nodeIntegration:false,contextIsolation:true}});const wc=win.webContents;await wc.loadURL('data:text/html,<button id="b" onclick="window.result=prompt(\'name\',\'default\')">Prompt</button>');wc.debugger.attach('1.3');wc.debugger.on('message',(_e,m,p,s)=>{if(m.startsWith('Page.javascriptDialog')){evidence.events.push({m,p,s});if(m==='Page.javascriptDialogOpening')setTimeout(()=>void wc.debugger.sendCommand('Page.handleJavaScriptDialog',{accept:true,promptText:'native answer'},s||undefined).catch(error=>console.error(error)),150);}});await wc.debugger.sendCommand('Page.enable');
+evidence.original=await wc.executeJavaScript('({prompt:String(prompt),own:Object.getOwnPropertyNames(Window.prototype).includes("prompt"),parent:typeof Object.getPrototypeOf(window).prompt})');
+evidence.iframe=await wc.executeJavaScript('(()=>{const frame=document.createElement("iframe");document.body.append(frame);window.probeFrame=frame;return String(frame.contentWindow.prompt);})()');
+const tree=await wc.debugger.sendCommand('Page.getFrameTree');const world=await wc.debugger.sendCommand('Page.createIsolatedWorld',{frameId:tree.frameTree.frame.id,worldName:'mybuddy-prompt-probe'});
+evidence.isolatedFunction=await wc.debugger.sendCommand('Runtime.evaluate',{expression:'String(prompt)',contextId:world.executionContextId,returnByValue:true});
+evidence.nativePrompt=await wc.debugger.sendCommand('Runtime.evaluate',{expression:'prompt("Native probe","default")',contextId:world.executionContextId,returnByValue:true,userGesture:true});
+const native=await wc.debugger.sendCommand('Runtime.evaluate',{expression:'prompt',contextId:world.executionContextId});
+const main=await wc.debugger.sendCommand('Runtime.evaluate',{expression:'window'});
+try{evidence.crossWorld=await wc.debugger.sendCommand('Runtime.callFunctionOn',{objectId:main.result.objectId,functionDeclaration:'function(native){this.prompt=native.bind(this);return String(this.prompt)}',arguments:[{objectId:native.result.objectId}],returnByValue:true});}catch(e){evidence.crossWorldError=String(e);}
+evidence.repair=await wc.executeJavaScript('(()=>{const frame=document.createElement("iframe");frame.hidden=true;document.documentElement.append(frame);const builtin=frame.contentWindow.prompt;const before={name:prompt.name,source:String(prompt)};window.prompt=builtin.bind(window);frame.remove();return {before,after:String(prompt)};})()');
+evidence.mainAfter=await wc.executeJavaScript('(()=>{try{return prompt("Real page","initial")}catch(e){return String(e)}})()',true);
+evidence.button=await wc.executeJavaScript('document.querySelector("#b").click();window.result',true);
+})().catch(e=>{evidence.error=String(e);console.error(e);process.exitCode=1;}).finally(()=>{clearTimeout(guard);const dir=join(process.cwd(),'out/diagnostics/browser-p0p1');mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'prompt-probe.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));win?.destroy();app.exit(process.exitCode?1:0);});

@@ -23,7 +23,8 @@ export function browserNativeInput(session: PageInspectionSession): UiNativeInpu
         return;
       }
       const type = event.type === "mouseDown" ? "mousePressed" : event.type === "mouseUp" ? "mouseReleased" : event.type === "mouseWheel" ? "mouseWheel" : "mouseMoved";
-      await session.inputCommand("Input.dispatchMouseEvent", { type, x: event.x, y: event.y, modifiers, button: event.button ?? "none", clickCount: "clickCount" in event ? event.clickCount : 0,
+      const buttons = (flags.includes("leftbuttondown") ? 1 : 0) | (flags.includes("rightbuttondown") ? 2 : 0) | (flags.includes("middlebuttondown") ? 4 : 0);
+      await session.inputCommand("Input.dispatchMouseEvent", { type, x: event.x, y: event.y, modifiers, buttons: event.type === "mouseDown" ? event.button === "right" ? 2 : event.button === "middle" ? 4 : 1 : buttons, button: event.button ?? "none", clickCount: "clickCount" in event ? event.clickCount : 0,
         ...("deltaX" in event ? { deltaX: event.deltaX ?? 0, deltaY: event.deltaY ?? 0 } : {}) });
     },
   };

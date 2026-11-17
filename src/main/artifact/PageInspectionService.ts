@@ -22,7 +22,7 @@ export interface DebuggerLike {
   attach(protocolVersion?: string): void;
   detach(): void;
   isAttached(): boolean;
-  sendCommand(method: string, commandParams?: unknown): Promise<unknown>;
+  sendCommand(method: string, commandParams?: unknown, sessionId?: string): Promise<unknown>;
   on(
     event: "message",
     listener: (event: unknown, method: string, params: unknown, sessionId?: string) => void,
@@ -137,6 +137,8 @@ export class PageInspectionSession {
   private disposeListeners: Array<() => void> = [];
   private disposed = false;
   private attaching: Promise<void> | null = null;
+  private readonly protocolListeners = new Set<(method: string, params: unknown, sessionId?: string) => void>();
+  private readonly protocolReplay = new Map<string, { method: string; params: unknown; sessionId?: string }>();
 
   /** 选中事件（controller 订阅；payload 含 backendNodeId 等 DOM 信息） */
   onSelection: ((payload: SelectionEventPayload) => void) | null = null;
@@ -178,9 +180,11 @@ export class PageInspectionSession {
     dbg.attach(PROTOCOL_VERSION);
     this.attached = true;
 
-    const onMessage = (event: unknown, method: string, params: unknown): void => {
+    const onMessage = (event: unknown, method: string, params: unknown, sessionId?: string): void => {
       void event;
-      this.handleMessage(method, params as Record<string, unknown>);
+      if (!sessionId) this.handleMessage(method, params as Record<string, unknown>);
+      this.rememberProtocol(method, params, sessionId);
+      for (const listener of [...this.protocolListeners]) listener(method, params, sessionId);
     };
     const onDetach = (event: unknown, reason: string): void => {
       void event;
@@ -188,6 +192,8 @@ export class PageInspectionSession {
       this.inspectEnabled = false;
       this.overlayEnabled = false;
       this.onDetached?.(reason);
+      this.protocolReplay.clear();
+      for (const listener of [...this.protocolListeners]) listener("Inspector.detached", { reason });
     };
     dbg.on("message", onMessage);
     dbg.on("detach", onDetach);
@@ -275,8 +281,43 @@ export class PageInspectionSession {
     await this.send(method, parameters);
   }
 
+  get hasProtocolSubscribers(): boolean { return this.protocolListeners.size > 0; }
+
+  /** Browser-owned automation clients share this exact debugger attachment. */
+  protocolCommand(method: string, parameters?: unknown, sessionId?: string): Promise<unknown> {
+    return this.send(method, parameters, sessionId);
+  }
+
+  subscribeProtocol(listener: (method: string, params: unknown, sessionId?: string) => void): () => void {
+    if (this.disposed) throw new Error("检查会话已释放");
+    this.protocolListeners.add(listener);
+    // Enabling Runtime twice does not replay its existing execution contexts.
+    // New consumers receive the live identities retained by this sole owner.
+    for (const event of this.protocolReplay.values()) listener(event.method, event.params, event.sessionId);
+    return () => { this.protocolListeners.delete(listener); };
+  }
+
+  private rememberProtocol(method: string, params: unknown, sessionId = ""): void {
+    if (!params || typeof params !== "object") return;
+    if (method === "Runtime.executionContextCreated" && "context" in params && params.context && typeof params.context === "object" && "id" in params.context && typeof params.context.id === "number") {
+      this.protocolReplay.set(`context:${sessionId}:${params.context.id}`, { method, params, sessionId });
+    } else if (method === "Runtime.executionContextDestroyed" && "executionContextId" in params) {
+      this.protocolReplay.delete(`context:${sessionId}:${String(params.executionContextId)}`);
+    } else if (method === "Runtime.executionContextsCleared") {
+      for (const [key, event] of this.protocolReplay) if (key.startsWith("context:") && event.sessionId === sessionId) this.protocolReplay.delete(key);
+    } else if (method === "Target.attachedToTarget" && "sessionId" in params && typeof params.sessionId === "string") {
+      this.protocolReplay.set(`target:${params.sessionId}`, { method, params, sessionId });
+    } else if (method === "Target.detachedFromTarget" && "sessionId" in params && typeof params.sessionId === "string") {
+      const detached = new Set([params.sessionId]);
+      for (const [key, event] of this.protocolReplay) if (key.startsWith("target:") && event.sessionId && detached.has(event.sessionId) && event.params && typeof event.params === "object" && "sessionId" in event.params && typeof event.params.sessionId === "string") detached.add(event.params.sessionId);
+      for (const [key, event] of this.protocolReplay) if (detached.has(event.sessionId ?? "") || key.startsWith("target:") && detached.has(key.slice(7))) this.protocolReplay.delete(key);
+    }
+    while (this.protocolReplay.size > 4096) this.protocolReplay.delete(this.protocolReplay.keys().next().value!);
+  }
+
   /** detach（幂等）：关 inspect、清监听、detach debugger */
   detach(): void {
+    this.protocolReplay.clear();
     this.inspectEnabled = false;
     this.overlayEnabled = false;
     if (this.debuggerLike && this.attached) {
@@ -301,16 +342,18 @@ export class PageInspectionSession {
   /** 永久释放（幂等）：detach + 标记 disposed（不可再 attach） */
   dispose(): void {
     this.detach();
+    for (const listener of [...this.protocolListeners]) listener("Inspector.detached", { reason: "disposed" });
+    this.protocolListeners.clear();
     this.disposed = true;
   }
 
   // ---------- 内部 ----------
 
-  private async send(method: string, params?: unknown): Promise<unknown> {
+  private async send(method: string, params?: unknown, sessionId?: string): Promise<unknown> {
     if (!this.debuggerLike || !this.attached) {
       throw new Error(`CDP sendCommand 失败（未 attach）: ${method}`);
     }
-    return this.debuggerLike.sendCommand(method, params);
+    return this.debuggerLike.sendCommand(method, params, sessionId);
   }
 
   private handleMessage(method: string, params: Record<string, unknown>): void {

@@ -4,6 +4,7 @@
  * 避免 mybuddy-artifact 协议宿主拦截外链。
  */
 import { BrowserWindow, dialog, WebContentsView, type Rectangle } from "electron";
+import { BrowserIpc } from "../../shared/agent-ipc";
 import { randomUUID } from "node:crypto";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../../shared/browser-tabs";
 import type { CaptureModeState, SelectionDescriptor } from "../../shared/capture-mode";
@@ -15,6 +16,7 @@ import {
   type SelectionEventPayload,
 } from "../artifact/PageInspectionService";
 import { runtimeProbeService } from "../capabilities/RuntimeProbeService";
+import { tryHandleBrowserBeforeUnload } from "../capabilities/browser/BrowserPrompt";
 
 export const BROWSER_CAPTURE_ARTIFACT_ID = "extension-browser";
 const DEFAULT_BROWSER_VIEWPORT = { x: 0, y: 0, width: 1280, height: 720 };
@@ -108,6 +110,7 @@ class BrowserTabSurface {
     // WebContentsView 没有浏览器标签页自带的离开确认 UI。默认拒绝会让
     // loadURL/reload 以 ERR_FAILED 结束，页面看起来仍是旧内容。
     wc.on("will-prevent-unload", (event) => {
+      if (tryHandleBrowserBeforeUnload(wc, event)) return;
       if (this.confirmUnload(win)) event.preventDefault();
     });
     wc.setWindowOpenHandler(({ url }) => {
@@ -396,7 +399,7 @@ class BrowserTabSurface {
         mainWindow?.off("hide", preserveSurface);
         mainWindow?.off("minimize", preserveSurface);
         releaseSurface();
-        if (pageInspectionService.sessionFor(wc, "browser-host") === session && this.inspector !== session) {
+        if (pageInspectionService.sessionFor(wc, "browser-host") === session && this.inspector !== session && !session.hasProtocolSubscribers) {
           pageInspectionService.release(wc, "browser-host");
         }
       }
@@ -485,7 +488,7 @@ class BrowserTabSurface {
       await inspector.attach(wc.debugger);
       await inspector.setInspectMode();
       if (this.captureGeneration !== this.generation) {
-        pageInspectionService.release(wc, "browser-host");
+        this.releaseInspectionUi(inspector, wc);
         this.inspector = null;
         this.captureGeneration = null;
         this.setCaptureState("exited");
@@ -493,7 +496,7 @@ class BrowserTabSurface {
       }
       this.setCaptureState("active");
     } catch (error) {
-      pageInspectionService.release(wc, "browser-host");
+      this.releaseInspectionUi(inspector, wc);
       this.inspector = null;
       this.captureGeneration = null;
       this.setCaptureState(
@@ -507,12 +510,18 @@ class BrowserTabSurface {
     if (this.captureState !== "entering" && this.captureState !== "active") return;
     const wc = this.view?.webContents;
     if (this.inspector) {
-      this.inspector.detach();
-      if (wc) pageInspectionService.release(wc, "browser-host");
+      this.releaseInspectionUi(this.inspector, wc);
       this.inspector = null;
     }
     this.captureGeneration = null;
     this.setCaptureState("exited");
+  }
+
+  private releaseInspectionUi(inspector: PageInspectionSession, wc?: Electron.WebContents): void {
+    inspector.onSelection = null; inspector.onDetached = null; inspector.onInspectModeCanceled = null;
+    if (inspector.hasProtocolSubscribers) void inspector.clearInspectMode().catch(() => {});
+    else if (wc) pageInspectionService.release(wc, "browser-host");
+    else inspector.detach();
   }
 
   get captureVersion(): number {
@@ -724,6 +733,14 @@ export class BrowserHost {
     if (!this.desiredVisible) tab.surface.hide();
     if (refreshDirty && tab.dirty) { tab.dirty = false; tab.surface.hardReload(); }
     this.emitTabs();
+    return true;
+  }
+
+  /** Reveal an existing task page for login without creating a navigation intent. */
+  presentTabForUser(id: string): boolean {
+    const tab = this.tabs.get(id);
+    if (!tab || !this.win || this.win.isDestroyed() || !this.selectTab(id, false)) return false;
+    this.win.webContents.send(BrowserIpc.openRequest, { url: tab.surface.url, tabId: id, key: tab.key, taskId: tab.taskId });
     return true;
   }
 

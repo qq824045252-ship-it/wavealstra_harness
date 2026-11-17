@@ -34,7 +34,7 @@ try {
   if (live) {
     baseUrl = process.env.BOT_FRONTDOOR_BASE_URL || 'http://127.0.0.1:3425/v1';
     const selected = process.env.BOT_FRONTDOOR_MODEL || 'opendesign/deepseek-v4.1-flash';
-    const loaded = await require('./bot-live-model-config.cjs').loadLiveModel(baseUrl, selected);
+    const loaded = await require('./live-model-config.cjs').loadLiveModel(baseUrl, selected);
     definition = loaded.model; report.model = loaded.evidence; save();
   }
   const modelsPath = join(temp,'models.json');

@@ -1,0 +1,60 @@
+const assert = require('node:assert/strict');
+const { app, BrowserWindow } = require('electron');
+const { createServer } = require('node:http');
+const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { tmpdir } = require('node:os');
+const { buildSync } = require('esbuild');
+
+const profile = mkdtempSync(join(tmpdir(), 'mybuddy-beforeunload-service-'));
+app.setPath('userData', join(profile, 'profile')); app.setPath('home', profile);
+app.on('window-all-closed', () => {});
+const output = join(process.cwd(), 'out/tests/browser-beforeunload-service'); mkdirSync(output, { recursive: true });
+buildSync({ stdin: { contents: 'export {BrowserHost} from "./src/main/browser/BrowserHost"; export {BrowserAutomationService} from "./src/main/capabilities/BrowserAutomationService";', resolveDir: process.cwd(), loader: 'ts' }, bundle: true, platform: 'node', format: 'cjs', packages: 'external', outfile: join(output, 'entry.cjs'), logLevel: 'silent' });
+const { BrowserHost, BrowserAutomationService } = require(join(output, 'entry.cjs'));
+const server = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<button>Activate</button><p>Navigation target</p>'); });
+const evidence = { electron: process.versions.electron, checks: [] };
+let host, win;
+const guard = setTimeout(() => { console.error('beforeunload service test timed out'); app.exit(1); }, 30000);
+(async () => {
+  await app.whenReady(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  win = new BrowserWindow({ show: false, width: 900, height: 650 }); await win.loadURL('data:text/html,Isolated navigation host');
+  let nativeConfirms = 0;
+  host = new BrowserHost(() => { nativeConfirms++; return false; }); host.attach(win);
+  const service = new BrowserAutomationService(() => host);
+  const context = { taskId: 'beforeunload-task', taskRoot: profile };
+  const opened = await service.execute({ action: 'navigate', url: origin }, undefined, context); assert(opened.tabId);
+  const tabId = opened.tabId, wc = host.getTabHost(tabId).inspectionWebContents;
+  const navigate = (url, action) => service.execute({ action: 'navigate', tabId, url, timeoutMs: 5000, dialogRules: [{ type: 'beforeunload', answer: { action } }] }, undefined, context);
+  const lifecycle = (action, answer) => service.execute({ action, tabId, timeoutMs: 5000, dialogRules: [{ type: 'beforeunload', answer: { action: answer } }] }, undefined, context);
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await wc.executeJavaScript('window.onbeforeunload=()=>true;true', true);
+    const initialUrl = wc.getURL();
+    await assert.rejects(navigate(`${origin}/denied-${cycle}`, 'dismiss'));
+    assert.equal(wc.getURL(), initialUrl);
+    const accepted = await navigate(`${origin}/accepted-${cycle}`, 'accept');
+    assert.equal(accepted.url, `${origin}/accepted-${cycle}`);
+    assert.equal(wc.getURL(), `${origin}/accepted-${cycle}`);
+    assert.equal(nativeConfirms, 0);
+    evidence.checks.push(`public service cycle ${cycle + 1}: denied navigation settles before immediate prearmed accepted retry`);
+  }
+  await wc.executeJavaScript('window.navigationMarker="original document";window.onbeforeunload=()=>true;true', true);
+  await assert.rejects(lifecycle('reload', 'dismiss'), error => error.code === 'NAVIGATION_FAILED');
+  assert.equal(await wc.executeJavaScript('window.navigationMarker'), 'original document');
+  await lifecycle('reload', 'accept');
+  assert.equal(await wc.executeJavaScript('window.navigationMarker'), undefined);
+  evidence.checks.push('public reload: denial preserves document and explicit accepted retry creates a new document');
+  await wc.executeJavaScript('window.onbeforeunload=()=>true;true', true);
+  await assert.rejects(lifecycle('close', 'dismiss'), error => error.code === 'NAVIGATION_FAILED');
+  assert(host.getTabHost(tabId)); assert.equal(wc.isDestroyed(), false);
+  await lifecycle('close', 'accept');
+  assert.equal(host.getTabHost(tabId), null); assert.equal(wc.isDestroyed(), true);
+  assert.equal(nativeConfirms, 0);
+  evidence.checks.push('public close: denial retains exact tab and explicit accepted retry destroys it without system modal');
+  evidence.checks.forEach(value => console.log('PASS', value));
+})().catch(error => { evidence.error = String(error.stack || error); console.error(error); process.exitCode = 1; }).finally(() => {
+  clearTimeout(guard); host?.dispose(); win?.destroy(); server.close();
+  const diagnostics = join(process.cwd(), 'out/diagnostics/browser-p0p1'); mkdirSync(diagnostics, { recursive: true });
+  writeFileSync(join(diagnostics, 'beforeunload-service.json'), JSON.stringify(evidence, null, 2)); app.exit(process.exitCode ? 1 : 0);
+});

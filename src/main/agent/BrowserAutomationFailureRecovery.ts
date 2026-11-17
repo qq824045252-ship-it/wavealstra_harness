@@ -3,7 +3,7 @@ import type {
   BrowserExecInput,
   BrowserExecOutput,
 } from "../capabilities/BrowserAutomationService";
-import { BrowserAutomationError } from "../capabilities/BrowserAutomationService";
+import { BrowserAutomationError, BROWSER_INPUT_ACTIONS } from "../capabilities/BrowserAutomationService";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
 
@@ -12,9 +12,10 @@ export interface BrowserAutomationRecoveryBridge {
   failures: ExecutionFailureRepository;
 }
 
-const SIDE_EFFECT_ACTIONS = new Set<BrowserExecInput["action"]>(["navigate", "click", "fill", "press"]);
+const SIDE_EFFECT_ACTIONS = new Set<BrowserExecInput["action"]>(["navigate", ...BROWSER_INPUT_ACTIONS]);
 const PRE_ACTION_CODES = new Set<BrowserAutomationErrorCode>([
   "HOST_UNAVAILABLE", "PAGE_UNAVAILABLE", "SCREENSHOT_EMPTY", "SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE",
+  "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "SURFACE_CHANGED",
 ]);
 const RECOVERABLE_CODES = new Set<BrowserAutomationErrorCode>([
   ...PRE_ACTION_CODES,
@@ -24,6 +25,7 @@ const RECOVERABLE_CODES = new Set<BrowserAutomationErrorCode>([
 const PRE_ACTION_CAUSE_CODES = [
   "browser-host-unavailable", "browser-page-unavailable", "browser-screenshot-empty", "browser-selector-not-found",
   "browser-element-not-clickable", "browser-element-not-editable",
+  "browser-element-ambiguous", "browser-element-disabled", "browser-element-not-visible", "browser-surface-changed",
 ] as const;
 
 function encoded(value: string | undefined): string | undefined {
@@ -62,6 +64,11 @@ export function browserAutomationRecoveryTarget(input: BrowserExecInput, evidenc
   const url = actionUrl(input, evidence);
   const pieces = [url ? `url=${encoded(url)}` : undefined];
   if (input.selector?.trim()) pieces.push(`selector=${encoded(input.selector.trim())}`);
+  else {
+    if (input.role?.trim()) pieces.push(`role=${encoded(input.role.trim())}`);
+    if (input.name?.trim()) pieces.push(`name=${encoded(input.name.trim())}`);
+    if (input.action !== "fill" && input.text?.trim()) pieces.push(`text=${encoded(input.text.trim())}`);
+  }
   return `browser:${input.action}:${pieces.filter(Boolean).join("|") || "surface"}`;
 }
 
@@ -83,6 +90,10 @@ function guidance(error: BrowserAutomationError, input: BrowserExecInput): strin
     SELECTOR_NOT_FOUND: "Read or inspect the current page again and choose a selector that exists on that page.",
     ELEMENT_NOT_CLICKABLE: "Re-observe the page and choose a genuinely interactive element rather than forcing the old selector.",
     ELEMENT_NOT_EDITABLE: "Re-observe the form and select the actual editable input before filling.",
+    ELEMENT_NOT_VISIBLE: "Inspect the target and blocker, expand its menu/panel or dismiss the overlay, then find it again. A pre-dispatch failure is safe to correct and retry.",
+    ELEMENT_DISABLED: "Inspect the target and complete its form prerequisites before trying again.",
+    ELEMENT_AMBIGUOUS: "Find the candidates, then use one returned selector to identify the intended element.",
+    SURFACE_CHANGED: "Read or find the current task tab again and use the newly observed node reference.",
     FOCUS_FAILED: "Re-observe the page and confirm the same target element can receive focus before sending a key.",
     EXECUTION_FAILED: SIDE_EFFECT_ACTIONS.has(input.action)
       ? "Re-read or screenshot the current page before deciding whether to repeat the action; it may already have taken effect."
@@ -104,7 +115,7 @@ export function recordBrowserAutomationFailureRecovery(
   if (!ctx) return false;
   const sideEffecting = SIDE_EFFECT_ACTIONS.has(input.action);
   const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
-  const preAction = outcome?.dispatch === "not_started" || PRE_ACTION_CODES.has(error.code);
+  const preAction = outcome ? outcome.dispatch === "not_started" : PRE_ACTION_CODES.has(error.code);
   const unknownEffect = !preAction && sideEffecting && input.action !== "navigate";
   const target = error.code === "HOST_UNAVAILABLE"
     ? `browser:${input.action}:surface`
@@ -130,9 +141,15 @@ export function settleBrowserAutomationRecovery(
   if (!bridge) return;
   const ctx = bridge.resolveContext();
   if (!ctx) return;
-  const exact = browserAutomationRecoveryTarget(input, output);
-  const surface = browserAutomationRecoveryTarget({ ...input, selector: undefined }, undefined);
-  bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: PRE_ACTION_CAUSE_CODES });
+  const evidence = { ...output, currentUrl: output.sourceUrl ?? output.url };
+  const exact = browserAutomationRecoveryTarget(input, evidence);
+  const surface = `browser:${input.action}:surface`;
+  const provenTargets = new Set([exact]);
+  for (const element of output.elements ?? []) {
+    provenTargets.add(browserAutomationRecoveryTarget({ ...input, selector: element.selector }, evidence));
+    if (element.id) provenTargets.add(browserAutomationRecoveryTarget({ ...input, selector: `#${element.id}` }, evidence));
+  }
+  for (const target of provenTargets) bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: PRE_ACTION_CAUSE_CODES });
   if (surface !== exact) bridge.failures.resolveMatching(ctx.taskId, { target: surface, causeCodes: ["browser-host-unavailable"] });
 
   if (input.action === "navigate") {
@@ -140,7 +157,7 @@ export function settleBrowserAutomationRecovery(
   } else if (input.action === "press") {
     bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: ["browser-focus-failed"] });
   } else if (input.action === "read" || input.action === "screenshot") {
-    const uncertainCodes = ["browser-execution-failed", "browser-wait-timeout", "browser-cancelled"];
+    const uncertainCodes = [...RECOVERABLE_CODES].map(code => `browser-${code.toLowerCase().replaceAll("_", "-")}`);
     bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: uncertainCodes });
     bridge.failures.resolveMatching(ctx.taskId, { target: uncertainPageTarget(output), causeCodes: uncertainCodes });
     bridge.failures.resolveMatching(ctx.taskId, { target: "browser:uncertain:surface", causeCodes: uncertainCodes });

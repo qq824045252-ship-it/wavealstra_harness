@@ -1,0 +1,156 @@
+{
+  "objective": "Complete all previously listed P0/P1 browser capabilities through the task-owned built-in browser",
+  "phases": [
+    "ground",
+    "sketch",
+    "compare",
+    "implement",
+    "verify",
+    "completion-audit"
+  ],
+  "requirements": [
+    {
+      "id": "remove-app-iframes",
+      "priority": "cancelled-by-user",
+      "acceptance": "User cancelled deletion; preserve application-owned iframe previews and all unrelated code",
+      "status": "cancelled-preserved"
+    },
+    {
+      "id": "frames",
+      "priority": "P0",
+      "acceptance": "User restored iframe support: nested same-origin and cross-origin frame enumeration, observation, trusted input and stale frame rejection",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-document-context-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "shadow",
+      "priority": "P0",
+      "acceptance": "Open shadow roots observation and input with exact node identity, without claiming closed-root support",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-accessibility-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "semantics",
+      "priority": "P0",
+      "acceptance": "Accessible names, scoped exact locators, native roles and state, with useful AX observation",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-accessibility-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "assertions",
+      "priority": "P0",
+      "acceptance": "Bounded URL/text/value/state/count/response conditions and business result assertions separate from dispatched input",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-conditions-electron",
+        "test:browser-runtime-integration-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "files",
+      "priority": "P0",
+      "acceptance": "Single/multiple upload and completed actual download/export artifact with contents verified",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-upload-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "dialogs",
+      "priority": "P0",
+      "acceptance": "Alert/confirm/prompt/beforeunload handled without deadlocking the caller, tied to the correct task tab",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-prompt-electron",
+        "test:browser-beforeunload-service-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "tables",
+      "priority": "P0",
+      "acceptance": "Virtualized, paginated and infinite data reading with row identity, horizontal scrolling and explicit completeness evidence",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-collection-dom-electron",
+        "test:browser-runtime-integration-electron",
+        "test:browser-capabilities-electron",
+        "test:browser-collection-export"
+      ]
+    },
+    {
+      "id": "gestures",
+      "priority": "P1",
+      "acceptance": "Double/right/modifier click, drag, sequential text, dates and editor interactions; cancellation releases held input",
+      "status": "focused-verified",
+      "checks": [
+        "test:ui-gestures-integration-electron",
+        "test:browser-html-drag-electron",
+        "test:browser-capabilities-electron"
+      ]
+    },
+    {
+      "id": "tabs",
+      "priority": "P1",
+      "acceptance": "Task-owned open/list/select/close/back/forward/reload without taking another task's page",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-tabs-electron",
+        "test:browser-tabs-ui",
+        "test:browser-runtime-integration-electron"
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "priority": "P1",
+      "acceptance": "Bounded request/response/console/error events, action association and reviewable traces",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-page-events-electron",
+        "test:browser-runtime-integration-electron",
+        "test:browser-accessibility-electron"
+      ]
+    },
+    {
+      "id": "vision",
+      "priority": "P1",
+      "acceptance": "Browser-local screenshot coordinate actions bound to tab/document/viewport/zoom provenance and stale rejection",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-visual-input-electron",
+        "test:browser-runtime-integration-electron"
+      ]
+    },
+    {
+      "id": "handoff",
+      "priority": "P1",
+      "acceptance": "Human login/2FA handoff resumes the exact pending tab and verifies its state without replaying business effects",
+      "status": "focused-verified",
+      "checks": [
+        "test:browser-handoff",
+        "test:browser-handoff-tool-electron"
+      ]
+    }
+  ],
+  "invariants": [
+    "No external browser substitution",
+    "One debugger owner",
+    "Fixed task tab and document identity",
+    "One absolute invocation deadline",
+    "No replay of uncertain side effects",
+    "Preserve unrelated workspace modifications",
+    "No product build/package/commit/push authorization"
+  ],
+  "acceptanceScope": "Current source on Windows/Electron 44.5.1, isolated local fixtures and actual registered tool chain; no authenticated-site, Linux desktop, whole-repository or release acceptance"
+}

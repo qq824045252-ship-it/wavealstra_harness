@@ -1,0 +1,48 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Module from "node:module";
+import { app, BrowserWindow } from "electron";
+import { build } from "esbuild";
+const base=mkdtempSync(join(tmpdir(),"browser-upload-")),taskRoot=join(base,"task"),outside=join(base,"outside");
+mkdirSync(taskRoot);mkdirSync(outside);writeFileSync(join(taskRoot,"report.txt"),"真实上传 bytes");writeFileSync(join(taskRoot,"second.txt"),"second");writeFileSync(join(outside,"secret.txt"),"SECRET OUTSIDE");
+symlinkSync(outside,join(taskRoot,"outside-link"),"junction");
+app.setPath("userData",join(base,"profile"));app.setPath("home",base);
+const watchdog=setTimeout(()=>{console.error("timed out");app.exit(1)},30000);
+void (async()=>{let main,child,win,observer,session;try{
+ await app.whenReady();
+ const bundle=await build({stdin:{contents:`export {BrowserAccessibility} from './src/main/capabilities/browser/BrowserAccessibility';export {uploadBrowserFiles} from './src/main/capabilities/browser/BrowserUploads';export {bindBrowserDocument,listBrowserFrames} from './src/main/capabilities/browser/BrowserDocumentContext';export {AutomationScope} from './src/main/capabilities/AutomationScope';export {PageInspectionSession} from './src/main/artifact/PageInspectionService';export {findScript} from './src/main/capabilities/UiAutomationService';export {withBrowserDom} from './src/main/capabilities/browser/BrowserDom';`,resolveDir:process.cwd(),loader:'ts'},bundle:true,write:false,platform:'node',format:'cjs',packages:'external'});
+ const module=new Module(join(process.cwd(),'upload-probe.cjs'));module.filename=join(process.cwd(),'upload-probe.cjs');module.paths=Reflect.get(Module,'_nodeModulePaths')(process.cwd());Reflect.get(module,'_compile').call(module,bundle.outputFiles[0].text,module.filename);
+ const {BrowserAccessibility,uploadBrowserFiles,bindBrowserDocument,listBrowserFrames,AutomationScope,PageInspectionSession,findScript,withBrowserDom}=module.exports;
+ let resolvePost: (value: string) => void = () => {};const received=new Promise<string>(resolve=>{resolvePost=resolve});
+ child=createServer((req,res)=>{if(req.method==='POST'){const chunks: Buffer[]=[];req.on('data',chunk=>chunks.push(chunk));req.on('end',()=>{resolvePost(Buffer.concat(chunks).toString());res.end('ok')});return;}res.setHeader('Content-Type','text/html; charset=utf-8');res.end(`<div id=host></div><script>host.attachShadow({mode:'open'}).innerHTML='<form method="post" enctype="multipart/form-data"><input id="upload" type="file" name="upload" multiple><button>Send</button></form>'</script>`)});
+ await new Promise(resolve=>child.listen(0,'127.0.0.2',resolve));const childUrl=`http://127.0.0.2:${child.address().port}`;
+ main=createServer((_req,res)=>{res.setHeader('Content-Type','text/html');res.end(`<input type=file id=top><iframe name=child src="${childUrl}"></iframe>`)});await new Promise(resolve=>main.listen(0,'127.0.0.1',resolve));
+ win=new BrowserWindow({show:false,width:1000,height:700,webPreferences:{sandbox:true}});const wc=win.webContents;await wc.loadURL(`http://127.0.0.1:${main.address().port}`);
+ const scope=new AutomationScope(undefined,20000),slot='__uploadProbe';const root=await bindBrowserDocument(wc,undefined,slot,scope);
+ const frame=listBrowserFrames(wc).find(f=>f.name==='child');assert(frame);const context=await bindBrowserDocument(wc,frame.frameId,slot,scope);assert.notEqual(context.nativeFrame.processId,wc.mainFrame.processId);
+ session=new PageInspectionSession('upload-probe');await session.attach(wc.debugger);observer=new BrowserAccessibility(session,slot);
+ const observed=await context.evaluate(withBrowserDom(findScript({selector:'#upload'},10,false,0)));assert.equal(observed.matches.length,1);const selector=observed.matches[0].selector;
+ const rootObserved=await root.evaluate(withBrowserDom(findScript({selector:'#top'},10,false,0)));const topSelector=rootObserved.matches[0].selector;
+ const rejectScope=new AutomationScope(undefined,10000);
+ await assert.rejects(uploadBrowserFiles({accessibility:observer,context:root,selector:topSelector,taskRoot,paths:['report.txt','second.txt'],scope:rejectScope}));assert.equal(rejectScope.dispatched,false);
+ const topScope=new AutomationScope(undefined,10000);
+ const top=await uploadBrowserFiles({accessibility:observer,context:root,selector:topSelector,taskRoot,paths:['report.txt'],scope:topScope});
+ assert.equal(top.files[0].name,'report.txt');assert.equal(await root.evaluate(`document.querySelector('#top').files[0].text()`),'真实上传 bytes');
+ await root.evaluate(`(document.querySelector('#top').outerHTML='<input type="file" id="top">',true)`);
+ const staleScope=new AutomationScope(undefined,10000);
+ await assert.rejects(uploadBrowserFiles({accessibility:observer,context:root,selector:topSelector,taskRoot,paths:['report.txt'],scope:staleScope}));assert.equal(staleScope.dispatched,false);
+ await assert.rejects(uploadBrowserFiles({accessibility:observer,context,selector,taskRoot,paths:[join(outside,'secret.txt')],scope:rejectScope}));assert.equal(rejectScope.dispatched,false);
+ await assert.rejects(uploadBrowserFiles({accessibility:observer,context,selector,taskRoot,paths:['outside-link/secret.txt'],scope:rejectScope}));assert.equal(rejectScope.dispatched,false);
+ await assert.rejects(uploadBrowserFiles({accessibility:observer,context,selector:'#never-observed',taskRoot,paths:['report.txt'],scope:rejectScope}));assert.equal(rejectScope.dispatched,false);
+ const uploadScope=new AutomationScope(undefined,10000);const result=await uploadBrowserFiles({accessibility:observer,context,selector,taskRoot,paths:['report.txt','second.txt'],scope:uploadScope});
+ assert.deepEqual(result.files,[{name:'report.txt',size:Buffer.byteLength('真实上传 bytes')},{name:'second.txt',size:6}]);assert(uploadScope.dispatched&&uploadScope.confirmed);
+ const content=await context.evaluate(`Promise.all([...document.querySelector('#host').shadowRoot.querySelector('#upload').files].map(f=>f.text()))`);assert.deepEqual(content,['真实上传 bytes','second']);
+ await context.evaluate(`(setTimeout(()=>document.querySelector('#host').shadowRoot.querySelector('form').requestSubmit(),0),true)`);
+ const body=await Promise.race([received,new Promise<never>((_resolve,reject)=>setTimeout(()=>reject(new Error('multipart timeout')),5000))]);assert(body.includes('真实上传 bytes'));assert(body.includes('second'));assert(!body.includes('SECRET OUTSIDE'));
+ root.dispose();context.dispose();console.log('PASS OOPIF shadow observed file input, real multipart bytes, task-root and junction boundaries');
+ }catch(error){console.error(error);process.exitCode=1}finally{clearTimeout(watchdog);observer?.dispose();session?.dispose();win?.destroy();main?.close();child?.close();app.exit(process.exitCode?1:0)}})();
+
+

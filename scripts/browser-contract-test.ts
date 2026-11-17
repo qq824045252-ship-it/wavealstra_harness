@@ -3,6 +3,8 @@ import { BrowserAutomationService, BrowserAutomationError } from "../src/main/ca
 import type { BrowserHost } from "../src/main/browser/BrowserHost";
 import { AutomationScope, AutomationTimeoutError } from "../src/main/capabilities/AutomationScope";
 import { PageInspectionSession } from "../src/main/artifact/PageInspectionService";
+import { browserExecSchema } from "../src/main/capabilities/BrowserToolContract";
+import { Value } from "typebox/value";
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function deferred<T>() {
@@ -29,6 +31,28 @@ function fixture() {
 }
 
 const checks: string[] = [];
+{
+  for (const input of [
+    { action: "hover", role: "button", name: "账簿" },
+    { action: "click", role: "link", name: "凭证汇总表", hover: [{ role: "button", name: "账簿" }] },
+    { action: "scroll", delta_y: 500 },
+    { action: "select", selector: "#region", values: ["jp"] },
+    { action: "check", selector: "#agree", checked: true },
+  ]) assert(Value.Check(browserExecSchema, input), JSON.stringify(input));
+  for (const input of [
+    { action: "evaluate", code: "document.body.click()" },
+    { action: "click", selector: "a", hover: [] },
+    { action: "click", selector: "a", hover: Array.from({ length: 9 }, () => ({ name: "menu" })) },
+    { action: "click", selector: "a", hover: [{ name: "menu", tabId: "another-task" }] },
+    { action: "select", selector: "select", values: [42] },
+    { action: "check", selector: "input", checked: "false" },
+  ]) assert.equal(Value.Check(browserExecSchema, input), false, JSON.stringify(input));
+  let hosts = 0;
+  const service = new BrowserAutomationService(() => { hosts++; return null; });
+  await assert.rejects(service.execute({ action: "click", selector: "a", hover: [{}] }), error => error instanceof BrowserAutomationError && error.code === "INVALID_INPUT");
+  assert.equal(hosts, 0);
+  checks.push("model-visible schema exposes menu paths and form actions; invalid paths fail before touching the host");
+}
 {
   const scope = new AutomationScope(undefined, 100);
   await scope.run(() => delay(60));
@@ -106,7 +130,7 @@ const checks: string[] = [];
     if (script.includes("const snapshot=state.snapshot")) return { documentId: "doc", text: "Field", elements: [{ ...element, label: "Field" }] };
     if (script.includes("?.documentId")) return "doc";
     if (script.includes("const q=")) return { ok: true, matches: [element] };
-    if (script.includes("const hit=document.elementFromPoint")) return { x: 10, y: 10 };
+    if (script.includes("for(const r of el.getClientRects())")) return { x: 10, y: 10 };
     if (script.includes("return el?{tag:")) return { tag: "input", name: "Field" };
     return true;
   };

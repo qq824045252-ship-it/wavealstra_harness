@@ -34,8 +34,68 @@ Existing methods remain. Additions are `getTabs()`, `ensureTab(options)`, `selec
 
 ## Verification
 
+### Hover menus and form controls
+
+`browser_exec` supports `hover`, `scroll`, `select`, and `check`. `find` and `inspect` return visibility, disabled state, bounds, checkbox state, and native select options. `read` includes a bounded option summary. `inspect` returns at most 80 options and reports `optionsTruncated`.
+
+A flyout can close between separate calls. For a menu such as 账簿 → 凭证汇总表, pass its hover ancestors with the final click:
+
+```javascript
+await tools.browser_exec({
+	action: "click",
+	role: "link",
+	name: "凭证汇总表",
+	hover: [{ role: "button", name: "账簿" }],
+	after: { mode: "interactive" },
+});
+```
+
+The `hover` array accepts one to eight locators. Each locator can specify `selector`, `role`, `name`, or `text`. The service discovers and hovers each ancestor in order, then discovers the target. All steps share one fixed tab, one native presentation lease, and one deadline. An existing observed reference keeps its node identity. A replaced node is rejected rather than rebound to another node.
+
+Native `<details>` disclosures appear through their first `<summary>` control, with role `button` and an `expanded` state. Hidden descendants report `hiddenBy` with the observed summary reference needed to reveal them. Nested disclosures report the outermost closed ancestor first. The service does not expand disclosures automatically. Successful actions through an observed reference also settle pre-action failures for that returned element's proven `#id` alias.
+
+The real task `日历任务笔记三合一Gadget设计` exposed missing summary semantics, an attempt to click a copy button inside a closed disclosure, and a recovery card left after `#capInput` was successfully filled through its node reference. Its native journal also contains ordinary request errors: `fill.value` instead of `fill.text`, an `after.maxChars` value below the schema minimum, and a selector that did not match the document. These errors are distinct from unsupported frames or Shadow DOM. The original Gadget HTML and data were served read-only in an isolated Electron profile to verify summary discovery, disclosure expansion, copy-button visibility and capture-input filling. No live task state, source data, pending submissions or system clipboard was changed. Rerun that optional check by setting `BROWSER_GADGET_FIXTURE_DIR` to the Gadget's `code` directory before `pnpm -s test:browser-task-execution-electron`.
+
+`scroll` uses `delta_x` and `delta_y`, with positive values moving right and down. Without a locator, it sends wheel input within the current viewport. With a locator, it scrolls the observed container. `select` accepts an array of option values in `values`, dispatches DOM `input` and `change` events, and checks the accepted selection. These select events are synthetic. Custom dropdowns use `hover` and `click`. `check` accepts `checked: true` or `false` and does not click when the requested state already holds. `press` focuses the element and sends the key without an extra click.
+
+Clicks scroll the target into view with instant behavior, sample stable geometry, and check several points inside the visible client rectangles. They wait up to 1.5 seconds within the invocation deadline for transient visibility or occlusion to clear. Hidden ancestors and disabled fieldsets are detected. A persistent obstruction returns blocker metadata. A trusted input receipt is awaited in the original document before dispatch, allowing a confirmed link click to navigate without reporting the expected document replacement as a failure.
+
+Navigation can start after the trusted click receipt, even while `isLoadingMainFrame()` still reports false. If the same retained tab changes document during `after`, the service restarts only its read-only observation against the new document. The original deadline still applies. The input action is never repeated.
+
+Successful corrected actions resolve matching pre-action recovery notices. A successful link navigation uses `sourceUrl` to settle the failed click on the page it left. Semantic locators distinguish different menu items. Errors include dispatch evidence in the model-visible response. Unknown effects require readback before any repeat submission.
+
+The real Electron regression includes a collapsed flyout whose child is initially invisible, hover-path navigation, partial occlusion, ancestor opacity, transient visibility, nested scrolling, single and multiple select, checkbox idempotence, and an Enter-triggered submission count of one. These are isolated local fixtures. They do not establish acceptance on an authenticated 柠檬云 account. This earlier hover-only checkpoint excluded frame documents and Shadow DOM; the capability reference below supersedes that boundary.
+
+The earlier 2026-11-17 hover-only run passed the browser contract, recovery, Durable composition, native tool policy, UI recovery and cancellation, built-in browser, managed tabs, and task-execution tests. The task fixture opened a slow report three times and received exactly three report requests, including navigation during after-observation. Screenshot regression passed 64 checks on a standalone repeat; its first run failed a minimized-window visibility assertion, so stability is not established by that repeat. Full typecheck remained blocked by concurrent Bot/Work removals and their remaining script imports. Full headless, GUI, and ARTIFACT gates were not run.
+
 - `test:browser-tabs-electron`: real native documents, A→B→A input/JS preservation, task isolation, in-flight fixed handles, shared-session popups/opener scripting, cancelled/confirmed close, blockers and resource cleanup.
 - `test:browser-tabs-ui`: actual BrowserView with real Electron IPC and native BrowserHost; task switches after URL navigation, address blur, panel remount after background navigation, new/closed tab controls.
 - Existing `test:browser-builtin-electron`, `test:browser-refresh`, and `test:browser-screenshot-electron` preserve their behavioral coverage. Screenshot fixture inspection follows each tab's capture owner.
 
 All GUI tests use isolated profiles. If the machine's `/tmp` quota is exhausted, set `TMPDIR` to a private directory under `out/tests`; never use the user's live profile.
+
+## Browser automation capability reference
+
+The current tool supports selected nested same-origin and cross-origin iframe documents, open Shadow DOM, and Chromium accessibility observation. Existing application iframe previews remain in place. `BrowserHost` owns tabs and native presentation. `PageInspectionSession` owns the debugger; automation, diagnostics, accessibility, screenshot capture, and selection UI share it. Exiting selection mode does not detach active diagnostic consumers.
+
+`frames` returns opaque native frame identities. Pass `frameId` to document observation and input actions. A context binds the selected document and every ancestor by native frame identity and a per-document nonce. Reloads, removed frames, changed owners, and ancestor occlusion reject stale input. Frame geometry supports borders, padding, ancestor scrolling, and positive axis scale. Rotated or perspective geometry returns `UNSUPPORTED_SCOPE`. Child documents are observed explicitly rather than silently merged into the parent.
+
+DOM observation searches open shadow roots. Text reading follows assigned slot nodes, and input hit testing and focus follow the composed tree. Closed roots are excluded. `within` must select one container. `exact`, `label`, `placeholder`, and `testId` refine locators. `accessibility` returns bounded Chromium names, roles, and states for one document. `find({axNodeId,documentId})` converts a node from the latest AX snapshot to an observed DOM reference. AX node numbers alone are insufficient because backend IDs can collide across renderer processes.
+
+`assert` accepts 1 to 16 `expect` conditions. The supported kinds are `url`, `text`, `value`, `count`, and `state`. Input actions can also include `expect`. `businessResult` reports those conditions independently of `outcome`, which records input dispatch and receipt. Failure retains the last condition evidence. Password values are redacted. An observation or assertion never repeats a mutation.
+
+`response` and `download` are armed before their associated action under a per-page operation queue. Responses must belong to requests started after arming. Diagnostics record bounded requests, responses, failures, console messages, and exceptions, including child-target session identity. URLs omit credentials, query strings, and fragments. These are time-window associations, not proof that a particular request was caused by a particular handler. Response status alone does not establish business success.
+
+`upload` accepts 1 to 20 regular files under the trusted task directory and an observed file-input reference. Canonical path checks reject directory escapes and junction escapes. Native multiple selection requires a multiple file input. Chromium receives actual files through the selected Runtime context, and the returned FileList is checked. Upload does not submit the form. `download` waits for actual completion and returns path, byte count, and SHA-256. The registered tool also registers a file artifact. Registration failure retains the completed download and action outcome; it does not invite another click.
+
+`dialogRules` provides one-shot alert, confirm, prompt, and beforeunload answers. `diagnostics` reports a pending dialog, and `dialog` answers its exact ID without joining the blocked page action queue. Electron's unsupported prompt wrapper requires a guarded internal adapter; unknown Electron handler shapes fail explicitly. Site-owned prompt overrides remain unchanged. Native prompt return values preserve string, empty string, default text, and cancellation null. For beforeunload, navigation, history, reload, and close can prearm an accept or dismiss rule. An unmatched request is safely canceled. A late accept does not recreate the discarded navigation; the caller must explicitly retry the original operation with a rule. A denied navigation is settled before a retry can proceed.
+
+`collect` requires stable row keys, cell selectors, and an explicit terminal rule. It combines virtualized or paginated rows and can scan horizontal virtual columns using numeric column indices. Row and column indices start at zero. `queryIdentity` identifies a filter revision. Supply it when filters can change without a URL change. A `scroll-end` rule requires `expectedRows`; reaching the current bottom alone does not prove an infinite feed is complete. Budget exhaustion, gaps, changed filters, conflicting rows, and missing progress produce `partial` with a reason. A continuation remains bound to the task, tab, document, and query. When the result exceeds the inline character budget, `collectionFile` contains all collected data as checked JSON and `collectionArtifact` identifies the registered artifact. `outputTruncated` refers to the inline preview, not the saved JSON.
+
+`click` supports `button:right`, `clickCount:2`, and control, alt, shift, or meta modifiers. `fill` supports sequential Unicode text and contenteditable controls. Native date, time, datetime-local, month, and week fields use an explicit synthetic setter strategy and verify validity. Native select change events are also synthetic. `drag` uses observed source and destination references. The pointer path retains and releases its own input. HTML5 source-data transfer is selected with `dragMode:html`; it uses Chromium interception and the real source data rather than caller-supplied file paths.
+
+`screenshot` returns a one-use `captureId` and viewport metadata. `click_at` and `scroll_at` require that capture and screenshot pixel coordinates. The service validates the exact task, tab, frame document tree, viewport, scroll, zoom, and decoded pixels before sending browser-local input. Canvas-only changes invalidate the capture. Animated content or caret changes can therefore require a fresh screenshot. Unsupported pinch offsets fail explicitly.
+
+`open`, `select_tab`, `close`, `back`, `forward`, and `reload` operate on the current task's retained tabs. Closing waits for actual destruction, and same-document history changes count as navigation completion. `handoff({tabId,reason:'login'})` or reason `2fa` presents the existing tab and uses the real persisted conversation interaction. Human waiting is outside the page action deadline. Only an affirmative user answer issues a token. `resume({tabId,token,expect})` checks current page conditions on that same tab and consumes the token only after verification. User secrets remain in the browser; the agent cannot supply its own completion answer.
+
+The focused fixtures exercise the actual Electron engine, public service, registered tool, Durable Code Mode, real user-interaction service, and artifact registration. They use isolated profiles and local servers. They do not establish authenticated-site acceptance on 柠檬云 or replace the repository-wide headless, GUI, and packaged ARTIFACT gates. No product build, package, installation, commit, or push was performed for this change.

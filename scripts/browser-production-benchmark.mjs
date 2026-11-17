@@ -18,7 +18,7 @@ if (models.some(model => !model || /\s/.test(model))) throw Error("--models must
 const entry = options.entry ?? "scripts/browser-production-live.ts";
 if (!["scripts/browser-production-live.ts", "scripts/browser-screenshot-electron-test.ts"].includes(entry)) throw Error("Unsupported benchmark entry");
 const cases = (options.cases ?? "short,long,table,async,form,popup,non-browser,bot-work").split(",");
-const allowedCases = entry === "scripts/browser-production-live.ts" ? ["short", "long", "table", "async", "form", "popup", "non-browser", "bot-work", "partial"] : ["screenshot"];
+const allowedCases = entry === "scripts/browser-production-live.ts" ? ["short", "long", "table", "async", "form", "popup", "non-browser", "partial"] : ["screenshot"];
 if (cases.some(test => !allowedCases.includes(test))) throw Error("Unknown benchmark case");
 const root = resolve("out/diagnostics/browser-46-50/production", new Date().toISOString().replace(/[:.]/g, "-")); mkdirSync(root, { recursive: true });
 const sourceFiles = execFileSync("rg", ["--files", "src/main", "src/shared"], { encoding: "utf8" }).trim().split(/\r?\n/);
