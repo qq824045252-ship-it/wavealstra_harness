@@ -670,7 +670,13 @@
     "test:browser-handoff-tool-electron": "esbuild scripts/browser-handoff-tool-electron-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/browser-handoff-tool-electron-test.mjs && electron out/tests/browser-handoff-tool-electron-test.mjs",
     "test:browser-prompt-electron": "electron scripts/browser-prompt-electron-test.cjs",
     "test:browser-beforeunload-service-electron": "electron scripts/browser-beforeunload-service-electron-test.cjs",
-    "test:browser-html-drag-electron": "electron scripts/browser-html-drag-electron-test.cjs"
+    "test:browser-html-drag-electron": "electron scripts/browser-html-drag-electron-test.cjs",
+    "test:browser-hover-receipt-electron": "esbuild scripts/browser-hover-receipt-electron-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/browser-hover-receipt-electron-test.mjs && electron out/tests/browser-hover-receipt-electron-test.mjs",
+    "test:gadget-history-recovery-electron": "esbuild scripts/gadget-history-recovery-electron-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/gadget-history-recovery-electron-test.mjs && electron out/tests/gadget-history-recovery-electron-test.mjs",
+    "test:gadget-source-read": "esbuild scripts/gadget-source-read-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/gadget-source-read-test.mjs && node scripts/test-guard.mjs out/tests/gadget-source-read-test.mjs",
+    "test:calendar-sync": "node scripts/test-guard.mjs scripts/calendar-sync-test.mjs",
+    "repair:calendar": "esbuild scripts/prepare-calendar-repair.ts --bundle --platform=node --format=cjs --packages=external --outfile=out/tests/prepare-calendar-repair.cjs && node out/tests/prepare-calendar-repair.cjs",
+    "repair:calendar:verify": "esbuild scripts/verify-calendar-repair.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --outfile=out/tests/verify-calendar-repair.cjs && node scripts/test-guard.mjs out/tests/verify-calendar-repair.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
