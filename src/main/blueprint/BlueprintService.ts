@@ -177,6 +177,7 @@ export class BlueprintService {
             entry: gadget.manifest.entry,
             files: gadget.sourceFiles,
             defaultConfig: gadget.manifest.defaultConfig,
+            backend: gadget.manifest.backend,
             metadata: gadget.metadata,
             blueprintId: blueprint.id,
           });

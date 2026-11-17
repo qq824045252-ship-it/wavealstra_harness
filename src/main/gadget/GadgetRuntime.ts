@@ -1,30 +1,36 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { get } from "node:http";
-import type { Readable } from "node:stream";
+import { randomBytes } from "node:crypto";
+import { currentNodePlatform } from "../platform/runtime";
+import { createGadgetCommandRunner, terminateGadgetCommands } from "../platform/gadget-commands";
+import { runGadgetHost, type GadgetHostOptions } from "./GadgetHost";
+import { createGadgetState } from "./GadgetState";
+import { installGadgetClient } from "./GadgetClient";
+import type { GadgetJson } from "../../shared/gadget-backend";
 import type { GadgetDescriptor, GadgetRuntimeDiagnostics, GadgetRuntimeState } from "../../shared/gadget-types";
 import type { GadgetStorage } from "./GadgetStorage";
 import type { GadgetRegistry } from "./GadgetRegistry";
 
 interface RuntimeInstance {
-  child: ChildProcessByStdio<null, Readable, Readable>;
+  child: ChildProcess;
   state: GadgetRuntimeState;
   stderr: string;
   termination?: GadgetRuntimeDiagnostics;
+  token: string;
+  backend: boolean;
+  commandPids: Set<number>;
 }
 
-const HOST_SCRIPT = String.raw`
-const http=require('node:http'),fs=require('node:fs'),path=require('node:path');
-const root=fs.realpathSync(process.cwd()),entry=process.env.MYBUDDY_GADGET_ENTRY||'index.html';
-const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp'};
-const server=http.createServer((req,res)=>{try{const a=server.address(),port=a&&typeof a==='object'?a.port:0,host=String(req.headers.host||'').toLowerCase();if(host!=='127.0.0.1:'+port&&host!=='localhost:'+port){res.writeHead(403,{'x-content-type-options':'nosniff'});return res.end('Forbidden')}if(req.url==='/__mybuddy_health'){res.writeHead(200,{'content-type':'application/json','x-content-type-options':'nosniff'});return res.end('{"ok":true}')}const raw=decodeURIComponent((req.url||'/').split('?')[0]);const rel=raw==='/'?entry:raw.replace(/^\/+/, '');const file=fs.realpathSync(path.resolve(root,rel));if(file!==root&&!file.startsWith(root+path.sep)){res.writeHead(403);return res.end('Forbidden')}const st=fs.statSync(file);if(!st.isFile()){res.writeHead(404);return res.end('Not found')}const ext=path.extname(file).toLowerCase();res.writeHead(200,{'content-type':mime[ext]||'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});if(ext==='.html'||ext==='.htm'){let html=fs.readFileSync(file,'utf8');const bridge="<script>(function(){document.addEventListener('click',function(e){const a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a)return;const href=a.getAttribute('href')||'';if(!/^file:/i.test(href))return;e.preventDefault();e.stopPropagation();window.open('https://mybuddy-open.local/open-file?target='+encodeURIComponent(href),'_blank');},true);})();<\/script>";html=html.replace(/<\/body>/i,bridge+'</body>');return res.end(html)}fs.createReadStream(file).pipe(res)}catch(e){res.writeHead(404,{'x-content-type-options':'nosniff'});res.end('Not found')}});
-server.listen(0,'127.0.0.1',()=>{const a=server.address();process.stdout.write('MYBUDDY_GADGET_PORT:'+a.port+'\n')});
-const close=()=>server.close(()=>process.exit(0));process.on('SIGTERM',close);process.on('SIGINT',close);
-`;
+function hostScript(options: GadgetHostOptions): string {
+  return `(${runGadgetHost.toString()})(${JSON.stringify(options)}, ${createGadgetState.toString()}, ${createGadgetCommandRunner.toString()})` +
+    '.catch(error => { console.error(error); process.exit(1); });';
+}
 
 export class GadgetRuntime {
   private readonly instances = new Map<string, RuntimeInstance>();
   // All public operations share one queue. Internal operations never re-enter it.
   private readonly operations = new Map<string, Promise<unknown>>();
+  private readonly commandCleanup = new Map<string, { pids: Set<number>; flight?: Promise<void> }>();
 
   constructor(
     private readonly storage: GadgetStorage,
@@ -53,6 +59,7 @@ export class GadgetRuntime {
   }
 
   private async startOne(descriptor: GadgetDescriptor): Promise<GadgetRuntimeState> {
+    await this.cleanupCommands(descriptor.id);
     const existing = this.instances.get(descriptor.id);
     if (existing) {
       const checked = await this.healthOne(descriptor.id);
@@ -68,20 +75,44 @@ export class GadgetRuntime {
     try {
       this.storage.materializeLegacyLocalHtmlRedirect(descriptor.id);
       const manifest = this.storage.readManifest(descriptor.id);
-      const child = spawn(process.execPath, ["-e", HOST_SCRIPT], {
+      const token = randomBytes(32).toString("hex");
+      const options: GadgetHostOptions = {
+        gadgetId: descriptor.id, manifest, dataPath: this.storage.paths(descriptor.id).dataPath, token,
+        sdkSource: `(${installGadgetClient.toString()})(${JSON.stringify(token)});`, platform: currentNodePlatform,
+      };
+      // Deliver source over stdin: no token in argv, no extra packaged worker asset,
+      // and no Windows command-line length limit for the embedded host.
+      const environmentNames = new Set([
+        "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "TMPDIR",
+        "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+        ...(manifest.backend?.environment ?? []).map(name => name.toUpperCase()),
+      ]);
+      const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && environmentNames.has(name.toUpperCase())));
+      const child = spawn(process.execPath, ["-"], {
         cwd: this.storage.paths(descriptor.id).sourcePath,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", MYBUDDY_GADGET_ENTRY: manifest.entry },
-        stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+        env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+        stdio: ["pipe", "pipe", "pipe", "ipc"], windowsHide: true,
       });
-      instance = { child, state: starting, stderr: "" };
-      const owned = instance;
+      const owned: RuntimeInstance = { child, state: starting, stderr: "", token, backend: Boolean(manifest.backend), commandPids: new Set() };
+      instance = owned;
       this.instances.set(descriptor.id, owned);
-      child.stderr.on("data", (chunk) => { owned.stderr = `${owned.stderr}${String(chunk)}`.slice(-4000); });
+      child.on("message", (message: unknown) => {
+        if (!message || typeof message !== "object" || !("pid" in message) || typeof message.pid !== "number"
+          || !Number.isSafeInteger(message.pid) || message.pid <= 1 || message.pid === process.pid || message.pid === child.pid || !("type" in message)) return;
+        if (message.type === "command-started") owned.commandPids.add(message.pid);
+        if (message.type === "command-exited") owned.commandPids.delete(message.pid);
+      });
+      child.stdin?.on("error", () => undefined);
+      child.stderr?.on("data", (chunk) => { owned.stderr = `${owned.stderr}${String(chunk)}`.slice(-4000); });
       // close follows exit and drains stderr. Retain diagnostics even for code 0
       // when exit was not requested (a successful exit is not a healthy server).
       child.once("close", (code, signal) => {
         if (this.instances.get(descriptor.id) !== owned) return;
         this.instances.delete(descriptor.id);
+        if (owned.commandPids.size) {
+          this.commandCleanup.set(descriptor.id, { pids: new Set(owned.commandPids) });
+          void this.cleanupCommands(descriptor.id).catch(error => console.warn("[GadgetRuntime] command cleanup failed", error));
+        }
         const diagnostics: GadgetRuntimeDiagnostics = {
           ...owned.termination,
           reason: owned.termination?.reason ?? (owned.state.status === "starting" ? "startup_failure" : "unexpected_exit"),
@@ -102,7 +133,7 @@ export class GadgetRuntime {
         const timer = setTimeout(() => finish(new Error("Gadget 启动超时")), 8_000);
         const finish = (error?: Error): void => {
           clearTimeout(timer);
-          child.stdout.off("data", onData);
+          child.stdout?.off("data", onData);
           child.off("exit", onExit);
           error ? reject(error) : resolve();
         };
@@ -120,7 +151,7 @@ export class GadgetRuntime {
           };
           finish();
         };
-        child.stdout.on("data", onData);
+        child.stdout?.on("data", onData);
         child.once("exit", onExit);
         // Keep an error listener after startup too (kill/spawn errors must not
         // become uncaught main-process exceptions).
@@ -130,6 +161,7 @@ export class GadgetRuntime {
             this.fail(owned, "health_failure", error.message);
           }
         });
+        child.stdin?.end(hostScript(options));
       });
       return await this.healthOne(descriptor.id);
     } catch (error) {
@@ -223,6 +255,7 @@ export class GadgetRuntime {
   private async stopOne(id: string, reason: "explicit_stop" | "restart"): Promise<GadgetRuntimeState> {
     const instance = this.instances.get(id);
     if (!instance) {
+      await this.cleanupCommands(id);
       const stopped: GadgetRuntimeState = { gadgetId: id, status: "stopped", diagnostics: this.registry.runtime(id).diagnostics };
       this.setState(stopped);
       return stopped;
@@ -240,8 +273,12 @@ export class GadgetRuntime {
         child.off("close", finish);
         reject(new Error("Gadget 进程停止超时；未启动替代进程"));
       }, 4_000);
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null && child.signalCode === null) {
+        if (child.connected) child.send({ type: "shutdown" }, (error) => { if (error) child.kill("SIGTERM"); });
+        else child.kill("SIGTERM");
+      }
     });
+    await this.cleanupCommands(id);
     return this.registry.runtime(id);
   }
 
@@ -252,11 +289,78 @@ export class GadgetRuntime {
     });
   }
 
+  sourceChanged(descriptor: GadgetDescriptor): void {
+    const current = this.instances.get(descriptor.id);
+    if (!current || (!current.backend && !this.storage.readManifest(descriptor.id).backend)) return;
+    // Static edits retain their URL. Executable edits get a fresh process/module
+    // cache and revoke outstanding calls, while the independent data/ stays put.
+    this.configurationChanged(descriptor);
+  }
+
+  configurationChanged(descriptor: GadgetDescriptor): void {
+    const current = this.instances.get(descriptor.id);
+    if (!current) return;
+    void this.enqueue(descriptor.id, async () => {
+      // A preceding explicit stop wins over this automatic source activation.
+      if (this.instances.get(descriptor.id) !== current) return;
+      await this.stopOne(descriptor.id, "restart");
+      await this.startOne(descriptor);
+    }).catch(error => {
+      console.warn("[GadgetRuntime] configuration activation failed", error);
+    });
+  }
+
+  async request(descriptor: GadgetDescriptor, route: string, input?: unknown, options: {
+    signal?: AbortSignal;
+    start?: boolean;
+    authorize?: () => void;
+  } = {}): Promise<GadgetJson> {
+    const { signal } = options;
+    options.authorize?.();
+    signal?.throwIfAborted();
+    const state = options.start === false ? this.registry.runtime(descriptor.id) : await this.start(descriptor);
+    options.authorize?.();
+    signal?.throwIfAborted();
+    const instance = this.instances.get(descriptor.id);
+    if (state.status !== "running" || !state.url || !instance) throw new Error(state.error || "Gadget 后台不可用");
+    const response = await fetch(new URL(`__mybuddy/${route}`, state.url), {
+      method: input === undefined ? "GET" : "POST",
+      headers: { "x-mybuddy-gadget-token": instance.token, ...(input === undefined ? {} : { "content-type": "application/json" }) },
+      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(125_000)]) : AbortSignal.timeout(125_000),
+    });
+    const result: unknown = await response.json();
+    options.authorize?.();
+    if (this.instances.get(descriptor.id) !== instance || !this.isAlive(instance)) throw new Error("Gadget 已重启或停止；本次操作不会自动重放");
+    if (!result || typeof result !== "object") throw new Error("Gadget 返回无效结果");
+    if (!response.ok) {
+      const error = "error" in result ? result.error : null;
+      if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+        throw Object.assign(new Error(error.message), { code: "code" in error ? error.code : "REQUEST_FAILED" });
+      }
+      throw new Error(`Gadget 请求失败 (${response.status})`);
+    }
+    if (!("value" in result)) throw new Error("Gadget 返回缺少结果");
+    // Only JSON from the owned host reaches this boundary.
+    return result.value as GadgetJson;
+  }
+
   async dispose(id: string): Promise<void> { await this.stop(id); }
 
   async disposeAll(): Promise<void> {
-    const ids = new Set([...this.instances.keys(), ...this.operations.keys()]);
+    const ids = new Set([...this.instances.keys(), ...this.operations.keys(), ...this.commandCleanup.keys()]);
     await Promise.all([...ids].map((id) => this.stop(id)));
+  }
+
+  private async cleanupCommands(id: string): Promise<void> {
+    const pending = this.commandCleanup.get(id);
+    if (!pending) return;
+    if (!pending.flight) {
+      pending.flight = terminateGadgetCommands(pending.pids).then(() => {
+        if (this.commandCleanup.get(id) === pending) this.commandCleanup.delete(id);
+      }).finally(() => { pending.flight = undefined; });
+    }
+    await pending.flight;
   }
 
   private setState(state: GadgetRuntimeState): void {

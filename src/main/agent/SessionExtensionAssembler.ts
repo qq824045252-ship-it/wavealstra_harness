@@ -122,6 +122,24 @@ export class SessionExtensionAssembler {
 
   private conversationCapabilityFactories(input: Pick<SessionExtensionAssemblyInput,
     "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability">, durable = false): InlineExtension[] {
+    const ask = async (request: Parameters<NonNullable<SessionBuiltinCapabilityBridge["browserHandoff"]>>[0],
+      key: string, signal: AbortSignal) => {
+      const context = input.resolveConversationContext();
+      if (!context || context.taskId !== input.taskId) throw new Error("浏览器交接缺少当前任务的对话执行身份");
+      if (signal.aborted) throw new Error("当前执行已中止");
+      if (durable) {
+        const active = currentDurableInvocation();
+        if (!active || active.execution.taskId !== input.taskId) throw new Error("浏览器交接缺少当前任务的持久执行身份");
+        return this.deps.conversationInteractions.requestDurable(context, request, {
+          key, signal,
+          onPending: interaction => { void active.native.details({ interactionId: interaction.id, waitingForInput: true }, active.context).catch(() => {}); },
+        });
+      }
+      const onAbort = () => this.deps.conversationInteractions.cancelExecution(context.executionId, "当前执行已中止");
+      signal.addEventListener("abort", onAbort, { once: true });
+      try { return await this.deps.conversationInteractions.request(context, request); }
+      finally { signal.removeEventListener("abort", onAbort); }
+    };
     return [
       createConversationRuntimeExtension({
         resolveContext: input.resolveConversationContext,
@@ -141,6 +159,7 @@ export class SessionExtensionAssembler {
         taskId: input.taskId,
         get taskRoot() { return durable ? currentDurableExecutionCwd() ?? input.taskRoot : input.taskRoot; },
         ...input.builtinCapability,
+        browserHandoff: ask,
         ...(durable ? { getExecutionRunId: currentDurableRunId } : {}),
         shellVerification: { resolveContext: input.resolveConversationContext, attempts: this.deps.executionAttempts, failures: this.deps.executionFailures },
         computerRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures },

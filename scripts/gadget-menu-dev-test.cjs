@@ -1,3 +1,1 @@
-/** Full-app Electron acceptance, isolated profile and actual Gadget IPC. */
-process.env.GADGET_MENU_DEV = '1';
-require('./bot-settings-dev-test.cjs');
+require('./desktop-dev-harness.cjs').run(require('./gadget-menu-dev-checks.cjs'), {name:'gadget-menu'});

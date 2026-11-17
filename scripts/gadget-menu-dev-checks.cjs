@@ -33,7 +33,7 @@ module.exports = async ({evaluate, rpc, until, report, out, home}) => {
     const task={id:'gadget-menu-task',title:'Gadget menu task',spaceId:space.id,updatedAt:Date.now(),modelId:'fixture/fixture',welcomeMode:'working',messages:[{id:'fixture-message',role:'assistant',createdAt:Date.now(),blocks:[{type:'text',content:'隔离的界面验收，无模型请求。'}]}]};
     await window.api.db.upsertSpace(space);await window.api.db.upsertTask(task);
     window.gadgetTestItem=await window.api.gadget.create({name:'bilibili 演示站',description:'B 站风格视频站演示界面：轮播、推荐流、排行榜、搜索筛选、视频详情弹层。全部为本地示例数据，不调用官方接口。',scope:{type:'global'},files:[{path:'index.html',content:'<!doctype html><h1>Gadget menu test</h1>'}]});
-    s.setState({theme:'light',page:'gadgets',tasks:[task],spaces:[space],activeTaskId:task.id,activeBotId:null,draft:null,sidebarCollapsed:false,panelOpen:false});
+    s.setState({theme:'light',page:'gadgets',tasks:[task],spaces:[space],activeTaskId:task.id,draft:null,sidebarCollapsed:false,panelOpen:false});
   })()`);
   report.seededPresentationFacts.push('Disposable workspace/task and actual Gadget files created via IPC; no production data or model request.');
   await until(()=>evaluate(`!!document.querySelector('.gadget-more-btn')`),'global gadget');

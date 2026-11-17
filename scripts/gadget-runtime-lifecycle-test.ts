@@ -12,12 +12,13 @@ async function main(): Promise<void> {
   mkdirSync(fixtureBase, { recursive: true });
   const root = mkdtempSync(join(fixtureBase, "gadget-runtime-lifecycle-"));
   writeFileSync(join(root, "index.html"), "<body>isolated runtime fixture</body>");
+  mkdirSync(join(root, "data"));
   const registry = new GadgetRegistry();
   const events: GadgetRuntimeState[] = [];
   const storage = {
     materializeLegacyLocalHtmlRedirect: () => false,
     readManifest: () => ({ entry: "index.html" }),
-    paths: () => ({ sourcePath: root }),
+    paths: () => ({ sourcePath: root, dataPath: join(root, "data") }),
   } as unknown as GadgetStorage;
   const runtime = new GadgetRuntime(storage, registry, state => events.push(state));
   const descriptor = { id: "fixture-runtime" } as GadgetDescriptor;

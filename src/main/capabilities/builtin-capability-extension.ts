@@ -1,12 +1,12 @@
 import { browserAgentPolicy } from "./BrowserAgentPolicy";
-import { browserToolDescription } from "./BrowserToolContract";
+import { browserExecSchema, browserToolDescription } from "./BrowserToolContract";
 import { registerLocalWorkflowTools, type LocalWorkflowBridge } from "./local-workflow-extension";
 import { VideoJobPendingError } from "./VideoGenerationJobs";
 import { consultToolResult } from "./MultiModelConsult";
 import { consultSummary, type MultiModelConsultInput, type MultiModelConsultReport } from "../../shared/multi-model-consult";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   createBashTool,
@@ -16,6 +16,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { ArtifactKind } from "../../shared/artifact-types";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import { isPathInsideOrEqual } from "../task/TaskExecutionWorkspace";
 import type { IsolationLevel } from "../security/TaskExecutionIsolation";
@@ -29,6 +30,7 @@ import type {
   VideoGenerateInput,
 } from "./BuiltinCapabilityRuntime";
 import type { BrowserAutomationService, BrowserExecInput } from "./BrowserAutomationService";
+import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
 import { uiAutomationService, type UiExecInput } from "./UiAutomationService";
 import { computerAutomationService, type ComputerBatchAction, type ComputerExecInput, type ComputerExecOutput } from "./ComputerAutomationService";
 import { formatComputerUseFailureEvidence, withComputerUseDeliveryEvidence } from "./ComputerUsePolicy";
@@ -64,6 +66,8 @@ export interface BuiltinCapabilityExtensionBridge {
   taskRoot: string;
   runtime: BuiltinCapabilityRuntime;
   browser: BrowserAutomationService;
+  /** Actual task interaction service; browser handoff cannot accept a model-declared answer. */
+  browserHandoff?: (request: ConversationInteractionRequest, durableKey: string, signal: AbortSignal) => Promise<ConversationInteractionAnswer>;
   artifactService: () => ArtifactService | null;
   markArtifactEmitted?: (path: string) => void;
   getProducerMessageId: () => string | undefined;
@@ -100,13 +104,20 @@ function errorResult(tool: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   const computerEvidence = tool === "computer_exec" ? formatComputerUseFailureEvidence(error) : "";
   const additional = error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : undefined;
+  const browserEvidence = tool === "browser_exec" ? JSON.stringify({
+    code: error && typeof error === "object" && "code" in error ? error.code : undefined,
+    ...additional,
+    nextAction: additional && "outcome" in additional && additional.outcome && typeof additional.outcome === "object" && "dispatch" in additional.outcome && additional.outcome.dispatch === "not_started"
+      ? "重新观察并修正目标；悬停菜单使用 hover 路径在同一次调用中展开并点击。"
+      : "先只读核对当前页面和操作结果，不要盲目重放提交。",
+  }) : "";
   const details = error instanceof VideoJobPendingError
     ? { error: message, ...additional, videoJob: { jobId: error.jobId, remoteId: error.remoteId, reason: error.reason, remoteCancelled: false } }
     : (error && typeof error === "object" && "details" in error && error.details && typeof error.details === "object")
     ? { error: message, details: error.details as Record<string, unknown> }
     : { error: message };
   return {
-    content: [{ type: "text" as const, text: `[${tool}] ${message}${computerEvidence ? `\n\n执行证据（先回读状态，禁止重放已执行或结果未知的输入）：\n${computerEvidence}` : ""}` }],
+    content: [{ type: "text" as const, text: `[${tool}] ${message}${computerEvidence ? `\n\n执行证据（先回读状态，禁止重放已执行或结果未知的输入）：\n${computerEvidence}` : ""}${browserEvidence ? `\n\n浏览器执行证据：\n${browserEvidence}` : ""}` }],
     isError: true as const,
     details: { ...details, ...(error && typeof error === "object" && "code" in error && typeof error.code === "string" ? { code: error.code } : {}) } as Record<string, unknown>,
   };
@@ -259,38 +270,6 @@ const textToSpeechSchema = Type.Object({
   voice: Type.Optional(Type.String({ maxLength: 200 })),
   rate: Type.Optional(Type.String({ maxLength: 40 })),
   format: Type.Optional(Type.Union([Type.Literal("mp3"), Type.Literal("wav"), Type.Literal("ogg")])),
-}, { additionalProperties: false });
-
-const browserExecSchema = Type.Object({
-  action: Type.Union([
-    Type.Literal("status"), Type.Literal("navigate"), Type.Literal("read"),
-    Type.Literal("click"), Type.Literal("fill"), Type.Literal("press"), Type.Literal("screenshot"),
-    Type.Literal("find"), Type.Literal("inspect"), Type.Literal("wait_for"),
-  ]),
-  reload: Type.Optional(Type.Boolean()),
-  gadgetId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-  tabId: Type.Optional(Type.String({ maxLength: 200 })),
-  url: Type.Optional(Type.String({ maxLength: 2_000 })),
-  selector: Type.Optional(Type.String({ maxLength: 1_000 })),
-  text: Type.Optional(Type.String({ maxLength: 100_000 })),
-  key: Type.Optional(Type.String({ maxLength: 60 })),
-  max_chars: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 100_000 })),
-  mode: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("interactive")])),
-  role: Type.Optional(Type.String({ maxLength: 200 })),
-  name: Type.Optional(Type.String({ maxLength: 1_000 })),
-  cursor: Type.Optional(Type.String({ maxLength: 300 })),
-  offset: Type.Optional(Type.Integer({ minimum: 0 })),
-  element_offset: Type.Optional(Type.Integer({ minimum: 0 })),
-  timeout_ms: Type.Optional(Type.Integer({ minimum: 100, maximum: 30_000 })),
-  state: Type.Optional(Type.Union([Type.Literal("attached"), Type.Literal("detached"), Type.Literal("visible"), Type.Literal("hidden")])),
-  after: Type.Optional(Type.Object({
-    selector: Type.Optional(Type.String({ maxLength: 1_000 })),
-    role: Type.Optional(Type.String({ maxLength: 200 })),
-    name: Type.Optional(Type.String({ maxLength: 1_000 })),
-    state: Type.Optional(Type.Union([Type.Literal("attached"), Type.Literal("detached"), Type.Literal("visible"), Type.Literal("hidden")])),
-    mode: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("interactive")])),
-    maxChars: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 100_000 })),
-  }, { additionalProperties: false })),
 }, { additionalProperties: false });
 
 const uiExecSchema = Type.Object({
@@ -760,14 +739,37 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         name: "browser_exec",
         label: "浏览器操作",
         description: browserToolDescription,
-        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, text?, mode?, cursor?, after?, timeout_ms?)",
+        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, hover?, text?, values?, checked?, delta_x?, delta_y?, mode?, cursor?, after?, timeout_ms?)",
         parameters: browserExecSchema,
-        execute: async (tc, p: BrowserExecInput & { max_chars?: number; timeout_ms?: number; element_offset?: number }, signal, _onUpdate, ctx) => {
+        execute: async (tc, p: BrowserExecInput & { max_chars?: number; timeout_ms?: number; element_offset?: number; delta_x?: number; delta_y?: number }, signal, _onUpdate, ctx) => {
           let input: BrowserExecInput | undefined;
           try {
             const context = toolContext(bridge, tc, signal);
-            input = { ...p, maxChars: p.max_chars, timeoutMs: p.timeout_ms, elementOffset: p.element_offset };
-            const result = await bridge.browser.execute(input, signal, { taskId: bridge.taskId });
+            input = { ...p, maxChars: p.max_chars, timeoutMs: p.timeout_ms, elementOffset: p.element_offset, deltaX: p.delta_x, deltaY: p.delta_y };
+            if (input.action === "handoff" && !bridge.browserHandoff) throw new Error("当前执行未连接真实任务交互服务，无法请求人工登录");
+            let result = input.action === "handoff" ? await bridge.browser.beginHandoff(input, signal, { taskId: bridge.taskId, requestKey: context.toolCallId, ask: (request, key, requestedSignal) => bridge.browserHandoff!(request, key, requestedSignal ?? new AbortController().signal) }) : await bridge.browser.execute(input, signal, { taskId: bridge.taskId, taskRoot: bridge.taskRoot });
+            if (result.collectionFile) {
+              const service = bridge.artifactService();
+              try {
+                if (!service) throw new Error("产物服务不可用，完整集合数据已保留在 collectionFile.path");
+                const artifact = await service.register({ taskId: bridge.taskId, kind: "code", title: "浏览器集合完整数据", workspaceFile: { entryFile: result.collectionFile.path, rootDir: result.collectionFile.rootDir }, producerMessageId: context.producerMessageId, producerToolCallId: context.toolCallId });
+                result = { ...result, collectionArtifact: { status: "registered", artifactId: artifact.id } };
+                bridge.markArtifactEmitted?.(result.collectionFile!.path);
+              } catch (error) { result = { ...result, collectionArtifact: { status: "failed", reason: String(error) } }; }
+            }
+            if (result.download?.state === "completed") {
+              const downloaded = result.download;
+              const ext = extname(downloaded.path).toLowerCase();
+              const kind: ArtifactKind = ext === ".pdf" ? "pdf" : [".xlsx", ".xls", ".docx", ".pptx", ".csv"].includes(ext) ? "office" : ext === ".html" ? "html" : ext === ".svg" ? "svg" : [".png", ".jpg", ".jpeg", ".webp"].includes(ext) ? "image" : ext === ".md" ? "markdown" : "code";
+              const service = bridge.artifactService();
+              if (service) {
+                try {
+                  const artifact = await service.register({ taskId: bridge.taskId, kind, title: basename(downloaded.path), workspaceFile: { entryFile: downloaded.path, rootDir: bridge.taskRoot }, producerMessageId: context.producerMessageId, producerToolCallId: context.toolCallId });
+                  result = { ...result, artifactId: artifact.id, downloadArtifact: { status: "registered" } };
+                  bridge.markArtifactEmitted?.(downloaded.path);
+                } catch (error) { result = { ...result, downloadArtifact: { status: "failed", reason: String(error) } }; }
+              }
+            }
             settleBrowserAutomationRecovery(bridge.browserRecovery, input, result);
             if (result.screenshot) {
               const saved = await materializer.materialize("image", {
@@ -781,7 +783,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
                 prompt: "请分析这张浏览器截图，准确描述页面主要内容、可见控件、文本、状态、错误提示和与当前任务相关的可交互目标。不要猜测不可见内容。",
               });
             }
-            return jsonResult(`浏览器动作完成：${p.action}`, result);
+            return { ...jsonResult(`浏览器动作完成：${p.action}`, result), isError: result.businessResult?.status === "failed" || result.downloadArtifact?.status === "failed" || result.collectionArtifact?.status === "failed" || result.download?.state === "interrupted" || result.download?.state === "cancelled" };
           } catch (error) {
             if (input) recordBrowserAutomationFailureRecovery(bridge.browserRecovery, input, error);
             return errorResult("browser_exec", error);

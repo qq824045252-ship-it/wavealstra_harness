@@ -27,7 +27,7 @@ const reportPath = join(process.cwd(), "artifacts/gadget-browser-recovery-live",
 mkdirSync(join(process.cwd(), "artifacts/gadget-browser-recovery-live"), { recursive: true });
 const base = process.env.MYBUDDY_BROWSER_LIVE_URL ?? "http://127.0.0.1:3425/v1";
 const require = createRequire(import.meta.url);
-const { liveModelFromCatalog } = require(join(process.cwd(), "scripts/bot-live-model-config.cjs"));
+const { liveModelFromCatalog } = require(join(process.cwd(), "scripts/live-model-config.cjs"));
 const report: any = { at: new Date().toISOString(), fixture: root, cases: [], transport: "live chat/completions tool loop", execution: "production built-in extension + BrowserHost/BrowserAutomationService + GadgetService/Runtime", systemPrompt: "你是测试本地浏览器的助手。必须实际使用提供的工具完成用户任务，依据工具结果回答。浏览器操作仅使用 browser_exec，不得启动外部浏览器。read 返回页面文字；改变页面后再次 read，再继续输入或点击。工具出错时读取明确错误并恢复，不盲目重试。不要调用 screenshot，此测试核验 DOM 和导航，不需要图片。" };
 const save = () => writeFileSync(reportPath, JSON.stringify(report, null, 2));
 let host: BrowserHost | undefined; let win: BrowserWindow | undefined; let gadgets: GadgetRuntime | undefined; let db: AppDatabase | undefined;

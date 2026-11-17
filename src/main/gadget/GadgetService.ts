@@ -12,6 +12,7 @@ import type {
   GadgetSourceUpdateRequest,
 } from "../../shared/gadget-types";
 import { assertGadgetScope, GADGET_MANIFEST_SCHEMA_VERSION, normalizeJsonRecord } from "../../shared/gadget-types";
+import { gadgetBackendSchema, type GadgetJson, type GadgetBackendInput } from "../../shared/gadget-backend";
 import { saveGadgetToTaskDirectory } from "./saveGadgetToTaskDirectory";
 import type { GadgetSaveToTaskDirectoryRequest, GadgetSaveToTaskDirectoryResult } from "../../shared/gadget-ipc";
 import type { GadgetListRequest } from "../../shared/gadget-ipc";
@@ -90,6 +91,7 @@ export class GadgetService {
       type: "web",
       entry,
       ...(request.defaultConfig ? { defaultConfig: request.defaultConfig } : {}),
+      ...(request.backend === undefined ? {} : { backend: gadgetBackendSchema.parse(request.backend) }),
     };
     const paths = this.deps.storage.create(id, manifest, request.files);
     const now = Date.now();
@@ -151,6 +153,7 @@ export class GadgetService {
       if (manifestChanged) this.deps.storage.writeManifest(current.id, nextManifest);
       const saved = this.deps.repository.update(updated);
       this.deps.registry.upsert(saved);
+      if (request.defaultConfig !== undefined) this.deps.runtime.configurationChanged(saved);
       this.emitChanged({ type: "updated", gadgetId: saved.id });
       return saved;
     } catch (error) {
@@ -206,6 +209,7 @@ export class GadgetService {
     const updated = { ...current, updatedAt: Date.now() };
     const snapshot = this.deps.storage.updateSource(request, () => this.deps.repository.update(updated));
     this.deps.registry.upsert(updated);
+    this.deps.runtime.sourceChanged(updated);
     this.emitChanged({ type: "updated", gadgetId: current.id, sourceChanged: true });
     return snapshot;
   }
@@ -218,6 +222,30 @@ export class GadgetService {
       this.emitChanged({ type: "open-requested", gadgetId: id, taskId });
     }
     return state;
+  }
+
+  async callForTask(id: string, taskId: string, action: string, input: GadgetJson = null, signal?: AbortSignal): Promise<GadgetJson> {
+    const gadget = this.getForTask(id, taskId);
+    if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$/.test(action)) throw new Error("Gadget action 名称无效");
+    const result = await this.deps.runtime.request(gadget, `actions/${encodeURIComponent(action)}`, { input }, {
+      signal, authorize: () => { this.getForTask(id, taskId); },
+    });
+    this.getForTask(id, taskId);
+    return result;
+  }
+
+  async runtimeForTask(id: string, taskId: string, operation: "status" | "stop" | "restart" | "logs"): Promise<unknown> {
+    const gadget = this.getForTask(id, taskId);
+    let result: unknown;
+    if (operation === "status") result = await this.health(id);
+    else if (operation === "stop") result = await this.stop(id);
+    else if (operation === "restart") result = await this.restart(id);
+    else if (gadget.runtime.status !== "running") result = { runtime: gadget.runtime, logs: [] };
+    else result = await this.deps.runtime.request(gadget, "logs", undefined, { start: false,
+      authorize: () => { this.getForTask(id, taskId); },
+    });
+    this.getForTask(id, taskId);
+    return result;
   }
 
   /** Independent source/configuration snapshot. Runtime data and browser sessions are not shared. */
@@ -372,6 +400,7 @@ export class GadgetService {
     entry: string;
     files: GadgetSourceFile[];
     defaultConfig?: Record<string, unknown>;
+    backend?: GadgetBackendInput;
     metadata?: Record<string, unknown>;
     blueprintId: string;
   }): GadgetDescriptor {
@@ -403,6 +432,7 @@ export class GadgetService {
     const gadget = this.require(input.gadgetId);
     this.assertVisibleToTask(gadget, input.taskId);
     const entry = this.deps.storage.readEntry(gadget.id);
+    if (entry.manifest.backend) throw new Error("这个 Gadget 包含后台，独立 HTML Artifact 无法运行它。请保存到任务目录或另存为 Blueprint；导出报告时请生成不依赖后台的 HTML。");
     return this.deps.artifacts.write({ taskId: input.taskId, title: input.title?.trim() || gadget.name, content: entry.content });
   }
 

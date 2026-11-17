@@ -67,7 +67,7 @@ async function navigate(where) {
     await click(button('.workspace-detail-tab', 'Gadgets'));
     await until(() => evaluate('Boolean(document.querySelector(".workspace-gadgets"))'), 'workspace gadgets');
   } else {
-    await evaluate(`window.gadgetSaveStore.setState({page:'chat',activeTaskId:'bound-task',activeBotId:null,draft:null,panelOpen:true,panelMode:'gadgets',panelWidth:440,panelExpanded:false})`);
+    await evaluate(`window.gadgetSaveStore.setState({page:'chat',activeTaskId:'bound-task',draft:null,panelOpen:true,panelMode:'gadgets',panelWidth:440,panelExpanded:false})`);
     await until(() => evaluate('Boolean(document.querySelector(".task-gadgets-view"))'), 'task gadgets');
   }
   await wait(200);
@@ -144,7 +144,7 @@ async function deleteUi(name, id, cancelFirst = false) {
       const space={id:'bound-space',name:'Save fixture space',path:${JSON.stringify(taskRoot)},createdAt:Date.now(),updatedAt:Date.now()};
       const task={id:'bound-task',title:'Copy fixture task',spaceId:space.id,updatedAt:Date.now(),sessionFile:${JSON.stringify(manager.getSessionFile())},welcomeMode:'working',messages:[{id:'fixture-message',role:'assistant',createdAt:Date.now(),blocks:[{type:'text',content:'Isolated UI fixture. No model request.'}]}]};
       await window.api.db.upsertSpace(space);await window.api.db.upsertTask(task);
-      s.setState({theme:'light',tasks:[task],spaces:[space],activeTaskId:task.id,activeBotId:null,draft:null,sidebarCollapsed:false});
+      s.setState({theme:'light',tasks:[task],spaces:[space],activeTaskId:task.id,draft:null,sidebarCollapsed:false});
       return window.api.gadget.create({name:'Copy fixture',scope:{type:'task',taskId:task.id},entry:'page/index.html',defaultConfig:{fixture:1},files:[{path:'page/index.html',content:'<!doctype html><html><body><h1>Independent preview fixture</h1><script src="../assets/app.js"></script></body></html>'},{path:'assets/app.js',content:'window.fixtureLoaded=true;'},{path:'assets/pixel.bin',encoding:'base64',content:'AP8NCg=='}]});})()`);
     assert(source.sourcePath.startsWith(home+path.sep),'Real IPC storage must stay in fixture HOME');
     const expected=await snapshot(source.id);

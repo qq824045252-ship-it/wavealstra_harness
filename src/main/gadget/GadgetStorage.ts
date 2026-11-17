@@ -86,6 +86,9 @@ export class GadgetStorage {
       if (!existsSync(join(target.sourcePath, ...normalized.entry.split("/")))) {
         throw new Error(`Gadget 入口文件不存在：${normalized.entry}`);
       }
+      if (normalized.backend && !existsSync(join(target.sourcePath, ...normalized.backend.entry.split("/")))) {
+        throw new Error(`Gadget 后台入口不存在：${normalized.backend.entry}`);
+      }
       this.writeManifest(id, normalized);
       return target;
     } catch (error) {
@@ -195,12 +198,17 @@ export class GadgetStorage {
       merged.set(path.toLowerCase(), { ...file, path: old?.path ?? path });
     }
     this.validateSourceFiles([...merged.values()]);
-    if (!merged.has(current.manifest.entry.toLowerCase())) throw new Error("Gadget 缺少入口文件");
+    const manifest = normalizeGadgetManifest({ ...current.manifest,
+      ...(request.backend === undefined ? {} : { backend: request.backend === null ? undefined : request.backend }),
+    });
+    if (!merged.has(manifest.entry.toLowerCase())) throw new Error("Gadget 缺少入口文件");
+    if (manifest.backend && !merged.has(manifest.backend.entry.toLowerCase())) throw new Error("Gadget 缺少后台入口文件");
     const paths = this.paths(id);
     const next = join(paths.root, `code.next-${randomUUID()}`);
     const previous = join(paths.root, `code.previous-${randomUUID()}`);
     mkdirSync(next);
     const applied: Array<{ destination: string; backup: string | null }> = [];
+    let manifestWritten = false;
     try {
       for (const file of merged.values()) {
         const destination = resolve(next, ...safeRelativePath(file.path).split("/"));
@@ -221,6 +229,7 @@ export class GadgetStorage {
         renameSync(resolve(next, ...file.path.split("/")), destination);
         applied.push({ destination, backup });
       }
+      if (request.backend !== undefined) { this.writeManifest(id, manifest); manifestWritten = true; }
       const snapshot = this.readSource(id);
       commit();
       // A cleanup failure must not report a successful source/DB commit as a failed edit.
@@ -232,6 +241,7 @@ export class GadgetStorage {
         if (backup) renameSync(backup, destination);
         else rmSync(destination, { force: true });
       }
+      if (manifestWritten) this.writeManifest(id, current.manifest);
       rmSync(previous, { recursive: true, force: true });
       throw error;
     } finally {
