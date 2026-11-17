@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {GADGET_MANIFEST_SCHEMA_VERSION} from '../src/shared/gadget-types';
+import {readGadgetSourcePage} from '../src/main/gadget/GadgetSourceRead';
+import {gadgetIdsForPreview} from '../src/main/agent/durable/DurableGadgetPreviewIdentity';
+const content='中文🙂\n'.repeat(20000),source={revision:'revision-a',manifest:{schemaVersion:GADGET_MANIFEST_SCHEMA_VERSION,name:'large',type:'web' as const,entry:'index.html'},files:[{path:'index.html',content}]};
+let cursor:string|undefined,joined='',pages=0;
+do{const result=readGadgetSourcePage({gadgetId:'gdt-fixture',path:'index.html',cursor,maxBytes:2000},source);assert(Buffer.byteLength(result.content)<=2000);assert.match(result.content.slice(0,120),/revision-a/);assert.equal(result.details.offset,joined.length);joined+=result.details.chunk;cursor=result.details.nextCursor;pages++;}while(cursor);
+assert.equal(joined,content);assert(pages>2);
+const first=readGadgetSourcePage({gadgetId:'gdt-fixture',maxBytes:2000},source);assert(first.details.nextCursor);assert.throws(()=>readGadgetSourcePage({gadgetId:'gdt-fixture',cursor:first.details.nextCursor},{...source,revision:'revision-b'}),/变化/);assert.throws(()=>readGadgetSourcePage({gadgetId:'gdt-other',cursor:first.details.nextCursor},source),/变化/);assert.throws(()=>readGadgetSourcePage({gadgetId:'gdt-fixture',path:'missing'},source),/不存在/);
+const messages=JSON.parse(JSON.stringify([{kind:'pi.tool-result',model:[{role:'toolResult',toolName:'browser_exec',isError:false,details:{action:'navigate',url:'http://127.0.0.1:60261/nodecheck.html',gadgetId:'gdt-fixture',outcome:{effect:'confirmed'}}}]}]));
+assert.deepEqual([...gadgetIdsForPreview(messages,'http://localhost:60261/cap2.html')],['gdt-fixture']);
+assert.equal(gadgetIdsForPreview([{...messages[0],kind:'pi.user'}],'http://localhost:60261/').size,0);messages[0].model[0].isError=true;assert.equal(gadgetIdsForPreview(messages,'http://127.0.0.1:60261/').size,0);messages[0].model[0].isError=false;
+const collision=structuredClone(messages[0]);collision.model[0].details.gadgetId='gdt-second';assert.equal(gadgetIdsForPreview([...messages,collision],'http://127.0.0.1:60261/').size,2);
+console.log('PASS bounded Unicode source pages, revision-first output, stale cursor rejection and successful-host-only historical preview identity');

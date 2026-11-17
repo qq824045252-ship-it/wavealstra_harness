@@ -99,3 +99,11 @@ DOM observation searches open shadow roots. Text reading follows assigned slot n
 `open`, `select_tab`, `close`, `back`, `forward`, and `reload` operate on the current task's retained tabs. Closing waits for actual destruction, and same-document history changes count as navigation completion. `handoff({tabId,reason:'login'})` or reason `2fa` presents the existing tab and uses the real persisted conversation interaction. Human waiting is outside the page action deadline. Only an affirmative user answer issues a token. `resume({tabId,token,expect})` checks current page conditions on that same tab and consumes the token only after verification. User secrets remain in the browser; the agent cannot supply its own completion answer.
 
 The focused fixtures exercise the actual Electron engine, public service, registered tool, Durable Code Mode, real user-interaction service, and artifact registration. They use isolated profiles and local servers. They do not establish authenticated-site acceptance on 柠檬云 or replace the repository-wide headless, GUI, and packaged ARTIFACT gates. No product build, package, installation, commit, or push was performed for this change.
+
+## 现场报告回归补充
+
+普通容器的名称使用自身文本，不把整个后代子树聚合成容器名称；显式角色控件仍保留完整组合文本。因此展开子菜单不会让 body 或导航容器和“账簿”菜单锚点撞名。确有同名目标时，歧义错误返回有界 `candidates`，这些引用同步记入当前文档观察，可直接选择其中一个继续操作。定位歧义由 Agent 修正，不创建需要人工恢复的卡片；结果未知的实际输入仍保留原有保护。
+
+可信输入回执只在事件路径包含预期节点时确认。监听期间的其他可信事件不会提前将回执判失败。原始 hover 菜单夹具、名称和引用两种祖先定位、真实重复名称，以及先发生无关可信点击的干扰用例均有隔离 Electron 回归。
+
+Gadget 导航还会查询当前任务持久对话及原生归属的子对话中的成功宿主回执，以恢复应用重开后丢失的进程内端口映射。只使用结构化工具字段，不从用户文本、模型陈述或页面源码推断归属。恢复后仍走 GadgetService 的任务可见性校验；未知或歧义的端口不猜测，不重放输入。此路径与 `gadget_read` 的结构化分页通过真实 Durable Code Mode 组合用例验证。柠檬云登录态过期仍属于站点状态，未以本地菜单测试替代真实登录后验收。

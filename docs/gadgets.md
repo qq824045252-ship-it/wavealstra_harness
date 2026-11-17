@@ -159,3 +159,31 @@ Agent 使用 `gadget_read` 查看准确源码和 revision，使用 `gadget_call`
 设计比较了固定宿主动作注册表和可编程后台。注册表要求每接入一种 CLI 就修改 MyBuddy，通用性不足；可编程后台成为实现基础，同时采用统一的状态存储、会话校验、执行管理和 HTTP 文件隔离。共享 BrowserHost 的 Node 设置保持不变。
 
 宿主、SDK、状态存储和平台执行器作为自包含函数嵌入主程序，再经 stdin 交给 Electron Node。这样不用新增发行包中的 worker 资产，也避开 Windows 命令行长度上限和命令行令牌泄露。真实 dev 检查负责验证 bundler 转换后的函数仍可独立执行。
+
+## Agent 源码分页读取
+
+`gadget_read({gadgetId,path?,cursor?,maxBytes?})` 默认每页最多 12000 UTF-8 字节，包含页头。`revision` 始终位于文本页头和结构化返回中，不能被排在长源码尾部。`path` 只读一个确切源文件；省略时读取包含 manifest 和全部文件的 JSON 文本。`chunk` 是本页内容，`offset` 和 `totalChars` 使用 UTF-16 字符偏移。续页使用 `nextCursor`，页边界不会拆开 Unicode 代理对。`maxBytes` 范围为 2000 至 20000。
+
+Code Mode 直接取得 `revision`、`chunk`、`truncated` 和 `nextCursor`。修改文件前按 cursor 拼接完整内容；不能把一个截断页当作完整文件传给 `gadget_update`。Cursor 绑定 Gadget、路径和源码 revision，读取期间源码改变会拒绝旧 cursor。保存仍用 `gadget_update.expectedRevision`，不需要直接写磁盘来绕过工具。
+
+文本返回本身是一个完整 JSON 对象，`revision` 是第一个属性，源码位于 `chunk`，可以直接 `JSON.parse(result.content[0].text)`。Code Mode 已将这些字段提升为工具结果属性，无需再次解析文本。
+
+成功的 Gadget 预览结果会向调用任务的持久对话写入精简身份回执。Code Mode 的嵌套调用也写到所属对话。重新打开应用后，旧端口 URL 可以根据成功回执恢复 Gadget 身份，再检查当前任务可见性并启动服务。历史端口对应多个 Gadget 时拒绝猜测，需显式传 `gadgetId`。恢复保持原 pathname、query 和 hash，不重放源码修改或业务输入。
+
+## 日历同步与显示窗口
+
+`examples/gadgets/calendar-sync/` 提供已有“日历 · 任务 · Keep”页面的定向升级模板。同步通过 `gadget.call('calendar.sync')` 调用后台，不向静态服务注册 POST 路由。首次同步分页读取完整日历，后续按 Google 的同步 token 合并更新和取消事件；token 过期后重新完整同步。只有完整分页成功才原子提交数据及 token，失败保留上次快照。token 保存在实例私有 `data/`，不进入页面快照。
+
+显示窗口是独立配置，可选起始日期和 7、14、31、42 天。重复日程按显示窗口查询展开实例，不缩减已同步的原始集合。全天事件的结束日期不包含当天；带时间的事件按 `Asia/Shanghai` 日期归组。页面的未提交队列保存到实例 storage，重启端口变化后仍保留，刷新或同步不会执行队列中的远端写入。
+
+修复脚本仅适用于这份已有页面结构，结构不匹配时拒绝修改。操作前必须指定 Gadget ID：
+
+```sh
+pnpm -s repair:calendar <gadgetId>
+pnpm -s repair:calendar:verify <gadgetId>
+pnpm -s repair:calendar <gadgetId> --apply
+```
+
+第一步在 `out/diagnostics/calendar-sync-repair/<gadgetId>/` 保存源码备份和待应用补丁；第二步使用隔离数据库与真实 Gadget 工具验证分页、revision 更新、后台重启及命令执行；第三步按原 revision 应用，并备份、替换所属任务工作区的 `sync.mjs`。随后重启该 Gadget。此修复只同步日历，保留已有任务和 Keep 快照。
+
+在所属任务工作区执行 `node sync.mjs <gadgetId> --full` 可以回填完整历史；省略 `--full` 使用增量同步。脚本不接受显示天数参数，防止再次把页面窗口当作同步边界。`pnpm -s test:calendar-sync` 验证分页、历史保留、删除合并、token 失效、失败时原子保留和独立的重复日程查询；`pnpm -s test:gadget-history-recovery-electron` 验证真实 Durable Code Mode 的源码分页与更新链路。
