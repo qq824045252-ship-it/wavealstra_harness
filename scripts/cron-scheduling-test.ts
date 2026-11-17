@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { testSchedulingContinuity } from "./cron-scheduling-continuity";
+import { testAutomationLifecycle } from "./automation-lifecycle-test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ function barrier() {
 }
 
 async function main() {
+  await testAutomationLifecycle();
   await testSchedulingContinuity();
   const root = mkdtempSync(join(tmpdir(), "mybuddy-cron-native-"));
   process.env.HOME = root;
@@ -119,7 +121,7 @@ async function main() {
       historyBarrier.release(); historyBarrier = undefined;
       await delay(30);
       assert.equal(prompts.length, 2, "取消 await 准备中的计划不得启动");
-      if (action === "cancel") assert.equal(db.getCronJob(scheduled.id), undefined);
+      if (action === "cancel") assert.equal(cron.getForTask("source", scheduled.id).status, "cancelled");
     }
     empty = true;
     cron.upsert(job("empty", { target: { kind: "task", taskId: "source" } }));

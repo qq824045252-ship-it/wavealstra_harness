@@ -28,10 +28,10 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
   pi.registerTool({
     name: "automation_exec",
     label: "Task automation",
-    description: "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队；cancel 只阻止未来启动，不中断已开始的用户回合。可 list/runs/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。",
-    promptSnippet: "automation_exec(action, name?, prompt?, schedule_type?, schedule_expr?, target?, max_runs?, deadline?, restart_policy?, id?)",
+    description: "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队。get 按 id 查看计划、当前与最近运行；runs 传 id 可用 cursor 按页查单条计划。cancel 停止未来触发，保留计划和历史，不中断已开始的用户回合；取消后不能 resume。可 list/get/runs/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。",
+    promptSnippet: "automation_exec(action, name?, prompt?, schedule_type?, schedule_expr?, target?, max_runs?, deadline?, restart_policy?, id?, cursor?)",
     parameters: Type.Object({
-      action: Type.Union((["create", "list", "runs", "pause", "resume", "cancel"] as const).map(value => Type.Literal(value))),
+      action: Type.Union((["create", "list", "get", "runs", "pause", "resume", "cancel"] as const).map(value => Type.Literal(value))),
       name: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
       prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 100000 })),
       schedule_type: Type.Optional(Type.Union([Type.Literal("at"), Type.Literal("every"), Type.Literal("cron")])),
@@ -43,11 +43,20 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       restart_policy: Type.Optional(Type.Union([Type.Literal("resume"), Type.Literal("pause")])),
       id: Type.Optional(Type.String({ minLength: 1 })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+      cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
     }, { additionalProperties: false }),
     execute: async (_id, input, signal) => result(() => {
       signal?.throwIfAborted();
       if (input.action === "list") return { jobs: services.cron.listForTask(taskId), localOnly: true, missedRuns: "skip" };
-      if (input.action === "runs") return services.cron.runsForTask(taskId, input.limit);
+      if (input.action === "get") {
+        if (!input.id) throw new Error("get requires id");
+        return services.cron.getForTask(taskId, input.id);
+      }
+      if (input.action === "runs") {
+        if (input.id) return services.cron.runPageForTask(taskId, input.id, input.limit, input.cursor);
+        if (input.cursor !== undefined) throw new Error("runs pagination requires id");
+        return services.cron.runsForTask(taskId, input.limit);
+      }
       if (input.action === "create") {
         if (!input.name?.trim() || !input.prompt?.trim() || !input.schedule_type || !input.schedule_expr) throw new Error("create requires name, prompt, schedule_type and schedule_expr");
         const effectiveTo = input.deadline ? Date.parse(input.deadline) : undefined;

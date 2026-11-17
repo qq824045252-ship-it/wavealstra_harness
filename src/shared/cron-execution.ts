@@ -16,6 +16,7 @@ export const CronExecutionSchema = Type.Object({
     Type.Object({ kind: Type.Literal("new-task") }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal("task"), taskId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
   ])),
+  cancelledAt: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
   maxRuns: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
   restartPolicy: Type.Optional(Type.Union([Type.Literal("resume"), Type.Literal("pause")])),
 }, { additionalProperties: false });

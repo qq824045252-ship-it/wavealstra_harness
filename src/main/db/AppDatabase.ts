@@ -3622,6 +3622,7 @@ export class AppDatabase {
       target: job.target,
       maxRuns: job.maxRuns,
       restartPolicy: job.restartPolicy,
+      cancelledAt: job.cancelledAt,
     });
     this.db
       .prepare(
@@ -3736,10 +3737,29 @@ export class AppDatabase {
   }
 
   listCronRuns(limit = 50, jobIds?: string[]): CronRunDto[] {
+    if (jobIds?.length === 0) return [];
+
     const rows = this.db
       .prepare(`SELECT * FROM cron_runs ${jobIds ? `WHERE job_id IN (${jobIds.map(() => "?").join(",")})` : ""} ORDER BY started_at DESC LIMIT ?`)
       .all(...(jobIds ?? []), limit) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
+    return rows.map(row => this.rowToCronRun(row));
+  }
+
+  listCronJobRuns(jobId: string, limit: number, before?: { startedAt: number; id: string }, status?: CronRunDto["status"]): CronRunDto[] {
+    const clauses = ["job_id = ?"];
+    const values: (string | number)[] = [jobId];
+    if (before) {
+      clauses.push("(started_at < ? OR (started_at = ? AND id < ?))");
+      values.push(before.startedAt, before.startedAt, before.id);
+    }
+    if (status) { clauses.push("status = ?"); values.push(status); }
+    const query = "SELECT * FROM cron_runs WHERE " + clauses.join(" AND ") + " ORDER BY started_at DESC, id DESC LIMIT ?";
+    const rows = this.db.prepare(query).all(...values, limit) as Array<Record<string, unknown>>;
+    return rows.map(row => this.rowToCronRun(row));
+  }
+
+  private rowToCronRun(r: Record<string, unknown>): CronRunDto {
+    return {
       id: String(r.id),
       jobId: String(r.job_id),
       startedAt: Number(r.started_at),
@@ -3747,7 +3767,7 @@ export class AppDatabase {
       status: r.status as CronRunDto["status"],
       error: (r.error as string | null) ?? undefined,
       taskId: (r.task_id as string | null) ?? undefined,
-    }));
+    };
   }
 
   touchCronLastRun(jobId: string): void {

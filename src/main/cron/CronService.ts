@@ -163,6 +163,56 @@ export class CronService {
     return this.db.listCronRuns(Math.max(1, Math.min(200, limit)), this.listForTask(taskId).map(job => job.id));
   }
 
+  private requireTaskJob(taskId: string, id: string): CronJobDto {
+    const job = this.db.getCronJob(id);
+    if (!job || job.sourceTaskId !== taskId || job.reminder) throw new Error("Automation does not belong to the current task");
+    return job;
+  }
+
+  getForTask(taskId: string, id: string) {
+    const saved = this.requireTaskJob(taskId, id);
+    const job = this.withNext(saved);
+    const now = Date.now();
+    const unavailable = this.unavailableReason(saved);
+    const reason = saved.cancelledAt !== undefined ? "cancelled"
+      : unavailable ? "unavailable"
+      : saved.maxRuns !== undefined && (saved.runCount ?? 0) >= saved.maxRuns ? "max_runs_reached"
+      : saved.effectiveTo !== undefined && saved.effectiveTo <= now ? "expired"
+      : saved.scheduleType === "at" && Date.parse(saved.scheduleExpr) <= now ? "scheduled_time_passed"
+      : !saved.enabled ? "paused"
+      : this.stopped ? "scheduler_stopped"
+      : job.nextRunAt === undefined ? "no_future_occurrence" : undefined;
+    return {
+      job: reason ? { ...job, nextRunAt: undefined } : job,
+      status: reason ?? "scheduled", ...(unavailable && reason === "unavailable" ? { detail: unavailable } : {}),
+      hostMustBeRunning: true, missedRuns: "skip",
+      activeRun: this.db.listCronJobRuns(id, 1, undefined, "running")[0] ?? null,
+      latestRun: this.db.listCronJobRuns(id, 1)[0] ?? null,
+    };
+  }
+
+  runPageForTask(taskId: string, id: string, limit = 25, cursor?: string) {
+    this.requireTaskJob(taskId, id);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Invalid run page size");
+    const schema = z.tuple([z.literal(id), z.number().int().nonnegative(), z.string().min(1).max(256)]);
+    let before: { startedAt: number; id: string } | undefined;
+    if (cursor !== undefined) {
+      try {
+        if (!/^[A-Za-z0-9_-]{1,1024}$/.test(cursor)) throw new Error();
+        const [, startedAt, runId] = schema.parse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
+        before = { startedAt, id: runId };
+      } catch { throw new Error("Invalid automation run cursor"); }
+    }
+    const rows = this.db.listCronJobRuns(id, limit + 1, before);
+    const runs = rows.slice(0, limit);
+    const last = runs.at(-1);
+    return {
+      id, runs,
+      nextCursor: rows.length > limit && last
+        ? Buffer.from(JSON.stringify([id, last.startedAt, last.id]), "utf8").toString("base64url") : null,
+    };
+  }
+
   createForTask(taskId: string, cwd: string, input: Pick<CronJobDto,
     "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy"
   > & { target: "current-task" | "new-task" }): CronJobDto {
@@ -182,21 +232,31 @@ export class CronService {
   changeForTask(taskId: string, id: string, action: "pause" | "resume" | "cancel"): void {
     const job = this.db.getCronJob(id);
     if (!job || job.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
-    if (action === "cancel") this.remove(id);
-    else this.setEnabled(id, action === "resume");
+    if (action !== "cancel") {
+      this.setEnabled(id, action === "resume");
+      return;
+    }
+    if (job.cancelledAt !== undefined) return;
+    const now = Date.now();
+    const cancelled = { ...job, enabled: false, cancelledAt: now, updatedAt: now };
+    this.db.upsertCronJob(cancelled);
+    this.disarm(id);
+    broadcast(CronIpc.event, { type: "upsert", job: this.withNext(cancelled) });
   }
 
   upsert(job: CronJobDto): CronJobDto {
     assertSingleExpertId(job.expertId);
     validateSchedule(job);
-    parseCronExecution({ reminder: job.reminder, sourceTaskId: job.sourceTaskId, target: job.target, maxRuns: job.maxRuns, restartPolicy: job.restartPolicy });
+    parseCronExecution({ reminder: job.reminder, sourceTaskId: job.sourceTaskId, target: job.target, maxRuns: job.maxRuns, restartPolicy: job.restartPolicy, cancelledAt: job.cancelledAt });
     const now = Date.now();
     const existing = this.db.getCronJob(job.id);
+    if ((existing?.cancelledAt !== undefined || job.cancelledAt !== undefined) && job.enabled) throw new Error("Cancelled automation cannot be enabled");
     const next: CronJobDto = {
       ...job,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       projectId: job.projectId ?? existing?.projectId,
+      cancelledAt: existing?.cancelledAt ?? job.cancelledAt,
     };
     const unavailable = this.unavailableReason(next);
     if (unavailable) throw new Error(unavailable);
@@ -214,6 +274,7 @@ export class CronService {
     const job = this.db.getCronJob(id);
     if (!job) return;
     if (enabled) {
+      if (job.cancelledAt !== undefined) throw new Error("Cancelled automation cannot be resumed");
       const unavailable = this.unavailableReason(job);
       if (unavailable) throw new Error(unavailable);
       validateSchedule(job);
@@ -265,6 +326,7 @@ export class CronService {
   async runNow(id: string): Promise<void> {
     const job = this.db.getCronJob(id);
     if (!job) throw new Error(`cron job not found: ${id}`);
+    if (job.cancelledAt !== undefined) throw new Error("Cancelled automation cannot be run");
     const unavailable = this.unavailableReason(job);
     if (unavailable) throw new Error(unavailable);
     void this.execute(job, { force: true }).catch((err) => {
