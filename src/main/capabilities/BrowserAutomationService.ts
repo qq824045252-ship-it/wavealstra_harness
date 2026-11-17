@@ -225,7 +225,7 @@ export class BrowserAutomationService {
     return { action: input.action, tabId: identity.tabId, handoff, outcome: { dispatch: "not_started", effect: "none" } };
   }
 
-  async execute(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string; taskRoot?: string }): Promise<BrowserExecOutput> {
+  async execute(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string; taskRoot?: string; resolveGadgetId?: (url: string) => Promise<string | undefined> }): Promise<BrowserExecOutput> {
     // Validate the complete request before touching the browser surface. A durable
     // checkpoint written here proves this exact invocation never began its action.
     try {
@@ -312,7 +312,7 @@ export class BrowserAutomationService {
     } finally { scope.close(); }
   }
 
-  private async executeManaged(input: BrowserExecInput, scope: AutomationScope, context?: { taskId: string; taskRoot?: string }): Promise<BrowserExecOutput> {
+  private async executeManaged(input: BrowserExecInput, scope: AutomationScope, context?: { taskId: string; taskRoot?: string; resolveGadgetId?: (url: string) => Promise<string | undefined> }): Promise<BrowserExecOutput> {
     const signal = scope.signal;
     scope.check();
     const browser = this.host();
@@ -345,7 +345,10 @@ export class BrowserAutomationService {
       let pageNavigationKey: string | undefined;
       let pageRequest: object | undefined;
       try {
-        if (taskId && this.resolveGadgetPreview) preview = await scope.run(() => this.resolveGadgetPreview!(requested, taskId, input.gadgetId));
+        if (taskId && this.resolveGadgetPreview) {
+          const gadgetId = input.gadgetId ?? await scope.run(async () => context?.resolveGadgetId?.(requested));
+          preview = await scope.run(() => this.resolveGadgetPreview!(requested, taskId, gadgetId));
+        }
         if (signal?.aborted) throw new DOMException("浏览器操作已取消", "AbortError");
         if (this.navigationRequests.get(navigationOwner) !== request || page && page.captureVersion !== previousVersion) {
           throw new BrowserAutomationError("SURFACE_CHANGED", "恢复预览期间页面已变化，请重新读取后再导航");
@@ -787,7 +790,17 @@ export class BrowserAutomationService {
     const destination = input.dragTo ? this.observations.get(owner)?.targets.get(input.dragTo) : undefined;
     if (action === "drag" && !destination) throw new BrowserAutomationError("SURFACE_CHANGED", "拖动目的地需要先 find 同一文档中的目标");
     const uiInput: UiExecInput = { action, target: "browser", selector: pageScroll ? "body" : selector, role: input.role, name: input.name, within: input.within, exact: input.exact, label: input.label, placeholder: input.placeholder, testId: input.testId, text: input.action !== "fill" ? input.text : undefined, value: input.text, key: input.key, state: input.state, timeoutMs: scope.remaining, deltaX: input.deltaX, deltaY: input.deltaY, values: input.values, checked: input.checked, button: input.button, clickCount: input.clickCount, modifiers: input.modifiers, inputMode: input.inputMode, delayMs: input.delayMs, dateType: input.dateType, dragTo: destination?.selector, dragMode: input.dragMode, dragToExpected: destination ? { tag: destination.tag, name: destination.label || undefined } : undefined, expected, observedSelectors, onActionAccepted };
-    const result = await executor.execute(uiInput, scope.signal, scope);
+    let result;
+    try { result = await executor.execute(uiInput, scope.signal, scope); }
+    catch (error) {
+      if (error instanceof UiAutomationError && error.code === "ELEMENT_AMBIGUOUS" && error.candidates?.length) {
+        const candidates = error.candidates.map(({ name, text: _text, ...el }) => ({ ...el, label: name ?? "" }));
+        const documentId = await js<string>(browserDocumentScript(this.observationSlot));
+        this.remember(owner, { version, webContentsId: wc.id, url, documentId }, candidates);
+        throw new UiAutomationError(error.code, error.message, { candidates, documentId });
+      }
+      throw error;
+    }
     const elements = result.elements?.map(({ name, text: _text, ...el }) => ({ ...el, label: name ?? "" }));
     if (input.action === "find" || input.action === "inspect") {
       const documentId = await js<string>(browserDocumentScript(this.observationSlot));
