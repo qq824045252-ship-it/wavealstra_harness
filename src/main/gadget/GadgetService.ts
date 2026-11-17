@@ -348,6 +348,7 @@ export class GadgetService {
   async health(id: string): Promise<GadgetRuntimeState> {
     this.require(id);
     const state = await this.deps.runtime.health(id);
+    this.rememberPreview(state);
     this.emitChanged({ type: "runtime", gadgetId: id });
     return state;
   }

@@ -1,3 +1,4 @@
+import { GadgetPreviewEntry, gadgetPreviewIdentities } from "./DurableGadgetPreviewIdentity";
 import { durableExtensionDiagnostics } from "./DurableToolDiagnostics";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ModelRegistry, type ModelRuntime, type ExtensionAPI, type ExtensionContext, type ToolDefinition, type InlineExtension } from "@earendil-works/pi-coding-agent";
@@ -10,6 +11,7 @@ import { durableSourceUserMessageId } from "./DurableInputProvenance";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { createAgentSettingsManager } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
+import { gadgetReadOutputSchema } from "../../gadget/GadgetSourceRead";
 import { browserStructuredOutputSchema } from "../../capabilities/BrowserToolContract";
 
 type NativeApi = Parameters<ToolRegistration["execute"]>[1];
@@ -40,7 +42,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
   const api = new Proxy({
     registerTool(tool: ToolDefinition) {
       tools.push({ name: tool.name, description: tool.description, parameters: tool.parameters,
-        ...(tool.name === "browser_exec" ? { structuredOutputSchema: browserStructuredOutputSchema } : {}),
+        ...(tool.name === "browser_exec" ? { structuredOutputSchema: browserStructuredOutputSchema } : tool.name === "gadget_read" ? { structuredOutputSchema: gadgetReadOutputSchema } : {}),
         // Data writes must never be repeated after a crash with an unknown outcome.
         replay: capabilities?.taskId && (tool.name === "request_user_input" || tool.name === "multi_model_consult") ? "safe" : "unsafe",
         execute: async (args, native, context) => {
@@ -61,8 +63,11 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
                 extensionContext as Parameters<typeof tool.execute>[4]);
               context.abortSignal?.throwIfAborted();
               const details = result.details === undefined ? undefined : JSON.parse(JSON.stringify(result.details));
+              if (!result.isError && capabilities?.taskId) for (const receipt of gadgetPreviewIdentities(tool.name, details)) {
+                invocation.getStore()!.writes.push(native.commit(tx => tx.appendEntry(GadgetPreviewEntry, conversationId, { data: receipt }), context));
+              }
               return { output: result.content, isError: result.isError, diagnostics: durableExtensionDiagnostics(result), details,
-                ...(tool.name === "browser_exec" ? { structuredOutput: { ...details, ...(details?.details?.outcome ? { outcome: details.details.outcome } : {}), isError: Boolean(result.isError) } } : {}) };
+                ...((tool.name === "browser_exec" || tool.name === "gadget_read") ? { structuredOutput: { ...details, ...(details?.details?.outcome ? { outcome: details.details.outcome } : {}), isError: Boolean(result.isError) } } : {}) };
             } finally {
               const current = invocation.getStore()!;
               await Promise.all([...current.writes, current.progress]);

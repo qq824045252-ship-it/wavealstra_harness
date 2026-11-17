@@ -1,3 +1,4 @@
+import { resolveDurableGadgetPreview } from "../agent/durable/DurableGadgetPreviewIdentity";
 import { browserAgentPolicy } from "./BrowserAgentPolicy";
 import { browserExecSchema, browserToolDescription } from "./BrowserToolContract";
 import { registerLocalWorkflowTools, type LocalWorkflowBridge } from "./local-workflow-extension";
@@ -747,7 +748,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             const context = toolContext(bridge, tc, signal);
             input = { ...p, maxChars: p.max_chars, timeoutMs: p.timeout_ms, elementOffset: p.element_offset, deltaX: p.delta_x, deltaY: p.delta_y };
             if (input.action === "handoff" && !bridge.browserHandoff) throw new Error("当前执行未连接真实任务交互服务，无法请求人工登录");
-            let result = input.action === "handoff" ? await bridge.browser.beginHandoff(input, signal, { taskId: bridge.taskId, requestKey: context.toolCallId, ask: (request, key, requestedSignal) => bridge.browserHandoff!(request, key, requestedSignal ?? new AbortController().signal) }) : await bridge.browser.execute(input, signal, { taskId: bridge.taskId, taskRoot: bridge.taskRoot });
+            let result = input.action === "handoff" ? await bridge.browser.beginHandoff(input, signal, { taskId: bridge.taskId, requestKey: context.toolCallId, ask: (request, key, requestedSignal) => bridge.browserHandoff!(request, key, requestedSignal ?? new AbortController().signal) }) : await bridge.browser.execute(input, signal, { taskId: bridge.taskId, taskRoot: bridge.taskRoot, resolveGadgetId: url => resolveDurableGadgetPreview(url, bridge.taskId) });
             if (result.collectionFile) {
               const service = bridge.artifactService();
               try {

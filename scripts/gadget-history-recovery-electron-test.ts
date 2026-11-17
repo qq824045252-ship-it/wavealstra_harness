@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Module from "node:module";
+import { build } from "esbuild";
+import { createServer } from "node:http";
+import { app, BrowserWindow } from "electron";
+import { Type } from "typebox";
+import { defineEntry } from "@earendil-works/pi-durable";
+import { currentDurableInvocation } from "../src/main/agent/durable/DurableExecutionContext";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { BrowserHost } from "../src/main/browser/BrowserHost";
+import { BrowserAutomationService } from "../src/main/capabilities/BrowserAutomationService";
+import { BuiltinCapabilityRuntime } from "../src/main/capabilities/BuiltinCapabilityRuntime";
+import { BuiltinCapabilityStore } from "../src/main/capabilities/BuiltinCapabilityStore";
+import { createBuiltinCapabilityExtension } from "../src/main/capabilities/builtin-capability-extension";
+import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
+import { GadgetRepository } from "../src/main/gadget/GadgetRepository";
+import { GadgetStorage } from "../src/main/gadget/GadgetStorage";
+import { GadgetRegistry } from "../src/main/gadget/GadgetRegistry";
+import type { GadgetRuntime } from "../src/main/gadget/GadgetRuntime";
+import { GadgetService } from "../src/main/gadget/GadgetService";
+import { createGadgetAgentExtension } from "../src/main/gadget/gadget-agent-extension";
+import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
+import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+const root=mkdtempSync(join(tmpdir(),"gadget-history-"));process.env.HOME=root;process.env.USERPROFILE=root;app.setPath("home",root);app.setPath("userData",join(root,"profile"));app.on("window-all-closed",()=>{});
+const guard=setTimeout(()=>{console.error("history integration timeout");app.exit(1)},60000);
+let host:BrowserHost|undefined,win:BrowserWindow|undefined,agent:DurableBotRuntime|undefined,gadgetRuntime:GadgetRuntime|undefined;
+const trap=createServer((_q,r)=>{trapCalls++;r.end("unrelated recycled port")});let trapCalls=0;
+void(async()=>{try{
+ await app.whenReady();
+ const built=await build({stdin:{contents:"export {GadgetRuntime} from './src/main/gadget/GadgetRuntime';",resolveDir:process.cwd(),loader:"ts"},platform:"node",format:"cjs",bundle:true,write:false,packages:"external"});
+ const compiled=new Module(join(process.cwd(),"gadget-history-runtime.cjs"));compiled.filename=join(process.cwd(),"gadget-history-runtime.cjs");compiled.paths=Reflect.get(Module,"_nodeModulePaths")(process.cwd());Reflect.get(compiled,"_compile").call(compiled,built.outputFiles[0].text,compiled.filename);
+ const Runtime:typeof import("../src/main/gadget/GadgetRuntime").GadgetRuntime=compiled.exports.GadgetRuntime;
+ win=new BrowserWindow({show:false,width:1000,height:800});await win.loadURL("data:text/html,isolated host");
+ const taskId="history-task",db=new AppDatabase(join(root,"app.db"));db.upsertTask({id:taskId,title:"fixture",updatedAt:Date.now()});
+ const storage=new GadgetStorage(join(root,"gadgets")),repository=new GadgetRepository(db.connection);
+ const createService=()=>{const registry=new GadgetRegistry();gadgetRuntime=new Runtime(storage,registry);return new GadgetService({repository,storage,registry,runtime:gadgetRuntime,workspaceExists:()=>false,workspaceEffectiveArchived:()=>false,taskExists:id=>id===taskId,taskWorkspaceId:()=>null,workspaceAncestors:()=>[]})};
+ let service=createService();const original="<!doctype html><h1>Version one</h1><!--"+"长源码🙂".repeat(10000)+"-->";
+ const gadget=service.create({name:"history",scope:{type:"task",taskId},files:[{path:"index.html",content:original},{path:"cap2.html",content:"<main>Recovered cap2 原路径</main>"}]});
+ const legacy=service.create({name:"child-only historical preview",scope:{type:"task",taskId},files:[{path:"index.html",content:"<p>legacy fixture</p>"},{path:"cap2.html",content:"<main>Recovered cap2 原路径</main>"}]});
+ const config=structuredClone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG);for(const key of ["web","vision","imageGeneration","videoGeneration","speechToText","textToSpeech","subagent","multiModelConsult","diagnostics","ocr"] as const){if(config[key])config[key].enabled=false;}config.execution.codeExecutionEnabled=false;config.execution.terminalEnabled=false;
+ const store=new BuiltinCapabilityStore(join(root,"capabilities.json"));store.write(config);const capabilities=new BuiltinCapabilityRuntime({store,credentials:{has:()=>false,get:()=>null,set:()=>{throw Error("isolated")},clear:()=>{}}});
+ const models=await ModelRuntime.create({authPath:join(root,"auth.json"),modelsPath:null,modelsStorePath:join(root,"models.json"),refreshOnCreate:false});
+ let phase=0,oldUrl="";const outputs:string[]=[];
+ models.registerProvider("fixture",{api:"openai-completions",apiKey:"isolated",baseUrl:"http://127.0.0.1:1",models:[{id:"model",name:"gadget recovery fixture",reasoning:false,input:["text"],contextWindow:128000,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}],streamSimple:(model,request)=>{
+ const previous=request.messages.at(-1);let content:AssistantMessage["content"];
+ if(previous?.role==="toolResult"){const out=JSON.stringify(previous.content);outputs.push(out);assert.equal(previous.isError,false,out);assert(!out.includes("Script failed"),out);content=[{type:"text",text:"verified"}];}
+ else{const code=phase===0?`const opened=await tools.gadget_open({gadgetId:${JSON.stringify(gadget.id)}});if(opened.isError)throw Error(JSON.stringify(opened));let cursor,joined='',revision,pages=0;do{const r=await tools.gadget_read({gadgetId:${JSON.stringify(gadget.id)},path:'index.html',maxBytes:4000,...(cursor?{cursor}:{})});if(r.isError||!r.revision)throw Error(JSON.stringify(r));revision??=r.revision;if(revision!==r.revision)throw Error('changed revision');joined+=r.chunk;cursor=r.nextCursor;if(++pages>100)throw Error('pagination stuck');}while(cursor);if(joined.length!==${original.length}||pages<2)throw Error('source truncated');const saved=await tools.gadget_update({gadgetId:${JSON.stringify(gadget.id)},expectedRevision:revision,files:[{path:'index.html',content:joined.replace('Version one','Version two')}]});if(saved.isError)throw Error(JSON.stringify(saved));await tools.legacy_preview_fixture({});text({pages,revision,updated:true});`:`const r=await tools.browser_exec({action:'navigate',url:${JSON.stringify(oldUrl)},after:{mode:'text'}});if(r.isError)throw Error(JSON.stringify(r));if(r.gadgetId!==${JSON.stringify(legacy.id)}||r.recoveredFromUrl!==${JSON.stringify(oldUrl)}||r.observation.status!=='completed'||!r.observation.result.text.includes('Recovered cap2'))throw Error(JSON.stringify(r));text({recovered:true,url:r.url});`;
+ content=[{type:"toolCall",id:"phase-"+phase,name:"codemode",arguments:{code}}];}
+ const reason=previous?.role==="toolResult"?"stop":"toolUse",stream=createAssistantMessageEventStream();queueMicrotask(()=>{stream.push({type:"done",reason,message:{role:"assistant",content,stopReason:reason,api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}}});stream.end()});return stream;}});
+ const open=async()=>{host=new BrowserHost();host.attach(win!);const browser=new BrowserAutomationService(()=>host??null);browser.setGadgetPreviewResolver((url,id,gadgetId)=>service.resolveBrowserPreview(url,id,gadgetId));const bridge=await durableDomainTools([createBuiltinCapabilityExtension({taskId,taskRoot:root,nativeExecution:true,runtime:capabilities,browser,artifactService:()=>null,getProducerMessageId:()=>undefined,getIsolationLevel:()=>"none"}),createGadgetAgentExtension({taskId,service,resolveWorkspaceId:()=>null,getPermissionMode:()=>"auto",requestApproval:async()=>true}) ,api=>{api.registerTool({name:"legacy_preview_fixture",label:"legacy host receipt",description:"isolated host fixture",parameters:Type.Object({}),execute:async()=>{
+ const state=await service.start(legacy.id);assert.equal(state.status,"running");const active=currentDurableInvocation();assert(active);
+ await active.native.commit(async tx=>{const child=await tx.createConversation({ownership:{kind:"task",taskId:active.native.taskId}});await tx.appendEntry(defineEntry("pi.tool-result"),child.id,{model:[{role:"toolResult",toolName:"gadget_open",toolCallId:"historical-open",content:[],isError:false,timestamp:0,details:JSON.parse(JSON.stringify(state))}]});},active.context);
+ return{content:[{type:"text",text:"legacy child-only receipt recorded"}],details:{}};}})}],{taskId,cwd:root,models});return DurableBotRuntime.open({taskId,cwd:root,directory:join(root,"state"),models,model:{provider:"fixture",modelId:"model"},toolMode:"codemode",tools:bridge.tools,instructions:()=>"isolated tool fixture",onSnapshot:()=>{}})};
+ agent=await open();assert.equal((await(await agent.submit("initial","input-0")).wait(BACKGROUND_CONTEXT)).status,"done");assert(service.readSource(gadget.id).files.find(f=>f.path==="index.html")?.content.includes("Version two"));
+ const first=await service.health(legacy.id);assert(first.url&&first.port);oldUrl=new URL("cap2.html?keep=1#anchor",first.url).href;
+ await agent.close();await gadgetRuntime!.disposeAll();host!.dispose();await new Promise<void>(resolve=>trap.listen(first.port,"127.0.0.1",resolve));service=createService();phase=1;agent=await open();assert.equal((await(await agent.submit("reopen old preview","input-1")).wait(BACKGROUND_CONTEXT)).status,"done");assert.equal(trapCalls,0);assert.equal(service.readSource(gadget.id).files.find(f=>f.path==="index.html")?.content,original.replace("Version one","Version two"));assert(outputs.some(x=>x.includes('recovered')));console.log("PASS real Durable Code Mode: bounded revision/source pages -> gadget_update; fresh GadgetService + BrowserHost recover child-only prior URL without contacting recycled port");await agent.close();await gadgetRuntime!.disposeAll();host!.dispose();win.destroy();db.close();trap.close();clearTimeout(guard);app.exit(0);
+}catch(error){console.error(error);await agent?.close();await gadgetRuntime?.disposeAll();host?.dispose();win?.destroy();trap.close();clearTimeout(guard);app.exit(1)}})();
