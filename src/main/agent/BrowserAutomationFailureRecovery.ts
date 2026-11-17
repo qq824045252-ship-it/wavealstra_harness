@@ -116,8 +116,8 @@ export function recordBrowserAutomationFailureRecovery(
   const sideEffecting = SIDE_EFFECT_ACTIONS.has(input.action);
   const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
   const preAction = outcome ? outcome.dispatch === "not_started" : PRE_ACTION_CODES.has(error.code);
-  if (error.code === "ELEMENT_AMBIGUOUS") {
-    if (preAction) bridge.failures.resolveMatching(ctx.taskId, { target: browserAutomationRecoveryTarget(input, error.details), causeCodes: ["browser-element-ambiguous"] });
+  if (error.code === "ELEMENT_AMBIGUOUS" || error.code === "SURFACE_CHANGED" && preAction) {
+    if (preAction) bridge.failures.resolveMatching(ctx.taskId, { target: browserAutomationRecoveryTarget(input, error.details), causeCodes: [causeCode(error)] });
     return false;
   }
   const unknownEffect = !preAction && sideEffecting && input.action !== "navigate";

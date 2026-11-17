@@ -116,7 +116,7 @@ try {
   assert(failures.list("task").find(item => item.id === missingFailure.id)?.resolvedAt);
   assert(failures.list("task").find(item => item.id === hostFailure.id)?.resolvedAt);
 
-  for (const code of ["ELEMENT_NOT_VISIBLE", "ELEMENT_DISABLED", "SURFACE_CHANGED"] as const) {
+  for (const code of ["ELEMENT_NOT_VISIBLE", "ELEMENT_DISABLED"] as const) {
     const error = new BrowserAutomationError(code, "target not ready", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/form" });
     assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, error));
     const failure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === `browser-${code.toLowerCase().replaceAll("_", "-")}`)!;
@@ -130,6 +130,11 @@ try {
   assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("ELEMENT_AMBIGUOUS", "choose candidate", { outcome: { dispatch: "not_started", effect: "none" } })), false);
   assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("ELEMENT_AMBIGUOUS", "hover preparation completed, choose final candidate", { outcome: { dispatch: "dispatched", effect: "unknown" } })), false);
   assert.equal(failures.list("task").length, beforeAmbiguous, "a locator choice is an Agent correction, not human recovery");
+  const beforeStale = failures.list("task").length;
+  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("SURFACE_CHANGED", "find current node", { outcome: { dispatch: "not_started", effect: "none" } })), false);
+  assert.equal(failures.list("task").length, beforeStale, "a stale pre-dispatch reference requires Agent observation, not human recovery");
+  assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("SURFACE_CHANGED", "document changed after input", { outcome: { dispatch: "dispatched", effect: "unknown" }, currentUrl: "https://example.test/changed" })));
+  assert.equal(failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-surface-changed")?.sideEffects, "unknown", "a changed document after dispatch must still preserve uncertain effects");
   const flyoutInput = { action: "click" as const, role: "link", name: "凭证汇总表" };
   assert(recordBrowserAutomationFailureRecovery(bridge, flyoutInput, new BrowserAutomationError("ELEMENT_NOT_VISIBLE", "collapsed menu", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/books" })));
   const flyoutFailure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-element-not-visible")!;
@@ -141,7 +146,7 @@ try {
   settleBrowserAutomationRecovery(bridge, flyoutInput, { action: "click", sourceUrl: "https://example.test/books", url: "https://example.test/report" });
   assert(!failures.list("task").some(item => !item.resolvedAt && item.causeCode === "browser-host-unavailable"), "semantic locators also settle restored host availability");
   const unobservedField = { action: "fill" as const, selector: "#capInput", text: "test" };
-  assert(recordBrowserAutomationFailureRecovery(bridge, unobservedField, new BrowserAutomationError("SURFACE_CHANGED", "observe first", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/gadget" })));
+  failures.recordIfAbsent({ ...ctx, causeCode: "browser-surface-changed", phase: "observe", recovery: "recoverable", sideEffects: "none", target: browserAutomationRecoveryTarget(unobservedField, { currentUrl: "https://example.test/gadget" }), message: "historical observe-first notice", nextAction: "find" });
   const unobservedFailure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-surface-changed")!;
   const fieldRef = '[data-mybuddy-ui-ref="observed-input"]';
   settleBrowserAutomationRecovery(bridge, { action: "fill", selector: fieldRef, text: "test" }, { action: "fill", url: "https://example.test/gadget", elements: [{ selector: fieldRef, tag: "input", id: "anotherInput", label: "Another" }] });
