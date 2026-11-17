@@ -512,7 +512,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
       mcpNames.length > 0 ||
       connectorNames.length > 0;
     // 仅技能/MCP、无说明文字时仍渲染芯片气泡（不再整行空白）
-    if (!text && taskReferences.length === 0 && !hasMetaChips) {
+    if (!text && taskReferences.length === 0 && !hasMetaChips && !message.submitting && !message.submissionFailed) {
       return <div className="msg-row user" />;
     }
     return (
@@ -616,9 +616,11 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
               <div className="user-bubble-text">{text}</div>
             </CollapsibleBody>
           ) : null}
+          {message.submitting && <div className="bot-submission-status" role="status">发送中…</div>}
+          {message.submissionFailed && <div className="bot-submission-status" role="status">未发送</div>}
         </div>
         {/* 用户每条消息外侧右下角：复制 / 导入 / 更多（助手消息不显示） */}
-        <MessageActionBar
+        {!message.submitting && !message.submissionFailed && <MessageActionBar
           copyText={text}
           importable={!btw}
           moreItems={
@@ -647,7 +649,7 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
                   }] : []),
                 ]
           }
-        />
+        />}
         <ConfirmDialog
           open={deleteConfirmOpen}
           title="删除这条消息？"

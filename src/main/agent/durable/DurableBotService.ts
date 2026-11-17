@@ -51,6 +51,7 @@ import type { CreateConversationBranchRequest } from "../../../shared/conversati
 import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, type MaterializedDurableBranch } from "./DurableTaskBranch";
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
+type AdmissionMark = (stage: string) => void;
 class DurableToolAssemblyError extends Error {
   constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause), { cause }); }
 }
@@ -104,7 +105,7 @@ export interface DurableBotServiceOptions {
   prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
   auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
-  prepareTask?: (request: AgentPromptRequest) => Promise<AgentPromptRequest>;
+  prepareTask?: (request: AgentPromptRequest, mark?: AdmissionMark) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
   beforeModelRequest?: (taskId: string) => void;
   providerAuthorityGuarded?: (taskId: string) => boolean;
@@ -574,9 +575,11 @@ export class DurableBotService {
     }
   }
 
-  private async prepareRequest(request: AgentPromptRequest): Promise<AgentPromptRequest> {
-    request = await this.options.prepareTask?.(request) ?? request;
+  private async prepareRequest(request: AgentPromptRequest, mark?: AdmissionMark): Promise<AgentPromptRequest> {
+    request = await this.options.prepareTask?.(request, mark) ?? request;
+    mark?.("task");
     await this.options.models.refresh({ allowNetwork: false });
+    mark?.("catalog");
     this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
@@ -589,7 +592,7 @@ export class DurableBotService {
     return request;
   }
 
-  private async configureRequest(open: OpenBot, request: AgentPromptRequest): Promise<BotModelResolution["target"]> {
+  private async configureRequest(open: OpenBot, request: AgentPromptRequest, mark?: AdmissionMark): Promise<BotModelResolution["target"]> {
       // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
       // only a newly admitted input after native idle can adopt a saved desired revision.
       if (await open.runtime.isIdle()) {
@@ -599,6 +602,7 @@ export class DurableBotService {
       }
       const current = this.options.db.getTask(request.taskId)!;
       const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
+      mark?.("mcp");
       // 只有真正要发请求时才要求模型可用：这里解析失败会明确报错，而不是把会话标成损坏。
       const resolvedModel = await this.resolveTaskModel(current);
       // 替换提示是一次性的开卷告知：一旦本轮能按任务模型正常执行（用户也可能已手动改选模型），就收起。
@@ -606,12 +610,14 @@ export class DurableBotService {
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
       const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd, mcp);
+      mark?.("tools");
       await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, request),
         [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks);
+      mark?.("configure");
       return resolvedModel.target;
   }
 
-  private async admit(request: AgentPromptRequest) {
+  private async admit(request: AgentPromptRequest, mark?: AdmissionMark) {
     // Committed retries retain their original configuration and input preparation.
     if (this.binding(request.taskId)) {
       const existing = await this.withRecovery(request.taskId, async open => {
@@ -621,9 +627,12 @@ export class DurableBotService {
       });
       if (existing) return existing;
     }
-    request = await this.prepareRequest(request);
+    mark?.("deduplicate");
+    request = await this.prepareRequest(request, mark);
+    mark?.("taskPersisted");
     return this.withRecovery(request.taskId, async open => {
-      const model = await this.configureRequest(open, request);
+      mark?.("opened");
+      const model = await this.configureRequest(open, request, mark);
       let text = await this.options.prepareInput?.(request) ?? request.text;
       if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
       const content: Exclude<import("@earendil-works/pi-durable").UserInput, string> = [{ type: "text", text }];
@@ -639,20 +648,29 @@ export class DurableBotService {
       }
       const audit = this.options.auditInput?.(request);
       this.options.beforeSubmit?.(request);
+      mark?.("payload");
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
-        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [], ...(audit ? { audit } : {}) });
+        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [], ...(audit ? { audit } : {}) }, mark);
       return { submission, open };
     });
   }
 
   private async admitTracked(request: AgentPromptRequest) {
-    return this.trackAdmission(request.taskId, () => this.admit(request));
+    if (process.env.MYBUDDY_ADMISSION_TRACE !== "1") return this.trackAdmission(request.taskId, () => this.admit(request));
+    // Time only; never record the input, files, credentials or provider payload.
+    const timestamps: Record<string, number> = {};
+    const start = performance.now();
+    const mark: AdmissionMark = stage => { timestamps[stage] = Math.round((performance.now() - start) * 10) / 10; };
+    try { return await this.trackAdmission(request.taskId, () => this.admit(request, mark), mark); }
+    finally { mark("finished"); console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps })); }
   }
 
-  private trackAdmission<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+  private trackAdmission<T>(taskId: string, operation: () => Promise<T>, mark?: AdmissionMark): Promise<T> {
     const prior = this.admissionTails.get(taskId) ?? Promise.resolve();
     const pending = prior.catch(() => {}).then(async () => {
+      mark?.("queue");
       if (this.options.db.getTask(taskId)) await this.open(taskId, true);
+      mark?.("preopen");
       return operation();
     });
     this.admissionTails.set(taskId, pending);

@@ -1547,7 +1547,7 @@ function registerIpc(): void {
   );
 
   // DB
-  ipcMain.handle(DbIpc.listSpaces, () => db.listSpaces());
+  ipcMain.handle(DbIpc.listSpaces, () => agentService.botWorkspaceNavigation().spaces);
   // Renderer 只接收正常/显式归档任务；安全回收（trashed）任务保留在 DB 至 purge，但不应重启后“复活”。
   ipcMain.handle(DbIpc.listTasks, () => db.listNonTrashedTasks());
   ipcMain.handle(DbIpc.listProjects, (_e, includeArchived?: boolean) =>

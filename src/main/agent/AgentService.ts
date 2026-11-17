@@ -1170,7 +1170,7 @@ export class AgentService {
     return this.botRegistry.listBots(LOCAL_USER_ID);
   }
 
-  botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot(); }
+  botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot({ repair: false }); }
   botMessageForHtmlExport(request: import('../../shared/saved-artifact').MessageHtmlRequest) {
     const bot = this.botRegistry.getBot(request.botId);
     if (!bot || bot.userId !== LOCAL_USER_ID) throw new Error("Bot 不属于当前用户");
@@ -1372,7 +1372,7 @@ export class AgentService {
       // 自动/手动整理的状态都从运行时回调进来；这里只做 DTO 投影并 emit，不同步等待。
       onContextStatus: (taskId, status) =>
         this.publishCompactionState(this.durableCompactionStatus(taskId, status, this.lastCompactionStatus.get(taskId))),
-      prepareTask: request => this.prepareDurableTask(request),
+      prepareTask: (request, mark) => this.prepareDurableTask(request, mark),
       beforeSubmit: request => {
         if (isGatewayBotTaskId(request.taskId) || this.workService.repo.bindingForTask(request.taskId))
           throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
@@ -1739,7 +1739,7 @@ export class AgentService {
     return !(selection.excludeTools ?? []).some(tool => tool.toLowerCase() === name.toLowerCase());
   }
 
-  private async prepareDurableTask(request: AgentPromptRequest): Promise<AgentPromptRequest> {
+  private async prepareDurableTask(request: AgentPromptRequest, mark?: (stage: string) => void): Promise<AgentPromptRequest> {
     this.durableAssemblies.delete(request.taskId);
     assertSingleExpertId(request.expertId);
     const cwd = prepareTaskWorkspace(this.db, this.taskWorkspace, this.executionFailures, request.taskId, request.assistantMessageId,
@@ -1766,7 +1766,10 @@ export class AgentService {
       resolved.effectiveProfile.policy.suggestedPermissionMode, this.settingsStore.read().permissionMode ?? "default");
     await ensurePresetRuntimeReadyWithRecovery({ failures: this.executionFailures, taskId: task.id,
       assistantMessageId: request.assistantMessageId, preset, ensureReady: () => this.runtimeRequirements.ensurePresetReady(preset) });
-    await this.memoryWriteQueue;
+    mark?.("presetReady");
+    // Appending a turn does not change already captured evidence. Background L1
+    // extraction may call a model for any task; it must not gate chat admission.
+    // Evidence-changing deletion and regeneration keep their separate barrier.
     const connectorIds = resolved.connectorDecisions.filter(item => item.enabled).map(item => item.id);
     this.settingsStore.setTaskConnectorIds(request.taskId, connectorIds);
     this.durableAssemblies.delete(request.taskId);

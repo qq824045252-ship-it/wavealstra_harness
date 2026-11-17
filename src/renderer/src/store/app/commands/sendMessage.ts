@@ -150,6 +150,14 @@ export function createSendMessageActions(
       set({ terminalContext: null });
 
       const userMsgId = uid(storeContext);
+      const failDurableSend = (message: string): void => set((state) => ({
+        tasks: state.tasks.map((item) => item.id === activeTaskId ? {
+          ...item,
+          botInputError: message,
+          botPendingSubmissions: item.botPendingSubmissions?.map((input) =>
+            input.id === userMsgId ? { ...input, submitting: false, submissionFailed: true } : input),
+        } : item),
+      }));
       const assistantMsgId = uid(storeContext);
       const atts = (attachments ?? []).filter((a) => a.name);
       const referencedPaths = new Set(
@@ -241,11 +249,10 @@ export function createSendMessageActions(
                 ...(isDurable
                   ? {
                       botInputError: undefined,
-                      botPendingSubmission: {
-                        id: userMsgId,
-                        text: visibleText,
-                        attachmentNames: displayAttachments.map((a) => a.name),
-                      },
+                      botPendingSubmissions: [
+                        ...(x.botPendingSubmissions ?? []),
+                        { ...userMsg, inputRequestId: userMsgId, submitting: true },
+                      ],
                     }
                   : {}),
               }
@@ -354,17 +361,7 @@ export function createSendMessageActions(
       }
       if (!api?.agent) {
         if (isDurable) {
-          set((state) => ({
-            tasks: state.tasks.map((item) =>
-              item.id === activeTaskId
-                ? {
-                    ...item,
-                    botInputError: "主进程 Agent API 未就绪",
-                    botPendingSubmission: undefined,
-                  }
-                : item,
-            ),
-          }));
+          failDurableSend("主进程 Agent API 未就绪");
           return;
         }
         get().applyAgentPatch({
@@ -413,13 +410,7 @@ export function createSendMessageActions(
           // 不静默吞掉。仅当本地确已插入空 assistant 壳时才以 error 结束它（诚实暴露失败）。
           if (result?.error) {
             if (isDurable) {
-              set((state) => ({
-                tasks: state.tasks.map((item) =>
-                  item.id === activeTaskId
-                    ? { ...item, botInputError: result.error!.message }
-                    : item,
-                ),
-              }));
+              failDurableSend(result.error.message);
               return;
             }
             const currentTask = get().tasks.find(
@@ -458,7 +449,11 @@ export function createSendMessageActions(
             }
           }
           // 同步主进程写入的 sessionFile / 权威 cwd（P0：主进程回读，Renderer 不决定目录）
-          const rows = await api.db?.listTasks?.();
+          const rows = await api.db?.listTasks?.().catch((error: unknown) => {
+            // Metadata readback is not the submission result.
+            console.warn("[SendMessage] task metadata readback failed", error);
+            return undefined;
+          });
           const row = rows?.find((t) => t.id === activeTaskId);
           if (!row) return;
           set((s) => {
@@ -491,13 +486,7 @@ export function createSendMessageActions(
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           if (isDurable) {
-            set((state) => ({
-              tasks: state.tasks.map((item) =>
-                item.id === activeTaskId
-                  ? { ...item, botInputError: message }
-                  : item,
-              ),
-            }));
+            failDurableSend(message);
             return;
           }
           get().applyAgentPatch({
@@ -506,17 +495,6 @@ export function createSendMessageActions(
             messageId: assistantMsgId,
             error: message,
           });
-        })
-        .finally(() => {
-          if (isDurable)
-            set((state) => ({
-              tasks: state.tasks.map((item) =>
-                item.id === activeTaskId &&
-                item.botPendingSubmission?.id === userMsgId
-                  ? { ...item, botPendingSubmission: undefined }
-                  : item,
-              ),
-            }));
         });
     },
   };

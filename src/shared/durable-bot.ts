@@ -15,7 +15,7 @@ export interface DurableBotSnapshot {
   /** Last entry preceding the loaded history window; omitted at the beginning. */
   historyBefore?: number;
   queued: number;
-  pendingInputs: Array<{ id: string; mode: "steer" | "followUp"; text: string }>;
+  pendingInputs: Array<{ id: string; inputRequestId?: string; mode: "steer" | "followUp"; text: string }>;
   retry?: { at: number; error: string };
   compacting: boolean;
   messages: ChatMessageDto[];

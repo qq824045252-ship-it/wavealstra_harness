@@ -5,6 +5,7 @@ import type { DurableBotSnapshot } from "@shared/durable-bot";
 export function botMessagePresentation(
   messages: readonly ChatMessage[],
   pendingInputs: readonly DurableBotSnapshot["pendingInputs"][number][] = [],
+  localInputs: readonly ChatMessage[] = [],
 ): ChatMessage[] {
   const result: ChatMessage[] = [];
   let userId: string | undefined;
@@ -44,7 +45,11 @@ export function botMessagePresentation(
     replies = [];
   };
   for (const message of messages) {
-    if (message.role === "user") { flush(); userId = message.id; result.push(message); }
+    if (message.role === "user") {
+      flush();
+      userId = message.inputRequestId ?? message.id;
+      result.push(message.inputRequestId ? { ...message, presentationKey: `durable-input-${message.inputRequestId}` } : message);
+    }
     else replies.push(message);
   }
   flush();
@@ -53,10 +58,12 @@ export function botMessagePresentation(
   for (const input of pendingInputs) {
     result.push(
       { id: `durable-queued-user-${input.id}`, role: "user", createdAt: 0,
+        presentationKey: input.inputRequestId ? `durable-input-${input.inputRequestId}` : undefined,
         blocks: [{ type: "text", text: input.text }] },
       { id: `durable-queued-reply-${input.id}`, role: "assistant", createdAt: 0,
         blocks: [], streaming: true, pendingBehavior: input.mode },
     );
   }
+  for (const input of localInputs) result.push({ ...input, presentationKey: `durable-input-${input.id}` });
   return result;
 }

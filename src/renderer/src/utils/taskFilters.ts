@@ -97,7 +97,7 @@ export function matchesTaskFilter(
 
 export function taskHasActiveExecution(task: Task | null): boolean {
   if (!task) return false;
-  if (task.botPendingSubmission) return true;
+  if (task.botPendingSubmissions?.some(input => input.submitting)) return true;
   if (messagesOf(task).some(message => message.externalAgent && message.streaming)) return true;
   if (task.durable) return task.durable.busy;
   if (hasActiveExecutionMessages(messagesOf(task))) return true;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { useAppStore } from "../src/renderer/src/store/appStore";
 import { minimalTask, prepareTestEnv } from "./test-store-harness";
 import type { AgentPromptRequest, TaskDto } from "../src/shared/agent-ipc";
+import { botMessagePresentation } from "../src/renderer/src/lib/botMessagePresentation";
 
 async function main(): Promise<void> {
   prepareTestEnv();
@@ -48,7 +49,51 @@ async function main(): Promise<void> {
   await useAppStore.getState().sendMessage("must not execute after failed save");
   assert.equal(requests.length,0);
   assert.match(useAppStore.getState().tasks[0].botInputError ?? "",/SAVE_REJECTED/);
-  assert.equal(useAppStore.getState().tasks[0].botPendingSubmission,undefined);
+  assert.equal(useAppStore.getState().tasks[0].botPendingSubmissions?.[0].submitting,false);
+  assert.equal(useAppStore.getState().tasks[0].botPendingSubmissions?.[0].submissionFailed,true);
+
+  seed("coding","coding");
+  api.db.upsertTask = async () => {};
+  api.agent.prompt = async request => ({ queued: true, receipt: {
+    taskId: request.taskId, operationId: request.userMessageId, submissionId: 3, status: "queued",
+  } });
+  const done = useAppStore.getState().sendMessage("existing conversation follow-up", [{name:"example.txt",path:"/example.txt"}]);
+  const task = () => useAppStore.getState().tasks[0];
+  const display = () => botMessagePresentation(task().messages, task().durable?.pendingInputs, task().botPendingSubmissions);
+  const optimistic = display().at(-1)!;
+  assert.equal(optimistic.submitting,true);
+  assert.deepEqual(optimistic.blocks,[{type:"text",text:"existing conversation follow-up"}]);
+  assert.equal(optimistic.attachments?.[0]?.name,"example.txt");
+  assert.equal(task().messages.length,1,"optimistic rows do not become history");
+  await done;
+  assert.equal(display().at(-1)?.id,optimistic.id,"IPC success cannot clear a bubble before the projection arrives");
+  const snapshot = {backend:"pi-durable",epoch:"test",historyId:"test",revision:1,conversationId:"test",toolMode:"native",
+    busy:true,queued:1,compacting:false,messages:[{id:"durable-1",role:"user",text:"first",createdAt:1}],
+    pendingInputs:[{id:"3",inputRequestId:optimistic.id,mode:"followUp",text:"existing conversation follow-up"}],
+  } as const;
+  useAppStore.getState().applyAgentPatch({type:"durable_snapshot",taskId:"bound-task",snapshot:{
+    ...snapshot,messages:[...snapshot.messages],pendingInputs:[...snapshot.pendingInputs],
+  }});
+  assert.equal(task().botPendingSubmissions,undefined);
+  assert.equal(display()[1]?.presentationKey,optimistic.presentationKey,"queued acceptance keeps one stable bubble");
+  useAppStore.getState().applyAgentPatch({type:"durable_snapshot",taskId:"bound-task",snapshot:{
+    ...snapshot,revision:2,queued:0,pendingInputs:[],messages:[...snapshot.messages,
+      {id:"durable-3",role:"user",text:"existing conversation follow-up",createdAt:3,inputRequestId:optimistic.id}],
+  }});
+  assert.equal(display().length,2);
+  assert.equal(display()[1]?.presentationKey,optimistic.presentationKey);
+
+  const a = useAppStore.getState().sendMessage("same text");
+  const b = useAppStore.getState().sendMessage("same text");
+  const [first, second] = task().botPendingSubmissions!;
+  assert.notEqual(first.id,second.id);
+  useAppStore.getState().applyAgentPatch({type:"durable_snapshot", taskId:"bound-task", snapshot:{
+    ...snapshot,revision:3,messages:[...snapshot.messages],
+    pendingInputs:[{id:"4",inputRequestId:first.id,mode:"followUp",text:"same text"}],
+  }});
+  assert.deepEqual(task().botPendingSubmissions?.map(input=>input.id),[second.id]);
+  assert.equal(new Set(display().map(message=>message.presentationKey ?? message.id)).size,display().length);
+  await Promise.all([a,b]);
   console.log("PASS: task mode authority, persist-before-prompt, pending Bot lock and failed-save admission");
 }
 main().catch(error => { console.error(error); process.exitCode=1; });

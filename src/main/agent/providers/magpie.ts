@@ -1,6 +1,7 @@
 import type { Api, ApiKeyAuth, Model, ModelThinkingLevel, Provider, ProviderStreams, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ModelsModelConfig } from "../ModelsConfigStore";
+import { magpieChatRecovery } from "./MagpieChatRecovery";
 
 export const MAGPIE_PROVIDER_ID = "magpie";
 
@@ -104,7 +105,7 @@ export function magpieProvider(
     models: [],
     api: {
       "anthropic-messages": passThrough(api["anthropic-messages"]),
-      "openai-completions": passThrough(api["openai-completions"]),
+      "openai-completions": magpieChatRecovery(api["openai-completions"]),
       "openai-responses": passThrough(api["openai-responses"]),
     },
     fetchModels: async (context) => {

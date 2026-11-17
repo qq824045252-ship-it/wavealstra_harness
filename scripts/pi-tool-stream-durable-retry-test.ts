@@ -8,6 +8,8 @@ import {stream} from '@earendil-works/pi-ai/api/openai-completions';
 import {isRetryableAssistantError} from '@earendil-works/pi-ai/utils/retry';
 import {Type} from 'typebox';
 import {DurableSqliteDatabase} from '../src/main/agent/durable/DurableSqliteDatabase';
+import { magpieChatRecovery } from '../src/main/agent/providers/MagpieChatRecovery';
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 const root=await mkdtemp(join(tmpdir(),'stream-retry-durable-'));
 const model:any={id:'fixture',name:'Fixture',provider:'fixture',api:'openai-completions',baseUrl:'https://fixture.invalid/v1',reasoning:false,input:['text'],contextWindow:128000,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
 const error='Ambiguous streamed tool call index; provider must send a stable call id';
@@ -27,4 +29,45 @@ async function run(name:string){let requests=0,effects=0;let firstDone!:()=>void
  else {assert.equal(result.status,'unanswered');assert.equal(requests,name==='cancel'?1:3);assert.equal(effects,0);}
  console.log('PASS '+name+' '+JSON.stringify({requests,effects,status:result.status}));passed++;}finally{await h.close(ctx);}}
 for(const name of ['success','exhausted','cancel'])await run(name);
+{
+  const requests: boolean[] = [];
+  const values: string[] = [];
+  const routedModel = {...model, provider:'magpie'};
+  const adapter = magpieChatRecovery(openAICompletionsApi());
+  const registry = createRegistry();
+  const extension = defineExtension({name:'recovery-fixture',tools:[defineTool({
+    name:'effect',description:'record one fixture value',parameters:Type.Object({value:Type.String()}),replay:'safe',
+    execute:async(args)=>{ values.push(args.value); return {output:[{type:'text',text:'recorded'}]}; },
+  })]});
+  registry.install(extension);
+  const models:any = {getAuth:async()=>undefined,getModel:()=>routedModel,
+    streamSimple:(_m:any,input:any,options:any)=>adapter.streamSimple(routedModel,input,{...options,apiKey:'fixture',fetch:async(input,init)=>{
+      const payload = await new Request(input,init).json() as {stream:boolean};
+      requests.push(payload.stream);
+      if (requests.length===1) return response(good('before'));
+      if (requests.length===2) return response(bad);
+      if (requests.length===3) {
+        const tool_calls = ['after-one','after-two'].map(value=>call(0,value,JSON.stringify({value})));
+        return Response.json({choices:[{message:{role:'assistant',tool_calls},finish_reason:'tool_calls'}]});
+      }
+      return response(null);
+    }}),
+  };
+  const db=join(root,'magpie-recovery.sqlite');
+  const h=await Harness.open(await SqliteStorage.open(await DurableSqliteDatabase.open(db)),{
+    registry,models,settings:{retry:{enabled:true,maxRetries:2,baseDelayMs:1,maxAgentDelayMs:1000},compaction:{enabled:false}},
+  },ctx);
+  try {
+    const c=await h.createConversation({ownership:{kind:'ownerless'},agent:{
+      model:{provider:'magpie',modelId:'fixture'},extensions:[extension],
+    }},ctx);
+    const submitted=await c.submit({type:'input',content:'public fixture',requestId:'magpie-recovery'},ctx);
+    assert.equal((await submitted.wait(ctx)).status,'done');
+    await c.waitForIdle(ctx);
+    assert.deepEqual(requests,[true,true,false,true]);
+    assert.deepEqual(values.slice().sort(),['after-one','after-two','before']);
+    console.log('PASS Magpie recovery resumes the failing generation; prior side effects run exactly once');
+    passed++;
+  } finally { await h.close(ctx); }
+}
 console.log(JSON.stringify({passed,root}));

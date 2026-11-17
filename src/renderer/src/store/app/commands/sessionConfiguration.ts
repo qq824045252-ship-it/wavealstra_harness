@@ -33,7 +33,7 @@ export function createSessionConfigurationActions(
         task &&
           (task.messages.length > 0 ||
             task.sessionFile ||
-            task.botPendingSubmission ||
+            task.botPendingSubmissions?.some(input => input.submitting) ||
             task.durable),
       );
       if (locked) {

@@ -668,13 +668,15 @@ export class DurableBotRuntime {
     }
   }
 
-  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata) {
+  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void) {
     this.assertSessionHealthy();
     try {
       const submission = await this.conversation.submit({ type: "input", content, requestId, whenBusy,
-        ...(metadata ? { entry: { kind: "mybuddy.user", data: { mybuddyInput: metadata } } } : {}),
+        ...(metadata ? { entry: { kind: "mybuddy.user", data: { mybuddyInput: { ...metadata, inputRequestId: requestId } } } } : {}),
       }, ctx);
+      mark?.("committed");
       await this.refresh();
+      mark?.("projected");
       return submission;
     } catch (error) {
       return await this.normalizeFailure(error);
@@ -902,6 +904,7 @@ export class DurableBotRuntime {
         && typeof item.name === "string" && typeof item.path === "string" ? [{ name: item.name, path: item.path }] : []);
       const audit = durableInputAuditSchema.safeParse(input.audit);
       target.set(entry.id, { text: input.text, displayText: input.displayText, attachments,
+        ...(typeof input.inputRequestId === "string" ? { inputRequestId: input.inputRequestId } : {}),
         ...(typeof input.botRequestId === "string" ? { botRequestId: input.botRequestId } : {}), ...(audit.success ? { audit: audit.data } : {}) });
     }
   }
@@ -1300,7 +1303,14 @@ export class DurableBotRuntime {
     const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: this.epoch, historyId: this.historyId, revision: ++this.revision,
       conversationId: String(this.conversation.id), toolMode: this.options.toolMode,
       busy, queued, status, historyBefore: this.historyBefore, messages, ...(error ? { error } : {}),
-      pendingInputs: (inbox?.items ?? []).flatMap(item => item.mode === "write" ? [] : [{ id: String(item.id), mode: item.mode, text: contentText(item.content) }]),
+      pendingInputs: (inbox?.items ?? []).flatMap(item => {
+        if (item.mode === "write") return [];
+        const data = item.entry?.data;
+        const input = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
+        return [{ id: String(item.id), mode: item.mode,
+          inputRequestId: input && typeof input === "object" && !Array.isArray(input) && typeof input.inputRequestId === "string" ? input.inputRequestId : undefined,
+          text: input && typeof input === "object" && !Array.isArray(input) && typeof input.displayText === "string" ? input.displayText : contentText(item.content) }];
+      }),
       retry: live.generation?.retry, compacting: Boolean(live.compactions?.length),
       outcome: busy ? undefined : outcome,
       ...(model ? { contextUsage: { usedTokens, estimated: usedTokens !== null, contextWindow: model.contextWindow,

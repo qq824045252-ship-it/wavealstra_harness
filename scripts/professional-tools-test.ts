@@ -262,8 +262,8 @@ async function main(): Promise<void> {
     const agent = readFileSync("src/main/agent/AgentService.ts", "utf-8");
     const orchestrator = readFileSync("src/main/professional-tools/RuntimeRequirementOrchestrator.ts", "utf-8");
     const durable = readFileSync("src/main/agent/durable/DurableBotService.ts", "utf-8");
-    const preparePos = durable.indexOf("request = await this.prepareRequest(request)");
-    const assemblePos = durable.indexOf("await this.configureRequest(open, request)", preparePos);
+    const preparePos = durable.search(/request = await this\.prepareRequest\(request(?:,\s*mark)?\)/);
+    const assemblePos = durable.search(/await this\.configureRequest\(open,\s*request(?:,\s*mark)?\)/);
     assert(
       preparePos >= 0 && assemblePos > preparePos && agent.includes("ensureReady: () => this.runtimeRequirements.ensurePresetReady(preset)"),
       "Durable 在工具/MCP 装配前强制 managed runtime gate",

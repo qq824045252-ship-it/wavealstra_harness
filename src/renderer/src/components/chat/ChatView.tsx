@@ -571,9 +571,10 @@ export default function ChatView(): React.JSX.Element {
   const displayMessages = useMemo(() => {
     const live = task?.messages ?? [];
     const messages = visibleWindow?.kind === "focus" ? visibleWindow.messages : visibleWindow ? mergeHistoryWindow([visibleWindow.messages], live) : live;
-    return task?.durable !== undefined || task?.welcomeMode === "general"
-      ? botMessagePresentation(messages, visibleWindow?.kind === "focus" ? [] : task.durable?.pendingInputs) : messages;
-  }, [visibleWindow, task?.messages, task?.welcomeMode, task?.durable, task?.durable?.pendingInputs]);
+    return task?.durable !== undefined || task?.welcomeMode === "general" || task?.botPendingSubmissions?.length
+      ? botMessagePresentation(messages, visibleWindow?.kind === "focus" ? [] : task?.durable?.pendingInputs,
+        visibleWindow?.kind === "focus" ? [] : task?.botPendingSubmissions) : messages;
+  }, [visibleWindow, task?.messages, task?.welcomeMode, task?.durable, task?.botPendingSubmissions]);
   const messageCount = displayMessages.length;
   const hasMessages = messageCount > 0;
   const lastMessage = displayMessages[messageCount - 1];
@@ -901,7 +902,7 @@ export default function ChatView(): React.JSX.Element {
   }
 
   // Admission and errors remain visible before the first native message arrives.
-  if (!task || (task.welcomeMode !== "general" && task.messages.length === 0 && !task.sessionFile && !task.durable && !task.botPendingSubmission && !task.botInputError)) {
+  if (!task || (task.welcomeMode !== "general" && !hasMessages && !task.sessionFile && !task.durable && !task.botInputError)) {
     const showHeroHeader = Boolean(task || sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
@@ -924,7 +925,7 @@ export default function ChatView(): React.JSX.Element {
       ? task.welcomeMode
       : "coding";
 
-  if (task.messages.length === 0) {
+  if (!hasMessages) {
     return (
       <div className="chat-column task-ambient" data-mode={taskMode}>
         <div className="chat-header task-chat-header">
@@ -949,13 +950,7 @@ export default function ChatView(): React.JSX.Element {
           {sidePanelButton}
         </div>
         <div className="chat-scroll">
-          {task.botPendingSubmission && <div className="bot-submission-preview">
-            <div className="bot-submission-input">{task.botPendingSubmission.text}
-              {task.botPendingSubmission.attachmentNames.map((name, index) => <span className="bot-submission-attachment" key={index}>{name}</span>)}
-            </div>
-            <div className="bot-submission-status" role="status"><span className="bot-submission-spinner" aria-hidden="true" />正在准备回复…</div>
-          </div>}
-          {!task.botPendingSubmission && !task.historyError &&
+          {!task.historyError &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
             <div className="empty-block-title">{task.durable || task.welcomeMode === "general" ? "会话" : "正在加载历史对话…"}</div>
             <div style={{ fontSize: 12.5 }}>{task.durable || task.welcomeMode === "general" ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>

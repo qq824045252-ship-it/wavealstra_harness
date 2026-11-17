@@ -112,6 +112,12 @@ export function createAgentProjectionActions(
         }
         set((state) => {
           const prior = state.tasks.find((task) => task.id === patch.taskId);
+          const localInputs = prior?.botPendingSubmissions;
+          const acknowledged = localInputs?.length ? new Set([
+            ...snapshot.messages.map(message => message.inputRequestId),
+            ...snapshot.pendingInputs.map(input => input.inputRequestId),
+          ]) : undefined;
+          const remaining = acknowledged ? localInputs?.filter(input => !acknowledged.has(input.id)) : localInputs;
           const task: Task = {
             ...prior,
             id: patch.taskId,
@@ -120,6 +126,7 @@ export function createAgentProjectionActions(
             historyWindow: prior?.historyWindow?.historyId === snapshot.historyId ? prior.historyWindow : undefined,
             historyError: undefined,
             messages,
+            botPendingSubmissions: remaining?.length ? remaining : undefined,
             title:
               prior?.title ??
               taskTitleFromFirstMessage(

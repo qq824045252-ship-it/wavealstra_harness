@@ -121,6 +121,10 @@ export interface MessageTerminalContext {
 
 export interface ChatMessage {
   id: string;
+  inputRequestId?: string;
+  /** Renderer only: this bubble has not yet been accepted into durable history. */
+  submitting?: boolean;
+  submissionFailed?: boolean;
   /** Native message provenance retained by a merged display row; never changes persisted history. */
   sourceMessageIds?: string[];
   role: "user" | "assistant";
@@ -207,7 +211,7 @@ export interface Task {
   /** Transport/configuration errors before Durable accepts an input, not execution state. */
   botInputError?: string;
   /** Local transport feedback only, never persisted as a message or execution state. */
-  botPendingSubmission?: { id: string; text: string; attachmentNames: string[] };
+  botPendingSubmissions?: ChatMessage[];
   id: string;
   title: string;
   /** 所属空间；无则显示在「任务」分组 */
