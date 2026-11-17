@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { browserAgentPolicy } from "../src/main/capabilities/BrowserAgentPolicy";
+import { browserToolDescription } from "../src/main/capabilities/BrowserToolContract";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +102,19 @@ await check("computer_exec exposes distinct native contracts to Linux and Window
   assert.doesNotMatch(linux.description, /UIA|PrintWindow|WGC|computer-use-linux/);
   assert.doesNotMatch(linux.screenshotSummary, /Windows/);
   assert.match(computerUseToolCopy("macos").description, /unsupported/);
+});
+
+await check("browser and native desktop contracts forbid autonomous external-browser fallback", () => {
+  assert.match(browserAgentPolicy, /一律使用侧栏 browser_exec/);
+  assert.match(browserAgentPolicy, /用户亲自点击/);
+  assert.match(browserAgentPolicy, /Agent 不得代点/);
+  assert.match(browserAgentPolicy, /失败时报告具体原因/);
+  assert.ok(browserToolDescription.startsWith(browserAgentPolicy));
+  for (const platform of ["windows", "linux", "macos"] as const) {
+    for (const nativeExecution of [true, false]) {
+      assert.ok(computerUseToolCopy(platform, { nativeExecution }).description.startsWith(browserAgentPolicy));
+    }
+  }
 });
 
 await check("detection result is cached per platform; refresh recomputes", () => {

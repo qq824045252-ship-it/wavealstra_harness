@@ -2,6 +2,11 @@
 
 The native `BrowserHost` is a registry of sandboxed `WebContentsView` documents. It does not substitute an external browser. Every tab shares the existing `persist:extension-browser` session, while its document, history, capture generation and screenshot queue are independent.
 
+## Browser routing
+
+- Agent HTML and web interaction uses `browser_exec` in a task-owned built-in tab. Prefer navigate plus `after: { mode: "text" }` when the goal is to open and read. Report unavailable or failed navigation; do not substitute a system browser or native Computer Use. Background automation can keep its tab without stealing foreground focus.
+- Ordinary app HTTP(S) links, including localhost, open in the sidebar. Registered HTML artifacts may also render in their isolated preview; links leaving that preview stay inside the app. System browser launch is reserved for explicit UI controls. OAuth provider links are handed to the user for manual authorization rather than launched automatically.
+
 ## Ownership and selection
 
 - `ensureTab({ key, taskId?, gadgetId?, activate? })` returns a `BrowserTabInfo`. Identity is the pair `(taskId, key)`, not the current URL. Shared `browserTabKey(url, gadgetId?)` gives `gadget:<id>` or `url:<initial-url>`; do not add a second task prefix.

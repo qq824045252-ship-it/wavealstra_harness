@@ -366,8 +366,7 @@ async function main(): Promise<void> {
     const extensionAssemblerSource = readFileSync(join(process.cwd(), "src/main/agent/SessionExtensionAssembler.ts"), "utf8");
     assert(!extensionAssemblerSource.includes("loadLegacyCapabilityFactories("), "session assembler must not load legacy disk capabilities");
     assert(!extensionAssemblerSource.includes("user-extension-loader"), "session assembler must not reference disk extension loader");
-    const builtinCapabilitySource = readFileSync(join(process.cwd(), "src/main/capabilities/builtin-capability-extension.ts"), "utf8");
-    assert(builtinCapabilitySource.includes("createWebAccessCapabilityExtension(pi)"), "WebAccess must be compiled into product capability registration");
+    assert(tools.some((tool) => tool.name === "web_search"), "WebAccess must register its search tool in the product capability extension");
     assert(!existsSync(join(process.cwd(), "src/main/agent/user-extension-loader.ts")), "legacy user extension loader must be deleted");
     const pathsSource = readFileSync(join(process.cwd(), "src/main/paths.ts"), "utf8");
     assert(!pathsSource.includes("getExtensionsDir"), "runtime must not expose ~/.mybuddy/extensions as executable surface");

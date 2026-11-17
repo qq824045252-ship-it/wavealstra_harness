@@ -1,3 +1,4 @@
+import { openCuratorInApp, type WebAccessBrowserOptions } from "./curator-browser";
 import { buildWebSearchReport, formatWebSearchReport } from "./search-report";
 import { mergeSearchSources } from "./search-aggregation";
 import { searchReportSummary, type WebSearchReport, type SearchProviderRun } from "../../../shared/web-search";
@@ -43,9 +44,6 @@ import { isDeepSeekAvailable } from "./deepseek.ts";
 import { isGeminiApiAvailable } from "./gemini-api.ts";
 import { getActiveGoogleEmail, getGeminiWebAvailabilityDiagnostic, isGeminiWebAvailable } from "./gemini-web.ts";
 import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
-import { browserOpenCommand } from "../../platform/browsers";
-import { getPlatformGlimpseOpen, openInGlimpse, type GlimpseWindow } from "../../platform/glimpse";
-import { currentPlatformId } from "../../platform/index";
 import { isBraveAvailable } from "./brave.ts";
 import { isCodexSearchAvailable, isOpenAISearchAvailable } from "./openai-search.ts";
 import { decideBrowserReuse, resolveCodexFallbackProvider } from "./fetch-strategy.ts";
@@ -551,7 +549,6 @@ let widgetVisible = false;
 let widgetUnsubscribe: (() => void) | null = null;
 const pendingCurates = new Map<string, PendingCurate>();
 const activeCurators = new Map<string, CuratorServerHandle>();
-const glimpseWins = new Map<string, GlimpseWindow>();
 
 interface PendingCurate {
 	phase: "searching" | "curating";
@@ -691,9 +688,6 @@ function formatFullResults(queryData: QueryResultData): string {
 
 function closeCurator(callId?: string): void {
 	if (callId !== undefined) {
-		const win = glimpseWins.get(callId);
-		glimpseWins.delete(callId);
-		try { win?.close(); } catch {}
 		pendingCurates.get(callId)?.cancel("stale");
 		pendingCurates.delete(callId);
 		const curator = activeCurators.get(callId);
@@ -702,10 +696,6 @@ function closeCurator(callId?: string): void {
 		return;
 	}
 
-	for (const win of glimpseWins.values()) {
-		try { win.close(); } catch {}
-	}
-	glimpseWins.clear();
 	for (const pc of pendingCurates.values()) {
 		try { pc.cancel("stale"); } catch {}
 	}
@@ -714,14 +704,6 @@ function closeCurator(callId?: string): void {
 		try { curator.close(); } catch {}
 	}
 	activeCurators.clear();
-}
-
-async function openInBrowser(pi: ExtensionAPI, url: string): Promise<void> {
-	const { command, args } = browserOpenCommand(currentPlatformId, url);
-	const result = await pi.exec(command, args);
-	if (result.code !== 0) {
-		throw new Error(result.stderr || `Failed to open browser (exit code ${result.code})`);
-	}
 }
 
 function extractDomain(url: string): string {
@@ -838,7 +820,7 @@ function handleSessionChange(ctx: ExtensionContext): void {
 	}
 }
 
-export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
+export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOptions: WebAccessBrowserOptions = {}) {
 	const initConfig = loadConfigForExtensionInit();
 	const toolNames = resolveToolNames(initConfig);
 	const storedContentSources = initConfig.webSearch?.enabled === false
@@ -1459,25 +1441,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const open = await getPlatformGlimpseOpen();
-			if (open) {
-				try {
-					const win = openInGlimpse(open, handle.url, "Search Curator");
-					glimpseWins.set(callId, win);
-					win.on("closed", () => {
-						if (glimpseWins.get(callId) === win) {
-							glimpseWins.delete(callId);
-							closeCurator(callId);
-						}
-					});
-					return;
-				} catch (err) {
-					const message = err instanceof Error ? err.message : String(err);
-					console.error(`Failed to open Glimpse curator window: ${message}`);
-					glimpseWins.delete(callId);
-				}
-			}
-			await openInBrowser(pi, handle.url);
+			await openCuratorInApp(handle.url, browserOptions);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			console.error(`Failed to open curator UI: ${message}`);
@@ -3037,33 +3001,10 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI) {
 				if (!shouldAutoOpenCuratorBrowser(loadConfig())) {
 					ctx.ui.notify(`Search curator is running. Open manually: ${handle.url}`, "info");
 				} else {
-					const open = await getPlatformGlimpseOpen();
-					if (open) {
-						try {
-							const win = openInGlimpse(open, handle.url, "Search Curator");
-							glimpseWins.set(commandCallId, win);
-							win.on("closed", () => {
-								if (glimpseWins.get(commandCallId) === win) {
-									glimpseWins.delete(commandCallId);
-									closeCurator(commandCallId);
-								}
-							});
-						} catch (err) {
-							const message = err instanceof Error ? err.message : String(err);
-							console.error(`Failed to open Glimpse curator window: ${message}`);
-							glimpseWins.delete(commandCallId);
-							try {
-								await openInBrowser(pi, handle.url);
-							} catch (browserErr) {
-								browserOpenError = browserErr instanceof Error ? browserErr.message : String(browserErr);
-							}
-						}
-					} else {
-						try {
-							await openInBrowser(pi, handle.url);
-						} catch (browserErr) {
-							browserOpenError = browserErr instanceof Error ? browserErr.message : String(browserErr);
-						}
+					try {
+						await openCuratorInApp(handle.url, browserOptions);
+					} catch (browserErr) {
+						browserOpenError = browserErr instanceof Error ? browserErr.message : String(browserErr);
 					}
 					if (browserOpenError) {
 						console.error(`Failed to open curator UI: ${browserOpenError}`);

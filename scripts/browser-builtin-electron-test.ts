@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { app, BrowserWindow, shell } from "electron";
 import { BrowserHost } from "../src/main/browser/BrowserHost";
+import { ArtifactPreviewHost } from "../src/main/artifact/ArtifactPreviewHost";
 import { BrowserAutomationService, BrowserAutomationError } from "../src/main/capabilities/BrowserAutomationService";
 
 const profiles = join(process.cwd(), "out/tests/browser-electron-profiles");
@@ -21,7 +23,7 @@ const server = createServer((req, res) => {
   res.setHeader("content-type", "text/html; charset=utf-8");
   res.end(req.url === "/next" ? "<title>Destination</title><h1>内置浏览器目标 7284</h1>" : `<title>Fixture</title><table><tr><td>Alpha</td><td>17</td><td>3</td></tr></table><a id="next" href="/next" target="_blank">Next</a><button id="popup" onclick="window.open('/next','_blank')">Popup</button><input id="name"><input id="password" type="password" value="SECRET-FIXTURE"><input id="hidden" type="hidden" value="HIDDEN-FIXTURE"><label>Notes<textarea>PRIVATE-TEXTAREA</textarea></label><div contenteditable="true" aria-label="editable notes">PRIVATE-EDITABLE</div><button id="save" onclick="document.body.dataset.saved=document.querySelector('#name').value">Save</button>`);
 });
-let win: BrowserWindow | undefined, host: BrowserHost | undefined;
+let win: BrowserWindow | undefined, host: BrowserHost | undefined, preview: ArtifactPreviewHost | undefined;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate: () => boolean, label: string) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(30); }
@@ -71,6 +73,24 @@ void (async () => {
   await service.execute({ action: "click", selector: "#save" });
   assert.equal(await wc.executeJavaScript("document.body.dataset.saved"), "verified");
   report.checks.push({ name: "fresh-observation-form", saved: true });
+  const fixture = join(root, "preview.html");
+  writeFileSync(fixture, '<h1>Local HTML fixture 6153</h1><a id="same" href="' + url + 'next">Same</a><a id="popup" target="_blank" href="' + url + 'next">Popup</a>');
+  const fileUrl = pathToFileURL(fixture).href;
+  const local = await service.execute({ action: "navigate", url: fileUrl, after: { mode: "text" } });
+  assert.match(JSON.stringify(local), /Local HTML fixture 6153/, "navigate + read local HTML in one tool call");
+  preview = new ArtifactPreviewHost();
+  const routes: string[] = [];
+  preview.attach(win, target => routes.push(target));
+  await preview.load(fileUrl);
+  for (const [idx, selector] of ["#same", "#popup"].entries()) {
+    await preview.webContentsView!.webContents.executeJavaScript('document.querySelector(' + JSON.stringify(selector) + ').click()');
+    await until(() => routes.length === idx + 1, 'artifact routes ' + selector);
+    assert.equal(routes[idx], url + "next");
+  }
+  const fromArtifact = await service.execute({ action: "navigate", url: routes[1], after: { mode: "text" } });
+  assert.match(JSON.stringify(fromArtifact), /7284/);
+  assert.equal(external.length, 0, "artifact navigation and local HTML stay in the sidebar");
+  report.checks.push({ name: "local-html-and-artifact-navigation", externalOpens: external.length });
   const port = (server.address() as { port: number }).port;
   await new Promise<void>(resolve => server.close(() => resolve()));
   await assert.rejects(service.execute({ action: "navigate", url: `http://127.0.0.1:${port}/?v=2` }),
@@ -79,5 +99,5 @@ void (async () => {
   console.log("builtin browser Electron: PASS (target=_blank, window.open, retained parent and managed popup/session, fresh form input, actual refused localhost)");
 })().catch(error => { report.error = String(error?.stack ?? error); console.error(report.error); process.exitCode = 1; }).finally(() => {
   writeFileSync(join(output, "electron-results.json"), JSON.stringify(report, null, 2));
-  shell.openExternal = originalExternal; host?.dispose(); if (win && !win.isDestroyed()) win.destroy(); server.close(); clearTimeout(guard); app.exit(Number(process.exitCode ?? 0));
+  shell.openExternal = originalExternal; preview?.dispose(); host?.dispose(); if (win && !win.isDestroyed()) win.destroy(); server.close(); clearTimeout(guard); app.exit(Number(process.exitCode ?? 0));
 });

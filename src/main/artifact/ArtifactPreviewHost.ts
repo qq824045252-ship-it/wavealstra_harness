@@ -12,9 +12,9 @@
  * - 显示决策由 NativeSurfaceCoordinator 独占（4A）：本类的 show/hide/setBounds
  *   只有 Coordinator 一条链调用。
  * - 页面与 renderer 完全隔离（sandbox，无 preload、无 Node 能力）
- * - 导航策略：产物协议内相对导航放行；其余 http(s)（含 localhost）→ 系统浏览器
+ * - 导航策略：产物协议内相对导航放行；其余 HTTP(S)（含 localhost）→ 侧栏浏览器
  */
-import { BrowserWindow, shell, WebContentsView, type Rectangle } from "electron";
+import { BrowserWindow, WebContentsView, type Rectangle } from "electron";
 import { ArtifactProtocol } from "./ArtifactProtocol";
 import { runtimeProbeService } from "../capabilities/RuntimeProbeService";
 
@@ -39,12 +39,8 @@ export class ArtifactPreviewHost {
   private lastBounds: Rectangle | null = null;
   private isVisible = false;
 
-  private routeHttpUrl(url: string): void {
-    if (/^https?:/i.test(url)) void shell.openExternal(url);
-  }
-
   /** 挂载到主窗口：创建独立 webContents（sandbox 隔离，不可信产物页面） */
-  attach(win: BrowserWindow): void {
+  attach(win: BrowserWindow, openSidebar?: (url: string) => void): void {
     if (this.view) return;
     const view = new WebContentsView({
       webPreferences: {
@@ -61,16 +57,19 @@ export class ArtifactPreviewHost {
 
     const wc = view.webContents;
     runtimeProbeService.attach("artifact", wc);
-    // 新窗口一律拒绝，http(s) 送系统浏览器
+    const routeHttpUrl = (url: string): void => {
+      if (/^https?:\/\//i.test(url)) openSidebar?.(url);
+    };
+    // 新窗口一律拒绝，HTTP(S) 转到侧栏浏览器
     wc.setWindowOpenHandler(({ url }) => {
-      this.routeHttpUrl(url);
+      routeHttpUrl(url);
       return { action: "deny" };
     });
-    // 产物页面内导航：协议内相对导航放行；其它 http(s) → 系统浏览器
+    // 产物页面内导航：协议内相对导航放行；HTTP(S) 转到侧栏浏览器
     wc.on("will-navigate", (event, url) => {
       if (url.startsWith(`${ArtifactProtocol.SCHEME}://`)) return;
       event.preventDefault();
-      this.routeHttpUrl(url);
+      routeHttpUrl(url);
     });
   }
 

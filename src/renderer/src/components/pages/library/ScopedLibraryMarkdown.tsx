@@ -5,6 +5,7 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import type { ScopedLibraryOperations } from "@/lib/scopedLibraryOperations";
+import { useAppStore } from "@/store/appStore";
 
 interface Props {
   content: string;
@@ -39,7 +40,7 @@ export default function ScopedLibraryMarkdown({ content, itemId, access, onOpenI
         if (href?.startsWith("#")) return;
         event.preventDefault();
         if (!href) return;
-        if (/^https?:\/\//i.test(href)) { void window.api?.browser.openExternal(href); return; }
+        if (/^https?:\/\//i.test(href)) { useAppStore.getState().setBrowserUrl(href); return; }
         void access.resolveLink(itemId, href).then(onOpenItem, (error: unknown) => onError(error instanceof Error ? error.message : "无法打开资料链接"));
       }}>{children}</a>,
       img: ({ src, alt }) => <ScopedImage src={src} alt={alt} itemId={itemId} access={access} />,

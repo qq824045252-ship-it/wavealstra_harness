@@ -1,6 +1,6 @@
 import { isPiCodeModeEnabled, piCodeModeState, type PiCodeModeState } from '../../shared/pi-code-mode';
 /** Native Pi MCP for both task sessions and the desktop manager. No legacy protocol runtime. */
-import { BrowserWindow, shell } from 'electron';
+import { BrowserWindow } from 'electron';
 import { join } from 'node:path';
 import {
   createAgentSession, createCodemodeExtension, createEventBus, createMcpExtension, createToolSearchExtension,
@@ -87,7 +87,7 @@ export class McpRuntimeService {
         loadConfig: () => structuredClone(config),
         credentials: this.credentialStore(),
         logPath: join(getPluginDirectory('mcp', this.agentDir), 'mcp-native.log'),
-        openUrl: url => { void shell.openExternal(url); },
+        openUrl: url => { broadcast(McpIpc.notify, { message: '请手动在系统浏览器完成 MCP 授权：' + url, type: 'info', at: Date.now() }); },
         updateConfig: () => { throw new Error('MCP 配置由能力管理页统一维护，请在管理页修改。'); },
         onController: controller => {
           if (factoryEpoch !== this.epoch) {
@@ -259,7 +259,7 @@ export class McpRuntimeService {
         showAuthorizationUrl: url => {
           if (flow.cancelled) throw new Error("授权已取消");
           report({ok:true,details:{server:name,authorizationUrl:url.href,runtime:'pi-native'}});
-          void shell.openExternal(url.href).catch(error=>broadcast(McpIpc.notify,{message:message(error),type:'error',at:Date.now()}));
+          // The authorization dialog exposes an explicit manual open action, never an automatic browser launch.
         },
         promptForRedirectUrl: signal => new Promise(resolve=>{
           let done=false;

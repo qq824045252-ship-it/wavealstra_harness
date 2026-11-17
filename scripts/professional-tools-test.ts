@@ -40,6 +40,7 @@ function fakeHarness(options: {
   seedDrawioReady?: boolean;
   /** 预置 Draw.io 端口被非本服务占用（httpStatus 200 但无身份标记） */
   seedDrawioOccupiedPorts?: number[];
+  failSidebarOnce?: boolean;
 } = {}) {
   const files = new Set<string>([penpotCompose]);
   const drawioOccupied = new Set<number>(options.seedDrawioOccupiedPorts ?? []);
@@ -115,8 +116,10 @@ function fakeHarness(options: {
       if (drawioOccupied.has(port)) return "<html><title>other service</title></html>";
       return null;
     },
-    openExternal: async (url) => { events.push(`open:${url}`); },
-    openInApp: async (url) => { events.push(`inapp:${url}`); },
+    openInApp: async (url) => {
+      events.push(`inapp:${url}`);
+      if (options.failSidebarOnce) { options.failSidebarOnce = false; throw new Error("fixture sidebar unavailable"); }
+    },
     sleep: async () => {},
   };
 
@@ -157,8 +160,18 @@ async function main(): Promise<void> {
     const penpotOpen = await h.service.open("penpot");
     assert(penpotOpen.ok && penpotOpen.status.ready, "Penpot open => docker up + Ready + 浏览器");
     assert(h.events.some((e) => e.startsWith("run:docker:") && e.includes("up|-d")), "Penpot open 才 docker up");
-    assert(h.events.includes("open:http://localhost:9001"), "Penpot start/open Ready 后系统浏览器打开 9001");
-    assert(!h.events.some((e) => e.startsWith("inapp:")), "Penpot 不走应用内扩展栏浏览器");
+    assert(h.events.includes("inapp:http://localhost:9001"), "Penpot start/open Ready 后侧栏浏览器打开 9001");
+    assert(!h.events.some((e) => e.startsWith("open:")), "Penpot 不启动系统浏览器");
+  }
+
+  {
+    const h = fakeHarness({ failSidebarOnce: true });
+    h.setPenpotReady(true);
+    const failed = await h.service.open("penpot");
+    assert(!failed.ok && failed.error?.includes("fixture sidebar unavailable"), "侧栏不可用明确失败，不宣称打开成功");
+    assert(!h.events.some(e => e.startsWith("open:")), "侧栏失败不回落系统浏览器");
+    const retry = await h.service.open("penpot");
+    assert(retry.ok && h.events.filter(e => e.startsWith("inapp:")).length === 2, "失败不会被防重复窗口吞掉，手动重试可成功");
   }
 
   console.log("\n== 3. Penpot owned process / docker 生命周期 ==");
@@ -191,8 +204,8 @@ async function main(): Promise<void> {
     h.setPenpotReady(true);
     const started = await h.service.start("penpot");
     assert(started.ready, "Penpot 已 Ready 时 start 直接成功");
-    assert(h.events.includes("open:http://localhost:9001"), "Penpot start Ready 后自动用系统浏览器打开 9001（无 token）");
-    assert(!h.events.some((e) => e.startsWith("inapp:")), "已 Ready 的 start 也不走扩展栏");
+    assert(h.events.includes("inapp:http://localhost:9001"), "Penpot start Ready 后用侧栏浏览器打开 9001（无 token）");
+    assert(!h.events.some((e) => e.startsWith("open:")), "已 Ready 的 start 也不启动系统浏览器");
   }
 
   console.log("\n== 6.5 Draw.io Runtime：探测 / 生命周期 / 打开 / payload ==");
@@ -279,35 +292,16 @@ async function main(): Promise<void> {
   }
   {
     const main = readFileSync("src/main/index.ts", "utf-8");
-    assert(main.includes("await shell.openExternal(url);"), "ProfessionalToolRuntime openExternal 走系统外部浏览器");
-    assert(
-      main.includes("openInApp: async (url)") && main.includes("BrowserIpc.openRequest, { url }"),
-      "openInApp op 走应用内扩展栏浏览器（browserHost.open + 渲染层 openRequest）",
-    );
-    const openInAppPos = main.indexOf("openInApp: async (url)");
-    const openExternalPos = main.indexOf("await shell.openExternal(url);");
-    assert(
-      openInAppPos >= 0 && openExternalPos >= 0,
-      "index.ts 同时保留 openExternal 与 openInApp 两个独立 op",
-    );
-    // 主窗口：全部 http(s)（含 localhost）→ 系统浏览器；专业工具 openInApp 仍走扩展栏
-    assert(
-      /if \(\/\^https\?:\/i\.test\(url\)\) \{\s*void shell\.openExternal\(url\);/.test(main),
-      "index.ts 主窗口 http(s) 一律 openExternal（含 localhost）",
-    );
-    assert(
-      !main.includes("artifactPreviewHost.onLocalUrl"),
-      "产物预览不再把本机链接回调进扩展栏",
-    );
+    assert(main.includes("openInApp: async (url)"), "professional tools expose sidebar-only open adapter");
     const runtimeSrc = readFileSync("src/main/professional-tools/ProfessionalToolRuntime.ts", "utf-8");
     const penpotOpen = runtimeSrc.slice(
       runtimeSrc.indexOf("class PenpotRuntime"),
       runtimeSrc.indexOf("class DrawioRuntime"),
     );
     assert(
-      penpotOpen.includes("this.ops.openExternal(PENPOT_DEFAULT_OPEN_URL)") &&
-        !penpotOpen.includes("openInApp(PENPOT_DEFAULT_OPEN_URL)"),
-      "Penpot start/open 走系统浏览器（openExternal），不走扩展栏",
+      penpotOpen.includes("this.ops.openInApp(PENPOT_DEFAULT_OPEN_URL)") &&
+        !penpotOpen.includes("this.ops.openExternal("),
+      "Penpot start/open 只走侧栏，不走系统浏览器",
     );
   }
   {

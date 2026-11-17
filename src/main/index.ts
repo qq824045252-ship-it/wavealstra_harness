@@ -586,6 +586,11 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 
   runtimeProbeService.attach("app", win.webContents);
 
+  const openSidebar = (url: string): void => {
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(BrowserIpc.openRequest, { url });
+    }
+  };
   win.webContents.setWindowOpenHandler(({ url }) => {
     const openSafeLocalDocument = (fileUrl: string): void => {
       try {
@@ -595,9 +600,10 @@ function createWindow(initialTheme: AppTheme = "light"): void {
           ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico", ".svg",
           ".docx", ".xlsx", ".pptx",
         ]);
-        if (existsSync(target) && safeExtensions.has(extname(target).toLowerCase())) {
-          void shell.openPath(target);
-        }
+        const extension = extname(target).toLowerCase();
+        if (!safeExtensions.has(extension) || !existsSync(target)) return;
+        if (extension === ".html" || extension === ".htm") openSidebar(pathToFileURL(target).href);
+        else void shell.openPath(target);
       } catch (error) {
         console.warn("[WindowOpen] 无法打开本地文档链接", error);
       }
@@ -614,8 +620,8 @@ function createWindow(initialTheme: AppTheme = "light"): void {
       }
     } catch { /* non-standard URL; handled below */ }
 
-    if (/^https?:/i.test(url)) {
-      void shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) {
+      openSidebar(url);
       return { action: "deny" };
     }
     if (/^file:/i.test(url)) openSafeLocalDocument(url);
@@ -708,7 +714,7 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 
   // HTML 产物预览宿主：WebContentsView 叠加 + mybuddy-artifact 协议
   // Wave 4A：宿主挂载后注入 Coordinator（唯一能碰 WCV 显示状态的入口）
-  artifactPreviewHost.attach(win);
+  artifactPreviewHost.attach(win, openSidebar);
   surfaceCoordinator.setHost(artifactPreviewHost);
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -1044,8 +1050,7 @@ function registerIpc(): void {
     if (event.senderFrame !== event.sender.mainFrame) throw new Error("仅应用主界面可以打开保存版本");
     const id = event.sender.id;
     savedArtifactPreviewService.attachOwner(event.sender, url => {
-      browserHost.open(url);
-      event.sender.send(BrowserIpc.openRequest, { url });
+      if (!event.sender.isDestroyed()) event.sender.send(BrowserIpc.openRequest, { url });
     });
     return savedArtifactPreviewService.prepare(id, request);
   });
@@ -2340,7 +2345,10 @@ function registerIpc(): void {
   });
   ipcMain.on(ArtifactIpc.reload, () => surfaceCoordinator.reload(SURFACE_MAIN));
   ipcMain.on(ArtifactIpc.hardReload, () => surfaceCoordinator.hardReload(SURFACE_MAIN));
-  ipcMain.handle(ArtifactIpc.openInBrowser, async (_e, req: ArtifactPreviewRequest) => {
+  ipcMain.handle(ArtifactIpc.openInBrowser, async (event, req: ArtifactPreviewRequest) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) {
+      return { ok: false, error: "仅应用主界面的按钮可在系统浏览器打开" };
+    }
     const descriptor = artifactDomainService.get(req.id);
     if (!descriptor || descriptor.kind !== "html") {
       return { ok: false, error: "仅 HTML 产物支持在系统浏览器打开" };
@@ -2412,11 +2420,12 @@ function registerIpc(): void {
   ipcMain.on(BrowserIpc.hardReload, () => browserHost.hardReload());
   ipcMain.on(BrowserIpc.back, () => browserHost.back());
   ipcMain.on(BrowserIpc.forward, () => browserHost.forward());
-  // url 可选：聊天外链传显式 URL；扩展栏工具栏无参时打开当前页
-  ipcMain.on(BrowserIpc.openExternal, (_e, url?: string) => {
+  // 显式系统浏览器按钮：授权/文档按钮可传 URL，侧栏工具栏无参打开当前页。
+  ipcMain.on(BrowserIpc.openExternal, (event, url?: string) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return;
     const target =
       typeof url === "string" && url.trim() ? url.trim() : browserHost.url;
-    if (/^https?:/i.test(target)) void shell.openExternal(target);
+    if (/^https?:\/\//i.test(target)) void shell.openExternal(target);
   });
   ipcMain.on(BrowserIpc.setRect, (_e, rect: Electron.Rectangle) => browserHost.setBounds(rect));
   ipcMain.on(BrowserIpc.hide, () => browserHost.hide());
@@ -3084,15 +3093,11 @@ app.whenReady().then(async () => {
         .listServers()
         .some((server) => server.name === providerId && server.installed && !server.disabled),
     ops: {
-      openExternal: async (url) => {
-        await shell.openExternal(url);
-      },
       openInApp: async (url) => {
-        // 应用内扩展栏浏览器：先导航，再通知渲染层打开浏览器面板（App.tsx 常驻监听 openRequest）
-        browserHost.open(url);
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send(BrowserIpc.openRequest, { url });
-        }
+        // Let the renderer select the right task tab and own the single navigation.
+        const win = botManagementWindow;
+        if (!win || win.isDestroyed() || win.webContents.isDestroyed()) throw new Error("内置浏览器尚未就绪");
+        win.webContents.send(BrowserIpc.openRequest, { url });
       },
     },
   });

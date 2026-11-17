@@ -1,3 +1,4 @@
+import { browserAgentPolicy } from "./BrowserAgentPolicy";
 import { browserToolDescription } from "./BrowserToolContract";
 import { registerLocalWorkflowTools, type LocalWorkflowBridge } from "./local-workflow-extension";
 import { VideoJobPendingError } from "./VideoGenerationJobs";
@@ -489,7 +490,14 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       taskId: bridge.taskId, taskRoot: bridge.taskRoot, services: bridge.localWorkflow,
       terminalEnabled: config.execution.terminalEnabled,
     });
-    if (config.web.enabled) createWebAccessCapabilityExtension(pi);
+    if (config.web.enabled) createWebAccessCapabilityExtension(pi, {
+      openInApp: async (url) => {
+        if (!bridge.runtime.config().browser.enabled || !bridge.browser.available) {
+          throw new Error("侧栏浏览器不可用；请检查浏览器能力设置，不能自动改用外部浏览器");
+        }
+        await bridge.browser.execute({ action: "navigate", url }, undefined, { taskId: bridge.taskId });
+      },
+    });
 
     if (config.multiModelConsult.enabled && bridge.consult) {
       pi.registerTool({
@@ -786,7 +794,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "ui_exec",
         label: "界面操作",
-        description: "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。只覆盖 MyBuddy 自身的渲染界面；跨应用、桌面窗口和结构化控件操作请用 computer_exec。",
+        description: browserAgentPolicy + "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。只覆盖 MyBuddy 自身的渲染界面；跨应用、桌面窗口和结构化控件操作请用 computer_exec。",
         promptSnippet: "ui_exec(action, target?, selector?/text?/role?/name?, value?, key?, state?)",
         parameters: uiExecSchema,
         execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {

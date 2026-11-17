@@ -8,7 +8,7 @@
  *   「streaming 纯文本 div → react-markdown 全量重建」的 renderer 切换。
  *
  * 自定义节点（安全与能力保持）：
- * - link：复用 MdFileLink（产物链接/外链系统浏览器/锚点，行为与旧 renderer 一致）；
+ * - link：复用 MdFileLink（产物链接/侧栏浏览器/锚点，行为与旧 renderer 一致）；
  * - image：按当前任务的产物路径加载，保留正文图文位置；HTTPS/data 图片直接显示；
  * - code_block：highlight.js（common 语言集）高亮 + 复制按钮 + 语言标签；
  *   ```md/```markdown 围栏 → Markdown 预览卡（含递归深度防护）；流式（loading）时
@@ -63,7 +63,7 @@ function ChatLinkNode({ node }: NodeComponentProps<MarkstreamLinkNode>): React.J
     // Bot history has no ordinary Task scope. Never resolve a basename against
     // whichever unrelated Task happens to remain selected behind Bot mode.
     if (/^https?:\/\//i.test(node.href)) return <a href={node.href} className="md-link" onClick={event => {
-      event.preventDefault(); window.api?.browser?.openExternal?.(node.href);
+      event.preventDefault(); useAppStore.getState().setBrowserUrl(node.href);
     }}>{node.text}</a>;
     if (node.href.startsWith("#")) return <a href={node.href} className="md-link md-anchor">{node.text}</a>;
     return <span title={`文件引用：${node.href}（请从关联事项查看）`}>{node.text}</span>;

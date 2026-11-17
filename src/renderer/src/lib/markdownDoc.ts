@@ -145,9 +145,9 @@ export function classifyImageSrc(src: string): ImagePolicy {
 /**
  * 链接 href 分类：
  *   - #anchor        → 文档内锚点（组件内滚动处理）
- *   - 全部 http(s)   → 系统外部浏览器（含 localhost / 127.0.0.1）
+ *   - HTTP(S) → 侧栏浏览器（含 localhost / 127.0.0.1）
  *   - 文件类         → 产物跳转（沿用 MdFileLink；磁盘 .html 走右侧预览）
- *   - OD daemon 裸根 → 有 HTML 产物则右侧预览，否则系统浏览器
+ *   - OD daemon 裸根 → 有 HTML 产物则右侧预览，否则侧栏浏览器
  *
  * loopback / OD 判定与 main 共用 `shared/link-policy`。
  */

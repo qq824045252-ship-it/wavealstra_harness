@@ -29,6 +29,7 @@ export default function ProviderAuthSection({
     name: string;
     authType: "api_key" | "oauth";
   } | null>(null);
+  const [authLinks, setAuthLinks] = useState<Array<{url: string; label?: string}>>([]);
   const [deviceCode, setDeviceCode] = useState<Extract<AuthEventDto, { type: "device_code" }> | null>(null);
 
   useEffect(() => {
@@ -38,9 +39,11 @@ export default function ProviderAuthSection({
     });
     const unsubEvent = window.api?.agent?.onAuthEvent?.((ev) => {
       if (ev.type === "device_code") setDeviceCode(ev);
+      if (ev.type === "auth_url") setAuthLinks([{ url: ev.url, label: "授权页面" }]);
+      if (ev.type === "info" && ev.links?.length) setAuthLinks(ev.links);
       const line =
         ev.type === "auth_url"
-          ? `打开浏览器：${ev.url}${ev.instructions ? `（${ev.instructions}）` : ""}`
+          ? `请手动打开授权页面：${ev.url}${ev.instructions ? `（${ev.instructions}）` : ""}`
           : ev.type === "device_code"
             ? `验证码 ${ev.userCode} → ${ev.verificationUri}`
             : ev.message;
@@ -57,6 +60,7 @@ export default function ProviderAuthSection({
     setLoginLog([]);
     setAuthPrompt(null);
     setDeviceCode(null);
+    setAuthLinks([]);
   }, [provider?.id]);
 
 
@@ -68,6 +72,7 @@ export default function ProviderAuthSection({
     setAuthPrompt(null);
     setAuthAnswer("");
     setDeviceCode(null);
+    setAuthLinks([]);
     setStatus("");
     try {
       const result = await window.api?.agent?.login?.({ providerId: provider.id, authType });
@@ -91,6 +96,7 @@ export default function ProviderAuthSection({
       setAuthPrompt(null);
       setLoginTarget(null);
       setDeviceCode(null);
+      setAuthLinks([]);
     }
   };
 
@@ -109,6 +115,7 @@ export default function ProviderAuthSection({
     await window.api?.agent?.authCancel?.(authPrompt?.requestId);
     setAuthPrompt(null);
     setDeviceCode(null);
+    setAuthLinks([]);
   };
 
   const doLogout = async (): Promise<void> => {
@@ -178,12 +185,17 @@ export default function ProviderAuthSection({
           <div className="models-login-log">
             {loginLog.map((line, index) => <div key={`${index}-${line.slice(0, 16)}`}>{line}</div>)}
           </div>
+          {authLinks.filter(link => /^https?:\/\//i.test(link.url)).map((link, index) => (
+            <button key={index} type="button" className="btn" onClick={() => window.api?.browser?.openExternal?.(link.url)}>
+              在系统浏览器打开{link.label ?? "授权页面"}
+            </button>
+          ))}
           {deviceCode && (
             <div className="models-login-prompt">
               <div className="models-login-prompt-msg">请在浏览器确认授权。验证码：<strong>{deviceCode.userCode}</strong></div>
               <div className="models-login-prompt-actions">
                 <button type="button" className="btn" onClick={() => deviceCode.verificationUri && window.api?.browser?.openExternal?.(deviceCode.verificationUri)}>
-                  打开浏览器
+                  在系统浏览器打开授权页面
                 </button>
               </div>
             </div>

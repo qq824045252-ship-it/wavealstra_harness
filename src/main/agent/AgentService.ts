@@ -58,7 +58,7 @@ import { recordPromptFailureRecovery, resolvePromptFailureRecovery } from "./Pro
 import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow } from "electron";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -337,6 +337,7 @@ import {
 import { createProjectPlanExtension } from "../project/project-plan-extension";
 import { browserHost } from "../browser/BrowserHost";
 import { BrowserAutomationService } from "../capabilities/BrowserAutomationService";
+import { browserAgentPolicy } from "../capabilities/BrowserAgentPolicy";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
 import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
@@ -1555,6 +1556,7 @@ export class AgentService {
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos;
     return [
       ...assembly.appendParts,
+      browserAgentPolicy,
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
@@ -2396,17 +2398,7 @@ export class AgentService {
           links?: readonly { url: string; label?: string }[];
         }): void => {
           if (abort.signal.aborted) return;
-          if (event.type === "auth_url" && event.url) {
-            void shell.openExternal(event.url);
-          }
-          if (event.type === "device_code" && event.verificationUri) {
-            void shell.openExternal(event.verificationUri);
-          }
-          if (event.type === "info" && event.links?.length) {
-            for (const link of event.links) {
-              if (link.url) void shell.openExternal(link.url);
-            }
-          }
+          // The provider dialog displays links and device codes; only its explicit user action opens a browser.
           broadcast(AgentIpc.authEvent, event as AuthEventDto);
         },
       };

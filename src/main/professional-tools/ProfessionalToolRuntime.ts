@@ -69,8 +69,7 @@ export interface ProfessionalToolPlatformOps {
   httpStatus(url: string): Promise<number>;
   /** GET 并返回响应体（截断；不可达/错误 => null）。供身份标记探测（如 Draw.io HTML title）。 */
   httpGet(url: string): Promise<string | null>;
-  openExternal(url: string): Promise<void>;
-  /** 应用内打开（扩展栏浏览器/现有 Web surface）；未配置时回落 openExternal。 */
+  /** 应用内打开（扩展栏浏览器/现有 Web surface）；未配置时明确报错，不回落系统浏览器。 */
   openInApp(url: string): Promise<void>;
   sleep(ms: number): Promise<void>;
 }
@@ -196,12 +195,8 @@ function defaultOps(): ProfessionalToolPlatformOps {
     httpReady: defaultHttpReady,
     httpStatus: defaultHttpStatus,
     httpGet: defaultHttpGet,
-    openExternal: async () => {
-      throw new Error("openExternal dependency is not configured");
-    },
-    openInApp: async (url) => {
-      // 未显式配置应用内打开 → 回落系统浏览器（与 openExternal 同语义）
-      return defaultOps().openExternal(url);
+    openInApp: async () => {
+      throw new Error("应用内浏览器未配置；不会改用系统浏览器");
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
@@ -320,15 +315,11 @@ class PenpotRuntime extends BaseRuntime {
     return body != null && isPenpotIdentityHtml(body);
   }
 
-  private async openSystemBrowser(): Promise<void> {
+  private async openSidebarBrowser(): Promise<void> {
     const now = Date.now();
     if (now - this.lastBrowserOpenAt < 3_000) return;
+    await this.ops.openInApp(PENPOT_DEFAULT_OPEN_URL);
     this.lastBrowserOpenAt = now;
-    try {
-      await this.ops.openExternal(PENPOT_DEFAULT_OPEN_URL);
-    } catch {
-      // 打开浏览器失败不影响 Ready；用户仍可点「打开」重试
-    }
   }
 
   async start(): Promise<ProfessionalToolStatusDto> {
@@ -349,7 +340,11 @@ class PenpotRuntime extends BaseRuntime {
       status = await this.waitReady();
       if (!status.ready) return { ...status, state: "error", detail: "Penpot 启动后等待 Ready 超时" };
     }
-    await this.openSystemBrowser();
+    try {
+      await this.openSidebarBrowser();
+    } catch (error) {
+      return { ...status, state: "error", detail: redactSensitiveText(`侧栏浏览器打开失败：${error instanceof Error ? error.message : String(error)}；不会改用系统浏览器`) };
+    }
     return status;
   }
 
@@ -362,14 +357,14 @@ class PenpotRuntime extends BaseRuntime {
 
   async open(): Promise<ProfessionalToolResultDto> {
     const status = await this.start();
-    if (!status.ready) return this.fail(status, status.detail ?? "Penpot 未 Ready");
+    if (!status.ready || status.state === "error") return this.fail(status, status.detail ?? "Penpot 未 Ready");
     return { ok: true, providerId: this.providerId, status };
   }
 
   /**
    * 建会话 gate：只校验 compose 存在 + MCP 已配置，不 docker up、不弹浏览器。
    * 旧逻辑 prepare 会 up -d，且 createSession 每次 open 弹窗；服务未 Ready 时反复 up/open 烦人。
-   * 需要服务时走 start()/open()（Ready 后系统浏览器打开 9001）。
+   * 需要服务时走 start()/open()（Ready 后侧栏浏览器打开 9001）。
    */
   override async customPrepare(): Promise<ProfessionalToolResultDto | null> {
     const status = await this.status();
@@ -514,7 +509,7 @@ class DrawioRuntime extends BaseRuntime {
     return this.status();
   }
 
-  /** 应用内扩展栏浏览器打开画布（无会话时根路径自动 302 最近会话）；未配置 openInApp 回落系统浏览器。 */
+  /** 应用内扩展栏浏览器打开画布（无会话时根路径自动 302 最近会话）；未配置 openInApp 时明确失败，不回落系统浏览器。 */
   async open(): Promise<ProfessionalToolResultDto> {
     const status = await this.status();
     if (!status.installed) {

@@ -119,7 +119,7 @@ export default function LibraryDocumentView({
         <p className="library-save-hint">{payload.item.sizeBytes} 字节。此文件需要对应应用查看，可通过「打开位置」访问。</p>
       </div> : kind === "url" && payload.item.url ? <div className="library-empty">
         <strong>链接资料</strong><p className="library-url-line">{payload.item.url}</p>
-        <button type="button" className="btn" onClick={() => { if (/^https?:\/\//i.test(payload.item.url!)) void window.api?.browser.openExternal(payload.item.url); }}>在浏览器打开</button>
+        <button type="button" className="btn" onClick={() => { if (/^https?:\/\//i.test(payload.item.url!)) void window.api?.browser.openExternal(payload.item.url); }}>在系统浏览器打开</button>
       </div> : kind === "markdown" && (readOnly || mode === "preview") ? <div className="library-md-preview">
         <ScopedLibraryMarkdown content={draft} itemId={itemId} access={access} onOpenItem={onOpenItem} onError={onToast} />
       </div>

@@ -1312,8 +1312,11 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
             {authState === "waiting" && (
               <>
                 <div className="mcp-auth-hint">
-                  已打开授权页面（未自动打开时可复制链接到浏览器）：
+                  请手动打开授权页面；不会自动启动系统浏览器：
                 </div>
+                <button type="button" className="btn" disabled={!/^https?:\/\//i.test(authUrl)} onClick={() => window.api?.browser?.openExternal?.(authUrl)}>
+                  在系统浏览器打开授权页面
+                </button>
                 <div className="mcp-auth-url" title={authUrl}>
                   {authUrl || "正在获取授权链接…"}
                 </div>

@@ -1,7 +1,7 @@
 /**
  * MdFileLink — Markdown 链接渲染（Chat/Artifact 共用）：
  * - 本地文件类链接（含 .html / file://）：命中产物 → 右侧预览；
- * - 外部 http(s)：系统浏览器（OpenDesign 裸根有 HTML 产物时右侧预览）；
+ * - HTTP(S)：侧栏浏览器（OpenDesign 裸根有 HTML 产物时右侧预览）；
  * - 锚点：文档内默认滚动行为。
  */
 import { useAppStore, selectActiveTaskArtifacts } from "@/store/appStore";
@@ -12,7 +12,7 @@ import { isAnchorHref, isBareOpenDesignDaemonUrl, isExternalHref } from "@/lib/m
 import type { Artifact } from "@/types";
 
 function isFileLikeHref(href: string): boolean {
-  if (!href || href.startsWith("http://") || href.startsWith("https://")) return false;
+  if (!href || isExternalHref(href)) return false;
   if (isAnchorHref(href)) return false;
   // file:// 也按本地文件处理（basename 命中产物 → 右侧预览）
   if (/^file:/i.test(href)) return true;
@@ -38,12 +38,6 @@ function pickHtmlArtifact(artifacts: Artifact[]): Artifact | undefined {
   return artifacts.find((a) => a.kind === "html") ?? artifacts.find((a) => /\.html?$/i.test(a.name));
 }
 
-function openSystemBrowser(url: string): void {
-  // 勿用 target=_blank：Electron + rel=noreferrer 常把 about:blank 交给 openExternal。
-  const open = window.api?.browser?.openExternal;
-  if (typeof open === "function") open(url);
-}
-
 function openHttpLink(
   url: string,
   opts?: {
@@ -51,7 +45,7 @@ function openHttpLink(
     openArtifact?: (id: string) => void;
   },
 ): void {
-  // OpenDesign headless 裸根无 Web UI：有 HTML 产物才右侧预览，否则系统浏览器
+  // OpenDesign headless 裸根无 Web UI：有 HTML 产物时直接在右侧预览
   if (isBareOpenDesignDaemonUrl(url)) {
     const html = opts?.artifacts ? pickHtmlArtifact(opts.artifacts) : undefined;
     if (html && opts?.openArtifact) {
@@ -59,8 +53,8 @@ function openHttpLink(
       return;
     }
   }
-  // 所有 http(s)（含 localhost / 127.0.0.1）→ 系统浏览器
-  openSystemBrowser(url);
+  // HTTP(S) links use the same task-scoped browser as tool automation.
+  useAppStore.getState().setBrowserUrl(url);
 }
 
 export function MdFileLink({

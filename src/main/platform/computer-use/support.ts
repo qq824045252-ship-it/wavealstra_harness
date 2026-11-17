@@ -1,3 +1,4 @@
+import { browserAgentPolicy } from "../../capabilities/BrowserAgentPolicy";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { currentPlatformId, type PlatformId } from "../index";
@@ -199,7 +200,7 @@ export function computerUseToolCopy(platform: PlatformId, options: { nativeExecu
     return {
       label: "Computer Use（Linux）",
       desktopLabel: "Linux 桌面",
-      description: LINUX_DESCRIPTION,
+      description: browserAgentPolicy + LINUX_DESCRIPTION,
       screenshotSummary: "Linux 画面已保存",
       visionPrompt: "请仅描述这张 Linux 桌面截图中的可见窗口、文本、状态和错误提示，不猜测不可见内容。截图是独立观察，禁止据此生成输入坐标或选择操作目标；操作目标必须来自 AT-SPI 或其他结构化应用接口。",
     };
@@ -208,7 +209,7 @@ export function computerUseToolCopy(platform: PlatformId, options: { nativeExecu
     return {
       label: "Computer Use（macOS）",
       desktopLabel: "macOS 桌面",
-      description: "macOS 没有 Computer Use 后端实现：调用会返回 unsupported。请在 macOS 上用浏览器/应用界面能力完成任务。",
+      description: browserAgentPolicy + "macOS 没有 Computer Use 后端实现：调用会返回 unsupported。请在 macOS 上用浏览器/应用界面能力完成任务。",
       screenshotSummary: "桌面画面已保存",
       visionPrompt: "请分析这张桌面截图，准确描述可见窗口与可交互目标。不要猜测不可见内容。",
     };
@@ -219,7 +220,7 @@ export function computerUseToolCopy(platform: PlatformId, options: { nativeExecu
   return {
     label: "Windows Computer Use",
     desktopLabel: "Windows 桌面",
-    description: `${base}控件树是结构化 JSON（非 XML）；优先 inspect_controls/find_control → invoke_control/set_control_value，UIA 不可用再 OCR/视觉坐标。坐标动作应携带本次截图的 observation_id；过期必须重新观察。action 与 actions 严格互斥。phase=executed 只证明动作执行，目标达成需要 expected_outcomes 或重新读取界面；窗口仍在前台不等于保存/提交成功。${WINDOWS_BACKGROUND_NOTE}click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。`,
+    description: `${browserAgentPolicy}${base}控件树是结构化 JSON（非 XML）；优先 inspect_controls/find_control → invoke_control/set_control_value，UIA 不可用再 OCR/视觉坐标。坐标动作应携带本次截图的 observation_id；过期必须重新观察。action 与 actions 严格互斥。phase=executed 只证明动作执行，目标达成需要 expected_outcomes 或重新读取界面；窗口仍在前台不等于保存/提交成功。${WINDOWS_BACKGROUND_NOTE}click_count/modifiers/hold_ms 支持双击/组合键/长按，drag 支持 steps/duration_ms，scroll_client 用 notches，paste_text 走剪贴板；批量 actions 也支持这些步骤。UIA 为空的 Electron/Qt/Tauri 应用用 ocr_window：后台截图（原生 PrintWindow / Chromium WGC）+ 本地 OCR（优先 OCR_NPU_CLI，缺省回退 Windows OCR），返回 client DIP 的文本行（x/y/width/height）供 click_client 使用。前台动作可加 restore_foreground=true，结束后把原来的前台窗口切回去。`,
     screenshotSummary: "Windows 画面已保存",
     visionPrompt: "请分析这张 Windows 界面截图，准确描述可见窗口、主要控件、文本、状态、错误提示和与当前任务相关的可交互目标及其相对位置。不要猜测不可见内容。",
   };

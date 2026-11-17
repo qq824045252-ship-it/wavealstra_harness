@@ -1,10 +1,10 @@
 /**
  * 聊天/预览链接判定（main + renderer 共用）：
- *   - 全部 http(s)（含 localhost / 127.0.0.1）→ 系统外部浏览器
+ *   - HTTP(S)（含 localhost / 127.0.0.1）由调用端路由到侧栏浏览器
  *   - 磁盘 HTML 产物 / file 路径 → 右侧产物预览（openArtifact，不经本模块）
  *   - OpenDesign daemon 裸根（7456–7466 的 `/`）→ 无 Web Studio；有 HTML 产物才右侧预览
  *
- * isLocalHttpHref / isRemoteHttpHref 仍用于 OpenDesign 端口识别等，不再驱动「本机进扩展栏」。
+ * isLocalHttpHref / isRemoteHttpHref 用于地址分类，不决定浏览器选择。
  */
 import {
   OPENDESIGN_DEFAULT_PORT,
@@ -32,7 +32,7 @@ export function isLocalHttpHref(href: string | undefined): boolean {
   }
 }
 
-/** 公网/外网 http(s)（非 loopback）→ 系统浏览器。 */
+/** 公网/外网 HTTP(S)（非 loopback）。 */
 export function isRemoteHttpHref(href: string | undefined): boolean {
   return isHttpHref(href) && !isLocalHttpHref(href);
 }

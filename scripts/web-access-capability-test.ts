@@ -1,3 +1,4 @@
+import { openCuratorInApp } from "../src/main/capabilities/web-access/curator-browser";
 import { pageAnswerFallback } from "../src/main/capabilities/web-access/page-answer-fallback";
 import { WEB_SEARCH_PROVIDER_OPTIONS } from "../src/shared/agent-ipc";
 /**
@@ -129,6 +130,23 @@ console.log("== WebAccess Capability：index.ts 接线（防纯函数存在但�
   assert(indexSrc.includes('config.browserReuse?.enabled !== false'), "browserReuse 配置读取在接线内");
   const fetchStrategy = readFileSync(join(bundledDir, "fetch-strategy.ts"), "utf-8");
   assert(fetchStrategy.includes("useBrowser") && fetchStrategy.includes("resolveCodexFallbackProvider"), "纯函数导出保持");
+}
+
+console.log("== Curator opens only in the task sidebar browser ==");
+{
+  const urls: string[] = [];
+  await openCuratorInApp("http://127.0.0.1:45000/curator", { openInApp: async url => { urls.push(url); } });
+  assert(urls.length === 1 && urls[0] === "http://127.0.0.1:45000/curator", "curator uses injected app browser once");
+  let unavailable = false;
+  try { await openCuratorInApp("http://127.0.0.1:45000/curator", {}); } catch (error) { unavailable = String(error).includes("sidebar browser is unavailable"); }
+  assert(unavailable, "missing app browser reports unavailable without OS fallback");
+  const failure = new Error("navigation rejected");
+  let propagated: unknown;
+  try { await openCuratorInApp("http://127.0.0.1:45000/curator", { openInApp: async () => { throw failure; } }); } catch (error) { propagated = error; }
+  assert(propagated === failure, "app navigation failure is preserved without fallback");
+  const indexSrc = readFileSync(join(bundledDir, "index.ts"), "utf-8");
+  assert(!indexSrc.includes("browserOpenCommand") && !indexSrc.includes("getPlatformGlimpseOpen"), "both OS and separate-window curator fallbacks removed");
+  assert(indexSrc.split("await openCuratorInApp(handle.url, browserOptions)").length === 3, "automatic and command curator flows both use app browser");
 }
 
 console.log("== WebAccess product capability boundary ==");

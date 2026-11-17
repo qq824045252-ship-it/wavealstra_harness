@@ -55,7 +55,6 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
       }
       if (event.data.type !== "mybuddy:saved-artifact-link" || typeof event.data.url !== "string" || !/^https?:\/\//i.test(event.data.url)) return;
       if (!window.api?.browser?.open) { setNotice("内置浏览器暂不可用，请重启 MyBuddy 后重试"); return; }
-      window.api.browser.open(event.data.url);
       useAppStore.getState().setBrowserUrl(event.data.url);
     };
     window.addEventListener("message", receive);
