@@ -18,7 +18,7 @@ module.exports = async ({ evaluate, rpc, until, report, out }) => {
     const {useAppStore:s}=await import('/src/store/appStore.ts'); window.acpMenuStore=s;
     const task={id:${JSON.stringify(taskId)},title:'ACP 菜单样式验收',updatedAt:Date.now(),welcomeMode:'coding',messages:[]};
     await window.api.db.upsertTask(task);
-    s.setState({page:'chat',activeBotId:null,activeTaskId:task.id,draft:null,welcomeMode:'coding',tasks:[task],sidebarCollapsed:true,panelOpen:false});
+    s.setState({page:'chat',activeTaskId:task.id,draft:null,welcomeMode:'coding',tasks:[task],sidebarCollapsed:true,panelOpen:false});
     (await import('/src/lib/externalAgentCatalog.ts')).updateExternalAgentCatalog(${JSON.stringify(agents)});
   })()`);
   await until(() => evaluate('Boolean(document.querySelector("button[title=添加]"))'), 'chat composer');
@@ -39,6 +39,7 @@ module.exports = async ({ evaluate, rpc, until, report, out }) => {
   const row = name => `[...document.querySelectorAll('.add-menu-flyout-row')].find(e=>e.querySelector('.add-menu-flyout-text')?.textContent===${JSON.stringify(name)})`;
   const open = async () => {
     await click(menuTrigger);
+    await until(() => evaluate(`!!document.querySelector('.add-menu-portal-root')`), 'add menu opened');
     const p = await point(`[...document.querySelectorAll('.add-menu-item')].find(e=>e.textContent.trim()==='外部 Agent')`);
     await rpc('Input.dispatchMouseEvent', {type:'mouseMoved',...p});
     await until(() => evaluate('document.querySelectorAll(".add-menu-flyout-row").length === 5'), 'ACP menu catalog');

@@ -58,7 +58,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-storage-(current|lease)$/,/^test:core-performance/, /^test:bot-work-query-scale$/, /^test:bot-work-summary-query$/, /^test:bot-work-phase2-recovery$/, /^test:bot-work-phase5-native-story$/, /^test:gateway-inbox-crash$/, /^test:gateway-port-fallback$/];
+const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-storage-(current|lease)$/,/^test:core-performance/, /^test:bot-work-summary-query$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -76,8 +76,6 @@ const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-stor
  */
 const GUI_TESTS = new Set([
   "test:artifact-card-visual-desktop", // isolated Electron CSS cascade fixture, no live profile
-  "test:resident-host-dev",
-  "test:resident-host",
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
@@ -88,8 +86,26 @@ const GUI_TESTS = new Set([
   "test:gadget-save-workspace-desktop",
   "test:gadget-save-copies-desktop",
   "test:gadget-menu-dev",
+  "test:gadget-backend-dev",
   "test:browser-builtin-electron",
   "test:browser-task-execution-electron",
+  "test:browser-capabilities-electron",
+  "test:browser-html-drag-electron",
+  "test:browser-beforeunload-service-electron",
+  "test:browser-prompt-electron",
+  "test:browser-handoff-tool-electron",
+  "test:browser-runtime-integration-electron",
+  "test:browser-page-events-electron",
+  "test:browser-gestures-electron",
+  "test:browser-collection-electron",
+  "test:browser-collection-dom-electron",
+  "test:browser-conditions-electron",
+  "test:browser-upload-electron",
+  "test:ui-gestures-integration-electron",
+  "test:browser-document-context-electron",
+  "test:browser-accessibility-electron",
+  "test:browser-visual-input-electron",
+
   "test:diagnostics-cache-ui",
   "test:model-menu-ui",
   "test:bot-report-dedup-desktop",
@@ -270,24 +286,11 @@ const HEADLESS_TESTS = new Set([
   "test:deepseek-media-integration",
   "test:deepseek-tts-stream",
   "test:capability-conversation",
-  "test:bot-capability-conversation",
   "test:speech-stream-player",
   "test:capability-result-dom",
   "test:deepseek-native",
   "test:deepseek-model-settings-ui",
-  "test:bot-avatars",
-  "test:bot-avatar-decoder",
-  "test:bot-avatar-containers",
-  "test:bot-avatar-assets",
-  "test:work-execution-isolation",
   "test:ui-automation-cancellation",
-  "test:bot-work-result-artifacts",
-  "test:work-result-lifecycle",
-  "test:work-completion-recovery",
-  "test:gateway-work-review",
-  "test:bot-work-method-feedback",
-  "test:bot-cross-channel-contract",
-  "test:gateway-bot-binding",
   "test:wecom-registration",
   "test:wecom-registration-ui",
   "test:business-gateway-registration",
@@ -299,9 +302,6 @@ const HEADLESS_TESTS = new Set([
   "test:gateway-channel-ui",
   "test:gateway-qr-race-ui",
   "test:gateway-setup-guide",
-  "test:bot-organization-primitives",
-  "test:bot-organization",
-  "test:bot-foreground-lifecycle",
   "test:durable-storage-current",
   "test:durable-context-live-assessment",
   "test:durable-context-active-view",
@@ -309,26 +309,15 @@ const HEADLESS_TESTS = new Set([
   "test:durable-context-window-matrix",
   "test:durable-storage-replay-api",
   "test:durable-storage-lease",
-  "test:work-file-event-source", // Real local fs.watch + SQLite; no Electron or external source account.
   "test:gadget-save-copies",
-  "test:bot-peer-calls",
-  "test:work-watch-goal",
-  "test:bot-rename",
-  "test:bot-team-conversation",
-  "test:bot-create-avatar",
   "test:bot-task-reply-presentation",
   "test:bot-active-requests",
-  "test:bot-activity-monitor",
-  "test:bot-work-query-scale",
   "test:durable-artifact-registration",
-  "test:durable-work-liveness",
   "test:web-access-extract-runtime", // Default fixture is local; real weather request is opt-in.
   "test:chat-composer-ui", // React DOM behavior using linkedom; no Electron/display dependency.
   "test:cloudflared-cli-detect",
-  "test:work-conversation-feedback",
   "test:durable-close-retry",
   "test:durable-sqlite-close-retry",
-  "test:work-feedback-incremental",
   "test:wechat-callback-auth",
   "test:wecom-media",
   "test:weixin-media",
@@ -344,13 +333,7 @@ const HEADLESS_TESTS = new Set([
   "test:bot-work-phase4-schedule-clock",
   "test:bot-work-phase4-causal-guard",
   "test:bot-work-no-quota",
-  "test:bot-work-automatic-recovery",
-  "test:bot-work-automatic-completion",
   "test:bot-work-phase4-backpressure",
-  "test:bot-work-phase5-delivery-dedup",
-  "test:bot-work-phase5-reconnect-diagnostics",
-  "test:bot-work-phase5-e2e-story",
-  "test:bot-work-phase5-gateway",
   "test:dingtalk-gateway",
   "test:discord-gateway",
   "test:gateway-provider-config",
@@ -365,8 +348,6 @@ const HEADLESS_TESTS = new Set([
   "test:weixin-qr-ui",
   "test:bot-work-summary-query",
   "test:bot-work-phase5-owner-summary",
-  "test:bot-work-phase5-review",
-  "test:bot-work-phase5-native-story",
   "test:remote-work-sync",
 
   "test:durable-projection",
@@ -376,8 +357,6 @@ const HEADLESS_TESTS = new Set([
   "test:work-isolation-retirement",
   "test:work-budget-retirement",
   "test:work-effect-retirement",
-  "test:bot-work-team-recovery",
-  "test:bot-execution-diagnostics",
   "test:task-diagnostics",
   "test:durable-subagent",
   "test:durable-consult",

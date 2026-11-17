@@ -49,7 +49,7 @@ module.exports = async ({ evaluate, rpc, until, report, out, home }) => {
   await evaluate(`(async()=>{const {useAppStore:s}=await import('/src/store/appStore.ts');window.toolbarStore=s;
     const tasks=['normal','bot'].map((mode,i)=>({id:'toolbar-'+mode,title:mode==='bot'?'Bot 侧栏布局验收':'普通任务侧栏布局验收',updatedAt:Date.now()-i,cwd:${JSON.stringify(workspace)},status:'idle',welcomeMode:mode==='bot'?'general':'working',executionBackend:mode==='bot'?'pi-durable':'pi',messages:[{id:'toolbar-message-'+i,role:'assistant',createdAt:Date.now(),blocks:[{type:'text',content:'侧栏布局验证，不会发送模型请求。'}]}]}));
     for(const task of tasks)await window.api.db.upsertTask(task);
-    s.setState({theme:'light',page:'chat',tasks,activeTaskId:tasks[0].id,activeBotId:null,draft:null,sidebarCollapsed:false,panelOpen:true,panelMode:'overview',panelWidth:375,panelExpanded:false,workspaceFilesCount:4,gadgetsCount:4});
+    s.setState({theme:'light',page:'chat',tasks,activeTaskId:tasks[0].id,draft:null,sidebarCollapsed:false,panelOpen:true,panelMode:'overview',panelWidth:375,panelExpanded:false,workspaceFilesCount:4,gadgetsCount:4});
   })()`);
   report.seededPresentationFacts.push('Two task rows in isolated temporary DB, ordinary Pi and Bot Pi Durable; no model execution.');
   await until(()=>evaluate('Boolean(document.querySelector(".extension-nav-tabs"))'),'production shared toolbar');

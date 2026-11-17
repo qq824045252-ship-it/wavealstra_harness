@@ -85,7 +85,7 @@ async function createRuntime(dir: string, models: Record<string, unknown>): Prom
 }
 
 try {
-  const {liveModelFromCatalog} = createRequire(import.meta.url)(join(process.cwd(), "scripts/bot-live-model-config.cjs"));
+  const {liveModelFromCatalog} = createRequire(import.meta.url)(join(process.cwd(), "scripts/live-model-config.cjs"));
   const live = liveModelFromCatalog({data:liveRows}, "vendor/new-chat");
   assert.equal(live.model.maxTokens,32768,"ordinary live tests use the selected gateway model limit, not 4096");
   assert.equal(live.model.contextWindow,262144);

@@ -1,5 +1,5 @@
 /** Real pnpm dev/Electron renderer, seeded presentation facts; no LLM or user profile.
- * Run: SUBAGENT_POPOVER_DEV=1 pnpm exec node scripts/bot-settings-dev-test.cjs
+ * Run: pnpm exec node scripts/desktop-dev-harness.cjs subagent-popover
  * Use a writable TMPDIR when the desktop /tmp quota is full.
  */
 const assert = require('node:assert/strict');
@@ -10,7 +10,7 @@ module.exports = async ({ evaluate, rpc, until, report, out }) => {
   await evaluate(`(async()=>{
     const {useAppStore:s}=await import('/src/store/appStore.ts'); window.overlapStore=s;
     const results=Array.from({length:30},(_,i)=>({subagentId:'item-'+i,agent:'scout',displayName:'子代理 '+i+' 长名称验证',task:'只读核对资料',status:'completed',exitCode:0,resolvedModel:'fixture/fixture',workspace:{kind:'shared',cwd:'C:/Users/servi/Documents/GitHub/wavealstra_harness/a/very/long/path'},usage:{input:100,output:50,cacheRead:40000,cacheWrite:0,cost:0,contextTokens:42000,turns:2},messages:[{role:'assistant',content:[{type:'text',text:'核对完成'}],timestamp:Date.now()}]}));
-    s.setState({page:'chat',activeBotId:null,activeTaskId:'overlap-fixture',draft:null,welcomeMode:'coding',tasks:[{id:'overlap-fixture',title:'截图复现：子代理弹层与右侧概览',updatedAt:Date.now(),welcomeMode:'coding',messages:[{id:'m-fixture',role:'assistant',createdAt:Date.now(),blocks:[{type:'text',content:'这是一段验证遮挡的对话正文。'},{type:'tool',toolCall:{id:'tc-fixture',tool:'subagent',summary:'30 个子代理',status:'done',detail:JSON.stringify({mode:'parallel',results})}}]}]}]});
+    s.setState({page:'chat',activeTaskId:'overlap-fixture',draft:null,welcomeMode:'coding',tasks:[{id:'overlap-fixture',title:'截图复现：子代理弹层与右侧概览',updatedAt:Date.now(),welcomeMode:'coding',messages:[{id:'m-fixture',role:'assistant',createdAt:Date.now(),blocks:[{type:'text',content:'这是一段验证遮挡的对话正文。'},{type:'tool',toolCall:{id:'tc-fixture',tool:'subagent',summary:'30 个子代理',status:'done',detail:JSON.stringify({mode:'parallel',results})}}]}]}]});
   })()`);
   await until(()=>evaluate('Boolean(document.querySelector(".subagent-chip"))'),'seeded subagent chip');
   for (const [width,height,sidebar,panel] of [[2048,1256,false,true],[2048,1256,false,false],[1280,800,false,true],[760,620,true,false],[440,520,true,false]]) {

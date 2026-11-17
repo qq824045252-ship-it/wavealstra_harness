@@ -2,31 +2,13 @@
   "$source": {
     "commit": "c8de589e74464c67ba42e42c90f7d169ef205a45",
     "path": "src/renderer/src/store/appStore.ts",
-    "note": "Pre-refactor public exports and top-level ownership. Changes require an explicit contract decision; never regenerate this from the refactored implementation to hide a missing member."
+    "note": "Pre-refactor public exports and top-level ownership. Changes require an explicit contract decision; never regenerate this from the refactored implementation to hide a missing member.",
+    "retirement": "2026-11-17 user requested removal of standalone Bot state and actions; history and Goal retained. Existing ordinary-task contract stays frozen."
   },
   "actionAdditions": {
-    "forgetDeletedBot": "After an authoritative Bot deletion receipt, remove only that identity and its conversation, draft and selection caches; preserve reassigned Work and unrelated Bot state.",
-    "createBot": "Independent Bot creation: send a validated metadata-only request, verify the receipt, and merge the persistent identity without changing Task/Work or newer navigation. Legacy action keys remain frozen.",
     "releaseArtifactRender": "Release a ChatImage preview's cached payload and hydration state when it leaves the viewport. The pre-refactor action and initialization lists below remain frozen.",
-    "setBotDraft": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "submitBotDraft": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "setActiveBotId": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "setSelectedWorkId": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "refreshBotWork": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "applyWorkProjection": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "markBotNotificationRead": "BOT-WORK UI-02/UI-03/UI-05: independent Bot selection, draft and authoritative Work projection; ordinary Task actions stay unchanged.",
-    "refreshBotHistory": "Phase 2 persistent Bot conversation sending and recovery.",
-    "cancelBotSend": "Phase 2 persistent Bot conversation sending and recovery.",
-    "archiveBotConversation": "Phase 2 persistent Bot conversation sending and recovery.",
-    "setBotAttachments": "Bot attachments: update only the named Bot attachment draft, separate from ordinary Task drafts.",
-    "setActiveTeam": "Select a stable team identity, preserving independent personal/team drafts and conversation scopes.",
     "openSubagentView": "Open a specific subagent conversation while retaining its parent task navigation.",
-    "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run.",
-    "syncBotComposerDefaults": "Rebase unsent Bot composer defaults after settings reads/saves while preserving explicit per-draft overrides and immutable pending sends.",
-    "setBotComposerSelection": "Update the active Bot or team composer model, experts, skills, MCP and connectors without changing ordinary task selection.",
-    "setHistoricalTeamWork": "Select or clear a runtime-only historical team Work viewer and advance the navigation intent version without changing composer or active team ownership.",
-    "loadOlderBotHistory": "Explicit bounded conversation paging with scope and cursor fences.",
-    "openNotificationConversation": "Notifications: open the host-authoritative Bot conversation named by an activation target; navigation resolves the existing record and never creates a Work or a message."
+    "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run."
   },
   "publicExports": {
     "CreateRelatedTaskOptions": "type",
@@ -617,30 +599,9 @@
     "workspaceFilesCount"
   ],
   "stateAdditions": {
-    "activeBotId": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "selectedWorkId": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botDraft": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botSubmissionNotice": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botIdentities": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botIdentitiesLoaded": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botWorks": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botHostStatus": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botWorkError": "BOT-WORK UI-03/UI-05: Bot UI state is separate from the ordinary Task context.",
-    "botDrafts": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botHistories": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botPendingSends": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botConversationErrors": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botWorkCursor": "Phase 2 separate Bot message identities and scoped durable projection cursor.",
-    "botAttachmentDrafts": "Bot attachments: durable per-Bot file drafts survive switching and lost acknowledgements without crossing Task context.",
-    "activeTeam": "Explicit selected team workspace scope; kept separate from personal Bot conversations and drafts.",
     "subagentView": "Independent subagent conversation navigation retains parent task and completed subagent visibility.",
-    "botComposerDefaults": "Per-scope saved settings revision, capability baseline and explicit overrides; never sent as request configuration.",
-    "botComposerDrafts": "Per-Bot and per-team composer capability drafts, isolated from ordinary task drafts and other Bot identities.",
     "browserGadgetByTask": "Retain explicit Gadget identity per task/home so a new runtime port updates only its owned browser entry.",
     "browserNavigationVersion": "Guard asynchronous Gadget open results against newer explicit renderer navigation.",
-    "browserTabByTask": "Retain selected native tab identity per task/home across internal navigation, panel dismissal and task switches.",
-    "historicalTeamWork": "Runtime-only historical team Work viewer; never becomes a composer selection or team identity and clears when navigation changes.",
-    "botNavigationEpoch": "Monotonic Bot/team navigation intent version; invalidates delayed historical Work navigation when the user changes page, Bot, team or selected Work.",
-    "botHistoryPages": "Per-scope pending/error state for explicit older-history reads."
+    "browserTabByTask": "Retain selected native tab identity per task/home across internal navigation, panel dismissal and task switches."
   }
 }

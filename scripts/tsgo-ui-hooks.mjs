@@ -8,8 +8,7 @@ registerHooks({
  resolve(specifier,context,next){
   if(specifier==='@/lib/monacoWorkerEntry?worker&inline')return {url:'data:text/javascript,export default class {constructor(){throw new Error(%22Monaco worker is outside this DOM fixture%22)}}',shortCircuit:true};
   let path;
-  if(specifier==='@/lib/botAvatarAssets')path=resolve(compiled,'scripts/bot-avatar-ui-assets.js');
-  else if(specifier.startsWith('@/'))path=resolve(compiled,'src/renderer/src',specifier.slice(2));
+  if(specifier.startsWith('@/'))path=resolve(compiled,'src/renderer/src',specifier.slice(2));
   else if(specifier.startsWith('@shared/'))path=resolve(compiled,'src/shared',specifier.slice(8));
   else if(specifier.startsWith('.')&&context.parentURL?.startsWith('file:'))path=fileURLToPath(new URL(specifier,context.parentURL));
   if(path){

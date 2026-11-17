@@ -533,7 +533,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2298",
+          "src/main/index.ts:2303",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -543,7 +543,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2302",
+          "src/main/index.ts:2307",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -553,7 +553,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2306",
+          "src/main/index.ts:2311",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -563,7 +563,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2317",
+          "src/main/index.ts:2322",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -573,7 +573,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2321",
+          "src/main/index.ts:2326",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -583,7 +583,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2326",
+          "src/main/index.ts:2331",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -593,7 +593,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2330",
+          "src/main/index.ts:2335",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [
@@ -615,7 +615,7 @@
       {
         "channel": "agent:abort",
         "entries": [
-          "src/main/index.ts:1195",
+          "src/main/index.ts:1200",
           "scripts/browser-stop-ui-electron-test.ts:42"
         ],
         "foreign": [
@@ -625,7 +625,7 @@
       {
         "channel": "agent:getAppSettings",
         "entries": [
-          "src/main/index.ts:1344",
+          "src/main/index.ts:1349",
           "scripts/browser-stop-ui-electron-test.ts:41"
         ],
         "foreign": [
@@ -635,7 +635,7 @@
       {
         "channel": "agent:loadTaskHistory",
         "entries": [
-          "src/main/index.ts:1477",
+          "src/main/index.ts:1482",
           "scripts/browser-stop-ui-electron-test.ts:43"
         ],
         "foreign": [
@@ -645,7 +645,7 @@
       {
         "channel": "agent:getModeProfile",
         "entries": [
-          "src/main/index.ts:1510",
+          "src/main/index.ts:1515",
           "scripts/browser-stop-ui-electron-test.ts:40"
         ],
         "foreign": [

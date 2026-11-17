@@ -65,7 +65,7 @@ async function accountMenu(mode) {
   }
   await clickSelector('.sidebar-user-main');
   const shot=await rpc('Page.captureScreenshot',{format:'png'});
-  fs.writeFileSync(path.join(output,mode==='Bot 模式'?'bot-account-menu.png':'ordinary-account-menu.png'),Buffer.from(shot.data,'base64'));
+  fs.writeFileSync(path.join(output,'ordinary-account-menu.png'),Buffer.from(shot.data,'base64'));
   await clickSelector('.sidebar-user-main');
   console.log('PASS '+mode+' account menu omits Bot mode; all other actions, toggle, Escape and outside dismissal remain');
 }
