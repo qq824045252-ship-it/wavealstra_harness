@@ -116,6 +116,10 @@ export function recordBrowserAutomationFailureRecovery(
   const sideEffecting = SIDE_EFFECT_ACTIONS.has(input.action);
   const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
   const preAction = outcome ? outcome.dispatch === "not_started" : PRE_ACTION_CODES.has(error.code);
+  if (error.code === "ELEMENT_AMBIGUOUS") {
+    if (preAction) bridge.failures.resolveMatching(ctx.taskId, { target: browserAutomationRecoveryTarget(input, error.details), causeCodes: ["browser-element-ambiguous"] });
+    return false;
+  }
   const unknownEffect = !preAction && sideEffecting && input.action !== "navigate";
   const target = error.code === "HOST_UNAVAILABLE"
     ? `browser:${input.action}:surface`

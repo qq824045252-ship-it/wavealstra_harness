@@ -1,0 +1,49 @@
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { app, BrowserWindow } from "electron";
+import { pageInspectionService } from "../src/main/artifact/PageInspectionService";
+import { BrowserHost } from "../src/main/browser/BrowserHost";
+import { BrowserAutomationService, BrowserAutomationError } from "../src/main/capabilities/BrowserAutomationService";
+const root=mkdtempSync(join(tmpdir(),"hover-receipt-"));app.setPath("userData",join(root,"profile"));app.setPath("home",root);app.on("window-all-closed",()=>{});
+const guard=setTimeout(()=>app.exit(1),40000);
+void(async()=>{let host:BrowserHost|undefined,win:BrowserWindow|undefined;try{
+await app.whenReady();win=new BrowserWindow({show:false,width:1000,height:800});await win.loadURL("data:text/html,test");host=new BrowserHost();host.attach(win);const service=new BrowserAutomationService(()=>host??null);const context={taskId:"hover-fixture",taskRoot:root};const url=pathToFileURL(join(process.cwd(),"scripts/browser-hover-menu-fixture.html")).href;
+{
+ const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
+ const wc=host.getTabHost(tabId)!.inspectionWebContents!;await wc.executeJavaScript(`document.querySelector('.nav').insertAdjacentHTML('beforeend','<div class="menu" id="duplicate">账簿</div>');true`);
+ let ambiguous: BrowserAutomationError | undefined;
+ try{await service.execute({action:"click",tabId,role:"link",name:"凭证汇总表",hover:[{name:"账簿"}]},undefined,context)}catch(error){if(error instanceof BrowserAutomationError)ambiguous=error;else throw error;}
+ assert.equal(ambiguous?.code,"ELEMENT_AMBIGUOUS");
+ const details=ambiguous?.details;assert(details&&typeof details==="object"&&"candidates" in details&&Array.isArray(details.candidates));
+ const candidate=details.candidates.find(c=>c.tag==="div"&&c.bounds.x===40&&c.label.includes("账簿"));assert(candidate);
+ const fixed=await service.execute({action:"click",tabId,role:"link",name:"凭证汇总表",exact:true,hover:[{selector:candidate.selector}]},undefined,context);assert.equal(fixed.outcome?.effect,"confirmed");
+}
+for(let i=0;i<8;i++){
+ const opened=await service.execute({action:"navigate",url,reload:true},undefined,context);const tabId=opened.tabId!;
+ const found=await service.execute({action:"find",tabId,selector:"div.menu"},undefined,context);const anchor=found.elements?.find(el=>el.label.includes("账簿"));assert(anchor);
+ const result=await service.execute({action:"click",tabId,role:"link",name:"凭证汇总表",exact:true,hover:[i%2?{name:"账簿"}:{selector:anchor.selector}],after:{selector:"#out",mode:"text"}},undefined,context);
+ assert.deepEqual(result.outcome,{dispatch:"dispatched",effect:"confirmed"});assert.equal(result.observation?.status,"completed");assert.match(result.observation.status==="completed"?result.observation.result.text??"":"",/已点击：凭证汇总表/);
+}
+{
+ const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
+ const wc=host.getTabHost(tabId)!.inspectionWebContents!;
+ await wc.executeJavaScript(`document.querySelector('.sub').insertAdjacentHTML('beforeend','<button id="decoy">无关控件</button>');true`);
+ const found=await service.execute({action:"find",tabId,selector:"div.menu"},undefined,context),anchor=found.elements?.find(el=>el.label.includes("账簿"));assert(anchor);
+ const session=pageInspectionService.sessionFor(wc,"browser-host")!;const original=session.inputCommand.bind(session);let injected=false;
+ session.inputCommand=async(method,params)=>{
+   if(!injected&&method==="Input.dispatchMouseEvent"&&params.type==="mousePressed"){
+     injected=true;const p=await wc.executeJavaScript(`(()=>{const r=document.querySelector('#decoy').getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+     await original(method,{type:"mousePressed",...p,button:"left",buttons:1,clickCount:1});
+     await original(method,{type:"mouseReleased",...p,button:"left",buttons:0,clickCount:1});
+   }
+   await original(method,params);
+ };
+ try {const clicked=await service.execute({action:"click",tabId,role:"link",name:"凭证汇总表",exact:true,hover:[{selector:anchor.selector}]},undefined,context);assert.equal(clicked.outcome?.effect,"confirmed");}
+ finally{session.inputCommand=original;}
+ assert(injected);assert.match(await wc.executeJavaScript("document.querySelector('#out').textContent"),/已点击：凭证汇总表/);
+}
+console.log("PASS original reported hover fixture: candidate-ref correction, 8 atomic hover/clicks and an unrelated trusted-event receipt");host.dispose();win.destroy();clearTimeout(guard);app.exit(0);
+}catch(error){console.error(error);host?.dispose();win?.destroy();clearTimeout(guard);app.exit(1)}})();

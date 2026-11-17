@@ -17,7 +17,7 @@ export const UI_AUTOMATION_ERROR_CODES = [
 ] as const;
 export type UiAutomationErrorCode = (typeof UI_AUTOMATION_ERROR_CODES)[number];
 export class UiAutomationError extends Error {
-  constructor(public readonly code: UiAutomationErrorCode, message: string, public readonly details?: unknown) {
+  constructor(public readonly code: UiAutomationErrorCode, message: string, public readonly details?: unknown, public readonly candidates?: UiElementInfo[]) {
     super(message);
     this.name = "UiAutomationError";
   }
@@ -151,7 +151,8 @@ export function findScript(input: ReturnType<typeof locator> & { visibleOnly?: b
       }
       return '';
     };
-    const nameOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?el.getAttribute('aria-labelledby').split(/\\s+/).map(id=>el.getRootNode().getElementById(id)?.textContent||'').join(' '):'')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):'')||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||(el instanceof HTMLInputElement&&['button','submit','reset','image'].includes(el.type)?el.value||el.alt:'')||(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable)?__mbDom.composedText(el):'')||el.getAttribute('name'));
+    const contentName=el=>roleOf(el)?__mbDom.composedText(el):Array.from(el.childNodes).map(node=>node.nodeType===Node.TEXT_NODE?node.textContent||'':node instanceof HTMLSlotElement?__mbDom.composedText(node):'').join('');
+    const nameOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?el.getAttribute('aria-labelledby').split(/\\s+/).map(id=>el.getRootNode().getElementById(id)?.textContent||'').join(' '):'')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):'')||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||(el instanceof HTMLInputElement&&['button','submit','reset','image'].includes(el.type)?el.value||el.alt:'')||(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable)?contentName(el):'')||el.getAttribute('name'));
     const refs=window.__mybuddyUiRefs||(window.__mybuddyUiRefs=new WeakMap());
     const path=(el)=>{ let ref=refs.get(el); if(!ref){ref=${JSON.stringify(randomUUID())}+'-'+(++window.__mybuddyUiRefCounter|| (window.__mybuddyUiRefCounter=1));refs.set(el,ref);el.setAttribute('data-mybuddy-ui-ref',ref);} return '[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]'; };
     const closedDisclosure=el=>{let blocked;for(let parent=__mbDom.parent(el);parent;parent=__mbDom.parent(parent)){if(parent instanceof HTMLDetailsElement&&!parent.open){const summary=parent.querySelector(':scope > summary');if(summary&&!summary.contains(el))blocked=summary;}}return blocked;};
@@ -224,13 +225,13 @@ export class UiAutomationService {
   }
 
   private async one(wc: WebContents, input: UiExecInput, scope: AutomationScope): Promise<UiElementInfo> {
-    const visible = await this.find(wc, input, scope, 2, false, true);
+    const visible = await this.find(wc, input, scope, 20, false, true);
     if (visible.length === 1) return visible[0];
-    if (visible.length > 1) throw new UiAutomationError("ELEMENT_AMBIGUOUS", "UI 定位不唯一：存在多个可见目标");
+    if (visible.length > 1) throw new UiAutomationError("ELEMENT_AMBIGUOUS", "UI 定位不唯一：存在多个可见目标；请从 candidates 选择唯一引用", { countAtLeast: visible.length }, visible);
     const rows = await this.find(wc, input, scope, 2, false);
     if (!rows.length) throw new UiAutomationError("ELEMENT_NOT_FOUND", "未找到目标 UI 元素");
     if (rows.length > 1) {
-      throw new UiAutomationError("ELEMENT_AMBIGUOUS", `UI 定位不唯一：匹配 ${rows.length} 个元素`, { count: rows.length });
+      throw new UiAutomationError("ELEMENT_AMBIGUOUS", `UI 定位不唯一：匹配 ${rows.length} 个元素`, { count: rows.length }, rows);
     }
     return rows[0];
   }
@@ -243,7 +244,7 @@ export class UiAutomationService {
       for(const [key,old]of receipts){if(receipts.size<16)break;old.cleanup();receipts.delete(key);}
       const entry={};entry.promise=new Promise(resolve=>{
         const finish=value=>{document.removeEventListener(${JSON.stringify(event)},listener,true);clearTimeout(entry.timer);resolve(value)};
-        const listener=e=>{if(e.isTrusted)finish(e.composedPath().includes(el))};
+        const listener=e=>{if(e.isTrusted&&e.composedPath().includes(el))finish(true)};
         entry.cleanup=()=>finish(false);entry.timer=setTimeout(entry.cleanup,Math.max(1,${scope.deadline}-Date.now()));
         document.addEventListener(${JSON.stringify(event)},listener,true);
       });

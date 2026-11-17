@@ -116,7 +116,7 @@ try {
   assert(failures.list("task").find(item => item.id === missingFailure.id)?.resolvedAt);
   assert(failures.list("task").find(item => item.id === hostFailure.id)?.resolvedAt);
 
-  for (const code of ["ELEMENT_NOT_VISIBLE", "ELEMENT_DISABLED", "ELEMENT_AMBIGUOUS", "SURFACE_CHANGED"] as const) {
+  for (const code of ["ELEMENT_NOT_VISIBLE", "ELEMENT_DISABLED", "SURFACE_CHANGED"] as const) {
     const error = new BrowserAutomationError(code, "target not ready", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/form" });
     assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, error));
     const failure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === `browser-${code.toLowerCase().replaceAll("_", "-")}`)!;
@@ -126,6 +126,10 @@ try {
     settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form", outcome: { dispatch: "dispatched", effect: "confirmed" } });
     assert(failures.list("task").find(item => item.id === failure.id)?.resolvedAt, `${code}: successful corrected action clears the recovery notice`);
   }
+  const beforeAmbiguous = failures.list("task").length;
+  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("ELEMENT_AMBIGUOUS", "choose candidate", { outcome: { dispatch: "not_started", effect: "none" } })), false);
+  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("ELEMENT_AMBIGUOUS", "hover preparation completed, choose final candidate", { outcome: { dispatch: "dispatched", effect: "unknown" } })), false);
+  assert.equal(failures.list("task").length, beforeAmbiguous, "a locator choice is an Agent correction, not human recovery");
   const flyoutInput = { action: "click" as const, role: "link", name: "凭证汇总表" };
   assert(recordBrowserAutomationFailureRecovery(bridge, flyoutInput, new BrowserAutomationError("ELEMENT_NOT_VISIBLE", "collapsed menu", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/books" })));
   const flyoutFailure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-element-not-visible")!;

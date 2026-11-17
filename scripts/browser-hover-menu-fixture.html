@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>hover 菜单验证</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; margin: 40px; }
+  .nav { display: flex; gap: 4px; }
+  .menu { position: relative; padding: 8px 14px; border: 1px solid #ddd; border-radius: 8px; cursor: default; }
+  .menu:hover { background: #f4efe7; }
+  .sub { display: none; position: absolute; top: 100%; left: 0; margin-top: 4px; min-width: 180px;
+         border: 1px solid #ddd; border-radius: 8px; background: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.08); padding: 6px; }
+  .menu:hover .sub { display: block; }
+  .sub a { display: block; padding: 6px 10px; border-radius: 6px; color: #333; text-decoration: none; }
+  .sub a:hover { background: #f4efe7; }
+  #out { margin-top: 28px; font-weight: 600; color: #7a3b23; }
+</style>
+</head>
+<body>
+  <div class="nav">
+    <div class="menu">
+      账簿
+      <div class="sub">
+        <a href="#voucher-summary" role="link">凭证汇总表</a>
+        <a href="#aux-subsidiary" role="link">核算项目明细账</a>
+        <a href="#aging" role="link">账龄分析表</a>
+      </div>
+    </div>
+    <div class="menu">报表</div>
+  </div>
+  <p id="out">尚未点击任何子项</p>
+  <script>
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest('.sub a');
+      if (!a) return;
+      e.preventDefault();
+      document.getElementById('out').textContent = '已点击：' + a.textContent.trim() + '（' + a.getAttribute('href') + '）';
+    });
+  </script>
+</body>
+</html>
