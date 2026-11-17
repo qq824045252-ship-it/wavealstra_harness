@@ -10,7 +10,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getMyBuddyDir } from "./paths";
-import { gatewayBotBindingSchema, type GatewayBotBinding } from "../shared/gateway-bot-binding";
 import { readDiskSpaceFallback } from "./platform/fs-security";
 import type { PermissionMode, DiskSpaceDto } from "../shared/agent-ipc";
 import {
@@ -80,7 +79,6 @@ export interface AppSettings {
   /** 点击关闭窗口时最小化到系统托盘（默认开启） */
   closeToTray: boolean;
   /** Explicitly paired external owner identities, scoped to a verified channel account. */
-  gatewayBotBindings?: Record<string, GatewayBotBinding>;
   /** Keep an independent host alive after the desktop client exits. */
   residentHostEnabled: boolean;
   /** 统一通知中心 / 桌面通知策略。 */
@@ -257,10 +255,7 @@ export class AppSettingsStore {
       const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<AppSettings> & Record<string, unknown>;
       const merged = { ...DEFAULTS, ...migrateLegacyShellPreferences(raw).settings } as AppSettings;
       merged.residentHostEnabled = raw.residentHostEnabled === true;
-      merged.gatewayBotBindings = Object.fromEntries(Object.entries(raw.gatewayBotBindings ?? {}).flatMap(([id, value]) => {
-        const parsed = gatewayBotBindingSchema.safeParse(value);
-        return parsed.success ? [[id, parsed.data]] : [];
-      }));
+      delete (merged as AppSettings & Record<string, unknown>).gatewayBotBindings;
       delete (merged as AppSettings & Record<string, unknown>).backupFiles;
       const piSettings = SettingsManager.create(process.cwd(), getMyBuddyDir());
       const piDefaultProvider = piSettings.getDefaultProvider();

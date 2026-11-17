@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { WorkControlResult, WorkDto, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import { workSubitemSchema, type ContinuationWorkParams, type WorkContinuationDto, type WorkSubitemDto, type WorkSubitemResult } from "../../../shared/bot-work-phase3";
 import type { WorkService } from "./WorkService";
-import type {WorkExecutionObservation} from "./WorkExecutionAdapter";
+import type {WorkExecutionObservation} from "./WorkExecutionObservation";
 
 export function ensureWorkPartialTables(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS work_subitem_results (

@@ -2,17 +2,15 @@ import type { WorkProjectionDto } from '@shared/bot-work';
 import { ExecutionUsageMetrics } from '../chat/ExecutionUsageMetrics';
 import { GenerationSpeedDisplay } from '../chat/GenerationSpeed';
 import { formatTokenCount } from '@shared/token-format';
-import { useAppStore } from '@/store/appStore';
 import './WorkExecutionMetrics.css';
 
 export function WorkExecutionMetrics({work}:{work:WorkProjectionDto}) {
-  const identities=useAppStore(state=>state.botIdentities);
   if(!work.executions.length)return null;
   return <section className="bot-detail-section work-execution-metrics" aria-label="执行统计">
     <h3>执行统计</h3>
     <p className="work-execution-metrics-note">每次执行独立统计，含其原生子调用；速度和上下文仅对应本次执行主模型。未取得的数据显示 —。</p>
     {work.executions.map((execution,index)=>{
-      const name=identities.find(bot=>bot.botId===execution.botId)?.displayName??'执行成员';
+      const name=execution.botId;
       const metrics=execution.metrics;
       const usage=metrics?{totalInput:metrics.totalInputTokens??undefined,input:metrics.inputTokens??undefined,output:metrics.outputTokens??undefined,cacheRead:metrics.cacheReadTokens??undefined,cacheWrite:metrics.cacheWriteTokens??undefined}:undefined;
       const active=['pending','submitted','running'].includes(execution.status);

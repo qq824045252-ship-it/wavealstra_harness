@@ -699,7 +699,7 @@ export interface PreloadApi {
     addBlocker: (token: string) => void;
     removeBlocker: (token: string) => void;
     onUrlChanged: (callback: (url: string) => void) => () => void;
-    onOpenRequest: (callback: (url: string) => void) => () => void;
+    onOpenRequest: (callback: (url: string, retained?: { tabId: string; key: string; taskId?: string }) => void) => () => void;
   };
   /** 扩展栏终端（node-pty，主进程托管；renderer 只走白名单 IPC） */
   terminal: {

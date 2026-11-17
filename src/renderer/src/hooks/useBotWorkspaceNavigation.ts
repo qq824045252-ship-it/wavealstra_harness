@@ -44,11 +44,10 @@ export function useBotWorkspaceNavigation() {
     void refresh();
     let debounce: ReturnType<typeof setTimeout> | undefined;
     const changed = () => { if (debounce) return; debounce = setTimeout(() => { debounce = undefined; void refresh(); }, 500); };
-    const unsubscribe = window.api?.botWork.onMessageChanged?.(changed);
     const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 5000);
     window.addEventListener('focus', changed);
     window.addEventListener('mybuddy:teams-refresh', changed);
-    return () => { clearInterval(timer); clearTimeout(debounce); unsubscribe?.(); window.removeEventListener('focus', changed); window.removeEventListener('mybuddy:teams-refresh', changed); };
+    return () => { clearInterval(timer); clearTimeout(debounce); window.removeEventListener('focus', changed); window.removeEventListener('mybuddy:teams-refresh', changed); };
   }, []);
   return value;
 }

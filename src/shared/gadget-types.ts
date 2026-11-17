@@ -1,4 +1,5 @@
 /** Gadget shared domain contract. This module is runtime-neutral. */
+import { gadgetBackendSchema, type GadgetBackendDeclaration, type GadgetBackendInput } from "./gadget-backend";
 
 export const GADGET_MANIFEST_SCHEMA_VERSION = 1;
 
@@ -16,6 +17,7 @@ export interface GadgetManifest {
   type: GadgetType;
   entry: string;
   defaultConfig?: Record<string, unknown>;
+  backend?: GadgetBackendDeclaration;
 }
 
 export interface GadgetDescriptor {
@@ -71,6 +73,7 @@ export interface GadgetCreateRequest {
   entry?: string;
   files?: GadgetSourceFile[];
   defaultConfig?: Record<string, unknown>;
+  backend?: GadgetBackendInput;
   metadata?: Record<string, unknown>;
   createdByTaskId?: string;
   blueprintId?: string;
@@ -95,6 +98,8 @@ export interface GadgetSourceUpdateRequest {
   gadgetId: string;
   expectedRevision: string;
   files: GadgetSourceFile[];
+  /** undefined preserves the backend; null removes it. */
+  backend?: GadgetBackendInput | null;
 }
 
 export interface GadgetListItem extends GadgetDescriptor {
@@ -163,6 +168,9 @@ export function normalizeGadgetManifest(value: unknown): GadgetManifest {
     !entry || entry.startsWith("/") || /^[a-zA-Z]:/.test(entry) || entry.includes("\0") ||
     entry.split("/").some((part) => !part || part === "." || part === "..")
   ) throw new Error("Gadget manifest entry 必须是安全相对路径");
+  if (entry.split("/").some((part) => part.toLowerCase() === "server" || part.startsWith("."))) {
+    throw new Error("Gadget HTML 入口不得位于 server/ 或隐藏目录");
+  }
   const defaultConfig = manifest.defaultConfig;
   const normalizedConfig = defaultConfig === undefined ? undefined : normalizeJsonRecord(defaultConfig, "Gadget defaultConfig");
   return {
@@ -171,5 +179,6 @@ export function normalizeGadgetManifest(value: unknown): GadgetManifest {
     type: "web",
     entry,
     ...(normalizedConfig ? { defaultConfig: normalizedConfig } : {}),
+    ...(manifest.backend === undefined ? {} : { backend: gadgetBackendSchema.parse(manifest.backend) }),
   };
 }

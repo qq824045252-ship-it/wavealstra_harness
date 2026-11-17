@@ -6,7 +6,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Cursor, SubmissionRecord, TaskId } from "@earendil-works/pi-durable";
 import { recoverMissingSubitems, type DurableWorkReadTx } from "./DurableMissingSubitems";
-import type { WorkExecutionObservation } from "../work/WorkExecutionAdapter";
+import type { WorkExecutionObservation } from "../work/WorkExecutionObservation";
 import { DurableHistoryProjection, durableContentText } from "./DurableHistoryProjection";
 import type { WorkSubitemResult } from "../../../shared/bot-work-phase3";
 

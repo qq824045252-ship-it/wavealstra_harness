@@ -14,7 +14,3 @@ export function readTeamPlan(value: string): { plan: WorkTeamPlan; revision: num
   const { planRevision, predecessors, retainedResults, ...plan } = storedPlanSchema.parse(JSON.parse(value));
   return { plan, revision: planRevision, predecessors, retainedResults };
 }
-
-export function writeTeamPlan(plan: WorkTeamPlan, revision: number, predecessors: TeamPlanPredecessors = [], retainedResults?: RetainedTeamResults): string {
-  return JSON.stringify({ ...plan, planRevision: revision, predecessors, retainedResults });
-}

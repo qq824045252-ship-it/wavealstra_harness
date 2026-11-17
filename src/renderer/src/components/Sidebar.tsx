@@ -1,3 +1,6 @@
+import "./sidebar/SidebarNavigation.css";
+import { workspaceRequestRevision } from "@/lib/workspace-request-selection";
+import { openHistoricalNotification } from "@/lib/historicalNotification";
 import { deliverNotificationActivation } from "../lib/notificationActivationDelivery";
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
@@ -416,21 +419,31 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
               acknowledge: id => api.acknowledgeActivation(id),
               navigate: async () => {
               const state = useAppStore.getState();
+              const selectionRevision = workspaceRequestRevision();
+              const assertSelection = () => {
+                const current = useAppStore.getState();
+                if (disposed || controller.signal.aborted || workspaceRequestRevision() !== selectionRevision || current.page !== state.page
+                  || current.activeTaskId !== state.activeTaskId || current.activeWorkspaceId !== state.activeWorkspaceId)
+                  throw new Error("通知导航已被新的选择取代，请重新点击通知");
+              };
               switch (target.kind) {
                 case "task": state.setActiveTask(target.taskId); break;
                 case "project": state.openProjectDetails(target.projectId); break;
                 case "automation": state.setPage("automation"); break;
                 case "runtime": state.setSettingsOpen(true, "extensions"); break;
-                case "botConversation": await state.openNotificationConversation(target, controller.signal); break;
+                case "botConversation":
+                  await openHistoricalNotification(target, window.api?.botWork, openWorkspaceRequest,
+                    { signal: controller.signal, isCurrent: () => { assertSelection(); return true; } });
+                  break;
                 case "work": {
-                  const epoch = state.botNavigationEpoch;
                   const work = await window.api?.botWork.getWork(target.workId);
                   if (!work || work.workId !== target.workId || work.archive?.deletedAt !== undefined) throw new Error("通知对应的事项已不可用");
                   if (disposed) return;
-                  if (useAppStore.getState().botNavigationEpoch !== epoch) throw new Error("通知导航已被新的选择取代，请重新点击通知");
+                  assertSelection();
                   const navigation = await window.api?.botWork.workspaceNavigation();
                   const request = navigation?.foregroundRequests.find(item => item.botId === work.ownerBotId && work.originalDelegation?.messages.some(message => message.messageId === item.messageId));
                   if (!request) throw new Error("此历史事项尚无工作空间入口，记录未删除");
+                  assertSelection();
                   openWorkspaceRequest(request);
                   break;
                 }

@@ -1,3 +1,5 @@
+> 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
+
 > Integration status (2026-11-13): integrated on main baseline d6fc2d8b. Direct Omarchy checks passed: typecheck, test:bot-avatar-ui (React/DOM fixture), classification audit, and integrity of 93 entries / 186 assets. Native desktop file selection, packaged application behavior and full regression were not run. Independent security re-review was blocked and is NOT claimed to have passed. Historical producer results below are not independent integration acceptance. Publication does not remove these limitations.
 
 # Bot 头像支持与素材交接

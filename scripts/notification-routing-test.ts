@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { NotificationService } from "../src/main/notification/NotificationService";
 import { NotificationRepository } from "../src/main/notification/NotificationRepository";
 import { parseNotificationTarget, type NotificationDto } from "../src/shared/notification";
-import { createBotConversationActions } from "../src/renderer/src/store/app/slices/botConversation";
+import { openHistoricalNotification } from "../src/renderer/src/lib/historicalNotification";
+import type { BotWorkspaceRequestDto } from "../src/shared/bot-workspace-navigation";
+import { activateWorkspaceRequest } from "../src/renderer/src/lib/workspace-request-selection";
 
 const directory = mkdtempSync(join(tmpdir(), "notification-routing-"));
 const filename = join(directory, "test.db");
@@ -47,26 +49,63 @@ notifications.markRead(work.id); assert.equal(notifications.unreadCount(),0);
 notifications.dismiss(work.id); assert.equal(notifications.list().length,0);
 db.close(); rmSync(directory,{recursive:true,force:true});
 
-// Production store actions with deterministic authorized host responses.
+// Production store actions route retired Bot notifications into exact read-only
+// workspace history, without creating an ordinary Task or reviving Bot mode.
 (globalThis as any).localStorage = {getItem:()=>null,setItem:()=>{},removeItem:()=>{}};
-let state: any = {botNavigationEpoch:0,botDrafts:{b:"unsent draft"},botHistories:{},botHistoryPages:{},botConversationErrors:{},botAttachmentDrafts:{b:[{name:"draft.txt"}]}};
+const events: any[] = [];
+(globalThis as any).window = { dispatchEvent: (event: any) => { events.push(event); return true; } };
+const { selectedWorkspaceRequest, clearWorkspaceRequest } = await import('../src/renderer/src/lib/workspace-request-selection');
+const ordinaryDraft = { title: 'ordinary draft' };
+let state: any = { page:'chat', activeTaskId:'ordinary-task', draft:ordinaryDraft };
 const requests: any[] = [];
-let wait: (()=>void) | undefined;
-const api: any = { botWork: { listBots:async()=>[{botId:"b"}], history:async(request:any)=>{requests.push(request); if(wait) await new Promise<void>(resolve=>{wait=resolve}); return {botId:request.botId,teamId:request.teamId,conversationId:request.conversationId ?? "new",messages:[]};} } };
-const actions = createBotConversationActions({get:()=>state,set:(update:any)=>{state={...state,...(typeof update === "function"?update(state):update)}},getApi:()=>api} as any);
-state={...state,...actions};
-await actions.openNotificationConversation({kind:"botConversation",botId:"b",conversationId:"old"});
-assert.equal(state.botHistories.b.conversationId,"old"); assert.equal(state.botDraft,"unsent draft"); assert.equal(state.botAttachmentDrafts.b[0].name,"draft.txt");
-await actions.refreshBotHistory("b"); assert.equal(requests.at(-1).conversationId,"old","background refresh must not jump to latest conversation");
-wait=()=>{};
-const pending=actions.openNotificationConversation({kind:"botConversation",botId:"b",conversationId:"other"});
-await Promise.resolve(); await Promise.resolve();
-state.botNavigationEpoch++; wait?.(); wait=undefined; await assert.rejects(pending,/新的选择/);
-assert.equal(state.botHistories.b.conversationId,"old","late response cannot replace user's newer selection");
-const aborted = new AbortController(); aborted.abort();
-await assert.rejects(actions.openNotificationConversation({kind:"botConversation",botId:"b",conversationId:"other"}, aborted.signal));
-assert.equal(state.botHistories.b.conversationId,"old","disposed renderer cannot navigate");
-console.log("notification routing: PASS (SQLite restart/desktop-only/deletion/expiry/dedupe + exact conversation/drafts/race)");
+const routes: BotWorkspaceRequestDto[] = [
+ {id:'r-old',spaceId:'space-b',botId:'b',conversationId:'old',requestId:'old-request',messageId:'old-user',title:'old',status:'completed',createdAt:1,updatedAt:1,archived:true},
+ {id:'r-new',spaceId:'space-b',botId:'b',conversationId:'old',requestId:'new-request',messageId:'new-user',title:'new',status:'completed',createdAt:2,updatedAt:2,archived:false},
+ {id:'r-other',spaceId:'space-other',botId:'other-bot',conversationId:'old',requestId:'old-request',messageId:'old-user',title:'wrong owner',status:'completed',createdAt:3,updatedAt:3,archived:false},
+];
+let release: (()=>void) | undefined;
+let gate: Promise<void> | undefined;
+let invalidIdentity = false;
+const api: any = { botWork: {
+ workspaceNavigation:async()=>{ if(gate) await gate; return {spaces:[],taskSpaces:[],conversations:[],foregroundRequests:routes}; },
+ history:async(request:any)=>{requests.push(request); return {botId:invalidIdentity?'wrong':request.botId,teamId:request.teamId,conversationId:request.conversationId,
+  messages:request.before === undefined ? [{messageId:'new-user',requestId:'new-request'}] : [{messageId:'old-assistant',requestId:'old-request'}],
+  before:request.before === undefined ? 10 : undefined};},
+} };
+const actions = { openNotificationConversation: (target: any, signal?: AbortSignal) => {
+ const page = state.page, taskId = state.activeTaskId;
+ return openHistoricalNotification(target, api.botWork, request => activateWorkspaceRequest(request, spaceId => state.openWorkspaceDetail(spaceId)),
+   { signal, isCurrent: () => state.page === page && state.activeTaskId === taskId });
+}};
+state={...state,...actions,openWorkspaceDetail:(spaceId:string)=>{state={...state,page:'workspace',activeWorkspaceId:spaceId};}};
+await actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old',messageId:'old-assistant'});
+assert.equal(state.page,'workspace');assert.equal(state.activeWorkspaceId,'space-b');
+assert.equal(selectedWorkspaceRequest('space-b')?.requestId,'old-request','message identity, not newest neighbour, selects history');
+assert.equal(events.at(-1).detail.requestId,'old-request');assert.equal(requests.length,2,'historical message lookup paginates');
+assert.equal(state.draft,ordinaryDraft);assert.equal(state.activeTaskId,'ordinary-task');
+
+assert.equal(Object.hasOwn(api.botWork,'listBots'),false,'history routing does not require live Bot runtime');
+await actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old'});
+assert.equal(selectedWorkspaceRequest('space-b')?.requestId,'new-request','conversation-only target selects latest matching owner request');
+const navigations=events.length;
+await assert.rejects(actions.openNotificationConversation({kind:'botConversation',botId:'b',teamId:'other-team',conversationId:'old'}),/尚无工作空间入口/);
+await assert.rejects(actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old',messageId:'missing'}),/未找到/);
+invalidIdentity=true;
+await assert.rejects(actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old',messageId:'old-assistant'}),/身份不匹配/);
+invalidIdentity=false;assert.equal(events.length,navigations,'invalid targets cannot navigate to neighbours');
+gate=new Promise<void>(resolve=>{release=resolve;});
+const pending=actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old'});
+await Promise.resolve();state.activeTaskId="newer-task";release!();gate=undefined;
+await assert.rejects(pending,/新的选择/);assert.equal(events.length,navigations,'late response cannot replace newer selection');
+gate=new Promise<void>(resolve=>{release=resolve;});
+const sameSpacePending=actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old'});
+await Promise.resolve();activateWorkspaceRequest(routes[0],()=>{});const afterUserSelection=events.length;release!();gate=undefined;
+await assert.rejects(sameSpacePending,/新的选择/);
+assert.equal(events.length,afterUserSelection,'late notification cannot replace another historical request in the same workspace');
+const aborted=new AbortController();aborted.abort();
+await assert.rejects(actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old'},aborted.signal));
+assert.equal(events.length,afterUserSelection,'disposed renderer cannot navigate');clearWorkspaceRequest();
+console.log('notification routing: PASS (SQLite restart/desktop-only/deletion/expiry/dedupe + exact read-only workspace request/drafts/pagination/race)');
 
 // Use the production per-click delivery policy, not a duplicate test-only drain.
 const { deliverNotificationActivation } = await import('../src/renderer/src/lib/notificationActivationDelivery');

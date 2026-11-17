@@ -6,10 +6,10 @@ import { estimateContextTokens, estimateMessageTokens, estimateTextTokens } from
 import type { CompactionReason, Conversation, ContextView, DocumentReader, EntryRecord, HookApi } from "@earendil-works/pi-durable";
 import { DurableContextRefArchive, DurableContextBlockArchive } from "./DurableContextArchive";
 import {
-  activeBlocks, blockDocs, collectBlockContent, createCore, createInitialState, defaultConfig,
+  activeBlocks, blockDocs, createCore, createInitialState, defaultConfig,
   isSummaryMessageId, searchBlocks, SUMMARY_HEADER,
   type CompressibleRange, type CompressionBlock, type CompressionCore, type CompressionState, type Config,
-  type CoreMessage,
+  type CoreMessage, type CompressRangeSpec,
 } from "../../../../../vendor/acp-kernel/src/index.ts";
 import type {
   ContextManagementEngine, ContextManagementReason, ContextManagementStatusDto, ContextManagementSummaryDto,
@@ -85,6 +85,7 @@ interface TurnOutcome {
   skippedReason?: string;
 }
 type OperationSource = DurableContextLastOperation["source"];
+type CompressionPlan = Pick<CompressRangeSpec, "startRef" | "endRef"> & { text: string };
 
 /**
  * Durable 会话的上下文管理协调点。
@@ -443,7 +444,7 @@ export class DurableContextManager {
         this.rebaseNeeded = true;
         await this.rebase(headEntryId, ctx, "boundary");
       }
-      if (!this.healthy) { this.assertRequestFits(messages); return undefined; }
+      if (!this.healthy) return this.projectCommitted(messages, ctx);
       const outcome = await this.maintainAndProject(messages, view.entries, api.models, ctx, { automatic: true, source: this.operationSource(view) });
       this.assertRequestFits(outcome.projected);
       this.consecutiveFailures = 0;
@@ -453,9 +454,17 @@ export class DurableContextManager {
     } catch (error) {
       this.consecutiveFailures++;
       this.fail("自动上下文整理失败", error);
-      this.assertRequestFits(messages);
-      return undefined;
+      return this.projectCommitted(messages, ctx);
     }
+  }
+
+  private async projectCommitted(messages: readonly Message[], ctx: Context): Promise<{ messages: readonly Message[] } | undefined> {
+    const view = await this.host.conversation.context(ctx);
+    const committed = this.committed;
+    const state = (view.head?.id ?? null) === committed.headEntryId ? parseKernelState(committed) : undefined;
+    const projected = state ? this.renderProjected(this.buildCoreMessages(messages, view.entries), state) : undefined;
+    this.assertRequestFits(projected?.messages ?? messages);
+    return projected?.applied ? { messages: projected.messages } : undefined;
   }
 
   /** Never send an oversized raw fallback after maintenance failed or protected input could not shrink. */
@@ -690,7 +699,7 @@ export class DurableContextManager {
     }
     const projected = this.renderProjected(build, applied.state);
     if (projected.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)
-      >= view.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)) {
+      >= this.renderProjected(build, state).messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)) {
       return { ok: false, message: "摘要没有减少实际输入，未提交压缩结果" };
     }
     const operation = await this.beginOperation(ctx, "manual", false, view.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0), this.operationSource(view));
@@ -855,6 +864,7 @@ export class DurableContextManager {
     // 分支/复制历史里的 assistant usage 描述的是源会话当时的投影，不是本分支的当前输入：
     // 取「最近 usage」与「逐条消息独立估算」的较大值，避免用过期 usage 低估真实出站体积。
     const estimatedMessages = messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
+    const residentTokens = this.renderProjected(build, this.kernelState).messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
     const beforeTokens = Math.max(measured.tokens, estimatedMessages) + toolTokens;
     if (!build.messages.length) {
       if (options.force) {
@@ -880,33 +890,52 @@ export class DurableContextManager {
     state = turn.state;
     let folds = 0;
     let tokensCompressed = 0;
-    const ranges = turn.nudge?.compressibleRanges ?? [];
     const safeTrigger = Math.min(policy.triggerTokens, Math.max(0, policy.window - this.requestReserve(policy.window)));
     const pressure = beforeTokens > safeTrigger;
     const knownGrowth = Boolean(turn.nudge?.shouldInject);
+    const plans: CompressionPlan[] = [];
+    if (pressure || knownGrowth || options.force) {
+      const tier = turn.nudge?.tier;
+      if (tier === 2 || tier === 3) {
+        const targets = new Set(turn.nudge?.tierTargetBlocks?.map(block => block.blockId));
+        const positions = new Map(build.messages.map((message, index) => [message.id, index]));
+        const blocks = topLevelBlocks(state).filter(block => targets.has(block.blockId))
+          .map(block => ({ block, position: block.effectiveMessageIds.reduce((min, id) => Math.min(min, positions.get(id) ?? Infinity), Infinity) }))
+          .filter(item => Number.isFinite(item.position)).sort((a, b) => a.position - b.position).map(item => item.block);
+        const first = blocks[0], last = blocks.at(-1);
+        if (first && last && blocks.length === targets.size) {
+          const plan = this.planCompression({ startRef: first.blockId, endRef: last.blockId }, build, state, policy.window, tier);
+          if (plan) plans.push(plan);
+        }
+      } else {
+        const ranges = this.safeAutomaticRanges(turn.nudge?.compressibleRanges ?? [], build, state, policy.window);
+        for (const range of selectRanges(ranges, Math.max(2_048, Math.floor(safeTrigger * 0.7)))) {
+          const plan = this.planCompression(range, build, state, policy.window);
+          if (plan) plans.push(plan);
+        }
+      }
+    }
     const reason = options.force ? "manual" : pressure ? "threshold" : "growth";
-    const operation = options.force || (ranges.length > 0 && (pressure || knownGrowth))
+    const operation = options.force || plans.length > 0
       ? await this.beginOperation(ctx, reason, options.automatic, beforeTokens, options.source) : undefined;
     try {
     let skippedReason: string | undefined;
-    if (!ranges.length) {
+    if (!plans.length) {
       skippedReason = this.describeNothingToCompress(turn.state, build.messages.length);
-    } else if (pressure || knownGrowth || options.force) {
-      const target = Math.max(2_048, Math.floor(safeTrigger * 0.7));
-      const chosen = selectRanges(ranges, target);
+    } else {
       const model = await this.resolveModel(models, ctx);
       const appliedRanges: Array<{ startRef: string; endRef: string; summary: string; topic?: string }> = [];
-      for (const range of chosen) {
-        const text = this.rangeText(range, turn.state, build.messages);
+      for (const { startRef, endRef, text } of plans) {
         if (!text.trim()) continue;
         const summary = await this.summarizeMessages([
           { role: "user", content: text, timestamp: Date.now() } as Message,
         ], Math.max(6_000, Math.floor(policy.window * 0.3)), model, models, ctx);
         const topic = firstLine(text).slice(0, 120);
-        appliedRanges.push({ startRef: range.startRef, endRef: range.endRef, summary, ...(topic ? { topic } : {}) });
+        appliedRanges.push({ startRef, endRef, summary, ...(topic ? { topic } : {}) });
       }
       if (appliedRanges.length) {
         const applied = this.core.applyCompression({ ranges: appliedRanges, messages: build.messages, state, config: this.buildConfig(policy.window, build.protectedIds) });
+        if (applied.result.errors.length) throw new Error(applied.result.errors.join("；"));
         state = applied.state;
         folds = applied.result.blocksCreated;
         // applyCompression 已经产出新 state；不需要第二次 processTurn 重新跑完整管线。
@@ -914,12 +943,10 @@ export class DurableContextManager {
       } else {
         skippedReason = "推荐范围没有可读原文";
       }
-    } else {
-      skippedReason = beforeTokens <= policy.triggerTokens ? "尚未达到整理阈值" : undefined;
     }
     const rendered = this.renderProjected(build, state);
     const afterTokens = rendered.messages.reduce((total, message) => total + estimateMessageTokens(message), 0) + toolTokens;
-    if (folds > 0 && afterTokens >= estimatedMessages + toolTokens) throw new Error("摘要没有减少实际输入，未提交压缩结果");
+    if (folds > 0 && afterTokens >= residentTokens + toolTokens) throw new Error("摘要没有减少实际输入，未提交压缩结果");
     this.kernelState = state;
     this.persisted.stats.folds += folds;
     this.persisted.stats.tokensCompressed += tokensCompressed;
@@ -952,7 +979,7 @@ export class DurableContextManager {
 
   private describeNothingToCompress(state: CompressionState, messageCount: number): string {
     if (messageCount <= 4) return "历史太短，没有可整理内容";
-    if (countTopLevelBlocks(state) > 0) return "当前历史都已被摘要覆盖";
+    if (countTopLevelBlocks(state) > 0) return "没有可安全整理的范围，已保留现有摘要";
     return "没有可整理的历史";
   }
 
@@ -1080,6 +1107,75 @@ export class DurableContextManager {
     if (this.persisted.summaries.length > 200) this.persisted.summaries.splice(0, this.persisted.summaries.length - 200);
   }
 
+  /** Close kernel recommendations over provider atomic groups before summarization. */
+  private safeAutomaticRanges(ranges: readonly CompressibleRange[], build: CoreBuild, state: CompressionState, window: number): CompressibleRange[] {
+    if (!ranges.length) return [];
+    const positions = new Map(build.messages.map((message, index) => [message.id, index]));
+    // Native messages, complete tool exchanges, and existing summaries are atomic.
+    // Merge overlapping atomic spans once, including transitive tool batches.
+    const groups = build.mappings.map(mapping => mapping.coreIds);
+    const calls = new Map<string, string[]>();
+    for (const message of build.messages) if (message.toolCallId) {
+      const ids = calls.get(message.toolCallId) ?? [];
+      ids.push(message.id); calls.set(message.toolCallId, ids);
+    }
+    for (const ids of calls.values()) groups.push(ids);
+    for (const block of topLevelBlocks(state)) groups.push(block.effectiveMessageIds);
+    const spans: Array<{ start: number; end: number }> = [];
+    for (const ids of groups) {
+      let start = Infinity, end = -1;
+      for (const id of ids) { const index = positions.get(id); if (index !== undefined) { start = Math.min(start, index); end = Math.max(end, index); } }
+      if (end >= 0) spans.push({ start, end });
+    }
+    spans.sort((a, b) => a.start - b.start);
+    const atomic: typeof spans = [];
+    for (const span of spans) {
+      const prior = atomic.at(-1);
+      if (prior && span.start <= prior.end) prior.end = Math.max(prior.end, span.end);
+      else atomic.push({ ...span });
+    }
+    const closed: Array<{ start: number; end: number }> = [];
+    for (const range of ranges) {
+      let start = positions.get(state.messageRefs.byRef[range.startRef] ?? "");
+      let end = positions.get(state.messageRefs.byRef[range.endRef] ?? "");
+      if (start === undefined || end === undefined || start > end) continue;
+      for (const span of atomic) {
+        if (span.start > end) break;
+        if (span.end >= start) { start = Math.min(start, span.start); end = Math.max(end, span.end); }
+      }
+      closed.push({ start, end });
+    }
+    closed.sort((a, b) => a.start - b.start);
+    const merged: typeof closed = [];
+    for (const range of closed) {
+      const prior = merged.at(-1);
+      if (prior && range.start <= prior.end) prior.end = Math.max(prior.end, range.end);
+      else merged.push({ ...range });
+    }
+    const safe: CompressibleRange[] = [];
+    for (const { start, end } of merged) {
+      if (safe.length >= 6) break;
+      const messages = build.messages.slice(start, end + 1);
+      if (messages.some(message => build.protectedIds.has(message.id))) continue;
+      const startRef = state.messageRefs.byRaw[messages[0]!.id], endRef = state.messageRefs.byRaw[messages.at(-1)!.id];
+      if (!startRef || !endRef) continue;
+      // Use the production kernel's protection/recency/block rules, then the
+      // provider atomicity guard BEFORE spending any tokens on a summary.
+      const trial = this.core.applyCompression({ ranges: [{ startRef, endRef, summary: "Range validation placeholder describing a complete historical exchange." }],
+        messages: build.messages, state, config: this.buildConfig(window, build.protectedIds) });
+      if (trial.result.blocksCreated !== 1 || trial.result.errors.length) continue;
+      const priorBlocks = new Set(topLevelBlocks(state).map(block => block.blockId));
+      const created = topLevelBlocks(trial.state).filter(block => !priorBlocks.has(block.blockId));
+      const covered = new Set(created.flatMap(block => block.effectiveMessageIds));
+      if (created.length !== 1 || messages.some(message => !covered.has(message.id))) continue;
+      try { this.renderProjected(build, trial.state); } catch { continue; }
+      safe.push({ startRef, endRef, startIndex: start, endIndex: end, count: messages.length,
+        tokens: messages.reduce((sum, message) => sum + estimateTextTokens(message.text ?? ""), 0),
+        chars: messages.reduce((sum, message) => sum + (message.text?.length ?? 0), 0), toolPct: 0, textPct: 100 });
+    }
+    return safe;
+  }
+
   /** 把内核覆盖关系还原成真实 provider 消息：只替换被覆盖的原消息，证据注入保持原样。 */
   private renderProjected(build: CoreBuild, state: CompressionState): { messages: readonly Message[]; applied: boolean } {
     const top = topLevelBlocks(state);
@@ -1134,17 +1230,35 @@ export class DurableContextManager {
     return { role: "user", content: text, timestamp: block.createdAt ?? Date.now() } as Message;
   }
 
-  private rangeText(range: CompressibleRange, state: CompressionState, messages: readonly CoreMessage[]): string {
-    const start = refIndex(range.startRef);
-    const end = refIndex(range.endRef);
-    if (start === undefined || end === undefined) return "";
-    const byId = new Map(messages.map(message => [message.id, message]));
+  private planCompression(range: Pick<CompressRangeSpec, "startRef" | "endRef">, build: CoreBuild, state: CompressionState,
+    window: number, tier?: CompressionBlock["tier"]): CompressionPlan | undefined {
+    const trial = this.core.applyCompression({ ranges: [{ startRef: range.startRef, endRef: range.endRef,
+      summary: "Range validation placeholder describing a complete historical exchange." }],
+      messages: build.messages, state, config: this.buildConfig(window, build.protectedIds) });
+    if (trial.result.blocksCreated !== 1 || trial.result.errors.length) return undefined;
+    const existing = new Set(state.blocks.map(block => block.blockId));
+    const block = trial.state.blocks.find(block => !existing.has(block.blockId));
+    if (!block || (tier !== undefined && block.tier !== tier)) return undefined;
+    try { this.renderProjected(build, trial.state); } catch { return undefined; }
+    return { startRef: range.startRef, endRef: range.endRef, text: this.compressionText(block.effectiveMessageIds, build, state) };
+  }
+
+  private compressionText(ids: readonly string[], build: CoreBuild, state: CompressionState): string {
+    const included = new Set(ids);
+    const resident = new Map<string, CompressionBlock>();
+    for (const block of topLevelBlocks(state)) {
+      for (const id of block.effectiveMessageIds) resident.set(id, block);
+    }
+    const emitted = new Set<string>();
     const parts: string[] = [];
-    for (let index = start; index <= end; index++) {
-      const ref = `m${String(index).padStart(5, "0")}`;
-      const rawId = state.messageRefs.byRef[ref];
-      const message = rawId ? byId.get(rawId) : undefined;
-      if (message?.text) parts.push(`${message.role}: ${message.text}`);
+    for (const mapping of build.mappings) {
+      if (!mapping.coreIds.some(id => included.has(id))) continue;
+      const block = mapping.coreIds.map(id => resident.get(id)).find(item => item !== undefined);
+      if (!block) parts.push(messageTextForSummary(mapping.message));
+      else if (!emitted.has(block.blockId)) {
+        emitted.add(block.blockId);
+        parts.push(`${SUMMARY_MARKER} [${block.blockId}, tier ${block.tier}]\n${block.summary}`);
+      }
     }
     return parts.join("\n\n");
   }
@@ -1437,12 +1551,13 @@ export function splitByText(text: string, budget: number): string[] {
 }
 
 function messageTextForSummary(message: Message): string {
-  const text = flattenContent(message.content);
   if (message.role === "assistant") {
-    const calls = message.content.flatMap(part => part.type === "toolCall" ? [`[tool ${part.name} ${JSON.stringify(part.arguments ?? {})}]`] : []);
-    return [`assistant: ${text}`, ...calls].filter(Boolean).join("\n");
+    const parts = message.content.flatMap(part => part.type === "text" ? [part.text]
+      : part.type === "toolCall" ? [`[tool-call ${part.name} (${part.id})]\n${JSON.stringify(part.arguments ?? {})}`] : []);
+    return `assistant: ${parts.join("\n")}`;
   }
-  if (message.role === "toolResult") return `tool ${message.toolName}: ${text}`;
+  const text = flattenContent(message.content);
+  if (message.role === "toolResult") return `[tool-result ${message.toolName} (${message.toolCallId}) status=${message.isError ? "error" : "ok"}]\n${text}`;
   return `${message.role}: ${text}`;
 }
 

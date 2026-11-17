@@ -146,9 +146,7 @@ export class BotRegistry {
         ...input.memoryScope,
       }),
       authorizationJson: JSON.stringify(authorization),
-      foregroundAllowedToolsJson: JSON.stringify(input.foregroundAllowedTools ?? [
-        "reminder_manage", "work_query_status", "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "memory_search", "memory_forget", "memory_remember",
-      ]),
+      foregroundAllowedToolsJson: JSON.stringify(input.foregroundAllowedTools ?? []),
       notificationPolicyJson: input.notificationPolicyJson ?? JSON.stringify({ inAppCard: true }),
       status: input.status ?? "active",
       now,
@@ -397,17 +395,7 @@ export class BotRegistry {
         allowUnconfirmedSpeculationInMemory: false,
       }),
       authorization: normalizeAuthorization(parseJson<WorkAuthorizationDto>(row.authorization_json, minimumAuthorization())),
-      // Team templates are another shape of the existing create-Work capability.
-      // Older Bot rows need no grant rewrite to expose the new host-owned entry.
-      foregroundAllowedTools: (() => {
-        const tools = parseJson<string[]>(row.foreground_allowed_tools_json, []);
-        // Existing memory-enabled Bots must expose the user's own forget control too.
-        // Its execution still requires this turn's explicit forget request and private scope.
-        return [...new Set([...tools,
-          ...(tools.includes("work_create") ? ["reminder_manage", "work_team_templates", "work_team_create"] : []),
-          ...(tools.includes("memory_search") ? ["memory_forget", "memory_remember"] : []),
-        ])];
-      })(),
+      foregroundAllowedTools: parseJson<string[]>(row.foreground_allowed_tools_json, []),
       notificationPolicyJson: row.notification_policy_json,
       status: row.status,
       createdAt: row.created_at,

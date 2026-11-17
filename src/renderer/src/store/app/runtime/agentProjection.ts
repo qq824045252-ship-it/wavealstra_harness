@@ -43,10 +43,6 @@ export function createAgentProjectionActions(
   };
   return {
     applyAgentPatch: (patch) => {
-      if (patch.type === "work_projection_snapshot") {
-        get().applyWorkProjection(patch.projection);
-        return;
-      }
       // Late provider discovery completes after first paint; re-read the catalog without
       // replacing the user's current model selection (see reloadModelCatalog).
       if (patch.type === "models_changed") {

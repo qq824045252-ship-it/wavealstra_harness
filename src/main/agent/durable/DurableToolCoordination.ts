@@ -24,10 +24,9 @@ const independentReads = new Set<string>([...WEB_ACCESS_TOOL_NAMES,
   "tool_search", "mcp_list_tools", "mcp_list_resources", "mcp_read_resource", "mcp_status"]);
 const resourceReads = new Set(["library_list", "library_search", "library_read", "memory_search", "memory_get", "memory_history",
   "workspace_notes_read", "project_notes_read", "project_knowledge_search", "project_knowledge_read", "project_memory_list", "project_memory_get", "project_memory_search"]);
-// Host queries and dispatch transact business state; their eventual worker tools acquire file locks separately.
-const hostControls = new Set(["reminder_manage", "schedule_overview", "work_query_status", "work_watch_sources",
-  "work_create", "work_amend", "work_pause", "work_resume", "work_cancel", "work_team_templates", "work_team_create", "work_team_replan",
-  "bot_list", "bot_ask", "bot_collaborate", "bot_organize", "foreground_query_requests", "foreground_cancel_request"]);
+// Goal state is transactional; file access remains owned by the actual task tools.
+const hostControls = new Set(["conversation_goal_get", "conversation_goal_create",
+  "conversation_goal_update", "conversation_goal_propose_complete"]);
 
 function conflicts(left: Access[], right: Access[]): boolean {
   return left.some(a => right.some(b => (a.mode === "write" || b.mode === "write") && (a.kind === "unknown" || b.kind === "unknown"

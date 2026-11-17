@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { AgentSubmissionReceipt } from "../../../shared/agent-ipc";
 import type { WorkControlResult, WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkService } from "./WorkService";
-import type { WorkExecutionObservation } from "./WorkExecutionAdapter";
+import type { WorkExecutionObservation } from "./WorkExecutionObservation";
 import { workExecutionObservationSchema as observationSchema } from "../../../shared/bot-work-phase3";
 
 const factSchema = z.object({ fact_id: z.string(), binding_id: z.string(), namespace_hash: z.string(), payload_json: z.string() });

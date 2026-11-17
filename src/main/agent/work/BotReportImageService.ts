@@ -12,7 +12,7 @@ import type { WorkService } from "./WorkService";
 
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_REPORT_IMAGES = 32;
-export type BotReportImagePreparation = "complete" | "retry";
+type BotReportImagePreparation = "complete" | "retry";
 type ImageCapture = { preparation: BotReportImagePreparation; images: BotReportImages | undefined };
 type ReportImageMime = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 function imageMime(bytes: Buffer): ReportImageMime | undefined {
@@ -45,7 +45,7 @@ function completeImage(bytes: Buffer, mimeType: ReportImageMime): boolean {
 /** Snapshot only references in an authenticated host feedback message. The
  * durable execution binding owns the filesystem scope, never the active Task,
  * mutable Work owner, model-supplied root, or a filename match in another task.
- * Existing reports recover lazily; fresh feedback captures before UI navigation.
+ * Historical reports recover lazily when displayed.
  */
 export class BotReportImageService {
   private readonly messages: BotConversationRepository;
@@ -53,17 +53,6 @@ export class BotReportImageService {
   constructor(private readonly db: Database.Database, private readonly userId: string,
     private readonly works: WorkService, private readonly artifacts: () => ArtifactService | null) {
     this.messages = new BotConversationRepository(db);
-  }
-
-  async captureWork(workId: string): Promise<BotReportImagePreparation> {
-    const origin = this.messages.workOrigin(this.userId, workId);
-    if (!origin) return "complete";
-    const rows = this.db.prepare(`SELECT m.message_id FROM bot_messages m JOIN bot_work_feedback f ON f.message_id=m.message_id
-      WHERE m.conversation_id=? AND m.bot_id=? AND json_extract(f.metadata_json,'$.workId')=?`)
-      .all(origin.conversation_id, origin.bot_id, workId) as { message_id: string }[];
-    let preparation: BotReportImagePreparation = "complete";
-    for (const row of rows) if ((await this.capture(row.message_id)).preparation === "retry") preparation = "retry";
-    return preparation;
   }
 
   async hydrateHistory(history: BotHistoryDto): Promise<BotHistoryDto> {

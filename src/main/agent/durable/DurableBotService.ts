@@ -34,13 +34,10 @@ import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
 import { durableContentText } from "./DurableHistoryProjection";
-import { durableWorkRuntimeState } from "./DurableWorkRuntimeState";
-import { DurableWorkProgressReader } from "./DurableWorkProgressReader";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
-import type { WorkExecutionPort } from "../work/WorkExecutionAdapter";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
 import { AgentDoc, LiveDoc, SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -117,8 +114,6 @@ export interface DurableBotServiceOptions {
 
 /** One process owns each store. SQLite only binds product IDs; all execution state is in Durable. */
 export class DurableBotService {
-  private readonly workProgress = new DurableWorkProgressReader();
-  private readonly pendingWorkProgress = new Map<string, { record: SubmissionRecord; observation: import("../work/WorkExecutionAdapter").WorkExecutionObservation }>();
   private readonly rebinding = new Map<string, Promise<OpenBot>>();
   private readonly opening = new Map<string, Promise<OpenBot>>();
   private readonly opened = new Map<string, OpenBot>();
@@ -734,103 +729,9 @@ export class DurableBotService {
     return submissionResult(request.taskId, state);
   }
 
-  workExecutionPort(): WorkExecutionPort {
-    return {
-      prepare: async taskId => {
-        const open = await this.open(taskId);
-        const binding = this.binding(taskId);
-        if (!binding) throw new Error("原生执行缺少持久化存储绑定");
-        return { taskId, durableStoreKey: binding.directory, conversationId: String(open.runtime.conversation.id), workspaceBinding: binding.cwd };
-      },
-      find: async binding => {
-        const { record } = await this.workSubmission(binding);
-        return record ? submissionResult(binding.taskId, record).receipt : undefined;
-      },
-      submit: async (binding, text) => {
-        const { open } = await this.workSubmission(binding);
-        if (String(open.runtime.conversation.id) !== binding.conversationId) throw new Error("原接收会话已变化，拒绝改用另一会话派发");
-        this.workMetrics.begin(binding);
-        const accepted = await this.submit({ taskId: binding.taskId, userMessageId: binding.operationId,
-          assistantMessageId: `work:${binding.bindingId}`, text });
-        if (!accepted.receipt) throw new Error(accepted.error?.message ?? "原生执行未返回受理回执");
-        return accepted.receipt;
-      },
-      stop: async binding => {
-        const { open } = await this.workSubmission(binding);
-        if (String(open.runtime.conversation.id) !== binding.conversationId) throw new Error("停止目标与原执行会话不一致");
-        await this.abort(binding.taskId);
-      },
-      acknowledgeObservation: (binding, _receipt, observation) => {
-        const pending = this.pendingWorkProgress.get(binding.bindingId);
-        if (pending && observation.status === "running") {
-          this.workProgress.acknowledge(pending.record, pending.observation, binding.workspaceBinding, binding.durableStoreKey);
-          this.pendingWorkProgress.delete(binding.bindingId);
-        }
-      },
-      inspect: async (binding, receipt) => {
-        const { open, record } = await this.workSubmission(binding);
-        if (!record || record.id !== receipt.submissionId || record.requestId !== receipt.operationId) throw new Error("执行回执与原命名空间不一致");
-        await open.runtime.refresh();
-        const live = record.type === "input" && record.status === "placed"
-          ? await open.runtime.harness.snapshot(LiveDoc, open.runtime.conversation.id, context) : undefined;
-        const observation = await open.runtime.conversation.commit(tx => this.workProgress.read(tx, record, binding.workspaceBinding, binding.durableStoreKey, live), context);
-        if (observation.status === "running") {
-          this.pendingWorkProgress.set(binding.bindingId, { record, observation });
-          const inspection = await open.runtime.harness.inspect(context);
-          // A storage failure can evict/reopen a Session after the startup drain
-          // has ended. Resume the existing receipt, never submit a replacement.
-          // The same authority/lifecycle checks used at startup still apply.
-          if (inspection.scheduling === "paused" && !this.resumeSkipReason(binding.taskId)) open.runtime.resume();
-          return { ...observation, ...durableWorkRuntimeState(inspection) };
-        }
-        this.pendingWorkProgress.delete(binding.bindingId);
-        const dedicated = this.options.db.connection.prepare("SELECT 1 FROM work_dispatch_requests WHERE task_id=? AND work_id=?")
-          .get(binding.taskId, binding.workId);
-        if (dedicated) {
-          // The host creates one fresh store per input. Session totals therefore
-          // include exactly its root, owned children and compaction, without
-          // attributing a shared answer or another Work's history to this binding.
-          const inspection = await open.runtime.harness.inspect(context);
-          if (inspection.tasks.length) return { status: "running", generatedArtifacts: observation.generatedArtifacts, subitems: observation.subitems,
-            ...durableWorkRuntimeState(inspection) };
-          const interruptedUsage = await open.runtime.conversation.commit(async tx => {
-            let cursor: Cursor | undefined;
-            do {
-              const page = await tx.scanTasks({}, 200, cursor);
-              if (page.items.some(task => ["pi.generation", "pi.compaction"].includes(task.kind) && task.state.status === "terminal"
-                && ["aborted", "faulted", "orphaned"].includes(task.state.outcome.status))) return true;
-              cursor = page.next;
-            } while (cursor);
-            return false;
-          }, context);
-          const usage = await open.runtime.harness.usage(context);
-          const usageTokens = [...Object.values(usage.models), ...Object.values(usage.tools)].reduce((sum, item) => sum + item.totalTokens, 0);
-          return { ...observation, usageTokens: observation.status === "stopped" || interruptedUsage ? undefined : usageTokens };
-        }
-        return observation;
-      },
-    };
-  }
 
-  private async workSubmission(binding: WorkExecutionBindingDto): Promise<{ open: OpenBot; record: SubmissionRecord | undefined }> {
-    const stored = this.binding(binding.taskId);
-    if (!stored || stored.directory !== binding.durableStoreKey || stored.cwd !== binding.workspaceBinding) {
-      throw new Error("Work 执行与原生 task/store/workspace 绑定不一致，拒绝重新分配");
-    }
-    return this.withRecovery(binding.taskId, async open => {
-      const record = await open.runtime.conversation.commit(async tx => {
-        let cursor: Cursor | undefined;
-        do {
-          const page = await tx.scanConversations({}, 200, cursor);
-          const original = page.items.find(conversation => String(conversation.id) === binding.conversationId && !conversation.owner);
-          if (original) return tx.submissionByRequest(original.id, binding.operationId);
-          cursor = page.next;
-        } while (cursor);
-        throw new Error("原接收会话不存在，不能换会话重新提交");
-      }, context);
-      return { open, record };
-    });
-  }
+
+
 
   /** Inspect an accepted input before an adapter validates or changes mutable task configuration. */
   async findSubmission(taskId: string, operationId: string): Promise<AgentPromptResult | undefined> {
@@ -1052,8 +953,6 @@ export class DurableBotService {
     await this.projections.get(taskId);
   }
   async close(): Promise<void> {
-    this.workProgress.clear();
-    this.pendingWorkProgress.clear();
     this.closing = true;
     this.resumeAdmission?.cancel();
     await Promise.allSettled(this.passiveReads.values());

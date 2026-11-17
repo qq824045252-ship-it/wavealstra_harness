@@ -1,3 +1,5 @@
+> 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
+
 # 头像上传容器预检安全修复（独立候选 v2）
 
 旧交接补丁 `bot-avatars-from-6072ad6a.patch` / `bot-avatars-review-overlay.zip` 存在 WebP 解码前尺寸绕过，不能合入。本次候选保留同一 main 基线和全部 93 只正式资源，只修头像安全与相关测试/构建。没有提交、推送，也没有覆盖本地 Work UI 或编排。

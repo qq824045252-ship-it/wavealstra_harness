@@ -684,7 +684,7 @@ const api = {
     history: request => ipcRenderer.invoke(BotWorkIpc.history, request),
     workspaceNavigation: () => ipcRenderer.invoke(BotWorkIpc.workspaceNavigation),
     getWork: (workId: string) => ipcRenderer.invoke(BotWorkIpc.getWork, workId),
-  } satisfies Pick<BotWorkApi, "history" | "workspaceNavigation" | "getWork">,
+  } satisfies BotWorkApi,
 
   notification: {
     activate: (id: string): Promise<void> => ipcRenderer.invoke(NotificationIpc.activate, id),
@@ -1160,10 +1160,10 @@ const api = {
       ipcRenderer.on(BrowserIpc.urlChanged, handler);
       return () => ipcRenderer.removeListener(BrowserIpc.urlChanged, handler);
     },
-    onOpenRequest: (callback: (url: string) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, payload: { url?: string } | string): void => {
+    onOpenRequest: (callback: (url: string, retained?: { tabId: string; key: string; taskId?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, payload: { url?: string; tabId?: string; key?: string; taskId?: string } | string): void => {
         const url = typeof payload === "string" ? payload : payload?.url;
-        if (url) callback(url);
+        if (url) callback(url, typeof payload !== "string" && payload.tabId && payload.key ? { tabId: payload.tabId, key: payload.key, taskId: payload.taskId } : undefined);
       };
       ipcRenderer.on(BrowserIpc.openRequest, handler);
       return () => ipcRenderer.removeListener(BrowserIpc.openRequest, handler);

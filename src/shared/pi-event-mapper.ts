@@ -168,11 +168,11 @@ function isDangerousTool(tool: string, input: unknown): boolean {
   if (tool === "automation_exec") return !["list", "get", "runs"].includes(String((input as { action?: string })?.action));
   if (tool === "browser_exec") {
     const action = String((input as { action?: string })?.action ?? "");
-    return action === "click" || action === "fill" || action === "press";
+    return ["click", "fill", "press", "scroll", "hover", "select", "check"].includes(action);
   }
   if (tool === "ui_exec") {
     const action = String((input as { action?: string })?.action ?? "");
-    return action === "click" || action === "fill" || action === "press" || action === "scroll";
+    return ["click", "fill", "press", "scroll", "hover", "select", "check"].includes(action);
   }
   if (tool === "computer_exec") {
     return !isComputerExecReadonly(input);
@@ -191,7 +191,7 @@ function isSideEffectTool(tool: string, input: unknown): boolean {
   }
   if (tool === "ui_exec") {
     const action = String((input as { action?: string })?.action ?? "");
-    return ["click", "fill", "press", "scroll"].includes(action);
+    return ["click", "fill", "press", "scroll", "hover", "select", "check"].includes(action);
   }
   if (tool === "computer_exec") {
     return !isComputerExecReadonly(input);

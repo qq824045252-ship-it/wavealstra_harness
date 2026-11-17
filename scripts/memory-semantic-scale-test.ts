@@ -7,7 +7,6 @@ import { setTimeout as pause } from "node:timers/promises";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
-import { BotConversationMemory } from "../src/main/agent/work/BotConversationMemory";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
@@ -63,8 +62,8 @@ try {
   const vectorPlan = db.connection.prepare(`EXPLAIN QUERY PLAN SELECT e.memory_id,e.embedding,e.dimension,e.content_hash,m.content_hash AS current_hash
     FROM memory_embeddings e CROSS JOIN memory_records m ON m.id=e.memory_id WHERE e.model_id=? AND e.model_version=? AND ${where.sql}
     AND e.memory_id>? ORDER BY e.memory_id LIMIT 128`).all(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, ...where.args, "");
-  const bridge = (memory: MemoryService) => new BotConversationMemory({ db, userId: LOCAL_USER_ID, memory,
-    pipeline: new MemoryPipelineManager(db), enabled: () => true, extract: async () => {}, changed: () => {} });
+  const bridge = (memory: MemoryService) => ({ search: (botId: string, query: string, conversationId: string) =>
+    memory.searchHybrid({ botId, conversationId, scopeTypes: ["global", "conversation", "bot"], includeInherited: true, query, statuses: ["active"], limit: 20 }) });
   const routes = [{ path: "lexical", adapter: bridge(lexical), query: "QZVXNEEDLE" }, { path: "semantic", adapter: bridge(semantic), query: "ZZYXYX" }];
   for (const route of routes) assert((await route.adapter.search("scale-owner", route.query, receipt.conversationId)).some(hit => hit.memory.id === target.id));
   const baselineRss = process.memoryUsage().rss;

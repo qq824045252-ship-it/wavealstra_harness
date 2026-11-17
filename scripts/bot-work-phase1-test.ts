@@ -9,7 +9,6 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotWorkContextService } from "../src/main/agent/work/BotWorkContextService";
 import { BotExpertBindingService } from "../src/main/agent/work/BotExpertBindingService";
-import { WorkSourceObserver } from "../src/main/agent/work/WorkSourceObserver";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { ConversationGoalService } from "../src/main/agent/ConversationGoalService";
 import { TaskExpertBindingService } from "../src/main/experts/TaskExpertBindingService";
@@ -162,23 +161,6 @@ if (!isMainThread) {
     assert(work.repo.listSubscriptions(watching.workId).every(subscription => subscription.stoppedAt));
     assert(work.repo.listSubscriptions(unrelated.workId).every(subscription => !subscription.stoppedAt));
 
-    // R06: real external file changes and out-of-order source reads cannot roll back the target.
-    const sourceWork = create("source-work");
-    const observer = new WorkSourceObserver(work);
-    const sourceFile = join(root, "external-input.txt");
-    writeFileSync(sourceFile, "A");
-    const sourceA = ok(await observer.file(user, sourceWork.workId, "source-A", sourceFile));
-    let completeOldRead!: (value: { inputSnapshotId: string; sources: typeof sourceA.goalSources }) => void;
-    const oldRead = observer.refresh(user, sourceWork.workId, "late-A-observation", () => new Promise(resolve => { completeOldRead = resolve; }));
-    writeFileSync(sourceFile, "B");
-    const sourceB = ok(await observer.file(user, sourceWork.workId, "source-B", sourceFile));
-    assert.equal(sourceB.intentRevision, sourceA.intentRevision);
-    assert.equal(sourceB.sourceVersion, sourceA.sourceVersion + 1);
-    completeOldRead({ inputSnapshotId: sourceA.inputSnapshotId, sources: sourceA.goalSources });
-    assert.equal((await oldRead).ok, false);
-    assert.equal(work.getWork(sourceWork.workId)?.inputSnapshotId, sourceB.inputSnapshotId);
-    assert.equal(ok(await observer.file(user, sourceWork.workId, "late-event-read-current", sourceFile)).inputSnapshotId, sourceB.inputSnapshotId);
-
     // A23/R09: real installed expert, complete skill packages, frozen per-execution assembly.
     const source = join(root, "expert-source");
     mkdirSync(join(source, "agents"), { recursive: true });
@@ -190,8 +172,18 @@ if (!isMainThread) {
     const installed = experts.installByPath(source);
     let globalSkillEnabled = true;
     const taskExperts = new TaskExpertBindingService(db, experts, { rootDir: join(root, "task-experts"), isSkillEnabled: () => globalSkillEnabled });
-    const expertBindings = new BotExpertBindingService(bots, experts, taskExperts, { rootDir: join(root, "bot-experts") });
-    const staged = expertBindings.stage("analyst-bot", LOCAL_USER_ID, installed.id);
+    const expertBindings = new BotExpertBindingService(taskExperts);
+    const stageFixture = () => {
+      const expert = experts.getDetail(installed.id);
+      return bots.stageExpertVersion("analyst-bot", { expertId: expert.id, sourceRevision: expert.revision,
+        systemPromptHash: createHash("sha256").update(expert.instructions).digest("hex"),
+        allowedMcpIds: expert.mcpIds, allowedSkillIds: expert.skills ?? [], allowedConnectorIds: expert.connectorIds,
+        stagedBy: LOCAL_USER_ID, configuration: {revision: expert.revision, sourceExpertId: expert.id, sourceRevision: expert.revision,
+          name: expert.name, instructions: expert.instructions, skillIds: expert.skills ?? [], mcpIds: expert.mcpIds, connectorIds: expert.connectorIds},
+        skillPackages: [{id: "calibration", directory: join(source, "skills", "calibration"), origin: "private"}],
+      });
+    };
+    const staged = stageFixture();
     assert(staged.ok);
     assert.equal(bots.adoptExpertVersion("analyst-bot", {}).ok, false, "adoption requires reviewed identity");
     assert(bots.adoptExpertVersion("analyst-bot", { pendingVersion: staged.pendingVersion }).ok);
@@ -200,7 +192,7 @@ if (!isMainThread) {
     const detail = experts.getDetail(installed.id);
     const editedExpert = experts.update({ id: installed.id, name: detail.name, description: detail.description,
       instructions: "Identity two", expectedRevision: detail.revision, mcpIds: ["mcp-two"], connectorIds: ["connector-two"] });
-    const nextVersion = expertBindings.stage("analyst-bot", LOCAL_USER_ID, installed.id);
+    const nextVersion = stageFixture();
     assert(nextVersion.ok);
     assert(bots.adoptExpertVersion("analyst-bot", { pendingVersion: nextVersion.pendingVersion }).ok);
     assert.equal(bots.adoptExpertVersion("analyst-bot", { pendingVersion: staged.pendingVersion }).ok, false);

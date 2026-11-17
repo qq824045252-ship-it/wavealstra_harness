@@ -5,7 +5,7 @@ const path = require('node:path');
 const esbuild = require('esbuild');
 const checkProjectionEquivalence = require('./sidebar-projection-dev-equivalence.cjs');
 
-const current = fs.readFileSync(path.join(__dirname, '../src/renderer/src/components/Sidebar.tsx'), 'utf8');
+const current = fs.readFileSync(path.join(__dirname, '../src/renderer/src/components/Sidebar.tsx'), 'utf8').replace(/\r\n/g, '\n');
 const declaration = '    let tasksById: Map<string, Task> | undefined;\n';
 const indexedLookup = `          if (!tasksById) {
             tasksById = new Map<string, Task>();

@@ -83,12 +83,11 @@ function fixtures(): void {
     memoryGateway: { status: async () => ({ enabled: false, running: false, writeEnabled: false, port: 3351 }), listGrants: async () => [] },
   };
   (window as any).api = api;
-  useAppStore.setState({ spaces: [{ id: "ws", name: "研发工作空间" } as any], projects: [], tasks: [], botIdentities: [] });
+  useAppStore.setState({ spaces: [{ id: "ws", name: "研发工作空间" } as any], projects: [], tasks: [] });
 }
 
 function botMemoryFixtures() {
   fixtures();
-  useAppStore.setState({ botIdentities: [{ botId: "bot-study", displayName: "学习搭子" }, { botId: "bot-travel", displayName: "旅行助理" }] as any });
   const records = [
     { ...atom, id: "study-memory", title: "学习时偏好简短中文", scopes: [{ scopeType: "bot", scopeId: "bot-study", binding: "primary" }] },
     { ...atom, id: "travel-memory", title: "旅行偏好步行路线", scopes: [{ scopeType: "bot", scopeId: "bot-travel", binding: "primary" }] },

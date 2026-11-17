@@ -5,7 +5,8 @@ import { join, dirname } from 'node:path';
 import { AppDatabase } from '../src/main/db/AppDatabase';
 import { BotRegistry } from '../src/main/agent/work/BotRegistry';
 import { BotConversationRepository } from '../src/main/agent/work/BotConversationRepository';
-import { BotConversationService } from '../src/main/agent/work/BotConversationService';
+import { HistoricalBotReader } from '../src/main/agent/work/HistoricalBotReader';
+import { WorkService } from '../src/main/agent/work/WorkService';
 import { BotMessageHtmlService } from '../src/main/artifact/BotMessageHtmlService';
 import { SavedArtifactActions } from '../src/main/artifact/SavedArtifactActions';
 import { DESKTOP_USER_GRANTS } from '../src/main/agent/work/WorkService';
@@ -18,8 +19,7 @@ try {
   bots.registerBot({ botId: 'a', userId: LOCAL_USER_ID, displayName: 'A', authorization: DESKTOP_USER_GRANTS });
   bots.registerBot({ botId: 'foreign', userId: 'another-user', displayName: 'Foreign', authorization: DESKTOP_USER_GRANTS });
   // Exercise the production authorization method with real repositories, no model/session side effects.
-  const conversations = Object.assign(Object.create(BotConversationService.prototype),
-    { options: { db, bots, userId: LOCAL_USER_ID, works: { teams: { foregroundTemplates: () => [] } } }, messages }) as BotConversationService;
+  const conversations = new HistoricalBotReader(app, bots, new WorkService(db, { bots }));
   const receipt = messages.accept(LOCAL_USER_ID, { botId: 'a', requestId: 'html', text: 'Make HTML' });
   const html = '<!doctype html>\r\n<html><body>' + '真实原文'.repeat(10000) + '</body></html>\r\n';
   const original = '说明\r\n```html\r\n' + html + '```\r\n结束';

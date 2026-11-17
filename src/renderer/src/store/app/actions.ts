@@ -146,25 +146,6 @@ export interface AppActions {
   deleteMarketConnector: (id: string) => Promise<void>;
   setConnectorEnabled: (id: string, enabled: boolean) => Promise<void>;
   setPage: (page: Page) => void;
-  forgetDeletedBot: (botId: string) => void;
-  setBotDraft: (text: string) => void;
-  setBotAttachments: (botId: string, attachments: import("@/types").Attachment[]) => void;
-  syncBotComposerDefaults: (settings: import("@shared/bot-settings").BotSettingsDto, scope?: string) => void;
-  setBotComposerSelection: (scope: string, selection: import("@shared/bot-conversation").BotComposerSelection) => void;
-  submitBotDraft: (options?: { retryRequestId?: string; editRejectedRequestId?: string; referenceMessageId?: string }) => Promise<void>;
-  loadOlderBotHistory: (botId: string, teamId?: string) => Promise<void>;
-  openNotificationConversation: (target: Extract<import("../../../../shared/notification").NotificationActivationTarget, { kind: "botConversation" }>, signal?: AbortSignal) => Promise<void>;
-  refreshBotHistory: (botId: string, teamId?: string) => Promise<void>;
-  cancelBotSend: (botId: string, requestId: string) => Promise<void>;
-  archiveBotConversation: (botId: string, teamId?: string) => Promise<void>;
-  createBot: (request: import("../../../../shared/bot-create").BotCreateRequest) => Promise<import("../../../../shared/bot-create").BotCreateResult>;
-  setActiveTeam: (team: import("../../../../shared/bot-work-team").WorkTeamTemplateDto | null) => void;
-  setActiveBotId: (botId: string | null) => void;
-  setSelectedWorkId: (workId: string | null) => void;
-  setHistoricalTeamWork: (work: import("../../../../shared/bot-work").WorkProjectionDto | null) => void;
-  refreshBotWork: (includeClosed?: boolean) => Promise<void>;
-  applyWorkProjection: (projection: import("../../../../shared/bot-work").WorkProjectionDto) => void;
-  markBotNotificationRead: (notificationId: string) => Promise<void>;
   openHubMcp: (serverName?: string) => void;
   requestLibraryNav: (
     dest:

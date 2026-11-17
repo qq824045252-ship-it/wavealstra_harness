@@ -4,6 +4,7 @@ import type { BotMessageDto } from '@shared/bot-conversation';
 import { BotMessage } from '@/components/pages/BotMessage';
 import { WorkFiles, generatedWorkFiles } from '@/components/pages/BotWorkResult';
 import ChatMarkdown from '@/components/pages/BotChatMarkdown';
+import { WorkExecutionMetrics } from '@/components/pages/WorkExecutionMetrics';
 import type { WorkProjectionDto } from '@shared/bot-work';
 import './WorkspaceForeground.css';
 
@@ -37,22 +38,14 @@ export function WorkspaceForegroundConversation({ request, conversationTitle, sp
       finally { if (live) setLoading(false); }
     };
     void load();
-    const unsubscribe = window.api?.botWork.onMessageChanged?.(event => {
-      if (!live || event.conversationId !== request.conversationId || event.message.requestId !== request.requestId) return;
-      setMessages(current => {
-        const old = current.find(message => message.messageId === event.message.messageId);
-        if (old && (old.messageRevision ?? 0) > (event.message.messageRevision ?? 0)) return current;
-        return [...current.filter(message => message.messageId !== event.message.messageId), event.message].sort((a,b) => a.ordinal-b.ordinal);
-      });
-    });
-    return () => { live = false; unsubscribe?.(); };
+    return () => { live = false; };
   }, [request.botId, request.teamId, request.conversationId, request.requestId]);
   return <section className="workspace-foreground-view" aria-label="前台任务对话">
     <header className="workspace-foreground-heading"><button className="btn btn--ghost" type="button" onClick={work ? () => setWork(undefined) : onBack}>← {work ? '返回对话' : spaceName}</button><span className="workspace-origin-conversation" title={request.conversationId}>{conversationTitle ?? '原对话'}</span><h2 title={request.title}>{work?.title ?? request.title}</h2></header>
     <div className="workspace-foreground-messages">
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">正在读取原始对话…</p>}
-      {work ? <section aria-label="历史事项"><h3>{work.title}</h3><ChatMarkdown text={work.goalDescription ?? work.title} streaming={false} resolveTaskFiles={false} /><WorkFiles files={generatedWorkFiles(work)} /></section> : messages.map(message => <BotMessage key={message.messageId} message={message} workLinkSource={messages.find(item => item.role === 'user' && item.requestId === message.requestId)} botName={spaceName} works={[]} onOpenWork={id => {
+      {work ? <section aria-label="历史事项"><h3>{work.title}</h3><WorkExecutionMetrics work={work} /><ChatMarkdown text={work.goalDescription ?? work.title} streaming={false} resolveTaskFiles={false} /><WorkFiles files={generatedWorkFiles(work)} /></section> : messages.map(message => <BotMessage key={message.messageId} message={message} workLinkSource={messages.find(item => item.role === 'user' && item.requestId === message.requestId)} botName={spaceName} works={[]} onOpenWork={id => {
         void window.api?.botWork.getWork(id).then(result => { if (result) setWork(result); else setError('找不到关联事项'); }).catch(cause => setError(String(cause)));
       }} onCancel={() => {}} readOnly />)}
       {!loading && !error && messages.length === 0 && <p>没有找到此任务的原始消息。请返回工作空间刷新。</p>}

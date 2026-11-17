@@ -1,27 +1,27 @@
-import { BotConversationRepository } from "./work/BotConversationRepository";
-import { botHistorySchema } from "../../shared/bot-conversation";
+import { HistoricalBotReader } from "./work/HistoricalBotReader";
+
+
 import { createBotComposerSkillAccess } from "./work/BotComposerSkillAccess";
 import { connectorRuntimeContext } from "../connectors/ConnectorRuntimeContext";
 import { BotWorkspaceNavigationService } from "./work/BotWorkspaceNavigationService";
 import { botMemorySource } from "../memory/BotMemorySource";
-import { z } from "zod";
+
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
 import { SkillTrialLedger } from "./SkillTrialLedger";
-import { diagnoseSkillReadiness, diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
+import { diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
-import { DEFAULT_WELCOME_MODE, resolveWelcomeMode } from "../../shared/mode-profile";
+import { resolveWelcomeMode } from "../../shared/mode-profile";
 import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
-import { BotWorkIpc } from "../../shared/bot-work-ipc";
 import type { GatewayBotTurnRequest } from "../gateway/GatewayAgentTurn";
 import { botWorkHasSharedOrigin } from "../memory/BotMemorySource";
 import { BotReportImageService } from "./work/BotReportImageService";
 import { resolveWorkContinuationCwd } from "./work/WorkContinuationWorkspace";
 import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
-import { projectMemoryContext, resolveTaskMemoryScope } from "./MemoryContextProjection";
+import { resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { durableDomainTools } from "./durable/DurableDomainTools";
 import { createDurableReadOnlyTools, createDurableSubagentTools, durableSubagentIpcBackend, stopDurableSubagentsForModelScopeChange } from "./durable/DurableSubagents";
 import { guardSubagentWriteCall } from "../capabilities/subagent/write-conflict";
@@ -37,148 +37,47 @@ import { WorkCollaborationContext } from "./work/WorkCollaborationContext";
 import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
 import { currentDurableExecutionContext, currentDurableInvocation } from "./durable/DurableExecutionContext";
 import { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
-import { durableText } from "./durable/DurableTurnProjection";
-import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
+
+
 import type { LocalWorkflowBridge } from "../capabilities/local-workflow-extension";
 import { captureProcedureExecution } from "../memory/MemoryProcedureEvidence";
 import type { CreateConversationBranchRequest } from "../../shared/conversation-branch";
 import type { DurableBranchAnchor, MaterializedDurableBranch } from "./durable/DurableTaskBranch";
-import { getVisibleSessionUserMessages } from "./session-user-messages";
+
 import { type ConsultWorkerControls } from "../capabilities/MultiModelConsult";
 import { ExecutionFailureRepository } from "./ExecutionFailureRepository";
-import { installModelInvocationAdmission, setSessionRequestGuard, withModelInvocationSettings } from "./ModelInvocationAdmission";
-import { EphemeralContextProjection, type ProjectionScope } from "./EphemeralContextProjection";
-import { EvidenceBudget, isEvidenceSegment, type SupplementalEvidence } from "./EvidenceBudget";
-import { bindLegacyMemoryHistory } from "./LegacyMemorySummaryRecovery";
+import { installModelInvocationAdmission, withModelInvocationSettings } from "./ModelInvocationAdmission";
+
+
+
 import { ProjectNotesService } from "../project/ProjectNotesService";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { recoverInterruptedExecutions } from "./ExecutionRestartRecovery";
 import { ensurePresetRuntimeReadyWithRecovery } from "./RuntimeRequirementRecovery";
-import { recordPromptFailureRecovery, resolvePromptFailureRecovery } from "./PromptFailureRecovery";
+
 import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import { BrowserWindow } from "electron";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { PerformanceTracker } from "../usage/PerformanceTracker";
-import { GenerationSpeedTracker } from "../usage/GenerationSpeedTracker";
+
+
 import { UsageStatsService, type RecordLiveInput } from "../usage/UsageStatsService";
 import { applyMyBuddyModelAttribution } from "../../shared/usage-stats";
-import {
-  CredentialSynchronizationError,
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  resolveModelScopeWithDiagnostics,
-  type AgentSession,
-  type PromptOptions,
-  type ScopedModel,
-} from "@earendil-works/pi-coding-agent";
-import {
-  AgentIpc,
-  SubagentIpc,
-  BtwIpc,
-  DbIpc,
-  type AgentApproveToolRequest,
-  type AgentPromptRequest,
-  type AgentPromptResult,
-  type AgentSubmissionReceipt,
-  type AgentRegenerateRequest,
-  type AgentRegenerateResult,
-  type AgentDeleteUserMessageRequest,
-  type AgentRestoreBackupRequest,
-  type AgentSetPermissionModeRequest,
-  type AgentSwitchExpertRequest,
-  type AgentUiPatch,
-  type BtwStartRequest,
-  type BtwPromptRequest,
-  type BtwUiPatch,
-  type EnhancePromptRequest,
-  type EnhancePromptResult,
-  type CapabilityPolicyNoticeDto,
-  type AppSettingsDto,
-  type AuthEventDto,
-  type AuthLoginRequest,
-  type AuthLoginResult,
-  type AuthLogoutResult,
-  type AuthPromptDto,
-  type AuthPromptRequestDto,
-  type AuthTypeDto,
-  type ContextUsageDto,
-  type CredentialInfoDto,
-  type ExpertDto,
-  type ExpertAuthoringCreateRequest,
-  type ExpertAuthoringCreateResult,
-  type ExpertAuthoringDraft,
-  type ExpertAuthoringGenerateRequest,
-  type LocalConnectorDto,
-  type PrivateSkillDto,
-  type LoginProviderDto,
-  type MarketExpertDto,
-  type MarketSkillDto,
-  type MemoryChangedDto,
-  type ModelInfoDto,
-  type ModelReloadResultDto,
-  type ModelsFileConfigDto,
-  type ModelsProviderConfigDto,
-  type PermissionMode,
-  type RuntimeContextInspectionDto,
-  type RuntimeContextSnapshotDto,
-  type SkillAuthoringCreateRequest,
-  type SkillAuthoringCreateResult,
-  type SkillAuthoringDraft,
-  type SkillAuthoringGenerateRequest,
-  type SkillEvalRunRequest,
-  type SkillEvalRunResultDto,
-  type SkillImprovementApplyRequest,
-  type SkillImprovementDraftResult,
-  type SkillDetailDto,
-  type SkillImprovementGenerateRequest,
-  type SkillPackageValidationDto,
-  type SkillDto,
-  type SoulDto,
-  type TaskHistoryDto,
-  type TaskHistoryTarget,
-  type TaskUserQuestionsDto,
-  type TaskUserQuestionsQuery,
-  type TaskDto,
-  type WelcomeMode,
-  type FileBackupInfoDto,
-  type ModeBlockId,
-  type ModePolicyDto,
-  type ModePresetDto,
-  type ModeProfileDto,
-  type ModeProfileSummaryDto,
-  type AssembleModePreviewRequest,
-  type AssemblyTraceDto,
-  type DiskSpaceDto,
-  type BuiltinCapabilitiesConfigDto,
-  type BuiltinCapabilitiesSnapshotDto,
-  type BuiltinCapabilityId,
-  type SaveBuiltinCredentialRequest,
-  type SaveBuiltinCapabilitySettingsRequest,
-  type CapabilityVideoJobDto,
-  type TestBuiltinCapabilityResultDto,
-  type SubagentConfigDto,
-  type SubagentConfigPatch,
-  type UserFontDto,
-  type WebSearchConfigDto,
-  type ApiKeyPoolStateDto,
-  type SearchProviderKeyUsageDto,
-} from "../../shared/agent-ipc";
+import { CredentialSynchronizationError, ModelRuntime, SettingsManager, resolveModelScopeWithDiagnostics, type AgentSession, type ScopedModel } from "@earendil-works/pi-coding-agent";
+import { AgentIpc, SubagentIpc, BtwIpc, DbIpc, type AgentApproveToolRequest, type AgentPromptRequest, type AgentPromptResult, type AgentSubmissionReceipt, type AgentRegenerateRequest, type AgentRegenerateResult, type AgentDeleteUserMessageRequest, type AgentRestoreBackupRequest, type AgentSetPermissionModeRequest, type AgentSwitchExpertRequest, type AgentUiPatch, type BtwStartRequest, type BtwPromptRequest, type BtwUiPatch, type EnhancePromptRequest, type EnhancePromptResult, type CapabilityPolicyNoticeDto, type AppSettingsDto, type AuthEventDto, type AuthLoginRequest, type AuthLoginResult, type AuthLogoutResult, type AuthPromptDto, type AuthPromptRequestDto, type AuthTypeDto, type ContextUsageDto, type CredentialInfoDto, type ExpertDto, type ExpertAuthoringCreateRequest, type ExpertAuthoringCreateResult, type ExpertAuthoringDraft, type ExpertAuthoringGenerateRequest, type LocalConnectorDto, type PrivateSkillDto, type LoginProviderDto, type MarketExpertDto, type MarketSkillDto, type MemoryChangedDto, type ModelInfoDto, type ModelReloadResultDto, type ModelsFileConfigDto, type PermissionMode, type RuntimeContextInspectionDto, type RuntimeContextSnapshotDto, type SkillAuthoringCreateRequest, type SkillAuthoringCreateResult, type SkillAuthoringDraft, type SkillAuthoringGenerateRequest, type SkillEvalRunRequest, type SkillEvalRunResultDto, type SkillImprovementApplyRequest, type SkillImprovementDraftResult, type SkillDetailDto, type SkillImprovementGenerateRequest, type SkillPackageValidationDto, type SkillDto, type SoulDto, type TaskHistoryDto, type TaskHistoryTarget, type TaskUserQuestionsDto, type TaskUserQuestionsQuery, type TaskDto, type WelcomeMode, type FileBackupInfoDto, type ModeBlockId, type ModePolicyDto, type ModeProfileDto, type ModeProfileSummaryDto, type AssembleModePreviewRequest, type AssemblyTraceDto, type DiskSpaceDto, type BuiltinCapabilitiesConfigDto, type BuiltinCapabilitiesSnapshotDto, type BuiltinCapabilityId, type SaveBuiltinCredentialRequest, type SaveBuiltinCapabilitySettingsRequest, type CapabilityVideoJobDto, type TestBuiltinCapabilityResultDto, type SubagentConfigDto, type SubagentConfigPatch, type UserFontDto, type WebSearchConfigDto, type ApiKeyPoolStateDto, type SearchProviderKeyUsageDto } from "../../shared/agent-ipc";
 import { estimateTextTokens } from "../../shared/token-format";
-import { BTW_MAX_SESSIONS, canStartBtwSession } from "../../shared/btw-policy";
-import { sanitizeEnhancedPrompt } from "../../shared/prompt-enhance";
-import { normalizedEditorTextHash } from "../../shared/regenerate-hash";
-import { stripInjectedUserPromptTail } from "../../shared/user-prompt-display";
-import { assertSingleExpertId, isRemovedExpertTeamId, normalizeSingleExpertId } from "../../shared/expert-id";
 
-import { listProjectTemplates } from "../../shared/project-template";
+
+
+
+import { assertSingleExpertId, normalizeSingleExpertId } from "../../shared/expert-id";
+
+
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
-import { mapPiEventToPatches, type MapperContext } from "../../shared/pi-event-mapper";
+
 import { formatTerminalContextForPrompt } from "../../shared/terminal-ipc";
 import { AppSettingsStore } from "../AppSettingsStore";
 import { resolveCompactionPolicy, normalizeCompactionTriggerRatio, normalizeCompactionTriggerTokens } from "../../shared/compaction-policy";
@@ -186,13 +85,13 @@ import type { TaskCompactionStatusDto, TaskCompactionResultDto } from "../../sha
 import { resolveContextTokenEstimate } from "../../shared/compaction";
 import { normalizeCompactionEngine, type ContextManagementEngine, type ContextManagementStatusDto } from "../../shared/context-management";
 import type { ProductCompactionSettings } from "./durable/context/types";
-import { existsSync as sessionFileExists } from "node:fs";
+
 import { UserFontsStore } from "../UserFontsStore";
 import { AppDatabase } from "../db/AppDatabase";
 import { ProjectRepository } from "../project/ProjectRepository";
 import { ProjectContextResolver } from "../project/ProjectContextResolver";
-import type { ResolvedProjectContext } from "../../shared/project-domain";
-import { getAuthPath, getModelsPath, getMyBuddyDir, getSkillsDir, getPromptsDir, getMcpDir } from "../paths";
+
+import { getAuthPath, getModelsPath, getMyBuddyDir, getSkillsDir, getMcpDir } from "../paths";
 import { pickDefaultModelAfterLogin } from "../../shared/provider-login";
 import {
   assertPathInsideTask,
@@ -243,19 +142,11 @@ import { FileBackupService } from "./FileBackupService";
 import { loadTaskHistoryFromSession } from "./session-history";
 import { isGatewayBotTaskId } from "../../shared/gateway-task";
 import { loadTaskArtifacts } from "./artifact-index";
-import {
-  activateNextAssistantTurn,
-  assemblyInputsChanged,
-  invalidatePendingPromptQueue,
-  resolveRegenerateConnectorIds,
-  resolveSessionRestartFallback,
-  SessionRegistry,
-  type SessionEntry,
-} from "./SessionRegistry";
+import { invalidatePendingPromptQueue, SessionRegistry } from "./SessionRegistry";
 import { PendingActionRegistry } from "./PendingActionRegistry";
 import type { PromptRunState } from "./PromptRunRegistry";
 import { PromptExecutionCoordinator } from "./PromptExecutionCoordinator";
-import { PromptSubmissionCoordinator, resolvePromptCompactionBehavior } from "./PromptSubmissionCoordinator";
+import { PromptSubmissionCoordinator } from "./PromptSubmissionCoordinator";
 import { artifactKindForFile, diffWorkspaceSnapshot, isGeneratedWorkspacePath, previewWorkspaceFile, snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import type { ArtifactRefreshCoordinator } from "../artifact/ArtifactRefreshCoordinator";
@@ -270,15 +161,9 @@ import { MemorySkillRevisionService } from "../memory/MemorySkillRevisionService
 import { createMemoryExtension } from "../memory/memory-extension";
 import { ModeProfileStore } from "./ModeProfileStore";
 
-import {
-  activateResolvedSessionTools,
-  assembleProjectContextSegments,
-  assemblePrompt,
-  resolveDurableToolSelection,
-  type SessionToolSelection,
-} from "./PromptAssembly";
+import { assemblePrompt, resolveDurableToolSelection, type SessionToolSelection } from "./PromptAssembly";
 import { derivePromptContextCharBudget } from "./PromptContextBudget";
-import { filterLoaderSkills } from "./SkillPolicy";
+
 import {
   resolveRuntimeContextPolicy,
   type RuntimeContextPolicyInput,
@@ -294,24 +179,17 @@ import { BotRegistry } from "./work/BotRegistry";
 import { BotSettingsService } from "./work/BotSettingsService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
 import { BotWorkContextService } from "./work/BotWorkContextService";
-import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
+import { WorkService } from "./work/WorkService";
 import { workExecutionToolAllowed } from "./work/WorkExecutionToolPolicy";
 import { WorkHostAuthority } from "./work/WorkHostAuthority";
-import {
-  DEFAULT_BOT_ID,
-  LOCAL_USER_ID,
-  type BotDto,
-  type WorkActor,
-  type WorkControlResult,
-  type WorkProjectionDto,
-} from "../../shared/bot-work";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkProjectionDto } from "../../shared/bot-work";
 import type { ConversationRuntimeSnapshotDto } from "../../shared/conversation-runtime";
 import type { AgentLoadoutEffectiveSelectionDto } from "../../shared/agent-loadout";
 import type { ConversationInteractionAnswer, ConversationInteractionMutationResult } from "../../shared/conversation-interaction";
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../../shared/conversation-goal";
 import type { ConversationGoalMutationResult } from "../../shared/conversation-runtime";
 import { AgentLoadoutObservationService } from "./AgentLoadoutObservationService";
-import { resolveEffectiveLoadoutSelection } from "./AgentLoadoutResolver";
+
 import { AgentLoadoutService } from "./AgentLoadoutService";
 import { LibraryWorkspaceContextService } from "./LibraryWorkspaceContextService";
 import { SessionExtensionAssembler } from "./SessionExtensionAssembler";
@@ -320,7 +198,7 @@ import { SessionLifecycleManager } from "./SessionLifecycleManager";
 import { SessionEventCoordinator } from "./SessionEventCoordinator";
 import { BtwSessionService } from "./BtwSessionService";
 import { PromptEnhancementService } from "./PromptEnhancementService";
-import { diffRuntimeAssembly, fingerprintRuntimeAssembly, fingerprintRuntimeAudit } from "./RuntimeAssemblyFingerprint";
+import { diffRuntimeAssembly, fingerprintRuntimeAssembly } from "./RuntimeAssemblyFingerprint";
 import { collectSessionSkillPaths } from "./sessionSkillPaths";
 import {
   resolveEffectiveModelId,
@@ -623,6 +501,7 @@ export class AgentService {
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
   private readonly botRegistry: BotRegistry;
+  private readonly botHistory: HistoricalBotReader;
   private readonly botSettings: BotSettingsService;
   private readonly botExpertBindings: BotExpertBindingService;
   private readonly botWorkContext: BotWorkContextService;
@@ -819,27 +698,14 @@ export class AgentService {
     );
     this.botRegistry = new BotRegistry(db.connection);
     this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
-    this.botExpertBindings = new BotExpertBindingService(this.botRegistry, this.expertsService, this.expertBindings, {
-      resolveSkillDirectory: (id, botId) => {
-        const skill = this.skillsService.listInstalled(undefined, [], { botId }).find(item => item.id === id || item.name === id);
-        return skill?.enabled && skill.filePath ? dirname(skill.filePath) : undefined;
-      },
-    });
-    this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"), async botId => {
-      const enabledMcp = this.mcpRuntime.previewMcpFilter("working", this.modeProfiles.getProfile("working").policy.mcpPolicy).enabled;
-      return { models: (await this.listModels()).filter(item => item.kind !== "image-generation").map(item => ({ id: item.id, name: item.name, available: item.enabled !== false && item.available !== false })),
-        experts: this.listExperts().map(item => ({ id: item.id, name: item.name, available: item.enabled })),
-        skills: this.skillsService.listInstalled(undefined, [], { botId }).map(item => ({ id: item.id, name: item.name, available: item.enabled })),
-        mcps: enabledMcp.map(id => ({id, name: id, available: true})),
-        connectors: this.listConnectors().map(item => ({id: item.id, name: item.name, available: Boolean(item.installed && item.enabled !== false)})) };
-    }, input => this.botExpertBindings.assembleSettings(input, LOCAL_USER_ID));
+    this.botExpertBindings = new BotExpertBindingService(this.expertBindings);
+    this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"));
     this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`);
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
       requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.workMessageSettings(work, botId)?.profile : undefined,
       emitProjection: (projection) => {
-        this.emitPatch({ type: "work_projection_snapshot", projection });
         if (this.settingsStore.read().memoryEnabled) {
           try { this.workMemoryCapture.capture(projection.workId); } catch (error) { console.warn("[Work] memory capture deferred", error); }
         }
@@ -850,6 +716,7 @@ export class AgentService {
       && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
       .catch(error => console.warn("[Work] memory catch-up deferred", error));
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
+    this.botHistory = new HistoricalBotReader(db, this.botRegistry, this.workService, this.botReportImages);
     this.conversationGoals = new ConversationGoalService(
       this.workService,
       (patch) => this.emitPatch(patch),
@@ -1166,34 +1033,11 @@ export class AgentService {
     return this.conversationGoals;
   }
 
-  listBots(): BotDto[] {
-    return this.botRegistry.listBots(LOCAL_USER_ID);
-  }
-
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot({ repair: false }); }
   botMessageForHtmlExport(request: import('../../shared/saved-artifact').MessageHtmlRequest) {
-    const bot = this.botRegistry.getBot(request.botId);
-    if (!bot || bot.userId !== LOCAL_USER_ID) throw new Error("Bot 不属于当前用户");
-    const messages = new BotConversationRepository(this.db.connection);
-    const conversation = messages.conversation(LOCAL_USER_ID, request.botId, request.conversationId);
-    const sourceKind = this.db.connection.prepare('SELECT source_kind FROM bot_conversations WHERE conversation_id=? AND user_id=?').pluck().get(request.conversationId, LOCAL_USER_ID);
-    if (!conversation || conversation.bot_id !== request.botId || sourceKind !== "user") throw new Error("消息不属于可导出的用户会话");
-    if (conversation.team_id && !this.workService.teams.foregroundTemplates(LOCAL_USER_ID, request.botId).some(team => team.templateId === conversation.team_id)) throw new Error("团队不存在或负责人已变化");
-    const message = messages.message(request.messageId);
-    if (!message || message.conversationId !== conversation.conversation_id || message.botId !== request.botId) throw new Error("消息不属于当前会话");
-    return message;
+    return this.botHistory.messageForHtmlExport(request);
   }
-  async botMessageHistory(request: unknown) {
-    const input = botHistorySchema.parse(request);
-    const bot = this.botRegistry.getBot(input.botId);
-    if (!bot || bot.userId !== LOCAL_USER_ID) throw new Error("Bot 不属于当前用户");
-    if (input.teamId && !this.workService.teams.foregroundTemplates(LOCAL_USER_ID, input.botId).some(team => team.templateId === input.teamId))
-      throw new Error("团队不存在或负责人已变化");
-    if (input.teamId && input.inbox) throw new Error("团队历史不能读取个人收件箱");
-    // Historical navigation must not recreate runners or backfill new Bot messages.
-    const history = new BotConversationRepository(this.db.connection).history(LOCAL_USER_ID, input, { reconcile: false });
-    return this.botReportImages ? this.botReportImages.hydrateHistory(history) : history;
-  }
+  botMessageHistory(request: unknown) { return this.botHistory.history(request); }
 
   getWorkProjection(workId: string): WorkProjectionDto | undefined {
     if (this.workService.getWork(workId)?.userId !== LOCAL_USER_ID) return undefined;
@@ -3479,10 +3323,6 @@ export class AgentService {
     };
   }
 
-  /** Host-only synchronous binding write: no model-settings await between identity check and persistence. */
-  saveGatewayBotBindings(bindings: NonNullable<AppSettingsDto["gatewayBotBindings"]>): void {
-    this.settingsStore.write({ gatewayBotBindings: bindings });
-  }
   async updateAppSettings(partial: Partial<AppSettingsDto>): Promise<AppSettingsDto> {
     const previous = this.getAppSettings();
     const { enabledModels, defaultModelId, modelPreferences, ...productPartial } = partial;

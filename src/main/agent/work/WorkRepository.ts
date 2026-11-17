@@ -25,7 +25,7 @@ import type {
 import type { ExpertConfigSnapshotDto, WorkAuthorizationDto } from "../../../shared/bot-work";
 import { captureTeamReportContext, capturedTeamReportContext } from "./WorkReportPresentation";
 import { botDelegationInput, BOT_DELEGATION_INSTRUCTIONS } from "./BotDelegationInput";
-import { BOT_FILE_DELIVERY_INSTRUCTIONS } from "./BotFileDeliveryInstructions";
+import { WORK_FILE_DELIVERY_INSTRUCTIONS } from "./WorkFileDeliveryInstructions";
 import { z } from "zod";
 
 function json<T>(value: string | null | undefined, fallback: T): T {
@@ -606,7 +606,7 @@ export class WorkRepository {
         instructions: "这是承诺到期的只读跟进。整理已有成果、未完成项和缺口，不重跑原业务副作用，不重复已确认的外部效果。",
       } } : {}),
       instructions: (userRequest ? BOT_DELEGATION_INSTRUCTIONS
-        : "按上述持久要求执行。只提交成果、证据和未覆盖范围，不自行宣布整个 Work 已验收。") + "\n" + BOT_FILE_DELIVERY_INSTRUCTIONS,
+        : "按上述持久要求执行。只提交成果、证据和未覆盖范围，不自行宣布整个 Work 已验收。") + "\n" + WORK_FILE_DELIVERY_INSTRUCTIONS,
     });
   }
 

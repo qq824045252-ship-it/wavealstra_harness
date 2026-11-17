@@ -123,6 +123,8 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "gadget_read",
   "gadget_update",
   "gadget_open",
+  "gadget_call",
+  "gadget_runtime",
   "query_work_graph",
   "search_workspace_resources",
   "subagent",

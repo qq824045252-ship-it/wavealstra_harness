@@ -9,7 +9,6 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
-import { WorkConversationFeedback } from "../src/main/agent/work/WorkConversationFeedback";
 import { BotReportImageService } from "../src/main/agent/work/BotReportImageService";
 import { ArtifactService } from "../src/main/artifact/ArtifactService";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
@@ -50,15 +49,15 @@ try {
   const absolute = encodeURI(imagePath.split(sep).join("/")); const file = pathToFileURL(imagePath).href;
   const body = `![relative](<报告 截图.png>)\n![absolute](${absolute})\n![url](${file})\n![outside](../outside.png)\n![bad](invalid.png)\n![missing](missing.png)\n![parens](capture(1).png)\n![reference][proof]\n\n[proof]: capture(1).png`;
   works.repo.insertBinding({ ...binding, settlementNote: body });
-  const feedback = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works, isAuthority: () => true });
-  assert.equal(feedback.drain(), 1);
-  const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID });
+  const originRecord = messages.workOrigin(LOCAL_USER_ID, work.workId)!;
+  const appendReport = (row: typeof binding, text: string, event: string) => messages.appendWorkFeedback(originRecord, work.workId, event, "1", text, {
+    workId: work.workId, eventId: event, kind: "binding", category: "result", executionId: row.bindingId,
+    intentRevision: row.intentRevision, inputSnapshotId: row.inputSnapshotId,
+  });
+  appendReport(binding, body, "historical-binding");
+  const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID }, { reconcile: false });
   const report = history().messages.at(-1)!;
-  assert.equal(artifacts.listByTask(binding.taskId).length, 0, "legacy report begins without artifacts");
-  // Existing host messages gain metadata on recovery, without a schema reset or body rewrite.
-  db.connection.exec("DELETE FROM bot_work_feedback");
-  assert.equal(feedback.recover(), 0);
-  assert.equal(history().messages.at(-1)?.text, report.text);
+  assert.equal(artifacts.listByTask(binding.taskId).length, 0);
   const first = await images.hydrateHistory(history());
   const scope = first.messages.at(-1)!.reportImages!;
   assert.equal(scope.taskId, binding.taskId);
@@ -85,11 +84,7 @@ try {
   // A subsequent report at the same filename captures new bytes, never rewrites history.
   const changed = Buffer.concat([bytes, Buffer.from("new image version")]); writeFileSync(imagePath, changed);
   works.repo.insertBinding({ ...binding, bindingId: "binding-new", operationId: "execute-new", taskId: "new-task", settlementNote: body });
-  const capturing = new WorkConversationFeedback({ db: db.connection, userId: LOCAL_USER_ID, works, isAuthority: () => true,
-    prepareImages: id => images.captureWork(id) });
-  assert.equal(capturing.drain(), 1);
-  await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(artifacts.listByTask("new-task").length, 2, "new report snapshots without visiting the UI");
+  appendReport({ ...binding, bindingId: "binding-new", taskId: "new-task" }, body, "historical-new");
   const next = (await images.hydrateHistory(history())).messages.at(-1)!.reportImages!;
   assert.notEqual(next.artifacts[0]!.id, descriptor.id);
   assert.deepEqual((await artifacts.readImageVariant(next.artifacts[0]!.id, "full"))?.data, changed);
@@ -104,13 +99,14 @@ try {
   const escape = join(cwd, "escape");
   symlinkSync(root, escape, "junction");
   works.repo.insertBinding({ ...binding, bindingId: "escape", operationId: "escape", taskId: "escape-task", settlementNote: "![escaped](escape/outside.png)" });
-  capturing.drain(); await images.captureWork(work.workId);
+  appendReport({ ...binding, bindingId: "escape", taskId: "escape-task" }, "![escaped](escape/outside.png)", "historical-escape");
+  await images.hydrateHistory(history());
   assert.equal(artifacts.listByTask("escape-task").length, 0);
   if (process.platform !== "win32") {
     execFileSync("mkfifo", [join(cwd, "blocked.png")]);
     works.repo.insertBinding({ ...binding, bindingId: "fifo", operationId: "fifo", taskId: "fifo-task", settlementNote: "![fifo](blocked.png)" });
-    feedback.drain();
-    await images.captureWork(work.workId);
+    appendReport({ ...binding, bindingId: "fifo", taskId: "fifo-task" }, "![fifo](blocked.png)", "historical-fifo");
+    await images.hydrateHistory(history());
     assert.equal(artifacts.listByTask("fifo-task").length, 0, "nonregular files cannot block main-thread open");
   }
   // Concurrent history reads stay idempotent and do not mutate Work acceptance/version.
@@ -149,68 +145,3 @@ try {
   assert.equal(messages.messageWithWorkFeedback("missing-message"), undefined);
   console.log("PASS bot report images: old/new reports, exact binding, aliases, immutable recovery, boundaries, stale DTO/backfill, fresh scope and IPC");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }
-
-// Run the actual image service behind Work feedback. Its best-effort history
-// reader must not silently acknowledge a transient background snapshot failure.
-for (const fault of ["registration", "missing", "partial", "partial-header", "partial-body", "service-unavailable"]) {
-  const retryRoot = mkdtempSync(join(tmpdir(), "bot-report-image-retry-"));
-  const retryDb = new AppDatabase(join(retryRoot, "test.db"));
-  let feedback: WorkConversationFeedback | undefined;
-  mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  try {
-    const bots = new BotRegistry(retryDb.connection); bots.ensureDefaultBot(LOCAL_USER_ID);
-    const works = new WorkService(retryDb.connection, { bots });
-    const messages = new BotConversationRepository(retryDb.connection);
-    const storage = new ArtifactStorage(join(retryRoot, "artifacts"));
-    const artifacts = new ArtifactService(storage, new ArtifactRepository(retryDb.connection), new ArtifactRegistry());
-    let serviceUnavailable = fault === "service-unavailable";
-    const images = new BotReportImageService(retryDb.connection, LOCAL_USER_ID, works, () => serviceUnavailable ? null : artifacts);
-    const source = messages.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "retry-source", text: "截图成果" });
-    messages.update(source.assistantMessageId, "completed", "已受理");
-    const created = works.createWork({ kind: "user", userId: LOCAL_USER_ID, grants: DESKTOP_USER_GRANTS },
-      { operationId: "retry-work", title: "截图成果", conversationId: source.conversationId, sourceMessageId: source.userMessageId });
-    assert(created.ok); const work = created.work;
-    const imagePath = join(retryRoot, "retry.png");
-    if (fault !== "missing") writeFileSync(imagePath, fault === "partial" ? Buffer.alloc(0)
-      : fault === "partial-header" ? bytes.subarray(0, 4) : fault === "partial-body" ? bytes.subarray(0, bytes.length - 6) : bytes);
-    let failRegistration = fault === "registration";
-    const materialize = storage.materialize.bind(storage);
-    mock.method(storage, "materialize", (...args: Parameters<ArtifactStorage["materialize"]>) => {
-      if (failRegistration) throw Error("fixture artifact storage unavailable");
-      return materialize(...args);
-    });
-    works.repo.insertBinding({ bindingId: "retry-binding", workId: work.workId, operationId: "retry-execution", botId: DEFAULT_BOT_ID,
-      taskId: "retry-task", durableStoreKey: "store", conversationId: "native", intentRevision: work.intentRevision,
-      ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, expertSnapshot: bots.activeSnapshot(DEFAULT_BOT_ID)!,
-      delegatedScope: [], workspaceBinding: retryRoot, status: "completed", admittedAt: 1, settledAt: 2,
-      settlementNote: "真实截图成果\n![proof](retry.png)" });
-    feedback = new WorkConversationFeedback({ db: retryDb.connection, userId: LOCAL_USER_ID, works,
-      isAuthority: () => true, prepareImages: id => images.captureWork(id) });
-    assert.equal(feedback.drain(), 1);
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(artifacts.listByTask("retry-task").length, 0);
-    const history = () => messages.history(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, conversationId: source.conversationId });
-    const before = history().messages.map(message => [message.messageId, message.text]);
-    const unchangedWork = works.getWork(work.workId);
-    failRegistration = false;
-    serviceUnavailable = false;
-    writeFileSync(imagePath, bytes);
-    mock.timers.tick(2_001);
-    assert.equal(feedback.drain(), 0, "retry does not add a duplicate result message");
-    await new Promise<void>(resolve => setImmediate(resolve));
-    const saved = artifacts.listByTask("retry-task");
-    assert.equal(saved.length, 1, `${fault} recovers through real image preparation without Work changes or a UI read`);
-    assert.deepEqual((await artifacts.readImageVariant(saved[0]!.id, "full"))?.data, bytes);
-    assert.deepEqual(history().messages.map(message => [message.messageId, message.text]), before);
-    assert.deepEqual(works.getWork(work.workId), unchangedWork);
-    const idle = mock.method(images, "captureWork");
-    mock.timers.tick(2_001); feedback.drain();
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(idle.mock.callCount(), 0, "successful image completion removes the retry candidate");
-    idle.mock.restore();
-    console.log(`PASS #34 real image service ${fault} failure recovers while Work remains unchanged`);
-  } finally {
-    feedback?.close(); mock.timers.reset(); mock.restoreAll();
-    retryDb.close(); rmSync(retryRoot, { recursive: true, force: true });
-  }
-}

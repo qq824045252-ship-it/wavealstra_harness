@@ -1,3 +1,5 @@
+> 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
+
 # Bot 交互调度规格：前台快答、里程碑回流、插话与未来安排
 
 > 本源文件是 [issue #27](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/27) 的可施工契约整理，不取代 issue 内的 PDF 逐页原文。冲突时以 Issue/PDF 原要求为准；最新证据、缺项与逐项状态见 [二次核对报告](reviews/bot-scheduling-27-followup-2026-11-12.md)，旧报告仅记录当时验证。

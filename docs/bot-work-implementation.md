@@ -1,3 +1,5 @@
+> 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
+
 # Bot / Work 实施记录
 
 > 2026-11-12 现行契约：本文各阶段为历史实施记录。Issue #21 的共享资源隔离、Work 动作审批及续跑已退役；其后应用权限与预算也按用户方向退役。不得按下文 Phase 3 旧描述重新实现。现状和保留边界见 [退役契约](work-action-approval-loop.md)，最终核对见 [#21 闭环报告](reviews/work-isolation-21-closure-2026-11-12.md)。

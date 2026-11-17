@@ -172,7 +172,7 @@ export class WorkService {
     this.cards = new WorkResultCards(db, this.repo);
     this.phase5 = new WorkPhase5Facts(this, this.now, db);
     this.pausedBacklog = new WorkPausedBacklog(db, this);
-    this.teams = new WorkTeamService(db, this, this.bots, this.now);
+    this.teams = new WorkTeamService(db, this, this.bots);
     this.recordArchive = new WorkRecordArchive(db, this, this.now, () => !this.authorityError());
     this.automaticCompletion = new WorkAutomaticCompletion(db, this, (work, conclusion, summary, bindingId) => {
       this.closeWithConclusion(work, conclusion, { operationId: `automatic-completion:${bindingId}`, closureSummary: summary }, this.now());

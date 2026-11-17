@@ -229,6 +229,24 @@ export class CronService {
     });
   }
 
+  updateForTask(taskId: string, id: string, patch: Partial<Pick<CronJobDto,
+    "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy"
+  >>): CronJobDto {
+    const job = this.db.getCronJob(id);
+    if (!job || job.sourceTaskId !== taskId || job.reminder) throw new Error("计划不属于当前任务");
+    // Whitelist mutable configuration; never replace identity, execution history or authority.
+    const next = { ...job };
+    for (const key of ["name", "prompt", "scheduleType", "scheduleExpr", "timezone", "effectiveTo", "maxRuns", "restartPolicy"] as const) {
+      if (patch[key] !== undefined) Object.assign(next, { [key]: patch[key] });
+    }
+    if (!next.name.trim() || !next.prompt.trim()) throw new Error("name and prompt must not be blank");
+    new Intl.DateTimeFormat("en", { timeZone: next.timezone }).format();
+    if (JSON.stringify(next) === JSON.stringify(job)) return this.withNext(job);
+    const scheduleChanged = (["scheduleType", "scheduleExpr", "timezone", "effectiveTo", "maxRuns"] as const)
+      .some(key => next[key] !== job[key]);
+    return this.saveJob(next, !scheduleChanged);
+  }
+
   changeForTask(taskId: string, id: string, action: "pause" | "resume" | "cancel"): void {
     const job = this.db.getCronJob(id);
     if (!job || job.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
@@ -245,6 +263,10 @@ export class CronService {
   }
 
   upsert(job: CronJobDto): CronJobDto {
+    return this.saveJob(job);
+  }
+
+  private saveJob(job: CronJobDto, preserveTimer = false): CronJobDto {
     assertSingleExpertId(job.expertId);
     validateSchedule(job);
     parseCronExecution({ reminder: job.reminder, sourceTaskId: job.sourceTaskId, target: job.target, maxRuns: job.maxRuns, restartPolicy: job.restartPolicy, cancelledAt: job.cancelledAt });
@@ -263,8 +285,10 @@ export class CronService {
     delete next.nextRunAt;
     delete next.runCount;
     this.db.upsertCronJob(next);
-    this.disarm(next.id);
-    if (next.enabled) this.arm(this.db.getCronJob(next.id) ?? next);
+    if (!preserveTimer) {
+      this.disarm(next.id);
+      if (next.enabled) this.arm(this.db.getCronJob(next.id) ?? next);
+    }
     const enriched = this.withNext(this.db.getCronJob(next.id) ?? next);
     broadcast(CronIpc.event, { type: "upsert", job: enriched });
     return enriched;
@@ -393,6 +417,9 @@ export class CronService {
       if (this.stopped || this.revisions.get(job.id) !== revision) return;
       const persisted = this.db.getCronJob(job.id);
       if (!persisted || (!persisted.enabled && !opts?.force) || withinEffectiveRange(persisted) === "after") return;
+      // Content-only edits keep the pending timer/revision; use the current
+      // configuration after asynchronous preparation, before committing input.
+      latest = { ...persisted, expertId: normalizeSingleExpertId(persisted.expertId) };
       const currentUnavailable = this.unavailableReason(persisted);
       if (currentUnavailable) {
         await this.recordSkipped(persisted, currentUnavailable);

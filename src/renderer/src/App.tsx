@@ -39,15 +39,15 @@ export default function App(): React.JSX.Element {
   const searchOpen = useAppStore((s) => s.searchOpen);
   const compactAutomationLayout = useMediaQuery("(max-width: 720px)");
   const usesNavigationDrawer = page === "automation" && compactAutomationLayout;
-  const [botNavigationOpen, setBotNavigationOpen] = useState(false);
-  const botNavigationRef = useRef<HTMLDialogElement>(null);
-  useEffect(() => { setBotNavigationOpen(false); }, [page, compactAutomationLayout]);
-  useEffect(() => { if (searchOpen || settingsOpen) { setBotNavigationOpen(false); } }, [searchOpen, settingsOpen]);
+  const [navigationDrawerOpen, setNavigationDrawerOpen] = useState(false);
+  const navigationDrawerRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => { setNavigationDrawerOpen(false); }, [page, compactAutomationLayout]);
+  useEffect(() => { if (searchOpen || settingsOpen) { setNavigationDrawerOpen(false); } }, [searchOpen, settingsOpen]);
   useEffect(() => {
-    const dialog = botNavigationRef.current;
-    if (usesNavigationDrawer && botNavigationOpen) dialog?.showModal();
+    const dialog = navigationDrawerRef.current;
+    if (usesNavigationDrawer && navigationDrawerOpen) dialog?.showModal();
     else if (dialog?.open) dialog.close();
-  }, [usesNavigationDrawer, botNavigationOpen]);
+  }, [usesNavigationDrawer, navigationDrawerOpen]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -112,7 +112,13 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     const api = window.api?.browser;
     if (!api?.onOpenRequest) return;
-    return api.onOpenRequest((url) => {
+    return api.onOpenRequest((url, retained) => {
+      if (retained?.taskId) {
+        const taskId = retained.taskId;
+        useAppStore.setState(state => ({ browserTabByTask: { ...state.browserTabByTask, [taskId]: { id: retained.tabId, key: retained.key, url } }, browserUrlByTask: { ...state.browserUrlByTask, [taskId]: url } }));
+        if (useAppStore.getState().activeTaskId === taskId) useAppStore.getState().showBrowser();
+        return;
+      }
       useAppStore.getState().setBrowserUrl(url);
     });
   }, []);
@@ -137,8 +143,8 @@ export default function App(): React.JSX.Element {
 
   return (
     <div className="app">
-      {usesNavigationDrawer ? <dialog ref={botNavigationRef} className="bot-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setBotNavigationOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setBotNavigationOpen(false); }}>
-        <Sidebar onClose={() => setBotNavigationOpen(false)} />
+      {usesNavigationDrawer ? <dialog ref={navigationDrawerRef} className="app-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setNavigationDrawerOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setNavigationDrawerOpen(false); }}>
+        <Sidebar onClose={() => setNavigationDrawerOpen(false)} />
       </dialog> : !sidebarCollapsed && <Sidebar />}
       <div
         className={`main-area ${panelExpanded ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
@@ -167,7 +173,7 @@ export default function App(): React.JSX.Element {
         ) : page === "experts" || page === "skills" || page === "mcp" || page === "connectors" ? (
           <HubPage tab={page} />
         ) : page === "automation" ? (
-          <AutomationPage onToggleNavigation={usesNavigationDrawer ? () => setBotNavigationOpen(open => !open) : undefined} />
+          <AutomationPage onToggleNavigation={usesNavigationDrawer ? () => setNavigationDrawerOpen(open => !open) : undefined} />
         ) : page === "files" ? (
           <FilesPage />
         ) : page === "mailbox" ? (

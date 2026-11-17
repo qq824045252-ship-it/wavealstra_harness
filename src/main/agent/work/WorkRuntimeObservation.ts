@@ -1,6 +1,6 @@
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
 import type { WorkRuntimeObservationDto } from "../../../shared/bot-work-phase3";
-import type { WorkExecutionObservation } from "./WorkExecutionAdapter";
+import type { WorkExecutionObservation } from "./WorkExecutionObservation";
 
 /** Process-local liveness facts. Never resurrect a previous host's persisted 'running'. */
 export class WorkRuntimeObservation {

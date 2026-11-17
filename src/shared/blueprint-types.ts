@@ -1,7 +1,7 @@
 /** Blueprint shared schema. Definition JSON is validated independently from the database schema. */
 
 import type { GadgetManifest, GadgetScope, GadgetSourceFile } from "./gadget-types";
-import { normalizeJsonRecord } from "./gadget-types";
+import { normalizeGadgetManifest, normalizeJsonRecord } from "./gadget-types";
 import type { TemplateCapabilityRegistries } from "./project-template/types";
 import { assertBlueprintSecretFree, isBlueprintSensitivePath } from "./blueprint-secret-policy";
 
@@ -363,14 +363,14 @@ function validateGadgetDefinition(value: unknown, seen: Set<string>, budget: Blu
   const defaultConfig = manifestRaw.defaultConfig === undefined
     ? undefined
     : normalizeJsonRecord(manifestRaw.defaultConfig, "Gadget defaultConfig");
-  const manifest: GadgetManifest = {
+  const manifest: GadgetManifest = normalizeGadgetManifest({
     schemaVersion: Number(manifestRaw.schemaVersion),
     name: requireString(manifestRaw.name, "Gadget manifest name"),
     type: manifestRaw.type === "web" ? "web" : (() => { throw new Error("当前仅支持 web Gadget"); })(),
     entry: validateRelativePath(manifestRaw.entry, "Gadget manifest entry"),
     ...(defaultConfig ? { defaultConfig } : {}),
-  };
-  if (manifest.schemaVersion !== 1) throw new Error(`不支持的 Gadget manifest 版本：${manifest.schemaVersion}`);
+    ...(manifestRaw.backend === undefined ? {} : { backend: manifestRaw.backend }),
+  });
   const sourceFilesRaw = optionalArray(gadget, "sourceFiles", "Gadget sourceFiles");
   if (!sourceFilesRaw) throw new Error("Gadget sourceFiles 必须存在");
   const sourcePaths = new Set<string>();
@@ -386,6 +386,7 @@ function validateGadgetDefinition(value: unknown, seen: Set<string>, budget: Blu
     return { path, content, encoding };
   });
   if (!sourceFiles.some((file) => file.path === manifest.entry)) throw new Error(`Gadget Blueprint 缺少入口文件：${manifest.entry}`);
+  if (manifest.backend && !sourceFiles.some((file) => file.path === manifest.backend?.entry)) throw new Error(`Gadget Blueprint 缺少后台入口：${manifest.backend.entry}`);
   if (gadget.description !== undefined && typeof gadget.description !== "string") throw new Error("Blueprint gadget description 必须是字符串");
   const metadata = gadget.metadata === undefined ? undefined : normalizeJsonRecord(gadget.metadata, "Blueprint gadget metadata");
   if (gadget.workspaceKey !== undefined && typeof gadget.workspaceKey !== "string") throw new Error("Blueprint gadget workspaceKey 必须是字符串");

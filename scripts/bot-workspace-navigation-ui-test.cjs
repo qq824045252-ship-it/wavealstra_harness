@@ -1,10 +1,10 @@
 const {runRendererFixture}=require('./renderer-fixture-driver.cjs');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const out=path.join(__dirname,'../out/tests');
-runRendererFixture({name:'bot-workspace-navigation',width:1200,height:900},async fixture=>{
+runRendererFixture({name:'bot-workspace-navigation',width:1200,height:900,show:process.argv.includes('--visible')},async fixture=>{
  const run=code=>fixture.evaluate(code);
  const wait=async code=>{const end=Date.now()+8000;while(!await run(code)){if(Date.now()>end)throw Error('timeout '+code);await new Promise(r=>setTimeout(r,30));}};
- fs.writeFileSync(path.join(out,'bot-workspace-navigation-ui.html'),'<html><body><div id="root"></div><script src="bot-workspace-navigation-ui.js"></script></body></html>');
+ fs.writeFileSync(path.join(out,'bot-workspace-navigation-ui.html'),'<html><head><link rel="stylesheet" href="bot-workspace-navigation-ui.css"></head><body><div id="root"></div><script src="bot-workspace-navigation-ui.js"></script></body></html>');
  await fixture.loadFile(path.join(out,'bot-workspace-navigation-ui.html'));
  await wait(`document.querySelectorAll('.workspace-conversation-row').length===3`);
  assert.equal(await run(`document.querySelectorAll('.workspace-foreground-row').length`),0,'conversation task lists initially collapsed');
@@ -13,6 +13,13 @@ runRendererFixture({name:'bot-workspace-navigation',width:1200,height:900},async
  await run(`[...document.querySelectorAll('.workspace-foreground-row')].find(b=>b.textContent==='个人任务0已回复').click()`);
  await wait(`document.querySelector('.workspace-foreground-messages')?.innerText.includes('个人任务0结果')`);
  assert.equal(await run(`document.querySelectorAll('.workspace-foreground-messages .bot-message-work-links button').length`),1,'workspace request detail deduplicates shared Work link');
+ assert.equal(await run(`Boolean(document.querySelector('.bot-composer, #bot-draft'))`),false,'historical view has no retired composer');
+ if(fixture.backend!=='dom') {
+   const bounds=await run(`(()=>{const e=document.querySelector('.workspace-foreground-messages'),r=e.getBoundingClientRect();return {width:r.width,height:r.height,overflow:e.scrollWidth>e.clientWidth+1}})()`);
+   assert(bounds.width>400&&bounds.height>100&&!bounds.overflow,'historical transcript remains visible without horizontal overflow');
+   assert(await fixture.screenshot(path.join(out,'historical-conversation.png')),'historical transcript screenshot saved');
+ }
+
  assert.equal(await run(`document.querySelectorAll('.workspace-foreground-messages .bot-message.assistant .bot-message-work-links').length`),0,'workspace reply does not repeat the input card');
  assert.equal(await run(`document.querySelectorAll('.workspace-foreground-messages .bot-reply-reference').length`),0,'link context does not add a duplicate question quote in request detail');
  await run(`document.querySelector('.workspace-foreground-heading button').click()`);

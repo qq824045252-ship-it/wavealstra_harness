@@ -1,3 +1,5 @@
+> 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
+
 # Bot delegation fidelity
 
 The foreground Bot can plan and split work without another approval. Its summaries,

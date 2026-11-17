@@ -795,6 +795,7 @@ function registerIpc(): void {
     entry: request.entry,
     files: request.files,
     defaultConfig: request.defaultConfig,
+    backend: request.backend,
     metadata: request.metadata,
     // createdByTaskId / blueprintId are Main-owned provenance and are never accepted from Renderer IPC.
   }));
@@ -1348,7 +1349,7 @@ function registerIpc(): void {
   );
   ipcMain.handle(AgentIpc.getAppSettings, () => agentService.getAppSettings());
   ipcMain.handle(AgentIpc.updateAppSettings, async (_e, partial) => {
-    if (partial?.gatewayBotBindings !== undefined) throw new Error("渠道个人助理绑定已移除");
+    if (partial && "gatewayBotBindings" in partial) throw new Error("渠道个人助理绑定已移除");
     const {
       memoryGatewayEnabled, memoryGatewayWriteEnabled, memoryGatewayPort,
       remoteAccessEnabled, remoteAccessPort, remoteAccessBaseUrl,
