@@ -28,10 +28,10 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
   pi.registerTool({
     name: "automation_exec",
     label: "Task automation",
-    description: "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队。get 按 id 查看计划、当前与最近运行；runs 传 id 可用 cursor 按页查单条计划。cancel 停止未来触发，保留计划和历史，不中断已开始的用户回合；取消后不能 resume。可 list/get/runs/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。",
+    description: "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。update 必须给已有 id，仅修改传入字段，保留任务 ID、执行历史和启用/暂停状态；修改已有任务必须用 update，不要取消后重建。可更新 name/prompt/调度/时区/max_runs/deadline/restart_policy；max_runs 是累计运行上限，不重置次数。修改不会中断已开始的回合，新配置用于后续触发。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队。get 按 id 查看计划、当前与最近运行；runs 传 id 可用 cursor 按页查单条计划。cancel 停止未来触发，保留计划和历史，不中断已开始的用户回合；取消后不能 resume。可 list/runs/update/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。",
     promptSnippet: "automation_exec(action, name?, prompt?, schedule_type?, schedule_expr?, target?, max_runs?, deadline?, restart_policy?, id?, cursor?)",
     parameters: Type.Object({
-      action: Type.Union((["create", "list", "get", "runs", "pause", "resume", "cancel"] as const).map(value => Type.Literal(value))),
+      action: Type.Union((["create", "update", "list", "get", "runs", "pause", "resume", "cancel"] as const).map(value => Type.Literal(value))),
       name: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
       prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 100000 })),
       schedule_type: Type.Optional(Type.Union([Type.Literal("at"), Type.Literal("every"), Type.Literal("cron")])),
@@ -69,6 +69,16 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         });
       }
       if (!input.id) throw new Error("This action requires id");
+      if (input.action === "update") {
+        if (input.target !== undefined) throw new Error("update cannot change target");
+        const effectiveTo = input.deadline === undefined ? undefined : Date.parse(input.deadline);
+        if (effectiveTo !== undefined && (!Number.isFinite(effectiveTo) || effectiveTo <= Date.now())) throw new Error("deadline must be a future ISO timestamp");
+        return services.cron.updateForTask(taskId, input.id, {
+          name: input.name, prompt: input.prompt, scheduleType: input.schedule_type,
+          scheduleExpr: input.schedule_expr, timezone: input.timezone,
+          maxRuns: input.max_runs, effectiveTo, restartPolicy: input.restart_policy,
+        });
+      }
       services.cron.changeForTask(taskId, input.id, input.action);
       return { id: input.id, action: input.action, jobs: services.cron.listForTask(taskId) };
     }),

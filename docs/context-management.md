@@ -1,8 +1,20 @@
+> 2026-11-17：`test:durable-context-dev:live` 已改走普通任务入口；第七项验证普通任务调用 `acp_status`。该入口不再依赖 Bot 导航、Bot composer 或独立 Bot 测试框架。
+
 > Latest closure audit and actual long-history limits: [Issue #26 matrix](issue26-closure-matrix-20261112.md). A successful automatic-compression story is not proof that every closure requirement is complete.
 
 # 自动上下文管理（billion-context / acp-kernel 原生接入）
 
 对应 Issue #26。本文说明 Durable 主执行路径如何自动管理模型上下文、如何回查原文、如何持久化/恢复，以及当前已验证与未验证的边界。
+
+## 宿主适配修复（2026-11-17）
+
+- 自动整理先把内核推荐范围扩展为完整的原生消息、工具调用批次和已有摘要块，再用真实内核试算并检查出站消息完整性。受保护或无法完整替换的范围不会发起摘要模型请求。
+- 摘要生成失败时继续使用已提交的摘要投影。连续两次失败只暂停生成新摘要，不停用已有摘要；恢复使用投影不会把失败状态伪报为整理成功。出站请求仍须满足当前模型的输入与输出预留限制。
+- 内核要求二级或三级归并时，宿主消费 `tierTargetBlocks`，按消息顺序使用块边界执行归并。摘要输入保留当前可见的下一级摘要，不重新展开已折叠原文；受保护的当前消息不进入归并输入。
+- 摘要中的工具调用和结果携带工具名称、调用 ID、参数、结果正文及成功或错误标志。原始消息与附件继续保存在 Durable entries。
+- 新摘要必须比当前摘要投影更小。比较基线使用当前可见消息，不能因新摘要比完整原始历史小就接受一次实际增大的重写。
+
+专项验证为 `test:durable-context-safety` 和 `test:durable-context-operations`。前者覆盖真实内核的二三级计划、并行工具批次和超窗失败降级；后者使用真实 SQLite 验证二级摘要提交、关闭重开、原文回查与连续失败后的投影。模型响应使用本地夹具，这些用例不代表真实模型或桌面验收。
 
 ## 后续安全复核（2026-11-12）
 

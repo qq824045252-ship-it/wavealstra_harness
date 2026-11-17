@@ -30,15 +30,16 @@ function seed(): Message[] {
 function fixture(contextWindow = 128_000, outputLimit = 4096) {
   let reply: (() => AssistantMessage) | undefined;
   let calls = 0;
+  const summaryInputs: unknown[] = [];
   let action: ((signal?: AbortSignal) => Promise<void>) | undefined;
   const model = { id: "fixture", provider: "fixture", api: "openai-completions", name: "fixture", reasoning: false,
     input: ["text"], contextWindow, maxTokens: outputLimit, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const models = { getModel: () => model, getAuth: async () => undefined,
     streamSimple: () => { throw new Error("Status/maintenance must not start a business generation"); },
     completeSimple: async (_model: unknown, _input: unknown, options?: { signal?: AbortSignal }) => {
-      calls++; await action?.(options?.signal); if (reply) return reply(); return assistant("Earlier notes preserve the archive paths, exact errors and versions; originals remain retrievable.");
+      calls++; summaryInputs.push(_input); await action?.(options?.signal); if (reply) return reply(); return assistant("Earlier notes preserve the archive paths, exact errors and versions; originals remain retrievable.");
     } } as unknown as DurableBotOptions["models"];
-  return { models, setReply: (next?: () => AssistantMessage) => { reply = next; }, calls: () => calls, setAction: (next?: typeof action) => { action = next; } };
+  return { models, summaryInputs, setReply: (next?: () => AssistantMessage) => { reply = next; }, calls: () => calls, setAction: (next?: typeof action) => { action = next; } };
 }
 type Internals = { contextManager: DurableContextManager; conversation: Conversation; harness: Harness; storage: Storage };
 function internals(runtime: DurableBotRuntime): Internals { return runtime as unknown as Internals; }
@@ -120,6 +121,67 @@ if (crashMode === "--crash") {
 } else {
   const root = await mkdtemp(join(tmpdir(), "context-operations-"));
   try {
+    {
+      const source = fixture();
+      const directory = join(root, "tier-distillation");
+      let runtime = await open(directory, source, seed());
+      try {
+        let { contextManager: manager, conversation } = internals(runtime);
+        await manager.ensureReady(ctx);
+        let view = await conversation.context(ctx);
+        await manager.beforeRequest(view.messages, { models: source.models } as never, ctx);
+        const originals = view.entries.filter(entry => JSON.stringify(entry.model).includes("EXACT_ORIGINAL_"));
+        assert.equal(originals.length, 10);
+        for (const [start, end, label] of [[0, 3, "A"], [4, 5, "B"]] as const) {
+          const result = await manager.applyModelCompression({ startRef: manager.refsForEntry(originals[start]!.id)[0]!,
+            endRef: manager.refsForEntry(originals[end]!.id)[0]!,
+            summary: `RESIDENT_SUMMARY_${label}: archived details remain retrievable. `.repeat(320) }, ctx);
+          assert.equal(result.ok, true, result.message);
+        }
+        await conversation.commit(tx => tx.appendEntry(conversation.id, { kind: "pi.user", model: [
+          { role: "user", content: "PROTECTED_SQLITE_REQUEST " + "p".repeat(270_000), timestamp: 11 },
+        ] }), ctx);
+        for (let round = 0; round < 3; round++) {
+          view = await conversation.context(ctx);
+          assert(await manager.beforeRequest(view.messages, { models: source.models } as never, ctx));
+          if ((await manager.readState(ctx))?.blocks.some(block => block.active && block.tier === 2)) break;
+        }
+        const tier2 = (await manager.readState(ctx))?.blocks.find(block => block.active && block.tier === 2);
+        assert(tier2, "the production manager must commit a T2 block into real SQLite");
+        const input = JSON.stringify(source.summaryInputs);
+        assert(input.includes("RESIDENT_SUMMARY_A") && input.includes("RESIDENT_SUMMARY_B"));
+        assert(!input.includes("EXACT_ORIGINAL_0") && !input.includes("PROTECTED_SQLITE_REQUEST"));
+        const committed = await state(runtime);
+        assert.equal(committed.lastOperation?.phase, "completed");
+        const calls = source.calls();
+        await runtime.close();
+        runtime = await open(directory, source);
+        ({ contextManager: manager, conversation } = internals(runtime));
+        await manager.ensureReady(ctx);
+        assert((await manager.readState(ctx))?.blocks.some(block => block.active && block.blockId === tier2.blockId && block.tier === 2));
+        view = await conversation.context(ctx);
+        const projected = await manager.beforeRequest(view.messages, { models: source.models } as never, ctx);
+        assert(projected && !JSON.stringify(projected.messages).includes("EXACT_ORIGINAL_0"));
+        assert.equal(source.calls(), calls, "cold reopen replays the committed T2 summary without another model call");
+        const reader = { entry: (id: number) => conversation.commit(tx => tx.entry(id as typeof originals[number]["id"]), ctx) };
+        const original = await manager.retrieveOriginal({ blockId: tier2.blockId, limit: 12000 }, reader, ctx);
+        assert(original.text.includes("EXACT_ORIGINAL_0"));
+        await conversation.commit(async tx => {
+          await tx.appendEntry(conversation.id, { kind: "pi.user", model: [{ role: "user", content: "Continue inspecting the archive.", timestamp: 12 }] });
+          await tx.appendEntry(conversation.id, { kind: "pi.assistant", model: [assistant("The latest work is retained.", 13)] });
+        }, ctx);
+        source.setAction(async () => { throw new Error("isolated provider failure after durable T2 commit"); });
+        for (let attempt = 0; attempt < 2; attempt++) assert.equal((await manager.compressNow(ctx)).applied, false);
+        const failedCalls = source.calls();
+        view = await conversation.context(ctx);
+        const fallback = await manager.beforeRequest(view.messages, { models: source.models } as never, ctx);
+        assert(fallback && !JSON.stringify(fallback.messages).includes("EXACT_ORIGINAL_0"));
+        assert(JSON.stringify(fallback.messages).includes("PROTECTED_SQLITE_REQUEST"));
+        assert.equal(source.calls(), failedCalls);
+        assert.equal((await state(runtime)).lastOperation?.phase, "failed");
+        console.log("PASS real SQLite T2 commit/reopen/original retrieval and failed-maintenance projection without model replay");
+      } finally { await runtime.close(); }
+    }
     // A real completed operation and session identity survive reopen. Passive reads don't write or start models.
     const source = fixture();
     const directory = join(root, "restart");

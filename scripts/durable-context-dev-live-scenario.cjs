@@ -64,20 +64,10 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
    const wires=requests.slice(result.requestStart);
    assert(wires.some(request=>request.messages?.some(message=>message.role==='tool'&&JSON.stringify(message.content).includes('source: original Durable entries')&&JSON.stringify(message.content).includes(quote))),'real provider request must contain verbatim original tool result, not only a summary');
  }catch(error){report.cases.push({label:'verbatim retrieval after restart',status:'failed',error:String(error.stack||error)});save();}
- // Exercise the production Bot foreground allow-list, not only the ordinary-task runtime.
  try {
-   await until(()=>evaluate('[...document.querySelectorAll("button")].some(button=>button.textContent.includes("Bot 模式"))'),'Bot navigation');
-   await evaluate('[...document.querySelectorAll("button")].find(button=>button.textContent.includes("Bot 模式")).click()');
-   await until(()=>evaluate('Boolean(document.querySelector("#bot-draft"))'),'Bot composer');
-   const from=requests.length,started=Date.now();
-   await evaluate(`(()=>{const e=document.querySelector('#bot-draft');e.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'请先实际调用 acp_status 查看本会话上下文管理状态，再只返回工具提供的 engine 值。不要创建后台事项或调用其他工具。');e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-   await wait(100);await evaluate('document.querySelector(".bot-composer button[type=submit]").click()');
-   let answer;
-   await until(async()=>{const history=await evaluate('window.api.botWork.history({botId:"bot-mybuddy-default"})');const requestId=history.messages.filter(message=>message.role==='user').at(-1)?.requestId;answer=history.messages.find(message=>message.role==='assistant'&&message.requestId===requestId&&message.status==='completed');return Boolean(answer);},'Bot context status');
-   const wires=requests.slice(from);
-   assert(wires.some(request=>request.messages?.some(message=>message.role==='tool'&&JSON.stringify(message.content).includes('engine: '+engine))),'Bot must receive real acp_status tool result');
-   report.cases.push({label:'Bot foreground context-tool access',status:'passed',elapsedMs:Date.now()-started,answer:answer.text,requestStart:from,requestEnd:requests.length});save();
- } catch(error) {report.cases.push({label:'Bot foreground context-tool access',status:'failed',error:String(error.stack||error)});save();}
+   const result=await say('请先实际调用 acp_status 查看本会话上下文管理状态，再只返回工具提供的 engine 值。不要创建后台事项或调用其他工具。','ordinary task context-tool access');
+   assert(requests.slice(result.requestStart,result.requestEnd).some(request=>request.messages?.some(message=>message.role==='tool'&&JSON.stringify(message.content).includes('engine: '+engine))),'ordinary task must receive the real acp_status tool result');
+ } catch(error) {report.cases.push({label:'ordinary task context-tool access',status:'failed',error:String(error.stack||error)});save();}
  summaryCalls=requests.map((request,index)=>({request,index})).filter(({request})=>request.messages?.some(message=>['system','developer'].includes(message.role)&&JSON.stringify(message.content).includes(engine==='native'?'You are a context summarization assistant.':'compress conversation history')));
  report.summaryCalls=summaryCalls.map(({request,index})=>({index,chars:JSON.stringify(request.messages).length,model:request.model}));
  report.requestCount=requests.length;report.usage={raw:rawUsageAudit,pricing:'not measured; do not interpret fixture zero prices as free'};
@@ -87,6 +77,6 @@ exports.run=async({evaluate,rpc,until,report,requests,rawUsageAudit,out,home,res
  assert(summaryCalls.length>0,'automatic summaries must really call the model');
  assert(projected.length>0,'subsequent real provider requests must use the committed summary');
  assert.equal(report.cases.filter(item=>item.status==='failed').length,0,JSON.stringify(report.cases.filter(item=>item.status==='failed')));
- assert.equal(report.cases.length,7,'six distinct ordinary task types plus Bot foreground tool access');
+ assert.equal(report.cases.length,7,'six distinct ordinary task types plus task context-tool access');
  report.checks.push('six distinct ordinary task types; real automatic summary provider calls; actual compressed outgoing requests; real Electron cold restart; exact original retrieval through model tools');
 };

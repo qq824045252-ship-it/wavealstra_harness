@@ -33,8 +33,8 @@ function assess(report, requests) {
   const original = result('verbatim retrieval after restart'); assert(original.answer.includes('NB-7/4412') && original.answer.includes('03:17 UTC'));
   const originalEvidence = requests.slice(original.requestStart, original.requestEnd).flatMap((request, offset) => request.messages.filter(message => message.role === 'tool' && JSON.stringify(message.content).includes('source: original Durable entries') && JSON.stringify(message.content).includes(quote)).map(message => ({ requestIndex: original.requestStart + offset, text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content) })));
   assert(originalEvidence.length, 'exact original must reach the real provider as a tool result');
-  const bot = result('Bot foreground context-tool access');
-  assert(requests.slice(bot.requestStart, bot.requestEnd).some(request => request.messages.some(message => message.role === 'tool' && JSON.stringify(message.content).includes('engine: billion-context'))));
+  const status = result('ordinary task context-tool access');
+  assert(requests.slice(status.requestStart, status.requestEnd).some(request => request.messages.some(message => message.role === 'tool' && JSON.stringify(message.content).includes('engine: billion-context'))));
   const summaryRequests = requests.flatMap((request, index) => request.messages.some(message => ['system', 'developer'].includes(message.role) && JSON.stringify(message.content).includes('You compress conversation history')) ? [{ index, model: request.model, requestCharacters: JSON.stringify(request.messages).length }] : []);
   const projectedRequests = requests.flatMap((request, index) => request.messages.some(message => JSON.stringify(message.content).includes('[Compressed conversation section]')) ? [index] : []);
   assert(summaryRequests.length > 0); assert(projectedRequests.length > 0);

@@ -45,9 +45,9 @@ const windowCreation = startupCalls.get("createWindow")?.[0];
 assert(typeof windowCreation === "number", "bootstrap must create the window-backed tool hosts");
 assert(initialization < windowCreation && windowCreation < recoveryStart,
   "initialize AgentService, attach the browser/UI hosts, then resume persisted tasks");
-assert(windowCreation < startupPosition("workNotificationHost.start")
-  && startupPosition("workNotificationHost.start") < recoveryStart,
-  "attach the desktop/resident notification sink before starting delivery and recovery");
+for (const retired of ["workNotificationHost.start", "agentService.setWorkNotificationWake", "agentService.setBotContinuationDelivery"]) {
+  assert.equal(startupCalls.has(retired), false, `${retired} must not boot standalone Bot background services`);
+}
 for (const dependency of ["setSelectionContextResolver", "setArtifactDomain", "setGadgetDomain", "setLocalWorkflowServices"]) {
   assert(startupPosition(`agentService.${dependency}`) < initialization,
     `install ${dependency} before agentService.init()`);

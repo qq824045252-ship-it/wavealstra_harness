@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { testSchedulingContinuity } from "./cron-scheduling-continuity";
 import { testAutomationLifecycle } from "./automation-lifecycle-test";
+import { testAutomationUpdate } from "./automation-update-test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,7 @@ function barrier() {
 
 async function main() {
   await testAutomationLifecycle();
+  await testAutomationUpdate();
   await testSchedulingContinuity();
   const root = mkdtempSync(join(tmpdir(), "mybuddy-cron-native-"));
   process.env.HOME = root;

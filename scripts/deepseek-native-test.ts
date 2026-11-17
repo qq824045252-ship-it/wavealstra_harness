@@ -12,7 +12,6 @@ import { Type } from "typebox";
 import { mybuddyDeepSeekProvider } from "../src/main/agent/providers/deepseek";
 import { DeepSeekFileUploads, deepseekFileAttachment, deepseekFileReference } from "../src/main/agent/providers/deepseek-files";
 import { registerMyBuddyProviders } from "../src/main/agent/providers";
-import { prepareBotAttachmentInput } from "../src/main/agent/work/BotAttachmentInput";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { assistantRow } from "../src/main/agent/durable/DurableHistoryProjection";
 import { deepseekAssistantMetadata, deepseekCitationMarkdown, deepseekHostedToolRows, deepseekNativeOptions } from "../src/shared/deepseek";
@@ -224,8 +223,9 @@ const root = await mkdtemp(join(tmpdir(), "deepseek-native-"));
 try {
   const path = join(root, "evidence.txt"); await writeFile(path, "persisted attachment evidence");
   const attachment = { name: "evidence.txt", path };
-  const input = await prepareBotAttachmentInput({ text: "Read the attached file", attachments: [attachment], model,
-    directory: root, requestId: "first-file" });
+  const attachmentInput = deepseekFileAttachment(path, attachment.name, await readFile(path), "text");
+  assert(attachmentInput);
+  const input = [{ type: "text" as const, text: "Read the attached file" }, attachmentInput];
   assert(Array.isArray(input));
   assert(input.some(block => deepseekFileReference(block)));
   const fileContext = normalizeContext({ messages: [{ role: "user", content: input, timestamp: 3 }] });

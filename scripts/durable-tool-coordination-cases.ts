@@ -74,7 +74,7 @@ export async function verifyDurableToolCoordination(root: string): Promise<void>
     let started = false;
     const after = run("read", { path: target }, async () => { started = true; assert.equal(await readFile(target, "utf8"), name); });
     await run("web_search", { query: "independent network query" }, async () => {});
-    await run("work_cancel", { workId: "held-operation" }, async () => {});
+    await run("conversation_goal_get", { taskId: "held-operation" }, async () => {});
     assert.equal(started, false, "opaque commands cannot gain parallel write access by declaring readOnly or a misleading path");
     release.release(); await Promise.all([command, after]);
   }
@@ -86,14 +86,13 @@ export async function verifyDurableToolCoordination(root: string): Promise<void>
   await shellEntered.promise;
   let queuedWriteStarted = false;
   const queuedWrite = run("write", { path: other }, async () => { queuedWriteStarted = true; await writeFile(other, "worker wrote"); });
-  const controls = ["work_query_status", "work_create", "work_amend", "work_team_create", "work_team_replan",
-    "foreground_query_requests", "foreground_cancel_request"];
+  const controls = ["conversation_goal_get", "conversation_goal_create", "conversation_goal_update", "conversation_goal_propose_complete"];
   const completedControls: string[] = [];
   const requests = controls.map(name => run(name, {}, async () => { completedControls.push(name); }));
   try {
     await turn();
-    assert.deepEqual(completedControls, controls, "host status, creation, replanning and cancellation stay responsive during a running shell");
-    assert.equal(queuedWriteStarted, false, "dispatch control cannot release a queued worker's actual file write");
+    assert.deepEqual(completedControls, controls, "Goal queries and updates stay responsive during a running shell");
+    assert.equal(queuedWriteStarted, false, "Goal control cannot release a queued task's actual file write");
   } finally {
     releaseShell.release(); await Promise.all([shell, queuedWrite, ...requests]);
   }
