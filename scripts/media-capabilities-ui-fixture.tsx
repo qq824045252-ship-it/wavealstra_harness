@@ -6,6 +6,8 @@ import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, Buil
 import { API_PROTOCOL_CAPABILITIES, CODEX_CONNECTION_ID, connectionRequiresModel, DEEPSEEK_API_ROOT, LOCAL_WHISPER_CONNECTION_ID, MAGPIE_CONNECTION_ID, MEDIA_CAPABILITY_IDS, OPENROUTER_API_ROOT } from "../src/shared/media-capabilities";
 import type { CapabilityConnectionOption, MediaCapabilityId } from "../src/shared/media-capabilities";
 import type { WebSearchConfigDto } from "../src/shared/agent-ipc";
+import type { ChatMessage } from "../src/renderer/src/types";
+import { state as storeFixture } from "./media-capabilities-store-stub";
 import "../src/renderer/src/styles/global.css";
 
 const container = document.body.appendChild(document.createElement("main"));
@@ -110,7 +112,7 @@ async function waitFor(condition: () => boolean, message: string): Promise<void>
   const until = Date.now() + 5000;
   while (!condition()) { if (Date.now() > until) throw new Error(message); await settle(); }
 }
-async function setup(mutate?: (value: BuiltinCapabilitiesConfigDto) => void, options?: { search?: WebSearchConfigDto; catalogs?: Record<string, ModelCatalog> }): Promise<void> {
+async function setup(mutate?: (value: BuiltinCapabilitiesConfigDto) => void, options?: { search?: WebSearchConfigDto; catalogs?: Record<string, ModelCatalog>; messages?: ChatMessage[] }): Promise<void> {
   flushSync(() => root.render(null));
   config = clone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG);
   config.ocr = { enabled: true, serviceId: "ocr-existing" };
@@ -119,6 +121,8 @@ async function setup(mutate?: (value: BuiltinCapabilitiesConfigDto) => void, opt
   config.textToSpeech.enabled = false;
   mutate?.(config);
   search = options?.search ? clone(options.search) : {};
+  storeFixture.activeTaskId = options?.messages ? "search-fixture" : null;
+  storeFixture.tasks = options?.messages ? [{ id: "search-fixture", messages: options.messages }] : [];
   catalogs = options?.catalogs ? clone(options.catalogs) : {};
   discoveredCatalogs = {};
   revision = 1; keyReferences = new Set(["protected-ocr"]);
@@ -238,7 +242,8 @@ export async function run(): Promise<string[]> {
   await click(`${row("text-to-speech")} .switch`);
   assert(document.querySelectorAll("[data-connection-id]").length === 1, "Two capabilities reuse one API connection/editor");
   await expand(searchRowDisclosure);
-  await open(`${row("web")} .capability-options`);
+  await click(".search-providers-toggle");
+  await click('[aria-label="配置 Tavily"]');
   await change('[aria-label="Tavily API Key"]', "fixture-search-key");
   failMain = true;
   await save();
@@ -259,7 +264,8 @@ export async function run(): Promise<string[]> {
   await setup();
   await click(`${row("image-generation")} .switch`);
   await expand(searchRowDisclosure);
-  await open(`${row("web")} .capability-options`);
+  await click(".search-providers-toggle");
+  await click('[aria-label="配置 Tavily"]');
   await change('[aria-label="Tavily API Key"]', "another-search-key");
   failSearch = true;
   await save();
@@ -350,7 +356,7 @@ export async function run(): Promise<string[]> {
   passed.push("unavailable legacy providers and draft refresh failures are preserved; video jobs are read-only and recoverable by id");
 
   // 1) 联网搜索默认收起，摘要随配置实时变化；展开后搜索控件仍可用。
-  await setup(undefined, { search: { searchPolicy: { mode: "parallel", providers: ["tavily", "brave"], providerTimeoutMs: 30000, totalTimeoutMs: 60000, maxRequests: 12, verifySources: true } } });
+  await setup(undefined, { search: { tavilyApiKey: "fixture", braveApiKey: "fixture", searchPolicy: { mode: "parallel", providers: ["tavily", "brave"], providerTimeoutMs: 30000, totalTimeoutMs: 60000, maxRequests: 12, verifySources: true } } });
   const webDisclosure = element<HTMLDetailsElement>(searchRowDisclosure);
   assert(webDisclosure.tagName.toLowerCase() === "details" && !webDisclosure.open, "联网搜索默认收起");
   const summaryText = () => element(`${searchRowDisclosure} > .capability-config-summary > .capability-config-summary-text`).textContent?.trim() ?? "";
@@ -362,19 +368,34 @@ export async function run(): Promise<string[]> {
   await expand(searchRowDisclosure);
   assert(element<HTMLDetailsElement>(searchRowDisclosure).open, "展开后可操作搜索设置");
   const providerGrid = element(`${row("web")} .search-provider-grid`);
-  assert(providerGrid.querySelectorAll('input[type="checkbox"]').length === 2 && providerGrid.querySelectorAll("label").length === 2, "展开后供应商网格可见且可勾选");
+  assert(["tavily", "brave"].every(id => providerGrid.querySelector<HTMLInputElement>(`input[type="checkbox"][value="${id}"]`)?.checked), "展开后已选的两家供应商均可见");
   assert(!element(`${row("web")} .search-provider-grid input[value="brave"]`).matches(":disabled"), "供应商复选框可用于勾选");
   await click(`${row("web")} .search-provider-grid input[value="brave"]`);
-  assert(summaryText().includes("多源同时搜索 · 1 家供应商"), "取消勾选供应商后摘要数量实时更新");
+  assert(summaryText().includes("多源同时搜索 · 2 家供应商"), "未保存的供应商调整不改变已保存摘要");
+  assert(element('[data-search-provider="brave"]').textContent?.includes("停用待保存"), "未保存的停用与已启用状态明确区分");
   await change('[aria-label="搜索方式"]', "single");
-  assert(summaryText().includes("指定单源 · Tavily"), "单源摘要显示供应商名称");
+  assert(element<HTMLInputElement>('input[name="search-provider"][value="tavily"]').checked, "单源草稿选中 Tavily");
   await change('[aria-label="搜索方式"]', "fallback");
-  assert(summaryText().includes("按序回退 · 1 家"), "回退摘要显示按序供应商数量");
+  assert(Boolean(document.querySelector('[aria-label="上移 Tavily"]')), "回退顺序在供应商行内调整");
   await change('[aria-label="搜索方式"]', "auto");
-  assert(summaryText().includes("自动选择可用源"), "自动模式摘要说明自动选择");
+  assert(!providerGrid.querySelector('input[name="search-provider"]') && Boolean(providerGrid.querySelector('[data-search-provider="tavily"]')), "自动模式仍可管理供应商，不显示手动选择控件");
   await click(`${row("web")} .switch`);
-  assert(summaryText() === "已关闭", "关闭能力后摘要显示已关闭");
-  passed.push("联网搜索默认收起且摘要实时（并行/单源/回退/自动/关闭），展开后供应商网格可勾选，关键操作不被折叠隐藏");
+  assert(summaryText().includes("多源同时搜索 · 2 家供应商"), "未保存的开关不会改写已保存摘要");
+  passed.push("联网搜索一张供应商表：已生效与待保存分开，自动模式可配置，回退顺序同行调整");
+  await setup(undefined, { search: { serperApiKey: "fixture" }, messages: [{
+    id: "message", role: "assistant", createdAt: 0, blocks: [{ type: "tool", toolCall: {
+      tool: "web_search", status: "success", id: "fixture", summary: "fixture web search",
+      webSearch: { version: 1, id: "fixture", status: "partial", queries: ["sample"], sources: [], runs: [
+        { provider: "deepseek", status: "error", skippedReason: "unavailable", query: "sample", answer: "", results: [], durationMs: 0 },
+        { provider: "serper", status: "success", query: "sample", answer: "", results: [], durationMs: 5 },
+      ] },
+    } }],
+  } as ChatMessage] });
+  const latest = element('[aria-label="上次实际搜索"]');
+  assert(latest.textContent?.includes("DeepSeek Search：未调用（不可用）") && latest.textContent?.includes("Serper：返回结果"),
+    "Call history uses returned receipts and distinguishes not dispatched from a provider outcome");
+  assert(!document.querySelector('[data-search-provider="deepseek"]'), "Historical provider usage does not mark it configured");
+  passed.push("上次实际搜索独立展示回执，不把不可用或历史调用当成已配置");
 
   // 2) 有模型目录时用下拉选择；无目录时仍是文本输入并提示刷新。
   const openRouterCatalog: ModelCatalog = { "image-generation": [{ id: "google/gemini-2.5-flash-image", label: "Gemini 2.5 Flash Image" }, { id: "openai/gpt-5-image", label: "GPT-5 Image" }] };
@@ -474,12 +495,18 @@ export async function run(): Promise<string[]> {
     value.mediaBindings = {};
     value.textToSpeech = { enabled: false, voice: "old-provider-voice", rate: "1.5" };
   });
+  await expand(searchRowDisclosure);
+  await click(".search-providers-toggle");
+  assert(element('[data-search-provider="deepseek"]').textContent?.includes("未配置"), "DeepSeek is discoverable before adding a key");
+  await click('[aria-label="配置 DeepSeek Search"]');
   await change('[aria-label="DeepSeek 搜索服务"]', "__add_api__");
   const deepseekId = element("[data-connection-id]").getAttribute("data-connection-id")!;
   const deepseekPanel = `[data-connection-id="${deepseekId}"]`;
+  await open(deepseekPanel);
   assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API 地址"]`).value === DEEPSEEK_API_ROOT, "DeepSeek preset uses the official tool root");
   assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API 地址"]`).matches(":disabled"), "Native preset endpoint remains fixed");
-  await change(`${deepseekPanel} [aria-label="API Key"]`, "fixture-deepseek-key");
+  await change('[aria-label="DeepSeek 搜索 API Key"]', "fixture-deepseek-key");
+  assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API Key"]`).value === "fixture-deepseek-key", "Inline editing shares the same credential draft");
   await change('[aria-label="语音转文字服务"]', deepseekId);
   await change('[aria-label="图片文字识别服务"]', deepseekId);
   await change('[aria-label="文字转语音服务"]', deepseekId);
@@ -493,7 +520,8 @@ export async function run(): Promise<string[]> {
   await change('[aria-label="网页读取服务"]', "deepseek");
   await change('[aria-label="搜索方式"]', "single");
   await click('input[name="search-provider"][value="deepseek"]');
-  assert(element('input[value="deepseek"]').closest("label")?.textContent?.includes("已配置"), "An unsaved shared key makes DeepSeek available in the search selector");
+  const deepseekRow = element('[data-search-provider="deepseek"]');
+  assert(deepseekRow.textContent?.includes("配置待保存") && !deepseekRow.textContent?.includes("已启用"), "An unsaved shared key can be selected but is not advertised as live");
   for (const capability of ["speech-to-text", "ocr", "text-to-speech"]) {
     if (element(`${row(capability)} .switch`).getAttribute("aria-pressed") !== "true") await click(`${row(capability)} .switch`);
   }
@@ -519,7 +547,10 @@ export async function run(): Promise<string[]> {
   assert(element<HTMLSelectElement>('[aria-label="DeepSeek OCR 识别方式"]').value === "rich_layout_recognition", "Reopening retains document recognition mode");
   assert(element<HTMLSelectElement>('[aria-label="文字转语音声音"]').value === "tide", "Reopening retains selected native voice");
   assert(element<HTMLSelectElement>('[aria-label="文字转语音播放方式"]').value === "http", "Reopening retains explicit HTTP speech");
+  await expand(searchRowDisclosure);
+  await click('[aria-label="配置 DeepSeek Search"]');
   assert(element<HTMLSelectElement>('[aria-label="DeepSeek 搜索服务"]').value === deepseekId, "Reopening retains the shared search service");
+  assert(element('[data-search-provider="deepseek"]').textContent?.includes("已启用"), "Persisted DeepSeek selection is distinguished from runtime usage");
   assert(element<HTMLSelectElement>('[aria-label="网页读取服务"]').value === "deepseek", "Reopening retains native page reading");
   assert(element<HTMLInputElement>(`${deepseekPanel} [aria-label="API Key"]`).value === "", "Reopening does not expose a saved key");
   assert(element<HTMLButtonElement>(saveButton).disabled, "Reopened configuration is clean without a synthetic model edit");

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { act, type ReactNode } from "react";
 import ApiServicePicker from "../src/renderer/src/components/settings/ApiServicePicker";
-import WebServiceSettings from "../src/renderer/src/components/settings/WebServiceSettings";
-import { createApiServiceConnection, type ApiWebServiceConfig } from "../src/shared/api-service-settings";
+import { WebFetchSettings, WebSearchConnection } from "../src/renderer/src/components/settings/WebServiceSettings";
+import { API_WEB_SERVICE_BINDINGS, createApiServiceConnection, type ApiWebServiceConfig } from "../src/shared/api-service-settings";
 import { MEDIA_PROVIDER_PRESETS, type ApiCapabilityConnection } from "../src/shared/media-capabilities";
 
 /** Run within the existing isolated DOM suite; no production credentials or IPC. */
@@ -53,12 +53,13 @@ export async function verifyApiServiceSettingsDom(root: { render: (node: ReactNo
   const connections: Record<string, ApiCapabilityConnection> = { "api-router": createApiServiceConnection("openrouter") };
   let additions = 0;
   const drawWeb = async (): Promise<void> => {
-    await act(async () => { root.render(<WebServiceSettings value={value} connections={connections} disabled={false}
-      onChange={patch => { value = { ...value, ...patch }; }} onAdd={preset => {
+    const onChange = (patch: ApiWebServiceConfig): void => { value = { ...value, ...patch }; };
+    await act(async () => { root.render(<><WebSearchConnection binding={API_WEB_SERVICE_BINDINGS[0]} value={value} connections={connections} disabled={false}
+      onChange={onChange} onAdd={preset => {
         const id = `api-web-${++additions}`;
         connections[id] = createApiServiceConnection(preset);
         return id;
-      }} />); });
+      }} /><WebFetchSettings value={value} disabled={false} onChange={onChange} /></>); });
   };
   await drawWeb();
   assert(![...field("DeepSeek 搜索服务").options].some(option => option.value === "api-router"));
@@ -75,7 +76,7 @@ export async function verifyApiServiceSettingsDom(root: { render: (node: ReactNo
   connections["api-web-2"] = createApiServiceConnection("deepseek");
   await select("DeepSeek 搜索服务", "");
   await drawWeb();
-  assert.equal(value.deepseekConnectionId, undefined);
+  assert.equal(value.deepseekConnectionId, "", "Clearing a previously saved binding sends an explicit unset");
   assert.match(field("DeepSeek 搜索服务").options[0].textContent ?? "", /多个连接/);
   value = { ...value, deepseekConnectionId: "api-removed" };
   await drawWeb();

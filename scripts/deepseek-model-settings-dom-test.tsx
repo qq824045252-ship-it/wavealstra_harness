@@ -14,7 +14,10 @@ Object.defineProperty(window.HTMLInputElement.prototype, "checked", { configurab
   get() { return this.hasAttribute("checked"); }, set(value: boolean) { value ? this.setAttribute("checked", "") : this.removeAttribute("checked"); } });
 const selectValue = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!;
 Object.defineProperty(window.HTMLSelectElement.prototype, "value", { configurable: true, get: selectValue.get,
-  set(value: string) { for (const option of this.options) option.selected = option.value === value; } });
+  set(value: string) {
+    for (const option of this.options) option.removeAttribute("selected");
+    [...this.options].find(option => option.value === value)?.setAttribute("selected", "");
+  } });
 const { createRoot } = await import("react-dom/client");
 const root = createRoot(document.getElementById("root")!);
 const initial: SavedModelEntry = { providerId: "deepseek", modelId: "deepseek-flash", api: "openai-completions", baseUrl: "https://api.deepseek.com",

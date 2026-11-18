@@ -14,15 +14,17 @@ import { desktopPlatformLabel, desktopRuntimeSummary } from "@shared/desktop-pla
 import { useAppStore } from "@/store/appStore";
 import { WEB_SEARCH_PROVIDER_OPTIONS, type WebSearchConfigDto } from "@shared/agent-ipc";
 import ApiServicePicker from "./ApiServicePicker";
-import WebServiceSettings from "./WebServiceSettings";
+import { WebFetchSettings, WebSearchConnection } from "./WebServiceSettings";
+import LatestSearchRun from "./LatestSearchRun";
 import {
   API_SERVICE_PROTOCOL_SETTINGS, API_WEB_SERVICE_BINDINGS, apiConnectionUsedForWeb, apiServiceCapabilityLabels,
-  apiServiceMediaControls, createApiServiceConnection, selectedWebServiceConnection, webSettingsDependOnConnections,
+  apiServiceMediaControls, createApiServiceConnection, selectedWebServiceConnection, webServiceConnections, webSettingsDependOnConnections,
 } from "@shared/api-service-settings";
 import "./CapabilitiesTab.css";
 
 const AUTO_SERVICE = "__automatic__";
 const ADD_SERVICE = "__add_api__";
+const SEARCH_KEY_FIELDS = { tavily: "tavilyApiKey", serper: "serperApiKey", tinyfish: "tinyfishApiKey", brave: "braveApiKey" } as const;
 const ADD_PRESET_PREFIX = "__preset__:";
 const CUSTOM_MODEL = "__custom_model__";
 const STATE_LABEL: Record<string, string> = {
@@ -408,21 +410,28 @@ export default function CapabilitiesTab(): React.JSX.Element {
   }, [snapshot?.mediaServices, draft?.connections]);
   const statusById = useMemo(() => new Map(snapshot?.capabilities.map(item => [item.id, item]) ?? []), [snapshot]);
   const visionModels = useMemo(() => models.filter(model => model.enabled !== false && model.supportsImages), [models]);
+  const codexConfigured = snapshot?.mediaServices?.some(service => service.id === CODEX_CONNECTION_ID && service.authState === "signed-in") ?? false;
+  const savedSearchPolicy = useMemo(() => searchPolicyFromConfig(savedWebSearch ?? {}), [savedWebSearch]);
   const searchProviderChoices = useMemo(() => {
-    const ready = new Set<string>(webSearchDraft?.configuredProviders ?? []);
-    if (models.some(model => model.vendor === "openai-codex" || model.id.startsWith("openai-codex/"))) ready.add("codex");
-    const searchKeys = { tavily: webSearchDraft?.tavilyApiKey, serper: webSearchDraft?.serperApiKey, tinyfish: webSearchDraft?.tinyfishApiKey, brave: webSearchDraft?.braveApiKey };
-    for (const [id, key] of Object.entries(searchKeys)) if (key?.trim() || webSearchDraft?.apiKeyPools?.[id]?.length) ready.add(id);
-    for (const provider of savedWebSearch?.searchRouting?.providers ?? []) ready.add(provider);
-    for (const binding of API_WEB_SERVICE_BINDINGS) {
-      const selected = selectedWebServiceConnection(binding, webSearchDraft, draft?.connections);
-      const pendingKey = selected ? credentialDrafts[selected[0]] : undefined;
-      const savedService = selected ? services.find(service => service.id === selected[0]) : undefined;
-      if (selected && !pendingKey?.clear && (pendingKey?.secret?.trim() || savedService?.authState === "configured")) ready.add(binding.provider);
-      else ready.delete(binding.provider);
-    }
-    return WEB_SEARCH_PROVIDER_OPTIONS.filter(provider => ready.has(provider.id)).map(provider => provider.id);
-  }, [models, savedWebSearch, webSearchDraft, draft?.connections, credentialDrafts, services]);
+    const resolve = (config: WebSearchConfigDto | null, connections: BuiltinCapabilitiesConfigDto["connections"], drafts: Record<string, CredentialDraft>, isDraft: boolean): string[] => {
+      const ready = new Set<string>(config?.configuredProviders ?? []);
+      if (codexConfigured) ready.add("codex");
+      for (const [id, field] of Object.entries(SEARCH_KEY_FIELDS)) {
+        if (config?.[field]?.trim() || config?.apiKeyPools?.[id]?.some(key => key.trim())) ready.add(id);
+        else if (isDraft && savedWebSearch?.[field]?.trim()) ready.delete(id);
+      }
+      for (const binding of API_WEB_SERVICE_BINDINGS) {
+        const selected = selectedWebServiceConnection(binding, config, connections);
+        const pendingKey = selected && drafts[selected[0]];
+        const savedService = selected && snapshot?.mediaServices?.find(service => service.id === selected[0]);
+        if (selected && !pendingKey?.clear && (pendingKey?.secret?.trim() || savedService?.authState === "configured")) ready.add(binding.provider);
+        else ready.delete(binding.provider);
+      }
+      return WEB_SEARCH_PROVIDER_OPTIONS.filter(provider => ready.has(provider.id)).map(provider => provider.id);
+    };
+    return { draft: resolve(webSearchDraft, draft?.connections, credentialDrafts, true),
+      saved: resolve(savedWebSearch, savedConfig?.connections, {}, false) };
+  }, [codexConfigured, savedWebSearch, webSearchDraft, draft?.connections, savedConfig?.connections, credentialDrafts, snapshot?.mediaServices]);
   const credentialChanges = Object.entries(credentialDrafts).filter(([, change]) => hasCredentialChange(change)).map(([key, change]) =>
     key.endsWith("::secretKey")
       ? { connectionId: key.slice(0, -"::secretKey".length), slot: "secretKey" as const, ...change }
@@ -455,7 +464,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
     setOpenConnections(current => new Set(current).add(id));
     requestAnimationFrame(() => document.getElementById(`capability-connection-${id}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   };
-  const addConnection = (capability?: MediaCapabilityId, presetId?: string): string | undefined => {
+  const addConnection = (capability?: MediaCapabilityId, presetId?: string, reveal = true): string | undefined => {
     const preset = MEDIA_PROVIDER_PRESETS.find(entry => entry.id === presetId);
     if (preset && capability && !preset.capabilities.includes(capability)) return;
     const id = `api-${crypto.randomUUID()}`;
@@ -470,7 +479,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
         ...(capability === "text-to-speech" ? { textToSpeech: { ...current.textToSpeech, voice: apiServiceMediaControls(connection).speech?.defaultVoice, rate: undefined } } : {}),
       };
     });
-    editConnection(id);
+    if (reveal) editConnection(id);
     return id;
   };
   const selectService = (id: MediaCapabilityId, selected: string): void => {
@@ -590,6 +599,36 @@ export default function CapabilitiesTab(): React.JSX.Element {
   const rowCommon = (id: BuiltinCapabilityId, enabled: boolean) => ({ id, enabled, savedEnabled: statusById.get(id)?.enabled, disabled: busy, testing: testing === id, status: statusById.get(id), checkResult: checkResult?.id === id ? checkResult : null, onTest: (target: BuiltinCapabilityId) => void test(target) });
   const connectionUsers = (connectionId: string): MediaCapabilityId[] => MEDIA_CAPABILITY_IDS.filter(id => mediaBinding(draft, id).connectionId === connectionId);
   const configChangedElsewhere = draftRevision !== undefined && snapshot?.revision !== undefined && draftRevision !== snapshot.revision;
+  const searchConnections = draft.connections ?? {};
+  const searchConfig = webSearchDraft ?? {};
+  const patchSearch = (patch: Partial<WebSearchConfigDto>): void => setWebSearchDraft(current => ({ ...(current ?? {}), ...patch }));
+  const linkedSearchProviders = API_WEB_SERVICE_BINDINGS.filter(binding => searchConfig[binding.connectionField]
+    || webServiceConnections(binding, searchConnections).length > 0).map(binding => binding.provider);
+  const searchSettingsPending = searchPending || savedConfig?.web.enabled !== draft.web.enabled
+    || API_WEB_SERVICE_BINDINGS.some(binding => webServiceConnections(binding, searchConnections).some(([id, connection]) =>
+      differs(connection, savedConfig?.connections?.[id]) || hasCredentialChange(credentialDrafts[id])));
+  const renderSearchProvider = (id: string): ReactNode => {
+    const binding = API_WEB_SERVICE_BINDINGS.find(binding => binding.provider === id);
+    if (binding) {
+      const selected = selectedWebServiceConnection(binding, searchConfig, searchConnections);
+      const key = selected && credentialDrafts[selected[0]];
+      return <>
+        <WebSearchConnection binding={binding} value={searchConfig} connections={searchConnections} disabled={busy} onChange={patchSearch}
+          onAdd={presetId => addConnection(undefined, presetId, false)} />
+        {selected && <SettingsSecretField label={`${binding.label} 搜索 API Key`} value={key?.secret ?? ""} clear={key?.clear}
+          configured={Boolean(snapshot?.mediaServices?.some(service => service.id === selected[0] && service.authState === "configured"))} disabled={busy}
+          onChange={secret => changeCredential(selected[0], { secret, clear: false })}
+          onClearChange={clear => changeCredential(selected[0], { secret: "", clear })} />}
+      </>;
+    }
+    const field = SEARCH_KEY_FIELDS[id as keyof typeof SEARCH_KEY_FIELDS];
+    if (field) return <SettingsInput label={`${searchProviderLabel(id)} API Key`} type="password" autoComplete="new-password"
+      hint={searchConfig.apiKeyPools?.[id]?.length ? "此供应商已设多 Key 池；搜索优先使用池中的 Key。" : undefined}
+      value={searchConfig[field] ?? ""} onChange={event => patchSearch({ [field]: event.target.value })} />;
+    return <p>{id === "codex" ? "使用模型设置中的 Codex 登录，不需要独立 API Key。"
+      : id === "openai" || id === "xai" ? "使用对应供应商的现有模型连接。模型连接可用不代表搜索接口已验证。"
+      : "此供应商使用现有高级搜索配置；当前页面不编辑它的凭据。搜索是否可用以实际调用为准。"}</p>;
+  };
 
   return <div className="capabilities-page" aria-busy={saving}>
     <p className="settings-section-desc capabilities-intro">为每项能力选择服务。已有登录和本机服务可直接使用，也可以添加 API 服务供多项能力共用。</p>
@@ -700,13 +739,13 @@ export default function CapabilitiesTab(): React.JSX.Element {
     </SettingsSection>
 
     <SettingsSection title="搜索与图像理解">
-      <CapabilityRow {...rowCommon("web", draft.web.enabled)} title="联网搜索" description={searchPolicy.mode === "parallel" ? `同时搜索 ${searchPolicy.providers.length} 家供应商` : "选择检索方式与供应商。"} tools={["web_search", "fetch_content", "source_check", "get_search_content"]} configurationPending={searchPending} collapsible defaultCollapsed summary={searchSummary(draft.web.enabled, searchPolicy)} onToggle={enabled => changeConfig(current => ({ ...current, web: { ...current.web, enabled } }))}>
+      <CapabilityRow {...rowCommon("web", draft.web.enabled)} title="联网搜索" description="在同一处配置并选择搜索供应商。" tools={["web_search", "fetch_content", "source_check", "get_search_content"]} configurationPending={searchSettingsPending} collapsible defaultCollapsed summary={searchSummary(savedConfig?.web.enabled ?? false, savedSearchPolicy)} onToggle={enabled => changeConfig(current => ({ ...current, web: { ...current.web, enabled } }))}>
         {searchLoadError ? <div className="capability-search-error"><p className="settings-inline-error" role="alert">{searchLoadError}</p><button type="button" className="btn" disabled={busy || refreshing} onClick={() => void retrySearch()}>重新读取搜索设置</button></div> : <>
-          <SearchSettings value={searchPolicy} configured={searchProviderChoices} disabled={!draft.web.enabled || busy} onChange={setSearchPolicy} />
-          <WebServiceSettings value={webSearchDraft ?? {}} connections={draft.connections ?? {}} disabled={busy}
-            onChange={patch => setWebSearchDraft(current => ({ ...(current ?? {}), ...patch }))}
-            onAdd={presetId => addConnection(undefined, presetId)} />
-          <details className="capability-options"><summary>独立搜索 API Key</summary><div className="capability-form-grid">{([['tavilyApiKey', 'Tavily'], ['serperApiKey', 'Serper'], ['tinyfishApiKey', 'TinyFish'], ['braveApiKey', 'Brave']] as const).map(([key, label]) => <SettingsInput key={key} label={`${label} API Key`} type="password" autoComplete="new-password" value={webSearchDraft?.[key] ?? ""} onChange={event => setWebSearchDraft(current => ({ ...(current ?? {}), [key]: event.target.value || undefined }))} />)}</div></details>
+          <SearchSettings value={searchPolicy} saved={savedSearchPolicy} savedEnabled={savedConfig?.web.enabled ?? false}
+            configured={searchProviderChoices.draft} savedConfigured={searchProviderChoices.saved} linked={linkedSearchProviders} disabled={busy}
+            onChange={setSearchPolicy} renderProviderConfig={renderSearchProvider}
+            advanced={<WebFetchSettings value={searchConfig} disabled={busy} onChange={patchSearch} />} />
+          <LatestSearchRun />
         </>}
       </CapabilityRow>
       <CapabilityRow {...rowCommon("vision", draft.vision.enabled)} title="图像理解" description="为不支持图片输入的主模型选择视觉模型；用于分析图片。" tools={["describe_image"]} configurationPending={savedConfig?.vision.model !== draft.vision.model} preventEnable={!visionModels.length} collapsible summary={draft.vision.model ? `视觉模型 · ${visionModels.find(model => model.id === draft.vision.model)?.name ?? draft.vision.model}` : "自动使用可用视觉模型"} onToggle={enabled => changeConfig(current => ({ ...current, vision: { ...current.vision, enabled } }))}>
