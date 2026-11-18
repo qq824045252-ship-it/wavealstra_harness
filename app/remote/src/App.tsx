@@ -15,17 +15,16 @@ import { useRemoteStore, localDoneAckAt } from './store/remoteStore'
 import { buildRemoteTimeline } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
 import { ClaudeToolCard } from './components/ClaudeToolCard'
-import { RemoteImageChipList, resolveImageOwnerId } from './components/RemoteImages'
+import { RemoteImageSummary, resolveImageOwnerId } from './components/RemoteImages'
 import { buildSpaceTaskGroups, spaceBreadcrumb, type SpaceGroupNode } from './lib/spaceGroups'
 import { useHistoryPagination } from './lib/historyPagination'
-import { prependScrollTop } from './lib/historyWindow'
+import { anchorPrependScrollTop } from './lib/historyWindow'
 import { taskModeLabel } from './lib/taskModeLabel'
 import { taskDotLabel, taskStatusDot } from './lib/taskStatusDot'
 import { ConnectPage } from './components/ConnectPage'
 import { NewTaskSetupChips, NewTaskSetupSheet } from './components/NewTaskSetup'
 import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
 import { RemoteConversationInteractionCard } from './components/RemoteConversationInteractionCard'
-import { WorkPanelLauncher } from './components/WorkPanel'
 import './styles/app.css'
 
 import { acpOptionLabel, acpStatusLabel } from './lib/acpLabels'
@@ -146,7 +145,6 @@ export function App() {
     {!client || !bootstrap ? <ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /> : activeTaskId ? <ChatPage /> : <HomePage />}
     {client && bootstrap && showConnectionSettings && <div className="connection-settings-overlay"><ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /></div>}
     {client && bootstrap && !activeTaskId && <NewTaskSetupSheet />}
-    {client && bootstrap && <WorkPanelLauncher client={client} />}
   </div>
 }
 
@@ -308,6 +306,13 @@ function timelineFirstMessageId(element: HTMLElement): string | undefined {
   return element.querySelector<HTMLElement>('[data-message-id]')?.dataset.messageId
 }
 
+/** 某条消息在滚动容器里的视口偏移（负值 = 已经在视口上方） */
+function messageOffset(element: HTMLElement, messageId: string): number | null {
+  const node = element.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`)
+  if (!node) return null
+  return node.getBoundingClientRect().top - element.getBoundingClientRect().top
+}
+
 /**
  * 前插块里的图片 / SVG / 字体之后还会长高，布局时刻的一次补偿不够。
  * 盯住原首条消息在容器内的偏移，一漂就补回；一旦 scrollTop 偏离我们写入的值
@@ -409,28 +414,27 @@ function ChatPage() {
     return map
   }, [runtime?.interactions])
   /**
-   * 图片 → 消息归属（稳定规则见 resolveImageOwnerId），以及无法归属的「其他图片」。
+   * 图片 → 回复 的归属（稳定规则见 resolveImageOwnerId）。
    *
-   * 早先版本把归属做成「任务末尾一堆链接」，等于丢掉上下文；上一版又直接用
-   * createdByMessageId 硬匹配，遇到 live/快照 id 空间不同就整批掉到末尾。这里两条都避开：
-   * 先按稳定的工具调用 id 归属，再退化为消息 id、durable 序号，实在认不出才集中放末尾。
+   * 只在所属回复下渲染一行汇总（见 RemoteImageSummary），不再单独造一个「任务末尾图片区」：
+   * 那个区块会在更早历史加载后整块消失/出现，除了搅动滚动位置，还让图片有两套入口。
+   * 归属落在还没加载的更早历史里时，图会在那一页上屏时自动出现（不丢，只是暂时没位置）。
    */
-  const { imagesByMessage, orphanImages } = useMemo(() => {
+  const imagesByMessage = useMemo(() => {
     const grouped = new Map<string, RemoteImageArtifact[]>()
     const all = histories[activeTaskId ?? '']?.imageArtifacts ?? EMPTY_MESSAGE_IMAGES
-    const orphans: RemoteImageArtifact[] = []
-    if (!all.length) return { imagesByMessage: grouped, orphanImages: orphans }
+    if (!all.length) return grouped
     const seen = new Set<string>()
     for (const image of all) {
       const ownerId = resolveImageOwnerId(image, messages)
-      if (!ownerId) { orphans.push(image); continue }
+      if (!ownerId) continue
       if (seen.has(image.id)) continue
       seen.add(image.id)
       const list = grouped.get(ownerId) ?? []
       list.push(image)
       grouped.set(ownerId, list)
     }
-    return { imagesByMessage: grouped, orphanImages: orphans }
+    return grouped
   }, [messages, histories, activeTaskId])
   const visibleAssistantIds = useMemo(
     () => new Set(messages.filter(message => message.role === 'assistant').map(message => message.id)),
@@ -472,10 +476,13 @@ function ChatPage() {
     const el = timelineRef.current
     if (!el) return
     // 前插补偿优先于任何「新轮次置顶」判定：上拉加载更早历史不是一次新的用户回合，
-    // 不能被下面的 pin 拉回底部。内容在顶部变长，scrollTop 同步加同样的高度，视觉位置才不动。
+    // 不能被下面的 pin 拉回底部。把原首条消息按回原位，视觉位置才不动。
     const prepend = consumePrependAnchor(timelineFirstMessageId(el))
     if (prepend) {
-      el.scrollTop = prependScrollTop(prepend.top, prepend.scrollHeight, el.scrollHeight)
+      // 按锚点几何补偿：锚点下方的布局变化（「其他图片」块消失、流式 token、图片解码）不得算进
+      // 上方长高量。读矩形必须在写 scrollTop 之前；空时间轴（没有锚点）时不动，原地就是顶。
+      const offset = prepend.prevFirstId ? messageOffset(el, prepend.prevFirstId) : null
+      if (offset !== null) el.scrollTop = anchorPrependScrollTop(el.scrollTop, prepend.prevFirstOffset, offset)
       guardPrependAnchor(el, prepend.prevFirstId, prepend.prevFirstOffset)
     }
     const users = el.querySelectorAll<HTMLElement>('.message-bubble-user')
@@ -692,7 +699,8 @@ function ChatPage() {
                   <ProcessPanel thinking={message.thinking} tools={message.tools} activity={message.activity} running={!!message.streaming || (message.id === lastAssistantId && isBusy)} />
                 )}
 
-                <RemoteMarkdown text={message.text} taskId={activeTaskId} messageImages={imagesByMessage.get(message.id) ?? EMPTY_MESSAGE_IMAGES} images={histories[activeTaskId]?.imageArtifacts} />
+                <RemoteMarkdown text={message.text} images={histories[activeTaskId]?.imageArtifacts} />
+                <RemoteImageSummary taskId={activeTaskId} images={imagesByMessage.get(message.id) ?? EMPTY_MESSAGE_IMAGES} />
                 {(interactionsByMessage.get(message.id) ?? []).map(interaction => (
                   <RemoteConversationInteractionCard
                     key={interaction.id}
@@ -809,13 +817,6 @@ function ChatPage() {
               </div>
             </div>
           ))}
-
-          {orphanImages.length > 0 && (
-            <div className="timeline-image-links">
-              <div className="timeline-image-links-title">其他图片（{orphanImages.length}）</div>
-              <RemoteImageChipList taskId={activeTaskId ?? ''} images={orphanImages} />
-            </div>
-          )}
 
           {!isBusy && <div className="chat-disclaimer">MyBuddy is AI and can make mistakes.</div>}
           <div className="chat-bottom-spacer" />

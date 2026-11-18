@@ -12,17 +12,14 @@ import { RemoteAccessServer } from "../src/main/remote/RemoteAccessServer";
 import { RemoteDeviceStore } from "../src/main/remote/RemoteDeviceStore";
 import { RemoteAccessPairing } from "../src/main/remote/RemoteAccessPairing";
 import { RemoteEventBus } from "../src/main/remote/RemoteEventBus";
-import type { RemoteWorkCardReadResult, RemoteWorkSummary, RemoteWorkUpdate } from "../shared/src/remote-contract";
-import { RemoteApiError, RemoteClient } from "../app/remote/src/api/RemoteClient";
-import { useRemoteWorkStore } from "../app/remote/src/store/remoteWork";
-import { workCardCompletionLabel } from "../app/remote/src/components/WorkPanel";
+import type { RemoteWorkSummary, RemoteWorkUpdate } from "../shared/src/remote-contract";
 import type { WorkActor, WorkControlResult, WorkDto } from "../src/shared/bot-work";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
 
 /**
- * BW-A45 (paired-device half): Work sync, card read, diagnostics, version-bound feedback
- * and manual resend over the authenticated Remote API. Nothing here bypasses the host
- * service — the bridge is the same one the desktop wiring installs.
+ * Work（主机侧事项日志）对已配对设备的 HTTP 面：同步游标、卡片已读、诊断、版本绑定的反馈与人工重发。
+ * 全部断言都打在电脑端服务与 HTTP 收条上——安卓端不再有 Bot 入口（那套 UI/store 已随入口删除），
+ * 这条用例只负责主机 API 不被改坏。
  */
 
 const root = mkdtempSync(join(tmpdir(), "remote-work-"));
@@ -72,7 +69,6 @@ const server = new RemoteAccessServer({
 });
 const address = await server.start();
 const device = devices.issue("Test Phone", randomUUID());
-const client = new RemoteClient(`http://127.0.0.1:${address.port}`, device.token);
 const call = (method: string, path: string, body?: unknown, token = device.token) => new Promise<{ status: number; json: any }>((resolve, reject) => {
   const payload = body === undefined ? undefined : JSON.stringify(body);
   const req = request({ host: "127.0.0.1", port: address.port, method, path,
@@ -210,23 +206,14 @@ try {
     assert.equal(works.notifications.attempts(notification.notificationId).length, 1);
     assert.equal(works.repo.getNotification(notification.notificationId)!.delivery, "unknown");
 
-    useRemoteWorkStore.getState().setClient(client);
-    await useRemoteWorkStore.getState().refresh(client);
-    const reviewed = useRemoteWorkStore.getState().works.find(item => item.workId === work.workId)!;
+    const reviewed = (await call("GET", `/v1/work/${work.workId}`)).json as RemoteWorkSummary;
     const bindings = works.repo.listBindings(work.workId).length;
-    let confirmedRequest: Parameters<RemoteClient["workResend"]>[2] | undefined;
-    const originalResend = client.workResend.bind(client);
-    client.workResend = (workId, notificationId, request) => {
-      confirmedRequest = request;
-      return originalResend(workId, notificationId, request);
-    };
-    const accepted = await useRemoteWorkStore.getState().resendNotification(client, work.workId,
-      notification.notificationId, { reason: "用户确认重发", acknowledgedDuplicateRisk: true, versionGuard: guard(reviewed) });
-    client.workResend = originalResend;
-    assert.equal(accepted.ok, true, accepted.message);
-    assert.deepEqual(accepted, { ok: true, replayed: false },
+    const confirmedRequest = { operationId: "phone-resend-confirmed", reason: "用户确认重发",
+      acknowledgedDuplicateRisk: true, versionGuard: guard(reviewed) };
+    const accepted = await call("POST", route, confirmedRequest);
+    assert.equal(accepted.status, 200, JSON.stringify(accepted.json));
+    assert.deepEqual(accepted.json, { ok: true, replayed: false },
       "HTTP resend success must expose only the device receipt, not work/operation/outbox internals");
-    assert.ok(confirmedRequest);
     const versionAfterResend = works.getWork(work.workId)!.stateVersion;
     const replay = await call("POST", route, confirmedRequest);
     assert.equal(replay.status, 200);
@@ -243,7 +230,7 @@ try {
   });
 
   await check("phone feedback carries the real artifact snapshot and rejects stale controls", async () => {
-    const summary = await client.workSummary(work.workId);
+    const summary = (await call("GET", `/v1/work/${work.workId}`)).json as RemoteWorkSummary;
     assert.equal(summary.artifactSnapshotId, works.artifacts.currentSnapshotId(work.workId));
     assert.ok(summary.artifactSnapshotId?.startsWith("artifacts:"));
     const request = { operationId: "artifact-feedback", criterionIds: [works.getWork(work.workId)!.criteria[1]!.id],
@@ -253,17 +240,18 @@ try {
     assert.equal((await call("POST", route, { ...request, versionGuard: undefined })).status, 400);
     assert.equal((await call("POST", route, { ...request, artifactSnapshotId: undefined })).status, 409);
     assert.equal((await call("POST", route, { ...request, artifactSnapshotId: "artifacts:old" })).status, 409);
-    await assert.rejects(client.workFeedback(work.workId, { ...request,
-      versionGuard: { ...request.versionGuard, expectedStateVersion: summary.stateVersion - 1 } }),
-    error => error instanceof RemoteApiError && error.status === 409 && error.code === "version_conflict"
-      && error.message !== "HTTP 409");
+    const staleControl = await call("POST", route, { ...request,
+      versionGuard: { ...request.versionGuard, expectedStateVersion: summary.stateVersion - 1 } });
+    assert.equal(staleControl.status, 409);
+    assert.equal(staleControl.json.code, "version_conflict");
+    assert.notEqual(staleControl.json.message, "HTTP 409", "a version conflict must carry a human reason");
     assert.equal(works.getWork(work.workId)!.criteria[1]!.status, "failed");
-    const accepted = await useRemoteWorkStore.getState().submitFeedback(client, work.workId, request);
-    assert.equal(accepted.ok, true, accepted.message);
-    assert.deepEqual(accepted, { ok: true, replayed: false },
+    const accepted = await call("POST", route, request);
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(accepted.json, { ok: true, replayed: false },
       "HTTP feedback success must not serialize the host Work, workspace, authorization or budget");
     assert.equal(works.getWork(work.workId)!.criteria[1]!.status, "satisfied");
-    const verified = await client.workSummary(work.workId);
+    const verified = (await call("GET", `/v1/work/${work.workId}`)).json as RemoteWorkSummary;
     assert.equal(verified.unverifiedScope.find(item => item.criterionId === request.criterionIds[0])?.reason,
       "user_verified", "the real HTTP projection preserves user verification provenance for the phone");
     const versionAfterFeedback = works.getWork(work.workId)!.stateVersion;
@@ -278,7 +266,7 @@ try {
       "feedback version conflicts must not expose latestWorkSnapshot");
   });
 
-  await check("a reused acceptance card displays successful closure without another card", async () => {
+  await check("a reused acceptance card stays current after a successful close", async () => {
     const current = works.getWork(work.workId)!;
     unwrap(works.recordUserFeedback(user, { operationId: "ready-to-close", workId: work.workId,
       criterionIds: current.criteria.map(item => item.id), environment: "omarchy", sourceRef: "final-review",
@@ -286,199 +274,17 @@ try {
       versionGuard: guard(current), failed: false }));
     unwrap(works.closeWork(user, { operationId: "close", workId: work.workId, conclusion: "succeeded",
       versionGuard: guard(works.getWork(work.workId)!) }));
-    const summary = await client.workSummary(work.workId);
+    const summary = (await call("GET", `/v1/work/${work.workId}`)).json as RemoteWorkSummary;
     assert.equal(summary.lifecycle, "closed");
     assert.equal(summary.closureConclusion, "succeeded");
     assert.equal(summary.cards.length, 1);
     const accepted = summary.cards[0]!;
     assert.equal(accepted.kind, "accepted_result");
-    assert.equal(workCardCompletionLabel(summary, accepted), "已完成并关闭");
-    for (const closureConclusion of ["cancelled", "ended_unsuccessfully"] as const)
-      assert.equal(workCardCompletionLabel({ ...summary, closureConclusion }, accepted), undefined);
-    assert.equal(workCardCompletionLabel({ ...summary, lifecycle: "active" }, accepted), undefined);
-    assert.equal(workCardCompletionLabel(summary, { ...accepted, currency: "historical" }), undefined);
-    assert.equal(workCardCompletionLabel(summary, { ...accepted, currency: "superseded" }), undefined);
-    assert.equal(workCardCompletionLabel(summary, { ...accepted, kind: "blocked_escalation" }), undefined);
-  });
-
-  // These are real Zustand store transitions. Deferred transports expose races that the
-  // HTTP-only tests above cannot exercise without depending on timers or network speed.
-  const sample: RemoteWorkSummary = { ...await client.workSummary(work.workId), lifecycle: "active",
-    closureConclusion: undefined, stateVersion: 1 };
-  sample.cards = sample.cards.map(item => ({ ...item, readAt: undefined, readVersion: 0 }));
-  const snapshot = (epoch: string, sequence = 1, entries = [sample], scope: "open" | "all" = "open"):
-    Extract<RemoteWorkUpdate, { kind: "snapshot" }> => ({ kind: "snapshot", cursor: { epoch, sequence, scope }, works: entries });
-  const deferred = <T,>() => {
-    let resolve!: (value: T) => void;
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
-    return { promise, resolve, reject };
-  };
-  const fakeClient = (name: string) => {
-    const fake = new RemoteClient(`https://${name}.invalid`, "fixture-token");
-    fake.workSync = async () => snapshot("epoch-a");
-    fake.workCardRead = async () => ({ ok: true, readAt: 100, readVersion: 1 });
-    fake.workDiagnostics = async () => ({ source: name });
-    fake.workFeedback = async () => { throw new Error("unexpected stale feedback request"); };
-    fake.workResend = async () => { throw new Error("unexpected stale resend request"); };
-    return fake;
-  };
-  const bind = (fake: RemoteClient) => {
-    useRemoteWorkStore.getState().setClient(null);
-    useRemoteWorkStore.getState().setIncludeClosed(false);
-    useRemoteWorkStore.getState().setClient(fake);
-  };
-
-  await check("an epoch replacement discards high local versions, reads and diagnostics", async () => {
-    const fake = fakeClient("epoch"); bind(fake);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-old", 70, [{ ...sample, stateVersion: 900,
-      cards: sample.cards.map(item => ({ ...item, readAt: 500, readVersion: 7 })) }]));
-    useRemoteWorkStore.getState().setSelectedWork(sample.workId);
-    await useRemoteWorkStore.getState().loadDiagnostics(fake, sample.workId);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-new"));
-    const state = useRemoteWorkStore.getState();
-    assert.equal(state.works[0]!.stateVersion, 1);
-    assert.equal(state.works[0]!.cards[0]!.readAt, undefined);
-    assert.equal(state.works[0]!.cards[0]!.readVersion, 0);
-    assert.equal(state.selectedWorkId, null);
-    assert.deepEqual(state.diagnostics, {});
-  });
-
-  await check("client replacement fences every old response and cannot revive the old session", async () => {
-    const old = fakeClient("old"); const next = fakeClient("next"); bind(old);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a"));
-    const oldSync = deferred<RemoteWorkUpdate>(); const nextSync = deferred<RemoteWorkUpdate>();
-    const oldRead = deferred<RemoteWorkCardReadResult>(); const oldDiagnostics = deferred<unknown>();
-    let oldSyncCalls = 0;
-    old.workSync = () => { oldSyncCalls += 1; return oldSync.promise; };
-    old.workCardRead = () => oldRead.promise; old.workDiagnostics = () => oldDiagnostics.promise;
-    next.workSync = () => nextSync.promise;
-    const sync = useRemoteWorkStore.getState().refresh(old);
-    const read = useRemoteWorkStore.getState().markCardRead(old, sample.workId, sample.cards[0]!.semanticCardKey);
-    const diagnostics = useRemoteWorkStore.getState().loadDiagnostics(old, sample.workId);
-    useRemoteWorkStore.getState().setClient(next);
-    assert.deepEqual(useRemoteWorkStore.getState().works, []);
-    assert.equal(useRemoteWorkStore.getState().cursor, null);
-    const newSync = useRemoteWorkStore.getState().refresh(next);
-    oldSync.resolve(snapshot("epoch-a", 40)); oldRead.resolve({ ok: true, readAt: 900, readVersion: 90 });
-    oldDiagnostics.resolve({ privateOldSession: true });
-    await Promise.all([sync, read, diagnostics]);
-    await useRemoteWorkStore.getState().refresh(old);
-    assert.equal(oldSyncCalls, 1, "a late component callback cannot bind the old client again");
-    assert.equal(useRemoteWorkStore.getState().loading, true, "old completion cannot clear new loading");
-    assert.deepEqual(useRemoteWorkStore.getState().works, []);
-    assert.deepEqual(useRemoteWorkStore.getState().diagnostics, {});
-    assert.equal((await useRemoteWorkStore.getState().resendNotification(old, sample.workId, "n", {
-      reason: "stale", acknowledgedDuplicateRisk: true, versionGuard: guard(sample) })).ok, false);
-    assert.equal((await useRemoteWorkStore.getState().submitFeedback(old, sample.workId, { operationId: "stale",
-      criterionIds: ["c"], environment: "omarchy", sourceRef: "old", inputSnapshotId: sample.inputSnapshotId,
-      versionGuard: guard(sample), failed: false })).ok, false);
-    nextSync.resolve(snapshot("epoch-a", 1)); await newSync;
-    assert.equal(useRemoteWorkStore.getState().client, next);
-    assert.equal(useRemoteWorkStore.getState().works[0]!.cards[0]!.readAt, undefined);
-  });
-
-  await check("disconnect clears data immediately and late failures stay out of the next session", async () => {
-    const old = fakeClient("disconnect"); bind(old);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a"));
-    await useRemoteWorkStore.getState().loadDiagnostics(old, sample.workId);
-    const pending = deferred<RemoteWorkUpdate>(); old.workSync = () => pending.promise;
-    const first = useRemoteWorkStore.getState().refresh(old);
-    useRemoteWorkStore.getState().setClient(null);
-    assert.deepEqual(useRemoteWorkStore.getState().works, []);
-    assert.deepEqual(useRemoteWorkStore.getState().diagnostics, {});
-    const next = fakeClient("after-disconnect"); useRemoteWorkStore.getState().setClient(next);
-    await useRemoteWorkStore.getState().refresh(next);
-    pending.reject(new Error("private previous host error")); await first;
-    assert.equal(useRemoteWorkStore.getState().error, null);
-    assert.equal(useRemoteWorkStore.getState().client, next);
-  });
-
-  await check("scope changes invalidate pages before a replacement refresh begins", async () => {
-    const fake = fakeClient("scope"); bind(fake);
-    useRemoteWorkStore.getState().setIncludeClosed(true);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a", 5, [{ ...sample, lifecycle: "closed" }], "all"));
-    const pending = deferred<RemoteWorkUpdate>();
-    fake.workSync = request => { assert.equal(request.includeClosed, true); return pending.promise; };
-    const first = useRemoteWorkStore.getState().refresh(fake);
-    useRemoteWorkStore.getState().setIncludeClosed(false);
-    pending.resolve(snapshot("epoch-a", 6, [{ ...sample, lifecycle: "closed" }], "all")); await first;
-    assert.deepEqual(useRemoteWorkStore.getState().works, []);
-    assert.equal(useRemoteWorkStore.getState().cursor, null);
-    fake.workSync = async request => { assert.equal(request.includeClosed, false); assert.equal(request.cursor, undefined);
-      return snapshot("epoch-a", 7); };
-    await useRemoteWorkStore.getState().refresh(fake);
-    assert.equal(useRemoteWorkStore.getState().cursor?.scope, "open");
-    assert.equal(useRemoteWorkStore.getState().works[0]!.lifecycle, "active");
-  });
-
-  await check("late read and diagnostics replies cannot cross a host epoch", async () => {
-    const fake = fakeClient("late-epoch"); bind(fake);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a"));
-    const readReply = deferred<RemoteWorkCardReadResult>(); const diagnosticReply = deferred<unknown>();
-    fake.workCardRead = () => readReply.promise; fake.workDiagnostics = () => diagnosticReply.promise;
-    const read = useRemoteWorkStore.getState().markCardRead(fake, sample.workId, sample.cards[0]!.semanticCardKey);
-    const diagnostics = useRemoteWorkStore.getState().loadDiagnostics(fake, sample.workId);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-b"));
-    readReply.resolve({ ok: true, readAt: 900, readVersion: 20 }); diagnosticReply.resolve({ oldEpoch: true });
-    assert.equal((await read).ok, false); await diagnostics;
-    assert.equal(useRemoteWorkStore.getState().works[0]!.cards[0]!.readAt, undefined);
-    assert.deepEqual(useRemoteWorkStore.getState().diagnostics, {});
-  });
-
-  await check("out-of-order read receipts and snapshots preserve one monotonic read watermark", async () => {
-    const fake = fakeClient("read-order"); bind(fake);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a"));
-    const firstReply = deferred<RemoteWorkCardReadResult>(); const secondReply = deferred<RemoteWorkCardReadResult>();
-    let calls = 0; fake.workCardRead = () => ++calls === 1 ? firstReply.promise : secondReply.promise;
-    const first = useRemoteWorkStore.getState().markCardRead(fake, sample.workId, sample.cards[0]!.semanticCardKey);
-    const second = useRemoteWorkStore.getState().markCardRead(fake, sample.workId, sample.cards[0]!.semanticCardKey);
-    secondReply.resolve({ ok: true, readAt: 300, readVersion: 3 }); await second;
-    firstReply.resolve({ ok: true, readAt: 200, readVersion: 2 }); await first;
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a", 2));
-    const observed = useRemoteWorkStore.getState().works[0]!;
-    assert.equal(observed.cards[0]!.readAt, 300);
-    assert.equal(observed.cards[0]!.readVersion, 3);
-    assert.equal(observed.stateVersion, sample.stateVersion);
-  });
-
-  await check("diagnostics are fenced by both Work version and latest diagnostics request", async () => {
-    const fake = fakeClient("diagnostics-version"); bind(fake);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a"));
-    const old = deferred<unknown>(); fake.workDiagnostics = () => old.promise;
-    const first = useRemoteWorkStore.getState().loadDiagnostics(fake, sample.workId);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a", 2, [{ ...sample, stateVersion: 2 }]));
-    old.resolve({ stateVersion: 1 }); await first;
-    assert.deepEqual(useRemoteWorkStore.getState().diagnostics, {});
-    const earlier = deferred<unknown>(); const newer = deferred<unknown>();
-    let calls = 0; fake.workDiagnostics = () => ++calls === 1 ? earlier.promise : newer.promise;
-    const a = useRemoteWorkStore.getState().loadDiagnostics(fake, sample.workId);
-    const b = useRemoteWorkStore.getState().loadDiagnostics(fake, sample.workId);
-    newer.resolve({ newest: true }); await b; earlier.resolve({ older: true }); await a;
-    assert.deepEqual(useRemoteWorkStore.getState().diagnostics[sample.workId], { newest: true });
-    useRemoteWorkStore.getState().applyUpdate({ kind: "delta", from: 2,
-      cursor: { epoch: "epoch-a", scope: "open", sequence: 3 }, hasMore: false,
-      events: [{ kind: "remove", sequence: 3, workId: sample.workId, reason: "closed" }] });
-    assert.deepEqual(useRemoteWorkStore.getState().diagnostics, {});
-  });
-
-  await check("a discontinuous delta requests one authoritative snapshot", async () => {
-    const fake = fakeClient("gap"); bind(fake);
-    useRemoteWorkStore.getState().applyUpdate(snapshot("epoch-a"));
-    let calls = 0;
-    fake.workSync = async request => {
-      if (++calls === 1) return { kind: "delta", from: 1, cursor: { epoch: "epoch-a", scope: "open", sequence: 3 },
-        hasMore: false, events: [{ kind: "upsert", sequence: 2, work: sample }] };
-      assert.equal(request.cursor, undefined);
-      return snapshot("epoch-a", 3, [{ ...sample, title: "authoritative" }]);
-    };
-    await useRemoteWorkStore.getState().refresh(fake);
-    assert.equal(calls, 2);
-    assert.equal(useRemoteWorkStore.getState().works[0]!.title, "authoritative");
+    assert.equal(accepted.currency, "current");
+    assert.equal(accepted.intentRevision, summary.intentRevision);
   });
 
   console.log(`Remote Work sync: ${passes.length} passed`);
 } finally {
-  useRemoteWorkStore.getState().setClient(null);
   await server.stop();
 }

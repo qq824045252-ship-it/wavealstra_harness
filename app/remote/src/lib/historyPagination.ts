@@ -3,17 +3,13 @@ import { useRemoteStore } from '../store/remoteStore'
 import { appendOlderBlocks, isPrependOnly, type OlderHistoryBlock } from './historyWindow'
 
 /**
- * 一次性前插补偿现场：插入前的 scrollTop / scrollHeight，以及插入前时间轴首条消息 id。
- * App 在 useLayoutEffect 里把 scrollTop 换成 prependScrollTop(...)，读者视觉位置不动。
+ * 一次性前插补偿现场：插入前时间轴首条消息 id 与它在容器内的偏移。
+ * App 在 useLayoutEffect 里把这个锚点写回原位（anchorPrependScrollTop），读者视觉位置不动。
  */
 export interface PrependAnchor {
-  /** 插入前的 scrollTop */
-  top: number
-  /** 插入前的 scrollHeight */
-  scrollHeight: number
-  /** 插入前时间轴首条消息 id；undefined = 插入前是空时间轴 */
+  /** 插入前时间轴首条消息 id；undefined = 插入前是空时间轴（没有可保的视觉锚点） */
   prevFirstId?: string
-  /** 插入前该首条消息在容器内的偏移：异步增高之后用它把视口拉回去 */
+  /** 插入前该首条消息在容器内的偏移：新块上屏后用它的位移算出补偿量 */
   prevFirstOffset: number
   /** 新块里所有消息 id：只有块真的上屏（首条变成块内消息）时才补偿 */
   blockIds: Set<string>
@@ -133,8 +129,6 @@ export function useHistoryPagination(options: HistoryPaginationOptions) {
         : null
       pendingAnchorRef.current = element && timelineRef.current === element
         ? {
-            top: element.scrollTop,
-            scrollHeight: element.scrollHeight,
             prevFirstId: first?.dataset.messageId,
             prevFirstOffset: first
               ? first.getBoundingClientRect().top - element.getBoundingClientRect().top

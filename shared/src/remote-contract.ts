@@ -166,6 +166,11 @@ export interface RemoteImageArtifact extends RemoteArtifactMetadata {
   version: number
   mimeType?: string
   sources: string[]
+  /**
+   * 产物创建时刻（电脑端时钟）。producer id 属于另一套 id 空间（`durable-live-*`、
+   * `durable-tool-*` 这类本轮流式/工具身份）时，远端只能按时刻把它归到最近一条更早的回复。
+   */
+  createdAt?: number
   createdByMessageId?: string
   createdByToolCallId?: string
 }

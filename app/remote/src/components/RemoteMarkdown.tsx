@@ -1,8 +1,8 @@
 import { Children, isValidElement, memo, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown'
-import type { RemoteArtifactMetadata, RemoteImageArtifact } from '@mybuddy/shared'
+import type { RemoteImageArtifact } from '@mybuddy/shared'
 import { remoteImageReference, resolveRemoteImageReference } from '../../../../shared/src/remote-images'
-import { RemoteMessageImageScope, RemoteImageChipList, RemoteMarkdownImage, mentionedImageIds } from './RemoteImages'
+import { RemoteMarkdownImage } from './RemoteImages'
 import remarkGfm from 'remark-gfm'
 // Intentionally the SAME component and validation path as desktop ChatMarkdown.
 import SvgFencePreview, { isSvgFenceLanguage, normalizeStandaloneSvgBlocks } from '../../../../src/renderer/src/components/common/SvgFencePreview'
@@ -40,14 +40,19 @@ function MarkdownTable({ children, node: _node, ...props }: MarkdownTableProps) 
   </div>
 }
 
-const MARKDOWN_COMPONENTS: Components = { pre: MarkdownPre, img: RemoteMarkdownImage, table: MarkdownTable }
+/** 稳定空数组：避免每次渲染给 memo 组件一个新 identity */
 const EMPTY_IMAGES: RemoteImageArtifact[] = []
+const MARKDOWN_COMPONENTS: Components = { pre: MarkdownPre, img: RemoteMarkdownImage, table: MarkdownTable }
 const REMARK_PLUGINS = [remarkGfm]
 
 // Snapshot objects change frequently; unchanged historical text need not reparse.
 // Stable MarkdownPre identity is still required when the current reply streams.
-export const RemoteMarkdown = memo(function RemoteMarkdown({ text, taskId = '', messageImages = EMPTY_IMAGES, images = EMPTY_IMAGES }: {
-  text: string; taskId?: string; messageImages?: readonly RemoteImageArtifact[]; images?: readonly RemoteImageArtifact[]
+//
+// 正文只负责文字：产物图由气泡按「一条回复一行汇总」渲染（见 RemoteImageSummary）。
+// 这里只把「正文提到的是哪张产物」判给 urlTransform——解析成功的图被替换成内部引用，
+// 组件据此渲染为空；解析不成功的路径留在正文里显示「图片尚不可用」，不静默吞掉诊断。
+export const RemoteMarkdown = memo(function RemoteMarkdown({ text, images = EMPTY_IMAGES }: {
+  text: string; images?: readonly RemoteImageArtifact[]
 }) {
   const source = useMemo(() => normalizeStandaloneSvgBlocks(text), [text])
 
@@ -61,18 +66,8 @@ export const RemoteMarkdown = memo(function RemoteMarkdown({ text, taskId = '', 
     }
     return defaultUrlTransform(url)
   }, [images])
-  // 归属由 App 用稳定规则（工具调用 id → 消息 id → durable 序号）算好传进来；
-  // 正文里已经直观引用过的图不再重复列一遍。
-  const extraImages = useMemo(() => {
-    if (!messageImages.length) return EMPTY_IMAGES
-    const mentioned = mentionedImageIds(source, images.length ? images : messageImages)
-    return messageImages.filter(image => !mentioned.has(image.id))
-  }, [source, images, messageImages])
 
-  return <RemoteMessageImageScope taskId={taskId} images={images}>
-    <div className="assistant-markdown-content">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={transform}>{source}</ReactMarkdown>
-    </div>
-    <RemoteImageChipList taskId={taskId} images={extraImages} />
-  </RemoteMessageImageScope>
+  return <div className="assistant-markdown-content">
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={transform}>{source}</ReactMarkdown>
+  </div>
 })

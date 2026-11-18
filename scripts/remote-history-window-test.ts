@@ -1,7 +1,7 @@
 /**
  * 远程端「更早历史」前插窗口：
  *   1. appendOlderBlocks —— 前插顺序 / epoch 校验 / durable-<entryId> 去重
- *   2. prependScrollTop  —— 前插后的滚动补偿（.chat-timeline 有 overflow-anchor: none）
+ *   2. anchorPrependScrollTop —— 前插后的滚动补偿（.chat-timeline 有 overflow-anchor: none）
  *   3. isPrependOnly     —— 只有「列表头变了」才算前插
  *   4. 与 buildRemoteTimeline 合起来：前插块 + 实时窗口仍是一条时间正序、无重复轮次的时间轴
  *
@@ -12,9 +12,9 @@
 import assert from "node:assert/strict";
 import type { RemoteHistoryMessage } from "../shared/src/remote-contract";
 import {
+  anchorPrependScrollTop,
   appendOlderBlocks,
   isPrependOnly,
-  prependScrollTop,
   type OlderHistoryBlock,
 } from "../app/remote/src/lib/historyWindow";
 import { buildRemoteTimeline } from "../app/remote/src/store/remoteTimeline";
@@ -83,14 +83,14 @@ function idsOf(blocks: OlderHistoryBlock[]): string[] {
   assert.deepEqual(idsOf(once), ["durable-1"]);
 }
 
-// 6. 前插补偿：内容在上方长高多少，scrollTop 就加多少，视觉锚点不动。
+// 6. 前插补偿：按锚点几何算，只有锚点上方的位移才算数。
 {
-  assert.equal(prependScrollTop(1200, 8000, 9000), 2200, "长高 1000 → scrollTop +1000");
-  assert.equal(prependScrollTop(0, 5000, 6200), 1200, "原本贴在顶部：补偿后应该停在新块之后");
-  assert.equal(prependScrollTop(500, 8000, 8000), 500, "高度没变就不动");
-  assert.equal(prependScrollTop(500, 9000, 8000), 500, "内容反而变短时不许往回拉");
-  assert.equal(prependScrollTop(Number.NaN, 9000, 9999), 0, "非法 scrollTop 归零");
-  assert.equal(prependScrollTop(10, Number.NaN, 9999), 10, "非法高度当作没变");
+  assert.equal(anchorPrependScrollTop(1200, 16, 3016), 4200, "上方长高 3000 → scrollTop +3000");
+  assert.equal(anchorPrependScrollTop(0, 16, 3016), 3000, "原本贴顶：补偿后停在新区块之后");
+  assert.equal(anchorPrependScrollTop(500, 16, 16), 500, "锚点没动就不补偿（锚点下方的增长不算）");
+  assert.equal(anchorPrependScrollTop(500, 3016, 16), 500, "上方反而变短时不许往回拉");
+  assert.equal(anchorPrependScrollTop(Number.NaN, 0, 10), 0, "非法 scrollTop 归零");
+  assert.equal(anchorPrependScrollTop(500, Number.NaN, 10), 500, "非法偏移当作没动");
 }
 
 // 7. isPrependOnly：只有「列表头换人」才算前插。

@@ -57,20 +57,21 @@ export function appendOlderBlocks(
 }
 
 /**
- * 前插后要恢复的 scrollTop。
+ * 前插后要恢复的 scrollTop——**按锚点几何算**，而不是整条时间轴的高度差。
  *
- * `.chat-timeline` 显式 `overflow-anchor: none`（见 styles/app.css），浏览器不会替我们锚定；
- * 内容在**上方**长高了 delta，若 scrollTop 不动，读者看到的正文就会整体下移 delta。
- * 把 scrollTop 同样加 delta，视觉锚点才停在原处。delta <= 0（尚未布局完 / 内容反而变短）
- * 时保持原位，绝不主动往回拉。
+ * 高度差会把锚点「下方」的布局变化一起吃进去：同一次渲染里消失的「其他图片」块、
+ * 正在流式的回复、图片解码前后高度不同……凡是在下方增减多少，补偿就偏多少，
+ * 读者看到的就是「上拉加载一页，正文先跳再被拽回来」。
+ * 只有锚点消息自己在容器里的位移才是读者看到的位移，所以：
+ *   scrollTop = 当前 scrollTop + (锚点现在的偏移 - 锚点当初的偏移)
+ * 两个偏移都是相对滚动容器的视口坐标，与高度无关。delta <= 0（没长高 / 时钟乱）时保持原位。
  */
-export function prependScrollTop(prevTop: number, prevScrollHeight: number, nextScrollHeight: number): number {
-  if (!Number.isFinite(prevTop) || prevTop < 0) return 0
-  const grown = Number.isFinite(prevScrollHeight) && Number.isFinite(nextScrollHeight)
-    ? nextScrollHeight - prevScrollHeight
-    : 0
-  if (grown <= 0) return prevTop
-  return prevTop + grown
+export function anchorPrependScrollTop(currentTop: number, prevFirstOffset: number, nextFirstOffset: number): number {
+  if (!Number.isFinite(currentTop) || currentTop < 0) return 0
+  if (!Number.isFinite(prevFirstOffset) || !Number.isFinite(nextFirstOffset)) return currentTop
+  const grown = nextFirstOffset - prevFirstOffset
+  if (grown <= 0) return currentTop
+  return currentTop + grown
 }
 
 /**

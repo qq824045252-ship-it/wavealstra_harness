@@ -46,7 +46,8 @@ export class RemoteImageService {
       const sources: string[] = entry ? [entry] : [];
       if (entry && task.cwd && inside(task.cwd, entry)) sources.push(relative(task.cwd, entry).replace(/\\/g, '/'));
       return { id: d.id, name: d.title || (entry ? basename(entry) : '生成图片'), kind: 'image', version: d.version,
-        mimeType: d.mimeType, sources, createdByMessageId: d.createdByMessageId, createdByToolCallId: d.createdByToolCallId };
+        mimeType: d.mimeType, sources, createdAt: d.createdAt,
+        createdByMessageId: d.createdByMessageId, createdByToolCallId: d.createdByToolCallId };
     });
     const refs = source.listMessageRefs(taskId);
     return { ...history, imageArtifacts: images, messages: history.messages.map(message => {

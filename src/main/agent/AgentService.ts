@@ -1583,7 +1583,12 @@ export class AgentService {
         nativeExecution: true, runtime: this.builtinCapabilities, browser: this.browserAutomation,
         localWorkflow: this.localWorkflow ? { ...this.localWorkflow, getPermissionMode } : undefined,
         artifactService: () => this.artifactService,
-        getProducerMessageId: () => currentDurableExecutionContext()?.assistantMessageId ?? this.durableBots?.lastAssistantId(task.id),
+        // 只把可寻址的持久 entry id 写进产物溯源：`durable-live-*` / `durable-tool-*` 是本轮流式与
+        // 工具执行身份，回合落盘后就换成 durable-<entryId>，存进去就是永远对不上的 dangling id。
+        getProducerMessageId: () => {
+          const candidate = currentDurableExecutionContext()?.assistantMessageId ?? this.durableBots?.lastAssistantId(task.id);
+          return candidate && /^durable-\d+$/.test(candidate) ? candidate : undefined;
+        },
         getIsolationLevel: () => this.getShellIsolationLevel(), pythonRuntime: this.pythonRuntime,
         resolveSkillScript: path => this.skillsService.resolveSkillScriptOwner(path, cwd, skillPaths),
         skillAuthoring: { assess: (intent, modelId) => this.assessSkillAuthoring({ intent, modelId }),

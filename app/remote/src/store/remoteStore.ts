@@ -11,7 +11,6 @@ import type {
   RemoteDurableSnapshot, RemoteDurableDelta, RemoteDurableState,
 } from '@mybuddy/shared'
 import { RemoteApiError, RemoteClient } from '../api/RemoteClient'
-import { useRemoteWorkStore } from './remoteWork'
 import { checkRemoteService, normalizeRemoteAddress } from '../api/connectionSetup'
 import { RemoteEventStream } from '../api/RemoteEventStream'
 import {
@@ -469,8 +468,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     if (!get().client) { await get().initialize(); return }
     const taskId = get().activeTaskId
     const client = get().client!
-    await Promise.all([refresh(), useRemoteWorkStore.getState().refresh(client),
-      taskId ? syncTaskHistory(taskId) : Promise.resolve()])
+    await Promise.all([refresh(), taskId ? syncTaskHistory(taskId) : Promise.resolve()])
   },
   async resume() {
     if (Date.now() - lastResumeAt < 500) return
@@ -508,14 +506,10 @@ export const useRemoteStore = create<State>((set, get) => ({
       stream = new RemoteEventStream(client, applyEvent, connected => {
         if (get().client !== client) return
         set({ connection: connected ? 'connected' : 'reconnecting', ...(connected ? { error: null } : {}) })
-        if (connected) {
-          scheduleRemoteSync()
-          void useRemoteWorkStore.getState().refresh(client)
-        }
+        if (connected) scheduleRemoteSync()
       })
       const nextServerKey = serverCacheKey(normalizedBase, bootstrap.device?.id)
       activeServerKey = nextServerKey
-      useRemoteWorkStore.getState().setClient(client)
       set({
         client, bootstrap, notifications, connection: 'connected', histories: get().histories, runtimes: get().runtimes, live: get().live,
         activeTaskId: bootstrap.tasks.some(task => task.id === get().activeTaskId && !task.archived) ? get().activeTaskId : null,
@@ -549,10 +543,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       }
       // 401/403 不要拆掉当前界面：调用方（自动重连、7 秒 resync）拿到的失效令牌不该把
       // 正在看的对话整屏换掉。保留 client/bootstrap，让缓存历史继续显示，只在顶部报错提示。
-      if (status === 401 || status === 403) {
-        stream?.stop(); stream = null
-        useRemoteWorkStore.getState().setClient(null)
-      }
+      if (status === 401 || status === 403) { stream?.stop(); stream = null }
       set({ connection: status === 401 || status === 403 ? 'unauthorized' : 'disconnected', error: error instanceof Error ? error.message : String(error) })
       throw error
     }
@@ -602,7 +593,6 @@ export const useRemoteStore = create<State>((set, get) => ({
   },
   async disconnect() {
     ++connectionRevision; ++navigationRevision
-    useRemoteWorkStore.getState().setClient(null)
     clearTimeout(refreshTimer); refreshTimer = undefined
     stream?.stop(); stream = null
     await clearCredential()
@@ -627,7 +617,6 @@ export const useRemoteStore = create<State>((set, get) => ({
     if (get().serverConfig.activeServerId === serverId && get().client && get().connection === 'connected') return
     ++connectionRevision
     ++navigationRevision
-    useRemoteWorkStore.getState().setClient(null)
     clearTimeout(refreshTimer); refreshTimer = undefined
     stream?.stop(); stream = null
     const newConfig = await setActiveServerId(serverId)
@@ -1287,13 +1276,6 @@ export function applyEvent(event: RemoteEventEnvelope): void {
   }
   if (event.type !== 'agent.patch') return
   const patch = event.payload as Record<string, unknown>
-  // A Work projection is only a wakeup: the device then reads the durable journal, so an
-  // SSE id can never act as the Work cursor.
-  if (patch.type === 'work_projection_snapshot') {
-    const client = useRemoteStore.getState().client
-    if (client) void useRemoteWorkStore.getState().refresh(client)
-    return
-  }
   const taskId = String(patch.taskId ?? '')
   if (!taskId) return
   taskEventRevisions.set(taskId, (taskEventRevisions.get(taskId) ?? 0) + 1)

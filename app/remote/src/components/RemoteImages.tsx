@@ -1,7 +1,6 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { RemoteImageArtifact } from '@mybuddy/shared'
-import { resolveRemoteImageReference } from '../../../../shared/src/remote-images'
 import { RemoteClient } from '../api/RemoteClient'
 import { useRemoteStore } from '../store/remoteStore'
 
@@ -10,14 +9,11 @@ import { useRemoteStore } from '../store/remoteStore'
  *
  * 两条硬约束（都是踩过的坑）：
  * 1. 不内联 <img>：解码前后高度会变，长对话滚动位置被反复修正，表现为聊天记录乱跳。
- * 2. 不用「挂载时注册、卸载时注销」的计数来决定图片显示位置：那会让同一张图先出现在消息
- *    底部、下一帧再跳到正文位置（或者反过来），表现为「有时有、有时没有」。现在由
- *    (markdown 文本, 产物清单) 直接算出「正文提过哪些图」，与渲染顺序完全无关。
+ * 2. 一条回复最多只占**一行**图片 UI：一条图一张时显示名字，多张时只显示「N 张图片」，
+ *    点开看图廊。逐张挂在气泡里会把同一条回复撞得很高，也让正文里的引用和末尾列表
+ *    变成两套口径。
  */
 
-const EMPTY_IMAGES: RemoteImageArtifact[] = []
-export interface RemoteImageScopeValue { taskId: string; images: readonly RemoteImageArtifact[] }
-const Scope = createContext<RemoteImageScopeValue | null>(null)
 type CacheEntry = { promise: Promise<Blob>; bytes: number }
 const caches = new WeakMap<RemoteClient, Map<string, CacheEntry>>()
 
@@ -48,77 +44,15 @@ function formatKind(mimeType?: string): string {
   return mimeType?.split('/')[1]?.toUpperCase() ?? ''
 }
 
-/**
- * 从 markdown 源码里算出「正文引用过哪些产物图」。
- * 与 urlTransform 用的是同一个 resolveRemoteImageReference，因此判定口径完全一致。
- */
-export function mentionedImageIds(text: string, images: readonly RemoteImageArtifact[]): Set<string> {
-  const ids = new Set<string>()
-  if (!images.length) return ids
-  const pattern = /!?\[[^\]]*\]\(\s*([^)\s]+)/g
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(text)) !== null) {
-    const image = resolveRemoteImageReference(match[1]!, images)
-    if (image) ids.add(image.id)
-  }
-  // 已经是内部引用形式（mybuddy-artifact://local/<id>）时直接取 id
-  const direct = /mybuddy-artifact:\/\/local\/([^\s)"'>]+)/g
-  while ((match = direct.exec(text)) !== null) {
-    try { ids.add(decodeURIComponent(match[1]!)) } catch { ids.add(match[1]!) }
-  }
-  return ids
+/** 一批图的格式摘要：PNG / PNG·JPEG，只占一个小标签 */
+function kindSummary(images: readonly RemoteImageArtifact[]): string {
+  const kinds = [...new Set(images.map(image => formatKind(image.mimeType)).filter(Boolean))]
+  return kinds.join('·')
 }
 
-/**
- * 图片 → 消息 的归属解析（纯函数，可单测）。
- *
- * 三种数据形态（live 消息 / durable 快照 / 缓存回填）里 message id 会互相不一致，
- * 但**工具调用 id 是稳定的**，所以按以下优先级判定，保证同一张图稳定落在同一条回复下面：
- *   1. createdByToolCallId → 工具调用所属消息（允许 `call_x/1`、`call_x:nested:bash:0` 变体）
- *   2. createdByMessageId 直接命中消息 id
- *   3. durable 序号：消息 id 形如 durable-<n>，取 max(n) <= 图片所属 n 的那条 assistant
- * 三条都不命中才返回 null（调用方放到末尾「其他图片」，不会凭空消失）。
- */
-export interface ImageOwnerMessage {
-  id: string
-  role: 'user' | 'assistant'
-  tools?: ReadonlyArray<{ id: string }>
-}
-
-function toolBaseCallId(raw: string): string {
-  const slash = raw.indexOf('/')
-  return (slash > 0 ? raw.slice(0, slash) : raw).replace(/:nested:.*$/, '')
-}
-
-function durableOrdinal(id: string): number | null {
-  const match = /^durable-(\d+)$/.exec(id)
-  return match ? Number(match[1]) : null
-}
-
-export function resolveImageOwnerId(image: RemoteImageArtifact, messages: readonly ImageOwnerMessage[]): string | null {
-  const toolId = image.createdByToolCallId
-  if (toolId) {
-    const base = toolBaseCallId(toolId)
-    const holder = messages.find(message =>
-      (message.tools ?? []).some(tool => toolBaseCallId(tool.id) === base))
-    if (holder) return holder.id
-  }
-  const byMessage = image.createdByMessageId
-  if (byMessage && messages.some(message => message.id === byMessage)) return byMessage
-  const target = byMessage ? durableOrdinal(byMessage) : null
-  if (target !== null) {
-    let best: { id: string; ordinal: number } | null = null
-    for (const message of messages) {
-      if (message.role !== 'assistant') continue
-      const ordinal = durableOrdinal(message.id)
-      if (ordinal === null || ordinal > target) continue
-      if (!best || ordinal > best.ordinal) best = { id: message.id, ordinal }
-    }
-    if (best) return best.id
-  }
-  return null
-}
-
+// 归属解析搬去 lib/imageOwner.ts：它只依赖 shared 的类型，组件测试用 esbuild 打包时不会
+// 顺着 @mybuddy/shared 桶导入去解析无扩展名的相对模块。这里保留再导出，App 的导入不变。
+export { resolveImageOwnerId, type ImageOwnerMessage } from '../lib/imageOwner'
 function ImageViewer({ label, src, fallback, onClose }: { label: string; src: string | null; fallback?: ReactNode; onClose: () => void }) {
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -166,7 +100,9 @@ export function RemoteArtifactImageLink({ image, taskId, alt }: { image: RemoteI
       if (previous) URL.revokeObjectURL(previous)
     }).catch(cause => { if (alive) setError(cause instanceof Error ? cause.message : '图片读取失败') })
     return () => { alive = false }
-  }, [open, client, taskId, image, retry])
+    // 依赖到 id/version 而不是整个对象：后台同步会重建同一张图的描述对象，
+    // 拿对象当依赖会让开着的大图每 7 秒重拉一次、闪一帧。
+  }, [open, client, taskId, image.id, image.version, retry])
 
   useEffect(() => () => {
     if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null }
@@ -184,18 +120,69 @@ export function RemoteArtifactImageLink({ image, taskId, alt }: { image: RemoteI
   </>
 }
 
-export function RemoteMessageImageScope({ taskId, images = EMPTY_IMAGES, children }: {
-  taskId: string; images?: readonly RemoteImageArtifact[]; children: ReactNode
-}) {
-  return <Scope.Provider value={{ taskId, images }}>{children}</Scope.Provider>
+/**
+ * 一条回复的图片汇总：**永远只有一行**。
+ *   1 张 → 直接显示名字与格式（点开看原图）；
+ *   2 张以上 → 只显示「N 张图片」，点开看图廊（一次加载整批，关闭即释放）。
+ * 图片落在哪条回复由 App 的稳定规则算好传进来；本组件不知道也不猜归属。
+ */
+export function RemoteImageSummary({ taskId, images }: { taskId: string; images: readonly RemoteImageArtifact[] }) {
+  // 打开时把清单快照下来：后台同步会重建图片描述对象，拿实时数组当依赖会让图廊反复重拉、闪帧
+  const [gallery, setGallery] = useState<readonly RemoteImageArtifact[] | null>(null)
+  if (!images.length) return null
+  const single = images.length === 1 ? images[0] : undefined
+  if (single) return <RemoteArtifactImageLink image={single} taskId={taskId} />
+  return <>
+    <ImageChip label={`${images.length} 张图片`} detail={kindSummary(images)} onOpen={() => setGallery([...images])} />
+    {gallery && <ImageGallery taskId={taskId} images={gallery} onClose={() => setGallery(null)} />}
+  </>
 }
 
-/** 正文没有引用到的产物图，统一在消息末尾补一条链接 */
-export function RemoteImageChipList({ taskId, images }: { taskId: string; images: readonly RemoteImageArtifact[] }) {
-  if (!images.length) return null
-  return <div className="remote-message-image-links">
-    {images.map(image => <RemoteArtifactImageLink key={image.id} image={image} taskId={taskId} />)}
-  </div>
+interface LoadedImage { url: string | null; error: string | null }
+
+function ImageGallery({ taskId, images, onClose }: {
+  taskId: string; images: readonly RemoteImageArtifact[]; onClose: () => void
+}) {
+  const client = useRemoteStore(state => state.client)
+  const [loaded, setLoaded] = useState<ReadonlyMap<string, LoadedImage>>(new Map())
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    document.addEventListener('keydown', close)
+    return () => document.removeEventListener('keydown', close)
+  }, [onClose])
+  useEffect(() => {
+    if (!client) return
+    let alive = true
+    const created: string[] = []
+    void Promise.all(images.map(async (image): Promise<[string, LoadedImage]> => {
+      try {
+        const blob = await loadRemoteImage(client, taskId, image)
+        if (!alive) return [image.id, { url: null, error: null }]
+        const url = URL.createObjectURL(blob)
+        created.push(url)
+        return [image.id, { url, error: null }]
+      } catch (cause) {
+        return [image.id, { url: null, error: cause instanceof Error ? cause.message : '图片读取失败' }]
+      }
+    })).then(entries => { if (alive) setLoaded(new Map(entries)) })
+    return () => { alive = false; for (const url of created) URL.revokeObjectURL(url) }
+  }, [client, taskId, images])
+  return createPortal(
+    <div className="remote-image-viewer remote-image-gallery" role="dialog" aria-modal="true" aria-label={`本回复的 ${images.length} 张图片`} onClick={onClose}>
+      <button type="button" autoFocus aria-label="关闭图片汇总" onClick={onClose}>关闭</button>
+      <div className="remote-image-gallery-list" onClick={event => event.stopPropagation()}>
+        {images.map(image => {
+          const item = loaded.get(image.id)
+          return <figure key={image.id} className="remote-image-gallery-item">
+            {item?.url ? <img src={item.url} alt={image.name} />
+              : <span className="remote-image-status" role="status">{item?.error ? `图片无法显示：${item.error}` : '图片加载中…'}</span>}
+            <figcaption>{image.name}</figcaption>
+          </figure>
+        })}
+      </div>
+    </div>,
+    document.body,
+  )
 }
 
 function RemoteExternalImageLink({ src, alt, title }: { src: string; alt?: string; title?: string }) {
@@ -207,11 +194,10 @@ function RemoteExternalImageLink({ src, alt, title }: { src: string; alt?: strin
   </>
 }
 
-/** markdown 里的图片：默认渲染成链接条，绝不内联撑开高度 */
+/** markdown 里的图片：产物图归给本回复的图片汇总（这里不渲染），外链图仍然只给一条链接 */
 export function RemoteMarkdownImage({ src = '', alt, title }: { src?: string; alt?: string; title?: string }) {
-  const scope = useContext(Scope)
-  const image = scope ? resolveRemoteImageReference(src, scope.images) : undefined
-  if (image && scope) return <RemoteArtifactImageLink image={image} taskId={scope.taskId} alt={alt} />
+  // 已解析的产物图：正文位置不再插一张卡片，整条回复的图由 RemoteImageSummary 统一给出
+  if (/^mybuddy-artifact:/i.test(src)) return null
 
   const external = /^https:\/\//i.test(src) ? src
     : /^data:image\/(?:png|jpeg|jpg|gif|webp|bmp|avif);base64,/i.test(src) ? src
