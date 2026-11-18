@@ -12,12 +12,15 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/store/appStore";
-import type { SubagentSummaryDto } from "@shared/agent-ipc";
 import {
   buildRuntimeOverview,
   type RuntimeOverviewVm,
 } from "@/components/artifact/overview/overviewRuntime";
 import { accumulateSubagentRuns } from "@/lib/subagentRunsAccumulator";
+import {
+  scopeActiveSubagents,
+  type ActiveSubagentSnapshot,
+} from "@/lib/subagentActiveScope";
 
 export interface SubagentRuns {
   vm: RuntimeOverviewVm;
@@ -40,7 +43,10 @@ export function useSubagentRuns(taskId: string | null | undefined, nowOverride?:
   const terminalSessions = useAppStore((s) => s.terminalSessions);
   const activeModelId = useAppStore((s) => s.activeModelId);
   const models = useAppStore((s) => s.models);
-  const [activeSubagents, setActiveSubagents] = useState<SubagentSummaryDto[]>([]);
+  // 列表连同「它是在哪个 taskId 下取的」一起存：切任务后的过渡帧不许把上一个任务的
+  // 实例当成当前任务的（否则记账会把它们永久留在新任务的完成态里）。
+  const [activeSnapshot, setActiveSnapshot] = useState<ActiveSubagentSnapshot>({ taskId: "", list: [] });
+  const activeSubagents = scopeActiveSubagents(activeSnapshot, taskId);
   const [internalNow, setInternalNow] = useState(() => Date.now());
   // 调用方已有自己的 tick（侧栏还要驱动外部子任务与终端的耗时）时复用它，不造第二个定时器
   const now = nowOverride ?? internalNow;
@@ -51,16 +57,16 @@ export function useSubagentRuns(taskId: string | null | undefined, nowOverride?:
   // 运行中实例：事件驱动 + 任务切换重置（旧任务的响应不得污染新任务）
   useEffect(() => {
     if (!taskId) {
-      setActiveSubagents([]);
+      setActiveSnapshot({ taskId: "", list: [] });
       return;
     }
     let disposed = false;
     const refresh = async (): Promise<void> => {
       try {
         const list = await window.api?.subagent?.active?.(taskId);
-        if (!disposed) setActiveSubagents(list ?? []);
+        if (!disposed) setActiveSnapshot({ taskId, list: list ?? [] });
       } catch {
-        if (!disposed) setActiveSubagents([]);
+        if (!disposed) setActiveSnapshot({ taskId, list: [] });
       }
     };
     void refresh();

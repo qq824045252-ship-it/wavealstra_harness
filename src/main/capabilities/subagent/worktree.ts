@@ -33,6 +33,13 @@ export type PreparedSubagentWorkspace =
 
 type WorktreeWorkspace = Extract<PreparedSubagentWorkspace, { kind: "worktree" }>;
 
+/**
+ * Only the policy half. Whether this directory can host a worktree is a different question, and the
+ * preflight answers it per item: an auto+parallel+write-capable plan on a non-Git directory is
+ * rejected before start with `requires a Git working tree`, which is the contract durable-subagent-test
+ * pins (`preflight must fail before any child conversation exists`). Answering both halves here would
+ * turn that refusal into a silent shared batch.
+ */
 export async function repositoryAllowsGitIsolation(cwd: string, authorize?: () => boolean): Promise<boolean> {
   if (authorize?.() === false) return false;
   let directory = path.resolve(cwd);

@@ -144,11 +144,9 @@ export function resolveSubagentSelection(input: SubagentSelectionInput): Subagen
     } else if (input.roles && Object.hasOwn(input.roles, reference) && (roleCandidates = input.roles[reference]) !== undefined) {
       const picked = resolveRoleCandidate(roleCandidates, input.availableModels);
       if (!picked) {
-        throw new Error(
-          `Subagent model role "${reference}" has no available model in the native model scope. Candidates: ${
-            roleCandidates.join(", ") || "(empty)"
-          }`,
-        );
+        throw new Error(roleCandidates.length === 0
+          ? `Subagent model role "${reference}" is configured with no candidate models, so every dispatch fails before start. Add at least one provider/model to subagent.json roles.${reference}.`
+          : `Subagent model role "${reference}" has no available model in the native model scope. Candidates: ${roleCandidates.join(", ")}. Add an available model to subagent.json roles.${reference}, or widen the allowed models.`);
       }
       model = picked;
       modelSource = "role-map";

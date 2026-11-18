@@ -115,6 +115,10 @@ const parentDispatch = (prompt: string): Record<string, unknown> | undefined => 
     { agent: "no-such-agent", task: "SCENARIO=chain-rejected step two", model, isolation },
     { agent: "worker", task: "SCENARIO=chain-rejected step three", model, isolation },
   ] };
+  if (marker("agent-alias")) return {
+    agent: /ALIAS=([\w-]+)/.exec(prompt)?.[1] ?? "general-purpose",
+    task: "SCENARIO=agent-alias task", model, isolation,
+  };
   if (marker("chain")) return { chain: [
     { agent: "worker", task: "SCENARIO=chain step one", model, isolation },
     { agent: "worker", task: "SCENARIO=chain step two after {previous}", model, isolation },
@@ -755,6 +759,16 @@ try {
   assert.match(chainRejected.output, /Step 2: \[no-such-agent\] rejected \(id: /);
   assert.doesNotMatch(chainRejected.output, /Step 3:/, "the chain must not run past the rejected step");
   assert.match(chainRejected.output, /Chain stopped at step 2 \(no-such-agent\): the step was rejected before start\./);
+
+  // Upstream harness vocabulary (`general-purpose` / `general` / `generalPurpose`) names the same
+  // read-write general worker. Resolving it to `worker` keeps a copied playbook working; an invented
+  // name must still fail, which the chain-rejected scenario above pins.
+  for (const alias of ["general-purpose", "general", "generalPurpose"]) {
+    const aliasRun = await runScenario(`agent-alias-${alias}`, `SCENARIO=agent-alias ALIAS=${alias}`);
+    assert.equal(aliasRun.isError, false, `${alias} must resolve to the worker role\n${aliasRun.output}`);
+    assert.equal(aliasRun.children, 1, `${alias} must dispatch exactly one child`);
+    assert.doesNotMatch(aliasRun.output, /Unknown agent/);
+  }
 
   // ---- N-2/D-2: a parallel same-file write is blocked instead of silently overwriting ------------
   const conflictRun = await runScenario("write-conflict", "SCENARIO=write-conflict");

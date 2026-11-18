@@ -66,6 +66,10 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
   const dirty = draftKey(draft) !== savedKey;
   const knownIds = new Set(models.map((model) => model.id));
   const missing = draft.allowedModels.filter((id) => !knownIds.has(id));
+  // A role with no candidate is accepted by the file schema but rejected by every dispatch; the
+  // warning has to appear before the first failed call, and saving must stay allowed because an
+  // operator may be narrowing the policy step by step.
+  const emptyRoleNames = draft.roles.filter((role) => role.candidates.length === 0).map((role) => role.name);
   const patch = (next: Partial<Draft>): void => setDraft({ ...draft, ...next });
   const toggleModel = (id: string): void => patch({
     allowedModels: draft.allowedModels.includes(id)
@@ -199,6 +203,11 @@ export default function SubagentExecutionSettings({ models, config, onSaved }: {
               <div className="subagent-policy-roles-head">
                 <small>按顺序选择可用且被允许的模型；服务商报错会终止运行。diverse 角色为多个任务分配不同模型。</small>
               </div>
+              {emptyRoleNames.length > 0 && (
+                <div className="subagent-policy-warn" role="alert">
+                  角色 {emptyRoleNames.join("、")} 还没有候选模型，调用该角色会在派发前被拒绝，请添加至少一个候选模型。
+                </div>
+              )}
               {draft.roles.map((role, index) => {
                 const available = models.filter((model) => !role.candidates.includes(model.id));
                 const updateCandidates = (candidates: string[]): void => patch({

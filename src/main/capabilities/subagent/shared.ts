@@ -262,9 +262,11 @@ const DisplayNameField = Type.Optional(
   }),
 );
 
+const AgentNameDescription = "Name of the agent to invoke. Must be a role id listed in the subagent tool description; upstream names such as general-purpose are not local roles and are rejected before dispatch";
+
 const TaskItem = Type.Object({
   ...ExecutionFields,
-  agent: Type.String({ description: "Name of the agent to invoke" }),
+  agent: Type.String({ description: AgentNameDescription }),
   task: Type.String({ description: "Task handoff: goal; allowed file scope; constraints; known facts with source paths; acceptance commands/conditions; artifact paths. Return conclusion, changed files, execution evidence, unverified items" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
   displayName: DisplayNameField,
@@ -272,7 +274,7 @@ const TaskItem = Type.Object({
 
 const ChainItem = Type.Object({
   ...ExecutionFields,
-  agent: Type.String({ description: "Name of the agent to invoke" }),
+  agent: Type.String({ description: AgentNameDescription }),
   task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
   displayName: DisplayNameField,
@@ -285,7 +287,7 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 
 export const SubagentParams = Type.Object({
   ...ExecutionFields,
-  agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
+  agent: Type.Optional(Type.String({ description: `${AgentNameDescription} (for single mode)` })),
   task: Type.Optional(Type.String({ description: "Task handoff: goal; allowed scope; constraints; facts/source paths; acceptance commands; artifact paths (single mode)" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
   chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),

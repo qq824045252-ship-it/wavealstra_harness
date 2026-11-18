@@ -166,10 +166,28 @@ function isTierLimitFailure(result: SingleResult | undefined): boolean {
     && message.content.some(part => part.type === "toolCall"));
 }
 
+/**
+ * The model can only pass a role id it has seen. Without this list the only way to learn the names
+ * is to dispatch and read `Unknown agent: X. Available: ...` from a batch that already failed.
+ */
+function describeAvailableAgents(cwd: string): string {
+  try {
+    const config = loadSubagentConfig();
+    const scope: AgentScope = config.agentScope === "project" || config.agentScope === "both" ? "both" : "user";
+    const disabled = new Set(config.disabledAgents ?? []);
+    const names = discoverAgents(cwd, scope).agents.filter(role => !disabled.has(role.name)).map(role => role.name);
+    return names.length > 0
+      ? `Valid agent ids here: ${names.join(", ")}. Any other name is rejected before dispatch (upstream names such as general-purpose are not local roles). `
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 export function createDurableSubagentTools(options: DurableSubagentOptions): ToolRegistration[] {
   const subagent = defineTool({
     name: "subagent", parameters: SubagentParams, replay: "safe",
-    description: "Delegate single (agent/task), parallel (tasks), or sequential (chain with {previous}) work to durable child conversations. Roles, model selection, reasoning, tool limits and Chinese display names follow MyBuddy settings. Children keep their original workspace and results across restart. Only a supplied subdirectory of the host task workspace is allowed. Child tools cannot delegate recursively. Use subagent_list and subagent_steer for live work. On a revised Work, delegate only changed or missing steps: include the latest requirement and relevant completed/uncertain facts, never copy old imperative tasks to replay already completed work. An original one-time parallel process does not restart merely because the Work revision changed.",
+    description: `${describeAvailableAgents(options.cwd)}Delegate single (agent/task), parallel (tasks), or sequential (chain with {previous}) work to durable child conversations. Roles, model selection, reasoning, tool limits and Chinese display names follow MyBuddy settings. Children keep their original workspace and results across restart. Only a supplied subdirectory of the host task workspace is allowed. Child tools cannot delegate recursively. Use subagent_list and subagent_steer for live work. On a revised Work, delegate only changed or missing steps: include the latest requirement and relevant completed/uncertain facts, never copy old imperative tasks to replay already completed work. An original one-time parallel process does not restart merely because the Work revision changed.`,
     execute: async (params, api, context) => {
       const dispatch = await api.memo<JsonRepresentation<Dispatch>>("dispatch", context)
         ?? await api.memo("dispatch", json(await planDispatch(params, api, context, options)), context);
@@ -388,7 +406,10 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
     };
     try {
       const role = roles.find(role => role.name === item.agent)
-        ?? (["default", "assistant", "agent"].includes(item.agent.trim().toLowerCase()) ? roles.find(role => role.name === "worker") ?? roles[0] : undefined);
+        // Upstream harnesses name their general subagent `general-purpose` (Claude Code) or
+        // `generalPurpose`/`general` (Cursor/OpenCode). Those are the same read-write general worker,
+        // and a hard failure here only teaches the model to retry the same batch. Unknown names still fail.
+        ?? (["default", "assistant", "agent", "general", "general-purpose", "generalpurpose"].includes(item.agent.trim().toLowerCase()) ? roles.find(role => role.name === "worker") ?? roles[0] : undefined);
       if (!role) throw new Error(`Unknown agent: ${item.agent}. Available: ${roles.map(role => role.name).join(", ")}`);
       const sourceCwd = await realpath(resolve(options.cwd, item.cwd ?? params.cwd ?? options.cwd));
       const selected = resolveSubagentSelection({ invocation: { model: assignments?.[index] ?? item.model ?? params.model, reasoning: item.reasoning ?? params.reasoning }, parentModelId,

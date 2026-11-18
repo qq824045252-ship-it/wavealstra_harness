@@ -5,7 +5,9 @@ import { subagentHeaderMetrics } from "../src/renderer/src/lib/subagentHeaderMet
  * 覆盖用户能直接看到的三条契约：
  * 1. 名字同步：侧栏/顶栏/对话页都只能经 subagentRunName 取名（displayName → role → id）；
  * 2. 完成不消失：运行中派发的 details.results[] 也必须出现在完成态；
- * 3. 窗口驱逐不消失：消息被裁掉后，记过账的条目补成「已结束」，且不重复。
+ * 3. 窗口驱逐不消失：消息被裁掉后，记过账的条目补成「已结束」，且不重复；
+ * 4. 跨任务不串：切任务后上一任务的运行中列表不许进入当前任务的记账（右上角面板
+ *    会把别人的子代理永久留在每个任务里）。
  * 另外验收子会话消息 → 主聊天 ChatMessage 的映射（任务补位、工具卡、正文走 finalBlocks）。
  */
 import {
@@ -19,6 +21,10 @@ import {
   accumulateSubagentRuns,
   resetSubagentRunsAccumulator,
 } from "@/lib/subagentRunsAccumulator";
+import {
+  EMPTY_ACTIVE_SUBAGENTS,
+  scopeActiveSubagents,
+} from "@/lib/subagentActiveScope";
 import { childMessagesToChatMessages, findSubagentResultRun } from "@/lib/subagentChat";
 import type { ChildMessage } from "@/lib/subagentDetails";
 import type { ChatMessage } from "@/types";
@@ -169,6 +175,55 @@ console.log("== 窗口驱逐不消失（记账） ==");
   const lostRow: DoneSubagentVm | undefined = lost.doneSubagents.find((row) => row.id === "sa-lost");
   assert(Boolean(lostRow), "运行中实例消失后仍留下一条");
   assert(lostRow?.state === "unknown", `状态只能是 unknown（${lostRow?.state}）`);
+}
+
+console.log("== 跨任务不串：运行中快照必须带作用域 ==");
+{
+  const erpRows = ["妙蛙种子", "皮卡丘", "小火龙", "喵喵", "可达鸭", "耿鬼", "卡比兽", "杰尼龟"]
+    .map((name, index) => ({
+      subagentId: `durable-erp-${index}`,
+      role: "scout",
+      displayName: name,
+      roleSource: "user" as const,
+      roleDescription: "",
+      project: "C:/repo/WaveAlstra_ERP",
+      status: "running" as const,
+      createdAt: NOW - 60_000,
+      updatedAt: NOW,
+      lastPromptAt: NOW - 60_000,
+      runCount: 1,
+      steerCount: 0,
+      pendingSteers: [],
+      usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 10, turns: 1 },
+      depth: 1,
+      workerAlive: true,
+    }));
+
+  // 先记录「不做作用域守卫」会怎样：一帧旧快照就能把 8 条别人的实例永久记进新任务。
+  resetSubagentRunsAccumulator();
+  const leakedFrame = accumulateSubagentRuns("t-image", buildRuntimeOverview({
+    taskId: "t-image", messages: [], activeSubagents: erpRows, terminalSessions: {}, now: NOW,
+  }));
+  assert(leakedFrame.runningSubagents.length === 8, "（对照组）未守卫时会把上一任务的运行中行当成本任务的");
+  const nextFrame = accumulateSubagentRuns("t-image", buildRuntimeOverview({
+    taskId: "t-image", messages: [], activeSubagents: [], terminalSessions: {}, now: NOW,
+  }));
+  assert(nextFrame.doneSubagents.length === 8, `（对照组）记账后它们永久留在新任务的完成态（${nextFrame.doneSubagents.length}）`);
+  assert(nextFrame.doneSubagents.every((row) => row.state === "unknown"), "（对照组）状态只能降级成「已结束/unknown」");
+
+  // 契约：快照自带作用域，不匹配就返回空表，新任务一条也不记。
+  resetSubagentRunsAccumulator();
+  const staleSnapshot = { taskId: "t-erp", list: erpRows };
+  const scoped = scopeActiveSubagents(staleSnapshot, "t-image");
+  assert(scoped.length === 0, "切任务后旧快照不进入当前任务");
+  assert(scoped === EMPTY_ACTIVE_SUBAGENTS, "空表引用稳定（避免 useMemo 每帧失效）");
+  const clean = accumulateSubagentRuns("t-image", buildRuntimeOverview({
+    taskId: "t-image", messages: [], activeSubagents: scoped, terminalSessions: {}, now: NOW,
+  }));
+  assert(clean.runningSubagents.length === 0 && clean.doneSubagents.length === 0, "新任务不继承上一任务的子代理");
+  assert(scopeActiveSubagents(staleSnapshot, " t-erp ").length === 8, "同一任务（作用域含空白）照常可用");
+  assert(scopeActiveSubagents({ taskId: "", list: erpRows }, "").length === 0, "无作用域一律空表");
+  resetSubagentRunsAccumulator();
 }
 
 console.log("== 子会话消息 → 主聊天 ChatMessage ==");
