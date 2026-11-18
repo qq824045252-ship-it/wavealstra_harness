@@ -757,14 +757,15 @@ export default function ChatView(): React.JSX.Element {
               </div>
             </div>
           )}
+          {/* 静态兄弟元素不要带 key：两个兄弟同时用 task.id 会让 React 复用同一
+              fiber，把整条消息列表渲染两遍（看起来像「消息自己重复刷新」）。 */}
           <MessageList
             taskId={task.id}
-            key={task.id}
             messages={displayMessages}
             artifacts={artifacts}
             visibleArtifacts={visibleArtifacts}
           />
-          <div key={activeChatId} ref={tailSpaceRef} className="chat-pin-tail-space" aria-hidden="true" />
+          <div ref={tailSpaceRef} className="chat-pin-tail-space" aria-hidden="true" />
         </div>
         {/* 用户接管滚动（上拉阅读历史）时出现；点击 = 显式「回到底部」动作。
             位于 chat viewport overlay 层（非滚动容器内）：消息怎么滚，

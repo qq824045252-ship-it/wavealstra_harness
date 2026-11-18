@@ -19,6 +19,15 @@ const checks: Array<[string, boolean]> = [
     chatInput.includes("onBeforeSend?.()") && !/isAssistantTurnStart|needsTurnAnchorSpace/.test(chatView)],
   ["history picker jumps within the loaded DOM, with no history replacement", chatView.includes("messages={displayMessages}") &&
     chatView.includes("onJumpToMessage={jumpToHistoryQuestion}") && !/clearWindow|useHistoryQuestions/.test(chatView)],
+  // 静态兄弟不能一起带 key：两个都用 task.id 时 React 会复用同一 fiber，
+  // 把整条消息列表渲染成 N 份（长会话里越刷越多）。
+  ["static scroll siblings carry no keys that could collide", (() => {
+    const listStart = chatView.indexOf("<MessageList");
+    const listTag = listStart < 0 ? "" : chatView.slice(listStart, chatView.indexOf("/>" , listStart));
+    const spacerTag = chatView.match(/<div[^>]*chat-pin-tail-space[^>]*>/)?.[0] ?? "";
+    return listTag.includes("taskId={task.id}") && !/\bkey=/.test(listTag) &&
+      !/\bkey=/.test(spacerTag) && /ref=\{tailSpaceRef\}/.test(spacerTag);
+  })()],
   ["streaming/layout observers have no scroll writer", !chatView.includes("keepAnchorPinned") && !chatView.includes("onVirtualLayout") && !chatView.includes("new ResizeObserver")],
   ["single guarded direct scrollTop writer", (() => { const w=chatView.match(/\.scrollTop\s*=/g) ?? []; return w.length===1 && /el\.scrollTop = target;/.test(chatView); })()],
   ["wheel-up waits for displacement", /onWheelUpCandidate\(followStateRef\.current\)/.test(chatView) && /onFollowScroll\(followStateRef\.current, bottomDistance\(\), delta\)/.test(chatView)],
