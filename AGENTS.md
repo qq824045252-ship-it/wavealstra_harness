@@ -31,6 +31,12 @@
 
 ## Default workflow
 
+### Summary size contract
+
+| 规则 | 强制检查 |
+| --- | --- |
+| 摘要长度只有一个数字：内核 `Config.compress.maxSummaryLength`（字符，超长会让内核拒绝**整批**范围）。宿主侧所有摘要预算（提示词上限、输出 token、分块、范围拆分、`acp_compress` 预检）必须从 `src/main/agent/durable/context/SummaryBudget.ts` 派生。不要新增第二套 token 预算，也不要用放宽上限来「修」超长；范围过大就沿原子边界拆块。 | `test:durable-summary-budget`（契约数学/拆块）与 `test:durable-context-summary-limit`（真实内核：超长摘要 condense 后提交、持续拒收时停在宿主侧、连续多轮每块 ≤ 上限）。 |
+
 ### Memory correctness checks
 
 | 规则 | 强制检查 |

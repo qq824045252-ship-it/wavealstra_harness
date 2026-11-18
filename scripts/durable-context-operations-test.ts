@@ -13,6 +13,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/e
 import type { Conversation, Harness, Storage } from "@earendil-works/pi-durable";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
 import { DurableContextManager } from "../src/main/agent/durable/context/DurableContextManager";
+import { nativeSummaryBudget, type SummaryBudget } from "../src/main/agent/durable/context/SummaryBudget";
 import { DurableContextStateDoc, type DurableContextPersistedState } from "../src/main/agent/durable/context/DurableContextState";
 import { readDurableContextStatus } from "../src/main/agent/durable/context/DurableContextStatus";
 import { createDurableContextTools } from "../src/main/agent/durable/context/DurableContextTools";
@@ -428,7 +429,7 @@ if (crashMode === "--crash") {
       const runtime = await open(join(root, "summary-retry-runtime"), source, seed());
       const { conversation } = internals(runtime);
       const manager = new DurableContextManager({ conversation, models, policy: () => ({ ratio: 0.8, absoluteTokens: null }), contextWindow: () => 128_000 });
-      const testManager = manager as unknown as { summarizeMessages: (messages: Message[], budget: number,
+      const testManager = manager as unknown as { summarizeMessages: (messages: Message[], budget: SummaryBudget,
         model: unknown, models: typeof source.models, context: typeof ctx) => Promise<string> };
       const model: Parameters<typeof processResponsesStream>[3] = { id: "retry-fixture", name: "Retry fixture",
         provider: "fixture", api: "openai-responses", baseUrl: "http://127.0.0.1", reasoning: false, input: ["text"],
@@ -461,28 +462,28 @@ if (crashMode === "--crash") {
         return assistant(message.content.includes("FIRST_CHUNK") ? "Verified first section" : "Verified continuation");
       }} as typeof models;
       const messages: Message[] = [
-        { role: "user", content: "FIRST_CHUNK " + "alpha ".repeat(400), timestamp: 1 },
-        { role: "user", content: "SECOND_CHUNK " + "beta ".repeat(450), timestamp: 2 },
+        { role: "user", content: "FIRST_CHUNK " + "alpha ".repeat(7_600), timestamp: 1 },
+        { role: "user", content: "SECOND_CHUNK " + "beta ".repeat(8_000), timestamp: 2 },
       ];
       // One segment fits, both together don't. The first successful response is only tentative.
       try {
-        await assert.rejects(testManager.summarizeMessages(messages, 850, model, stub, ctx), /content_filter.*尝试 1 次/);
+        await assert.rejects(testManager.summarizeMessages(messages, nativeSummaryBudget(), model, stub, ctx), /content_filter.*尝试 1 次/);
         assert.equal(seen.length, 2);
         const first = seen[0]!.prompt;
         const second = seen[1]!.prompt;
         assert(first.includes("FIRST_CHUNK") && !first.includes("SECOND_CHUNK"));
         const firstCap = seen[1]!.cap;
         mode = "below-cap";
-        await assert.rejects(testManager.summarizeMessages(messages, 850, model, stub, ctx), /error:incomplete.*尝试 1 次/);
+        await assert.rejects(testManager.summarizeMessages(messages, nativeSummaryBudget(), model, stub, ctx), /error:incomplete.*尝试 1 次/);
         assert.equal(seen.length, 3);
         mode = "recover";
-        const summary = await testManager.summarizeMessages(messages, 850, model, stub, ctx);
+        const summary = await testManager.summarizeMessages(messages, nativeSummaryBudget(), model, stub, ctx);
         assert(!summary.includes("Partial output"));
         assert.equal(seen.filter(call => call.prompt === first).length, 1, "do not re-send a successful identical segment");
         assert.deepEqual(seen.filter(call => call.prompt === second).map(call => call.cap), [firstCap, firstCap, firstCap, firstCap * 2]);
         mode = "gateway-length";
         const beforeAlias = seen.length;
-        const aliasSummary = await testManager.summarizeMessages(messages, 850, { ...model, id: "different-model" }, stub, ctx);
+        const aliasSummary = await testManager.summarizeMessages(messages, nativeSummaryBudget(), { ...model, id: "different-model" }, stub, ctx);
         assert(!aliasSummary.includes("Partial output"));
         assert.deepEqual(seen.slice(beforeAlias).filter(call => call.prompt === second).map(call => call.cap), [firstCap, firstCap * 2]);
         assert.equal(seen.filter(call => call.prompt === first).length, 2, "a different model must not reuse the summary");

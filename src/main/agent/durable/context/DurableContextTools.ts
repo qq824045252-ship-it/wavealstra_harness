@@ -58,6 +58,7 @@ export function createDurableContextTools(options: DurableContextToolsOptions) {
       const manager = await managerFor(api, context); if (!manager) return { output: [{ type: "text" as const, text: "该会话没有独立的上下文管理状态。" }] };
       return guard(context, async () => {
         const { state, status: snapshot } = manager.readStatusSnapshot();
+        const limits = manager.summaryLimits();
         const lines = [
           `engine: ${snapshot.engine}`,
           `enabled: ${snapshot.enabled}`,
@@ -67,6 +68,8 @@ export function createDurableContextTools(options: DurableContextToolsOptions) {
           `operationId: ${snapshot.operationId ?? "none"}`,
           `contextWindow: ${snapshot.contextWindow}`,
           `triggerTokens: ${snapshot.triggerTokens}`,
+          `summaryLimitChars: ${Number.isFinite(limits.chars) ? limits.chars : "disabled"}`,
+          `summaryRangeChars: ${Number.isFinite(limits.rangeChars) ? limits.rangeChars : "unbounded"}`,
           `estimatedInputTokens: ${snapshot.estimatedInputTokens ?? "unknown"}`,
           `lastOperation: ${snapshot.beforeTokens !== undefined ? `${snapshot.beforeTokens} -> ${snapshot.afterTokens ?? "unknown"} tokens` : "none"}`,
           `activeBlocks: ${snapshot.blocks ?? 0}`,
@@ -147,7 +150,7 @@ export function createDurableContextTools(options: DurableContextToolsOptions) {
     name: "acp_compress",
     parameters: CompressParams,
     replay: "unsafe",
-    description: "Fold an old, contiguous range of messages into one summary. Only call this for work that is finished and no longer needed verbatim; the original text stays retrievable through acp_retrieve. Use acp_status for currently viable refs.",
+    description: "Fold an old, contiguous range of messages into one summary. Only call this for work that is finished and no longer needed verbatim; the original text stays retrievable through acp_retrieve. The summary must be at most summaryLimitChars characters (see acp_status); a longer one is rejected before any state changes, so split the range instead of exceeding the limit.",
     execute: async (params, api, context) => {
       const manager = await managerFor(api, context); if (!manager) return { output: [{ type: "text" as const, text: "该会话没有独立的上下文管理状态。" }] };
       return guard(context, async () => {

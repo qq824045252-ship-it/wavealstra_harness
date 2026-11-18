@@ -309,6 +309,7 @@ const HEADLESS_TESTS = new Set([
   "test:durable-context-active-view",
   "test:durable-context-entrypoints",
   "test:durable-context-window-matrix",
+  "test:durable-context-summary-limit",
   "test:durable-storage-replay-api",
   "test:durable-storage-lease",
   "test:gadget-save-copies",

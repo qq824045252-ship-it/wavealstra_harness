@@ -1,4 +1,4 @@
-import { classifySummaryStop, summaryModelLimits, summaryOutputBudget, nextSummaryOutputBudget } from "./DurableSummaryBudget";
+import { classifySummaryStop, summaryModelLimits, nextSummaryOutputBudget, blockSummaryBudget, nativeSummaryBudget, SummaryOverLimitError, type SummaryBudget } from "./SummaryBudget";
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
@@ -160,6 +160,20 @@ export class DurableContextManager {
     const absolute = product.absoluteTokens;
     const triggerTokens = absolute !== null && absolute > 0 ? Math.min(ratioTokens, absolute) : ratioTokens;
     return { window, triggerTokens, reserveTokens: Math.max(1_024, window - triggerTokens) };
+  }
+
+  /**
+   * 内核门禁的摘要契约：数字来自即将交给内核的 `Config.compress`，与校验同源。
+   * 自动摘要、范围拆分、模型主动折叠与状态展示都由这一个预算派生。
+   */
+  private blockBudget(window = this.resolvePolicy().window): SummaryBudget {
+    return blockSummaryBudget(this.buildConfig(window, new Set()).compress);
+  }
+
+  /** 让模型看到真实的块上限（`acp_status`），而不是只在失败之后才从错误里读到。 */
+  summaryLimits(): { chars: number; rangeChars: number } {
+    const budget = this.blockBudget();
+    return { chars: budget.charMax, rangeChars: budget.maxRangeChars };
   }
 
   statusSnapshot(): ContextManagementStatusDto {
@@ -532,7 +546,7 @@ export class DurableContextManager {
         const beforeTokens = projected.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
         operation = await this.beginOperation(ctx, "threshold", true, beforeTokens, this.operationSource(view));
         const model = await this.resolveModel(api.models, ctx);
-        const text = await this.summarizeMessages(projected, Math.max(4_096, Math.floor(policy.window * 0.45)), model, api.models, ctx);
+        const text = await this.summarizeMessages(projected, nativeSummaryBudget(), model, api.models, ctx);
         const summary = `${SUMMARY_MARKER}\n${text}\n\n[Original records remain available through acp_search (scope=originals) and acp_retrieve (entryId/ref/blockId).]`;
         const afterTokens = estimateTextTokens(summary);
         if (afterTokens >= beforeTokens) throw new Error("前缀摘要没有减少实际输入，未提交原生边界");
@@ -554,13 +568,13 @@ export class DurableContextManager {
           new Error("文本摘要不能替代原始附件；请保留当前历史并切换更大窗口模型，或缩小输入后重试。"));
         return { decline: true };
       }
-      const budget = Math.max(4_096, Math.floor(policy.window * 0.45));
+      const inputBudget = Math.max(4_096, Math.floor(policy.window * 0.45));
       const inputTokens = Math.max(estimateMessages(input.messages), input.messages.reduce((total, message) => total + estimateMessageTokens(message), 0));
       this.rebaseNeeded = true;
-      if (inputTokens <= budget) return undefined;
+      if (inputTokens <= inputBudget) return undefined;
       operation = await this.beginOperation(ctx, input.reason === "manual" ? "manual" : "fallback", input.reason !== "manual", inputTokens);
       const model = await this.resolveModel(api.models, ctx);
-      const summary = await this.summarizeMessages(input.messages, budget, model, api.models, ctx);
+      const summary = await this.summarizeMessages(input.messages, nativeSummaryBudget(), model, api.models, ctx);
       // The native task has not committed its head yet. Do not publish completed from a before hook.
       await this.finishOperation(operation, { phase: "applying", engine: "native",
         ...(input.firstKept !== undefined ? { nativeCommit: { taskId: api.taskId, firstKept: input.firstKept,
@@ -678,6 +692,9 @@ export class DurableContextManager {
     input: { startRef: string; endRef: string; summary: string; topic?: string; expectedRevision?: number; expectedConfigDigest?: string }, ctx: Context,
   ): Promise<{ ok: boolean; message: string }> {
     if (this.engine !== "billion-context") return { ok: false, message: "当前设置为按比例压缩（Pi 原生），未启用 billion-context" };
+    // 字符契约在宿主边界兑现：超长摘要不进内核、不动状态，直接给出超了多少和两种改法。
+    const budget = this.blockBudget();
+    if (!budget.fits(input.summary)) return { ok: false, message: budget.overage(input.summary) };
     await this.ensureReady(ctx);
     const view = await this.host.conversation.context(ctx);
     if ((view.head?.id ?? null) !== this.headEntryId || this.rebaseNeeded) await this.rebase(view.head?.id ?? null, ctx, "boundary");
@@ -924,15 +941,25 @@ export class DurableContextManager {
       skippedReason = this.describeNothingToCompress(turn.state, build.messages.length);
     } else {
       const model = await this.resolveModel(models, ctx);
+      const summaryBudget = this.blockBudget(policy.window);
       const appliedRanges: Array<{ startRef: string; endRef: string; summary: string; topic?: string }> = [];
+      const summaryFailures: string[] = [];
       for (const { startRef, endRef, text } of plans) {
         if (!text.trim()) continue;
-        const summary = await this.summarizeMessages([
-          { role: "user", content: text, timestamp: Date.now() } as Message,
-        ], Math.max(6_000, Math.floor(policy.window * 0.3)), model, models, ctx);
-        const topic = firstLine(text).slice(0, 120);
-        appliedRanges.push({ startRef, endRef, summary, ...(topic ? { topic } : {}) });
+        // 一条摘要失败不连坐整轮：其余范围照常落地，失败原因如实报告（不再伪装成内核整批拒绝）。
+        try {
+          const body = await this.summarizeMessages([
+            { role: "user", content: text, timestamp: Date.now() } as Message,
+          ], summaryBudget, model, models, ctx);
+          const topic = firstLine(text).slice(0, 120);
+          appliedRanges.push({ startRef, endRef, summary: body, ...(topic ? { topic } : {}) });
+        } catch (error) {
+          // 超限是单范围问题（跳过它继续整理别的）；模型/窗口故障是系统性的，立刻中止本轮。
+          if (!(error instanceof SummaryOverLimitError)) throw error;
+          summaryFailures.push(errorText(error));
+        }
       }
+      if (!appliedRanges.length && summaryFailures.length) throw new Error(summaryFailures[0]);
       if (appliedRanges.length) {
         const applied = this.core.applyCompression({ ranges: appliedRanges, messages: build.messages, state, config: this.buildConfig(policy.window, build.protectedIds) });
         if (applied.result.errors.length) throw new Error(applied.result.errors.join("；"));
@@ -943,6 +970,8 @@ export class DurableContextManager {
       } else {
         skippedReason = "推荐范围没有可读原文";
       }
+      // 部分范围被跳过时也要如实带上原因；否则 UI 只会看到「已完成」。
+      if (summaryFailures.length) skippedReason = `部分范围未整理：${summaryFailures[0]}`;
     }
     const rendered = this.renderProjected(build, state);
     const afterTokens = rendered.messages.reduce((total, message) => total + estimateMessageTokens(message), 0) + toolTokens;
@@ -1152,8 +1181,12 @@ export class DurableContextManager {
       if (prior && range.start <= prior.end) prior.end = Math.max(prior.end, range.end);
       else merged.push({ ...range });
     }
+    // 一条摘要最多代表 maxRangeChars 原文；超过就沿原子组边界拆块。
+    // 拆块让每块都能在字符上限内保住细节，而不是逼出一条必然被内核拒绝的超长摘要。
+    const maxRangeChars = this.blockBudget(window).maxRangeChars;
+    const planned = Number.isFinite(maxRangeChars) ? splitSpansByChars(merged, atomic, build, maxRangeChars) : merged;
     const safe: CompressibleRange[] = [];
-    for (const { start, end } of merged) {
+    for (const { start, end } of planned) {
       if (safe.length >= 6) break;
       const messages = build.messages.slice(start, end + 1);
       if (messages.some(message => build.protectedIds.has(message.id))) continue;
@@ -1263,10 +1296,13 @@ export class DurableContextManager {
     return parts.join("\n\n");
   }
 
-  /** 有界摘要：单次输入超过 chunkBudget 时分块滚动摘要，合并请求本身也受窗口约束。 */
+  /**
+   * 有界摘要：单次输入超过“一条摘要能承载的原文”时分块滚动摘要，合并请求同样受窗口与契约约束。
+   * 所有数字来自 {@link SummaryBudget}，这里不再有第二套 token 常量。
+   */
   private async summarizeMessages(
     messages: readonly Message[],
-    chunkBudget: number,
+    summary: SummaryBudget,
     model: unknown,
     models: Models,
     ctx: Context,
@@ -1274,19 +1310,22 @@ export class DurableContextManager {
     const window = this.resolvePolicy().window;
     const limits = summaryModelLimits(model, window);
     const outputReserve = Math.min(limits.output, Math.floor(limits.window / 4));
-    const budget = Math.min(chunkBudget, 24_000, limits.window - outputReserve - estimateTextTokens(SUMMARIZER_SYSTEM) - limits.safety - 256);
-    if (budget < 256) throw new Error("当前模型窗口不足以执行有界摘要");
-    const chunks = splitByTokens(messages, budget);
+    const windowTokens = limits.window - outputReserve - estimateTextTokens(SUMMARIZER_SYSTEM) - limits.safety - 256;
+    const source = messages.map(messageTextForSummary).join("\n\n");
+    const charsPerToken = source.length / Math.max(1, estimateTextTokens(source));
+    const chunkBudget = summary.inputLimitTokens(charsPerToken, windowTokens);
+    if (chunkBudget < 256) throw new Error("当前模型窗口不足以执行有界摘要");
+    const chunks = splitByTokens(messages, chunkBudget);
     const summaries: string[] = [];
     for (const chunk of chunks) {
-      summaries.push(await this.callSummarizer(chunk, model, models, ctx));
+      summaries.push(await this.callSummarizer(chunk, model, models, ctx, "summary", summary));
     }
     if (summaries.length === 1) return summaries[0]!;
     let merged = summaries.join("\n\n---\n\n");
     for (let round = 0; round < 6; round++) {
-      if (estimateTextTokens(merged) <= budget) return this.callSummarizer(merged, model, models, ctx, true);
+      if (estimateTextTokens(merged) <= chunkBudget) return this.callSummarizer(merged, model, models, ctx, "merge", summary);
       const parts: string[] = [];
-      for (const chunk of splitByText(merged, budget)) parts.push(await this.callSummarizer(chunk, model, models, ctx, true));
+      for (const chunk of splitByText(merged, chunkBudget)) parts.push(await this.callSummarizer(chunk, model, models, ctx, "merge", summary));
       const reduced = parts.join("\n\n");
       if (estimateTextTokens(reduced) >= estimateTextTokens(merged)) throw new Error("摘要合并没有减少输入，已停止重试");
       merged = reduced;
@@ -1294,18 +1333,27 @@ export class DurableContextManager {
     throw new Error("摘要合并达到安全重试上限");
   }
 
-  private async callSummarizer(input: string, model: unknown, models: Models, ctx: Context, merge = false): Promise<string> {
-    const prompt = merge
+  /**
+   * 摘要生成的唯一入口。提示词里带真实字符上限，输出先在宿主侧兑现契约：
+   * 超限先做一次只压字数的 condense，仍超限就抛可执行的超限说明 —— 永不把超长摘要交给内核。
+   */
+  private async callSummarizer(input: string, model: unknown, models: Models, ctx: Context,
+    mode: "summary" | "merge" | "condense" = "summary", summary: SummaryBudget = this.blockBudget()): Promise<string> {
+    const system = `${SUMMARIZER_SYSTEM}\n${summary.rule()}`;
+    const prompt = mode === "merge"
       ? `Merge these partial summaries into one coherent summary. Keep every concrete detail (paths, versions, errors, decisions, open tasks) and output only the merged summary.\n\n${input}`
-      : `<conversation>\n${input}\n</conversation>\n\nSummarize this section so another assistant can continue the task without re-reading it.`;
+      : mode === "condense"
+        ? `Rewrite the summary below so that it is at most ${summary.charMax} characters. Keep paths, versions, exact errors, decisions and open objectives; drop process narration and repeated output. Output only the rewritten summary.\n\n${input}`
+        : `<conversation>\n${input}\n</conversation>\n\nSummarize this section so another assistant can continue the task without re-reading it.`;
     const signal = this.maintenanceSignal(ctx);
     signal?.throwIfAborted();
     const messages: Message[] = [
-      { role: "system", content: SUMMARIZER_SYSTEM, timestamp: Date.now() },
+      { role: "system", content: system, timestamp: Date.now() },
       { role: "user", content: prompt, timestamp: Date.now() },
     ];
-    const inputTokens = messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
-    const budget = summaryOutputBudget(model, this.resolvePolicy().window, inputTokens);
+    const limits = summaryModelLimits(model, this.resolvePolicy().window);
+    const ceiling = limits.output;
+    const initial = Math.max(256, Math.min(ceiling, summary.outputTokens(input) + (limits.reasoning ? 4096 : 512)));
     if (this.summaryMemoModels !== models) {
       this.summaryMemo.clear();
       this.summaryMemoModels = models;
@@ -1314,7 +1362,7 @@ export class DurableContextManager {
     const key = createHash("sha256").update(JSON.stringify([
       this.persisted.sessionId, this.persisted.epoch, this.configDigest(),
       resolved?.provider, resolved?.id, resolved?.api, resolved?.baseUrl, resolved?.compat,
-      budget, SUMMARIZER_SYSTEM, prompt,
+      summary.charMax, ceiling, initial, system, prompt,
     ])).digest("hex");
     const cached = this.summaryMemo.get(key);
     if (cached !== undefined) {
@@ -1322,7 +1370,7 @@ export class DurableContextManager {
       this.summaryMemo.set(key, cached);
       return cached;
     }
-    let maxTokens = budget.initial;
+    let maxTokens = initial;
     for (let attempt = 0; attempt < 3; attempt++) {
       signal?.throwIfAborted();
       const result = await models.completeSimple(model as never, { messages }, {
@@ -1331,18 +1379,22 @@ export class DurableContextManager {
       signal?.throwIfAborted();
       const text = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n").trim();
       if (result.stopReason === "stop" && text) {
-        if (text.length <= 32_768) {
+        // condense 本身不再递归；其余模式超限时只压一次字数，仍超限则明确报超，不污染内核。
+        const fitted = summary.fits(text) || mode === "condense"
+          ? text : await this.callSummarizer(text, model, models, ctx, "condense", summary);
+        if (!summary.fits(fitted)) throw new SummaryOverLimitError(summary.overage(fitted));
+        if (summary.cacheable(fitted)) {
           if (this.summaryMemo.size >= 16) this.summaryMemo.delete(this.summaryMemo.keys().next().value!);
-          this.summaryMemo.set(key, text);
+          this.summaryMemo.set(key, fitted);
         }
-        return text;
+        return fitted;
       }
       const reason = classifySummaryStop(result, maxTokens);
       // Never commit a truncated summary or feed it back as authoritative history. Retry only
       // the same read-only summary request; model accounting remains on completeSimple.
-      const next = nextSummaryOutputBudget(maxTokens, budget.ceiling);
+      const next = nextSummaryOutputBudget(maxTokens, ceiling);
       if ((reason !== "length" && reason !== "length:incomplete-at-cap") || attempt === 2 || next <= maxTokens) {
-        throw new Error(`摘要模型没有返回有效摘要（${reason}）；输出预算 ${maxTokens}/${budget.ceiling} tokens，尝试 ${attempt + 1} 次；原文和已提交摘要保留`);
+        throw new Error(`摘要模型没有返回有效摘要（${reason}）；输出预算 ${maxTokens}/${ceiling} tokens，尝试 ${attempt + 1} 次；原文和已提交摘要保留`);
       }
       this.publish({ ...this.status, message: `摘要输出被截断，正在增加输出预算重试（${next} tokens）` });
       maxTokens = next;
@@ -1501,6 +1553,42 @@ export function refIndex(ref: string): number | undefined {
 
 function countTopLevelBlocks(state: CompressionState): number { return topLevelBlocks(state).length; }
 
+/** 沿原子边界把过大的范围切成多段：每段都能由一条摘要（≤ 字符上限）代表。 */
+export function splitSpansByChars(
+  spans: readonly { start: number; end: number }[],
+  atomic: readonly { start: number; end: number }[],
+  build: { messages: ReadonlyArray<{ text?: string }> },
+  maxChars: number,
+): Array<{ start: number; end: number }> {
+  const prefix = [0];
+  for (const message of build.messages) prefix.push(prefix[prefix.length - 1]! + (message.text?.length ?? 0));
+  const charsOf = (start: number, end: number) => prefix[end + 1]! - prefix[start]!;
+  const out: Array<{ start: number; end: number }> = [];
+  for (const span of spans) {
+    let start = span.start;
+    let chars = 0;
+    let end = span.start - 1;
+    for (const group of atomic) {
+      if (group.end < span.start) continue;
+      if (group.start > span.end) break;
+      const from = Math.max(group.start, span.start);
+      const to = Math.min(group.end, span.end);
+      const size = charsOf(from, to);
+      // 已经装了内容且再加就超限 → 先收一段再从这里重新开始；
+      // 单个原子组自己就超限时独占一段（它不可再拆，只能压得更狠）。
+      if (end >= start && chars + size > maxChars) {
+        out.push({ start, end });
+        start = from;
+        chars = 0;
+      }
+      chars += size;
+      end = to;
+    }
+    if (end >= start) out.push({ start, end });
+  }
+  return out;
+}
+
 function selectRanges(ranges: readonly CompressibleRange[], targetTokens: number): CompressibleRange[] {
   const chosen: CompressibleRange[] = [];
   let saved = 0;
@@ -1570,7 +1658,9 @@ function firstLine(text: string): string {
 }
 
 function errorText(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  // 普通 Error 的 "Error: " 前缀对用户没有信息量；带语义名字的错误（取消、过期）保留名字。
+  if (!(error instanceof Error)) return String(error);
+  return error.name && error.name !== "Error" ? `${error.name}: ${error.message}` : error.message;
 }
 
 function isAbortError(error: unknown): boolean {

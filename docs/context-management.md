@@ -54,6 +54,26 @@
 6. **分支**：会话 fork/regenerate 通过 `asOf` 文档拿到锚点时的状态，不复制“现在”的摘要；独立新任务分支按复制后的可见历史确定性重建。
 7. **覆盖范围**：主会话、Bot/Work、Gateway、辅助运行时、子代理、会诊各自持有独立 state；Code Mode 私有 conversation 不接管。
 
+## 3.1 摘要大小契约（2026-11-18）
+
+内核（vendor 固定 SHA，不手改）只认一个数字：`Config.compress.maxSummaryLength` = 20000 **字符**，超长会让
+`applyCompression` 拒绝**整批**范围。宿主因此只保留这一条字符契约，所有派生数字集中在
+`src/main/agent/durable/context/SummaryBudget.ts`：
+
+- **上限**：一条摘要 ≤ `charMax` 字符。
+- **范围**：一条摘要最多代表 `maxRangeChars = charMax × 4` 字符原文；超过就沿原子边界（原生消息 / 工具批次 /
+  已有摘要块）**拆成多块**，不再逼一条超长摘要。拆块后总摘要容量随块数增长，长会话折叠不再随历史变长而丢细节。
+- **生成侧**：提示词里写明字符上限；输出 token 由 `charMax` 和文本字符/token 密度反推（CJK ≈ 1 字符/token，
+  英文 ≈ 4 字符/token）。不再使用「输入 token / 3」：英文 20000 字符只有约 5000 token，旧的 token 预算等于把字符上限放开 4 倍。
+- **兑现**：超限摘要先在宿主侧 condense 一次；仍超限就作为**单范围失败**跳过（其它范围照常折叠），并给出
+  “超了多少 + 两种改法”。内核的 `Batch rejected before folding any range` 因此从运行期故障变成不可达的编程错误防线。
+- **模型主动折叠**：`acp_compress` 在进入内核前判长度；`acp_status` 输出 `summaryLimitChars` / `summaryRangeChars`，模型不必先失败才知道上限。
+- **原生（Pi）压缩**：没有内核门禁，摘要按窗口尽量完整，只有单次请求输入受 24K token 成本上限约束。
+
+验证：`pnpm -s test:durable-summary-budget`（契约数学、CJK 输出预算、拆块、condense）与
+`pnpm -s test:durable-context-summary-limit`（真实内核 + SQLite：超长摘要 condense 后提交；持续拒收时停在宿主侧且
+不提交任何块；连续多轮每块 ≤ 上限）。
+
 ## 4. 命令
 
 ```bash
@@ -62,6 +82,8 @@ pnpm -s test:durable-context-management      # 自动整理/原文回查/重启/
 pnpm -s test:durable-context-branch-cancel   # 分支 as-of/取消/overflow 兜底/子会话/独立任务分支
 pnpm -s test:durable-context-performance     # 合成 refs 元数据与活动视图测量，不是冷存储/RSS 验收
 pnpm -s test:durable-context-safety          # 原文身份/提交故障/分块/分页/超限输入
+pnpm -s test:durable-summary-budget          # 摘要字符契约、CJK 输出预算、拆块、condense
+pnpm -s test:durable-context-summary-limit   # 真实内核：超长摘要不进入内核、拆块与连续多轮
 pnpm -s test:durable-context-dev:live        # opt-in 真 Electron + 模型六类任务（需实机与本地模型网关）
 pnpm -s test:durable-compaction-settings     # 阈值换算
 pnpm -s test:compaction-settings-ui          # 设置页引擎切换/手动控件 skipped 文案（headless UI）
