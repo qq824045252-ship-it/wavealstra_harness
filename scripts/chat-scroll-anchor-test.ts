@@ -1,3 +1,6 @@
+import { strict as assert } from "node:assert";
+import { Virtualizer } from "@tanstack/react-virtual";
+import { bindChatScrollCompensation, initialFollowState, onUserScrollUp } from "../src/renderer/src/lib/scrollFollow.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,7 +19,7 @@ const checks: Array<[string, boolean]> = [
   ["user takeover gates new-turn pin", /shouldPinOnNewTurn\(followRef\.current, isNewTurn\)/.test(chatView)],
   ["full stream keeps anchor space until assistant_end", /const needsTurnAnchorSpace =\s*tailMessage\?\.role === "user" \|\|\s*\(tailMessage\?\.role === "assistant" && Boolean\(tailMessage\.streaming\)\)/.test(chatView)],
   ["single guarded direct scrollTop writer", (() => { const w=chatView.match(/\.scrollTop\s*=/g) ?? []; return w.length===1 && /el\.scrollTop = target;/.test(chatView); })()],
-  ["virtualizer compensation stays under follow state", /shouldAdjustScrollPositionOnItemSizeChange[\s\S]{0,600}shouldAdjustScrollCompensation/.test(chatView)],
+  ["virtualizer compensation wired on the live instance", chatView.includes("bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef)")],
   ["wheel-up waits for displacement", /onWheelUpCandidate\(followStateRef\.current\)/.test(chatView) && /onFollowScroll\(followStateRef\.current, bottomDistance\(\), delta\)/.test(chatView)],
   ["pointer and keyboard takeover remain wired", /document\.addEventListener\("pointerup", clearPointerIntent\)/.test(chatView) && /document\.addEventListener\("keydown", markKeyboardIntent\)/.test(chatView)],
   ["programmatic target is clamped", /Math\.min\(top, maxScrollTop\)/.test(chatView) && /target > Math\.max\(0, el\.scrollHeight - el\.clientHeight\)/.test(chatView)],
@@ -27,7 +30,7 @@ const checks: Array<[string, boolean]> = [
   // 历史块前插并由唯一滚动入口补偿，界面没有隐藏分页按钮。
   ["history prepends and compensates", chatView.includes("mergeHistoryWindow([visibleWindow.messages], live)") && chatView.includes("useEarlierHistory({") && /applyProgrammaticScrollTop\(prependScrollTop\(anchor\.top, anchor\.height, element\.scrollHeight\)\)/.test(earlierHistory) && !chatView.includes('className="durable-history-earlier"')],
   ["pull-up near top loads serially", /const EARLIER_EDGE_PX = 48/.test(earlierHistory) && earlierHistory.includes("if (element.scrollTop >= EARLIER_EDGE_PX) return;") && earlierHistory.includes("if (loadingRef.current || !taskId || target === undefined || !element) return;") && chatView.includes("if (delta < 0) requestEarlier();")],
-  ["prepend suppresses pin and virtual compensation", chatView.includes("if (!hasMessages || prepended) return;") && chatView.includes("isPrependOnly(previousDisplayMessagesRef.current, displayMessages)") && chatView.includes("compensationOwned: programmaticTargetRef.current !== null")],
+  ["prepend suppresses pin and virtual compensation", chatView.includes("if (!hasMessages || prepended) return;") && chatView.includes("isPrependOnly(previousDisplayMessagesRef.current, displayMessages)") && chatView.includes("bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef)")],
   ["jump-to-bottom clears history window", /className="jump-to-bottom"[\s\S]{0,420}clearWindow\(\)/.test(chatView) && earlierHistory.includes("tokenRef.current += 1;")],
   // 手机端同样是前插：不再有隐藏分页按钮，触摸与 wheel 共用同一“贴顶继续拉”判定。
   ["remote timeline prepends older blocks without pagination buttons", remoteApp.includes("onWheel={handleWheel}") && remoteApp.includes("onTouchMove={handleTouchMove}") && !remoteApp.includes('hidden aria-hidden="true"') && remoteApp.includes("consumePrependAnchor(timelineFirstMessageId(el))") && !remoteApp.includes("setOlderPage(undefined)")],
@@ -37,3 +40,39 @@ for (const [name, pass] of checks) console.log(`${pass ? "PASS" : "FAIL"}  ${nam
 const failed = checks.filter(([, pass]) => !pass);
 console.log(`\n===== ChatScrollAnchor: ${checks.length - failed.length}/${checks.length} passed =====`);
 if (failed.length > 0) process.exit(1);
+
+/** Drive the installed virtual-core through its real measurement path. No React
+ * or Electron needed to verify whether a resize produces a scroll write. */
+function scrollWrites(index: number, size: number, follow: boolean, target: number | null): number[] {
+  const writes: number[] = [];
+  const virtualizer = new Virtualizer<HTMLDivElement, Element>({
+    count: 18,
+    getScrollElement: () => null,
+    estimateSize: () => 100,
+    initialOffset: 1750,
+    initialRect: { width: 800, height: 400 },
+    scrollToFn: (offset, { adjustments }) => writes.push(offset + (adjustments ?? 0)),
+    observeElementRect: () => undefined,
+    observeElementOffset: () => undefined,
+  });
+  const state = initialFollowState();
+  const followStateRef = { current: follow ? state : onUserScrollUp(state) };
+  const programmaticTargetRef = { current: target };
+  bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef);
+  // Let direction settle: remaining on an older message still means takeover.
+  followStateRef.current = { ...followStateRef.current, direction: null };
+  virtualizer.getVirtualItems();
+  virtualizer.resizeItem(index, size);
+  return writes;
+}
+
+// The active row starts above the viewport, but its measured bottom is below
+// it. Do not drag the viewport down when a thinking/tool block enlarges it.
+assert.deepEqual(scrollWrites(17, 350, false, null), []);
+// A row wholly above the viewport still needs normal anchor compensation.
+assert.deepEqual(scrollWrites(0, 350, false, null), [2000]);
+// Do not let the virtualizer compete with either ordinary follow or a pending
+// programmatic placement such as history prepend.
+assert.deepEqual(scrollWrites(0, 350, true, null), []);
+assert.deepEqual(scrollWrites(0, 350, false, 1750), []);
+console.log("PASS installed virtualizer: streaming-row growth, above-viewport compensation, and scroll ownership");

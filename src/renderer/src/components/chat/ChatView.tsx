@@ -3,7 +3,7 @@ import TaskRecoveryNotice from "./TaskRecoveryNotice";
 import SessionHistoryRecoveryNotice from "./SessionHistoryRecoveryNotice";
 import TaskModelRecoveryNotice from "./TaskModelRecoveryNotice";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/react-virtual";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
@@ -36,6 +36,7 @@ import { COPY, getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
 import { heroHeadline, heroSubline } from "./heroCopy";
 import HeroSuggestChips from "./HeroSuggestChips";
 import {
+  bindChatScrollCompensation,
   initialFollowState,
   keyboardIntent,
   onHistoryJump,
@@ -47,7 +48,6 @@ import {
   onUserScrollDown,
   onUserScrollUp,
   onWheelUpCandidate,
-  shouldAdjustScrollCompensation,
   shouldInferUserScroll,
   shouldPinOnNewTurn,
   type FollowState,
@@ -60,18 +60,6 @@ import { estimateMessageHeight } from "@/lib/messageSizeEstimate";
 const MESSAGE_VIRTUALIZE_THRESHOLD = 16;
 /** 新一轮用户消息置顶时距滚动容器顶的留白 */
 const TURN_TOP_OFFSET = 8;
-
-/**
- * shouldAdjustScrollPositionOnItemSizeChange 是 virtual-core 选项但 React 包装层
- * 类型未暴露（v3.14.9）；用断言补类型（运行时选项有效）。
- */
-type VirtualizerOptionsWithCompensation = Parameters<typeof useVirtualizer>[0] & {
-  shouldAdjustScrollPositionOnItemSizeChange: (
-    item: VirtualItem,
-    delta: number,
-    instance: Virtualizer<HTMLDivElement, Element>,
-  ) => boolean;
-};
 
 function recentSpaceLabel(spaces: Space[], spaceId: string | undefined): string {
   if (!spaceId) return COPY.independentTask;
@@ -362,20 +350,6 @@ function MessageList({
     // 历史消息可能在滚动容器首次挂载的同一帧恢复；先给虚拟器一个
     // 可用视口，随后 ResizeObserver 会用真实尺寸替换它。
     initialRect: { width: 800, height: 640 },
-    // 把 virtualizer 的行尺寸变化滚动补偿纳入单一滚动意图状态机：
-    // follow=true 时不让尺寸重测主动改 scrollTop；新一轮置顶由 ChatView 单次执行；
-    // follow=false（用户接管）时仅允许「行真实下边缘完全在折叠线上方」的锚点
-    // 补偿，禁止把用户视口向下拖（#1218：流式行增长在折叠线下方不位移视口）。
-    shouldAdjustScrollPositionOnItemSizeChange: (item, delta, instance) =>
-      shouldAdjustScrollCompensation({
-        itemStart: item.start,
-        cachedSize: item.size,
-        delta,
-        scrollOffset: (instance.scrollOffset ?? 0) + instance.scrollAdjustments,
-        scrollDirection: instance.scrollDirection,
-        follow: followStateRef.current.follow,
-        compensationOwned: programmaticTargetRef.current !== null,
-      }),
     measureElement:
       typeof window !== "undefined" && navigator.userAgent.indexOf("Firefox") === -1
         ? (el) => {
@@ -392,7 +366,8 @@ function MessageList({
             return el.getBoundingClientRect().height;
           }
         : undefined,
-  } as VirtualizerOptionsWithCompensation);
+  });
+  bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef);
   virtualizerRef.current = virtualizer;
 
   apiRef.current = {

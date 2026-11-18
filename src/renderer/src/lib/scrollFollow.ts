@@ -1,3 +1,5 @@
+import type { Virtualizer } from "@tanstack/react-virtual";
+
 /**
  * 消息列表「单一滚动意图」纯状态机（无 React 依赖，可独立单测）。
  *
@@ -203,6 +205,27 @@ export function shouldAdjustScrollCompensation(ctx: CompensationContext): boolea
   if (ctx.delta === 0) return false;
   // 行真实下边缘 = 缓存高 + 本次增量；必须完全在折叠线上方（含边界）才补偿
   return ctx.itemStart + ctx.cachedSize + ctx.delta <= ctx.scrollOffset;
+}
+
+/**
+ * virtual-core reads the resize predicate from the instance, not its options.
+ * Bind during render so it is ready before React attaches measurement refs.
+ */
+export function bindChatScrollCompensation(
+  virtualizer: Virtualizer<HTMLDivElement, Element>,
+  followStateRef: Readonly<{ current: FollowState }>,
+  programmaticTargetRef: Readonly<{ current: number | null }>,
+): void {
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) =>
+    shouldAdjustScrollCompensation({
+      itemStart: item.start,
+      cachedSize: item.size,
+      delta,
+      scrollOffset: (instance.scrollOffset ?? 0) + instance.scrollAdjustments,
+      scrollDirection: instance.scrollDirection,
+      follow: followStateRef.current.follow,
+      compensationOwned: programmaticTargetRef.current !== null,
+    });
 }
 
 /* ---------------------------------------------------------------------------
