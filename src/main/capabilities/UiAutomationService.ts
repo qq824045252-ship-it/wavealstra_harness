@@ -260,7 +260,16 @@ export class UiAutomationService {
     });
     void receipt.catch(() => {});
     try {
-      scope.dispatch(); await send();
+      scope.dispatch();
+      try { await send(); }
+      catch (error) {
+        // A key/click handler may navigate before native send completion reaches
+        // the host. Reconcile only the already-armed original-node receipt;
+        // cancellation, timeouts and absent receipts must still fail.
+        if (!(error instanceof Error && "code" in error && error.code === "SURFACE_CHANGED")) throw error;
+        if (!await receipt) throw error;
+        return;
+      }
       const accepted = await receipt;
       if (!accepted) throw new UiAutomationError("EXECUTION_FAILED", "原生输入已派发，但目标没有确认收到事件；请只读观察，不要重放提交");
     } finally {

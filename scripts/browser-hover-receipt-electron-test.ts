@@ -14,6 +14,50 @@ await app.whenReady();win=new BrowserWindow({show:false,width:1000,height:800});
 {
  const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
  const wc=host.getTabHost(tabId)!.inspectionWebContents!;
+ await wc.executeJavaScript(`document.body.insertAdjacentHTML('beforeend','<textarea id="spa-submit"></textarea>');window.submissions=0;document.querySelector('#spa-submit').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();window.submissions++;history.pushState({},'',location.pathname+'?chat=submitted');}};true`);
+ await service.execute({action:"find",tabId,selector:"#spa-submit"},undefined,context);
+ const original=wc.executeJavaScript.bind(wc);
+ // Delay only the host delivery of the real renderer receipt. Native key events
+ // and the SPA handler run normally, matching a navigation-before-ack race.
+ wc.executeJavaScript=async(code,...args)=>{
+   const value=await original(code,...args);
+   if(code.includes('window.__mybuddyInputReceipts.get('))await new Promise(resolve=>setTimeout(resolve,60));
+   return value;
+ };
+ try {
+   const submitted=await service.execute({action:"press",tabId,selector:"#spa-submit",key:"Enter"},undefined,context);
+   assert.deepEqual(submitted.outcome,{dispatch:"dispatched",effect:"confirmed"});
+ } finally { wc.executeJavaScript=original; }
+ assert.equal(await original("window.submissions"),1,"receipt reconciliation must not replay a submission");
+ assert(wc.getURL().includes('chat=submitted'));
+}
+for (const scenario of ["lost-receipt", "cancelled"] as const) {
+ const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
+ const wc=host.getTabHost(tabId)!.inspectionWebContents!;
+ await wc.executeJavaScript(`document.body.insertAdjacentHTML('beforeend','<textarea id="guarded-submit"></textarea>');window.submissions=0;document.querySelector('#guarded-submit').onkeydown=e=>{if(e.key==='Enter'){window.submissions++;history.pushState({},'',location.pathname+'?guarded');}};true`);
+ await service.execute({action:"find",tabId,selector:"#guarded-submit"},undefined,context);
+ const original=wc.executeJavaScript.bind(wc),controller=new AbortController();
+ wc.executeJavaScript=async(code,...args)=>{
+   const value=await original(code,...args);
+   if(code.includes('window.__mybuddyInputReceipts.get(')){
+     if(scenario==="cancelled")controller.abort();
+     await new Promise(resolve=>setTimeout(resolve,60));
+     return false;
+   }
+   return value;
+ };
+ try {
+   await assert.rejects(service.execute({action:"press",tabId,selector:"#guarded-submit",key:"Enter"},controller.signal,context),error=>{
+     assert(error instanceof Error);
+     if(scenario==="cancelled")return error.name==="AbortError";
+     return error instanceof BrowserAutomationError&&error.code==="SURFACE_CHANGED";
+   },"URL changes alone cannot confirm input without its receipt, or override cancellation");
+ } finally { wc.executeJavaScript=original; }
+ assert.equal(await original("window.submissions"),1,"uncertainty and cancellation never trigger an automatic second submission");
+}
+{
+ const opened=await service.execute({action:"navigate",url,reload:true},undefined,context),tabId=opened.tabId!;
+ const wc=host.getTabHost(tabId)!.inspectionWebContents!;
  await wc.executeJavaScript(`document.body.insertAdjacentHTML('beforeend','<div id="custom-login">登录</div>');window.loginClicks=0;document.querySelector('#custom-login').onclick=()=>{window.loginClicks++;};true`);
  await service.execute({action:"read",tabId},undefined,context);
  await assert.rejects(service.execute({action:"click",tabId,name:"登录",exact:true},undefined,context),error=>error instanceof BrowserAutomationError&&error.code==="SURFACE_CHANGED");
@@ -58,5 +102,5 @@ for(let i=0;i<8;i++){
  finally{session.inputCommand=original;}
  assert(injected);assert.match(await wc.executeJavaScript("document.querySelector('#out').textContent"),/已点击：凭证汇总表/);
 }
-console.log("PASS custom-control observe/find/click with escape-free refs; original hover fixture: candidate-ref correction, 8 atomic hover/clicks and an unrelated trusted-event receipt");host.dispose();win.destroy();clearTimeout(guard);app.exit(0);
+console.log("PASS SPA submit receipt after navigation, lost-receipt/cancellation no-replay, custom-control refs, candidate correction, 8 hover/clicks and trusted-event interference");host.dispose();win.destroy();clearTimeout(guard);app.exit(0);
 }catch(error){console.error(error);host?.dispose();win?.destroy();clearTimeout(guard);app.exit(1)}})();
