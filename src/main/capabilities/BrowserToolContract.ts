@@ -115,5 +115,6 @@ export const browserToolDescription = browserAgentPolicy + [
   "Codemode 返回结构化结果：const r=await tools.browser_exec({action:'navigate',url,after:{mode:'text'}});text(r)。",
   "顺序 await 多步时每步检查 isError；失败立即停止后续动作。",
   "outcome.dispatch=not_started 时可依据错误详情重新观察、修正目标后继续；dispatched 且 effect=unknown 时先只读核对，禁止盲目重放提交。",
-  "截图自动视觉路由；不执行任意 JavaScript；非浏览器原生应用操作才用 computer_exec。",
+  "页面结构可读时不要截图：read/find/inspect/assert 足以读取、按控件点击、填写和验收普通网页；只有 canvas/图表/视频等像素内容、需要视觉验收的呈现，或 find 找不到控件时才 screenshot。",
+  "每张截图都会保存为产物并做视觉处理：能沿用已读结构就不要连续截图，坐标动作也只在上面那三类情况下使用。截图自动视觉路由；不执行任意 JavaScript；非浏览器原生应用操作才用 computer_exec。",
 ].join("");
