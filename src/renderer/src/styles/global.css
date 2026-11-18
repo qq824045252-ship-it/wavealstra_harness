@@ -1476,7 +1476,7 @@ html[data-theme="dark"] .extension-top-bar {
 }
 
 /* 聊天 viewport overlay 层：包住滚动容器（message-scroll），自身不滚动。
-   「回到底部」按钮锚定在这里 —— 消息怎么滚、virtualizer 怎么重测，
+   「回到底部」按钮锚定在这里 —— 消息怎么滚，
    按钮视觉位置都不移动；不参与消息流布局/虚拟测量。 */
 .chat-viewport {
   position: relative;
@@ -1564,28 +1564,9 @@ html[data-theme="dark"] .extension-top-bar {
   justify-content: flex-start;
 }
 
-/* 当前轮进行中时才需要额外空间把最新用户消息置顶；完成后立即恢复正常底部间距。 */
-.message-list--turn-anchor:not(.message-list--virtual) {
-  padding-bottom: calc(var(--chat-anchor-pad, 48vh) + 12px);
-}
-
-.message-list--virtual {
-  position: relative;
-  display: block;
-  width: 100%;
-  max-width: var(--chat-content-max, 832px);
-  gap: 0;
-  padding: 16px 0 12px;
-  box-sizing: border-box;
-}
-
-.message-list-virtual-row {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  padding-bottom: 26px;
-  box-sizing: border-box;
+.chat-pin-tail-space {
+  height: 0;
+  pointer-events: none;
 }
 
 .msg-row {
@@ -21197,10 +21178,6 @@ html[data-theme="dark"] .extension-artifact-item.active {
   color: var(--warning);
 }
 
-.message-list-virtual-row {
-  padding-bottom: 18px;
-}
-
 .jump-to-bottom {
   border-color: var(--border-subtle);
   background: var(--surface-elevated);
@@ -23125,12 +23102,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   gap: 22px;
 }
 
-/* task-ambient 的常规 28px 底边距不能盖掉进行中回合的置顶缓冲。
-   非虚拟列表依赖这块空间，才能在准备回答时把最新用户消息留在视口内。 */
-.chat-column.task-ambient .message-list--turn-anchor:not(.message-list--virtual) {
-  padding-bottom: calc(var(--chat-anchor-pad, 48vh) + 12px);
-}
-
 .assistant-avatar-row {
   margin-bottom: 2px;
 }
@@ -23208,10 +23179,6 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   margin-top: 0;
   padding-top: 0;
   border-top: none;
-}
-
-.chat-column.task-ambient .message-list-virtual-row {
-  padding-bottom: 22px;
 }
 
 .artifact-chips {
