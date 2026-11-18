@@ -7,3 +7,9 @@ export const safeStorage = {
   decryptString: (_value: Buffer): string => { throw new Error('OS encryption must not be used in Node integration fixtures'); },
 };
 export const app = { getPath: () => process.cwd(), isPackaged: false };
+export const nativeImage = {
+  createFromBuffer: (_bytes: Buffer): never => {
+    throw new Error('Electron image decoding must not be used in Node integration fixtures');
+  },
+};
+export default { app, BrowserWindow, shell, safeStorage, nativeImage };
