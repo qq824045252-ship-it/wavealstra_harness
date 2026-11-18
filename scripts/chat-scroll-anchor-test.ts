@@ -1,6 +1,5 @@
 import { strict as assert } from "node:assert";
-import { Virtualizer } from "@tanstack/react-virtual";
-import { bindChatScrollCompensation, initialFollowState, onUserScrollUp } from "../src/renderer/src/lib/scrollFollow.ts";
+import { chatPinPosition, latestHumanMessageId } from "../src/renderer/src/lib/chatPinPosition.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,30 +8,26 @@ const chatView = readFileSync(join(root, "src/renderer/src/components/chat/ChatV
 const chatInput = readFileSync(join(root, "src/renderer/src/components/chat/ChatInput.tsx"), "utf8");
 const css = readFileSync(join(root, "src/renderer/src/styles/global.css"), "utf8");
 const remoteApp = readFileSync(join(root, "app/remote/src/App.tsx"), "utf8");
-const earlierHistory = readFileSync(join(root, "src/renderer/src/components/chat/useEarlierHistory.ts"), "utf8");
 
 const checks: Array<[string, boolean]> = [
-  ["new turn pin is one-shot and deferred one frame", /const resetAndPin = \(\): void => \{[\s\S]{0,260}requestAnimationFrame\(\(\) => \{[\s\S]{0,100}pinUserMessageToTopRef\.current\(\);/.test(chatView) && !/const resetAndPin[\s\S]{0,300}requestAnimationFrame\(\(\) => \{[\s\S]{0,120}requestAnimationFrame/.test(chatView)],
+  ["active desktop conversation uses the full-history hook and ordinary DOM rows", chatView.includes("useFullTaskHistory(task)") &&
+    chatView.includes('className="message-list"') && chatView.includes("messages.map((msg)") &&
+    !/useVirtualizer|requestEarlier|loadAround|loadNewer/.test(chatView)],
+  ["only the initial history placement, local send, or click can pin", chatView.includes("if (firstOpen || localQuestionArrived) pinUserMessageToTop()") &&
+    chatView.includes("onClick={pinUserMessageToTop}") &&
+    chatView.includes("previousUserId: latestUserMessageId") &&
+    chatInput.includes("onBeforeSend?.()") && !/isAssistantTurnStart|needsTurnAnchorSpace/.test(chatView)],
+  ["history picker jumps within the loaded DOM, with no history replacement", chatView.includes("messages={displayMessages}") &&
+    chatView.includes("onJumpToMessage={jumpToHistoryQuestion}") && !/clearWindow|useHistoryQuestions/.test(chatView)],
   ["streaming/layout observers have no scroll writer", !chatView.includes("keepAnchorPinned") && !chatView.includes("onVirtualLayout") && !chatView.includes("new ResizeObserver")],
-  ["automatic new-turn pin never enters virtualizer scrollToIndex reconcile", (() => { const s=chatView.indexOf("const pinUserMessageToTop = useCallback"); const e=chatView.indexOf("const pinUserMessageToTopRef",s); const b=chatView.slice(s,e); return s>=0 && b.includes("getMessageOffset(id)") && b.includes("applyProgrammaticScrollTop") && !b.includes("scrollToMessageId(id, false)") && !b.includes("virtualizer.scrollToIndex"); })()],
-  ["local send restores follow before mount", /onBeforeSend=\{\(\) => \{[\s\S]{0,180}pendingLocalSendRef\.current = true;[\s\S]{0,180}onResetForTask\(followStateRef\.current\)/.test(chatView) && /onBeforeSend\?\.\(\);[\s\S]{0,80}if \(onSend\)/.test(chatInput)],
-  ["user takeover gates new-turn pin", /shouldPinOnNewTurn\(followRef\.current, isNewTurn\)/.test(chatView)],
-  ["full stream keeps anchor space until assistant_end", /const needsTurnAnchorSpace =\s*tailMessage\?\.role === "user" \|\|\s*\(tailMessage\?\.role === "assistant" && Boolean\(tailMessage\.streaming\)\)/.test(chatView)],
   ["single guarded direct scrollTop writer", (() => { const w=chatView.match(/\.scrollTop\s*=/g) ?? []; return w.length===1 && /el\.scrollTop = target;/.test(chatView); })()],
-  ["virtualizer compensation wired on the live instance", chatView.includes("bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef)")],
   ["wheel-up waits for displacement", /onWheelUpCandidate\(followStateRef\.current\)/.test(chatView) && /onFollowScroll\(followStateRef\.current, bottomDistance\(\), delta\)/.test(chatView)],
   ["pointer and keyboard takeover remain wired", /document\.addEventListener\("pointerup", clearPointerIntent\)/.test(chatView) && /document\.addEventListener\("keydown", markKeyboardIntent\)/.test(chatView)],
   ["programmatic target is clamped", /Math\.min\(top, maxScrollTop\)/.test(chatView) && /target > Math\.max\(0, el\.scrollHeight - el\.clientHeight\)/.test(chatView)],
-  ["jump action restores follow", /className="jump-to-bottom"[\s\S]{0,420}onResetForTask\(followStateRef\.current\)/.test(chatView)],
+  ["manual pin restores follow", /spacer\.style\.height[^;]+;\s*commitFollow\(onResetForTask\(followStateRef\.current\)\)/.test(chatView)],
   ["anchor padding has no animated range change", !/\.message-list \{[\s\S]{0,400}transition: padding-bottom/.test(css)],
   ["assistant markdown remains full width", /\.msg-row:not\(\.user\) > \.msg-body,[\s\S]{0,320}\.markstream-react\.markdown-renderer \{\s*width: 100%;\s*max-width: 100%;\s*box-sizing: border-box;\s*\}/.test(css)],
   ["markstream intrinsic sizing is disabled", /\.msg-row:not\(\.user\) \.markstream-react\.markdown-renderer \{[\s\S]{0,180}content-visibility: visible;[\s\S]{0,120}contain-intrinsic-size: auto;/.test(css)],
-  // 历史块前插并由唯一滚动入口补偿，界面没有隐藏分页按钮。
-  ["history prepends and compensates", chatView.includes("mergeHistoryWindow([visibleWindow.messages], live)") && chatView.includes("useEarlierHistory({") && /applyProgrammaticScrollTop\(prependScrollTop\(anchor\.top, anchor\.height, element\.scrollHeight\)\)/.test(earlierHistory) && !chatView.includes('className="durable-history-earlier"')],
-  ["pull-up near top loads serially", /const EARLIER_EDGE_PX = 48/.test(earlierHistory) && earlierHistory.includes("if (element.scrollTop >= EARLIER_EDGE_PX) return;") && earlierHistory.includes("if (loadingRef.current || !taskId || target === undefined || !element) return;") && chatView.includes("if (delta < 0) requestEarlier();")],
-  ["prepend suppresses pin and virtual compensation", chatView.includes("if (!hasMessages || prepended) return;") && chatView.includes("isPrependOnly(previousDisplayMessagesRef.current, displayMessages)") && chatView.includes("bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef)")],
-  ["jump-to-bottom clears history window", /className="jump-to-bottom"[\s\S]{0,420}clearWindow\(\)/.test(chatView) && earlierHistory.includes("tokenRef.current += 1;")],
-  // 手机端同样是前插：不再有隐藏分页按钮，触摸与 wheel 共用同一“贴顶继续拉”判定。
   ["remote timeline prepends older blocks without pagination buttons", remoteApp.includes("onWheel={handleWheel}") && remoteApp.includes("onTouchMove={handleTouchMove}") && !remoteApp.includes('hidden aria-hidden="true"') && remoteApp.includes("consumePrependAnchor(timelineFirstMessageId(el))") && !remoteApp.includes("setOlderPage(undefined)")],
 ];
 
@@ -41,38 +36,13 @@ const failed = checks.filter(([, pass]) => !pass);
 console.log(`\n===== ChatScrollAnchor: ${checks.length - failed.length}/${checks.length} passed =====`);
 if (failed.length > 0) process.exit(1);
 
-/** Drive the installed virtual-core through its real measurement path. No React
- * or Electron needed to verify whether a resize produces a scroll write. */
-function scrollWrites(index: number, size: number, follow: boolean, target: number | null): number[] {
-  const writes: number[] = [];
-  const virtualizer = new Virtualizer<HTMLDivElement, Element>({
-    count: 18,
-    getScrollElement: () => null,
-    estimateSize: () => 100,
-    initialOffset: 1750,
-    initialRect: { width: 800, height: 400 },
-    scrollToFn: (offset, { adjustments }) => writes.push(offset + (adjustments ?? 0)),
-    observeElementRect: () => undefined,
-    observeElementOffset: () => undefined,
-  });
-  const state = initialFollowState();
-  const followStateRef = { current: follow ? state : onUserScrollUp(state) };
-  const programmaticTargetRef = { current: target };
-  bindChatScrollCompensation(virtualizer, followStateRef, programmaticTargetRef);
-  // Let direction settle: remaining on an older message still means takeover.
-  followStateRef.current = { ...followStateRef.current, direction: null };
-  virtualizer.getVirtualItems();
-  virtualizer.resizeItem(index, size);
-  return writes;
-}
-
-// The active row starts above the viewport, but its measured bottom is below
-// it. Do not drag the viewport down when a thinking/tool block enlarges it.
-assert.deepEqual(scrollWrites(17, 350, false, null), []);
-// A row wholly above the viewport still needs normal anchor compensation.
-assert.deepEqual(scrollWrites(0, 350, false, null), [2000]);
-// Do not let the virtualizer compete with either ordinary follow or a pending
-// programmatic placement such as history prepend.
-assert.deepEqual(scrollWrites(0, 350, true, null), []);
-assert.deepEqual(scrollWrites(0, 350, false, 1750), []);
-console.log("PASS installed virtualizer: streaming-row growth, above-viewport compensation, and scroll ownership");
+assert.equal(latestHumanMessageId([
+  { id: "human", role: "user" }, { id: "goal", role: "user", goalContinuation: true },
+  { id: "reply", role: "assistant" },
+]), "human");
+const short = chatPinPosition({ scrollTop: 100, anchorOffset: 200, topInset: 8, naturalHeight: 380, viewportHeight: 500 });
+assert.deepEqual(short, { top: 292, tailSpace: 412 }, "a completed short reply still permits an 8px inset");
+assert.equal(380 + short.tailSpace - 500, short.top, "browser can reach the requested anchor");
+assert.deepEqual(chatPinPosition({ scrollTop: 100, anchorOffset: 200, topInset: 8, naturalHeight: 900, viewportHeight: 500 }),
+  { top: 292, tailSpace: 0 }, "long replies need no extra space");
+console.log("PASS human anchor and reachable layout for short and long responses");

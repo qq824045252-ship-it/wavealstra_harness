@@ -352,8 +352,8 @@ console.log("== 场景⑧：首轮反馈与结束收束结构 ==");
   );
   assert(
     !css.includes("transition: padding-bottom") &&
-      css.includes(".message-list--turn-anchor:not(.message-list--virtual)"),
-    "首轮底部锚点空间在置顶测量前一次到位",
+      css.includes(".chat-pin-tail-space"),
+    "置顶占位不做高度动画",
   );
 }
 
