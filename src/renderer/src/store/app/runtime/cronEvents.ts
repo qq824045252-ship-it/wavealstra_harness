@@ -1,4 +1,5 @@
 import { normalizeSingleExpertId } from "../../../../../shared/expert-id";
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import type { ChatMessage, Task } from "../../../types";
 import type { RuntimeBinding } from "./binding";
 
@@ -42,7 +43,7 @@ export function bindCronEvents(
               : runStatus === "error"
                 ? "failed"
                 : "in_progress"),
-          updatedAt: row.updatedAt,
+          updatedAt: advanceActivity(undefined, row.updatedAt),
           messages: [],
           sessionFile: row.sessionFile,
           cwd: row.cwd,

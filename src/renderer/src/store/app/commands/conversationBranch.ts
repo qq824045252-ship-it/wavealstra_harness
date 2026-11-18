@@ -1,5 +1,6 @@
 import { mergeHistoryWindow } from "../../../lib/historyWindow";
 import type { CreateConversationBranchRequest } from "../../../../../shared/conversation-branch";
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import type { Task } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -77,7 +78,7 @@ export function createConversationBranchActions(
           spaceId: child.spaceId,
           projectId: child.projectId,
           status: child.status,
-          updatedAt: child.updatedAt,
+          updatedAt: advanceActivity(undefined, child.updatedAt),
           sessionFile: child.sessionFile,
           cwd: child.cwd,
           welcomeMode: child.welcomeMode,

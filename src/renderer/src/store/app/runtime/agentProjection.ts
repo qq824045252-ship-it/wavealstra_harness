@@ -9,6 +9,7 @@ import type { AgentDeltaPatch } from "../types";
 import { hydrateTaskMetadataFromDb } from "./taskHydration";
 import { reloadModelCatalog } from "./bootstrap";
 import { applyDurableDelta, replayDurableDeltas } from "../../../../../../shared/src/durable-sync";
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import type { DurableBotDelta, DurableBotState } from "../../../../../shared/durable-bot";
 import type { ChatMessageDto } from "../../../../../shared/agent-ipc";
 
@@ -128,10 +129,9 @@ export function createAgentProjectionActions(
               taskTitleFromFirstMessage(
                 snapshot.messages.find((m) => m.role === "user")?.text ?? "新任务",
               ),
-            updatedAt:
-              snapshot.messages.at(-1)?.createdAt ??
-              prior?.updatedAt ??
-              Date.now(),
+            // 任务时间只取主进程回填的权威活动时间（DB 单调投影），不再从消息时间自己推：
+            // 占位行的 createdAt 不是事实，旧写法会让侧栏出现 epoch 0（“20774 天”）。
+            updatedAt: advanceActivity(prior?.updatedAt, snapshot.activityAt),
             status: snapshot.busy
               ? "in_progress"
               : snapshot.error || snapshot.outcome === "failed"
@@ -168,7 +168,7 @@ export function createAgentProjectionActions(
             task = {
               id: patch.taskId,
               title: taskTitleFromFirstMessage(patch.text),
-              updatedAt: patch.createdAt,
+              updatedAt: advanceActivity(undefined, patch.createdAt),
               messages: [message],
               status: "in_progress",
             };
@@ -189,7 +189,7 @@ export function createAgentProjectionActions(
                     ? taskTitleFromFirstMessage(patch.text)
                     : item.title,
                   status: "in_progress",
-                  updatedAt: patch.createdAt,
+                  updatedAt: advanceActivity(item.updatedAt, patch.createdAt),
                   messages: [...item.messages, message],
                 }
               : item,

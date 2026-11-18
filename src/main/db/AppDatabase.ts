@@ -59,6 +59,7 @@ import type {
   WelcomeMode,
 } from "../../shared/agent-ipc";
 import { normalizeWelcomeMode } from "../../shared/mode-profile";
+import { advanceActivity } from "../../../shared/src/activity-time";
 import type {
   ConversationBranchInfoDto,
   ConversationBranchPosition,
@@ -2934,7 +2935,7 @@ export class AppDatabase {
     }
     const prev = this.db
       .prepare(
-        `SELECT title, space_id, project_id, status, session_file, cwd, welcome_mode, model_id,
+        `SELECT title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode, model_id,
                 permission_mode, expert_id, mode_preset_id, start_at, due_at,
                 space_sort_order, is_favorited, external_agent_pin_json, done_acked_at FROM tasks WHERE id = ?`,
       )
@@ -2944,6 +2945,7 @@ export class AppDatabase {
           space_id: string | null;
           project_id: string | null;
           status: string | null;
+          updated_at: number;
           session_file: string | null;
           cwd: string | null;
           welcome_mode: string | null;
@@ -3015,7 +3017,9 @@ export class AppDatabase {
         // null = 明确解绑；undefined = 保留旧 Project 绑定。
         projectId: hasProjectId ? projectId : (prev?.project_id ?? null),
         status: task.status ?? prev?.status ?? null,
-        updatedAt: task.updatedAt,
+        // 「最后活动时间」单写入口：调用方给的时刻只有在真实且更新时才生效。
+        // 旧版本曾把渲染层投影出来的 0（占位行）原样落库，侧栏于是永久显示 20774 天。
+        updatedAt: advanceActivity(prev?.updated_at, task.updatedAt),
         // 未传时保留旧值，避免 UI 重命名/发消息把 session_file 清掉导致重启无法恢复
         sessionFile: task.sessionFile ?? prev?.session_file ?? null,
         cwd: task.cwd ?? prev?.cwd ?? null,

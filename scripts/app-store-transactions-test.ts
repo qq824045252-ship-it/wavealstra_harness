@@ -562,6 +562,27 @@ async function durableSnapshotsRetainInteractionCards(): Promise<void> {
   assert.equal(api.getState().tasks[0].messages.length, 0, "A branch snapshot must not resurrect removed interaction rows");
 }
 
+async function durableActivityTimeNeverRegresses(): Promise<void> {
+  const { useAppStore: api } = store();
+  const started = Date.now() - 60 * 60_000;
+  api.setState({ tasks: [task("task", { updatedAt: started, messages: [], welcomeMode: "general" })] });
+  // 占位行携带 epoch 0：旧实现把「最后一条消息的 createdAt」直接当任务时间，侧栏显示 20774 天。
+  const snapshot: DurableBotSnapshot = { backend: "pi-durable", historyId: "history-fixture", epoch: "activity", revision: 1, conversationId: "1", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false,
+    messages: [{ id: "durable-placeholder", role: "assistant", text: "", streaming: true, createdAt: 0 }] };
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot });
+  assert.equal(api.getState().tasks[0].updatedAt, started, "a placeholder row's epoch 0 never becomes the task time");
+
+  const advanced = started + 30_000;
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot: { ...snapshot, revision: 2, activityAt: advanced } });
+  assert.equal(api.getState().tasks[0].updatedAt, advanced, "the authoritative activity time advances the task");
+
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot: { ...snapshot, revision: 3, activityAt: started } });
+  assert.equal(api.getState().tasks[0].updatedAt, advanced, "an older activity time never rewinds the task");
+
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "task", snapshot: { ...snapshot, revision: 4, activityAt: Number.NaN } });
+  assert.equal(api.getState().tasks[0].updatedAt, advanced, "an invalid activity time is ignored");
+}
+
 async function main(): Promise<void> {
   const tests = [
     activationIsAtomicAndLateReadsStayWithTheirOwner,
@@ -573,6 +594,7 @@ async function main(): Promise<void> {
     asyncDeletionRetryStopsTheCapturedTask,
     fileChangeProjectionPreservesWorkspacePath,
     durableSnapshotsRetainInteractionCards,
+    durableActivityTimeNeverRegresses,
     durableRevisionGapReadsOnceAndReplaysBufferedUpdates,
     sidebarSelectorSkipsUnchangedTaskRederivation,
     artifactReconcileNoOpKeepsStoreState,

@@ -14,6 +14,13 @@ export interface DurableBotSnapshot {
   status?: "idle" | "running" | "queued" | "retrying" | "waiting_input" | "stopped" | "failed" | "completed";
   /** Last entry preceding the loaded history window; omitted at the beginning. */
   historyBefore?: number;
+  /**
+   * 本轮观测到的最新真实活动时刻；`tasks.updated_at` 的权威镜像（主进程单调写入后回填）。
+   * 渲染层只能用它与自己已有的值取「更大者」，
+   * 不允许再从消息时间自己推算任务时间（占位行的时间不是事实，见 activity-time.ts）。
+   * 省略 = 本次快照没有新的活动证据。
+   */
+  activityAt?: number;
   queued: number;
   pendingInputs: Array<{ id: string; inputRequestId?: string; mode: "steer" | "followUp"; text: string }>;
   retry?: { at: number; error: string };

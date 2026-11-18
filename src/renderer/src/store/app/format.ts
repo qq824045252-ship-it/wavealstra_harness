@@ -1,3 +1,5 @@
+import { activityTimeOrUndefined } from "../../../../../shared/src/activity-time";
+
 export function formatDuration(ms?: number): string | undefined {
   if (ms == null) return undefined;
   if (ms < 1000) return `${ms}ms`;
@@ -6,16 +8,31 @@ export function formatDuration(ms?: number): string | undefined {
   return `${Math.floor(s / 60)}m${s % 60}s`;
 }
 
-export function relativeTime(ts: number, opts?: { compact?: boolean }): string {
-  const diff = Date.now() - ts;
-  const MIN = 60_000;
-  // compact：去掉「前」字的短格式（侧栏任务行右侧标签），完整格式用于表格/tooltip
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * 相对时间。
+ *
+ * 未知（缺失 / 0 / NaN / 非数值）必须渲染成「—」而不是算出来的天数：
+ * 历史事故里 epoch 0 被显示为「20774 天」，让人去查格式化，而真正的问题在写入端。
+ * 时间落在未来时（时钟偏差）与「刚刚」同属 diff < 1 分钟，自然归为「刚刚」。
+ *
+ * compact：去掉「前」字的短格式（侧栏任务行右侧标签），完整格式用于表格/tooltip。
+ */
+export function relativeTime(
+  ts: number | null | undefined,
+  opts?: { compact?: boolean },
+): string {
+  const at = activityTimeOrUndefined(ts);
+  if (at === undefined) return "—";
   const suffix = opts?.compact ? "" : "前";
-  if (diff < MIN) return "刚刚";
-  if (diff < 60 * MIN) return `${Math.floor(diff / MIN)}分钟${suffix}`;
-  if (diff < 24 * 60 * MIN)
-    return `${Math.floor(diff / (60 * MIN))}小时${suffix}`;
-  return `${Math.floor(diff / (24 * 60 * MIN))}天${suffix}`;
+  const diff = Date.now() - at;
+  if (diff < MINUTE_MS) return "刚刚";
+  if (diff < HOUR_MS) return `${Math.floor(diff / MINUTE_MS)}分钟${suffix}`;
+  if (diff < DAY_MS) return `${Math.floor(diff / HOUR_MS)}小时${suffix}`;
+  return `${Math.floor(diff / DAY_MS)}天${suffix}`;
 }
 
 export function clockTime(ts: number): string {

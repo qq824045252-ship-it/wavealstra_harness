@@ -11,6 +11,7 @@ export interface AppInfo {
   dataDir: string
 }
 
+export * from './activity-time'
 export * from './remote-contract'
 export * from './user-prompt-display'
 export * from './durable-sync'

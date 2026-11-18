@@ -1,6 +1,7 @@
 import type { TaskDto } from "../../../../../shared/agent-ipc";
 import { normalizeSingleExpertId } from "../../../../../shared/expert-id";
 import { DEFAULT_WELCOME_MODE } from "../../../../../shared/mode-profile";
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import type { PermissionMode, Task } from "../../../types";
 
 /**
@@ -22,7 +23,8 @@ export function mapTaskRowToTask(
     spaceId: row.spaceId ?? undefined,
     projectId: row.projectId ?? undefined,
     status: row.status as Task["status"],
-    updatedAt: row.updatedAt,
+    // DB 是活动时间的权威源；万一读到一个损坏值，宁可显示「此刻」也不要显示 1970。
+    updatedAt: advanceActivity(undefined, row.updatedAt),
     messages: [],
     sessionFile: row.sessionFile,
     cwd: row.cwd,

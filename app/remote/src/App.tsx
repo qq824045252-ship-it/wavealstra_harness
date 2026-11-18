@@ -6,6 +6,7 @@ import {
   ThumbsDown, ThumbsUp, Trash2, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
+import { activityTimeOrUndefined } from '@mybuddy/shared'
 import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
 
 /** 稳定空数组：避免每次渲染给 RemoteMarkdown 一个新 identity 导致 memo 失效 */
@@ -2134,7 +2135,10 @@ function pickGreeting(): string {
 }
 
 function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp
+  // 与桌面端同一条规则：未知（缺失/0/NaN）渲染成「—」，不要算出「1970/1/1」之类的假日期。
+  const at = activityTimeOrUndefined(timestamp)
+  if (at === undefined) return '—'
+  const diff = Date.now() - at
   const minutes = Math.floor(diff / 60000)
   if (minutes < 1) return '刚刚'
   if (minutes < 60) return `${minutes}分钟前`
@@ -2142,5 +2146,5 @@ function formatRelativeTime(timestamp: number): string {
   if (hours < 24) return `${hours}小时前`
   const days = Math.floor(hours / 24)
   if (days < 7) return `${days}天前`
-  return new Date(timestamp).toLocaleDateString()
+  return new Date(at).toLocaleDateString()
 }

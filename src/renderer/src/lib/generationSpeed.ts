@@ -1,5 +1,6 @@
 import type { GenerationStats } from "@shared/generation-stats";
 import type { ChatMessage } from "@/types";
+import { activityTimeOrUndefined } from "../../../../shared/src/activity-time";
 
 /** Prefer the executing reply over a queued follow-up shell. Never show a previous turn's speed. */
 export function selectGenerationReply(messages: ChatMessage[]): ChatMessage | undefined {
@@ -12,7 +13,8 @@ export function selectGenerationReply(messages: ChatMessage[]): ChatMessage | un
 export interface GenerationSpeedInput {
   stats?: GenerationStats;
   streaming: boolean;
-  createdAt: number;
+  /** 未知时为 undefined：不得用 0 兜底（会算出 epoch 至今的「等待」时长）。 */
+  createdAt?: number;
   approval: boolean;
 }
 
@@ -20,7 +22,7 @@ export function generationSpeedInput(message: ChatMessage | undefined): Generati
   return {
     stats: message?.generationStats,
     streaming: Boolean(message?.streaming),
-    createdAt: message?.createdAt ?? 0,
+    createdAt: activityTimeOrUndefined(message?.createdAt),
     approval: Boolean(message?.streaming && message.blocks.some(
       (block) => block.type === "tool" && block.toolCall.status === "pending_approval",
     )),
@@ -73,7 +75,8 @@ export function generationSpeedView(input: GenerationSpeedInput, now: number): {
       : "实时估算：当前模型调用收到的文本、思考和工具参数，按字符粗估 token；每半秒刷新。");
     details.push("估算值不用于用量计费；结束后使用模型返回的 token 数计算平均速度。");
   } else {
-    label = `等待 ${seconds(now - (stats?.startedAt ?? createdAt))}`;
+    const waitingSince = activityTimeOrUndefined(stats?.startedAt) ?? createdAt;
+    label = waitingSince === undefined ? "等待输出" : `等待 ${seconds(now - waitingSince)}`;
     details.push("等待模型输出，首响应等待不计入生成速度。");
   }
   // A retry makes the current attempt the long one (large tool arguments); show it, don't hide it.

@@ -6,6 +6,7 @@ import {
 import type { Task } from "../../../types";
 import type { AppContext } from "../context";
 import { historyMessageToChatMessage } from "../messages/historyMapper";
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
 
 export const EXTERNAL_HISTORY_HYDRATION_MS = 2000;
 
@@ -100,7 +101,8 @@ export function hydrateTaskMetadataFromDb(
                   spaceId: row.spaceId ?? undefined,
                   projectId: row.projectId ?? undefined,
                   status: (row.status as Task["status"]) ?? task.status,
-                  updatedAt: Math.max(task.updatedAt, row.updatedAt),
+                  // 与 durable 快照、DB 写入同一个规则：只前进，非法值不采纳。
+                  updatedAt: advanceActivity(task.updatedAt, row.updatedAt),
                   sessionFile: row.sessionFile ?? task.sessionFile,
                   cwd: row.cwd ?? task.cwd,
                   modelId: row.modelId ?? task.modelId,
