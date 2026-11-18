@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, unlink, symlink, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, unlink, symlink, link, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -9,8 +9,10 @@ try {
   const storageRoot = join(root, 'host'), store = join(storageRoot, 'durable', 'a'.repeat(64), 'artifacts');
   await mkdir(store, { recursive: true });
   const bytes = Buffer.from('immutable saved version\n'), digest = createHash('sha256').update(bytes).digest('hex');
-  const snapshotPath = join(store, digest + '.txt');
-  await writeFile(snapshotPath, bytes);
+  const fixturePath = join(store, digest + '.txt');
+  await writeFile(fixturePath, bytes);
+  // The app receives the canonical path from artifact registration.
+  const snapshotPath = await realpath(fixturePath);
   let destination, opened, calls = 0, dialog = async () => destination;
   const service = new SavedArtifactActions({ storageRoot, exportRoot: join(root, 'exports'), chooseDestination: () => dialog(), openPath: async path => { calls++; opened = path; return ''; } });
   const request = { snapshotPath, name: '../../report.exe' };

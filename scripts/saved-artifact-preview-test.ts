@@ -18,6 +18,14 @@ try {
   await writeFile(join(cwd, 'pages/next.html'), '<h1>old page</h1>');
   const receipt = await inspectDurableArtifact(cwd, path, store);
   const manifestPath = await captureSavedWebBundle(cwd, path, receipt.snapshotPath!, store, inspectDurableArtifact);
+  // Receipt paths are canonical even when the host was configured with an alias.
+  const storeAlias = join(root, 'store-alias');
+  await symlink(store, storeAlias, 'junction');
+  assert.equal(await captureSavedWebBundle(cwd, path, receipt.snapshotPath!, storeAlias, inspectDurableArtifact), manifestPath);
+  const redirectedStore = join(root, 'redirected-store');
+  await mkdir(redirectedStore);
+  await symlink(join(store, 'artifacts'), join(redirectedStore, 'artifacts'), 'junction');
+  await assert.rejects(captureSavedWebBundle(cwd, path, receipt.snapshotPath!, redirectedStore, inspectDurableArtifact), /保存版本路径无效/);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   assert.equal(Object.keys(manifest.resources).length, 5);
   assert.deepEqual(manifest.warnings, []);
@@ -91,7 +99,7 @@ try {
   await rm(latePath); // Later resources must refresh the saved entry, not require the deleted source.
   await writeFile(join(cwd, 'late.css'), 'body{color:purple}');
   callId = 'css-later'; await tool.execute({ path: 'late.css' }, api, ctx);
-  const refreshed = entries.filter(e => e.data.path === latePath).at(-1).data;
+  const refreshed = entries.filter(e => e.data.path === early.path).at(-1).data;
   assert.notEqual(refreshed.previewManifestPath, early.previewManifestPath);
   assert.equal(refreshed.digest, early.digest);
   const refreshedManifest = JSON.parse(await readFile(refreshed.previewManifestPath, 'utf8'));

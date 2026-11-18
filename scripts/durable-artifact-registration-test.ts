@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, readdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -9,7 +9,9 @@ import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration,
 
 const root = await mkdtemp(join(tmpdir(), "artifact-registration-"));
 try {
-  const cwd = join(root, "workspace"); await mkdir(cwd);
+  const workspace = join(root, "workspace"); await mkdir(workspace);
+  // Artifact receipts use the canonical workspace, including Windows path casing.
+  const cwd = await realpath(workspace);
   const path = join(cwd, "report.html");
   await writeFile(path, "<h1>shell-created output</h1>");
   const file = await inspectDurableArtifact(cwd, "report.html");
@@ -61,7 +63,7 @@ try {
   assert.equal(missing.output.length, 1, "missing source returns one readable diagnostic");
   const diagnostic = missing.output[0];
   assert(diagnostic.type === "text", "missing source diagnostic must be text");
-  assert(diagnostic.text.includes(join(cwd, "workspace/report.html")), "diagnostic identifies the resolved missing path");
+  assert(diagnostic.text.includes(join(cwd, "workspace", "report.html")), "diagnostic identifies the resolved missing path");
   assert(diagnostic.text.includes(cwd), "diagnostic identifies the bound workspace");
   assert.equal(entries.length, 0, "missing source cannot append a receipt");
   assert.deepEqual(await readdir(directory, { recursive: true }), beforeMissing, "missing source creates no snapshot");

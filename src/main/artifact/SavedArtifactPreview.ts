@@ -47,6 +47,10 @@ export function savedResourceReferences(content: string, extension: string): str
 /** Captured at registration time, never at view time. Each manifest hashes its complete resource map. */
 export async function captureSavedWebBundle(cwd: string, sourcePath: string, snapshotPath: string, directory: string, inspect: Inspect): Promise<string> {
   const root = await realpath(cwd);
+  // Registration resolves the host directory before creating the snapshot.
+  // Compare against the same canonical parent, while requiring artifacts itself to be a real directory.
+  const store = join(await realpath(directory), 'artifacts');
+  if (await realpath(store) !== store) throw new Error('保存版本路径无效');
   const entry = relative(root, sourcePath).split(sep).join('/');
   const queue = [{ name: entry, snapshotPath }];
   const resources: Manifest['resources'] = Object.create(null);
@@ -63,7 +67,7 @@ export async function captureSavedWebBundle(cwd: string, sourcePath: string, sna
       // The entry is already immutable: its mutable source may have been moved or deleted.
       // Dependencies still require real-path confinement before capture.
       if (!inside(root, source) || (!item.snapshotPath && !inside(root, await realpath(source)))) throw new Error('资源位于工作区之外');
-      if (item.snapshotPath && (await realpath(item.snapshotPath) !== resolve(item.snapshotPath) || dirname(resolve(item.snapshotPath)) !== resolve(directory, 'artifacts'))) throw new Error('保存版本路径无效');
+      if (item.snapshotPath && (await realpath(item.snapshotPath) !== resolve(item.snapshotPath) || dirname(resolve(item.snapshotPath)) !== store)) throw new Error('保存版本路径无效');
       const receipt = item.snapshotPath ? { snapshotPath: item.snapshotPath, digest: basename(item.snapshotPath).split('.')[0], sizeBytes: (await stat(item.snapshotPath)).size } : await inspect(root, source, directory);
       if (!receipt.snapshotPath) throw new Error('资源没有保存版本');
       total += receipt.sizeBytes;
