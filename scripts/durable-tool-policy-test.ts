@@ -311,7 +311,7 @@ try {
         navigateForAutomation: async () => { throw new Error("connection lost after navigation began"); },
       };
       const tab = { id: "fixture-tab", taskId, url: page.url };
-      return { attached: true, activeTabId: tab.id, listTabs: () => [tab], getTabHost: () => page, ensureTab: () => tab } as any;
+      return { attached: true, activeTabId: tab.id, listTabs: () => [tab], getTabHost: () => page, ensureTab: () => tab, getTaskTab: () => tab, setTaskTab: () => true } as any;
     });
     const taskId = `receipt-${scenario}`;
     const args: JsonObject = scenario === "invalid-url" ? { action: "navigate", url: "file:///tmp/test.html" }

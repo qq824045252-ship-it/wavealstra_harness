@@ -33,6 +33,8 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
     capturePage: async () => ({ isEmpty: () => false, toPNG: () => Buffer.from("png") }),
   };
   const host = {
+    getTaskTab: () => undefined,
+    setTaskTab: () => false,
     attached: true, activeTabId: "fixture", captureVersion: 0,
     getTabHost: () => host,
     listTabs: () => [],
@@ -50,6 +52,10 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
 }
 
 try {
+  for (const code of ["SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE", "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "SURFACE_CHANGED", "WAIT_TIMEOUT"] as const) {
+    assert.equal(recordBrowserAutomationFailureRecovery(bridge, { action: "click", role: "button", name: "开启新对话" }, new BrowserAutomationError(code, "re-observe locally", { outcome: { dispatch: "not_started", effect: "none" } })), false, `${code}: tool-local observation corrections must not become persistent human recovery`);
+  }
+  assert.equal(failures.list("task").length,0);
   const unavailable = new BrowserAutomationService(() => null);
   await assert.rejects(unavailable.execute({ action: "status" }),
     (error: unknown) => error instanceof BrowserAutomationError && error.code === "HOST_UNAVAILABLE");
@@ -109,50 +115,27 @@ try {
   assert.equal(unobserved.sent.length, 0);
 
   const missingError = new BrowserAutomationError("SELECTOR_NOT_FOUND", "selector not found", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/form" });
-  assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, missingError));
-  const missingFailure = failures.list("task").find(item => item.causeCode === "browser-selector-not-found")!;
-  assert.equal(missingFailure.phase, "observe"); assert.equal(missingFailure.sideEffects, "none");
+  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, missingError), false);
   settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form" });
-  assert(failures.list("task").find(item => item.id === missingFailure.id)?.resolvedAt);
   assert(failures.list("task").find(item => item.id === hostFailure.id)?.resolvedAt);
 
-  for (const code of ["ELEMENT_NOT_VISIBLE", "ELEMENT_DISABLED"] as const) {
-    const error = new BrowserAutomationError(code, "target not ready", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/form" });
-    assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, error));
-    const failure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === `browser-${code.toLowerCase().replaceAll("_", "-")}`)!;
-    assert.equal(failure.sideEffects, "none");
-    settleBrowserAutomationRecovery(bridge, { action: "read" }, { action: "read", url: "https://unrelated.test/" });
-    assert.equal(failures.list("task").find(item => item.id === failure.id)?.resolvedAt, undefined);
-    settleBrowserAutomationRecovery(bridge, clickInput, { action: "click", url: "https://example.test/form", outcome: { dispatch: "dispatched", effect: "confirmed" } });
-    assert(failures.list("task").find(item => item.id === failure.id)?.resolvedAt, `${code}: successful corrected action clears the recovery notice`);
+  for (const code of ["SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE", "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "SURFACE_CHANGED", "WAIT_TIMEOUT"] as const) {
+    const currentUrl = `https://example.test/uncertain/${code}`;
+    assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError(code, "unconfirmed dispatched input", { outcome: { dispatch: "dispatched", effect: "unknown" }, currentUrl })));
+    const failure = failures.list("task").find(item => !item.resolvedAt && item.target === `browser:uncertain:url=${encodeURIComponent(currentUrl)}`);
+    assert(failure,`${code}: unknown effects remain visible`);assert.equal(failure.sideEffects,"unknown");
+    settleBrowserAutomationRecovery(bridge,clickInput,{action:"click",url:currentUrl,outcome:{dispatch:"dispatched",effect:"confirmed"}});
+    assert.equal(failures.list("task").find(item=>item.id===failure.id)?.resolvedAt,undefined,"a later action cannot retroactively confirm the earlier unknown action");
   }
-  const beforeAmbiguous = failures.list("task").length;
-  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("ELEMENT_AMBIGUOUS", "choose candidate", { outcome: { dispatch: "not_started", effect: "none" } })), false);
-  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("ELEMENT_AMBIGUOUS", "hover preparation completed, choose final candidate", { outcome: { dispatch: "dispatched", effect: "unknown" } })), false);
-  assert.equal(failures.list("task").length, beforeAmbiguous, "a locator choice is an Agent correction, not human recovery");
-  const beforeStale = failures.list("task").length;
-  assert.equal(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("SURFACE_CHANGED", "find current node", { outcome: { dispatch: "not_started", effect: "none" } })), false);
-  assert.equal(failures.list("task").length, beforeStale, "a stale pre-dispatch reference requires Agent observation, not human recovery");
-  assert(recordBrowserAutomationFailureRecovery(bridge, clickInput, new BrowserAutomationError("SURFACE_CHANGED", "document changed after input", { outcome: { dispatch: "dispatched", effect: "unknown" }, currentUrl: "https://example.test/changed" })));
-  assert.equal(failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-surface-changed")?.sideEffects, "unknown", "a changed document after dispatch must still preserve uncertain effects");
   const flyoutInput = { action: "click" as const, role: "link", name: "凭证汇总表" };
-  assert(recordBrowserAutomationFailureRecovery(bridge, flyoutInput, new BrowserAutomationError("ELEMENT_NOT_VISIBLE", "collapsed menu", { outcome: { dispatch: "not_started", effect: "none" }, currentUrl: "https://example.test/books" })));
-  const flyoutFailure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-element-not-visible")!;
-  settleBrowserAutomationRecovery(bridge, { action: "click", role: "link", name: "总账" }, { action: "click", url: "https://example.test/books" });
-  assert.equal(failures.list("task").find(item => item.id === flyoutFailure.id)?.resolvedAt, undefined, "another menu entry does not settle this failure");
-  settleBrowserAutomationRecovery(bridge, flyoutInput, { action: "click", sourceUrl: "https://example.test/books", url: "https://example.test/report" });
-  assert(failures.list("task").find(item => item.id === flyoutFailure.id)?.resolvedAt, "successful link navigation settles the source page's failed menu click");
   assert(recordBrowserAutomationFailureRecovery(bridge, flyoutInput, hostError));
   settleBrowserAutomationRecovery(bridge, flyoutInput, { action: "click", sourceUrl: "https://example.test/books", url: "https://example.test/report" });
   assert(!failures.list("task").some(item => !item.resolvedAt && item.causeCode === "browser-host-unavailable"), "semantic locators also settle restored host availability");
-  const unobservedField = { action: "fill" as const, selector: "#capInput", text: "test" };
-  failures.recordIfAbsent({ ...ctx, causeCode: "browser-surface-changed", phase: "observe", recovery: "recoverable", sideEffects: "none", target: browserAutomationRecoveryTarget(unobservedField, { currentUrl: "https://example.test/gadget" }), message: "historical observe-first notice", nextAction: "find" });
-  const unobservedFailure = failures.list("task").find(item => !item.resolvedAt && item.causeCode === "browser-surface-changed")!;
-  const fieldRef = '[data-mybuddy-ui-ref="observed-input"]';
-  settleBrowserAutomationRecovery(bridge, { action: "fill", selector: fieldRef, text: "test" }, { action: "fill", url: "https://example.test/gadget", elements: [{ selector: fieldRef, tag: "input", id: "anotherInput", label: "Another" }] });
-  assert.equal(failures.list("task").find(item => item.id === unobservedFailure.id)?.resolvedAt, undefined);
-  settleBrowserAutomationRecovery(bridge, { action: "fill", selector: fieldRef, text: "test" }, { action: "fill", url: "https://example.test/gadget", elements: [{ selector: fieldRef, tag: "input", id: "capInput", label: "一句话" }] });
-  assert(failures.list("task").find(item => item.id === unobservedFailure.id)?.resolvedAt, "successful fill through an observed reference settles its proven #id alias");
+  const historical=failures.record({ ...ctx, causeCode:"browser-selector-not-found",phase:"observe",recovery:"recoverable",sideEffects:"none",message:"old role=button failed, custom span clicked successfully",nextAction:"find",target:"old-button" });
+  assert(!failures.list("task").some(item=>item.id===historical.id),"existing observation-only cards obey the current policy too");
+  assert.deepEqual(db.prepare("SELECT resolved_at, dismissed_at FROM execution_failures WHERE id=?").get(historical.id),{resolved_at:null,dismissed_at:null},"classification preserves history without pretending it resolved or changing the user's dismissal");
+  const requiresUser=failures.record({...ctx,causeCode:"browser-selector-not-found",phase:"observe",recovery:"requires-user-action",sideEffects:"none",message:"explicitly requires user",nextAction:"user action"});
+  assert(failures.list("task").some(item=>item.id===requiresUser.id),"classification does not hide explicit user-action requests");
 
   for (const code of ["EXECUTION_FAILED", "WAIT_TIMEOUT", "CANCELLED"] as const) {
     const error = new BrowserAutomationError(code, "lost action receipt", { outcome: { dispatch: "dispatched", effect: "unknown" }, currentUrl: "https://example.test/form" });
@@ -163,8 +146,7 @@ try {
     assert.equal(failures.list("task").find(item => item.id === failure.id)?.resolvedAt, undefined, "later click never reconciles an uncertain earlier click");
   }
   const preflightTimeout = new BrowserAutomationError("WAIT_TIMEOUT", "target check pending", { outcome: { dispatch: "not_started", effect: "none" } });
-  assert(recordBrowserAutomationFailureRecovery(bridge, { action: "fill", selector: "#pending" }, preflightTimeout));
-  assert.equal(failures.list("task").find(item => item.causeCode === "browser-wait-timeout" && item.target?.includes("%23pending"))?.sideEffects, "none");
+  assert.equal(recordBrowserAutomationFailureRecovery(bridge, { action: "fill", selector: "#pending" }, preflightTimeout),false);
   settleBrowserAutomationRecovery(bridge, { action: "read" }, { action: "read", url: "https://example.test/form", text: "fresh actual page evidence" });
   assert(!failures.list("task").some(item => !item.resolvedAt && item.target === "browser:uncertain:url=https%3A%2F%2Fexample.test%2Fform"));
 

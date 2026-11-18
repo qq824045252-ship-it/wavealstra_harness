@@ -3,7 +3,7 @@ import { browserCollectionSchema } from "./browser/BrowserCollectionSchema";
 import { browserConditionSchema } from "./browser/BrowserConditions";
 import { browserAgentPolicy } from "./BrowserAgentPolicy";
 
-export const BROWSER_EXEC_ACTIONS = ["status", "navigate", "read", "click", "fill", "drag", "press", "screenshot", "find", "inspect", "wait_for", "scroll", "hover", "select", "check", "frames", "accessibility", "assert", "diagnostics", "dialog", "open", "select_tab", "close", "back", "forward", "reload", "upload", "collect", "click_at", "scroll_at", "handoff", "resume"] as const;
+export const BROWSER_EXEC_ACTIONS = ["status", "tabs", "navigate", "read", "click", "fill", "drag", "press", "screenshot", "find", "inspect", "wait_for", "scroll", "hover", "select", "check", "frames", "accessibility", "assert", "diagnostics", "dialog", "open", "select_tab", "close", "back", "forward", "reload", "upload", "collect", "click_at", "scroll_at", "handoff", "resume"] as const;
 
 export const browserExecSchema = Type.Object({
   action: Type.Union(BROWSER_EXEC_ACTIONS.map(action => Type.Literal(action))),
@@ -27,6 +27,8 @@ export const browserExecSchema = Type.Object({
   reload: Type.Optional(Type.Boolean()),
   gadgetId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   tabId: Type.Optional(Type.String({ maxLength: 200 })),
+  tabTitle: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+  tabUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
   frameId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   url: Type.Optional(Type.String({ maxLength: 2_000 })),
   selector: Type.Optional(Type.String({ maxLength: 1_000 })),
@@ -78,6 +80,8 @@ export const browserExecSchema = Type.Object({
 export const browserStructuredOutputSchema = Type.Object({
   isError: Type.Boolean(),
   action: Type.Optional(Type.String()), tabId: Type.Optional(Type.String()),
+  activeTabId: Type.Optional(Type.String()), sourceTabId: Type.Optional(Type.String()), openedTabId: Type.Optional(Type.String()),
+  tabs: Type.Optional(Type.Array(Type.Object({ id: Type.String(), title: Type.String(), url: Type.String(), loading: Type.Boolean(), openerTabId: Type.Optional(Type.String()) }, { additionalProperties: true }))),
   url: Type.Optional(Type.String()), title: Type.Optional(Type.String()), text: Type.Optional(Type.String()),
   nextCursor: Type.Optional(Type.String()), textTruncated: Type.Optional(Type.Boolean()),
   elements: Type.Optional(Type.Array(Type.Object({ selector: Type.String(), tag: Type.String(), label: Type.String() }, { additionalProperties: true }))),
@@ -93,8 +97,10 @@ export const browserToolDescription = browserAgentPolicy + [
   "click 支持 button:right、clickCount:2 和 modifiers；fill 的 inputMode:sequential 逐个 Unicode 字符输入，日期控件返回 synthetic-setter 策略；drag 传已 find 的目的地 dragTo 引用；原生 HTML5 拖放使用 dragMode:html，由真实 draggable 源产生 DataTransfer，保留原始数据并等待可信 drop。",
   "screenshot 返回 captureId 与像素 viewport，click_at/scroll_at 必须携带该 captureId、截图像素 x/y；页面像素、文档、滚动、视口或缩放变化会拒绝旧截图。每张截图只允许一次坐标操作。",
   "handoff({tabId,reason:'login'或'2fa'}) 向真实用户请求登录，等待用户完成后才返回 token；resume({tabId,token,expect}) 只读验证当前登录态。不得自行代答或重复提交业务动作。人工等待不计入单次页面动作30秒预算。",
-  "open 新建本任务标签，select_tab/close/back/forward/reload 只操作本任务标签。",
-  "status 列出本任务 tabs；tabId 固定本任务页面，不传时用本任务最近操作的标签。",
+  "切换浏览器顶部标签不要点击网页中的 tab 或用 navigate 重开：先 tabs 查看本任务标签的 id/title/url，再 select_tab({tabId,after:{mode:'interactive'}}) 切换并观察已有页面。也可用精确 tabTitle/tabUrl；同名时必须从候选中选 tabId。切换保留登录、草稿和页面状态。",
+  "tabs/status 返回 tabId（当前任务默认操作目标）及 activeTabId（当前任务在侧栏显示的标签）；其它任务的标签不会返回。open 新建本任务标签，select_tab/close/back/forward/reload 只操作本任务标签。",
+  "不传 tabId 时跟随本任务当前标签；手动切换、open/navigate 和由当前页打开的 popup 会更新默认目标，切换到其它任务不影响本任务。popup 回执的 tabId/openedTabId 是新页，sourceTabId 是触发动作的旧页，后续观察新页后再交互。",
+  "并行操作不同页面时必须显式传 tabId；单次调用固定其目标页面，不随中途的界面切换重定向。",
   "navigate 支持 http(s) 或本机 file://，不支持网络共享；返回已有标签会保留页面，reload:true 强制刷新，本机源码变更会自动刷新。",
   "Gadget 可传 gadgetId 按身份恢复当前端口。",
   "常用读取直接 navigate({url,after:{mode:'text'}})。",

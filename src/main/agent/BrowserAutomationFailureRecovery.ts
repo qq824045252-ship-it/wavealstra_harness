@@ -6,6 +6,7 @@ import type {
 import { BrowserAutomationError, BROWSER_INPUT_ACTIONS } from "../capabilities/BrowserAutomationService";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
+import { isBrowserObservationCode } from "./BrowserObservationFailure";
 
 export interface BrowserAutomationRecoveryBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
@@ -116,10 +117,7 @@ export function recordBrowserAutomationFailureRecovery(
   const sideEffecting = SIDE_EFFECT_ACTIONS.has(input.action);
   const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
   const preAction = outcome ? outcome.dispatch === "not_started" : PRE_ACTION_CODES.has(error.code);
-  if (error.code === "ELEMENT_AMBIGUOUS" || error.code === "SURFACE_CHANGED" && preAction) {
-    if (preAction) bridge.failures.resolveMatching(ctx.taskId, { target: browserAutomationRecoveryTarget(input, error.details), causeCodes: [causeCode(error)] });
-    return false;
-  }
+  if (preAction && isBrowserObservationCode(error.code)) return false;
   const unknownEffect = !preAction && sideEffecting && input.action !== "navigate";
   const target = error.code === "HOST_UNAVAILABLE"
     ? `browser:${input.action}:surface`

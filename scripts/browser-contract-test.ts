@@ -24,6 +24,8 @@ function fixture() {
     navigateForAutomation: async () => { const pending = deferred<void>(); navigations.push(pending); await pending.promise; },
   }));
   const host = {
+    getTaskTab: () => ({ id: "a", taskId: "task", url: pages[0].url }),
+    setTaskTab: (_taskId: string, id: string) => pages.some(page => page.id === id),
     attached: true, listTabs: () => pages.map(page => ({ id: page.id, taskId: "task", url: page.url })),
     getTabHost: (id: string) => pages.find(page => page.id === id) ?? null,
   } as unknown as BrowserHost;
@@ -33,6 +35,9 @@ function fixture() {
 const checks: string[] = [];
 {
   for (const input of [
+    { action: "tabs" },
+    { action: "select_tab", tabTitle: "Service accounts – IAM & Admin" },
+    { action: "select_tab", tabUrl: "https://fixture.test/account" },
     { action: "hover", role: "button", name: "账簿" },
     { action: "click", role: "link", name: "凭证汇总表", hover: [{ role: "button", name: "账簿" }] },
     { action: "scroll", delta_y: 500 },
@@ -50,6 +55,8 @@ const checks: string[] = [];
   let hosts = 0;
   const service = new BrowserAutomationService(() => { hosts++; return null; });
   await assert.rejects(service.execute({ action: "click", selector: "a", hover: [{}] }), error => error instanceof BrowserAutomationError && error.code === "INVALID_INPUT");
+  await assert.rejects(service.execute({ action: "select_tab" }), error => error instanceof BrowserAutomationError && error.code === "INVALID_INPUT");
+  await assert.rejects(service.execute({ action: "select_tab", tabId: "a", tabTitle: "A" }), error => error instanceof BrowserAutomationError && error.code === "INVALID_INPUT");
   assert.equal(hosts, 0);
   checks.push("model-visible schema exposes menu paths and form actions; invalid paths fail before touching the host");
 }

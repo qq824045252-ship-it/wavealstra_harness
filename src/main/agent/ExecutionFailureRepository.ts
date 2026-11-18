@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ExecutionFailureDto } from "../../shared/execution-recovery";
+import { isBrowserObservationFailure } from "./BrowserObservationFailure";
 
 /**
  * 已完成 schema 保障与一次性遗留清理的连接。
@@ -53,6 +54,9 @@ export class ExecutionFailureRepository {
           || !["retryable", "recoverable", "requires-user-action", "terminal"].includes(record.recovery)
           || !["prepare", "execute", "observe", "verify", "recover"].includes(record.phase)
           || !["none", "known", "unknown"].includes(record.sideEffects) || !Number.isFinite(record.createdAt)) return [];
+        // Apply the same classification to existing rows. Retain their tool
+        // history and database evidence without claiming the failure resolved.
+        if (isBrowserObservationFailure(record)) return [];
         return [{ ...record, resolvedAt: row.resolved_at ?? undefined, dismissedAt: row.dismissed_at ?? undefined }];
       } catch { return []; } // Keep the original corrupt row for diagnosis.
     });

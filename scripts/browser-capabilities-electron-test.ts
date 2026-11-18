@@ -20,6 +20,7 @@ import { createBuiltinCapabilityExtension } from "../src/main/capabilities/built
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
 
 const output = join(process.cwd(), "out/diagnostics/browser-p0p1");
 mkdirSync(output, { recursive: true });
@@ -40,7 +41,11 @@ async function serve(hostname: string, body: (path: string) => string) {
       const chunks: Buffer[] = []; req.on("data", chunk => chunks.push(chunk));
       req.on("end", () => { writes.push(JSON.parse(Buffer.concat(chunks).toString())); res.end("saved"); }); return;
     }
-    res.setHeader("Content-Type", "text/html; charset=utf-8"); res.end(body(req.url ?? "/"));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    if (req.url === "/recovery") {
+      res.end(`<div onclick="history.pushState({},'',location.pathname+'?new')"><span>开启新对话</span></div><textarea aria-label="消息"></textarea><p id="submission"></p><script>window.submissions=0;document.querySelector('textarea').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();window.submissions++;history.pushState({},'',location.pathname+'?submitted');document.querySelector('#submission').textContent='已发送 '+window.submissions;}};</script>`);return;
+    }
+    res.end(body(req.url ?? "/"));
   });
   servers.push(server); await new Promise<void>(resolve => server.listen(0, hostname, resolve));
   const address = server.address(); assert(address && typeof address !== "string"); return `http://${hostname}:${address.port}`;
@@ -70,12 +75,24 @@ void (async () => {
   }
   const artifacts = new FixtureArtifactService(new ArtifactStorage(join(root, "artifact-content")), new ArtifactRepository(artifactDb), new ArtifactRegistry());
   const capabilities = new BuiltinCapabilityRuntime({ store, credentials: { has: () => false, get: () => null, set: () => { throw Error("isolated test has no credentials"); }, clear: () => {} } });
+  artifactDb.exec("CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY); INSERT INTO tasks(id) VALUES ('browser-capabilities')");
+  const failures = new ExecutionFailureRepository(artifactDb);
   const bridge = await durableDomainTools([createBuiltinCapabilityExtension({ taskId: "browser-capabilities", taskRoot: root, nativeExecution: true,
+    browserRecovery: { resolveContext: () => ({ taskId: "browser-capabilities", executionId: "fixture", assistantMessageId: "fixture" }), failures },
     runtime: capabilities, browser, artifactService: () => artifacts, getProducerMessageId: () => undefined, getIsolationLevel: () => "none" })]);
   const models = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
   let generations = 0;
   const code = `
     const step=async input=>{const r=await tools.browser_exec(input);if(r.isError)throw Error(JSON.stringify(r));return r;};
+    const recovery=await step({action:'navigate',url:${JSON.stringify(origin + "/recovery")},after:{mode:'interactive'}});
+    const rejected=await tools.browser_exec({action:'click',tabId:recovery.tabId,role:'button',name:'开启新对话',exact:true});
+    if(!rejected.isError||rejected.code!=='SELECTOR_NOT_FOUND')throw Error('custom span unexpectedly matched button');
+    const custom=await step({action:'find',tabId:recovery.tabId,name:'开启新对话',exact:true});
+    await step({action:'click',tabId:recovery.tabId,selector:custom.elements[0].selector});
+    await step({action:'find',tabId:recovery.tabId,role:'textbox',name:'消息',exact:true});
+    await step({action:'fill',tabId:recovery.tabId,role:'textbox',name:'消息',exact:true,text:'实际提交一次'});
+    const sent=await step({action:'press',tabId:recovery.tabId,role:'textbox',name:'消息',exact:true,key:'Enter',after:{mode:'text'}});
+    if(sent.outcome.effect!=='confirmed'||sent.observation.status!=='completed'||!sent.observation.result.text.includes('已发送 1'))throw Error(JSON.stringify(sent));
     const opened=await step({action:'navigate',url:${JSON.stringify(origin)},after:{mode:'interactive'}});
     const tabId=opened.tabId;
     const fs=await step({action:'frames',tabId});const frame=fs.frames.find(f=>f.name==='nested-editor');if(!frame)throw Error('nested frame missing');
@@ -108,7 +125,11 @@ void (async () => {
     const failed=await tools.browser_exec({action:'assert',tabId,timeout_ms:150,expect:[{kind:'count',selector:'#missing',count:1}]});if(!failed.isError||failed.businessResult.status!=='failed')throw Error('assertion incorrectly passed');
     const long=await step({action:'collect',tabId,max_chars:1000,collection:{scopeSelector:'#long-table',rowSelector:'tr',cellSelector:'td',keyAttribute:'data-key',rowIndexAttribute:'data-index',expectedRows:{selector:'#long-table',attribute:'data-count'},terminal:{kind:'disabled',target:{selector:'#long-end'}},advance:{kind:'next',target:{selector:'#long-end'}}}});if(!long.collection.outputTruncated||long.collection.status!=='complete'||long.collectionArtifact.status!=='registered'||!long.collectionFile.path)throw Error('full collection artifact missing');
     const diag=await step({action:'diagnostics',tabId});if(!diag.diagnostics.events.some(e=>e.kind==='console'))throw Error('diagnostic console missing');
-    const opened2=await step({action:'open',url:${JSON.stringify(origin + "/other")}});await step({action:'close',tabId:opened2.tabId});await step({action:'select_tab',tabId});
+    const opened2=await step({action:'open',url:${JSON.stringify(origin + "/other")}});
+    const tabs=await step({action:'tabs'});if(tabs.tabId!==opened2.tabId||!tabs.tabs.some(t=>t.id===tabId))throw Error('new tab was not adopted');
+    const switched=await step({action:'select_tab',tabId,after:{mode:'text'}});if(switched.activeTabId!==tabId||switched.observation.status!=='completed')throw Error('tab switch/observe failed');
+    const current=await step({action:'read',mode:'text'});if(current.tabId!==tabId)throw Error('implicit read returned the old tab');
+    await step({action:'close',tabId:opened2.tabId});
     const read=await step({action:'read',tabId,selector:'#scope-a',mode:'text'});text({frames:fs.frames.length,text:read.text});
   `;
   models.registerProvider("fixture", { api: "openai-completions", apiKey: "isolated", baseUrl: "http://127.0.0.1:1",
@@ -122,6 +143,7 @@ void (async () => {
     } });
   const open = () => DurableBotRuntime.open({ taskId: "browser-capabilities", cwd: root, directory: join(root, "state"), models, model: { provider: "fixture", modelId: "model" }, toolMode: "codemode", tools: bridge.tools, instructions: () => "isolated browser capability fixture", onSnapshot: () => {} });
   runtime = await open(); assert.equal((await (await runtime.submit("run", "stable-input")).wait(BACKGROUND_CONTEXT)).status, "done");
+  assert.equal(failures.list("browser-capabilities").filter(item => !item.resolvedAt).length,0,"real Code Mode locator correction and SPA submit leave no stale recovery cards");
   assert.deepEqual(writes, [{ source: "frame", value: "跨域中文🙂", trusted: true }, { source: "shadow-a", value: "Shadow 中文🙂", trusted: true }]);
   assert.deepEqual(uploadedBodies, ["真实文件中文🙂"]);
   const exported = artifacts.listByTask("browser-capabilities"); assert.equal(exported.length, 2);

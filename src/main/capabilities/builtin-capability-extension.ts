@@ -740,7 +740,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         name: "browser_exec",
         label: "浏览器操作",
         description: browserToolDescription,
-        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, hover?, text?, values?, checked?, delta_x?, delta_y?, mode?, cursor?, after?, timeout_ms?)",
+        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, hover?, text?, values?, checked?, delta_x?, delta_y?, mode?, cursor?, after?, timeout_ms?)；tabs 列标签，select_tab(tabId 或 tabTitle/tabUrl, after?) 切换；popup 后跟随新 tabId。",
         parameters: browserExecSchema,
         execute: async (tc, p: BrowserExecInput & { max_chars?: number; timeout_ms?: number; element_offset?: number; delta_x?: number; delta_y?: number }, signal, _onUpdate, ctx) => {
           let input: BrowserExecInput | undefined;

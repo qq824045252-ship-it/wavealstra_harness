@@ -50,6 +50,8 @@ export interface BrowserExecInput extends BrowserReadOptions {
   action: BrowserExecAction;
   gadgetId?: string;
   tabId?: string;
+  tabTitle?: string;
+  tabUrl?: string;
   frameId?: string;
   url?: string;
   selector?: string;
@@ -100,6 +102,8 @@ export interface BrowserExecOutput {
   downloadArtifact?: { status: "registered" | "failed"; reason?: string };
   gadgetId?: string;
   tabId?: string;
+  activeTabId?: string;
+  sourceTabId?: string;
   url?: string;
   title?: string;
   sourceUrl?: string;
@@ -188,7 +192,6 @@ export class BrowserAutomationService {
   private readonly observations = new Map<string, ObservedPage>();
 
   private readonly pageFlights = new Map<number, Promise<void>>();
-  private readonly ownedTabs = new Map<string, string>();
   private readonly navigationRequests = new Map<string, object>();
   private readonly sourceRevisions = new Map<string, string>();
   private resolveGadgetPreview?: (url: string, taskId: string, gadgetId?: string) => Promise<GadgetBrowserPreview | null>;
@@ -240,6 +243,12 @@ export class BrowserAutomationService {
         throw new BrowserAutomationError("INVALID_INPUT", "reload 仅用于 navigate，且必须是布尔值");
       }
       if (input.tabId !== undefined) requireShort(input.tabId, "tabId", 200);
+      if (input.tabTitle !== undefined || input.tabUrl !== undefined) {
+        if (input.action !== "select_tab" || input.tabId) throw new BrowserAutomationError("INVALID_INPUT", "tabTitle/tabUrl 仅用于 select_tab，不能与 tabId 同时使用");
+        if (input.tabTitle !== undefined) requireShort(input.tabTitle, "tabTitle", 1000);
+        if (input.tabUrl !== undefined) requireShort(input.tabUrl, "tabUrl", 2000);
+      }
+      if (input.action === "select_tab" && !input.tabId && !input.tabTitle && !input.tabUrl) throw new BrowserAutomationError("INVALID_INPUT", "select_tab 需要 tabId 或精确的 tabTitle/tabUrl；先 tabs 获取候选标签");
       if (input.frameId !== undefined) {
         requireShort(input.frameId, "frameId", 200);
         if (input.action === "navigate" || input.action === "screenshot") throw new BrowserAutomationError("INVALID_INPUT", "navigate 和 screenshot 使用标签页，frameId 用于文档内观察与操作");
@@ -263,7 +272,7 @@ export class BrowserAutomationService {
       for (const [label, value, max] of [["selector", input.selector, 1000], ["role", input.role, 200], ["name", input.name, 1000], ["cursor", input.cursor, 300]] as const) if (value !== undefined) requireShort(value, label, max);
       if (input.maxChars !== undefined && (!Number.isSafeInteger(input.maxChars) || input.maxChars < 1000 || input.maxChars > 100000)) throw new BrowserAutomationError("INVALID_INPUT", "max_chars 必须为 1000..100000");
       if (input.mode !== undefined && !["text", "interactive"].includes(input.mode)) throw new BrowserAutomationError("INVALID_INPUT", "未知读取模式");
-      if (input.after && input.action !== "navigate" && input.action !== "wait_for" && input.action !== "click_at" && input.action !== "scroll_at" && !BROWSER_INPUT_ACTIONS.has(input.action)) throw new BrowserAutomationError("INVALID_INPUT", "after 仅用于导航、动作或条件等待");
+      if (input.after && input.action !== "navigate" && input.action !== "select_tab" && input.action !== "wait_for" && input.action !== "click_at" && input.action !== "scroll_at" && !BROWSER_INPUT_ACTIONS.has(input.action)) throw new BrowserAutomationError("INVALID_INPUT", "after 仅用于导航、切换标签、动作或条件等待");
       if (input.action === "check" && typeof input.checked !== "boolean") throw new BrowserAutomationError("INVALID_INPUT", "check 需要 checked 布尔值");
       if (input.action === "select" && (!Array.isArray(input.values) || input.values.length > 80 || input.values.some(value => typeof value !== "string" || value.length > 1000))) throw new BrowserAutomationError("INVALID_INPUT", "select 需要 values 字符串数组，最多 80 项，每项最多 1000 字符");
       if (input.action === "scroll" && (![input.deltaX ?? 0, input.deltaY ?? 0].every(value => Number.isFinite(value) && Math.abs(value) <= 100000) || !(input.deltaX || input.deltaY))) throw new BrowserAutomationError("INVALID_INPUT", "scroll 需要非零 delta_x/delta_y，范围 -100000..100000");
@@ -322,8 +331,15 @@ export class BrowserAutomationService {
     if (input.gadgetId && (!taskId || !this.resolveGadgetPreview)) throw new BrowserAutomationError("INVALID_INPUT", "Gadget 导航需要当前任务及 Gadget 服务");
     const owner = invocation ? `${invocation.execution.taskId}:${invocation.native.conversationId}` : taskId ?? "direct-host-entry";
     const tabs = taskId ? browser.listTabs().filter(tab => tab.taskId === taskId) : [];
-    let tab = input.tabId ? tabs.find(tab => tab.id === input.tabId) : tabs.find(tab => tab.id === this.ownedTabs.get(owner));
+    let tab = input.tabId ? tabs.find(tab => tab.id === input.tabId) : taskId ? browser.getTaskTab(taskId) : undefined;
     if (input.tabId && !tab) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭或不属于当前任务，请重新导航", { tabId: input.tabId });
+    if (input.action === "select_tab" && !input.tabId) {
+      const candidates = tabs.filter(value => (input.tabTitle === undefined || value.title === input.tabTitle) && (input.tabUrl === undefined || value.url === input.tabUrl));
+      if (candidates.length !== 1) throw new BrowserAutomationError(candidates.length ? "ELEMENT_AMBIGUOUS" : "SELECTOR_NOT_FOUND", "标签定位不唯一或未找到，请从 tabs 返回的候选中使用 tabId", { tabs: candidates.length ? candidates : tabs });
+      tab = candidates[0];
+    }
+    if ((input.action === "status" || input.action === "tabs") && taskId) return { action: input.action, tabId: tab?.id, activeTabId: tabs.some(value => value.id === browser.activeTabId) ? browser.activeTabId ?? undefined : undefined, url: tab?.url || undefined, title: tab?.title, tabs, detail: tab?.url ? "ready" : "idle" };
+    if (input.action === "tabs") throw new BrowserAutomationError("INVALID_INPUT", "tabs 需要当前任务");
     if (input.action === "open") {
       if (!taskId) throw new BrowserAutomationError("INVALID_INPUT", "open 需要当前任务");
       scope.dispatch();
@@ -363,6 +379,7 @@ export class BrowserAutomationService {
           tab = browser.ensureTab({ key, taskId, gadgetId: preview?.gadgetId, activate: false });
         }
         if (tab) page = browser.getTabHost(tab.id);
+        if (taskId && tab) browser.setTaskTab(taskId, tab.id);
         if (!page?.inspectionWebContents) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
         const previousRevision = tab && this.sourceRevisions.get(tab.id);
         let revision = preview ? `gadget:${preview.revision}` : undefined;
@@ -391,7 +408,6 @@ export class BrowserAutomationService {
         finally { releaseDialogs?.(); }
         if (navigationTabId && browser.getTabHost(navigationTabId) !== navigationPage) throw new BrowserAutomationError("SURFACE_CHANGED", "导航目标标签已关闭");
         if (this.navigationRequests.get(navigationOwner) !== request || this.navigationRequests.get(pageNavigationKey) !== pageRequest) throw new BrowserAutomationError("SURFACE_CHANGED", "导航已被较新的浏览器请求替代，请重新读取");
-        if (taskId && tab) this.ownedTabs.set(owner, tab.id);
         if (revision && tab) this.sourceRevisions.set(tab.id, revision);
         const current = page.inspectionWebContents;
         if (!current || current.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭");
@@ -423,18 +439,24 @@ export class BrowserAutomationService {
         if (pageNavigationKey && this.navigationRequests.get(pageNavigationKey) === pageRequest) this.navigationRequests.delete(pageNavigationKey);
       }
     }
-    if (input.action === "status" && taskId) return { action: input.action, tabId: tab?.id, url: tab?.url || undefined, tabs, detail: tab?.url ? "ready" : "idle" };
     const page = taskId ? tab && browser.getTabHost(tab.id) : browser.activeTabId ? browser.getTabHost(browser.activeTabId) : null;
     if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "当前任务没有可用标签页，请 navigate 打开页面；不会自动接管其它任务的页面");
     const managedWc = page.inspectionWebContents;
     if (!managedWc || managedWc.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "保留的标签页已关闭");
-    if (input.action === "select_tab" || input.action === "close") {
+    if (taskId && tab && input.tabId && input.action !== "close") browser.setTaskTab(taskId, tab.id);
+    if (input.action === "select_tab") {
+      if (!taskId || !tab) throw new BrowserAutomationError("INVALID_INPUT", "标签切换需要当前任务的目标标签");
+      scope.dispatch();
+      if (!browser.selectTab(tab.id, false)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "切换目标标签已关闭");
+      scope.confirmed = true;
+      return this.afterObservation(input, { action: input.action, tabId: tab.id, activeTabId: tab.id, url: managedWc.getURL(), title: managedWc.getTitle(), tabs: browser.listTabs().filter(value => value.taskId === taskId) }, scope, page, `${owner}:${tab.id}`);
+    }
+    if (input.action === "close") {
       if (!taskId || !tab) throw new BrowserAutomationError("INVALID_INPUT", "标签管理需要本任务的 tabId");
       const runtime = context?.taskRoot || input.dialogRules ? await this.runtimes.get(managedWc, scope, context?.taskRoot) : undefined;
       const releaseDialogs = runtime?.events.armDialogRules(input.dialogRules ?? []);
       try {
-      scope.dispatch();
-      if (input.action === "close") {
+        scope.dispatch();
         const wc = page.inspectionWebContents;
         let denied = false;
         const onPrevent = (event: {defaultPrevented: boolean}) => { denied = !event.defaultPrevented; };
@@ -445,11 +467,9 @@ export class BrowserAutomationService {
             if (denied) { await runtime?.events.settleNavigationDialog(scope); throw new BrowserAutomationError("NAVIGATION_FAILED", "页面拒绝关闭；如需离开，请显式提供 beforeunload 接受规则", { tabId: tab.id }); }
             await scope.run(() => new Promise<void>(resolve => setTimeout(resolve, 20)));
           }
-          if (this.ownedTabs.get(owner) === tab.id) this.ownedTabs.delete(owner);
         } finally { wc?.off("will-prevent-unload", onPrevent); }
-      } else { this.ownedTabs.set(owner, tab.id); browser.selectTab(tab.id, false); }
-      scope.confirmed = true;
-      return { action: input.action, tabId: tab.id, tabs: browser.listTabs().filter(t => t.taskId === taskId) };
+        scope.confirmed = true;
+        return { action: input.action, tabId: tab.id, tabs: browser.listTabs().filter(t => t.taskId === taskId) };
       } finally { releaseDialogs?.(); }
     }
     if (["back", "forward", "reload"].includes(input.action)) {
@@ -528,10 +548,10 @@ export class BrowserAutomationService {
     // only for this task's next observation; never redirect another task or UI.
     const popup = ["click", "press"].includes(input.action) && taskId && tab && browser.listTabs().find(value => !before.has(value.id)
       && value.taskId === taskId && value.openerTabId === tab!.id);
-    if (taskId && tab) this.ownedTabs.set(owner, popup ? popup.id : tab.id);
     const afterPage = popup ? browser.getTabHost(popup.id) : page;
     const result = afterPage ? await this.afterObservation(popup ? { ...input, frameId: undefined } : input, base, scope, afterPage, `${owner}:${popup ? popup.id : tab?.id ?? page.inspectionWebContents?.id}`) : base;
-    return { ...result, tabId: tab?.id, ...(popup ? { openedTabId: popup.id, detail: `${result.detail ?? ""}；已打开新标签 ${popup.id}，后续读取使用新标签` } : {}) };
+    const opened = popup ? browser.listTabs().find(value => value.id === popup.id) : undefined;
+    return { ...result, tabId: popup ? popup.id : tab?.id, ...(popup ? { sourceTabId: tab?.id, openedTabId: popup.id, url: opened?.url ?? popup.url, title: opened?.title ?? popup.title, elements: undefined, documentId: undefined, detail: `${result.detail ?? ""}；已打开新标签 ${popup.id}，后续读取使用新标签` } : {}) };
     } finally { response?.cancel(); download?.cancel(); releaseDialogs?.(); }
     });
   }

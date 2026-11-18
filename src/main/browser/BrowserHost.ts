@@ -609,6 +609,7 @@ interface ManagedBrowserTab {
 export class BrowserHost {
   private win: BrowserWindow | null = null;
   private readonly tabs = new Map<string, ManagedBrowserTab>();
+  private readonly taskTabs = new Map<string, string>();
   private activeId: string | null = null;
   private lastBounds: Rectangle | null = null;
   private desiredVisible = false;
@@ -647,6 +648,15 @@ export class BrowserHost {
   listTabs(): BrowserTabInfo[] { return [...this.tabs.values()].map((tab) => this.info(tab)); }
   getTabsState(): BrowserTabsState { return { activeTabId: this.activeId, tabs: this.listTabs() }; }
   getTabHost(id: string): BrowserPageHost | null { return this.tabs.get(id)?.surface ?? null; }
+  getTaskTab(taskId: string): BrowserTabInfo | undefined {
+    const tab = this.tabs.get(this.taskTabs.get(taskId) ?? "");
+    return tab?.taskId === taskId ? this.info(tab) : undefined;
+  }
+  setTaskTab(taskId: string, id: string): boolean {
+    if (this.tabs.get(id)?.taskId !== taskId) return false;
+    this.taskTabs.set(taskId, id);
+    return true;
+  }
   private emitTabs(): void { this.onTabsChanged?.(this.getTabsState()); }
 
   ensureTab(options: BrowserOpenOptions = {}): BrowserTabInfo {
@@ -667,6 +677,9 @@ export class BrowserHost {
     surface.attach(this.win!, preferences, webContents);
     for (const token of this.blockers) surface.addBlocker(token);
     this.tabs.set(tab.id, tab);
+    if (tab.taskId && (!this.taskTabs.has(tab.taskId) || openerTabId && this.taskTabs.get(tab.taskId) === openerTabId)) {
+      this.setTaskTab(tab.taskId, tab.id);
+    }
     surface.onUrlChanged = (url) => {
       this.emitTabs();
       if (this.activeId === tab.id) this.onUrlChanged?.(url);
@@ -718,6 +731,7 @@ export class BrowserHost {
   selectTab(id: string, refreshDirty = true): boolean {
     const tab = this.tabs.get(id);
     if (!tab) return false;
+    if (tab.taskId) this.setTaskTab(tab.taskId, id);
     if (this.activeId !== id) {
       this.active?.exitCapture();
       this.active?.hide();
@@ -754,6 +768,11 @@ export class BrowserHost {
     const tab = this.tabs.get(id);
     if (!tab) return;
     this.tabs.delete(id);
+    if (tab.taskId && this.taskTabs.get(tab.taskId) === id) {
+      const next = [...this.tabs.values()].filter(candidate => candidate.taskId === tab.taskId).at(-1);
+      if (next) this.setTaskTab(tab.taskId, next.id);
+      else this.taskTabs.delete(tab.taskId);
+    }
     tab.surface.dispose();
     if (this.activeId === id) {
       this.activeId = null;
@@ -826,7 +845,7 @@ export class BrowserHost {
   async readDocumentHtml(): Promise<string | null> { return await this.active?.readDocumentHtml() ?? null; }
   dispose(): void {
     const tabs = [...this.tabs.values()];
-    this.tabs.clear(); this.activeId = null;
+    this.tabs.clear(); this.taskTabs.clear(); this.activeId = null;
     for (const tab of tabs) tab.surface.dispose();
     this.win = null; this.lastBounds = null; this.desiredVisible = false; this.blockers.clear();
     this.selectionVersion++;
