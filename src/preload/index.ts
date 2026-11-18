@@ -677,6 +677,7 @@ const api = {
     createGoal: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.createGoal, request),
     updateGoal: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.updateGoal, request),
     cancelGoal: (goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.cancelGoal, goalId),
+    resumeGoalContinuation: (goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.resumeGoalContinuation, goalId),
   } satisfies ConversationRuntimeApi,
 
   // Read-only workspace history. The standalone Bot feature no longer exposes commands.

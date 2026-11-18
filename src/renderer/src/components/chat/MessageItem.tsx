@@ -474,6 +474,19 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
     copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), COPY_FEEDBACK_MS);
   }, [message]);
 
+  if (message.role === "user" && message.goalContinuation) {
+    const label = message.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n").trim()
+      || `Goal 自动续跑 #${message.goalContinuation.attempt}`;
+    return (
+      <div className="msg-row user goal-continuation-row">
+        <div className="goal-continuation-bar" title={`宿主第 ${message.goalContinuation.attempt} 次自动续跑（非用户输入）`}>
+          <IconTarget size={12} strokeWidth={1.5} />
+          <span>{label}</span>
+        </div>
+      </div>
+    );
+  }
+
   if (message.role === "user") {
     const rawText = message.blocks
       .map((b) => (b.type === "text" ? b.text : ""))

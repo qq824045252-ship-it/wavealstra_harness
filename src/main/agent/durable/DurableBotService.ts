@@ -10,6 +10,7 @@ import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
 import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
+import type { GoalContinuationOrigin } from "../../../shared/conversation-goal";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
 import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
 import { durableDelta } from "../../../../shared/src/durable-sync";
@@ -62,6 +63,10 @@ interface OpenBot {
   /** Set while this runtime and its MCP clients are being torn down after a Session failure. */
   closing?: Promise<void>;
 }
+export interface DurableInputOrigin {
+  goalContinuation?: GoalContinuationOrigin;
+}
+
 export interface DurableBotServiceOptions {
   db: AppDatabase;
   models: ModelRuntime;
@@ -470,8 +475,11 @@ export class DurableBotService {
           this.workMetrics.project(taskId, snapshot);
           // Projection only; this status is never consulted to resume or finish durable work.
           taskProjection.writeStatus(taskId, snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending");
-          const messageTime = snapshot.messages.at(-1)?.createdAt;
-          if (messageTime !== undefined) taskProjection.touch(taskId, messageTime);
+          // 「最后活动时间」只有一个写入口：先让 DB 单调前进，再把库里的权威值回填给 UI。
+          // 两边不再各算一套（历史事故：占位行 createdAt=0 被渲染层当成任务时间，侧栏显示 20774 天，
+          // 而 DB 一直是对的）。快照对象在 emit 前就地回填，runtime.latest 与 IPC 看到的是同一个值。
+          const activityAt = taskProjection.recordActivity(taskId, snapshot.activityAt);
+          if (activityAt !== undefined) snapshot.activityAt = activityAt;
           const { messages: _messages, epoch: _epoch, revision: _revision, ...state } = snapshot;
           this.options.emit(previousSnapshot?.epoch === snapshot.epoch
             ? { type: "durable_delta", taskId, delta: durableDelta(previousSnapshot, snapshot, state) }
@@ -612,7 +620,7 @@ export class DurableBotService {
       return resolvedModel.target;
   }
 
-  private async admit(request: AgentPromptRequest, mark?: AdmissionMark) {
+  private async admit(request: AgentPromptRequest, origin?: DurableInputOrigin, mark?: AdmissionMark) {
     // Committed retries retain their original configuration and input preparation.
     if (this.binding(request.taskId)) {
       const existing = await this.withRecovery(request.taskId, async open => {
@@ -645,18 +653,19 @@ export class DurableBotService {
       this.options.beforeSubmit?.(request);
       mark?.("payload");
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
-        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [], ...(audit ? { audit } : {}) }, mark);
+        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [],
+          ...(audit ? { audit } : {}), ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}) }, mark);
       return { submission, open };
     });
   }
 
-  private async admitTracked(request: AgentPromptRequest) {
-    if (process.env.MYBUDDY_ADMISSION_TRACE !== "1") return this.trackAdmission(request.taskId, () => this.admit(request));
+  private async admitTracked(request: AgentPromptRequest, origin?: DurableInputOrigin) {
+    if (process.env.MYBUDDY_ADMISSION_TRACE !== "1") return this.trackAdmission(request.taskId, () => this.admit(request, origin));
     // Time only; never record the input, files, credentials or provider payload.
     const timestamps: Record<string, number> = {};
     const start = performance.now();
     const mark: AdmissionMark = stage => { timestamps[stage] = Math.round((performance.now() - start) * 10) / 10; };
-    try { return await this.trackAdmission(request.taskId, () => this.admit(request, mark), mark); }
+    try { return await this.trackAdmission(request.taskId, () => this.admit(request, origin, mark), mark); }
     finally { mark("finished"); console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps })); }
   }
 
@@ -723,8 +732,8 @@ export class DurableBotService {
     });
   }
 
-  async submit(request: AgentPromptRequest): Promise<AgentPromptResult> {
-    const { submission } = await this.admitTracked(request);
+  async submit(request: AgentPromptRequest, origin?: DurableInputOrigin): Promise<AgentPromptResult> {
+    const { submission } = await this.admitTracked(request, origin);
     const state = await submission.status(context);
     return submissionResult(request.taskId, state);
   }
@@ -760,6 +769,14 @@ export class DurableBotService {
       } while (cursor);
       return undefined;
     }, context);
+  }
+
+  /** Scheduling inspection only: opens the native session if needed, never submits. */
+  async inspect(taskId: string): Promise<DurableBotSnapshot | undefined> {
+    if (!this.options.db.getTask(taskId)) return undefined;
+    const open = await this.open(taskId);
+    await open.runtime.refresh();
+    return open.runtime.snapshot;
   }
 
   async submissionStatus(receipt: AgentSubmissionReceipt, wait = false): Promise<AgentPromptResult> {

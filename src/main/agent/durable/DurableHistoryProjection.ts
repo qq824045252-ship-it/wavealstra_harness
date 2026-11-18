@@ -8,8 +8,9 @@ import { deepseekCitationMarkdown, deepseekHostedToolRows } from "../../../share
 import { capabilityResultFromDetails } from "../../../shared/capability-result";
 import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
+import { latestActivityTime } from "../../../../shared/src/activity-time";
 
-export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; audit?: import("./DurableSkillProjection").DurableInputAudit };
+export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; goalContinuation?: import("../../../shared/conversation-goal").GoalContinuationOrigin; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
 export type DurableResponseSpeed = { readonly tps?: number | null; readonly ttftMs?: number | null };
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
@@ -34,14 +35,20 @@ export class DurableHistoryProjection {
   private ordered: ChatMessageDto[] = [];
   private dirty = false;
   private latestStatusEntry = 0;
-  private latestInputEntry = 0;
   private newestEntry?: number;
   private oldestEntry?: number;
   readonly children = new Map<string, number>();
   readonly interrupted: InterruptedNested[] = [];
   error?: string;
   outcome?: DurableBotSnapshot["outcome"];
+  /** 当前轮的输入时间（由本类见过的用户条目推出；窗口外要看 DurableBotRuntime 的 run.first）。 */
   turnStartedAt?: number;
+  /**
+   * 本投影**见过**的最新真实消息时间，与行、与窗口都无关：
+   * 行会被 trim 掉、窗口只有最新 50~100 条，但「最后一次活动发生在什么时候」必须一直记得。
+   * 侧栏时间只能取这个值，不能从 `messages.at(-1)` 反推。
+   */
+  observedAt?: number;
 
   get newest(): number | undefined { return this.newestEntry; }
   get oldest(): number | undefined { return this.oldestEntry; }
@@ -93,11 +100,13 @@ export class DurableHistoryProjection {
       this.oldestEntry = Math.min(this.oldestEntry ?? entry.id, entry.id);
       const id = `durable-${entry.id}`;
       for (const message of entry.model ?? []) {
+        this.observedAt = latestActivityTime(this.observedAt, message.timestamp);
         if (message.role === "user" && (entry.kind === "pi.user" || entry.kind === "mybuddy.user")) {
           const input = metadata.get(entry.id);
-          this.rows.set(id, { id, projectionVersion: 1, entryId: String(entry.id), role: "user", botRequestId: input?.botRequestId, inputRequestId: input?.inputRequestId, text: input?.displayText ?? durableContentText(message.content), attachments: input?.attachments, createdAt: message.timestamp });
+          this.rows.set(id, { id, projectionVersion: 1, entryId: String(entry.id), role: "user", botRequestId: input?.botRequestId, inputRequestId: input?.inputRequestId, goalContinuation: input?.goalContinuation, text: input?.displayText ?? durableContentText(message.content), attachments: input?.attachments, createdAt: message.timestamp });
           this.dirty = true;
-          if (entry.id >= this.latestInputEntry) { this.latestInputEntry = entry.id; this.turnStartedAt = message.timestamp; }
+          // 只认合法时刻：没有时间戳的用户条目不得把「本轮起点」清成 0。
+          this.turnStartedAt = latestActivityTime(this.turnStartedAt, message.timestamp) ?? this.turnStartedAt;
           if (entry.id >= this.latestStatusEntry) { this.latestStatusEntry = entry.id; this.outcome = undefined; this.error = undefined; }
         } else if (message.role === "assistant") {
           const user = [...this.entries.values()].filter(item => item.id <= entry.id && (item.kind === "pi.user" || item.kind === "mybuddy.user")).sort((a, b) => b.id - a.id)[0];

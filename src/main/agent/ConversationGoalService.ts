@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentUiPatch } from "../../shared/agent-ipc";
 import {
   CONVERSATION_GOAL_MAX_CRITERIA,
+  type ConversationGoalContinuationDto,
   type ConversationGoalCreateRequest,
   type ConversationGoalDto,
   type ConversationGoalStatus,
@@ -31,6 +32,16 @@ export interface ConversationGoalServiceOptions {
   botId?: string;
   resolveBotId?: (taskId: string) => string;
   resolveSourceMessageId?: (taskId: string) => string | undefined;
+  /** Read-only ledger projection supplied by the host scheduler. */
+  resolveContinuation?: (workId: string) => ConversationGoalContinuationDto | undefined;
+  /** Foreground pause/resume is a scheduling event, not a second goal authority. */
+  onStatusChange?: (goal: ConversationGoalDto, status: "paused" | "active") => void;
+  /** A freshly created Goal gets a ledger baseline before its first turn, so its
+   * budget window starts at creation instead of at the first settle. */
+  onCreate?: (goal: ConversationGoalDto) => void;
+  /** A Work is linked to its canonical Bot conversation and the desktop task; only
+   * the latter is a schedulable task. Fallback: reported linked conversations. */
+  resolvePrimaryTask?: (workId: string) => string | undefined;
 }
 
 /**
@@ -80,13 +91,19 @@ export class ConversationGoalService {
     });
     if (!result.ok) return { ok: false, code: mapErrorCode(result.code), message: result.message };
     const goal = this.toGoal(result.work, request.taskId);
-    if (!result.replayed) this.publish(goal);
+    if (!result.replayed) {
+      this.publish(goal);
+      this.options.onCreate?.(goal);
+    }
     return { ok: true, goal };
   }
 
   update(request: ConversationGoalUpdateRequest, context: GoalCallContext = {}): ConversationGoalMutationResult {
     // Completion is one Work control operation. Its own transaction commits the
     // validation and closure; file evidence is read before entering that boundary.
+    // Only a real paused → active transition is a resume; an update that merely
+    // includes status:"active" must not clear a host deferral.
+    const lifecycleBefore = request.status === "active" ? this.work.getWork(request.goalId)?.lifecycle : undefined;
     if (request.status === "achieved") {
       const result = this.applyUpdate(request, context);
       if (result.ok) this.publish(result.goal);
@@ -99,7 +116,11 @@ export class ConversationGoalService {
         if (!changed.ok) throw new GoalMutationRejected(changed);
         return changed;
       });
-      if (result.ok) this.publish(result.goal);
+      if (result.ok) {
+        this.publish(result.goal);
+        if (request.status === "paused") this.options.onStatusChange?.(result.goal, "paused");
+        else if (request.status === "active" && lifecycleBefore === "paused") this.options.onStatusChange?.(result.goal, "active");
+      }
       return result;
     } catch (error) {
       if (error instanceof GoalMutationRejected) return error.result;
@@ -282,6 +303,7 @@ export class ConversationGoalService {
   }
 
   toGoal(work: WorkDto, taskId: string): ConversationGoalDto {
+    const continuation = this.options.resolveContinuation?.(work.workId);
     return {
       id: work.workId,
       taskId,
@@ -295,6 +317,7 @@ export class ConversationGoalService {
       createdAt: work.createdAt,
       updatedAt: work.updatedAt,
       achievedAt: work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? work.closedAt : undefined,
+      ...(continuation ? { continuation } : {}),
     };
   }
 
@@ -315,7 +338,8 @@ export class ConversationGoalService {
   }
 
   private primaryConversation(work: WorkDto): string {
-    return work.legacyTaskId ?? this.work.repo.listConversationIds(work.workId)[0] ?? work.workId;
+    return this.options.resolvePrimaryTask?.(work.workId)
+      ?? work.legacyTaskId ?? this.work.repo.listConversationIds(work.workId)[0] ?? work.workId;
   }
 
   private userActor(): WorkActor {

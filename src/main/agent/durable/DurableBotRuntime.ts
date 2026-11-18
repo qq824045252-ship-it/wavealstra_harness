@@ -34,6 +34,7 @@ import { openDurableStorage } from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
 import { durableStorageOwnerState } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
+import { activityTimeOrUndefined, latestActivityTime } from "../../../../shared/src/activity-time";
 import { withDurableImageRead } from "./DurableImages";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
@@ -179,6 +180,13 @@ export class DurableBotRuntime {
   private contextTokens: number | null = null;
   /** Host-side stream clocks, one per live generation task; pi's `LiveState.generation` carries no timestamps. */
   private readonly generationTimings = new Map<number, { attempt: number; timing: GenerationTiming }>();
+  /**
+   * 本轮 run 的起点时间，按 run 缓存。
+   * 不能只靠 history 里的用户条目：那需要条目在投影窗口（最新 50~100 条）内，
+   * 长任务里用户条目早被挤出去，重开会话就退回 undefined，
+   * 占位行于是拿 epoch 0 当 createdAt（侧栏显示 20774 天）。见 resolveRunStart。
+   */
+  private runStarted?: { taskId: TaskId; at: number };
   private evidence?: DurableEvidenceProjection;
   /** 自动上下文管理协调器；仅在 DurableBotOptions.contextManagement 提供时存在。 */
   private contextManager?: DurableContextManager;
@@ -903,9 +911,19 @@ export class DurableBotRuntime {
       const attachments = input.attachments.flatMap(item => item && typeof item === "object" && !Array.isArray(item)
         && typeof item.name === "string" && typeof item.path === "string" ? [{ name: item.name, path: item.path }] : []);
       const audit = durableInputAuditSchema.safeParse(input.audit);
+      const rawContinuation = input.goalContinuation;
+      const intentRevision = rawContinuation && typeof rawContinuation === "object" && !Array.isArray(rawContinuation)
+        ? Number(rawContinuation.intentRevision) : NaN;
+      const attempt = rawContinuation && typeof rawContinuation === "object" && !Array.isArray(rawContinuation)
+        ? Number(rawContinuation.attempt) : NaN;
+      const goalContinuation = rawContinuation && typeof rawContinuation === "object" && !Array.isArray(rawContinuation)
+        && typeof rawContinuation.workId === "string" && Number.isSafeInteger(intentRevision) && Number.isSafeInteger(attempt)
+        ? { workId: rawContinuation.workId, intentRevision, attempt }
+        : undefined;
       target.set(entry.id, { text: input.text, displayText: input.displayText, attachments,
         ...(typeof input.inputRequestId === "string" ? { inputRequestId: input.inputRequestId } : {}),
-        ...(typeof input.botRequestId === "string" ? { botRequestId: input.botRequestId } : {}), ...(audit.success ? { audit: audit.data } : {}) });
+        ...(typeof input.botRequestId === "string" ? { botRequestId: input.botRequestId } : {}), ...(audit.success ? { audit: audit.data } : {}),
+        ...(goalContinuation ? { goalContinuation } : {}) });
     }
   }
 
@@ -1111,6 +1129,27 @@ export class DurableBotRuntime {
     if (!owner.tools?.some(item => item.id === row.id)) (owner.tools ??= []).push(row);
   }
 
+  /**
+   * 本轮 run 的起点时间：以 `live.run.first`（本轮第一个 entry 的 id）为准，窗口外也能按 id 读回；
+   * 读不到才退回投影里见过的用户条目，最后退回观测时刻。
+   *
+   * 不能用投影窗口里的用户条目单独决定：窗口只有最新 50~100 条 entry，长任务里用户条目早被挤出去，
+   * 重开会话后起点变 undefined，实时占位行拿到 `createdAt: 0`，渲染层把它当任务时间 → 侧栏「20774 天」。
+   */
+  private async resolveRunStart(live: LiveState, now: number): Promise<number | undefined> {
+    const run = live.run;
+    if (!run) return activityTimeOrUndefined(this.history.turnStartedAt);
+    if (this.runStarted?.taskId === run.taskId) return this.runStarted.at;
+    let fromEntry: number | undefined;
+    if (run.first !== undefined) {
+      const page = await this.conversation.entries({ minEntryId: run.first, maxEntryId: run.first, order: "ascending" }, 1, undefined, ctx);
+      fromEntry = latestActivityTime(...(page.items[0]?.model ?? []).map(message => message.timestamp));
+    }
+    const at = fromEntry ?? activityTimeOrUndefined(this.history.turnStartedAt) ?? now;
+    this.runStarted = { taskId: run.taskId, at };
+    return at;
+  }
+
   private async project(value: ConversationView): Promise<void> {
     if (this.closeState.kind !== "open" || this.failed) return;
     // One observation clock for this revision: the same `now` feeds the stream clocks and the retry countdown.
@@ -1150,7 +1189,7 @@ export class DurableBotRuntime {
     const nestedEntries = new Map<number, EntryRecord[]>();
     let error = this.history.error;
     let outcome = this.history.outcome;
-    const turnStartedAt = this.history.turnStartedAt;
+    const turnStartedAt = await this.resolveRunStart(live, now);
     for (const item of this.history.interrupted.splice(0)) {
       const index = this.history.index(item.ownerId);
       if (index === undefined) continue;
@@ -1169,7 +1208,7 @@ export class DurableBotRuntime {
       const currentIndex = generationId ? this.history.index(generationId) : undefined;
       let current = currentIndex !== undefined ? messages[currentIndex] : messages.at(-1)?.presentationKey === key ? messages.at(-1) : undefined;
       if (!current) {
-        current = { id: `durable-live-${live.run.taskId}`, presentationKey: key, role: "assistant", text: "", createdAt: turnStartedAt ?? 0 };
+        current = { id: `durable-live-${live.run.taskId}`, presentationKey: key, role: "assistant", text: "", createdAt: turnStartedAt ?? now };
         messages.push(current);
       }
       current.streaming = true;
@@ -1303,6 +1342,8 @@ export class DurableBotRuntime {
     const snapshot: DurableBotSnapshot = { backend: "pi-durable", epoch: this.epoch, historyId: this.historyId, revision: ++this.revision,
       conversationId: String(this.conversation.id), toolMode: this.options.toolMode,
       busy, queued, status, historyBefore: this.historyBefore, messages, ...(error ? { error } : {}),
+      // 本轮起点与「投影见过的最新消息时间」取大：与行、与窗口无关，也永不是 0。
+      activityAt: latestActivityTime(turnStartedAt, this.history.observedAt),
       pendingInputs: (inbox?.items ?? []).flatMap(item => {
         if (item.mode === "write") return [];
         const data = item.entry?.data;

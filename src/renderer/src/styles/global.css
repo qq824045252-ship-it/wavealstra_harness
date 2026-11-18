@@ -195,7 +195,15 @@
 .conversation-goal-dialog input, .conversation-goal-dialog textarea { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid var(--border-color, rgba(128,128,128,.3)); border-radius: 8px; background: var(--surface-input, transparent); color: var(--text-primary, inherit); font: inherit; resize: vertical; }
 .conversation-goal-criteria { display: grid; gap: 5px; margin-top: 12px; padding: 10px; border-radius: 9px; background: var(--surface-hover, rgba(128,128,128,.06)); font-size: 12px; }
 .conversation-goal-criteria > div { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; }
-.conversation-goal-dialog footer { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; margin-top: 17px; }
+.conversation-goal-dialog footer { display: flex; align-items: center; gap: 8px; margin-top: 17px; }
+.conversation-goal-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.conversation-goal-save { display: flex; gap: 8px; margin-left: auto; }
+.conversation-goal-continuation { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 10px; color: var(--text-secondary, #666); font-size: 12px; font-variant-numeric: tabular-nums; }
+.conversation-goal-continuation-stop { color: var(--danger-color, #c04b49); }
+.goal-continuation-row { display: flex; justify-content: flex-end; padding: 1px 0; }
+.goal-continuation-bar { display: inline-flex; align-items: center; gap: 6px; max-width: min(78%, 520px); padding: 3px 10px; border: 1px dashed var(--border-subtle, rgba(128,128,128,.32)); border-radius: var(--radius-pill, 999px); background: transparent; color: var(--fg-muted); font-size: 11px; }
+.goal-continuation-bar svg { flex-shrink: 0; opacity: .7; }
+.goal-continuation-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-goal-dialog footer button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--border-color, rgba(128,128,128,.28)); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; }
 .conversation-goal-dialog footer button.primary { border-color: var(--accent-color, #4c7dff); background: var(--accent-color, #4c7dff); color: #fff; }
 .conversation-goal-dialog footer button.danger { color: var(--danger-color, #c04b49); }

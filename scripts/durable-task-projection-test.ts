@@ -39,10 +39,24 @@ try {
   assert.equal(prepares, 0, "snapshot writes reuse statements prepared at open");
 
   assert.equal(db.getTask("task")?.status, "in_progress");
-  assert.equal(projection.touch("task", 200), 1, "a newer message advances updated_at");
-  assert.equal(projection.touch("task", 150), 0, "updated_at never moves backwards");
-  assert.equal(projection.touch("task", 200), 0, "the same timestamp rewrites nothing");
+  // recordActivity 返回的是「库里最终的值」，而不是 changes：调用方要拿它回填 UI 快照。
+  assert.equal(projection.recordActivity("task", 200), 200, "a newer event advances updated_at");
+  assert.equal(projection.recordActivity("task", 150), 200, "updated_at never moves backwards");
+  assert.equal(projection.recordActivity("task", 200), 200, "the same timestamp rewrites nothing");
   assert.equal(db.getTask("task")?.updatedAt, 200);
+
+  // 非法的候选值（epoch 0 / NaN / 缺失）不得成为任务时间，也不得丢掉已有权威值。
+  assert.equal(projection.recordActivity("task", 0), 200, "epoch 0 never becomes the task time");
+  assert.equal(projection.recordActivity("task", Number.NaN), 200, "NaN never becomes the task time");
+  assert.equal(projection.recordActivity("task", undefined), 200, "a missing time keeps the stored one");
+  assert.equal(db.getTask("task")?.updatedAt, 200);
+  assert.equal(projection.recordActivity("missing-task", 5_000), 5_000, "with no row to persist, the valid candidate is echoed for the UI");
+  assert.equal(projection.recordActivity("missing-task", 0), undefined, "no row and no valid candidate leaves nothing to publish");
+
+  // 旧数据里的 0 会被下一次真实写入修好（单调条件 0 < candidate 成立）。
+  db.connection.prepare("UPDATE tasks SET updated_at = 0 WHERE id = ?").run("task");
+  assert.equal(projection.recordActivity("task", 900), 900, "a legacy 0 row is repaired by the next real event");
+  assert.equal(db.getTask("task")?.updatedAt, 900);
 
   assert.equal(projection.rememberWorkspace("task", "message-1", "/workspace"), 1);
   assert.equal(projection.rememberWorkspace("task", "message-1", "/workspace"), 0, "remembering is idempotent");

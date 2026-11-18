@@ -73,7 +73,8 @@ export async function captureDurableBranch(runtime: DurableBotRuntime, anchor: D
     entries.push({ sourceId: source.id, store: store?.values ?? {}, context: await runtime.contextBranchAt(fork.id, source.id), entry: {
       kind: source.kind, model: source.model, head: source.head, edits: source.edits,
       data: source.data !== undefined && (source.data === null || typeof source.data !== "object" || Array.isArray(source.data)) ? source.data : { ...data, inherited: true, sourceEntryId: String(source.id), ...(input ? {
-        mybuddyInput: { text: input.text ?? "", displayText: input.displayText ?? "", attachments: input.attachments ?? [] },
+        mybuddyInput: { text: input.text ?? "", displayText: input.displayText ?? "", attachments: input.attachments ?? [],
+          ...(input.goalContinuation ? { goalContinuation: input.goalContinuation } : {}) },
       } : {}) },
     } });
   }

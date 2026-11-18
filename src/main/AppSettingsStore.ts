@@ -127,6 +127,15 @@ export interface AppSettings {
    * 默认关闭；验收通过后默认开启。
    */
   conversationBranchEnabled?: boolean;
+  /**
+   * 对话 Goal 宿主自动续跑（默认开启）。关闭后退回纯提示词契约：
+   * 模型仍看到 Goal 段，但一轮结束后宿主不再点火。
+   */
+  conversationGoalContinuationEnabled?: boolean;
+  /** 每个 Goal 的自动续跑轮次上限（1–10，默认 3）。 */
+  conversationGoalMaxAttempts?: number;
+  /** Goal 自动续跑的全局默认 token 预算；null = 不限。 */
+  conversationGoalTokenBudget?: number | null;
   /** ACP 管理页显式停用的外部 Agent id；缺省/空数组 = 全部启用。 */
   disabledExternalAgentIds?: string[];
   /** ACP 会话选项偏好：agentId → configId → value（select valueId 或 boolean）。 */
@@ -177,6 +186,19 @@ export function normalizeFontScale(raw: unknown): number {
   return Math.min(150, Math.max(75, Math.round(raw)));
 }
 
+/** Goal auto-continuation attempt cap: 1–10, default 3. */
+export function normalizeGoalMaxAttempts(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 3;
+  return Math.min(10, Math.max(1, Math.round(raw)));
+}
+
+/** Goal auto-continuation token budget: positive integer or null (unlimited). */
+export function normalizeGoalTokenBudget(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1) return null;
+  return Math.round(raw);
+}
+
 const DEFAULTS: AppSettings = {
   language: "zh-CN",
   permissionMode: "default",
@@ -208,6 +230,9 @@ const DEFAULTS: AppSettings = {
   compactionTriggerTokens: DEFAULT_COMPACTION_TRIGGER_TOKENS,
   compactionEngine: DEFAULT_COMPACTION_ENGINE,
   conversationBranchEnabled: false,
+  conversationGoalContinuationEnabled: true,
+  conversationGoalMaxAttempts: 3,
+  conversationGoalTokenBudget: null,
 };
 
 export function getSettingsPath(): string {
@@ -303,6 +328,9 @@ export class AppSettingsStore {
       merged.compactionTriggerTokens = normalizeCompactionTriggerTokens(merged.compactionTriggerTokens);
       merged.compactionEngine = normalizeCompactionEngine(merged.compactionEngine);
       merged.conversationBranchEnabled = merged.conversationBranchEnabled === true;
+      merged.conversationGoalContinuationEnabled = merged.conversationGoalContinuationEnabled !== false;
+      merged.conversationGoalMaxAttempts = normalizeGoalMaxAttempts(merged.conversationGoalMaxAttempts);
+      merged.conversationGoalTokenBudget = normalizeGoalTokenBudget(merged.conversationGoalTokenBudget);
       return merged;
     } catch {
       // 损坏：轮换保留最近两代损坏副本（.corrupt.bak 最新、.corrupt.bak.1 上一代，数量有界），
@@ -392,6 +420,15 @@ export class AppSettingsStore {
     }
     if (partial.compactionEngine !== undefined) {
       next.compactionEngine = normalizeCompactionEngine(partial.compactionEngine);
+    }
+    if (partial.conversationGoalContinuationEnabled !== undefined) {
+      next.conversationGoalContinuationEnabled = partial.conversationGoalContinuationEnabled !== false;
+    }
+    if (partial.conversationGoalMaxAttempts !== undefined) {
+      next.conversationGoalMaxAttempts = normalizeGoalMaxAttempts(partial.conversationGoalMaxAttempts);
+    }
+    if (partial.conversationGoalTokenBudget !== undefined) {
+      next.conversationGoalTokenBudget = normalizeGoalTokenBudget(partial.conversationGoalTokenBudget);
     }
     const persisted = { ...next } as Record<string, unknown>;
     delete persisted.defaultModelId;

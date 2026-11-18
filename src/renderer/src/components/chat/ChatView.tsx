@@ -275,7 +275,8 @@ function HistoryPopup({
   const taskId = task?.id;
   const { index, hasMore, loading, error, loadMore } = useHistoryQuestions(taskId, task?.durable?.historyId);
   const windowQuestions = (task?.messages ?? [])
-    .filter((m) => m.role === "user")
+    // Host auto-continuations are not questions the user asked.
+    .filter((m) => m.role === "user" && !m.goalContinuation)
     .map((m) => ({
       id: m.id,
       text: m.blocks

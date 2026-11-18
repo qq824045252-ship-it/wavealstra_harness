@@ -12,6 +12,7 @@ export const ConversationRuntimeIpc = {
   createGoal: "conversation-runtime:create-goal",
   updateGoal: "conversation-runtime:update-goal",
   cancelGoal: "conversation-runtime:cancel-goal",
+  resumeGoalContinuation: "conversation-runtime:resume-goal-continuation",
 } as const;
 
 export interface ConversationRuntimeSnapshotDto {
@@ -35,4 +36,6 @@ export interface ConversationRuntimeApi {
   createGoal(request: ConversationGoalCreateRequest): Promise<ConversationGoalMutationResult>;
   updateGoal(request: ConversationGoalUpdateRequest): Promise<ConversationGoalMutationResult>;
   cancelGoal(goalId: string): Promise<ConversationGoalMutationResult>;
+  /** Clear the host deferral, reset the attempt/budget window, and try to continue now. */
+  resumeGoalContinuation(goalId: string): Promise<ConversationGoalMutationResult>;
 }

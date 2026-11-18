@@ -10,6 +10,39 @@ export interface GoalCriterionDto {
   evidence?: string;
 }
 
+export type GoalContinuationState = "idle" | "igniting" | "deferred" | "exhausted";
+export type GoalContinuationDeferReason =
+  | "user_interrupt"
+  | "turn_aborted"
+  | "run_failed"
+  | "restart"
+  | "no_progress"
+  | "manual_stop"
+  | "attempts"
+  | "budget";
+
+/**
+ * Host identity of a Goal continuation input. It is metadata on the persisted
+ * user row, not a second message kind: the projection still reads one user entry
+ * per input and the renderer can collapse it into a narrow "auto-continuation" bar.
+ */
+export type GoalContinuationOrigin = {
+  workId: string;
+  intentRevision: number;
+  attempt: number;
+};
+
+/** Ledger projection shown on the Goal chip. The Work remains the completion authority. */
+export interface ConversationGoalContinuationDto {
+  state: GoalContinuationState;
+  attempts: number;
+  maxAttempts: number;
+  tokensUsed: number;
+  tokenBudget?: number | null;
+  deferReason?: GoalContinuationDeferReason;
+  lastContinuationAt?: number;
+}
+
 export interface ConversationGoalDto {
   id: string;
   taskId: string;
@@ -23,6 +56,8 @@ export interface ConversationGoalDto {
   createdAt: number;
   updatedAt: number;
   achievedAt?: number;
+  /** Host-side auto-continuation ledger. Absent only for hosts that predate it. */
+  continuation?: ConversationGoalContinuationDto;
 }
 
 export interface ConversationGoalCreateRequest {
@@ -41,4 +76,6 @@ export interface ConversationGoalUpdateRequest {
   status?: ConversationGoalStatus;
   criteria?: Array<{ id?: string; text: string; status?: GoalCriterionStatus; evidence?: string }>;
   criterionUpdates?: Array<{ id: string; status?: GoalCriterionStatus; evidence?: string; text?: string }>;
+  /** Per-goal auto-continuation budget. null = follow the global default, undefined = unchanged. */
+  tokenBudget?: number | null;
 }

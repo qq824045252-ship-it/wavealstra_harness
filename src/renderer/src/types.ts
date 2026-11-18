@@ -127,6 +127,8 @@ export interface ChatMessage {
   submissionFailed?: boolean;
   /** Native message provenance retained by a merged display row; never changes persisted history. */
   sourceMessageIds?: string[];
+  /** Host-authored Goal auto-continuation provenance. Rendered as a narrow marker, not a user bubble. */
+  goalContinuation?: import("../../shared/conversation-goal").GoalContinuationOrigin;
   role: "user" | "assistant";
   /** 用户消息附带的文件 */
   attachments?: Attachment[];

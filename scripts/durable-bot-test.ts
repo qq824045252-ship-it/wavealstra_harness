@@ -19,6 +19,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { clearResults, getResult } from "../src/main/capabilities/web-access/storage";
 import { generalModeConfiguration, emptyModePolicy, artifactVisibleForDisplay } from "../src/shared/mode-profile";
+import { isActivityTime } from "../shared/src/activity-time";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-test-"));
 console.log("Isolated test directory:", root);
@@ -109,12 +110,19 @@ for (const mode of ["native", "codemode"] as const) {
     assert.equal((await (await sibling.submit({ type: "input", content: "sibling", requestId: "sibling" }, ctx)).wait(ctx)).status, "done");
     await sibling.waitForIdle(ctx);
     const before = (await runtime.refresh()).messages;
+    // 「最后活动时间」端到端契约：它必须是真实时刻，且与投影窗口无关（旧实现从
+    // messages.at(-1) 推算，长任务里占位行会把它变成 epoch 0 → 侧栏 20774 天）。
+    const activity = (await runtime.refresh()).activityAt;
+    assert(isActivityTime(activity), `activity must be a real instant, got ${String(activity)}`);
+    const newestMessageAt = Math.max(...before.map(message => message.createdAt));
+    assert.equal(activity, newestMessageAt, "activity is the newest real message instant, not a placeholder's");
     assert.deepEqual(before.filter(message => message.role === "user").map(message => message.text), ["visible-1", "visible-2"]);
     assert.deepEqual(before.filter(message => message.role === "user").map(message => message.attachments?.[0].name), ["file-1", "file-2"]);
     assert(before.filter(message => message.role === "assistant").every(message => message.durationMs !== undefined));
     await runtime.close();
     runtime = await DurableBotRuntime.open(options);
     assert.deepEqual(runtime.snapshot.messages, before, "input display metadata, response timing and complete history survive reopen");
+    assert.equal(runtime.snapshot.activityAt, activity, "activity survives reopen: the window no longer decides it");
     code = 'if(load("n")!==2)throw Error("reopen lost root store or fork/sibling mutated it"); text(load("n"));';
     assert.equal((await (await runtime.submit("read persisted store", "document-reopen")).wait(ctx)).status, "done");
   } finally { await runtime.close(); }

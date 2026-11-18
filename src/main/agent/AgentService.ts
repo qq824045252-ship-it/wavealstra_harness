@@ -175,6 +175,8 @@ import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { ConversationInteractionRepository } from "./ConversationInteractionRepository";
 import { ConversationInteractionService } from "./ConversationInteractionService";
 import { ConversationGoalService } from "./ConversationGoalService";
+import { renderConversationGoalSection } from "./ConversationGoalPrompt";
+import { GoalContinuationService } from "./work/GoalContinuationService";
 import { BotRegistry } from "./work/BotRegistry";
 import { BotSettingsService } from "./work/BotSettingsService";
 import { BotExpertBindingService } from "./work/BotExpertBindingService";
@@ -186,7 +188,7 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkProjectionDto } from "../../sha
 import type { ConversationRuntimeSnapshotDto } from "../../shared/conversation-runtime";
 import type { AgentLoadoutEffectiveSelectionDto } from "../../shared/agent-loadout";
 import type { ConversationInteractionAnswer, ConversationInteractionMutationResult } from "../../shared/conversation-interaction";
-import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../../shared/conversation-goal";
+import type { ConversationGoalContinuationDto, ConversationGoalCreateRequest, ConversationGoalDto, ConversationGoalUpdateRequest } from "../../shared/conversation-goal";
 import type { ConversationGoalMutationResult } from "../../shared/conversation-runtime";
 import { AgentLoadoutObservationService } from "./AgentLoadoutObservationService";
 
@@ -500,6 +502,9 @@ export class AgentService {
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
+  /** Host-side Goal auto-continuation scheduler; declared before DurableBots so its
+   * settle/tool hooks can reference it, assigned once the Work authority exists. */
+  private goalContinuations!: GoalContinuationService;
   private readonly botRegistry: BotRegistry;
   private readonly botHistory: HistoricalBotReader;
   private readonly botSettings: BotSettingsService;
@@ -721,6 +726,10 @@ export class AgentService {
       this.workService,
       (patch) => this.emitPatch(patch),
       { userId: LOCAL_USER_ID, botId: DEFAULT_BOT_ID,
+        resolveContinuation: workId => this.goalContinuations?.read(workId),
+        onStatusChange: (goal, status) => this.goalContinuations?.onGoalStatusChange(goal, status),
+        onCreate: goal => this.goalContinuations?.register(goal),
+        resolvePrimaryTask: workId => this.goalContinuations?.resolveTaskId(workId),
         resolveBotId: taskId => this.botWorkContext.resolveBot(LOCAL_USER_ID, "desktop", taskId, DEFAULT_BOT_ID).botId,
         resolveSourceMessageId: taskId => {
           const invocation = currentDurableInvocation();
@@ -728,6 +737,29 @@ export class AgentService {
         } },
     );
     this.botWorkContext = new BotWorkContextService(db.connection, this.botRegistry, this.workService);
+    this.goalContinuations = new GoalContinuationService({
+      db: db.connection,
+      work: this.workService,
+      goals: this.conversationGoals,
+      emit: patch => this.emitPatch(patch),
+      submit: (request, origin) => {
+        if (!this.durableBots) return Promise.reject(new Error("执行服务尚未初始化"));
+        return this.durableBots.submit(request, origin);
+      },
+      inspect: taskId => this.durableBots?.inspect(taskId) ?? Promise.resolve(undefined),
+      waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
+      enabled: () => this.settingsStore.read().conversationGoalContinuationEnabled !== false
+        && process.env.MYBUDDY_DISABLE_GOAL_CONTINUATION !== "1",
+      maxAttempts: () => {
+        const configured = this.settingsStore.read().conversationGoalMaxAttempts;
+        const fallback = Number(process.env.MYBUDDY_GOAL_MAX_ATTEMPTS);
+        return Number.isFinite(configured) ? configured! : Number.isFinite(fallback) && fallback > 0 ? fallback : 3;
+      },
+      tokenBudget: () => {
+        const configured = this.settingsStore.read().conversationGoalTokenBudget;
+        return typeof configured === "number" && Number.isFinite(configured) && configured > 0 ? configured : null;
+      },
+    });
     this.executionFailures = new ExecutionFailureRepository(db.connection);
     this.executionAttempts = new ExecutionAttemptRepository(db.connection);
     recoverInterruptedExecutions(this.executionAttempts, this.executionFailures);
@@ -1018,7 +1050,37 @@ export class AgentService {
   }
 
   updateConversationGoal(request: ConversationGoalUpdateRequest): ConversationGoalMutationResult {
-    return this.conversationGoals.update(request);
+    const { tokenBudget, ...goalRequest } = request;
+    if (tokenBudget !== undefined && tokenBudget !== null && (!Number.isFinite(tokenBudget) || tokenBudget < 1)) {
+      return { ok: false, code: "invalid_request", message: "token 预算必须是正整数，或留空表示不限" };
+    }
+    const hasGoalChange = goalRequest.title !== undefined || goalRequest.description !== undefined
+      || goalRequest.progressSummary !== undefined || goalRequest.status !== undefined
+      || goalRequest.criteria !== undefined || goalRequest.criterionUpdates !== undefined;
+    let result: ConversationGoalMutationResult;
+    if (hasGoalChange) {
+      result = this.conversationGoals.update(goalRequest);
+    } else {
+      const work = this.workService.getWork(request.goalId);
+      if (!work) return { ok: false, code: "not_found", message: "找不到该 Goal" };
+      const taskId = this.goalContinuations.resolveTaskId(work.workId)
+        ?? work.legacyTaskId ?? this.workService.repo.listConversationIds(work.workId)[0] ?? work.workId;
+      result = { ok: true, goal: this.conversationGoals.toGoal(work, taskId) };
+    }
+    if (!result.ok || tokenBudget === undefined) return result;
+    const work = this.workService.getWork(request.goalId);
+    if (!work) return { ok: false, code: "not_found", message: "找不到该 Goal" };
+    this.goalContinuations.setBudget(work.workId, tokenBudget === null ? null : Math.round(tokenBudget));
+    const taskId = this.goalContinuations.resolveTaskId(work.workId)
+      ?? work.legacyTaskId ?? this.workService.repo.listConversationIds(work.workId)[0] ?? work.workId;
+    return { ok: true, goal: this.conversationGoals.toGoal(this.workService.getWork(work.workId) ?? work, taskId) };
+  }
+
+  /** Explicit "continue" on a deferred/exhausted Goal: fresh attempts and budget window. */
+  resumeGoalContinuation(goalId: string): ConversationGoalMutationResult {
+    const result = this.goalContinuations.resume(goalId);
+    if (result.ok) return result;
+    return { ok: false, code: result.message.startsWith("找不到") ? "not_found" : "conflict", message: result.message };
   }
 
   cancelConversationGoal(goalId: string): ConversationGoalMutationResult {
@@ -1031,6 +1093,11 @@ export class AgentService {
 
   getConversationGoals(): ConversationGoalService {
     return this.conversationGoals;
+  }
+
+  /** Read-only ledger projection for diagnostics and tests; the Goal chip uses the DTO. */
+  getGoalContinuation(goalId: string): ConversationGoalContinuationDto | undefined {
+    return this.goalContinuations?.read(goalId);
   }
 
   botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot({ repair: false }); }
@@ -1244,6 +1311,9 @@ export class AgentService {
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
       onRelease: taskId => { this.durableSkills.release(taskId); computerUseRunCoordinator.endTask(taskId, "failed"); },
       onSettled: (taskId, snapshot) => {
+        // A continuation is decided from the settle, including aborted/failed ones:
+        // the host must record why it will not point at the Goal again.
+        this.goalContinuations.onSettled(taskId, snapshot);
         computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
@@ -1252,7 +1322,10 @@ export class AgentService {
           : { kind: "completed", taskId, assistantMessageId: message.id });
       },
       onResponse: (taskId, message, info) => this.recordDurableUsage(taskId, message, info),
-      onTool: event => this.taskDiagnostics.observeTool(event),
+      onTool: event => {
+        this.taskDiagnostics.observeTool(event);
+        if (event.phase === "finish" && event.taskId) this.goalContinuations.account(event.taskId);
+      },
       observedUsage: (taskId, conversationId) => this.taskDiagnostics.usageForConversation(taskId, conversationId),
       onRequest: (taskId, info) => {
         if (info.sourceKind !== "main") return;
@@ -1367,6 +1440,8 @@ export class AgentService {
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     await this.durableBots.resumePersisted();
+    // A run the host pointed at before the crash is never replayed silently.
+    this.goalContinuations.reconcileRestart();
   }
 
   private boundExpertPrompt(identity: TaskExpertSnapshot): string {
@@ -1400,12 +1475,28 @@ export class AgentService {
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos;
     return [
       ...assembly.appendParts,
+      // Live Goal state, re-read per model request: a foreground conversation has no
+      // execution binding, so this section is the only place the open requirement and
+      // its stop rules reach the model. Never cache it with the static capsule.
+      renderConversationGoalSection(this.liveConversationGoal(task.id)) ?? "",
       browserAgentPolicy,
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
         .map(s => `- ${s.name}: ${s.description} (${s.filePath})`).join("\n"),
     ].filter(Boolean).join("\n\n");
+  }
+
+  /** The Goal section must never fail a turn: ambiguity is a UI conflict, not a prompt fact.
+   * A delegated execution (binding) keeps its own worker contract and tool surface, so the
+   * interactive Goal rules are only injected into conversations the user actually drives. */
+  private liveConversationGoal(taskId: string): ConversationGoalDto | null {
+    if (this.workService.repo.bindingForTask(taskId)) return null;
+    try {
+      return this.conversationGoals.getLive(taskId) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private durableInputAudit(request: AgentPromptRequest): DurableInputAudit {
@@ -1447,6 +1538,12 @@ export class AgentService {
       pricingConfigured: this.durablePricingConfigured(message.provider, message.model),
       sample: { turnIndex: info.generationTaskId, requestStartedAt: null, firstResponseAt: null, completedAt: message.timestamp,
         ttftMs: null, decodeMs: null, generationTps: null, modelWallMs: null, outputTokens: message.usage.output, reasoningTokens: null } });
+    // Goal continuation budget is measured from real provider usage, independent
+    // of the observation-only diagnostics table. The event key makes a replay of
+    // the same committed message (live + projection) count once.
+    this.goalContinuations.noteResponse(taskId, `durable:${taskId}:${info.conversationId}:${info.generationTaskId}:${message.timestamp}`, {
+      input: message.usage.input, output: message.usage.output, cacheRead: message.usage.cacheRead,
+    });
   }
 
   /** 模型目录里的单价是否真实配置；用于区分「未配置 → 0」与「真实 0 费用」。 */
@@ -4386,6 +4483,8 @@ export class AgentService {
 
   async prompt(req: AgentPromptRequest, options?: { durableAdmissionOnly?: boolean }): Promise<AgentPromptResult> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    // A real user input always wins over a pending automatic continuation.
+    this.goalContinuations.noteUserInput(req.taskId);
     return this.durableBots.prompt(req, options?.durableAdmissionOnly ?? true);
   }
 
@@ -4792,6 +4891,7 @@ export class AgentService {
   }
 
   dispose(): void {
+    this.goalContinuations?.dispose();
     this.builtinCapabilities.speechStreams.close();
     this.workService.scheduler.stop();
     this.workHostAuthority.stop();

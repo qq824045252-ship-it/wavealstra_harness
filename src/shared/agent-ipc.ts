@@ -1574,6 +1574,12 @@ export interface AppSettingsDto {
   compactionEngine?: "billion-context" | "native";
   /** 对话分支（Branch in new task）灰度开关（§15.1；默认关闭） */
   conversationBranchEnabled?: boolean;
+  /** 对话 Goal 宿主自动续跑开关（默认开启）。 */
+  conversationGoalContinuationEnabled?: boolean;
+  /** 每个 Goal 的自动续跑轮次上限（1–10，默认 3）。 */
+  conversationGoalMaxAttempts?: number;
+  /** Goal 自动续跑的全局默认 token 预算；null = 不设全局默认（各 Goal 留空即不限）。 */
+  conversationGoalTokenBudget?: number | null;
   /** ACP 管理页显式停用的外部 Agent id；缺省/空数组 = 全部启用。 */
   disabledExternalAgentIds?: string[];
   /** ACP 会话选项偏好：agentId → configId → value（select valueId 或 boolean）。 */
@@ -2120,6 +2126,8 @@ export interface ChatMessageDto {
   inputRequestId?: string;
   /** Host-authored foreground input identity; never inferred from displayed text. */
   botRequestId?: string;
+  /** Host-authored Goal auto-continuation provenance; renders as a narrow marker, not a user bubble. */
+  goalContinuation?: import("./conversation-goal").GoalContinuationOrigin;
   /** Immutable presentation revision within one Durable runtime epoch. Live rows omit it. */
   projectionVersion?: number;
   streaming?: boolean;

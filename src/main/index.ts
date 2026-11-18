@@ -1140,6 +1140,8 @@ function registerIpc(): void {
     agentService.updateConversationGoal(req));
   ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string) =>
     agentService.cancelConversationGoal(goalId));
+  ipcMain.handle(ConversationRuntimeIpc.resumeGoalContinuation, (_e, goalId: string) =>
+    agentService.resumeGoalContinuation(goalId));
 
   // Read-only access for the existing workspace history; no standalone Bot commands.
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
