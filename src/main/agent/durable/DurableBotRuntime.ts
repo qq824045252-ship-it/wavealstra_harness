@@ -62,6 +62,8 @@ import { GenerationTiming, generationContentTokens } from "../../usage/generatio
 import { deepseekCitationMarkdown } from "../../../shared/deepseek";
 
 type BotInputMetadata = DurableInputMetadata;
+/** 孤立的工具结果最多回扫多少条 entry 去找调用行（默认窗口 50 条；留足余量但固定上限）。 */
+const ORPHAN_CALL_SCAN_ENTRIES = 500;
 const CompactionRequestSequence = defineDoc({ kind: "mybuddy.compaction-request-sequence", version: 1, scope: "session",
   initial: () => ({ next: 0 }), checkpointWhen: () => false,
 });
@@ -175,6 +177,8 @@ export class DurableBotRuntime {
   private readonly metadataByEntry = new Map<number, BotInputMetadata>();
   private readonly pendingAuditInputs = new Map<string, DurableInputAudit>();
   private readonly nestedHistory = new Map<number, { entries: EntryRecord[]; newest?: EntryId }>();
+  /** 找过 owner 行的孤立工具结果：同一个 callId 只扫一次，避免每帧重新扫历史。 */
+  private readonly orphanScans = new Set<string>();
   private pendingTurnEntries: EntryRecord[] = [];
   private consumerCursor?: number;
   private contextTokens: number | null = null;
@@ -736,6 +740,43 @@ export class DurableBotRuntime {
     return { historyId: this.historyId, before, messages: history.messages };
   }
 
+  /**
+   * 把孤立的工具结果接回它的调用行。
+   *
+   * 窗口按条数保留（默认最新 50 条），一次 25 分钟的子代理派发里，调用行（对话开头那条
+   * assistant）会被后续条目挤出窗口，结果行却落在窗口内。`applyResult` 找不到 owner 就返回，
+   * 于是“八个子代理全部完成”这条结果在界面上完全不存在（顶栏只剩后来单派发的那一个）。
+   *
+   * 这里从结果 entry 向前扫，找到包含这些 toolCallId 的 entry 后补成普通行；结果随后由
+   * `merge` 的 assistant 分支 apply 回去。扫描有界，且同一 callId 只扫一次（失败不重试）。
+   */
+  private async mendOrphanToolCalls(): Promise<boolean> {
+    const orphans = this.history.orphanToolCalls().filter(orphan => !this.orphanScans.has(orphan.callId));
+    if (orphans.length === 0) return false;
+    const wanted = new Set(orphans.map(orphan => orphan.callId));
+    const found: EntryRecord[] = [];
+    let before: EntryId | undefined = Math.min(...orphans.map(orphan => orphan.entryId)) as EntryId;
+    let scanned = 0;
+    while (wanted.size > 0 && before !== undefined && before > 1 && scanned < ORPHAN_CALL_SCAN_ENTRIES) {
+      const page = await this.conversation.entries({ maxEntryId: (before - 1) as EntryId, order: "descending" }, 100, undefined, ctx);
+      const items = page.items.filter(entry => entry.kind !== "mybuddy.context-import");
+      if (items.length === 0) break;
+      scanned += items.length;
+      for (const entry of items) {
+        for (const message of entry.model ?? []) {
+          if (message.role !== "assistant") continue;
+          for (const part of message.content) if (part.type === "toolCall" && wanted.has(part.id)) { found.push(entry); wanted.delete(part.id); }
+        }
+      }
+      before = items.at(-1)?.id as EntryId | undefined;
+    }
+    for (const orphan of orphans) this.orphanScans.add(orphan.callId);
+    if (found.length === 0) return false;
+    await this.loadInputMetadata(found, this.metadataByEntry);
+    this.history.merge(found, this.metadataByEntry, {}, {});
+    return true;
+  }
+
   /** Results outside a window update its tool rows without adding intervening messages. */
   private async completeHistoryTools(history: DurableHistoryProjection, afterEntryId: number, metadata: Map<number, BotInputMetadata>) {
     const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
@@ -1169,6 +1210,9 @@ export class DurableBotRuntime {
     const timing = entries.some(entry => !this.history.has(entry.id)) ? await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx) : undefined;
     await this.loadInputMetadata(entries);
     const fresh = this.history.merge(entries, this.metadataByEntry, timing?.completed ?? {}, timing?.speed ?? {});
+    // 长耗时工具的调用行可能已在窗口外：只补回 owner 行，否则结果（含子代理的 8 条记录）
+    // 会被 `applyResult` 静默丢弃，界面上这次调用从此不存在。
+    await this.mendOrphanToolCalls();
     const activeCalls = new Set([...(live.tools ?? []).map(slot => slot.callId), ...(live.nestedTools ?? []).map(slot => slot.parentCallId)]);
     const evictedBefore = this.history.trim(activeCalls);
     if (evictedBefore !== undefined) this.historyBefore = evictedBefore as EntryId;

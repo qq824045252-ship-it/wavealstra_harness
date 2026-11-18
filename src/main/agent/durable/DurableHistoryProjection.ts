@@ -32,6 +32,8 @@ export class DurableHistoryProjection {
   private readonly presentationRows = new Map<string, string>();
   private readonly rowIndices = new Map<string, number>();
   private readonly results = new Map<string, ToolResult>();
+  /** 结果条目自己的 entry id：调用行可能在窗口外，扫描要一个起点。 */
+  private readonly resultEntries = new Map<string, number>();
   private ordered: ChatMessageDto[] = [];
   private dirty = false;
   private latestStatusEntry = 0;
@@ -57,6 +59,23 @@ export class DurableHistoryProjection {
   row(id: string): ChatMessageDto | undefined { return this.rows.get(id); }
   presentationId(key: string): string | undefined { return this.presentationRows.get(key); }
   index(id: string): number | undefined { return this.rowIndices.get(id); }
+  /**
+   * 有结果、却没有对应调用行的工具调用（连同结果的 entry id，供调用方向前找 owner）。
+   *
+   * 为什么会出现：窗口按 entry 条数保留（默认最新 50 条），一次长耗时工具调用（子代理、
+   * 长 bash）的调用行可能落在窗口外，而结果行落在窗口内—— `applyResult` 找不到 owner 就
+   * 静默丢弃，这次调用的输出与 details（比如八个子代理的结果）从此在界面上不存在。
+   * 调用方拿这个列表去把 owner 行补回来，结果就能落到位。
+   */
+  orphanToolCalls(): Array<{ callId: string; entryId: number }> {
+    const out: Array<{ callId: string; entryId: number }> = [];
+    for (const callId of this.results.keys()) {
+      const entryId = this.resultEntries.get(callId);
+      if (entryId === undefined || this.owners.has(callId)) continue;
+      out.push({ callId, entryId });
+    }
+    return out;
+  }
   get messages(): ChatMessageDto[] {
     if (this.dirty) {
       this.ordered = [...this.rows.values()].sort((a, b) => Number(a.id.slice(8)) - Number(b.id.slice(8)));
@@ -76,6 +95,13 @@ export class DurableHistoryProjection {
       const owner = this.owners.get(call);
       if (owner) keep.add(Number(owner.slice(8)));
     }
+    // 有结果的调用行不能被驱逐：结果会跟着 `results` 一起失效，界面从此再也看不到这次调用。
+    // 只对「结果本身还在窗口里」的调用生效——否则历史上每次工具调用都会把窗口无限撑大。
+    for (const [call, resultEntryId] of this.resultEntries) {
+      if (!keep.has(resultEntryId)) continue;
+      const owner = this.owners.get(call);
+      if (owner) keep.add(Number(owner.slice(8)));
+    }
     let before: number | undefined;
     for (const id of ids) if (!keep.has(id)) {
       this.entries.delete(id); this.rows.delete(`durable-${id}`);
@@ -84,7 +110,9 @@ export class DurableHistoryProjection {
     for (const [call, owner] of this.owners) if (!this.rows.has(owner)) {
       this.owners.delete(call); this.children.delete(call);
     }
-    for (const call of this.results.keys()) if (!this.owners.has(call)) this.results.delete(call);
+    for (const call of this.results.keys()) if (!this.owners.has(call)) {
+      this.results.delete(call); this.resultEntries.delete(call);
+    }
     for (const [key, id] of this.presentationRows) if (!this.rows.has(id)) this.presentationRows.delete(key);
     this.oldestEntry = this.entries.size ? Math.min(...this.entries.keys()) : undefined;
     return before;
@@ -127,6 +155,7 @@ export class DurableHistoryProjection {
           }
         } else if (message.role === "toolResult") {
           this.results.set(message.toolCallId, message);
+          this.resultEntries.set(message.toolCallId, entry.id);
           this.applyResult(message);
           const ownerId = this.owners.get(message.toolCallId);
           if (ownerId && message.toolName === "codemode" && message.isError && !resultDetails(message)?.calls?.length && entry.byTaskId !== undefined) {

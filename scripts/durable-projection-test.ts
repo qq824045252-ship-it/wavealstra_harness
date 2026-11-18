@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { createModels, type AssistantMessage, type Message, type Models } from "@earendil-works/pi-ai";
-import { AgentDoc, defineTool, type Storage } from "@earendil-works/pi-durable";
+import { AgentDoc, defineTool, type EntryRecord, type Storage } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
-import { DURABLE_HISTORY_ENTRY_LIMIT } from "../src/main/agent/durable/DurableHistoryProjection";
+import { DurableHistoryProjection, DURABLE_HISTORY_ENTRY_LIMIT } from "../src/main/agent/durable/DurableHistoryProjection";
 import { CONTEXT_LEDGER_VERSION } from "../src/main/agent/EphemeralContextProjection";
 import { resolveDurableBranch, captureDurableBranch } from "../src/main/agent/durable/DurableTaskBranch";
 import { openDurableStorage } from "../src/main/agent/durable/DurableStorage";
@@ -29,6 +29,43 @@ const model = { id: "fixture", name: "fixture", provider: "fixture", api: "opena
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const answer = (text: string, timestamp: number): AssistantMessage => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", api: model.api, model: model.id, provider: model.provider, timestamp, usage });
 const history: Message[] = Array.from({ length: 65 }, (_, i) => [{ role: "user", content: `old question ${i}`, timestamp: i * 2 + 1 } satisfies Message, answer(`old answer ${i}`, i * 2 + 2)]).flat();
+
+console.log("== 孤立工具结果：调用行滚出窗口后结果不许丢 ==");
+{
+  const callId = "call-subagent-8";
+  const subagentCall = (id: number): EntryRecord => ({ id, kind: "pi.generation", byTaskId: 1, model: [{
+    role: "assistant", content: [{ type: "toolCall", id: callId, name: "subagent", arguments: { tasks: [{ agent: "worker", task: "审计" }] } }],
+    stopReason: "toolUse", api: model.api, model: model.id, provider: model.provider, timestamp: id, usage }] }) as unknown as EntryRecord;
+  const subagentResult = (id: number): EntryRecord => ({ id, kind: "pi.tool-result", byTaskId: 1, model: [{
+    role: "toolResult", toolCallId: callId, toolName: "subagent", isError: false,
+    content: [{ type: "text", text: "Parallel: 8/8 succeeded" }],
+    details: { mode: "parallel", plan: [{ itemId: "durable-1-0", displayName: "妙蛙种子" }],
+      results: [{ subagentId: "durable-1-0", status: "completed" }] }, timestamp: id }] }) as unknown as EntryRecord;
+
+  // 窗口里只有结果行：调用行（对话开头那条 assistant）已被挤出窗口。
+  const window = new DurableHistoryProjection();
+  window.merge([subagentResult(465)], new Map(), {});
+  assert.equal(window.messages.length, 0, "owner 不在窗口里时不产生半截消息");
+  assert.deepEqual(window.orphanToolCalls(), [{ callId, entryId: 465 }], "孤立结果必须被点名，供运行时补回调用行");
+
+  // 运行时补回调用行后，结果与详情落到位（顶栏子代理面板就是从这里读 records）。
+  window.merge([subagentCall(19)], new Map(), {});
+  const mended = window.messages[0]?.tools?.[0];
+  assert.equal(window.orphanToolCalls().length, 0, "补回调用行后不再是孤立结果");
+  assert.equal(mended?.tool, "subagent");
+  assert.equal(mended?.status, "success", "结果状态回填到调用行");
+  assert.match(mended?.detail ?? "", /"subagentId":"durable-1-0"/, "结果详情必须保留在 tool.detail 上");
+
+  // 裁剪不得驱逐「有结果的调用行」，否则那次调用会跟着结果一起消失。
+  const crowded = new DurableHistoryProjection();
+  const filler = Array.from({ length: DURABLE_HISTORY_ENTRY_LIMIT + 5 }, (_, index) => ({
+    id: 100 + index, kind: "pi.generation", byTaskId: 1, model: [answer(`filler ${index}`, 100 + index)] })) as unknown as EntryRecord[];
+  crowded.merge([subagentCall(19), subagentResult(465), ...filler], new Map(), {});
+  crowded.trim();
+  assert.equal(crowded.messages.flatMap(message => message.tools ?? []).find(tool => tool.id === callId)?.status, "success",
+    "结果所属的调用行必须留在窗口里");
+}
+
 let revision = 1;
 let waitingForInput = false;
 let historyLoads = 0;
