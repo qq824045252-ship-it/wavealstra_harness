@@ -148,7 +148,7 @@ if (crashMode === "--crash") {
           if ((await manager.readState(ctx))?.blocks.some(block => block.active && block.tier === 2)) break;
         }
         const tier2 = (await manager.readState(ctx))?.blocks.find(block => block.active && block.tier === 2);
-        assert(tier2, "the production manager must commit a T2 block into real SQLite");
+        assert(tier2, `the production manager must commit a T2 block into real SQLite: ${JSON.stringify(manager.statusSnapshot())}`);
         const input = JSON.stringify(source.summaryInputs);
         assert(input.includes("RESIDENT_SUMMARY_A") && input.includes("RESIDENT_SUMMARY_B"));
         assert(!input.includes("EXACT_ORIGINAL_0") && !input.includes("PROTECTED_SQLITE_REQUEST"));

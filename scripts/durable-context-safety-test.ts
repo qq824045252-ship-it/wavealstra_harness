@@ -21,7 +21,7 @@ function history(base = 1, size = 10, chars = 14_000): EntryRecord[] {
     return { id: base + index, conversationId: 1, kind: message.role === "assistant" ? "pi.assistant" : "pi.user", model: [message] } as unknown as EntryRecord;
   });
 }
-function fixture() {
+function fixture(absoluteTokens: number | null = null) {
   let doc = emptyPersistedState();
   const identity = { sessionId: "safety-fixture-session" };
   let entries = history();
@@ -55,7 +55,7 @@ function fixture() {
     },
   };
   const manager = new DurableContextManager({ conversation: conversation as never, models: models as never,
-    policy: () => ({ ratio: 0.8, absoluteTokens: null }), contextWindow: () => model.contextWindow, outputReserveTokens: () => model.maxTokens });
+    policy: () => ({ ratio: 0.8, absoluteTokens }), contextWindow: () => model.contextWindow, outputReserveTokens: () => model.maxTokens });
   return { manager, models, summaryRequests, setOutputLimit: (tokens: number) => { model.maxTokens = tokens; },
     setSummaryError: (error?: Error) => { summaryError = error; },
     doc: () => structuredClone(doc),
@@ -152,7 +152,7 @@ await paired.manager.flush(ctx);
 // Drive the actual automatic request path with a deterministic kernel nudge.
 // The model remains the local fixture; no provider/network call is made.
 for (const onlyRecent of [false, true]) {
-  const automatic = fixture();
+  const automatic = fixture(12_000);
   automatic.setView(pairRows, 100);
   const manager = automatic.manager as any;
   const processTurn = manager.core.processTurn.bind(manager.core);
@@ -337,7 +337,7 @@ for (let round = 0; round < 3; round++) {
 }
 const hierarchyState = await hierarchy.manager.readState(ctx);
 const tier2 = hierarchyState?.blocks.find(block => block.active && block.tier === 2);
-assert(tier2, "the real T2 kernel nudge must eventually distill resident T1 blocks");
+assert(tier2, `the real T2 kernel nudge must eventually distill resident T1 blocks: ${JSON.stringify(hierarchy.manager.statusSnapshot())}`);
 assert(tier2.directBlockIds.includes("b1") && tier2.directBlockIds.includes("b2"));
 const hierarchyInput = JSON.stringify(hierarchy.summaryRequests);
 assert(hierarchyInput.includes("COMMITTED_SUMMARY_A") && hierarchyInput.includes("COMMITTED_SUMMARY_B"));
@@ -352,7 +352,7 @@ const longTier2 = await hierarchy.manager.applyModelCompression({ startRef: tier
 assert.equal(longTier2.ok, false, "a larger resident summary must not count as successful compression");
 console.log("PASS real kernel T2 distillation uses committed summaries, retains originals and rejects resident input growth");
 
-const thirdTier = fixture();
+const thirdTier = fixture(90_000);
 await thirdTier.prepare();
 const thirdRows = history(1, 11);
 thirdRows[10] = { ...thirdRows[10]!, model: [

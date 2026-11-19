@@ -26,8 +26,8 @@ import type { DurableCompactionOutcome, ProductCompactionSettings } from "./type
 export const SUMMARY_MARKER = "[Compressed conversation section]";
 
 const SUMMARIZER_SYSTEM = `You compress conversation history for another AI assistant.
-Preserve every fact the assistant may need later: exact file paths, version numbers, error codes, commands, API and schema details, decisions and their reasons, outstanding tasks, current state, and the user's explicit instructions and corrections.
-Remove redundancy, raw tool output and chatter, but never invent, summarize away, or reword exact quotes that may be retrieved later.
+Keep the facts needed to continue: exact file paths, version numbers, error codes, relevant commands and API details, decisions and their reasons, outstanding tasks, current state, and the user's explicit instructions and corrections.
+Original records remain retrievable. Prefer concise facts and references over reproducing tool output or quoting entire records. Never invent facts. Obey the size rule even when the source contains more detail than one summary can hold.
 Write in the language of the conversation. Output only the summary, with no preamble.`;
 
 const EMPTY_KERNEL_VERSION = "0.0.195";
@@ -462,7 +462,7 @@ export class DurableContextManager {
       const outcome = await this.maintainAndProject(messages, view.entries, api.models, ctx, { automatic: true, source: this.operationSource(view) });
       this.assertRequestFits(outcome.projected);
       this.consecutiveFailures = 0;
-      this.publish({ ...this.status, estimatedInputTokens: outcome.beforeTokens, blocks: outcome.blocks,
+      this.publish({ ...this.status, estimatedInputTokens: outcome.afterTokens, blocks: outcome.blocks,
         processedMessages: outcome.folds > 0 ? outcome.processed : 0 });
       return outcome.projectedApplied ? { messages: outcome.projected } : undefined;
     } catch (error) {
@@ -542,11 +542,18 @@ export class DurableContextManager {
           if (ids.some(id => prefixIds.has(id)) && ids.some(id => !prefixIds.has(id))) return { decline: true };
         }
         const build = this.buildCoreMessages(input.messages, input.entries);
-        const projected = this.renderProjected(build, this.kernelState).messages;
-        const beforeTokens = projected.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+        const projected = this.renderProjected(build, this.kernelState);
+        const resident = this.renderProjected(this.buildCoreMessages(view.messages, view.entries), this.kernelState).messages;
+        const residentTokens = resident.reduce((sum, message) => sum + estimateMessageTokens(message), 0)
+          + (this.host.toolEstimateTokens?.() ?? 0);
+        const safeTrigger = Math.min(policy.triggerTokens, Math.max(0, policy.window - this.requestReserve(policy.window)));
+        const reuseProjection = projected.applied && residentTokens <= safeTrigger;
+        const beforeTokens = (reuseProjection ? input.messages : projected.messages).reduce((sum, message) => sum + estimateMessageTokens(message), 0);
         operation = await this.beginOperation(ctx, "threshold", true, beforeTokens, this.operationSource(view));
-        const model = await this.resolveModel(api.models, ctx);
-        const text = await this.summarizeMessages(projected, nativeSummaryBudget(), model, api.models, ctx);
+        // The SDK retires the raw prefix to bound the active graph. Existing BC coverage
+        // already made it fit: carry that projection forward without paying to rewrite it.
+        const text = reuseProjection ? projected.messages.map(messageTextForSummary).join("\n\n")
+          : await this.summarizeMessages(projected.messages, nativeSummaryBudget(), await this.resolveModel(api.models, ctx), api.models, ctx);
         const summary = `${SUMMARY_MARKER}\n${text}\n\n[Original records remain available through acp_search (scope=originals) and acp_retrieve (entryId/ref/blockId).]`;
         const afterTokens = estimateTextTokens(summary);
         if (afterTokens >= beforeTokens) throw new Error("前缀摘要没有减少实际输入，未提交原生边界");
@@ -876,13 +883,11 @@ export class DurableContextManager {
     if (!this.kernelState) throw new Error("上下文状态尚未初始化");
     const policy = this.resolvePolicy();
     const build = this.buildCoreMessages(messages, entries);
-    const measured = estimateContextTokens(messages);
     const toolTokens = this.host.toolEstimateTokens?.() ?? 0;
-    // 分支/复制历史里的 assistant usage 描述的是源会话当时的投影，不是本分支的当前输入：
-    // 取「最近 usage」与「逐条消息独立估算」的较大值，避免用过期 usage 低估真实出站体积。
-    const estimatedMessages = messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
     const residentTokens = this.renderProjected(build, this.kernelState).messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
-    const beforeTokens = Math.max(measured.tokens, estimatedMessages) + toolTokens;
+    // Historical usage and raw originals describe older, larger views. Only the current
+    // projection (including protected media and tool schemas) can trigger another rewrite.
+    const beforeTokens = residentTokens + toolTokens;
     if (!build.messages.length) {
       if (options.force) {
         const operation = await this.beginOperation(ctx, "manual", false, beforeTokens, options.source);
@@ -901,7 +906,7 @@ export class DurableContextManager {
       state,
       config: this.buildConfig(policy.window, build.protectedIds),
       tokenCount: beforeTokens,
-      tokenCountSource: measured.lastUsageIndex !== null && measured.tokens >= estimatedMessages ? "usage" : "estimate",
+      tokenCountSource: "estimate",
       renderTags: "none",
     });
     state = turn.state;
@@ -909,9 +914,8 @@ export class DurableContextManager {
     let tokensCompressed = 0;
     const safeTrigger = Math.min(policy.triggerTokens, Math.max(0, policy.window - this.requestReserve(policy.window)));
     const pressure = beforeTokens > safeTrigger;
-    const knownGrowth = Boolean(turn.nudge?.shouldInject);
     const plans: CompressionPlan[] = [];
-    if (pressure || knownGrowth || options.force) {
+    if (pressure || options.force) {
       const tier = turn.nudge?.tier;
       if (tier === 2 || tier === 3) {
         const targets = new Set(turn.nudge?.tierTargetBlocks?.map(block => block.blockId));
@@ -932,7 +936,7 @@ export class DurableContextManager {
         }
       }
     }
-    const reason = options.force ? "manual" : pressure ? "threshold" : "growth";
+    const reason = options.force ? "manual" : "threshold";
     const operation = options.force || plans.length > 0
       ? await this.beginOperation(ctx, reason, options.automatic, beforeTokens, options.source) : undefined;
     try {
@@ -944,20 +948,11 @@ export class DurableContextManager {
       const summaryBudget = this.blockBudget(policy.window);
       const appliedRanges: Array<{ startRef: string; endRef: string; summary: string; topic?: string }> = [];
       const summaryFailures: string[] = [];
-      for (const { startRef, endRef, text } of plans) {
-        if (!text.trim()) continue;
-        // 一条摘要失败不连坐整轮：其余范围照常落地，失败原因如实报告（不再伪装成内核整批拒绝）。
-        try {
-          const body = await this.summarizeMessages([
-            { role: "user", content: text, timestamp: Date.now() } as Message,
-          ], summaryBudget, model, models, ctx);
-          const topic = firstLine(text).slice(0, 120);
-          appliedRanges.push({ startRef, endRef, summary: body, ...(topic ? { topic } : {}) });
-        } catch (error) {
-          // 超限是单范围问题（跳过它继续整理别的）；模型/窗口故障是系统性的，立刻中止本轮。
-          if (!(error instanceof SummaryOverLimitError)) throw error;
-          summaryFailures.push(errorText(error));
-        }
+      for (const plan of plans) {
+        if (!plan.text.trim()) continue;
+        const result = await this.summarizePlan(plan, build, state, summaryBudget, model, models, ctx);
+        appliedRanges.push(...result.ranges);
+        summaryFailures.push(...result.failures);
       }
       if (!appliedRanges.length && summaryFailures.length) throw new Error(summaryFailures[0]);
       if (appliedRanges.length) {
@@ -997,7 +992,7 @@ export class DurableContextManager {
     return {
       state, projected: rendered.messages, projectedApplied: rendered.applied, folds, blocks: countTopLevelBlocks(state),
       beforeTokens, afterTokens, processed: build.messages.length,
-      reason: folds > 0 ? (options.force ? "manual" : pressure ? "threshold" : "growth") : undefined,
+      reason: folds > 0 ? reason : undefined,
       skippedReason,
     };
     } catch (error) {
@@ -1088,6 +1083,9 @@ export class DurableContextManager {
     const config = defaultConfig(window > 1 ? window : 100_000);
     config.preserveRecentMessages = 3;
     config.modelContextLimit = window > 1 ? window : 100_000;
+    // The host already measures the projected view. Deferring this pressure to a
+    // later usage sample can choose another T1 fold instead of the resident T2/T3 plan.
+    config.nudge.requireUsageSampleForPressure = false;
     config.isMessageProtected = message => protectedIds.has(message.id) || message.role === "system";
     return config;
   }
@@ -1137,7 +1135,8 @@ export class DurableContextManager {
   }
 
   /** Close kernel recommendations over provider atomic groups before summarization. */
-  private safeAutomaticRanges(ranges: readonly CompressibleRange[], build: CoreBuild, state: CompressionState, window: number): CompressibleRange[] {
+  private safeAutomaticRanges(ranges: readonly Pick<CompressibleRange, "startRef" | "endRef">[], build: CoreBuild, state: CompressionState,
+    window: number, maxRangeChars = this.blockBudget(window).maxRangeChars): CompressibleRange[] {
     if (!ranges.length) return [];
     const positions = new Map(build.messages.map((message, index) => [message.id, index]));
     // Native messages, complete tool exchanges, and existing summaries are atomic.
@@ -1183,7 +1182,6 @@ export class DurableContextManager {
     }
     // 一条摘要最多代表 maxRangeChars 原文；超过就沿原子组边界拆块。
     // 拆块让每块都能在字符上限内保住细节，而不是逼出一条必然被内核拒绝的超长摘要。
-    const maxRangeChars = this.blockBudget(window).maxRangeChars;
     const planned = Number.isFinite(maxRangeChars) ? splitSpansByChars(merged, atomic, build, maxRangeChars) : merged;
     const safe: CompressibleRange[] = [];
     for (const { start, end } of planned) {
@@ -1296,6 +1294,32 @@ export class DurableContextManager {
     return parts.join("\n\n");
   }
 
+  private async summarizePlan(plan: CompressionPlan, build: CoreBuild, state: CompressionState, budget: SummaryBudget,
+    model: unknown, models: Models, ctx: Context): Promise<{ ranges: CompressRangeSpec[]; failures: string[] }> {
+    try {
+      const summary = await this.summarizeMessages([
+        { role: "user", content: plan.text, timestamp: Date.now() } as Message,
+      ], budget, model, models, ctx);
+      return { ranges: [{ startRef: plan.startRef, endRef: plan.endRef, summary, topic: firstLine(plan.text).slice(0, 120) }], failures: [] };
+    } catch (error) {
+      if (!(error instanceof SummaryOverLimitError)) throw error;
+      // Split coverage as well as model input: merging these summaries back into one
+      // capped block would recreate the same failure. An atomic exchange stays whole.
+      const smaller = plan.text.length > budget.charMax
+        ? this.safeAutomaticRanges([plan], build, state, this.resolvePolicy().window, Math.floor(plan.text.length / 2))
+          .map(range => this.planCompression(range, build, state, this.resolvePolicy().window))
+          .filter((item): item is CompressionPlan => Boolean(item && item.text.length < plan.text.length))
+        : [];
+      if (smaller.length < 2) return { ranges: [], failures: [errorText(error)] };
+      const ranges: CompressRangeSpec[] = [], failures: string[] = [];
+      for (const child of smaller) {
+        const result = await this.summarizePlan(child, build, state, budget, model, models, ctx);
+        ranges.push(...result.ranges); failures.push(...result.failures);
+      }
+      return { ranges, failures };
+    }
+  }
+
   /**
    * 有界摘要：单次输入超过“一条摘要能承载的原文”时分块滚动摘要，合并请求同样受窗口与契约约束。
    * 所有数字来自 {@link SummaryBudget}，这里不再有第二套 token 常量。
@@ -1341,9 +1365,9 @@ export class DurableContextManager {
     mode: "summary" | "merge" | "condense" = "summary", summary: SummaryBudget = this.blockBudget()): Promise<string> {
     const system = `${SUMMARIZER_SYSTEM}\n${summary.rule()}`;
     const prompt = mode === "merge"
-      ? `Merge these partial summaries into one coherent summary. Keep every concrete detail (paths, versions, errors, decisions, open tasks) and output only the merged summary.\n\n${input}`
+      ? `Merge these partial summaries into one coherent summary within the size rule. Keep paths, versions, exact errors, decisions and open tasks; remove repeated detail. Output only the merged summary.\n\n${input}`
       : mode === "condense"
-        ? `Rewrite the summary below so that it is at most ${summary.charMax} characters. Keep paths, versions, exact errors, decisions and open objectives; drop process narration and repeated output. Output only the rewritten summary.\n\n${input}`
+        ? `Rewrite the summary below so that it is at most ${summary.targetChars} characters. Keep paths, versions, exact errors, decisions and open objectives; drop process narration and repeated output. Output only the rewritten summary.\n\n${input}`
         : `<conversation>\n${input}\n</conversation>\n\nSummarize this section so another assistant can continue the task without re-reading it.`;
     const signal = this.maintenanceSignal(ctx);
     signal?.throwIfAborted();

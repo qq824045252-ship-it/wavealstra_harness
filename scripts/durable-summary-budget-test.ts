@@ -15,8 +15,8 @@ assert(!block.fits("x".repeat(20_001)));
 assert.match(block.rule(), /20000 characters/, "the generation rule states the real number");
 assert.match(block.overage("x".repeat(20_500)), /超过单块上限 20000 字符（超出 500）/);
 // 同一字符上限对应完全不同的输出 token：英文 4 字符/token，中文 1 字符/token。
-assert(block.outputTokens("word ".repeat(4_000)) >= 5_000 && block.outputTokens("word ".repeat(4_000)) <= 6_000);
-assert(block.outputTokens("字".repeat(20_000)) >= 20_000, "CJK must not be under-budgeted by chars/3.5");
+assert.equal(block.outputTokens("word ".repeat(4_000)), 3_750, "output aims below the hard limit instead of inviting an oversized response");
+assert.equal(block.outputTokens("字".repeat(20_000)), 15_000, "CJK receives one output token per target character");
 // 输入块上限：英文 80000 字符即 20000 token；窗口更小时跟随窗口；单次请求另有成本上限。
 assert.equal(block.inputLimitTokens(4, 1_000_000), 20_000);
 assert.equal(block.inputLimitTokens(4, 8_192), 8_192);

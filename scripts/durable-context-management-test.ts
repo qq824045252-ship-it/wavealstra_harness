@@ -14,7 +14,7 @@
  *     下一次 provider 请求里的 toolResult 逐字包含种子历史中的唯一句子与句子后的细节（摘要 topic 只有
  *     120 字符，不可能包含细节，因此能证明文本来自原文 entry 而非摘要）。
  *  4. 重启恢复：close 后用同一 options 重新 open，下一次 provider 请求仍不含旧 marker、
- *     `contextManagementStatus()` 报告 engine=billion-context / blocks>0，且摘要模型调用次数不因重启增长。
+ *     已提交 BC 摘要或已退役的原生 head 持续生效，且摘要模型调用次数不因重启增长。
  *  5. 无可整理内容：干净会话 `compact()` 返回 `{ applied:false, skippedReason 非空 }`，且不调用摘要模型。
  *
  * 所有等待都有 20s deadline；finally 关闭 runtime、删除临时目录、恢复 HOME/USERPROFILE。
@@ -337,11 +337,14 @@ try {
   ];
   const submittedTurnTexts: string[] = [];
   let compressedAt = -1;
+  let seedRef: string | undefined;
   for (const turn of bigTurns) {
     const text = turnText(turn.id, turn.tokens);
     submittedTurnTexts.push(text);
     fixture.replyQueue.push({ kind: "text", text: `answer for ${turn.id}` });
     await submitTurn(main, text, turn.id);
+    const currentState = await readPersistedContextState(main);
+    seedRef ??= Object.entries(currentState?.refs ?? {}).find(([, locator]) => locator.entryId === seedEntryId)?.[0];
     const latest = fixture.requests.at(-1)!;
     console.log(`[context-test] ${turn.id}: request #${latest.index + 1} tokens=${latest.tokens} messages=${latest.messages.length} summary=${summaryMessages(latest).length > 0}`);
     compressedAt = fixture.requests.findIndex(record => summaryMessages(record).length > 0);
@@ -392,20 +395,17 @@ try {
   assert.equal(statusAfterCompaction.contextWindow, MODEL_CONTEXT_WINDOW, `contextWindow 必须来自 fixture 模型（${MODEL_CONTEXT_WINDOW}）`);
   assert.equal(statusAfterCompaction.triggerTokens, EXPECTED_TRIGGER_TOKENS,
     `产品策略 ratio=0.8 × ${MODEL_CONTEXT_WINDOW} 必须给出 ${EXPECTED_TRIGGER_TOKENS} 触发线（native reserveTokens 口径是 111616）`);
-  assert((statusAfterCompaction.blocks ?? 0) > 0, `自动整理后必须报告摘要块，实际 blocks=${statusAfterCompaction.blocks}`);
-  assert((statusAfterCompaction.summaries?.length ?? 0) > 0, "状态里必须有已提交摘要块");
-  assert(statusAfterCompaction.summaries!.every(summary => summary.entryIds.length > 0), "每个摘要块必须映射到原始 entryIds");
+  assert((automaticStatus.summaries?.length ?? 0) > 0, "自动整理必须发布已提交摘要块");
+  assert(automaticStatus.summaries!.every(summary => summary.entryIds.length > 0), "每个摘要块必须映射到原始 entryIds");
+  if (!statusAfterCompaction.blocks) assert.equal((await main.conversation.context(ctx)).head?.kind, "pi.compaction",
+    "活动摘要块退役后必须由真实原生 head 保留压缩视图");
   assert.equal(fixture.summaryCalls.filter(call => call.family === "native").length, 0,
     "BC 健康时不得触发 native 摘要：beforeCompact 必须在 reason=threshold 时 decline");
   assert.equal(fixture.requests[0]!.toolNames.includes("acp_retrieve"), true,
     "启用 contextManagement 后 acp_retrieve 必须进入 native 工具集（模型才能主动回查原文）");
 
   // ── 3) 原文回查：模型真实调用 acp_retrieve(ref)，下一次请求逐字收到原文 ────────
-  const persisted = await readPersistedContextState(main);
-  const refs = persisted?.refs ?? {};
-  const refEntry = Object.entries(refs).find(([, locator]) => locator.entryId === seedEntryId);
-  assert(refEntry, `持久化 refs 必须包含种子 entry ${seedEntryId}：${JSON.stringify(refs)}`);
-  const [seedRef] = refEntry;
+  assert(seedRef, `已提交摘要的 refs 必须包含种子 entry ${seedEntryId}`);
   assert(/^m\d{5}$/.test(seedRef), `ref 必须是 mNNNNN 形式，实际 ${seedRef}`);
 
   fixture.replyQueue.push({ kind: "tool", name: "acp_retrieve", arguments: { ref: seedRef } });
@@ -479,8 +479,9 @@ try {
     `重启后不得重新生成同一摘要：摘要调用次数 ${summaryCallsBeforeRestart} -> ${fixture.summaryCalls.length}`);
 
   const statusAfterRestart = await statusOf(main);
-  assert((statusAfterRestart.blocks ?? 0) > 0, `重启后 blocks 必须 > 0（实际 ${statusAfterRestart.blocks}，重启前 ${blocksBeforeRestart}）`);
-  assert((statusAfterRestart.summaries?.length ?? 0) > 0, "重启后必须仍能列出已提交摘要块");
+  if (!statusAfterRestart.blocks) assert.equal((await main.conversation.context(ctx)).head?.kind, "pi.compaction",
+    `重启后压缩视图必须由持久 head 恢复（重启前活动块 ${blocksBeforeRestart}）`);
+  else assert((statusAfterRestart.summaries?.length ?? 0) > 0, "活动摘要块必须带持久化定位");
   assert.equal(statusAfterRestart.triggerTokens, EXPECTED_TRIGGER_TOKENS, "重启后产品阈值口径必须保持不变");
 
   // 压缩之后的每一次 provider 请求都必须持续保持压缩形态（含重启后）。
@@ -520,7 +521,7 @@ try {
   console.log("PASS 产品阈值生效：128K 窗口 × ratio 0.8 = 102400 触发线；ratio 0.9/0.2 对照证明设置真的改变自动整理行为");
   console.log("PASS 自动整理：provider 请求显著变小并出现摘要标记，后续请求（含重启后）持续重放已提交摘要");
   console.log("PASS 原文回查：真实 acp_retrieve 工具调用 + Durable tool-result entry，逐字取回种子原句与原文细节");
-  console.log("PASS 重启恢复：同一 options 重开后摘要仍生效、blocks>0、摘要模型调用次数不增长");
+  console.log("PASS 重启恢复：同一 options 重开后已提交压缩视图仍生效、摘要模型调用次数不增长");
   console.log("PASS 无可整理内容：compact() 返回 applied=false 且 skippedReason 非空");
   console.log("durable context management test passed");
 } finally {

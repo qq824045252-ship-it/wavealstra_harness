@@ -327,7 +327,7 @@ try {
     const directory = join(root, "child-state");
     directories.push(directory);
     const fixture = createFixture();
-    const main = await withTimeout(DurableBotRuntime.open(runtimeOptions({ directory, workspace, fixture })), "open child-main runtime");
+    const main = await withTimeout(DurableBotRuntime.open(runtimeOptions({ directory, workspace, fixture, ratio: 0.5 })), "open child-main runtime");
     runtimes.push(main);
     const seed = seedHistory(80_000);
     const parentAgent = await withTimeout(main.conversation.agent(ctx), "read parent agent");
@@ -461,7 +461,7 @@ try {
     directories.push(directory);
     const fixture = createFixture();
     const runtime = await withTimeout(DurableBotRuntime.open(runtimeOptions({
-      directory, workspace, fixture, seed: seedHistory(80_000), toolMode: "codemode",
+      directory, workspace, fixture, seed: seedHistory(80_000), toolMode: "codemode", ratio: 0.5,
     })), "open codemode runtime");
     runtimes.push(runtime);
     fixture.replyQueue.push({ kind: "tool", name: "codemode", arguments: {
@@ -513,7 +513,7 @@ try {
     const directory = join(root, "consult-state");
     directories.push(directory);
     const fixture = createFixture();
-    const main = await withTimeout(DurableBotRuntime.open(runtimeOptions({ directory, workspace, fixture })), "open consult-main runtime");
+    const main = await withTimeout(DurableBotRuntime.open(runtimeOptions({ directory, workspace, fixture, ratio: 0.5 })), "open consult-main runtime");
     runtimes.push(main);
     const seed = seedHistory(80_000);
     const parentAgent = await withTimeout(main.conversation.agent(ctx), "read consult parent agent");
@@ -550,6 +550,7 @@ try {
       directory, workspace, fixture, seed: seedHistory(80_000), engineRef,
     })), "open engine-toggle runtime");
     runtimes.push(runtime);
+    assert.equal((await withTimeout(runtime.compact(), "seed BC projection before engine toggle")).applied, true);
 
     fixture.replyQueue.push({ kind: "text", text: "bc answer" });
     await submitTurn(runtime, "first turn under billion-context", "engine-toggle-bc");
@@ -606,6 +607,7 @@ try {
       directory, workspace, fixture, seed: seedHistory(80_000), engineRef, ratioRef,
     })), "open native-threshold runtime");
     runtimes.push(runtime);
+    assert.equal((await withTimeout(runtime.compact(), "seed BC projection before native threshold")).applied, true);
 
     fixture.replyQueue.push({ kind: "text", text: "bc warm answer" });
     await submitTurn(runtime, "warm under billion-context", "native-threshold-bc");

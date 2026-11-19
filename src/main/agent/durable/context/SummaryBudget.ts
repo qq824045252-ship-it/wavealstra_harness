@@ -45,6 +45,8 @@ export interface SummaryBudget {
   readonly charMax: number;
   /** 内核下限（字符）。 */
   readonly charMin: number;
+  /** 生成目标留出余量，仍从同一个内核硬上限派生。 */
+  readonly targetChars: number;
   /** 一条摘要最多代表的原文字符数。 */
   readonly maxRangeChars: number;
   /** 摘要（trim 后）是否满足内核校验。 */
@@ -85,11 +87,13 @@ export function nativeSummaryBudget(): SummaryBudget {
 
 function createBudget(charMax: number, charMin: number, maxRangeChars: number, inputTokenCap: number): SummaryBudget {
   const capped = Number.isFinite(charMax);
+  const targetChars = capped ? Math.max(charMin, Math.floor(charMax * 0.75)) : charMax;
   // 与内核一致：校验对象是 trim 之后的摘要（compress.ts 的 validateSummaryLength）。
   const fits = (text: string): boolean => text.trim().length <= charMax;
   return {
     charMax,
     charMin,
+    targetChars,
     maxRangeChars,
     fits,
     // 摘要与原文同语言，所以原文的字符/token 密度就是摘要的密度：
@@ -99,7 +103,7 @@ function createBudget(charMax: number, charMin: number, maxRangeChars: number, i
       const tokens = estimateTokensByScript(sample);
       const charsPerToken = tokens > 0 && sample.length > 0 ? sample.length / tokens : 4;
       if (!capped) return Math.max(512, Math.ceil(tokens / 3));
-      return Math.max(512, Math.ceil((charMax / Math.max(1, charsPerToken)) * 1.1));
+      return Math.max(512, Math.ceil(targetChars / Math.max(1, charsPerToken)));
     },
     inputLimitTokens: (charsPerToken, windowTokens) => Math.max(256, Math.min(
       windowTokens,
@@ -107,7 +111,7 @@ function createBudget(charMax: number, charMin: number, maxRangeChars: number, i
       Number.isFinite(maxRangeChars) ? Math.ceil(maxRangeChars / Math.max(1, charsPerToken)) : inputTokenCap,
     )),
     rule: () => capped
-      ? `HARD LIMIT: at most ${charMax} characters — count characters (Unicode code points), not words or tokens. A longer summary is rejected and the whole fold is lost, so cut detail instead of exceeding it: drop process narration, repeated tool output and intermediate states; keep paths, versions, exact errors, decisions and open objectives.`
+      ? `Aim for at most ${targetChars} characters. HARD LIMIT: at most ${charMax} characters (JavaScript UTF-16 string length), not words or tokens. A longer summary is rejected. Drop process narration, repeated tool output and intermediate states; keep paths, versions, exact errors, decisions and open objectives. Use references to the retrievable originals for remaining detail.`
       : `No hard character limit applies to this summary. Be as complete as the window allows, but remove process narration, repeated tool output and intermediate states.`,
     overage: text => {
       const length = text.trim().length;
