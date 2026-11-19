@@ -509,15 +509,10 @@ function hideNativeOverlays(): void {
 function applyNativeChrome(theme: AppTheme): void {
   nativeTheme.themeSource = theme;
 
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.setBackgroundColor(THEME_WINDOW_BG[theme]);
-
-    // Windows titleBarOverlay 的实时更新收在 platform/window-shell.ts；其它平台 no-op。
-    const overlay = THEME_TITLEBAR[theme];
-    applyPlatformTitleBarOverlay(win, {
-      titleBar: { color: overlay.color, symbolColor: overlay.symbolColor, height: TITLE_BAR_HEIGHT },
-    });
-  }
+  const win = botManagementWindow;
+  if (!win || win.isDestroyed()) return;
+  win.setBackgroundColor(THEME_WINDOW_BG[theme]);
+  applyPlatformTitleBarOverlay(win, { titleBar: { ...THEME_TITLEBAR[theme], height: TITLE_BAR_HEIGHT } });
 }
 
 function requireBrowserConsoleTarget(value: unknown): BrowserConsoleTarget {

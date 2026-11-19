@@ -24,6 +24,7 @@ type AbortHandler = (taskId: string) => void | Promise<void>;
 
 const OVERLAY_TITLE = "__MYBUDDY_COMPUTER_USE_OVERLAY__";
 const CONTROLS_TITLE = "__MYBUDDY_COMPUTER_USE_CONTROLS__";
+const CURSOR_RADIUS = 12;
 
 /**
  * Windows 才是真正的 overlay（透明分层窗口 + WGC 命中测试）；平台判断收敛到
@@ -58,16 +59,14 @@ const BORDER_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>${OVERLAY_TITLE}</title><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;pointer-events:none;font-family:Inter,"Segoe UI",sans-serif}
 #frame{position:absolute;inset:0;border:3px solid rgba(91,141,255,.96);border-radius:10px;box-sizing:border-box;box-shadow:inset 0 0 0 1px rgba(255,255,255,.48),0 0 18px rgba(91,141,255,.32);transition:border-color .16s ease,box-shadow .16s ease,opacity .16s ease}
-#frame::before{content:"";position:absolute;inset:-3px;border-radius:10px;background:linear-gradient(90deg,rgba(91,141,255,.08),rgba(112,91,255,.26),rgba(91,141,255,.08));opacity:.45;animation:sweep 1.8s linear infinite;z-index:-1}
-#cursor{position:absolute;width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.98);border:3px solid rgba(73,116,255,.98);box-shadow:0 2px 12px rgba(20,40,100,.35);transform:translate(-50%,-50%);opacity:0;transition:left .08s linear,top .08s linear,opacity .12s ease}
-#cursor::after{content:"";position:absolute;inset:-9px;border:2px solid rgba(91,141,255,.40);border-radius:50%;opacity:0}
+#cursor{position:absolute;box-sizing:border-box;width:${2 * CURSOR_RADIUS}px;height:${2 * CURSOR_RADIUS}px;border-radius:50%;background:#fff;border:3px solid #4974ff;transform:translate(-50%,-50%);opacity:0}
+#cursor::after{content:"";position:absolute;inset:1px;border:2px solid #5b8dff;border-radius:50%;opacity:0}
 body.clicking #cursor::after{animation:ripple .42s ease-out}
 body[data-phase="verifying"] #frame{border-color:rgba(67,178,132,.98);box-shadow:inset 0 0 0 1px rgba(255,255,255,.45),0 0 18px rgba(67,178,132,.30)}
 body[data-phase="recovering"] #frame{border-color:rgba(240,174,61,.98);box-shadow:inset 0 0 0 1px rgba(255,255,255,.45),0 0 18px rgba(240,174,61,.32)}
 body[data-phase="failed"] #frame{border-color:rgba(232,85,85,.98);box-shadow:inset 0 0 0 1px rgba(255,255,255,.45),0 0 18px rgba(232,85,85,.30)}
 body[data-phase="completed"] #frame{opacity:.58}
-@keyframes ripple{0%{transform:scale(.5);opacity:.9}100%{transform:scale(1.9);opacity:0}}
-@keyframes sweep{0%{transform:translateX(-45%)}100%{transform:translateX(45%)}}
+@keyframes ripple{0%{transform:scale(.3);opacity:.9}100%{transform:scale(1);opacity:0}}
 </style></head><body data-phase="observing"><div id="frame"></div><div id="cursor"></div><script>
 window.__setComputerOverlay=(state)=>{document.body.dataset.phase=state.phase||"observing";const c=document.getElementById("cursor");if(state.cursor){c.style.left=state.cursor.x+"px";c.style.top=state.cursor.y+"px";c.style.opacity="1"}else{c.style.opacity="0"}document.body.classList.toggle("clicking",!!state.cursor?.clicking);if(state.cursor?.clicking){setTimeout(()=>document.body.classList.remove("clicking"),430)}};
 </script></body></html>`;
@@ -220,14 +219,15 @@ export class ComputerUseOverlayService {
 
   private async ensureWindows(): Promise<void> {
     if (!overlaySupported()) return;
-    if (this.border && !this.border.isDestroyed() && this.controls && !this.controls.isDestroyed()) return;
     if (this.ready) return this.ready;
+    if (this.border && !this.border.isDestroyed() && this.controls && !this.controls.isDestroyed()) return;
     this.ready = (async () => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { BrowserWindow } = require("electron") as typeof import("electron");
       const common = {
         frame: false,
         transparent: true,
+        backgroundColor: "#00000000",
         resizable: false,
         movable: false,
         minimizable: false,
@@ -366,6 +366,23 @@ export class ComputerUseOverlayService {
         ? this.cursorInScreen(state.target, bounds, state.cursor)
         : undefined;
     const borderState = JSON.stringify({ phase: state.phase, cursor });
+    // Restrict the native window itself to the four edges and the optional
+    // pointer. Even an opaque compositor backing cannot cover the application.
+    const { width, height } = bounds;
+    const edge = Math.min(4, width, height);
+    const shape = [
+      { x: 0, y: 0, width, height: edge }, { x: 0, y: height - edge, width, height: edge },
+      { x: 0, y: 0, width: edge, height }, { x: width - edge, y: 0, width: edge, height },
+    ];
+    if (cursor) {
+      // setShape takes rectangles. One horizontal strip per row follows the
+      // round pointer without admitting a square of native background around it.
+      for (let dy = -CURSOR_RADIUS; dy < CURSOR_RADIUS; dy++) {
+        const half = Math.round(Math.sqrt(CURSOR_RADIUS ** 2 - (dy + 0.5) ** 2));
+        shape.push({ x: Math.round(cursor.x) - half, y: Math.round(cursor.y) + dy, width: 2 * half, height: 1 });
+      }
+    }
+    border.setShape(shape);
     const controlState = JSON.stringify({
       phase: state.phase,
       phaseLabel: phaseLabel(state.phase),

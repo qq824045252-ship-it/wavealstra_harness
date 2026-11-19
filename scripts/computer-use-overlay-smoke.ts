@@ -1,6 +1,6 @@
 ﻿import assert from "node:assert/strict";
-import { app, BrowserWindow, screen } from "electron";
-import { mkdtempSync } from "node:fs";
+import { app, BrowserWindow, desktopCapturer, screen } from "electron";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ComputerUseOverlayService } from "../src/main/platform/computer-use/overlay";
@@ -44,10 +44,45 @@ async function main(): Promise<void> {
   const parent = new AbortController();
   const scoped = coordinator.scope("overlay-smoke", parent.signal);
   const host = new WindowsAutomationHost();
+  const display = screen.getPrimaryDisplay();
+  const sample = new BrowserWindow({ x: display.workArea.x + 64, y: display.workArea.y + 64, width: 560, height: 320,
+    frame: false, show: false, focusable: false, alwaysOnTop: true, skipTaskbar: true });
+  await sample.loadURL('data:text/html,' + encodeURIComponent('<style>body{margin:0;height:100vh;background:linear-gradient(to right,#184839 50%,#783342 50%);display:grid;place-content:center;color:white;font:24px Segoe UI}</style><div>Overlay transparency test</div>'));
+  sample.showInactive();
+  const area = sample.getContentBounds();
+  const topLeft = screen.dipToScreenPoint(area);
+  const bottomRight = screen.dipToScreenPoint({ x: area.x + area.width, y: area.y + area.height });
+  target.windowRect = { left: topLeft.x, top: topLeft.y, right: bottomRight.x, bottom: bottomRight.y, width: bottomRight.x-topLeft.x, height: bottomRight.y-topLeft.y };
+  target.clientOrigin = topLeft;
+  target.scaleFactor = display.scaleFactor;
+  async function sampleDesktop() {
+    const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: {
+      width: Math.round(display.size.width * display.scaleFactor), height: Math.round(display.size.height * display.scaleFactor),
+    } });
+    const source = sources.find(item => item.display_id === String(display.id));
+    assert(source && !source.thumbnail.isEmpty(), "capture the display containing the test window");
+    const size = source.thumbnail.getSize();
+    const sx = size.width / display.size.width, sy = size.height / display.size.height;
+    return source.thumbnail.crop({ x: Math.round((area.x-display.bounds.x)*sx), y: Math.round((area.y-display.bounds.y)*sy),
+      width: Math.round(area.width*sx), height: Math.round(area.height*sy) });
+  }
+  function rgb(image: Electron.NativeImage, fx: number, fy: number) {
+    const {width, height} = image.getSize();
+    const offset = 4*(Math.floor(height*fy)*width+Math.floor(width*fx));
+    const bgra = image.toBitmap();
+    return [bgra[offset+2], bgra[offset+1], bgra[offset]];
+  }
   let stoppedTask: string | undefined;
   let restoreHitTest: (() => void) | undefined;
   overlay.setAbortHandler((taskId) => { stoppedTask = taskId; coordinator.cancel(taskId); });
   try {
+    let baseline = await sampleDesktop();
+    await waitUntil(async () => {
+      baseline = await sampleDesktop();
+      return rgb(baseline,.25,.75).join(",") === "24,72,57";
+    });
+    assert.deepEqual(rgb(baseline, .25, .75), [24,72,57], "test window must be visible before measuring");
+    assert.deepEqual(rgb(baseline, .75, .75), [120,51,66]);
     overlay.present({ taskId: "overlay-smoke", target, phase: "acting", action: "click_client", cursor: { x: 200, y: 150, clicking: true } });
     await waitUntil(() => BrowserWindow.getAllWindows().some((win) => win.getTitle() === "__MYBUDDY_COMPUTER_USE_OVERLAY__"));
     const border = BrowserWindow.getAllWindows().find((win) => win.getTitle() === "__MYBUDDY_COMPUTER_USE_OVERLAY__");
@@ -56,6 +91,32 @@ async function main(): Promise<void> {
     assert.equal(border!.isFocusable(), false, "visual border must never steal focus");
     assert.equal(controls!.isFocusable(), false, "controls bar must not steal target focus");
     await waitUntil(() => border!.isVisible() && controls!.isVisible());
+    assert(border.isContentProtected(), "Agent captures normally exclude the overlay");
+    // Include the border in this diagnostic capture so an invisible overlay cannot pass.
+    border.setContentProtection(false);
+    border.setBackgroundColor("#ffffff");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const painted = await sampleDesktop();
+    assert.deepEqual(rgb(painted,.25,.75), rgb(baseline,.25,.75), "left program pixels must survive an opaque native backdrop");
+    assert.deepEqual(rgb(painted,.75,.75), rgb(baseline,.75,.75), "right program pixels must survive an opaque native backdrop");
+    const nearCursor = [216 / area.width, 166 / area.height] as const;
+    assert.deepEqual(rgb(painted,...nearCursor), rgb(baseline,...nearCursor), "no white square around the pointer");
+    const [r,g,b] = rgb(painted,.5,1.5/area.height);
+    assert(b > r+75 && b > g+45, `blue border must be visible on desktop: ${r},${g},${b}`);
+    mkdirSync("out/tests", { recursive: true });
+    border.setBackgroundColor("#00000000");
+    await new Promise(resolve => setTimeout(resolve, 120));
+    writeFileSync("out/tests/computer-use-overlay-transparent.png", (await sampleDesktop()).toPNG());
+    // Exercise the full-monitor overlay and reuse of its window after resize.
+    overlay.presentDesktop({ taskId: "overlay-smoke", phase: "acting", action: "mouse_move",
+      xPhysical: topLeft.x + Math.round(100 * display.scaleFactor), yPhysical: topLeft.y + Math.round(80 * display.scaleFactor) });
+    await waitUntil(() => border.getBounds().width === display.bounds.width);
+    const desktopFrame = await sampleDesktop();
+    assert.deepEqual(rgb(desktopFrame,.25,.75), rgb(baseline,.25,.75));
+    assert.deepEqual(rgb(desktopFrame,200/area.width,150/area.height), rgb(baseline,200/area.width,150/area.height), "the old cursor position clears");
+    overlay.present({ taskId: "overlay-smoke", target, phase: "acting", action: "click_client" });
+    await waitUntil(() => border.getBounds().width === area.width);
+    border.setContentProtection(true);
     assert.equal(await controls!.webContents.executeJavaScript('document.querySelector("a").textContent'), "停止操作");
     const bounds = controls!.getBounds();
     const originalCursor = screen.getCursorScreenPoint;
@@ -92,6 +153,7 @@ async function main(): Promise<void> {
     restoreHitTest?.();
     coordinator.endTask("overlay-smoke", "failed");
     overlay.dispose();
+    sample.destroy();
     await host.shutdown().catch(() => undefined);
     app.quit();
   }
