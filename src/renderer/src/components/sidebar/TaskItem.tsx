@@ -111,11 +111,14 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     const anchor = menuAnchorRef.current;
     if (!anchor) return;
     const el = menuPortalRef.current;
+    // Include borders and use the real natural height; a minimum estimate leaves
+    // short menus floating away from the trigger when placement flips upward.
+    const measuredHeight = el ? el.scrollHeight + el.offsetHeight - el.clientHeight : 0;
     const placed = placeFixedMenu({
       anchor: layoutRect(anchor),
       // scrollHeight 是内容自然高度，不受当前 maxHeight 压缩
       menuWidth: Math.max(el?.offsetWidth ?? 0, MENU_MIN_WIDTH),
-      menuHeight: Math.max(el?.scrollHeight ?? 0, 220),
+      menuHeight: measuredHeight > 0 ? measuredHeight : 220,
       viewport: layoutViewportSize(),
       minWidth: MENU_MIN_WIDTH,
       maxHeight: MENU_MAX_HEIGHT,
