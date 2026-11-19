@@ -36,6 +36,45 @@ export async function pointerDrag(input: UiNativeInput, scope: AutomationScope, 
   }
 }
 
+/** Map the authored path onto the observed control before pressing any keys. */
+export async function strokeOnElement(input: UiNativeInput, scope: AutomationScope, selector: string, path: GesturePoint[],
+  modifiers: Array<"control" | "alt" | "shift" | "meta">, evaluate: <T>(script: string) => Promise<T>): Promise<void> {
+  const keys = { control: "Control", alt: "Alt", shift: "Shift", meta: "Meta" } as const;
+  if (modifiers.some(key => !Object.hasOwn(keys, key)) || new Set(modifiers).size !== modifiers.length) throw Error("Invalid gesture modifiers");
+  const points = await evaluate<GesturePoint[]>(`(() => {
+    const el=__mbDom.one(${JSON.stringify(selector)});
+    if (!el?.isConnected || !el.checkVisibility({visibilityProperty:true})) throw Error('Gesture target is not visible');
+    el.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
+    const r=el.getBoundingClientRect();
+    return ${JSON.stringify(path)}.map(p=>{
+      const x=r.left+p.x*Math.max(0,r.width-1), y=r.top+p.y*Math.max(0,r.height-1);
+      if (!__mbDom.contains(el,__mbDom.hit(x,y))) throw Error('Gesture path leaves the observed control');
+      return {x,y};
+    });
+  })()`);
+  const held: typeof modifiers = [];
+  let pending: Promise<void> | undefined;
+  try {
+    for (const modifier of modifiers) {
+      scope.dispatch();
+      await scope.run(() => {
+        held.push(modifier);
+        pending = input.send({ type: "keyDown", keyCode: keys[modifier], modifiers: [...held] });
+        return pending;
+      });
+    }
+    await pointerDrag({ ...input, send: event => input.send({ ...event, modifiers: [...held, ...(event.modifiers ?? [])] }) }, scope, points);
+  } finally {
+    await pending?.catch(() => {});
+    let failure: unknown;
+    while (held.length) {
+      const key = held.pop()!;
+      try { await input.send({ type: "keyUp", keyCode: keys[key], modifiers: [...held] }); } catch (error) { failure = error; }
+    }
+    if (failure) throw failure;
+  }
+}
+
 /** Dispatch explicit HTML drag data; this does not synthesize a source element's dragstart. */
 export async function htmlDrag(protocol: DragProtocol, scope: AutomationScope, points: readonly GesturePoint[], data: DragData): Promise<void> {
   checkWaypoints(points); scope.check();

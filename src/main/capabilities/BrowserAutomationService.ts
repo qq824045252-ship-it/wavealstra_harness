@@ -12,7 +12,7 @@ import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { recordHostToolNotStarted } from "../agent/durable/DurableToolOutcome";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
-import { BROWSER_EXEC_ACTIONS } from "./BrowserToolContract";
+import { BROWSER_EXEC_ACTIONS, browserFetchRequestSchema } from "./BrowserToolContract";
 import { browserConditionSchema, browserConditionsScript, parseBrowserConditionEvidence, type BrowserCondition, type BrowserConditionEvidence } from "./browser/BrowserConditions";
 import { exportBrowserCollection, BrowserCollectionExportError, type BrowserCollectionExport } from "./browser/BrowserCollectionExport";
 import { BrowserPromptError } from "./browser/BrowserPrompt";
@@ -20,8 +20,14 @@ import { BrowserCollection, type CollectionResult } from "./browser/BrowserColle
 import { browserCollectionSchema, type BrowserCollectionOptions } from "./browser/BrowserCollectionSchema";
 import { createBrowserCollectionDomSource, type CollectionDomCoverage } from "./browser/BrowserCollectionDom";
 import { BrowserVisualInput, BrowserVisualInputError, type BrowserVisualViewport } from "./browser/BrowserVisualInput";
-import { uploadBrowserFiles, type BrowserUploadResult } from "./browser/BrowserUploads";
+import { uploadBrowserFiles, validateBrowserUploadFiles, type BrowserUploadResult } from "./browser/BrowserUploads";
 import { BrowserHandoff, type BrowserHandoffRequest, type BrowserHandoffIdentity } from "./browser/BrowserHandoff";
+import { runBrowserLogin } from "./browser/BrowserLogin";
+import { evaluatePageSnapshot, pageFetchScript, pageSnapshotScript, type BrowserFetchRequest, type PageSnapshot } from "./browser/BrowserPageScript";
+import { browserEditorScript } from "./browser/BrowserEditor";
+import { browserEventReceiptScript, browserEventTypes, subscribeToBrowserEvent, type BrowserEventType, type BrowserEventReceipt } from "./browser/BrowserEventSubscription";
+import { strokeOnElement, type GesturePoint } from "./browser/BrowserGestures";
+import type { BrowserRenewalStatus } from "../browser/BrowserSessionRenewal";
 import { Value } from "typebox/value";
 import { BrowserPageRuntimes } from "./browser/BrowserPageRuntime";
 import { BrowserAccessibilityError, type BrowserAXSnapshot } from "./browser/BrowserAccessibility";
@@ -30,7 +36,7 @@ import { withBrowserDom } from "./browser/BrowserDom";
 import { bindBrowserDocument, listBrowserFrames, BrowserDocumentContextError, type BrowserFrameInfo } from "./browser/BrowserDocumentContext";
 
 export type BrowserExecAction = typeof BROWSER_EXEC_ACTIONS[number];
-export const BROWSER_INPUT_ACTIONS: ReadonlySet<BrowserExecAction> = new Set(["click", "fill", "drag", "press", "scroll", "hover", "select", "check", "upload"]);
+export const BROWSER_INPUT_ACTIONS: ReadonlySet<BrowserExecAction> = new Set(["click", "fill", "focus", "insert_text", "paste", "drag", "press", "scroll", "hover", "select", "check", "upload"]);
 
 export const BROWSER_AUTOMATION_ERROR_CODES = [
   "HOST_UNAVAILABLE", "INVALID_INPUT", "INVALID_URL", "INVALID_SELECTOR", "NAVIGATION_FAILED",
@@ -48,8 +54,16 @@ export class BrowserAutomationError extends Error {
 
 export interface BrowserExecInput extends BrowserReadOptions {
   action: BrowserExecAction;
+  expression?: string;
+  editSelector?: string;
+  eventType?: BrowserEventType;
+  listenerId?: string;
+  request?: BrowserFetchRequest;
+  html?: string;
   gadgetId?: string;
   tabId?: string;
+  verifyTabId?: string;
+  challenge?: "qr" | "code";
   tabTitle?: string;
   tabUrl?: string;
   frameId?: string;
@@ -75,6 +89,7 @@ export interface BrowserExecInput extends BrowserReadOptions {
   dateType?: UiExecInput["dateType"];
   dragTo?: string;
   dragMode?: UiExecInput["dragMode"];
+  points?: GesturePoint[];
   /** Ordered menu ancestors, observed and hovered on this same leased page. */
   hover?: Array<Pick<UiExecInput, "selector" | "role" | "name" | "text">>;
   files?: string[];
@@ -98,6 +113,9 @@ export interface BrowserExecInput extends BrowserReadOptions {
 }
 export interface BrowserExecOutput {
   action: BrowserExecAction;
+  listenerId?: string;
+  value?: unknown;
+  fetched?: { status: number; ok: boolean; contentType: string; body: string; truncated: boolean };
   artifactId?: string;
   downloadArtifact?: { status: "registered" | "failed"; reason?: string };
   gadgetId?: string;
@@ -121,6 +139,8 @@ export interface BrowserExecOutput {
   collectionArtifact?: { status: "registered" | "failed"; artifactId?: string; reason?: string };
   collection?: CollectionResult & { horizontalCoverage: CollectionDomCoverage; outputTruncated?: boolean };
   handoff?: { token?: string; initialDocumentId?: string; status?: "confirmed" | "pending" };
+  login?: { status: "confirmed" | "inspect" };
+  renewal?: BrowserRenewalStatus;
   accessibility?: BrowserAXSnapshot;
   businessResult?: { status: "passed" | "failed"; evidence: BrowserConditionEvidence[]; reason?: string };
   diagnostics?: { events: PageTrace[]; cursor: number; truncated: boolean };
@@ -187,6 +207,9 @@ export class BrowserAutomationService {
   private readonly collections = new BrowserCollection();
   private readonly visual = new BrowserVisualInput();
   private readonly handoffs = new BrowserHandoff();
+  private readonly loginTabs = new Set<string>();
+  // Routing hint only. Website state is checked again on each login request.
+  private readonly loginOrigins = new WeakMap<BrowserPageHost, string>();
   private readonly runtimes = new BrowserPageRuntimes(this.observationSlot);
   private readonly axSnapshots = new Map<string, BrowserAXSnapshot>();
   private readonly observations = new Map<string, ObservedPage>();
@@ -228,7 +251,7 @@ export class BrowserAutomationService {
     return { action: input.action, tabId: identity.tabId, handoff, outcome: { dispatch: "not_started", effect: "none" } };
   }
 
-  async execute(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string; taskRoot?: string; resolveGadgetId?: (url: string) => Promise<string | undefined> }): Promise<BrowserExecOutput> {
+  async execute(input: BrowserExecInput, signal?: AbortSignal, context?: { taskId: string; taskRoot?: string; resolveGadgetId?: (url: string) => Promise<string | undefined>; onLoginRequired?: () => void }): Promise<BrowserExecOutput> {
     // Validate the complete request before touching the browser surface. A durable
     // checkpoint written here proves this exact invocation never began its action.
     try {
@@ -243,6 +266,11 @@ export class BrowserAutomationService {
         throw new BrowserAutomationError("INVALID_INPUT", "reload 仅用于 navigate，且必须是布尔值");
       }
       if (input.tabId !== undefined) requireShort(input.tabId, "tabId", 200);
+      if (input.verifyTabId !== undefined && input.action !== "login") throw new BrowserAutomationError("INVALID_INPUT", "verifyTabId 仅用于 login");
+      if (input.challenge !== undefined && (input.action !== "login" || !["qr", "code"].includes(input.challenge) ||
+          !/^\[data-mybuddy-ui-ref="mb-[\w-]+"\]$/.test(input.selector ?? ""))) {
+        throw new BrowserAutomationError("INVALID_INPUT", "自定义验证需要 login、challenge 和 find 返回的当前节点引用");
+      }
       if (input.tabTitle !== undefined || input.tabUrl !== undefined) {
         if (input.action !== "select_tab" || input.tabId) throw new BrowserAutomationError("INVALID_INPUT", "tabTitle/tabUrl 仅用于 select_tab，不能与 tabId 同时使用");
         if (input.tabTitle !== undefined) requireShort(input.tabTitle, "tabTitle", 1000);
@@ -254,9 +282,23 @@ export class BrowserAutomationService {
         if (input.action === "navigate" || input.action === "screenshot") throw new BrowserAutomationError("INVALID_INPUT", "navigate 和 screenshot 使用标签页，frameId 用于文档内观察与操作");
       }
       if (input.action === "navigate" || input.action === "open") assertBrowserUrl(requireShort(input.url, "url", 2_000));
+      if (input.action === "evaluate") requireShort(input.expression, "expression", 16_000);
+      if (input.action === "listen" && (!input.selector || !input.eventType || !browserEventTypes.includes(input.eventType))) throw new BrowserAutomationError("INVALID_INPUT", "listen 需要已观察控件及事件类型");
+      if (input.listenerId !== undefined && (input.action !== "evaluate" || !/^[\da-f-]{36}$/.test(input.listenerId))) throw new BrowserAutomationError("INVALID_INPUT", "evaluate 需要有效的事件订阅");
+      if (input.editSelector !== undefined && (input.action !== "evaluate" || !input.editSelector || input.editSelector.length > 1000)) throw new BrowserAutomationError("INVALID_INPUT", "editSelector 需要已观察的普通文本框");
+      if (input.points !== undefined && (input.action !== "drag" || !input.selector || input.dragTo || input.dragMode === "html"
+        || !Array.isArray(input.points) || input.points.length < 2 || input.points.length > 64
+        || !input.points.every(p => p && [p.x, p.y].every(n => Number.isFinite(n) && n >= 0 && n <= 1)))) throw new BrowserAutomationError("INVALID_INPUT", "画线需要已观察控件及 2..64 个控件内的比例坐标");
+      if (input.action === "fetch") requireShort(input.url, "url", 2_000);
+      if (input.request && (input.action !== "fetch" || !Value.Check(browserFetchRequestSchema, input.request)
+        || ["GET", "HEAD"].includes(input.request.method) && input.request.body !== undefined
+        || input.download && input.request.method !== "GET")) throw new BrowserAutomationError("INVALID_INPUT", "无效的网页请求方法、正文或下载选项");
+      if (["focus", "insert_text", "paste"].includes(input.action) && !input.selector) throw new BrowserAutomationError("INVALID_INPUT", "编辑操作需要已观察目标 selector");
+      if (["insert_text", "paste"].includes(input.action) && (typeof input.text !== "string" || input.text.length > 100000)) throw new BrowserAutomationError("INVALID_INPUT", "需要 100000 字符以内的 text");
+      if (input.html !== undefined && (input.action !== "paste" || typeof input.html !== "string" || input.html.length > 100000)) throw new BrowserAutomationError("INVALID_INPUT", "paste 的 html 最多 100000 字符");
       if (["click", "fill", "press", "hover", "select", "check", "find", "inspect", "wait_for"].includes(input.action) && !input.axNodeId && !input.selector && !input.role && !input.name && !input.label && !input.placeholder && !input.testId && !(input.action !== "fill" && input.text)) throw new BrowserAutomationError("INVALID_INPUT", "需要 selector / role / name / text / label / placeholder / testId 定位");
       if (input.action === "collect" && !Value.Check(browserCollectionSchema, input.collection)) throw new BrowserAutomationError("INVALID_INPUT", "collect 需要有效的 collection 配置与明确的结束条件");
-      if (input.action === "upload" && (!input.files?.length || input.files.length > 20 || input.files.some(p => !p || p.length > 4000))) throw new BrowserAutomationError("INVALID_INPUT", "upload 需要 1..20 个当前任务目录内文件");
+      if ((input.action === "upload" || input.files !== undefined) && (!["click", "upload"].includes(input.action) || !Array.isArray(input.files) || !input.files.length || input.files.length > 20 || input.files.some(p => typeof p !== "string" || !p || p.length > 4000))) throw new BrowserAutomationError("INVALID_INPUT", "click 或 upload 可指定 1..20 个当前任务目录内文件");
       if (input.action === "click_at" || input.action === "scroll_at") {
         if (!input.captureId || !Number.isFinite(input.x) || !Number.isFinite(input.y)) throw new BrowserAutomationError("INVALID_INPUT", "坐标操作需要 captureId 与截图像素坐标 x/y");
         if (input.frameId) throw new BrowserAutomationError("INVALID_INPUT", "截图坐标属于整个标签页，不能传 frameId");
@@ -267,7 +309,7 @@ export class BrowserAutomationService {
       if (input.axNodeId && (input.action !== "find" || !input.documentId)) throw new BrowserAutomationError("INVALID_INPUT", "AX 引用转换需要 find + axNodeId + documentId");
       if (input.dialog && input.action !== "dialog") throw new BrowserAutomationError("INVALID_INPUT", "dialog 应答仅用于 dialog action");
       if (input.action === "dialog" && !input.dialog) throw new BrowserAutomationError("INVALID_INPUT", "dialog 需要 id 和 action");
-      if ((input.response || input.download || input.dialogRules && !["navigate", "reload", "back", "forward", "close"].includes(input.action)) && !BROWSER_INPUT_ACTIONS.has(input.action)) throw new BrowserAutomationError("INVALID_INPUT", "response/download/dialogRules 必须与输入动作一起提交");
+      if ((input.response || input.download && input.action !== "fetch" || input.dialogRules && !["navigate", "reload", "back", "forward", "close"].includes(input.action)) && !BROWSER_INPUT_ACTIONS.has(input.action)) throw new BrowserAutomationError("INVALID_INPUT", "response/download/dialogRules 必须与支持的动作一起提交");
       if (input.timeoutMs !== undefined && (!Number.isFinite(input.timeoutMs) || input.timeoutMs < 100 || input.timeoutMs > 30_000)) throw new BrowserAutomationError("INVALID_INPUT", "timeout_ms 必须为 100..30000");
       for (const [label, value, max] of [["selector", input.selector, 1000], ["role", input.role, 200], ["name", input.name, 1000], ["cursor", input.cursor, 300]] as const) if (value !== undefined) requireShort(value, label, max);
       if (input.maxChars !== undefined && (!Number.isSafeInteger(input.maxChars) || input.maxChars < 1000 || input.maxChars > 100000)) throw new BrowserAutomationError("INVALID_INPUT", "max_chars 必须为 1000..100000");
@@ -291,6 +333,31 @@ export class BrowserAutomationService {
     } catch (error) {
       await recordHostToolNotStarted("browser_exec");
       throw error;
+    }
+    if (input.action === "login") {
+      const host = this.host();
+      const taskId = context?.taskId ?? currentDurableInvocation()?.execution.taskId;
+      if (!host?.attached || !taskId) throw new BrowserAutomationError("HOST_UNAVAILABLE", "登录需要当前任务的内置浏览器");
+      const tab = host.listTabs().find(tab => tab.id === input.tabId && tab.taskId === taskId);
+      if (!tab) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "login 需要本任务已打开的 tabId");
+      const key = tab.openerTabId ?? tab.id;
+      if (this.loginTabs.has(key)) throw new BrowserAutomationError("INVALID_INPUT", "当前页面已有登录操作，请等待其结果");
+      this.loginTabs.add(key);
+      try {
+        const result = await runBrowserLogin({ input, host, tab, taskId, signal, observationSlot: this.observationSlot,
+          withSurface: (scope, page, operation) => this.withSurface(scope, page, operation),
+          execute: command => this.execute(command, signal, context), onLoginRequired: context?.onLoginRequired });
+        const verifiedPage = result.login?.status === "confirmed" && result.tabId && host.getTabHost(result.tabId);
+        if (verifiedPage) {
+          const origin = new URL(input.url!).origin;
+          const verifiedUrl = verifiedPage.inspectionWebContents?.getURL();
+          if (verifiedUrl && new URL(verifiedUrl).origin === origin) {
+            this.loginOrigins.set(verifiedPage, origin);
+            result.renewal = await host.trackVerifiedLogin(verifiedUrl);
+          }
+        }
+        return result;
+      } finally { this.loginTabs.delete(key); }
     }
     const scope = new AutomationScope(signal, input.timeoutMs);
     try {
@@ -338,8 +405,9 @@ export class BrowserAutomationService {
       if (candidates.length !== 1) throw new BrowserAutomationError(candidates.length ? "ELEMENT_AMBIGUOUS" : "SELECTOR_NOT_FOUND", "标签定位不唯一或未找到，请从 tabs 返回的候选中使用 tabId", { tabs: candidates.length ? candidates : tabs });
       tab = candidates[0];
     }
-    if ((input.action === "status" || input.action === "tabs") && taskId) return { action: input.action, tabId: tab?.id, activeTabId: tabs.some(value => value.id === browser.activeTabId) ? browser.activeTabId ?? undefined : undefined, url: tab?.url || undefined, title: tab?.title, tabs, detail: tab?.url ? "ready" : "idle" };
+    if ((input.action === "status" || input.action === "tabs") && taskId) return { action: input.action, tabId: tab?.id, activeTabId: tabs.some(value => value.id === browser.activeTabId) ? browser.activeTabId ?? undefined : undefined, url: tab?.url || undefined, title: tab?.title, tabs, detail: tab?.url ? "ready" : "idle", ...(input.action === "status" && tab?.url ? { renewal: browser.loginRenewalStatus(tab.url) } : {}) };
     if (input.action === "tabs") throw new BrowserAutomationError("INVALID_INPUT", "tabs 需要当前任务");
+    if (tab?.loginChallenge && input.action !== "open" && input.action !== "navigate") throw new BrowserAutomationError("PAGE_UNAVAILABLE", "用户正在此页完成登录，任务将在验证完成后继续");
     if (input.action === "open") {
       if (!taskId) throw new BrowserAutomationError("INVALID_INPUT", "open 需要当前任务");
       scope.dispatch();
@@ -372,12 +440,22 @@ export class BrowserAutomationService {
         target = preview?.url ?? requested;
         if (taskId && !input.tabId) {
           const key = browserTabKey(target, preview?.gadgetId);
-          const existing = browser.listTabs().find(value => value.taskId === taskId && value.key === key);
+          const owned = browser.listTabs().filter(value => value.taskId === taskId);
+          const site = !preview && /^https?:/.test(target) ? new URL(target).origin : undefined;
+          const atTarget = site ? owned.filter(value => !value.gadgetId && value.url === target) : [];
+          const loggedIn = site ? owned.filter(value => {
+            const host = browser.getTabHost(value.id);
+            return host && !value.gadgetId && value.url.startsWith(site + "/") && this.loginOrigins.get(host) === site;
+          }) : [];
+          const existing = atTarget.find(value => value.id === tab?.id)
+            ?? (atTarget.length === 1 ? atTarget[0] : undefined) ?? owned.find(value => value.key === key)
+            ?? loggedIn.find(value => value.id === tab?.id) ?? (loggedIn.length === 1 ? loggedIn[0] : undefined);
           if (existing && (!versions.has(existing.id) || browser.getTabHost(existing.id)?.captureVersion !== versions.get(existing.id))) {
             throw new BrowserAutomationError("SURFACE_CHANGED", "目标标签在恢复预览期间变化，请重新读取后再导航");
           }
-          tab = browser.ensureTab({ key, taskId, gadgetId: preview?.gadgetId, activate: false });
+          tab = existing ?? browser.ensureTab({ key, taskId, gadgetId: preview?.gadgetId, activate: false });
         }
+        if (tab && browser.listTabs().some(t => t.id === tab!.id && t.loginChallenge)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "此标签等待用户验证，请保留当前页面");
         if (tab) page = browser.getTabHost(tab.id);
         if (taskId && tab) browser.setTaskTab(taskId, tab.id);
         if (!page?.inspectionWebContents) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
@@ -521,7 +599,10 @@ export class BrowserAutomationService {
         const checked = await this.withSurface(scope, page, () => this.executeOnPage({ action: "assert", frameId: input.frameId, expect: input.expect }, scope, page, `${owner}:${tab!.id}`));
         return { passed: checked.businessResult?.status === "passed", documentId: identity.documentId, evidence: checked.businessResult! };
       } });
-      return { action: input.action, tabId: tab.id, handoff: { status: resumed.status }, businessResult: resumed.evidence };
+      const verifiedUrl = managedWc.getURL();
+      const renewal = resumed.status === "confirmed" && /^https?:\/\//i.test(verifiedUrl) ? await browser.trackVerifiedLogin(verifiedUrl) : undefined;
+      if (renewal) this.loginOrigins.set(page, new URL(verifiedUrl).origin);
+      return { action: input.action, tabId: tab.id, handoff: { status: resumed.status }, businessResult: resumed.evidence, renewal };
     }
     const runtime = input.action === "diagnostics" || input.action === "dialog" || input.action === "accessibility" || input.axNodeId || input.response || input.download || input.dialogRules
       ? await this.runtimes.get(managedWc, scope, context?.taskRoot) : undefined;
@@ -531,6 +612,7 @@ export class BrowserAutomationService {
       return { action: input.action, tabId: tab?.id };
     }
     return this.withPageOperation(managedWc.id, scope, async () => {
+    if (tab && browser.listTabs().some(t => t.id === tab!.id && t.loginChallenge)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "此标签等待用户验证");
     let response: ResponseWatch | undefined, download: DownloadWatch | undefined, releaseDialogs: (() => void) | undefined;
     try {
     response = input.response ? runtime?.events.armResponse(input.response) : undefined;
@@ -542,7 +624,10 @@ export class BrowserAutomationService {
     const perform = () => this.executeOnPage(input, scope, page, `${owner}:${tab?.id ?? page.inspectionWebContents?.id}`, () => !taskId || Boolean(tab && browser.getTabHost(tab.id) === page), context?.taskRoot);
     let base = await (input.action !== "status" ? this.withSurface(scope, page, perform) : perform());
     if (response) base = { ...base, response: await response.wait(scope) };
-    if (download) base = { ...base, download: await download.wait(scope) };
+    if (download) {
+      base = { ...base, download: await download.wait(scope) };
+      if (input.action === "fetch" && base.download?.state === "completed") scope.confirmed = true;
+    }
     if (runtime) base = { ...base, diagnostics: runtime.events.snapshot(traceStart), dialog: runtime.events.currentDialog() };
     // A popup opened by this exact document is a new retained page. Follow it
     // only for this task's next observation; never redirect another task or UI.
@@ -650,6 +735,51 @@ export class BrowserAutomationService {
       check(); return result;
     };
     if (input.action === "status") return { action: input.action, url, detail: url ? "ready" : "idle" };
+    if (input.action === "listen" || input.action === "evaluate") {
+      let field: string | undefined;
+      const observedSelector = input.action === "listen" ? input.selector : input.editSelector;
+      if (observedSelector) {
+        const observed = this.observations.get(owner);
+        if (!observed || observed.webContentsId !== wc.id || observed.version !== version || observed.url !== url
+          || observed.documentId !== await js<string>(browserDocumentScript(this.observationSlot))) throw new BrowserAutomationError("SURFACE_CHANGED", "请先查找需要编辑的文本框");
+        field = observed.targets.get(observedSelector)?.selector;
+        if (!field) throw new BrowserAutomationError("SURFACE_CHANGED", "需要当前页已观察的控件引用");
+      }
+      if (input.action === "listen") {
+        const listenerId = randomUUID();
+        await js(subscribeToBrowserEvent(this.observationSlot, listenerId, field!, input.eventType!));
+        return { action: input.action, listenerId };
+      }
+      const snapshot = await js<PageSnapshot>(pageSnapshotScript(field));
+      if (input.listenerId) snapshot.event = await js<BrowserEventReceipt | null>(browserEventReceiptScript(this.observationSlot, input.listenerId));
+      const { value, edited } = await evaluatePageSnapshot(snapshot, input.expression!, scope);
+      check();
+      if (field && snapshot.editor && edited !== snapshot.editor.before) {
+        if (typeof edited !== "string" || edited.length > 100000) throw new BrowserAutomationError("INVALID_INPUT", "文本框结果太长");
+        const unchanged = await js<boolean>(`__mbDom.one(${JSON.stringify(field)})?.value===${JSON.stringify(snapshot.editor.before)}`);
+        if (!unchanged) throw new BrowserAutomationError("SURFACE_CHANGED", "脚本计算期间文本框已改变");
+        await this.executeOnPage({ action: "fill", selector: field, text: edited, frameId: input.frameId }, scope, host, rootOwner, retained, taskRoot);
+      }
+      return { action: input.action, value };
+    }
+    if (input.action === "fetch") {
+      const base = new URL(await js<string>("location.href"));
+      const target = new URL(input.url!, base);
+      if (!/^https?:$/.test(base.protocol) || !/^https?:$/.test(target.protocol) || target.username || target.password) throw new BrowserAutomationError("INVALID_URL", "需要有效的 HTTP(S) 资源及页面地址");
+      const request = input.request ?? { method: "GET" };
+      const writes = request.method !== "GET" && request.method !== "HEAD";
+      if (target.origin !== base.origin && (writes || input.download)) throw new BrowserAutomationError("INVALID_URL", "跨域资源支持公开 GET/HEAD 和标准浏览器 CORS 检查");
+      if (input.download) {
+        if (document || !taskRoot) throw new BrowserAutomationError("INVALID_INPUT", "下载需要当前任务的主文档和工作目录");
+        scope.dispatch();
+        wc.downloadURL(target.href);
+        return { action: input.action };
+      }
+      if (writes) scope.dispatch();
+      const fetched = await js<NonNullable<BrowserExecOutput["fetched"]>>(pageFetchScript(target.href, input.maxChars ?? 30000, scope.remaining, request));
+      if (writes) scope.confirmed = true;
+      return { action: input.action, fetched };
+    }
     if (input.action === "frames") return { action: input.action, url, frames: listBrowserFrames(wc) };
     if (input.action === "assert") {
       let evidence: BrowserConditionEvidence[] = [];
@@ -758,12 +888,29 @@ export class BrowserAutomationService {
         if (current.tag !== target.tag) throw new BrowserAutomationError("SURFACE_CHANGED", "目标节点或语义已变化");
       }
     }
+    if (input.action === "focus" || input.action === "insert_text" || input.action === "paste") {
+      scope.dispatch();
+      await js(browserEditorScript(selector!, input.action, input.text, input.html));
+      scope.confirmed = true;
+      return { action: input.action, url };
+    }
     if (input.action === "upload") {
       if (!taskRoot || !selector) throw new BrowserAutomationError("INVALID_INPUT", "上传需要任务工作目录和已观察文件输入 selector");
       const runtime = await this.runtimes.get(wc, scope, taskRoot);
       const context = document ?? await bindBrowserDocument(wc, undefined, this.observationSlot, scope);
       try { return { action: input.action, url, upload: await uploadBrowserFiles({ accessibility: runtime.accessibility, context, selector, taskRoot, paths: input.files!, scope }) }; }
       finally { if (!document) context.dispose(); }
+    }
+    if (input.action === "click" && input.files) {
+      if (!taskRoot || !selector) throw new BrowserAutomationError("INVALID_INPUT", "请选择任务内文件和已观察的文件选择按钮");
+      const runtime = await this.runtimes.get(wc, scope, taskRoot);
+      const context = document ?? await bindBrowserDocument(wc, undefined, this.observationSlot, scope);
+      try {
+        const files = await validateBrowserUploadFiles({ taskRoot, paths: input.files, context, scope });
+        const receipt = await runtime.accessibility.chooseFiles(context, files, scope,
+          () => this.executeOnPage({ ...input, files: undefined }, scope, host, rootOwner, retained, taskRoot));
+        return { ...receipt.click, upload: receipt.upload };
+      } finally { if (!document) context.dispose(); }
     }
     let inputTransport: UiNativeInput | undefined;
     let htmlDragTransport: ((points: readonly { x: number; y: number }[], scope: AutomationScope) => Promise<void>) | undefined;
@@ -799,6 +946,11 @@ export class BrowserAutomationService {
       }
     }
     const executor = new UiAutomationService({ app: () => null, artifact: () => null, browser: () => wc, input: inputTransport, document, htmlDrag: htmlDragTransport });
+    if (input.action === "drag" && input.points && inputTransport) {
+      await strokeOnElement(inputTransport, scope, selector!, input.points, input.modifiers ?? [], js);
+      scope.confirmed = true;
+      return { action: input.action, url };
+    }
     if (input.action === "navigate") throw new BrowserAutomationError("INVALID_INPUT", "navigate 必须由标签管理器执行");
     const onActionAccepted = input.action === "click" || input.action === "press" || input.action === "drag" ? () => {
       if (!retained() || wc.isDestroyed() || host.inspectionWebContents !== wc) throw new BrowserAutomationError("SURFACE_CHANGED", "操作回执不属于保留的标签页");

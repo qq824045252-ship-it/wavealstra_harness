@@ -301,6 +301,11 @@ export default function BrowserView(): React.JSX.Element {
           onToggle: toggleCapture,
         }}
       />
+      {selectedTab?.loginChallenge && (
+        <div className="artifact-browser-notice" role="status">
+          {({ password: "请在网页中输入密码", qr: "请扫码登录", code: "请在网页中填写验证码" })[selectedTab.loginChallenge]}。登录成功后任务会自动继续。
+        </div>
+      )}
       {!tabsAvailable && (
         <div className="artifact-browser-notice" role="status">多标签功能需要重启 MyBuddy 后使用</div>
       )}

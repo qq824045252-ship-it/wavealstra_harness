@@ -14,6 +14,10 @@ export interface BrowserAutomationRecoveryBridge {
 }
 
 const SIDE_EFFECT_ACTIONS = new Set<BrowserExecInput["action"]>(["navigate", ...BROWSER_INPUT_ACTIONS]);
+function mayChangePage(input: BrowserExecInput): boolean {
+  return SIDE_EFFECT_ACTIONS.has(input.action) || input.action === "login" || input.action === "evaluate" && Boolean(input.editSelector)
+    || input.action === "fetch" && (Boolean(input.download) || !["GET", "HEAD"].includes(input.request?.method ?? "GET"));
+}
 const PRE_ACTION_CODES = new Set<BrowserAutomationErrorCode>([
   "HOST_UNAVAILABLE", "PAGE_UNAVAILABLE", "SCREENSHOT_EMPTY", "SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE",
   "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "SURFACE_CHANGED",
@@ -96,7 +100,7 @@ function guidance(error: BrowserAutomationError, input: BrowserExecInput): strin
     ELEMENT_AMBIGUOUS: "Find the candidates, then use one returned selector to identify the intended element.",
     SURFACE_CHANGED: "Read or find the current task tab again and use the newly observed node reference.",
     FOCUS_FAILED: "Re-observe the page and confirm the same target element can receive focus before sending a key.",
-    EXECUTION_FAILED: SIDE_EFFECT_ACTIONS.has(input.action)
+    EXECUTION_FAILED: mayChangePage(input)
       ? "Re-read or screenshot the current page before deciding whether to repeat the action; it may already have taken effect."
       : "Re-observe the current page and retry only after the browser document is healthy.",
   };
@@ -114,7 +118,7 @@ export function recordBrowserAutomationFailureRecovery(
   if (!(error instanceof BrowserAutomationError) || !RECOVERABLE_CODES.has(error.code)) return false;
   const ctx = bridge.resolveContext();
   if (!ctx) return false;
-  const sideEffecting = SIDE_EFFECT_ACTIONS.has(input.action);
+  const sideEffecting = mayChangePage(input);
   const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
   const preAction = outcome ? outcome.dispatch === "not_started" : PRE_ACTION_CODES.has(error.code);
   if (preAction && isBrowserObservationCode(error.code)) return false;

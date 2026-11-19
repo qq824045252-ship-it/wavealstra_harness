@@ -248,15 +248,47 @@ export class BrowserAccessibility {
     this.check(context, scope);
     const objectId = record(response) && !response.exceptionDetails && record(response.result) ? string(response.result.objectId) : undefined;
     if (!objectId) throw new BrowserAccessibilityError("SURFACE_CHANGED", "上传目标不是当前文档中唯一的已观察节点");
+    return this.assignFiles(context, mapped, objectId, files, scope, true);
+  }
+
+  async chooseFiles<T>(context: BrowserDocumentContext, files: readonly BrowserUploadFile[], scope: AutomationScope, click: () => Promise<T>): Promise<{ click: T; upload: BrowserUploadResult }> {
+    const mapped = await this.matchingContext(context, scope);
+    const sessionId = mapped.sessionId || undefined;
+    let opened!: (node: number) => void;
+    const pending = new Promise<number>(resolve => { opened = resolve; });
+    const unsubscribe = this.protocol.subscribeProtocol((method, params, sourceSession) => {
+      if (method === "Page.fileChooserOpened" && (sourceSession || "") === mapped.sessionId && record(params)
+        && params.frameId === mapped.frameId && positiveInteger(params.backendNodeId)) opened(params.backendNodeId);
+    });
+    try {
+      await scope.run(() => this.protocol.protocolCommand("Page.enable", {}, sessionId));
+      await scope.run(() => this.protocol.protocolCommand("Page.setInterceptFileChooserDialog", { enabled: true }, sessionId));
+      const receipt = await click();
+      scope.confirmed = false;
+      const backendNodeId = await scope.run(() => pending);
+      this.check(context, scope);
+      const resolved = await scope.run(() => this.protocol.protocolCommand("DOM.resolveNode", { backendNodeId, executionContextId: mapped.id }, sessionId));
+      const objectId = record(resolved) && record(resolved.object) ? string(resolved.object.objectId) : undefined;
+      if (!objectId) throw new BrowserAccessibilityError("SURFACE_CHANGED", "文件选择框已关闭");
+      return { click: receipt, upload: await this.assignFiles(context, mapped, objectId, files, scope, false) };
+    } finally {
+      unsubscribe();
+      await this.protocol.protocolCommand("Page.setInterceptFileChooserDialog", { enabled: false }, sessionId).catch(() => {});
+    }
+  }
+
+  private async assignFiles(context: BrowserDocumentContext, mapped: RuntimeContext, objectId: string,
+    files: readonly BrowserUploadFile[], scope: AutomationScope, requireObserved: boolean): Promise<BrowserUploadResult> {
     const inspect = async (): Promise<unknown> => this.protocol.protocolCommand("Runtime.callFunctionOn", {
       objectId, returnByValue: true,
-      functionDeclaration: `function(slot,documentId,count){
+      functionDeclaration: `function(slot,documentId,count,requireObserved){
         const ref=this.getAttribute?.('data-mybuddy-ui-ref');
-        if(window[slot]?.documentId!==documentId||!(this instanceof HTMLInputElement)||this.ownerDocument!==document||!this.isConnected||this.type!=='file'||this.matches(':disabled')||!ref||window.__mybuddyUiRefs?.get(this)!==ref)return {ok:false};
+        if(window[slot]?.documentId!==documentId||!(this instanceof HTMLInputElement)||this.ownerDocument!==document||this.type!=='file'||this.matches(':disabled'))return {ok:false};
+        if(requireObserved&&(!this.isConnected||!ref||window.__mybuddyUiRefs?.get(this)!==ref))return {ok:false};
         if(count>1&&!this.multiple)return {ok:false};
         return {ok:true,files:Array.from(this.files||[],f=>({name:f.name,size:f.size}))};
       }`,
-      arguments: [{ value: this.observationSlot }, { value: context.identity.documentId }, { value: files.length }],
+      arguments: [{ value: this.observationSlot }, { value: context.identity.documentId }, { value: files.length }, { value: requireObserved }],
     }, mapped.sessionId || undefined);
     const getValue = (raw: unknown): Record<string, unknown> | undefined => record(raw) && !raw.exceptionDetails && record(raw.result) && record(raw.result.value) ? raw.result.value : undefined;
     try {

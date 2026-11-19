@@ -738,15 +738,18 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         name: "browser_exec",
         label: "浏览器操作",
         description: browserToolDescription,
-        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, hover?, text?, values?, checked?, delta_x?, delta_y?, mode?, cursor?, after?, timeout_ms?)；tabs 列标签，select_tab(tabId 或 tabTitle/tabUrl, after?) 切换；popup 后跟随新 tabId。",
+        promptSnippet: "browser_exec(action, tabId?, url?, selector?/role?/name?, after?, timeout_ms?)；tabs/select_tab 复用标签；login(tabId,url,expect) 先复用会话、点击登录入口，需要密码/扫码/验证码时等待并自动继续。",
         parameters: browserExecSchema,
-        execute: async (tc, p: BrowserExecInput & { max_chars?: number; timeout_ms?: number; element_offset?: number; delta_x?: number; delta_y?: number }, signal, _onUpdate, ctx) => {
+        execute: async (tc, p: BrowserExecInput & { max_chars?: number; timeout_ms?: number; element_offset?: number; delta_x?: number; delta_y?: number }, signal, onUpdate, ctx) => {
           let input: BrowserExecInput | undefined;
           try {
             const context = toolContext(bridge, tc, signal);
             input = { ...p, maxChars: p.max_chars, timeoutMs: p.timeout_ms, elementOffset: p.element_offset, deltaX: p.delta_x, deltaY: p.delta_y };
             if (input.action === "handoff" && !bridge.browserHandoff) throw new Error("当前执行未连接真实任务交互服务，无法请求人工登录");
-            let result = input.action === "handoff" ? await bridge.browser.beginHandoff(input, signal, { taskId: bridge.taskId, requestKey: context.toolCallId, ask: (request, key, requestedSignal) => bridge.browserHandoff!(request, key, requestedSignal ?? new AbortController().signal) }) : await bridge.browser.execute(input, signal, { taskId: bridge.taskId, taskRoot: bridge.taskRoot, resolveGadgetId: url => resolveDurableGadgetPreview(url, bridge.taskId) });
+            let result = input.action === "handoff" ? await bridge.browser.beginHandoff(input, signal, { taskId: bridge.taskId, requestKey: context.toolCallId, ask: (request, key, requestedSignal) => bridge.browserHandoff!(request, key, requestedSignal ?? new AbortController().signal) }) : await bridge.browser.execute(input, signal, {
+              taskId: bridge.taskId, taskRoot: bridge.taskRoot, resolveGadgetId: url => resolveDurableGadgetPreview(url, bridge.taskId),
+              onLoginRequired: () => onUpdate?.({ content: [{ type: "text", text: "请在内置浏览器完成验证，登录成功后任务会自动继续。" }], details: { action: "login", waitingForInput: true } }),
+            });
             if (result.collectionFile) {
               const service = bridge.artifactService();
               try {

@@ -7,6 +7,7 @@ export interface BrowserOpenOptions {
   reload?: boolean;
 }
 export interface BrowserTabInfo {
+  loginChallenge?: "password" | "qr" | "code";
   openerTabId?: string;
   id: string;
   key: string;

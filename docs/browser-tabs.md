@@ -103,6 +103,30 @@ DOM observation searches open shadow roots. Text reading follows assigned slot n
 
 The focused fixtures exercise the actual Electron engine, public service, registered tool, Durable Code Mode, real user-interaction service, and artifact registration. They use isolated profiles and local servers. They do not establish authenticated-site acceptance on 柠檬云 or replace the repository-wide headless, GUI, and packaged ARTIFACT gates. No product build, package, installation, commit, or push was performed for this change.
 
+### Reusing website logins
+
+Start at the requested business page. Implicit navigation reuses a matching live URL in this task, including a page reached by redirect. A new path on the same origin prefers the current verified tab or the sole verified tab in that task, preserving tab-scoped storage. Explicit tab IDs and new-tab requests keep their usual behavior. The shared Electron profile retains cookies for as long as the website permits.
+
+When authentication blocks the task, call `login({tabId, url, expect})` with the business URL and a positive marker visible only after authentication, such as the account menu. The action checks the business page first and clicks at most one unambiguous login entry or saved identity. A visible password, QR, or verification-code challenge opens in the sidebar. The call watches for the business marker and returns the verified tab without requiring a chat response. Stopping the task releases the prompt. For an existing login popup, pass its opener as `verifyTabId` when the business result appears there. Pass `frameId` for a challenge inside a frame.
+
+A `login.status` of `confirmed` resumes the original work on the returned tab. With `inspect`, read the page or frames and choose the next observed step. This includes custom controls, multiple possible accounts, and redirects whose business result cannot yet be verified.
+
+After a verified login the sidebar profile registers the site's business page for automatic renewal. While MyBuddy is running, it makes a credentialed, uncached HEAD request before the observed cookie expiry, with a five-minute check interval for unknown server idle limits. A new, shorter cookie lifetime can bring the next attempt forward. Session cookies, rotating credentials, and Set-Cookie processing stay in Chromium. The profile saves the business URL without its query or fragment, the renewal status and the next due time. Restart restores the schedule even before the next task opens the site.
+
+When HEAD cannot renew the session, the browser can open the site's own home page in a separate sandboxed view to run its normal silent refresh. The view accepts no input and closes after the check. A 401 allows one first-party refresh attempt followed by a fresh check. Revocation, an explicit removal of the tracked login cookie, or a request for sign-in stops the schedule. A subsequent verified login can start it again. Temporary network failures retry with backoff.
+
+The current tab's `status.renewal` reports `cookie_extended` only when the site extends a previously observed cookie's expiry. `checked` reports a successful check with no measurable extension. Each task verifies the business page before treating the user as signed in. The Electron fixture runs two processes against a local server that rotates its HttpOnly session, enforces the original expiry, exercises the site's JavaScript refresh, and rejects revoked credentials.
+
+## 与 ego-browser 对照验收
+
+`pnpm -s test:browser-ego-parity` 需要本机 ego-browser 和桌面会话。该命令启动同一个临时网站，依次驱动真实 ego-browser 和 MyBuddy Electron，比较服务端数据、下载字节、网页事件与最终页面状态。每次运行在 `out/diagnostics/browser-ego-parity/` 下保存两端的逐项 JSON 和汇总。任一项缺失或失败，命令返回非零。单独运行 `pnpm -s test:browser-parity-electron` 可验证 MyBuddy 支持的场景。
+
+页面脚本可对 DOM 副本作 JavaScript 计算，用 `editSelector` 指定一个已观察文本框后可将计算结果写回实际表单。`listen` 订阅真实控件事件，`evaluate` 可通过 `listenerId` 读取其类型、可信标记和时间戳。每次脚本计算使用独立环境。在脚本中直接给网页注册回调、让它在下一次操作时执行，是完整对照中单列的一项差异。
+
+`fetch` 用当前网站会话读取或写入同源业务 API，公开的跨域 GET/HEAD 遵循浏览器 CORS 检查。`fetch` 配合 `download` 可将同源二进制文件保存到任务目录。`click` 配合 `files` 支持网页临时创建的文件选择器。`paste` 可给编辑器发送带纯文本和清理过的 HTML 的粘贴事件，系统剪贴板保持独立。`drag` 的 `points` 和 `modifiers` 可组合成画布内的连续笔划。
+
+登录专项另跑 `pnpm -s test:browser-handoff-tool-electron`。测试通过已注册的工具验证密码、扫码和验证码交接、原任务继续、跨进程续期，以及应用关闭期间访问凭据过期、重开后由网站刷新授权恢复的情况。
+
 ## 现场报告回归补充
 
 普通容器的名称使用自身文本，不把整个后代子树聚合成容器名称；显式角色控件仍保留完整组合文本。因此展开子菜单不会让 body 或导航容器和“账簿”菜单锚点撞名。确有同名目标时，歧义错误返回有界 `candidates`，这些引用同步记入当前文档观察，可直接选择其中一个继续操作。定位歧义由 Agent 修正，不创建需要人工恢复的卡片；结果未知的实际输入仍保留原有保护。

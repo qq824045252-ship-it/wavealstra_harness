@@ -17,6 +17,7 @@ import {
 } from "../artifact/PageInspectionService";
 import { runtimeProbeService } from "../capabilities/RuntimeProbeService";
 import { tryHandleBrowserBeforeUnload } from "../capabilities/browser/BrowserPrompt";
+import { BrowserSessionRenewal } from "./BrowserSessionRenewal";
 
 export const BROWSER_CAPTURE_ARTIFACT_ID = "extension-browser";
 const DEFAULT_BROWSER_VIEWPORT = { x: 0, y: 0, width: 1280, height: 720 };
@@ -595,6 +596,7 @@ export type BrowserPageHost = Pick<BrowserTabSurface,
   "inspectionWebContents" | "url" | "captureVersion" | "navigateForAutomation" | "captureScreenshot" | "readDocumentHtml" | "withAutomationSurface">;
 
 interface ManagedBrowserTab {
+  loginChallenge?: BrowserTabInfo["loginChallenge"];
   id: string;
   key: string;
   taskId?: string;
@@ -607,6 +609,7 @@ interface ManagedBrowserTab {
 /** Native tab registry. UI selection and automation document ownership are
  * deliberately independent. Hiding the panel never closes a document. */
 export class BrowserHost {
+  private renewal?: BrowserSessionRenewal;
   private win: BrowserWindow | null = null;
   private readonly tabs = new Map<string, ManagedBrowserTab>();
   private readonly taskTabs = new Map<string, string>();
@@ -636,14 +639,19 @@ export class BrowserHost {
     if (this.win) return;
     this.win = win;
     this.ensureTab({ key: "legacy", activate: true });
+    this.renewal = new BrowserSessionRenewal(this.inspectionWebContents!.session);
   }
+
+  trackVerifiedLogin(url: string) { return this.renewal?.track(url); }
+  loginRenewalStatus(url: string) { return this.renewal?.status(url); }
 
   private info(tab: ManagedBrowserTab): BrowserTabInfo {
     const wc = tab.surface.inspectionWebContents;
     return { id: tab.id, key: tab.key, taskId: tab.taskId, gadgetId: tab.gadgetId, openerTabId: tab.openerTabId,
       url: wc && !wc.isDestroyed() ? wc.getURL() : tab.surface.url,
       title: wc && !wc.isDestroyed() ? wc.getTitle() : "",
-      loading: Boolean(wc && !wc.isDestroyed() && wc.isLoadingMainFrame()) };
+      loading: Boolean(wc && !wc.isDestroyed() && wc.isLoadingMainFrame()),
+      ...(tab.loginChallenge ? { loginChallenge: tab.loginChallenge } : {}) };
   }
   listTabs(): BrowserTabInfo[] { return [...this.tabs.values()].map((tab) => this.info(tab)); }
   getTabsState(): BrowserTabsState { return { activeTabId: this.activeId, tabs: this.listTabs() }; }
@@ -751,6 +759,19 @@ export class BrowserHost {
   }
 
   /** Reveal an existing task page for login without creating a navigation intent. */
+  showLoginChallenge(id: string, challenge: NonNullable<BrowserTabInfo["loginChallenge"]>): () => void {
+    const tab = this.tabs.get(id);
+    if (!tab || tab.loginChallenge) throw new Error("登录标签已关闭或正在等待用户操作");
+    tab.loginChallenge = challenge;
+    try {
+      if (!this.presentTabForUser(id)) throw new Error("无法呈现登录标签");
+    } catch (error) {
+      delete tab.loginChallenge;
+      throw error;
+    }
+    return () => { delete tab.loginChallenge; this.emitTabs(); };
+  }
+
   presentTabForUser(id: string): boolean {
     const tab = this.tabs.get(id);
     if (!tab || !this.win || this.win.isDestroyed() || !this.selectTab(id, false)) return false;
@@ -845,6 +866,7 @@ export class BrowserHost {
   async readDocumentHtml(): Promise<string | null> { return await this.active?.readDocumentHtml() ?? null; }
   dispose(): void {
     const tabs = [...this.tabs.values()];
+    this.renewal?.dispose(); this.renewal = undefined;
     this.tabs.clear(); this.taskTabs.clear(); this.activeId = null;
     for (const tab of tabs) tab.surface.dispose();
     this.win = null; this.lastBounds = null; this.desiredVisible = false; this.blockers.clear();

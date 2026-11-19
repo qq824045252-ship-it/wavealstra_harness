@@ -11,7 +11,7 @@ export const browserConditionSchema = Type.Union([
   Type.Object({ kind: Type.Literal("text"), selector: Type.Optional(selector), within, value: text, match }, { additionalProperties: false }),
   Type.Object({ kind: Type.Literal("value"), selector, within, value: text }, { additionalProperties: false }),
   Type.Object({ kind: Type.Literal("count"), selector, within, count: Type.Integer({ minimum: 0, maximum: 1_000_000 }) }, { additionalProperties: false }),
-  Type.Object({ kind: Type.Literal("state"), selector, within, state: Type.Union((["attached", "detached", "visible", "hidden", "enabled", "disabled", "checked", "unchecked", "editable", "expanded", "collapsed"] as const).map(value => Type.Literal(value))) }, { additionalProperties: false }),
+  Type.Object({ kind: Type.Literal("state"), selector, within, state: Type.Enum(["attached", "detached", "visible", "hidden", "enabled", "disabled", "checked", "unchecked", "editable", "expanded", "collapsed"]) }, { additionalProperties: false }),
 ]);
 export type BrowserCondition = Static<typeof browserConditionSchema>;
 const evidenceValue = Type.Union([Type.String({ maxLength: 1000 }), Type.Number(), Type.Boolean(), Type.Null()]);

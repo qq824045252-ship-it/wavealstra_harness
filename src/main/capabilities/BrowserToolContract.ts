@@ -2,11 +2,24 @@ import { Type } from "typebox";
 import { browserCollectionSchema } from "./browser/BrowserCollectionSchema";
 import { browserConditionSchema } from "./browser/BrowserConditions";
 import { browserAgentPolicy } from "./BrowserAgentPolicy";
+import { browserEventTypes } from "./browser/BrowserEventSubscription";
 
-export const BROWSER_EXEC_ACTIONS = ["status", "tabs", "navigate", "read", "click", "fill", "drag", "press", "screenshot", "find", "inspect", "wait_for", "scroll", "hover", "select", "check", "frames", "accessibility", "assert", "diagnostics", "dialog", "open", "select_tab", "close", "back", "forward", "reload", "upload", "collect", "click_at", "scroll_at", "handoff", "resume"] as const;
+export const BROWSER_EXEC_ACTIONS = ["status", "tabs", "navigate", "read", "evaluate", "listen", "fetch", "click", "fill", "focus", "insert_text", "paste", "drag", "press", "screenshot", "find", "inspect", "wait_for", "scroll", "hover", "select", "check", "frames", "accessibility", "assert", "diagnostics", "dialog", "open", "select_tab", "close", "back", "forward", "reload", "upload", "collect", "click_at", "scroll_at", "login", "handoff", "resume"] as const;
+
+export const browserFetchRequestSchema = Type.Object({
+  method: Type.Enum(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
+  contentType: Type.Optional(Type.Enum(["application/json", "application/x-www-form-urlencoded", "text/plain"])),
+  body: Type.Optional(Type.String({ maxLength: 100000 })),
+}, { additionalProperties: false });
 
 export const browserExecSchema = Type.Object({
   action: Type.Union(BROWSER_EXEC_ACTIONS.map(action => Type.Literal(action))),
+  expression: Type.Optional(Type.String({ minLength: 1, maxLength: 16000 })),
+  editSelector: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+  eventType: Type.Optional(Type.Enum(browserEventTypes)),
+  listenerId: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+  request: Type.Optional(browserFetchRequestSchema),
+  html: Type.Optional(Type.String({ maxLength: 100000 })),
   files: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 4000 }), { minItems: 1, maxItems: 20 })),
   collection: Type.Optional(browserCollectionSchema),
   maxSteps: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
@@ -27,6 +40,8 @@ export const browserExecSchema = Type.Object({
   reload: Type.Optional(Type.Boolean()),
   gadgetId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   tabId: Type.Optional(Type.String({ maxLength: 200 })),
+  verifyTabId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  challenge: Type.Optional(Type.Enum(["qr", "code"])),
   tabTitle: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
   tabUrl: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
   frameId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
@@ -45,6 +60,9 @@ export const browserExecSchema = Type.Object({
   dateType: Type.Optional(Type.Union(["date", "time", "datetime-local", "month", "week"].map(value => Type.Literal(value)))),
   dragMode: Type.Optional(Type.Union([Type.Literal("pointer"), Type.Literal("html")])),
   dragTo: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+  points: Type.Optional(Type.Array(Type.Object({
+    x: Type.Number({ minimum: 0, maximum: 1 }), y: Type.Number({ minimum: 0, maximum: 1 }),
+  }, { additionalProperties: false }), { minItems: 2, maxItems: 64 })),
   checked: Type.Optional(Type.Boolean()),
   hover: Type.Optional(Type.Array(Type.Object({
     selector: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
@@ -84,19 +102,33 @@ export const browserStructuredOutputSchema = Type.Object({
   tabs: Type.Optional(Type.Array(Type.Object({ id: Type.String(), title: Type.String(), url: Type.String(), loading: Type.Boolean(), openerTabId: Type.Optional(Type.String()) }, { additionalProperties: true }))),
   url: Type.Optional(Type.String()), title: Type.Optional(Type.String()), text: Type.Optional(Type.String()),
   nextCursor: Type.Optional(Type.String()), textTruncated: Type.Optional(Type.Boolean()),
+  login: Type.Optional(Type.Object({ status: Type.Union([Type.Literal("confirmed"), Type.Literal("inspect")]) })),
+  renewal: Type.Optional(Type.Object({ state: Type.String(), nextAttemptAt: Type.Optional(Type.Number()), lastExtendedAt: Type.Optional(Type.Number()) })),
+  detail: Type.Optional(Type.String()),
+  value: Type.Optional(Type.Unknown()),
+  listenerId: Type.Optional(Type.String()),
+  fetched: Type.Optional(Type.Object({ status: Type.Number(), ok: Type.Boolean(), contentType: Type.String(), body: Type.String(), truncated: Type.Boolean() })),
   elements: Type.Optional(Type.Array(Type.Object({ selector: Type.String(), tag: Type.String(), label: Type.String() }, { additionalProperties: true }))),
   outcome: Type.Optional(Type.Object({ dispatch: Type.Union([Type.Literal("not_started"), Type.Literal("dispatched")]), effect: Type.Union([Type.Literal("none"), Type.Literal("unknown"), Type.Literal("confirmed")]) })),
   code: Type.Optional(Type.String()), error: Type.Optional(Type.String()),
 }, { additionalProperties: true });
 
 export const browserToolDescription = browserAgentPolicy + [
+  "login({tabId,url,expect}) 的 url 是原业务地址，expect 使用登录后才有的目标页 URL、可见控件或文字。工具先只读核验，再尝试一次明确的登录入口，密码/扫码/验证码页面会自动等待业务页就绪。login.status=confirmed 就继续原任务；inspect 时读取当前页/frames，自己点击已观察的其它登录步骤，未知效果先核对。frameId 可指定登录控件的 iframe；弹窗登录后回到原页时 verifyTabId 指定其 opener。不要用登录框消失作为成功依据。",
+  "识别出未标注的登录二维码或验证码框时，先 find 对应图片、画布或输入框，再给 login 传 challenge:'qr' 或 'code' 和该节点的 selector 引用，仍能在登录成功后自动继续。",
+  "login 成功登记该站登录续期，status 返回本标签站点的 renewal。cookie_extended 表示网站 Cookie 到期时间延后，checked 仅表示已检查，不能据此推断账户有效。sign_in_required 时在原业务页重新核验登录。",
   "使用 MyBuddy 内置 Electron 浏览器，每个任务保留独立标签、共享登录 session，popup 也留在内置浏览器。",
+  "evaluate({expression}) 在当前文档的隔离 DOM 副本中计算 JavaScript 表达式并返回 JSON value，可用 document.querySelectorAll 过滤、转换与汇总。页面交互走 click/fill 等原生动作。fetch({url}) 在当前 HTTP(S) 文档中读取同源文本/JSON 资源，沿用网站会话和浏览器请求策略，返回 fetched.status/body/truncated。",
+  "evaluate 可用 editSelector 指定已 find 的普通文本框，脚本对其 value 的修改经原生输入写回网页。",
+  "listen({selector,eventType}) 在已观察控件上监听下一次 DOM 事件，返回 listenerId。evaluate({listenerId,expression}) 中 event 是实际事件的 type/trusted/timeStamp，尚未发生时为 null。订阅在此文档内有效两分钟。",
+  "fetch 可传 request:{method,contentType,body} 提交当前站点业务请求。写入只执行一次，结果不明时先查询。下载同源资源用 fetch({url,download:{}})。点击动态文件选择按钮时传 click({selector,files})。focus、insert_text、paste 均指定已观察的 selector，insert_text 在选区插入 text，paste 接受 text 与可选 html，支持表格、段落和强调等格式。",
   "frames 枚举当前标签页的嵌套 iframe；后续 read/find/inspect/输入传 frameId，跨域同样适用。开放 Shadow DOM 自动遍历，封闭根不支持。within 限定唯一容器，exact:true 精确匹配，label/placeholder/testId 可定位。accessibility 返回 Chromium AX 名称与状态；find({axNodeId,documentId}) 将最近 AX 节点转为稳定引用。",
   "assert 传 expect 条件数组，支持 url/text/value/count/state；输入动作也可带 expect，businessResult 单独报告业务条件，不把输入回执当作保存成功。response/download 在动作前监听，返回实际响应或完成文件；dialogRules 在动作前注册一次性对话框应答；navigate/reload/back/forward/close 可预设 beforeunload 接受或拒绝，未预设会安全取消离开，迟到的接受不能隐式重放导航，diagnostics 查看有界事件和待处理 dialog，dialog 按 id 应答。",
   "upload 必须先 find 文件输入，再传 selector 和 files（当前任务目录内相对或绝对路径，最多20个）；原生多文件输入才支持多个文件。collect 传 collection 的 rowSelector/cellSelector/keyAttribute，以及明确 terminal 和 advance 规则；横向虚拟列传 horizontal 的 columnIndexAttribute，索引从0开始。scroll-end 结束规则必须同时提供 expectedRows；无限列表仅滚到底部不能证明读取完成。返回 complete/partial、reason 和 cursor；partial 不能声称已读全表。超出行内字符预算时，outputTruncated:true，完整数据保存为 collectionFile 并登记 collectionArtifact；用文件读取全部行，cursor 仍只用于继续采集。",
   "click 支持 button:right、clickCount:2 和 modifiers；fill 的 inputMode:sequential 逐个 Unicode 字符输入，日期控件返回 synthetic-setter 策略；drag 传已 find 的目的地 dragTo 引用；原生 HTML5 拖放使用 dragMode:html，由真实 draggable 源产生 DataTransfer，保留原始数据并等待可信 drop。",
+  "在画布或绘图控件内画线时，drag({selector,points:[{x,y},...]}) 用 0 到 1 的比例指定控件内路径，支持 modifiers 组合拖动。结束或取消时释放本次输入。",
   "screenshot 返回 captureId 与像素 viewport，click_at/scroll_at 必须携带该 captureId、截图像素 x/y；页面像素、文档、滚动、视口或缩放变化会拒绝旧截图。每张截图只允许一次坐标操作。",
-  "handoff({tabId,reason:'login'或'2fa'}) 向真实用户请求登录，等待用户完成后才返回 token；resume({tabId,token,expect}) 只读验证当前登录态。不得自行代答或重复提交业务动作。人工等待不计入单次页面动作30秒预算。",
+  "特殊验证界面无法识别或缺少可靠的成功条件时，确认已出现密码、扫码或验证码再用 handoff({tabId,reason:'login'或'2fa'}) 请求人工操作；用户确认后用 resume({tabId,token,expect}) 核验并继续。不得自行代答或重复提交业务动作。",
   "切换浏览器顶部标签不要点击网页中的 tab 或用 navigate 重开：先 tabs 查看本任务标签的 id/title/url，再 select_tab({tabId,after:{mode:'interactive'}}) 切换并观察已有页面。也可用精确 tabTitle/tabUrl；同名时必须从候选中选 tabId。切换保留登录、草稿和页面状态。",
   "tabs/status 返回 tabId（当前任务默认操作目标）及 activeTabId（当前任务在侧栏显示的标签）；其它任务的标签不会返回。open 新建本任务标签，select_tab/close/back/forward/reload 只操作本任务标签。",
   "不传 tabId 时跟随本任务当前标签；手动切换、open/navigate 和由当前页打开的 popup 会更新默认目标，切换到其它任务不影响本任务。popup 回执的 tabId/openedTabId 是新页，sourceTabId 是触发动作的旧页，后续观察新页后再交互。",
@@ -116,5 +148,5 @@ export const browserToolDescription = browserAgentPolicy + [
   "顺序 await 多步时每步检查 isError；失败立即停止后续动作。",
   "outcome.dispatch=not_started 时可依据错误详情重新观察、修正目标后继续；dispatched 且 effect=unknown 时先只读核对，禁止盲目重放提交。",
   "页面结构可读时不要截图：read/find/inspect/assert 足以读取、按控件点击、填写和验收普通网页；只有 canvas/图表/视频等像素内容、需要视觉验收的呈现，或 find 找不到控件时才 screenshot。",
-  "每张截图都会保存为产物并做视觉处理：能沿用已读结构就不要连续截图，坐标动作也只在上面那三类情况下使用。截图自动视觉路由；不执行任意 JavaScript；非浏览器原生应用操作才用 computer_exec。",
+  "每张截图都会保存为产物并做视觉处理：能沿用已读结构就不要连续截图，坐标动作也只在上面那三类情况下使用。截图自动视觉路由；非浏览器原生应用操作才用 computer_exec。",
 ].join("");
