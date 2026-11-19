@@ -199,3 +199,25 @@ index ab5cfcc..9d44665 100644
 +export { FileAuthStorageBackend, InMemoryAuthStorageBackend } from "./core/auth-storage.js";
  //# sourceMappingURL=index.js.map
 \ No newline at end of file
+diff --git a/dist/core/tools/grep.js b/dist/core/tools/grep.js
+--- a/dist/core/tools/grep.js
++++ b/dist/core/tools/grep.js
+@@ -185,7 +185,8 @@
+                                 settle(() => reject(new Error("Operation aborted")));
+                                 return;
+                             }
+-                            if (!killedDueToLimit && code !== 0 && code !== 1) {
++                            const partial = code === 2 && matches.length > 0;
++                            if (!killedDueToLimit && !partial && code !== 0 && code !== 1) {
+                                 const errorMsg = stderr.trim() || `ripgrep exited with code ${code}`;
+                                 settle(() => reject(new Error(errorMsg)));
+                                 return;
+@@ -219,6 +220,8 @@
+                             const details = {};
+                             // Build actionable notices for truncation and match limits.
+                             const notices = [];
++                            if ((partial || killedDueToLimit) && stderr.trim())
++                                notices.push("Partial search; unreadable paths: " + stderr.trim().slice(0, 1000));
+                             if (matchLimitReached) {
+                                 notices.push(`${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`);
+                                 details.matchLimitReached = effectiveLimit;
