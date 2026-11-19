@@ -6,6 +6,7 @@ import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-wo
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
+import { AnswerRoutingIpc, type AnswerRoutingApi } from "../shared/answer-routing";
 import { WorkspaceNotesIpc, type WorkspaceNoteSaveRequest } from "../shared/workspace-notes";
 import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
 import { PluginStorageIpc, type PluginStoragePathsDto } from "../shared/plugin-storage";
@@ -105,6 +106,8 @@ import {
   type AgentApproveToolRequest,
   type AgentPromptRequest,
   type AgentPromptResult,
+  type PrepareTaskWorktreeRequest,
+  type PrepareTaskWorktreeResult,
   type AgentSubmissionReceipt,
   type AgentRegenerateRequest,
   type AgentRegenerateResult,
@@ -415,6 +418,8 @@ const api = {
   agent: {
     prompt: (req: AgentPromptRequest): Promise<AgentPromptResult> =>
       ipcRenderer.invoke(AgentIpc.prompt, req),
+    prepareTaskWorktree: (req: PrepareTaskWorktreeRequest): Promise<PrepareTaskWorktreeResult> =>
+      ipcRenderer.invoke(AgentIpc.prepareTaskWorktree, req),
     submissionStatus: (receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> => ipcRenderer.invoke(AgentIpc.submissionStatus, receipt),
     waitForSubmission: (receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> => ipcRenderer.invoke(AgentIpc.waitForSubmission, receipt),
     regenerate: (req: AgentRegenerateRequest): Promise<AgentRegenerateResult> =>
@@ -808,6 +813,14 @@ const api = {
     detectCloudflared: (): Promise<RemoteCloudflaredStatus> => ipcRenderer.invoke(RemoteAccessIpc.detectCloudflared),
   },
 
+  answerRouting: {
+    list: () => ipcRenderer.invoke(AnswerRoutingIpc.list),
+    save: (draft, version) => ipcRenderer.invoke(AnswerRoutingIpc.save, draft, version),
+    remove: (id, revision) => ipcRenderer.invoke(AnswerRoutingIpc.remove, id, revision),
+    preview: (query, projectId) => ipcRenderer.invoke(AnswerRoutingIpc.preview, query, projectId),
+    history: turn => ipcRenderer.invoke(AnswerRoutingIpc.history, turn),
+    suggest: (teaching, question, answer) => ipcRenderer.invoke(AnswerRoutingIpc.suggest, teaching, question, answer),
+  } satisfies AnswerRoutingApi,
   memory: {
     organization: (): Promise<MemoryOrganizationRun | null> => ipcRenderer.invoke(MemoryOrganizationIpc.latest),
     startOrganization: (resumeId?: string): Promise<MemoryOrganizationRun> => ipcRenderer.invoke(MemoryOrganizationIpc.start, resumeId),

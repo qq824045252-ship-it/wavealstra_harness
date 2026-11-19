@@ -112,6 +112,7 @@ export interface EnhancePromptResult {
 
 export const AgentIpc = {
   prompt: "agent:prompt",
+  prepareTaskWorktree: "agent:prepareTaskWorktree",
   submissionStatus: "agent:submissionStatus",
   waitForSubmission: "agent:waitForSubmission",
   /** 重新生成：回退到某轮用户消息并重新生成回复 */
@@ -385,15 +386,7 @@ export interface SubagentSummaryDto {
     finalText?: string;
     stopReason?: string;
   };
-  usage: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-    contextTokens: number;
-    turns: number;
-  };
+  usage: import("./subagent-model-config").SubagentUsage;
   sessionId?: string;
   pid?: number;
   model?: string;
@@ -714,6 +707,13 @@ export interface WorkspaceFilePreviewDto {
   /** 仅图像且显式请求缩略图时存在 */
   thumbnail?: WorkspaceFileThumbnailDto;
 }
+
+export interface PrepareTaskWorktreeRequest {
+  taskId: string;
+  spaceId: string;
+}
+
+export type PrepareTaskWorktreeResult = { ok: true } | { ok: false; error: string };
 
 export interface AgentPromptRequest {
   taskId: string;

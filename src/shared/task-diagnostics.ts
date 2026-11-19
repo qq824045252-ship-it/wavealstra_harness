@@ -1,4 +1,12 @@
 export type DiagnosticSource = "main" | "subagent" | "auxiliary";
+export interface ConversationUsageReceipt {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens?: number | null;
+  cacheHitRate: number | null;
+  requests?: number;
+}
 export interface ReportedTokenUsage {
   input: number | null;
   output: number | null;

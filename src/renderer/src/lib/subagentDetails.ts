@@ -65,6 +65,7 @@ export interface SubagentResultRun {
   /** 首条到末条消息的时间跨度；时间戳缺失或异常则 undefined（不伪造时长） */
   durationMs?: number;
   usage?: {
+    reported?: import("@shared/task-diagnostics").ConversationUsageReceipt;
     input?: number;
     output?: number;
     cacheRead?: number;
@@ -95,6 +96,41 @@ function num(value: unknown): number | undefined {
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+type DispatchTool = { tool: string; detail?: string; output?: string };
+const projected = new WeakMap<DispatchTool, { output?: string; detail?: string; result?: string }>();
+
+/** Read the child receipt even when the visible parent tool dispatched the subagent internally. */
+export function subagentDispatchDetail(call: DispatchTool): string | undefined {
+  if (call.tool === "subagent") return call.detail;
+  if (call.tool !== "pstack_delegate") return;
+  const cached = projected.get(call);
+  if (cached && cached.output === call.output && cached.detail === call.detail) return cached.result;
+  const object = (text?: string) => { try { return record(JSON.parse(text ?? "")); } catch { return null; } };
+  const info = object(call.detail);
+  const reply = object(call.output);
+  const results = new Map<string, Record<string, unknown>>();
+  for (const item of Array.isArray(info?.participants) ? info.participants : []) {
+    const row = record(item), id = str(row?.subagentId);
+    if (row && id && ["completed","failed","cancelled","timedout","error"].includes(String(row.status))) results.set(id,row);
+  }
+  const models = Array.isArray(reply?.models) ? reply.models : [];
+  const answers = Array.isArray(reply?.answers) ? reply.answers : [];
+  if (Array.isArray(reply?.children)) reply.children.forEach((id, index) => {
+    const answer = str(answers[index]);
+    if (typeof id !== "string" || !answer || !str(models[index])) return;
+    const tasks = Array.isArray(info?.tasks) ? info.tasks : [];
+    results.set(id, { agent:reply.role, task:tasks[index] ?? tasks[0], ...results.get(id), subagentId:id, status:"completed",
+      resolvedModel:models[index], messages:[{ role:"assistant", content:[{type:"text",text:answer}] }] });
+  });
+  for (const failure of Array.isArray(reply?.failures) ? reply.failures : []) {
+    const id = str(failure?.child);
+    if (id) results.set(id,{...results.get(id),subagentId:id,status:failure.status === "cancelled" ? "cancelled" : "failed",resolvedModel:failure.model,errorMessage:failure.error});
+  }
+  const result = results.size ? JSON.stringify({results:[...results.values()]}) : undefined;
+  projected.set(call,{output:call.output,detail:call.detail,result});
+  return result;
 }
 
 function planItem(raw: unknown): SubagentPlanItem | null {
@@ -146,7 +182,7 @@ function resultRun(raw: unknown): SubagentResultRun | null {
     model: str(item.model),
     cwd: str(workspace?.cwd),
     messages,
-    durationMs: span(messages),
+    durationMs: num(item.durationMs) ?? span(messages),
     usage: record(item.usage) as SubagentResultRun["usage"],
   };
 }

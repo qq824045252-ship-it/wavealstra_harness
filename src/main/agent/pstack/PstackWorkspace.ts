@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import { largeDiff } from "./PstackLargeDiff";
+import { MANIFEST_FILENAME } from "../../task/TaskExecutionWorkspace";
 
 const exec = promisify(execFile);
 const hash = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
@@ -101,12 +102,13 @@ export async function skillFileState(root: string, id: string, retain: boolean, 
 
 async function gitPaths(base: WorkspaceBaseline, signal?: AbortSignal) {
   const scope = relative(base.root, base.cwd).split(sep).join("/") || ".";
-  const pieces = await Promise.all([
+  const [tracked, untracked] = await Promise.all([
     git(base.root, ["diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base.head, "--", scope], signal),
     git(base.root, ["ls-files", "--others", "--exclude-standard", "-z", "--", scope], signal),
   ]);
-  return pieces.flatMap(bytes => bytes.toString("utf8").split("\0").filter(Boolean)
-    .map(name => relative(base.cwd, resolve(base.root, name)).split(sep).join("/")));
+  const paths = (bytes: Buffer) => bytes.toString("utf8").split("\0").filter(Boolean)
+    .map(name => relative(base.cwd, resolve(base.root, name)).split(sep).join("/"));
+  return [...paths(tracked), ...paths(untracked).filter(name => name !== MANIFEST_FILENAME)];
 }
 
 async function collect(base: WorkspaceBaseline, retain: boolean, signal?: AbortSignal) {

@@ -102,7 +102,7 @@ export default function WorkspacePicker({
       // draft-workspace：仅改 draft，不碰 homeSpaceId / activeTask
       const cur = useAppStore.getState().draft;
       if (id == null) {
-        if (cur) useAppStore.setState({ draft: { ...cur, spaceId: undefined } });
+        if (cur) useAppStore.setState({ draft: { ...cur, spaceId: undefined, worktreeTaskId: undefined } });
         else useAppStore.setState({ draft: { spaceId: undefined } });
         // 若 draft 仅有 spaceId，移除后置 null 保持语义
         const after = useAppStore.getState().draft;
@@ -110,7 +110,7 @@ export default function WorkspacePicker({
           useAppStore.setState({ draft: null });
         }
       } else {
-        useAppStore.setState({ draft: { ...(cur ?? {}), spaceId: id } as typeof cur });
+        useAppStore.setState({ draft: { ...cur, spaceId: id, worktreeTaskId: id === cur?.spaceId ? cur.worktreeTaskId : undefined } });
       }
     }
     onClose();

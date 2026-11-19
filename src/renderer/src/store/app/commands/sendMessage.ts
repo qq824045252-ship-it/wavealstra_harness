@@ -27,8 +27,10 @@ export function createSendMessageActions(
       connectorIds,
       explicitOverrides,
       externalAgent,
+      preparedTaskId,
     ) => {
       let { activeTaskId } = get();
+      if (preparedTaskId && (activeTaskId || get().draft?.worktreeTaskId !== preparedTaskId)) return;
       let materializedPlanId: string | undefined;
       if (!activeTaskId) {
         // 草稿态（点「新建任务」/召唤专家后尚未发过消息）：此刻才创建任务并激活，
@@ -36,7 +38,7 @@ export function createSendMessageActions(
         const state = get();
         materializedPlanId = state.draft?.planId;
         const task: Task = {
-          id: uid(storeContext),
+          id: preparedTaskId ?? uid(storeContext),
           title: state.draft?.title?.trim() || "新任务",
           spaceId: state.draft?.spaceId ?? undefined,
           projectId: state.draft?.projectId,

@@ -4,6 +4,7 @@ import { composerFiles, mergeComposerAttachments, pickComposerAttachment } from 
 import ChatComposer from "./ChatComposer";
 import { useConsultSelection } from "./useConsultSelection";
 import { requestConsultForMessage } from "@shared/multi-model-consult";
+import { createTaskWorktreeId, isTaskWorktreeId } from "@shared/task-worktree";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { selectActiveTaskArtifacts, useAppStore, type StreamingSendMode } from "@/store/appStore";
@@ -49,6 +50,7 @@ import {
   IconCheck,
   IconChevronDown,
   IconCode,
+  IconGitBranch,
   IconLink,
   IconList,
   IconPencil,
@@ -105,6 +107,7 @@ interface Props {
     streamingBehavior?: "steer" | "followUp",
     connectorIds?: string[],
     externalAgent?: ExternalAgentSelection,
+    preparedTaskId?: string,
   ) => void;
   /** 外部填入草稿（如 HomeHero 场景 chip） */
   externalDraft?: string | null;
@@ -230,6 +233,8 @@ export default function ChatInput({
     ?? (pinnedAgent
       ? { id: pinnedAgent.id, name: pinnedAgent.name, protocol: "acp" as const, commandLabel: "已固定 · 逐轮续聊" }
       : null);
+  const effectiveExternalAgentRef = useRef(effectiveExternalAgent);
+  effectiveExternalAgentRef.current = effectiveExternalAgent;
   const [dragOver, setDragOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const droppedTextCaret = useRef<number | null>(null);
@@ -430,6 +435,17 @@ export default function ChatInput({
     (activeTask.messages.length > 0 || Boolean(activeTask.sessionFile));
   /** 首页/草稿态：召唤专家选中的专家，materialize 前暂存于此 */
   const draft = useAppStore((s) => s.draft);
+  const draftSpace = useAppStore((s) => s.spaces.find((space) => space.id === s.draft?.spaceId));
+  const worktreeUnavailable = effectiveExternalAgent
+    ? "切换到 MyBuddy 主模型后可使用工作树"
+    : !draftSpace || draftSpace.pathMissing || (draftSpace.effectiveArchived ?? draftSpace.archived)
+      ? "请先选择 Git 仓库所在的工作空间"
+      : undefined;
+  const [preparingWorktree, setPreparingWorktree] = useState(false);
+  const worktreeFlight = useRef(false);
+  const [worktreeError, setWorktreeError] = useState("");
+  const worktreeTaskId = !activeTaskId ? draft?.worktreeTaskId : undefined;
+  useEffect(() => setWorktreeError(""), [worktreeTaskId]);
   /** Prompt Enhance 上下文：双 surface 映射。
    *  chat（有 activeTaskId）：任务内增强，主进程从 taskId 解析受控环境；
    *  new-task（草稿态）：projectId/spaceId 取自 appStore draft（无 id 时主进程回退
@@ -739,7 +755,7 @@ export default function ChatInput({
   }, [pendingExternalAgentContinuation, activeTaskId, clearPendingExternalAgentContinuation]);
 
   const send = async (): Promise<void> => {
-    if (interruptSendRef.current || (!btwActive && taskCompacting)) return;
+    if (interruptSendRef.current || worktreeFlight.current || (!btwActive && taskCompacting)) return;
     // BTW 激活时：Enter/发送只消费独立草稿 btwText（经纯函数路由，绝不读取主 text）；
     // 主 composer 的 text/附件/引用原样保留，只清空 btwText
     if (btwActive) {
@@ -856,6 +872,49 @@ export default function ChatInput({
     }
     const payload = consultRequested ? requestConsultForMessage(basePayload) : basePayload;
 
+    if (worktreeTaskId) {
+      if (worktreeUnavailable || !draft?.spaceId) {
+        setWorktreeError(worktreeUnavailable ?? "请先选择 Git 仓库所在的工作空间");
+        return;
+      }
+      const origin = useAppStore.getState();
+      const preparation = window.api?.agent?.prepareTaskWorktree;
+      if (!preparation) {
+        setWorktreeError("工作树服务尚未就绪，请重启 MyBuddy");
+        return;
+      }
+      worktreeFlight.current = true;
+      closeAllPopups();
+      setPreparingWorktree(true);
+      setWorktreeError("");
+      try {
+        const result = await preparation({ taskId: worktreeTaskId, spaceId: draft.spaceId });
+        if (!result.ok) {
+          setWorktreeError(result.error);
+          return;
+        }
+      } catch (error) {
+        console.warn("[Worktree] preparation IPC failed", error);
+        setWorktreeError("无法连接工作树服务，请重试");
+        return;
+      } finally {
+        worktreeFlight.current = false;
+        setPreparingWorktree(false);
+      }
+      const current = useAppStore.getState();
+      const snapshot = composerSnapshotRef.current;
+      if (current.activeTaskId || current.page !== origin.page
+        || current.draft?.worktreeTaskId !== worktreeTaskId || !textareaRef.current) return;
+      if (current.draft !== origin.draft || current.welcomeMode !== origin.welcomeMode
+        || current.modePresetId !== origin.modePresetId || effectiveExternalAgentRef.current
+        || snapshot.text !== text || snapshot.attachments !== attachments || snapshot.attachedSkills !== attachedSkills
+        || snapshot.attachedMcps !== attachedMcps || snapshot.refFiles !== refFiles || snapshot.refTasks !== refTasks
+        || current.chatSelections !== origin.chatSelections || current.terminalContext !== terminalContext) {
+        setWorktreeError("工作树创建期间草稿有更新，请重新发送");
+        return;
+      }
+    }
+
     // 投递计划在任意 await 前一次性算出，防止 intent/Task/executing 在异步间隙漂移
     const plan = resolveStreamingSendPlan(executing, streamingSendMode);
 
@@ -890,6 +949,7 @@ export default function ChatInput({
         externalAgent
           ? { id: externalAgent.id, name: externalAgent.name, protocol: externalAgent.protocol, continueFromRunId: externalAgent.continueFromRunId }
           : undefined,
+        worktreeTaskId,
       );
     } else {
       sendMessage(
@@ -902,6 +962,7 @@ export default function ChatInput({
         externalAgent
           ? { id: externalAgent.id, name: externalAgent.name, protocol: externalAgent.protocol, continueFromRunId: externalAgent.continueFromRunId }
           : undefined,
+        worktreeTaskId,
       );
     }
     setText("");
@@ -1116,6 +1177,8 @@ export default function ChatInput({
           ? <button type="button" className="btn btn--small" data-testid="consult-configure" onClick={openConsultConfiguration}>配置会诊</button>
           : <button type="button" className="btn btn--small" data-testid="consult-retry" onClick={() => void selectConsult()}>重试</button>}
       </div>}
+      {preparingWorktree && <div className="consult-composer-notice" role="status">正在创建 Git 工作树…</div>}
+      {worktreeTaskId && worktreeError && <div className="mcp-auth-error" role="alert">{worktreeError}</div>}
       <div className="input-box">
         {(hasAttachChips || showStreamingMode) && (
           <div className="input-top-row">
@@ -1427,6 +1490,7 @@ export default function ChatInput({
                   : "继续，或 @ / 拖入文件"
           }
           value={btwActive ? btwText : text}
+          readOnly={preparingWorktree}
           onChange={(e) => {
             // BTW 激活时写入独立 btwText，绝不触碰主 composer 草稿
             if (btwActive) {
@@ -1462,7 +1526,7 @@ export default function ChatInput({
             <button
               className={`input-tool-btn ${addOpen ? "active" : ""}`}
               title={btwActive ? "BTW 临时对话仅支持文本" : "添加"}
-              disabled={btwActive}
+              disabled={btwActive || preparingWorktree}
               aria-expanded={addOpen}
               aria-haspopup="menu"
               onClick={() => {
@@ -1532,6 +1596,32 @@ export default function ChatInput({
               />
             )}
           </div>
+          {!activeTaskId ? (
+            <button
+              type="button"
+              className="input-tool-btn worktree-trigger"
+              aria-label="Git 工作树"
+              aria-description={!worktreeTaskId ? worktreeUnavailable : undefined}
+              aria-pressed={Boolean(worktreeTaskId)}
+              disabled={preparingWorktree}
+              aria-disabled={Boolean(!worktreeTaskId && worktreeUnavailable)}
+              title={worktreeTaskId ? "关闭 Git 工作树" : worktreeUnavailable ?? "在独立 Git 工作树中开始新对话"}
+              onClick={() => {
+                if (!worktreeTaskId && worktreeUnavailable) return;
+                useAppStore.setState((state) => state.activeTaskId || !state.draft ? {} : ({
+                  draft: { ...state.draft, worktreeTaskId: worktreeTaskId ? undefined : createTaskWorktreeId() },
+                }));
+              }}
+            >
+              <IconGitBranch size={16} />
+            </button>
+          ) : isTaskWorktreeId(activeTaskId) && (
+            <span className="input-tool-btn worktree-status" role="img"
+              aria-label="当前对话使用独立 Git 工作树"
+              title={activeTask?.cwd ?? "当前对话使用独立 Git 工作树"}>
+              <IconGitBranch size={16} />
+            </span>
+          )}
           {canBtw && (
             <button
               type="button"
@@ -1665,7 +1755,7 @@ export default function ChatInput({
               type="button"
               className="send-btn"
               disabled={
-                (!btwActive && taskCompacting) || enhance.status === "enhancing" ||
+                preparingWorktree || (!btwActive && taskCompacting) || enhance.status === "enhancing" ||
                 (btwActive
                   ? btwStreaming || !btwText.trim()
                   : !text.trim() &&

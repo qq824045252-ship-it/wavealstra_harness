@@ -21,6 +21,7 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime } from "./DurableBotRuntime";
+import type { AnswerRoutingService } from "../AnswerRoutingService";
 import type { DurableCompactionOutcome, ProductCompactionSettings } from "./context/types";
 import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
 import type { ContextManagementEngine, ContextManagementStatusDto } from "../../../shared/context-management";
@@ -85,6 +86,7 @@ export interface DurableBotServiceOptions {
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions;
+  answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask">;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
   mcpSelection?: (task: TaskDto) => readonly string[];
   toolAllowed?: (task: TaskDto, name: string) => boolean;
@@ -93,7 +95,7 @@ export interface DurableBotServiceOptions {
   onResponse?: (taskId: string, message: AssistantMessage, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onRequest?: (taskId: string, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onTool?: (event: ToolDiagnosticEvent) => void;
-  observedUsage?: (taskId: string, conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
+  observedUsage?: (taskId: string, conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
   waitingForInput?: (taskId: string) => boolean;
   /** Startup resumption width; interactive access bypasses the queue and is never throttled here. */
   resumeConcurrency?: number;
@@ -424,7 +426,12 @@ export class DurableBotService {
         () => db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
       );
+      const routing = this.options.answerRouting;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
+        answerRouting: routing && {
+          enabled: () => routing.hasRulesForTask(taskId),
+          prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd, canRead: () => toolGate.allowed("read") }),
+        },
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
@@ -946,7 +953,7 @@ export class DurableBotService {
     const binding = this.binding(taskId);
     if (!binding) return { messages: [] };
     const reading = readDurableReadOnlyHistory({ directory: binding.directory, cwd: binding.cwd,
-      models: this.options.models, beforeEntryId });
+      models: this.options.models, beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId) });
     const barrier = reading.then(() => {}, () => {}).finally(() => {
       if (this.passiveReads.get(taskId) === barrier) this.passiveReads.delete(taskId);
     });

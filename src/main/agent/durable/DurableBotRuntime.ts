@@ -44,7 +44,9 @@ import { estimateTextTokens } from "../../../shared/token-format";
 import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings } from "../ModelInvocationAdmission";
 import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
 import { DurableSubagentIdentity, resolveDurableExecutionCwd } from "./DurableSubagents";
+import { recoverChildMeasurements } from "./DurableChildMeasurements";
 import { DurableEvidenceProjection, type DurableEvidenceOptions } from "./DurableEvidenceProjection";
+import { projectAnswerRule, type TurnAnswerRouting } from "./DurableAnswerRouting";
 import { DurableContextManager } from "./context/DurableContextManager";
 import { DurableContextStateDoc, type DurableContextPersistedState } from "./context/DurableContextState";
 import { captureContextBranchAt } from "./context/DurableContextBranch";
@@ -91,6 +93,7 @@ export interface DurableBotOptions {
   instructions: () => string;
   evidence?: (messages: readonly Message[]) => string;
   evidenceProjection?: DurableEvidenceOptions;
+  answerRouting?: TurnAnswerRouting;
   onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   beforeProviderRequest?: () => void;
@@ -101,7 +104,7 @@ export interface DurableBotOptions {
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   executionIdentity?: { taskId?: string; sourceKind: DiagnosticSource; executionScope: string };
   onTool?: (event: ToolDiagnosticEvent) => void;
-  observedUsage?: (conversationId: string) => { inputTokens: number | null; outputTokens: number | null; cacheReadTokens: number | null; cacheHitRate: number | null };
+  observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
   initialHistory?: { messages: readonly Message[]; context: readonly Message[] } | (() => Promise<{ messages: readonly Message[]; context: readonly Message[] } | undefined>);
   initialBranch?: DurableBranchSeed;
   toolHooks?: Partial<ToolHooks>;
@@ -334,7 +337,7 @@ export class DurableBotRuntime {
     // Recovered generations may enter their hook while the host is still opening.
     let finishOpening!: (projection: DurableEvidenceProjection | undefined) => void;
     const openingEvidence = new Promise<DurableEvidenceProjection | undefined>(resolve => { finishOpening = resolve; });
-    registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message),
+    registry.install(botExtension(options, storage, native, codemode, (id, message) => runtime?.recordResponse(id, message),
       (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context), async (id, context) => harness?.getTask(id, context), (conversationId, context) => runtime!.contextManagerFor(conversationId, context),
       async (operation, context) => {
         const opened = await requestHarness;
@@ -484,7 +487,7 @@ export class DurableBotRuntime {
   private installExtension(): void {
     const names = new Set(this.nativeTools.map(tool => tool.name));
     const registered = [...this.nativeTools, ...this.compatibilityTools.filter(tool => !names.has(tool.name))];
-    this.registry.install(botExtension(this.options, registered, this.codemode,
+    this.registry.install(botExtension(this.options, this.storage, registered, this.codemode,
       (id, message) => this.recordResponse(id, message),
       (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence,
       (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context),
@@ -740,7 +743,7 @@ export class DurableBotRuntime {
       const page = await this.conversation.entries({ maxEntryId: before as EntryId, order: "descending" }, size + 1, undefined, ctx);
       const entries = page.items.slice(0, size).filter(entry => entry.kind !== "mybuddy.context-import");
       await this.loadInputMetadata(entries, metadata);
-      history.merge(entries, metadata, timing?.completed ?? {}, timing?.speed ?? {});
+      history.merge(await this.historyEntries(history, entries), metadata, timing?.completed ?? {}, timing?.speed ?? {});
       before = page.items[size]?.id;
       if (history.messages.length) break;
     }
@@ -785,6 +788,13 @@ export class DurableBotRuntime {
     return true;
   }
 
+  private async historyEntries(history: DurableHistoryProjection, entries: readonly EntryRecord[]): Promise<EntryRecord[]> {
+    const fresh = entries.filter(entry => !history.has(entry.id));
+    return Promise.all(fresh.map(entry => entry.model?.some(m => m.role === "toolResult" && m.toolName === "pstack_delegate")
+      ? recoverChildMeasurements(entry, this.storage, this.harness, ctx, this.options.observedUsage)
+      : entry));
+  }
+
   /** Results outside a window update its tool rows without adding intervening messages. */
   private async completeHistoryTools(history: DurableHistoryProjection, afterEntryId: number, metadata: Map<number, BotInputMetadata>) {
     const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
@@ -794,7 +804,7 @@ export class DurableBotRuntime {
       for (const entry of later.items) {
         const results = entry.model?.filter(message => message.role === "toolResult" && unresolved.has(message.toolCallId));
         if (results?.length) {
-          history.merge([{ ...entry, model: results }], metadata, {});
+          history.merge(await this.historyEntries(history, [{ ...entry, model: results }]), metadata, {});
           for (const message of results) if (message.role === "toolResult") unresolved.delete(message.toolCallId);
         }
       }
@@ -821,7 +831,7 @@ export class DurableBotRuntime {
     await this.loadInputMetadata(entries, metadata);
     const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
     const history = new DurableHistoryProjection();
-    history.merge(entries, metadata, timing?.completed ?? {}, timing?.speed ?? {});
+    history.merge(await this.historyEntries(history, entries), metadata, timing?.completed ?? {}, timing?.speed ?? {});
     await this.completeHistoryTools(history, entries.at(-1)?.id ?? entryId, metadata);
     return { historyId: this.historyId, before: earlier.items[25]?.id, after: later.items[size]?.id === undefined ? undefined : later.items[size - 1]?.id,
       messages: history.messages };
@@ -940,7 +950,7 @@ export class DurableBotRuntime {
       const active = await tx.doc(ActiveDurableConversation);
       if (active.conversationId !== this.conversation.id || active.regeneration?.kind !== "pending" || active.regeneration.input.operationId !== input.operationId) throw new Error("重新生成输入归属已变化");
       const id = await this.conversation.submit(tx, { type: "input", content: input.content, requestId: input.operationId,
-        ...(input.metadata ? { entry: { kind: "mybuddy.user", data: { mybuddyInput: input.metadata } } } : {}),
+        ...(input.metadata ? { entry: { kind: "mybuddy.user", data: { mybuddyInput: { ...input.metadata, inputRequestId: input.operationId } } } } : {}),
       });
       active.regeneration = { kind: "admitted", operationId: input.operationId, submissionId: id };
       return id;
@@ -1217,7 +1227,7 @@ export class DurableBotRuntime {
     const live = (value.docs["pi.live"] ?? {}) as LiveState;
     const timing = entries.some(entry => !this.history.has(entry.id)) ? await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx) : undefined;
     await this.loadInputMetadata(entries);
-    const fresh = this.history.merge(entries, this.metadataByEntry, timing?.completed ?? {}, timing?.speed ?? {});
+    const fresh = this.history.merge(await this.historyEntries(this.history, entries), this.metadataByEntry, timing?.completed ?? {}, timing?.speed ?? {});
     // 长耗时工具的调用行可能已在窗口外：只补回 owner 行，否则结果（含子代理的 8 条记录）
     // 会被 `applyResult` 静默丢弃，界面上这次调用从此不存在。
     await this.mendOrphanToolCalls();
@@ -1550,6 +1560,7 @@ export function durableAuthorityRequestOptions(_api: string, lifecycleChecked: b
 
 function botExtension(
   options: DurableBotOptions,
+  storage: Storage,
   native: readonly ToolRegistration[],
   codemode: ToolRegistration,
   recordResponse: (taskId: number, message: AssistantMessage) => void | Promise<void>,
@@ -1676,7 +1687,15 @@ function botExtension(
           const projected = await manager.beforeRequest(messages, api, context);
           if (projected) { messages = projected.messages; changed = true; }
         }
-        validate = ledger?.captureRequestGuard() ?? (() => {});
+        const route = options.answerRouting && await projectAnswerRule(options.answerRouting, storage, api, context, messages);
+        if (route) { messages = route.messages; changed = true; }
+        const validateEvidence = ledger?.captureRequestGuard();
+        let recorded = false;
+        validate = () => {
+          validateEvidence?.();
+          route?.validate();
+          if (route && !recorded) { route.record(); recorded = true; }
+        };
         return changed ? { messages } : undefined;
       } catch (error) {
         validate = () => { throw error; };

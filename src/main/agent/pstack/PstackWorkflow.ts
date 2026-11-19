@@ -5,12 +5,13 @@ import { Type } from "typebox";
 import { dirname, relative, resolve, sep } from "node:path";
 import { PSTACK_PLAYBOOKS, PSTACK_SKILLS, normalizePstackSettings, validatePstackPlan } from "../../../shared/pstack";
 import { createPstackDelegate } from "./PstackDelegate";
+import { codingTagRoute, codingTagSupportsRoute, readOnlyCodingTag } from "../../../shared/pstack/coding-tags";
 import { isPstackObservation } from "./PstackObservationCommand";
 import { contestStep, prepareContestAdvance } from "./PstackContest";
 import { checkEvalExport, createEvalSave, exportEval, requestedEvalFiles } from "./PstackEvalExport";
 import { checked, criteria, detached, failure, live, observation, owner, playbookFor, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success,
   transcript, update, view, WorkflowFiles, WorkflowState, type WorkflowOptions, type WorkflowRun } from "./PstackState";
-import { baselineWorkspace, branchReviewBase, measureWorkspace, readPlanFile, reviewCommit, reviewScope } from "./PstackWorkspace";
+import { baselineWorkspace, branchReviewBase, measureWorkspace, readPlanFile, reviewBaseline, reviewCommit, reviewScope } from "./PstackWorkspace";
 import { appendPstackDecision, auditPstackDecisions, createPstackDecisionAppend, decisionParameters, hasPstackDecisions } from "./PstackDecisionTrail";
 import { decisionDigest } from "./PstackAttention";
 import { createPstackWatchTool } from "./watch";
@@ -22,7 +23,7 @@ const actions = ["status", "start", "advance", "review", "complete", "block", "r
 const parameters = Type.Object({
   action: Type.Union(actions.map(value => Type.Literal(value))),
   playbook: Type.Optional(Type.String()), stage: Type.Optional(Type.String()), skill: Type.Optional(Type.String()),
-  note: Type.Optional(Type.String({ maxLength: 4000 })), command: Type.Optional(Type.String({ maxLength: 1800 })),
+  note: Type.Optional(Type.String({ maxLength: 4000, description: "For block, this note is shown directly to the user. Write concise Markdown with real paragraph breaks, the specific blocker, verified work and the next feasible step. Preserve paths and code in backticks." })), command: Type.Optional(Type.String({ maxLength: 1800 })),
   artifact: Type.Optional(Type.String({ description: "Workspace path to the multi-phase plan, or the actual PR body at opening-a-pr describe (default pr.md)." })),
   scheduleId: Type.Optional(Type.String({ minLength: 1, description: "At an autopilot audit, optionally attach the authorized current-task automation that uses the auditSchedule returned by status." })),
   pullRequest: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "The actual published PR URL for opening-a-pr open and confirm. Do not publish without authorization." })),
@@ -65,26 +66,35 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         const { action, note } = args;
         const current = await state(api, ctx), run = current?.task === options.taskId ? current : null;
         const settings = run && run.phase !== "complete" && !(action === "start" && args.replace) ? runSettings(run) : normalizePstackSettings(options.settings());
+        const preferred = codingTagRoute(options.tag) ?? settings.skills["poteto-mode"]?.parameters.preferredPlaybook;
+        const tagId = options.tag?.id;
+        const allowedRoute = (id: string) => codingTagSupportsRoute(tagId, id) && !!routeSettings(settings, id)?.enabled;
+        const defaultRoute = typeof preferred === "string" && allowedRoute(preferred) ? preferred : "auto";
+        if (readOnlyCodingTag(tagId) && (["verify", "decision", "export-eval", "audit", "pr-body"].includes(action) || args.artifactDirectory))
+          throw new Error("当前标签只读。请使用 read、find、grep 或 review 核实证据。");
+        if (run && run.phase !== "complete" && !codingTagSupportsRoute(tagId, run.playbook) &&
+            !["status", "skill", "block"].includes(action) && !(action === "start" && args.replace))
+          throw new Error("原有流程超出当前只读标签的范围。用 start(replace=true,note) 记录新目标并启动当前标签的流程。");
         if (action === "skill") return success(skillView(settings, args.skill ?? ""));
-        if (action === "status") return success(run ? { ...view(run), ...(isAutopilot(run.playbook) && { ownerAuditHistory: await recordedOwnerAudits(api, ctx, run.run) }) } : {
-          phase: "idle", preferredPlaybook: settings.skills["poteto-mode"]?.parameters.preferredPlaybook,
-          playbooks: PSTACK_PLAYBOOKS.filter(s => settings.playbooks[s.id]?.enabled).map(({ id, description }) => ({ id, description })),
-          skills: PSTACK_SKILLS.filter(s => settings.skills[s.id]?.enabled).map(({ id }) => id),
+        if (action === "status") return success(run ? { ...view(run), preferredPlaybook: defaultRoute, ...(isAutopilot(run.playbook) && { ownerAuditHistory: await recordedOwnerAudits(api, ctx, run.run) }) } : {
+          phase: "idle", preferredPlaybook: defaultRoute,
+          playbooks: PSTACK_PLAYBOOKS.filter(s => allowedRoute(s.id)).map(({ id, description }) => ({ id, description })),
+          skills: PSTACK_SKILLS.filter(s => allowedRoute("skill:" + s.id)).map(({ id }) => id),
         });
         const active = await live(api, ctx);
         if (!active?.first || !active.inputs.length) throw new Error("Workflow requires a current user input.");
         if (run?.operations.includes(api.taskId)) return success(view(run));
         if (action === "start") {
-          const preferred = settings.skills["poteto-mode"]?.parameters.preferredPlaybook;
-          const requested = args.skill ? "skill:" + args.skill : args.playbook ?? (typeof preferred === "string" && preferred !== "auto" ? preferred : "");
+          const requested = args.skill ? "skill:" + args.skill : args.playbook ??
+            (run && run.phase !== "complete" && !args.replace ? run.playbook : defaultRoute);
           if (run && run.phase !== "complete" && !args.replace) {
             if (requested !== run.playbook) throw new Error("A workflow is already active. Finish it or resume its current stage.");
             return success(view(run));
           }
           if (run?.inputs.some(id => active.inputs.includes(id as typeof active.inputs[number]))) throw new Error("This input already completed its workflow.");
           if (args.replace && !note?.trim()) throw new Error("Record the change in the user's requested objective in note.");
-          const book = playbookFor({ playbook: requested });
-          if (!routeSettings(settings, book.id)?.enabled) throw new Error("Select an enabled playbook or skill from status.");
+          if (!allowedRoute(requested)) throw new Error("Select an enabled playbook or skill from status for this tag.");
+          const book = playbookFor({ playbook: requested, tagId });
           const base = await baselineWorkspace(options.cwd, ctx.abortSignal);
           let reviewBase: string | undefined;
           if (args.baseRef) reviewBase = await reviewCommit(base, args.baseRef, ctx.abortSignal);
@@ -94,6 +104,7 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           }
           const started: WorkflowRun = { task: options.taskId, run: api.taskId, first: active.first, inputs: [...active.inputs],
             revision: 1, operations: [api.taskId], playbook: book.id, config: JSON.stringify(settings), phase: "running",
+            ...(tagId && { tagId }),
             block: "", stage: 0, notes: [], verification: null, review: null, delegates: [],
             ...(reviewBase !== undefined && { reviewCommit: reviewBase }) };
           const result = await api.commit(async tx => {
@@ -201,7 +212,7 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           if (method === "tdd" && stepId === "green" && (!run.red || !run.verification?.passed ||
             run.red.command !== run.verification.command || run.red.fingerprint === run.verification.fingerprint))
             throw new Error("Rerun the original failed command against the changed workspace and obtain exit code zero.");
-          const checkpoint = settings.skills.architect?.enabled && settings.skills.architect.parameters.checkpoint === true
+          const checkpoint = !readOnlyCodingTag(run.tagId) && settings.skills.architect?.enabled && settings.skills.architect.parameters.checkpoint === true
             && (method === "architect" ? stepId === "synthesize" : stage.skillIds.includes("architect") && stage.id === "design"
               && !run.invoked?.some(entry => entry.stage === stage.id && entry.skill === "architect"));
           return success(view(await save(next => {
@@ -254,8 +265,13 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         const reasons = reviewReasons(settings, reviewedDelta, history, run);
         const reviewed = !!run.review?.passed && run.review.fingerprint === reviewedDelta.fingerprint
           && (run.playbook !== "investigation" || !!run.review.answerDraft);
+        // A read-only review can deliver a substantiated negative verdict. Missing or invalid member receipts still block delivery.
+        const reportedFindings = run.tagId === "code-review" && run.review?.passed === false &&
+          run.review.fingerprint === reviewedDelta.fingerprint && !run.review.error &&
+          !!run.review.members?.length && run.review.members.every(member => !member.error);
         if (action === "review") return success({ reasons, reviewBase: run.reviewCommit ?? "task start", reviewerRole: settings.thermos.reviewerRole,
-          currentReviewPassed: reviewed, criteria: criteria(settings), authoredSkills:scoped.map(f=>({file:f.path,sha256:f.current.digest})), ...reviewedDelta });
+          ...(tagId === "code-review" && await reviewBaseline(scope, reviewedDelta.paths, ctx.abortSignal, scoped)),
+          currentReviewPassed: reviewed, currentReviewFinished: reviewed || reportedFindings, criteria: criteria(settings), authoredSkills:scoped.map(f=>({file:f.path,sha256:f.current.digest})), ...reviewedDelta });
         const snapshotDone = run.watch?.allowed && ["STATUS", "ORIGIN_STATUS"].includes(run.watch.verdict) && !delta.paths.length &&
           (run.watch.mergedSnapshot || (run.playbook === "babysit" && settings.playbooks.babysit.parameters.mode === "check"));
         if (stage && !snapshotDone) throw new Error("Complete the current stage: " + stage.id);
@@ -265,14 +281,21 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           if (current.digest !== run.prBody?.digest) throw new Error("The PR body changed after its review. Call pr-body(artifact) to inspect its current content before claiming publication.");
           await inspectPublishedPr(base.cwd, args.pullRequest ?? run.publishedPr?.url, current, settings.playbooks[run.playbook].parameters.forge, ctx.abortSignal);
         }
-        if (run.playbook === "investigation" && delta.paths.length)
+        if ((run.playbook === "investigation" || readOnlyCodingTag(run.tagId)) && delta.paths.length)
           throw new Error("The read-only investigation changed the workspace: " + delta.paths.join(", ") + ". Reconcile the changes before claiming completion.");
         if (run.playbook === "orchestrate") {
           const missing = await orchestrationProgress(api, ctx, run);
           if (missing) throw new Error(missing);
         }
-        if (!delta.coverageComplete || !reviewedDelta.coverageComplete) throw new Error("The workspace could not be fully fingerprinted. Resolve unreadable paths or start a task with a narrower workspace. " + reviewedDelta.unknown.slice(0, 3).join(", "));
-        if (reasons.length && !reviewed) throw new Error("Independent Thermos review required: " + reasons.join(", "));
+        if (!delta.coverageComplete || !reviewedDelta.coverageComplete) {
+          const problems = [...new Set([...delta.unknown, ...reviewedDelta.unknown])].slice(0, 3);
+          const overLimit = problems.includes("file count exceeds inspection limit");
+          throw new Error(["当前工作区的文件指纹检查未完成。", "",
+            overLimit ? "文件数量超过检查上限。请在本次改动所属的具体项目目录重新验证。" : "请处理下列无法检查的路径，再重新验证。",
+            ...problems.filter(problem => problem !== "file count exceeds inspection limit").map(problem => "- " + problem), "",
+            "用户可以单独接受已验证的交付物；流程仍须取得完整指纹才能标记完成。"].join("\n"));
+        }
+        if (reasons.length && !reviewed && !reportedFindings) throw new Error("Independent Thermos review required: " + reasons.join(", "));
         let planReceipt: WorkflowRun["plan"];
         if (run.playbook === "multi-phase-plan") {
           const planPath = settings.playbooks["multi-phase-plan"].parameters.planPath;
@@ -297,7 +320,7 @@ export function createPstackWorkflow(options: WorkflowOptions) {
             if (!check.valid) throw new Error("Installed skill validation failed for " + f.path + ": " + check.errors.join(", "));
           }
         }
-        if (delta.paths.some(path => path !== planReceipt?.path && path !== auditedTrail && !authored.some(f=>f.path===path)) || delta.unknown.length) {
+        if (run.tagId === "add-tests" || delta.paths.some(path => path !== planReceipt?.path && path !== auditedTrail && !authored.some(f=>f.path===path)) || delta.unknown.length) {
           if (!run.verification?.passed || run.verification.fingerprint !== delta.fingerprint)
             throw new Error("Current workspace needs a successful verification. Call verify with the project's focused check.");
         } else if (!planReceipt && !auditedTrail && !authored.length && !observation(history) && !run.verification?.passed && !run.delegates.length && !reviewed && !run.watch?.allowed) {
@@ -305,7 +328,8 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         }
         if ((await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run))).fingerprint !== delta.fingerprint)
           throw new Error("Workspace changed while evaluating the completion gate; inspect the latest version.");
-        const thermosOutcome = reasons.length ? "Thermos 审查通过（" + reasons.join("，") + "）。"
+        const thermosOutcome = reportedFindings ? "Thermos 独立审查已完成，代码存在待修复问题。"
+          : reasons.length ? "Thermos 审查通过（" + reasons.join("，") + "）。"
           : !settings.skills["thermo-nuclear-code-quality-review"]?.enabled ? "Thermos 未触发（任务设置已关闭质量审查）。"
           : "Thermos 未触发（变更 " + reviewedDelta.changedLines + " 行，未满足本任务启用的审查条件）。";
         return success(view(await save(next => { next.phase = "complete"; next.thermosOutcome = thermosOutcome; if (planReceipt) next.plan = planReceipt;

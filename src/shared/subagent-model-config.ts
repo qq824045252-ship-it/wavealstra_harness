@@ -165,6 +165,7 @@ export function resolveSubagentReasoningAfterModelSwitch(opts: {
  * 字段与 `SubagentSummaryDto.usage` / usage_events 的 token 列同口径。
  */
 export interface SubagentUsage {
+  reported?: import("./task-diagnostics").ConversationUsageReceipt;
   input: number;
   output: number;
   cacheRead: number;
@@ -199,7 +200,10 @@ function parseSubagentUsage(raw: unknown): SubagentUsage | undefined {
   const usage = raw as Record<string, unknown>;
   if (!isNonNegativeNumber(usage.input) || !isNonNegativeNumber(usage.output)
     || !isNonNegativeNumber(usage.cacheRead) || !isNonNegativeNumber(usage.cacheWrite)) return undefined;
+  const reported = usage.reported as SubagentUsage["reported"];
   return {
+    ...(reported && [reported.inputTokens, reported.outputTokens, reported.cacheReadTokens, reported.cacheWriteTokens, reported.cacheHitRate]
+      .every(value => value === null || isNonNegativeNumber(value)) && { reported }),
     input: usage.input,
     output: usage.output,
     cacheRead: usage.cacheRead,

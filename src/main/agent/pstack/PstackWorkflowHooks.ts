@@ -4,6 +4,8 @@ import { live, runSettings, state, transcript, WorkflowFiles, type WorkflowOptio
 import { measureWorkspace, reviewScope } from "./PstackWorkspace";
 import { MERGE_REVIEW_BLOCK } from "./PstackReviewIntent";
 import { authoredFiles, captureAuthoredSkill } from "./PstackAuthoredSkills";
+import { codingTagRoute } from "../../../shared/pstack/coding-tags";
+import { formatPstackBlock } from "./PstackBlockReport";
 
 const mutatingTools = new Set(["write", "edit", "bash", "powershell", "subagent", "terminal_exec", "execute_code", "apply_patch", "skill_authoring_create"]);
 export const textMessage = (content: string | readonly { type: string; text?: string }[]) =>
@@ -11,7 +13,10 @@ export const textMessage = (content: string | readonly { type: string; text?: st
 
 export function createPstackWorkflowHooks(options: WorkflowOptions) {
   const beforeTool: ToolHooks["beforeTool"] = async (call, api, ctx) => {
-    if (!options.active() || !mutatingTools.has(call.name)) return;
+    if (!options.active()) return;
+    const defaultRoute = codingTagRoute(options.tag);
+    const tagObservation = defaultRoute && defaultRoute !== "auto" && ["read", "find", "grep", "ls"].includes(call.name);
+    if (!mutatingTools.has(call.name) && !tagObservation) return;
     const run = await state(api, ctx);
     if (run?.task === options.taskId) {
       if (run.playbook === "investigation" && ["write", "edit", "apply_patch", "skill_authoring_create"].includes(call.name))
@@ -33,7 +38,9 @@ export function createPstackWorkflowHooks(options: WorkflowOptions) {
       }
       if (run.phase === "running") return;
     }
-    return { block: "This coding task needs an active pstack workflow. Call pstack_workflow status and start or resume before this tool." };
+    return { block: defaultRoute && defaultRoute !== "auto" ?
+      "当前标签默认流程为 " + defaultRoute + "。先调用 pstack_workflow(action=start)，已暂停的任务用 resume；若默认流程停用请用 status 选择。" :
+      "This coding task needs an active pstack workflow. Call pstack_workflow status and start or resume before this tool." };
   };
 
   async function gate(api: HookApi, ctx: Context) {
@@ -44,7 +51,11 @@ export function createPstackWorkflowHooks(options: WorkflowOptions) {
     const taskScoped = run?.task === options.taskId && (run.phase !== "complete" || run.inputs.some(id => active.inputs.includes(id as typeof active.inputs[number])));
     if (taskScoped && run.phase === "complete") return { complete: true, thermosOutcome: run.thermosOutcome, attention: run.attention,
       answerDraft: run.playbook === "investigation" && run.review?.passed ? run.review.answerDraft : undefined } as const;
-    if (taskScoped && run.phase === "blocked") return { blocked: run.block } as const;
+    if (taskScoped && run.phase === "blocked") {
+      if (run.inputs.some(id => active.inputs.includes(id as typeof active.inputs[number]))) return { blocked: run.block } as const;
+      // A follow-up can acknowledge or discuss a blocked run. Resume explicitly rebinds the new input.
+      return;
+    }
     const history = await transcript(api, ctx, active.first);
     const inputs = history.filter(e => e.kind === "pi.user" || e.kind === "mybuddy.user").flatMap(e =>
       (e.model ?? []).flatMap(m => m.role === "user" ? [textMessage(m.content)] : []));
@@ -72,7 +83,7 @@ export function createPstackWorkflowHooks(options: WorkflowOptions) {
         answer.content = [...answer.content, { type: "text", text: "\n\n## Attention\n\nreviewed by " + models.join(", ") + "\n\n" + (flags.length ? flags.map(flag => "- " + flag).join("\n") : "No flags") }];
       }
     } else if (result?.blocked) {
-      answer.content = [{ type: "text", text: "pstack 工作流尚待继续。当前阻碍：" + result.blocked }];
+      answer.content = [{ type: "text", text: formatPstackBlock(result.blocked) }];
     } else if (result?.unfinished) {
       answer.content = [{ type: "text", text: result.unfinished }];
       answer.stopReason = "aborted";

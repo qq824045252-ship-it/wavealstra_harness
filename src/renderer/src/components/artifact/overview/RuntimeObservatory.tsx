@@ -14,6 +14,7 @@ import type { SubagentUsage } from "@shared/subagent-model-config";
 import type { ExternalAgentRunDto } from "@shared/external-agent";
 import { modelBadgeTitle, type ModelBadge } from "@/lib/modelBadge";
 import { useSubagentRuns } from "@/hooks/useSubagentRuns";
+import ChatMarkdown from "@/components/chat/ChatMarkdown";
 import {
   formatElapsed,
   subagentUsageFields,
@@ -65,6 +66,7 @@ function ModelChip({ badge }: { badge?: ModelBadge }): React.JSX.Element | null 
 export default function RuntimeObservatory(): React.JSX.Element | null {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const openSubagentDrawer = useAppStore((s) => s.openSubagentDrawer);
+  const openSubagentView = useAppStore((s) => s.openSubagentView);
   const [expandedDoneId, setExpandedDoneId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [activeExternalAgents, setActiveExternalAgents] = useState<ExternalAgentRunDto[]>([]);
@@ -191,7 +193,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
               return (
                 <li key={`done:${d.id}`} className={`ro-row ro-row--done ${isExpanded ? "expanded" : ""}`}>
                   <span className="ro-status-col">
-                    <Dot state={d.state === "completed" ? "ok" : "err"} />
+                    <Dot state={d.state === "completed" ? "ok" : d.state === "failed" ? "err" : "idle"} />
                   </span>
                   <div
                     className="ro-row-main ro-btn ro-btn--done"
@@ -233,7 +235,7 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                         {d.detail && (
                           <div className="ro-detail-block">
                             <span className="ro-detail-title">执行输出 / 结果:</span>
-                            <pre className="ro-detail-pre">{d.detail}</pre>
+                            <div className="ro-detail-report"><ChatMarkdown text={d.detail} streaming={false} /></div>
                           </div>
                         )}
                         <div className="ro-detail-footer">
@@ -253,9 +255,9 @@ export default function RuntimeObservatory(): React.JSX.Element | null {
                           <button
                             type="button"
                             className="ro-detail-btn ro-detail-btn-primary"
-                            onClick={() => openSubagentDrawer(d.id)}
+                            onClick={() => activeTaskId && openSubagentView(activeTaskId, d.id)}
                           >
-                            打开临时抽屉
+                            查看执行结果
                           </button>
                         </div>
                       </div>

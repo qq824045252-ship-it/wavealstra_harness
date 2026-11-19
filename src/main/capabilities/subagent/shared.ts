@@ -30,13 +30,14 @@ export interface SingleResult {
   subagentId: string;
   /** Actual native child conversation, absent for pre-start rejection. */
   nativeConversationId?: number;
+  durationMs?: number;
   /** 可选显示名（纯展示；允许中文；不参与身份/文件名/worker 参数） */
   displayName?: string;
   status: SubagentStatus;
   exitCode: number;
   messages: MessageLike[];
   stderr: string;
-  usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number; turns: number };
+  usage: import("../../../shared/subagent-model-config").SubagentUsage;
   model?: string;
   stopReason?: string;
   errorMessage?: string;

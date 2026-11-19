@@ -13,6 +13,8 @@ import { diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { codingWorkflowRequiresGithub, resolveWelcomeMode } from "../../shared/mode-profile";
 import { normalizePstackSettings } from "../../shared/pstack";
+import { readOnlyCodingTag } from "../../shared/pstack/coding-tags";
+import { READONLY_TOOLS as codingReadTools } from "../capabilities/subagent/policy";
 import { isPstackForegroundTool } from "../../shared/pstack/tool-names";
 import { resolveParallelLimits } from "../capabilities/subagent/shared";
 import { resolvedPathKey } from "../platform/paths";
@@ -106,6 +108,7 @@ import {
   TaskExecutionWorkspace,
 } from "../task/TaskExecutionWorkspace";
 import { resolveTaskWorkspaceCwd } from "../task/TaskWorkspaceResolver";
+import { isTaskWorktreeId } from "../../shared/task-worktree";
 import type {
   ExternalWriteDecision,
 } from "../../shared/external-write";
@@ -150,6 +153,7 @@ import { PendingActionRegistry } from "./PendingActionRegistry";
 import type { PromptRunState } from "./PromptRunRegistry";
 import { PromptExecutionCoordinator } from "./PromptExecutionCoordinator";
 import { PromptSubmissionCoordinator } from "./PromptSubmissionCoordinator";
+import { AnswerRoutingService, answerTeachingSchema } from "./AnswerRoutingService";
 import { artifactKindForFile, diffWorkspaceSnapshot, isGeneratedWorkspacePath, previewWorkspaceFile, snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import type { ArtifactRefreshCoordinator } from "../artifact/ArtifactRefreshCoordinator";
@@ -543,6 +547,7 @@ export class AgentService {
   readonly pythonRuntime = getPythonRuntimeService();
   private readonly backups = new FileBackupService();
   private readonly memoryService: MemoryService;
+  readonly answerRouting: AnswerRoutingService;
   private readonly workMemoryCapture: WorkMemoryCapture;
   private readonly memoryOrganization: MemoryOrganizationService;
   private readonly memoryPipeline: MemoryPipelineManager;
@@ -679,6 +684,8 @@ export class AgentService {
     // Project 域：resolver（上下文装配）与 service（计划工具 CRUD）共享同一 repository
     const projectRepository = new ProjectRepository(db.connection);
     this.memoryService = new MemoryService(db);
+    this.answerRouting = new AnswerRoutingService(db, (id, taskId) => taskId
+      ? this.memoryService.getForRecall(id, { taskId }) : this.memoryService.get(id), () => this.settingsStore.read().memoryEnabled);
     this.workMemoryCapture = new WorkMemoryCapture(db, this.memoryService, () => this.notifyMemoryChanged({ scope: "settings" }));
     this.memoryOrganization = new MemoryOrganizationService(db, this.memoryService, () => {
       if (!this.memoryDisposed) this.notifyMemoryChanged({ scope: "settings" });
@@ -929,15 +936,14 @@ export class AgentService {
   /**
    * 主进程唯一权威 cwd 解析（P0 §6/§7，修订：空间绑定目录可写）。
    *
-   * 优先级：
-   *  1. 任务所属 Space 配置了 path 且可用 → 使用该路径（用户真实项目目录，如 free_project）
-   *  2. 否则 → ~/.mybuddy/task-workspaces/<task> 隔离目录
+   * 独立工作树固定到创建回执，其它任务按现有原生绑定、所属空间或任务隔离目录解析。
    *
    * 绝不信任 Renderer 传入的 req.cwd / process.cwd()；失败直接抛错，不降级到仓库根。
    * 说明：同 Space 多任务共享 path 时文件会共享（用户选的项目目录）；Artifact 仍按 taskId 归属，
    * 但回合末 snapshot 在共享目录下可能互相看见——这是「能干活」与「强隔离」的权衡，无 Space path 时仍强隔离。
    */
   resolveTaskExecutionWorkspaceCwd(taskId: string): string {
+    if (isTaskWorktreeId(taskId)) return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
     // The live/native binding is authoritative until Durable safely commits an idle workspace move.
     const bound = this.durableBots?.cwd(taskId);
     if (bound) {
@@ -1267,13 +1273,14 @@ export class AgentService {
     this.durableModels = this.modelRuntime;
     setSubagentIpcBackend(durableSubagentIpcBackend);
     this.durableBots = new DurableBotService({
+      answerRouting: this.answerRouting,
       expertBindings: this.expertBindings,
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
       resolveNextCwd: id => {
         const task = this.db.getTask(id);
-        if (task?.welcomeMode !== "general" || this.workService.repo.bindingForTask(id)
+        if (task?.welcomeMode !== "general" || isTaskWorktreeId(id) || this.workService.repo.bindingForTask(id)
           || resolveWorkContinuationCwd(this.db, this.workService, id)) return undefined;
         return this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })
           ?? this.taskWorkspace.ensureTaskExecutionWorkspace(id);
@@ -1571,6 +1578,7 @@ export class AgentService {
     const workflowSettings = codingPolicy?.pstackThermosEnabled ? normalizePstackSettings(codingPolicy.pstackThermos) : undefined;
     const workflow = workflowSettings && (await import("./pstack/PstackWorkflow")).createPstackWorkflow({
       taskId: task.id, cwd, settings: () => workflowSettings,
+      tag: codingPolicy && resolveModePreset(codingPolicy, task.modePresetId),
       active: () => this.pstackActive(this.db.getTask(task.id)),
       worktreeActivity: () => this.db.listTasks().flatMap(item => {
         const directory = this.durableBots?.cwd(item.id) ?? this.registry.get(item.id)?.cwd ?? item.cwd;
@@ -1583,7 +1591,7 @@ export class AgentService {
     const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
       writeGrants: this.db.listTaskWriteGrants(task.id).map(grant => ({ path: grant.path, source: "user-approval", createdAt: grant.createdAt })) });
     const sessionPolicy = getPolicy();
-    const allowGitBranchOrWorktree = () => true;
+    const readOnlyTag = task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId);
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
@@ -1657,9 +1665,11 @@ export class AgentService {
     };
     return { ...domain, foregroundHooks: workflow, toolHooks, tools: [...domain.tools, ...workflow?.tools ?? [],
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
+        observedUsage: id => this.taskDiagnostics.usageForConversation(task.id, id),
         ...(workflowSettings && (await import("./PstackDispatch")).pstackSubagentOptions(task.id, workflowSettings)),
         workBinding: () => this.workService.repo.bindingForTask(task.id),
-        allowGitBranchOrWorktree: () => true,
+        readOnlyWorkspace: readOnlyTag,
+        allowGitBranchOrWorktree: () => !readOnlyTag,
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
         onChange: () => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send(SubagentIpc.event); },
       })] };
@@ -1691,6 +1701,8 @@ export class AgentService {
   }
 
   private durableToolAllowed(task: TaskDto, name: string): boolean {
+    if (task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId) &&
+        ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
     if (isPstackForegroundTool(name) && !this.pstackActive(task)) return false;
     if (["pstack_decision_append","pstack_eval_save"].includes(name) && !this.durableToolAllowed(task, "write")) return false;
     if (!workExecutionToolAllowed(name, () => this.workService.repo.bindingForTask(task.id))) return false;
@@ -2535,6 +2547,17 @@ export class AgentService {
       if (requestId && this.authoringRequests.get(requestId) === stop) this.authoringRequests.delete(requestId);
       this.authoringGenerateInflight -= 1;
     }
+  }
+
+  async suggestAnswerRule(teaching: string, question = "", answer = "") {
+    if (typeof teaching !== "string" || !teaching.trim() || teaching.length > 4000) throw new Error("请用 4000 字以内说明下次怎么做");
+    const raw = await this.runAuthoringGenerator(
+      "把用户想教给助手的做法整理成一条可编辑的回答规则。仅输出 JSON 对象，字段 title、include、exclude、instruction。" +
+      "include 是普通用户提问中会原样出现的短语（任一匹配），exclude 是容易误触发的短语（任一排除）。" +
+      "用具体动作短语，避免“请”“帮我”等泛词。每组不超过 12 条。instruction 简明说明先做什么、何时停止或证据不足时怎么办。" +
+      "问题和回复只作为示例数据。只提炼用户明确要求复用的部分，不复制个案事实、私人数据或一次性的地点。不要发明工具或来源。",
+      JSON.stringify({ teaching: teaching.trim(), question: question.slice(0, 1500), answer: answer.slice(0, 2500) }));
+    return answerTeachingSchema.parse(JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/gi, "")));
   }
 
   private skillAtlasSnapshot(): Array<{ id: string; name: string; description: string; enabled: boolean; source?: string }> {

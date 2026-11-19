@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 512,
-  "allRegistrations": 532,
-  "uniqueChannels": 512,
+  "mainRegistrations": 519,
+  "allRegistrations": 539,
+  "uniqueChannels": 519,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -77,6 +77,7 @@
     "agent:openFontsDir",
     "agent:openModeFile",
     "agent:openModesDir",
+    "agent:prepareTaskWorktree",
     "agent:prompt",
     "agent:readUserFont",
     "agent:refreshBuiltinMediaServices",
@@ -118,6 +119,12 @@
     "agent:updateExpert",
     "agent:validateSkillPackage",
     "agent:waitForSubmission",
+    "answer-routing:history",
+    "answer-routing:list",
+    "answer-routing:preview",
+    "answer-routing:remove",
+    "answer-routing:save",
+    "answer-routing:suggest",
     "artifact-domain:get",
     "artifact-domain:list",
     "artifact-domain:readContent",
@@ -534,7 +541,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2306",
+          "src/main/index.ts:2322",
           "scripts/wave5-real-open-e2e.ts:304"
         ],
         "foreign": [
@@ -544,7 +551,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2310",
+          "src/main/index.ts:2326",
           "scripts/wave5-real-open-e2e.ts:300"
         ],
         "foreign": [
@@ -554,7 +561,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2314",
+          "src/main/index.ts:2330",
           "scripts/wave5-real-open-e2e.ts:297"
         ],
         "foreign": [
@@ -564,7 +571,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2325",
+          "src/main/index.ts:2341",
           "scripts/wave5-real-open-e2e.ts:296"
         ],
         "foreign": [
@@ -574,7 +581,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2329",
+          "src/main/index.ts:2345",
           "scripts/wave5-real-open-e2e.ts:292"
         ],
         "foreign": [
@@ -584,7 +591,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2334",
+          "src/main/index.ts:2350",
           "scripts/wave5-real-open-e2e.ts:307"
         ],
         "foreign": [
@@ -594,7 +601,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2338",
+          "src/main/index.ts:2354",
           "scripts/wave5-real-open-e2e.ts:310"
         ],
         "foreign": [
@@ -616,7 +623,7 @@
       {
         "channel": "agent:abort",
         "entries": [
-          "src/main/index.ts:1203",
+          "src/main/index.ts:1211",
           "scripts/browser-stop-ui-electron-test.ts:42"
         ],
         "foreign": [
@@ -626,7 +633,7 @@
       {
         "channel": "agent:getAppSettings",
         "entries": [
-          "src/main/index.ts:1352",
+          "src/main/index.ts:1360",
           "scripts/browser-stop-ui-electron-test.ts:41"
         ],
         "foreign": [
@@ -636,7 +643,7 @@
       {
         "channel": "agent:loadTaskHistory",
         "entries": [
-          "src/main/index.ts:1485",
+          "src/main/index.ts:1493",
           "scripts/browser-stop-ui-electron-test.ts:43"
         ],
         "foreign": [
@@ -646,7 +653,7 @@
       {
         "channel": "agent:getModeProfile",
         "entries": [
-          "src/main/index.ts:1518",
+          "src/main/index.ts:1526",
           "scripts/browser-stop-ui-electron-test.ts:40"
         ],
         "foreign": [

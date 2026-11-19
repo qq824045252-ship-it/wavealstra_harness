@@ -6,10 +6,11 @@ import { durableStorageExists } from "./DurableStorage";
 /** A short-lived native viewer, never cached or promoted into an execution session. */
 export async function readDurableReadOnlyHistory(input: {
   directory: string; cwd: string; models: Models; beforeEntryId?: TaskHistoryTarget;
+  observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
 }): Promise<TaskHistoryDto> {
   if (!durableStorageExists(input.directory)) return { messages: [], cwd: input.cwd };
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
-    models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
+    models: input.models, observedUsage: input.observedUsage, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
     const block = input.beforeEntryId === undefined ? undefined : await runtime.loadHistoryWindow(input.beforeEntryId);
     const { epoch: _epoch, revision: _revision, ...archive } = runtime.snapshot;

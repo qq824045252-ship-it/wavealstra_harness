@@ -188,6 +188,7 @@ function normalizePresets(raw: unknown, seedPresets?: ModePresetDto[]): ModePres
         id,
         label,
         durableToolMode: item.durableToolMode === "codemode" ? "codemode" : item.durableToolMode === "native" ? "native" : undefined,
+        pstackRoute: typeof item.pstackRoute === "string" ? item.pstackRoute.trim() || undefined : undefined,
         description:
           item.description === undefined || item.description === null
             ? undefined

@@ -805,6 +805,9 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
                   <div style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{selected.title}</div>
                   <span style={{ flex: 1 }} />
                   <button type="button" className="btn" disabled={busy || selectedShared} onClick={() => void editSelected()}>编辑</button>
+                  {alreadyGlobal && selected.status === "active" && <button type="button" className="btn"
+                    onClick={() => useAppStore.setState({ settingsOpen: true, settingsTab: "answerRouting",
+                      answerRuleSeed: { memoryId: selected.id, sourceHash: selected.contentHash, title: selected.title, instruction: selected.content } })}>设为回答规则</button>}
                   <button
                     type="button"
                     className="btn danger"

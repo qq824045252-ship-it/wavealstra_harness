@@ -11,7 +11,7 @@ import { DRAWIO_MCP_SERVER_ID } from "../../shared/professional-tools";
 const DRAWIO_PROVIDER = DRAWIO_MCP_SERVER_ID;
 
 export const CODING_WORKFLOW_INSTRUCTIONS =
-  "代码开发使用内置 pstack + thermos。结合用户请求和当前标签选择剧本，遵守标签的任务范围和权限。调用 pstack_workflow status 后用 start(playbook) 启动剧本。按当前阶段、角色和已保存的参数执行，将实际结果写入 advance(stage,note)。阶段列出的辅助方法按需使用。解释直接在对话交付，文件按任务需要创建。用 verify 记录项目检查，交付前调用 review 查看触发原因；需要时用 pstack_delegate(purpose=thermos) 取得独立审查回执。complete 成功后回复。如果剩下的是确切的外部依赖，用 block(note) 记录。";
+  "代码开发使用内置 pstack + thermos。调用 pstack_workflow status 查看当前标签的 preferredPlaybook。有默认流程时直接调用 start；显示 auto 时按用户任务选择已启用的 playbook 或 skill。用户指定流程时显式传入，并遵守标签的任务范围。按当前阶段、角色和已保存的参数执行，用 advance(stage,note) 记录实际结果。写代码后用 verify 记录项目检查。只读任务在对话中交付有出处的结论。交付前用 review 查看触发原因，需要时用 pstack_delegate(purpose=thermos) 取得独立审查回执。complete 成功后回复。如果确有外部依赖，用 block(note) 记录。";
 
 /** Stable id keeps existing Penpot configuration and task references compatible. */
 export const PENPOT_PRESET: ModePresetDto = {
@@ -334,7 +334,7 @@ export const CODING_MODE_PRESETS: ModePresetDto[] = [
       "2. 重点检查：正确性（含边界条件）、架构、安全性、性能、可维护性、测试充分性、回归风险。\n" +
       "3. 输出结构化评审：按严重程度（阻断/警告/建议/细节）列出问题，每条给出位置、原因与修复建议；\n" +
       "   最后给出结论（通过 / 需修改 / 有阻断）与总体摘要。\n" +
-      "4. 默认只读：不修改代码、不写文件；如需验证可运行只读命令（测试/构建仅读结果）。\n" +
+      "4. 用 read、grep、find 检查源码和已有测试证据。启用内置流程时调用 review 查看审查基准、变更路径和修改前后片段。\n" +
       "5. 审查不等于动手修：发现阻断问题时给出建议补丁即可，真正落地请切到「修 Bug」或「重构」。",
     skillPolicy: {
       prefer: ["review", "github", "test", "git"],

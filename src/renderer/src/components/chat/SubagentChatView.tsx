@@ -153,7 +153,7 @@ export default function SubagentChatView({
         model={model}
         usage={usage}
         elapsed={elapsed}
-        elapsedTitle={running ? "本子代理本轮从派发至今的时间，包含工具执行与等待" : resultRun?.durationMs !== undefined ? "本子代理首末消息的时间跨度，非纯模型生成耗时" : "最后观测到的运行时长；没有记录时显示 —，不继续计时"}
+        elapsedTitle={running ? "本子代理本轮从派发至今的时间，包含工具执行与等待" : "本子代理实际记录的运行时长，包含工具执行与等待"}
         onBack={closeSubagentView}
       />
 

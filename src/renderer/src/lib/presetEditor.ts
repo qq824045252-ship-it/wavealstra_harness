@@ -55,6 +55,8 @@ export function normalizePresetDraft(raw: Partial<ModePresetDto> | undefined): M
     label,
     description: optString(raw?.description) ?? undefined,
     promptAddon: optString(raw?.promptAddon) ?? undefined,
+    pstackRoute: optString(raw?.pstackRoute) ?? undefined,
+    requiredRuntimes: raw?.requiredRuntimes,
     durableToolMode: raw?.durableToolMode === "codemode" ? "codemode" : raw?.durableToolMode === "native" ? "native" : undefined,
     providerMcpIds: strList(raw?.providerMcpIds),
     suggestedModelId: optString(raw?.suggestedModelId),

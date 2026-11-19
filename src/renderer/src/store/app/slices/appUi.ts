@@ -15,6 +15,8 @@ export interface AppUiState {
     | null;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
+  answerRuleSeed?: { question?: string; answer?: string; projectId?: string; memoryId?: string; sourceHash?: string;
+    title?: string; instruction?: string; turn?: { taskId: string; inputId: string } };
   searchOpen: boolean;
   activeWorkspaceId: string | null;
   subagentDrawer?: { instanceId: string };
@@ -105,7 +107,7 @@ export function createAppUiActions(
     },
 
     setSettingsOpen: (open, tab) =>
-      set((s) => ({ settingsOpen: open, settingsTab: tab ?? s.settingsTab })),
+      set((s) => ({ settingsOpen: open, settingsTab: tab ?? s.settingsTab, answerRuleSeed: undefined })),
 
     setSearchOpen: (open) => set({ searchOpen: open }),
   };

@@ -20,6 +20,21 @@ import { providerFailures, type ProviderDependency } from "./PstackProviderFailu
 import { isUnitOwnerDispatch, recordBlockedUnit } from "./PstackOrchestration";
 export { parseThermosVerdict } from "./PstackThermosVerdict";
 
+const dispatchParticipants = z.object({ results: z.array(z.object({
+  subagentId: z.string(), nativeConversationId: z.number().optional(), agent: z.string().optional(),
+  displayName: z.string().optional(), status: z.string(), exitCode: z.number(),
+  resolvedModel: z.string().optional(), errorMessage: z.string().optional(),
+  durationMs: z.number().nonnegative().optional(),
+  usage: z.object({
+    input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(),
+    cost: z.number(), contextTokens: z.number(), turns: z.number(),
+    reported: z.object({ inputTokens: z.number().nullable(), outputTokens: z.number().nullable(),
+      cacheReadTokens: z.number().nullable(), cacheWriteTokens: z.number().nullable().optional(),
+      cacheHitRate: z.number().nullable(), requests: z.number().optional() }).optional(),
+  }).optional(),
+  workspace: z.object({ cwd: z.string() }).optional(),
+})) });
+
 const child = z.object({
   subagentId: z.string().min(1), nativeConversationId: z.number().int(), status: z.literal("completed"), exitCode: z.literal(0),
   rejected: z.literal(false).optional(), writeConflicts: z.array(z.string()).max(0).optional(),
@@ -38,6 +53,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
       purpose: Type.Optional(Type.Union([Type.Literal("stage"), Type.Literal("thermos"), Type.Literal("decisions")])),
       answerDraft: Type.Optional(Type.String({ minLength: 1, maxLength: 24000, description: "Exact user-facing investigation result to review. Revise this text after a substantive finding. The accepted text is delivered to the user." })) }),
     async execute({ role, tasks, purpose, answerDraft }, api, ctx) {
+      let details: { participants: z.infer<typeof dispatchParticipants>["results"] } | undefined;
       try {
         checked(options, ctx); await owner(api, ctx);
         const run = await state(api, ctx);
@@ -81,6 +97,9 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         }));
         const userRequests = userInputs.map(i => i.text), inputIds = userInputs.map(i => i.id);
         const baseline = delta && await reviewBaseline(scope, delta.paths, ctx.abortSignal,scoped);
+        const panelDiff = run.tagId === "code-review" && !thermos && role === "interrogate-reviewers"
+          ? await reviewBaseline(scope, (await measureWorkspace(scope, settings.thermos.fileLines, ctx.abortSignal)).paths, ctx.abortSignal)
+          : undefined;
         const targets = delta ? await reviewTargets(base.cwd, delta.paths, userRequests, history) : [];
         const taskVersion = delta && (scope === base ? delta : await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,scoped));
         const verified = taskVersion ? currentVerificationEvidence(run, taskVersion.fingerprint, history) : [];
@@ -114,6 +133,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           "Cross-check decision rows in " + audit.path + " against the following task-local execution transcript. Flag weak evidence, omitted verification and risky decisions. Each flag is a plain string naming the affected row or entry and explaining the problem. Return one JSON object, for example {\"flags\":[\"Row 2 lacks a verification receipt.\"]} or {\"flags\":[]} if there are no findings.",
           JSON.stringify(audit.rows), auditTranscript(history), task,
         ].join("\n") : [stage.instructions, ...(run.reviewCommit ? ["Compare the task changes from the recorded Git baseline " + run.reviewCommit + ", including the current working tree."] : []),
+          ...(panelDiff ? ["Changed excerpts at the selected baseline: " + JSON.stringify(panelDiff)] : []),
           "Parameters: " + JSON.stringify(routeSettings(settings, run.playbook).parameters),
           "Stage methods: " + JSON.stringify(stage.skillIds.filter(id => settings.skills[id]?.enabled).map(id => skillView(settings, id))), task].join("\n"));
         let args = contest?.args ?? await preparePstackDispatch(settings, role, briefs, options.cwd);
@@ -137,6 +157,8 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           : await monitorOwnerDispatch(pending, api, ctx, ownerDispatch, Number(timing.firstReportMinutes), Number(timing.auditMinutes),
             { run: run.run, active: options.active, expectedOwners: config.count });
         checked(options, ctx);
+        const participants = dispatchParticipants.safeParse(result.details);
+        if (participants.success) details = { participants: participants.data.results };
         const failed = result.isError ? providerFailures(result.details) : [];
         const allAuthorsUnavailable = contest && failed.length === contest.count && failed.some(f => f.quota);
         const partial = contest && !contest.privatePrompt && result.details && !allAuthorsUnavailable ? arenaSurvivors(result.details, contest.count) : undefined;
@@ -157,7 +179,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
                 else next.dispatchDependency = dependency;
               });
             }
-            return { ...success({ message: reason, failures: failed, toolTaskId: result.taskId }), isError: true };
+            return { ...success({ message: reason, failures: failed, toolTaskId: result.taskId }), details, isError: true };
           }
           throw new Error("Subagent dispatch failed: " + JSON.stringify(result.diagnostics) + " " + String(JSON.stringify(result.structuredOutput) ?? "").slice(0, 4000));
         }
@@ -204,7 +226,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           const fresh = await Promise.all(answers.map(async (answer, i): Promise<ThermosMember> => {
             const member = { child: ids[i], model: models[i], answer: answer.slice(0, 16_000), inspection: inspections![i] };
             try {
-              const passed = parseThermosVerdict(answer, rubric.map(c => c.id));
+              const passed = parseThermosVerdict(answer, rubric.map(c => c.id), run.tagId === "code-review");
               await validateInspections(base.cwd, targets, [member.inspection], false);
               return { ...member, passed };
             } catch (error) { return { ...member, passed: false, error: (error as Error).message }; }
@@ -227,8 +249,8 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           else next.delegates.push(receipt);
         });
         return { ...success({ ...receipt, ...(delta && { passed, reasons, inspections }), ...(reviewError && { error: reviewError }), ...(attention && { attention }) }),
-          ...(reviewError && { isError: true }) };
-      } catch (error) { ctx.abortSignal?.throwIfAborted(); return failure(error); }
+          details, ...(reviewError && { isError: true }) };
+      } catch (error) { ctx.abortSignal?.throwIfAborted(); return { ...failure(error), details }; }
     },
   });
 }

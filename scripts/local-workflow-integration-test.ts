@@ -11,6 +11,7 @@ import { traverseFast } from "@babel/types";
 import { PSTACK_THERMOS_ID } from "../src/shared/mode-profile";
 import { normalizePstackSettings, THERMOS_CRITERIA } from "../src/shared/pstack";
 import { checkProviderRecovery, providerFixtureResponse } from "./pstack-provider-recovery-fixture";
+import { assertTagCase, seedTagCase, tagCases, tagFixtureReply } from "./coding-tag-fixture";
 
 // Persisted sessions require both domain services and window-backed tools before opening.
 const bootstrap = parse(readFileSync("src/main/index.ts", "utf8"), { sourceType: "module", plugins: ["typescript"] });
@@ -135,7 +136,11 @@ const server = createServer(async (request, response) => {
   let call: [string, Record<string, unknown>] | undefined;
   let answer = "CRON_ACTUAL_OK";
   const fixture = providerFixtureResponse(raw, body.model);
-  if (fixture) {
+  const tagCase = /CODING_TAG_CASE_([a-z-]+)/.exec(raw)?.[1];
+  if (tagCase) {
+    const reply = tagFixtureReply(tagCase, body);
+    call = reply.call; answer = reply.answer;
+  } else if (fixture) {
     if (fixture.quota) {
       response.writeHead(402,{"content-type":"application/json"});
       response.end(JSON.stringify({error:{code:"insufficient_balance",message:'Worker account exhausted: {"reset_at":"2026-12-01T00:00:00Z"}'}}));
@@ -368,6 +373,26 @@ try {
       .filter(item=>item.type==="function_call_output").flatMap(item=>{try{return [JSON.parse(item.output)];}catch{return [];}});
   },async()=>{await agent.releaseDurableTask("UNIT_PROVIDER_BOARD");});
   console.log("PASS stage and decision provider failures, atomic owner failure receipt, durable reopen and same-unit retry with zero internal retry budget");
+  const tagFlow = normalizePstackSettings(undefined);
+  for (const role of Object.values(tagFlow.roles)) Object.assign(role,{ model:"fixture/observer", count:1, isolation:"shared" });
+  const presetFile = process.env.MYBUDDY_CODING_TAGS_FIXTURE;
+  const tagPresets = presetFile ? JSON.parse(readFileSync(presetFile, "utf8")) :
+    [...coding.policy.presets ?? [], { id:"web-html", label:"HTML 开发", pstackRoute:"feature", promptAddon:"Use Modern Web Guidance." }];
+  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...tagPresets,legacy],pstackThermos:tagFlow});
+  for (const [id, preferred] of tagCases) {
+    const taskId = "tag-" + id, cwd = workspaces.ensureTaskExecutionWorkspace(taskId);
+    seedTagCase(id,cwd);
+    if (id === "web-html" && process.env.MYBUDDY_TAG_HTML_GUIDE)
+      writeFileSync(join(cwd,"dialog-guide.md"),readFileSync(process.env.MYBUDDY_TAG_HTML_GUIDE));
+    db.upsertTask({ id:taskId, title:id, cwd, ...selected, modePresetId:id, modelId:request.modelId, updatedAt:1 });
+    const begin = requests.length;
+    const text = "CODING_TAG_CASE_" + id + (id === "code-review" ? " 请独立审查 value.cjs。" : "");
+    await agent.prompt({...request,modePresetId:id,taskId,text,userMessageId:taskId+"-in",assistantMessageId:taskId+"-out"},{durableAdmissionOnly:false});
+    assertTagCase(id,preferred,cwd,requests.slice(begin));
+    if (id === "web-html" && process.env.MYBUDDY_TAG_HTML_OUTPUT)
+      writeFileSync(process.env.MYBUDDY_TAG_HTML_OUTPUT,readFileSync(join(cwd,"index.html")));
+    await agent.releaseDurableTask(taskId);
+  }
   agent.saveModePolicy("coding", { ...agent.getModeProfile("coding").policy, pstackThermosEnabled: false });
   assert(!agent.assembleModePreview(selected).skillFilter.visible.includes(PSTACK_THERMOS_ID));
   assert.equal(agent.getModeProfile("coding").policy.presets?.find(tag => tag.id === legacy.id)?.promptAddon, legacy.promptAddon);

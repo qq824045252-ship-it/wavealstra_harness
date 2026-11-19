@@ -131,9 +131,23 @@ if (arm !== "original") {
     ...(route === "perf-issue" && { samplesPerVariant: settings.skills["benchmark-checklist"].parameters.samplesPerVariant }) });
 }
 const request = previous?.request ?? (reference && reference.request) ?? (cases[route] + (route === "investigation" ? " 请独立审查结论。" : ""));
-const personal = json(join(profile, "modes/coding/policy.json")).presets?.find(p => p.id === "pstack-thermos");
+function originalPreset() {
+  const presetFile = process.env.PSTACK_LIVE_ORIGINAL_PRESET;
+  if (presetFile) return json(presetFile);
+  for (const directory of [config, profile]) {
+    const policyFile = join(directory, "modes/coding/policy.json");
+    const tag = existsSync(policyFile) && json(policyFile).presets?.find(p => p.id === "pstack-thermos");
+    if (tag) return tag;
+  }
+  const backups = join(profile, "backups");
+  for (const folder of (existsSync(backups) ? readdirSync(backups) : []).filter(name => name.startsWith("coding-tags-")).sort().reverse()) {
+    const file = join(backups, folder, "original-preset.json");
+    if (existsSync(file) && json(file).id === "pstack-thermos") return json(file);
+  }
+  throw Error("Set PSTACK_LIVE_ORIGINAL_PRESET to the saved original tag JSON.");
+}
+const personal = arm === "original" ? originalPreset() : undefined;
 if (arm === "original" && !previous) {
-  if (!personal) throw Error("The configured original preset is missing.");
   const skills = join(config, "plugins", "skills");
   mkdirSync(skills, {recursive:true});
   for (const id of personal.skillPolicy.allow) {

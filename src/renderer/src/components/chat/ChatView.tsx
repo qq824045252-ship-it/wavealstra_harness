@@ -295,13 +295,18 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts }: {
   artifacts: Artifact[];
   visibleArtifacts: Artifact[];
 }): React.JSX.Element {
+  let precedingUser: ChatMessage | undefined;
   return (
     <div className="message-list">
-      {messages.map((msg) => (
+      {messages.map((msg) => {
+        if (msg.role === "user") precedingUser = msg;
+        return (
         <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
-          <MessageItem message={msg} taskId={taskId} artifacts={artifacts} visibleArtifacts={visibleArtifacts} />
+          <MessageItem message={msg} taskId={taskId} sourceQuestion={msg.role === "assistant" ? precedingUser : undefined}
+            artifacts={artifacts} visibleArtifacts={visibleArtifacts} />
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

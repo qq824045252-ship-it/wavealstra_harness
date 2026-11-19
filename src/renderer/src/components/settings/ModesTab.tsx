@@ -59,7 +59,8 @@ import {
 } from "@/lib/presetEditor";
 import { previewBlockedHint } from "@/lib/modesPreviewGuard";
 import { isRetiredDesignSkill, isRetiredManagedProvider } from "@shared/professional-tools";
-import { normalizePstackSettings, validatePstackSettings, type PstackSettings } from "@shared/pstack";
+import { normalizePstackSettings, validatePstackSettings, PSTACK_PLAYBOOKS, PSTACK_SKILLS, type PstackSettings } from "@shared/pstack";
+import { codingTagRoute, codingTagSupportsRoute } from "@shared/pstack/coding-tags";
 import PstackSettingsEditor from "./PstackSettingsEditor";
 
 type EditPane = ModeBlockId | "skills" | "mcp" | "artifacts" | "policy" | "presets" | "pstack";
@@ -600,6 +601,7 @@ function CatalogPickList({
  */
 function PresetEditor({
   general = false,
+  coding = false,
   preset,
   idLocked,
   onChange,
@@ -611,6 +613,7 @@ function PresetEditor({
   catalogLoading,
 }: {
   general?: boolean;
+  coding?: boolean;
   preset: ModePresetDto;
   /** 出厂 seed preset 的 id 不可改（避免破坏 defaultModePresetId 解析） */
   idLocked: boolean;
@@ -684,6 +687,15 @@ function PresetEditor({
           <span className="modes-preset-field-label">描述</span>
           <input value={p.description ?? ""} onChange={(e) => patch({ description: e.target.value })} />
         </label>
+        {coding && <label className="modes-preset-field">
+          <span className="modes-preset-field-label">启用 pstack 时的默认流程</span>
+          <select aria-label="启用 pstack 时的默认流程" value={p.pstackRoute ?? ""} onChange={e => patch({ pstackRoute: e.target.value || undefined })}>
+            <option value="">跟随标签默认（{codingTagRoute({ id: p.id }) ?? "代码开发设置"}）</option>
+            <option value="auto">按本次任务选择</option>
+            {PSTACK_PLAYBOOKS.filter(b => codingTagSupportsRoute(p.id, b.id)).map(b => <option key={b.id} value={b.id}>{b.label}</option>)}
+            {PSTACK_SKILLS.filter(s => codingTagSupportsRoute(p.id, "skill:" + s.id)).map(s => <option key={s.id} value={"skill:" + s.id}>{s.label}</option>)}
+          </select>
+        </label>}
         <label className="modes-preset-field">
           <span className="modes-preset-field-label">
             Prompt 附加段（promptAddon，仅新会话生效）
@@ -1748,6 +1760,7 @@ export default function ModesTab(): React.JSX.Element {
                 <button
                   type="button"
                   className={`modes-nav-item${pane === "presets" ? " active" : ""}`}
+                  aria-label="预设 / Tags"
                   onClick={() => selectPane("presets")}
                 >
                   <span className="modes-nav-icon">{paneIcon("presets")}</span>
@@ -1906,6 +1919,7 @@ export default function ModesTab(): React.JSX.Element {
                         </div>
                         <PresetEditor
                           general={mode === "general"}
+                          coding={mode === "coding"}
                           preset={selectedPreset}
                           idLocked={isSeedPreset(mode, selectedPreset.id)}
                           onChange={updateSelectedPreset}

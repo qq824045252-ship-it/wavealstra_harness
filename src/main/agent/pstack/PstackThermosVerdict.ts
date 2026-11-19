@@ -31,11 +31,12 @@ function finalObject(answer: string) {
     throw new Error("Provide exactly one final JSON verdict. No conflicting verdicts or trailing explanations.");
   return objects[0].value;
 }
-export function parseThermosVerdict(answer: string, ids: string[]) {
+export function parseThermosVerdict(answer: string, ids: string[], requireFindings = false) {
   try {
     const result = verdict.parse(finalObject(answer));
     const missing = ids.filter(id => !Object.hasOwn(result.checks, id));
     if (missing.length) throw new Error("Missing criteria: " + missing.join(", "));
+    if (requireFindings && result.verdict === "revise" && !result.findings.length) throw new Error("A review report must identify at least one unresolved finding for a revise verdict.");
     return result.verdict === "pass" && result.findings.length === 0;
   } catch (e) {
     const problem = e instanceof z.ZodError ? e.issues.map(i => i.path.join(".") + ": " + i.message).join("; ") : (e as Error).message;

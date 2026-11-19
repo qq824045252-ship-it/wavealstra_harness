@@ -23,7 +23,7 @@ import {
   extractSubagentIdFromToolResult,
   type SubagentUsage,
 } from "@shared/subagent-model-config";
-import { parseSubagentDetails, parseSubagentResultRecords } from "@/lib/subagentDetails";
+import { parseSubagentDetails, parseSubagentResultRecords, subagentDispatchDetail } from "@/lib/subagentDetails";
 import { formatCount, formatRateDash, formatTokenCount } from "@shared/token-format";
 import {
   buildModelBadge,
@@ -248,7 +248,7 @@ function isActiveInstance(dto: SubagentSummaryDto): boolean {
 function usableUsage(usage: SubagentUsage | undefined): SubagentUsage | undefined {
   if (!usage) return undefined;
   const total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  return total > 0 || usage.turns > 0 ? usage : undefined;
+  return total > 0 || usage.turns > 0 || usage.reported?.requests ? usage : undefined;
 }
 
 /**
@@ -256,6 +256,7 @@ function usableUsage(usage: SubagentUsage | undefined): SubagentUsage | undefine
  * （shared/usage-stats.cacheHitRate）。分母为 0 → null（界面显示「—」，不伪装成 0%）。
  */
 export function subagentCacheHitRate(usage: SubagentUsage): number | null {
+  if (usage.reported) return usage.reported.cacheHitRate;
   const denom = usage.cacheRead + usage.input + usage.cacheWrite;
   if (!(denom > 0)) return null;
   return usage.cacheRead / denom;
@@ -276,9 +277,9 @@ export interface SubagentUsageField {
 export function subagentUsageFields(usage: SubagentUsage): SubagentUsageField[] {
   const hit = subagentCacheHitRate(usage);
   return [
-    { key: "input", label: "输入", value: formatTokenCount(usage.input) },
-    { key: "cacheRead", label: "缓存读取", value: formatTokenCount(usage.cacheRead) },
-    { key: "output", label: "输出", value: formatTokenCount(usage.output) },
+    { key: "input", label: "输入", value: formatTokenCount(usage.reported ? usage.reported.inputTokens : usage.input) },
+    { key: "cacheRead", label: "缓存读取", value: formatTokenCount(usage.reported ? usage.reported.cacheReadTokens : usage.cacheRead) },
+    { key: "output", label: "输出", value: formatTokenCount(usage.reported ? usage.reported.outputTokens : usage.output) },
     {
       key: "hit",
       label: "命中",
@@ -292,10 +293,10 @@ export function subagentUsageFields(usage: SubagentUsage): SubagentUsageField[] 
 /** 悬停展示的完整分解（含缓存写 / 轮次 / 费用，不进窄行）。 */
 export function subagentUsageTitle(usage: SubagentUsage): string {
   const parts = [
-    `新输入 ${formatTokenCount(usage.input)}`,
-    `缓存读 ${formatTokenCount(usage.cacheRead)}`,
-    `缓存写 ${formatTokenCount(usage.cacheWrite)}`,
-    `输出 ${formatTokenCount(usage.output)}`,
+    `新输入 ${formatTokenCount(usage.reported ? usage.reported.inputTokens : usage.input)}`,
+    `缓存读 ${formatTokenCount(usage.reported ? usage.reported.cacheReadTokens : usage.cacheRead)}`,
+    `缓存写 ${formatTokenCount(usage.reported ? usage.reported.cacheWriteTokens : usage.cacheWrite)}`,
+    `输出 ${formatTokenCount(usage.reported ? usage.reported.outputTokens : usage.output)}`,
   ];
   const hit = subagentCacheHitRate(usage);
   parts.push(`缓存命中率 ${formatRateDash(hit)}`);
@@ -372,7 +373,7 @@ export function buildDoneSubagents(
   >();
   for (const msg of messages) {
     for (const block of msg.blocks ?? []) {
-      if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
+      if (block.type !== "tool" || !["subagent","pstack_delegate"].includes(block.toolCall.tool)) continue;
       const tc = block.toolCall;
       // 未开始的不算完成；**运行中的派发必须算**：rolling pool 里已跑完的 child 会立刻从
       // IPC 索引移除，只有 details.results[] 还留着它们——以前在这里一律 skip，“完成态”
@@ -380,9 +381,10 @@ export function buildDoneSubagents(
       if (tc.status === "pending_approval") continue;
       // Durable 架构：完成态工具的 detail 是结构化结果（details.results[]），优先按它建条目；
       // 旧消息没有结构化结果时回退到文本标记解析。
-      const structured = parseSubagentResultRecords(tc.detail);
+      const dispatchDetail = subagentDispatchDetail(tc);
+      const structured = parseSubagentResultRecords(dispatchDetail);
       // 工作目录与真实时长只在结构化结果的原始 messages / workspace 里；共用同一份缓存解析。
-      const runs = parseSubagentDetails(tc.detail)?.results ?? [];
+      const runs = parseSubagentDetails(dispatchDetail)?.results ?? [];
       if (structured.length > 0) {
         for (const item of structured) {
           const state: DoneSubagentState =
@@ -391,11 +393,11 @@ export function buildDoneSubagents(
                 : (item.exitCode ?? 0) === 0 ? "completed" : "failed";
           const prev = map.get(item.subagentId);
           const run = runs.find((r) => r.subagentId === item.subagentId);
-          const summary = oneLine(
+          const summaryText = (
             item.finalText || item.errorMessage
-              || (state === "completed" ? "已完成" : state === "failed" ? "执行失败" : "已取消"),
-            64,
+              || (state === "completed" ? "已完成" : state === "failed" ? "执行失败" : "已取消")
           );
+          const summary = oneLine(summaryText.replace(/^(?:#{1,6}[^\n]*\n\s*)+/, "").trim() || summaryText.replace(/^#+\s*/, ""));
           const model = buildModelBadge(item.resolvedModel ?? item.model, {
             displayName: item.resolvedModel ? modelNames?.[item.resolvedModel] : undefined,
           }) ?? prev?.model;
@@ -417,7 +419,7 @@ export function buildDoneSubagents(
         continue;
       }
       // 运行中的派发没有 legacy 文本结果可解析；等它真正终结后再走回退路径。
-      if (tc.status === "running") continue;
+      if (tc.status === "running" || tc.tool !== "subagent") continue;
       const id = extractSubagentId(tc.output, tc.detail);
       if (!id) continue;
       const displayName = extractSubagentDisplayNameFromToolResult("subagent", tc.output, tc.detail);

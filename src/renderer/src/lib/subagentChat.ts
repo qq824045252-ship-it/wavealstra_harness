@@ -13,7 +13,7 @@ import type { ChatMessageDto, ChatToolCallDto } from "@shared/agent-ipc";
 import { summarizeToolInput } from "@shared/pi-event-mapper";
 import { historyMessageToChatMessage } from "@/store/app/messages/historyMapper";
 import type { ChildMessage, SubagentResultRun } from "@/lib/subagentDetails";
-import { childMessageText, parseSubagentDetails } from "@/lib/subagentDetails";
+import { childMessageText, parseSubagentDetails, subagentDispatchDetail } from "@/lib/subagentDetails";
 
 interface ToolOutcome {
   text: string;
@@ -144,8 +144,8 @@ export function findSubagentResultRun(messages: ChatMessage[], subagentId: strin
   let found: SubagentResultRun | null = null;
   for (const message of messages) {
     for (const block of message.blocks ?? []) {
-      if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
-      const run = parseSubagentDetails(block.toolCall.detail)?.results.find((item) => item.subagentId === subagentId);
+      if (block.type !== "tool") continue;
+      const run = parseSubagentDetails(subagentDispatchDetail(block.toolCall))?.results.find((item) => item.subagentId === subagentId);
       if (run) found = run;
     }
   }

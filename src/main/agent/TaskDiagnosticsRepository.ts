@@ -267,7 +267,7 @@ export class TaskDiagnosticsRepository {
       ? null
       : (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
     const cacheHitRate = cacheReadTokens !== null && denominator !== null && denominator > 0 ? cacheReadTokens / denominator : null;
-    return { inputTokens, outputTokens, cacheReadTokens, cacheHitRate };
+    return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheHitRate, requests: summary.count };
     } catch { return unknown; }
   }
 

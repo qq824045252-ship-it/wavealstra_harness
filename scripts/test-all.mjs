@@ -183,10 +183,12 @@ const GUI_TESTS = new Set([
 const NETWORK_TESTS = new Set([
   "test:bot-task-reply-harness", // loopback-only HTTP/WebSocket fixture and driver checks; no external account or desktop
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
+  "test:answer-routing-live", // isolated dev app, same synthetic release record across three real model turns
   "test:gadget-browser-recovery-live",
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
   "test:browser-builtin-live",
   "test:browser-production-live",
+  "test:browser-ego-parity",
   "test:gadget-agent-live",
   // 真实 Magpie 网关的缓存边界实验：要真凭据/网络/花费，缺 MYBUDDY_CACHE_LIVE=1 会自己 SKIP。
   "test:cache-live",

@@ -38,6 +38,7 @@ import {
 
 interface Props {
   message: ChatMessage;
+  sourceQuestion?: ChatMessage;
   /** Only task chat supplies a local image scope; Gateway/BTW must not inherit activeTaskId. */
   taskId?: string;
   artifacts?: Artifact[];
@@ -403,7 +404,7 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false }: Props): React.JSX.Element {
+function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false }: Props): React.JSX.Element {
   const showAllArtifacts = useAppStore((s) => s.showAllArtifacts);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
@@ -812,6 +813,12 @@ function MessageItem({ message, taskId, artifacts = EMPTY_ARTIFACTS, visibleArti
             </button>
             {btw ? null : (
               <>
+                {taskId && !message.streaming && <button type="button" className="icon-btn" title="教给调度器" aria-label="教给调度器" onClick={() => {
+                  const question = sourceQuestion?.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n") ?? "";
+                  useAppStore.setState({ settingsOpen: true, settingsTab: "answerRouting",
+                    answerRuleSeed: { question: userPromptDisplayText(question), answer: assistantCopyText(message), projectId: currentTask?.projectId,
+                      turn: sourceQuestion ? { taskId, inputId: sourceQuestion.inputRequestId ?? sourceQuestion.id } : undefined } });
+                }}><IconSparkles size={14} /></button>}
                 <button className="icon-btn" title="赞">
                   <IconThumbsUp size={14} />
                 </button>

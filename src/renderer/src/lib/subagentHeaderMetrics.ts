@@ -1,6 +1,7 @@
 import { formatCount, formatRateDash, formatTokenCount } from "@shared/token-format";
 
 export interface HeaderUsage {
+  reported?: import("@shared/task-diagnostics").ConversationUsageReceipt;
   input?: number;
   totalInput?: number;
   output?: number;
@@ -20,12 +21,13 @@ export function subagentHeaderMetrics(usage?: HeaderUsage, scope = "本子代理
   // Spawn/failed-call snapshots can contain only zero placeholders. Without
   // any positive measurement these cannot prove a known-zero provider receipt.
   const measured = usage && ![usage.input, usage.output, usage.cacheRead, usage.cacheWrite].every((n) => n === 0);
-  const input = measured ? number(usage.input) : undefined;
-  const output = measured ? number(usage.output) : undefined;
-  const read = measured ? number(usage.cacheRead) : undefined;
-  const write = measured ? number(usage.cacheWrite) : undefined;
+  const receipt = usage?.reported;
+  const input = receipt ? number(receipt.inputTokens) : measured ? number(usage.input) : undefined;
+  const output = receipt ? number(receipt.outputTokens) : measured ? number(usage.output) : undefined;
+  const read = receipt ? number(receipt.cacheReadTokens) : measured ? number(usage.cacheRead) : undefined;
+  const write = receipt ? number(receipt.cacheWriteTokens) : measured ? number(usage.cacheWrite) : undefined;
   const denominator = number(usage?.totalInput) ?? (input !== undefined && read !== undefined && write !== undefined ? input + read + write : undefined);
-  const hit = denominator !== undefined && Number.isFinite(denominator) && denominator > 0 && read !== undefined ? read! / denominator : undefined;
+  const hit = receipt ? number(receipt.cacheHitRate) : denominator !== undefined && Number.isFinite(denominator) && denominator > 0 && read !== undefined ? read / denominator : undefined;
   const token = (key: string, label: string, value: number | undefined, meaning: string): HeaderMetric => ({
     key, label, value: formatTokenCount(value),
     title: value === undefined ? `${meaning}：未取得有效计量，不按 0 计算` : `${meaning}：${formatCount(value)} tokens（${scope}）`,
@@ -36,6 +38,7 @@ export function subagentHeaderMetrics(usage?: HeaderUsage, scope = "本子代理
     token("output", "输出", output, "输出 token"),
     token("cacheWrite", "缓存写", write, "写入缓存的输入 token"),
     { key: "hit", label: "缓存命中率", value: formatRateDash(hit),
-      title: usage?.totalInput !== undefined ? `${scope}：缓存读 ÷ 供应商总输入 tokens；未将缺失缓存写入视为 0` : `${scope}：缓存读 ÷（新输入 + 缓存读 + 缓存写）；缺少任一分量或分母为 0 时显示 —` },
+      title: receipt ? `${scope}：按该子会话已报告的输入分量计算，与任务诊断一致`
+        : usage?.totalInput !== undefined ? `${scope}：缓存读 ÷ 供应商总输入 tokens；未将缺失缓存写入视为 0` : `${scope}：缓存读 ÷（新输入 + 缓存读 + 缓存写）；缺少任一分量或分母为 0 时显示 —` },
   ];
 }

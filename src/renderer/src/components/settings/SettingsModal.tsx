@@ -38,6 +38,7 @@ import BusinessGatewayRegistration from "./BusinessGatewayRegistration";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
+import AnswerRoutingTab from "./AnswerRoutingTab";
 import CapabilitiesTab from "./CapabilitiesTab";
 import RemoteAccessTab from "./RemoteAccessTab";
 import ArchivesTab from "./ArchivesTab";
@@ -69,6 +70,7 @@ const TABS: Array<{ id: SettingsTab; icon: React.ComponentType<{ size?: number }
   { id: "modes", icon: IconPencil, label: "模式与提示词" },
   { id: "personalize", icon: IconSparkles, label: "个性化" },
   { id: "memory", icon: IconClock, label: "记忆" },
+  { id: "answerRouting", icon: IconLink, label: "回答调度" },
   { id: "archive", icon: IconArchive, label: "归档管理" },
   { id: "models", icon: IconGrid, label: "模型" },
   { id: "subagent", icon: IconBlocks, label: "子代理设置" },
@@ -1347,6 +1349,7 @@ const TAB_TITLE: Record<SettingsTab, string> = {
   modes: "模式与提示词",
   personalize: "个性化",
   memory: "记忆",
+  answerRouting: "回答调度",
   archive: "归档管理",
   models: "模型",
   subagent: "子代理设置",
@@ -1396,6 +1399,7 @@ export default function SettingsModal(): React.JSX.Element {
             {tab === "modes" && <ModesTab />}
             {tab === "personalize" && <PersonalizeTab />}
             {tab === "memory" && <MemoryTab />}
+            {tab === "answerRouting" && <AnswerRoutingTab />}
             {tab === "archive" && <ArchivesTab />}
             {tab === "models" && <ModelsTab />}
             {tab === "subagent" && <SubagentSettingsTab />}

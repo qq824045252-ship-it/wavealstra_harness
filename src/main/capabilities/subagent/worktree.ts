@@ -15,6 +15,7 @@ export interface PrepareSubagentWorkspaceOptions {
   signal?: AbortSignal;
   /** Stable durable call identity; retries inspect the same provisioning receipt. */
   operationId?: string;
+  branchNamespace?: "subagent" | "task";
   /** Rechecked at the actual side-effect boundary, including recovered receipts. */
   authorizeGitIsolation?: () => boolean;
 }
@@ -32,6 +33,10 @@ export type PreparedSubagentWorkspace =
     };
 
 type WorktreeWorkspace = Extract<PreparedSubagentWorkspace, { kind: "worktree" }>;
+
+export function durableWorktreeAllocation(baseDir: string, operationId: string): string {
+  return path.join(baseDir, `durable-${createHash("sha256").update(operationId).digest("hex")}`);
+}
 
 /**
  * Only the policy half. Whether this directory can host a worktree is a different question, and the
@@ -141,7 +146,7 @@ export async function prepareSubagentWorkspace(options: PrepareSubagentWorkspace
   await mkdir(path.resolve(options.baseDir), { recursive: true });
   const baseDir = await realpath(options.baseDir);
   const allocation = options.operationId
-    ? path.join(baseDir, `durable-${createHash("sha256").update(options.operationId).digest("hex")}`)
+    ? durableWorktreeAllocation(baseDir, options.operationId)
     : await mkdtemp(path.join(baseDir, "subagent-"));
   if (options.operationId) {
     await mkdir(allocation, { recursive: true });
@@ -183,7 +188,7 @@ export async function prepareSubagentWorkspace(options: PrepareSubagentWorkspace
     root,
     repository,
     baseCommit,
-    branch: `subagent/${randomUUID()}`,
+    branch: `${options.branchNamespace ?? "subagent"}/${randomUUID()}`,
     receiptPath: path.join(allocation, "receipt.json"),
   };
   const receipt = { ...workspace, sourceCwd: cwd };

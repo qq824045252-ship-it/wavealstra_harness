@@ -9,6 +9,7 @@ import { capabilityResultFromDetails } from "../../../shared/capability-result";
 import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
 import { latestActivityTime } from "../../../../shared/src/activity-time";
+import { formatStoredPstackReply } from "../pstack/PstackBlockReport";
 
 export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; goalContinuation?: import("../../../shared/conversation-goal").GoalContinuationOrigin; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
@@ -181,7 +182,7 @@ export class DurableHistoryProjection {
     const details = resultDetails(message);
     const calls = (details?.calls ?? []).map((call, index) => nestedToolRow(message.toolCallId, call, index));
     const tools = (owner.tools ?? []).map(tool => tool.id === message.toolCallId
-      ? { ...tool, status: message.isError ? "error" as const : "success" as const, output: durableContentText(message.content), detail: message.details === undefined ? tool.detail : JSON.stringify(message.details),
+      ? { ...tool, status: message.isError ? "error" as const : "success" as const, output: durableContentText(message.content), detail: toolResultDetail(tool, message),
           capabilityResult: capabilityResultFromDetails(message.toolName, message.details),
           webSearch: searchReportFromDetails(message.details), consult: consultReportFromDetails(message.details) } : tool);
     for (const call of calls) if (!tools.some(tool => tool.id === call.id)) tools.push(call);
@@ -189,6 +190,18 @@ export class DurableHistoryProjection {
     const artifacts = details?.imagePaths?.map(path => ({ id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "" }));
     this.replace({ ...owner, tools, ...(artifacts?.length ? { artifacts: [...owner.artifacts ?? [], ...artifacts.filter(artifact => !owner.artifacts?.some(item => item.id === artifact.id))] } : {}) });
   }
+}
+
+function toolResultDetail(tool: ToolRow, message: ToolResult): string | undefined {
+  if (message.details === undefined) return tool.detail;
+  if (message.toolName === "pstack_delegate" && tool.detail && message.details && typeof message.details === "object" && !Array.isArray(message.details)) {
+    // The display receipt adds measurements; keep the caller's public assignment alongside it.
+    try {
+      const args = JSON.parse(tool.detail);
+      if (Array.isArray(args.tasks)) return JSON.stringify({ tasks: args.tasks, ...message.details });
+    } catch { /* Some tool inputs have only a human-readable summary. */ }
+  }
+  return JSON.stringify(message.details);
 }
 
 /**
@@ -205,7 +218,7 @@ export function assistantRow(id: string, taskId: TaskId | undefined, message: As
       tps: streaming ? null : validSpeed(metrics?.tps), estimated: false, outputTokens: message.usage.output,
       ttftMs: streaming ? null : validDuration(metrics?.ttftMs),
       ...(!streaming ? { outcome: message.stopReason === "aborted" ? "aborted" as const : message.stopReason === "error" || message.stopReason === "length" ? "error" as const : "completed" as const } : {}) },
-    text: durableContentText(message.content) + deepseekCitationMarkdown(message) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
+    text: formatStoredPstackReply(durableContentText(message.content)) + deepseekCitationMarkdown(message) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
     thinking: message.content.filter(item => item.type === "thinking").map(item => item.thinking).join(""),
     tools: [...deepseekHostedToolRows(message, streaming), ...message.content.filter(item => item.type === "toolCall").map(call => {
       const text = summarizeToolInput(call.name, call.arguments);

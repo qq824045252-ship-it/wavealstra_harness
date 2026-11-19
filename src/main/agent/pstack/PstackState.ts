@@ -2,6 +2,7 @@ import { defineDoc, LiveDoc, type Cursor, type EntryId, type EntryRecord, type H
 import type { Context } from "@earendil-works/chord/context";
 import { PSTACK_PLAYBOOKS, PSTACK_SKILLS, THERMOS_CRITERIA, normalizePstackSettings, resolvePstackRole, type PstackPlaybook, type PstackStage, type PstackSettings } from "../../../shared/pstack";
 import type { WorkspaceBaseline, WorkspaceDelta } from "./PstackWorkspace";
+import { readOnlyCodingTag, type CodingTag } from "../../../shared/pstack/coding-tags";
 import { auditSchedule, isAutopilot, type inspectPublishedPr, type OwnerReport } from "./PstackDelivery";
 import type { BuildHistory } from "./watch/builds";
 import type { OwnerAuditTick } from "./PstackOwnerMonitor";
@@ -13,11 +14,12 @@ import type { Contest, ContestAudit } from "./PstackContest";
 import type { EvalExport } from "./PstackEvalExport";
 
 export type Api = Parameters<ToolRegistration["execute"]>[1];
-export type WorkflowOptions = { taskId: string; cwd: string; active: () => boolean; settings: () => PstackSettings; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
+export type WorkflowOptions = { taskId: string; cwd: string; tag?: CodingTag | null; active: () => boolean; settings: () => PstackSettings; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
 export const REVIEW = "thermo-nuclear-code-quality-review";
 export type DelegateReceipt = { role: string; stage: number; stageId: string; toolTaskId: number; children: string[]; models: string[]; answers: string[]; ownerReports?: OwnerReport[]; ownerAudit?: OwnerAuditTick; participants?: ContestAudit[] };
 export type WorkflowRun = {
   task: string; run: number; first: EntryId; inputs: number[]; revision: number; playbook: string; config: string;
+  tagId?: string;
   phase: "running" | "blocked" | "complete"; stage: number; block: string; notes: string[]; operations: number[];
   verification: { command: string; fingerprint: string; toolTaskId: number; passed: boolean } | null;
   red?: { command: string; fingerprint: string; toolTaskId: number; exitCode: number };
@@ -59,8 +61,10 @@ function route(id: string): PstackPlaybook {
   if (!book) throw new Error("This playbook is unavailable: " + id);
   return book;
 }
-export function playbookFor(run: Pick<WorkflowRun, "playbook" | "invoked">): PstackPlaybook {
-  const book = route(run.playbook);
+export function playbookFor(run: Pick<WorkflowRun, "playbook" | "invoked" | "tagId">): PstackPlaybook {
+  let book = route(run.playbook);
+  if (book.id === "skill:architect" && readOnlyCodingTag(run.tagId))
+    book = { ...book, stages: book.stages.filter(stage => ["ground", "sketch", "synthesize"].includes(stage.id)) };
   if (!run.invoked?.length) return book;
   return { ...book, stages: book.stages.flatMap(stage => [
     ...run.invoked!.filter(entry => entry.stage === stage.id).flatMap(entry => route("skill:" + entry.skill).stages.map(substage =>

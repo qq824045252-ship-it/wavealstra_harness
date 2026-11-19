@@ -10,7 +10,7 @@ import {
   type TurnDiagnostics,
   type Verdict,
 } from "@/lib/diagnosticsRules";
-import { parseSubagentDetails } from "@/lib/subagentDetails";
+import { parseSubagentDetails, subagentDispatchDetail } from "@/lib/subagentDetails";
 import { useAppStore } from "@/store/appStore";
 import "./TaskDiagnosticsPanel.css";
 import { formatTokenCount } from "@shared/token-format";
@@ -307,8 +307,8 @@ export default function TaskDiagnosticsPanel({ taskId }: { taskId: string | null
     const map: Record<string, string> = {};
     for (const message of task?.messages ?? []) {
       for (const block of message.blocks ?? []) {
-        if (block.type !== "tool" || block.toolCall.tool !== "subagent") continue;
-        for (const run of parseSubagentDetails(block.toolCall.detail)?.results ?? []) {
+        if (block.type !== "tool") continue;
+        for (const run of parseSubagentDetails(subagentDispatchDetail(block.toolCall))?.results ?? []) {
           if (!run.nativeConversationId) continue;
           map[run.nativeConversationId] = run.displayName || run.agent || run.subagentId;
         }

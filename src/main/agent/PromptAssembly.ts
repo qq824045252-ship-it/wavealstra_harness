@@ -9,7 +9,8 @@ import type {
   ModeToolPolicy,
   WelcomeMode,
 } from "../../shared/mode-profile";
-import { codingWorkflowEnabled, emptyArtifactPolicy } from "../../shared/mode-profile";
+import { codingWorkflowEnabled, emptyArtifactPolicy, resolveModePreset } from "../../shared/mode-profile";
+import { codingTagRoute } from "../../shared/pstack/coding-tags";
 import { CODING_WORKFLOW_INSTRUCTIONS } from "./mode-defaults";
 import type { ResolvedProjectContext } from "../../shared/project-domain";
 import {
@@ -321,9 +322,11 @@ export function assemblePrompt(input: PromptAssemblyInput): AssemblyTraceDto {
     ),
   );
 
+  const tagRoute = codingTagRoute(resolveModePreset(profile.policy, input.modePreset?.id));
   const modeParts = [
     `## 场景模式：${profile.labelZh}`,
-    ...(codingWorkflowEnabled(welcomeMode, profile.policy) ? [CODING_WORKFLOW_INSTRUCTIONS] : []),
+    ...(codingWorkflowEnabled(welcomeMode, profile.policy) ? [CODING_WORKFLOW_INSTRUCTIONS,
+      ...(tagRoute && tagRoute !== "auto" ? [`当前标签「${input.modePreset?.label}」首选 ${tagRoute}。第一步调用 pstack_workflow(action="start")，宿主会应用标签设置。若该流程被停用，用 status 查看可选流程。`] : [])] : []),
     ...profile.blocks.map((b) => {
       if (b.source === "user") {
         /* mark later */

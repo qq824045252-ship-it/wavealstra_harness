@@ -23,6 +23,8 @@ import type {
   AgentApproveToolRequest,
   AgentPromptRequest,
   AgentPromptResult,
+  PrepareTaskWorktreeRequest,
+  PrepareTaskWorktreeResult,
   AgentSubmissionReceipt,
   AgentRegenerateRequest,
   AgentRegenerateResult,
@@ -265,6 +267,7 @@ export interface PreloadApi {
   startNativeDrag: (filePaths: string | string[]) => void;
   agent: {
     prompt: (req: AgentPromptRequest) => Promise<AgentPromptResult>;
+    prepareTaskWorktree: (req: PrepareTaskWorktreeRequest) => Promise<PrepareTaskWorktreeResult>;
     submissionStatus: (receipt: AgentSubmissionReceipt) => Promise<AgentPromptResult>;
     waitForSubmission: (receipt: AgentSubmissionReceipt) => Promise<AgentPromptResult>;
     regenerate: (req: AgentRegenerateRequest) => Promise<AgentRegenerateResult>;
@@ -485,6 +488,7 @@ export interface PreloadApi {
     pairWindowState: () => Promise<RemotePairWindowDto | null>;
     detectCloudflared: () => Promise<RemoteCloudflaredStatus>;
   };
+  answerRouting: import("../shared/answer-routing").AnswerRoutingApi;
   memory: {
     organization: () => Promise<import("../shared/memory-organization").MemoryOrganizationRun | null>;
     startOrganization: (resumeId?: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;

@@ -67,6 +67,23 @@ export async function run() {
   root.render(<ModesTab />);
   await openEditor();
   const activation = "启用内置 pstack + thermos";
+  await button("预设 / Tags");
+  const routeField = "启用 pstack 时的默认流程";
+  async function pickTag(id: string) {
+    const tag = await until(() => [...document.querySelectorAll<HTMLButtonElement>(".modes-preset-rail-item")].find(el =>
+      el.querySelector(".modes-preset-rail-id")?.textContent === id), id);
+    tag.click(); await tick();
+  }
+  await pickTag("feature-dev");
+  await enter(routeField, "prototype");
+  await button("保存");
+  await until(() => !document.querySelector<HTMLButtonElement>(".modes-editor-actions .primary")?.matches(":enabled"), "tag route save");
+  assert((await readPolicy()).presets?.find(tag => tag.id === "feature-dev")?.pstackRoute === "prototype", "Tag route did not reach disk");
+  await pickTag("plan-design");
+  assert(![...(await field(routeField) as HTMLSelectElement).options].some(o=>o.value === "feature"), "Design tag offers an implementation route");
+  await pickTag("feature-dev");
+  assert((await field(routeField)).value === "prototype","Saved tag route not displayed");
+  await button("pstack + thermos");
   assert(!(await field(activation) as HTMLInputElement).checked, "Builtin workflow should start disabled");
   assert(document.querySelector(".pstack-top")?.textContent?.includes("所有代码开发任务"), "The switch must explain its mode-wide scope");
   assert(document.querySelectorAll(".pstack-list button").length === 52, "Incomplete skill catalog");

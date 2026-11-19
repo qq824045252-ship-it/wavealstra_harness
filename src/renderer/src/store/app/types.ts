@@ -38,6 +38,7 @@ export type SettingsTab =
   | "modes"
   | "personalize"
   | "memory"
+  | "answerRouting"
   | "archive"
   | "models"
   | "subagent"
@@ -52,6 +53,8 @@ export type SettingsTab =
   | "help";
 
 export interface TaskDraft {
+  /** Task id reserved for the worktree selected in this draft. */
+  worktreeTaskId?: string;
   /** 发起时绑定的空间（空间内「+ 添加对话」） */
   spaceId?: string;
   /** 与 Space 正交的长期 Project 上下文。 */

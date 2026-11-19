@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { DurableSubagentIdentity, DURABLE_SUBAGENT_TIER_LIMIT_RETRIES } from "./DurableSubagentIdentity";
+import { addChildResponse } from "./DurableChildMeasurements";
 export { DurableSubagentIdentity } from "./DurableSubagentIdentity";
 import { readDurableWorkRevisionContext, type WorkRevisionBinding } from "./DurableWorkRevisionContext";
 import { assertModelAdmission } from "../ModelInvocationAdmission";
@@ -120,7 +121,9 @@ export interface DurableSubagentOptions {
   permissionMode: () => PermissionMode;
   workspaceNotes?: () => string;
   onChange?: () => void;
+  observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
   allowGitBranchOrWorktree?: () => boolean;
+  readOnlyWorkspace?: boolean;
   workBinding?: () => WorkRevisionBinding | undefined;
 }
 
@@ -129,6 +132,7 @@ type ActiveChild = {
   id: string;
   identity: Identity;
   summary: SubagentSummaryDto;
+  snapshot: () => SubagentSummaryDto;
   steer: (instruction: string, requestId: string) => Promise<void>;
   cancel: () => Promise<void>;
   transcript: () => Promise<{ record: SubagentSummaryDto; entries: Array<{ ts: number; type: "message_end"; message: Message }>; ended: boolean }>;
@@ -156,7 +160,7 @@ export const durableSubagentIpcBackend = {
   // 作用域必须按 taskId 过滤：面板只应看到当前任务的实例
   active: (taskId: string) => [...activeChildren.values()]
     .filter(child => child.taskId === taskId)
-    .map(child => child.summary),
+    .map(child => child.snapshot()),
   transcript: async (id: string) => await activeChildren.get(id)?.transcript() ?? { record: null, entries: [], ended: true },
   steer: async (id: string, instruction: string) => {
     const child = activeChildren.get(id);
@@ -223,7 +227,8 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       const normalized = dispatch.items.map(item => normalizePlanItem(item, dispatch));
       const parent = await api.agent(context);
       const excluded = new Set<string>([...RECURSION_TOOLS, "codemode", "execute_code", "multi_model_consult"]);
-      const inherited = parent.callable.map(tool => tool.name).filter(name => !excluded.has(name) && !isPstackForegroundTool(name));
+      const inherited = parent.callable.map(tool => tool.name).filter(name => !excluded.has(name) && !isPstackForegroundTool(name) &&
+        (!options.readOnlyWorkspace || READONLY_TOOLS.some(tool => tool === name)));
       const items = normalized.map(item => item.kind === "run" ? { ...item, tools: childRoleTools(item.role, inherited) } : item);
       const results: SingleResult[] = [];
       /** D-1: the identity deadline observed by the first attempt; a retry must stay inside it. */
@@ -354,7 +359,7 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
     description: "List live durable children belonging to this host task. Only running children are indexed; a finished child's result stays in the subagent tool result and the task timeline.",
     execute: async params => {
       const children = [...activeChildren.values()].filter(child => child.taskId === options.taskId)
-        .map(child => child.summary).filter(child => (!params.agent || child.role === params.agent) && (!params.status || child.status === params.status))
+        .map(child => child.snapshot()).filter(child => (!params.agent || child.role === params.agent) && (!params.status || child.status === params.status))
         .sort((a, b) => b.createdAt - a.createdAt).slice(0, params.limit ?? 20);
       return { output: [{ type: "text", text: JSON.stringify(children) }], details: json({ active: children }) };
     },
@@ -485,7 +490,8 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
         allowTools: config.allowTools, denyTools: config.denyTools, confirmTools: config.confirmTools ?? [...DEFAULT_CONFIRM_TOOLS] });
       const tightened = tightenPolicy(policy, permissionMode);
       const allowed = tightened.tools ?? parent.callable.map(tool => tool.name);
-      const tools = childRoleTools(role, allowed.filter(name => !tightened.excludeTools.includes(name) && !isPstackForegroundTool(name) && !["codemode", "execute_code", "multi_model_consult"].includes(name)));
+      const tools = childRoleTools(role, allowed.filter(name => (!options.readOnlyWorkspace || READONLY_TOOLS.some(tool => tool === name)) &&
+        !tightened.excludeTools.includes(name) && !isPstackForegroundTool(name) && !["codemode", "execute_code", "multi_model_consult"].includes(name)));
       candidates.push({ base, role, sourceCwd, tools, selection: selected,
         explicitIsolation: item.isolation !== undefined || params.isolation !== undefined });
     } catch (error) {
@@ -793,12 +799,16 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
       } while (cursor);
       return output;
     };
-    const active: ActiveChild = { taskId: options.taskId, id: item.id, identity: created.identity, summary,
+    const snapshot = (): SubagentSummaryDto => {
+      const reported = options.observedUsage?.(String(created.id));
+      return reported?.requests ? { ...summary, usage: { ...summary.usage, reported, turns: reported.requests } } : summary;
+    };
+    const active: ActiveChild = { taskId: options.taskId, id: item.id, identity: created.identity, summary, snapshot,
       steer: async (instruction, requestId) => {
         await child.submit({ type: "input", content: instruction, requestId, whenBusy: "steer", whenIdle: "reject" }, context);
         summary.steerCount++; options.onChange?.();
       }, cancel: () => child.abort(context),
-      transcript: async () => ({ record: summary, entries: (await messages()).map(message => ({ ts: message.timestamp, type: "message_end", message })), ended: false }) };
+      transcript: async () => ({ record: snapshot(), entries: (await messages()).map(message => ({ ts: message.timestamp, type: "message_end", message })), ended: false }) };
     activeChildren.set(item.id, active); options.onChange?.();
     const watch = await api.watchDoc(LiveDoc, created.id, context);
     if (watch) {
@@ -834,15 +844,21 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     result.status = timedout ? "timedout" : receipt.status === "done" && final?.stopReason === "stop" ? "completed" : receipt.status === "unanswered" && receipt.reason === "aborted" ? "cancelled" : "failed";
     result.exitCode = result.status === "completed" ? 0 : 1;
     result.stopReason = final?.stopReason;
-    result.errorMessage = timedout ? "Subagent time limit reached" : result.exitCode ? final?.errorMessage ?? (receipt.status === "unanswered" ? receipt.reason : "Subagent did not complete") : undefined;
-    result.stderr = result.errorMessage ?? "";
-    for (const message of assistants) {
-      result.usage.input += message.usage.input; result.usage.output += message.usage.output;
-      result.usage.cacheRead += message.usage.cacheRead; result.usage.cacheWrite += message.usage.cacheWrite;
-      result.usage.cost += message.usage.cost.total; result.usage.turns++;
-      result.usage.contextTokens = message.usage.totalTokens;
+    if (result.exitCode) {
+      if (timedout) result.errorMessage = "Subagent time limit reached";
+      else if (receipt.status === "unanswered") {
+        const detail = typeof receipt.detail === "string" ? receipt.detail.trim() : "";
+        result.errorMessage = final?.errorMessage || detail || receipt.reason;
+      }
+      else if (final?.stopReason === "length") result.errorMessage = "子代理回复达到模型输出长度上限，报告被截断";
+      else result.errorMessage = final?.errorMessage || "Subagent did not complete";
     }
+    result.stderr = result.errorMessage ?? "";
+    for (const message of assistants) addChildResponse(result.usage, message);
     result.nativeConversationId = created.id;
+    result.durationMs = Math.max(0, api.now() - created.identity.startedAt);
+    const reported = options.observedUsage?.(String(created.id));
+    if (reported?.requests && reported.requests === result.usage.turns) result.usage.reported = reported;
     return { result: withWriteConflicts(result), deadline: created.identity.deadline };
   } catch (error) {
     // Closing the Harness must leave the safe tool pending. Turning cancellation into a result would lose recovery.
@@ -882,8 +898,12 @@ export function createDurableReadOnlyTools(cwd: string): ToolRegistration[] {
       const result = await createFindTool(await boundCwd(api, context)).execute(api.callId, args, context.abortSignal);
       return { output: result.content, details: copyJson(result.details ?? null, { omitUndefinedProperties: true }) };
     } }),
-    defineTool({ name: grep.name, description: grep.description, parameters: grep.parameters, replay: "safe", execute: async (args, api, context) => {
-      const result = await createGrepTool(await boundCwd(api, context)).execute(api.callId, args, context.abortSignal);
+    defineTool({ name: grep.name, description: grep.description + " Source searches skip node_modules by default. Supply a dependency path or an explicit glob to search dependencies.", parameters: grep.parameters, replay: "safe", execute: async (args, api, context) => {
+      const directory = await boundCwd(api, context);
+      const searchPath = resolve(directory, args.path ?? ".");
+      const includeDependencies = searchPath.split(/[\\/]/).some(part => part.toLowerCase() === "node_modules");
+      const query = args.glob || includeDependencies ? args : { ...args, glob: "!**/node_modules" };
+      const result = await createGrepTool(directory).execute(api.callId, query, context.abortSignal);
       return { output: result.content, details: copyJson(result.details ?? null, { omitUndefinedProperties: true }) };
     } }),
   ];

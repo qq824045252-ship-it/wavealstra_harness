@@ -217,7 +217,7 @@ export default function ProjectWorkspace({
   const railMode = useProjectConfigRailStore((state) => state.mode);
 
   const sendFromProject = useCallback<NonNullable<React.ComponentProps<typeof ChatInput>["onSend"]>>(
-    (text, attachments, taskReferences, streamingBehavior, connectorIds, externalAgent) => {
+    (text, attachments, taskReferences, streamingBehavior, connectorIds, externalAgent, preparedTaskId) => {
       const state = useAppStore.getState();
       if (!project || state.draft?.projectId !== project.id) return;
       // Only fill an untouched draft. Explicit folder overrides (including no folder) win.
@@ -233,7 +233,7 @@ export default function ProjectWorkspace({
       // Project dock materializes the project-bound draft, then moves to the only
       // surface that renders streaming messages so the reply is immediately visible.
       useAppStore.getState().setPage("chat");
-      sendMessage(text, attachments, taskReferences, streamingBehavior, connectorIds, undefined, externalAgent);
+      sendMessage(text, attachments, taskReferences, streamingBehavior, connectorIds, undefined, externalAgent, preparedTaskId);
     },
     [sendMessage, project, onToast],
   );

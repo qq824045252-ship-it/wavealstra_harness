@@ -20519,6 +20519,19 @@ html[data-theme="dark"] .task-item.active {
   color: var(--fg);
 }
 
+.input-box .input-toolbar .worktree-trigger[aria-pressed="true"],
+.input-box .input-toolbar .worktree-status {
+  background: var(--bg-active);
+  color: var(--fg);
+}
+
+.input-box .input-toolbar .worktree-trigger[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--fg-muted);
+}
+
 .input-box .send-btn {
   border-radius: var(--radius-md);
   color: var(--primary-fg);
@@ -24047,15 +24060,12 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   line-height: 1.4;
 }
 
-.ro-detail-pre {
+.ro-detail-report {
   margin: 0;
   padding: 6px 8px;
   border-radius: 4px;
   background: var(--bg-code, rgba(0, 0, 0, 0.05));
-  font-family: var(--font-mono);
-  font-size: 11px;
   color: var(--fg);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 180px;
   overflow-y: auto;

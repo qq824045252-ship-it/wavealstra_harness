@@ -14,6 +14,18 @@ import { normalizePstackSettings } from "../src/shared/pstack";
 import { createPstackWorkflow, isPstackCheck } from "../src/main/agent/pstack/PstackWorkflow";
 import { isPstackObservation } from "../src/main/agent/pstack/PstackObservationCommand";
 import { WorkflowState } from "../src/main/agent/pstack/PstackState";
+import { formatPstackBlock, formatStoredPstackReply } from "../src/main/agent/pstack/PstackBlockReport";
+
+const rawBlock = String.raw`目录 C:\new\repo。\n已完成：验证通过。\n解除条件：\n1) 选择仓库。\n2) 再次验证。`;
+const formattedBlock = formatPstackBlock(rawBlock);
+assert.match(formattedBlock, /^## 工作流暂停\n/);
+assert.ok(formattedBlock.includes("### 已完成\n\n验证通过。"));
+assert.ok(formattedBlock.includes("1) 选择仓库。\n2) 再次验证。"));
+assert.ok(formattedBlock.includes(String.raw`C:\new\repo`));
+assert.equal(formatStoredPstackReply("pstack 工作流尚待继续。当前阻碍：" + rawBlock), formattedBlock);
+assert.equal(formatStoredPstackReply(rawBlock), rawBlock);
+const codeSample = ["```js", String.raw`const s = "。\n已完成：";`, "```"].join("\n");
+assert.ok(formatPstackBlock(codeSample).includes(codeSample));
 import { testInFlightOwners } from "./pstack-owner-monitor-fixture";
 import { baselineWorkspace, branchReviewBase, measureWorkspace, missingFile, readPlanFile, reviewBaseline, reviewCommit, reviewScope, skillFileState } from "../src/main/agent/pstack/PstackWorkspace";
 import { reviewIntent } from "../src/main/agent/pstack/PstackReviewIntent";
@@ -168,6 +180,9 @@ try {
     const revision = (await status())!.run!.revision;
     await runtime.close(); runtime = await open();
     assert.equal((await status())?.run?.revision, revision, "same run survives production durable reopen");
+    const thanks = await runtime.submit("做得挺好的，谢谢", "acknowledge-block");
+    assert.equal(await runtime.reply(thanks), "Fixture yielded.", "a new acknowledgement gets its own reply");
+    assert.equal((await status())?.run?.phase, "blocked", "acknowledgement does not clear the gate");
     const testFile = "const test=require('node:test'); test('works',()=>{});\n";
     const finished = await turn("继续", "run-2", [work("resume"),
       { name: "write", arguments: { path: "check.cjs", content: testFile } },

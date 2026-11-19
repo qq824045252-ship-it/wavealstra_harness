@@ -247,6 +247,8 @@ export interface AppActions {
       ExternalAgentDescriptorDto,
       "id" | "name" | "protocol"
     > & { continueFromRunId?: string },
+    /** New task id whose worktree was prepared by the main process. */
+    preparedTaskId?: string,
   ) => void | Promise<void>;
   deleteUserMessage: (messageId: string) => Promise<void>;
   regenerateMessage: (messageId: string) => void;

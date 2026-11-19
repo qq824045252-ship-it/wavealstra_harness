@@ -16,6 +16,9 @@ import { DurableMcp } from "../src/main/agent/durable/DurableMcp";
 import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
 import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { AnswerRoutingService } from "../src/main/agent/AnswerRoutingService";
+import { MemoryService } from "../src/main/memory/MemoryService";
+import { answerRuleExamples } from "../src/shared/answer-routing";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { clearResults, getResult } from "../src/main/capabilities/web-access/storage";
 import { generalModeConfiguration, emptyModePolicy, artifactVisibleForDisplay } from "../src/shared/mode-profile";
@@ -52,6 +55,69 @@ assert.equal(policy.presets?.[0].mcpPolicy, undefined);
 // Bot 产物策略 soft + unfiltered：任何产物都不隐藏（含 .py；不再有 CAD/FreeCAD 临时脚本特判）
 assert(artifactVisibleForDisplay("scripts/generated/report.py", policy.artifactPolicy));
 assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.pptd"]));
+
+// The provider boundary sees the route/file for its own input, including after a reopen.
+{
+  const cwd = join(root, "answer-routing"); await mkdir(cwd);
+  const db = new AppDatabase(join(cwd, "app.db"));
+  const taskId = "routing-example";
+  db.upsertTask({ id: taskId, title: "调度对话", cwd, modelId: "fixture/fixture", updatedAt: 1 });
+  const memories = new MemoryService(db);
+  const source = memories.create({ title: "天气", content: "天气简报优先出行时段。", kind: "procedure", sourceType: "manual", scopeType: "global" });
+  const routing = new AnswerRoutingService(db, (id, task) => task ? memories.getForRecall(id, { taskId: task }) : memories.get(id));
+  const weather = routing.save({ ...answerRuleExamples[0], sourceMemoryId: source.id, sourceHash: source.contentHash });
+  const report = routing.save({ ...answerRuleExamples[1], evidenceFile: "release.md" });
+  db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES('route-project','验收项目',1,1)").run();
+  const projectRule = routing.save({ ...answerRuleExamples[1], projectId: "route-project", title: "本项目周报" });
+  assert.equal(routing.preview("写项目周报", "route-project")?.rule.title, "本项目周报");
+  assert.equal(routing.preview("写项目周报", null)?.rule.title, "周报核对发布记录");
+  assert.equal(routing.preview("润色文字\n## 用户附带文件\n天气 项目周报", "route-project"), null);
+  routing.remove(projectRule.id, projectRule.revision);
+  await writeFile(join(cwd, "release.md"), "需求 R-37 已提测，尚无发布记录。");
+  const payloads: string[] = [];
+  let canRead = true;
+  const service = new DurableBotService({ db, agentDir: cwd, mcpDir: join(cwd, "mcp"),
+    models: { ...models(context => { payloads.push(JSON.stringify(context.messages)); return text("fixture reply"); }),
+      refresh: async () => ({}), getAvailable: async () => [model] },
+    answerRouting: routing, evidenceProjection: () => ({ memory: memories, enabled: () => true, scope: () => ({ taskId }), supplementalEvidence: () => [] }),
+    resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native",
+    toolAllowed: (_task, name) => name !== "read" || canRead, defaultModel: () => "fixture/fixture", emit: () => {} });
+  const ask = async (id: string, question: string) => {
+    const count = payloads.length;
+    await service.prompt({ taskId, text: question, userMessageId: id, assistantMessageId: "answer-" + id }, false);
+    assert.equal(payloads.length, count + 1);
+    return payloads[count];
+  };
+  try {
+    assert.match(await ask("weather", "上海明早出门要带伞吗"), /逐小时预报/);
+    assert.doesNotMatch(await ask("translate", "翻译：上海天气好"), /逐小时预报/);
+    await service.release(taskId);
+    assert.match(await ask("report", "帮我写项目周报"), /需求 R-37 已提测，尚无发布记录/);
+    const history = (await service.history(taskId)).messages;
+    assert.equal(history.filter(item => item.role === "user").at(-1)?.text, "帮我写项目周报");
+    assert.deepEqual(routing.history().map(item => [item.inputId, item.title]),
+      [["report", "周报核对发布记录"], ["weather", "查询出行天气"]]);
+    assert.match(routing.history()[0].detail, /已预读 release.md/);
+    canRead = false;
+    const denied = await ask("denied", "整理周报");
+    assert.match(denied, /未取得资料 release.md/);
+    assert.doesNotMatch(denied, /需求 R-37/);
+    routing.save({ ...weather, enabled: false }, weather);
+    assert.doesNotMatch(await ask("off", "明天的天气如何"), /逐小时预报/);
+    assert.throws(() => routing.remove(weather.id, weather.revision), /规则已变化/);
+    const restored = routing.save(weather, { id: weather.id, revision: 2 });
+    memories.update({ id: source.id, content: "天气简报先核对所在城市。" });
+    assert.equal(routing.preview("明天天气如何", null, taskId), null);
+    assert.equal(routing.list().find(item => item.id === weather.id)?.sourceNeedsReview, true);
+    assert.throws(() => routing.save(restored, restored), /来源全局记忆已变化/);
+    assert.throws(() => routing.save({ ...report, evidenceFile: "../other.md" }, report), /相对路径/);
+    routing.remove(report.id, report.revision);
+    assert.equal(routing.history().length, 1);
+    memories.forget(source.id);
+    assert.deepEqual(routing.list(), []);
+    assert.deepEqual(routing.history(), []);
+  } finally { await service.close(); db.close(); }
+}
 
 // Drop an actual emitted revision between the native writer and the desktop store.
 {

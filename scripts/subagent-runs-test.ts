@@ -279,5 +279,27 @@ console.log("== 子代理头部用量：同一快照 / 缺失不补零 ==");
   assert(metrics({input:Number.MAX_VALUE,cacheRead:Number.MAX_VALUE,cacheWrite:0}).hit.value === "—", "溢出分母不伪造有效百分比");
 }
 
+{
+  const args = {role:"how-explorer",tasks:["Trace the active caller"]};
+  const call = {id:"delegate", tool:"pstack_delegate", status:"success" as const, summary:"stage", detail:JSON.stringify(args),
+    output:JSON.stringify({role:args.role,children:["child-a","child-b"],models:["pool/a","pool/b"],answers:["Caller A","Caller B"]})};
+  const history = [msg({id:"parent",blocks:[{type:"tool",toolCall:call}]})];
+  const done = buildDoneSubagents(history);
+  assert(done.length === 2 && done.every(row=>row.state === "completed"), "工作流内部派发的两份回执分别显示完成");
+  assert(done.find(row=>row.id==="child-b")?.detail === "Caller B" && !!findSubagentResultRun(history,"child-b")?.messages.length, "重开任务能按子代理 ID 查看实际返回的答案");
+  const usage = {input:64420,output:8856,cacheRead:1015808,cacheWrite:0,cost:0,contextTokens:0,turns:22,
+    reported:{inputTokens:64420,outputTokens:8856,cacheReadTokens:1015808,cacheWriteTokens:null,cacheHitRate:1015808/1080228,requests:22}};
+  call.detail = JSON.stringify({participants:[{subagentId:"child-a",displayName:"凯西",status:"completed",exitCode:0,nativeConversationId:50,durationMs:38400,usage}]});
+  const rows = buildDoneSubagents(history);
+  const run = findSubagentResultRun(history,"child-a");
+  const header = subagentHeaderMetrics(run?.usage);
+  assert(rows.find(r=>r.id==="child-a")?.usage?.cacheRead===1015808 && run?.durationMs===38400 && !rows.find(r=>r.id==="child-b")?.usage,"仅本子代理获得其持久化的计量和耗时");
+  assert(header.find(m=>m.key==="cacheWrite")?.value==="—" && header.find(m=>m.key==="hit")?.value==="94%","缓存写缺报时保留其他实测字段");
+  assert(buildDoneSubagents(history).find(row=>row.id==="child-a")?.name==="凯西","保留内核记录的子代理名字");
+  call.output = JSON.stringify({failures:[{child:"child-b",model:"pool/b",status:"failed",error:"HTTP 402"}]});
+  const mixed = buildDoneSubagents(history);
+  assert(mixed.find(row=>row.id==="child-b")?.state==="failed" && mixed.find(row=>row.id==="child-a")?.state==="completed","部分失败按成员回执判定");
+}
+
 console.log(`\n结果: passed=${passed} failed=${failed}`);
 if (failed > 0) process.exitCode = 1;

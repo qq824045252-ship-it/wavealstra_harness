@@ -316,6 +316,8 @@ export interface ModeSceneChip {
  * 挂载在 ModePolicyDto.presets 上，随 policy.json 一起持久化（向后兼容：旧文件缺 presets 时回退出厂）。
  */
 export interface ModePresetDto {
+  /** Default native workflow for this coding tag. */
+  pstackRoute?: string;
   /** 通用模式 Tag selects durable tool presentation; both options run on Pi Durable. */
   durableToolMode?: "native" | "codemode";
   /** 场景 preset id（如 web-prototype / general），与 provider 解耦 */

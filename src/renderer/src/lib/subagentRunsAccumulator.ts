@@ -91,7 +91,15 @@ export function accumulateSubagentRuns(taskId: string, vm: RuntimeOverviewVm): R
   };
   // 最新态优先：同一 id 在本次派生里只应归入一个分组
   for (const row of vm.runningSubagents) set(row.id, { order: 0, kind: "running", running: row });
-  for (const row of vm.doneSubagents) set(row.id, { order: 0, kind: "done", done: row });
+  const doneSubagents = vm.doneSubagents.map(row => {
+    const previous = entries.get(row.id);
+    const known = previous?.kind === "running" ? previous.running : previous?.done;
+    const done = known && !row.displayName && known.displayName
+      ? { ...row, name: known.displayName, displayName: known.displayName, cwd: row.cwd ?? known.cwd }
+      : row;
+    set(row.id, { order: 0, kind: "done", done });
+    return done;
+  });
 
   const ordered = [...entries.entries()].sort((a, b) => a[1].order - b[1].order);
   // 上限保护：一直跑的长任务不能无限记账
@@ -101,7 +109,7 @@ export function accumulateSubagentRuns(taskId: string, vm: RuntimeOverviewVm): R
   const remembered = [...entries.values()]
     .sort((a, b) => a.order - b.order)
     .map(entryToDone);
-  return { ...vm, doneSubagents: mergeRememberedRuns(remembered, vm) };
+  return { ...vm, doneSubagents: mergeRememberedRuns(remembered, { ...vm, doneSubagents }) };
 }
 
 /** 仅测试用：清空记账。 */

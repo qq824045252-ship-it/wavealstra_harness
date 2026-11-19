@@ -16,6 +16,7 @@ import "./officecli-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";
 import { ensureOfficeCliSkill } from "./skills/OfficeCliSkill";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
+import { AnswerRoutingIpc } from "../shared/answer-routing";
 import { ProjectNotesService } from "./project/ProjectNotesService";
 import { WorkspaceNotesIpc } from "../shared/workspace-notes";
 import { WorkspaceNotesService } from "./workspace/WorkspaceNotesService";
@@ -50,6 +51,8 @@ import {
 import type {
   AgentApproveToolRequest,
   AgentPromptRequest,
+  PrepareTaskWorktreeRequest,
+  PrepareTaskWorktreeResult,
   AgentRegenerateRequest,
   AgentDeleteUserMessageRequest,
   AgentRestoreBackupRequest,
@@ -251,6 +254,8 @@ import { TaskExecutionWorkspaceLifecycle } from "./task/TaskExecutionWorkspaceLi
 import { ArchivedContentDeletion, artifactPurgeCleanupWarning, removeManagedTaskSession } from "./task/ArchivedContentDeletion";
 import { ArchivedContentDeletionIpc, TRASH_RETENTION_DAYS, TrashIpc, type ArchivedContentDeletionRequest } from "../shared/archive-deletion";
 import { TaskExecutionWorkspace } from "./task/TaskExecutionWorkspace";
+import { prepareTaskGitWorktree, resolveTaskWorktreeCwd } from "./task/TaskGitWorktree";
+import { isTaskWorktreeId } from "../shared/task-worktree";
 import { McpConfigService } from "./mcp/McpConfigService";
 import { PluginStorageIpc } from "../shared/plugin-storage";
 import { getPluginStorage } from "./plugins/PluginStorage";
@@ -1112,6 +1117,14 @@ function registerIpc(): void {
   });
 
   // Agent
+  ipcMain.handle(AgentIpc.prepareTaskWorktree, async (_e, req: PrepareTaskWorktreeRequest): Promise<PrepareTaskWorktreeResult> => {
+    try {
+      await prepareTaskGitWorktree(db, req);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
   ipcMain.handle(AgentIpc.prompt, async (_e, req: AgentPromptRequest) => {
     return await agentService.prompt(req);
   });
@@ -1968,7 +1981,9 @@ function registerIpc(): void {
   ipcMain.handle(DbIpc.upsertTask, (_e, task) => {
     // Cockpit 即时刷新：任务绑定变化（含解绑/改绑）广播新旧项目（不 bump project.updated_at，避免会话重建扰动）
     const prevProjectId = task?.id ? db.getTask(task.id)?.projectId : undefined;
-    db.upsertTask(task);
+    db.upsertTask(isTaskWorktreeId(task?.id) && !db.getTask(task.id)
+      ? { ...task, cwd: resolveTaskWorktreeCwd(task.id) }
+      : task);
     for (const projectId of new Set([task?.projectId, prevProjectId].filter(Boolean) as string[])) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
       notifyProjectAttention(projectId);
@@ -2239,6 +2254,12 @@ function registerIpc(): void {
   ipcMain.handle(MemoryIpc.scenarios, (_e, limit?: number) => agentService.kernelMemoryScenarios(limit));
   ipcMain.handle(MemoryIpc.coreProfiles, (_e, limit?: number) => agentService.kernelMemoryCoreProfiles(limit));
   ipcMain.handle(MemoryIpc.skillCandidates, (_e, status?: import("../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) => agentService.kernelMemorySkillCandidates(status, limit));
+  ipcMain.handle(AnswerRoutingIpc.list, () => agentService.answerRouting.list());
+  ipcMain.handle(AnswerRoutingIpc.save, (_e, draft, version) => agentService.answerRouting.save(draft, version));
+  ipcMain.handle(AnswerRoutingIpc.remove, (_e, id, revision) => agentService.answerRouting.remove(id, revision));
+  ipcMain.handle(AnswerRoutingIpc.preview, (_e, query, projectId) => agentService.answerRouting.preview(query, projectId));
+  ipcMain.handle(AnswerRoutingIpc.history, (_e, turn) => agentService.answerRouting.history(turn));
+  ipcMain.handle(AnswerRoutingIpc.suggest, (_e, teaching, question, answer) => agentService.suggestAnswerRule(teaching, question, answer));
   ipcMain.handle(MemoryIpc.skillLearningStatus, () => agentService.kernelSkillLearningStatus());
   ipcMain.handle(MemoryIpc.deleteSkillHistory, (_e, request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest) => agentService.deleteKernelSkillHistory(request));
   ipcMain.handle(MemoryIpc.refreshSkillCandidates, () => agentService.refreshKernelMemorySkillCandidates());
