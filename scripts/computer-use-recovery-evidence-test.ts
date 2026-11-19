@@ -26,6 +26,18 @@ const bridge = { resolveContext: () => ctx, failures };
 const target = windowFixture();
 
 try {
+  const lookup: ComputerExecInput = { action: "find_control", windowHandle: target.handle, controlName: "RELEASE_FIXTURE_OK", controlType: "Text" };
+  const lookupTarget = computerUseRecoveryTarget(lookup);
+  const oldMiss = failures.record({ ...ctx, target: lookupTarget, causeCode: "computer-control-not-found",
+    phase: "observe", recovery: "recoverable", sideEffects: "none", message: "Computer Use find_control failed (CONTROL_NOT_FOUND): No UI Automation control matched", nextAction: "Inspect again" });
+  assert(!failures.list("task").some(f => f.id === oldMiss.id));
+  assert(db.prepare("SELECT id FROM execution_failures WHERE id=? AND resolved_at IS NULL").get(oldMiss.id));
+  assert.equal(recordComputerUseFailureRecovery(bridge, lookup, new WindowsAutomationError("CONTROL_AMBIGUOUS", "Multiple UI Automation controls matched")), false);
+  assert(recordComputerUseFailureRecovery(bridge, lookup, new WindowsAutomationError("CONTROL_TREE_UNAVAILABLE", "UI Automation root is unavailable")));
+  assert(failures.list("task").some(f => f.causeCode === "computer-control-tree-unavailable" && f.target === lookupTarget));
+  assert(recordComputerUseFailureRecovery(bridge, lookup, new WindowsAutomationError("CONTROL_AMBIGUOUS", "Multiple UI Automation controls matched", { executed: "unknown" })));
+  settleComputerUseResultRecovery(bridge, lookup, { action: "find_control", window: target, matched: false });
+  assert(failures.list("task").some(f => f.causeCode === "computer-control-ambiguous" && f.sideEffects === "unknown" && !f.resolvedAt));
   const click = { action: "click_client" as const, taskId: "task", windowHandle: target.handle, x: 10, y: 10 };
   assert.equal(computerUseRecoveryTarget(click), "computer:click_client:hwnd=9001");
 

@@ -36,6 +36,12 @@ export const WEB_ACCESS_TOOL_NAMES = [
   "get_search_content",
 ] as const;
 
+export const UI_INPUT_ACTIONS = ["click", "fill", "press", "scroll", "hover", "select", "check", "drag"] as const;
+export const UI_EXEC_ACTIONS = ["status", "snapshot", "find", "inspect", "screenshot", "wait_for", ...UI_INPUT_ACTIONS] as const;
+export function isUiInputAction(action: unknown): boolean {
+  return UI_INPUT_ACTIONS.some(value => value === action);
+}
+
 /** MyBuddy 自研原生能力工具（builtin-capability-extension 注册，非 MCP） */
 export const NATIVE_CAPABILITY_TOOL_NAMES = [
   ...WEB_ACCESS_TOOL_NAMES,

@@ -147,7 +147,11 @@ Use for MyBuddy-owned web surfaces.
 
 Useful sequence:
 
-\`snapshot -> find/inspect -> click/fill/press/scroll -> wait_for -> snapshot/screenshot\`
+\`snapshot -> scoped find/inspect -> click/fill/press/scroll/hover/check/select/drag -> wait_for\`
+
+For a menu or dialog, set within to a unique container and pass role, name and exact in the action. If elementsTruncated is true, narrow the container or locator. Pass after with a locator and expected state to verify that the next control appeared or the popup closed.
+
+When a reference expires, inspect the returned candidates. If its container is gone, observe the current page and reopen the intended dialog. If input was dispatched, read back the result before sending further input.
 
 For a click bug, prefer \`click\` because it follows the real Electron input path instead of JavaScript \`element.click()\`.
 

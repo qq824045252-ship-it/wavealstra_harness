@@ -58,6 +58,8 @@ export function formatComputerUseFailureEvidence(error: unknown): string {
     "semanticOutcome", "checks", "kind", "status", "cleanup", "cleanupError", "cleanupFailed", "keys", "buttons", "errors",
     "window", "handle", "processId", "className", "title", "identityToken", "layoutId", "observationId",
     "message", "detail", "evidence", "reason", "diagnosticCode",
+    "computerUseRecovery", "guidance", "retry", "attempt", "truncated", "maxDepth", "maxNodes",
+    "selector", "controlName", "controlClassName", "exactName", "controlType", "name", "automationId", "runtimeId", "controlRuntimeId", "candidates", "matchCount", "observedControlCount", "uiaAvailable",
   ];
   let budget = 6_000;
   let truncated = false;
@@ -80,6 +82,14 @@ export function formatComputerUseFailureEvidence(error: unknown): string {
     for (const key of keys) {
       if (!Object.prototype.hasOwnProperty.call(source, key) || source[key] === undefined) continue;
       budget -= key.length + 6;
+      // A shortened identifier can match a different control. Return it intact or ask for a new observation.
+      if ((key === "runtimeId" || key === "controlRuntimeId" || key === "automationId") && typeof source[key] === "string") {
+        const id = source[key] as string;
+        if (id.length > Math.min(4096, budget)) { truncated = true; continue; }
+        picked[key] = id;
+        budget -= id.length;
+        continue;
+      }
       const item = visit(source[key], depth + 1);
       if (item !== undefined) picked[key] = item;
     }

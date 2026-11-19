@@ -3,7 +3,11 @@
 export const browserDomPrelude = `const __mbDom=(()=>{
   const roots=(root=document)=>{const result=[root],seen=new Set(result);if(root.shadowRoot){result.push(root.shadowRoot);seen.add(root.shadowRoot);}for(let i=0;i<result.length;i++)for(const el of result[i].querySelectorAll('*'))if(el.shadowRoot&&!seen.has(el.shadowRoot)){seen.add(el.shadowRoot);result.push(el.shadowRoot);}return result;};
   const all=(selector,root=document)=>[...new Set([...(root instanceof Element&&root.matches(selector)?[root]:[]),...roots(root).flatMap(part=>Array.from(part.querySelectorAll(selector)))])];
-  const one=(selector,root=document)=>all(selector,root)[0]||null;
+  const one=(selector,root=document)=>{
+    const nodes=all(selector,root);
+    if(/^\\[data-mybuddy-ui-ref="[^"]+"\\]$/.test(selector))return nodes.find(el=>window.__mybuddyUiRefs?.get(el)===el.getAttribute('data-mybuddy-ui-ref'))||null;
+    return nodes[0]||null;
+  };
   const parent=el=>el.assignedSlot||el.parentElement||(el.getRootNode() instanceof ShadowRoot?el.getRootNode().host:null);
   const contains=(ancestor,node)=>{for(let current=node;current;current=parent(current))if(current===ancestor)return true;return false;};
   const active=()=>{let el=document.activeElement;while(el?.shadowRoot?.activeElement)el=el.shadowRoot.activeElement;return el;};

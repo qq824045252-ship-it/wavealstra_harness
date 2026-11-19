@@ -6,7 +6,7 @@ import type {
 import { BrowserAutomationError, BROWSER_INPUT_ACTIONS } from "../capabilities/BrowserAutomationService";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
-import { isBrowserObservationCode } from "./BrowserObservationFailure";
+import { isBrowserObservationCode } from "./AutomationObservationFailure";
 
 export interface BrowserAutomationRecoveryBridge {
   resolveContext: () => ConversationExecutionContext | undefined;

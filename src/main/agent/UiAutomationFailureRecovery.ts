@@ -1,5 +1,6 @@
 import type { UiExecInput, UiExecOutput, UiAutomationErrorCode } from "../capabilities/UiAutomationService";
 import { UiAutomationError } from "../capabilities/UiAutomationService";
+import { isUiInputAction } from "../../shared/native-tools";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
 
@@ -8,75 +9,64 @@ export interface UiAutomationRecoveryBridge {
   failures: ExecutionFailureRepository;
 }
 
-const SIDE_EFFECT_ACTIONS = new Set<UiExecInput["action"]>(["click", "fill", "press", "scroll"]);
-const RECOVERABLE_CODES = new Set<UiAutomationErrorCode>([
-  "TARGET_UNAVAILABLE", "ELEMENT_NOT_FOUND", "ELEMENT_AMBIGUOUS", "ELEMENT_DISAPPEARED", "ELEMENT_NOT_VISIBLE",
-  "ELEMENT_DISABLED", "ELEMENT_NOT_EDITABLE", "SCREENSHOT_EMPTY", "WAIT_TIMEOUT", "EXECUTION_FAILED",
-]);
-const PRE_ACTION_CODES = new Set<UiAutomationErrorCode>([
-  "TARGET_UNAVAILABLE", "ELEMENT_NOT_FOUND", "ELEMENT_AMBIGUOUS", "ELEMENT_DISAPPEARED", "ELEMENT_NOT_VISIBLE",
-  "ELEMENT_DISABLED", "SCREENSHOT_EMPTY", "WAIT_TIMEOUT", "EXECUTION_FAILED",
-]);
-const UI_CAUSE_CODES = [
-  "ui-target-unavailable", "ui-element-not-found", "ui-element-ambiguous", "ui-element-disappeared", "ui-element-not-visible",
-  "ui-element-disabled", "ui-element-not-editable", "ui-screenshot-empty", "ui-wait-timeout", "ui-execution-failed",
-] as const;
-
-function clean(value: string | undefined): string | undefined {
-  const text = value?.trim();
-  return text ? encodeURIComponent(text.toLocaleLowerCase()) : undefined;
-}
+const ENVIRONMENT_CODES = ["TARGET_UNAVAILABLE", "SCREENSHOT_EMPTY", "CAPTURE_TIMEOUT", "EXECUTION_FAILED"] as const;
+const uiCause = (code: UiAutomationErrorCode): string => `ui-${code.toLowerCase().replaceAll("_", "-")}`;
 
 export function uiAutomationRecoveryTarget(input: UiExecInput): string {
   const target = input.target ?? "app";
-  const locator = input.selector?.trim()
-    ? `selector=${encodeURIComponent(input.selector.trim())}`
-    : [clean(input.role) ? `role=${clean(input.role)}` : undefined, clean(input.name) ? `name=${clean(input.name)}` : undefined,
-        clean(input.text) ? `text=${clean(input.text)}` : undefined].filter(Boolean).join("|") || "surface";
-  return `ui:${input.action}:${target}:${locator}`;
+  const parts: string[] = [];
+  for (const key of ["selector", "role", "name", "text", "label", "placeholder", "testId", "within"] as const) {
+    const value = input[key]?.trim();
+    if (!value) continue;
+    const literal = input.exact || key === "selector" || key === "testId" || key === "within";
+    parts.push(`${key}=${encodeURIComponent(literal ? value : value.toLowerCase())}`);
+  }
+  if (input.exact) parts.push("exact");
+  return `ui:${input.action}:${target}:${parts.join("|") || "surface"}`;
 }
 
-function causeCode(error: UiAutomationError): string {
-  return `ui-${error.code.toLowerCase().replaceAll("_", "-")}`;
-}
-
-function guidance(error: UiAutomationError, input: UiExecInput): string {
-  const messages: Partial<Record<UiAutomationErrorCode, string>> = {
-    TARGET_UNAVAILABLE: `Reopen or restore the ${input.target ?? "app"} UI surface, then observe it again before retrying.`,
-    ELEMENT_NOT_FOUND: "Refresh the UI snapshot/find result and locate the intended element again; do not reuse stale coordinates or selectors blindly.",
-    ELEMENT_AMBIGUOUS: "Refine the selector/role/name so exactly one element matches before acting.",
-    ELEMENT_DISAPPEARED: "The element changed between observation and action. Re-observe the same UI surface before another action.",
-    ELEMENT_NOT_VISIBLE: "Re-observe layout/scroll state and target a visible element before acting.",
-    ELEMENT_DISABLED: "Inspect why the control is disabled and satisfy its prerequisite instead of forcing the action.",
-    ELEMENT_NOT_EDITABLE: "The attempted fill focused/clicked the target but it is not editable. Re-observe and choose the correct input control.",
-    SCREENSHOT_EMPTY: "Restore the UI surface to a visible/ready state, then capture it again.",
-    WAIT_TIMEOUT: "Read the current UI state and decide whether the awaited condition is still reachable before waiting again.",
-    EXECUTION_FAILED: "Re-observe the UI surface and retry only after confirming the target document is still healthy.",
-  };
-  return messages[error.code] ?? "Re-observe the UI surface and re-plan before retrying.";
+export function uiRecoveryGuidance(error: UiAutomationError, input: UiExecInput): string {
+  if (error.details?.stage === "verify") return "输入步骤已完成，尚未确认预期界面状态。请用 wait_for、inspect 或截图核对结果。";
+  if (error.outcome?.dispatch === "dispatched") return "输入可能已经生效。请先用 find、inspect 或截图核对结果，再决定下一步。";
+  switch (error.code) {
+    case "TARGET_UNAVAILABLE": return `请先打开 ${input.target ?? "app"} 对应的界面，再重新观察。`;
+    case "ELEMENT_NOT_FOUND":
+    case "ELEMENT_DISAPPEARED":
+    case "SURFACE_CHANGED":
+      if (error.details?.scopePresent === false) return "上次观察的菜单或弹窗已经消失。请先确认当前页面，再重新打开目标区域。";
+      return error.candidates?.length ? "原引用已失效。请核对当前候选控件的名称和所属区域，确认后使用新引用。" : "请先确认菜单或弹窗仍然打开，再用 within 限定区域，按 role 和 name 查找当前控件。";
+    case "ELEMENT_AMBIGUOUS": return "请核对候选控件，使用唯一引用，或用 within、role、name 和 exact 缩小范围。";
+    case "ELEMENT_NOT_VISIBLE": return "请查看遮挡物或所属折叠区，展开目标或关闭遮挡后重新查找。";
+    case "ELEMENT_DISABLED": return "请检查控件的启用条件，完成前置步骤后重新查找。";
+    case "ELEMENT_NOT_EDITABLE": return "请检查控件类型、只读状态和焦点，重新选择可编辑控件。";
+    case "SCREENSHOT_EMPTY":
+    case "CAPTURE_TIMEOUT": return "请确认目标界面可见并已就绪，再获取截图。";
+    default: return "请先读取当前界面状态，再决定下一步。";
+  }
 }
 
 export function recordUiAutomationFailureRecovery(bridge: UiAutomationRecoveryBridge | undefined, input: UiExecInput, error: unknown): boolean {
-  if (!bridge || !(error instanceof UiAutomationError) || !RECOVERABLE_CODES.has(error.code)) return false;
+  if (!bridge || !(error instanceof UiAutomationError)) return false;
+  const dispatched = error.outcome?.dispatch === "dispatched";
+  if (!dispatched && !ENVIRONMENT_CODES.some(code => code === error.code)) return false;
   const ctx = bridge.resolveContext();
   if (!ctx) return false;
-  const preAction = PRE_ACTION_CODES.has(error.code);
+  const hasInput = dispatched && isUiInputAction(input.action);
   bridge.failures.recordIfAbsent({
     ...ctx,
-    causeCode: causeCode(error),
-    phase: preAction ? "observe" : "execute",
+    causeCode: uiCause(error.code),
+    phase: error.details?.stage === "verify" ? "verify" : hasInput ? "execute" : "observe",
     recovery: "recoverable",
-    sideEffects: preAction || !SIDE_EFFECT_ACTIONS.has(input.action) ? "none" : "known",
+    sideEffects: hasInput ? error.outcome?.effect === "confirmed" ? "known" : "unknown" : "none",
     target: uiAutomationRecoveryTarget(input),
-    message: `UI automation ${input.action} failed (${error.code}): ${error.message}`,
-    nextAction: guidance(error, input),
+    message: `界面操作 ${input.action} 失败（${error.code}）：${error.message}`,
+    nextAction: uiRecoveryGuidance(error, input),
   });
   return true;
 }
 
-export function settleUiAutomationRecovery(bridge: UiAutomationRecoveryBridge | undefined, input: UiExecInput, _output: UiExecOutput): void {
-  if (!bridge) return;
-  const ctx = bridge.resolveContext();
-  if (!ctx) return;
-  bridge.failures.resolveMatching(ctx.taskId, { target: uiAutomationRecoveryTarget(input), causeCodes: UI_CAUSE_CODES });
+export function settleUiAutomationRecovery(bridge: UiAutomationRecoveryBridge | undefined, input: UiExecInput, output: UiExecOutput): void {
+  const ctx = bridge?.resolveContext();
+  if (!bridge || !ctx || output.detail === "unavailable") return;
+  bridge.failures.resolveMatching(ctx.taskId, { target: uiAutomationRecoveryTarget(input), sideEffects: "none", causeCodes: ENVIRONMENT_CODES.map(uiCause) });
 }

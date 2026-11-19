@@ -3,7 +3,7 @@ import { consultReportFromDetails, consultSummary } from "./multi-model-consult"
 import { capabilityResultFromDetails } from "./capability-result";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentUiPatch } from "./agent-ipc";
-import { MUTATING_BUILTIN_TOOLS } from "./native-tools";
+import { isUiInputAction, MUTATING_BUILTIN_TOOLS } from "./native-tools";
 import { deepseekCitationMarkdown, deepseekHostedToolRows } from "./deepseek";
 
 export interface MapperContext {
@@ -171,8 +171,7 @@ function isDangerousTool(tool: string, input: unknown): boolean {
     return ["click", "fill", "press", "scroll", "hover", "select", "check"].includes(action);
   }
   if (tool === "ui_exec") {
-    const action = String((input as { action?: string })?.action ?? "");
-    return ["click", "fill", "press", "scroll", "hover", "select", "check"].includes(action);
+    return isUiInputAction((input as { action?: string })?.action);
   }
   if (tool === "computer_exec") {
     return !isComputerExecReadonly(input);
@@ -190,8 +189,7 @@ function isSideEffectTool(tool: string, input: unknown): boolean {
     return action !== "status" && action !== "read" && action !== "screenshot";
   }
   if (tool === "ui_exec") {
-    const action = String((input as { action?: string })?.action ?? "");
-    return ["click", "fill", "press", "scroll", "hover", "select", "check"].includes(action);
+    return isUiInputAction((input as { action?: string })?.action);
   }
   if (tool === "computer_exec") {
     return !isComputerExecReadonly(input);

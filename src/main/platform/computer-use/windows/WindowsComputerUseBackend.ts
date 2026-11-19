@@ -602,8 +602,10 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
     }
     if (input.action === "find_control") {
       const target = await this.guardedTarget(input, signal);
-      const result = await this.request<"find_control", { window: unknown; control: ControlInfo }>(
-        "find_control", { target, selector: this.selectorFromInput(input), maxDepth: input.maxDepth, maxNodes: input.maxNodes }, signal,
+      const timeoutMs = Math.min(30_000, Math.max(0, input.timeoutMs ?? 0));
+      const result = await this.request<"find_control", { window: unknown; matched: boolean; control?: ControlInfo }>(
+        "find_control", { target, selector: this.selectorFromInput(input), maxDepth: input.maxDepth, maxNodes: input.maxNodes, observeOnly: true, timeoutMs }, signal,
+        timeoutMs ? timeoutMs + 2_000 : undefined,
       );
       return { action: input.action, ...result, window: normalizeWindowInfo(result.window) };
     }
@@ -775,7 +777,7 @@ export class WindowsComputerUseBackend implements ComputerUseBackend {
   }
 
   private bindFocusGuard(window: WindowInfo): TargetIdentity {
-    const target = { windowHandle: window.handle, expectedProcessId: window.processId };
+    const target = { windowHandle: window.handle, expectedProcessId: window.processId, className: window.className };
     this.focusGuards.set(target, window);
     return target;
   }

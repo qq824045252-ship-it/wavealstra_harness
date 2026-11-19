@@ -75,9 +75,10 @@ function value(item) {
             const snapshot = value(last);
             const element = snapshot.elements.find(x => x.id === 'cu-fixture-button');
             assert(element, 'snapshot app must still target main renderer while overlay and secondary windows exist');
-            name = 'ui_exec'; args = { action: 'click', selector: element.selector }; break;
+            name = 'ui_exec'; args = { action: 'click', within: 'body', selector: element.selector, after: { selector: '#cu-fixture-button[data-clicked="1"]' } }; break;
           }
           case 3:
+            assert.equal(value(last).verification.state, 'visible');
             assert.equal(await ui('window.__cuClicks'), 1, 'snapshot selector must cause a real click');
             args = { action: 'inspect_controls', window_handle: targetHandle }; break;
           case 4:
@@ -144,24 +145,30 @@ function value(item) {
     await until(() => ui('Boolean(window.api?.agent && document.querySelector(".sidebar"))'), 'app UI');
     report.version = await main("process.mainModule.require('electron').app.getVersion()");
     if (executable) assert.equal(report.version, JSON.parse(fs.readFileSync('package.json')).version);
-    await ui(`(async()=>{await window.api.db.upsertSpace({id:'cu-space',name:'CU isolated',path:${JSON.stringify(path.join(fixture, 'workspace'))},createdAt:Date.now(),updatedAt:Date.now()});await window.api.db.upsertTask({id:'cu-task',title:'CU acceptance',spaceId:'cu-space',updatedAt:Date.now(),modelId:'magpie/fixture',permissionMode:'auto',welcomeMode:'working'});window.__cuClicks=0;const b=document.createElement('button');b.id='cu-fixture-button';b.textContent='CU fixture action';b.style='position:fixed;top:100px;left:200px;z-index:999999;padding:20px';b.onclick=()=>window.__cuClicks++;document.body.append(b);window.__cuEvents=[];window.api.agent.onEvent(p=>window.__cuEvents.push(p));return true})()`);
+    await ui(`(async()=>{await window.api.db.upsertSpace({id:'cu-space',name:'CU isolated',path:${JSON.stringify(path.join(fixture, 'workspace'))},createdAt:Date.now(),updatedAt:Date.now()});await window.api.db.upsertTask({id:'cu-task',title:'CU acceptance',spaceId:'cu-space',updatedAt:Date.now(),modelId:'magpie/fixture',permissionMode:'auto',welcomeMode:'working'});window.__cuClicks=0;const b=document.createElement('button');b.id='cu-fixture-button';b.textContent='CU fixture action';b.style='position:fixed;top:100px;left:200px;z-index:999999;padding:20px';b.onclick=()=>{b.dataset.clicked=String(++window.__cuClicks)};document.body.append(b);window.__cuEvents=[];window.api.agent.onEvent(p=>window.__cuEvents.push(p));return true})()`);
     targetHandle = await main(`(async()=>{const {app,BrowserWindow}=process.mainModule.require('electron');app.setAccessibilitySupportEnabled(true);const w=globalThis.__cuTarget=new BrowserWindow({width:420,height:300,show:false});await w.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent('<title>MyBuddy CU E2E Fixture</title>'+Array.from({length:14},(_,i)=>'<div role="group" aria-label="Level '+i+'">').join('')+'<button style="margin:60px;padding:20px" onclick="window.clicked++">Native action</button>'+'</div>'.repeat(14)+'<script>window.clicked=0</script>'));w.showInactive();return w.getNativeWindowHandle().readBigUInt64LE().toString()})()`);
     const request = () => ({ taskId: 'cu-task', spaceId: 'cu-space', text: 'Run isolated Computer Use acceptance ' + mode, modelId: 'magpie/fixture', welcomeMode: 'working', permissionMode: 'auto', userMessageId: 'user-' + mode, assistantMessageId: 'assistant-' + mode });
-    await ui(`window.api.agent.prompt(${JSON.stringify(request())})`);
+    const submit = () => `window.api.agent.prompt(${JSON.stringify(request())}).then(result=>result.receipt?window.api.agent.waitForSubmission(result.receipt):result)`;
+    const completed = await ui(submit());
+    if (report.gatewayError) throw Error(report.gatewayError);
+    assert.equal(completed.error, undefined, JSON.stringify(completed));
+    assert.equal(completed.receipt?.status, 'done');
     await until(hidden, 'normal completion hides BOTH native overlay windows');
-    assert(await ui(`window.__cuEvents.some(p=>p.type==='assistant_end'&&p.messageId==='assistant-complete')`));
+    assert.equal(step, 8, 'the model received all tool results before its final response');
+    assert(await ui(`window.api.agent.loadTaskHistory('cu-task').then(h=>h.messages.some(m=>m.role==='assistant'&&m.text.includes('CU_AGENT_FLOW_COMPLETE')))`));
     report.tests.push('Actual agent: list windows -> app snapshot -> exact DOM click -> deep UIA inspect/invoke -> screenshot -> observation-bound physical coordinate click -> final -> native overlay hidden');
     mode = 'cancel'; step = 0;
-    await ui(`window.__cuPrompt=window.api.agent.prompt(${JSON.stringify(request())}).then(value=>({ok:true,value}),error=>({ok:false,error:String(error)}));true`);
+    await ui(`window.__cuPrompt=${submit()};true`);
     await until(() => !!held, 'provider waiting after successful CU action');
     await ui(`window.api.agent.abort('cu-task')`);
     await until(hidden, 'abort hides overlay while provider has not completed');
-    assert.equal((await ui('window.__cuPrompt')).ok, true);
+    const cancelled = await ui('window.__cuPrompt');
+    assert(cancelled.cancelled || cancelled.receipt?.status === 'unanswered', JSON.stringify(cancelled));
     held.end(); held = undefined;
     report.tests.push('CU retracts while the provider is held; subsequent abort settles the task without false errors or reopening the overlays');
     mode = 'truncate'; step = 0;
-    const failed = await ui(`window.api.agent.prompt(${JSON.stringify(request())}).then(value=>({ok:true,value}),error=>({ok:false,error:String(error)}))`);
-    assert.equal(failed.ok, false); assert(failed.error.includes('terminal response event'), failed.error);
+    const failed = await ui(submit());
+    assert(failed.error?.message.includes('terminal response event'), JSON.stringify(failed));
     await until(hidden, 'provider failure hides BOTH native overlay windows');
     report.tests.push('Provider EOF after successful CU remains a task failure and releases both native windows');
     report.status = 'passed'; console.log(JSON.stringify(report, null, 2));

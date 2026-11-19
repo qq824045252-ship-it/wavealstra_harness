@@ -37,30 +37,34 @@ try {
   catch (error) { if (error instanceof UiAutomationError) timeoutError = error; else throw error; }
   assert.equal(timeoutError?.code, "WAIT_TIMEOUT");
   const waitInput = { action: "wait_for" as const, target: "app" as const, selector: "#never", state: "visible" as const, timeoutMs: 100 };
-  assert(recordUiAutomationFailureRecovery(bridge, waitInput, timeoutError));
-  const waitFailure = failures.list("task").find((item) => item.causeCode === "ui-wait-timeout")!;
-  assert.equal(waitFailure.sideEffects, "none");
-  settleUiAutomationRecovery(bridge, waitInput, { action: "wait_for", target: "app", detail: "visible" });
-  assert(failures.list("task").find((item) => item.id === waitFailure.id)?.resolvedAt);
+  assert.deepEqual(timeoutError?.outcome, { dispatch: "not_started", effect: "none" });
+  assert.equal(recordUiAutomationFailureRecovery(bridge, waitInput, timeoutError), false);
 
   let missingError: UiAutomationError | undefined;
   try { await service.execute({ action: "click", target: "app", selector: "#missing" }); }
   catch (error) { if (error instanceof UiAutomationError) missingError = error; else throw error; }
   assert.equal(missingError?.code, "ELEMENT_NOT_FOUND");
   const clickInput = { action: "click" as const, target: "app" as const, selector: "#missing" };
-  assert(recordUiAutomationFailureRecovery(bridge, clickInput, missingError));
-  const missingFailure = failures.list("task").find((item) => item.causeCode === "ui-element-not-found")!;
-  assert.equal(missingFailure.phase, "observe");
-  assert.equal(missingFailure.sideEffects, "none", "element lookup failed before any click was sent");
+  assert.deepEqual(missingError?.outcome, { dispatch: "not_started", effect: "none" });
+  assert.equal(recordUiAutomationFailureRecovery(bridge, clickInput, missingError), false);
+  const oldLookup = failures.record({ ...ctx, target: uiAutomationRecoveryTarget(clickInput), causeCode: "ui-element-not-found",
+    phase: "observe", recovery: "recoverable", sideEffects: "none", message: "old lookup", nextAction: "observe" });
+  assert(!failures.list("task").some(item => item.id === oldLookup.id));
+  assert(db.prepare("SELECT id FROM execution_failures WHERE id=? AND resolved_at IS NULL").get(oldLookup.id));
 
   const fillInput = { action: "fill" as const, target: "app" as const, selector: "#field", value: "abc" };
   const notEditable = new UiAutomationError("ELEMENT_NOT_EDITABLE", "not editable");
-  assert(recordUiAutomationFailureRecovery(bridge, fillInput, notEditable));
-  const editableFailure = failures.list("task").find((item) => item.causeCode === "ui-element-not-editable")!;
-  assert.equal(editableFailure.phase, "execute");
-  assert.equal(editableFailure.sideEffects, "known", "fill checks editability after focusing/clicking the element");
+  assert.equal(recordUiAutomationFailureRecovery(bridge, fillInput, notEditable), false);
+  const sent = new UiAutomationError("EXECUTION_FAILED", "readback unavailable", { outcome: { dispatch: "dispatched", effect: "unknown" } });
+  assert(recordUiAutomationFailureRecovery(bridge, fillInput, sent));
+  const uncertain = failures.list("task").find(item => item.causeCode === "ui-execution-failed")!;
+  assert.equal(uncertain.phase, "execute");
+  assert.equal(uncertain.sideEffects, "unknown");
+  const readFailure = new UiAutomationError("EXECUTION_FAILED", "renderer read failed", { outcome: { dispatch: "not_started", effect: "none" } });
+  assert(recordUiAutomationFailureRecovery(bridge, fillInput, readFailure));
   settleUiAutomationRecovery(bridge, fillInput, { action: "fill", target: "app", detail: "filled" });
-  assert(failures.list("task").find((item) => item.id === editableFailure.id)?.resolvedAt);
+  assert(failures.list("task").some(item => item.sideEffects === "none" && item.causeCode === "ui-execution-failed" && item.resolvedAt));
+  assert(!failures.list("task").find(item => item.id === uncertain.id)?.resolvedAt);
 
   const beforeInvalid = failures.list("task").length;
   assert.equal(recordUiAutomationFailureRecovery(bridge, { action: "find", target: "app", selector: "[" }, new UiAutomationError("INVALID_SELECTOR", "bad selector")), false);

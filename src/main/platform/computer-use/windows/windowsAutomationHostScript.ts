@@ -556,13 +556,15 @@ function Get-Controls($window, [int]$maxDepth = 10, [int]$maxNodes = 300) {
   $controls = [Collections.Generic.List[object]]::new()
   $visited = 0
   $truncated = $false
+  $unreadable = $false
   while ($queue.Count -gt 0) {
     $pair = $queue.Dequeue(); $element = $pair.Element; $depth = [int]$pair.Depth
     $visited++
     if ($visited -gt $maxNodes) { $truncated = $true; break }
     if ($depth -gt 0) {
       $control = Convert-Control $element $depth $window
-      if ($null -ne $control) {
+      if ($null -eq $control) { $unreadable = $true }
+      else {
         $hasName = -not [string]::IsNullOrWhiteSpace([string]$control['name'])
         $hasAutomationId = -not [string]::IsNullOrWhiteSpace([string]$control['automationId'])
         $meaningfulType = [string]$control['controlType'] -notin @('Pane','Custom','Window')
@@ -570,7 +572,7 @@ function Get-Controls($window, [int]$maxDepth = 10, [int]$maxNodes = 300) {
       }
     }
     if ($depth -ge $maxDepth) {
-      try { if ($null -ne $walker.GetFirstChild($element)) { $truncated = $true } } catch { $truncated = $true }
+      try { if ($null -ne $walker.GetFirstChild($element)) { $truncated = $true } } catch { $unreadable = $true }
       continue
     }
     try {
@@ -580,14 +582,15 @@ function Get-Controls($window, [int]$maxDepth = 10, [int]$maxNodes = 300) {
         $queue.Enqueue([pscustomobject]@{ Element = $child; Depth = ($depth + 1) })
         $child = $walker.GetNextSibling($child)
       }
-    } catch { }
+    } catch { $unreadable = $true }
   }
-  return [ordered]@{ controls = @($controls); uiaAvailable = $true; truncated = $truncated; detail = if ($controls.Count -eq 0) { 'No meaningful controls exposed' } else { $null } }
+  return [ordered]@{ controls = @($controls); uiaAvailable = $true; truncated = ($truncated -or $unreadable); unreadable = $unreadable; detail = if ($unreadable) { 'Some UI Automation nodes could not be read' } elseif ($controls.Count -eq 0) { 'No meaningful controls exposed' } else { $null } }
 }
 
 function Select-Control($window, $selector, [int]$maxDepth = 10, [int]$maxNodes = 1000) {
   $tree = Get-Controls $window $maxDepth $maxNodes
   if ($null -ne $tree.__error) { return $tree }
+  if (-not $tree.uiaAvailable -or $tree.unreadable) { return New-ErrorResult 'CONTROL_TREE_UNAVAILABLE' $tree.detail @{ window = $window; uiaAvailable = $tree.uiaAvailable; truncated = $tree.truncated } }
   $matches = @($tree.controls)
   if (-not [string]::IsNullOrWhiteSpace([string]$selector.controlRuntimeId)) { $matches = @($matches | Where-Object { $_.runtimeId -eq [string]$selector.controlRuntimeId }) }
   if (-not [string]::IsNullOrWhiteSpace([string]$selector.automationId)) { $matches = @($matches | Where-Object { $_.automationId -eq [string]$selector.automationId }) }
@@ -598,9 +601,9 @@ function Select-Control($window, $selector, [int]$maxDepth = 10, [int]$maxNodes 
     if ([bool]$selector.exactName) { $matches = @($matches | Where-Object { $_.name.Equals($name, [StringComparison]::OrdinalIgnoreCase) }) }
     else { $matches = @($matches | Where-Object { $_.name.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0 }) }
   }
-  if ($tree.truncated) { return New-ErrorResult 'CONTROL_AMBIGUOUS' 'UI Automation search was truncated; uniqueness cannot be established' @{ candidates = $matches; truncated = $true; maxDepth = $maxDepth; maxNodes = $maxNodes } }
-  if ($matches.Count -eq 0) { return New-ErrorResult 'CONTROL_NOT_FOUND' 'No UI Automation control matched' $selector }
-  if ($matches.Count -gt 1) { return New-ErrorResult 'CONTROL_AMBIGUOUS' 'Multiple UI Automation controls matched' @{ candidates = $matches } }
+  if ($tree.truncated) { return New-ErrorResult 'CONTROL_AMBIGUOUS' 'UI Automation search was truncated; uniqueness cannot be established' @{ candidates = @($matches | Select-Object -First 8); truncated = $true; maxDepth = $maxDepth; maxNodes = $maxNodes } }
+  if ($matches.Count -eq 0) { return New-ErrorResult 'CONTROL_NOT_FOUND' 'No UI Automation control matched' @{ selector = $selector; observedControlCount = $tree.controls.Count; truncated = $false } }
+  if ($matches.Count -gt 1) { return New-ErrorResult 'CONTROL_AMBIGUOUS' 'Multiple UI Automation controls matched' @{ candidates = @($matches | Select-Object -First 8); matchCount = $matches.Count } }
   return $matches[0]
 }
 
@@ -690,8 +693,26 @@ function Invoke-Dispatch([string]$action, $params) {
       $window = Resolve-Target $params.target; if ($null -ne $window.__error) { return $window }
       $depth = if ($null -ne $params.maxDepth) { [Math]::Min(32, [Math]::Max(1, [int]$params.maxDepth)) } else { 10 }
       $nodes = if ($null -ne $params.maxNodes) { [Math]::Min(1000, [Math]::Max(1, [int]$params.maxNodes)) } else { 1000 }
-      $control = Select-Control $window $params.selector $depth $nodes; if ($null -ne $control.__error) { return $control }
-      return [ordered]@{ window = $window; control = $control }
+      $timer = [Diagnostics.Stopwatch]::StartNew()
+      $attempts = 0
+      do {
+        $attempts++
+        $control = Select-Control $window $params.selector $depth $nodes
+        if (-not $params.observeOnly) {
+          if ($null -ne $control.__error) { return $control }
+          return [ordered]@{ window = $window; control = $control }
+        }
+        $window = Resolve-Target $params.target
+        if ($null -ne $window.__error) { return $window }
+        if ($null -eq $control.__error) { return [ordered]@{ window = $window; matched = $true; control = $control; attempts = $attempts } }
+        if ($control.__error.code -ne 'CONTROL_NOT_FOUND') { return $control }
+        $remaining = [long]$params.timeoutMs - $timer.ElapsedMilliseconds
+        if ($remaining -le 0) { break }
+        Start-Sleep -Milliseconds ([Math]::Min(150L, $remaining))
+        $window = Resolve-Target $params.target
+        if ($null -ne $window.__error) { return $window }
+      } while ($true)
+      return [ordered]@{ window = $window; matched = $false; selector = $params.selector; observedControlCount = $control.__error.details.observedControlCount; attempts = $attempts; waitedMs = $timer.ElapsedMilliseconds; truncated = $false; detail = '当前窗口已读取，控件树中没有匹配项。请核对页面是否正确、内容是否已经显示，或只读检查窗口截图。' }
     }
     'invoke_control' {
       $focused = Focus-Target $params.target; if ($null -ne $focused.__error) { return $focused }; $window = $focused.window

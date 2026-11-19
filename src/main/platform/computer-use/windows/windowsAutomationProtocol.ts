@@ -26,7 +26,7 @@ export interface HostRequestMap {
     timeoutMs?: number;
   };
   inspect_controls: { target: TargetIdentity; maxDepth?: number; maxNodes?: number };
-  find_control: { target: TargetIdentity; selector: ControlSelector; maxDepth?: number; maxNodes?: number };
+  find_control: { target: TargetIdentity; selector: ControlSelector; maxDepth?: number; maxNodes?: number; observeOnly?: boolean; timeoutMs?: number };
   invoke_control: { target: TargetIdentity; selector: ControlSelector; maxDepth?: number; maxNodes?: number };
   set_control_value: { target: TargetIdentity; selector: ControlSelector; value: string; maxDepth?: number; maxNodes?: number };
   move_client: { target: TargetIdentity; x: number; y: number };

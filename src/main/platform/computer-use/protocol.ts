@@ -15,6 +15,7 @@ export const WINDOWS_AUTOMATION_ERROR_CODES = [
   "FOCUS_FAILED",
   "STALE_OBSERVATION",
   "CONTROL_NOT_FOUND",
+  "CONTROL_TREE_UNAVAILABLE",
   "CONTROL_AMBIGUOUS",
   "CONTROL_NOT_ACTIONABLE",
   "CAPTURE_FAILED",
@@ -360,6 +361,7 @@ export interface ComputerExecInput {
 
 export interface ComputerExecOutput {
   action: ComputerExecAction | "batch";
+  matched?: boolean;
   detail?: string;
   windows?: WindowInfo[];
   window?: WindowInfo;

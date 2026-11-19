@@ -70,6 +70,9 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
     };
   }
   if ((error.code === "HOST_UNAVAILABLE" || error.code === "REQUEST_TIMEOUT") && readonlyAction(input)) {
+    if (input.action === "find_control" && input.timeoutMs && error.code === "REQUEST_TIMEOUT") return {
+      retry: false, reason: "lookup-host-timeout", guidance: "自动化宿主未能在查找时限内完成读取。请先检查窗口响应情况，查找结果尚未确认。",
+    };
     return {
       retry: true,
       delayMs: 100,
@@ -82,6 +85,7 @@ export function planComputerUseRecovery(error: unknown, input: ComputerExecInput
   const guidance: Partial<Record<WindowsAutomationError["code"], string>> = {
     CONTROL_AMBIGUOUS: "控件匹配不唯一；先 inspect_controls，再用 automationId/runtimeId/controlType 缩小选择器。",
     CONTROL_NOT_FOUND: "控件已变化或不可见；重新 inspect_controls 后再定位。",
+    CONTROL_TREE_UNAVAILABLE: "窗口未提供完整可读的 UI Automation 控件树。请核对窗口是否仍可访问，或使用只读截图检查内容。",
     POINT_OUTSIDE_CLIENT: "坐标已失效；禁止修补旧坐标，重新读取窗口和可靠的 clientBoundsDip。",
     WINDOW_AMBIGUOUS: "窗口标题匹配不唯一；改用 HWND/PID 或更精确的 class/title。",
     WINDOW_NOT_FOUND: "目标窗口不存在；重新 list_windows/wait_for_window，不要盲点。",

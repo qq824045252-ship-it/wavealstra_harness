@@ -82,6 +82,14 @@ async function main() {
   assert.ok(boundedEvidence.length < 10_000);
   assert.equal(JSON.parse(boundedEvidence).executed, "unknown");
   assert.equal(JSON.parse(boundedEvidence).evidenceTruncated, true);
+  const controlId = "control/" + "x".repeat(400);
+  const ambiguous = JSON.parse(formatComputerUseFailureEvidence(new WindowsAutomationError("CONTROL_AMBIGUOUS", "choose a control", {
+    candidates: [{ runtimeId: controlId, automationId: "save", controlType: "Button", name: "保存", value: "private field value" }],
+    computerUseRecovery: { guidance: "inspect_controls", retry: false }, truncated: true, maxDepth: 8,
+  })));
+  assert.deepEqual(ambiguous.candidates, [{ runtimeId: controlId, automationId: "save", controlType: "Button", name: "保存" }]);
+  assert.equal(ambiguous.computerUseRecovery.guidance, "inspect_controls");
+  assert.equal(ambiguous.truncated, true);
   assert.equal(JSON.parse(boundedEvidence).actionResult.screenshot, undefined);
   assert.equal(JSON.parse(boundedEvidence).actionResult.controls, undefined);
 

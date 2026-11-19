@@ -12,7 +12,7 @@ export interface ComputerUseRecoveryBridge {
 const OPERATIONAL_CAUSE_CODES = [
   "computer-window-not-found", "computer-window-ambiguous", "computer-target-changed", "computer-window-not-visible",
   "computer-focus-failed", "computer-stale-observation", "computer-control-not-found", "computer-control-ambiguous",
-  "computer-control-not-actionable", "computer-capture-failed", "computer-capture-spans-multiple-displays",
+  "computer-control-not-actionable", "computer-control-tree-unavailable", "computer-capture-failed", "computer-capture-spans-multiple-displays",
   "computer-point-outside-client", "computer-wait-timeout", "computer-host-unavailable", "computer-host-protocol-error",
   "computer-request-timeout",
   "computer-batch-incomplete", "computer-delivery-uncertain",
@@ -186,10 +186,12 @@ export function recordComputerUseFailureRecovery(bridge: ComputerUseRecoveryBrid
   const target = computerUseRecoveryTarget(input, error.details);
   const evidence = deliveryEvidence(error.details);
   const sideEffects = evidence.sideEffects ?? (PRE_ACTION_CODES.has(error.code) || !sideEffectingInput(input) ? "none" : "unknown");
+  // A read-only ambiguous selector is actionable by the model using its candidates.
+  if (input.action === "find_control" && !input.actions?.length && error.code === "CONTROL_AMBIGUOUS" && sideEffects === "none" && !evidence.partial) return false;
   recordRecovery(bridge, {
     ...ctx,
     causeCode: causeCodeFor(error.code),
-    phase: PRE_ACTION_CODES.has(error.code) && sideEffects === "none" ? "observe" : "execute",
+    phase: (PRE_ACTION_CODES.has(error.code) || !sideEffectingInput(input)) && sideEffects === "none" ? "observe" : "execute",
     recovery: "recoverable",
     sideEffects,
     target,

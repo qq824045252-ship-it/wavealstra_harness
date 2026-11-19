@@ -108,4 +108,10 @@ async function main(): Promise<void> {
   results.push("actual task/workspace/global section menus expose unique in-app copy entries, no export/move, and dispatch copyScope");
   return (window as any).require("electron").ipcRenderer.send("fixture-result", { status: "passed", tests: results });
 }
-void main().catch(error => (window as any).require("electron").ipcRenderer.send("fixture-result", { status: "failed", error: String(error.stack || error) }));
+if (location.hash === "#ui-exec") {
+  state.spaces.push({ id: "personal", name: "个人助理" });
+  Object.assign(window, { fixtureCopy: { requests, mount: () => mount("copy") } });
+  void mount("copy");
+} else {
+  void main().catch(error => (window as any).require("electron").ipcRenderer.send("fixture-result", { status: "failed", error: String(error.stack || error) }));
+}

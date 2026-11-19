@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ExecutionFailureDto } from "../../shared/execution-recovery";
-import { isBrowserObservationFailure } from "./BrowserObservationFailure";
+import { isAutomationObservationFailure } from "./AutomationObservationFailure";
 
 /**
  * 已完成 schema 保障与一次性遗留清理的连接。
@@ -56,7 +56,7 @@ export class ExecutionFailureRepository {
           || !["none", "known", "unknown"].includes(record.sideEffects) || !Number.isFinite(record.createdAt)) return [];
         // Apply the same classification to existing rows. Retain their tool
         // history and database evidence without claiming the failure resolved.
-        if (isBrowserObservationFailure(record)) return [];
+        if (isAutomationObservationFailure(record)) return [];
         return [{ ...record, resolvedAt: row.resolved_at ?? undefined, dismissedAt: row.dismissed_at ?? undefined }];
       } catch { return []; } // Keep the original corrupt row for diagnosis.
     });
@@ -72,13 +72,16 @@ export class ExecutionFailureRepository {
     return change.changes > 0;
   }
 
-  resolveMatching(taskId: string, input: { target?: string; causeCodes?: readonly string[] }): number {
+  resolveMatching(taskId: string, input: { target?: string; causeCodes?: readonly string[]; sideEffects?: ExecutionFailureDto["sideEffects"] }): number {
     const rows = this.db.prepare("SELECT id, cause_code, record_json FROM execution_failures WHERE task_id = ? AND resolved_at IS NULL ORDER BY created_at DESC, rowid DESC").all(taskId) as Array<{ id: string; cause_code: string; record_json: string }>;
     const ids = rows.flatMap((row) => {
       if (input.causeCodes?.length && !input.causeCodes.includes(row.cause_code)) return [];
-      if (input.target !== undefined) {
-        try { if ((JSON.parse(row.record_json) as ExecutionFailureDto).target !== input.target) return []; }
-        catch { return []; }
+      if (input.target !== undefined || input.sideEffects !== undefined) {
+        try {
+          const record = JSON.parse(row.record_json) as ExecutionFailureDto;
+          if (input.target !== undefined && record.target !== input.target) return [];
+          if (input.sideEffects !== undefined && record.sideEffects !== input.sideEffects) return [];
+        } catch { return []; }
       }
       return [row.id];
     });

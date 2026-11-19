@@ -70,10 +70,9 @@ assert(
   !files.includes("extensions/**/*"),
   "generic executable extensions glob is absent",
 );
-const serena = listBundledMcpExtensions().find((bundle) => bundle.id === "serena");
 assert(
-  Boolean(serena && Object.keys(serena.servers).length),
-  "declarative Serena MCP bundle is discoverable with server configuration",
+  !listBundledMcpExtensions().some(bundle => bundle.id === "serena" || "serena" in bundle.servers),
+  "product MCP bundles exclude Serena",
 );
 
 console.log("\nresult: passed=" + passed + " failed=" + failed);

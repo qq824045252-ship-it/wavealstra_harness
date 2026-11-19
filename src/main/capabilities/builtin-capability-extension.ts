@@ -16,7 +16,8 @@ import {
   type ExtensionAPI,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
+import { UI_EXEC_ACTIONS } from "../../shared/native-tools";
 import type { ArtifactKind } from "../../shared/artifact-types";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import { isPathInsideOrEqual } from "../task/TaskExecutionWorkspace";
@@ -32,7 +33,7 @@ import type {
 } from "./BuiltinCapabilityRuntime";
 import type { BrowserAutomationService, BrowserExecInput } from "./BrowserAutomationService";
 import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
-import { uiAutomationService, type UiExecInput } from "./UiAutomationService";
+import { uiAutomationService, UiAutomationError, type UiExecInput } from "./UiAutomationService";
 import { computerAutomationService, type ComputerBatchAction, type ComputerExecInput, type ComputerExecOutput } from "./ComputerAutomationService";
 import { formatComputerUseFailureEvidence, withComputerUseDeliveryEvidence } from "./ComputerUsePolicy";
 import { computerUseToolCopy } from "../platform/computer-use/support";
@@ -49,7 +50,7 @@ import { executeCodeLanguages } from "../platform/shell-tools";
 import type { VerifiedProcessBridge } from "../agent/VerifiedCodeExecution";
 import { codeExecutionEvidenceIdentity, executeVerifiedCode, recordCodeRuntimePreparationFailure, resolveCodeRuntimePreparationFailure } from "../agent/VerifiedCodeExecution";
 import { recordComputerUseFailureRecovery, settleComputerUseResultRecovery, type ComputerUseRecoveryBridge } from "../agent/ComputerUseFailureRecovery";
-import { recordUiAutomationFailureRecovery, settleUiAutomationRecovery, type UiAutomationRecoveryBridge } from "../agent/UiAutomationFailureRecovery";
+import { recordUiAutomationFailureRecovery, settleUiAutomationRecovery, uiRecoveryGuidance, type UiAutomationRecoveryBridge } from "../agent/UiAutomationFailureRecovery";
 import { recordBrowserAutomationFailureRecovery, settleBrowserAutomationRecovery, type BrowserAutomationRecoveryBridge } from "../agent/BrowserAutomationFailureRecovery";
 import { recordSkillAuthoringFailureRecovery, settleSkillAuthoringRecovery, type SkillAuthoringRecoveryBridge } from "../agent/SkillAuthoringFailureRecovery";
 import type { PythonRuntimeService } from "../runtime/PythonRuntimeService";
@@ -273,26 +274,23 @@ const textToSpeechSchema = Type.Object({
   format: Type.Optional(Type.Union([Type.Literal("mp3"), Type.Literal("wav"), Type.Literal("ogg")])),
 }, { additionalProperties: false });
 
-const uiExecSchema = Type.Object({
-  action: Type.Union([
-    Type.Literal("status"), Type.Literal("snapshot"), Type.Literal("find"), Type.Literal("inspect"),
-    Type.Literal("click"), Type.Literal("fill"), Type.Literal("press"), Type.Literal("scroll"),
-    Type.Literal("screenshot"), Type.Literal("wait_for"),
-  ]),
-  target: Type.Optional(Type.Union([Type.Literal("app"), Type.Literal("browser"), Type.Literal("artifact")])),
+const uiLocatorSchema = Type.Object({
+  ...Type.Pick(browserExecSchema, ["role", "name", "within", "exact", "label", "placeholder", "testId"]).properties,
   selector: Type.Optional(Type.String({ maxLength: 2_000 })),
   text: Type.Optional(Type.String({ maxLength: 4_000 })),
-  role: Type.Optional(Type.String({ maxLength: 200 })),
-  name: Type.Optional(Type.String({ maxLength: 1_000 })),
+});
+const uiExecSchema = Type.Object({
+  action: Type.Union(UI_EXEC_ACTIONS.map(action => Type.Literal(action))),
+  ...uiLocatorSchema.properties,
+  ...Type.Pick(browserExecSchema, ["button", "clickCount", "modifiers", "inputMode", "delayMs", "dragTo", "values", "checked", "state"]).properties,
+  after: Type.Optional(Type.Object({ ...uiLocatorSchema.properties, state: browserExecSchema.properties.state }, { additionalProperties: false })),
+  target: Type.Optional(Type.Union([Type.Literal("app"), Type.Literal("browser"), Type.Literal("artifact")])),
   value: Type.Optional(Type.String({ maxLength: 100_000 })),
   key: Type.Optional(Type.String({ maxLength: 80 })),
   delta_x: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
-  delta_y: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000 })),
+  delta_y: Type.Optional(Type.Number({ minimum: -100_000, maximum: 100_000, description: "ui_exec 滚轮增量，负值向下滚动，正值向上滚动。" })),
   max_chars: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 100_000 })),
   timeout_ms: Type.Optional(Type.Integer({ minimum: 100, maximum: 30_000 })),
-  state: Type.Optional(Type.Union([
-    Type.Literal("attached"), Type.Literal("detached"), Type.Literal("visible"), Type.Literal("hidden"),
-  ])),
 }, { additionalProperties: false });
 
 const computerOutcomeExpectationSchema = Type.Object({
@@ -797,26 +795,18 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
       pi.registerTool({
         name: "ui_exec",
         label: "界面操作",
-        description: browserAgentPolicy + "观察并操作 MyBuddy 主界面、内嵌浏览器或 Artifact 页面。点击/键盘走 Electron 输入事件，适合真实复现 UI Bug；不执行任意 JavaScript。screenshot 已自动视觉路由，不需要再手动调用 describe_image。只覆盖 MyBuddy 自身的渲染界面；跨应用、桌面窗口和结构化控件操作请用 computer_exec。",
-        promptSnippet: "ui_exec(action, target?, selector?/text?/role?/name?, value?, key?, state?)",
+        description: browserAgentPolicy + "使用 snapshot 观察，find/inspect 查找，wait_for 核对状态。结果截断时用 within 限定容器。菜单和弹窗可在同一次 click 中按 within、role、name 和 exact 定位。也支持 label、placeholder、testId。hover 悬停，check 传 checked，select 传选项 values，指针 drag 传目的控件 dragTo。click 支持右键、双击和修饰键。fill 使用 value。输入可带 after 定位并等待预期控件 visible、hidden、attached 或 detached。原控件消失时核对 candidates，或重新打开弹窗再 find。已派发的输入先核对结果。screenshot 已自动视觉路由。",
+        promptSnippet: "ui_exec(action, target?, within?, selector?/role?/name?/text?, exact?, value?, checked?, values?, dragTo?)",
         parameters: uiExecSchema,
-        execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
+        execute: async (tc, p: Static<typeof uiExecSchema>, signal, _onUpdate, ctx) => {
           let input: UiExecInput | undefined;
           try {
             input = {
-              action: p.action as UiExecInput["action"],
-              target: p.target as UiExecInput["target"],
-              selector: p.selector as string | undefined,
-              text: p.text as string | undefined,
-              role: p.role as string | undefined,
-              name: p.name as string | undefined,
-              value: p.value as string | undefined,
-              key: p.key as string | undefined,
-              deltaX: p.delta_x as number | undefined,
-              deltaY: p.delta_y as number | undefined,
-              maxChars: p.max_chars as number | undefined,
-              timeoutMs: p.timeout_ms as number | undefined,
-              state: p.state as UiExecInput["state"],
+              action: p.action, target: p.target, selector: p.selector, text: p.text, role: p.role, name: p.name,
+              within: p.within, exact: p.exact, label: p.label, placeholder: p.placeholder, testId: p.testId,
+              value: p.value, key: p.key, values: p.values, checked: p.checked, dragTo: p.dragTo, after: p.after,
+              button: p.button, clickCount: p.clickCount, modifiers: p.modifiers, inputMode: p.inputMode, delayMs: p.delayMs,
+              deltaX: p.delta_x, deltaY: p.delta_y, maxChars: p.max_chars, timeoutMs: p.timeout_ms, state: p.state,
             };
             const result = await uiAutomationService.execute(input, signal);
             settleUiAutomationRecovery(bridge.uiRecovery, input, result);
@@ -836,6 +826,14 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             return jsonResult(`界面动作完成：${input.action}`, result);
           } catch (error) {
             if (input) recordUiAutomationFailureRecovery(bridge.uiRecovery, input, error);
+            if (input && error instanceof UiAutomationError) {
+              return { ...jsonResult(`界面操作失败：${error.message}`, {
+                code: error.code, error: error.message, target: input.target ?? "app", action: input.action,
+                ...error.details, outcome: error.outcome,
+                candidates: error.candidates?.slice(0, 8).map(({ selector, tag, role, name, visible, disabled }) => ({ selector, tag, role, name, visible, disabled })),
+                nextAction: uiRecoveryGuidance(error, input),
+              }), isError: true };
+            }
             return errorResult("ui_exec", error);
           }
         },
@@ -960,6 +958,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               operationSignal?.throwIfAborted();
               return imageResult;
             }
+            if (action === "find_control" && result.matched === false) return jsonResult("控件查找完成：当前窗口未观察到匹配项", result);
             return jsonResult(batchActions?.length
               ? `批量桌面动作结果：${result.batch?.steps.filter((step) => step.ok).length ?? 0}/${batchActions.length} 步完成`
               : `桌面动作结果：${String(action)}`, result);

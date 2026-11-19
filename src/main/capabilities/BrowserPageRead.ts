@@ -57,7 +57,7 @@ export function browserPageReadScript(slot: string, input: BrowserReadOptions): 
     }
     const snapshot=state.snapshot;
     if(offset>snapshot.text.length)return {error:'INVALID_INPUT',detail:'offset exceeds snapshot text'};
-    const targetResult=snapshot.mode==='text'?{ok:true,matches:[],total:0}:(${findScript(query, 80, false, "elementOffset", "snapshot.query")});
+    const targetResult=snapshot.mode==='text'?{ok:true,matches:[],total:0}:(${findScript(query, { limit: 80, offset: "elementOffset", query: "snapshot.query" })});
     if(!targetResult.ok)return {error:'INVALID_SELECTOR'};
     // Continuations enumerate only the required element page using the same shared locator.
     const rows=targetResult.matches;

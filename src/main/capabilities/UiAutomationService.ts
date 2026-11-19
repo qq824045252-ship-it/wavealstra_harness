@@ -2,25 +2,30 @@ import { randomUUID } from "node:crypto";
 import type { BrowserWindow, WebContents } from "electron";
 import { selectAllModifier } from "../platform/input";
 import type { BrowserHost } from "../browser/BrowserHost";
-import { pageInspectionService, PageCaptureError, PageCaptureScope } from "../artifact/PageInspectionService";
+import { PageCaptureError, PageCaptureScope } from "../artifact/PageInspectionService";
 import { AutomationScope, AutomationTimeoutError } from "./AutomationScope";
 import { withBrowserDom } from "./browser/BrowserDom";
 import { insertTextSequential, pointerDrag, setDateInput, type DateInputType } from "./browser/BrowserGestures";
+import { isUiInputAction, UI_EXEC_ACTIONS } from "../../shared/native-tools";
+import { recordHostToolNotStarted } from "../agent/durable/DurableToolOutcome";
 
 export type UiTarget = "app" | "browser" | "artifact";
-export type UiExecAction = "status" | "snapshot" | "find" | "inspect" | "click" | "fill" | "drag" | "press" | "scroll" | "hover" | "select" | "check" | "screenshot" | "wait_for";
+export type UiExecAction = (typeof UI_EXEC_ACTIONS)[number];
 export type UiWaitState = "attached" | "detached" | "visible" | "hidden";
+type UiWaitCondition = Pick<UiExecInput, "selector" | "role" | "name" | "text" | "within" | "exact" | "label" | "placeholder" | "testId" | "state">;
 export const UI_AUTOMATION_ERROR_CODES = [
   "TARGET_UNAVAILABLE", "INVALID_INPUT", "INVALID_LOCATOR", "INVALID_SELECTOR", "ELEMENT_NOT_FOUND",
   "ELEMENT_AMBIGUOUS", "ELEMENT_DISAPPEARED", "ELEMENT_NOT_VISIBLE", "ELEMENT_DISABLED", "ELEMENT_NOT_EDITABLE",
-  "SCREENSHOT_EMPTY", "WAIT_TIMEOUT", "EXECUTION_FAILED", "UNSUPPORTED_ACTION", "CAPTURE_TIMEOUT", "SURFACE_CHANGED",
+  "SCREENSHOT_EMPTY", "WAIT_TIMEOUT", "EXECUTION_FAILED", "UNSUPPORTED_ACTION", "CAPTURE_TIMEOUT", "SURFACE_CHANGED", "CANCELLED",
 ] as const;
 export type UiAutomationErrorCode = (typeof UI_AUTOMATION_ERROR_CODES)[number];
+type UiActionOutcome = { dispatch: "not_started" | "dispatched"; effect: "none" | "unknown" | "confirmed" };
 export class UiAutomationError extends Error {
-  constructor(public readonly code: UiAutomationErrorCode, message: string, public readonly details?: unknown, public readonly candidates?: UiElementInfo[]) {
+  constructor(public readonly code: UiAutomationErrorCode, message: string, public details?: Record<string, unknown> & { outcome?: UiActionOutcome }, public readonly candidates?: UiElementInfo[]) {
     super(message);
     this.name = "UiAutomationError";
   }
+  get outcome(): UiActionOutcome | undefined { return this.details?.outcome; }
 }
 
 export interface UiExecInput {
@@ -53,6 +58,7 @@ export interface UiExecInput {
   maxChars?: number;
   timeoutMs?: number;
   state?: UiWaitState;
+  after?: UiWaitCondition;
   /** Host observation, never supplied by the tool schema. */
   expected?: Pick<UiElementInfo, "tag" | "name">;
   observedSelectors?: readonly string[];
@@ -88,6 +94,13 @@ export interface UiExecOutput {
   text?: string;
   elements?: UiElementInfo[];
   screenshot?: Uint8Array;
+  outcome?: UiActionOutcome;
+  availableTargets?: UiTarget[];
+  actions?: readonly UiExecAction[];
+  elementsTotal?: number;
+  elementsTruncated?: boolean;
+  textTruncated?: boolean;
+  verification?: { state: UiWaitState; elements: UiElementInfo[] };
 }
 
 export interface UiAutomationTargets {
@@ -125,7 +138,19 @@ function locator(input: UiExecInput): Pick<UiExecInput, "selector" | "text" | "r
   return result;
 }
 
-export function findScript(input: ReturnType<typeof locator> & { visibleOnly?: boolean }, limit: number, inspect: boolean, offset: number | "elementOffset" = 0, query?: "snapshot.query"): string {
+interface UiQueryResult { matches: UiElementInfo[]; total: number; text?: string; textTruncated?: boolean; }
+interface UiQueryOptions {
+  limit?: number;
+  inspect?: boolean;
+  visibleOnly?: boolean;
+  observation?: "remember" | "refresh";
+  textLimit?: number;
+  offset?: number | "elementOffset";
+  query?: "snapshot.query";
+}
+
+export function findScript(input: ReturnType<typeof locator> & { visibleOnly?: boolean }, options: UiQueryOptions): string {
+  const { limit = 20, inspect = false, offset = 0, query, observation, textLimit } = options;
   return `(() => {
     const q=${query ?? JSON.stringify(input)}; const limit=${Math.max(1, Math.min(200, limit))}; const inspect=${inspect};
     const norm=(v)=>String(v??'').replace(/\\s+/g,' ').trim();
@@ -152,15 +177,34 @@ export function findScript(input: ReturnType<typeof locator> & { visibleOnly?: b
       return '';
     };
     const contentName=el=>roleOf(el)?__mbDom.composedText(el):Array.from(el.childNodes).map(node=>node.nodeType===Node.TEXT_NODE?node.textContent||'':node instanceof HTMLSlotElement?__mbDom.composedText(node):'').join('');
-    const nameOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?el.getAttribute('aria-labelledby').split(/\\s+/).map(id=>el.getRootNode().getElementById(id)?.textContent||'').join(' '):'')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):'')||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||(el instanceof HTMLInputElement&&['button','submit','reset','image'].includes(el.type)?el.value||el.alt:'')||(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable)?contentName(el):'')||el.getAttribute('name'));
-    const refs=window.__mybuddyUiRefs||(window.__mybuddyUiRefs=new WeakMap());
-    const path=(el)=>{ let ref=refs.get(el); if(!ref){ref=${JSON.stringify(`mb-${randomUUID()}`)}+'-'+(++window.__mybuddyUiRefCounter|| (window.__mybuddyUiRefCounter=1));refs.set(el,ref);el.setAttribute('data-mybuddy-ui-ref',ref);} return '[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]'; };
+    const labelOf=(el)=>norm(el.getAttribute('aria-label')||(el.getAttribute('aria-labelledby')?el.getAttribute('aria-labelledby').split(/\\s+/).map(id=>el.getRootNode().getElementById(id)?.textContent||'').join(' '):'')||(el.labels?[...el.labels].map(l=>{const c=l.cloneNode(true);c.querySelectorAll('input,textarea,select,[contenteditable]').forEach(n=>n.remove());return c.textContent||''}).join(' '):''));
+    const nameOf=(el)=>norm(labelOf(el)||el.getAttribute('title')||(el instanceof HTMLInputElement?el.placeholder:'')||(el instanceof HTMLInputElement&&['button','submit','reset','image'].includes(el.type)?el.value||el.alt:'')||(!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable)?contentName(el):'')||el.getAttribute('name'));
+    const refs=${observation === "refresh" ? "(window.__mybuddyUiRefs=new WeakMap())" : "window.__mybuddyUiRefs||(window.__mybuddyUiRefs=new WeakMap())"};
+    const path=(el)=>{ let ref=refs.get(el); if(!ref||ref!==el.getAttribute('data-mybuddy-ui-ref')){ref=${JSON.stringify(`mb-${randomUUID()}`)}+'-'+(++window.__mybuddyUiRefCounter|| (window.__mybuddyUiRefCounter=1));refs.set(el,ref);el.setAttribute('data-mybuddy-ui-ref',ref);} return '[data-mybuddy-ui-ref="'+CSS.escape(ref)+'"]'; };
     const closedDisclosure=el=>{let blocked;for(let parent=__mbDom.parent(el);parent;parent=__mbDom.parent(parent)){if(parent instanceof HTMLDetailsElement&&!parent.open){const summary=parent.querySelector(':scope > summary');if(summary&&!summary.contains(el))blocked=summary;}}return blocked;};
-    let all; try{const scopes=q.within?__mbDom.all(q.within):[document];if(scopes.length!==1)return {ok:false,error:'ambiguous scope: '+scopes.length};const root=scopes[0];all=q.selector?__mbDom.all(q.selector,root):__mbDom.all('*',root);}catch(e){return {ok:false,error:'invalid selector: '+String(e)}}
+    let root,all; try{
+      const scopes=q.within?__mbDom.all(q.within).filter(el=>!q.within.includes('data-mybuddy-ui-ref')||refs.get(el)===el.getAttribute('data-mybuddy-ui-ref')):[document];
+      if(!scopes.length)return {ok:true,matches:[],total:0};
+      if(scopes.length>1)return {ok:false,error:'ambiguous scope: '+scopes.length};
+      root=scopes[0];all=q.selector?__mbDom.all(q.selector,root):__mbDom.all('*',root);
+    }catch(e){return {ok:false,error:'invalid selector: '+String(e)}}
     const visible=el=>{const r=el.getBoundingClientRect();return !closedDisclosure(el)&&r.width>0&&r.height>0&&el.checkVisibility({opacityProperty:true,visibilityProperty:true,contentVisibilityAuto:true})};
-    const filtered=all.filter(el=>{ if(!(el instanceof Element))return false; if(q.visibleOnly&&!visible(el))return false; if(q.selector?.includes('data-mybuddy-ui-ref')&&refs.get(el)!==el.getAttribute('data-mybuddy-ui-ref'))return false; const n=nameOf(el),r=roleOf(el); if(q.role&&r!==q.role.toLowerCase())return false; const matches=(actual,wanted)=>q.exact?actual===wanted:actual.toLowerCase().includes(wanted.toLowerCase());if(q.name&&!matches(n,q.name))return false;if(q.label&&!matches(n,q.label))return false;if(q.placeholder&&!matches(el.getAttribute('placeholder')||'',q.placeholder))return false;if(q.testId&&el.getAttribute('data-testid')!==q.testId)return false; if(q.text&&!matches(norm(__mbDom.text(el)),q.text))return false; return true; });
+    const filtered=all.filter(el=>{ if(!(el instanceof Element))return false; if(q.visibleOnly&&!visible(el))return false; if(q.selector?.includes('data-mybuddy-ui-ref')&&refs.get(el)!==el.getAttribute('data-mybuddy-ui-ref'))return false; if(q.role&&roleOf(el)!==q.role.toLowerCase())return false; const matches=(actual,wanted)=>q.exact?actual===wanted:actual.toLowerCase().includes(wanted.toLowerCase());if(q.name&&!matches(nameOf(el),q.name))return false;if(q.label&&!matches(labelOf(el),q.label))return false;if(q.placeholder&&!matches(el.getAttribute('placeholder')||'',q.placeholder))return false;if(q.testId&&el.getAttribute('data-testid')!==q.testId)return false; if(q.text&&!matches(norm(__mbDom.text(el)),q.text))return false; return true; });
     const matches=filtered.slice(${offset},${offset}+limit).map(el=>{ const r=el.getBoundingClientRect(); const s=getComputedStyle(el); const editable=el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el.isContentEditable; const item={selector:path(el),tag:el.tagName.toLowerCase(),id:el.id||undefined,role:roleOf(el)||undefined,name:nameOf(el).slice(0,160)||undefined,text:!editable?norm(__mbDom.text(el)).slice(0,160)||undefined:undefined,visible:visible(el),disabled:Boolean(el.matches(':disabled')||el.closest('[inert],[aria-disabled="true"]')),bounds:{x:r.x,y:r.y,width:r.width,height:r.height},type:el instanceof HTMLInputElement?el.type:undefined,checked:el instanceof HTMLInputElement&&['checkbox','radio'].includes(el.type)?(el.indeterminate?'mixed':el.checked):el.hasAttribute('aria-checked')?(el.getAttribute('aria-checked')==='mixed'?'mixed':el.getAttribute('aria-checked')==='true'):undefined}; if(el instanceof HTMLSelectElement){item.options=Array.from(el.options).slice(0,80).map(o=>({value:o.value,label:o.label,selected:o.selected,disabled:o.disabled||Boolean(o.closest('optgroup:disabled'))}));item.optionsTruncated=el.options.length>80;} const disclosure=closedDisclosure(el);if(disclosure)item.hiddenBy={kind:'details',selector:path(disclosure),tag:'summary',label:nameOf(disclosure).slice(0,160)};if(el.localName==='summary'&&el.parentElement instanceof HTMLDetailsElement&&el.parentElement.querySelector(':scope > summary')===el)item.expanded=el.parentElement.open;else if(el.hasAttribute('aria-expanded'))item.expanded=el.getAttribute('aria-expanded')==='true';if(inspect){item.outerHTML=el.outerHTML.slice(0,8000); item.styles={display:s.display,visibility:s.visibility,opacity:s.opacity,position:s.position,zIndex:s.zIndex,pointerEvents:s.pointerEvents,overflowX:s.overflowX,overflowY:s.overflowY};} return item; });
-    return {ok:true,matches,total:filtered.length};
+    ${observation ? `const hints=window.__mybuddyUiHints||(window.__mybuddyUiHints=new Map());
+      for(const [i,item] of matches.entries()){
+        if(!item.role||!item.name)continue;
+        const el=filtered[${offset}+i];
+        let container=root instanceof Element?root:null;
+        if(!container)for(let parent=__mbDom.parent(el);parent;parent=__mbDom.parent(parent)){
+          if(parent.matches('dialog,[role="dialog"],[role="menu"],[role="listbox"],[aria-modal="true"]')){container=parent;break;}
+        }
+        hints.delete(item.selector);
+        hints.set(item.selector,{role:item.role,name:item.name,exact:true,within:container?path(container):undefined});
+        if(hints.size>512)hints.delete(hints.keys().next().value);
+      }` : ""}
+    ${textLimit === undefined ? "" : `const text=__mbDom.text(root===document?document.body:root);`}
+    return {ok:true,matches,total:filtered.length${textLimit === undefined ? "" : `,text:text.slice(0,${textLimit}),textTruncated:text.length>${textLimit}`}};
   })()`;
 }
 
@@ -215,28 +259,43 @@ export class UiAutomationService {
     return wc;
   }
 
-  private async find(wc: WebContents, input: UiExecInput, scope: AutomationScope, limit = 20, inspect = false, visibleOnly = false): Promise<UiElementInfo[]> {
-    const result = await scope.run(() => this.evaluate(wc, findScript({ ...locator(input), visibleOnly }, limit, inspect))) as { ok?: boolean; error?: string; matches?: UiElementInfo[] };
+  private async find(wc: WebContents, input: UiExecInput, scope: AutomationScope, options: UiQueryOptions = {}): Promise<UiQueryResult> {
+    const script = findScript({ ...locator(input), visibleOnly: options.visibleOnly }, options);
+    const result = await scope.run(() => this.evaluate(wc, script)) as UiQueryResult & { ok?: boolean; error?: string };
     if (!result?.ok) {
       const message = result?.error || "UI 元素查找失败";
-      throw new UiAutomationError(/^invalid selector:/i.test(message) ? "INVALID_SELECTOR" : "EXECUTION_FAILED", message);
+      throw new UiAutomationError(message.startsWith("ambiguous scope:") ? "ELEMENT_AMBIGUOUS" : /^invalid selector:/i.test(message) ? "INVALID_SELECTOR" : "EXECUTION_FAILED", message);
     }
-    return result.matches ?? [];
+    return result;
   }
 
   private async one(wc: WebContents, input: UiExecInput, scope: AutomationScope): Promise<UiElementInfo> {
-    const visible = await this.find(wc, input, scope, 20, false, true);
+    const { matches: visible } = await this.find(wc, input, scope, { visibleOnly: true });
     if (visible.length === 1) return visible[0];
     if (visible.length > 1) throw new UiAutomationError("ELEMENT_AMBIGUOUS", "UI 定位不唯一：存在多个可见目标；请从 candidates 选择唯一引用", { countAtLeast: visible.length }, visible);
-    const rows = await this.find(wc, input, scope, 2, false);
-    if (!rows.length) throw new UiAutomationError("ELEMENT_NOT_FOUND", "未找到目标 UI 元素");
+    const { matches: rows } = await this.find(wc, input, scope, { limit: 2 });
+    if (!rows.length) {
+      // Old node references can suggest a fresh observation, never an automatic input.
+      if (input.selector?.startsWith('[data-mybuddy-ui-ref=')) {
+        const recovery = await scope.run(() => this.evaluate(wc, `(() => {
+          const query=window.__mybuddyUiHints?.get(${JSON.stringify(input.selector)});
+          if(!query)return {};
+          const snapshot={query:{...query,visibleOnly:true}};
+          const result=${findScript({}, { limit: 6, query: "snapshot.query", observation: "remember" })};
+          return {lastObserved:query,scopePresent:query.within?!!__mbDom.one(query.within):undefined,candidates:result.matches||[]};
+        })()`)) as { lastObserved?: Record<string, unknown>; scopePresent?: boolean; candidates?: UiElementInfo[] };
+        throw new UiAutomationError("ELEMENT_NOT_FOUND", "原控件引用已失效，请核对当前界面后重新定位",
+          { lastObserved: recovery.lastObserved, scopePresent: recovery.scopePresent }, recovery.candidates);
+      }
+      throw new UiAutomationError("ELEMENT_NOT_FOUND", "未找到目标 UI 元素");
+    }
     if (rows.length > 1) {
       throw new UiAutomationError("ELEMENT_AMBIGUOUS", `UI 定位不唯一：匹配 ${rows.length} 个元素`, { count: rows.length }, rows);
     }
     return rows[0];
   }
 
-  private async dispatch(wc: WebContents, selector: string, event: "click" | "dblclick" | "contextmenu" | "mouseup" | "drop" | "keydown" | "mousemove", scope: AutomationScope, send: () => Promise<void>, onAccepted?: () => void): Promise<void> {
+  private async dispatch(wc: WebContents, selector: string, event: "click" | "dblclick" | "contextmenu" | "mouseup" | "drop" | "keydown" | "mousemove" | "wheel", scope: AutomationScope, send: () => Promise<void>, onAccepted?: () => void): Promise<void> {
     const token = randomUUID();
     const prepared = await scope.run(() => this.evaluate(wc, `(() => {
       const el=__mbDom.one(${JSON.stringify(selector)});if(!el)return false;
@@ -248,7 +307,10 @@ export class UiAutomationService {
         entry.cleanup=()=>finish(false);entry.timer=setTimeout(entry.cleanup,Math.max(1,${scope.deadline}-Date.now()));
         document.addEventListener(${JSON.stringify(event)},listener,true);
       });
-      receipts.set(${JSON.stringify(token)},entry);return true;
+      receipts.set(${JSON.stringify(token)},entry);
+      ${event === "wheel" ? `// Chromium can scroll on its compositor without sending a DOM wheel event
+      // until the new listener has been committed. Wait before delivering input.
+      return new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(el.isConnected))));` : "return true;"}
     })()`));
     if (!prepared) throw new UiAutomationError("ELEMENT_DISAPPEARED", "输入派发前目标已消失");
     // Start awaiting in the original document before input. A link can replace
@@ -332,10 +394,45 @@ export class UiAutomationService {
     const release = wc ? scope.guard(() => {
       if (wc.isDestroyed() || this.targetContents(target) !== wc) throw new UiAutomationError("SURFACE_CHANGED", "UI target 已变化，请重新观察");
     }) : () => {};
-    try { return await this.executeScoped(input, scope); }
+    const outcome = (): NonNullable<UiExecOutput["outcome"]> => ({
+      dispatch: scope.dispatched ? "dispatched" : "not_started",
+      effect: !scope.dispatched ? "none" : scope.confirmed ? "confirmed" : "unknown",
+    });
+    let verifying = false;
+    try {
+      if (input.after) {
+        if (!isUiInputAction(input.action)) throw new UiAutomationError("INVALID_INPUT", "after 只适用于输入动作");
+        locator({ ...input.after, action: "wait_for" });
+        // Check CSS syntax before an input can have effects. The target itself
+        // may first appear after the input, so it does not need to exist yet.
+        const selectors = [input.after.selector, input.after.within].filter(Boolean);
+        if (wc && selectors.length) {
+          const valid = await scope.run(() => this.evaluate(wc, `(() => {try{for(const s of ${JSON.stringify(selectors)}) document.createElement('div').matches(s);return true}catch{return false}})()`));
+          if (!valid) throw new UiAutomationError("INVALID_SELECTOR", "after 中的 CSS 定位无效");
+        }
+      }
+      const result = await this.executeScoped(input, scope);
+      if (input.after) {
+        verifying = true;
+        const state = input.after.state ?? "visible";
+        const observed = await this.executeScoped({ ...input.after, action: "wait_for", target, state, timeoutMs: scope.remaining }, scope);
+        result.verification = { state, elements: observed.elements ?? [] };
+      }
+      return !sharedScope && isUiInputAction(input.action) ? { ...result, outcome: outcome() } : result;
+    }
     catch (error) {
-      if (error instanceof AutomationTimeoutError) throw new UiAutomationError("WAIT_TIMEOUT", error.message, { outcome: { dispatch: scope.dispatched ? "dispatched" : "not_started", effect: scope.confirmed ? "confirmed" : scope.dispatched ? "unknown" : "none" } });
-      throw error;
+      const cancelled = error instanceof Error && error.name === "AbortError";
+      if (sharedScope && cancelled) throw error;
+      const failure = error instanceof UiAutomationError ? error
+        : cancelled ? new UiAutomationError("CANCELLED", error.message)
+        : error instanceof AutomationTimeoutError ? new UiAutomationError("WAIT_TIMEOUT", error.message)
+        : error instanceof PageCaptureError && error.code !== "CANCELLED" ? new UiAutomationError(error.code, error.message)
+        : !sharedScope ? new UiAutomationError("EXECUTION_FAILED", error instanceof Error ? error.message : String(error)) : undefined;
+      if (!failure) throw error;
+      if (cancelled) failure.name = "AbortError";
+      failure.details = { ...failure.details, outcome: outcome(), ...(verifying ? { stage: "verify", expected: input.after } : {}) };
+      if (!sharedScope && !scope.dispatched && isUiInputAction(input.action)) await recordHostToolNotStarted("ui_exec");
+      throw failure;
     } finally { release(); if (!sharedScope) scope.close(); }
   }
 
@@ -344,9 +441,11 @@ export class UiAutomationService {
     if (signal?.aborted) throw new DOMException("界面操作已取消", "AbortError");
     const target = input.target ?? "app";
     if (input.action === "status") {
-      if (!this.available(target)) return { action: input.action, target, detail: "unavailable" };
+      const availableTargets = (["app", "browser", "artifact"] as const).filter(surface => this.available(surface));
+      const status = { action: input.action, target, availableTargets, actions: UI_EXEC_ACTIONS };
+      if (!availableTargets.includes(target)) return { ...status, detail: "unavailable" };
       const wc = this.wc(target);
-      return { action: input.action, target, url: wc.getURL(), title: wc.getTitle(), detail: "ready" };
+      return { ...status, url: wc.getURL(), title: wc.getTitle(), detail: "ready" };
     }
 
     const wc = this.wc(target);
@@ -364,18 +463,18 @@ export class UiAutomationService {
     });
     const base = { action: input.action, target, url: wc.getURL(), title: wc.getTitle() } as const;
 
-    if (input.action === "snapshot") {
-      const page = await scope.run(() => pageInspectionService.getPageSnapshot(wc));
-      // A reference belongs to this exact DOM node and document. Reordering keeps it
-      // valid; replacement/navigation/new snapshots cannot silently retarget it.
-      const rows = await this.find(wc, { action: "find", selector: 'button,a,input,textarea,select,[role],[aria-label],[data-testid]' }, scope, 200);
-      const max = Math.max(1_000, Math.min(100_000, Math.round(input.maxChars ?? 30_000)));
-      return { ...base, text: page?.text.slice(0, max) ?? "", elements: rows, detail: `snapshot: ${rows.length} interactive elements` };
-    }
-
-    if (input.action === "find" || input.action === "inspect") {
-      const rows = await this.find(wc, input, scope, input.action === "inspect" ? 10 : 20, input.action === "inspect");
-      return { ...base, elements: rows, detail: `matched ${rows.length}` };
+    if (input.action === "snapshot" || input.action === "find" || input.action === "inspect") {
+      const snapshot = input.action === "snapshot";
+      const inspect = input.action === "inspect";
+      const controls = 'button,a,input:not([type="hidden"]),textarea,select,summary,[contenteditable="true"],[tabindex],[role],[aria-label],[data-testid]';
+      const query = snapshot ? { ...input, selector: controls } : input;
+      const max = snapshot ? Math.max(1000, Math.min(100000, Math.round(input.maxChars ?? 30000))) : undefined;
+      // A full app snapshot starts a new observation. A scoped read may itself depend
+      // on a prior reference. Embedded browser readers also share refs with browser_exec.
+      const observation = snapshot && !input.within && target !== "browser" ? "refresh" : "remember";
+      const result = await this.find(wc, query, scope, { limit: snapshot ? 200 : inspect ? 10 : 20, inspect, observation, textLimit: max });
+      return { ...base, elements: result.matches, elementsTotal: result.total, elementsTruncated: result.matches.length < result.total,
+        ...(snapshot ? { text: result.text ?? "", textTruncated: result.textTruncated ?? false } : {}), detail: `matched ${result.total}` };
     }
 
     if (input.action === "screenshot") {
@@ -408,7 +507,7 @@ export class UiAutomationService {
       const started = Date.now();
       while (Date.now() - started <= timeout) {
         check();
-        const rows = await this.find(wc, input, scope, 20, false);
+        const { matches: rows } = await this.find(wc, input, scope, { visibleOnly: state === "visible" || state === "hidden", observation: "remember" });
         const attached = rows.length > 0;
         const visible = rows.some((row) => row.visible);
         const done = state === "attached" ? attached : state === "detached" ? !attached : state === "visible" ? visible : !visible;
@@ -485,7 +584,8 @@ export class UiAutomationService {
         if (current.checked !== input.checked) throw new UiAutomationError("EXECUTION_FAILED", "已点击，但控件未接受勾选状态；请只读确认");
       }
       scope.confirmed = true;
-      return { ...base, elements: await this.find(wc, { action: "find", selector: element.selector }, scope), detail: `checked=${input.checked} ${element.selector}` };
+      const { matches } = await this.find(wc, { action: "find", selector: element.selector }, scope);
+      return { ...base, elements: matches, detail: `checked=${input.checked} ${element.selector}` };
     }
     if (input.action === "select") {
       if (!Array.isArray(input.values) || input.values.length > 80 || input.values.some(value => typeof value !== "string")) throw new UiAutomationError("INVALID_INPUT", "select 需要 values 数组，最多 80 项");
@@ -508,7 +608,8 @@ export class UiAutomationService {
       const accepted = await js<boolean>(`(() => {const el=__mbDom.one(${JSON.stringify(element.selector)});return el instanceof HTMLSelectElement&&JSON.stringify(Array.from(el.selectedOptions,o=>o.value).sort())===JSON.stringify(${JSON.stringify([...new Set(input.values)].sort())});})()`);
       if (!accepted) throw new UiAutomationError("EXECUTION_FAILED", "控件未接受下拉选择，请只读确认，不要重放提交");
       scope.confirmed = true;
-      return { ...base, elements: await this.find(wc, { action: "find", selector: element.selector }, scope), detail: `selected ${JSON.stringify(input.values)} on ${element.selector}` };
+      const { matches } = await this.find(wc, { action: "find", selector: element.selector }, scope);
+      return { ...base, elements: matches, detail: `selected ${JSON.stringify(input.values)} on ${element.selector}` };
     }
     if (input.action === "fill") {
       const value = input.value ?? "";
@@ -557,6 +658,8 @@ export class UiAutomationService {
       const modifiers = tokens.map(token => aliases[token.toLowerCase()]);
       if (modifiers.some(token => !token)) throw new UiAutomationError("INVALID_INPUT", "不支持的快捷键修饰符");
       await this.point(wc, element, scope);
+      // Moving focus can trigger handlers before the key is sent.
+      scope.dispatch();
       const focused = await js(`(() => {const el=__mbDom.one(${JSON.stringify(element.selector)});el?.focus({preventScroll:true});return __mbDom.active()===el;})()`);
       if (!focused) throw new UiAutomationError("ELEMENT_NOT_EDITABLE", "目标未收到键盘焦点");
       await this.dispatch(wc, element.selector, "keydown", scope, () => this.sendPair(wc, { type: "keyDown", keyCode, modifiers }, { type: "keyUp", keyCode, modifiers }, scope), input.onActionAccepted);
@@ -568,10 +671,9 @@ export class UiAutomationService {
       const dy = Number.isFinite(input.deltaY) ? Number(input.deltaY) : 0;
       if (!dx && !dy) throw new UiAutomationError("INVALID_INPUT", "scroll 需要非零 delta_x 或 delta_y");
       const { x, y } = await this.point(wc, element, scope, false);
-      scope.dispatch();
-      await scope.run(() => this.send(wc, { type: "mouseWheel", x, y, deltaX: dx, deltaY: dy, canScroll: true }));
-      await js("new Promise(resolve=>setTimeout(resolve,80))");
+      await this.dispatch(wc, element.selector, "wheel", scope, () => scope.run(() => this.send(wc, { type: "mouseWheel", x, y, deltaX: dx, deltaY: dy, canScroll: true })));
       scope.confirmed = true;
+      await js("new Promise(resolve=>setTimeout(resolve,80))");
       return { ...base, elements: [element], detail: `scrolled ${dx},${dy} at ${x},${y}` };
     }
     throw new UiAutomationError("UNSUPPORTED_ACTION", `不支持的 ui_exec action：${input.action}`);
