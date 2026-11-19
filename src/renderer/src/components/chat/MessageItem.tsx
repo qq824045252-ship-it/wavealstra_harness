@@ -49,6 +49,8 @@ interface Props {
    * 数据源仍是 BTW 自己的临时消息集合（与主任务管道无任何写入关系）。
    */
   btw?: boolean;
+  /** Gateway records do not carry task execution outcomes. Never infer completion. */
+  gatewayStatus?: string;
 }
 
 /** 超过该字符数默认折叠（长总结/大表一次输出） */
@@ -404,7 +406,7 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false }: Props): React.JSX.Element {
+function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus }: Props): React.JSX.Element {
   const showAllArtifacts = useAppStore((s) => s.showAllArtifacts);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
@@ -731,7 +733,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
           </span>
         </div>
 
-        <ExecutionTimeline message={message} taskId={taskId} />
+        {gatewayStatus ? <div className="assistant-source-badge">{gatewayStatus}</div> : <ExecutionTimeline message={message} taskId={taskId} />}
 
         {(message.interactions ?? []).map((interaction) => (
           <ConversationInteractionCard key={interaction.id} interaction={interaction} />

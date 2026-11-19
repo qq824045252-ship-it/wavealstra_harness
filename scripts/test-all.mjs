@@ -291,6 +291,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:gateway-conversation",
   "test:deepseek-connection",
   "test:deepseek-search",
   "test:deepseek-media-provider",
@@ -309,6 +310,8 @@ const HEADLESS_TESTS = new Set([
   "test:gateway-registration-card-ui",
   "test:business-gateway-registration-service",
   "test:gateway-binding-slack-identity",
+  "test:gateway-presentation-ui",
+  "test:gateway-settings-preservation-ui",
   "test:gateway-connected-ui",
   "test:gateway-channel-ui",
   "test:gateway-qr-race-ui",

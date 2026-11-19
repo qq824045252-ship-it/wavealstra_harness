@@ -1,5 +1,5 @@
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
-import { gatewayBotTaskId } from "../../shared/gateway-task";
+import { conversationalRequest, gatewayConversationId } from "./GatewayConversation";
 import type { SlackChannelHistory } from "./channels";
 import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 
@@ -23,7 +23,6 @@ export interface GatewayBotTurnRequest extends AgentPromptRequest { gatewayOrigi
 
 /** Await the native submission's own answer, never a task-wide stream or UI message ID. */
 export async function runGatewayAgentTurn(agent: GatewayAgentPort, request: GatewayBotTurnRequest): Promise<string> {
-  const { sessionFile: _legacySession, permissionMode: _legacyPermission, ...input } = request;
-  return agent.runGatewayTurn({ ...input, taskId: gatewayBotTaskId(request.taskId),
-    welcomeMode: "general", modePresetId: "native", streamingBehavior: "followUp" });
+  return agent.runGatewayTurn({ ...conversationalRequest(request),
+    taskId: gatewayConversationId(request.gatewayOrigin), gatewayOrigin: request.gatewayOrigin });
 }

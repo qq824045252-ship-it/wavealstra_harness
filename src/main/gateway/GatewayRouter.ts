@@ -5,7 +5,7 @@ import type { AppSettingsStore } from "../AppSettingsStore";
 import { gatewayInboundIdentity } from "./gateway-inbound-identity";
 
 import { isSecureGatewayProvider } from "./GatewayProviderConfig";
-import { runGatewayAgentTurn, withSlackChannelHistory, type GatewayAgentPort } from "./GatewayAgentTurn";
+import { runGatewayAgentTurn, type GatewayAgentPort } from "./GatewayAgentTurn";
 import { safeSlackError, redactSlackText } from "./SlackSocketModeAdapter";
 import type { ChannelAdapter, GatewayInboundHandler, GatewayInboundMessage } from "./channels";
 import type { createIdempotencyGuard } from "./GatewayRateLimiter";
@@ -20,6 +20,7 @@ interface GatewayRouterOptions {
   slackId(): string;
   isAuthorized(channelId: string): boolean;
   isAllowed(channelId: string, senderId?: string): boolean;
+  isConversationAuthorized(channelId: string, senderId?: string): boolean;
   processed: ReturnType<typeof createIdempotencyGuard>;
   emitEvent(event: GatewayEventDto): void;
 
@@ -31,7 +32,7 @@ interface GatewayRouterOptions {
 }
 
 /** Admission policy and native execution are independent of transport lifecycle.
- * A durable replay reuses the original native identity and never emits project input twice.
+ * Replies use their own durable receipt; channel text never becomes a project-side action.
  */
 export class GatewayRouter {
   constructor(private readonly options: GatewayRouterOptions) {}
@@ -51,6 +52,11 @@ export class GatewayRouter {
       const redact = this.options.outboundFilter();
       const msg = { ...input, reply: (text: string) => input.reply(redact(text)) };
       if (this.options.isStopping()) throw new Error("Gateway 正在关闭，消息将在重连后继续");
+      if (!this.options.isConversationAuthorized(msg.channelId, msg.sender?.id)) {
+        this.options.emitEvent({ channelId: msg.channelId, direction: "system", at: Date.now(),
+          text: "渠道消息未执行：请在助理设置中明确配置允许的发送者；连接成功不等于对话已授权。" });
+        return;
+      }
       // Slack validates its binding and persists dedupe before acknowledging events.
       if (msg.channelId === this.options.slackId()) return this.handleSlackInbound(msg, redact);
       const inboundAdapter = this.options.adapters.get(msg.channelId);
@@ -88,20 +94,7 @@ export class GatewayRouter {
         messageId: msg.messageId,
       });
 
-      // 项目投递钩子：命中 `@项目 <名>：内容` 则记录项目事件（fail-open，不影响原流程）
-      try {
-        if (!msg.gatewayDelivery?.replay) this.options.projectMessageSink?.({
-          text: msg.text,
-          channelId: msg.channelId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-          senderName: msg.sender?.name,
-        });
-      } catch (err) {
-        console.warn(`[Gateway] 项目投递钩子失败 ${msg.channelId}：`, this.options.safeError(err));
-      }
-
-
+      // Channel conversations have no project/workspace side effects.
       let text: string;
       try {
 
@@ -116,8 +109,9 @@ export class GatewayRouter {
         text = `处理失败：${this.options.safeError(err)}`;
       }
       try {
-        if (this.options.isStopping() || this.options.adapters.get(msg.channelId)?.workConnectionKey?.() !== connectionKey) {
-          throw new Error("Gateway 回复连接账号已改变，未发送");
+        if (this.options.isStopping() || !this.options.isConversationAuthorized(msg.channelId, msg.sender?.id)
+          || this.options.adapters.get(msg.channelId)?.workConnectionKey?.() !== connectionKey) {
+          throw new Error("Gateway 回复连接账号或允许名单已改变，未发送");
         }
         text = redact(text);
         await msg.reply(text);
@@ -156,26 +150,13 @@ export class GatewayRouter {
       channelId: msg.channelId, direction: "in", text: msg.text, at: Date.now(),
       chatId: msg.chatId, senderId: msg.sender?.id, messageId: msg.messageId,
     });
-    try {
-      this.options.projectMessageSink?.({ text: msg.text, channelId: msg.channelId, chatId: msg.chatId,
-        messageId: msg.messageId, senderName: msg.sender?.name });
-    } catch { /* Existing project ingestion remains optional; Pi still receives the instruction. */ }
-    if (msg.slackHistory?.status === "unavailable") {
-      const code = msg.slackHistory.errorCode ?? "request_failed";
-      const text = code === "missing_scope"
-        ? "已收到你的 @，但 Bot 读取这个频道的历史被 Slack 拒绝（missing_scope）。本次尚未读到前面的聊天，需要先确认该频道的历史读取权限。"
-        : "已收到你的 @，但本次未能读取前面的频道聊天（" + code + "）。请稍后重试；本次没有使用其他内容代替频道历史。";
-      await msg.reply(text);
-      this.options.emitEvent({ channelId: msg.channelId, direction: "out", text, at: Date.now(), chatId: msg.chatId });
-      return;
-    }
     let text: string;
     try {
 
       const settings = this.options.readSettings();
       const modelId = settings.defaultModelId?.trim() || undefined;
       text = await runGatewayAgentTurn(this.options.agent, {
-        taskId: msg.taskId, text: withSlackChannelHistory(msg.text, msg.slackHistory), displayText: msg.text, userMessageId: msg.userMessageId,
+        taskId: msg.taskId, text: msg.text, displayText: msg.text, userMessageId: msg.userMessageId,
         assistantMessageId: msg.assistantMessageId, attachments: msg.attachments,
         streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
         gatewayOrigin: this.origin(msg, connectionKey, msg.userMessageId),
@@ -185,6 +166,11 @@ export class GatewayRouter {
       text = "任务处理失败：" + safeSlackError(error);
     }
     text = redact(redactSlackText(text));
+    // Recheck both account and sender authorization after the asynchronous model turn.
+    if (this.options.isStopping() || !this.options.isConversationAuthorized(msg.channelId, msg.sender?.id)
+      || this.options.adapters.get(msg.channelId)?.workConnectionKey?.() !== connectionKey) {
+      throw new Error("渠道账号或允许名单已改变，未发送回复");
+    }
     // Network failure is an outbox failure, not a second native task execution.
     await msg.reply(text);
     this.options.emitEvent({ channelId: msg.channelId, direction: "out", text, at: Date.now(), chatId: msg.chatId });

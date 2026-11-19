@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep, basename } from "node:path";
 import { SlackSocketModeAdapter, redactSlackText, safeSlackError, splitSlackReply, type SlackSocket } from "../src/main/gateway/SlackSocketModeAdapter";
 import { SlackGatewayJournal, slackTaskId, type SlackDelivery } from "../src/main/gateway/SlackGatewayJournal";
 import { runGatewayAgentTurn, withSlackChannelHistory, type GatewayAgentPort } from "../src/main/gateway/GatewayAgentTurn";
+import { gatewayConversationId } from "../src/main/gateway/GatewayConversation";
 import { GatewayService } from "../src/main/gateway/GatewayService";
 import { sealSlackGatewayConfig, openSlackGatewayConfig, slackGatewayConfigView } from "../src/main/gateway/SlackGatewayCredentials";
 import { setEncryptionAvailable } from "./gateway-electron-stub";
@@ -380,7 +381,7 @@ try {
   });
   await check("Gateway persists encrypted config before activation; disconnect/restore preserve secrets and Pi policy", async () => {
     let stored: any; let connected = false; let activations = 0; let failSave = false;
-    const requests: AgentPromptRequest[] = [];
+    const requests: Parameters<GatewayAgentPort["runGatewayTurn"]>[0][] = [];
     const db = {
       listGatewayChannels: () => stored ? [stored] : [],
       upsertGatewayChannel: (row: any) => { if (failSave) throw new Error("fixture store failure"); stored = { ...row }; },
@@ -416,15 +417,16 @@ try {
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-thread", taskId: "native-task",
       userMessageId: "user-turn", assistantMessageId: "assistant-turn", text: "fixture",
       sender: { id: config.allowUsers[0] }, reply: async (text: string) => { replies.push(text); } });
-    assert.equal(requests[0].modelId, "fixture/native-model"); assert.equal(requests[0].permissionMode, undefined);
+    assert.equal(requests[0].modelId, "fixture/native-model"); assert.equal(requests[0].permissionMode, "readonly");
     assert.equal(requests[0].sessionFile, undefined); assert.equal(requests[0].welcomeMode, "general");
-    assert.equal(requests[0].modePresetId, "native"); assert.equal(requests[0].taskId, "gw-bot-native-task");
+    assert.equal(requests[0].modePresetId, "native"); assert.equal(requests[0].taskId, gatewayConversationId(requests[0].gatewayOrigin));
+    assert.notEqual(requests[0].taskId, "gw-bot-native-task");
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-channel", taskId: "native-channel",
       userMessageId: "channel-user", assistantMessageId: "channel-assistant", text: "总结下内容", sender: { id: config.allowUsers[0] },
       slackHistory: { channelId: "CFIXTURE", beforeTs: "1700000010.000001", status: "loaded", hasMore: false,
         messages: [{ ts: "1700000009.000001", text: "actual channel reference material" }] },
       reply: async (text: string) => { replies.push(text); } });
-    assert(requests[1].text.includes("actual channel reference material"));
+    assert.equal(requests[1].text, "总结下内容", "Slack history cannot enter the conversation prompt");
     assert.equal(requests[1].displayText, "总结下内容");
     const requestCount = requests.length;
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-scope", taskId: "native-denied",
@@ -432,8 +434,9 @@ try {
       slackHistory: { channelId: "CFIXTURE", beforeTs: "1700000010.000001", status: "unavailable", hasMore: false,
         messages: [], errorCode: "missing_scope", requiredScopes: ["channels:history"] },
       reply: async (text: string) => { replies.push(text); } });
-    assert.equal(requests.length, requestCount, "failed channel read must not execute a task against unrelated sources");
-    assert(replies.at(-1)?.includes("missing_scope"));
+    assert.equal(requests.length, requestCount + 1, "conversation does not depend on channel-history access");
+    assert.equal(requests.at(-1)?.text, "总结下内容");
+    assert.equal(replies.at(-1), "native-policy-reply");
     assert.equal(requests[0].streamingBehavior, "followUp"); assert.equal(replies[0], "native-policy-reply");
     await service.stop(); await service.restoreChannels(); assert.equal(activations, 3);
     failSave = true;
@@ -441,7 +444,7 @@ try {
     assert.equal(connected, false); assert.equal(activations, 3, "failed host commit must not release inbound execution");
     failSave = false; await service.stop();
   });
-  await check("Gateway awaits its native answer and forces Bot/native without legacy policy", async () => {
+  await check("Gateway awaits its native answer and forces read-only conversation without legacy policy", async () => {
     let finish!: (text: string) => void;
     const request = { taskId: "task", text: "fixture", assistantMessageId: "assistant", userMessageId: "user",
       gatewayOrigin: { channelId: "slack-default", connectionKey: "a".repeat(64), chatId: "T:D:thread", senderId: "owner",
@@ -449,6 +452,7 @@ try {
     const port: GatewayAgentPort = {
       runGatewayTurn: async input => {
         assert.equal(input.welcomeMode,"general"); assert.equal(input.modePresetId,"native");
+        assert.equal(input.permissionMode, "readonly"); assert.equal(input.taskId, gatewayConversationId(request.gatewayOrigin));
         return new Promise<string>(resolve => { finish = resolve; });
       },
     };
@@ -474,7 +478,7 @@ try {
     assert.equal(chunks.length, 3); assert.equal(chunks.join(""), long);
   });
 
-  await check("native Pi tool task executes once and same Slack thread continues its session (local scripted provider)", async () => {
+  await check("native Pi text turn executes once and same Slack thread continues its session (local scripted provider)", async () => {
     const f = fixture("pi-native");
     const cwd = join(root, "native-task");
     mkdirSync(cwd);
@@ -483,25 +487,16 @@ try {
       baseUrl: "http://invalid.invalid", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     };
-    let writes = 0;
     const runtime = {
       hasConfiguredAuth: () => true, getAuth: async () => ({ auth: { apiKey: "local-fixture-only" } }), getModel: () => model,
       streamSimple: (_model: Model<any>, context: Context) => {
         const stream = createAssistantMessageEventStream();
-        const userIndex = context.messages.findLastIndex(message => message.role === "user");
-        const afterUser = context.messages.slice(userIndex + 1).filter(message => message.role === "toolResult");
-        const userText = JSON.stringify(context.messages[userIndex]);
-        const isFollowUp = userText.includes("read-created-file");
-        let content: AssistantMessage["content"];
-        if (!afterUser.length) {
-          if (!isFollowUp) writes++;
-          content = [{ type: "toolCall", id: isFollowUp ? "read-native" : "write-native", name: isFollowUp ? "read" : "write",
-            arguments: isFollowUp ? { path: "slack-result.txt" } : { path: "slack-result.txt", content: "NATIVE_PI_SLACK_OK\n" } }];
-        } else {
-          assert(!afterUser.some(message => message.isError), "native tool succeeds");
-          content = [{ type: "text", text: isFollowUp ? "SAME_SESSION_READ_OK" : "NATIVE_PI_WRITE_OK" }];
-        }
-        const stopReason = content.some(part => part.type === "toolCall") ? "toolUse" as const : "stop" as const;
+        assert.equal(context.tools?.length ?? 0, 0, "no tools must reach the channel conversation model");
+        const users = context.messages.filter(message => message.role === "user");
+        const followUp = JSON.stringify(users.at(-1)).includes("follow-up");
+        if (followUp) assert(JSON.stringify(users[0]).includes("first-question"), "same sender and thread preserve context");
+        const content: AssistantMessage["content"] = [{ type: "text", text: followUp ? "SAME_SESSION_REPLY_OK" : "NATIVE_PI_REPLY_OK" }];
+        const stopReason = "stop" as const;
         const response: AssistantMessage = { role: "assistant", content, stopReason, api: model.api, provider: model.provider,
           model: model.id, timestamp: Date.now(), usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
@@ -510,7 +505,7 @@ try {
       },
     } as any;
     const session = await DurableBotRuntime.open({ directory: join(cwd,"durable"), cwd, models: runtime,
-      model: { provider:model.provider,modelId:model.id }, toolMode:"native", instructions:()=>"fixture", onSnapshot:()=>{} });
+      model: { provider:model.provider,modelId:model.id }, toolMode:"native", toolAllowed:()=>false, instructions:()=>"fixture", onSnapshot:()=>{} });
     const requests: AgentPromptRequest[] = [];
     const port: GatewayAgentPort = {
       runGatewayTurn: async request => {
@@ -527,14 +522,13 @@ try {
     });
     try {
       await f.adapter.connect(config);
-      const first = event("EvNATIVE", undefined, { text: "create-file" });
+      const first = event("EvNATIVE", undefined, { text: "first-question" });
       f.sockets[0].emit(first); f.sockets[0].emit(first);
-      await until(() => f.posts.length === 1, "native write result returned");
-      assert.equal(readFileSync(join(cwd, "slack-result.txt"), "utf8"), "NATIVE_PI_SLACK_OK\n"); assert.equal(writes, 1);
-      f.sockets[0].emit(event("EvFOLLOWUP", "1700000000.000002", { thread_ts: first.payload.event.ts, text: "read-created-file" }));
-      await until(() => f.posts.length === 2, "same-session read reply");
+      await until(() => f.posts.length === 1, "native text result returned");
+      f.sockets[0].emit(event("EvFOLLOWUP", "1700000000.000002", { thread_ts: first.payload.event.ts, text: "follow-up" }));
+      await until(() => f.posts.length === 2, "same-session text reply");
       assert.equal(requests[0].taskId, requests[1].taskId);
-      assert.equal(f.posts[0].text, "NATIVE_PI_WRITE_OK"); assert.equal(f.posts[1].text, "SAME_SESSION_READ_OK");
+      assert.equal(f.posts[0].text, "NATIVE_PI_REPLY_OK"); assert.equal(f.posts[1].text, "SAME_SESSION_REPLY_OK");
       await session.refresh(); assert.equal(session.snapshot.messages.filter(message=>message.role==='user').length,2);
     } finally { await f.adapter.disconnect(); await session.close(); }
   });

@@ -7,6 +7,8 @@ async function main() {
     adapters: new Map([["slack", { workConnectionKey: () => key }]]),
     isStopping: () => false, slackId: () => "slack", outboundFilter: () => (value: string) => value,
     emitEvent: (event: any) => events.push(event),
+    isConversationAuthorized: (_channelId: string, senderId?: string) => senderId === "owner",
+    readSettings: () => ({}), agent: { runGatewayTurn: async () => "fixture reply" },
   } as any);
   const input = { channelId: "slack", chatId: "chat", text: "fixture", taskId: "task", userMessageId: "user", assistantMessageId: "assistant", sender: { id: "owner" }, slackHistory: { status: "unavailable", errorCode: "missing_scope" }, reply: async () => {} } as any;
   await router.handler()(input);

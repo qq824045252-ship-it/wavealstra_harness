@@ -512,6 +512,7 @@ export class GatewayService {
       db: this.db, agent: this.agent, adapters: this.adapters,
       readSettings: () => this.settingsStore.read(), isStopping: () => this.stopping,
       slackId: () => this.slack.id, isAuthorized: channelId => this.channelPolicies.has(channelId),
+      isConversationAuthorized: (channelId, senderId) => Boolean(senderId && this.channelPolicies.get(channelId)?.allowUsers.includes(senderId)),
       isAllowed: (channelId, senderId) => this.isAllowed(channelId, senderId), processed: this.processed,
       emitEvent: event => this.emitEvent(event),
       projectMessageSink: this.projectMessageSink,

@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import { parseHTML } from "linkedom";
+import { act } from "react";
+import Channel from "../src/renderer/src/components/settings/GatewayChannelSettings";
+const {window:w,document:d}=parseHTML("<html><body></body></html>");
+Object.assign(globalThis,{window:w,document:d,IS_REACT_ACT_ENVIRONMENT:true});
+const {createRoot}=await import("react-dom/client");
+const tick=async()=>{await act(async()=>{await new Promise(r=>setTimeout(r,10));});};
+const rows = ["telegram", "slack", "dingtalk", "discord", "feishu", "wecom", "wechat"];
+for (const type of rows) {
+ const id=`${type}-default`;
+ const stored={appId:"app",teamId:"team",botToken:"••••••",appToken:"••••••",secret:"••••••",allowUsers:["owner-1","owner-2"],allowDirectMessages:false,guildIds:["guild-1"],transport:"websocket",mode:"smart"};
+ const saved:unknown[]=[];
+ Object.assign(w,{api:{gateway:{status:async()=>({channels:[{id,connected:true}]}),getChannelConfig:async()=>({hasConfig:true,config:stored}),onEvent:()=>()=>{},connect:async(...args:unknown[])=>{saved.push(args);}}}});
+ const host=d.body.appendChild(d.createElement("div"));const root=createRoot(host);
+ const fields=[{key:"appId",label:"App ID"},{key:"teamId",label:"Team ID"},{key:"botToken",label:"Token",type:"password" as const},{key:"appToken",label:"App Token",type:"password" as const},{key:"secret",label:"Secret",type:"password" as const},{key:"guildIds",label:"Guilds",type:"list" as const},{key:"transport",label:"Transport"},{key:"mode",label:"Mode"}];
+ await act(async()=>root.render(<Channel channelId={id} title={type} desc="test" fields={fields}/>));await tick();
+ assert.equal(saved.length,0,"opening/restoring must not rewrite configuration");
+ const button=(name:string)=>[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent===name)!;
+ await act(async()=>button("管理").click());
+ await act(async()=>button("保存并重新连接").click());await tick();
+ assert.equal(saved.length,1);
+ const config=(saved[0] as any[])[1];
+ assert.deepEqual(config.allowUsers,stored.allowUsers);
+ assert.equal(config.botToken,stored.botToken,"unchanged secret must remain backend reuse marker");
+ assert.deepEqual(config.guildIds,stored.guildIds);
+ if(type==="discord")assert.equal(config.allowDirectMessages,false);
+ await act(async()=>root.unmount());host.remove();
+}
+console.log("Gateway settings preservation PASS: seven manual channels, no writes on open, unchanged credentials/list/Discord scope");

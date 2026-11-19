@@ -1,3 +1,4 @@
+import { isGatewayConversation } from "../../gateway/GatewayConversation";
 import { WorkExecutionMetricsStore } from "../work/WorkExecutionMetrics";
 import { recordCollaborationExecutionStarted } from "../work/BotCollaborationExecutionFacts";
 import { createHash } from "node:crypto";
@@ -85,7 +86,7 @@ export interface DurableBotServiceOptions {
   resolveNextCwd?: (taskId: string) => string | undefined;
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
-  evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions;
+  evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
   answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask">;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
   mcpSelection?: (task: TaskDto) => readonly string[];
@@ -113,7 +114,7 @@ export interface DurableBotServiceOptions {
   projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string, messageWorkspaces?: ReadonlyMap<string, string>) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
   prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
-  auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit;
+  auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit | undefined;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
   prepareTask?: (request: AgentPromptRequest, mark?: AdmissionMark) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
@@ -371,7 +372,7 @@ export class DurableBotService {
 
   private async openInternal(taskId: string): Promise<OpenBot> {
     const { db, agentDir, models } = this.options;
-    this.options.expertBindings?.ensureLegacy(taskId);
+    if (!isGatewayConversation(taskId)) this.options.expertBindings?.ensureLegacy(taskId);
     const task = db.getTask(taskId);
     if (!task) throw new Error("任务不存在");
     const prior = this.binding(taskId);
@@ -426,7 +427,7 @@ export class DurableBotService {
         () => db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
       );
-      const routing = this.options.answerRouting;
+      const routing = isGatewayConversation(taskId) ? undefined : this.options.answerRouting;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         answerRouting: routing && {
           enabled: () => routing.hasRulesForTask(taskId),
@@ -597,7 +598,7 @@ export class DurableBotService {
     mark?.("task");
     await this.options.models.refresh({ allowNetwork: false });
     mark?.("catalog");
-    this.options.expertBindings?.ensureLegacy(request.taskId);
+    if (!isGatewayConversation(request.taskId)) this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     // Product selections are durable task configuration, never global scene state.
@@ -612,7 +613,7 @@ export class DurableBotService {
   private async configureRequest(open: OpenBot, request: AgentPromptRequest, mark?: AdmissionMark): Promise<BotModelResolution["target"]> {
       // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
       // only a newly admitted input after native idle can adopt a saved desired revision.
-      if (await open.runtime.isIdle()) {
+      if (!isGatewayConversation(request.taskId) && await open.runtime.isIdle()) {
         const before = this.options.expertBindings?.get(request.taskId);
         const binding = this.options.expertBindings?.promote(request.taskId);
         if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
@@ -1056,7 +1057,7 @@ export class DurableBotService {
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
   async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
-    if (!isGatewayBotTaskId(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
+    if (!isGatewayBotTaskId(request.taskId) && !isGatewayConversation(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
     const existing = this.options.db.getTask(request.taskId);
     this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
       title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
@@ -1064,14 +1065,14 @@ export class DurableBotService {
       welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
     const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
     try {
-      return await open.runtime.reply(submission);
+      return await open.runtime.reply(submission, { requireText: isGatewayConversation(request.taskId) });
     } catch (error) {
       if (!(error instanceof SessionFailed)) throw error;
       await this.invalidate(request.taskId, open);
       const reopened = await this.open(request.taskId);
       const recovered = await reopened.runtime.harness.submission(submission.id, context);
       if (!recovered) throw error;
-      return reopened.runtime.reply(recovered);
+      return reopened.runtime.reply(recovered, { requireText: isGatewayConversation(request.taskId) });
     }
   }
 }

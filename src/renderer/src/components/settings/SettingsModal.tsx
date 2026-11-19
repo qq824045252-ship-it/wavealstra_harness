@@ -844,7 +844,7 @@ function AssistantTab(): React.JSX.Element {
   return (
     <>
       <div className="settings-row-desc" style={{ marginBottom: 12 }}>
-        连接后符合授权条件的消息会自动开始任务；应用重启后尝试恢复连接。
+        仅对符合授权条件的消息进行文字对话，并回复原会话；不调用本机工具或读取个人资料，附件暂不读取。连接成功不代表消息已处理或回复成功，请查看本地助理消息记录。应用重启后尝试恢复已保存的连接。
       </div>
 
       <QQGatewaySettings />
@@ -865,7 +865,7 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="telegram-default"
         title="Telegram（推荐）"
-        desc="在 @BotFather 建个 Bot，把 Token 填进来就能用，不需要公网。"
+        desc="在 @BotFather 创建 Bot，填写 Token 和允许的用户 ID；无需公网回调。"
         fields={[
           { key: "botToken", label: "Bot Token", type: "password", placeholder: "123456:AA-xxx" },
         ]}
@@ -875,7 +875,7 @@ function AssistantTab(): React.JSX.Element {
         channelId="dingtalk-default"
         registration={onConnected => <BusinessGatewayRegistration provider="dingtalk" onConnected={onConnected} />}
         title="钉钉企业机器人"
-        desc="官方 Stream 长连接，无需公网回调。仅接受指定企业与员工消息，任务进度和文件发回原会话；需要机器人消息与文件权限。凭据加密保存。"
+        desc="官方 Stream 长连接，无需公网回调。仅接受指定企业与员工消息，文字回复发回原会话；需要机器人消息权限。凭据加密保存。"
         fields={[
           { key: "clientId", label: "Client ID", placeholder: "应用 AppKey" },
           { key: "clientSecret", label: "Client Secret", type: "password", placeholder: "应用 AppSecret" },
@@ -886,7 +886,7 @@ function AssistantTab(): React.JSX.Element {
       <GatewayBlock
         channelId="discord-default"
         title="Discord 官方 Bot"
-        desc="使用官方 Bot Token 和 Gateway 长连接，服务器中仅接受 @Bot，私聊需显式启用。任务进度和文件发回原频道或讨论串；需要发送消息与附件权限。凭据加密保存，不支持个人账号 Token。"
+        desc="使用官方 Bot Token 和 Gateway 长连接，服务器中仅接受 @Bot，私聊需显式启用。文字回复发回原频道或讨论串；需要发送消息权限。凭据加密保存，不支持个人账号 Token。"
         fields={[
           { key: "applicationId", label: "Application ID", placeholder: "Discord 应用 ID" },
           { key: "botToken", label: "Bot Token", type: "password", placeholder: "官方机器人 Token" },
@@ -897,7 +897,7 @@ function AssistantTab(): React.JSX.Element {
         channelId="feishu-default"
         registration={onConnected => <BusinessGatewayRegistration provider="feishu" onConnected={onConnected} />}
         title="飞书"
-        desc="推荐 websocket：飞书官方 SDK 长连接，无需公网回调。保留 webhook 模式，需 Verification Token 与公网 /feishu 回调。当前仅文本消息，不含 Hermes 富媒体、卡片等能力。"
+        desc="推荐 websocket：飞书官方 SDK 长连接，无需公网回调。保留 webhook 模式，需 Verification Token 与公网 /feishu 回调。渠道支持接收文本与媒体，但本地助理当前仅处理文字，不读取附件或提供完整 Hermes 卡片能力。"
         fields={[
           { key: "transport", label: "接入方式", placeholder: "websocket 或 webhook（旧配置保留 webhook）" },
           { key: "appId", label: "App ID", placeholder: "cli_xxx" },
@@ -910,7 +910,7 @@ function AssistantTab(): React.JSX.Element {
         channelId="wecom-default"
         registration={onConnected => <BusinessGatewayRegistration provider="wecom" onConnected={onConnected}/> }
         title="企微"
-        desc="smart：官方 Smart Robot 长连接，填写 Bot ID 和 Secret；callback：原自建应用回调，填写下方 Corp ID、Agent ID、Secret、Token 和 AES Key，需公网 /wecom。Smart Robot 当前支持文本收取/Markdown 回复，暂不支持主动 Work 通知、富媒体或原生流式。"
+        desc="smart：官方 Smart Robot 长连接，填写 Bot ID 和 Secret；callback：原自建应用回调，填写下方 Corp ID、Agent ID、Secret、Token 和 AES Key，需公网 /wecom。Smart Robot 支持文本与媒体收取、Markdown 回复；本地助理当前仅处理文字，不读取附件，不提供主动 Work 通知或原生流式。"
         fields={[
           { key: "mode", label: "接入方式", placeholder: "smart 或 callback（旧配置保留 callback）" },
           { key: "botId", label: "Bot ID", placeholder: "Smart Robot ID" },

@@ -180,6 +180,7 @@ export default function GatewayBlock({
       </div>
       {formError && <div role="alert">{formError}</div>}
       <GatewayConnectionPanel title={title} connected={connected}>
+      <div className="settings-card-desc">连接状态仅表示渠道接入，不代表消息已处理或回复成功。断开不会撤销平台授权。</div>
       <div className="settings-card-desc">{desc}</div>
       {offerRegistration && <div className="settings-card-footer">
         <button type="button" className="btn" aria-pressed={!manualSetup} onClick={() => setManualSetup(false)}>扫码创建机器人</button>
@@ -212,7 +213,7 @@ export default function GatewayBlock({
       {isDiscord && <Row label="允许 Discord 私聊" desc="默认关闭；打开后也仅允许下方用户 ID。">
         <input type="checkbox" aria-label="允许 Discord 私聊" checked={allowDirectMessages} onChange={e => { dirty.current++; setAllowDirectMessages(e.target.checked); }} />
       </Row>}
-      <Row label="允许的用户" desc={isSlack ? "必填：允许触发机器人的 Slack Member ID，逗号分隔。" : requiresAllowUsers ? "必填：平台用户 ID（钉钉为员工 senderStaffId），逗号分隔。" : "只允许这些用户使用，逗号分隔；留空则谁都能用。"}>
+      <Row label="允许的用户" desc={isSlack ? "必填：允许触发机器人的 Slack Member ID，逗号分隔。" : requiresAllowUsers ? "必填：平台用户 ID（钉钉为员工 senderStaffId），逗号分隔。" : "允许触发对话的平台用户 ID，逗号分隔；留空不代表允许所有人执行。"}>
         <input
           className="settings-input"
           aria-label={isSlack ? "允许的 Slack 用户" : undefined}

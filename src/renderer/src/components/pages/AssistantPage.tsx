@@ -7,13 +7,18 @@ import type {
 } from "../../../../shared/agent-ipc";
 import MessageItem from "@/components/chat/MessageItem";
 import { useAppStore } from "@/store/appStore";
-import { IconClock, IconMore, IconSearch, IconShare } from "@/components/common/icons";
+import { gatewayRecordKey, gatewayRecordStatus, mergeGatewayRecords, type GatewayRecord } from "@/lib/gatewayPresentation";
 
 const CHANNEL_LABEL: Record<string, string> = {
   "feishu-default": "飞书",
   "wecom-default": "企微",
   "wechat-default": "微信",
   "telegram-default": "Telegram",
+  "slack-default": "Slack",
+  "dingtalk-default": "钉钉",
+  "discord-default": "Discord",
+  "qq-default": "QQ",
+  "weixin-default": "微信扫码",
   system: "系统",
 };
 
@@ -35,7 +40,7 @@ function messageToChatMessage(ev: GatewayEventDto | GatewayMessageDto): ChatMess
       : `${ev.senderName ?? ""}${ev.senderName ? "：" : ""}${ev.text}`;
   return {
     // direction 参与 id：同毫秒的 in/out 不冲突
-    id: `gw-${ev.channelId}-${ev.chatId}-${ev.direction}-${ev.at}`,
+    id: gatewayRecordKey(ev),
     role,
     createdAt: ev.at,
     // user 气泡读 blocks、assistant 读 finalBlocks，两处都要填
@@ -47,105 +52,71 @@ function messageToChatMessage(ev: GatewayEventDto | GatewayMessageDto): ChatMess
 /** 助理页：IM Gateway 消息镜像（按会话分组，历史落库可查） */
 export default function AssistantPage(): React.JSX.Element {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [records, setRecords] = useState<GatewayRecord[]>([]);
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const selectedRef = useRef<string | null>(null);
   const [status, setStatus] = useState<GatewayStatusDto | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const statusEpoch = useRef(0);
+  const conversations = useMemo(() => {
+    const map = new Map<string, Conversation>();
+    for (const record of records) {
+      const key = `${record.channelId}:${record.chatId ?? ""}`;
+      map.set(key, { key, channelId: record.channelId, chatId: record.chatId ?? "",
+        title: record.senderName ?? record.chatId ?? record.channelId,
+        lastText: record.text.slice(0, 40), at: record.at, unread: 0 });
+    }
+    return [...map.values()].sort((a, b) => b.at - a.at);
+  }, [records]);
+  const selectedKey = activeKey ?? conversations[0]?.key ?? null;
+  selectedRef.current = selectedKey;
+  const messages = useMemo(() => records.filter(record =>
+    `${record.channelId}:${record.chatId ?? ""}` === selectedKey), [records, selectedKey]);
 
-  // 初始加载：历史消息落库回放（重启不丢）
   useEffect(() => {
     let alive = true;
-    void window.api?.gateway
-      ?.listMessages({ limit: 300 })
-      .then((history) => {
-        if (!alive) return;
-        const map = new Map<string, Conversation>();
-        const byChat = new Map<string, GatewayMessageDto[]>();
-        for (const m of history) {
-          const key = `${m.channelId}:${m.chatId}`;
-          const list = byChat.get(key) ?? [];
-          list.push(m);
-          byChat.set(key, list);
-        }
-        for (const [key, list] of byChat) {
-          const last = list[list.length - 1];
-          map.set(key, {
-            key,
-            channelId: last.channelId,
-            chatId: last.chatId,
-            title: last.senderName ?? (last.channelId === "system" ? "系统" : last.chatId),
-            lastText: last.text.slice(0, 40),
-            at: last.at,
-            unread: 0,
-          });
-        }
-        const convs = [...map.values()].sort((a, b) => b.at - a.at);
-        setConversations(convs);
-        if (convs.length > 0 && !activeKey) {
-          const first = convs[0];
-          setActiveKey(first.key);
-          setMessages(byChat.get(first.key)?.map(messageToChatMessage) ?? []);
-        }
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
-    return () => {
-      alive = false;
+    const refreshStatus = async () => {
+      const epoch = ++statusEpoch.current;
+      try {
+        const next = await window.api?.gateway?.status();
+        if (alive && epoch === statusEpoch.current) setStatus(next ?? null);
+      } catch { if (alive && epoch === statusEpoch.current) setStatus(null); }
     };
+    void window.api?.gateway?.listMessages({ limit: 300 }).then(history => {
+      if (alive) { setRecords(current => mergeGatewayRecords(history, current)); setLoaded(true); }
+    }).catch(() => { if (alive) { setLoadError("消息记录加载失败，请重新打开本地助理重试。"); setLoaded(true); } });
+    const unsubscribe = window.api?.gateway?.onEvent(event => {
+      if (!alive) return;
+      const key = `${event.channelId}:${event.chatId ?? ""}`;
+      if (selectedRef.current && key !== selectedRef.current) setUnread(current => ({ ...current, [key]: (current[key] ?? 0) + 1 }));
+      setRecords(current => mergeGatewayRecords(current, [event]));
+      void refreshStatus();
+    });
+    void refreshStatus();
+    const timer = setInterval(() => void refreshStatus(), 5000);
+    return () => { alive = false; statusEpoch.current++; unsubscribe?.(); clearInterval(timer); };
   }, []);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages.length]);
+    if (!selectedKey) return;
+    setActiveKey(current => current ?? selectedKey);
+    setUnread(current => current[selectedKey] ? { ...current, [selectedKey]: 0 } : current);
+    let alive = true;
+    const sep = selectedKey.indexOf(":");
+    void window.api?.gateway?.listMessages({ channelId: selectedKey.slice(0, sep),
+      chatId: selectedKey.slice(sep + 1), limit: 200 }).then(history => {
+        // A late response may add records, but must never select or overwrite another conversation.
+        if (alive) { setRecords(current => mergeGatewayRecords(history, current)); setLoadError(""); }
+      }).catch(() => { if (alive) setLoadError("会话记录加载失败，已收到的消息仍保留。"); });
+    return () => { alive = false; };
+  }, [selectedKey]);
 
   useEffect(() => {
-    void window.api?.gateway?.status().then(setStatus);
-    return window.api?.gateway?.onEvent((ev) => {
-      const key = `${ev.channelId}:${ev.chatId ?? ""}`;
-      setConversations((list) => {
-        const title =
-          ev.senderName ??
-          (ev.channelId === "system" ? "系统" : (ev.chatId ?? ev.channelId));
-        const existing = list.find((c) => c.key === key);
-        if (existing) {
-          return list.map((c) =>
-            c.key === key
-              ? {
-                  ...c,
-                  title,
-                  lastText: ev.text.slice(0, 40),
-                  at: ev.at,
-                  unread: c.key === activeKey ? 0 : c.unread + 1,
-                }
-              : c,
-          );
-        }
-        return [
-          ...list,
-          { key, channelId: ev.channelId, chatId: ev.chatId ?? "", title, lastText: ev.text.slice(0, 40), at: ev.at, unread: 0 },
-        ];
-      });
-      if (key === activeKey) {
-        setMessages((list) => [...list, messageToChatMessage(ev)]);
-      }
-      void window.api?.gateway?.status().then(setStatus);
-    });
-  }, [activeKey]);
-
-  const selectConversation = (key: string): void => {
-    setActiveKey(key);
-    setConversations((list) =>
-      list.map((c) => (c.key === key ? { ...c, unread: 0 } : c)),
-    );
-    const sep = key.indexOf(":");
-    const channelId = key.slice(0, sep);
-    const chatId = key.slice(sep + 1);
-    void window.api
-      ?.gateway?.listMessages({ channelId, chatId: chatId === "" ? undefined : chatId, limit: 200 })
-      .then((history) => setMessages(history.map(messageToChatMessage)));
-  };
+    scrollRef.current?.scrollTo?.({ top: scrollRef.current.scrollHeight });
+  }, [selectedKey, messages.length]);
 
   const connected = status?.channels.some((c) => c.connected) ?? false;
   const hint = connected
@@ -153,11 +124,11 @@ export default function AssistantPage(): React.JSX.Element {
         .filter((c) => c.connected)
         .map((c) => `${c.name}已连接`)
         .join(" · ")
-    : "未连接";
+    : status ? "未连接" : "连接状态未知";
 
   const activeConv = useMemo(
-    () => conversations.find((c) => c.key === activeKey) ?? null,
-    [conversations, activeKey],
+    () => conversations.find((c) => c.key === selectedKey) ?? null,
+    [conversations, selectedKey],
   );
 
   return (
@@ -165,48 +136,37 @@ export default function AssistantPage(): React.JSX.Element {
       <div className="chat-header">
         <div className="chat-header-title">本地助理</div>
         <span className="assistant-conn-hint">
-          {hint}
+          {hint}（仅连接状态）
           {" · "}
           <button className="link-btn" onClick={() => setSettingsOpen(true, "assistant")}>
             配置
           </button>
         </span>
         <div className="chat-header-sub" />
-        <button className="icon-btn" title="搜索">
-          <IconSearch size={15} />
-        </button>
-        <button className="icon-btn" title="分享">
-          <IconShare size={15} />
-        </button>
-        <button className="icon-btn" title="历史提问">
-          <IconClock size={15} />
-        </button>
-        <button className="icon-btn" title="更多">
-          <IconMore size={15} />
-        </button>
       </div>
 
+      {loadError && <div role="alert">{loadError}</div>}
       <div className="assistant-body">
         <div className="assistant-conv-list">
           {!loaded && <div className="assistant-conv-empty">加载中…</div>}
           {loaded && conversations.length === 0 && (
             <div className="assistant-conv-empty">
-              暂无会话。在「助理设置」连接 Telegram / 飞书 / 企微 / 微信后，
+              暂无会话。在「助理设置」连接所需渠道后，
               从 IM 发消息即可在这里看到。
             </div>
           )}
           {conversations.map((c) => (
             <button
               key={c.key}
-              className={`assistant-conv-item ${c.key === activeKey ? "active" : ""}`}
-              onClick={() => selectConversation(c.key)}
+              className={`assistant-conv-item ${c.key === selectedKey ? "active" : ""}`}
+              onClick={() => setActiveKey(c.key)}
             >
               <div className="assistant-conv-row">
                 <span className={`assistant-conv-badge ch-${c.channelId.split("-")[0]}`}>
                   {CHANNEL_LABEL[c.channelId] ?? c.channelId}
                 </span>
                 <span className="assistant-conv-title">{c.title}</span>
-                {c.unread > 0 && <span className="assistant-conv-unread">{c.unread}</span>}
+                {(unread[c.key] ?? 0) > 0 && <span className="assistant-conv-unread">{unread[c.key]}</span>}
               </div>
               <div className="assistant-conv-preview">{c.lastText}</div>
               <div className="assistant-conv-time">
@@ -228,8 +188,8 @@ export default function AssistantPage(): React.JSX.Element {
                 {CHANNEL_LABEL[activeConv.channelId] ?? activeConv.channelId} · {activeConv.title}
               </div>
             )}
-            {messages.map((msg) => (
-              <MessageItem key={msg.id} message={msg} />
+            {messages.map((record) => (
+              <MessageItem key={gatewayRecordKey(record)} message={messageToChatMessage(record)} btw gatewayStatus={gatewayRecordStatus(record)} />
             ))}
           </div>
         </div>

@@ -11,10 +11,11 @@ import { getCurrentTools, type Message, type AssistantMessage } from "@earendil-
 import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { DurableBotService, type DurableBotServiceOptions } from "../src/main/agent/durable/DurableBotService";
+import { isolateGatewayConversations } from "../src/main/agent/durable/GatewayConversationIsolation";
 import { openDurableAuxiliary } from "../src/main/agent/durable/DurableAuxiliaryRuntime";
 import type { DurableBotOptions, DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { GatewayService } from "../src/main/gateway/GatewayService";
-import { gatewayInboundIdentity } from "../src/main/gateway/gateway-inbound-identity";
+import { gatewayConversationId } from "../src/main/gateway/GatewayConversation";
 
 const root=mkdtempSync(join(tmpdir(),"i26-entrypoints-"));
 const previous={HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE,PI_CODING_AGENT_DIR:process.env.PI_CODING_AGENT_DIR};
@@ -32,7 +33,10 @@ const fixture={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async
   queueMicrotask(()=>{try{
    const i=messages.findLastIndex(m=>m.role==="user"),input=text(messages[i]!);const query=/RETRIEVE_(GATEWAY|AUXILIARY)/.exec(input)?.[1];
    const results=messages.slice(i+1).filter(m=>m.role==="toolResult");let content:AssistantMessage["content"]=[{type:"text",text:"DONE"}];let reason:"stop"|"toolUse"="stop";
-   if(query){
+   if(input.includes("RETRIEVE_GATEWAY")) {
+    assert.equal(getCurrentTools(messages).length,0,"Gateway text-only conversation may not receive retrieval or execution tools");
+    content=[{type:"text",text:"TEXT_ONLY_GATEWAY"}];
+   } else if(query){
     assert(getCurrentTools(messages).some(t=>t.name==="acp_retrieve"));
     if(!results.length){content=[{type:"toolCall",id:`search-${requests.length}`,name:"acp_search",arguments:{query:`EXACT_${query}_ORIGINAL`,scope:"originals"}}];reason="toolUse";}
     else if(results.length===1){const entry=/entry (\d+) · (?:pi|mybuddy)\.user/.exec(text(results[0]!));assert(entry,"original search must return actual entry: "+text(results[0]!));content=[{type:"toolCall",id:`retrieve-${requests.length}`,name:"acp_retrieve",arguments:{entryId:Number(entry[1]),limit:1000}}];reason="toolUse";}
@@ -43,28 +47,28 @@ const fixture={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async
  }};
 const models=fixture as unknown as DurableBotOptions["models"];
 const db=new AppDatabase(join(agentDir,"app.db"));
-const durable=new DurableBotService({db,models:fixture as unknown as DurableBotServiceOptions["models"],agentDir,mcpDir,defaultModel:()=>"fixture/entrypoint",toolMode:()=>"native",instructions:()=>"Only obey the latest synthetic test request.",tools:async()=>({tools:[],contextHooks:[]}) as never,
- productCompaction:()=>({ratio:0.8,absoluteTokens:20000}),emit:()=>{},resolveCwd:id=>{const p=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(p,{recursive:true});return p;}});
+const durable=new DurableBotService(isolateGatewayConversations({db,models:fixture as unknown as DurableBotServiceOptions["models"],agentDir,mcpDir,defaultModel:()=>"fixture/entrypoint",toolMode:()=>"native",instructions:()=>"Only obey the latest synthetic test request.",tools:async()=>({tools:[],contextHooks:[]}) as never,
+ productCompaction:()=>({ratio:0.8,absoluteTokens:20000}),emit:()=>{},resolveCwd:id=>{const p=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(p,{recursive:true});return p;}}));
 const gateway=new GatewayService(db,{runGatewayTurn:(request:Parameters<DurableBotService["runGatewayTurn"]>[0])=>durable.runGatewayTurn(request)} as never);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/entrypoint"})};
-const account="c".repeat(64),channel="telegram-default",chat="context-matrix";
+const account="c".repeat(64),channel="telegram-default",chat="context-matrix",sender="fixture-sender";
 (gateway as any).adapters.get(channel).workConnectionKey=()=>account;
-(gateway as any).channelPolicies.set(channel,{allowUsers:[]});
+(gateway as any).channelPolicies.set(channel,{allowUsers:[sender]});
 const inbound=(gateway as any).createInboundHandler();
-const taskId=gatewayInboundIdentity(channel,account,chat).taskId;
+const taskId=gatewayConversationId({channelId:channel,connectionKey:account,chatId:chat,senderId:sender,messageId:"fixture",audience:"shared"});
 const filler="Synthetic archived observations with no additional instructions. ".repeat(550);
 const seed=(kind:string,n:number)=>`Synthetic block ${n}.\n${n===0?`EXACT_${kind}_ORIGINAL verbatim-${kind}-NB7.\n`:""}${filler}`;
 const deadline=async<T>(p:Promise<T>):Promise<T>=>{let timer:NodeJS.Timeout;try{return await Promise.race([p,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error("entrypoint deadline")),30000);})]);}finally{clearTimeout(timer!);}};
 let auxiliary:DurableBotRuntime|undefined;
 try{
- const replies:string[]=[];const sendGateway=async(value:string,id:string)=>deadline(inbound({channelId:channel,chatId:chat,messageId:id,text:value,reply:async(t:string)=>{replies.push(t);}}));
+ const replies:string[]=[];const sendGateway=async(value:string,id:string)=>deadline(inbound({channelId:channel,chatId:chat,messageId:id,text:value,sender:{id:sender},reply:async(t:string)=>{replies.push(t);}}));
  for(let n=0;n<8;n++)await sendGateway(seed("GATEWAY",n),`gateway-${n}`);
  assert.equal(replies.length,8);assert(summaries>0,"Gateway must call real summary fixture");
  assert(requests.some(ms=>JSON.stringify(ms).includes("[Compressed")&&!JSON.stringify(ms).includes("EXACT_GATEWAY_ORIGINAL")),"Gateway outgoing requests must use committed projection without old original");
  const gatewayStatus=await durable.contextManagementStatus(taskId);assert(gatewayStatus?.sessionId);assert.equal(gatewayStatus.triggerTokens,20000);
- await sendGateway("RETRIEVE_GATEWAY","gateway-retrieve");assert.equal(replies.at(-1),"VERIFIED_GATEWAY");
+ await sendGateway("RETRIEVE_GATEWAY","gateway-retrieve");assert.equal(replies.at(-1),"TEXT_ONLY_GATEWAY");
  const gatewaySummaryCount=summaries;await durable.release(taskId);await sendGateway("Continue after cold reopen.","gateway-reopen");assert.equal(summaries,gatewaySummaryCount,"reopen must not duplicate maintenance");
- console.log("PASS production Gateway inbound → Durable service: automatic projection, original tools, persisted reopen");
+ console.log("PASS Gateway inbound → isolated Durable service: automatic projection, text-only admission, persisted reopen");
  const start=requests.length,summaryStart=summaries;
  const openAux=()=>openDurableAuxiliary({agentDir,id:"context-aux",models,initialize:async()=>({id:"context-aux",kind:"btw",parentTaskId:taskId,cwd:root,instructions:"Only synthetic context validation.",model:{provider:"fixture",modelId:model.id}}),runtime:async()=>({onSnapshot:()=>{}})});
  auxiliary=(await openAux()).runtime;

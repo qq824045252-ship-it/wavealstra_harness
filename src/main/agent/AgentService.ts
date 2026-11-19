@@ -1,3 +1,5 @@
+import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
+import { conversationalRequest, gatewayConversationId, isGatewayConversation } from "../gateway/GatewayConversation";
 import { HistoricalBotReader } from "./work/HistoricalBotReader";
 
 
@@ -1272,7 +1274,7 @@ export class AgentService {
     await this.migrateLegacyModelPreferences();
     this.durableModels = this.modelRuntime;
     setSubagentIpcBackend(durableSubagentIpcBackend);
-    this.durableBots = new DurableBotService({
+    this.durableBots = new DurableBotService(isolateGatewayConversations({
       answerRouting: this.answerRouting,
       expertBindings: this.expertBindings,
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
@@ -1438,7 +1440,7 @@ export class AgentService {
         }
       },
       emit: patch => this.emitPatch(patch),
-    });
+    }));
   }
 
   /** Startup drain outcome for diagnostics/tests; delivered never implies native work finished. */
@@ -1779,9 +1781,13 @@ export class AgentService {
     await this.durableBots?.close();
   }
 
-  async runGatewayTurn(_request: GatewayBotTurnRequest): Promise<string> {
-    // Do not silently turn a retired Bot-channel binding into an Ordinary task.
-    throw new Error("独立 Bot 模式已移除；原 Bot 渠道绑定不再执行任务。");
+  async runGatewayTurn(request: GatewayBotTurnRequest): Promise<string> {
+    if (!isGatewayConversation(request.taskId) || request.taskId !== gatewayConversationId(request.gatewayOrigin)
+      || this.workService.repo.bindingForTask(request.taskId)) {
+      throw new Error("历史 Bot 渠道绑定仅供查看，不能转换为新的渠道对话。");
+    }
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.runGatewayTurn(conversationalRequest(request));
   }
 
   private async resolvePiModelScope(
