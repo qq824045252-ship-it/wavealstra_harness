@@ -1,5 +1,8 @@
 export type DurableVersioned<Message, State> = State & { epoch: string; revision: number; messages: Message[] }
 
+/** A passive history reader has rows and metadata, but owns no stream cursor. */
+export type DurableHistoryView<T> = T | (Omit<T, 'epoch' | 'revision'> & { epoch?: never; revision?: never })
+
 /** Metadata replaces the previous metadata, so omitted optional fields are cleared. */
 export interface DurableStreamDelta<Message, State> {
   epoch: string
@@ -61,8 +64,8 @@ export function replayDurableDeltas<Message extends { id: string }, State>(
   snapshot: DurableVersioned<Message, State>,
   buffered: readonly DurableStreamDelta<Message, State>[],
 ): { snapshot: DurableVersioned<Message, State>; gap: boolean } {
-  for (const delta of buffered) {
-    if (delta.epoch !== snapshot.epoch) continue
+  const matching = buffered.filter(delta => delta.epoch === snapshot.epoch).sort((a, b) => a.revision - b.revision)
+  for (const delta of matching) {
     const result = applyDurableDelta(snapshot, delta)
     if (result.kind === 'resync') return { snapshot, gap: true }
     if (result.kind === 'applied') snapshot = result.snapshot

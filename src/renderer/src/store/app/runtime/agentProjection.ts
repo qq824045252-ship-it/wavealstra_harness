@@ -1,15 +1,15 @@
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
+import { projectDurableHistory } from "./taskHistoryRead";
 import type { ChatMessage, Task } from "../../../types";
 import { hasActiveExecutionMessages } from "../../../utils/taskFilters";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
-import { durableMessageToChatMessage } from "../messages/historyMapper";
 import { applyPatchToMessage } from "../messages/messageReducer";
 import { taskTitleFromFirstMessage } from "../messages/promptDisplay";
 import type { AgentDeltaPatch } from "../types";
 import { hydrateTaskMetadataFromDb } from "./taskHydration";
 import { reloadModelCatalog } from "./bootstrap";
 import { applyDurableDelta, replayDurableDeltas } from "../../../../../../shared/src/durable-sync";
-import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import type { DurableBotDelta, DurableBotState } from "../../../../../shared/durable-bot";
 import type { ChatMessageDto } from "../../../../../shared/agent-ipc";
 
@@ -18,27 +18,46 @@ export function createAgentProjectionActions(
 ): Pick<AppActions, "applyAgentPatch" | "applyAgentDeltaBatch"> {
   const { get, set } = storeContext;
   const resync = (taskId: string, delta: DurableBotDelta): void => {
-    const queue = storeContext.runtime.durableResyncs.get(taskId);
-    if (queue) { queue.push(delta); if (queue.length > 256) queue.shift(); return; }
-    const buffered = [delta];
-    const initialEpoch = get().tasks.find(task => task.id === taskId)?.durable?.epoch;
-    storeContext.runtime.durableResyncs.set(taskId, buffered);
+    const flights = storeContext.runtime.durableResyncs;
+    const pending = flights.get(taskId);
+    if (pending) {
+      if (pending.buffered.length < 256) pending.buffered.push(delta);
+      else pending.overflow = true; // the next full read covers even the unbuffered revisions
+      return;
+    }
+    const flight = { buffered: [delta], overflow: false };
+    flights.set(taskId, flight);
+    const current = () => get().tasks.find(task => task.id === taskId)?.durable;
+    const ownsRead = () => flights.get(taskId) === flight
+      && !storeContext.runtime.deletedTaskRuntimeTombstones.has(taskId);
     void (async () => {
       try {
-        const history = await storeContext.getApi()?.agent?.loadTaskHistory?.(taskId);
-        if (!history?.durable) throw new Error("未取得持久会话的完整状态");
-        const currentEpoch = get().tasks.find(task => task.id === taskId)?.durable?.epoch;
-        if (currentEpoch === initialEpoch || currentEpoch === history.durable.epoch) get().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: history.durable });
-        storeContext.runtime.durableResyncs.delete(taskId);
-        const accepted = get().tasks.find(task => task.id === taskId)?.durable;
-        if (accepted) {
-          const replay = replayDurableDeltas<ChatMessageDto, DurableBotState>(accepted, buffered);
-          get().applyAgentPatch({ type: "durable_snapshot", taskId, snapshot: replay.snapshot });
-          if (replay.gap) throw new Error("增量仍有缺口，请重新打开会话");
+        for (;;) {
+          const atStart = current();
+          // The host read covers everything already emitted when it starts.
+          // Only arrivals during the await can require another read.
+          const covered = flight.buffered.splice(0);
+          flight.overflow = false;
+          const history = await storeContext.getApi()?.agent?.loadTaskHistory?.(taskId);
+          if (!ownsRead()) return;
+          const latest = current();
+          const read = history?.durable;
+          const writerChanged = latest?.epoch !== atStart?.epoch && latest?.epoch !== read?.epoch;
+          const baseline = latest?.epoch !== undefined && (writerChanged
+            || (latest.epoch === read?.epoch && latest.revision >= read.revision)) ? latest : read;
+          if (baseline?.epoch === undefined) throw new Error(history?.historyError ?? "未取得运行会话的实时快照");
+          if (flight.overflow || flight.buffered.some(event => event.epoch !== baseline.epoch)) continue;
+          const replay = replayDurableDeltas<ChatMessageDto, DurableBotState>(baseline, covered.concat(flight.buffered));
+          if (replay.gap && flight.buffered.length) continue;
+          if (replay.gap) throw new Error("实时快照未覆盖已发布的增量");
+          flights.delete(taskId);
+          projectDurableHistory(storeContext, taskId, replay.snapshot);
+          return;
         }
       } catch (error) {
-        storeContext.runtime.durableResyncs.delete(taskId);
-        set(state => ({ tasks: state.tasks.map(task => task.id === taskId ? { ...task, historyError: `会话同步失败：${error instanceof Error ? error.message : String(error)}` } : task) }));
+        if (ownsRead()) set(state => ({ tasks: state.tasks.map(task => task.id === taskId ? { ...task, historyError: `会话同步失败：${error instanceof Error ? error.message : String(error)}` } : task) }));
+      } finally {
+        if (flights.get(taskId) === flight) flights.delete(taskId);
       }
     })();
   };
@@ -73,81 +92,17 @@ export function createAgentProjectionActions(
       }
 
       if (patch.type === "durable_delta") {
+        if (storeContext.runtime.retiredDurableEpochs.get(patch.taskId)?.has(patch.delta.epoch)) return;
         if (storeContext.runtime.durableResyncs.has(patch.taskId)) { resync(patch.taskId, patch.delta); return; }
         const known = get().tasks.find(task => task.id === patch.taskId)?.durable;
-        const result = applyDurableDelta<ChatMessageDto, DurableBotState>(known, patch.delta);
+        const result = applyDurableDelta<ChatMessageDto, DurableBotState>(known?.epoch !== undefined ? known : undefined, patch.delta);
         if (result.kind === "resync") resync(patch.taskId, patch.delta);
         else if (result.kind === "applied") get().applyAgentPatch({ type: "durable_snapshot", taskId: patch.taskId, snapshot: result.snapshot });
         return;
       }
 
       if (patch.type === "durable_snapshot") {
-        const snapshot = patch.snapshot;
-        const known = get().tasks.find((task) => task.id === patch.taskId);
-        if (
-          known?.durable?.epoch === snapshot.epoch &&
-          known.durable.revision >= snapshot.revision
-        )
-          return;
-        const priorRows = new Map(known?.durable?.epoch === snapshot.epoch ? known.durable.messages.map(message => [message.id, message]) : []);
-        const priorMessages = new Map(known?.messages.map(message => [message.id, message]));
-        const messages: ChatMessage[] = snapshot.messages.map((message) => {
-          const previous = priorMessages.get(message.id);
-          if (previous && (priorRows.get(message.id) === message || (message.projectionVersion !== undefined && priorRows.get(message.id)?.projectionVersion === message.projectionVersion))) return previous;
-          return {
-          ...durableMessageToChatMessage(message), executionId: previous?.executionId,
-          interactions: previous?.interactions, artifactIds: previous?.artifactIds, changesCount: previous?.changesCount,
-          };
-        });
-        if (!known?.durable || known.durable.epoch === snapshot.epoch) {
-          const projectedIds = new Set(messages.map(message => message.id));
-          for (const previous of known?.messages ?? []) {
-            if (!previous.interactions?.length || projectedIds.has(previous.id)) continue;
-            const next = messages.findIndex(message => message.createdAt > previous.createdAt);
-            messages.splice(next < 0 ? messages.length : next, 0, { ...previous, streaming: false });
-          }
-        }
-        set((state) => {
-          const prior = state.tasks.find((task) => task.id === patch.taskId);
-          const localInputs = prior?.botPendingSubmissions;
-          const acknowledged = localInputs?.length ? new Set([
-            ...snapshot.messages.map(message => message.inputRequestId),
-            ...snapshot.pendingInputs.map(input => input.inputRequestId),
-          ]) : undefined;
-          const remaining = acknowledged ? localInputs?.filter(input => !acknowledged.has(input.id)) : localInputs;
-          const task: Task = {
-            ...prior,
-            id: patch.taskId,
-            welcomeMode: prior?.welcomeMode,
-            durable: snapshot,
-            historyWindow: prior?.historyWindow?.historyId === snapshot.historyId ? prior.historyWindow : undefined,
-            historyError: undefined,
-            messages,
-            botPendingSubmissions: remaining?.length ? remaining : undefined,
-            title:
-              prior?.title ??
-              taskTitleFromFirstMessage(
-                snapshot.messages.find((m) => m.role === "user")?.text ?? "新任务",
-              ),
-            // 任务时间只取主进程回填的权威活动时间（DB 单调投影），不再从消息时间自己推：
-            // 占位行的 createdAt 不是事实，旧写法会让侧栏出现 epoch 0（“20774 天”）。
-            updatedAt: advanceActivity(prior?.updatedAt, snapshot.activityAt),
-            status: snapshot.busy
-              ? "in_progress"
-              : snapshot.error || snapshot.outcome === "failed"
-                ? "failed"
-                : snapshot.outcome === "completed"
-                  ? "completed"
-                  : "pending",
-          };
-          return {
-            tasks: prior
-              ? state.tasks.map((item) => (item.id === task.id ? task : item))
-              : [task, ...state.tasks],
-          };
-        });
-        if (!known) hydrateTaskMetadataFromDb(storeContext, patch.taskId);
-        get().reconcileTaskMessageArtifacts(patch.taskId);
+        projectDurableHistory(storeContext, patch.taskId, patch.snapshot);
         return;
       }
 

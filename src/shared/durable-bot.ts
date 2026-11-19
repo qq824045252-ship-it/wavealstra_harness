@@ -1,5 +1,5 @@
 import type { ChatMessageDto, ContextUsageDto } from "./agent-ipc";
-import type { DurableStreamDelta } from "../../shared/src/durable-sync";
+import type { DurableHistoryView, DurableStreamDelta } from "../../shared/src/durable-sync";
 
 export type BotToolMode = "native" | "codemode";
 export interface DurableBotSnapshot {
@@ -50,5 +50,6 @@ export interface DurableHistoryBlock {
   messages: ChatMessageDto[];
 }
 
+export type DurableBotHistory = DurableHistoryView<DurableBotSnapshot>;
 export type DurableBotState = Omit<DurableBotSnapshot, "messages" | "epoch" | "revision">;
 export type DurableBotDelta = DurableStreamDelta<ChatMessageDto, DurableBotState>;

@@ -50,6 +50,9 @@ export function createInitRuntimeActions(
       const dispose = (): void => {
         if (!active) return;
         active = false;
+        storeContext.runtime.durableResyncs.clear();
+        storeContext.runtime.taskHistoryReads.clear();
+        storeContext.runtime.retiredDurableEpochs.clear();
         const failures: unknown[] = [];
         try {
           deltas.dispose();

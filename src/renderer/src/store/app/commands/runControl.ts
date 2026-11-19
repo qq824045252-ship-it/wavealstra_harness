@@ -1,3 +1,4 @@
+import { readTaskHistory } from "../runtime/taskHistoryRead";
 import type { ToolStatus } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -12,16 +13,7 @@ export async function abortTask(
   const externalRun = owner?.messages.some(message => message.externalAgent && message.streaming);
   if (!externalRun && (owner?.durable || owner?.botPendingSubmissions?.some(input => input.submitting) || owner?.welcomeMode === "general")) {
     await storeContext.getApi()?.agent?.abort?.(taskId);
-    const history = await storeContext
-      .getApi()
-      ?.agent?.loadTaskHistory?.(taskId);
-    const current = get().tasks.find(task => task.id === taskId)?.durable;
-    if (history?.durable && (!current || current.epoch === owner?.durable?.epoch || current.epoch === history.durable.epoch))
-      get().applyAgentPatch({
-        type: "durable_snapshot",
-        taskId,
-        snapshot: history.durable,
-      });
+    await readTaskHistory(storeContext, taskId);
     return;
   }
 

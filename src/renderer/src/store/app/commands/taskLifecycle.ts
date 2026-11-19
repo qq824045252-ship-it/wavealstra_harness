@@ -22,10 +22,16 @@ export function createTaskLifecycleActions(
   | "restoreTask"
 > {
   const { get, set } = storeContext;
+  const retire = (id: string): void => {
+    storeContext.runtime.deletedTaskRuntimeTombstones.add(id);
+    storeContext.runtime.durableResyncs.delete(id);
+    storeContext.runtime.taskHistoryReads.delete(id);
+    storeContext.runtime.retiredDurableEpochs.delete(id);
+  };
   return {
     deleteTask: (id) => {
       // Mark before the optimistic UI removal / async Main trash call, closing the late-patch race window.
-      storeContext.runtime.deletedTaskRuntimeTombstones.add(id);
+      retire(id);
       const deletingActive = get().activeTaskId === id;
       set((s) => {
         const tasks = s.tasks.filter((x) => x.id !== id);
@@ -93,7 +99,7 @@ export function createTaskLifecycleActions(
       const taskIds = new Set(result.deletedTaskIds);
       const spaceIds = new Set(result.deletedSpaceIds);
       for (const id of taskIds)
-        storeContext.runtime.deletedTaskRuntimeTombstones.add(id);
+        retire(id);
       const deletingActive = taskIds.has(get().activeTaskId ?? "");
       set((state) => {
         const tasks = state.tasks.filter((task) => !taskIds.has(task.id));

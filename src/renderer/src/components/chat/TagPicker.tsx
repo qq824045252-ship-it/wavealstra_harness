@@ -16,6 +16,7 @@ interface Props {
 
 export default function TagPicker({ open, onToggle, onClose }: Props): React.JSX.Element {
   const welcomeMode = useAppStore((state) => state.welcomeMode);
+  const settingsOpen = useAppStore((state) => state.settingsOpen);
   const modePresetId = useAppStore((state) => state.modePresetId);
   const setModePreset = useAppStore((state) => state.setModePreset);
   const task = useAppStore((state) => state.tasks.find((item) => item.id === state.activeTaskId));
@@ -26,6 +27,7 @@ export default function TagPicker({ open, onToggle, onClose }: Props): React.JSX
   useDismissOnClickOutside(open, onClose, anchorRef);
 
   useEffect(() => {
+    if (settingsOpen) return;
     const requested = welcomeMode;
     let cancelled = false;
     void window.api?.agent?.getModeProfile?.(requested).then((profile) => {
@@ -47,7 +49,7 @@ export default function TagPicker({ open, onToggle, onClose }: Props): React.JSX
     return () => {
       cancelled = true;
     };
-  }, [welcomeMode]);
+  }, [welcomeMode, settingsOpen]);
 
   const needsProviderCheck = presets.some((preset) => (preset.providerMcpIds?.length ?? 0) > 0);
   useEffect(() => {

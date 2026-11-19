@@ -73,6 +73,7 @@ function formatRecentTime(ts: number): string {
 
 function HomeHero(): React.JSX.Element {
   const welcomeMode = useAppStore((s) => s.welcomeMode);
+  const settingsOpen = useAppStore((s) => s.settingsOpen);
   const setWelcomeMode = useAppStore((s) => s.setWelcomeMode);
   const modePresetId = useAppStore((s) => s.modePresetId);
   const setModePreset = useAppStore((s) => s.setModePreset);
@@ -94,13 +95,14 @@ function HomeHero(): React.JSX.Element {
   );
 
   useEffect(() => {
+    if (settingsOpen) return;
     let current = true;
     setPresets([]);
     void window.api?.agent?.getModeProfile?.(welcomeMode).then((p) => {
       if (current) setPresets(p?.policy?.presets ?? []);
     });
     return () => { current = false; };
-  }, [welcomeMode]);
+  }, [welcomeMode, settingsOpen]);
 
   // Preset Bar 可用性：仅当 preset 声明了 providerMcpIds 才需要查 MCP（复用现有 mcp:listServers）
   const needsProviderCheck = presets.some((p) => (p.providerMcpIds?.length ?? 0) > 0);
@@ -727,6 +729,7 @@ export default function ChatView(): React.JSX.Element {
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>
+          {task.historyError && <div className="conv-branch-error" role="alert">{task.historyError}</div>}
           {fullHistory.error && <div className="conv-branch-error" role="alert">{fullHistory.error} <button type="button" onClick={fullHistory.retry}>重试</button></div>}
           {branchError && branchError.taskId === task.id && (
             <div className="conv-branch-error" role="alert">

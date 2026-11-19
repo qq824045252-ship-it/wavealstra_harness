@@ -66,6 +66,7 @@ createRoot(document.getElementById('root')!).render(<App />)
   },
   advance() {
     const history = useRemoteStore.getState().histories['t-running']
+    if (history.durable?.epoch === undefined) throw Error('expected live fixture');
     const messages = [{ id: 'latest', role: 'user' as const, text: 'LATEST_UPDATED', createdAt: 1001 }]
     useRemoteStore.setState({ histories: { 't-running': { ...history, messages, durable: { ...history.durable!, messages, revision: 2 } } } })
   },

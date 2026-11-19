@@ -179,6 +179,7 @@ function firstOffset(): number | null {
   appendWindow: (extra: RemoteHistoryMessage[]) => {
     const state = useRemoteStore.getState()
     const current = state.histories[TASK_ID]!
+    if (current.durable?.epoch === undefined) throw Error("expected live fixture");
     const messages = [...current.messages, ...extra]
     useRemoteStore.setState({ histories: { ...state.histories, [TASK_ID]: { ...current, messages,
       durable: { ...current.durable!, messages, revision: current.durable!.revision + 1 } } } })
@@ -187,6 +188,7 @@ function firstOffset(): number | null {
   rollWindow: (nextHistoryBefore: number) => {
     const state = useRemoteStore.getState()
     const current = state.histories[TASK_ID]!
+    if (current.durable?.epoch === undefined) throw Error("expected live fixture");
     useRemoteStore.setState({ histories: { ...state.histories, [TASK_ID]: { ...current,
       durable: { ...current.durable!, historyBefore: nextHistoryBefore, revision: current.durable!.revision + 1 } } } })
   },

@@ -596,6 +596,7 @@ async function main(): Promise<void> {
     durableSnapshotsRetainInteractionCards,
     durableActivityTimeNeverRegresses,
     durableRevisionGapReadsOnceAndReplaysBufferedUpdates,
+    durableReadsFollowTheCurrentWriter,
     sidebarSelectorSkipsUnchangedTaskRederivation,
     artifactReconcileNoOpKeepsStoreState,
     lateModelCatalogKeepsUserSelection,
@@ -814,14 +815,91 @@ async function durableRevisionGapReadsOnceAndReplaysBufferedUpdates(): Promise<v
   assert.equal(api.getState().tasks[0].messages[0], stableRow, "unchanged message conversion is reused across a delta");
   api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(3), snapshot(4)) });
   api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(4), snapshot(5)) });
+  api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(6), snapshot(7)) });
+  api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(5), snapshot(6)) });
   assert.equal(reads, 1, "a gap starts one explicit full-history read");
   assert.equal(api.getState().tasks[0].durable?.revision, 2, "missing revisions cannot be applied approximately");
   history.resolve({ messages: snapshot(4).messages, durable: snapshot(4) });
   await tick();
-  assert.equal(api.getState().tasks[0].durable?.revision, 5, "events received during resynchronization are replayed after the snapshot");
+  assert.equal(api.getState().tasks[0].durable?.revision, 7, "out-of-order events received during resynchronization are replayed after the snapshot");
   assert.equal(api.getState().tasks[0].messages.at(-1)?.finalBlocks?.[0].type, "text");
   api.getState().applyAgentPatch({ type: "durable_delta", taskId: "task", delta: delta(snapshot(3), snapshot(4)) });
   assert.equal(reads, 1, "replayed stale packets are ignored");
+}
+
+async function durableReadsFollowTheCurrentWriter(): Promise<void> {
+  const requests: ReturnType<typeof deferred<TaskHistoryDto>>[] = [];
+  const fixtureApi = {
+    db: { listSpaces: async () => [], listTasks: async () => [{ id: "a", title: "A", updatedAt: 1 }], getSoul: async () => null },
+    agent: { listSkills: async () => [], listModels: async () => [], loadTaskHistory: () => {
+      const request = deferred<TaskHistoryDto>(); requests.push(request); return request.promise;
+    } },
+  };
+  const { useAppStore: api, context } = store(fixtureApi);
+  const row = (epoch: string, revision: number): DurableBotSnapshot => ({
+    backend: "pi-durable", historyId: "branch", epoch, revision, conversationId: "1", toolMode: "native", busy: true,
+    queued: 0, pendingInputs: [], compacting: false, messages: [{ id: "answer", role: "assistant", text: epoch + revision, createdAt: 2 }],
+  });
+  const deliver = (epoch: string, revision: number) => {
+    const next = row(epoch, revision);
+    const { messages, revision: _seq, epoch: _epoch, ...state } = next;
+    api.getState().applyAgentPatch({ type: "durable_delta", taskId: "a", delta: durableDelta(row(epoch, revision - 1), next, state) });
+  };
+  const respond = (n: number, durable: DurableBotSnapshot) => requests[n].resolve({ durable, messages: durable.messages });
+  const push = (snapshot: DurableBotSnapshot) => api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: "a", snapshot });
+  const visible = () => api.getState().tasks.find(task => task.id === "a")?.durable?.messages.at(-1)?.text;
+  api.setState({ tasks: [task("a"), task("b")], activeTaskId: "a" });
+  push(row("old", 1));
+  deliver("old", 3);
+  deliver("new", 2); // host already captured the old snapshot; the new epoch's first full push was missed
+  respond(0, row("old", 3));
+  await tick();
+  assert.equal(requests.length, 2, "an epoch arriving after a read began needs its own authority check");
+  respond(1, row("new", 2));
+  await tick();
+  assert.equal(visible(), "new2");
+  push(row("old", 9));
+  deliver("old", 10);
+  deliver("new", 3);
+  assert.equal(visible(), "new3", "retired full and delta packets cannot roll back the replacement writer");
+  assert.equal(requests.length, 2);
+
+  api.getState().setActiveTask("a"); // held activation response from the previous writer
+  push(row("reopened", 1));
+  respond(2, row("new", 7));
+  await tick();
+  assert.equal(visible(), "reopened1");
+
+  const seen: Array<[string | null, string | undefined]> = [];
+  const unsubscribe = api.subscribe(state => seen.push([state.activeTaskId, visible()]));
+  const binding = { context, api: fixtureApi as unknown as NonNullable<Window["api"]>, isActive: () => true, addCleanup: () => {} };
+  await loadRuntimeBootstrap(binding, { mapTaskRowToTask, recomputeEffectiveArchived, emptySoul: EMPTY_SOUL });
+  assert.equal(requests.length, 4, "rebind refreshes the selected history even without another event");
+  respond(3, row("reopened", 4));
+  await tick();
+  unsubscribe();
+  assert(seen.every(([id, text]) => id === "a" && !!text), "rebind must preserve selection and published rows");
+  assert.equal(visible(), "reopened4");
+
+  api.getState().setActiveTask("a");
+  const { epoch, revision, ...archive } = row("viewer", 1);
+  deliver("reopened", 5);
+  requests[4].resolve({ messages: archive.messages, durable: archive });
+  await tick();
+  assert.equal(visible(), "reopened5", "late passive history cannot replace a live revision");
+  deliver("reopened", 6);
+  assert.equal(visible(), "reopened6");
+
+  deliver("reopened", 8);
+  for (let n = 9; n <= 300; n++) deliver("reopened", n);
+  respond(5, row("reopened", 8));
+  await tick();
+  assert.equal(requests.length, 7, "a saturated buffer requires a fresh authoritative read");
+  respond(6, row("reopened", 300));
+  await tick();
+  deliver("reopened", 301);
+  assert.equal(visible(), "reopened301");
+  assert.equal(requests.length, 7);
 }
 
 void main().catch((error) => {

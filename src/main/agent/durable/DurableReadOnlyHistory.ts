@@ -12,8 +12,8 @@ export async function readDurableReadOnlyHistory(input: {
     models: input.models, readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
     const block = input.beforeEntryId === undefined ? undefined : await runtime.loadHistoryWindow(input.beforeEntryId);
-    const snapshot = runtime.snapshot;
-    return { messages: block?.messages ?? snapshot.messages, durable: snapshot, cwd: input.cwd,
+    const { epoch: _epoch, revision: _revision, ...archive } = runtime.snapshot;
+    return { messages: block?.messages ?? archive.messages, durable: archive, cwd: input.cwd,
       ...(block ? { page: { historyId: block.historyId, before: block.before, after: block.after } } : {}) };
   } finally { await runtime.close(); }
 }

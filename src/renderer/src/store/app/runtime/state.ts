@@ -10,7 +10,12 @@ export interface AppRuntimeState {
   pendingTaskMetadataHydrations: Set<string>;
   externalHistoryHydrations: Map<string, number>;
   externalHistoryHydrationRequests: Map<string, { isActive(): boolean }>;
-  durableResyncs: Map<string, import("../../../../../shared/durable-bot").DurableBotDelta[]>;
+  retiredDurableEpochs: Map<string, Set<string>>;
+  taskHistoryReads: Map<string, symbol>;
+  durableResyncs: Map<string, {
+    buffered: import("../../../../../shared/durable-bot").DurableBotDelta[];
+    overflow: boolean;
+  }>;
   moveChain: Promise<void>;
   idCounter: number;
   renderHydration: RenderHydration | null;
@@ -25,6 +30,8 @@ export function createAppRuntimeState(): AppRuntimeState {
     pendingTaskMetadataHydrations: new Set(),
     externalHistoryHydrations: new Map(),
     externalHistoryHydrationRequests: new Map(),
+    retiredDurableEpochs: new Map(),
+    taskHistoryReads: new Map(),
     durableResyncs: new Map(),
     moveChain: Promise.resolve(),
     idCounter: 0,

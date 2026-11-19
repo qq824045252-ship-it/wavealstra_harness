@@ -1,3 +1,4 @@
+import { readTaskHistory } from "./taskHistoryRead";
 import type { SpaceDto, TaskDto } from "../../../../../shared/agent-ipc";
 import type { ModelInfoDto } from "../../../../../shared/agent-ipc";
 import { normalizeCodeTheme } from "../../../../../shared/code-theme";
@@ -143,14 +144,17 @@ const mappedSpaces = helpers.recomputeEffectiveArchived(
     effectiveArchived: space.effectiveArchived ?? Boolean(space.archived),
   })),
 );
-const mappedTasks = (taskRows as TaskDto[]).map((row) =>
-  helpers.mapTaskRowToTask(row, {
-    enabledModelIds,
-    defaultModelId,
-    permissionModeDefault: appSettings?.permissionMode ?? "default",
+const current = binding.context.get();
+const priorTasks = new Map(current.tasks.map(task => [task.id, task]));
+const mappedTasks = (taskRows as TaskDto[]).map(row => {
+  const metadata = helpers.mapTaskRowToTask(row, {
+    enabledModelIds, defaultModelId, permissionModeDefault: appSettings?.permissionMode ?? "default",
     taskConnectorIds: appSettings?.taskConnectorIds,
-  }),
-);
+  });
+  const prior = priorTasks.get(row.id);
+  return prior ? { ...prior, ...metadata, messages: prior.messages, status: prior.durable ? prior.status : metadata.status } : metadata;
+});
+const selected = mappedTasks.find(task => task.id === current.activeTaskId);
 set({
   spaces: mappedSpaces,
   projects,
@@ -160,20 +164,24 @@ set({
     .map((task) => task.id),
   soul: soul ?? helpers.emptySoul,
   models: mappedModels,
-  activeModelId: defaultModelId,
+  activeModelId: selected ? current.activeModelId : defaultModelId,
   defaultModelId,
   modelPreferences: appSettings?.modelPreferences ?? {},
-  contextWindowTokens:
+  contextWindowTokens: selected ? current.contextWindowTokens :
     mappedModels.find((model) => model.id === defaultModelId)
       ?.contextWindow || 128_000,
-  permissionMode: appSettings?.permissionMode ?? "default",
+  permissionMode: selected ? current.permissionMode : appSettings?.permissionMode ?? "default",
   conversationBranchEnabled:
     appSettings?.conversationBranchEnabled === true,
-  activeTaskId: null,
-  panelOpen: false,
-  artifactTabs: [],
-  activeArtifactId: null,
+  ...(!selected ? { activeTaskId: null, panelOpen: false, artifactTabs: [], activeArtifactId: null } : {}),
 });
+if (selected?.durable) {
+  // Rebinding can miss the last delta even if no further event arrives.
+  void readTaskHistory(binding.context, selected.id).catch(error => {
+    if (isActive()) set(state => ({ tasks: state.tasks.map(task => task.id === selected.id
+      ? { ...task, historyError: String(error) } : task) }));
+  });
+}
 markStartup("bootstrapApplied");
   // Two frames is the earliest proxy for "the task list can be clicked". The window is visible
   // during measurement, so this observes a real frame; renderer-loaded alone is never interactive.

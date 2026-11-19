@@ -192,7 +192,7 @@ export interface RemoteHistoryMessage {
 }
 
 export interface RemoteTaskHistory {
-  durable?: RemoteDurableSnapshot
+  durable?: import('./durable-sync').DurableHistoryView<RemoteDurableSnapshot>
   taskId: string
   messages: RemoteHistoryMessage[]
   /**

@@ -2171,7 +2171,7 @@ export interface SessionHistoryRecoveryDto {
 export type TaskHistoryTarget = number | { aroundEntryId: number } | { afterEntryId: number };
 
 export interface TaskHistoryDto {
-  durable?: import("./durable-bot").DurableBotSnapshot;
+  durable?: import("./durable-bot").DurableBotHistory;
   messages: ChatMessageDto[];  /**
    * 带 beforeEntryId 读取「更早历史块」时的块元数据；顶层 messages 即该块消息，
    * historyId 标识持久存储和分支；epoch 只标识实时传输实例。

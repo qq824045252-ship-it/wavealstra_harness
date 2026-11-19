@@ -1127,7 +1127,7 @@ async function syncTaskHistory(taskId: string, beforeEntryId?: number): Promise<
   const revision = (taskSyncRevisions.get(taskId) ?? 0) + 1
   taskSyncRevisions.set(taskId, revision)
   const eventRevision = taskEventRevisions.get(taskId) ?? 0
-  const initialEpoch = useRemoteStore.getState().histories[taskId]?.durable?.epoch
+  const initial = useRemoteStore.getState().histories[taskId]?.durable
   const [history, runtime] = await Promise.all([client.history(taskId, beforeEntryId), client.runtime(taskId)])
   if (useRemoteStore.getState().client !== client || taskSyncRevisions.get(taskId) !== revision) return
   historyFetchedAt.set(taskId, Date.now())
@@ -1139,8 +1139,8 @@ async function syncTaskHistory(taskId: string, beforeEntryId?: number): Promise<
     const newer = (taskEventRevisions.get(taskId) ?? 0) !== eventRevision
     if (history.durable) {
       const current = state.histories[taskId]?.durable;
-      if (current && current.epoch !== initialEpoch && current.epoch !== history.durable.epoch) return state;
-      if (current?.epoch === history.durable.epoch && current.revision > history.durable.revision) return state;
+      if (current !== initial && (history.durable.epoch === undefined || current?.epoch !== history.durable.epoch)) return state;
+      if (history.durable.epoch !== undefined && current?.epoch === history.durable.epoch && current.revision > history.durable.revision) return state;
       return {
         histories: { ...state.histories, [taskId]: history },
         live: { ...state.live, [taskId]: {} },
@@ -1221,7 +1221,8 @@ function receiveDurableDelta(taskId: string, delta: RemoteDurableDelta): void {
   const state = useRemoteStore.getState();
   const queue = durableResyncs.get(taskId);
   if (queue?.client === state.client) { queue.buffered.push(delta); if (queue.buffered.length > 256) queue.buffered.shift(); return; }
-  const applied = applyDurableDelta<RemoteHistoryMessage, RemoteDurableState>(state.histories[taskId]?.durable, delta);
+  const known = state.histories[taskId]?.durable;
+  const applied = applyDurableDelta<RemoteHistoryMessage, RemoteDurableState>(known?.epoch !== undefined ? known : undefined, delta);
   if (applied.kind === 'applied') { projectDurableSnapshot(taskId, applied.snapshot); return; }
   if (applied.kind === 'stale' || !state.client) return;
   const request = { client: state.client, buffered: [delta] };
@@ -1231,7 +1232,7 @@ function receiveDurableDelta(taskId: string, delta: RemoteDurableDelta): void {
     try {
       const [history, runtime] = await Promise.all([request.client.history(taskId), request.client.runtime(taskId)]);
       if (useRemoteStore.getState().client !== request.client || durableResyncs.get(taskId) !== request) return;
-      if (!history.durable) throw new Error('未取得持久会话的完整状态');
+      if (history.durable?.epoch === undefined) throw new Error('未取得运行会话的实时快照');
       const currentEpoch = useRemoteStore.getState().histories[taskId]?.durable?.epoch;
       if (currentEpoch === initialEpoch || currentEpoch === history.durable.epoch) projectDurableSnapshot(taskId, history.durable);
       useRemoteStore.setState(current => {
@@ -1242,7 +1243,7 @@ function receiveDurableDelta(taskId: string, delta: RemoteDurableDelta): void {
       });
       durableResyncs.delete(taskId);
       const accepted = useRemoteStore.getState().histories[taskId]?.durable;
-      if (accepted) {
+      if (accepted?.epoch !== undefined) {
         const replay = replayDurableDeltas<RemoteHistoryMessage, RemoteDurableState>(accepted, request.buffered);
         projectDurableSnapshot(taskId, replay.snapshot);
         if (replay.gap) throw new Error('增量仍有缺口，请重新打开会话');

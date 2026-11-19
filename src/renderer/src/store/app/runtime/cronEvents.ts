@@ -1,3 +1,4 @@
+import { readTaskHistory } from "./taskHistoryRead";
 import { normalizeSingleExpertId } from "../../../../../shared/expert-id";
 import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import type { ChatMessage, Task } from "../../../types";
@@ -103,60 +104,61 @@ export function bindCronEvents(
             );
           if (needHistory) {
             try {
-              const history = await api.agent?.loadTaskHistory?.(taskId);
-              if (!isActive() || !history?.messages?.length) return;
-              const restored: ChatMessage[] = history.messages.map(
-                (message) => ({
-                  id: message.id,
-                  role: message.role,
-                  createdAt: message.createdAt,
-                  modelName: message.modelName,
-                  externalAgent: message.externalAgent,
-                  durationLabel: formatDuration(message.durationMs),
-                  entryId: message.entryId,
-                  attachments: message.attachments,
-                  blocks:
-                    message.role === "user"
-                      ? [{ type: "text" as const, text: message.text }]
-                      : [
-                          ...(message.thinking
-                            ? [
-                                {
-                                  type: "thinking" as const,
-                                  text: message.thinking,
-                                },
-                              ]
-                            : []),
-                          ...(message.tools ?? []).map((tool) => ({
-                            type: "tool" as const,
-                            toolCall: { ...tool },
-                          })),
-                        ],
-                  finalBlocks:
-                    message.role === "assistant" && message.text
-                      ? [{ type: "text" as const, text: message.text }]
-                      : undefined,
-                  artifactIds: message.artifactIds,
-                  streaming: false,
-                }),
-              );
-              set((state) => ({
-                tasks: state.tasks.map((item) =>
-                  item.id === taskId
-                    ? {
-                        ...item,
-                        messages: restored,
-                        sessionFile: history.sessionFile ?? item.sessionFile,
-                        cwd: history.cwd ?? item.cwd,
-                        title:
-                          row.title && row.title !== "定时任务"
-                            ? row.title
-                            : item.title,
-                        updatedAt: Date.now(),
-                      }
-                    : item,
-                ),
-              }));
+              await readTaskHistory(binding.context, taskId, history => {
+                if (!isActive() || history.durable || !history.messages.length) return;
+                const restored: ChatMessage[] = history.messages.map(
+                  (message) => ({
+                    id: message.id,
+                    role: message.role,
+                    createdAt: message.createdAt,
+                    modelName: message.modelName,
+                    externalAgent: message.externalAgent,
+                    durationLabel: formatDuration(message.durationMs),
+                    entryId: message.entryId,
+                    attachments: message.attachments,
+                    blocks:
+                      message.role === "user"
+                        ? [{ type: "text" as const, text: message.text }]
+                        : [
+                            ...(message.thinking
+                              ? [
+                                  {
+                                    type: "thinking" as const,
+                                    text: message.thinking,
+                                  },
+                                ]
+                              : []),
+                            ...(message.tools ?? []).map((tool) => ({
+                              type: "tool" as const,
+                              toolCall: { ...tool },
+                            })),
+                          ],
+                    finalBlocks:
+                      message.role === "assistant" && message.text
+                        ? [{ type: "text" as const, text: message.text }]
+                        : undefined,
+                    artifactIds: message.artifactIds,
+                    streaming: false,
+                  }),
+                );
+                set((state) => ({
+                  tasks: state.tasks.map((item) =>
+                    item.id === taskId
+                      ? {
+                          ...item,
+                          messages: restored,
+                          sessionFile: history.sessionFile ?? item.sessionFile,
+                          cwd: history.cwd ?? item.cwd,
+                          title:
+                            row.title && row.title !== "定时任务"
+                              ? row.title
+                              : item.title,
+                          updatedAt: Date.now(),
+                        }
+                      : item,
+                  ),
+                }));
+              });
             } catch {
               /* ignore history hydrate errors */
             }

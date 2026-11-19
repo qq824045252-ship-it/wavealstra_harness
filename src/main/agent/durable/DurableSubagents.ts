@@ -124,6 +124,18 @@ export async function stopDurableSubagentsForModelScopeChange(): Promise<void> {
   await Promise.allSettled([...activeChildren.values()].map(child => child.cancel()));
 }
 
+/**
+ * Cancel this task's live children. Native abort reaches a child's conversation only while the
+ * parent task that owns it is reachable, so a stop issued after the parent turn already ended
+ * leaves the children running: their conversations stay live and every later fork/idle check
+ * keeps seeing work. Stopping them explicitly is what makes "stop" mean the whole subtree.
+ */
+export async function stopDurableSubagentsForTask(taskId: string): Promise<void> {
+  await Promise.allSettled([...activeChildren.values()]
+    .filter(child => child.taskId === taskId)
+    .map(child => child.cancel()));
+}
+
 /** This index is a view of live Durable calls. It never schedules or restores work. */
 export const durableSubagentIpcBackend = {
   // 作用域必须按 taskId 过滤：面板只应看到当前任务的实例

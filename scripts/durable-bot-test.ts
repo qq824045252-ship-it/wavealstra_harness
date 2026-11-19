@@ -19,6 +19,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { clearResults, getResult } from "../src/main/capabilities/web-access/storage";
 import { generalModeConfiguration, emptyModePolicy, artifactVisibleForDisplay } from "../src/shared/mode-profile";
+import { createAppStore } from "../src/renderer/src/store/app/createAppStore";
 import { isActivityTime } from "../shared/src/activity-time";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-test-"));
@@ -51,6 +52,51 @@ assert.equal(policy.presets?.[0].mcpPolicy, undefined);
 // Bot 产物策略 soft + unfiltered：任何产物都不隐藏（含 .py；不再有 CAD/FreeCAD 临时脚本特判）
 assert(artifactVisibleForDisplay("scripts/generated/report.py", policy.artifactPolicy));
 assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.pptd"]));
+
+// Drop an actual emitted revision between the native writer and the desktop store.
+{
+  const cwd = join(root, "desktop-sync"); await mkdir(cwd);
+  const db = new AppDatabase(join(cwd, "app.db"));
+  const taskId = "gap";
+  db.upsertTask({ id: taskId, title: taskId, cwd, modelId: "fixture/fixture", updatedAt: 1 });
+  let reads = 0, drop = false;
+  const desktop = createAppStore({ getApi: () => ({ agent: {
+    loadTaskHistory: async (id: string) => { reads++; return service.history(id, undefined, "current"); },
+  } }) as Window["api"] });
+  const service = new DurableBotService({ db, agentDir: cwd, mcpDir: join(cwd, "mcp"), models: { ...models(() => text("actual reply")), refresh: async () => ({}), getAvailable: async () => [model] },
+    resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native", defaultModel: () => "fixture/fixture",
+    emit: patch => { if (!drop) desktop.useAppStore.getState().applyAgentPatch(patch); } });
+  const drain = async () => {
+    const deadline = Date.now() + 5000;
+    while (desktop.context.runtime.durableResyncs.size) {
+      assert(Date.now() < deadline, "desktop resync did not settle");
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  };
+  try {
+    await service.prompt({ taskId, text: "actual question", userMessageId: "q", assistantMessageId: "a" }, false);
+    await drain();
+    const writer = await service.inspect(taskId);
+    assert(writer);
+    drop = true; await service.refresh(taskId); drop = false;
+    const before = reads;
+    for (let n = 0; n < 5; n++) { await service.refresh(taskId); await drain(); }
+    const projected = desktop.useAppStore.getState().tasks.find(task => task.id === taskId)?.durable;
+    console.log("desktop gap", { reads: reads - before, writer: writer.epoch, received: projected?.epoch });
+    assert.equal(reads - before, 1, "five delivered revisions after one gap should need one read");
+    assert.equal(projected?.epoch, writer.epoch);
+    assert.equal(projected?.revision, (await service.history(taskId, undefined, "current")).durable?.revision);
+    assert.equal((await service.history(taskId)).durable?.epoch, undefined, "stored reads beside a writer have no stream cursor");
+    assert.equal(projected?.messages.at(-1)?.text, "actual reply");
+    await service.release(taskId);
+    const archive = await service.history(taskId, undefined, "current");
+    assert.equal(archive.durable?.epoch, undefined, "a closed session has history but no live stream cursor");
+    assert.equal(archive.messages.at(-1)?.text, "actual reply");
+    const reopened = await service.inspect(taskId);
+    assert(reopened && reopened.epoch !== writer.epoch && reopened.historyId === writer.historyId);
+    assert.equal(desktop.useAppStore.getState().tasks[0].durable?.epoch, reopened.epoch);
+  } finally { await service.close(); db.close(); }
+}
 
 for (const mode of ["native", "codemode"] as const) {
   const cwd = join(root, mode); await mkdir(cwd);

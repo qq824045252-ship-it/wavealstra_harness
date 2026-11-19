@@ -1484,7 +1484,7 @@ function registerIpc(): void {
   );
   ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: import("../shared/agent-ipc").TaskHistoryTarget) => {
     const [nativeHistory, externalHistory] = await Promise.all([
-      agentService.loadTaskHistory(taskId, beforeEntryId),
+      agentService.loadTaskHistory(taskId, beforeEntryId, "current"),
       Promise.resolve(externalAgentRuntime?.history(taskId) ?? { messages: [], runs: [] }),
     ]);
     if (!externalHistory.messages.length) return nativeHistory;

@@ -112,7 +112,7 @@ export async function verifyHistoryUi() {
   await act(async () => history.at(-1)!.reply.resolve({ messages: [], page: { historyId: "regenerated-branch" } }));
   assert.equal(await jump, false, "branch changes reject even matching numeric entry IDs");
   await act(async () => { jump = controller().loadAround(5); });
-  await act(async () => { useAppStore.setState(state => ({ tasks: state.tasks.map(task => task.id === "B" && task.durable
+  await act(async () => { useAppStore.setState(state => ({ tasks: state.tasks.map(task => task.id === "B" && task.durable?.epoch !== undefined
     ? { ...task, durable: { ...task.durable, epoch: "reopened-runtime" } } : task) })); });
   await act(async () => history.at(-1)!.reply.resolve({ messages: [], page: { historyId: "persistent-branch" } }));
   assert.equal(await jump, false, "an in-flight response cannot cross a live runtime replacement");

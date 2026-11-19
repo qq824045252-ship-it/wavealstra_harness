@@ -209,7 +209,7 @@ export interface Task {
     { kind: "prepend"; seed: number } | { kind: "focus"; after?: number }
   );
   expertBinding?: import("../../shared/expert-binding").TaskExpertBindingDto;
-  durable?: import("../../shared/durable-bot").DurableBotSnapshot;
+  durable?: import("../../shared/durable-bot").DurableBotHistory;
   /** Transport/configuration errors before Durable accepts an input, not execution state. */
   botInputError?: string;
   /** Local transport feedback only, never persisted as a message or execution state. */

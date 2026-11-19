@@ -34,6 +34,7 @@ import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCa
 import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
+import { stopDurableSubagentsForTask } from "./DurableSubagents";
 import { durableContentText } from "./DurableHistoryProjection";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
@@ -50,6 +51,11 @@ import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, t
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
 type AdmissionMark = (stage: string) => void;
+/**
+ * How long a delete waits for its own stop. Background abort has no signal to cancel it, so a child
+ * that stops responding would otherwise pin the delete admission forever with no error surfaced.
+ */
+const STOP_BEFORE_DELETE_TIMEOUT_MS = 10_000;
 class DurableToolAssemblyError extends Error {
   constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause), { cause }); }
 }
@@ -669,7 +675,7 @@ export class DurableBotService {
     finally { mark("finished"); console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps })); }
   }
 
-  private trackAdmission<T>(taskId: string, operation: () => Promise<T>, mark?: AdmissionMark): Promise<T> {
+  private trackAdmission<T>(taskId: string, operation: () => Promise<T>, mark?: AdmissionMark, register?: (self: Promise<T>) => void): Promise<T> {
     const prior = this.admissionTails.get(taskId) ?? Promise.resolve();
     const pending = prior.catch(() => {}).then(async () => {
       mark?.("queue");
@@ -677,6 +683,9 @@ export class DurableBotService {
       mark?.("preopen");
       return operation();
     });
+    // Hand the caller its own admission before the body can run, so a stop issued from inside it can
+    // exclude itself instead of waiting on the promise that is waiting on it.
+    register?.(pending);
     this.admissionTails.set(taskId, pending);
     const admissions = this.admissions.get(taskId) ?? new Set();
     admissions.add(pending); this.admissions.set(taskId, admissions);
@@ -688,7 +697,15 @@ export class DurableBotService {
   }
 
   async deleteUserMessage(request: AgentDeleteUserMessageRequest): Promise<number> {
-    return this.trackAdmission(request.taskId, async () => {
+    // The admission is registered inside `trackAdmission` before the operation body can run, so the
+    // body cannot learn its own promise by reading a local assigned afterwards: `self` would still be
+    // undefined and the stop would wait for the very admission that is calling it.
+    const own: { promise?: Promise<unknown> } = {};
+    const operation = this.trackAdmission(request.taskId, async () => {
+      // Stop inside this admission so the delete owns its own quiescence. The renderer's stop is a
+      // separate, racing IPC call: with 9 subagent children live it only reaches the root branch and
+      // leaves the children running, which is what made the retry loop hang without any error.
+      await this.stopWithinAdmission(request.taskId, own.promise);
       const open = await this.open(request.taskId);
       const selected = await findDurableUserEntry(open.runtime.conversation, request, context);
       const timestamp = selected.entry.model?.find(message => message.role === "user")?.timestamp ?? 0;
@@ -696,7 +713,43 @@ export class DurableBotService {
       await this.release(request.taskId);
       await this.open(request.taskId);
       return timestamp;
+    }, undefined, self => { own.promise = self; });
+    return operation;
+  }
+
+  /**
+   * Cancellation for a caller that already holds this task's admission. Native abort covers the
+   * root conversation and, with `background`, every conversation reachable through a live task —
+   * including the one each subagent child owns, so the subtree settles before the fork proceeds.
+   */
+  private async stopWithinAdmission(taskId: string, exclude?: Promise<unknown>): Promise<void> {
+    await Promise.allSettled([...(this.admissions.get(taskId) ?? [])].filter(admission => admission !== exclude));
+    await stopDurableSubagentsForTask(taskId);
+    // `trackAdmission` already ran `open(taskId, true)` before this body, so the runtime is bound.
+    // Reuse it: going through withRecovery/open here would spend a second open on the same task and,
+    // if the stop never settles, leave that open occupying `rebinding` for every later caller.
+    const open = this.opened.get(taskId);
+    if (!open) return;
+    try {
+      // Background abort resolves only once every reached task is terminal, and this service's
+      // context carries no abort signal to cut that wait. A child that never settles would hold the
+      // delete open forever — the "deleting…" state that neither finished nor reported an error — so
+      // the wait is bounded and the fork below decides on the state it actually reached.
+      const stopped = await this.withinStopBudget("delete stop", () => open.runtime.abort());
+      if (!stopped) console.warn(`[Durable] Stop before delete is still settling for ${taskId}`);
+    } catch (error) { console.warn(`[Durable] Stop before delete failed for ${taskId}`, error); }
+    finally { this.options.onRelease?.(taskId); }
+  }
+
+  /** Run a stop under a deadline and report whether it settled, without leaving a shared slot behind. */
+  private async withinStopBudget(label: string, stop: () => Promise<unknown>): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<boolean>(resolve => {
+      timer = setTimeout(() => { console.warn(`[Durable] ${label} did not settle within ${STOP_BEFORE_DELETE_TIMEOUT_MS}ms`); resolve(false); }, STOP_BEFORE_DELETE_TIMEOUT_MS);
     });
+    try {
+      return await Promise.race([stop().then(() => true), deadline]);
+    } finally { clearTimeout(timer); }
   }
 
   async regenerate(request: AgentRegenerateRequest): Promise<AgentRegenerateResult> {
@@ -805,14 +858,21 @@ export class DurableBotService {
     return admissionOnly || !accepted.receipt ? accepted : this.submissionStatus(accepted.receipt, true);
   }
 
-  async history(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
+  async history(taskId: string, beforeEntryId?: TaskHistoryTarget, source: "stored" | "current" = "stored"): Promise<TaskHistoryDto> {
     if (!this.binding(taskId) && !this.options.db.getTask(taskId)?.sessionFile) return { messages: [] };
     try {
       // Opening history is inspection, not permission to resume pending tasks, migrate a
       // Durable journal, repair configuration, or assemble execution tools. A legacy Pi
       // sessionFile has no Durable binding yet and retains its separate import path below.
       if (this.binding(taskId)) {
-        const history = await this.passiveHistory(taskId, beforeEntryId);
+        // Read the very projection used by onSnapshot to produce deltas. Opening
+        // another writer (or refreshing this one) would itself produce events.
+        const current = source === "current" && beforeEntryId === undefined;
+        if (current && this.opening.has(taskId)) await this.opening.get(taskId)?.catch(() => {});
+        const snapshot = current ? this.opened.get(taskId)?.runtime.snapshot : undefined;
+        const history = snapshot
+          ? { durable: snapshot, messages: snapshot.messages, cwd: this.binding(taskId)?.cwd }
+          : await this.passiveHistory(taskId, beforeEntryId);
         const modelId = this.options.db.getTask(taskId)?.modelId;
         const modelRepair = this.opened.get(taskId)?.modelRepair;
         return { ...history, ...(modelId ? { modelId } : {}), ...(modelRepair ? { modelRecovery: modelRepair } : {}) };
@@ -930,11 +990,23 @@ export class DurableBotService {
     } while (cursor);
     return messages;
   }
-  async abort(taskId: string): Promise<void> {
+  async abort(taskId: string, exclude?: Promise<unknown>): Promise<void> {
     // Stop orders after any already-started input admission, then native abort owns cancellation.
-    await Promise.allSettled([...(this.admissions.get(taskId) ?? [])]);
-    try { if (this.binding(taskId)) await this.withRecovery(taskId, open => open.runtime.abort()); }
-    finally { this.options.onRelease?.(taskId); }
+    // `exclude` is the caller's own admission: a delete attempts its stop from inside its own
+    // admission, so waiting for the whole set would wait for itself forever.
+    await Promise.allSettled([...(this.admissions.get(taskId) ?? [])].filter(admission => admission !== exclude));
+    // Native abort stops the root branch; the children are separate conversations and keep running
+    // unless they are cancelled here, which is why "stop" used to leave them occupying the task.
+    await stopDurableSubagentsForTask(taskId);
+    try {
+      if (!this.binding(taskId)) return;
+      const open = await this.openBound(taskId);
+      // A stop that outran its budget has still been requested: the native abort keeps settling in
+      // the background, and waiting on it here would hold the caller's admission indefinitely.
+      if (!await this.withinStopBudget(`stop ${taskId}`, () => open.runtime.abort())) {
+        console.warn(`[Durable] Stop for ${taskId} is still settling`);
+      }
+    } finally { this.options.onRelease?.(taskId); }
   }
   async compact(taskId: string): Promise<DurableCompactionOutcome> {
     return await this.trackAdmission(taskId, () => this.withRecovery(taskId, open => open.runtime.compact()));

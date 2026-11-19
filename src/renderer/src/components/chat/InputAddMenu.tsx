@@ -250,6 +250,7 @@ export default function InputAddMenu({
   const refreshConnectors = useAppStore((s) => s.refreshConnectors);
   const installConnector = useAppStore((s) => s.installConnector);
   const welcomeMode = useAppStore((s) => contextMode ? "working" : s.welcomeMode);
+  const settingsOpen = useAppStore((s) => s.settingsOpen);
   const modePresetId = useAppStore((s) => contextMode ? null : s.modePresetId);
   const setPage = useAppStore((s) => s.setPage);
   const hookArtifacts = useActiveTaskArtifacts();
@@ -263,13 +264,17 @@ export default function InputAddMenu({
   const [skillFilterOn, setSkillFilterOn] = useState(true);
 
   useEffect(() => {
+    if (settingsOpen) return;
+    let current = true;
     void window.api?.agent?.getModeProfile?.(welcomeMode).then((p) => {
+      if (!current) return;
       setModeProfile(p);
       setRecommendedExpertIds(p?.policy?.recommendedExpertIds ?? []);
       setSkillPolicy(p?.policy?.skillPolicy ?? emptyModePolicy().skillPolicy);
       setMcpPolicy(p?.policy?.mcpPolicy ?? emptyModePolicy().mcpPolicy);
     });
-  }, [welcomeMode]);
+    return () => { current = false; };
+  }, [welcomeMode, settingsOpen]);
 
   // 与 HomeHero 一致：任务已锁定（有消息/session）用任务 preset，否则用全局 selection。
   // 复用 shared 纯函数合成 effective policy，保证与 createSession 装配完全一致（B 项修复）。

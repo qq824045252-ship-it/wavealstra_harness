@@ -26,11 +26,11 @@ export async function verifyHistoryNavigation(root: string, cwd: string) {
       await runtime.close();
       const first = await readDurableReadOnlyHistory(options);
       assert.equal(first.durable?.historyId, snapshot.historyId);
-      assert.notEqual(first.durable?.epoch, snapshot.epoch);
+      assert.equal(first.durable?.epoch, undefined);
       assert(first.durable?.historyBefore);
       const older = await readDurableReadOnlyHistory({ ...options, beforeEntryId: first.durable.historyBefore });
       assert.equal(older.page?.historyId, snapshot.historyId, "independent viewers must accept the same persistent history");
-      assert.notEqual(older.durable?.epoch, first.durable.epoch, "runtime stream epochs remain independent");
+      assert.equal(older.durable?.epoch, undefined, "historical pages expose no live stream cursor");
       assert(older.messages.length > 0);
       assert(older.page?.before === undefined || older.page.before < first.durable.historyBefore);
 

@@ -4366,8 +4366,8 @@ export class AgentService {
     );
   }
 
-  async loadTaskHistory(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
-    if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId);
+  async loadTaskHistory(taskId: string, beforeEntryId?: TaskHistoryTarget, source: "stored" | "current" = "stored"): Promise<TaskHistoryDto> {
+    if (this.durableBots?.owns(taskId)) return this.durableBots.history(taskId, beforeEntryId, source);
     const row = this.db.listTasks().find((t) => t.id === taskId);
     if (!row?.sessionFile) return { messages: [] };
     try {

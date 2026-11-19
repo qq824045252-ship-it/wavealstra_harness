@@ -1,3 +1,4 @@
+import { readTaskHistory } from "../runtime/taskHistoryRead";
 import { defaultModePresetId } from "../../../../../shared/mode-profile";
 import { setHistoryArtifactHints } from "../../../lib/messageArtifactReconcile";
 import type { HistoryArtifactHint } from "../../../lib/messageArtifactReconcile";
@@ -186,18 +187,8 @@ export function createTaskActivationActions(
         !hasMessages ||
         get().tasks.find((task) => task.id === id)?.durable !== undefined
       ) {
-        void storeContext
-          .getApi()
-          ?.agent?.loadTaskHistory?.(id)
-          .then(async (history) => {
+        void readTaskHistory(storeContext, id, (history) => {
             if (history.durable) {
-              const current = get().tasks.find(candidate => candidate.id === id)?.durable;
-              if (current && current.epoch !== task?.durable?.epoch && current.epoch !== history.durable.epoch) return;
-              get().applyAgentPatch({
-                type: "durable_snapshot",
-                taskId: id,
-                snapshot: history.durable,
-              });
               // 模型目录收缩后主进程会把失效的任务模型修复为可解析模型：这里同步任务与输入框，
               // 否则输入框会继续显示旧的（已不存在的）模型，与实际执行不一致。
               const repairedModelId =

@@ -61,11 +61,7 @@ check(
   "experimental readyChanged second-pin logic is not present",
   !/readyChanged|previousInitialViewReadyRef/.test(chatView),
 );
-check(
-  "reproduction remains below the virtualization boundary (threshold 16, strict greater-than)",
-  /const MESSAGE_VIRTUALIZE_THRESHOLD = 16;/.test(chatView) &&
-    /messages\.length > MESSAGE_VIRTUALIZE_THRESHOLD/.test(chatView),
-);
+// Full-history row mounting and viewport stability are exercised in test:chat-resync-desktop.
 
 const messageScroll = /\.message-scroll\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? "";
 check(

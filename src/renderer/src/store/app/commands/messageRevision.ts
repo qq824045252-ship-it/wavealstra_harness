@@ -1,3 +1,4 @@
+import { readTaskHistory } from "../runtime/taskHistoryRead";
 import { mergeHistoryWindow } from "../../../lib/historyWindow";
 import type { AgentRegenerateResult } from "../../../../../shared/agent-ipc";
 import { normalizedEditorTextHash } from "../../../../../shared/regenerate-hash";
@@ -66,11 +67,7 @@ export function createMessageRevisionActions(
           }
         }
         if (lastError) throw lastError;
-        const history = await api.loadTaskHistory?.(activeTaskId);
-        if (history?.durable) {
-          get().applyAgentPatch({ type: "durable_snapshot", taskId: activeTaskId, snapshot: history.durable });
-          return;
-        }
+        if (await readTaskHistory(storeContext, activeTaskId) !== "other") return;
       }
 
       const remaining = messages.slice(0, messageIndex);
@@ -246,9 +243,7 @@ export function createMessageRevisionActions(
             );
             return;
           }
-          const history = await api.agent.loadTaskHistory?.(activeTaskId);
-          if (result?.ok && history?.durable) {
-            get().applyAgentPatch({ type: "durable_snapshot", taskId: activeTaskId, snapshot: history.durable });
+          if (result?.ok && await readTaskHistory(storeContext, activeTaskId) !== "other") {
             const { [newAssistantMsgId]: _pending, ...pendingRegenerations } = get().pendingRegenerations;
             set({ pendingRegenerations });
             return;
