@@ -23,6 +23,7 @@ function isArguments(value: unknown): value is ToolHookCall["arguments"] {
 }
 
 function policyCall(call: ToolHookCall): ToolHookCall {
+  if (call.name === "pstack_decision_append" || call.name === "pstack_eval_save") return { ...call, name: "write" };
   if (call.name !== "mcp_call_tool") return call;
   const { server, tool, arguments: args } = call.arguments;
   if (typeof server !== "string" || !server || typeof tool !== "string" || !tool || !isArguments(args)) {
@@ -108,7 +109,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         if (sideEffect || dangerous) {
           const execution = await durableExecutionContext(options.taskId, api, context);
           const priorIntent = await api.memo("mybuddy.effect-intent", context);
-          let intent = priorIntent === undefined ? await prepareFileEffect(call, taskRoot) : effectIntentSchema.parse(priorIntent);
+          const fileCall = originalCall.name === "pstack_decision_append" ? originalCall : call;
+          let intent = priorIntent === undefined ? await prepareFileEffect(fileCall, taskRoot) : effectIntentSchema.parse(priorIntent);
           const origin = originalCall.name === "mcp_call_tool" && typeof originalCall.arguments.server === "string" && typeof originalCall.arguments.tool === "string"
             ? { server: originalCall.arguments.server, tool: originalCall.arguments.tool } : undefined;
           const prepared = !intent && options.effectRecovery

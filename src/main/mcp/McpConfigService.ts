@@ -715,7 +715,7 @@ export class McpConfigService {
   }
 
   /**
-   * 一键安装全部捆绑 coding MCP（serena / codegraph），写入 modes:["coding"]。
+   * 一键安装随产品提供的 MCP 服务，并写入各自声明的 modes。
    */
   installBundledCodingMcp(): McpInstallResultDto {
     const names: string[] = [];

@@ -11,7 +11,10 @@ import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordin
 import { SkillTrialLedger } from "./SkillTrialLedger";
 import { diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
-import { resolveWelcomeMode } from "../../shared/mode-profile";
+import { codingWorkflowRequiresGithub, resolveWelcomeMode } from "../../shared/mode-profile";
+import { normalizePstackSettings } from "../../shared/pstack";
+import { isPstackForegroundTool } from "../../shared/pstack/tool-names";
+import { resolveParallelLimits } from "../capabilities/subagent/shared";
 import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
@@ -1563,6 +1566,18 @@ export class AgentService {
   private readonly toolSelectionMemo = new WeakMap<AssemblyTraceDto, Map<string, SessionToolSelection>>();
 
   private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
+    const codingPolicy = task.welcomeMode === "coding"
+      ? this.modeProfiles.getProfile("coding").policy : undefined;
+    const workflowSettings = codingPolicy?.pstackThermosEnabled ? normalizePstackSettings(codingPolicy.pstackThermos) : undefined;
+    const workflow = workflowSettings && (await import("./pstack/PstackWorkflow")).createPstackWorkflow({
+      taskId: task.id, cwd, settings: () => workflowSettings,
+      active: () => this.pstackActive(this.db.getTask(task.id)),
+      worktreeActivity: () => this.db.listTasks().flatMap(item => {
+        const directory = this.durableBots?.cwd(item.id) ?? this.registry.get(item.id)?.cwd ?? item.cwd;
+        return directory ? [{ id: item.id, cwd: directory, updatedAt: item.updatedAt,
+          pinned: Boolean(item.isFavorited), active: this.isTaskBusy(item.id) }] : [];
+      }),
+    });
     const getPermissionMode = (): PermissionMode => "auto";
     const providerIds = this.durableAssembly(task).mcpFilter.enabled;
     const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
@@ -1640,8 +1655,9 @@ export class AgentService {
         return await consultHooks.afterTool?.(call, observed ?? result, api, context) ?? observed;
       },
     };
-    return { ...domain, toolHooks, tools: [...domain.tools,
+    return { ...domain, foregroundHooks: workflow, toolHooks, tools: [...domain.tools, ...workflow?.tools ?? [],
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
+        ...(workflowSettings && (await import("./PstackDispatch")).pstackSubagentOptions(task.id, workflowSettings)),
         workBinding: () => this.workService.repo.bindingForTask(task.id),
         allowGitBranchOrWorktree: () => true,
         workspaceNotes: () => [new ProjectNotesService(this.db).forSubagent(task.id), new WorkspaceNotesService(this.db).forSubagent(task.id)].filter(Boolean).join("\n\n"),
@@ -1670,7 +1686,13 @@ export class AgentService {
     return assembly;
   }
 
+  private pstackActive(task: TaskDto | null | undefined): boolean {
+    return task?.welcomeMode === "coding" && this.modeProfiles.pstackEnabled();
+  }
+
   private durableToolAllowed(task: TaskDto, name: string): boolean {
+    if (isPstackForegroundTool(name) && !this.pstackActive(task)) return false;
+    if (["pstack_decision_append","pstack_eval_save"].includes(name) && !this.durableToolAllowed(task, "write")) return false;
     if (!workExecutionToolAllowed(name, () => this.workService.repo.bindingForTask(task.id))) return false;
     const assembly = this.durableAssembly(task);
     const permissionMode = task.permissionMode ?? "default";
@@ -1681,7 +1703,7 @@ export class AgentService {
       selection = resolveDurableToolSelection(permissionMode, assembly.toolPolicy, this.builtinCapabilities.config());
       selections.set(permissionMode, selection);
     }
-    if (["subagent", "subagent_list", "subagent_steer"].includes(name) && !this.builtinCapabilities.config().subagent.enabled) return false;
+    if (["subagent", "subagent_list", "subagent_steer", "pstack_delegate"].includes(name) && !this.builtinCapabilities.config().subagent.enabled) return false;
     return !(selection.excludeTools ?? []).some(tool => tool.toLowerCase() === name.toLowerCase());
   }
 
@@ -1697,17 +1719,24 @@ export class AgentService {
     if (!task) throw new Error("任务不存在");
     const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);
     const profile = this.modeProfiles.getProfile(welcomeMode);
-    const preset = resolveModePreset(profile.policy, request.modePresetId ?? task.modePresetId);
+    const requestedPreset = request.modePresetId !== undefined ? request.modePresetId : task.modePresetId;
+    const preset = resolveModePreset(profile.policy, requestedPreset);
     const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile,
       projectContext: this.projectContextResolver.resolveTask(task.id), preset,
       expertId: this.expertBindings.active(task.id)?.sourceExpertId ?? request.expertId ?? task.expertId,
       connectorIds: this.expertConnectorIds(task.id, request.connectorIds),
       ...this.runtimeCapabilityAvailability(request.expertId ?? task.expertId, request.connectorIds, task.id) });
     const requiredMcpIds = new Set([...(preset?.providerMcpIds ?? []), ...(this.expertBindings.active(task.id)?.mcpIds ?? [])]);
-    const requiredMcpDecisions = requiredMcpIds.size ? this.mcpRuntime.previewMcpFilter(welcomeMode,
-      resolved.runtimePolicy.mcpPolicy, resolved.mcpPolicySources).capabilities.filter(decision => requiredMcpIds.has(decision.id) && !decision.enabled) : [];
+    const githubRequired = codingWorkflowRequiresGithub(welcomeMode, profile.policy);
+    if (githubRequired) requiredMcpIds.add("github");
+    const requiredMcp = requiredMcpIds.size ? this.mcpRuntime.previewMcpFilter(welcomeMode,
+      resolved.runtimePolicy.mcpPolicy, resolved.mcpPolicySources) : undefined;
+    const requiredMcpDecisions = requiredMcp?.capabilities.filter(decision => requiredMcpIds.has(decision.id) && !decision.enabled) ?? [];
     this.emitPatch({ type: "capability_notices", taskId: task.id,
       notices: capabilityPolicyNotices([resolved.expertDecision, ...resolved.connectorDecisions, ...requiredMcpDecisions]) });
+    if (githubRequired && !requiredMcp?.enabled.includes("github")) {
+      throw new Error("此流程要求 GitHub MCP。请启用 GitHub MCP 并允许本场景使用，或在 pstack 任务路由中改为按需绑定。");
+    }
     const permissionMode = resolveEffectivePermission(request.permissionMode ?? task.permissionMode,
       resolved.effectiveProfile.policy.suggestedPermissionMode, this.settingsStore.read().permissionMode ?? "default");
     await ensurePresetRuntimeReadyWithRecovery({ failures: this.executionFailures, taskId: task.id,
@@ -2945,8 +2974,8 @@ export class AgentService {
     return this.modeProfiles.saveBlock(id, blockId, content);
   }
 
-  saveModePolicy(id: WelcomeMode, policy: ModePolicyDto): ModeProfileDto {
-    return this.modeProfiles.savePolicy(id, policy);
+  saveModePolicy(id: WelcomeMode, policy: ModePolicyDto, section?: "pstack"): ModeProfileDto {
+    return this.modeProfiles.savePolicy(id, policy, section);
   }
 
   resetModeBlock(id: WelcomeMode, blockId: ModeBlockId): ModeProfileDto {
@@ -3095,6 +3124,9 @@ export class AgentService {
     // 受管 provider preflight 警告（只读，不改变装配结果）
     for (const w of providerWarnings) {
       trace.warnings.push(w);
+    }
+    if (codingWorkflowRequiresGithub(welcomeMode, profile.policy) && !mcpPreview.enabled.includes("github")) {
+      trace.warnings.push("代码开发基础流程要求 GitHub MCP，当前场景未启用该服务。");
     }
     // 重名诊断追加为 warnings（可观测，不改变装配结果）
     for (const name of shadowed) {
@@ -3737,6 +3769,7 @@ export class AgentService {
         : undefined;
       return {
         ...execution,
+        ...resolveParallelLimits(raw),
         revision: createHash("sha256").update(content).digest("hex"),
         agentScope: scope === "project" || scope === "both" || scope === "user" ? scope : undefined,
         confirmProjectAgents: typeof confirm === "boolean" ? confirm : undefined,
@@ -3750,7 +3783,7 @@ export class AgentService {
       };
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-      return { configPath: path, globalDefaultModelId: this.readSettingsDefaultModelId(), revision: createHash("sha256").update("").digest("hex") };
+      return { ...resolveParallelLimits(), configPath: path, globalDefaultModelId: this.readSettingsDefaultModelId(), revision: createHash("sha256").update("").digest("hex") };
     }
   }
 
@@ -3803,6 +3836,13 @@ export class AgentService {
     parseSubagentExecutionPolicy(merged);
     const execution = parseSubagentExecutionPolicy(config);
     const next: Record<string, unknown> = { ...merged };
+    if (config.maxConcurrency !== undefined || config.maxParallelTasks !== undefined) {
+      const limits = resolveParallelLimits({ ...merged, ...config });
+      for (const key of ["maxConcurrency", "maxParallelTasks"] as const) {
+        if (config[key] !== undefined && config[key] !== limits[key]) throw new Error(`子代理并行设置超出允许范围：${key}`);
+        next[key] = limits[key];
+      }
+    }
     for (const key of SUBAGENT_POLICY_KEYS) {
       if (key in config) next[key] = execution[key];
     }

@@ -29,7 +29,7 @@ import { summarizeToolInput } from "../../../shared/pi-event-mapper";
 import type { BotToolMode, DurableBotSnapshot, DurableHistoryBlock } from "../../../shared/durable-bot";
 import { createDurableCodeMode } from "./DurableCodeMode";
 import { seedDurableBranch, type DurableBranchSeed } from "./DurableTaskBranch";
-import type { DurableContextHook } from "./DurableDomainTools";
+import type { DurableContextHook, DurableDomainTools } from "./DurableDomainTools";
 import { openDurableStorage } from "./DurableStorage";
 import type { DurableStorageLease } from "./DurableStorageLease";
 import { durableStorageOwnerState } from "./DurableStorageLease";
@@ -105,6 +105,7 @@ export interface DurableBotOptions {
   initialHistory?: { messages: readonly Message[]; context: readonly Message[] } | (() => Promise<{ messages: readonly Message[]; context: readonly Message[] } | undefined>);
   initialBranch?: DurableBranchSeed;
   toolHooks?: Partial<ToolHooks>;
+  foregroundHooks?: DurableDomainTools["foregroundHooks"];
   toolAllowed?: (name: string) => boolean;
   readonlyShell?: () => boolean;
   waitingForInput?: () => boolean;
@@ -334,7 +335,12 @@ export class DurableBotRuntime {
     let finishOpening!: (projection: DurableEvidenceProjection | undefined) => void;
     const openingEvidence = new Promise<DurableEvidenceProjection | undefined>(resolve => { finishOpening = resolve; });
     registry.install(botExtension(options, native, codemode, (id, message) => runtime?.recordResponse(id, message),
-      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context), async (id, context) => harness?.getTask(id, context), (conversationId, context) => runtime!.contextManagerFor(conversationId, context)));
+      (code, context, conversationId) => runtime?.prewarmCodeMode(code, context, conversationId), () => options.evidenceProjection ? openingEvidence : undefined, (call, api, context) => runtime?.recordSkillRead(call, api, context), async (id, context) => harness?.getTask(id, context), (conversationId, context) => runtime!.contextManagerFor(conversationId, context),
+      async (operation, context) => {
+        const opened = await requestHarness;
+        if (!opened) throw new Error("前台工具无法持久化本次执行凭据。");
+        return opened.commit(operation, context);
+      }));
     let harness: Harness | undefined;
     try {
       harness = await Harness.open(storage, {
@@ -439,11 +445,13 @@ export class DurableBotRuntime {
   }
 
   async configure(model: DurableBotOptions["model"], toolMode: BotToolMode, thinkingLevel?: import("@earendil-works/pi-ai").ModelThinkingLevel,
-    extensions?: readonly ToolRegistration[], contextHooks?: readonly DurableContextHook[], toolHooks?: Partial<ToolHooks>): Promise<void> {
+    extensions?: readonly ToolRegistration[], contextHooks?: readonly DurableContextHook[], toolHooks?: Partial<ToolHooks>,
+    foregroundHooks?: DurableDomainTools["foregroundHooks"]): Promise<void> {
     this.assertSessionHealthy();
     // Request-context hooks come from the same extension factories as the tools; they are re-installed
     // together so a refreshed tool set can never keep a stale (or dropped) context rewrite.
     if (contextHooks) this.options.contextHooks = [...contextHooks];
+    if (extensions) this.options.foregroundHooks = foregroundHooks;
     if (toolHooks) this.options.toolHooks = toolHooks;
     if (model) {
       const resolved = this.options.models.getModel(model.provider, model.modelId);
@@ -480,7 +488,7 @@ export class DurableBotRuntime {
       (id, message) => this.recordResponse(id, message),
       (code, context, conversationId) => this.prewarmCodeMode(code, context, conversationId), () => this.evidence,
       (call, api, context) => this.recordSkillRead(call, api, context), (id, context) => this.harness.getTask(id, context),
-      (conversationId, context) => this.contextManagerFor(conversationId, context)));
+      (conversationId, context) => this.contextManagerFor(conversationId, context), this.harness.commit.bind(this.harness)));
   }
 
   /** Harness settings getter 的同步窗口来源；未知时返回 0，让策略回退保守值。 */
@@ -1550,6 +1558,7 @@ function botExtension(
   recordSkillRead?: (call: Parameters<ToolHooks["afterTool"]>[0], api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<void> | void,
   readNativeTask?: (id: Parameters<Harness["getTask"]>[0], context: Parameters<Harness["getTask"]>[1]) => ReturnType<Harness["getTask"]>,
   getContextManager?: (conversationId: Conversation["id"], context: Context) => Promise<DurableContextManager | undefined>,
+  commit?: Harness["commit"],
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
     Boolean((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value || (await api.snapshot(DurableConsultIdentity, api.conversationId, context))?.key);
@@ -1571,6 +1580,10 @@ function botExtension(
     generationByToolTask.get(toolTaskId) ?? currentGenerationByConversation.get(conversationId);
   const toolHooks: Partial<ToolHooks> = {
     beforeTool: async (call, api, context) => {
+      if (options.foregroundHooks && !await childConversation(api, context)) {
+        const gate = await options.foregroundHooks.beforeTool(call, api, context);
+        if (gate && "block" in gate) return gate;
+      }
       const decision = await options.toolHooks?.beforeTool?.(call, api, context);
       const generationTaskId = toolGeneration(api.taskId, String(api.conversationId));
       rememberToolGeneration(api.taskId, generationTaskId);
@@ -1590,6 +1603,8 @@ function botExtension(
         ? { taskId: api.taskId, conversationId: String(api.conversationId) } : undefined;
       const changed = await withNativeNotStarted(proof, () => options.toolHooks?.afterTool?.(call, result, api, context));
       const observed = changed ?? result;
+      if (options.foregroundHooks?.afterTool && !await childConversation(api, context))
+        await options.foregroundHooks.afterTool(call, observed, api, context, commit);
       if (call.name === "read" && !observed.isError) await recordSkillRead?.(call, api, context);
       try {
         options.onTool?.({ phase: "finish", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
@@ -1673,6 +1688,9 @@ function botExtension(
         executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), generationTaskId: api.taskId,
         sourceKind: options.executionIdentity?.sourceKind ?? (child ? "subagent" : "main") });
     }, afterResponse: async (message, api, context) => {
+      if (options.foregroundHooks && !await childConversation(api, context)) {
+        await options.foregroundHooks.afterResponse(message, api, context);
+      }
       const observed=context.abortSignal?modelUsageEvidence.get(options.models)?.get(context.abortSignal):undefined;
       const raw=observed?{...observed}:emptyUsageEvidence();
       try { options.onResponse?.(message, { conversationId: String(api.conversationId), generationTaskId: api.taskId,
@@ -1683,6 +1701,8 @@ function botExtension(
         ? [(content.arguments as { code?: unknown }).code].filter((code): code is string => typeof code === "string")
         : []);
       for (const code of codes) await prewarmCodeMode?.(code, context, api.conversationId);
+    }, onYield: async (answer, api, context) => {
+      if (options.foregroundHooks && !await childConversation(api, context)) return options.foregroundHooks.onYield(answer, api, context);
     }, afterRun: async (run, api, context) => {
       if (!options.onEntries || !await childConversation(api, context)) return undefined;
       try {

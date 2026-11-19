@@ -17,7 +17,7 @@ import type { McpRuntimeService } from "../mcp/McpRuntimeService";
 import type { TaskExecutionWorkspace } from "../task/TaskExecutionWorkspace";
 import type { ModeProfileStore } from "./ModeProfileStore";
 import type { ProjectContextResolver } from "../project/ProjectContextResolver";
-import { resolveModePreset } from "../../shared/mode-profile";
+import { codingWorkflowRequiresGithub, resolveModePreset } from "../../shared/mode-profile";
 import { resolveRuntimeContextPolicy } from "./RuntimeContextResolver";
 import { collectSessionSkillPaths } from "./sessionSkillPaths";
 import { resolveAgentLoadout, type LoadoutCandidate } from "./AgentLoadoutResolver";
@@ -247,6 +247,7 @@ export class AgentLoadoutService {
       resolved.mcpPolicySources,
     );
     const requiredMcp = new Set((preset?.providerMcpIds ?? []).map((id) => id.toLowerCase()));
+    if (codingWorkflowRequiresGithub(welcomeMode, profile.policy)) requiredMcp.add("github");
     for (const decision of mcpPreview.capabilities) {
       candidates.push({
         kind: "mcp",

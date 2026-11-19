@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AssemblyTraceDto,
   ExpertDto,
@@ -59,11 +59,14 @@ import {
 } from "@/lib/presetEditor";
 import { previewBlockedHint } from "@/lib/modesPreviewGuard";
 import { isRetiredDesignSkill, isRetiredManagedProvider } from "@shared/professional-tools";
+import { normalizePstackSettings, validatePstackSettings, type PstackSettings } from "@shared/pstack";
+import PstackSettingsEditor from "./PstackSettingsEditor";
 
-type EditPane = ModeBlockId | "skills" | "mcp" | "artifacts" | "policy" | "presets";
+type EditPane = ModeBlockId | "skills" | "mcp" | "artifacts" | "policy" | "presets" | "pstack";
 
 const PANE_LABELS: Record<EditPane, string> = {
   ...MODE_BLOCK_LABELS,
+  pstack: "pstack + thermos",
   skills: "技能限制",
   mcp: "MCP 限制",
   artifacts: "产物显示过滤",
@@ -72,6 +75,7 @@ const PANE_LABELS: Record<EditPane, string> = {
 };
 
 const PANE_HINTS: Record<EditPane, string> = {
+  pstack: "按任务选择工程流程，并在交付前检查是否需要严格代码审查。",
   goal: "场景目标与角色定位",
   workflow: "推荐工作步骤与节奏",
   delivery: "输出格式与交付物要求",
@@ -153,6 +157,7 @@ function paneIcon(pane: EditPane, size = 15): ReactNode {
       return <IconShield size={size} />;
     case "artifacts":
       return <IconFile size={size} />;
+    case "pstack":
     case "presets":
       return <IconBlocks size={size} />;
     case "policy":
@@ -959,9 +964,6 @@ function PresetEditor({
 export default function ModesTab(): React.JSX.Element {
   const [mode, setMode] = useState<WelcomeMode>("working");
   const [pane, setPane] = useState<EditPane>("goal");
-  useEffect(() => {
-    if (mode === "general" && ["skills", "mcp", "artifacts", "policy"].includes(pane)) setPane("goal");
-  }, [mode, pane]);
   const [profile, setProfile] = useState<ModeProfileDto | null>(null);
   const visiblePresetCount = sanitizeModePresets(mode, profile?.policy.presets ?? []).length;
   const [draft, setDraft] = useState("");
@@ -971,6 +973,8 @@ export default function ModesTab(): React.JSX.Element {
     emptyModePolicy().artifactPolicy,
   );
   const [dirty, setDirty] = useState(false);
+  const [pstackEnabled, setPstackEnabled] = useState(false);
+  const [pstackDraft, setPstackDraft] = useState<PstackSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hint, setHint] = useState("");
@@ -1075,7 +1079,10 @@ export default function ModesTab(): React.JSX.Element {
   );
 
   const applyProfileToDraft = (p: ModeProfileDto, nextPane: EditPane): void => {
-    if (nextPane === "policy") {
+    if (nextPane === "pstack") {
+      setPstackEnabled(p.policy.pstackThermosEnabled === true);
+      setPstackDraft(normalizePstackSettings(p.policy.pstackThermos));
+    } else if (nextPane === "policy") {
       setDraft(formatPolicy(p.policy));
     } else if (nextPane === "skills") {
       const skill = normalizeSkillPolicy(p.policy.skillPolicy);
@@ -1092,9 +1099,9 @@ export default function ModesTab(): React.JSX.Element {
       setArtifactDraft(normalizeArtifactPolicy(p.policy.artifactPolicy));
     } else if (nextPane === "presets") {
       const presets = sanitizeModePresets(
-        mode,
+        p.id,
         (p.policy.presets ?? [])
-          .filter((item) => !isRetiredModePresetId(mode, item.id))
+          .filter((item) => !isRetiredModePresetId(p.id, item.id))
           .map((item) => {
             const draft = normalizePresetDraft(item);
             return {
@@ -1104,7 +1111,7 @@ export default function ModesTab(): React.JSX.Element {
           }),
       );
       setPresetList(presets);
-      const preferred = defaultModePresetId(mode);
+      const preferred = defaultModePresetId(p.id);
       setSelectedPresetId((cur) => {
         if (cur && presets.some((x) => x.id === cur)) return cur;
         if (presets.some((x) => x.id === preferred)) return preferred;
@@ -1124,11 +1131,14 @@ export default function ModesTab(): React.JSX.Element {
     }
   }, []);
 
+  const loadRevision = useRef(0);
   const load = useCallback(async (id: WelcomeMode, nextPane: EditPane) => {
+    const revision = ++loadRevision.current;
     setLoading(true);
     setErrorMsg("");
     try {
       const p = await window.api?.agent?.getModeProfile?.(id);
+      if (revision !== loadRevision.current) return;
       if (!p) {
         setErrorMsg("无法加载模式配置（主进程未就绪）");
         setProfile(null);
@@ -1138,15 +1148,20 @@ export default function ModesTab(): React.JSX.Element {
       applyProfileToDraft(p, nextPane);
       setDirty(false);
     } catch (err) {
+      if (revision !== loadRevision.current) return;
       setErrorMsg(errText(err));
       setProfile(null);
     } finally {
-      setLoading(false);
+      if (revision === loadRevision.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void load(mode, pane);
+    const unavailable = (mode !== "coding" && pane === "pstack") ||
+      (mode === "general" && ["skills", "mcp", "artifacts", "policy"].includes(pane));
+    const next = unavailable ? "goal" : pane;
+    setPane(next);
+    void load(mode, next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
@@ -1175,6 +1190,7 @@ export default function ModesTab(): React.JSX.Element {
   };
 
   const selectPane = (next: EditPane): void => {
+    if (saving) return;
     if (!profile) {
       setPane(next);
       return;
@@ -1187,7 +1203,7 @@ export default function ModesTab(): React.JSX.Element {
   };
 
   const selectMode = (id: WelcomeMode): void => {
-    if (id === mode) return;
+    if (id === mode || saving) return;
     if (dirty) {
       setPendingConfirm({ kind: "switch-mode", next: id });
       return;
@@ -1199,6 +1215,7 @@ export default function ModesTab(): React.JSX.Element {
 
   const currentSource = useMemo(() => {
     if (!profile) return null;
+    if (pane === "pstack") return profile.policy.pstackThermosEnabled ? "已启用" : "已停用";
     if (
       pane === "policy" ||
       pane === "skills" ||
@@ -1240,7 +1257,19 @@ export default function ModesTab(): React.JSX.Element {
     setHint("");
     try {
       let next: ModeProfileDto | undefined;
-      if (pane === "policy") {
+      if (pane === "pstack") {
+        if (!pstackDraft) throw new Error("内置流程配置尚未载入。");
+        const problems = validatePstackSettings(pstackDraft);
+        if (problems.length) throw new Error(problems.join("；"));
+        const config = normalizePstackSettings(pstackDraft);
+        next = await window.api?.agent?.saveModePolicy?.(mode, {
+          ...profile.policy, pstackThermosEnabled: pstackEnabled, pstackThermos: config,
+        }, "pstack");
+        if (next && ((next.policy.pstackThermosEnabled === true) !== pstackEnabled ||
+          JSON.stringify(normalizePstackSettings(next.policy.pstackThermos)) !== JSON.stringify(config))) {
+          throw new Error("保存回读与编辑内容不同，请检查配置后重试。");
+        }
+      } else if (pane === "policy") {
         let parsed: ModePolicyDto;
         try {
           parsed = JSON.parse(draft) as ModePolicyDto;
@@ -1293,8 +1322,9 @@ export default function ModesTab(): React.JSX.Element {
     setErrorMsg("");
     try {
       // skills / mcp / artifacts / presets 是 policy 的一部分，恢复整份 policy（与 JSON 策略一致）
-      const next =
-        pane === "policy" ||
+      const next = pane === "pstack"
+        ? await window.api?.agent?.saveModePolicy?.(mode, { ...profile.policy, pstackThermosEnabled: false, pstackThermos: undefined }, "pstack")
+        : pane === "policy" ||
         pane === "skills" ||
         pane === "mcp" ||
         pane === "artifacts" ||
@@ -1353,12 +1383,12 @@ export default function ModesTab(): React.JSX.Element {
   }, [profile, pane]);
 
   const openCurrentFile = async (): Promise<void> => {
-    if (pane === "skills" || pane === "mcp" || pane === "artifacts" || pane === "presets") {
+    if (pane === "skills" || pane === "mcp" || pane === "artifacts" || pane === "presets" || pane === "pstack") {
       await openDir();
       return;
     }
     // 文案块必须开 .md；策略才开 policy.json
-    const target: ModeBlockId | "policy" = pane === "policy" ? "policy" : pane;
+    const target: ModeBlockId | "policy" = pane;
     if (!window.api?.agent?.openModeFile) {
       setErrorMsg("主进程未提供 openModeFile，请重启应用后再试");
       return;
@@ -1403,7 +1433,7 @@ export default function ModesTab(): React.JSX.Element {
         : undefined;
       const t = await window.api?.agent?.assembleModePreview?.({
         welcomeMode: mode,
-        modePresetId: selectedPreset?.id ?? selectedPresetId,
+        modePresetId: pane === "pstack" ? undefined : selectedPreset?.id ?? selectedPresetId,
         expertId: activeTask?.expertId ?? null,
         connectorIds: activeTask?.connectorIds,
         cwd: activeTask?.cwd,
@@ -1412,7 +1442,7 @@ export default function ModesTab(): React.JSX.Element {
       setTrace(t);
       setPreviewOpen(true);
       const mcpHidden = t.mcpFilter?.hidden?.length ?? 0;
-      const scopeNote = selectedPreset?.id
+      const scopeNote = pane === "pstack" ? (pstackEnabled ? "代码开发基础流程：pstack + thermos" : "内置流程已关闭") : selectedPreset?.id
         ? `Tag「${selectedPreset.label}」`
         : "基础 Mode 策略（未选 Tag）";
       setHint(
@@ -1542,7 +1572,7 @@ export default function ModesTab(): React.JSX.Element {
     });
   };
 
-  const showEditor = Boolean(profile) && !loading;
+  const showEditor = profile?.id === mode && !loading;
 
   return (
     <div className={`modes-tab${previewOpen ? " modes-tab--preview-open" : ""}`}>
@@ -1675,6 +1705,13 @@ export default function ModesTab(): React.JSX.Element {
               </div>
               <div className="modes-nav-group">
                 <div className="modes-nav-label">能力面</div>
+                {mode === "coding" && (
+                  <button type="button" className={`modes-nav-item${pane === "pstack" ? " active" : ""}`}
+                    onClick={() => selectPane("pstack")}>
+                    <span className="modes-nav-icon">{paneIcon("pstack")}</span>
+                    <span className="modes-nav-text">{PANE_LABELS.pstack}</span>
+                  </button>
+                )}
                 {mode !== "general" && <>
                 <button
                   type="button"
@@ -1802,6 +1839,17 @@ export default function ModesTab(): React.JSX.Element {
                 </div>
               ) : null}
 
+              {pane === "pstack" && mode === "coding" && pstackDraft && (
+                <PstackSettingsEditor value={pstackDraft} enabled={pstackEnabled} saving={saving} models={modelCatalog}
+                  change={(config, enabled) => {
+                    setPstackEnabled(enabled);
+                    setPstackDraft(config);
+                    setDirty(enabled !== (profile.policy.pstackThermosEnabled === true) ||
+                      JSON.stringify(config) !== JSON.stringify(normalizePstackSettings(profile.policy.pstackThermos)));
+                    setHint("");
+                    setErrorMsg("");
+                  }} />
+              )}
               {pane === "presets" ? (
                 <div className="modes-preset-layout">
                   <div className="modes-preset-rail">
@@ -2241,7 +2289,7 @@ export default function ModesTab(): React.JSX.Element {
       <ConfirmDialog
         open={pendingConfirm?.kind === "reset-current"}
         title={`将「${WELCOME_MODE_LABELS[mode]}」的「${PANE_LABELS[pane]}」恢复为出厂默认？`}
-        body="恢复后当前配置会被出厂默认覆盖，此操作不可撤销。"
+        body={pane === "pstack" ? "这将关闭内置工作流，并恢复技能、流程、模型角色和 Thermos 审查的默认配置。" : "恢复后当前配置会被出厂默认覆盖，此操作不可撤销。"}
         confirmLabel="恢复默认"
         danger
         onCancel={() => setPendingConfirm(null)}

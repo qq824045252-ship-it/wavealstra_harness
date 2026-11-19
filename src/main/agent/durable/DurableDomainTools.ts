@@ -2,7 +2,7 @@ import { GadgetPreviewEntry, gadgetPreviewIdentities } from "./DurableGadgetPrev
 import { durableExtensionDiagnostics } from "./DurableToolDiagnostics";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ModelRegistry, type ModelRuntime, type ExtensionAPI, type ExtensionContext, type ToolDefinition, type InlineExtension } from "@earendil-works/pi-coding-agent";
-import { defineEntry, LiveDoc, type ToolRegistration, type Cursor, type EntryRecord, type ConversationId, type ToolHooks } from "@earendil-works/pi-durable";
+import { defineEntry, LiveDoc, type ToolRegistration, type Cursor, type EntryRecord, type ConversationId, type ToolHooks, type GenerationHooks, type Harness } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
@@ -24,6 +24,9 @@ export type DurableContextHook = (messages: readonly Message[]) => Promise<{ mes
 export interface DurableDomainTools {
   tools: ToolRegistration[];
   toolHooks?: Partial<ToolHooks>;
+  foregroundHooks?: Pick<GenerationHooks, "onYield" | "afterResponse"> & Pick<ToolHooks, "beforeTool"> & {
+    afterTool?: (...args: [...Parameters<ToolHooks["afterTool"]>, commit?: Harness["commit"]]) => void | Promise<void>;
+  };
   /** 供 DurableBotRuntime 在 beforeRequest 里按序执行；不由 ToolTask 执行，也不影响打开历史。 */
   contextHooks: DurableContextHook[];
 }

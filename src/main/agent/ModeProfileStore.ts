@@ -10,10 +10,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { shell } from "electron";
 import {
   MODE_BLOCK_IDS,
   MODE_BLOCK_LABELS,
+  PSTACK_THERMOS_ID,
   RETIRED_MODE_PRESET_IDS,
   sanitizeModePresets,
   WELCOME_MODE_LABELS,
@@ -40,6 +42,7 @@ import {
   type RuntimeRequirementInput,
 } from "../../shared/runtime-requirement";
 import { getModesDir } from "../paths";
+import { normalizePstackSettings, validatePstackSettings } from "../../shared/pstack";
 import { MODE_SEEDS, PENPOT_PRESET } from "./mode-defaults";
 
 function isWelcomeMode(id: string): id is WelcomeMode {
@@ -179,7 +182,7 @@ function normalizePresets(raw: unknown, seedPresets?: ModePresetDto[]): ModePres
       const item = p as Record<string, unknown>;
       const id = String(item.id ?? "").trim();
       const label = String(item.label ?? "").trim();
-      if (!id || !label) return null;
+      if (!id || !label || id === PSTACK_THERMOS_ID) return null;
       const providerMcpIds = arr(item.providerMcpIds);
       return {
         id,
@@ -263,6 +266,8 @@ function normalizePolicy(raw: unknown, seedPresets?: ModePresetDto[]): ModePolic
   const toolMode = tool.mode === "hard" ? "hard" : "soft";
   const mcpMode = mcp.mode === "soft" ? "soft" : "hard";
   return {
+    ...(o.pstackThermosEnabled === true && { pstackThermosEnabled: true }),
+    ...(o.pstackThermos !== undefined && { pstackThermos: normalizePstackSettings(o.pstackThermos) }),
     skillPolicy: {
       prefer: arr(skill.prefer),
       demote: arr(skill.demote),
@@ -713,8 +718,39 @@ export class ModeProfileStore {
     return this.getProfile(id);
   }
 
-  savePolicy(id: WelcomeMode, policy: ModePolicyDto): ModeProfileDto {
+  pstackEnabled(): boolean {
+    try { return JSON.parse(readFileSync(this.policyFilePath("coding"), "utf8")).pstackThermosEnabled === true; }
+    catch { return false; }
+  }
+
+  savePolicy(id: WelcomeMode, policy: ModePolicyDto, section?: "pstack"): ModeProfileDto {
     if (!isWelcomeMode(id)) throw new Error(`未知场景模式: ${id}`);
+    if (id !== "coding" && (section === "pstack" || policy.pstackThermosEnabled || policy.pstackThermos !== undefined)) {
+      throw new Error("pstack + thermos 设置仅适用于代码开发。");
+    }
+    if (policy.pstackThermos !== undefined) {
+      const errors = validatePstackSettings(policy.pstackThermos);
+      if (errors.length) throw new Error(errors.join("\n"));
+    }
+    if (section === "pstack") {
+      const path = this.policyFilePath(id);
+      let saved: Record<string, unknown>;
+      try { saved = JSON.parse(readFileSync(path, "utf8")); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        saved = { ...MODE_SEEDS[id].policy };
+      }
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) throw new Error("代码开发配置无法读取。");
+      if (policy.pstackThermosEnabled === true) saved.pstackThermosEnabled = true;
+      else delete saved.pstackThermosEnabled;
+      if (policy.pstackThermos === undefined) delete saved.pstackThermos;
+      else saved.pstackThermos = normalizePstackSettings(policy.pstackThermos);
+      // Write against the current disk snapshot so another editor's custom presets survive.
+      const temp = path + "." + randomUUID() + ".tmp";
+      try { writeText(temp, JSON.stringify(saved, null, 2)); renameSync(temp, path); }
+      finally { rmSync(temp, { force: true }); }
+      return this.getProfile(id);
+    }
     // 保存时同样兼容：缺 presets 的旧 policy 回退出厂预设
     const normalized = id === "general" ? generalModeConfiguration(normalizePolicy(policy, MODE_SEEDS[id].policy.presets)) : normalizePolicy(policy, MODE_SEEDS[id].policy.presets);
     const err = validatePolicy(normalized);

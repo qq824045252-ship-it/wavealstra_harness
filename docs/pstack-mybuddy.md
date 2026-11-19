@@ -1,6 +1,37 @@
 # pstack in MyBuddy
 
-This reference describes MyBuddy's native tools that pstack skills can use. Skill instructions do not add tool parameters, provider access, or permissions.
+## 在代码开发中启用
+
+在「设置 → 模式与提示词 → 代码开发 → 能力面 → pstack + thermos」勾选启用并保存。初次安装时此功能关闭。开启后，所有代码开发任务共用这套基础流程。未选标签、最小模式、修 Bug、只读解释和个人标签都可直接使用；选中的标签继续提供自己的指令和权限。停用会保留参数，独立的恢复默认操作只重置本流程。
+
+设置页按原流程清单提供 52 项技能（含 24 条原则）、23 套流程的 145 个阶段、17 组角色和 8 项 Thermos 评审准则。每个条目展示其阶段、关联角色和可配置参数。模型页显示候选模型、排除项、推理能力、并发和超时。「全局子代理设置」的变更也影响其他使用子代理的任务。独立角色人数、预算、隔离和评审阈值保存在代码开发配置里。
+
+## 宿主能力与适配验收
+
+真实模型对照可通过 `pnpm -s pstack:live-case <剧本 ID> <native|original|control> <现有证据目录>` 运行。每次会话使用独立的 MyBuddy 配置、SQLite 数据库和 Git 样本。默认使用设置页选中的模型，子代理读取本机的角色候选。原版组使用个人安装的 pstack 预设和对应剧本；内置组调用编入软件的工具。每组保留原版文件摘要、实际输入、工具调用、子代理回执和完成状态。设置 `PSTACK_LIVE_MODEL` 可选用本机已经配置的候选模型。
+
+运行结束后，`node scripts/pstack-live-observe.mjs <证据目录> --save` 汇总阶段、真实模型、触发原因及审查回执，`node scripts/pstack-live-artifacts.mjs <证据目录>` 从工作区重新核对交付。外部写入、尚未收到的人工答复、模型服务报错和测试中断分别保留。PR 监视可以使用真实仓库的只读接口。
+
+改动前先检查了原流程实际调用的能力。真实子会话、模型选择、Git 工作树、定时器、终端和 SQLite 恢复均可复用。原设置只控制标签是否出现，宿主没有记录其阶段、审核独立性或阻止缺证完成。以下为本次原生适配的验证入口。
+
+| 能力 | MyBuddy 执行方式 | 验证入口 |
+| --- | --- | --- |
+| 配置与任务范围 | 代码开发模式启用后，主会话注册原生流程工具，并在场景指令中装配基座。标签继续控制附加指令和策略。 | `test:local-workflow`、`test:mode`、`test:mode-preset` |
+| 设置保存和重开 | Electron 设置窗口经 IPC 写入隔离的真实模式目录，停用、重开及独立重置均回读配置。 | `test:pstack-settings-ui` |
+| 分工、执行与中断恢复 | `pstack_workflow` 记录配置快照、当前阶段、阻塞原因和已完成的回执。`pstack_delegate` 把角色配置交给原生子代理。模型池不足时反馈具体原因。 | `test:local-workflow`、`test:pstack-workflow`、`test:durable-subagent` |
+| 验证与 Thermos 审查 | 宿主测量任务开始后的变化，保存真实校验命令的退出码、工作区版本和独立审查员的结果。改动会使旧凭据失效。 | `test:pstack-workflow`、`test:local-workflow` |
+| 大规模编排和工作树审计 | 任务自己的持久台账管理依赖、派发、结果通知、决策和已验证版本。Git 审计读取真实工作树、脏文件、提交、可选 PR 状态和磁盘占用。 | `test:local-workflow`、`test:pstack-orchestration`、`test:subagent-worktree` |
+| 决策日志 | 只追加六列 TSV，绑定配置路径和父操作，按任务审计日志行。宿主验证并发追加、恢复和文件身份。 | `test:pstack-decision-trail` |
+| PR 监视 | 监视器按所选范围读取单个 PR、依赖链或冻结队列，执行配置的轮询、超时、失败重试与草稿策略。GitHub 查询使用本机已授权的 `gh`。 | `test:pstack-watch` |
+| 本机调度与终端 | 调度沿用 CronService，终端沿用任务所属的 PTY。 | `test:cron-scheduling`、`test:task-terminal:live` |
+
+流程的阶段推进、命令执行、角色分配和凭据校验由宿主完成。设计取舍、评审问题的严重程度、写作方式等判断由模型按该阶段启用的准则完成。变更行数和文件规模可直接测量，条件扫描只能提示可能散落的特例，最终结论由审查员给出。工作区若有其他进程同时写入，宿主只能观察同一份文件的变化。
+
+本地代码任务可按需使用 GitHub。需要沿用个人标签的绑定时，在「技能与原则 → 任务路由」选择要求 GitHub MCP。GitHub 查询和外部写操作各自使用本机已有的工具、凭据与授权。工作流可随软件运行，无需安装 pstack、Bun 或 Commander。云端代理与关机期间调度取决于外部执行环境。
+
+GitHub 监视通过已登录的 `gh` 读取 PR、检查和队列。Origin 监视使用已登录的 Origin CLI 及其只读接口。GitHub 已在一个合并完成和一个仍开放的 PR 上对照原版。Origin 已用官方 CLI 实测登录边界，并重放官方响应样例。已认证 Origin 项目的状态仍需相应账户核验。
+
+Windows 设置页用真实 Electron 验证了编辑、保存和重开。工作流回归使用可控制的本地模型服务来重复制造失败。真实模型对照另经 MyBuddy 前台、持久子会话及本机实际配置的模型运行。移植代码的来源与许可见 [第三方声明](third-party/pstack-thermos-LICENSE.txt)。
 
 ## Frozen Bot / Work design
 

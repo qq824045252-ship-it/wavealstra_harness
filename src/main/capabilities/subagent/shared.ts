@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { DEFAULT_SUBAGENT_TIMEOUT_MS, parseSubagentExecutionPolicy, type SubagentExecutionPolicy } from "../../../shared/subagent-execution-policy";
+import { DEFAULT_SUBAGENT_TIMEOUT_MS, MAX_CONCURRENCY, MAX_PARALLEL_TASKS, parseSubagentExecutionPolicy, type SubagentExecutionPolicy } from "../../../shared/subagent-execution-policy";
 import type { ModelReasoningPreferenceDto } from "../../../shared/model-metadata";
 import type { AgentScope } from "./agents";
 import type { PreparedSubagentWorkspace, SubagentIsolation } from "./worktree";
@@ -17,8 +17,7 @@ export interface MessageLike {
   stopReason?: string;
 }
 
-export const MAX_PARALLEL_TASKS = 200;
-export const MAX_CONCURRENCY = 100;
+export { MAX_PARALLEL_TASKS, MAX_CONCURRENCY };
 export const DEFAULT_TASK_TIMEOUT_MS = DEFAULT_SUBAGENT_TIMEOUT_MS;
 export const DEFAULT_CONFIRM_TOOLS = ["write", "edit"] as const;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
@@ -26,7 +25,7 @@ const PER_PARALLEL_TOTAL_OUTPUT_CAP = 400 * 1024;
 
 export interface SingleResult {
   agent: string;
-  agentSource: "user" | "project" | "unknown";
+  agentSource: "user" | "project" | "builtin" | "unknown";
   task: string;
   subagentId: string;
   /** Actual native child conversation, absent for pre-start rejection. */

@@ -448,6 +448,7 @@ export class DurableBotService {
         taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
         contextHooks: domain?.contextHooks ?? [],
         toolHooks: domain?.toolHooks,
+        foregroundHooks: domain?.foregroundHooks,
         restoreTools: names => mcp.restoreTools(names),
         prepareCodeMode: (code, context) => (this.opened.get(taskId)?.mcp ?? mcp).codeModeTools(code, context),
         onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
@@ -621,7 +622,7 @@ export class DurableBotService {
       const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd, mcp);
       mark?.("tools");
       await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, request),
-        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks);
+        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks, domain?.foregroundHooks);
       mark?.("configure");
       return resolvedModel.target;
   }

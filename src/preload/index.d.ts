@@ -378,7 +378,7 @@ export interface PreloadApi {
       blockId: ModeBlockId,
       content: string,
     ) => Promise<ModeProfileDto>;
-    saveModePolicy: (id: WelcomeMode, policy: ModePolicyDto) => Promise<ModeProfileDto>;
+    saveModePolicy: (id: WelcomeMode, policy: ModePolicyDto, section?: "pstack") => Promise<ModeProfileDto>;
     resetModeBlock: (id: WelcomeMode, blockId: ModeBlockId) => Promise<ModeProfileDto>;
     resetModePolicy: (id: WelcomeMode) => Promise<ModeProfileDto>;
     resetModeProfile: (id: WelcomeMode) => Promise<ModeProfileDto>;
@@ -644,7 +644,7 @@ export interface PreloadApi {
     discover: () => Promise<McpDiscoveryDto>;
     listServers: () => Promise<McpServerDto[]>;
     install: (names: string[]) => Promise<McpInstallResultDto>;
-    /** 安装 extensions/mcp 捆绑 serena/codegraph（modes: coding） */
+    /** 安装 extensions/mcp 中随产品提供的 MCP 服务。 */
     installBundled: () => Promise<McpInstallResultDto>;
     remove: (names: string[]) => Promise<McpInstallResultDto>;
     setServerEnabled: (name: string, enabled: boolean) => Promise<McpInstallResultDto>;

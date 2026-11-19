@@ -1519,8 +1519,8 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.saveModeBlock, (_e, id, blockId, content) =>
     agentService.saveModeBlock(id, blockId, content),
   );
-  ipcMain.handle(AgentIpc.saveModePolicy, (_e, id, policy) =>
-    agentService.saveModePolicy(id, policy),
+  ipcMain.handle(AgentIpc.saveModePolicy, (_e, id, policy, section) =>
+    agentService.saveModePolicy(id, policy, section),
   );
   ipcMain.handle(AgentIpc.resetModeBlock, (_e, id, blockId) =>
     agentService.resetModeBlock(id, blockId),

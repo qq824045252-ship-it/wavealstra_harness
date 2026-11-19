@@ -3,6 +3,8 @@ import { Check } from "typebox/value";
 
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 600_000;
 export const MAX_SUBAGENT_TIMEOUT_MS = 3_600_000;
+export const MAX_PARALLEL_TASKS = 200;
+export const MAX_CONCURRENCY = 100;
 const ModelId = Type.String({ pattern: "^[^\\s/]+/[^\\s]+$" });
 export const SubagentExecutionPolicySchema = Type.Object({
   allowedModels: Type.Optional(Type.Array(ModelId, { uniqueItems: true })),

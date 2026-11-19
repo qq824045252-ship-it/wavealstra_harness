@@ -18,9 +18,11 @@ const active = new Set<Request>();
 const pending: Request[] = [];
 const argsSchema = z.record(z.string(), z.unknown());
 const mcpEnvelope = z.object({ server: z.string(), tool: z.string(), arguments: argsSchema });
-const containers = new Set(["codemode", "subagent", "subagent_list", "subagent_steer", "multi_model_consult", "request_user_input"]);
+// Nested calls acquire their own resource leases. Holding an outer unknown-write lease would deadlock them.
+const containers = new Set(["codemode", "subagent", "subagent_list", "subagent_steer", "multi_model_consult", "request_user_input", "pstack_workflow", "pstack_delegate", "pstack_orchestrate"]);
 const fileReads = new Set(["read", "ls", "find", "grep", "glob"]);
 const independentReads = new Set<string>([...WEB_ACCESS_TOOL_NAMES,
+  "pstack_watch_pr", "pstack_worktrees",
   "tool_search", "mcp_list_tools", "mcp_list_resources", "mcp_read_resource", "mcp_status"]);
 const resourceReads = new Set(["library_list", "library_search", "library_read", "memory_search", "memory_get", "memory_history",
   "workspace_notes_read", "project_notes_read", "project_knowledge_search", "project_knowledge_read", "project_memory_list", "project_memory_get", "project_memory_search"]);
@@ -80,7 +82,7 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
   };
   const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
   if (fileReads.has(name)) return [file(path ?? ".", "read")];
-  if (name === "write" || name === "edit") return path ? [file(path, "write")] : [{ kind: "unknown", mode: "write" }];
+  if (name === "write" || name === "edit" || name === "pstack_decision_append" || name === "pstack_eval_save") return path ? [file(path, "write")] : [{ kind: "unknown", mode: "write" }];
   const read = workShellRead(name, args);
   if (read) return [file(read.path, "read")];
   const mcp = classifyMcpToolCall(name, args);

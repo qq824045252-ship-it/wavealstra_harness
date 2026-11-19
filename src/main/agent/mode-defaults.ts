@@ -10,6 +10,9 @@ import { DRAWIO_MCP_SERVER_ID } from "../../shared/professional-tools";
 // 统一别名：Draw.io provider 在办公 preset 中统一引用（避免散落字符串）
 const DRAWIO_PROVIDER = DRAWIO_MCP_SERVER_ID;
 
+export const CODING_WORKFLOW_INSTRUCTIONS =
+  "代码开发使用内置 pstack + thermos。结合用户请求和当前标签选择剧本，遵守标签的任务范围和权限。调用 pstack_workflow status 后用 start(playbook) 启动剧本。按当前阶段、角色和已保存的参数执行，将实际结果写入 advance(stage,note)。阶段列出的辅助方法按需使用。解释直接在对话交付，文件按任务需要创建。用 verify 记录项目检查，交付前调用 review 查看触发原因；需要时用 pstack_delegate(purpose=thermos) 取得独立审查回执。complete 成功后回复。如果剩下的是确切的外部依赖，用 block(note) 记录。";
+
 /** Stable id keeps existing Penpot configuration and task references compatible. */
 export const PENPOT_PRESET: ModePresetDto = {
   id: "web-prototype",

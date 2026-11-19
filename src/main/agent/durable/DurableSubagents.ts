@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, readFile, realpath, rmdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { copyJson, type JsonRepresentation } from "@earendil-works/chord";
 import { withAbortSignal, type Context } from "@earendil-works/chord/context";
@@ -21,6 +21,7 @@ import { assertModelAdmission } from "../ModelInvocationAdmission";
 import type { SubagentSummaryDto } from "../../../shared/agent-ipc";
 import { assertSubagentModelAllowed, filterSubagentModels, resolveSubagentTimeout } from "../../../shared/subagent-execution-policy";
 import { discoverAgents, type AgentConfig, type AgentScope } from "../../capabilities/subagent/agents";
+import { isPstackForegroundTool } from "../../../shared/pstack/tool-names";
 import { appendWorkspaceNotes, buildContextBlock, buildSystemPromptContent, inspectSharedContext } from "../../capabilities/subagent/context";
 import { resolveBatchDisplayNames } from "../../capabilities/subagent/display-names";
 import { computeChildTools, READONLY_TOOLS, RECURSION_TOOLS, tightenPolicy, type PermissionMode } from "../../capabilities/subagent/policy";
@@ -39,6 +40,14 @@ import {
 type Invocation = Static<typeof SubagentParams>;
 type Item = NonNullable<Invocation["tasks"]>[number];
 type Selection = ReturnType<typeof resolveSubagentSelection>;
+export type BuiltinSubagentRole = Pick<AgentConfig, "name" | "description" | "systemPrompt" | "tools" | "model"> & {
+  source: "builtin"; readOnly: boolean; privateBrief?: boolean; draftDocuments?: boolean;
+};
+type DispatchRole = AgentConfig | BuiltinSubagentRole;
+function childRoleTools(role: DispatchRole, tools: string[]): string[] {
+  if (role.source === "builtin" && role.privateBrief) return tools.filter(name => name === "project_document");
+  return tools.filter(name => name !== "project_document" && (role.source !== "builtin" || !role.readOnly || READONLY_TOOLS.some(tool => name === tool)));
+}
 type IsolationRequest = "auto" | "shared" | "worktree";
 type PlanBase = {
   index: number;
@@ -54,9 +63,10 @@ type PlanBase = {
 type PlannedWorkspace = { kind: "worktree" } | { kind: "shared"; note: string };
 type PlannedChild = PlanBase & {
   kind: "run";
-  role: AgentConfig;
+  role: DispatchRole;
   tools: string[];
   selection: Selection;
+  documents?: Record<string, string>;
   workspace: PlannedWorkspace;
 };
 /**
@@ -102,6 +112,11 @@ export interface DurableSubagentOptions {
   taskId: string;
   cwd: string;
   models: ModelRuntime;
+  builtinRoles?: readonly BuiltinSubagentRole[];
+  privateParticipants?: (agents: string[], scope: { available: string[]; pools: Record<string,string[]>; parent?: string; defaultModel?: string;
+    supportsEffort: (id: string, effort: string) => boolean }, api: ToolExecutionApi, context: Context) =>
+    Promise<{ models: string[]; documents?: Record<string,string>[] } | undefined>;
+  excludedModels?: (api: ToolExecutionApi, ctx: Context) => Promise<ReadonlySet<string>>;
   permissionMode: () => PermissionMode;
   workspaceNotes?: () => string;
   onChange?: () => void;
@@ -208,8 +223,8 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       const normalized = dispatch.items.map(item => normalizePlanItem(item, dispatch));
       const parent = await api.agent(context);
       const excluded = new Set<string>([...RECURSION_TOOLS, "codemode", "execute_code", "multi_model_consult"]);
-      const inherited = parent.callable.map(tool => tool.name).filter(name => !excluded.has(name));
-      const items = normalized.map(item => item.kind === "run" ? { ...item, tools: [...inherited] } : item);
+      const inherited = parent.callable.map(tool => tool.name).filter(name => !excluded.has(name) && !isPstackForegroundTool(name));
+      const items = normalized.map(item => item.kind === "run" ? { ...item, tools: childRoleTools(item.role, inherited) } : item);
       const results: SingleResult[] = [];
       /** D-1: the identity deadline observed by the first attempt; a retry must stay inside it. */
       const deadlines = new Map<number, number>();
@@ -353,7 +368,28 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
       return { output: [{ type: "text", text: "已提交引导" }] };
     },
   });
-  return [...createDurableReadOnlyTools(options.cwd), subagent, list, steer];
+  const documents = defineTool({
+    name: "project_document", description: "Call with {} or name='.' to list project documents. Read one by name, or supply its complete text as content to save it if this project allows changes.", replay: "safe",
+    parameters: Type.Object({ name: Type.Optional(Type.String()), content: Type.Optional(Type.String({ maxLength: 131072 })) }),
+    execute: async ({ name, content }, api, ctx) => api.commit(async tx => {
+      const identity = (await tx.doc(DurableSubagentIdentity, api.conversationId)).value, files = identity?.item.documents;
+      if (identity?.taskId !== options.taskId || !files || identity.item.role.source !== "builtin" || !identity.item.role.privateBrief)
+        throw Error("Document unavailable in this session.");
+      if (content !== undefined) {
+        if (!identity.item.role.draftDocuments) throw Error("This project is read-only.");
+        if (!name || name.length > 256 || !name.split("/").every(part => part && part !== "." && part !== ".." && !["__proto__", "constructor", "prototype"].includes(part) && /^[\p{L}\p{N}_. -]+$/u.test(part)))
+          throw Error("Choose a project-relative document name.");
+        const total = Object.entries(files).reduce((n,[key,value]) => n + (key === name ? 0 : Buffer.byteLength(value)), Buffer.byteLength(content));
+        if (total > 128 * 1024) throw Error("Project documents exceed 128 KiB.");
+        files[name] = content;
+        return { output: [{ type: "text" as const, text: "Saved " + name }] };
+      }
+      if (!name || name === "." || name === "./") return { output: [{ type: "text" as const, text: JSON.stringify(Object.keys(files)) }] };
+      if (!Object.hasOwn(files, name)) throw Error("Document unavailable in this project. Call with {} to list the available names.");
+      return { output: [{ type: "text" as const, text: files[name] }] };
+    }, ctx),
+  });
+  return [...createDurableReadOnlyTools(options.cwd), subagent, list, steer, ...(options.privateParticipants ? [documents] : [])];
 }
 
 async function planDispatch(params: Invocation, api: ToolExecutionApi, context: Context, options: DurableSubagentOptions): Promise<Dispatch> {
@@ -374,22 +410,35 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
     : undefined;
   const scope = params.agentScope === "project" || params.agentScope === "both" || params.agentScope === "user" ? params.agentScope : config.agentScope ?? "user";
   const discovery = discoverAgents(options.cwd, scope);
-  const roles = discovery.agents.filter(role => !(config.disabledAgents ?? []).includes(role.name));
+  const roles = [...options.builtinRoles ?? [], ...discovery.agents].filter(role => !(config.disabledAgents ?? []).includes(role.name));
   const permissionMode: PermissionMode = "auto";
   const models = await options.models.getAvailable();
   const settings = SettingsManager.create(options.cwd, getAgentDir());
   const patterns = settings.getEnabledModels();
   const scoped = patterns ? (await resolveModelScopeWithDiagnostics(patterns, options.models)).scopedModels.map(item => item.model) : models;
-  const availableModels = filterSubagentModels(scoped.map(model => ({ id: `${model.provider}/${model.id}`,
+  const excludedModels = await options.excludedModels?.(api, context);
+  const availableModels = filterSubagentModels(scoped.filter(model => !excludedModels?.has(`${model.provider}/${model.id}`)).map(model => ({ id: `${model.provider}/${model.id}`,
     metadata: { source: "pi" as const, reasoning: model.reasoning, reasoningOptions: [{ type: "effort" as const, values: getSupportedThinkingLevels(model) }] } })), config);
   const parent = await api.agent(context);
   const parentModelId = parent.model && `${parent.model.provider}/${parent.model.modelId}`;
   const host = loadHostDefaults(options.cwd);
   const requestedModels = items.map(item => item.model ?? params.model);
+  const privateGroup = await options.privateParticipants?.(items.map(i => i.agent), {
+    available: availableModels.map(m => m.id), pools: config.roles ?? {}, parent: parentModelId ?? undefined,
+    defaultModel: config.defaultModel ?? host.defaultModelId ?? undefined,
+    supportsEffort: (model,effort) => {
+      if (effort === "default") return true;
+      try {
+        resolveSubagentSelection({invocation:{model,reasoning:effort === "off" ? {enabled:false} : {effort}},
+          defaults:{},availableModels});
+        return true;
+      } catch { return false; }
+    },
+  }, api, context);
   const diverse = requestedModels.some(model => model === DIVERSE_SUBAGENT_ROLE);
   if (diverse && (mode === "single" || requestedModels.some(model => model !== DIVERSE_SUBAGENT_ROLE))) throw new Error("Diverse requires every item in a parallel or chain invocation to select diverse");
-  const assignments = diverse ? assignDiverseModels({ mode: mode === "chain" ? "chain" : "parallel", taskCount: items.length,
-    availableModels, candidates: config.roles?.[DIVERSE_SUBAGENT_ROLE] ?? [] }) : undefined;
+  const assignments = privateGroup?.models ?? (diverse ? assignDiverseModels({ mode: mode === "chain" ? "chain" : "parallel", taskCount: items.length,
+    availableModels, candidates: config.roles?.[DIVERSE_SUBAGENT_ROLE] ?? [] }) : undefined);
   const names = resolveBatchDisplayNames(items, [...activeChildren.values()].filter(child => child.taskId === options.taskId).map(child => child.summary.displayName ?? ""));
   const worktreeBaseDir = join(getAgentDir(), "subagent-worktrees");
   const inspections = new Map<string, Promise<WorktreePreflight>>();
@@ -402,7 +451,7 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
     return error instanceof Error ? error.message : String(error);
   };
   /** Phase 1: resolve role/model/tools per item. Nothing is dispatched and no workspace is prepared. */
-  const candidates: Array<{ base: PlanBase; role: AgentConfig; sourceCwd: string; tools: string[]; selection: Selection; explicitIsolation: boolean }> = [];
+  const candidates: Array<{ base: PlanBase; role: DispatchRole; sourceCwd: string; tools: string[]; selection: Selection; explicitIsolation: boolean }> = [];
   const plan = new Map<number, PlanItem>();
   for (const [index, item] of items.entries()) {
     const requested = item.isolation ?? params.isolation;
@@ -412,7 +461,8 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
       id: `durable-${createHash("sha256").update(options.taskId).digest("hex").slice(0, 12)}-${api.taskId}-${index}`,
       displayName: names[index]!,
       agentName: item.agent,
-      task: appendWorkspaceNotes(item.task, options.workspaceNotes?.() ?? ""),
+      task: privateGroup?.documents ? item.task : appendWorkspaceNotes(item.task, options.workspaceNotes?.() ?? ""),
+      ...(privateGroup?.documents && { documents: privateGroup.documents[index] ?? {} }),
       sourceCwd: options.cwd,
       isolation,
     };
@@ -435,7 +485,7 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
         allowTools: config.allowTools, denyTools: config.denyTools, confirmTools: config.confirmTools ?? [...DEFAULT_CONFIRM_TOOLS] });
       const tightened = tightenPolicy(policy, permissionMode);
       const allowed = tightened.tools ?? parent.callable.map(tool => tool.name);
-      const tools = allowed.filter(name => !tightened.excludeTools.includes(name) && !["codemode", "execute_code", "multi_model_consult"].includes(name));
+      const tools = childRoleTools(role, allowed.filter(name => !tightened.excludeTools.includes(name) && !isPstackForegroundTool(name) && !["codemode", "execute_code", "multi_model_consult"].includes(name)));
       candidates.push({ base, role, sourceCwd, tools, selection: selected,
         explicitIsolation: item.isolation !== undefined || params.isolation !== undefined });
     } catch (error) {
@@ -634,6 +684,8 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     return undefined;
   }, context);
   let workspace = owned?.identity.workspace;
+  const privateBrief = item.role.source === "builtin" && item.role.privateBrief === true;
+  let privateDirectory: string | undefined;
   const diagnostics = [
     // D-1: a recovered quota rejection must not stay invisible; otherwise a `N/N succeeded` header
     // looks like the provider accepted N concurrent requests when it actually rejected some.
@@ -668,14 +720,23 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     // D-5: the isolation decision was made once, in planDispatch. Execute exactly that decision, so
     // the preflight and the child can never disagree about whether a worktree is in play.
     if (item.workspace.kind === "worktree") await assertGitIsolationAllowed(item.sourceCwd, options.allowGitBranchOrWorktree);
+    if (privateBrief) {
+      const root = await realpath(getAgentDir());
+      const slug = createHash("sha256").update(JSON.stringify([options.taskId, item.id, item.sourceCwd])).digest("hex").slice(0, 32);
+      const folder = join(root, "document-workspaces", slug);
+      await mkdir(folder, { recursive: true, mode: 0o700 });
+      if (await realpath(folder) !== folder) throw Error("The private project directory has been redirected.");
+      privateDirectory = folder;
+      workspace = { kind: "shared", cwd: folder };
+    }
     workspace ??= await prepareSubagentWorkspace({ cwd: item.sourceCwd, isolation: item.workspace.kind,
       parallel: dispatch.mode === "parallel", writable: isWritable(item.tools),
       baseDir: join(getAgentDir(), "subagent-worktrees"), signal: context.abortSignal, operationId: item.id, authorizeGitIsolation: options.allowGitBranchOrWorktree });
     if (workspace.kind !== item.workspace.kind) throw new Error(`Subagent workspace changed after planning: expected ${item.workspace.kind}, prepared ${workspace.kind}`);
-    const shared = inspectSharedContext(item.sourceCwd);
-    const instructions = buildSystemPromptContent(item.role.systemPrompt, buildContextBlock({ cwd: workspace.cwd,
+    const shared = privateBrief ? undefined : inspectSharedContext(item.sourceCwd);
+    const instructions = privateBrief ? item.role.systemPrompt : buildSystemPromptContent(item.role.systemPrompt, buildContextBlock({ cwd: workspace.cwd,
       roleName: item.role.name, roleDescription: item.role.description, tools: item.tools, permissionMode: dispatch.permissionMode,
-      deniedTools: [...RECURSION_TOOLS], sharedContext: shared.text, sharedContextStatus: shared, depth: 1 })
+      deniedTools: [...RECURSION_TOOLS], sharedContext: shared?.text, sharedContextStatus: shared, depth: 1 })
       + (dispatch.workRevisionContext ? `\n\n${dispatch.workRevisionContext}` : ""));
     const parent = await api.agent(context);
     const tools = parent.callable.filter(tool => item.tools.includes(tool.name));
@@ -794,6 +855,8 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     if (timer) clearTimeout(timer);
     await stopWatch?.();
     if (guardedConversation !== undefined) releaseGuardedChildWrite(guardedConversation, options.taskId);
+    // Documents live in the durable child. Remove only this empty directory.
+    if (privateDirectory && !context.abortSignal?.aborted) await rmdir(privateDirectory).catch(() => {});
     activeChildren.delete(item.id); options.onChange?.();
   }
 }

@@ -2,11 +2,14 @@
 
 import { composeMcpPolicies, composeSkillPolicies } from "./runtime-policy";
 import type { RuntimeRequirementInput } from "./runtime-requirement";
+import type { PstackSettings } from "./pstack";
 
 export type WelcomeMode = "working" | "coding" | "general";
 
 /** A missing scene is ordinary office work, never implicit coding. Explicit persisted scenes win. */
 export const DEFAULT_WELCOME_MODE: WelcomeMode = "working";
+/** Former built-in tag. Its stored tasks now follow the coding mode setting. */
+export const PSTACK_THERMOS_ID = "mybuddy-pstack-thermos";
 
 /** Canonical scene ids only; persisted legacy ids are migrated before reads. */
 export function normalizeWelcomeMode(value: unknown): WelcomeMode | null {
@@ -371,7 +374,7 @@ export const MODE_DEFAULT_PRESET_IDS: Record<WelcomeMode, string> = {
  */
 export const RETIRED_MODE_PRESET_IDS: Record<WelcomeMode, readonly string[]> = {
   working: ["inventory-summary", "documents", "spreadsheets", "presentations"],
-  coding: [],
+  coding: [PSTACK_THERMOS_ID],
   general: ["general", "web-prototype"],
 };
 
@@ -464,6 +467,9 @@ export function resolveModePresetId(
 }
 
 export interface ModePolicyDto {
+  /** Enable the native workflow for all coding tasks, including tasks with a custom tag. */
+  pstackThermosEnabled?: boolean;
+  pstackThermos?: PstackSettings;
   skillPolicy: ModeSkillPolicy;
   toolPolicy: ModeToolPolicy;
   mcpPolicy: ModeMcpPolicy;
@@ -480,6 +486,14 @@ export interface ModePolicyDto {
   scenes: ModeSceneChip[];
   /** 场景预设列表（各模式出厂可内置；无 preset 时为空数组） */
   presets?: ModePresetDto[];
+}
+
+export function codingWorkflowEnabled(mode: WelcomeMode, policy: ModePolicyDto): boolean {
+  return mode === "coding" && policy.pstackThermosEnabled === true;
+}
+
+export function codingWorkflowRequiresGithub(mode: WelcomeMode, policy: ModePolicyDto): boolean {
+  return codingWorkflowEnabled(mode, policy) && policy.pstackThermos?.skills["poteto-mode"]?.parameters.githubBinding === "required";
 }
 
 export interface ModeBlockDto {

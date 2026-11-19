@@ -1,0 +1,70 @@
+import { number, rubricScaleParameters } from "./parameters";
+import { book, delivery, step } from "./stages";
+
+export const developmentBooks = [
+  book("feature", "功能开发", "从现有调用链到新功能的真实入口验收。", [
+    step("trace", "追踪受影响的功能", "沿一个实际请求找到入口、调用者、状态和必须保持的行为。", ["how"], "how-explorer"),
+    step("design", "比较架构", "独立画出至少两种接口与状态模型，用调用样例测试取舍并选定责任边界。", ["architect"], "architect-runners"),
+    step("throughput", "划分可并行工作", "记录四项检查：启动前必须完成的门槛、独立工作流、共享可变状态和最小安全切片。无适用项写明原因。", ["principle-separate-before-serializing-shared-state"]),
+    step("implement", "按契约实现", "给实现者具体文件范围、已选领域模型与可执行验收。对跨层或并发难点使用复杂实现角色；复核真实差异。", ["principle-model-the-domain"], "feature"),
+    step("verify", "在用户入口验证", "用真实输入观察结果，失败与重新打开也要验证；证据缺失的路径单列。", ["principle-prove-it-works"]),
+    step("sequence", "整理有序改动", "把差异分成各自可验证的单元，按任务授权整理提交。", ["principle-sequence-verifiable-units"]),
+    step("review", "核对争议点", "如设计仍有争议，发起独立评审并对照代码核实，提取采纳、驳回和待决事项。", ["interrogate"]),
+    delivery(),
+  ]),
+  book("bug-fix", "修复缺陷", "重现问题、验证根因，再在原入口复验。", [
+    step("reproduce", "重现用户看到的失败", "在匹配的界面、接口或运行环境上操作。记录输入、期望、实际结果，必要时加入可移除的观测点。", ["principle-experience-first"]),
+    step("diagnose", "排除假设", "列出机制不同的候选根因，运行每次可排除最多假设的实验。从历史与源码追到第一个错误状态。", ["how", "why", "principle-fix-root-causes"], "how-explorer"),
+    step("fix", "实施有证据的修复", "跨边界时先确定接口；让实现者修复已确认的责任点。适合低成本回归时先记录正确原因的红灯。", ["tdd", "architect"], "bug-fix"),
+    step("verify", "重跑原始复现", "对同一入口、相同输入比较修复前后的可观察结果，附失败和通过输出。", ["principle-prove-it-works"]),
+    step("sequence", "保留前后证据", "使复现与修复可独立核实。若有提交授权，将可执行复现排在修复前面。", ["principle-sequence-verifiable-units"]), delivery(),
+  ]),
+  book("refactoring", "重构", "以等价行为为基线，减少读者必须理解的状态和分支。", [
+    step("baseline", "固定原行为", "找出调用者依赖的正常、错误与边缘语义，执行特征测试或记录一组实际输出。", ["how", "principle-test-behavior-not-implementation"]),
+    step("model", "找缺失的领域模型", "指出当前必须组合记忆的状态、重复判断和不可能状态。已有直观结构保持原状。", ["principle-model-the-domain"]),
+    step("design", "确定目标结构", "给目标模块、类型与调用图草稿。跨接口改动时评估从初始约束重新设计的候选。", ["architect", "principle-redesign-from-first-principles"]),
+    step("subtract", "先删除多余结构", "识别不再使用的代码、可推导状态、转发包装和重复校验，用行为基线验证删除。", ["principle-subtract-before-you-add"]),
+    step("reshape", "逐步迁移调用者", "沿调用图逐批实现目标结构，每步保持行为断言通过。内部接口的所有调用方到位后删除旧入口。", ["principle-migrate-callers-then-delete-legacy-apis"], "feature"),
+    step("equivalence", "验证真实结果等价", "在相同输入上运行新旧实现或重播保存的输出，差异须逐项解释。", ["principle-prove-it-works"]),
+    step("cost", "重走典型路径", "比较修改前后要理解的概念、跳转与状态；如果复杂度没有实质下降，重新选择结构。", ["principle-minimize-reader-load"]), delivery(),
+  ]),
+  book("perf-issue", "性能问题", "用相同工作量和产物验证性能修复。", [
+    step("baseline", "获取基线", "在出现症状的入口记录足够复现的负载、配置、计时和 trace，先检查数字是否可信。", ["benchmark-checklist"]),
+    step("trace", "定位瓶颈", "调查架构、资源上限和等待分布，从观测得出可推翻的因果假设。", ["how"], "how-explorer"),
+    step("fix", "按测量实施", "设计跨边界改动后交给性能实现角色，复核差异，在相同入口获取修改后的 trace。", ["architect"], "perf-issue"),
+    step("compare", "比较前后证据", "按相同数据、并发和冷热状态交替执行；报告中位数、范围、错误率，区分局部收益与端到端收益。", ["benchmark-checklist"]),
+    step("cite", "报告性能变化", "给出一个与用户等待相关的前后数值、单位、环境和原始测量位置。", ["principle-explain-the-number"]), delivery(),
+  ]),
+  book("hillclimb", "迭代优化", "冻结测量方法，每轮只改变一个假设。", [
+    step("workload", "验证真实负载", "用真实规模、历史状态和并发重现症状。确定指标、方向和停止条件，写清最低尝试数与目标。", ["how"]),
+    step("harness", "校准并冻结测量方法", "用差异已知的两个负载证明测量能分辨它们，记录条件并保持每轮可比。", ["principle-build-the-lever", "benchmark-checklist"]),
+    step("ledger", "建立尝试记录", "保存每轮假设、改动、前后数值、差值、正确性验证及是否保留；开始新一轮前读上一轮记录。", ["show-me-your-work"]),
+    step("hypothesize", "按机制排列假设", "基于当前热点或用户瓶颈提出可推翻的解释，预测该改动影响哪段工作。", ["principle-fix-root-causes"]),
+    step("iterate", "独立试验并复测", "一次实现一个假设，评估正确性、指标与复杂度。保留有收益的修改，舍弃无收益的尝试，记录两者原始证据。", ["benchmark-checklist"], "hillclimb"),
+    step("pivot", "突破停滞", "连续没有进展时换假设类别、结合接近成功的尝试或重读责任模块，保留先前失败的信息。", ["principle-attack-the-premise"]),
+    step("stop", "核对退出条件", "对照原始验收和最低尝试条件，说明仍有的候选及其代价；使用同一负载验证最终组合。", ["principle-prove-it-works"]), delivery(),
+  ]),
+  book("prototype", "原型探索", "制作最小可丢弃原型来解决一个具体决策。", [
+    step("decision", "确定要做的选择", "写出决定、候选与区分它们的可观察证据；单纯交付已确定的新功能转功能开发。"),
+    step("references", "收集对比依据", "仅在设计空间未定时收集参考与读者偏好。能用实验回答的问题直接实验。"),
+    step("build", "制作隔离原型", "在独立目录写出能区分候选的最小原型，保留入口与重放步骤。一次可丢弃的实验只需回答当前设计问题。"),
+    step("compare", "同时展示候选", "用相同数据和切换方式对比候选，标记每个变体。", ["principle-exhaust-the-design-space"]),
+    step("observe", "实际操作和观察", "视觉问题逐个驱动与截图。行为或速度问题用 verify 直接运行工作区的原型脚本并记录各候选的输出，例如 node proto/compare.cjs。将观察和结论写在回复中。", ["principle-experience-first"]),
+    step("handoff", "交付决策证据", "列出选择、原因和原型位置；将选定方向交给正式实现流程。"),
+  ]),
+  book("visual-parity", "视觉一致性", "固定原图，在相同状态逐个组件进行像素比较。", [
+    step("baseline", "采集状态矩阵", "在同一系统、字体、缩放和视口记录基线与目标；涵盖该组件有意义的交互状态。"),
+    step("freeze", "冻结验证工具", "记录基线与截图工具版本；发现基线错误先核实，禁止通过重写基线或缩窄测试来掩盖差异。"),
+    step("migrate", "按依赖逐项迁移", "优先公共组件，分开独立组件的写入范围，保留每个切片自己的验收。", ["principle-separate-before-serializing-shared-state"]),
+    step("diff", "定位不同像素", "以冻结的捕获流程对每个状态生成差异图。逐处解释差值，按目标重试到像素一致。", ["principle-prove-it-works"]), delivery(),
+  ]),
+  book("eval", "受控评估", "让候选者与裁判独立，用可审计的产物比较方案。", [
+    step("rubric", "写裁判标准", "明确变体和成功行为。用 advance 的 criteria 冻结 rubricCount 项，按设置中的评分上下限打分；本轮可用 ratingScale 覆盖。已有评分表可用 artifact 读取。用户要求保存时传 artifactDirectory，相对目录或 . 表示工作区根；宿主会写 rubric.json 和与裁判标签对应的全文，请勿另行命名、转写或手写产物。"),
+    step("isolate", "隔离并清理上下文", "需要项目资料时通过 advance 的 materials 传一组共享文件路径，或每名作者单独一组。宿主冻结各组，子会话仅能读取分配的文档。纯文字任务无需文件。"),
+    step("prompt", "写一条真实用户请求", "用 advance 的 prompt 参数冻结一条所有作者共同收到的自然语言请求，避免写入评估、评审、评分、其他作者的提示。"),
+    step("candidates", "并行取得候选输出", "同一请求派给独立模型，记录实际模型及产物，保留各自的干净运行环境。", ["arena"], "arena-runners"),
+    step("judge", "匿名评判", "清除身份信息，用与候选不同的模型或交叉评审者逐项比较；核实实际模型身份。", ["arena"], "arena-cross-judge"),
+    step("audit", "核对执行链", "从每份真实子会话回执核对输入、实际文件读取与产物。用户要文件时，advance 传 artifactDirectory（工作区根为 .），宿主按裁判看到的标签原样导出 rubric.json 和 Document-N.md。使用返回的路径与哈希；发生冲突可用 export-eval 指定新的目录。", ["principle-prove-it-works"]),
+    step("decision", "复核裁判结论", "完整阅读每个输出，核对尺度偏差、模型偏见和互有得失之处，给出证据和取舍。"),
+  ], [number("rubricCount", "评判项数量", "原始规程建议 3 至 6 条可验证的标准。", 4, 3, 6), ...rubricScaleParameters()]),
+];

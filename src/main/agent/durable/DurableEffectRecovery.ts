@@ -65,6 +65,13 @@ async function editedContent(args: Record<string, unknown>, path: string): Promi
 }
 
 export async function prepareFileEffect(call: ToolHookCall, cwd: string): Promise<EffectIntent | undefined> {
+  if (call.name === "pstack_decision_append") {
+    const { path: target, expectedSha256, expectedBytes } = call.arguments;
+    if (typeof target !== "string" || typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256)
+      || typeof expectedBytes !== "number" || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0) throw new Error("Invalid decision trail file intent");
+    const path = resolve(cwd, target);
+    return { kind: "file", path, canonicalPath: await canonicalTarget(path), sha256: expectedSha256, bytes: expectedBytes };
+  }
   if (!["write", "edit"].includes(call.name) || typeof call.arguments.path !== "string") return undefined;
   const path = resolve(cwd, call.arguments.path);
   try {

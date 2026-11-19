@@ -9,7 +9,8 @@ import type {
   ModeToolPolicy,
   WelcomeMode,
 } from "../../shared/mode-profile";
-import { emptyArtifactPolicy } from "../../shared/mode-profile";
+import { codingWorkflowEnabled, emptyArtifactPolicy } from "../../shared/mode-profile";
+import { CODING_WORKFLOW_INSTRUCTIONS } from "./mode-defaults";
 import type { ResolvedProjectContext } from "../../shared/project-domain";
 import {
   formatProjectTodoLine,
@@ -322,6 +323,7 @@ export function assemblePrompt(input: PromptAssemblyInput): AssemblyTraceDto {
 
   const modeParts = [
     `## 场景模式：${profile.labelZh}`,
+    ...(codingWorkflowEnabled(welcomeMode, profile.policy) ? [CODING_WORKFLOW_INSTRUCTIONS] : []),
     ...profile.blocks.map((b) => {
       if (b.source === "user") {
         /* mark later */

@@ -368,7 +368,7 @@ export interface SubagentSummaryDto {
   role: string;
   /** 可选显示名（纯展示，允许中文；不参与身份/唯一性/文件名） */
   displayName?: string;
-  roleSource: "user" | "project" | "unknown";
+  roleSource: "user" | "project" | "builtin" | "unknown";
   roleDescription: string;
   project: string;
   status: string;
@@ -488,7 +488,7 @@ export const McpIpc = {
   discover: "mcp:discover",
   listServers: "mcp:listServers",
   install: "mcp:install",
-  /** 安装 extensions/mcp 捆绑（serena / codegraph，含 modes:coding） */
+  /** 安装 extensions/mcp 中随产品提供的 MCP 服务。 */
   installBundled: "mcp:installBundled",
   remove: "mcp:remove",
   setServerEnabled: "mcp:setServerEnabled",
@@ -1617,6 +1617,8 @@ export type SubagentScopeDto = "user" | "project" | "both";
 
 /** ~/.mybuddy/subagent.json 内容（subagent 扩展配置） */
 export interface SubagentConfigDto extends SubagentExecutionPolicy {
+  maxParallelTasks?: number;
+  maxConcurrency?: number;
   revision: string;
   /** 默认角色来源：仅用户级 / 仅项目级 / 两者（工具调用参数可覆盖） */
   agentScope?: SubagentScopeDto;

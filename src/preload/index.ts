@@ -617,8 +617,8 @@ const api = {
       blockId: ModeBlockId,
       content: string,
     ): Promise<ModeProfileDto> => ipcRenderer.invoke(AgentIpc.saveModeBlock, id, blockId, content),
-    saveModePolicy: (id: WelcomeMode, policy: ModePolicyDto): Promise<ModeProfileDto> =>
-      ipcRenderer.invoke(AgentIpc.saveModePolicy, id, policy),
+    saveModePolicy: (id: WelcomeMode, policy: ModePolicyDto, section?: "pstack"): Promise<ModeProfileDto> =>
+      ipcRenderer.invoke(AgentIpc.saveModePolicy, id, policy, section),
     resetModeBlock: (id: WelcomeMode, blockId: ModeBlockId): Promise<ModeProfileDto> =>
       ipcRenderer.invoke(AgentIpc.resetModeBlock, id, blockId),
     resetModePolicy: (id: WelcomeMode): Promise<ModeProfileDto> =>
