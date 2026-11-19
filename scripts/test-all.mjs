@@ -75,6 +75,7 @@ const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-stor
  * （历史教训：`-ui$` 与 `:desktop$` 都曾漏出 GUI 用例，混进"无头"门禁）。
  */
 const GUI_TESTS = new Set([
+  "test:pstack-settings-ui",
   "test:gadget-history-recovery-electron",
   "test:browser-hover-receipt-electron",
   "test:artifact-card-visual-desktop", // isolated Electron CSS cascade fixture, no live profile
@@ -104,12 +105,14 @@ const GUI_TESTS = new Set([
   "test:browser-conditions-electron",
   "test:browser-upload-electron",
   "test:ui-gestures-integration-electron",
+  "test:ui-workspace-picker-electron",
   "test:browser-document-context-electron",
   "test:browser-accessibility-electron",
   "test:browser-visual-input-electron",
 
   "test:diagnostics-cache-ui",
   "test:model-menu-ui",
+  "test:chat-resync-desktop",
   "test:bot-report-dedup-desktop",
   "test:bot-message-actions-desktop",
   "test:acp-menu-dev", // actual pnpm dev Electron, isolated profile and seeded ACP catalog
@@ -168,6 +171,7 @@ const GUI_TESTS = new Set([
   "test:computer-use-run",
   "test:computer-use-overlay",
   "test:computer-automation-windows",
+  "test:computer-use-control-lookup-electron",
   // Linux 原生 GTK/Electron 专用靶窗：AT-SPI + Hyprland/ydotool，无截图定位。
   // 缺真实会话/依赖会非零退出；开发后端与真实发行包分别报告。
   "test:computer-use-linux",
@@ -240,6 +244,7 @@ const GUI_WINDOWS_ONLY = new Set([
   "test:computer-use-run",
   "test:computer-use-overlay",
   "test:computer-automation-windows",
+  "test:computer-use-control-lookup-electron",
 ]);
 
 /**
@@ -312,6 +317,7 @@ const HEADLESS_TESTS = new Set([
   "test:durable-context-summary-limit",
   "test:durable-storage-replay-api",
   "test:durable-storage-lease",
+  "test:durable-delete-stop",
   "test:gadget-save-copies",
   "test:bot-task-reply-presentation",
   "test:bot-active-requests",
