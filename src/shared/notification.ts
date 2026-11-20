@@ -80,6 +80,9 @@ export interface NotificationDto {
 export interface NotificationListRequest {
   unreadOnly?: boolean;
   limit?: number;
+  types?: readonly NotificationType[];
+  query?: string;
+  before?: Pick<NotificationDto, "createdAt" | "id">;
 }
 
 export interface NotificationChangedEvent {

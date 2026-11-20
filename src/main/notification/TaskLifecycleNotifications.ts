@@ -1,4 +1,4 @@
-import type { TaskDto } from "../../shared/agent-ipc";
+import type { AgentUiPatch, TaskDto } from "../../shared/agent-ipc";
 import type { AgentTaskLifecycleEvent } from "../agent/AgentService";
 import type { WorkRepository } from "../agent/work/WorkRepository";
 import type { NotificationService } from "./NotificationService";
@@ -28,4 +28,33 @@ export function publishTaskLifecycleNotification(input: {
       title: "任务需要你处理", body: `${taskTitle} · ${event.summary}${event.detail ? ` · ${event.detail}` : ""}`,
       dedupeKey: `task:${event.taskId}:tool:${event.toolCallId}:action` });
   }
+}
+
+export function createTaskInteractionNotificationListener(
+  getTask: (id: string) => TaskDto | undefined,
+  notifications: Pick<NotificationService, "publish" | "markReadByDedupeKey">,
+): (patch: AgentUiPatch) => void {
+  return patch => {
+    if (patch.type !== "conversation_interaction_snapshot") return;
+    const { interaction } = patch;
+    const dedupeKey = `task:${interaction.taskId}:interaction:${interaction.id}`;
+    if (interaction.status !== "pending") {
+      notifications.markReadByDedupeKey(dedupeKey);
+      return;
+    }
+    const task = getTask(interaction.taskId);
+    if (!task) return;
+    notifications.publish({
+      type: "task.action_required",
+      level: "warning",
+      title: "任务需要你处理",
+      body: `${task.title?.trim() || "任务"} · ${interaction.title}`,
+      sourceType: "task",
+      sourceId: interaction.taskId,
+      taskId: interaction.taskId,
+      workspaceId: task.spaceId ?? undefined,
+      projectId: task.projectId ?? undefined,
+      dedupeKey,
+    });
+  };
 }
