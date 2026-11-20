@@ -11,6 +11,7 @@ export function createAppNavigationActions(
         page,
         draft: page === "chat" ? s.draft : null,
         hubMcpFocusName: page === "mcp" ? s.hubMcpFocusName : null,
+        ...(page === "library" ? { libraryNav: null } : {}),
         ...(page !== "workspace" ? { activeWorkspaceId: null } : {}),
       })),
 

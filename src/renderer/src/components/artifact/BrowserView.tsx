@@ -15,6 +15,7 @@ import { useAppStore } from "@/store/appStore";
 import BrowserNavBar from "./BrowserNavBar";
 import CaptureModeStatus from "./CaptureModeStatus";
 import BrowserConsolePanel from "./BrowserConsolePanel";
+import LibraryClipDialog from "./LibraryClipDialog";
 
 export default function BrowserView(): React.JSX.Element {
   const modelId = useAppStore((s) => s.activeModelId);
@@ -33,6 +34,7 @@ export default function BrowserView(): React.JSX.Element {
   const openErrorTimer = useRef<number | null>(null);
   const [captureState, setCaptureState] = useState<CaptureModeStateEvent>({ state: "idle" });
   const [openBrowserError, setOpenBrowserError] = useState<string | null>(null);
+  const [clipTabId, setClipTabId] = useState<string | null>(null);
 
   const tabs = tabsState.tabs.filter((tab) => tab.taskId === (activeTaskId ?? undefined) && tab.key !== "legacy");
   const selectedTab = tabs.find((tab) => tab.id === tabsState.activeTabId);
@@ -301,6 +303,9 @@ export default function BrowserView(): React.JSX.Element {
           onToggle: toggleCapture,
         }}
       />
+      {selectedTab && !selectedTab.loading && /^https?:\/\//i.test(selectedTab.url) && window.api?.library?.note &&
+        <div className="artifact-browser-notice"><button type="button" className="btn" onClick={() => setClipTabId(selectedTab.id)}>剪藏到笔记</button></div>}
+      {clipTabId && <LibraryClipDialog tabId={clipTabId} onClose={() => setClipTabId(null)} />}
       {selectedTab?.loginChallenge && (
         <div className="artifact-browser-notice" role="status">
           {({ password: "请在网页中输入密码", qr: "请扫码登录", code: "请在网页中填写验证码" })[selectedTab.loginChallenge]}。登录成功后任务会自动继续。

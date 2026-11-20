@@ -1,0 +1,16 @@
+.library-clip-dialog {
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 36px));
+  background: var(--bg-secondary, Canvas);
+  color: var(--text-primary, CanvasText);
+  border: 1px solid var(--border, GrayText);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.library-clip-dialog::backdrop { background: #1513226b; }
+.library-clip-dialog h3 { margin: 0 0 12px; }
+.library-clip-dialog label { display: grid; gap: 4px; margin: 10px 0; }
+.library-clip-dialog :where(select, input) { width: 100%; font: inherit; padding: 6px; }
+.library-clip-dialog :where(p, li) { overflow-wrap: anywhere; }
+.library-clip-dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 14px; }
+.library-clip-dialog button { font: inherit; padding: 5px 10px; }

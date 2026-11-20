@@ -11,11 +11,14 @@
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { LibraryItemDto, LibrarySpaceDto } from "../../shared/library-ipc";
+import { LIBRARY_DEEP_SEARCH_HIT_MAX, LIBRARY_DEEP_SEARCH_QUERY_MAX_CHARS } from "../../shared/library-ipc";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
 import type { LibraryService } from "./LibraryService";
+import type { LibraryEvidenceJudge } from "./LibraryDeepSearch";
 
 export interface LibraryExtensionBridge {
   service: LibraryService;
+  resolveEvidenceJudge?: () => Promise<LibraryEvidenceJudge>;
   /** 当前任务身份；资料归属由服务端重新解析，附加/取消引用必须具有任务身份。 */
   taskId?: string;
   /** 无 taskId 的受信任会话使用的项目范围；有 taskId 时以数据库绑定为准 */
@@ -247,11 +250,33 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
       },
     });
 
+    if (bridge.resolveEvidenceJudge) {
+      const resolveJudge = bridge.resolveEvidenceJudge;
+      pi.registerTool({
+        name: "library_deep_search",
+        label: "资料库 · 深搜",
+        description: "用户明确要求深搜时，用完整问题在当前任务授权的资料范围多轮寻找证据。调用设置中的深搜判断模型，返回原文片段、资料 ID 和索引文本位置。",
+        promptSnippet: "library_deep_search(query, limit?) — 用户明确要求时，深搜当前任务可见的资料证据",
+        parameters: Type.Object({
+          query: Type.String({ minLength: 1, maxLength: LIBRARY_DEEP_SEARCH_QUERY_MAX_CHARS }),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: LIBRARY_DEEP_SEARCH_HIT_MAX })),
+        }, { additionalProperties: false }),
+        execute: async (_toolCallId, params, signal) => {
+          try {
+            const result = await service.deepSearchInTaskScope(params.query, params.limit, taskScope, resolveJudge, signal);
+            return textResult(JSON.stringify(result), result);
+          } catch (error) {
+            return errorResult(error);
+          }
+        },
+      });
+    }
+
     pi.registerTool({
       name: "library_read",
       label: "资料库 · 读取条目",
       description:
-        "读取当前任务可见范围内资料条目的内容。Markdown/HTML/CSV 返回正文（项目资料返回全文，其他资料可能截断）；URL 返回链接；PDF/Office/图片/未知文件返回结构化 metadata（类型/大小/受管路径/来源/provenance）——这些是非文本资产，需要文件/预览工具读取，资料库不提供内联全文。跨项目条目不可访问。若读取 search_workspace_resources 显式扩展直属子空间后的命中，传相同 explicitDirectChildSpaceId；仅本次读取生效，兄弟、孙级或归档空间拒绝。",
+        "读取当前任务可见范围内资料条目的内容。Markdown/HTML/CSV 返回正文（项目资料在内联预算内返回全文，其他资料最多 4000 字符）；URL 返回链接；超出内联预算的文本及 PDF/Office/图片/未知文件返回受管路径等元数据。需要时用资料检索定位证据或用文件工具读取受管文件。跨项目条目不可访问。若读取 search_workspace_resources 显式扩展直属子空间后的命中，传相同 explicitDirectChildSpaceId；仅本次读取生效，兄弟、孙级或归档空间拒绝。",
       promptSnippet: "library_read(id, explicitDirectChildSpaceId?) — 读取可见资料；临时子空间命中需携带相同子空间参数",
       parameters: readParamsSchema,
       execute: async (_toolCallId: string, params: { id: string; explicitDirectChildSpaceId?: string }) => {
@@ -260,9 +285,9 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
           if (item.kind === "url") {
             return textResult(`[url] ${item.title}\n链接：${item.url}`, { item });
           }
-          const content = service.readContent(item.id);
+          const space = service.getSpace(item.spaceId);
+          const content = service.readContent(item.id, space?.projectId ? undefined : 4000);
           if (content.requiresFileAccess) {
-            const space = service.getSpace(item.spaceId);
             const lines = [
               `[${item.kind}] ${item.title}（id=${item.id}）`,
               `类型：${item.kind}｜MIME：${item.mimeType || "未知"}｜大小：${item.sizeBytes} 字节`,
@@ -272,13 +297,13 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
                 : "",
               item.originalPath ? `原始路径：${item.originalPath}` : "",
               `位置：${spaceLabel(space)}`,
-              "该条目是非文本资产：资料库不提供内联全文。需要内容时请用文件工具读取受管路径，或让用户用预览/Office 打开。",
+              content.contentTooLarge
+                ? "文档太大，无法内联全文。可用资料深度检索定位原文证据，或按需读取受管路径。"
+                : "该条目是非文本资产：资料库不提供内联全文。需要内容时请用文件工具读取受管路径，或让用户用预览/Office 打开。",
             ];
             return textResult(lines.filter(Boolean).join("\n"), { item, managedPath: content.managedPath });
           }
-          const preview = service.getSpace(item.spaceId)?.projectId || content.content.length <= 4000
-            ? content.content
-            : `${content.content.slice(0, 4000)}\n…（内容过长，已截断前 4000 字符）`;
+          const preview = content.contentTruncated ? `${content.content}\n…（内容过长，已截断前 4000 字符）` : content.content;
           return textResult(`[${item.kind}] ${item.title}（id=${item.id}）\n\n${preview}`, { item, content });
         } catch (error) {
           return errorResult(error);

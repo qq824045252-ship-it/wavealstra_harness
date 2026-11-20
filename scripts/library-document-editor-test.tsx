@@ -17,6 +17,7 @@ const storage = {
 };
 Object.assign(globalThis, { window: testWindow, document: testDocument, IS_REACT_ACT_ENVIRONMENT: true });
 Object.defineProperty(testWindow, "sessionStorage", { value: storage, configurable: true });
+Object.defineProperty(testWindow, "localStorage", { value: storage, configurable: true });
 const key = (id = "a") => libraryDraftKey("project:project-a", id);
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -33,12 +34,14 @@ let saved: LibraryItemDto[] = [];
 let documents = new Map<string, LibraryContentDto>();
 let read: (id: string) => Promise<LibraryContentDto>;
 let write: (id: string, content: string) => Promise<LibraryItemDto>;
+let saveNote: (base: LibraryContentDto, title: string, content: string) => Promise<LibraryItemDto>;
 let access: ScopedLibraryOperations;
 let itemId = "a";
+let autoSave = false;
 let root: Root;
 let editor!: ReturnType<typeof useLibraryDocumentEditor>;
 function Harness() {
-  editor = useLibraryDocumentEditor({ itemId, access, onSaved: (item) => saved.push(item) });
+  editor = useLibraryDocumentEditor({ itemId, access, autoSave, onSaved: (item) => saved.push(item) });
   return <span>{editor.payload?.item.id ?? "loading"}:{editor.draft}</span>;
 }
 const clone = <T,>(value: T): T => structuredClone(value);
@@ -51,6 +54,7 @@ const makeAccess = (readOnly = false) => ({
     return clone(payload.item);
   },
   writeContent: (id: string, content: string) => write(id, content),
+  saveNote: (base: LibraryContentDto, title: string, content: string) => saveNote(base, title, content),
 }) as unknown as ScopedLibraryOperations;
 const render = async () => { await act(async () => { root.render(<Harness />); }); };
 const edits = async (content: string, title?: string) => { await act(async () => { editor.setDraft(content); if (title) editor.setTitle(title); }); };
@@ -61,7 +65,7 @@ async function mount() {
 }
 async function reset() {
   if (root) await act(async () => root.unmount());
-  entries.clear(); saved = []; itemId = "a";
+  entries.clear(); saved = []; itemId = "a"; autoSave = false;
   documents = new Map(["a", "b"].map((id) => [id, documentItem(id)]));
   read = async (id) => clone(documents.get(id)!);
   write = async (id, content) => {
@@ -71,6 +75,7 @@ async function reset() {
     return clone(payload.item);
   };
   access = makeAccess();
+  saveNote = (base, _title, content) => write(base.item.id, content);
   await mount();
 }
 async function test(name: string, run: () => Promise<void>) {
@@ -163,7 +168,47 @@ async function main() {
     assert.equal(editor.draft, "Draft b");
     assert.deepEqual(saved.map((item) => item.id), ["b"]);
   });
+  await test("a late autosave reply preserves and then saves later typing", async () => {
+    autoSave = true;
+    await render();
+    const first = deferred<LibraryItemDto>();
+    const second = deferred<LibraryItemDto>();
+    const writes: string[] = [];
+    saveNote = async (base, _title, content) => {
+      writes.push(content);
+      if (writes.length === 1) return first.promise;
+      assert.equal(base.content, "first draft");
+      return second.promise;
+    };
+    await edits("first draft");
+    let saving!: Promise<void>;
+    await act(async () => { saving = editor.save(); });
+    await edits("latest draft");
+    await act(async () => { first.resolve({ ...documents.get("a")!.item, updatedAt: 2 }); });
+    assert.equal(editor.draft, "latest draft");
+    assert.equal(readLibraryDraft(storage, key())?.content, "latest draft");
+    assert.deepEqual(writes, ["first draft", "latest draft"]);
+    await act(async () => { second.resolve({ ...documents.get("a")!.item, updatedAt: 3 }); await saving; });
+    assert.equal(editor.payload?.content, "latest draft");
+    assert.equal(readLibraryDraft(storage, key()), null);
+  });
+  await test("a failed autosave retains the draft across the editor lifecycle", async () => {
+    autoSave = true;
+    await render();
+    await edits("recover after failure");
+    const persist = saveNote;
+    saveNote = async () => { throw new Error("本地写入失败"); };
+    await act(async () => { await assert.rejects(editor.save(), /本地写入失败/); });
+    assert.equal(editor.savePaused, true);
+    assert.equal(readLibraryDraft(storage, key())?.content, "recover after failure");
+    await act(async () => root.unmount());
+    await mount();
+    assert.equal(editor.draft, "recover after failure");
+    saveNote = persist;
+    await act(async () => editor.save());
+    assert.equal(documents.get("a")!.content, "recover after failure");
+  });
   await act(async () => root.unmount());
-  console.log("library document editor: PASS (7 React lifecycle regressions)");
+  console.log("library document editor: PASS (9 React lifecycle regressions)");
 }
 void main().catch((error) => { console.error(error); process.exitCode = 1; });

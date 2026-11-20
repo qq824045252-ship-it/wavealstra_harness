@@ -191,3 +191,7 @@ export function resolveScopedLibraryLink(snapshot: LibrarySnapshotDto, sourceIte
   if (candidates.length !== 1) throw new Error(candidates.length ? "同名资料不止一份，请从文件夹中选择" : "链接目标不在当前资料范围，请到所属位置查看");
   return candidates[0].id;
 }
+export function libraryLinkedVersion(href: string): number | undefined {
+  const value = /^[^?#]+\?[^#]*\brev=(\d+)(?:&|#|$)/.exec(href)?.[1];
+  return value ? Number(value) : undefined;
+}

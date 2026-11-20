@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import type { LibraryItemDto, LibraryListRowDto, LibraryOwnerScope, LibrarySnapshotDto } from "@shared/library-ipc";
+import { LIBRARY_INLINE_FILE_MAX_BYTES } from "@shared/library-ipc";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import { IconChevronRight, IconSearch } from "@/components/common/icons";
 import { collectDroppedLocalFiles, dataTransferHasFiles } from "@/lib/projectWorkspace";
+import { isOfficeUseFile } from "@/lib/officeUseFile";
 import {
   defaultLibraryLocation, isLibraryTaskOwnedBy, libraryFolderRow, libraryItemRow, libraryOwnerKey,
   requireLibraryDestination,
@@ -11,9 +13,11 @@ import {
 import { ScopedLibraryOperations } from "@/lib/scopedLibraryOperations";
 import UnsavedChangesDialog from "../project/UnsavedChangesDialog";
 import LibraryDocumentView from "./LibraryDocumentView";
+import LargeLibraryFileView from "./LargeLibraryFileView";
 import ScopedLibraryDialog, { type ScopedLibraryCompose } from "./ScopedLibraryDialog";
 import ScopedLibraryRows from "./ScopedLibraryRows";
 import "@/styles/library.css";
+import { MaterialDeepSearch, MaterialRetrievalRow } from "./MaterialRetrievalControls";
 
 export interface ScopedLibraryManagerProps {
   scope: LibraryOwnerScope;
@@ -28,12 +32,18 @@ export interface ScopedLibraryManagerProps {
   onSnapshot?: (snapshot: LibrarySnapshotDto) => void;
   renderItemActions?: (item: LibraryItemDto) => ReactNode;
   onRegisterUnsaved?: (guard: LibraryUnsavedGuard | null) => void;
+  /** Present only in the top-level desktop Notes module. */
+  desktop?: { scopePicker: ReactNode };
   /** An explicit request from a project pin, with a new token for repeated openings. */
   itemRequest?: { itemId: string; token: number };
 }
 
+export const ScopedLibraryWorkbench = createContext<ComponentType<ScopedLibraryManagerProps> | null>(null);
+
 export function ScopedLibraryManager(props: ScopedLibraryManagerProps): React.JSX.Element {
   const identity = `${libraryOwnerKey(props.scope)}:${props.reference?.spaceId ?? ""}:${props.reference?.collectionId ?? ""}:${props.reference?.itemId ?? ""}`;
+  const Workbench = useContext(ScopedLibraryWorkbench);
+  if (Workbench) return <Workbench key={identity} {...props} />;
   // A new owner never renders metadata or an editor left over from the previous owner.
   return <ScopedLibraryManagerBody key={identity} {...props} />;
 }
@@ -241,6 +251,18 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
   const visible = rows.filter((row) => typeFilter === "all" || row.kind === "folder" || (typeFilter === "other"
     ? !["markdown", "csv", "html", "office"].includes(row.kind) : row.kind === typeFilter));
   const currentItem = snapshot?.items.find((item) => item.id === itemId);
+  const policyScope = reference ? null : scope.type === "workspace" ? { kind: "space" as const, id: scope.workspaceId }
+    : scope.type === "project" ? { kind: "project" as const, id: scope.projectId } : null;
+  const deepRequest = { query: effectiveQuery, owner: scope, reference };
+  const openEvidence = (id: string): void => {
+    void access.snapshot().then((next) => {
+      if (!mounted.current) return;
+      const item = next.items.find((entry) => entry.id === id);
+      if (!item) throw new Error("资料已不在当前范围");
+      setSnapshot(next);
+      open(libraryItemRow(next, item));
+    }).catch(report);
+  };
   const emptyName = scope.type === "project" ? "项目资料" : "资料";
 
   return <section className={`scoped-library-manager${readOnly ? " is-readonly" : ""}${dragging ? " drag-over" : ""}`} aria-label={name ?? "资料管理"}
@@ -253,7 +275,10 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
     </div>
     {notice && <div className={`scoped-library-notice${notice.error ? " is-error" : ""}`} role={notice.error ? "alert" : "status"}>{notice.text}</div>}
     {loading && !snapshot ? <div className="library-empty">正在加载资料…</div> : !snapshot ? <div className="library-empty">资料暂时不可用，请刷新重试。</div>
-      : itemId && currentItem ? <LibraryDocumentView key={itemId} itemId={itemId} access={access} onBack={() => navigate(() => setItemId(null))}
+      : itemId && currentItem ? currentItem.sizeBytes > LIBRARY_INLINE_FILE_MAX_BYTES && !isOfficeUseFile(currentItem.filename)
+        ? <LargeLibraryFileView key={itemId} item={currentItem} access={access} onBack={() => navigate(() => setItemId(null))}
+          onError={report} actions={props.renderItemActions?.(currentItem)} />
+        : <LibraryDocumentView key={itemId} itemId={itemId} access={access} onBack={() => navigate(() => setItemId(null))}
         onRenamed={changed} onDeleted={() => { setItemId(null); setNotice({ text: "已删除原资料" }); changed(); }}
         onOpenItem={(nextId) => { void access.snapshot().then((next) => { if (!mounted.current) return; const item = next.items.find((entry) => entry.id === nextId); if (!item) throw new Error("链接目标已不属于当前资料范围"); setSnapshot(next); open(libraryItemRow(next, item)); }).catch(report); }}
         onToast={(text) => setNotice({ text })} onRegisterUnsaved={registerEditor} actions={props.renderItemActions?.(currentItem)} />
@@ -268,6 +293,8 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
             {[['all', '全部类型'], ['markdown', '文档'], ['csv', '表格'], ['html', '页面'], ['office', '办公'], ['other', '其他']].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </div>
+        {policyScope && <MaterialRetrievalRow key={policyScope.id} scope={policyScope} readOnly={readOnly} />}
+        {scope.type !== "personal" && <MaterialDeepSearch key={JSON.stringify(deepRequest)} request={deepRequest} onOpen={openEvidence} />}
         <nav className="scoped-library-breadcrumbs" aria-label="当前资料位置">{breadcrumbs.map((crumb, index) => <span key={crumb.id ?? "root"}>
           {index > 0 && <IconChevronRight size={12} />}<button type="button" disabled={busy} onClick={() => { setLocation({ spaceId: location.spaceId, collectionId: crumb.id }); if (props.searchQuery === undefined) setQuery(""); }}>{crumb.name}</button>
         </span>)}</nav>
@@ -280,7 +307,7 @@ function ScopedLibraryManagerBody(props: ScopedLibraryManagerProps): React.JSX.E
         </div>}
         {searching ? <div className="library-empty" role="status">正在搜索资料…</div>
           : searchFailed ? <div className="library-empty">搜索失败，请刷新后重试。</div>
-          : !visible.length ? <div className="library-empty"><strong>{effectiveQuery ? `没有匹配的${emptyName}` : rows.length ? "没有此类型的资料" : `还没有${emptyName}`}</strong>
+          : !visible.length ? <div className="library-empty"><strong>{effectiveQuery ? `常规检索未找到匹配的${emptyName}` : rows.length ? "没有此类型的资料" : `还没有${emptyName}`}</strong>
           {!readOnly && !effectiveQuery && <span>新建资料、导入文档，或把文件拖到这里。</span>}
         </div> : <ScopedLibraryRows rows={visible} busy={busy} readOnly={readOnly} onOpen={open} onDrop={drop}
           onRename={(row) => setCompose({ type: "rename", row, title: row.title })}

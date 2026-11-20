@@ -1,16 +1,17 @@
 /**
  * 资料库域测试（current schema）：schema、个人空间引导文、集合/条目 CRUD、URL、收藏、
- * 内容搜索、版本快照、任务引用、产物保存（provenance/幂等/大小上限）、
+ * 内容搜索、版本快照、任务引用、产物保存（provenance、幂等、大文件）、
  * 二进制门禁、项目删除级联、任务删除清理、集合递归删除/跨项目移动拒绝、
  * symlink/junction 逃逸拒绝、原子写、旧 schema current-only 重建策略。
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
-import { LibraryService, LIBRARY_MAX_IMPORT_BYTES } from "../src/main/library/LibraryService";
-import { atomicWriteFileSync, assertManagedPathSafe } from "../src/main/library/library-file-io";
+import { LibraryService } from "../src/main/library/LibraryService";
+import { atomicWriteFileSync, assertManagedPathSafe, sha256File } from "../src/main/library/library-file-io";
+import { libraryNotesBackup } from "../src/main/library/library-note-backup";
 import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
@@ -191,8 +192,107 @@ const pendingAsyncChecks: Promise<void>[] = [];
   const noop = service.writeContent({ id: md.id, content: "# 内容搜索目标\n\n更新后。\n" });
   assert.equal(service.listVersions(md.id).length, 2, "同内容写入不产生新版本");
   assert.equal(noop.contentHash, service.getItem(md.id)!.contentHash);
+  assert.equal(service.readVersion(md.id, 2), "# 内容搜索目标\n\n关键句：氯丁橡胶密封圈。\n");
   service.deleteItem(md.id);
 }
+
+/* ---- 独立笔记：附件、版本、长正文检索、回收站与本地备份 ---- */
+{
+  const owner = { type: "personal" as const };
+  const space = service.ensureOwnedSpace(owner);
+  const folder = service.createCollection({ spaceId: space.id, name: "验收笔记" });
+  const image = service.addNoteImage(owner, space.id, folder.id, "figure.png", "image/png", Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4eAAAAAASUVORK5CYII=", "base64"));
+  const before = "原有版本\n\n![图](" + service.previewUrl(image.id) + ")\n";
+  const note = service.createItem({ spaceId: space.id, collectionId: folder.id, kind: "markdown", title: "长笔记", content: before });
+  const content = "a".repeat(280 * 1024) + "\n\n验收关键字：凛星浮墨。";
+  service.writeContent({ id: note.id, content, expectedContentHash: note.contentHash, expectedTitle: note.title });
+  assert.throws(() => service.writeContent({ id: note.id, content: "stale", expectedContentHash: note.contentHash }), /已在别处更新/);
+  assert.equal(service.noteImageUrl(note.id, service.previewUrl(image.id), 1), service.previewUrl(image.id));
+  assert.ok(service.searchOwnedScope("凛星", owner).some((hit) => hit.id === note.id));
+  assert.ok(service.retrieve("凛星浮墨", { spaceIds: new Set([space.id]) }).some((hit) => hit.itemId === note.id));
+  service.setNoteMetadata(owner, note.id, { tags: ["  工作 ", "工作"], pinned: true });
+  service.setNoteTrashed(owner, [note.id], true);
+  assert.equal(service.getItem(note.id), null);
+  assert.equal(service.retrieve("凛星浮墨", { spaceIds: new Set([space.id]) }).length, 0);
+  assert.ok(service.listTrashedNotes(owner).some((entry) => entry.id === note.id));
+  service.setNoteTrashed(owner, [note.id], false);
+  assert.equal(service.readVersion(note.id, 1), before);
+  assert.deepEqual(service.getItem(note.id)?.tags, ["工作"]);
+
+  const exported = libraryNotesBackup.parse(service.createNoteBackup(owner));
+  const backupFolder = exported.folders.find((entry) => entry.id === folder.id)!;
+  const backup = { ...exported, folders: [backupFolder], items: exported.items.filter((entry) => [image.id, note.id].includes(entry.item.id)) };
+  const backupDatabase = new AppDatabase(join(root, "notes-restore.db"));
+  const restoredService = new LibraryService(backupDatabase, { libraryRoot: join(root, "notes-restore-assets") });
+  assert.deepEqual(restoredService.restoreNoteBackup(owner, backup), { restored: 2, skipped: 0 });
+  assert.deepEqual(restoredService.restoreNoteBackup(owner, backup), { restored: 0, skipped: 2 });
+  assert.equal(restoredService.readContent(note.id).content, content);
+  assert.equal(restoredService.readVersion(note.id, 1), before);
+  assert.equal(restoredService.noteImageUrl(note.id, restoredService.previewUrl(image.id), 1), restoredService.previewUrl(image.id));
+  assert.deepEqual(restoredService.getItem(note.id)?.tags, ["工作"]);
+  backupDatabase.close();
+  service.deleteItem(note.id);
+  service.deleteItem(image.id);
+  service.deleteCollection(folder.id);
+}
+
+/* ---- 导入本地文件夹 ---- */
+const largeFileSize = 256 * 1024 * 1024 + 5;
+const largeSource = join(root, "我的资料", "huge.bin");
+pendingAsyncChecks.push((async () => {
+  const owner = { type: "personal" as const };
+  const spaceId = LIBRARY_PERSONAL_SPACE_ID;
+  const source = join(root, "我的资料");
+  mkdirSync(join(source, "章节", "图片"), { recursive: true });
+  mkdirSync(join(source, "空目录"));
+  const overview = "[明细](章节/明细.md#小节)\n\n![图](章节/图片/配图.png)\n";
+  writeFileSync(join(source, "总览.md"), overview);
+  writeFileSync(join(source, "章节", "明细.md"), "# 小节\n\n[回总览](../总览.md)\n");
+  const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4eAAAAAASUVORK5CYII=", "base64");
+  writeFileSync(join(source, "章节", "图片", "配图.png"), image);
+  const fd = openSync(largeSource, "w");
+  try { writeSync(fd, Buffer.from("tail!"), 0, 5, largeFileSize - 5); }
+  finally { closeSync(fd); }
+  const outside = join(root, "目录外");
+  mkdirSync(outside);
+  writeFileSync(join(outside, "目录外的文件.md"), "这不是源目录里的文件");
+  symlinkSync(outside, join(source, "目录快捷方式"), "junction");
+  const parent = service.createCollection({ spaceId, name: "导入目的地" });
+  const imported = await service.importFolder({ owner, spaceId, collectionId: parent.id, sourcePath: source });
+  assert.equal(imported.folder.name, "我的资料");
+  assert.equal(imported.folder.parentId, parent.id);
+  assert.equal(imported.fileCount, 4, "被 Markdown 引用的图片只导入一次，大文件一同导入");
+  assert.equal(imported.skippedEntries, 1, "导入跳过指向目录外的链接");
+  const collections = service.listCollections(spaceId);
+  const chapter = collections.find((folder) => folder.parentId === imported.folder.id && folder.name === "章节")!;
+  const pictures = collections.find((folder) => folder.parentId === chapter.id && folder.name === "图片")!;
+  assert.equal(collections.find((folder) => folder.parentId === imported.folder.id && folder.name === "空目录")?.name, "空目录");
+  const topNote = service.listItems(spaceId, imported.folder.id).find((item) => item.title === "总览")!;
+  const detail = service.listItems(spaceId, chapter.id).find((item) => item.title === "明细")!;
+  const photo = service.listItems(spaceId, pictures.id).find((item) => item.title === "配图")!;
+  assert.equal(service.readContent(topNote.id).content, `[明细](mybuddy-library://local/${detail.id}/#小节)\n\n![图](mybuddy-library://local/${photo.id}/)\n`);
+  assert.equal(service.readContent(detail.id).content, `# 小节\n\n[回总览](mybuddy-library://local/${topNote.id}/)\n`);
+  assert.deepEqual(readFileSync(service.absolutePath(photo)), image);
+  const largeItem = service.listItems(spaceId, imported.folder.id).find((item) => item.filename === "huge.bin")!;
+  assert.equal(largeItem.sizeBytes, largeFileSize);
+  assert.equal(sha256File(service.absolutePath(largeItem)), sha256File(largeSource));
+  assert.equal(readFileSync(join(source, "总览.md"), "utf8"), overview);
+
+  const failing = join(root, "失败的目录");
+  mkdirSync(failing);
+  writeFileSync(join(failing, "A.md"), "这篇文件已暂存");
+  writeFileSync(join(failing, "故障.md"), "注入数据库写入失败");
+  const beforeFiles = readdirSync(join(libraryRoot, spaceId));
+  db.connection.exec(`CREATE TEMP TRIGGER reject_folder_import BEFORE INSERT ON library_items
+    WHEN NEW.title = '故障' BEGIN SELECT RAISE(ABORT, '测试写入失败'); END`);
+  try {
+    await assert.rejects(service.importFolder({ owner, spaceId, collectionId: parent.id, sourcePath: failing }), /测试写入失败/);
+  } finally { db.connection.exec("DROP TRIGGER reject_folder_import"); }
+  assert.deepEqual(service.listCollections(spaceId).filter((folder) => folder.parentId === parent.id).map((folder) => folder.name), ["我的资料"]);
+  assert.deepEqual(readdirSync(join(libraryRoot, spaceId)), beforeFiles, "失败后仅保留之前导入的文件");
+  console.log("library folder import: PASS (nested folders, links, >256 MiB retained byte-for-byte, rollback)");
+})());
 
 /* ---- TaskLibraryReference + 任务删除清理 ---- */
 {
@@ -272,14 +372,32 @@ const pendingAsyncChecks: Promise<void>[] = [];
   assert.ok(binContent.managedPath && existsSync(binContent.managedPath!));
   assert.throws(() => service.writeContent({ id: bin.id, content: "x" }), /非文本/);
 
-  // 大小上限
-  const huge = join(root, "huge.bin");
-  const fd = require("node:fs").openSync(huge, "w");
-  require("node:fs").ftruncateSync(fd, LIBRARY_MAX_IMPORT_BYTES + 1);
-  require("node:fs").closeSync(fd);
-  assert.throws(() => service.importFile({ spaceId: LIBRARY_PERSONAL_SPACE_ID, sourcePath: huge }), /过大/);
+  const large = service.importFile({ spaceId: LIBRARY_PERSONAL_SPACE_ID, sourcePath: largeSource });
+  assert.equal(large.sizeBytes, largeFileSize);
+  assert.equal(sha256File(service.absolutePath(large)), sha256File(largeSource));
+  service.deleteItem(large.id);
+
+  db.connection.prepare(`INSERT INTO artifacts (id, task_id, kind, source_type, entry_file, root_dir, created_at, updated_at)
+    VALUES ('art-large', 'task-art', 'file', 'workspace-file', ?, ?, 1, 1)`).run(largeSource, root);
+  const largeArtifact = service.saveArtifact({ artifactId: "art-large", spaceId: LIBRARY_PERSONAL_SPACE_ID });
+  assert.equal(statSync(service.absolutePath(largeArtifact)).size, largeFileSize);
+  assert.equal(largeArtifact.contentHash, sha256File(largeSource));
+  assert.equal(service.saveArtifact({ artifactId: "art-large", spaceId: LIBRARY_PERSONAL_SPACE_ID }).id, largeArtifact.id);
+  service.deleteItem(largeArtifact.id);
+
+  const previousLargeText = "项目正文\n".repeat(110_000);
+  writeFileSync(artifactFile, previousLargeText);
+  service.saveArtifact({ artifactId: "art-1", spaceId: LIBRARY_PERSONAL_SPACE_ID });
+  writeFileSync(artifactFile, "新版正文");
+  service.saveArtifact({ artifactId: "art-1", spaceId: LIBRARY_PERSONAL_SPACE_ID });
+  const previousVersion = service.listVersions(saved.id)[0]!;
+  assert.equal(service.readVersion(saved.id, previousVersion.version), previousLargeText);
+  const storedVersion = db.connection.prepare("SELECT path, snapshot IS NULL AS file_backed FROM library_versions WHERE id=?")
+    .get(previousVersion.id) as { path: string; file_backed: number };
+  assert.equal(storedVersion.file_backed, 1, "大文本版本保存在受管文件中");
 
   service.deleteItem(saved.id);
+  assert(!existsSync(storedVersion.path), "删除源资料时清理文件版本");
   service.deleteItem(bin.id);
 }
 

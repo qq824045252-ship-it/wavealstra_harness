@@ -270,7 +270,13 @@ try {
   assert(preservedVersions.every((entry) => entry.versions.length >= 2), "migration fixture includes real historical revisions");
   migrating.close();
   const raw = new Database(migrationPath);
-  raw.exec("DROP INDEX uq_library_spaces_workspace; ALTER TABLE library_spaces DROP COLUMN workspace_id");
+  raw.exec(`
+    DROP INDEX uq_library_spaces_workspace;
+    ALTER TABLE library_spaces DROP COLUMN workspace_id;
+    ALTER TABLE library_items DROP COLUMN trashed_at;
+    ALTER TABLE library_items DROP COLUMN note_metadata;
+    ALTER TABLE library_versions DROP COLUMN snapshot;
+  `);
   assert.equal(raw.pragma("user_version", { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION);
   raw.close();
   migrating = new AppDatabase(migrationPath);
@@ -284,6 +290,8 @@ try {
   for (const entry of preservedVersions) {
     assert.deepEqual(migrationLibrary.listVersions(entry.itemId), entry.versions, "migration preserves historical version IDs, paths and metadata");
     for (const version of entry.versions) assert(existsSync(version.path), "recorded version paths remain valid after migration");
+    assert.throws(() => migrationLibrary.readVersion(entry.itemId, entry.versions[0].version), /正文副本已不可用/,
+      "legacy records with overwritten bytes cannot read the current file as old history");
   }
   assert(migrationLibrary.searchOwnedScope("personal migration payload", { type: "personal" }).some((entry) => entry.id === oldPersonal.id));
   assert.equal(migrationLibrary.searchOwnedScope("personal migration payload", { type: "project", projectId: "mp" }).some((entry) => entry.id === oldPersonal.id), false, "old personal content stays isolated after migration");

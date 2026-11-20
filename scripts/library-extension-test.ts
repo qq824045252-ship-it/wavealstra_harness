@@ -182,6 +182,12 @@ async function main(): Promise<void> {
     ok(readA.isError === undefined && readA.content[0].text.includes("项目A机密文档"), "A: 读 A 条目正常");
     const readPersonal = await call(tools, "library_read", { id: personalItem.id });
     ok(readPersonal.isError === undefined, "A: 读已附加的 personal 正常");
+    service.writeContent({ id: personalItem.id, content: "界".repeat(4000) + "超限正文尾标" });
+    const boundedRead = await call(tools, "library_read", { id: personalItem.id });
+    const details = boundedRead.details as { content: { content: string; contentTruncated: boolean } };
+    assert.equal(details.content.content, "界".repeat(4000), "非项目工具详情也只包含 4000 字符");
+    assert.equal(details.content.contentTruncated, true);
+    assert(!boundedRead.content[0].text.includes("超限正文尾标"));
     const unrelated = service.createItem({ spaceId: LIBRARY_PERSONAL_SPACE_ID, kind: "markdown", title: "未经引用的个人秘密" });
     ok(!(await call(tools, "library_list", { spaceId: LIBRARY_PERSONAL_SPACE_ID })).content[0].text.includes(unrelated.title), "A: 单条引用不会放大为整个个人库");
     ok(!(await call(tools, "library_search", { query: "未经引用" })).content[0].text.includes(unrelated.title), "A: 搜索不含未经引用的个人资料");

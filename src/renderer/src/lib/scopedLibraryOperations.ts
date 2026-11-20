@@ -1,4 +1,4 @@
-import type { LibraryCreateItemRequest, LibraryOwnerScope, LibraryContentDto, LibraryListRowDto, LibrarySnapshotDto } from "@shared/library-ipc";
+import type { LibraryCreateItemRequest, LibraryOwnerScope, LibraryContentDto, LibraryListRowDto, LibrarySnapshotDto, LibraryNoteOperation, LibraryNoteOperationResults, LibrarySearchRequest } from "@shared/library-ipc";
 import {
   isLibrarySpaceOwnedBy, libraryCollectionSubtree, requireLibraryDestination, requireLibraryFolder,
   requireLibraryItem, resolveScopedLibraryLink, scopedLibrarySearchRows, scopedLibrarySnapshot,
@@ -56,8 +56,8 @@ export class ScopedLibraryOperations {
     return payload;
   }
 
-  async search(query: string): Promise<{ snapshot: LibrarySnapshotDto; rows: LibraryListRowDto[] }> {
-    const hits = await this.getApi().search({ query, owner: this.scope, reference: this.reference });
+  async search(query: string, filter?: LibrarySearchRequest["filter"]): Promise<{ snapshot: LibrarySnapshotDto; rows: LibraryListRowDto[] }> {
+    const hits = await this.getApi().search({ query, owner: this.scope, reference: this.reference, filter });
     // A search may finish after documents were deleted, moved, or created.
     // Return one fresh projection for both the result rows and their navigation.
     const snapshot = await this.snapshot();
@@ -68,9 +68,9 @@ export class ScopedLibraryOperations {
     return resolveScopedLibraryLink(await this.snapshot(), sourceItemId, href);
   }
 
-  async createItem(location: LibraryLocation, kind: LibraryCreateItemRequest["kind"], title: string) {
+  async createItem(location: LibraryLocation, kind: LibraryCreateItemRequest["kind"], title: string, content?: string) {
     const target = await this.destination(location);
-    return value(await this.getApi().createItem({ ...target, kind, title }));
+    return value(await this.getApi().createItem({ ...target, kind, title, content }));
   }
 
   async createFolder(location: LibraryLocation, name: string) {
@@ -95,6 +95,12 @@ export class ScopedLibraryOperations {
     return items;
   }
 
+  async importFolder(location: LibraryLocation) {
+    this.writable();
+    if (location.spaceId) requireLibraryDestination(await this.snapshot(), location);
+    return this.note({ type: "importFolder", owner: this.scope, ...location });
+  }
+
   async renameItem(id: string, title: string) {
     await this.item(id, true);
     return value(await this.getApi().updateItem({ id, title }));
@@ -103,6 +109,23 @@ export class ScopedLibraryOperations {
   async writeContent(id: string, content: string) {
     await this.item(id, true);
     return value(await this.getApi().writeContent({ id, content }));
+  }
+
+  async saveNote(base: LibraryContentDto, title: string, content: string) {
+    await this.item(base.item.id, true);
+    return value(await this.getApi().writeContent({
+      id: base.item.id, title, content, expectedContentHash: base.item.contentHash, expectedTitle: base.item.title,
+    }));
+  }
+
+  async note<T extends LibraryNoteOperation>(request: T): Promise<LibraryNoteOperationResults[T["type"]]> {
+    if ("owner" in request && request.type !== "trashList") this.writable();
+    if ("id" in request) await this.item(request.id);
+    if ("ids" in request && request.type !== "restore") {
+      const snapshot = await this.snapshot();
+      for (const id of request.ids) requireLibraryItem(snapshot, id);
+    }
+    return value(await this.getApi().note(request));
   }
 
   async deleteItem(id: string): Promise<void> {

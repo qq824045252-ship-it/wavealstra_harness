@@ -43,11 +43,10 @@ function cosine(a: Float32Array, b: Float32Array): number {
   return s;
 }
 function blobToF32(blob: Buffer | Uint8Array): Float32Array {
-  if (blob instanceof Uint8Array && !(blob instanceof Buffer)) {
-    return new Float32Array(blob.buffer, blob.byteOffset, Math.floor(blob.byteLength / 4));
-  }
-  const buf = blob as Buffer;
-  return new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
+  // SQLite may return a view into a pooled byte buffer at a non-aligned offset.
+  const width = Float32Array.BYTES_PER_ELEMENT;
+  const bytes = blob.byteOffset % width === 0 ? blob : Uint8Array.from(blob);
+  return new Float32Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / width));
 }
 export function f32ToBlob(vec: Float32Array): Buffer {
   return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
@@ -114,7 +113,7 @@ export class WorkspaceSemanticProvider {
            FROM library_chunk_embeddings e
            JOIN library_chunks c ON c.id = e.chunk_id
            JOIN library_items li ON li.id = c.item_id
-           WHERE (${scopeClauses.join(" OR ")})
+           WHERE (${scopeClauses.join(" OR ")}) AND li.trashed_at IS NULL
              AND e.model_id = ? AND e.model_version = ?`
         ).all(...scopeParams, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION) as any;
       } catch (e) {

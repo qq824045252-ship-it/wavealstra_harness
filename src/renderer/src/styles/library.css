@@ -886,6 +886,7 @@
 
 /* Local owners use one compact content manager inside their existing page. */
 .library-page--scoped { display: block; padding: 24px 28px; overflow-y: auto; }
+.library-page--notes { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0; overflow: hidden; }
 .scoped-library-manager { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; min-width: 0; }
 .scoped-library-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .scoped-library-heading h3 { margin: 0; color: var(--fg); font-size: 16px; line-height: 1.4; }

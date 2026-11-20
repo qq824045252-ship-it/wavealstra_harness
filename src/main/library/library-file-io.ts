@@ -6,8 +6,43 @@
  * - 读取/预览前必须 assertManagedPathSafe：词法边界 + 逐组件 lstat 拒绝 symlink/junction；
  * - 写入采用 temp + fsync + atomic rename，避免半写；调用方负责 DB 记录顺序。
  */
-import { closeSync, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
+
+export function sha256File(path: string): string {
+  const hash = createHash("sha256");
+  const bytes = Buffer.allocUnsafe(1024 * 1024);
+  const fd = openSync(path, "r");
+  try {
+    for (let size = readSync(fd, bytes); size > 0; size = readSync(fd, bytes)) {
+      hash.update(bytes.subarray(0, size));
+    }
+    return hash.digest("hex");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readUtf8Prefix(path: string, maxChars: number): { content: string; contentTruncated: boolean } {
+  // Four bytes per UTF-8 code point leaves enough room for a complete character beyond the limit.
+  const buffer = Buffer.allocUnsafe((maxChars + 1) * 4);
+  const fd = openSync(path, "r");
+  try {
+    let size = 0;
+    while (size < buffer.length) {
+      const read = readSync(fd, buffer, size, buffer.length - size, null);
+      if (!read) break;
+      size += read;
+    }
+    const text = buffer.toString("utf8", 0, size);
+    const contentTruncated = text.length > maxChars;
+    const content = contentTruncated ? text.slice(0, maxChars).replace(/[\uD800-\uDBFF]$/, "") : text;
+    return { content, contentTruncated };
+  } finally {
+    closeSync(fd);
+  }
+}
 
 export function isPathInsideManagedRoot(root: string, abs: string): boolean {
   const rootResolved = resolve(root);
@@ -82,14 +117,14 @@ export function assertManagedPathSafe(root: string, abs: string): void {
 }
 
 /** 原子写：temp（同目录，保证同卷 rename）→ fsync → rename 覆盖。失败清理 temp。 */
-export function atomicWriteFileSync(target: string, content: string): void {
+export function atomicWriteFileSync(target: string, content: string | Uint8Array): void {
   const dir = dirname(target);
   mkdirSync(dir, { recursive: true });
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   let fd: number | null = null;
   try {
     fd = openSync(tmp, "w");
-    writeSync(fd, content, null, "utf8");
+    writeFileSync(fd, content);
     fsyncSync(fd);
     closeSync(fd);
     fd = null;

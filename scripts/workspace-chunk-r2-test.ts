@@ -7,7 +7,7 @@
  * - 测试不得手工 INSERT library_chunks_fts / library_fts 冒充生产索引
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
@@ -16,6 +16,14 @@ import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceL
 import { WorkspaceResourceLocator } from "../src/main/workspace/WorkspaceResourceLocator";
 import { chunkText, LIBRARY_CHUNK_DEFAULTS } from "../src/main/library/library-chunker";
 import type { SpaceDto } from "../src/shared/agent-ipc";
+import {
+  getMaterialRetrievalSettings,
+  resolveMaterialRetrievalScope,
+  setMaterialRetrievalScope,
+  setMaterialRetrievalSettings,
+} from "../src/main/library/MaterialRetrievalSettings";
+import { getSemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
+import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
 
 let passed = 0, failed = 0;
 function ok(cond: unknown, msg: string) { if (cond) { passed++; console.log(`  ✓ ${msg}`); } else { failed++; console.error(`  ✗ ${msg}`); } }
@@ -49,6 +57,199 @@ async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), "r2-"));
   const db = new AppDatabase(join(dir, "test.db"));
   try { await fn(db, dir); } finally { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function until(predicate: () => boolean, description: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(description);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+async function verifyMaterialRetrievalPolicy(): Promise<void> {
+  await withTmpDb(async (db, dir) => {
+    const root = { kind: "space", id: "retrieval-root" } as const;
+    const leaf = { kind: "space", id: "retrieval-leaf" } as const;
+    const project = { kind: "project", id: "retrieval-project" } as const;
+    db.createSpace(mkSpace(root.id, "Root", null));
+    db.createSpace(mkSpace("retrieval-middle", "Middle", root.id));
+    db.createSpace(mkSpace(leaf.id, "Leaf", "retrieval-middle"));
+    addProject(db, project.id);
+    eq(getMaterialRetrievalSettings(db), { mode: "hybrid", decisionModel: null }, "资料检索默认混合且决策模型未配置");
+    setMaterialRetrievalSettings(db, { decisionModel: "test-provider/test-model" });
+    setMaterialRetrievalScope(db, root, "keyword");
+    eq(resolveMaterialRetrievalScope(db, project).effective, "hybrid", "无归属项目继承全局");
+    db.connection.prepare("UPDATE projects SET default_space_id = ? WHERE id = ?").run(leaf.id, project.id);
+    eq(resolveMaterialRetrievalScope(db, project), {
+      override: null, effective: "keyword", source: "space", sourceId: root.id,
+    }, "项目沿所属空间多级向上继承");
+    setMaterialRetrievalScope(db, project, "hybrid");
+    db.archiveSpace(root.id, true);
+    assert.throws(() => setMaterialRetrievalScope(db, leaf, "hybrid"), /归档空间/);
+    assert.throws(() => setMaterialRetrievalScope(db, project, null), /归档项目/);
+    db.archiveSpace(root.id, false);
+    db.close();
+
+    const path = join(dir, "test.db");
+    const reopened = new AppDatabase(path);
+    try {
+      eq(getMaterialRetrievalSettings(reopened).decisionModel, "test-provider/test-model", "数据库重开后保留决策模型");
+      eq(resolveMaterialRetrievalScope(reopened, project).override, "hybrid", "数据库重开后保留项目覆盖");
+      eq(setMaterialRetrievalScope(reopened, project, null).sourceId, root.id, "取消项目覆盖立即恢复空间继承");
+    } finally {
+      reopened.close();
+    }
+    const restored = new AppDatabase(path);
+    try {
+      eq(resolveMaterialRetrievalScope(restored, project), {
+        override: null, effective: "keyword", source: "space", sourceId: root.id,
+      }, "再次重开后仍为继承状态");
+    } finally {
+      restored.close();
+    }
+  });
+}
+
+async function verifyMaterialRetrievalIndex(): Promise<void> {
+  await withTmpDb(async (db, dir) => {
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
+    const personal = lib.ensureOwnedSpace({ type: "personal" });
+    const first = lib.createItem({ spaceId: personal.id, kind: "markdown", title: "First", content: "" });
+    const second = lib.createItem({ spaceId: personal.id, kind: "markdown", title: "Second", content: "" });
+    const [earlyId, lateId] = first.id < second.id ? [first.id, second.id] : [second.id, first.id];
+    const write = (id: string, content: string) => lib.writeContent({ id, content });
+    const embeddings = (id: string) => (db.connection.prepare(
+      "SELECT embedding FROM library_chunk_embeddings WHERE chunk_id = ?",
+    ).pluck().all(`${id}#0`) as Buffer[]).map(bytes => bytes.readFloatLE());
+    const originalText = "首次进入队列的片段";
+    const earlyText = "在扫描开始后创建且编号靠前的片段";
+    const updatedText = "计算途中修改后的片段";
+    const strategyText = "计算期间切换为关键词";
+    const values = new Map([[originalText, 0.125], [earlyText, 0.25], [updatedText, 0.5], [strategyText, 0.75]]);
+    const runtime = getSemanticRuntime();
+    const originalStatus = runtime.getModelStatus;
+    const originalSession = runtime.ensureSession;
+    const originalEmbed = runtime.embed;
+    let blocked: { text: string; release: () => void } | undefined;
+    let pauseNext = true;
+    runtime.getModelStatus = () => ({ status: "ready", error: null, modelsRoot: dir });
+    runtime.ensureSession = async () => ({});
+    runtime.embed = async text => {
+      if (pauseNext) {
+        pauseNext = false;
+        await new Promise<void>(resolve => { blocked = { text, release: resolve }; });
+        blocked = undefined;
+      }
+      return new Float32Array(SEMANTIC_DIMENSION).fill(values.get(text)!);
+    };
+    try {
+      write(lateId, originalText);
+      lib.startSemanticIndexing();
+      await until(() => !!blocked, "等待首个片段进入向量计算");
+      write(earlyId, earlyText);
+      write(lateId, updatedText);
+      pauseNext = true;
+      blocked!.release();
+      await until(() => blocked?.text === earlyText, "靠前的新片段应在下一轮进入向量计算");
+      eq(embeddings(lateId), [], "旧内容的在途向量不会提交");
+      blocked!.release();
+      await until(() => lib.semanticIndexStats.completed === 2, "新片段与修改后的片段均应自动补算");
+      eq(embeddings(earlyId), [0.25], "编号靠前的新片段写入当前向量");
+      eq(embeddings(lateId), [0.5], "修改后的片段写入当前向量");
+
+      const project = { kind: "project", id: "retrieval-race-project" } as const;
+      addProject(db, project.id);
+      const scope = lib.ensureOwnedSpace({ type: "project", projectId: project.id });
+      pauseNext = true;
+      const item = lib.createItem({ spaceId: scope.id, kind: "markdown", title: "Strategy", content: strategyText });
+      await until(() => !!blocked, "等待项目片段开始计算");
+      setMaterialRetrievalScope(db, project, "keyword");
+      lib.scheduleSemanticIndex();
+      blocked!.release();
+      await until(() => !lib.semanticIndexStats.running, "等待在途索引完成");
+      eq(embeddings(item.id), [], "计算期间关闭混合检索时不提交向量");
+      eq(lib.semanticIndexStats.total, 2, "当前统计只覆盖允许混合检索的片段");
+      setMaterialRetrievalScope(db, project, null);
+      lib.scheduleSemanticIndex();
+      await until(() => lib.semanticIndexStats.completed === 3, "恢复混合检索后应补齐项目向量");
+      eq(embeddings(item.id), [0.75], "重新启用混合检索后补算项目片段");
+      eq(lib.semanticIndexStats.pending, 0, "恢复后没有待处理片段");
+    } finally {
+      blocked?.release();
+      await lib.stopSemanticIndexing();
+      runtime.getModelStatus = originalStatus;
+      runtime.ensureSession = originalSession;
+      runtime.embed = originalEmbed;
+    }
+  });
+}
+
+async function verifyLargeTextIndex(): Promise<void> {
+  await withTmpDb(async (db, dir) => {
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
+    addProject(db, "large-text-project");
+    const space = lib.ensureOwnedSpace({ type: "project", projectId: "large-text-project" });
+    const path = join(dir, "large-index.txt");
+    const utf8Anchor = "🧭界面断点见证";
+    const longPhrase = Array.from({ length: 46 }, (_, index) => `词${index}:`).join("");
+    const tail = "尾部专有检索术语";
+    const firstPart = "a".repeat(64 * 1024 - 1) + utf8Anchor;
+    const overlapCrossing = 680 * 128 + 60;
+    const body = firstPart + "b".repeat(overlapCrossing - firstPart.length) + longPhrase
+      + "c".repeat(1024 * 1024) + tail + "霓羚🪁🪂";
+    writeFileSync(path, body);
+    const item = lib.importFile({ spaceId: space.id, sourcePath: path });
+    const owner = { type: "project", projectId: "large-text-project" } as const;
+    assert.deepStrictEqual(lib.retrieve(utf8Anchor).map(hit => hit.itemId), [item.id]);
+    assert.deepStrictEqual(lib.retrieve(longPhrase).map(hit => hit.itemId), [item.id]);
+    assert.deepStrictEqual(lib.searchOwnedScope(tail, owner).map(hit => hit.id), [item.id]);
+    assert.deepStrictEqual(lib.retrieve(tail, { spaceIds: new Set(["other-scope"]) }), []);
+    assert.deepStrictEqual(lib.retrieve("霓羚").map(hit => hit.itemId), [item.id]);
+    assert.deepStrictEqual(lib.retrieve("🪁🪂").map(hit => hit.itemId), [item.id]);
+    const evidence = await lib.deepSearchOwnedScope({ owner, query: tail, limit: 2 },
+      async () => async ({ candidates }, _signal, validate) => {
+        validate();
+        return JSON.stringify({ judgments: candidates.map(({ id, text }) => ({ id, score: text.includes(tail) ? 3 : 0 })) });
+      });
+    const tailEvidence = evidence.hits.find(hit => hit.text.includes(tail));
+    assert.equal(tailEvidence?.itemId, item.id);
+    assert.equal(tailEvidence.source.startOffset + tailEvidence.text.indexOf(tail), body.indexOf(tail));
+    const matchingChunk = db.connection.prepare(`
+      SELECT char_offset AS offset, content FROM library_chunks
+      WHERE item_id = ? AND content LIKE ? ORDER BY char_offset LIMIT 1
+    `).get(item.id, `%${tail}%`) as { offset: number; content: string };
+    assert.equal(matchingChunk.offset + matchingChunk.content.indexOf(tail), body.indexOf(tail));
+    assert.deepStrictEqual(lib.semanticIndexStats.pending, chunkText(item.id, body).length);
+    passed += 10;
+
+    // Simulate an upgraded profile and fail partway through the first replacement.
+    db.connection.prepare(`
+      INSERT OR REPLACE INTO library_index_state (key, value, updated_at)
+      VALUES ('text-fts-coverage-version', '3', ?)
+    `).run(Date.now());
+    db.connection.exec(`
+      CREATE TEMP TRIGGER fail_large_chunk BEFORE INSERT ON library_chunks
+      WHEN NEW.chunk_index = 8
+      BEGIN SELECT RAISE(ABORT, 'injected large text write failure'); END;
+    `);
+    assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 0, failed: 1 });
+    assert.deepStrictEqual(lib.retrieve(tail).map(hit => hit.itemId), [item.id]);
+    db.connection.exec("DROP TRIGGER fail_large_chunk");
+    assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 1, failed: 0 });
+    assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 0, failed: 0 });
+    assert.deepStrictEqual(lib.retrieve(tail).map(hit => hit.itemId), [item.id]);
+    db.close();
+    const reopened = new AppDatabase(join(dir, "test.db"));
+    try {
+      const resumed = new LibraryService(reopened, { libraryRoot: join(dir, "library") });
+      assert.deepStrictEqual(await resumed.recoverTextFtsCoverageV2(), { processed: 0, failed: 0 });
+      assert.deepStrictEqual(resumed.searchOwnedScope(tail, owner).map(hit => hit.id), [item.id]);
+    } finally {
+      reopened.close();
+    }
+    passed += 7;
+  });
 }
 
 async function main() {
@@ -203,6 +404,7 @@ async function main() {
     const itemA = await mkItem(lib, sp.id, "bf old A", longText);
     const longTextB = syntheticLong(sp.id, "BF2", 80);
     const itemB = await mkItem(lib, sp.id, "bf old B", longTextB);
+    const empty = lib.createItem({ spaceId: sp.id, kind: "markdown", title: "blank note", content: "" });
     const repo: any = (lib as any).repo;
     // 人为制造旧态：清掉 chunks（模拟 v14 升级到 v15 前的旧数据）
     repo.deleteChunks(itemA.id);
@@ -216,6 +418,8 @@ async function main() {
     // 触发真实生产链 backfill
     const r1 = await lib.backfillMissingChunks({ batchSize: 1 });
     ok(r1.succeeded >= 2, `backfill 真实链路成功：${JSON.stringify(r1)}`);
+    ok(r1.skipped >= 1, "空笔记不阻塞启动回填");
+    eq(repo.listChunks(empty.id).length, 0, "空笔记不生成检索片段");
     ok(repo.listChunks(itemA.id).length > 1, "backfill 后 itemA 已生成 chunks");
     ok(repo.listChunks(itemB.id).length > 1, "backfill 后 itemB 已生成 chunks");
     // chunk FTS 可命中（真实检索，非手工 INSERT）
@@ -320,6 +524,12 @@ async function main() {
     eq(repo.listChunks(itemA.id).length, cnt1, "恢复后幂等：重复触发不增 chunk");
   });
 
+  console.log("== 资料检索策略：持久化、继承与归档 ==");
+  await verifyMaterialRetrievalPolicy();
+  console.log("== 资料语义索引：增量扫描、在途内容和策略变更 ==");
+  await verifyMaterialRetrievalIndex();
+  console.log("== 大文本索引：文件尾部、跨 UTF-8 读块、长查询与原子重建 ==");
+  await verifyLargeTextIndex();
   console.log(`\nResult: passed=${passed} failed=${failed}`);
   if (failed > 0) process.exit(1);
 }

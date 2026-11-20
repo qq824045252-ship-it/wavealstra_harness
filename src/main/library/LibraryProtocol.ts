@@ -6,7 +6,9 @@
  * - filename：同空间按文件名解析（HTML 相对引用 CSV）
  */
 import { protocol } from "electron";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { Readable } from "node:stream";
+import { LIBRARY_INLINE_FILE_MAX_BYTES } from "../../shared/library-ipc";
 import type { LibraryService } from "./LibraryService";
 
 export class LibraryProtocol {
@@ -31,6 +33,17 @@ export class LibraryProtocol {
       if (!encodedId) return this.text(404, "Not Found");
       const itemId = this.decode(encodedId);
       if (itemId === null) return this.text(400, "Bad Request");
+      if (url.searchParams.has("rev")) {
+        const revision = url.searchParams.get("rev") ?? "";
+        if (!/^\d+$/.test(revision)) return this.text(400, "Bad Request");
+        try {
+          const content = this.service.readVersion(itemId, Number(revision));
+          const body = new TextEncoder().encode(content);
+          return new Response(request.method === "HEAD" ? null : body, {
+            headers: this.headers("text/plain; charset=utf-8", body.byteLength),
+          });
+        } catch { return this.text(404, "Version unavailable"); }
+      }
       let subPath = "";
       if (segments.length > 1) {
         const rest = segments.slice(1).filter(Boolean).join("/");
@@ -44,13 +57,21 @@ export class LibraryProtocol {
       if (!resolved || !existsSync(resolved.path)) return this.text(404, "Not Found");
       const st = statSync(resolved.path);
       if (!st.isFile()) return this.text(404, "Not Found");
-      const body = readFileSync(resolved.path);
       if (request.method === "HEAD") {
         return new Response(null, {
           status: 200,
-          headers: this.headers(resolved.mime, body.byteLength),
+          headers: this.headers(resolved.mime, st.size),
         });
       }
+      if (st.size > LIBRARY_INLINE_FILE_MAX_BYTES) {
+        if (!subPath && resolved.mime.includes("html")) return this.text(413, "Open the managed file to view this document");
+        const body = Readable.toWeb(createReadStream(resolved.path));
+        return new Response(body as unknown as BodyInit, {
+          status: 200,
+          headers: this.headers(resolved.mime, st.size),
+        });
+      }
+      const body = readFileSync(resolved.path);
       let payload: Uint8Array = body;
       let mime = resolved.mime;
       if (!subPath && mime.includes("html")) {

@@ -17,5 +17,5 @@ export function libraryScopeWhere(scope: LibraryQueryScope, prefix = ""): { sql:
   add("space_id", scope.spaceIds);
   add("collection_id", scope.collectionIds);
   add("id", scope.itemIds);
-  return { sql: clauses.length ? `(${clauses.join(" OR ")})` : "0", params };
+  return { sql: clauses.length ? `(${clauses.join(" OR ")}) AND ${prefix}trashed_at IS NULL` : "0", params };
 }
