@@ -21,6 +21,7 @@ import {
   apiServiceMediaControls, createApiServiceConnection, selectedWebServiceConnection, webServiceConnections, webSettingsDependOnConnections,
 } from "@shared/api-service-settings";
 import "./CapabilitiesTab.css";
+import SearchApiKeyPools from "./SearchApiKeyPools";
 
 const AUTO_SERVICE = "__automatic__";
 const ADD_SERVICE = "__add_api__";
@@ -340,6 +341,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
   const [savedWebSearch, setSavedWebSearch] = useState<WebSearchConfigDto | null>(null);
   const [webSearchDraft, setWebSearchDraft] = useState<WebSearchConfigDto | null>(null);
   const [searchPolicy, setSearchPolicy] = useState(DEFAULT_SEARCH_POLICY);
+  const [keyPoolsOpen, setKeyPoolsOpen] = useState(false);
   const [credentialDrafts, setCredentialDrafts] = useState<Record<string, CredentialDraft>>({});
   const [openConnections, setOpenConnections] = useState<Set<string>>(() => new Set());
   const [newServicePreset, setNewServicePreset] = useState("");
@@ -366,6 +368,23 @@ export default function CapabilitiesTab(): React.JSX.Element {
     setSearchPolicy(searchPolicyFromConfig(next));
     setSearchLoadError(null);
   }, []);
+  const acceptSearchKeyPools = useCallback((next: WebSearchConfigDto) => {
+    const pools = { apiKeyPools: next.apiKeyPools, apiKeyStates: next.apiKeyStates };
+    const credentials = {
+      tavilyApiKey: next.tavilyApiKey,
+      serperApiKey: next.serperApiKey,
+      configuredProviders: next.configuredProviders,
+    };
+    setSavedWebSearch(current => ({ ...(current ?? {}), ...pools, ...credentials }));
+    setWebSearchDraft(current => ({
+      ...(current ?? {}),
+      ...pools,
+      ...credentials,
+      // Preserve edits intentionally made in the separate search settings form.
+      ...(current?.tavilyApiKey !== savedWebSearch?.tavilyApiKey ? { tavilyApiKey: current?.tavilyApiKey } : {}),
+      ...(current?.serperApiKey !== savedWebSearch?.serperApiKey ? { serperApiKey: current?.serperApiKey } : {}),
+    }));
+  }, [savedWebSearch]);
   const load = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -516,6 +535,11 @@ export default function CapabilitiesTab(): React.JSX.Element {
       if (searchPending && webSearchDraft) {
         const changedPolicy = differs(searchPolicyFromConfig(savedWebSearch ?? {}), searchPolicy);
         searchToSave = { ...webSearchDraft, ...(changedPolicy || savedWebSearch?.searchPolicy ? { searchPolicy: normalizeSearchPolicy(searchPolicy) } : {}) };
+        delete searchToSave.apiKeyPools;
+        delete searchToSave.apiKeyStates;
+        for (const field of Object.values(SEARCH_KEY_FIELDS)) {
+          if (searchToSave[field] === savedWebSearch?.[field]) delete searchToSave[field];
+        }
       }
     } catch (reason) { setError(`搜索设置未保存：${errorText(reason)}`); return; }
     inFlight.current = true; setSaving(true); setMessage(null); setError(null);
@@ -746,6 +770,10 @@ export default function CapabilitiesTab(): React.JSX.Element {
             onChange={setSearchPolicy} renderProviderConfig={renderSearchProvider}
             advanced={<WebFetchSettings value={searchConfig} disabled={busy} onChange={patchSearch} />} />
           <LatestSearchRun />
+          <details className="settings-search-api" open={keyPoolsOpen} onToggle={event => setKeyPoolsOpen(event.currentTarget.open)}>
+            <summary>搜索 API 密钥池</summary>
+            {keyPoolsOpen && <SearchApiKeyPools onSaved={acceptSearchKeyPools} />}
+          </details>
         </>}
       </CapabilityRow>
       <CapabilityRow {...rowCommon("vision", draft.vision.enabled)} title="图像理解" description="为不支持图片输入的主模型选择视觉模型；用于分析图片。" tools={["describe_image"]} configurationPending={savedConfig?.vision.model !== draft.vision.model} preventEnable={!visionModels.length} collapsible summary={draft.vision.model ? `视觉模型 · ${visionModels.find(model => model.id === draft.vision.model)?.name ?? draft.vision.model}` : "自动使用可用视觉模型"} onToggle={enabled => changeConfig(current => ({ ...current, vision: { ...current.vision, enabled } }))}>

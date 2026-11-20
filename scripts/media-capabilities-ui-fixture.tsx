@@ -103,7 +103,7 @@ function installApi(): void {
       }
       return snapshot();
     },
-    saveWebSearchConfig: async (request: WebSearchConfigDto) => { calls.search.push(clone(request)); if (failSearch) throw new Error("模拟搜索保存失败"); search = clone(request); return clone(search); },
+    saveWebSearchConfig: async (request: WebSearchConfigDto) => { calls.search.push(clone(request)); if (failSearch) throw new Error("模拟搜索保存失败"); search = { ...search, ...clone(request) }; return clone(search); },
     testBuiltinCapability: async (id: BuiltinCapabilityId) => { calls.check.push(id); if (failCheck) throw new Error("模拟检查失败：本机组件不可用"); return { ok: true, state: "unchecked", detail: "配置检查完成，未发起生成。", checkedAt: Date.now() }; },
     listBuiltinVideoJobs: async () => { calls.jobs++; return [{ id: "video-00000000-0000-4000-8000-000000000001", taskId: "fixture-task", connectionId: "api-demo", status: "in_progress", createdAt: 10, updatedAt: 20 }]; },
   } };
@@ -195,6 +195,57 @@ async function fillApi(id: string): Promise<void> {
 
 export async function run(): Promise<string[]> {
   const passed: string[] = [];
+
+  await setup(undefined, { search: {
+    tavilyApiKey: "fixture-old-tavily-key",
+    braveApiKey: "fixture-existing-brave-key",
+    configuredProviders: ["tavily", "brave"],
+    searchPolicy: { mode: "parallel", providers: ["tavily", "brave"], providerTimeoutMs: 30000, totalTimeoutMs: 60000, maxRequests: 12, verifySources: true },
+  } });
+  await expand(searchRowDisclosure);
+  await change('[aria-label="搜索方式"]', "single");
+  await expand("details.settings-search-api");
+  const tavilyPool = '.search-api-key-pools section[aria-label="Tavily"]';
+  await waitFor(() => Boolean(document.querySelector(tavilyPool + " .ak-key-remove")), "Legacy key is visible in its pool");
+  await click(tavilyPool + " .ak-key-remove");
+  assert(search.tavilyApiKey === "", "Deleting the legacy fallback key clears its persisted field");
+  assert(search.searchPolicy!.mode === "parallel", "Pool mutations do not persist the separate pending routing draft");
+  assert(search.braveApiKey === "fixture-existing-brave-key", "Pool mutations do not overwrite unrelated provider credentials");
+  assert(calls.search.length === 1 && calls.search[0]!.searchPolicy === undefined, "Pool save only writes pool data and the explicitly cleared fallback");
+  assert(element<HTMLSelectElement>('[aria-label="搜索方式"]').value === "single", "Pool mutation does not reset the pending routing draft");
+  await save();
+  assert(calls.search.length === 2 && calls.search[1]!.tavilyApiKey === undefined && calls.search[1]!.braveApiKey === undefined,
+    "Routing save omits untouched legacy key fields");
+  assert(calls.search[1]!.apiKeyPools === undefined && calls.search[1]!.apiKeyStates === undefined, "Routing save does not write pool config");
+  assert(search.searchPolicy!.mode === "single" && search.tavilyApiKey === "" && search.braveApiKey === "fixture-existing-brave-key",
+    "Saving pending routing neither resurrects a deleted key nor changes separate provider keys");
+  passed.push("legacy key pool mutations and pending search routing save independently without resurrecting credentials");
+
+  await setup(undefined, { search: {
+    apiKeyPools: { tavily: ["fixture-disabled", "fixture-cooling", "fixture-current", "fixture-backup"] },
+    apiKeyStates: { tavily: { activeIndex: 0, cooldownUntil: { 1: Date.now() + 600_000 }, disabled: [0] } },
+  } });
+  await expand(searchRowDisclosure);
+  await expand("details.settings-search-api");
+  await waitFor(() => document.querySelectorAll(tavilyPool + " li.ak-key").length === 4, "Pool keys loaded");
+  const poolRows = () => Array.from(document.querySelectorAll(tavilyPool + " li.ak-key"));
+  const badge = (index: number) => poolRows()[index]!.querySelector(".ak-key-badge")?.textContent;
+  const selectKey = '[title="手动设为当前使用的 key"]';
+  assert(badge(0) === "已禁用" && badge(1)?.startsWith("冷却中") && badge(2) === "生效中",
+    "UI skips disabled/cooling preferences like actual search execution");
+  assert(!poolRows()[0]!.querySelector(selectKey) && !poolRows()[1]!.querySelector(selectKey),
+    "Unavailable rows cannot be selected until restored");
+  assert(Boolean(poolRows()[3]!.querySelector(selectKey)), "Available backup can be selected");
+  search.apiKeyStates!.tavily!.disabled.push(3);
+  const fourthKey = tavilyPool + " li.ak-key:nth-child(4) " + selectKey;
+  await click(fourthKey);
+  assert(calls.search.length === 0 && element(".ak-error").textContent?.includes("该 key 暂不可用"),
+    "Fresh disk state prevents a stale selection from overriding a newly disabled key");
+  search.apiKeyStates!.tavily!.disabled.push(2);
+  await click(".search-api-key-pools-head > button");
+  assert(!poolRows().some(row => row.querySelector(".ak-key-badge.active")) && element(tavilyPool).textContent?.includes("暂无可用 key"),
+    "When no key is available the pool does not show any active key");
+  passed.push("key pool shows runtime fallback, blocks unavailable/stale selection and reports no usable key");
   await setup();
   assert(document.querySelectorAll(".capabilities-page h2").length === 0, "Title belongs to SettingsModal only");
   assert(MEDIA_CAPABILITY_IDS.every(id => Boolean(document.querySelector(`${row(id)} select[aria-label$="服务"]`))), "All five capabilities use the same service selector");
