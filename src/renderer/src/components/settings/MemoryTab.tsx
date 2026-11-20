@@ -4,12 +4,19 @@ import ConfirmDialog from "@/components/common/ConfirmDialog";
 import MemoryKernelExplorer from "./MemoryKernelExplorer";
 import MemorySkillPanel from "./MemorySkillPanel";
 import "./Memory.css";
+import type { AutomaticRecallMode, AutomaticRecallReceipt } from "@shared/memory-kernel";
+
 import type {
   MemoryGatewayAccessGrantDto,
   MemoryGatewayAccessMode,
   MemoryGatewayGrantScopeType,
   MemoryGatewayStatusDto,
 } from "@shared/memory-gateway";
+
+const RECALL_MODE: Record<AutomaticRecallMode, string> = {
+  hybrid: "已执行语义和关键词检索", off: "开关关闭，使用关键词", "short-query": "输入较短，使用关键词",
+  unavailable: "语义检索不可用，已回退到关键词", disabled: "记忆已停用", "no-budget": "本轮没有记忆上下文预算",
+};
 
 const MEMORY_SUBTABS = [
   { id: "browse", label: "全部记忆" },
@@ -88,6 +95,10 @@ export default function MemoryTab(): React.JSX.Element {
   const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
   const [subTab, setSubTab] = useState<MemorySubTab>("browse");
+  const [semantic, setSemantic] = useState<boolean | null>(null);
+  const [receipt, setReceipt] = useState<AutomaticRecallReceipt | undefined>();
+  const [receiptLoaded, setReceiptLoaded] = useState(false);
+  const [receiptRefresh, refreshReceipt] = useState(0);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [focusMemoryId, setFocusMemoryId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -129,7 +140,10 @@ export default function MemoryTab(): React.JSX.Element {
     const request = ++settingsReadVersion.current;
     let cancelled = false;
     void window.api?.agent?.getAppSettings?.().then((settings) => {
-      if (settings && !cancelled && request === settingsReadVersion.current) setEnabled(settings.memoryEnabled !== false);
+      if (settings && !cancelled && request === settingsReadVersion.current) {
+        setEnabled(settings.memoryEnabled !== false);
+        setSemantic(settings.automaticSemanticRecall !== false);
+      }
     }).catch((error) => { if (!cancelled && request === settingsReadVersion.current) setStatus(error instanceof Error ? error.message : String(error)); });
     return () => { cancelled = true; };
   }, [subTab]);
@@ -139,18 +153,29 @@ export default function MemoryTab(): React.JSX.Element {
     if (subTab === "access") void loadExternalAccess().catch((error) => setStatus(error instanceof Error ? error.message : String(error)));
   }, [subTab, loadExternalAccess]);
 
-  const persistEnabled = async (v: boolean): Promise<void> => {
+  useEffect(() => {
+    if (subTab !== "settings") return;
+    let active = true;
+    void window.api?.memory?.stats().then(stats => {
+      if (active) { setReceipt(stats.latestAutomaticRecall); setReceiptLoaded(true); }
+    }).catch(error => { if (active) setStatus(error instanceof Error ? error.message : String(error)); });
+    return () => { active = false; };
+  }, [subTab, receiptRefresh]);
+
+  const persistEnabled = async (v: boolean, key: "memoryEnabled" | "automaticSemanticRecall" = "memoryEnabled"): Promise<void> => {
     if (settingsSaving.current || enabled === null) return;
     settingsSaving.current = true;
     settingsReadVersion.current += 1;
-    const previous = enabled;
-    setEnabled(v);
+    const setValue = key === "memoryEnabled" ? setEnabled : setSemantic;
+    const previous = key === "memoryEnabled" ? enabled : semantic;
+    setValue(v);
     setBusy(true);
     try {
-      await window.api?.agent?.updateAppSettings?.({ memoryEnabled: v });
-      setStatus(v ? "记忆已开启：新对话会自动提取并加载记忆" : "记忆已关闭：不会提取或加载，已有内容仍保留");
+      if (!window.api?.agent?.updateAppSettings) throw new Error("设置服务尚未就绪");
+      await window.api.agent.updateAppSettings({ [key]: v });
+      setStatus(key === "automaticSemanticRecall" ? "已保存，下条新消息生效。" : v ? "记忆已开启：新对话会自动提取并加载记忆" : "记忆已关闭：不会提取或加载，已有内容仍保留");
     } catch (error) {
-      setEnabled(previous);
+      setValue(previous);
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
       settingsSaving.current = false;
@@ -328,6 +353,22 @@ export default function MemoryTab(): React.JSX.Element {
           >
             <Toggle label="使用记忆" on={enabled === true} disabled={busy || enabled === null} onChange={(value) => void persistEnabled(value)} />
           </Row>
+          <Row label="对话自动语义回忆" desc="新消息会按意思查找相关记忆。关闭后，自动回忆使用关键词。">
+            <Toggle label="对话自动语义回忆" on={semantic === true && enabled === true} disabled={busy || enabled !== true || semantic === null} onChange={value => void persistEnabled(value, "automaticSemanticRecall")} />
+          </Row>
+          <details className="memory-recall-receipt" onToggle={event => { if (event.currentTarget.open) refreshReceipt(n => n + 1); }}>
+            <summary>查看最近一次对话回忆</summary>
+            <div className="memory-recall-receipt-body" role="status">
+              {receipt ? <>
+                <span>{new Date(receipt.at).toLocaleTimeString()} · {tasks.find(task => task.id === receipt.taskId)?.title ?? receipt.taskId}</span>
+                <span>{RECALL_MODE[receipt.mode]} · 模型请求含 {receipt.semanticSources.length} 条本轮语义命中的记忆</span>
+                {receipt.mode === "unavailable" && <button type="button" className="btn btn-sm" onClick={() => { setFocusMemoryId(null); setSubTab("browse"); }}>检查语义索引</button>}
+                {receipt.semanticSources.length > 0 && <div className="memory-toolbar">{receipt.semanticSources.map(source =>
+                  <button key={source.id} type="button" className="btn btn-sm" onClick={() => { setFocusMemoryId(source.id); setSubTab("browse"); }}>查看记忆 {source.id.slice(-8)} · v{source.revision}</button>)}</div>}
+              </> : receiptLoaded ? "本次启动后暂无普通对话请求记录。" : "正在读取…"}
+              <button type="button" className="btn btn-sm" onClick={() => refreshReceipt(n => n + 1)}>刷新回忆记录</button>
+            </div>
+          </details>
           {enabled === false && (
             <div className="memory-disabled-notice">记忆当前已停用。已有记录不会删除，你仍可在「记忆」页查看和整理。</div>
           )}

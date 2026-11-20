@@ -37,7 +37,7 @@ export class SkillTrialLedger {
     const at = Date.now();
     let trial: SkillReadinessDiagnostic["trial"];
     try {
-      execFileSync("officecli", ["--version"], { cwd: input.cwd, env: process.env, timeout: 2500, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"] });
+      execFileSync(process.env.MYBUDDY_OFFICECLI || "officecli", ["--version"], { cwd: input.cwd, env: process.env, timeout: 2500, maxBuffer: 16384, stdio: ["ignore", "pipe", "pipe"] });
       trial = { state: "passed", at, evidence: "officecli --version exit=0; SKILL.md read; CLI smoke only, no document validation" };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? "nonzero_or_timeout";

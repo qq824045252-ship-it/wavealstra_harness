@@ -14,7 +14,12 @@ import { resolveDurableBranch, captureDurableBranch } from "../src/main/agent/du
 import { openDurableStorage } from "../src/main/agent/durable/DurableStorage";
 import { findDurableUserEntry } from "../src/main/agent/durable/DurableConversationBranch";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { durableTaskStatus } from "../src/shared/durable-bot";
 import { MemoryService } from "../src/main/memory/MemoryService";
+import { MemorySemanticProvider } from "../src/main/memory/MemorySemanticProvider";
+import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
+import { getSemanticRuntime, SemanticUnavailableError } from "../src/main/retrieval/SemanticRuntime";
+import type { AutomaticRecallReceipt } from "../src/shared/memory-kernel";
 import { WorkMemoryCapture } from "../src/main/memory/WorkMemoryCapture";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
@@ -120,6 +125,7 @@ try {
   assert.equal(runtime.snapshot.messages.at(-1), stable, "committed DTOs are cached by entry ID");
   waitingForInput = true;
   assert.equal((await runtime.refresh()).status, "waiting_input", "persistent approvals update even without a native watch revision");
+  assert.equal(durableTaskStatus(runtime.snapshot), "pending", "waiting for input belongs in the pending task filter");
   waitingForInput = false;
   assert.notEqual((await runtime.refresh()).status, "waiting_input");
   let pages = 0;
@@ -481,3 +487,51 @@ try {
   } finally {await worker.close();}
   console.log("PASS native Work preference correction, immutable tool continuation/restart, forgetting with raw history, generic constraints, empty/disabled/exhausted state and scope isolation");
 } finally {preferenceDb.close();}
+
+// Compare the exact same paraphrase in fresh conversations at the provider boundary.
+const recallDb = new AppDatabase(":memory:");
+const encoder = getSemanticRuntime();
+const originalEmbed = encoder.embed;
+try {
+  const realModel = process.env.MYBUDDY_TEST_REAL_SEMANTIC === "1";
+  if (!realModel) encoder.embed = async text => {
+    const vector = new Float32Array(SEMANTIC_DIMENSION);
+    vector[text.includes("仓库") ? 1 : 0] = 1;
+    return vector;
+  };
+  const seed = new MemoryService(recallDb, { semantic: false });
+  const record = seed.create({ kind: "fact", title: "出差考勤三原则", content: "员工出差期间计为出勤，补贴走费用报销，必须关联报销单。",
+    scopeType: "global", sourceType: "user" });
+  const distractor = seed.create({ kind: "fact", title: "仓库配色", content: "仓库货架使用蓝色标签。", scopeType: "global", sourceType: "user" });
+  const index = new MemorySemanticProvider(recallDb);
+  for (const item of [record, distractor]) assert.equal(await index.index(item), "indexed");
+  const memory = new MemoryService(recallDb);
+  const query = "外派那几天算上班吗？津贴从哪里领？";
+  const receiptLog: Array<Omit<AutomaticRecallReceipt, "taskId" | "at">> = [];
+  const payloads: Message[][] = [];
+  const models: Models = { ...api, streamSimple: (_model, input) => {
+    payloads.push(structuredClone([...input.messages]));
+    const output = createAssistantMessageEventStream();
+    queueMicrotask(() => { output.push({ type: "done", reason: "stop", message: answer("收到", Date.now()) }); output.end(); });
+    return output;
+  } };
+  for (const mode of ["off", "hybrid", "pruned", "unavailable"] as const) {
+    if (mode === "unavailable") encoder.embed = async () => { throw new SemanticUnavailableError("model unavailable"); };
+    const chat = await DurableBotRuntime.open({ ...options, directory: join(directory, "recall-" + mode), models, tools: [],
+      contextHooks: mode === "pruned" ? [messages => ({ messages: messages.filter(message =>
+        !(message.role === "user" && typeof message.content === "string" && message.content.includes(record.content))) })] : [],
+      evidenceProjection: { memory, scope: () => ({ taskId: "recall-test" }), enabled: () => true,
+        automaticSemanticRecall: () => mode !== "off", supplementalEvidence: () => [], onAutomaticRecall: receipt => receiptLog.push(receipt) } });
+    try {
+      const previous = payloads.length;
+      await (await chat.submit(query, "recall-" + mode)).wait(context);
+      assert.equal(payloads.length, previous + 1, "one actual provider request per new conversation");
+      const sent = JSON.stringify(payloads.at(-1));
+      assert.equal(sent.includes(record.content), mode === "hybrid", "paraphrased fact in actual request: " + mode);
+      assert.equal(receiptLog.length, payloads.length, "each dispatch reports exactly once");
+      assert.deepEqual(receiptLog.at(-1), { mode: mode === "pruned" ? "hybrid" : mode,
+        semanticSources: mode === "hybrid" ? [{ id: record.id, revision: seed.history(record.id)[0].revision }] : [] });
+    } finally { await chat.close(); }
+  }
+  console.log("PASS ordinary chat semantic recall off/on/unavailable, provider payload and receipt (" + (realModel ? "real BGE-M3" : "fixture vectors") + ")");
+} finally { encoder.embed = originalEmbed; recallDb.close(); }

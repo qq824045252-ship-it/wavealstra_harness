@@ -20,7 +20,10 @@ function hashString(s: string): number {
 }
 
 export class SemanticUnavailableError extends Error {
-  constructor(msg: string) { super(msg); this.name = "SemanticUnavailableError"; }
+  constructor(msg: string, readonly kind: "missing" | "invalid" | "runtime" = "runtime", readonly modelDirectory?: string) {
+    super(msg);
+    this.name = "SemanticUnavailableError";
+  }
 }
 
 export class SemanticRuntime {
@@ -36,6 +39,7 @@ export class SemanticRuntime {
   get dimension() { return SEMANTIC_DIMENSION; }
 
   getLoadMs(): number | null { return this.loadMs; }
+  getModelStatus(): ReturnType<SemanticModelManager["getStatus"]> { return this.manager.getStatus(); }
 
   isAvailable(): boolean {
     const st = this.manager.getStatus();
@@ -45,7 +49,9 @@ export class SemanticRuntime {
   /** Throw if not ready — caller maps to lexical-only vs explicit unavailable */
   ensureAvailableOrThrow(): void {
     const st = this.manager.getStatus();
-    if (st.status !== "ready") throw new SemanticUnavailableError(`semantic model ${st.status}${st.error ? `: ${st.error}` : ""}`);
+    if (st.status !== "ready") throw new SemanticUnavailableError(
+      st.error ?? (st.status === "not_installed" ? "未找到 BGE-M3 INT8 模型包" : `模型状态：${st.status}`),
+      st.status === "not_installed" ? "missing" : st.status === "corrupt" ? "invalid" : "runtime", st.modelsRoot);
   }
 
   async ensureSession(): Promise<any> {
@@ -62,6 +68,8 @@ export class SemanticRuntime {
         this.loadMs = Date.now() - t0;
         this.sess = sess;
         return sess;
+      } catch (error) {
+        throw new SemanticUnavailableError(error instanceof Error ? error.message : String(error), "runtime", this.manager.getModelsRoot());
       } finally { this.sessLoading = null; }
     })();
     const s = await this.sessLoading;
@@ -135,7 +143,7 @@ export class SemanticRuntime {
     const cache = this.ensureTokenizer();
     if (!cache) {
       // Tokenizer missing is fatal in production — surface as unavailable, not hash fallback
-      throw new SemanticUnavailableError("tokenizer.json not available");
+      throw new SemanticUnavailableError("tokenizer.json 无法加载", "invalid", this.manager.getModelsRoot());
     }
     const normalized = text.normalize("NFKC");
     const withPrefix = "▁" + normalized;

@@ -20,6 +20,20 @@ export type MemoryKind =
   | "procedure";
 
 export type MemoryStatus = "active" | "superseded" | "resolved" | "invalid";
+export interface MemoryIndexIssue {
+  kind: "missing" | "invalid" | "runtime" | "index";
+  detail: string;
+  modelDirectory?: string;
+}
+
+export interface MemoryIndexResult {
+  indexed: number;
+  current: number;
+  skipped: number;
+  failed: number;
+  pending: number;
+  issue?: MemoryIndexIssue;
+}
 export type MemoryScopeType = "global" | "workspace" | "project" | "task" | "bot" | "team" | "conversation" | "work";
 export type MemoryScopeBinding = "owned" | "promoted";
 export type MemorySourceType = "user" | "agent" | "tool" | "library" | "event" | "manual" | "import";
@@ -261,7 +275,17 @@ export interface MemoryProcedureExecutionDto {
   tools: Array<{ toolCallId: string; name: string; arguments: string; result: string }>;
 }
 
+export interface SkillDistillationProgress {
+  state: "running" | "paused" | "completed" | "failed";
+  total: number;
+  checked: number;
+  skipped: number;
+  created: number;
+  error?: string;
+}
+
 export interface MemorySkillLearningStatusDto {
+  distillation?: SkillDistillationProgress;
   procedures: number;
   reusableProcedures: number;
   failedTurns: number;
@@ -486,7 +510,16 @@ export interface MemoryCoreProfileDto {
   updatedAt: number;
 }
 
+export type AutomaticRecallMode = "hybrid" | "off" | "short-query" | "unavailable" | "disabled" | "no-budget";
+export interface AutomaticRecallReceipt {
+  taskId: string;
+  at: number;
+  mode: AutomaticRecallMode;
+  semanticSources: Array<{ id: string; revision: number }>;
+}
+
 export interface MemoryKernelStats {
+  latestAutomaticRecall?: AutomaticRecallReceipt;
   total: number;
   active: number;
   byKind: Record<string, number>;
@@ -549,6 +582,7 @@ export const MemoryIpc = {
   skillLearningStatus: "memory:skillLearningStatus",
   deleteSkillHistory: "memory:deleteSkillHistory",
   refreshSkillCandidates: "memory:refreshSkillCandidates",
+  distillSkills: "memory:distillSkills",
   approveSkillCandidate: "memory:approveSkillCandidate",
   rejectSkillCandidate: "memory:rejectSkillCandidate",
   skillEffectiveness: "memory:skillEffectiveness",

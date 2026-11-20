@@ -194,8 +194,70 @@ function organizationFixtures() {
   return { data, ready };
 }
 
+export async function checkSemanticIndexFeedback(): Promise<void> {
+  fixtures();
+  const modelDirectory = "C:/Users/" + "long-profile-name".repeat(8) + "/models/semantic/bge-m3-int8-v1";
+  api.db.getSemanticModelStatus = async () => ({ status: "not_installed", error: null, modelsRoot: modelDirectory });
+  api.memory.reindexSemantic = async () => ({ indexed: 0, current: 0, skipped: 0, pending: 177, failed: 0,
+    issue: { kind: "missing", detail: "未找到 BGE-M3 INT8 模型包", modelDirectory } });
+  mount(<MemoryKernelExplorer />);
+  await until(() => host.querySelector('[role="alert"]')?.textContent?.includes("未找到本地语义模型"), "missing model visible on entry");
+  await click("重试语义索引");
+  const guide = host.querySelector<HTMLDetailsElement>(".memory-index-feedback details");
+  check(guide && !guide.open && host.querySelector('[role="alert"]')?.textContent?.includes("待处理 177 条"), "model unavailable shows pending coverage and a collapsed guide");
+  guide!.querySelector("summary")!.click();
+  for (const width of [320, 540, 900]) {
+    host.style.width = width + "px";
+    const panel = host.querySelector<HTMLElement>(".memory-index-feedback")!;
+    check(guide!.open && panel.scrollWidth <= panel.clientWidth + 1 && panel.querySelector("code")?.textContent === modelDirectory,
+      "expanded model installation path fits at width " + width);
+  }
+  api.memory.reindexSemantic = async () => ({ indexed: 177, current: 0, skipped: 0, pending: 0, failed: 0 });
+  await click("重试语义索引");
+  check(!host.querySelector(".memory-index-feedback") && host.textContent?.includes("本次新增 177 条"), "successful retry replaces the guide");
+}
+
+export async function checkAutomaticRecallSettings(): Promise<void> {
+  fixtures();
+  let enabled = true;
+  api.agent.getAppSettings = async () => ({ memoryEnabled: true, automaticSemanticRecall: enabled });
+  api.agent.updateAppSettings = async (patch: { automaticSemanticRecall: boolean }) => { enabled = patch.automaticSemanticRecall; };
+  api.memory.stats = async () => ({ ...stats, latestAutomaticRecall: { taskId: "task-recall", at: Date.now(), mode: "hybrid",
+    semanticSources: [{ id: atom.id, revision: 2 }] } });
+  mount(<MemoryTab />);
+  await click("设置");
+  const toggle = () => host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="对话自动语义回忆"]')!;
+  await until(() => toggle()?.getAttribute("aria-checked") === "true", "saved automatic recall setting");
+  flushSync(() => toggle().click());
+  await until(() => !enabled && !toggle().disabled, "automatic recall switch persists");
+  await click("全部记忆");
+  await click("设置");
+  await until(() => toggle()?.getAttribute("aria-checked") === "false", "automatic recall setting survives reopening");
+  const details = host.querySelector<HTMLDetailsElement>(".memory-recall-receipt")!;
+  check(details && !details.open, "receipt starts collapsed");
+  details.querySelector("summary")!.click();
+  await until(() => details.open && details.innerText.includes("模型请求含 1 条"), "last actual request survives settings change");
+  for (const width of [320, 540, 900]) {
+    host.style.width = width + "px";
+    check(details.scrollWidth <= details.clientWidth + 1, "expanded recall details fit width " + width);
+  }
+  await click(/查看记忆 .*v2/);
+  await until(() => host.textContent?.includes(atom.title), "receipt links to memory explorer");
+  api.memory.stats = async () => ({ ...stats, latestAutomaticRecall: { taskId: "task-recall", at: Date.now(),
+    mode: "unavailable", semanticSources: [] } });
+  await click("设置");
+  host.querySelector<HTMLElement>(".memory-recall-receipt summary")!.click();
+  await until(() => host.innerText.includes("已回退到关键词"), "failed recall explains fallback");
+  await click("检查语义索引");
+  await until(() => host.textContent?.includes(atom.title), "fallback opens index controls");
+}
+
 export async function run(): Promise<string[]> {
   const results: string[] = [];
+  await checkAutomaticRecallSettings();
+  results.push("persisted automatic recall switch and responsive last-request receipt");
+  await checkSemanticIndexFeedback();
+  results.push("semantic index failure, responsive installation guide, retry and recovery");
   const botRequests = botMemoryFixtures();
   mount(<MemoryTab />);
   await until(() => host.textContent?.includes("学习时偏好简短中文"), "Bot memories loaded");

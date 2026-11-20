@@ -1,5 +1,5 @@
 import type { AppDatabase } from "../db/AppDatabase";
-import type { MemoryRecordDto } from "../../shared/memory-kernel";
+import type { MemoryIndexResult, MemoryRecordDto } from "../../shared/memory-kernel";
 import { memorySearchWhere, type MemorySearchScope } from "./MemorySearchScope";
 import { setImmediate as yieldThread } from "node:timers/promises";
 import {
@@ -41,28 +41,64 @@ export class MemorySemanticProvider {
     this.runtime = getSemanticRuntime(manager);
   }
 
-  async index(record: MemoryRecordDto): Promise<void> {
-    if (record.status !== "active") return;
+  async index(record: Pick<MemoryRecordDto, "id" | "status" | "contentHash" | "kind" | "title" | "content">): Promise<"indexed" | "current" | "skipped"> {
+    if (record.status !== "active") return "skipped";
     const conn = this.db.connection;
-    if (!conn.open) return;
+    if (!conn.open) return "skipped";
     const existing = conn.prepare(
-      `SELECT content_hash FROM memory_embeddings WHERE memory_id=? AND model_id=? AND model_version=?`,
-    ).get(record.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION) as { content_hash: string } | undefined;
-    if (existing?.content_hash === record.contentHash) return;
+      `SELECT 1 FROM memory_embeddings WHERE memory_id=? AND model_id=? AND model_version=?
+       AND content_hash=? AND dimension=? AND length(embedding)=?`,
+    ).get(record.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, record.contentHash, SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4);
+    if (existing) return "current";
     const vector = await this.runtime.embed(`${record.kind}: ${record.title}\n${record.content}`.trim());
     if (vector.length !== SEMANTIC_DIMENSION) throw new Error(`Memory embedding dimension mismatch: ${vector.length}`);
-    if (!conn.open) return;
+    if (!conn.open) return "skipped";
     const current = conn.prepare("SELECT content_hash,status FROM memory_records WHERE id=?").get(record.id) as
       { content_hash: string; status: string } | undefined;
     // Late vectors must not resurrect forgotten records or overwrite a newer revision.
     // This check and upsert are synchronous, so no JS mutation can interleave them.
-    if (!current || current.status !== "active" || current.content_hash !== record.contentHash) return;
-    conn.prepare(
+    if (!current || current.status !== "active" || current.content_hash !== record.contentHash) return "skipped";
+    const saved = conn.prepare(
       `INSERT INTO memory_embeddings (memory_id,model_id,model_version,content_hash,dimension,embedding,created_at)
        VALUES (?,?,?,?,?,?,?)
        ON CONFLICT(memory_id,model_id,model_version) DO UPDATE SET
-         content_hash=excluded.content_hash, dimension=excluded.dimension, embedding=excluded.embedding, created_at=excluded.created_at`,
+         content_hash=excluded.content_hash, dimension=excluded.dimension, embedding=excluded.embedding, created_at=excluded.created_at
+       WHERE content_hash<>excluded.content_hash OR dimension<>excluded.dimension OR length(embedding)<>length(excluded.embedding)`,
     ).run(record.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, record.contentHash, SEMANTIC_DIMENSION, f32ToBlob(vector), Date.now());
+    return saved.changes ? "indexed" : "current";
+  }
+
+  async backfill(limit?: number): Promise<MemoryIndexResult> {
+    const conn = this.db.connection;
+    const rows = conn.prepare(`SELECT m.id, e.memory_id IS NOT NULL AS ready FROM memory_records m
+      LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model_id=? AND e.model_version=?
+        AND e.content_hash=m.content_hash AND e.dimension=? AND length(e.embedding)=?
+      WHERE m.status='active' ORDER BY m.updated_at DESC, m.id`)
+      .all(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4) as Array<{ id: string; ready: number }>;
+    const missing = rows.filter(row => !row.ready);
+    const result: MemoryIndexResult = { indexed: 0, current: rows.length - missing.length, skipped: 0, failed: 0, pending: missing.length };
+    if (!rows.length) return result;
+    const read = conn.prepare("SELECT id,status,kind,title,content,content_hash AS contentHash FROM memory_records WHERE id=?");
+    try {
+      await this.runtime.ensureSession();
+      for (const row of missing.slice(0, limit === undefined ? missing.length : Math.max(1, limit))) {
+        const record = read.get(row.id) as Pick<MemoryRecordDto, "id" | "status" | "kind" | "title" | "content" | "contentHash"> | undefined;
+        try {
+          const outcome = record ? await this.index(record) : "skipped";
+          result[outcome]++;
+        } catch (error) {
+          if (error instanceof SemanticUnavailableError) throw error;
+          result.failed++;
+          result.issue ??= { kind: "index", detail: error instanceof Error ? error.message : String(error) };
+        }
+        result.pending--;
+      }
+    } catch (error) {
+      result.issue = error instanceof SemanticUnavailableError
+        ? { kind: error.kind, detail: error.message, modelDirectory: error.modelDirectory }
+        : { kind: "runtime", detail: error instanceof Error ? error.message : String(error) };
+    }
+    return result;
   }
 
   async search(query: string, scope: MemorySearchScope, accept: (id: string, contentHash: string) => boolean,

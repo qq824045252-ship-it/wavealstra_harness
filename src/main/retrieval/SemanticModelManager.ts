@@ -1,6 +1,6 @@
 /**
  * R3 Stage 1 — SemanticModelManager
- * Portable model distribution: app bundles onnxruntime-node, model downloaded on demand to userData.
+ * Electron and Node share the portable installation. An existing Electron profile model is also supported.
  * Directory: <MyBuddyDir>/models/semantic/bge-m3-int8-v1/
  *   ├─ model.onnx (external ref: bge-m3-int8.onnx.data)
  *   ├─ bge-m3-int8.onnx.data
@@ -17,7 +17,7 @@
  *  - explicit semantic mode: unavailable → throw/return unavailable (never hash fallback)
  */
 import { createHash } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, createWriteStream, existsSync, openSync, readSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { getMyBuddyDir } from "../paths";
@@ -43,39 +43,26 @@ export interface ModelManifest {
 const MODEL_SUBDIR = join("models", "semantic", "bge-m3-int8-v1");
 const REQUIRED_FILES = ["model.onnx", "bge-m3-int8.onnx.data", "tokenizer.json"] as const;
 
-function getModelsRoot(): string {
-  // Portable: use ~/.mybuddy/models — testable without Electron, also maps to app.getPath('userData') via symlink if needed.
-  // If electron app is available, prefer app.getPath('userData') when it differs; but keep ~/.mybuddy as canonical for now.
+function modelDirectories(): string[] {
+  const portable = join(getMyBuddyDir(), MODEL_SUBDIR);
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electron: any = require("electron");
-    const app = electron?.app;
-    if (app && typeof app.getPath === "function") {
-      const p = app.getPath("userData");
-      if (p && typeof p === "string") return join(p, "models", "semantic", "bge-m3-int8-v1");
-    }
-  } catch { /* fallback */ }
-  return join(getMyBuddyDir(), MODEL_SUBDIR);
+    const userData = require("electron")?.app?.getPath("userData");
+    if (userData) return [...new Set([join(userData, MODEL_SUBDIR), portable])];
+  } catch { /* Node tools only use the portable installation. */ }
+  return [portable];
 }
 
 function sha256File(path: string): string {
-  const h = createHash("sha256");
-  h.update(readFileSync(path));
-  return h.digest("hex").toLowerCase();
-}
-
-function shouldVerifySha(cached: { mtimes: Map<string, number>; sizes: Map<string, number>; shas: Map<string, string> } | null, fp: string, expectedSha: string): { need: boolean; cachedSha?: string } {
-  if (!cached) return { need: true };
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const fd = openSync(path, "r");
   try {
-    const st = statSync(fp);
-    const mt = st.mtimeMs;
-    const sz = st.size;
-    const prevMt = cached.mtimes.get(fp);
-    const prevSz = cached.sizes.get(fp);
-    const prevSha = cached.shas.get(fp);
-    if (prevMt === mt && prevSz === sz && prevSha === expectedSha.toLowerCase()) return { need: false, cachedSha: prevSha };
-  } catch {}
-  return { need: true };
+    let size: number;
+    while ((size = readSync(fd, buffer)) > 0) hash.update(buffer.subarray(0, size));
+    return hash.digest("hex");
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function readManifest(root: string): ModelManifest | null {
@@ -92,11 +79,20 @@ export class SemanticModelManager {
   private status: SemanticModelStatus = "not_installed";
   private statusError: string | null = null;
   private downloadingPromise: Promise<void> | null = null;
-  private verifiedAt: { mtimes: Map<string, number>; sizes: Map<string, number>; shas: Map<string, string> } | null = null;
+  private readonly verified = new Map<string, { mtime: number; size: number; sha: string }>();
+  private selectedRoot?: string;
 
   constructor(private readonly modelsRootOverride?: string) {}
 
-  getModelsRoot(): string { return this.modelsRootOverride ?? getModelsRoot(); }
+  private directories(): string[] {
+    return this.modelsRootOverride ? [this.modelsRootOverride] : modelDirectories();
+  }
+
+  getModelsRoot(): string {
+    if (this.selectedRoot) return this.selectedRoot;
+    const roots = this.directories();
+    return roots.find(root => existsSync(join(root, "manifest.json"))) ?? roots.at(-1)!;
+  }
   getModelPath(): string { return join(this.getModelsRoot(), "model.onnx"); }
   getTokenizerPath(): string { return join(this.getModelsRoot(), "tokenizer.json"); }
   getConfigPath(): string { return join(this.getModelsRoot(), "config.json"); }
@@ -110,106 +106,51 @@ export class SemanticModelManager {
   /** Verify existing installation; returns status. Does not trigger download. */
   checkSync(): { status: SemanticModelStatus; error: string | null } {
     if (this.status === "downloading") return { status: this.status, error: this.statusError };
-    const root = this.getModelsRoot();
-    const manifest = readManifest(root);
-    if (!manifest) {
-      // No manifest → check if files exist at all
-      const anyExists = REQUIRED_FILES.some((f) => existsSync(join(root, f)));
-      if (!anyExists) {
-        this.status = "not_installed";
+    const roots = this.directories();
+    let firstError: { root: string; detail: string } | undefined;
+    const preferred = this.status === "ready" && this.selectedRoot && roots.includes(this.selectedRoot) ? this.selectedRoot : undefined;
+    const candidates = preferred ? [preferred, ...roots.filter(root => root !== preferred)] : roots;
+    for (const root of candidates) {
+      if (!existsSync(join(root, "manifest.json")) && !REQUIRED_FILES.some(name => existsSync(join(root, name)))) continue;
+      try {
+        this.verifyRoot(root);
+        this.selectedRoot = root;
+        this.status = "ready";
         this.statusError = null;
         return { status: this.status, error: null };
-      }
-      this.status = "corrupt";
-      this.statusError = "manifest.json missing";
-      return { status: this.status, error: this.statusError };
-    }
-    if (manifest.modelId !== SEMANTIC_MODEL_ID || manifest.modelVersion !== SEMANTIC_MODEL_VERSION) {
-      this.status = "corrupt";
-      this.statusError = `manifest model mismatch: ${manifest.modelId}:${manifest.modelVersion}`;
-      return { status: this.status, error: this.statusError };
-    }
-    if (manifest.dimension !== SEMANTIC_DIMENSION) {
-      this.status = "corrupt";
-      this.statusError = `dimension mismatch: ${manifest.dimension} != ${SEMANTIC_DIMENSION}`;
-      return { status: this.status, error: this.statusError };
-    }
-    for (const f of REQUIRED_FILES) {
-      const entry = manifest.files.find((x) => x.name === f);
-      const fp = join(root, f);
-      if (!existsSync(fp)) {
-        this.status = "corrupt";
-        this.statusError = `missing file: ${f}`;
-        return { status: this.status, error: this.statusError };
-      }
-      if (entry?.sha256) {
-        const dec = shouldVerifySha(this.verifiedAt, fp, entry.sha256);
-        if (dec.need) {
-          try {
-            const actual = sha256File(fp);
-            if (actual !== entry.sha256.toLowerCase()) {
-              this.status = "corrupt";
-              this.statusError = `sha256 mismatch: ${f}`;
-              return { status: this.status, error: this.statusError };
-            }
-          } catch (e) {
-            this.status = "corrupt";
-            this.statusError = `sha256 check failed: ${f}: ${String(e)}`;
-            return { status: this.status, error: this.statusError };
-          }
-        }
-      }
-      if (entry?.size) {
-        try {
-          const st = statSync(fp);
-          if (st.size !== entry.size) {
-            this.status = "corrupt";
-            this.statusError = `size mismatch: ${f}`;
-            return { status: this.status, error: this.statusError };
-          }
-        } catch { /* ignore */ }
+      } catch (error) {
+        firstError ??= { root, detail: error instanceof Error ? error.message : String(error) };
       }
     }
-    // external data must match onnx internal location (bge-m3-int8.onnx.data)
+    this.selectedRoot = firstError?.root ?? roots.at(-1);
+    this.status = firstError ? "corrupt" : "not_installed";
+    this.statusError = firstError?.detail ?? null;
+    return { status: this.status, error: this.statusError };
+  }
+
+  private verifyRoot(root: string): void {
+    const manifest = readManifest(root);
+    if (!manifest) throw new Error("manifest.json 缺失或无法读取");
+    if (manifest.modelId !== SEMANTIC_MODEL_ID || manifest.modelVersion !== SEMANTIC_MODEL_VERSION || manifest.dimension !== SEMANTIC_DIMENSION) {
+      throw new Error(`模型包与 ${SEMANTIC_MODEL_ID} ${SEMANTIC_MODEL_VERSION}（${SEMANTIC_DIMENSION} 维）不匹配`);
+    }
+    for (const name of REQUIRED_FILES) {
+      if (!manifest.files.some(entry => entry.name === name && /^[a-f0-9]{64}$/i.test(entry.sha256))) {
+        throw new Error(`manifest.json 缺少 ${name} 的 SHA-256`);
+      }
+    }
     for (const entry of manifest.files) {
-      const fp = join(root, entry.name);
-      if (!existsSync(fp)) {
-        this.status = "corrupt";
-        this.statusError = `missing manifest file: ${entry.name}`;
-        return { status: this.status, error: this.statusError };
-      }
-      if (entry.sha256) {
-        const dec2 = shouldVerifySha(this.verifiedAt, fp, entry.sha256);
-        if (dec2.need) {
-          const actual = sha256File(fp);
-          if (actual !== entry.sha256.toLowerCase()) {
-            this.status = "corrupt";
-            this.statusError = `sha256 mismatch: ${entry.name}`;
-            return { status: this.status, error: this.statusError };
-          }
-        }
-      }
+      const file = join(root, entry.name);
+      if (!existsSync(file)) throw new Error(`缺少文件 ${entry.name}`);
+      const stat = statSync(file);
+      if (entry.size !== undefined && stat.size !== entry.size) throw new Error(`文件大小不匹配：${entry.name}`);
+      const sha = entry.sha256?.toLowerCase();
+      if (!sha) continue;
+      const cached = this.verified.get(file);
+      if (cached && cached.size === stat.size && cached.mtime === stat.mtimeMs && cached.sha === sha) continue;
+      if (sha256File(file) !== sha) throw new Error(`SHA-256 校验失败：${entry.name}`);
+      this.verified.set(file, { size: stat.size, mtime: stat.mtimeMs, sha });
     }
-    this.status = "ready";
-    this.statusError = null;
-    // Update verified cache (mtime/size of each file at success)
-    try {
-      const mtimes = new Map<string, number>();
-      const sizes = new Map<string, number>();
-      const shas = new Map<string, string>();
-      for (const entry of manifest.files) {
-        const fp2 = join(root, entry.name);
-        try {
-          const st2 = statSync(fp2);
-          mtimes.set(fp2, st2.mtimeMs);
-          sizes.set(fp2, st2.size);
-          shas.set(fp2, entry.sha256?.toLowerCase() ?? "");
-        } catch {}
-      }
-      // also include token/config? already via manifest
-      this.verifiedAt = { mtimes, sizes, shas };
-    } catch {}
-    return { status: this.status, error: null };
   }
 
   /** Ensure model is ready; throws if not. Caller maps to lexical-only vs explicit unavailable. */

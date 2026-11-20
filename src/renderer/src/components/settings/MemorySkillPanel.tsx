@@ -117,6 +117,25 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
     }
   };
 
+  const distillation = learningStatus?.distillation;
+  const distilling = distillation?.state === "running";
+  const distill = async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const api = window.api?.memory;
+      if (!api?.distillSkills) throw new Error("技能提炼服务尚未就绪，请重新打开 MyBuddy。");
+      await api.distillSkills(distilling ? "pause" : "start");
+      setSection("candidates");
+      await load();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const retryLearning = async (): Promise<void> => {
     if (busy) return;
     setBusy(true);
@@ -249,16 +268,25 @@ export default function MemorySkillPanel({ onOpenMemory }: { onOpenMemory: (id: 
   return (
     <div className="memory-tab-scroll memory-skill-panel">
       <header className="skill-learning-header">
-        <div><h2>从记忆学习技能</h2><p>审核可复用的方法，逐步积累你的技能库。</p></div>
+        <div><h2>从记忆学习技能</h2><p>AI 分批检查已保存的对话，将可复用的做法放入候选审核。</p></div>
         <div className="skill-learning-header-actions">
           <button type="button" className="btn" disabled={busy || loading} onClick={() => void load()}>{loading ? "加载中…" : "刷新"}</button>
           <button type="button" className="btn" onClick={openSkills}>前往技能中心</button>
-          <button type="button" className="btn primary" disabled={busy || loading} onClick={() => void refreshLearned()}>评估可学习流程</button>
+          <button type="button" className="btn primary" disabled={busy || (!distilling && loading)} onClick={() => void distill()}>
+            {distilling ? "暂停提炼" : distillation?.state === "paused" || distillation?.state === "failed" ? "继续 AI 提炼" : "AI 提炼技能"}
+          </button>
         </div>
       </header>
+      {distillation && <div className="memory-status skill-learning-status skill-distillation-progress" role="status">
+        <strong>{{ running: "正在提炼", paused: "已暂停", failed: "提炼中断", completed: "提炼完成" }[distillation.state]}</strong>
+        <span>{distillation.total === 0 ? "没有新的已保存对话需要检查。" :
+          `本次已检查 ${distillation.checked}/${distillation.total} 轮 · 新增 ${distillation.created} 个技能候选${distillation.skipped ? ` · 跳过 ${distillation.skipped} 轮` : ""}`}</span>
+        {distillation.error && <span>{distillation.error}</span>}
+      </div>}
       {status && <div className="memory-status skill-learning-status" role="status">{status.length > 220 ? <details><summary>{status.split("\n")[0].slice(0, 200)} · 查看详情</summary><pre>{status}</pre></details> : status}</div>}
       {learningStatus && <div className="skill-learning-health">
         <span>流程记忆 <b>{learningStatus.procedures}</b> · 可复用 <b>{learningStatus.reusableProcedures}</b> · 待提炼 <b>{learningStatus.pendingTurns ?? stats?.pendingTurns ?? 0}</b></span>
+        <button type="button" className="btn btn-sm" disabled={busy || loading || distilling} onClick={() => void refreshLearned()}>评估可学习流程</button>
         {learningStatus.reusableProcedures === 0 && <span>尚无可复用流程，完成工具任务后会自动提炼待审核技能。</span>}
         {(learningStatus.failedTurns > 0 || learningStatus.blockedSkills.length > 0) && <details className="skill-learning-diagnostics">
           <summary>{learningStatus.failedTurns} 条提炼失败 · {learningStatus.blockedSkills.length} 个技能需检查<span>查看详情</span></summary>

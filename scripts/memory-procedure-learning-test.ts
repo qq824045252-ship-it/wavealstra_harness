@@ -6,6 +6,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { AgentService } from "../src/main/agent/AgentService";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
+import { MemorySkillDistillation } from "../src/main/memory/MemorySkillDistillation";
 import { captureProcedureExecution } from "../src/main/memory/MemoryProcedureEvidence";
 import { SkillsService } from "../src/main/skills/SkillsService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
@@ -83,7 +84,8 @@ try {
 
   const agent = Object.create(AgentService.prototype) as any;
   Object.assign(agent, { db, botRegistry: new BotRegistry(db.connection), memoryService: memory,
-    memoryPipeline: pipeline, skillsService: skills, notifyMemoryChanged: () => {} });
+    memoryPipeline: pipeline, skillsService: skills, notifyMemoryChanged: () => {},
+    skillDistillation: new MemorySkillDistillation(db, () => {}) });
   const approved = agent.approveKernelMemorySkillCandidate(candidate.id);
   assert.equal(approved.status, "materialized");
   const skillPath = join(getSkillsDir(), candidate.slug, "SKILL.md");
@@ -136,6 +138,61 @@ try {
   raw = '{"candidates":[]}'; reason = "length";
   await assert.rejects(extractValidation, /截断/);
   console.log("PASS forged provenance, incomplete JSON and truncation remain failures");
+
+  // Drive the same action as the skills page over completed and pending history.
+  db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "trashed", createdAt: 1, updatedAt: Date.now() });
+  db.upsertTask({ id: "distill", title: "审查流程", spaceId: workspace.id, updatedAt: Date.now() });
+  const instruction = "导入表格前先核对列名，导入后按批次比对行数。";
+  const history = Array.from({ length: 17 }, (_, i) => pipeline.capture({ taskId: "distill",
+    userText: i === 0 ? instruction : "本轮无新方法 " + i, assistantText: "已记录", assistantMessageId: "distill-" + i }).turn);
+  pipeline.completeL1("distill", history.slice(0, 16));
+  let calls = 0;
+  Object.assign(agent, { settingsStore: { read: () => ({ memoryEnabled: true }) }, resolveCognitionModel: async () => ({ maxTokens: 4096 }),
+    modelRuntime: { completeSimple: async (_model: unknown, request: any) => {
+      calls++;
+      const payload = JSON.parse(request.messages[0].content);
+      assert.match(request.systemPrompt, /本次只从历史对话中提炼/);
+      assert(payload.conversationTurns.every((turn: any) => history.some(saved => saved.id === turn.id)));
+      if (calls === 2) throw Error("fixture model unavailable");
+      const method = { title: "表格导入对账", content: instruction, userEvidence: instruction, operationHint: "create",
+        confidence: 0.96, explicit: true, scopeType: "workspace" };
+      const candidates = payload.conversationTurns.some((row: any) => row.user === instruction)
+        ? [{ ...method, kind: "procedure" }, { ...method, kind: "fact", title: "不得创建的事实" }, { ...method, kind: "procedure", operationHint: "forget" }] : [];
+      return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ candidates }) }] };
+    } } });
+  const settled = async () => {
+    const deadline = Date.now() + 5000;
+    while (agent.skillDistillation.status()?.state === "running") {
+      assert(Date.now() < deadline, "distillation must settle");
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    return agent.skillDistillation.status();
+  };
+  agent.distillKernelSkills("start");
+  agent.distillKernelSkills("start");
+  const failedPass = await settled();
+  assert.equal(failedPass.state, "failed");
+  assert.match(failedPass.error, /fixture model unavailable/);
+  assert.equal(failedPass.checked, 8);
+  assert.equal(failedPass.created, 1);
+  assert.equal(calls, 2);
+  const learned = memory.listSkillCandidates().find(item => item.title === "表格导入对账")!;
+  assert(learned && !learned.installedSkillId);
+  assert.deepEqual(memory.get(learned.sourceMemoryIds[0])!.evidence.filter(e => e.evidenceKind === "conversation").map(e => e.refId), [history[0].id]);
+  assert(!memory.list().some(record => record.title === "不得创建的事实"));
+  // Restart the runner to verify checkpoints live in SQLite and retries skip committed batches.
+  agent.skillDistillation = new MemorySkillDistillation(db, () => {});
+  agent.distillKernelSkills("start");
+  const resumed = await settled();
+  assert.equal(resumed.state, "completed");
+  assert.equal(resumed.checked, 9);
+  assert.equal(resumed.created, 0);
+  assert.equal(calls, 4);
+  agent.distillKernelSkills("start");
+  assert.equal((await settled()).checked, 0);
+  assert.equal(calls, 4);
+  assert.equal(pipeline.turns.get(history[16].id)?.extractionState, "pending");
+  console.log("PASS one-click skill distillation, evidence, scope, interrupted batches and restart without reprocessing");
   console.log("memory-procedure-learning-test: PASS");
 } finally {
   db.close();
