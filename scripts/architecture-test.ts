@@ -1354,7 +1354,7 @@ async function main(): Promise<void> {
     const { TaskExecutionWorkspaceLifecycle } = await import("../src/main/task/TaskExecutionWorkspaceLifecycle");
     const { TaskExecutionWorkspace } = await import("../src/main/task/TaskExecutionWorkspace");
     const { previewBlockedHint } = await import("../src/renderer/src/lib/modesPreviewGuard");
-    const { isManagedToolProvider, MANAGED_TOOL_PROVIDER_IDS } = await import(
+    const { MANAGED_TOOL_PROVIDER_IDS } = await import(
       "../src/shared/professional-tools",
     );
     const { ExpertService } = await import("../src/main/experts/ExpertService");
@@ -1768,13 +1768,16 @@ async function main(): Promise<void> {
     const workingPreset = resolveModePreset(working.policy, "drawio-ai");
     assert(workingPreset != null, "N6：working/drawio-ai 预设存在");
     assert(
-      JSON.stringify((workingPreset!.providerMcpIds ?? []).filter(isManagedToolProvider)) ===
-        JSON.stringify(["drawio-ai"]),
-      "N6：drawio-ai 预设声明受管 provider drawio-ai",
+      workingPreset?.skillPolicy?.prefer?.includes("drawio-use") &&
+        (workingPreset?.promptAddon ?? "").includes("drawio_export"),
+      "N6：流程图预设优先内置 Draw.io Use 技能及导出工具",
     );
     assert(
-      (workingPreset!.mcpPolicy?.allow ?? []).includes("drawio-ai"),
-      "N6：drawio-ai 预设 mcpPolicy allow",
+      !(workingPreset?.providerMcpIds ?? []).includes("drawio-ai") &&
+        workingPreset?.mcpPolicy?.mode === "hard" &&
+        !workingPreset.mcpPolicy.allow.includes("drawio-ai") &&
+        workingPreset.mcpPolicy.deny.includes("drawio-ai"),
+      "N6：流程图预设不自动启动旧 Draw.io MCP，且明确禁止它",
     );
     const penpotPreset = resolveModePreset(working.policy, "web-prototype");
     assert(penpotPreset?.label === "Penpot", "N6：working/Penpot 预设存在");
