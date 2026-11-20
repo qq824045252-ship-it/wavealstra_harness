@@ -360,7 +360,7 @@ export interface LibrarySearchRequest {
   owner?: LibraryOwnerScope;
   /** 同一归属内进一步收窄为整个空间或文件夹子树。 */
   reference?: { spaceId: string; collectionId?: string | null; itemId?: string };
-  filter?: { spaceId?: string; collectionIds?: Array<string | null>; tag?: string; favorite?: boolean };
+  filter?: { spaceId?: string; collectionIds?: Array<string | null>; tag?: string; favorite?: boolean; hideDotfiles?: boolean };
 }
 
 export const LIBRARY_DEEP_SEARCH_QUERY_MAX_CHARS = 500;

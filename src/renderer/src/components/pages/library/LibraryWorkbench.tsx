@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { LibraryCollectionDto, LibraryItemDto, LibrarySnapshotDto } from "@shared/library-ipc";
+import { hiddenLibraryCollectionIds, isVisibleLibraryFile } from "@shared/library-visibility";
 import { isLibraryTaskOwnedBy, defaultLibraryLocation, libraryCollectionSubtree, libraryFolderRow, libraryItemRow,
   libraryMoveTargets, libraryOwnerKey, requireLibraryDestination,
   type LibraryLocation, type LibraryUnsavedGuard } from "@/lib/scopedLibrary";
@@ -23,6 +24,7 @@ import { MaterialDeepSearch, MaterialRetrievalRow } from "./MaterialRetrievalCon
 
 type View = "all" | "folder" | "favorites" | "trash" | "tag";
 type Sort = "updated" | "created" | "title";
+type NotesLayout = "two-column" | "three-column";
 type Selection = { id: string; version?: number };
 interface NotesBrowseState {
   location: LibraryLocation;
@@ -37,6 +39,7 @@ interface NotesBrowseState {
 const dragNotes = "application/x-mybuddy-library-items";
 const dragFolder = "application/x-mybuddy-library-folder";
 const listScrollByScope = new Map<string, number>();
+const desktopLayoutKey = "notes-desktop-layout";
 
 export default function LibraryWorkbench(props: ScopedLibraryManagerProps): React.JSX.Element {
   const { scope, reference, readOnly, initialItemId, initialCollectionId, initialSpaceId } = props;
@@ -74,6 +77,8 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
   const [busy, setBusy] = useState(false);
   const [left, setLeft] = useState(() => storedWidth("notes-left", 214, 160, 330));
   const [center, setCenter] = useState(() => storedWidth("notes-center", 288, 200, 445));
+  const [layout, setLayout] = useState<NotesLayout>(() =>
+    localStorage.getItem(desktopLayoutKey) === "two-column" ? "two-column" : "three-column");
   const [collapsed, setCollapsed] = useState(false);
   const [narrowView, setNarrowView] = useState<"folders" | "list">("list");
   const [focus, setFocus] = useState(false);
@@ -101,17 +106,25 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
   const activeTaskId = useAppStore((state) => state.activeTaskId);
   const theme = useAppStore((state) => state.theme);
   const isReadOnly = access.readOnly;
+  const hiddenFolders = useMemo(() => hiddenLibraryCollectionIds(snapshot?.collections ?? []), [snapshot?.collections]);
+  const shownSnapshot = useMemo(() => snapshot && ({ ...snapshot,
+    collections: snapshot.collections.filter((folder) => !hiddenFolders.has(folder.id)),
+    items: snapshot.items.filter((item) => isVisibleLibraryFile(item, hiddenFolders)),
+  }), [snapshot, hiddenFolders]);
   const effectiveQuery = (query || (view === "trash" ? "" : props.searchQuery) || "").trim();
-  const folderIds = useMemo(() => view === "folder" && location.collectionId && snapshot
-    ? libraryCollectionSubtree(snapshot.collections, location.collectionId) : null, [view, location.collectionId, snapshot]);
+  const folderIds = useMemo(() => view === "folder" && location.collectionId && shownSnapshot
+    ? libraryCollectionSubtree(shownSnapshot.collections, location.collectionId) : null, [view, location.collectionId, shownSnapshot]);
   const searchFilter = useMemo(() => ({
     spaceId: location.spaceId ?? undefined, collectionIds: folderIds ? [...folderIds] : undefined,
-    tag: view === "tag" ? tag : undefined, favorite: view === "favorites",
+    tag: view === "tag" ? tag : undefined, favorite: view === "favorites", hideDotfiles: true,
   }), [location.spaceId, folderIds, tag, view]);
   const deepRequest = { query: effectiveQuery, owner: scope, reference, filter: searchFilter };
   const searchKey = JSON.stringify(deepRequest);
-  const current = snapshot?.items.find((item) => item.id === selected?.id);
+  const current = shownSnapshot?.items.find((item) => item.id === selected?.id);
   const showDocument = desktop && Boolean(selected && (current || !snapshot));
+  const threeColumns = desktop && layout === "three-column";
+  const documentOnly = showDocument && !threeColumns;
+  const showList = !focus && !documentOnly;
   const listReady = Boolean(snapshot && (!effectiveQuery || view === "trash" || searchResults?.key === searchKey));
   const captureListScroll = (element = list.current): void => {
     if (!desktop || !listReady || !element) return;
@@ -126,17 +139,19 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
     if (desktop && snapshot) remember({ location, selected, view, tag, query, sort, closedFolders });
   }, [desktop, snapshot, location, selected, view, tag, query, sort, closedFolders, remember]);
   useLayoutEffect(() => {
-    if (desktop && !showDocument && listReady && list.current) list.current.scrollTop = listTop.current;
-  }, [desktop, showDocument, listReady]);
+    if (desktop && showList && listReady && list.current) list.current.scrollTop = listTop.current;
+  }, [desktop, showList, listReady]);
 
   const reload = useCallback(async () => {
     const ticket = ++loadId.current;
     const next = await access.snapshot();
     if (!alive.current || ticket !== loadId.current) return;
+    const hidden = hiddenLibraryCollectionIds(next.collections);
     setSnapshot(next);
     setLocation((previous) => {
       const requested = previous.spaceId ? previous : defaultLibraryLocation(next, reference);
       if (!requested.spaceId && !next.spaces.length) return requested;
+      if (requested.collectionId && hidden.has(requested.collectionId)) return { ...requested, collectionId: null };
       try { requireLibraryDestination(next, requested); return requested; }
       catch { return defaultLibraryLocation(next, reference); }
     });
@@ -144,11 +159,12 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
       initialized.current = true;
       if (initialItemId) {
         const item = next.items.find((item) => item.id === initialItemId);
-        if (item) setLocation({ spaceId: item.spaceId, collectionId: item.collectionId });
+        if (item && isVisibleLibraryFile(item, hidden)) setLocation({ spaceId: item.spaceId, collectionId: item.collectionId });
+        else if (item) report(new Error("这篇笔记是隐藏文件"));
         else report(new Error("此资料已不属于当前范围或已移入回收站"));
       }
     }
-    setSelected((selection) => selection && next.items.some((item) => item.id === selection.id) ? selection : null);
+    setSelected((selection) => selection && next.items.some((item) => item.id === selection.id && isVisibleLibraryFile(item, hidden)) ? selection : null);
     callbacks.current.onSnapshot?.(next);
   }, [access, initialItemId, scopeIdentity, report]);
 
@@ -219,7 +235,7 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
   const openItem = (id: string, version?: number): void => {
     void run(async () => {
       await flush();
-      if (!snapshot?.items.some((item) => item.id === id)) throw new Error("笔记不在当前资料范围");
+      if (!shownSnapshot?.items.some((item) => item.id === id)) throw new Error("这篇笔记在当前视图中不可见");
       setSelected({ id, version });
     }, false);
   };
@@ -228,7 +244,8 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
       await flush();
       const fresh = await access.snapshot();
       if (!alive.current) return;
-      if (!fresh.items.some((item) => item.id === id)) throw new Error("资料已不在当前范围");
+      const hidden = hiddenLibraryCollectionIds(fresh.collections);
+      if (!fresh.items.some((item) => item.id === id && isVisibleLibraryFile(item, hidden))) throw new Error("这篇笔记在当前视图中不可见");
       setSnapshot(fresh);
       setSelected({ id });
     }, false);
@@ -364,7 +381,7 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
     });
   };
 
-  const visible = (view === "trash" ? trash : snapshot?.items ?? []).filter((item) => {
+  const visible = (view === "trash" ? trash.filter((item) => isVisibleLibraryFile(item, hiddenFolders)) : shownSnapshot?.items ?? []).filter((item) => {
     if (view === "trash") return !effectiveQuery || item.title.toLowerCase().includes(effectiveQuery.toLowerCase());
     if (location.spaceId && item.spaceId !== location.spaceId) return false;
     if (view === "favorites" && !item.favorite) return false;
@@ -374,9 +391,9 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
     return !effectiveQuery || (searchResults?.key === searchKey && searchResults.ids?.has(item.id));
   }).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))
     || (sort === "title" ? a.title.localeCompare(b.title, "zh-CN") : sort === "created" ? b.createdAt - a.createdAt : b.updatedAt - a.updatedAt));
-  const spaceItems = snapshot?.items.filter((item) => !location.spaceId || item.spaceId === location.spaceId) ?? [];
+  const spaceItems = shownSnapshot?.items.filter((item) => !location.spaceId || item.spaceId === location.spaceId) ?? [];
   const tags = [...new Set(spaceItems.flatMap((item) => item.tags ?? []))].sort((a, b) => a.localeCompare(b, "zh-CN"));
-  const folders = snapshot?.collections.filter((folder) => folder.spaceId === location.spaceId) ?? [];
+  const folders = shownSnapshot?.collections.filter((folder) => folder.spaceId === location.spaceId) ?? [];
   const dialogOpen = Boolean(compose || confirmTrash || confirmFolder || editingTags || moveIds);
   useBlockNativeSurfaces(dialogOpen);
 
@@ -433,6 +450,13 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
   const selectedFolder = folders.find((folder) => folder.id === location.collectionId);
   const currentName = view === "folder" ? selectedFolder?.name ?? "文件夹" : view === "favorites" ? "收藏" : view === "trash" ? "回收站" : view === "tag" ? tag : "全部笔记";
   const widths = { "--notes-left": left + "px", "--notes-center": center + "px" } as CSSProperties;
+  const changeDesktopLayout = (next: NotesLayout): void => {
+    captureListScroll();
+    setLayout(next);
+    localStorage.setItem(desktopLayoutKey, next);
+    const state = useAppStore.getState();
+    if (next === "three-column" && state.sidebarCollapsed) state.toggleSidebar();
+  };
   const activeActions = current && !isReadOnly ? <>
     {props.renderItemActions?.(current)}
     <NotesMenu label="⋯" ariaLabel="笔记操作">
@@ -506,14 +530,14 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
   </>;
 
   return <section ref={workbench} className={"scoped-library-manager notes-workbench" + (desktop ? " notes-workbench--desktop" : "")}
-    style={desktop ? undefined : widths} aria-label={props.name ?? "笔记"}
+    style={widths} aria-label={props.name ?? "笔记"} data-layout={desktop ? layout : undefined}
     data-selected={Boolean(current)} data-focus={focus} data-collapsed={collapsed} data-narrow-view={narrowView}
     onKeyDown={(event) => {
       if (!event.ctrlKey && !event.metaKey) return;
       if (event.key.toLowerCase() === "n" && !isReadOnly) { event.preventDefault(); createNote(); }
       if (event.key === "/") {
         event.preventDefault();
-        if (showDocument) backToList(true);
+        if (documentOnly) backToList(true);
         else { setFocus(false); requestAnimationFrame(() => input.current?.focus()); }
       }
       if (!desktop && event.shiftKey && event.key.toLowerCase() === "f") { event.preventDefault(); setFocus((previous) => !previous); }
@@ -527,10 +551,10 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
       </div>
     </DesktopSectionSidebar>}
     <header className="notes-top">
-      {showDocument && <button className="notes-desktop-back" type="button" disabled={busy} onClick={() => backToList(true)}>
+      {documentOnly && <button className="notes-desktop-back" type="button" disabled={busy} onClick={() => backToList(true)}>
         <IconChevronLeft size={15} />返回列表
       </button>}
-      <strong>{showDocument ? currentName : props.name ?? "笔记"}</strong>
+      <strong>{documentOnly ? currentName : props.name ?? "笔记"}</strong>
       {isReadOnly && <span className="notes-muted">{reference ? "引用 · 只读" : "已归档 · 只读"}</span>}
       <div className="notes-top-actions">
         {!desktop && !current && !focus && <button type="button" className="notes-narrow-folder-toggle"
@@ -541,6 +565,10 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
         {!desktop && !isReadOnly && <button type="button" className="notes-primary" disabled={busy} onClick={createNote} title="Ctrl+N"><IconPlus size={14} />新建笔记</button>}
         {fileMenu}
         <NotesMenu label="视图">
+          {desktop && <>
+            <button type="button" aria-pressed={threeColumns} onClick={() => changeDesktopLayout("three-column")}>三列视图</button>
+            <button type="button" aria-pressed={!threeColumns} onClick={() => changeDesktopLayout("two-column")}>两列视图</button>
+          </>}
           {!desktop && <>
             <button type="button" onClick={() => setCollapsed((previous) => !previous)}>{collapsed ? "展开文件夹栏" : "收起文件夹栏"}</button>
             <button type="button" onClick={() => setFocus((previous) => !previous)}>{focus ? "退出专注" : "专注编辑"}</button>
@@ -556,14 +584,14 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
     </header>
     {(error || notice) && <div className="note-status" role={error ? "alert" : "status"}>{error || notice}
       <button type="button" onClick={() => { setError(""); setNotice(""); }} aria-label="关闭提示">×</button></div>}
-    {!focus && !showDocument && policyScope && <MaterialRetrievalRow key={policyScope.id} scope={policyScope} readOnly={isReadOnly} />}
+    {showList && policyScope && <MaterialRetrievalRow key={policyScope.id} scope={policyScope} readOnly={isReadOnly} />}
     <div className="notes-panes">
       {!desktop && !collapsed && !focus && <>
         <aside className="notes-folders" aria-label="文件夹和标签">
           {foldersAndTags}
         </aside>{resize("left")}
       </>}
-      {!focus && !showDocument && <>
+      {showList && <>
         <section className="notes-list" aria-label="笔记列表" data-compact={compact} onDragOver={dragOver} onDrop={(event) => drop(event, location)}>
           <label className="notes-search"><IconSearch size={15} /><input ref={input} aria-label="搜索当前资料" placeholder="搜索标题和正文"
             value={query || (view === "trash" ? "" : props.searchQuery) || ""}
@@ -607,9 +635,9 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
                 onClick={() => batch(async (ids) => { await access.note({ type: "restore", owner: scope, ids }); setNotice("已恢复"); }, [item.id])}>恢复</button>}
             </div>)}
           </div>
-        </section>{!desktop && resize("center")}
+        </section>{(!desktop || threeColumns) && resize("center")}
       </>}
-      {(!desktop || showDocument) && <main className="notes-canvas" aria-label="笔记编辑区">
+      {(!desktop || threeColumns || showDocument) && <main className="notes-canvas" aria-label="笔记编辑区">
         {current ? current.sizeBytes > LIBRARY_INLINE_FILE_MAX_BYTES && !isOfficeUseFile(current.filename)
           ? <LargeLibraryFileView key={current.id} item={current} access={access} onError={report} actions={activeActions} />
           : current.kind === "markdown" ? <NoteDocument key={current.id + ":" + (selected?.version ?? "")} item={current} initialVersion={selected?.version}
@@ -625,7 +653,7 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
           : <div className="notes-empty notes-empty-canvas">{showDocument ? "正在打开笔记…" : <>选择一篇笔记{!isReadOnly && "，或新建笔记"}</>}</div>}
       </main>}
     </div>
-    {compose && snapshot && <ScopedLibraryDialog value={compose} snapshot={snapshot} busy={busy} unlimitedItemTitle={scope.type === "project"}
+    {compose && shownSnapshot && <ScopedLibraryDialog value={compose} snapshot={shownSnapshot} busy={busy} unlimitedItemTitle={scope.type === "project"}
       onChange={setCompose} onCancel={() => setCompose(null)} onSubmit={submit} />}
     {editingTags && <div className="notes-modal-backdrop"><form className="notes-modal" onSubmit={(event) => {
       event.preventDefault();
@@ -651,9 +679,9 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
       batch(async (ids) => { await access.note({ type: "move", owner: scope, ids, collectionId: target }); setMoveIds(undefined); }, moveIds);
     }}>
       <h3>移动到文件夹</h3>
-      <select name="folder" aria-label="目标文件夹" autoFocus><option value="">根目录</option>{snapshot && moveIds[0] && (() => {
-        const item = snapshot.items.find((entry) => entry.id === moveIds[0]);
-        return item && libraryMoveTargets(snapshot, libraryItemRow(snapshot, item)).map((folder) =>
+      <select name="folder" aria-label="目标文件夹" autoFocus><option value="">根目录</option>{shownSnapshot && moveIds[0] && (() => {
+        const item = shownSnapshot.items.find((entry) => entry.id === moveIds[0]);
+        return item && libraryMoveTargets(shownSnapshot, libraryItemRow(shownSnapshot, item)).map((folder) =>
           <option value={folder.id} key={folder.id}>{folder.name}</option>);
       })()}</select>
       <div><button type="button" onClick={() => setMoveIds(undefined)}>取消</button><button disabled={busy}>移动</button></div>

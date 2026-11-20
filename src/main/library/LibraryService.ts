@@ -8,6 +8,7 @@ import { resolvedPathKey } from "../platform/paths";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
 import { getMaterialRetrievalSettings, hybridLibrarySpaceIds, resolveMaterialRetrievalScope } from "./MaterialRetrievalSettings";
 import type { LibraryQueryScope } from "./library-query-scope";
+import { hiddenLibraryCollectionIds, isVisibleLibraryFile } from "../../shared/library-visibility";
 import { SemanticRouter } from "../retrieval/SemanticRouter";
 import { WorkspaceSemanticProvider, type SemanticCandidate } from "../retrieval/WorkspaceSemanticProvider";
 import { fuseHits } from "../workspace/WorkspaceResourceLocator.semantic";
@@ -428,13 +429,15 @@ export class LibraryService {
   private ownedSearchScope(owner: LibraryOwnerScope, reference?: LibraryOwnerReference, filter?: LibrarySearchRequest["filter"]): LibraryQueryScope {
     const scope = ownedLibraryQueryScope(this.db, this.repo, owner, reference);
     if (!filter) return scope;
-    if (filter.spaceId && !filter.collectionIds && !filter.tag && !filter.favorite && scope.spaceIds.has(filter.spaceId)) {
+    const hiddenFolders = filter.hideDotfiles === true ? hiddenLibraryCollectionIds(this.repo.listCollections()) : undefined;
+    if (!hiddenFolders && filter.spaceId && !filter.collectionIds && !filter.tag && !filter.favorite && scope.spaceIds.has(filter.spaceId)) {
       return { spaceIds: new Set([filter.spaceId]) };
     }
     const collections = filter.collectionIds && new Set(filter.collectionIds);
     const itemIds = new Set(this.repo.listItemsInScope(scope).filter((item) =>
       (!filter.spaceId || item.spaceId === filter.spaceId) && (!collections || collections.has(item.collectionId))
-      && (!filter.tag || item.tags?.includes(filter.tag)) && (!filter.favorite || item.favorite)).map((item) => item.id));
+      && (!filter.tag || item.tags?.includes(filter.tag)) && (!filter.favorite || item.favorite)
+      && (!hiddenFolders || isVisibleLibraryFile(item, hiddenFolders))).map((item) => item.id));
     return { spaceIds: new Set(), itemIds };
   }
 
