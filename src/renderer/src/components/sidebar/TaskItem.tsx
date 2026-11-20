@@ -1,3 +1,4 @@
+import { isGatewayConversation } from "../../../../shared/gateway-task";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
@@ -336,8 +337,9 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
         if (editing) return;
         setMenuOpen(true);
       }}
-      draggable={!editing}
+      draggable={!editing && !isGatewayConversation(task.id)}
       onDragStart={(e) => {
+        if (isGatewayConversation(task.id)) { e.preventDefault(); return; }
         e.dataTransfer.setData("application/x-mybuddy-task", task.id);
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/plain", task.title);

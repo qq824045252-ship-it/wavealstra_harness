@@ -20,6 +20,7 @@ export function mapTaskRowToTask(
   return {
     id: row.id,
     title: row.title,
+    gatewaySidebarChannelId: row.gatewaySidebarChannelId,
     spaceId: row.spaceId ?? undefined,
     projectId: row.projectId ?? undefined,
     status: row.status as Task["status"],

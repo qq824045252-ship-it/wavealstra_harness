@@ -1,3 +1,4 @@
+import { isGatewayConversation } from "../../../../../shared/gateway-task";
 import type { TaskHistoryDto } from "../../../../../shared/agent-ipc";
 import type { AppContext } from "../context";
 import type { DurableBotHistory } from "../../../../../shared/durable-bot";
@@ -109,6 +110,8 @@ export function projectDurableHistory(storeContext: AppContext, taskId: string, 
         : [task, ...state.tasks],
     };
   });
-  if (!known) hydrateTaskMetadataFromDb(storeContext, taskId);
+  if (!known || (isGatewayConversation(taskId) && !known.gatewaySidebarChannelId)) {
+    hydrateTaskMetadataFromDb(storeContext, taskId);
+  }
   get().reconcileTaskMessageArtifacts(taskId);
 }

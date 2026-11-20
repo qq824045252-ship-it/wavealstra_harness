@@ -27,7 +27,8 @@ const { gatewayConversationId } = await import("../src/main/gateway/GatewayConve
 const { gatewayInboundIdentity } = await import("../src/main/gateway/gateway-inbound-identity");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 
-const db = new AppDatabase(join(root, "app.db"));
+const dbPath = join(root, "app.db");
+const db = new AppDatabase(dbPath);
 const channelId = "qq-default", chatId = "group-fixture", connectionKey = "a".repeat(64);
 const origin = (senderId: string) => ({ channelId, chatId, connectionKey, senderId, messageId: "origin", audience: "shared" as const });
 const old = gatewayInboundIdentity(channelId, connectionKey, chatId).taskId;
@@ -71,11 +72,13 @@ function openGateway(fixture: Awaited<ReturnType<typeof start>>) {
   };
   internal.settingsStore = { read: () => ({ defaultModelId: "fixture/model" }) };
   internal.adapters.get(channelId)!.workConnectionKey = () => connectionKey;
+  internal.adapters.get("telegram-default")!.workConnectionKey = () => connectionKey;
+  internal.channelPolicies.set("telegram-default", { allowUsers: ["alice"] });
   const allow = (allowUsers: string[]) => internal.channelPolicies.set(channelId, { allowUsers });
   allow(["alice", "bob"]);
   const inbound = internal.createInboundHandler();
-  const send = async (sender: string, messageId: string, message: string, replies: string[] = []): Promise<string[]> => {
-    await inbound({ channelId, chatId, sender: { id: sender }, messageId, text: message,
+  const send = async (sender: string, messageId: string, message: string, replies: string[] = [], channel = channelId): Promise<string[]> => {
+    await inbound({ channelId: channel, chatId, sender: { id: sender }, messageId, text: message,
       reply: async reply => { replies.push(reply); } });
     return replies;
   };
@@ -120,11 +123,36 @@ try {
   bridge.allow(["alice", "bob"]);
   assert.deepEqual(await bridge.send("unknown", "a4", "DENIED_STRANGER"), []);
   assert.equal(requests.length, first + 3);
+  assert.deepEqual(await bridge.send("alice", "tg1", "TELEGRAM_FIRST", [], "telegram-default"), ["REPLY TELEGRAM_FIRST"]);
+  const telegram = gatewayConversationId({ ...origin("alice"), channelId: "telegram-default" });
+  const expectedGroups = new Map([[alice, "qq-default"], [bob, "qq-default"], [telegram, "telegram-default"]]);
+  const assertSidebar = (database: InstanceType<typeof AppDatabase>) => {
+    const list = database.listNonTrashedTasks();
+    assert.equal(list.filter(task => task.gatewaySidebarChannelId).length, 3);
+    for (const [taskId, channel] of expectedGroups) {
+      const row = list.find(task => task.id === taskId);
+      assert.equal(row?.gatewaySidebarChannelId, channel);
+      assert.equal(row?.spaceId, undefined, "display grouping is never a real workspace");
+      assert.equal(row?.projectId, undefined);
+    }
+    assert.equal(list.find(task => task.id === old)?.gatewaySidebarChannelId, undefined);
+  };
+  const impostor = gatewayConversationId(origin("not-authorized"));
+  db.upsertTask({ id: impostor, title: "A carried DTO cannot create a trusted group", updatedAt: Date.now(), gatewaySidebarChannelId: "qq-default" });
+  assert.equal(db.getTask(impostor)?.gatewaySidebarChannelId, undefined);
+  db.createSpace({ id: "normal-workspace", name: "Ordinary workspace" });
+  assert.throws(() => db.moveTaskInWorkspaceTree({ taskId: alice, targetSpaceId: "normal-workspace" }), /不能移入/);
+  assert.throws(() => db.upsertTask({ id: alice, title: "scope spoof", updatedAt: Date.now(), spaceId: "normal-workspace" }), /不能绑定/);
+  assert.throws(() => db.upsertTask({ id: alice, title: "scope spoof", updatedAt: Date.now(), projectId: "not-a-project" }), /不能绑定/);
+  assertSidebar(db);
   assert.equal(bridge.gateway.listMessages({ channelId }).filter(event =>
     event.direction === "system" && event.text.includes("发送者")).length, 2);
 
   await bridge.gateway.stop(); bridge = undefined;
   await fixture.close(); fixture = undefined;
+  // Reopen SQLite itself (not only the agent object), ensuring groups are persisted.
+  const reopenedDb = new AppDatabase(dbPath);
+  try { assertSidebar(reopenedDb); } finally { reopenedDb.close(); }
   fixture = await start(); bridge = openGateway(fixture);
   assert.deepEqual(await bridge.send("alice", "a5", "ALICE_REOPEN"), ["REPLY ALICE_REOPEN"]);
   const reopened = requests.at(-1)!;
@@ -161,7 +189,7 @@ try {
   assert.equal(empty.length, 1);
   assert.match(empty[0]!, /^处理失败：/);
   assert(!empty[0]!.includes("任务已处理"), "empty provider results cannot become synthetic success");
-  console.log("PASS Gateway text-only real AgentService, sender isolation, allowlist, duplicate delivery and cold reopen");
+  console.log("PASS Gateway text-only real AgentService, sender isolation, allowlist, duplicate delivery, two channel sidebar groups and cold reopen");
 } finally {
   await bridge?.gateway.stop();
   await fixture?.close();

@@ -1056,13 +1056,16 @@ export class DurableBotService {
     await Promise.allSettled(this.passiveReads.values());
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
-  async runGatewayTurn(request: AgentPromptRequest): Promise<string> {
+  async runGatewayTurn(request: AgentPromptRequest, sidebarChannelId?: string): Promise<string> {
     if (!isGatewayBotTaskId(request.taskId) && !isGatewayConversation(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
     const existing = this.options.db.getTask(request.taskId);
-    this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
-      title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
-      ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
-      welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
+    this.options.db.connection.transaction(() => {
+      this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
+        title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
+        ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
+        welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
+      if (sidebarChannelId) this.options.db.recordGatewaySidebarConversation(request.taskId, sidebarChannelId);
+    })();
     const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
     try {
       return await open.runtime.reply(submission, { requireText: isGatewayConversation(request.taskId) });

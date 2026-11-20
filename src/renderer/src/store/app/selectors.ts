@@ -22,6 +22,7 @@ function sameSidebarTask(previous: Task, current: Task): boolean {
     previous.id === current.id &&
     previous.title === current.title &&
     previous.spaceId === current.spaceId &&
+    previous.gatewaySidebarChannelId === current.gatewaySidebarChannelId &&
     // 分钟粒度比较：流式/回放事件若仍推进 updatedAt，秒级噪声不该让整个
     // 侧栏任务数组换新引用（会触发全树重渲染，看起来像"一直在加载"）。
     Math.floor(previous.updatedAt / 60_000) ===

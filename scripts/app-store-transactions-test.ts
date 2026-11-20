@@ -1,3 +1,4 @@
+import { createAppSelectors } from "../src/renderer/src/store/app/selectors";
 import assert from "node:assert/strict";
 import { createAppStore } from "../src/renderer/src/store/app/createAppStore";
 import type { AppContext } from "../src/renderer/src/store/app/context";
@@ -6,7 +7,7 @@ import type { Task } from "../src/renderer/src/types";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import { durableDelta } from "../shared/src/durable-sync";
-import type { TaskHistoryDto } from "../src/shared/agent-ipc";
+import type { TaskDto, TaskHistoryDto } from "../src/shared/agent-ipc";
 import { loadRuntimeBootstrap } from "../src/renderer/src/store/app/runtime/bootstrap";
 import { mapTaskRowToTask } from "../src/renderer/src/store/app/tasks/taskMapper";
 import { recomputeEffectiveArchived } from "../src/renderer/src/store/app/workspaces/spaceHelpers";
@@ -583,7 +584,30 @@ async function durableActivityTimeNeverRegresses(): Promise<void> {
   assert.equal(api.getState().tasks[0].updatedAt, advanced, "an invalid activity time is ignored");
 }
 
+async function gatewaySidebarOriginHydratesKnownTask(): Promise<void> {
+  const id = `gateway-chat-${"a".repeat(64)}`;
+  const row = deferred<TaskDto[]>();
+  let reads = 0;
+  const { useAppStore: api } = store({ db: { listTasks: () => { reads++; return row.promise; } } });
+  api.setState({ tasks: [task(id, { updatedAt: 100, status: "in_progress", messages: [], welcomeMode: "general", modePresetId: "native" })] });
+  const snapshot: DurableBotSnapshot = { backend: "pi-durable", historyId: "gateway-history", epoch: "gateway-live", revision: 1, conversationId: "7", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false, messages: [] };
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot });
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: { ...snapshot, revision: 2 } });
+  assert.equal(reads, 1, "known tasks without trusted channel metadata refresh once while a read is pending");
+  const selectors = createAppSelectors();
+  const before = selectors.selectSidebarTasks(api.getState());
+  row.resolve([{ id, title: id, updatedAt: 100, status: "in_progress", welcomeMode: "general", modePresetId: "native", gatewaySidebarChannelId: "qq-default" }]);
+  await tick();
+  const after = selectors.selectSidebarTasks(api.getState());
+  assert.notEqual(after, before, "metadata-only change must invalidate the sidebar cache");
+  assert.equal(after[0]?.gatewaySidebarChannelId, "qq-default");
+  assert.equal(after[0]?.spaceId, undefined);
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: { ...snapshot, revision: 3 } });
+  assert.equal(reads, 1, "trusted projection does not need another SQLite read");
+}
+
 async function main(): Promise<void> {
+  await gatewaySidebarOriginHydratesKnownTask();
   const tests = [
     activationIsAtomicAndLateReadsStayWithTheirOwner,
     regenerationCommitsInOneNotification,

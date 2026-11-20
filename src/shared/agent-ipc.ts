@@ -2025,6 +2025,8 @@ export type DbUpsertResult =
 export type DbRenameResult = { ok: true } | { ok: false; error: string };
 
 export interface TaskDto {
+  /** Host-owned sidebar projection only, never a workspace binding. */
+  gatewaySidebarChannelId?: import("./gateway-task").GatewaySidebarChannelId;
   /** Read-only projection of the task-owned expert configuration. */
   expertBinding?: import("./expert-binding").TaskExpertBindingDto;
   executionBackend?: "pi" | "pi-durable";

@@ -200,6 +200,7 @@ export interface FileChange {
 }
 
 export interface Task {
+  gatewaySidebarChannelId?: import("../../shared/gateway-task").GatewaySidebarChannelId;
   /**
    * 已加载的更早历史窗口：messages 是「最旧块 → 最新块」的平铺，before 是最老游标。
    * seed = 首次加载时实时窗口的 historyBefore。实时窗口一旦前滚驱逐，seed 与 durable.historyBefore

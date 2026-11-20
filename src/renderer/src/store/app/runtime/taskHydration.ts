@@ -105,6 +105,7 @@ export function hydrateTaskMetadataFromDb(
                   updatedAt: advanceActivity(task.updatedAt, row.updatedAt),
                   sessionFile: row.sessionFile ?? task.sessionFile,
                   cwd: row.cwd ?? task.cwd,
+                  gatewaySidebarChannelId: row.gatewaySidebarChannelId,
                   modelId: row.modelId ?? task.modelId,
                   permissionMode,
                   welcomeMode,

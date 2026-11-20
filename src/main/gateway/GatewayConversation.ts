@@ -10,7 +10,7 @@ export function gatewayConversationId(origin: GatewayBotOrigin): string {
     "conversation-v1", origin.channelId, origin.connectionKey, origin.chatId, origin.senderId,
   ])).digest("hex")}`;
 }
-export function isGatewayConversation(id: string): boolean { return /^gateway-chat-[a-f0-9]{64}$/.test(id); }
+export { isGatewayConversation } from "../../shared/gateway-task";
 
 /** Explicit allowlist, not object spreading: no local selections, paths, expert or scope can cross this boundary. */
 export function conversationalRequest(request: AgentPromptRequest): AgentPromptRequest {

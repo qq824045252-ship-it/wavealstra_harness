@@ -1787,7 +1787,7 @@ export class AgentService {
       throw new Error("历史 Bot 渠道绑定仅供查看，不能转换为新的渠道对话。");
     }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    return this.durableBots.runGatewayTurn(conversationalRequest(request));
+    return this.durableBots.runGatewayTurn(conversationalRequest(request), request.gatewayOrigin.channelId);
   }
 
   private async resolvePiModelScope(

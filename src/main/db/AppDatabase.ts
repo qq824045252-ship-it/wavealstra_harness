@@ -1,3 +1,4 @@
+import { isGatewayConversation, isGatewaySidebarChannelId } from "../../shared/gateway-task";
 import Database from "better-sqlite3";
 import { ensureBotWorkTables } from "./bot-work-schema";
 import { ensureBotWorkPhase2Tables } from "./bot-work-phase2-schema";
@@ -98,6 +99,7 @@ function isExistingDirectory(p: string | null): boolean {
 
 /** tasks 表行（含迁移补列），供 getTask/listTasks 共用映射 */
 interface TaskRow {
+  gateway_sidebar_channel_id?: string;
   id: string;
   title: string;
   space_id: string | null;
@@ -1720,6 +1722,10 @@ export class AppDatabase {
         FOREIGN KEY (job_id) REFERENCES cron_jobs(id)
       );
 
+      CREATE TABLE IF NOT EXISTS gateway_sidebar_conversations (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        channel_id TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS gateway_channels (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
@@ -2615,6 +2621,7 @@ export class AppDatabase {
     targetIndex?: number;
     targetSortOrder?: number;
   }): void {
+    if (isGatewayConversation(input.taskId) && input.targetSpaceId !== null) throw new Error("网关对话不能移入执行工作空间");
     const { taskId, targetSpaceId } = input;
     const row = this.db.prepare("SELECT space_id FROM tasks WHERE id = ?").get(taskId) as
       | { space_id: string | null }
@@ -2777,7 +2784,8 @@ export class AppDatabase {
       .prepare(
         `SELECT id, title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode,
                 model_id, permission_mode, archived, expert_id, mode_preset_id, start_at, due_at,
-                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at
+                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at,
+                (SELECT g.channel_id FROM gateway_sidebar_conversations g WHERE g.task_id = tasks.id) AS gateway_sidebar_channel_id
          FROM tasks ORDER BY updated_at DESC`,
       )
       .all() as TaskRow[];
@@ -2810,7 +2818,8 @@ export class AppDatabase {
       .prepare(
         `SELECT id, title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode,
                 model_id, permission_mode, archived, expert_id, mode_preset_id, start_at, due_at,
-                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at
+                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at,
+                (SELECT g.channel_id FROM gateway_sidebar_conversations g WHERE g.task_id = tasks.id) AS gateway_sidebar_channel_id
          FROM tasks WHERE id = ?`,
       )
       .get(taskId) as TaskRow | undefined;
@@ -2822,6 +2831,8 @@ export class AppDatabase {
       expertBinding: binding ?? undefined,
       id: r.id,
       title: r.title,
+      gatewaySidebarChannelId: r.gateway_sidebar_channel_id && isGatewaySidebarChannelId(r.gateway_sidebar_channel_id)
+        ? r.gateway_sidebar_channel_id : undefined,
       spaceId: r.space_id ?? undefined,
       projectId: r.project_id ?? undefined,
       status: r.status ?? undefined,
@@ -2922,6 +2933,7 @@ export class AppDatabase {
   }
 
   upsertTask(task: TaskDto): void {
+    if (isGatewayConversation(task.id) && (task.spaceId || task.projectId)) throw new Error("网关对话不能绑定项目或执行工作空间");
     if (isGatewayBotTaskId(task.id)) task = { ...task, welcomeMode: "general", modePresetId: "native" };
     // UI 仍可能带 mock/遗留 spaceId；spaces 表无对应行时先解析占位，避免 FOREIGN KEY 失败
     const hasSpaceId = task.spaceId !== undefined;
@@ -3780,6 +3792,13 @@ export class AppDatabase {
       Date.now(),
       jobId,
     );
+  }
+
+  /** Called only from the validated Gateway admission path, not general task write IPC. */
+  recordGatewaySidebarConversation(taskId: string, channelId: string): void {
+    if (!isGatewayConversation(taskId) || !isGatewaySidebarChannelId(channelId)) return;
+    this.db.prepare(`INSERT OR IGNORE INTO gateway_sidebar_conversations(task_id,channel_id) VALUES(?,?)`)
+      .run(taskId, channelId);
   }
 
   listGatewayChannels(): Array<{
