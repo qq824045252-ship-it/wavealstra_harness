@@ -493,22 +493,21 @@ async function main() {
     repo.deleteChunks(itemB.id);
     repo.deleteChunks(itemC.id);
     // 失败隔离：二次恢复语义。首轮让 itemB 失败，验证隔离；二次恢复前像真实重启那样“剩余候选仍可查询”
-    const origResolve2: any = (lib as any).resolveBackfillText.bind(lib);
+    const origUpsert = repo.upsertChunks.bind(repo);
     let injected = false;
-    (lib as any).resolveBackfillText = async (item: any) => {
-      if (item.id === itemB.id && !injected) {
+    repo.upsertChunks = (itemId: string, chunks: unknown) => {
+      if (itemId === itemB.id && !injected) {
         injected = true;
         throw new Error("injected upsert fail");
       }
-      return origResolve2(item);
+      return origUpsert(itemId, chunks);
     };
     const rFail = await lib.backfillMissingChunks({ batchSize: 10 });
-    // 注意：注入在 resolve 阶段抛错，backfill 捕获后 failed++ 且不写入 chunk；但 log 显示 processed 4
-    // 说明还有隐藏 cands（如 personal 空间残留）导致 succeeded 3。核心断言：隔离生效（其它项已成功）
+    // 在 repo 写入边界注入故障，验证 backfill 隔离失效项而不依赖 LibraryService 私有方法。
     ok(rFail.failed === 1 && rFail.succeeded >= 2, `失败隔离：failed=1 succeeded>=2 (${JSON.stringify(rFail)})`);
     ok(repo.listChunks(itemA.id).length > 0 && repo.listChunks(itemC.id).length > 0, "失败隔离：其它项已成功（隔离生效）");
     // 恢复：此时 itemB 仍无 chunk（若因重试已写入则直接视为已恢复），二次触发应补齐
-    (lib as any).resolveBackfillText = origResolve2;
+    repo.upsertChunks = origUpsert;
     // 若首轮 itemB 仍空，则二次应有 succeeded>=1；若首轮已被重试写入，则二次为 0 但最终一致性已满足
     const wasEmptyBeforeResume = repo.listChunks(itemB.id).length === 0;
     const rResume = await lib.backfillMissingChunks({ batchSize: 10 });

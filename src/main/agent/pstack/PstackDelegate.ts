@@ -17,7 +17,8 @@ import { parseThermosVerdict, type ThermosMember } from "./PstackThermosVerdict"
 import { currentVerificationEvidence } from "./PstackVerificationEvidence";
 import { authoredFiles } from "./PstackAuthoredSkills";
 import { providerFailures, type ProviderDependency } from "./PstackProviderFailure";
-import { isUnitOwnerDispatch, recordBlockedUnit } from "./PstackOrchestration";
+import { recordBlockedUnit } from "./PstackOrchestration";
+import { isUnitOwnerDispatch } from "./PstackOrchestrationBoard";
 export { parseThermosVerdict } from "./PstackThermosVerdict";
 
 const dispatchParticipants = z.object({ results: z.array(z.object({

@@ -6,7 +6,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Cursor, TaskId } from "@earendil-works/pi-durable";
 import type { Api, DelegateReceipt, WorkflowRun } from "./PstackState";
 import { DurableSubagentIdentity } from "../durable/DurableSubagentIdentity";
-import { isUnitOwnerDispatch } from "./PstackOrchestration";
+import { isUnitOwnerDispatch } from "./PstackOrchestrationBoard";
 import { readPlanFile } from "./PstackWorkspace";
 import type { WorkspaceDelta } from "./PstackWorkspace";
 import { parseEveryExpr } from "../../cron/CronSchedule";

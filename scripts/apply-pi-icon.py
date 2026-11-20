@@ -100,6 +100,7 @@ def main() -> None:
     SOURCE.mkdir(parents=True, exist_ok=True)
     BUILD.mkdir(parents=True, exist_ok=True)
     ASSETS.mkdir(parents=True, exist_ok=True)
+    (ROOT / "src" / "shared" / "assets").mkdir(parents=True, exist_ok=True)
 
     master = draw_pi_mark(PNG_APP)
     master512 = master.resize((PNG_512, PNG_512), Image.Resampling.LANCZOS)
@@ -114,14 +115,14 @@ def main() -> None:
     write_ico(master, BUILD / "tray.ico")
 
     # runtime Electron assets
-    save_png(master, ASSETS / "app.png")
+    save_png(master, ROOT / "src" / "shared" / "assets" / "app.png")
     save_png(master512, ASSETS / "app-512.png")
     write_ico(master, ASSETS / "app.ico")
     save_png(master, ASSETS / "tray.png")
     write_ico(master, ASSETS / "tray.ico")
 
     print("Applied official Pi icons from https://pi.dev/favicon.svg")
-    print("Production paths: build/icon.*  build/tray.*  src/main/assets/app.*  src/main/assets/tray.*")
+    print("Production paths: build/icon.*  build/tray.*  src/shared/assets/app.png  src/main/assets/app.*  src/main/assets/tray.*")
 
 
 if __name__ == "__main__":

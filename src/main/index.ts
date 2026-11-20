@@ -38,7 +38,7 @@ import { basename, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, shell } from "electron";
 import appIconPath from "./assets/app.ico?asset";
-import appPngPath from "./assets/app.png?asset";
+import appPngPath from "../shared/assets/app.png?asset";
 import trayPngPath from "./assets/tray.png?asset";
 import {
   AgentIpc,
@@ -200,8 +200,9 @@ import {
   type LegacyArtifactSource,
 } from "./artifact/ArtifactDomainSetup";
 import { artifactPreviewHost } from "./artifact/ArtifactPreviewHost";
-import { runtimeProbeService, type RuntimeProbeEvent } from "./capabilities/RuntimeProbeService";
-import { BROWSER_CONSOLE_MAX_ENTRIES, type BrowserConsoleEntryDto, type BrowserConsoleSnapshotDto, type BrowserConsoleTarget } from "../shared/browser-console";
+import { runtimeProbeService } from "./capabilities/RuntimeProbeService";
+import { requireBrowserConsoleTarget, toBrowserConsoleEntry } from "./capabilities/BrowserConsoleProjection";
+import { BROWSER_CONSOLE_MAX_ENTRIES, type BrowserConsoleEntryDto, type BrowserConsoleSnapshotDto } from "../shared/browser-console";
 import { computerAutomationService } from "./capabilities/ComputerAutomationService";
 import { computerUseOverlayService } from "./capabilities/ComputerUseOverlayService";
 import { computerUseRunCoordinator } from "./capabilities/ComputerUseRunCoordinator";
@@ -530,28 +531,6 @@ function applyNativeChrome(theme: AppTheme): void {
   if (!win || win.isDestroyed()) return;
   win.setBackgroundColor(THEME_WINDOW_BG[theme]);
   applyPlatformTitleBarOverlay(win, { titleBar: { ...THEME_TITLEBAR[theme], height: TITLE_BAR_HEIGHT } });
-}
-
-function requireBrowserConsoleTarget(value: unknown): BrowserConsoleTarget {
-  if (value !== "browser" && value !== "artifact") throw new Error("无效的控制台 target");
-  return value;
-}
-
-function toBrowserConsoleEntry(event: RuntimeProbeEvent): BrowserConsoleEntryDto | null {
-  if (event.target !== "browser" && event.target !== "artifact") return null;
-  if (event.kind !== "console" && event.kind !== "runtime-error" && event.kind !== "load") return null;
-  // load 生命周期中的 start/stop 属于内部诊断噪声；控制台只显示真正失败。
-  if (event.kind === "load" && event.level !== "error") return null;
-  return {
-    sequence: event.sequence,
-    timestamp: event.timestamp,
-    level: event.level,
-    kind: event.kind,
-    message: event.message.replace(/^\[MYBUDDY_(?:RUNTIME_ERROR|UNHANDLED_REJECTION)\]\s*/, ""),
-    url: event.url,
-    sourceId: event.sourceId,
-    line: event.line,
-  };
 }
 
 function createWindow(initialTheme: AppTheme = "light"): void {

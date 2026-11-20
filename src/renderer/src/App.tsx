@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import appIcon from "../../main/assets/app.png";
+import appIcon from "../../shared/assets/app.png";
 import { applyTheme } from "@/lib/theme";
 import { useAppStore } from "@/store/appStore";
 import Sidebar from "@/components/Sidebar";
