@@ -6,6 +6,7 @@ import { locateCadCraftCli } from "./platform/cadcraft";
 import { checkCadUse } from "./capabilities/CadUseTools";
 import { CadCraftIpc, type CadCraftSource } from "../shared/cadcraft";
 import { OfficeUseHost } from "./office-use/OfficeUseHost";
+import { closeOfficeNativeSessions, closeOfficeNativeTask } from "./office-use/OfficeNativeTools";
 import { resolveOfficeTarget, saveOfficeAs } from "./office-use/OfficeSources";
 import { OfficeUseIpc } from "../shared/office-use";
 import { BotMessageHtmlService } from "./artifact/BotMessageHtmlService";
@@ -2058,6 +2059,7 @@ function registerIpc(): void {
   ipcMain.handle(DbIpc.deleteTask, async (_e, id: string) => {
     if (!taskLifecycle) throw new Error("TaskExecutionWorkspaceLifecycle 尚未初始化");
     const prevProjectId = db.getTask(id)?.projectId;
+    await closeOfficeNativeTask(id);
     await taskLifecycle.trash(id);
     try { workGraphService.cleanupByNode("task", id); } catch {}
     if (prevProjectId) {
@@ -3673,7 +3675,7 @@ app.on("before-quit", (event) => {
     try { externalAgentRuntime?.dispose(); } catch { /* best effort */ }
     try { computerUseOverlayService.dispose(); } catch { /* best effort */ }
     try { await gatewayService?.suspend(); } catch { /* best effort */ }
-    try { await agentService?.closeDurableBots(); } catch { /* best effort */ }
+    try { await Promise.all([agentService?.closeDurableBots(), closeOfficeNativeSessions()]); } catch { /* best effort */ }
     try { agentService?.dispose(); } catch { /* best effort */ }
     // Gadget 进程必须真正退出后才关闭 DB / 允许 Electron 结束。
     // 退出路径不得因参数列表求值失败产生未处理 rejection（同函数其余 cleanup 均已包 try/catch）。

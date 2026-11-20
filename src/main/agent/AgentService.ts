@@ -1740,7 +1740,8 @@ export class AgentService {
       if (this.builtinCapabilities.config().cadUse?.enabled === false) return false;
       if (task.permissionMode === "readonly" && name !== CAD_USE_TOOLS.inspect) return false;
     }
-    if ((name === OFFICE_USE_TOOLS.documentCreate || name === OFFICE_USE_TOOLS.selectionPropose || name === OFFICE_USE_TOOLS.editPropose) && task.permissionMode === "readonly") return false;
+    if ((name === OFFICE_USE_TOOLS.documentCreate || name === OFFICE_USE_TOOLS.selectionPropose || name === OFFICE_USE_TOOLS.editPropose ||
+      name === OFFICE_USE_TOOLS.nativeCall) && task.permissionMode === "readonly") return false;
     const assembly = this.durableAssembly(task);
     const permissionMode = task.permissionMode ?? "default";
     let selections = this.toolSelectionMemo.get(assembly);

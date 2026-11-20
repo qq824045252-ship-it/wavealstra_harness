@@ -169,6 +169,7 @@ export const MUTATING_BUILTIN_TOOLS = [
   "workspace_notes_save",
   OFFICE_USE_TOOLS.selectionPropose,
   OFFICE_USE_TOOLS.editPropose,
+  OFFICE_USE_TOOLS.nativeCall,
   CAD_USE_TOOLS.create,
   CAD_USE_TOOLS.edit,
   CAD_USE_TOOLS.export,

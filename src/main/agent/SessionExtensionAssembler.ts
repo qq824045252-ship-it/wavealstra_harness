@@ -27,6 +27,7 @@ import { createLibraryExtension } from "../library/library-extension";
 import type { LibraryEvidenceJudge } from "../library/LibraryDeepSearch";
 import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-extension";
 import { createOfficeSelectionExtension } from "../office-use/OfficeSelectionTools";
+import { createOfficeNativeExtension } from "../office-use/OfficeNativeTools";
 import { createCadUseExtension } from "../capabilities/CadUseTools";
 import { createOfficeDocument } from "../office-use/OfficeDocumentCreation";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
@@ -182,6 +183,12 @@ export class SessionExtensionAssembler {
         skillAuthoringRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures },
       }),
       // Durable filters tools on each request and keeps their registrations for existing call records.
+      ...(durable || officeUseEnabled() ? [createOfficeNativeExtension({
+        taskId: input.taskId,
+        taskRoot: () => (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
+        getPermissionMode,
+        isEnabled: officeUseEnabled,
+      })] : []),
       ...(durable || officeUseEnabled() ? [createOfficeSelectionExtension({
         taskId: input.taskId,
         getPermissionMode,

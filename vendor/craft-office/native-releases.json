@@ -1,0 +1,17 @@
+{
+  "wordcraft": {
+    "version": "0.18.1",
+    "win-x64": "257f670514057cb14967b88c85ac82d165da43ee7671e185acead61420af0389",
+    "linux-x64": "312a057d46dd80597c12dccfd1097ce25edea40baaaeb50bcb6f01ac1aebadb5"
+  },
+  "gridcraft": {
+    "version": "0.19.1",
+    "win-x64": "0b4bf8535f4904fac654326a360ff6d74ea6f4d184a8257c106388fafe74c9ac",
+    "linux-x64": "8d97bba2d5bb00fd69ed55064852c1fd914de40d5ecd55ca01c8df81b828946d"
+  },
+  "deckcraft": {
+    "version": "0.18.1",
+    "win-x64": "6df6f60b2182065c427fe4c3fe1b5d74b92706b238c6f35f3f91e5f359042e99",
+    "linux-x64": "5bae7d5566638624411ef968f2532ab3358dc280884144583e497c5631db8a26"
+  }
+}

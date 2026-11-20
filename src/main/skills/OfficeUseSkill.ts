@@ -13,7 +13,6 @@ export function officeUseInstructions(writable: boolean): string {
   if (!writable) return inspect;
   return [
     inspect,
-    `新建用 ${office.documentCreate}。修改已打开的文件，先用 ${office.selectionRead} 读取目标，再用 ${office.selectionPropose} 提交确认。`,
-    `样式、Excel 图表和冻结窗格、幻灯片备注和形状用 ${office.editPropose}。通过 ${office.reviewStatus} 区分待确认、已应用、已复验和已保存。`,
+    `先按任务需要选择对应的上游 Skill。用 ${office.nativeTools} 获取 WordCraft、GridCraft 或 DeckCraft 的真实工具参数，再用 ${office.nativeCall} 执行上游工具。需要用户确认的面板编辑用 ${office.selectionPropose} 或 ${office.editPropose}，用 ${office.reviewStatus} 查询回执。`,
   ].join(" ");
 }

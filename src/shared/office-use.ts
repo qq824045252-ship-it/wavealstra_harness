@@ -14,6 +14,8 @@ export const OFFICE_USE_TOOLS = {
   documentRender: "office_document_render",
   editPropose: "office_edit_propose",
   reviewStatus: "office_review_status",
+  nativeTools: "office_native_tools",
+  nativeCall: "office_native_call",
   selectionRead: "office_selection_read",
   selectionPropose: "office_selection_propose",
 } as const;

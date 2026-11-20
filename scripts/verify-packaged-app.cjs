@@ -269,6 +269,11 @@ function verifyPackagedApp(appDir, options = {}) {
   if (officeCheck.status !== 0) fail("Office runtime payload verification failed: " + (officeCheck.stderr || officeCheck.error));
   if (targetPlatform === "win32" || targetPlatform === "linux") {
     const target = targetPlatform === "win32" ? "win-x64" : "linux-x64";
+    const nativeOffice = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-craft-office-native.cjs"),
+      target, "--verify-assets", path.join(officeEditor, "native")], {
+      encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    });
+    if (nativeOffice.status !== 0) fail("Office native payload verification failed: " + (nativeOffice.stderr || nativeOffice.error));
     for (const [cadTarget, root] of [[target, "cadcraft"], ["web", "cadcraft/web"]]) {
       const cadCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-cadcraft.cjs"),
         "--target", cadTarget, "--verify-assets", path.join(resources, root)], {
@@ -282,6 +287,14 @@ function verifyPackagedApp(appDir, options = {}) {
     if (!fs.existsSync(path.join(resources, "builtin-skills/cad-use/SKILL.md"))) fail("Missing CAD Use skill");
     for (const file of ["SKILL.md", "LICENSE", "references/word.md", "references/excel.md", "references/powerpoint.md"]) {
       if (!fs.existsSync(path.join(resources, "builtin-skills", "office-use", file))) fail("Missing Office Use skill file: " + file);
+    }
+    const upstreamSkills = { wordcraft: ["commands.md"], gridcraft: ["commands.md", "functions.md"], deckcraft: ["commands.md", "catalogs.md"] };
+    for (const [engine, references] of Object.entries(upstreamSkills)) {
+      for (const file of ["SKILL.md", ...references.map(name => "references/" + name)]) {
+        if (!fs.existsSync(path.join(resources, "builtin-skills", "office-use", "references", "upstream", engine, file))) {
+          fail("Missing upstream Office skill file: " + engine + "/" + file);
+        }
+      }
     }
   }
   for (const entry of ["editor/host/index.html","editor/host/host.js","editor/host/host.css",

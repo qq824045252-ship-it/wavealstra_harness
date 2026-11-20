@@ -32,7 +32,7 @@ const resourceReads = new Set(["library_list", "library_search", "library_deep_s
 const hostControls = new Set(["conversation_goal_get", "conversation_goal_create",
   "conversation_goal_update", "conversation_goal_propose_complete",
   OFFICE_USE_TOOLS.documentRead, OFFICE_USE_TOOLS.documentRender, OFFICE_USE_TOOLS.reviewStatus,
-  OFFICE_USE_TOOLS.selectionRead, OFFICE_USE_TOOLS.selectionPropose, OFFICE_USE_TOOLS.editPropose]);
+  OFFICE_USE_TOOLS.selectionRead, OFFICE_USE_TOOLS.selectionPropose, OFFICE_USE_TOOLS.editPropose, OFFICE_USE_TOOLS.nativeTools]);
 
 function conflicts(left: Access[], right: Access[]): boolean {
   return left.some(a => right.some(b => (a.mode === "write" || b.mode === "write") && (a.kind === "unknown" || b.kind === "unknown"

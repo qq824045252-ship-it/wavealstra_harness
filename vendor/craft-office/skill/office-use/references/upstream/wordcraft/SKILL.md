@@ -1,0 +1,346 @@
+---
+name: wordcraft
+description: "Word processing with WordCraft (Word-style): write, format and edit documents — reports, letters, memos, résumés, proposals, manuals. Headings and styles, lists, tables, pictures, native charts and SmartArt, equations, headers/footers, page numbers, TOC, footnotes, comments, track changes, mail merge. Open and save .docx, export PDF; also ODT, RTF, HTML, Markdown, LaTeX, TXT, .doc (read)."
+version: 0.5.0
+author: storytold
+license: MIT
+platforms: [windows, linux, macos]
+metadata:
+  hermes:
+    tags: [Office, Document, Word, Docx, Writing, Report, Letter, PDF, MCP]
+    related_skills: [storytold, storytold-install, deckcraft, gridcraft, designcraft, pdfcraft, vectorcraft]
+---
+
+# WordCraft
+
+WordCraft is a free, open-source clean-room take on Microsoft Word (storytold Crafting Apps). An agent
+drives it through an MCP server (`wordcraft-cli mcp`) or one-shot CLI commands. It reads and writes real
+`.docx` that opens in Word, and exports PDF with selectable text. This skill is tested against WordCraft 0.15.2.
+
+## When to Use
+
+Use it for **flowing, text-first documents**:
+
+- reports, memos, letters, résumés, proposals, handbooks, minutes, contracts
+- turning Markdown/notes into a formatted `.docx` or PDF
+- editing an existing `.docx`: find/replace, restyle, add sections, comments, tracked changes
+- mail merge (letters, labels, envelopes from CSV, .xlsx or .ods)
+
+Pick a different Crafting App when:
+
+| The job is… | Use |
+|---|---|
+| Slides or a presentation | `deckcraft` |
+| Spreadsheets, calculations, data tables as the deliverable | `gridcraft` |
+| Designed layouts: brochures, magazines, flyers with free-placed frames | `designcraft` |
+| Editing pages, forms or annotations of an existing PDF | `pdfcraft` |
+| Logos or illustrations to place in the document | `vectorcraft` (export PNG, then insert it) |
+
+Simple bar/line/pie charts and process/cycle diagrams no longer need another app: use `insert.chart` and
+`insert.smartArt` (native, editable in Word).
+
+## Setup
+
+1. If tools named `mcp_wordcraft_*` are available, use them. This is the preferred way.
+2. Otherwise check for the CLI with `wordcraft-cli --version`. If it's missing, load the `storytold-install`
+   skill and run its `setup wordcraft`. Then ask the user to start a new session or run `/reload-mcp`.
+3. Until the MCP tools appear, use the CLI one-shots (see **CLI**).
+
+The server is **headless** by default (no window). Everything works except `screenshot`, `click`, `key` and
+`ui_inspect`. For the user to watch live: `wordcraft --control 7981`, then `wordcraft-cli mcp --connect 127.0.0.1:7981`
+(the bridge sends the app's control key from `WORDCRAFT_CONTROL_KEY` or the key file the app writes, and keeps serving
+while the app isn't open yet: calls fail with "not reachable … will retry on each call" until it is).
+Plain `wordcraft-cli mcp` reads and writes any path. `--automation-read-root DIR` / `--automation-write-root DIR`
+confine file access to DIR (a root left out grants no access of that kind; they are an error with `--connect`). `--author NAME` names who tracked
+changes and comments are by (default `WordCraft User`).
+
+## Mental Model
+
+- **One active document**, edited like a person would: a **caret/selection**, and every edit is a **command**
+  (655 of them) that acts at the caret or on the selection. `execute {command, params}` runs one,
+  `batch {commands: [...]}` runs many in one call (stops at the first error unless `keepGoing`).
+- **Several documents can be open.** A fresh server starts with an empty `Document1` (id 1); `new_document` and
+  `open_document` open another one beside it and make it active (the reply has its `id`; opening a file replaces an
+  unused blank one, and a file already open just becomes active, `alreadyOpen: true`). Tools act on the active document;
+  pass `doc: <id>` to `execute`, `batch`, `type_text`, `select_text`, `get_text`, `inspect_document`, `render_page` or
+  `save_document` to work on another without switching. `list_documents` lists them.
+- **Write top to bottom:** type a paragraph, style it, `text.newParagraph`, repeat. The paragraph after a
+  heading comes back as `Normal`.
+- **Positions** are `{story: "body" | {part: n}, path: [block, row, cell, block…], off: byteOffset}`. Every
+  command returns the new selection, so you can see where the caret went. Headers, footers, footnotes and
+  comments are separate *parts*; commands that create them **move the caret into the part**.
+- **Styles first, direct formatting second.** Use `para.style {style: "Heading 1"}` (names or ids like
+  `Heading1`), and change the look document-wide with `design.theme`, `design.styleSet`, then `styles.modify`.
+- **Typing behaves like Word's keyboard:** AutoCorrect runs when `text.newParagraph` ends a paragraph (see Pitfalls).
+- **Units are points** (72 per inch). `new_document` gives a Letter page 612 × 792 with 1-inch margins. Markdown, HTML
+  and text files take the system region's paper (A4 outside Letter regions); the CLI honours `WORDCRAFT_REGION=en-US`.
+  Check with `document.layout`, change with `layout.size {name}` or `{width, height}`.
+
+## Tools (Hermes names them `mcp_wordcraft_<tool>`)
+
+| Tool | Use it for |
+|---|---|
+| `new_document {template?}` | `blank`, `sample`, `letter`, `resume`, `report` (templates have placeholder text to replace). Opens a new document → `{id}` |
+| `open_document {path, password?}` / `save_document {path?, doc?}` | Open .docx .doc .odt .rtf .md .tex .html .txt .json (other text files as plain text). Save picks the format from the extension: docx, pdf, odt, rtf, html, md, tex, txt, png, xml (Word Flat XML) |
+| `list_documents` | Open documents: `id`, `title`, `path`, `dirty`, `active` |
+| `type_text {text, paragraphs?}` | Type at the caret, replacing the selection. `paragraphs: true` turns `\n` into new paragraphs |
+| `select_text {text, occurrence?}` | Select the n-th match (1-based). Then format it, or type to replace it |
+| `execute` / `batch` | Run commands (see **Commands**) |
+| `get_text` | Plain text of the story the caret is in (normally the body), tracked deletions left out |
+| `inspect_document` | Blocks with style, runs, lists, tables (cell text), objects (pictures, charts, fields), sections, parts, pages |
+| `render_page {page?, scale?}` | A page as PNG so you can **look** at it (1-based page) |
+| `list_commands {query}` | Find command ids and params |
+| `parity` | Feature coverage report (rarely needed) |
+| `screenshot`, `click`, `key`, `ui_inspect` | Desktop app only (`--connect`) |
+
+Resources: `wordcraft://document` (same as inspect) and `wordcraft://commands`.
+
+## Commands you'll use most
+
+- **Text & caret:** `text.insert {text}`, `text.newParagraph`, `text.lineBreak`, `text.tab` (next table cell),
+  `text.pageBreak`, `caret.docStart`/`caret.docEnd`/`caret.end`, `select.text {text, occurrence?}`, `select.all`,
+  `select.range {anchor, focus}`, `select.collapse`.
+- **Paragraph:** `para.style {style}`, `para.heading1..3`, `para.normal`, `para.align {value}`,
+  `para.spacing {before, after}`, `para.indents {left, right, firstLine}`, `para.lineSpacing {value}`,
+  `para.bullets {kind?, off?}`, `para.numbering {kind?, off?}`, `para.listLevel {level}`, `para.keepNext`,
+  `para.tabs {set|tabs|clear}`, `para.borders {kind | sides}`.
+- **Character:** `format.bold|italic|underline {value?}`, `format.font {name}`, `format.size {size}`,
+  `format.color {color: "RRGGBB"}`, `format.highlight {color: "yellow"}`, `format.charStyle {style}`, `format.clear`.
+- **Styles:** `styles.list`, `styles.modify {style, chr?, para?}`, `styles.create {name, basedOn?}`, `styles.delete {style}`.
+- **Insert:** `insert.table {rows, cols, style?}`, `insert.picture {path, width?, alt?}`, `insert.link {url | heading | bookmark, text?}`
+  (`link.targets` lists heading blocks and bookmarks for in-document links),
+  `insert.chart {type, data, title?, legend?, dataLabels?, width?, height?}`, `insert.smartArt {layout, items, colors?}`,
+  `insert.equation {latex | linear, display?, edit: false}`, `insert.header {text?}`, `insert.footer {text? | preset: "pageNumber"}`,
+  `insert.pageNumber {position, align, format?: "x of y"}`, `insert.closeHeader`, `insert.coverPage {title, subtitle?, author?}`,
+  `insert.shape`, `insert.textBox`.
+- **References:** `references.toc {levels?}` + `references.updateToc`, `references.footnote {text}`,
+  `references.caption {label, text, position?}`, `references.citation`, `references.bibliography`.
+- **Page:** `layout.margins {preset | top…}`, `layout.orientation {value}`, `layout.size {name}`,
+  `layout.columns {count}`, `layout.break {kind: "nextPage"|"continuous"…}`, `layout.differentFirstPage`.
+- **Design:** `design.theme {name}` (`design.themes`: Craft, Studio, Gallery, Atelier, Darkroom, Sketchbook),
+  `design.styleSet {name}`, `design.watermark {text, diagonal?}`, `design.pageColor`, `design.pageBorders`.
+- **Review:** `edit.replaceAll {text, with, matchCase?, wholeWord?, regex?, wildcards?, special?}`, `review.newComment {text}`,
+  `review.trackChanges {value?}`, `review.changes`, `review.acceptAll`, `review.wordCount`, `file.setAuthor {name}`,
+  `file.privacyOptions {removePersonalInfo?, removeDateTime?}` (saved authors become "Author", no dates).
+- **Tables (caret inside):** `table.style {style}`, `table.look {headerRow, bandedRows…}`, `table.insertRowBelow`,
+  `table.merge`, `table.columnWidth {width}`, `table.autofit {mode}`, `table.sort`, `table.properties {…}`,
+  `table.formula {formula: "=SUM(ABOVE)"}` (a live field in the caret cell).
+- **Lists & sizes:** `list.multilevelPreset {preset: "headings"|"article"|"outlineHeadings"|"chapter"}` numbers Heading 1–9
+  (1 / 1.1 / 1.1.1…; tested), `design.scaleFontSizes {delta | percent}` grows or shrinks every size.
+- **Languages:** `proof.packs` lists spelling/hyphenation packs; `proof.installPack {locale}` downloads one only when the
+  person has turned downloading on in the app (File › Options › Language), else it fails with `downloading is turned off`
+  (not tested).
+- **Documents:** `view.switchWindows {id?}` (list, or make one active), `file.closeDocument {id?, force?}`.
+- **Check:** `document.layout` (pages and the first block on each), `document.paragraph {path:[i]}`, `format.state`,
+  `font.missing` (fonts drawn with a substitute).
+
+Table style ids: `TableGrid`, `PlainTable1`, `GridTable1Light`, `GridTable4Accent{Blue|Orange|Green|Purple}`,
+`ListTable3Accent{Blue|Orange|Green|Purple}`. Everything else: grep `references/commands.md`.
+
+## Procedure
+
+1. **Plan** the outline (headings), what needs a table, list, chart, picture, and the deliverable formats.
+2. **Start:** `new_document {template}`, `open_document`, or convert Markdown (fastest for long text, see below).
+3. **Build in one `batch` per section**: insert → style → new paragraph. Keep ids/paths from the replies.
+4. **Look:** `inspect_document` for structure, `render_page` for each page. Fix overflow, stray empty
+   paragraphs, wrong styles.
+5. **Save** `.docx` (editable master), then export `.pdf` if needed. Absolute paths only.
+
+### Recipe: formatted report (tested)
+
+```text
+new_document {template: "blank"}
+batch {commands: [
+  {command:"text.insert", params:{text:"Q3 Business Review"}}, {command:"para.style", params:{style:"Title"}},
+  {command:"text.newParagraph"},
+  {command:"text.insert", params:{text:"Highlights"}}, {command:"para.heading1"}, {command:"text.newParagraph"},
+  {command:"text.insert", params:{text:"The quarter closed ahead of plan."}}, {command:"text.newParagraph"},
+  {command:"para.bullets"},                                      ← turn the list on BEFORE typing items
+  {command:"text.insert", params:{text:"Revenue up 12%"}}, {command:"text.newParagraph"},
+  {command:"text.insert", params:{text:"Churn down to 2.1%"}}, {command:"text.newParagraph"},
+  {command:"para.bullets", params:{off:true}}, {command:"para.normal"},
+  {command:"text.insert", params:{text:"Revenue by region"}}, {command:"para.heading2"}, {command:"text.newParagraph"},
+  {command:"insert.table", params:{rows:3, cols:3, style:"GridTable4AccentBlue"}},   ← caret lands in cell (0,0)
+  {command:"text.insert", params:{text:"Region"}}, {command:"text.tab"}, … fill row by row with text.tab …
+  {command:"caret.docEnd"},                                      ← leaves the table (an empty paragraph follows it)
+  {command:"insert.picture", params:{path:"/abs/chart.png", width:300, alt:"Revenue trend"}},   ← caret lands after it
+  {command:"para.alignCenter"}, {command:"text.newParagraph"}, {command:"para.alignLeft"},
+  {command:"text.insert", params:{text:"Next steps"}}, {command:"para.heading1"}, {command:"text.newParagraph"},
+  {command:"para.numbering"}, {command:"text.insert", params:{text:"Hire two account managers"}},
+  {command:"select.text", params:{text:"Q3 Business Review"}}, {command:"caret.end"}, {command:"text.newParagraph"},
+  {command:"references.toc", params:{levels:2}}, {command:"references.updateToc"},   ← TOC last, once headings exist
+  {command:"insert.header", params:{text:"Northwind Ltd - Confidential"}}, {command:"insert.closeHeader"},
+  {command:"insert.pageNumber", params:{position:"bottom", align:"center", format:"x of y"}}, {command:"insert.closeHeader"},
+  {command:"file.properties", params:{title:"Q3 Business Review", author:"Strategy Team"}} ]}
+render_page {page: 1}  →  look  ·  save_document {path:"/abs/report.docx"}  ·  save_document {path:"/abs/report.pdf"}
+```
+
+TOC page numbers come out right (checked in `get_text`, the render and the PDF). After any later edit that
+moves headings, run `references.updateToc` again before saving.
+
+### Recipe: native chart, SmartArt and equation (tested)
+
+```text
+batch {commands: [
+  {command:"insert.chart", params:{type:"column", title:"Revenue (M)", legend:"bottom", dataLabels:true, width:432, height:240,
+     data:{categories:["Q1","Q2","Q3"], series:[{name:"North", values:[1.1,1.2,1.4]}, {name:"South", values:[0.8,0.9,1.0]}]}}},
+  {command:"caret.end"}, {command:"text.newParagraph"},          ← a new chart is SELECTED, like a picture
+  {command:"insert.smartArt", params:{layout:"process", items:["Plan","Build","Ship"], colors:"colorful", width:432, height:120}},
+  {command:"caret.end"}, {command:"text.newParagraph"},
+  {command:"insert.equation", params:{latex:"E = mc^2", display:true, edit:false}}, {command:"caret.docEnd"} ]}
+```
+
+Types: column, columnStacked, bar, barStacked, line, area, pie, doughnut, scatter. Layouts: basicList, process,
+cycle, hierarchy, pyramid, radial, matrix, venn. They save as real Word charts/diagrams/OMML and render in PDF.
+Change later with `chart.editData`, `chart.type`, `smartArt.items` (caret on the object).
+
+### Recipe: from Markdown, then polish (tested)
+
+Write the content as Markdown (headings, `**bold**`, lists, pipe tables, links, `>` quotes, code fences), then:
+
+```text
+open_document {path:"/abs/memo.md"}                     (or CLI: wordcraft-cli convert memo.md memo.docx)
+select_text {text:"<text only found in a cell>"} → execute table.style {style:"ListTable3AccentGreen"}
+execute table.look {headerRow:true, bandedRows:true}               ← imported tables are plain TableGrid
+select_text {text:"the tracker"} → execute format.charStyle {style:"Hyperlink"}   ← links keep the URL but not the look
+execute caret.docStart → execute insert.coverPage {title, subtitle, author}
+execute select.range {anchor:{story:"body",path:[10],off:0}, focus:{story:"body",path:[16],off:0}} → execute text.delete
+                                                                   ← trims 6 spacer paragraphs; see Pitfalls
+execute insert.footer {preset:"pageNumber"} → execute insert.closeHeader → execute layout.differentFirstPage
+save_document {path:"/abs/memo.docx"} · save_document {path:"/abs/memo.pdf"}
+```
+
+Numbered (`1.`) and bulleted Markdown lists, bold, italic, quotes (`Quote` style) and code (`Code` style) import correctly.
+
+### Recipe: edit an existing .docx (tested)
+
+```text
+open_document {path:"/abs/report.docx"}
+execute edit.replaceAll {text:"Lisbon", with:"Porto"}                → {replaced: n}; formatting is kept
+execute design.theme {name:"Atelier"}                                ← theme BEFORE styles.modify (it resets style colours)
+execute styles.modify {style:"Heading 1", chr:{color:"8B1E3F", bold:true, size:20}, para:{spaceBefore:24}}
+select_text {text:"ahead of plan"} → execute format.bold → execute format.highlight {color:"yellow"}
+execute review.newComment {text:"Confirm with finance"}             ← comment on the selection
+select_text {text:"Churn down to 2.1%"} → execute caret.end → execute references.footnote {text:"Trailing twelve months."}
+execute insert.closeHeader                                           ← back to the body
+save_document {path:"/abs/report-v2.docx"}
+```
+
+For a letter, start from `new_document {template:"letter"}` and swap the placeholders with `edit.replaceAll`.
+Tracked edits: `execute review.trackChanges {value:true}`, then `select_text` + `type_text` or `edit.replaceAll`
+(both are recorded and saved as `w:ins`/`w:del`); `review.changes` lists them. To show comments and changes
+in a PDF: `file.exportPdf {path, markup:true}` or `wordcraft-cli convert in.docx out.pdf --markup`.
+
+### Recipe: mail merge letters (tested)
+
+```text
+new_document {template:"blank"} → execute tools.autocorrect {enabled:false}
+execute mailings.start {kind:"letters"}
+execute mailings.recipients {path:"/abs/people.csv"}      → {fields:[…], records:n}   (.xlsx/.xls/.ods: add sheet)
+batch: text.insert "Dear " · mailings.insertField {field:"Name"} · text.insert "," · text.newParagraph · …
+execute mailings.preview → get_text                         ← shows record 1 filled in
+execute mailings.finish {path:"/abs/merged.docx"}           → one letter per record, each on its own page
+```
+
+Only some records, or in another order: `mailings.filterRecipients {rules:[{field:"City", op:"equal", value:"Porto"}],
+sort:[{field:"Name", descending:true}]}` before preview/finish (→ `{records, of}`; `{}` clears it).
+
+### Recipe: work on several documents (tested)
+
+```text
+open_document {path:"/abs/source.docx"}                       → {id: 2}   (replaces the unused Document1)
+new_document {template:"report"}                              → {id: 3}, now the active one
+get_text {doc: 2}                                             ← read the source without switching
+batch {doc: 2, commands:[{command:"caret.docEnd"}, {command:"text.newParagraph"}, {command:"text.insert", params:{text:"…"}}]}
+save_document {doc: 2, path:"/abs/source-v2.docx"}            ← a file opened with a password is saved with it again
+list_documents → execute file.closeDocument {id: 2}           ← unsaved changes need force: true
+```
+
+## Formats
+
+- **Open:** .docx .doc (Word 97-2003, read only) .odt .rtf .md .tex .html .txt .json .xml (Word XML), and other text files.
+- **Save:** .docx .pdf .odt .rtf .html .md .tex .txt .xml .png (page image). `.doc` can't be written.
+  `.xml` is a Word XML Document (Flat OPC); `execute file.save {path, format:"wordml2003"}` writes a Word 2003 XML Document.
+- PDF has real text, links and bookmarks. `save_document` to a new path is "Save As"; omit `path` to save in place.
+- Password-protected Word files: `open_document {path}` fails with `this document is protected with a password` (a wrong
+  one: `the password is incorrect`); pass `password`. Save encrypted with `execute file.save {path, password}`. A file
+  opened with a password is saved with it again; PDF, HTML and text exports stay plain.
+
+## CLI (no MCP needed)
+
+```bash
+wordcraft-cli convert in.md out.docx            # docx doc(read) pdf odt rtf html md tex txt json png
+wordcraft-cli convert in.docx out.pdf --markup  # comments beside each page, tracked changes marked
+wordcraft-cli convert in.docx out.xml --format wordml2003   # Word 2003 XML (default .xml is Flat OPC)
+wordcraft-cli convert in.docx out.pdf --update-fields       # refresh unlocked fields (TOC, page refs) first
+wordcraft-cli info file.docx                     # JSON: pages, words, paragraphs, properties
+wordcraft-cli text file.docx                     # plain text with list labels  ·  wordcraft-cli inspect file.docx  (JSON)
+wordcraft-cli render file.docx page.png --page 2 --scale 0.8
+wordcraft-cli run --template letter --cmd 'edit.replaceAll={"text":"Dear","with":"Hello"}' \
+                  --cmd 'select.text={"text":"Hello"}' --cmd format.bold --save /abs/out.docx --print
+wordcraft-cli run --script job.json             # {"template"?|"file"?, "commands":[{"command","params"?} | id…], "save":["out.docx","out.pdf"]}
+wordcraft-cli commands [--json]                  # the full command catalog
+wordcraft-cli <command> --help                   # usage for one command
+```
+
+`run` takes `--file F` or `--template T`, then any number of `--cmd 'id={json}'`, then `--save`, and `--author NAME`.
+With `--script FILE` (`-` = stdin) the script's commands run first; its relative paths resolve against the script's
+folder, and one run can save several formats (tested: docx + pdf). A protected file: `--password-file PATH` or
+`WORDCRAFT_PASSWORD` (better than `--password PASS`, which other processes can read).
+`wordcraft-cli zotero …` drives a running Zotero (rarely needed).
+
+## Pitfalls
+
+- **A new chart or SmartArt stays selected.** The next `text.insert`/`type_text`/`text.newParagraph` *replaces* it.
+  Run `caret.end` (or `select.collapse`) right after inserting one. (`insert.picture` leaves the caret after the picture.)
+- **AutoCorrect on Enter.** `text.newParagraph` (and `type_text {paragraphs:true}`) applies AutoCorrect to the word before
+  it: `x` → `X`, `teh` → `the`, sentence capitals. For names, codes or lowercase lines, run
+  `execute tools.autocorrect {enabled:false}` first. It lasts for the server session only.
+- **`design.theme` resets style colours and fonts.** A `styles.modify` colour set before it is replaced by the theme colour.
+  Apply the theme first, then `styles.modify`.
+- **Cover page spills onto a second page.** `insert.coverPage` builds the page from empty `Normal` paragraphs, and the
+  author/date lines land on page 2. Right after it, delete six spacer paragraphs (`select.range` path [10] → [16],
+  `text.delete`) and check `document.layout` (cover blocks on page 1 only).
+- **`select_text` finds the first match anywhere**, including TOC entries, headings and list items that share the text.
+  After a TOC exists, a heading's text matches its TOC line first; use `occurrence` or a unique phrase.
+- **TOC page numbers go stale** after edits that move headings (also in the PDF). Run `references.updateToc` before saving.
+- **Caret left in a part.** `insert.header`/`insert.footer`/`insert.pageNumber`/`references.footnote` move the caret
+  into that part; `get_text` then returns only that part. Run `insert.closeHeader` to get back to the body.
+- **`type_text {paragraphs:true}` then `para.bullets` bullets only the last paragraph.** Turn the list on first, then type.
+- **Colours** are `"RRGGBB"` everywhere, including property objects (`styles.modify chr/para`, `format.set {props}`,
+  `para.set {props}`: color, shading, underlineColor). `"#RRGGBB"` and `"auto"` also work. A bad value fails with
+  `bad parameters: color must be RRGGBB or auto` (`format.color`) or ``bad parameters: invalid value: string "zz", expected
+  `auto`, `RRGGBB` or `#RRGGBB` `` (property objects); `format.color {color: {"Rgb":[…]}}` fails with ``bad parameters:
+  `color` (string) is required``.
+- **Unknown param keys are silently ignored** (no error). Check the effect with `format.state` or `document.paragraph {path:[i]}`.
+- **Table style names:** `insert.table {style:"Grid Table 4 Accent 1"}` → `bad parameters: no table style `Grid Table 4 Accent 1``.
+  Use the ids listed above (`styles.list`).
+- `table.*` with the caret outside a table: `not available: table.style: the cursor isn't in a table`.
+- `styles.create` also applies the new style to the paragraph at the caret.
+- `edit.replaceAll` inserts `with` exactly as given: with `matchCase` off, replacing `region` with `area` also turns
+  `Region` into lowercase `area`. Run a separate pass for capitalised matches.
+- `edit.replaceAll` searches the body only, not headers or footers (edit those with `insert.editHeader`, `select.all`, `type_text`).
+  `^p`, `^t` and other `^` codes are special by default; pass `special:false` to match a literal `^`.
+- `references.caption {label:"Table", text:"Sales"}` writes "Table 1: Sales". Don't start `text` with a colon.
+- `render_page` shows red spelling squiggles. PDF and `wordcraft-cli render` don't.
+- **Paths:** use absolute paths. Relative ones resolve against the server's working directory. With automation roots
+  set, a path outside them fails with `automation path rejected: outside the write root <DIR>: <path>`.
+- `file.closeDocument` on a changed document fails with `the document has unsaved changes: save it first, or pass "force": true
+  to discard them`. Closing the last one leaves a new blank document.
+- UI-only tools fail headless with `` `ui.screenshot` needs the desktop app: start `wordcraft --control 7981` and run
+  `wordcraft-cli mcp --connect 127.0.0.1:7981` ``. That's expected.
+
+## Verification
+
+- `inspect_document`: expected styles per block, `list` on list items, `cells` filled, `objects` for pictures, charts and
+  fields, `pages`. `document.layout` lists the first block of each page.
+- `render_page` every page and look at it before reporting done.
+- `wordcraft-cli info out.docx` and `wordcraft-cli text out.docx` confirm the saved file opens; render a page with
+  `wordcraft-cli render` (docx) or open the PDF in `pdfcraft`.
+
+## References
+
+- `${HERMES_SKILL_DIR}/references/commands.md`: all 655 commands with params, ribbon location and shortcut, grouped by
+  area (text, para, table, chart, smartArt, equation, mailings, review, references, fields, proof, developer…). Grep it
+  (`grep -n 'chart[.]' ${HERMES_SKILL_DIR}/references/commands.md`) rather than reading it whole.
+- Upstream docs: https://github.com/storytold/wordcraft/tree/main/docs (`mcp.md`, `control-protocol.md`, `typing-parity.md`).

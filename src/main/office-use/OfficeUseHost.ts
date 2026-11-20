@@ -10,6 +10,7 @@ import cadRelease from "../../../vendor/cadcraft/releases.json";
 import { CadCraftFile } from "../artifact/CadCraftFile";
 import { OfficeFile, type OfficeFileTarget } from "./OfficeFile";
 import { bindOfficeSelection } from "./OfficeSelectionTools";
+import { locateOfficeNative, officeNativeEngines } from "../platform/office-native";
 import { checkOfficeUseAssets, isOfficeEngineAsset, officeEngineByKind, officeStaticFiles } from "./OfficeUseAssets";
 
 interface Session {
@@ -47,8 +48,25 @@ export class OfficeUseHost {
   private cadRuntime = app.isPackaged ? join(process.resourcesPath, "cadcraft/web") : join(app.getAppPath(), "vendor/cadcraft/assets/web");
   constructor(private ports: Ports) {}
 
-  checkAssets() {
-    return checkOfficeUseAssets(this.runtime, this.editor);
+  async checkAssets() {
+    const [editor, upstream] = await Promise.all([
+      checkOfficeUseAssets(this.runtime, this.editor),
+      Promise.all(officeNativeEngines.map(async engine => {
+        try {
+          await locateOfficeNative(app.getAppPath(), engine, app.isPackaged ? process.resourcesPath : undefined);
+          return { engine, available: true };
+        } catch {
+          return { engine, available: false };
+        }
+      })),
+    ]);
+    const ready = upstream.filter(item => item.available).map(item => item.engine);
+    const missing = upstream.filter(item => !item.available).map(item => item.engine);
+    return {
+      state: missing.length && editor.state === "ready" ? "degraded" as const : editor.state,
+      detail: [editor.detail, ready.length ? `上游引擎可用：${ready.join("、")}。` : "",
+        missing.length ? `上游运行资源缺失：${missing.join("、")}。` : ""].filter(Boolean).join(" "),
+    };
   }
 
   private start(): Promise<string> {

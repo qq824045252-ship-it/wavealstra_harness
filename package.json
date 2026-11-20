@@ -51,7 +51,9 @@
     "dev": "electron-vite dev",
     "prepare:office-runtime": "node scripts/prepare-craft-office.cjs",
     "prepare:cadcraft": "node scripts/prepare-cadcraft.cjs",
+    "prepare:office-native": "node scripts/prepare-craft-office-native.cjs",
     "test:office-craft-electron": "node scripts/office-craft-electron.cjs",
+    "test:office-native-tools": "esbuild scripts/office-native-tools-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/office-native-tools-test.mjs && node out/tests/office-native-tools-test.mjs --desktop",
     "test:office-use-sources": "esbuild scripts/office-use-sources-test.ts --bundle --platform=node --format=cjs --packages=external --outfile=out/tests/office-use-sources-test.cjs && node scripts/test-guard.mjs out/tests/office-use-sources-test.cjs",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs",
@@ -813,7 +815,8 @@
       "output": "release"
     },
     "extraResources": [
-      { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets" },
+      { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets", "filter": ["**/*", "!native/**"] },
+      { "from": "vendor/craft-office/assets/native/${os}-${arch}", "to": "office-editor/native" },
       { "from": "vendor/craft-office/LICENSE.noto-cjk", "to": "office-editor/licenses/LICENSE.noto-cjk" },
       { "from": "vendor/craft-office/skill/office-use", "to": "builtin-skills/office-use" },
       { "from": "src/renderer/src/lib/office-use", "to": "office-editor/editor", "filter": ["host/**","craft/**","cad/**"] },
