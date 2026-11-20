@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep, extname } from "node:path";
 import type { EventEmitter } from "node:events";
+import yauzlPackage from "yauzl";
 import { prepareOfficeRoundTrip } from "./OfficeRoundTrip";
 import { assertDrawioBytes, DRAWIO_FILE_LIMIT } from "../drawio-use/DrawioXml";
 
@@ -48,12 +49,13 @@ async function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
   try { return await next; } finally { if (operations.get(key) === next) operations.delete(key); }
 }
 
+const yauzl = yauzlPackage as { fromBuffer(data: Buffer, options: {lazyEntries: boolean}, done: (error: Error | null, file?: EventEmitter & { readEntry(): void }) => void): void };
+
 // Only inspect the ZIP central directory. No Office XML or media is inflated here.
 export function assertOfficePackage(bytes: Buffer, kind: OfficeKind): Promise<void> {
   const required = new Set(["[Content_Types].xml", { word: "word/document.xml", excel: "xl/workbook.xml", ppt: "ppt/presentation.xml" }[kind]]);
   return new Promise((resolve, reject) => {
-    const zip = require("yauzl") as { fromBuffer(data: Buffer, options: {lazyEntries: boolean}, done: (error: Error | null, file?: EventEmitter & { readEntry(): void }) => void): void };
-    zip.fromBuffer(bytes, {lazyEntries:true}, (error, file) => {
+    yauzl.fromBuffer(bytes, {lazyEntries:true}, (error, file) => {
       if (error || !file) { reject(error || new Error("Office 文件无效")); return; }
       file.on("error", reject);
       file.on("entry", (entry: { fileName: string }) => {

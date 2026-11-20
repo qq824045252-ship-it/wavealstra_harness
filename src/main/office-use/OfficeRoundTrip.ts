@@ -1,5 +1,6 @@
 import { DOMParser, XMLSerializer, type Document, type Element } from "@xmldom/xmldom";
 import JSZip from "jszip";
+import yauzlPackage from "yauzl";
 import { posix } from "node:path";
 import type { EventEmitter } from "node:events";
 import type { Readable } from "node:stream";
@@ -20,7 +21,7 @@ interface ZipReader extends EventEmitter {
   close(): void;
   openReadStream(entry: Entry, callback: (error: Error | null, stream: Readable) => void): void;
 }
-const yauzl = require("yauzl") as {
+const yauzl = yauzlPackage as {
   fromBuffer(bytes: Buffer, options: Record<string, boolean>, callback: (error: Error | null, zip: ZipReader) => void): void;
 };
 
