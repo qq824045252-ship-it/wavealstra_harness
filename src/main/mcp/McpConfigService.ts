@@ -312,7 +312,7 @@ export class McpConfigService {
   saveServerConfig(request: McpSaveServerRequest): McpInstallResultDto {
     try {
       const { name, entryText, expectedEntryText } = request;
-      if (!/^[A-Za-z0-9_-]+$/.test(name) || ["__proto__", "constructor", "prototype"].includes(name)) throw new Error("服务器名称只能包含字母、数字、下划线和连字符");
+      assertServerName(name);
       const entry = parseJsonc(entryText);
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("服务器配置必须是 JSON 对象");
       const raw = readRawConfigObject(this.appGlobalPath, true);
@@ -331,6 +331,34 @@ export class McpConfigService {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  /** Register bundled dependencies without activating them or replacing existing entries. */
+  registerExpertServers(entries: Record<string, McpServerEntry>): void {
+    const names = Object.keys(entries);
+    if (!names.length) return;
+
+    names.forEach(assertServerName);
+    const validated = toNativeMcpConfig(emptyMcpFilterResult({ mcpServers: entries }));
+    if (validated.errors.length) throw new Error(validated.errors.join("\n"));
+
+    const raw = readRawConfigObject(this.appGlobalPath, true);
+    const servers = getServersObject(raw, true);
+    // Task selection ignores case, and Pi encodes hyphens as underscores in tool names.
+    const serverKey = (name: string) => name.replace(/-/g, "_").toLowerCase();
+    const usedNames = [...Object.keys(this.loadMcpConfig().mcpServers), ...names];
+    let changed = false;
+    for (const [name, entry] of Object.entries(entries)) {
+      const key = serverKey(name);
+      const existingName = usedNames.find(other => other !== name && serverKey(other) === key);
+      if (existingName) throw new Error(`专家包的 MCP「${name}」与「${existingName}」重名`);
+      if (Object.hasOwn(servers, name)) continue;
+      servers[name] = { ...entry, disabled: true };
+      changed = true;
+    }
+    if (!changed) return;
+    setServersObject(raw, servers);
+    writeJsonFile(this.appGlobalPath, `${JSON.stringify(raw, null, 2)}\n`);
   }
 
   /** 发现：所有全局配置来源 + 兼容来源 */
@@ -776,6 +804,12 @@ export class McpConfigService {
 }
 
 /* ------------------------------ 解析与合并工具 ------------------------------ */
+
+function assertServerName(name: string): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(name) || ["__proto__", "constructor", "prototype"].includes(name)) {
+    throw new Error("服务器名称只能包含字母、数字、下划线和连字符");
+  }
+}
 
 function readValidatedConfig(path: string): McpConfig | null {
   if (!existsSync(path)) return null;

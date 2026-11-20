@@ -5,7 +5,7 @@
  * 导出回读 / 卸载 / 单专家包过滤。
  * 测试使用临时 USERPROFILE，不触碰真实 ~/.mybuddy。
  */
-import { cpSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
+import { cpSync, mkdirSync, rmdirSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import JSZip from "jszip";
@@ -14,9 +14,11 @@ import JSZip from "jszip";
 const sandbox = join(tmpdir(), `mybuddy-expert-test-${Date.now()}`);
 process.env.USERPROFILE = sandbox;
 process.env.HOME = sandbox;
+process.env.APPDATA = join(sandbox, "AppData", "Roaming");
 
 // eslint-disable-next-line import/first
 import { ExpertService } from "../src/main/experts/ExpertService";
+import { McpConfigService } from "../src/main/mcp/McpConfigService";
 import { SkillAuthoringService } from "../src/main/skills/SkillAuthoringService";
 
 let passed = 0;
@@ -386,6 +388,62 @@ displayName:
   const roundTrip = svc.getDetail(first.id);
   assert(roundTrip.mcpIds.join() === "tools" && roundTrip.connectorIds.join() === "research-cli", "导出再导入保留 MCP 与连接器引用");
   assert(roundTrip.name === removedSkill.name && roundTrip.instructions === removedSkill.instructions, "导出再导入保留编辑后的名称和正文");
+
+  console.log("\n12. WorkBuddy 专家包的 MCP 依赖");
+  const workbuddyZip = new JSZip();
+  workbuddyZip.file("crowncad/.codebuddy-plugin/plugin.json", JSON.stringify({
+    name: "crowncad-modeling-expert", version: "1.0.3", dependencies: { mcpServers: "./.mcp.json" },
+  }));
+  workbuddyZip.file("crowncad/agents/crowncad-expert.md", "---\nname: crowncad-expert\n---\n\nModel with CrownCAD.\n");
+  workbuddyZip.file("crowncad/skills/modeling/SKILL.md", "---\nname: modeling\ndescription: Model parts.\n---\n\nModel an editable part.\n");
+  workbuddyZip.file("crowncad/.mcp.json", JSON.stringify({ mcpServers: {
+    crowncad_mcp: { type: "streamableHttp", url: "https://cad.example.invalid/mcp", "x-workbuddy": { auth: { type: "oauth" } } },
+  } }));
+  const workbuddyZipPath = join(sandbox, "crowncad.zip");
+  writeFileSync(workbuddyZipPath, await workbuddyZip.generateAsync({ type: "nodebuffer" }));
+  const mcp = new McpConfigService({ homeDir: sandbox });
+  const importedCrowncad = await svc.importZip(workbuddyZipPath);
+  assert(importedCrowncad.id === "crowncad-expert" && importedCrowncad.skills?.join() === "modeling", "导入专家及其私有技能");
+  assert(svc.getDetail("crowncad-expert").mcpIds.join() === "crowncad_mcp", "专家模板引用包内的 MCP");
+  const importedServer = mcp.listServers().find(server => server.name === "crowncad_mcp");
+  assert(importedServer?.installed && importedServer.disabled && importedServer.transport === "url", "MCP 管理页显示已注册、待启用的 HTTP 服务");
+  const entry = mcp.readServerConfig("crowncad_mcp");
+  const importedConfig = JSON.parse(entry.entryText);
+  assert(importedConfig.type === "http" && importedConfig.auth === "oauth" && importedConfig.url === "https://cad.example.invalid/mcp", "转换 WorkBuddy 的 HTTP 类型与 OAuth 标记");
+  const saved = mcp.saveServerConfig({ name: "crowncad_mcp", expectedEntryText: entry.entryText,
+    entryText: JSON.stringify({ type: "http", url: "https://custom.example.invalid/mcp", enabled: true }) });
+  assert(saved.ok, "可以编辑并启用导入的 MCP");
+  const userConfig = readFileSync(entry.path, "utf-8");
+  await svc.importZip(workbuddyZipPath);
+  assert(readFileSync(entry.path, "utf-8") === userConfig, "重新导入保留同名 MCP 的用户配置和启用状态");
+
+  const acceptedCrowncad = svc.getDetail("crowncad-expert");
+  workbuddyZip.file("crowncad/.mcp.json", JSON.stringify({ mcpServers: {
+    crowncad_next: { type: "http", url: "https://next.example.invalid/mcp" },
+  } }));
+  writeFileSync(workbuddyZipPath, await workbuddyZip.generateAsync({ type: "nodebuffer" }));
+  const blockedWrite = `${entry.path}.${process.pid}.tmp`;
+  mkdirSync(blockedWrite);
+  let registrationError = false;
+  try { await svc.importZip(workbuddyZipPath); } catch { registrationError = true; }
+  finally { rmdirSync(blockedWrite); }
+  assert(registrationError && svc.getDetail("crowncad-expert").revision === acceptedCrowncad.revision
+    && readFileSync(entry.path, "utf-8") === userConfig, "MCP 写入失败时恢复原专家并保留原配置");
+  const retriedCrowncad = await svc.importZip(workbuddyZipPath);
+  assert(retriedCrowncad.mcpIds?.join() === "crowncad_next" && mcp.listServers().some(server => server.name === "crowncad_next" && server.installed), "写入恢复后重新导入可完成注册和绑定");
+
+  const mcpFolder = join(sandbox, "folder-with-mcp");
+  mkdirSync(join(mcpFolder, ".codebuddy-plugin"), { recursive: true });
+  mkdirSync(join(mcpFolder, "config"));
+  writeFileSync(join(mcpFolder, "prompt.md"), "---\nname: folder-with-mcp\n---\n\nUse the configured MCP.\n");
+  writeFileSync(join(mcpFolder, ".codebuddy-plugin", "plugin.json"), JSON.stringify({
+    name: "folder-with-mcp", dependencies: { mcpServers: "./config/servers.json" },
+  }));
+  writeFileSync(join(mcpFolder, "config", "servers.json"), JSON.stringify({ mcpServers: {
+    folder_server: { type: "http", url: "https://folder.example.invalid/mcp" },
+  } }));
+  const importedFolder = svc.installByPath(mcpFolder);
+  assert(importedFolder.mcpIds?.join() === "folder_server" && mcp.listServers().some(server => server.name === "folder_server" && server.installed), "文件夹导入解析相对于专家包根的 MCP 配置");
 
   // ---------- 汇总 ----------
   console.log(`\n[expert-test] ${passed} passed, ${failed} failed`);

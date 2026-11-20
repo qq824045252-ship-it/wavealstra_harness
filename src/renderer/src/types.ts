@@ -348,6 +348,7 @@ export interface Expert {
   filePath?: string;
   /** 专家包自带 Private Skills 目录名（~/.mybuddy/experts/<id>/skills/ 下，不进入全局 Skill Center） */
   skills?: string[];
+  mcpIds?: string[];
 }
 
 /** 市场中的专家 */

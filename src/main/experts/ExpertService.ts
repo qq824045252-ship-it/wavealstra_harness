@@ -24,6 +24,8 @@ import type { ExpertDetailDto, ExpertUpdateRequest } from "../../shared/expert-b
 import { getExpertExportsDir, getExpertsDir, getExpertMarketDir, getPluginsDir, getSkillsDir } from "../paths";
 import { assertSingleExpertId } from "../../shared/expert-id";
 import { sanitizePrivateSkillPackage } from "../skills/SkillAuthoringService";
+import { McpConfigService, type McpServerEntry } from "../mcp/McpConfigService";
+import { readExpertFolderMcp, readExpertZipMcp } from "./ExpertPackageMcp";
 
 /**
  * 专家（Agent 型插件）服务。
@@ -91,7 +93,7 @@ function capabilityIds(values: unknown): string[] {
 }
 
 /** Stage on the same volume; failed preparation/swap never destroys the accepted package. */
-function stageExpertDirectory(target: string): { stage: string; commit: () => void; discard: () => void } {
+function stageExpertDirectory(target: string): { stage: string; commit: (afterSwap?: () => void) => void; discard: () => void } {
   const root = resolve(getExpertsDir());
   const dest = resolve(target);
   if (dirname(dest) !== root) throw new Error("专家目标目录超出安装目录");
@@ -103,12 +105,16 @@ function stageExpertDirectory(target: string): { stage: string; commit: () => vo
   return {
     stage,
     discard: () => { if (existsSync(stage)) rmSync(stage, { recursive: true, force: true }); },
-    commit: () => {
+    commit: (afterSwap) => {
       let backedUp = false;
+      let swapped = false;
       try {
         if (existsSync(dest)) { renameSync(dest, backup); backedUp = true; }
         renameSync(stage, dest);
+        swapped = true;
+        afterSwap?.();
       } catch (error) {
+        if (swapped) renameSync(dest, stage);
         if (backedUp && !existsSync(dest)) renameSync(backup, dest);
         throw error;
       }
@@ -121,9 +127,9 @@ function stageExpertDirectory(target: string): { stage: string; commit: () => vo
   };
 }
 
-function replaceExpertDirectory<T>(target: string, writer: (stage: string) => T): T {
+function replaceExpertDirectory<T>(target: string, writer: (stage: string) => T, afterSwap?: () => void): T {
   const staged = stageExpertDirectory(target);
-  try { const result = writer(staged.stage); staged.commit(); return result; }
+  try { const result = writer(staged.stage); staged.commit(afterSwap); return result; }
   finally { staged.discard(); }
 }
 
@@ -721,9 +727,12 @@ function packageToMarketExpert(pkg: LocalMarketPackage): MarketExpertDto {
 }
 
 /** 从原始插件目录解析为（可安装的）专家定义；找不到 agents/*.md 抛错 */
-function parsePluginDir(srcDir: string): Omit<StoredExpert, "enabled" | "source" | "installedAt"> {
+function parsePluginDir(srcDir: string): {
+  meta: Omit<StoredExpert, "enabled" | "source" | "installedAt">;
+  bundledMcp: Record<string, McpServerEntry>;
+} {
   const pluginJsonPath = join(srcDir, ".codebuddy-plugin", "plugin.json");
-  let pluginContent: string | null = null;
+  let pluginContent: string | undefined;
   if (existsSync(pluginJsonPath)) {
     pluginContent = readFileSync(pluginJsonPath, "utf-8");
     try {
@@ -756,7 +765,7 @@ function parsePluginDir(srcDir: string): Omit<StoredExpert, "enabled" | "source"
     readFileSync(agentMdPath, "utf-8"),
     agentMdPath === join(srcDir, "prompt.md") ? "expert" : "expert",
   );
-  return {
+  const meta = {
     ...agent.meta,
     ...pluginMeta,
     id: pluginMeta.id ?? agent.meta.id,
@@ -769,6 +778,7 @@ function parsePluginDir(srcDir: string): Omit<StoredExpert, "enabled" | "source"
     version: pluginMeta.version ?? agent.meta.version,
     promptFile: agentMdPath === join(srcDir, "prompt.md") ? "prompt.md" : undefined,
   };
+  return { meta, bundledMcp: readExpertFolderMcp(srcDir, pluginContent) };
 }
 
 /** Validate explicitly: some Node/filesystem combinations copy a directory as an empty file. */
@@ -865,6 +875,8 @@ function copyPackageSkills(
 /* ------------------------------------------------------------------ */
 
 export class ExpertService {
+  private readonly mcpConfig = new McpConfigService();
+
   /* ---------- 市场 ---------- */
 
   listMarket(): MarketExpertDto[] {
@@ -1159,7 +1171,7 @@ export class ExpertService {
     if (!src || !existsSync(src)) throw new Error("专家路径不存在");
     if (!statSync(src).isDirectory()) throw new Error("专家导入需要目录或 zip 包");
 
-    const meta = parsePluginDir(src);
+    const { meta, bundledMcp } = parsePluginDir(src);
     const installedDest = expertDirOf(meta.id);
     return replaceExpertDirectory(installedDest, dest => {
       // 复制角色提示词与原始结构
@@ -1188,10 +1200,11 @@ export class ExpertService {
         promptFile: "prompt.md",
         avatarFile,
         skills: skills.length ? skills : undefined,
+        mcpIds: capabilityIds([...(meta.mcpIds ?? []), ...Object.keys(bundledMcp)]),
       };
       writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
       return toExpertDto(installedDest, stored);
-    });
+    }, () => this.mcpConfig.registerExpertServers(bundledMcp));
   }
 
   /** 从 zip 导入（官方「导入专家」：解包后按目录安装） */
@@ -1207,20 +1220,25 @@ export class ExpertService {
     const agentMdEntry = findEntry("agents/.md")
       ? undefined
       : entries
-          .filter((k) => k.replace(/\\/g, "/").match(/agents\/[^/]+\.md$/i))
+          .filter((k) => k.replace(/\\/g, "/").match(/(?:^|\/)agents\/[^/]+\.md$/i))
           .sort((a, b) => a.length - b.length)[0];
-    const pluginJsonEntry = findEntry(".codebuddy-plugin/plugin.json");
     const avatarEntry = entries.find((k) => k.replace(/\\/g, "/").match(/avatars\/[^/]+\.(png|jpg|jpeg|webp|gif)$/i));
     const promptMdEntry = entries.find(key => key.replace(/\\/g, "/").toLowerCase() === "prompt.md") ?? findEntry("/prompt.md");
 
     const agentMdPath = agentMdEntry ?? promptMdEntry;
     if (!agentMdPath) throw new Error("zip 中未找到 agents/*.md 或 prompt.md，不是有效的专家包");
+    const agentEntryPath = agentMdPath.replace(/\\/g, "/");
+    const agentEntryDir = agentEntryPath.slice(0, agentEntryPath.lastIndexOf("/") + 1);
+    const packagePrefix = agentMdEntry ? agentEntryDir.slice(0, -"agents/".length) : agentEntryDir;
+    const manifestPath = `${packagePrefix}.codebuddy-plugin/plugin.json`.toLowerCase();
+    const pluginJsonEntry = entries.find(key => key.replace(/\\/g, "/").toLowerCase() === manifestPath);
 
     const agentMdContent = await zip.files[agentMdPath].async("string");
     const agent = parseAgentMd(agentMdContent, "expert");
+    let pluginContent: string | undefined;
     let pluginMeta: ReturnType<typeof parsePluginJson> = {};
     if (pluginJsonEntry) {
-      const pluginContent = await zip.files[pluginJsonEntry].async("string");
+      pluginContent = await zip.files[pluginJsonEntry].async("string");
       try {
         const plugin = JSON.parse(pluginContent) as LocalPluginJson;
         if (plugin.expertType === "team") throw new Error("Expert team packages are not supported");
@@ -1229,6 +1247,7 @@ export class ExpertService {
       }
       pluginMeta = parsePluginJson(pluginContent);
     }
+    const bundledMcp = await readExpertZipMcp(zip, packagePrefix, pluginContent);
 
     const meta = {
       ...agent.meta,
@@ -1294,9 +1313,10 @@ export class ExpertService {
         promptFile: "prompt.md",
         avatarFile,
         skills: installedSkills.length ? installedSkills : undefined,
+        mcpIds: capabilityIds([...(meta.mcpIds ?? []), ...Object.keys(bundledMcp)]),
       };
       writeFileSync(join(dest, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
-      transaction.commit();
+      transaction.commit(() => this.mcpConfig.registerExpertServers(bundledMcp));
       return toExpertDto(installedDest, stored);
     } finally { transaction.discard(); }
   }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/store/appStore";
-import type { Page, Skill } from "@/types";
+import type { Expert, Page, Skill } from "@/types";
 import type { PluginStoragePathsDto } from "@shared/plugin-storage";
 import { McpConfigEditor, MCP_EXPOSURE_LABELS } from "@/components/hub/McpConfigEditor";
 import { McpToolsDialog } from "@/components/hub/McpToolsDialog";
@@ -59,6 +59,12 @@ function HubCategoryPills({ label, pills, activeId, onChange }: {
 
 type HubToastKind = "ok" | "err" | "info";
 type HubToastState = { kind: HubToastKind; text: string };
+
+function expertImportMessage(expert: Expert | null, fallback: string): string {
+  if (!expert) return fallback;
+  const message = `已导入「${expert.name}」`;
+  return expert.mcpIds?.length ? `${message}，已绑定 ${expert.mcpIds.length} 个 MCP。可在 MCP 页查看启用状态。` : message;
+}
 
 type HubCardExpansionCommand = { sequence: number; expanded: boolean };
 
@@ -182,7 +188,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
         return;
       }
       const dto = await importExpertZip(picked.path);
-      setToast({ kind: "ok", text: dto ? `已导入「${dto.name}」` : "ZIP 已导入" });
+      setToast({ kind: "ok", text: expertImportMessage(dto, "ZIP 已导入") });
     } catch (err) {
       setToast({ kind: "err", text: `导入失败：${expertErrText(err)}` });
     } finally {
@@ -196,7 +202,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
       const picked = await (window.api as unknown as { pickLocalFolder?: () => Promise<{ path: string } | null> })?.pickLocalFolder?.();
       if (!picked?.path) return;
       const dto = await installExpertByPath(picked.path);
-      setToast({ kind: "ok", text: dto ? `已导入「${dto.name}」` : "文件夹已导入" });
+      setToast({ kind: "ok", text: expertImportMessage(dto, "文件夹已导入") });
     } catch (err) {
       setToast({ kind: "err", text: `导入失败：${expertErrText(err)}` });
     } finally {
@@ -230,7 +236,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
       const dto = target.toLowerCase().endsWith(".zip")
         ? await importExpertZip(target)
         : await installExpertByPath(target);
-      setToast({ kind: "ok", text: dto ? `已导入「${dto.name}」` : "已导入" });
+      setToast({ kind: "ok", text: expertImportMessage(dto, "已导入") });
     } catch (err) {
       setToast({ kind: "err", text: `导入失败：${expertErrText(err)}` });
     } finally {
@@ -287,6 +293,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
           {expert.category ? ` · ${expert.category}` : ""}
           {expert.version ? ` · v${expert.version}` : ""}
           {installed?.skills?.length ? ` · ${installed.skills.length} skills` : ""}
+          {installed?.mcpIds?.length ? ` · MCP 绑定 ${installed.mcpIds.length}` : ""}
         </>
       }
       description={expert.description}
