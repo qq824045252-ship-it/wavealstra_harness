@@ -22,7 +22,7 @@
   <rect x="40" y="184" width="660" height="80" rx="8" fill="#fef7ed" stroke="#e08b32" stroke-width="1.8"/>
   <text x="60" y="210" font-size="15" font-weight="600" fill="#1f2933">② previewWorkspaceFile() — WorkspaceService.ts:238</text>
   <text x="60" y="231" font-size="12.5" fill="#52606d">readFile 全量 → data:image/…;base64（×1.37）</text>
-  <text x="60" y="251" font-size="12.5" fill="#b45309">Office 分支有 OFFICE_PREVIEW_MAX_BYTES；image / pdf / media / cad 一行都没有</text>
+  <text x="60" y="251" font-size="12.5" fill="#b45309">Office 编辑器按文件路径打开文档，预览接口也支持大文件。</text>
 
   <path d="M370 264 L370 288" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow)"/>
 

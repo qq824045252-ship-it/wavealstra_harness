@@ -1,0 +1,241 @@
+diff --git a/crates/engine/src/cmd/edit.rs b/crates/engine/src/cmd/edit.rs
+index 8c7072f..c8c49e3 100644
+--- a/crates/engine/src/cmd/edit.rs
++++ b/crates/engine/src/cmd/edit.rs
+@@ -16,6 +16,7 @@ mod clipboard;
+ mod fill;
+ mod find;
+ mod go_to;
++mod mybuddy;
+ mod paste_special;
+ mod selection;
+ 
+@@ -40,6 +41,8 @@ use selection::{select_all, select_col, select_region, select_row, selection_mov
+ 
+ pub fn specs() -> Vec<CommandSpec> {
+     vec![
++        cmd!(query "mybuddy.rangeRead", "Read Selected Cells", [], None, "{} → selected typed cells", has_doc, mybuddy::read),
++        cmd!("mybuddy.rangeReplace", "Apply Reviewed Spreadsheet Edit", [], None, "{captured, cells}", has_doc, mybuddy::replace),
+         cmd!("cell.set", "Enter Cell", [], None, "{cell?: \"B2\", input: \"text, number or =formula\", sheet?, array?: bool}", has_doc, cell_set),
+         cmd!(
+             "range.setValues",
+diff --git a/crates/engine/src/cmd/edit/mybuddy.rs b/crates/engine/src/cmd/edit/mybuddy.rs
+new file mode 100644
+index 0000000..ced66b4
+--- /dev/null
++++ b/crates/engine/src/cmd/edit/mybuddy.rs
+@@ -0,0 +1,156 @@
++use gridcraft_core::{RangeRef, Value};
++use gridcraft_model::{Cell, Formula};
++use serde_json::{Value as Json, json};
++
++use super::cell::{check_arg_counts, parse_typed_formula};
++use super::{Result, Session, bad, edit};
++
++const READ: &str = "mybuddy.rangeRead";
++const REPLACE: &str = "mybuddy.rangeReplace";
++const MAX_TEXT: usize = 32_000;
++
++pub(super) fn read(session: &mut Session, _: &Json) -> Result<Json> {
++    let doc = session.doc()?;
++    let sheet_index = doc.wb.active_sheet();
++    let sheet = doc.wb.active().ok_or_else(|| bad(READ, "No active sheet."))?;
++    let range = doc.selection.current();
++    if doc.selection.ranges.len() != 1 {
++        return Err(bad(READ, "Select one contiguous rectangle of spreadsheet cells."));
++    }
++    if range.count() > 256 {
++        return Err(bad(READ, "Select up to 256 spreadsheet cells."));
++    }
++    if sheet.merges.iter().any(|merge| merge.intersects(&range)) {
++        return Err(bad(READ, "Select unmerged spreadsheet cells."));
++    }
++    if sheet.spill_ranges.values().any(|spill| spill.intersects(&range))
++        || sheet.cells.iter().any(|(_, cell)| cell.formula.as_ref().and_then(|f| f.array).is_some_and(|array| array.intersects(&range)))
++    {
++        return Err(bad(READ, "Select cells outside array formulas."));
++    }
++    let cells = range
++        .iter()
++        .map(|at| {
++            let cell = sheet.cell(at);
++            if sheet.cell_pictures.contains_key(&at) || cell.is_some_and(|cell| cell.py.is_some()) {
++                return Err(bad(READ, "Unsupported spreadsheet cell type."));
++            }
++            if crate::display::formula_hidden(&doc.wb, sheet, at) {
++                return Err(bad(READ, "Select cells without hidden formulas."));
++            }
++            if let Some(formula) = cell.and_then(|cell| cell.formula.as_ref()) {
++                return Ok(json!({"kind": "formula", "value": format!("={}", formula.text)}));
++            }
++            match sheet.value(at) {
++                Value::Empty => Ok(json!({"kind": "empty"})),
++                Value::Number(value) => Ok(json!({"kind": "number", "value": value})),
++                Value::Text(value) => Ok(json!({"kind": "text", "value": value.as_ref()})),
++                _ => Err(bad(READ, "Unsupported spreadsheet cell type.")),
++            }
++        })
++        .collect::<Result<Vec<Json>>>()?;
++    let cells = cells.chunks(range.width() as usize).collect::<Vec<_>>();
++    Ok(json!({
++        "document": doc.uid,
++        "sheetUid": sheet.uid.get(),
++        "target": {
++            "kind": "cell-range",
++            "sheet": sheet.name,
++            "sheetIndex": sheet_index,
++            "address": range.a1(),
++            "startColumn": range.start.col,
++            "endColumn": range.end.col,
++            "startRow": range.start.row,
++            "endRow": range.end.row,
++        },
++        "cells": cells,
++        "editable": !sheet.is_protected(),
++    }))
++}
++
++fn same_cell(a: &Json, b: &Json) -> bool {
++    if a["kind"] == "number" && b["kind"] == "number" {
++        return a["value"].as_f64().is_some() && a["value"].as_f64() == b["value"].as_f64();
++    }
++    a == b
++}
++
++fn same_cells(a: &Json, b: &Json) -> bool {
++    let (Some(a), Some(b)) = (a.as_array(), b.as_array()) else { return false };
++    a.len() == b.len()
++        && a.iter().zip(b).all(|(a, b)| {
++            let (Some(a), Some(b)) = (a.as_array(), b.as_array()) else { return false };
++            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_cell(a, b))
++        })
++}
++
++pub(super) fn replace(session: &mut Session, params: &Json) -> Result<Json> {
++    let current = read(session, &Json::Null)?;
++    let captured = &params["captured"];
++    for field in ["document", "sheetUid", "target"] {
++        if current[field] != captured[field] {
++            return Err(bad(REPLACE, "The selected spreadsheet range changed. Read it again."));
++        }
++    }
++    if !same_cells(&current["cells"], &captured["cells"]) {
++        return Err(bad(REPLACE, "The selected spreadsheet cells changed. Read them again."));
++    }
++    if current["editable"].as_bool() != Some(true) {
++        return Err(bad(REPLACE, "Select cells on an unprotected sheet."));
++    }
++    let doc = session.doc()?;
++    let sheet = doc.wb.active_sheet();
++    let range: RangeRef = doc.selection.current();
++    let rows = params["cells"].as_array().ok_or_else(|| bad(REPLACE, "Missing replacement cells."))?;
++    if rows.len() != range.height() as usize || rows.iter().any(|row| row.as_array().is_none_or(|row| row.len() != range.width() as usize)) {
++        return Err(bad(REPLACE, "The replacement must match the selected range."));
++    }
++    if same_cells(&params["cells"], &current["cells"]) {
++        return Ok(json!({"changed": 0}));
++    }
++    let changed = edit(session, |ctx| {
++        let mut changed = 0;
++        for at in range.iter() {
++            let y = (at.row - range.start.row) as usize;
++            let x = (at.col - range.start.col) as usize;
++            let proposed = &rows[y][x];
++            if same_cell(proposed, &current["cells"][y][x]) {
++                continue;
++            }
++            let sh = ctx.sheet_mut(sheet)?;
++            let style = sh.style_id(at);
++            let mut next = Cell { style, ..Cell::default() };
++            let value = &proposed["value"];
++            match proposed["kind"].as_str() {
++                Some("empty") => (),
++                Some("number") if value.as_f64().is_some() => next.value = Value::number(value.as_f64().unwrap_or_default()),
++                Some("text") if value.as_str().is_some_and(|text| text.encode_utf16().count() <= MAX_TEXT) => {
++                    next.value = Value::text(value.as_str().unwrap_or_default());
++                }
++                Some("formula") if value.as_str().is_some_and(|text| text.encode_utf16().count() <= MAX_TEXT && !text.contains(['\r', '\n'])) => {
++                    let input = value.as_str().unwrap_or_default();
++                    let formula =
++                        input.strip_prefix('=').filter(|body| !body.is_empty()).ok_or_else(|| bad(REPLACE, "Invalid spreadsheet formula."))?;
++                    if gridcraft_model::python::is_py_formula(input) {
++                        return Err(bad(REPLACE, "Python spreadsheet formulas are unsupported."));
++                    }
++                    let expression = ctx.wb.name_call_case(parse_typed_formula(formula)?);
++                    check_arg_counts(&expression)?;
++                    next = Cell::formula(Formula::from_expr(expression));
++                    next.style = style;
++                }
++                _ => return Err(bad(REPLACE, "Invalid typed spreadsheet cell.")),
++            }
++            let sh = ctx.sheet_mut(sheet)?;
++            if next.is_blank() {
++                sh.remove_cell(at);
++            } else {
++                sh.set_cell(at, next);
++            }
++            ctx.touch(sheet, at);
++            changed += 1;
++        }
++        Ok(changed)
++    })?;
++    Ok(json!({"changed": changed}))
++}
+diff --git a/crates/ui-egui/build.rs b/crates/ui-egui/build.rs
+index 2551abf..9c697d1 100644
+--- a/crates/ui-egui/build.rs
++++ b/crates/ui-egui/build.rs
+@@ -98,7 +98,7 @@ fn craft_fonts(dir: &std::path::Path, wasm: bool, required: bool) -> Result<Stri
+     if required {
+         craft_fonts_policy::check_required(&rows)?;
+     }
+-    let chinese = if wasm { Vec::new() } else { chinese_font_rows(&root, required)? };
++    let chinese = chinese_font_rows(&root, required)?;
+     for row in rows.iter().chain(&chinese) {
+         if craft_fonts_policy::barred(&row.family) {
+             println!("cargo::warning=craft-fonts: not embedding {} {} (repository asset policy)", row.family, row.style);
+diff --git a/crates/ui-egui/src/control.rs b/crates/ui-egui/src/control.rs
+index 602d5cc..6651d57 100644
+--- a/crates/ui-egui/src/control.rs
++++ b/crates/ui-egui/src/control.rs
+@@ -99,6 +99,11 @@ fn wrap(r: Result<Json, String>) -> Outcome {
+ /// Runs a command for an agent. Commands that move the selection scroll the active cell into
+ /// view, as the Go To dialog, the Name Box and the arrow keys do.
+ fn run(app: &mut SheetApp, id: &str, params: Json) -> Result<Json, String> {
++    if matches!(id, "mybuddy.rangeRead" | "mybuddy.rangeReplace")
++        && (app.editor.is_some() || app.text_box_editor.is_some() || app.dialog.is_some() || app.selected_object.is_some())
++    {
++        return Err("Finish the current spreadsheet edit and select cells first.".into());
++    }
+     let r = app.run(id, params);
+     if r.is_ok() && matches!(id, "edit.goTo" | "edit.goToSpecial" | "selection.set" | "selection.move") {
+         app.grid.ensure_visible = true;
+@@ -298,6 +303,16 @@ pub fn handle(app: &mut SheetApp, ctx: &egui::Context, method: &str, p: &Json) -
+         "engine.journal" => ok(json!(app.session.journal.iter().map(|(id, p)| json!({"command": id, "params": p})).collect::<Vec<_>>())),
+         "document.inspect" | "sheet.read" | "cell.get" | "selection.stats" => wrap(direct(app, method, p, false)),
+         "ui.inspect" => ok(inspect(app, ctx)),
++        "mybuddy.activeCellGlyphs" => {
++            let Some(doc) = app.session.active() else { return err("no document") };
++            let Some(sheet) = doc.wb.active() else { return err("no active sheet") };
++            let cell = doc.selection.active;
++            let style = doc.wb.styles.get(sheet.style_id(cell));
++            let font = egui::FontId::new(style.font.size, crate::theme::cell_family(&style.font.name, style.font.bold, style.font.italic));
++            let text = gridcraft_engine::display::cell_text(&doc.wb, sheet, cell);
++            let missing: String = ctx.fonts_mut(|fonts| text.chars().filter(|&c| !c.is_whitespace() && !fonts.has_glyph(&font, c)).collect());
++            ok(json!({"text": text, "missing": missing}))
++        }
+         "ui.ribbon" => {
+             app.ui.ribbon_tab = s("tab").unwrap_or("Home").to_string();
+             app.ui.ribbon_collapsed = false;
+diff --git a/crates/ui-egui/src/craft_fonts_policy.rs b/crates/ui-egui/src/craft_fonts_policy.rs
+index 1a91094..a8a2e0c 100644
+--- a/crates/ui-egui/src/craft_fonts_policy.rs
++++ b/crates/ui-egui/src/craft_fonts_policy.rs
+@@ -37,6 +37,7 @@ pub const CHINESE_FACES: &[(&str, &str, &[&str])] = &[("LXGW WenKai Lite", "Regu
+ /// the document-only faces stay off the wasm bundle. `Noto Sans Symbols` supplies `⌃`, and
+ /// `Noto Sans Symbols 2` supplies `✕`, `◀` and `✓`; `📋` still comes from egui's bundled emoji.
+ pub const WEB_ALLOWED: &[(&str, &str)] = &[
++    ("LXGW WenKai Lite", "Regular"),
+     ("BIZ UDPGothic", "Regular"),
+     ("BIZ UDPGothic", "Bold"),
+     ("NanumGothic", "Regular"),

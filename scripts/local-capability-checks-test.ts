@@ -15,6 +15,7 @@ import { activateResolvedSessionTools, resolveDurableToolSelection, resolveSessi
 import { checkLocalExecution } from "../src/main/capabilities/LocalCapabilityChecks";
 import type { PythonRuntimeService } from "../src/main/runtime/PythonRuntimeService";
 import { createBuiltinCapabilityExtension } from "../src/main/capabilities/builtin-capability-extension";
+import { checkOfficeUseAssets } from "../src/main/office-use/OfficeUseAssets";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-local-capabilities-test-"));
@@ -99,8 +100,25 @@ try {
   const store = new BuiltinCapabilityStore(path);
   await writeFile(path, JSON.stringify({ schemaVersion: 1, browser: { enabled: false } }));
   assert.equal(store.read().diagnostics?.enabled, false, "legacy disabled browser must not turn diagnostics on");
+  assert.equal(store.read().officeUse?.enabled, true, "Office Use stays enabled for previous installations");
+  const officeConfig = store.read();
+  store.write({ ...officeConfig, officeUse: { enabled: false } });
+  assert.equal(store.read().officeUse?.enabled, false);
+  assert.equal(store.read().browser.enabled, false);
   await writeFile(path, JSON.stringify({ schemaVersion: 1, browser: { enabled: true }, diagnostics: { enabled: false } }));
   assert.equal(store.read().diagnostics?.enabled, false);
+
+  const officeEditor = join(root, "office-editor");
+  runtime.registerLocalCheck("office-use", () => checkOfficeUseAssets(root, officeEditor));
+  assert.equal(state("office-use").state, "unchecked");
+  const missingOffice = await runtime.test("office-use");
+  assert.equal(missingOffice.ok, false);
+  assert.equal(missingOffice.state, "missing-dependency");
+  assert.match(missingOffice.detail, /编辑器组件缺失.*host\.js/);
+  assert.equal(state("office-use").state, "missing-dependency");
+  await mkdir(join(officeEditor, "host"), { recursive: true });
+  await writeFile(join(officeEditor, "host", "host.js"), "'use strict';");
+  assert.doesNotMatch((await runtime.test("office-use")).detail, /host\.js/, "a missing dependency check can be rerun after repair");
 
   const probeConfig = structuredClone(DEFAULT_BUILTIN_CAPABILITIES_CONFIG);
   probeConfig.web.enabled = probeConfig.vision.enabled = probeConfig.imageGeneration.enabled = probeConfig.videoGeneration.enabled = false;

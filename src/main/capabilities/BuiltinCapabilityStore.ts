@@ -116,6 +116,7 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
       transport: value.textToSpeech?.transport === "http" ? "http" : value.textToSpeech?.transport === "websocket" ? "websocket" : undefined,
     },
     browser: { enabled: value.browser?.enabled !== false },
+    officeUse: { enabled: value.officeUse?.enabled !== false },
     diagnostics: { enabled: value.diagnostics?.enabled ?? value.browser?.enabled !== false },
     execution: {
       terminalEnabled: value.execution?.terminalEnabled !== false,

@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/host/host.css"><title>MyBuddy Office</title></head>
+<body><span id="status" role="status">正在打开文档…</span>
+<section hidden id="panel"><div><strong id="label"></strong><button id="cancel">关闭</button></div>
+<label>选中内容<textarea id="original" readonly></textarea></label>
+<div><input id="instruction" placeholder="希望 AI 怎样改？" aria-label="修改要求"><button id="generate">生成建议</button></div>
+<label>修改建议<textarea id="candidate" aria-describedby="format-hint"></textarea></label><p id="format-hint" hidden>保持选区行列数，用制表符分列、换行分行。以 = 开头的未加引号内容按公式输入，用双引号包住要保留的文本。</p><button id="apply">应用到选区</button></section>
+<iframe id="editor" title="Office 编辑器" aria-busy="true" allow="cross-origin-isolated"></iframe><script src="/host/host.js"></script></body></html>

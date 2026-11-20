@@ -41,6 +41,40 @@ const WORKING_DENY_DRAWIO: ModePresetDto["mcpPolicy"] = {
   deny: [...OFFICE_PROVIDER_MCP_IDS],
 };
 
+const OFFICE_DOCUMENT_GUIDANCE = "操作当前打开的 Office 文档时，用 Office Use 查找、读取和定位内容。提交改写建议后由用户确认。";
+const SUMMARY_OUTPUT_GUIDANCE = "需要落盘时可用 Markdown。";
+const PROJECT_OUTPUT_GUIDANCE = "需要 Office 文件时按当前任务可用能力交付。";
+const ANALYSIS_OUTPUT_GUIDANCE = "需要 .xlsx 时使用当前任务可用的表格能力。";
+
+const OFFICE_PROMPT_REFRESH: Record<string, { old: string; previous?: string; current: string }> = {
+  "general-office": {
+    old: "需要 .docx/.xlsx/.pptx 时用 officecli（L1 读 → L2 DOM 改 → L3 原始 XML）。",
+    previous: "编辑当前打开的 Office 文档选区时使用 Office Use，并让用户确认修改。",
+    current: OFFICE_DOCUMENT_GUIDANCE,
+  },
+  summary: { old: "需要落盘时用 Markdown 或 officecli。", current: SUMMARY_OUTPUT_GUIDANCE },
+  "project-management": { old: "需要 Office 文件时用 officecli。", current: PROJECT_OUTPUT_GUIDANCE },
+  "data-analysis": { old: "需要 .xlsx 时用 officecli。", current: ANALYSIS_OUTPUT_GUIDANCE },
+};
+
+/** Refresh only shipped Office wording and its previous default whitelist. */
+export function refreshLegacyOfficePreset(preset: ModePresetDto, seed: ModePresetDto): ModePresetDto {
+  const guidance = OFFICE_PROMPT_REFRESH[preset.id];
+  const prompt = seed.promptAddon;
+  if (!guidance || !prompt || ![guidance.old, guidance.previous].some(previous =>
+    previous !== undefined && preset.promptAddon === prompt.replace(guidance.current, previous))) return preset;
+  const legacyPolicy = preset.id === "general-office" && seed.skillPolicy
+    ? { ...seed.skillPolicy, allow: ["officecli"] }
+    : undefined;
+  return {
+    ...preset,
+    promptAddon: prompt,
+    ...(legacyPolicy && JSON.stringify(preset.skillPolicy) === JSON.stringify(legacyPolicy)
+      ? { skillPolicy: seed.skillPolicy }
+      : {}),
+  };
+}
+
 /**
  * working 出厂 Mode Presets：对人交付的办公闭环。
  * 顺序：通用办公 → 总结 → 周报 → 会议纪要 → 项目管理 → 数据分析 → 流程图 → Penpot。
@@ -58,13 +92,13 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "1. 先弄清读者是谁、这份东西拿去干什么（汇报 / 对齐 / 决策 / 跟进）；材料不够就问，或标「待确认」。\n" +
       "2. 开头 3–5 行写清：是什么、所以呢、下一步谁做什么。不要先铺背景。\n" +
       "3. 正文短段、小标题、列表或表格；一段一个意思。人名、日期、数字、责任人必须可扫读、可对账。\n" +
-      "4. 需要 .docx/.xlsx/.pptx 时用 officecli（L1 读 → L2 DOM 改 → L3 原始 XML）。引用源文件或字段名。\n" +
+      `4. ${OFFICE_DOCUMENT_GUIDANCE}引用源文件或字段名。\n` +
       "5. 收尾给出产物路径，并点明局限。不写空话套话。流程图请切到「流程图」标签。",
     skillPolicy: {
       prefer: ["officecli", "fastcopy-copy", "weekly-report-fill", "周报", "summary", "report", "excel", "文档", "会议"],
       demote: [],
       hide: [],
-      allow: ["officecli"],
+      allow: [],
     },
     mcpPolicy: WORKING_DENY_DRAWIO,
   },
@@ -78,7 +112,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "2. 开头一句话结论：这件事现在是什么状态、对读者意味着什么。\n" +
       "3. 正文按主题归并 3–7 条要点，每条一个意思；删过程、留判断和事实。数字、人名、日期、出处必须可对账。\n" +
       "4. 单独列出：分歧 / 待确认 / 读者需要拍板或跟进的下一步（没有就写「无」）。\n" +
-      "5. 篇幅克制，默认一页内读完。原文只在容易断章取义时短引。需要落盘时用 Markdown 或 officecli。\n" +
+      `5. 篇幅克制，默认一页内读完。原文只在容易断章取义时短引。${SUMMARY_OUTPUT_GUIDANCE}\n` +
       "禁止按段落复述、堆形容词、把不确定写成定论。",
     skillPolicy: {
       prefer: ["summary", "officecli", "report", "文档"],
@@ -140,7 +174,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "2. 再列看板：任务 / 责任人 / 状态 / 截止 / 依赖。缺项标「待确认」，不编进度。\n" +
       "3. 风险写成「会发生什么 → 对谁有影响 → 建议动作」，不要只喊「需关注」。\n" +
       "4. 输出可扫读的 Markdown 表格或清单；必要时附一段可转发的对齐说明。\n" +
-      "5. 收尾只留 3 个以内「现在就要有人做的决定或动作」。需要 Office 文件时用 officecli。\n" +
+      `5. 收尾只留 3 个以内「现在就要有人做的决定或动作」。${PROJECT_OUTPUT_GUIDANCE}\n` +
       "不要写成空的 OKR / 赋能套话。",
     skillPolicy: {
       prefer: ["officecli", "文档", "summary", "report"],
@@ -160,7 +194,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "2. 用工具真实读表/CSV，禁止心算编造。先做数据体检：缺失、异常、重复、单位不一致。\n" +
       "3. 结论 3–5 条，每条带数字与对比（环比/同比/结构/贡献），并写清「所以建议怎么做」。\n" +
       "4. 关键对比用表格；趋势说方向与幅度，不堆原始行。相关关系不要写成因果。\n" +
-      "5. 附录交代样本、口径、局限。需要 .xlsx 时用 officecli。图表为结论服务，不装饰。",
+      `5. 附录交代样本、口径、局限。${ANALYSIS_OUTPUT_GUIDANCE}图表为结论服务，不装饰。`,
     skillPolicy: {
       prefer: ["officecli", "excel", "summary"],
       demote: [],

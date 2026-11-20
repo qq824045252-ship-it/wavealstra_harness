@@ -219,10 +219,11 @@ async function main(): Promise<void> {
       "drawio-ai promptAddon 含完整工具链路由（start_session→export_diagram）",
     );
     const generalOffice = workingPresets.find((p) => p.id === "general-office")!;
-    assert(generalOffice.skillPolicy?.allow.join(",") === "officecli", "通用办公默认技能白名单包含 officecli");
+    assert(generalOffice.skillPolicy?.allow.length === 0, "通用办公默认不要求 OfficeCLI");
+    assert(generalOffice.promptAddon?.includes("Office Use") && !generalOffice.promptAddon.includes("officecli"), "通用办公推荐 Office Use 处理当前文档选区");
     const officePolicy = resolveEffectiveModePolicy(MODE_SEEDS.working.policy, generalOffice);
     const officeSkills = filterSkillsForMode([{ id: "officecli", name: "officecli", description: "Office" }, { id: "other", name: "other", description: "Other" }], "working", officePolicy.skillPolicy);
-    assert(officeSkills.visible.map(skill => skill.id).join(",") === "officecli", "通用办公实际技能过滤放行 officecli");
+    assert(officeSkills.visible.some(skill => skill.id === "officecli") && officeSkills.visible.some(skill => skill.id === "other"), "通用办公允许显式安装的 OfficeCLI 和其他技能");
     assert(
       JSON.stringify(generalOffice.mcpPolicy?.deny) === JSON.stringify(["drawio-ai"]),
       "general-office deny OFFICE_PROVIDER_MCP_IDS（防 drawio 泄漏）",
@@ -859,18 +860,23 @@ async function main(): Promise<void> {
     );
   }
   {
-    // Unchanged previous defaults adopt OfficeCLI; custom lists remain intact and reads do not write disk.
+    // Refresh previous factory wording and policy while retaining user choices and untouched disk settings.
     const wFile = join(sandbox, ".mybuddy", "modes", "working", "policy.json");
     const before = readFileSync(wFile, "utf8");
     const prior = structuredClone(MODE_SEEDS.working.policy);
     prior.skillPolicy.allow = ["my-custom"];
     const general = prior.presets!.find(preset => preset.id === "general-office")!;
-    general.skillPolicy!.allow = [];
+    general.promptAddon = general.promptAddon!.replace(
+      "操作当前打开的 Office 文档时，用 Office Use 查找、读取和定位内容。提交改写建议后由用户确认。",
+      "需要 .docx/.xlsx/.pptx 时用 officecli（L1 读 → L2 DOM 改 → L3 原始 XML）。",
+    );
+    general.skillPolicy!.allow = ["officecli"];
     writeFileSync(wFile, JSON.stringify(prior));
     const upgraded = store.getProfile("working");
-    assert(resolveModePreset(upgraded.policy, "general-office")?.skillPolicy?.allow.join(",") === "officecli", "旧通用办公默认白名单读时更新");
-    assert(upgraded.policy.skillPolicy.allow.includes("my-custom") && upgraded.policy.skillPolicy.allow.includes("officecli"), "旧 base 白名单补入 officecli 并保留已有条目");
-    assert(JSON.parse(readFileSync(wFile, "utf8")).presets.find((p: ModePresetDto) => p.id === "general-office").skillPolicy.allow.length === 0, "默认升级不改写磁盘");
+    assert(resolveModePreset(upgraded.policy, "general-office")?.skillPolicy?.allow.length === 0, "旧通用办公默认 OfficeCLI 白名单读时移除");
+    assert(resolveModePreset(upgraded.policy, "general-office")?.promptAddon?.includes("Office Use"), "旧通用办公默认提示词读时更新");
+    assert(upgraded.policy.skillPolicy.allow.join(",") === "my-custom", "旧 base 白名单保留自定义技能");
+    assert(JSON.parse(readFileSync(wFile, "utf8")).presets.find((p: ModePresetDto) => p.id === "general-office").skillPolicy.allow.join(",") === "officecli", "默认升级不改写磁盘");
     general.skillPolicy!.allow = ["my-custom"];
     writeFileSync(wFile, JSON.stringify(prior));
     assert(resolveModePreset(store.getProfile("working").policy, "general-office")?.skillPolicy?.allow.join(",") === "my-custom", "保留通用办公自定义白名单");

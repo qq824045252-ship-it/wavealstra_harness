@@ -15,15 +15,9 @@ import CodeView from "@/components/artifact/CodeView";
 import MarkdownArtifactView from "@/components/artifact/MarkdownArtifactView";
 import ImageArtifactView from "@/components/artifact/ImageArtifactView";
 import PdfViewer from "@/components/artifact/PdfViewer";
-import DocxViewer from "@/components/artifact/DocxViewer";
-import XlsxViewer from "@/components/artifact/XlsxViewer";
 import { useAppStore } from "@/store/appStore";
 import { imageViewerStats } from "@/lib/imageView";
 import { pdfViewerStats } from "@/lib/pdfView";
-import { docxViewerStats, decodeDataUriBytes } from "@/lib/docxView";
-import { xlsxViewerStats } from "@/lib/xlsxView";
-import PptxViewer from "@/components/artifact/PptxViewer";
-import { pptxViewerStats } from "@/lib/pptxView";
 import { ChatImageScope, MessageImages } from "@/components/chat/ChatImage";
 import type { ChatMessage } from "@/types";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
@@ -34,12 +28,6 @@ declare global {
       setTheme: (theme: "light" | "dark") => void;
       renderImage: (file: string | null) => Promise<void>;
       renderPdf: (file: string | null) => Promise<void>;
-      renderDocx: (file: string | null) => Promise<void>;
-      renderXlsx: (file: string | null) => Promise<void>;
-      renderPptx: (file: string | null) => Promise<void>;
-      debugDocxParse: (dataUrl: string) => Promise<string>;
-      debugDocxImport: () => Promise<string>;
-      debugDocxStage: (dataUrl: string, stage: string) => Promise<string>;
       stats: () => {
         active: number;
         stageListeners: number;
@@ -57,14 +45,6 @@ declare global {
           textPagesExtracted: number;
         };
         pdfDom: number;
-        docx: {
-          docs: number;
-          listeners: number;
-          observers: number;
-          pagesLive: number;
-          renders: number;
-        };
-        docxDom: number;
       };
     };
   }
@@ -89,9 +69,6 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 
 let imageRoot: Root | null = null;
 let pdfRoot: Root | null = null;
-let docxRoot: Root | null = null;
-let xlsxRoot: Root | null = null;
-let pptxRoot: Root | null = null;
 
 async function renderChatSvg(file: string): Promise<void> {
   const root = document.getElementById("root");
@@ -164,57 +141,6 @@ async function renderImage(file: string | null): Promise<void> {
   imageRoot.render(<ImageArtifactView content={dataUrl} name={file} />);
 }
 
-/** 挂载/切换/卸载 DOCX 查看器（泄漏场景：long → simple → long → null） */
-async function renderDocx(file: string | null): Promise<void> {
-  const root = document.getElementById("root");
-  if (!root) throw new Error("no #root");
-  if (docxRoot) {
-    docxRoot.unmount();
-    docxRoot = null;
-  }
-  if (!file) return;
-  root.className = "preview-docx";
-  const response = await fetch(`w5a-fixture:///${encodeURIComponent(file)}`);
-  if (!response.ok) throw new Error(`w5a-fixture load failed: ${file}`);
-  const dataUrl = await blobToDataUrl(await response.blob());
-  docxRoot = createRoot(root);
-  docxRoot.render(<DocxViewer content={dataUrl} name={file} />);
-}
-
-/** 挂载/切换/卸载 XLSX 查看器（泄漏场景：10k → simple → 10k → null） */
-async function renderXlsx(file: string | null): Promise<void> {
-  const root = document.getElementById("root");
-  if (!root) throw new Error("no #root");
-  if (xlsxRoot) {
-    xlsxRoot.unmount();
-    xlsxRoot = null;
-  }
-  if (!file) return;
-  root.className = "preview-xlsx";
-  const response = await fetch(`w5a-fixture:///${encodeURIComponent(file)}`);
-  if (!response.ok) throw new Error(`w5a-fixture load failed: ${file}`);
-  const dataUrl = await blobToDataUrl(await response.blob());
-  xlsxRoot = createRoot(root);
-  xlsxRoot.render(<XlsxViewer content={dataUrl} name={file} />);
-}
-
-/** 挂载/切换/卸载 PPTX 查看器（泄漏场景：long → simple → long → null） */
-async function renderPptx(file: string | null): Promise<void> {
-  const root = document.getElementById("root");
-  if (!root) throw new Error("no #root");
-  if (pptxRoot) {
-    pptxRoot.unmount();
-    pptxRoot = null;
-  }
-  if (!file) return;
-  root.className = "preview-pptx";
-  const response = await fetch(`w5a-fixture:///${encodeURIComponent(file)}`);
-  if (!response.ok) throw new Error(`w5a-fixture load failed: ${file}`);
-  const dataUrl = await blobToDataUrl(await response.blob());
-  pptxRoot = createRoot(root);
-  pptxRoot.render(<PptxViewer content={dataUrl} name={file} />);
-}
-
 async function renderPdf(file: string | null): Promise<void> {
   const root = document.getElementById("root");
   if (!root) throw new Error("no #root");
@@ -250,47 +176,6 @@ async function main(): Promise<void> {
     },
     renderImage,
     renderPdf,
-    renderDocx,
-    renderXlsx,
-    renderPptx,
-    debugDocxImport: async (): Promise<string> => {
-      const mod = await import("docx-preview");
-      return "import ok: " + typeof mod.parseAsync;
-    },
-    debugDocxStage: async (dataUrl: string, stage: string): Promise<string> => {
-      const mod = await import("docx-preview");
-      const bytes = decodeDataUriBytes(dataUrl);
-      const blob = new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-      if (stage === "parse") {
-        const parsed = await mod.parseAsync(blob, { breakPages: true, renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true, inWrapper: true, className: "docx" });
-        return "parse ok";
-      }
-      if (stage === "render") {
-        const parsed = await mod.parseAsync(blob, { breakPages: true, renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true, inWrapper: true, className: "docx" });
-        const nodes = await mod.renderDocument(parsed, { breakPages: true, renderHeaders: true, renderFooters: true, renderFootnotes: true, renderEndnotes: true, inWrapper: true, className: "docx" });
-        const wrapper = nodes.find((n): n is HTMLElement => n instanceof HTMLElement && n.className.includes("docx-wrapper"));
-        const sections = wrapper ? wrapper.querySelectorAll("section.docx").length : -1;
-        return "render ok nodes=" + nodes.length + " sections=" + sections + " kids=" + (wrapper ? wrapper.children.length : -1);
-      }
-      return "unknown stage";
-    },
-    debugDocxParse: async (dataUrl: string): Promise<string> => {
-      const log: string[] = [];
-      try {
-        const mod = await import("docx-preview");
-        log.push("import ok");
-        const bytes = decodeDataUriBytes(dataUrl);
-        const blob = new Blob([bytes as BlobPart], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-        log.push("blob " + blob.size);
-        const parsed = await mod.parseAsync(blob, { breakPages: true, renderHeaders: true, renderFooters: true, inWrapper: true, className: "docx" });
-        log.push("parse ok");
-        const nodes = await mod.renderDocument(parsed, { breakPages: true, renderHeaders: true, renderFooters: true, inWrapper: true, className: "docx" });
-        log.push("render ok nodes=" + nodes.length);
-      } catch (e) {
-        log.push("ERR " + String(e).slice(0, 200));
-      }
-      return log.join(" | ");
-    },
     stats: () => ({
       active: imageViewerStats.active,
       stageListeners: imageViewerStats.stageListeners,
@@ -299,12 +184,6 @@ async function main(): Promise<void> {
       viewerDom: document.querySelectorAll(".image-viewer").length,
       pdf: { ...pdfViewerStats },
       pdfDom: document.querySelectorAll(".pdf-viewer").length,
-      docx: { ...docxViewerStats },
-      docxDom: document.querySelectorAll(".docx-viewer").length,
-      xlsx: { ...xlsxViewerStats },
-      xlsxDom: document.querySelectorAll(".xlsx-viewer").length,
-      pptx: { ...pptxViewerStats },
-      pptxDom: document.querySelectorAll(".pptx-viewer").length,
     }),
   };
 
@@ -330,32 +209,6 @@ async function main(): Promise<void> {
   if (kind === "pdf") {
     await renderPdf(file);
     if (params.get("pdfzoom") === "100") {
-      const tryZoom = (): void => {
-        const btn = document.querySelector<HTMLButtonElement>('[data-action="zoom-100"]');
-        if (btn) {
-          btn.click();
-          return;
-        }
-        window.setTimeout(tryZoom, 300);
-      };
-      window.setTimeout(tryZoom, 600);
-    }
-    return;
-  }
-
-  if (kind === "xlsx") {
-    await renderXlsx(file);
-    return;
-  }
-
-  if (kind === "pptx") {
-    await renderPptx(file);
-    return;
-  }
-
-  if (kind === "docx") {
-    await renderDocx(file);
-    if (params.get("docxzoom") === "100") {
       const tryZoom = (): void => {
         const btn = document.querySelector<HTMLButtonElement>('[data-action="zoom-100"]');
         if (btn) {

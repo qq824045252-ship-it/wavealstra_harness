@@ -142,8 +142,8 @@ export interface SpeechCapabilityProvider {
 type ProviderKind = "vision" | "media" | "speech";
 type AnyProvider = VisionCapabilityProvider | MediaCapabilityProvider | SpeechCapabilityProvider;
 
-export type LocalCapabilityId = "browser" | "terminal" | "code-execution" | "subagent" | "runtime-diagnostics";
-export interface LocalCapabilityCheckResult { state: "ready" | "degraded"; detail: string }
+export type LocalCapabilityId = "browser" | "office-use" | "terminal" | "code-execution" | "subagent" | "runtime-diagnostics";
+export interface LocalCapabilityCheckResult { state: "ready" | "degraded" | "missing-dependency"; detail: string }
 export interface LocalCapabilityAvailability { available: boolean; tools?: string[]; detail?: string }
 
 const LABELS: Record<string, { label: string; description: string; category: BuiltinCapabilityStatusDto["category"] }> = {
@@ -155,6 +155,7 @@ const LABELS: Record<string, { label: string; description: string; category: Bui
   "speech-to-text": { label: "语音转文字", description: "把任务内音频转写为文本。", category: "speech" },
   "text-to-speech": { label: "文字转语音", description: "把文本合成为任务音频产物。", category: "speech" },
   browser: { label: "界面与桌面操作", description: `操作 MyBuddy 浏览器/主界面，并在必要时执行受控${desktopPlatformLabel(process.platform)}交互。`, category: "automation" },
+  "office-use": { label: "Office Use", description: "查找和读取当前 Office 文档，定位段落、单元格或幻灯片文字，提交修改建议。", category: "automation" },
   "runtime-diagnostics": { label: "运行诊断", description: "读取应用、浏览器与产物的运行状态和日志。", category: "automation" },
   terminal: { label: "命令执行", description: "直接使用 Pi 原生 bash 执行命令。", category: "execution" },
   "code-execution": { label: "代码执行", description: "在任务目录内执行一次性代码。", category: "execution" },
@@ -404,6 +405,7 @@ export class BuiltinCapabilityRuntime {
         this.providerStatus("speech-to-text", config.speechToText.enabled, this.speechToTextProvider(), config.speechToText.provider),
         this.providerStatus("text-to-speech", config.textToSpeech.enabled, this.textToSpeechProvider(), config.textToSpeech.provider),
         simple("browser", config.browser.enabled, this.browserAvailable),
+        simple("office-use", config.officeUse?.enabled !== false, this.localChecks.has("office-use")),
         simple("runtime-diagnostics", config.diagnostics?.enabled ?? config.browser.enabled, this.localChecks.has("runtime-diagnostics")),
         simple("terminal", config.execution.terminalEnabled, true),
         simple("code-execution", config.execution.codeExecutionEnabled, true),
@@ -430,14 +432,14 @@ export class BuiltinCapabilityRuntime {
     const status = this.snapshot().capabilities.find((item) => item.id === id);
     if (!status) return { ok: false, state: "missing-dependency", detail: "未知能力", checkedAt: Date.now() };
     const local = this.localChecks.get(id as LocalCapabilityId);
-    if (local && status.enabled && status.state !== "missing-dependency") {
+    if (local && status.enabled && local.availability?.().available !== false) {
       const key = this.checkKey(id);
       const revision = (this.checkRevisions.get(id) ?? 0) + 1;
       this.checkRevisions.set(id, revision);
       let result: TestBuiltinCapabilityResultDto;
       try {
         const checked = await local.run();
-        result = { ok: true, ...checked, checkedAt: Date.now() };
+        result = { ok: checked.state !== "missing-dependency", ...checked, checkedAt: Date.now() };
       } catch (error) {
         result = { ok: false, state: "offline", detail: error instanceof Error ? error.message : String(error), checkedAt: Date.now() };
       }

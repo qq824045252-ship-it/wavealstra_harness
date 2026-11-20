@@ -1,4 +1,5 @@
 import { DEFAULT_MULTI_MODEL_CONSULT_CONFIG, type MultiModelConsultConfig } from "./multi-model-consult";
+import { OFFICE_USE_TOOLS } from "./office-use";
 import type { ApiCapabilityConnection, CapabilityConnectionOption, CapabilityCredentialChange, MediaCapabilityBinding, MediaCapabilityId } from "./media-capabilities";
 /**
  * MyBuddy native capability contract.
@@ -17,6 +18,7 @@ export type BuiltinCapabilityId =
   | "speech-to-text"
   | "text-to-speech"
   | "browser"
+  | "office-use"
   | "runtime-diagnostics"
   | "terminal"
   | "code-execution"
@@ -117,6 +119,8 @@ export interface BuiltinCapabilitiesConfigDto {
   textToSpeech: BuiltinTextToSpeechConfig;
   /** Browser + MyBuddy UI + Windows desktop interaction umbrella. */
   browser: BuiltinBrowserConfig;
+  /** Task assistant tools for the Office document open in MyBuddy. Defaults to enabled. */
+  officeUse?: { enabled: boolean };
   /** Optional for schema-v1 compatibility; legacy configurations inherit browser.enabled. */
   diagnostics?: { enabled: boolean };
   execution: BuiltinExecutionConfig;
@@ -186,6 +190,7 @@ export const DEFAULT_BUILTIN_CAPABILITIES_CONFIG: BuiltinCapabilitiesConfigDto =
     enabled: true,
   },
   browser: { enabled: true },
+  officeUse: { enabled: true },
   diagnostics: { enabled: true },
   execution: { terminalEnabled: true, codeExecutionEnabled: true },
   subagent: { enabled: true },
@@ -201,6 +206,7 @@ export const BUILTIN_CAPABILITY_TOOLS: Record<BuiltinCapabilityId, string[]> = {
   "speech-to-text": ["speech_to_text"],
   "text-to-speech": ["text_to_speech"],
   browser: ["browser_exec", "ui_exec", "computer_exec"],
+  "office-use": Object.values(OFFICE_USE_TOOLS),
   "runtime-diagnostics": ["runtime_probe"],
   terminal: ["bash", "terminal_exec"],
   "code-execution": ["execute_code"],

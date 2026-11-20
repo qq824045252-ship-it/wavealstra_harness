@@ -1,0 +1,20 @@
+{
+  "sha256": "35f6d14e67b4a8ce3af1c59ad05b0b4d6756b7d178cfa53c8a21a6b16b774f6a",
+  "files": {
+    "ATTRIBUTION.md": "c19b7a0b0f34dbfa872acd22c157bd1e9bf2c8657648c01e80ea8185a8c3f379",
+    "LICENSE-APACHE": "eb3d7b5485466acbd81f2b496f595ab637d2792e268206b27d99e793bdb67549",
+    "LICENSE-MIT": "7b6e0288d68469fee98354364cdc0e945a1a4d4cd9c02ed11df9406c1715587e",
+    "NOTICE": "02baa1a4323b7a1f962ac8ccf74ae26574c76089e1497d79ee324aeb484b62f1",
+    "OFL-biz-ud-pgothic.txt": "062c81ae55b5ddd56c08331c8fe86598c1ef7f4453560c74706427a008b68534",
+    "OFL-lxgw-wenkai-lite.txt": "7752fbb4e6c855f73a57a30caac80f583115658c656e11383d741571ddfa8882",
+    "OFL-nanum-gothic.txt": "6bca0c1a8c713fa5e703c5427a273ea736181c558312962569c28b4cb390fee3",
+    "OFL-noto-sans-arabic.txt": "3b7e321615e412e5fbb9eab5bf1c0a4cb84c732d3d5a9e9e3822972d5fb70b97",
+    "OFL-noto-sans-symbols-2.txt": "dee1e0758c6ce86a7aee4aa812387de573fbe1b9a78bfc8332515fac2762aba5",
+    "OFL-noto-sans-symbols.txt": "dee1e0758c6ce86a7aee4aa812387de573fbe1b9a78bfc8332515fac2762aba5",
+    "gridcraft-web.js": "77e93dbb81d009ac619dc64bf0072836b2636f69c272e66ff66018537b00f5ec",
+    "gridcraft-web_bg.wasm": "407cee606e8edbebf309d7850dab2e5562c0c4620adc3764f0696f93ab2f24bf",
+    "index.html": "4f51a1e9b041aac6ce2d8131d6b8a68747dd109bc4dc584e4de7dfac97fa001f",
+    "snippets/eframe-d31a8450ea12dfc1/inline0.js": "22a98f9d0c5a0532d291bdc9a3050439420b3d11143b4568fcfd3c66fff36995"
+  },
+  "archive": "gridcraft-web-mybuddy.zip"
+}

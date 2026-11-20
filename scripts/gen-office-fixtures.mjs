@@ -269,7 +269,7 @@ export async function genDocxImages() {
         ],
       }),
       mixedParagraph(i + 1),
-      // 每图一页（docx-preview 仅按显式分页符分页）
+      // 添加显式分页符，每页一图
       new Paragraph({ children: [new PageBreak()] }),
     );
   }

@@ -1,0 +1,44 @@
+{
+  "wordcraft": {
+    "url": "https://github.com/storytold/wordcraft/releases/download/v0.18.1/wordcraft-web-0.18.1.zip",
+    "sha256": "3daa7c2d1f209a7eeb2527fcefa3fe31e875848fb1970d68f54edae55fe0bc9f",
+    "files": {
+      "ATTRIBUTION.md": "3fc09b7189d078901db77a477bc2dc2007d9a139d59057c67cd5d46e8491d435",
+      "index.html": "31d22aea27588ffee2825c44d23b4c9f459613deb29fb73c50797535abfe72d1",
+      "LICENSE-APACHE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "LICENSE-MIT": "fc257de83c44ae49e4aad1cf777b886794be3ac9c8d00c010ef55935d5bbeba5",
+      "NOTICE": "8ff59a56c883fd708ed041c7a0ce4e16bb040e03027d94677d324ce711ebba2d",
+      "OFL-biz-ud-mincho.txt": "ef0ed524b3bd012f37015e986809eed6f67905456ebfc1ebd7fcc2765282ee01",
+      "OFL-biz-ud-pgothic.txt": "e753d7155d53c747d037a445e584c8ecfca6dd79846db610417e282a736b28bc",
+      "OFL-lxgw-wenkai-lite.txt": "0333a85fe077b6849f8e417acc44e8bd879442ceb681e271acf93e2d57fd4e2e",
+      "OFL-nanum-gothic.txt": "eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f",
+      "OFL-noto-sans-arabic.txt": "07fc70bfeb985cc1a87a8587d0a0c80bab11c86c9dc3fd95b6f0cb332f983e96",
+      "OFL-noto-sans-cjk-sc.txt": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+      "OFL-noto-sans-devanagari.txt": "a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331",
+      "OFL-noto-sans-georgian.txt": "8c02263c5d73d40544f9ed91e30c4e947407057a3cc430d7b786189aeceff6df",
+      "OFL-noto-sans-hebrew.txt": "9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47",
+      "OFL-noto-sans-symbols-2.txt": "b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0",
+      "OFL-noto-sans-symbols.txt": "b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0",
+      "OFL-noto-sans-thai.txt": "2e98fd23a52d253db8612cd5942c8f2ff4111b21d2367050fdca91d8ccc374a0",
+      "OFL-shippori-mincho.txt": "41fba056279be5f45ff9a99e44b7b53897b42732f5806d8e666e0ab49ac6bd38",
+      "snippets/eframe-d31a8450ea12dfc1/inline0.js": "22a98f9d0c5a0532d291bdc9a3050439420b3d11143b4568fcfd3c66fff36995",
+      "wordcraft-fa59e09a3f921e03.ico": "53a23dcf66260f44d87d4d143d633395f3e967f391eda47e6e9cc3a52f820225",
+      "wordcraft-web-bc9cdbc0b42827ee.js": "0454cb6cd67a4d4d39fe731660bf6c47ada739611e0a46af6291a9277831b957",
+      "wordcraft-web-bc9cdbc0b42827ee_bg.wasm": "e0bf7525b3553f38c4864794f6ec92bf4a4ebc7872b55ad7ac417eb22ba53bce"
+    }
+  },
+  "deckcraft": {
+    "url": "https://github.com/storytold/deckcraft/releases/download/v0.18.1/deckcraft-web-0.18.1.zip",
+    "sha256": "3196e537fcfab538aaa2e88584bc74e29bb584459b916ab584ac22fbafe32db5",
+    "files": {
+      "deckcraft-b8fcbb36ecec0385.ico": "ceb73e008aa2cdf4d05d6375da32c5536a2bc2637bee59cdf441e2f9f792a9cd",
+      "deckcraft-web-f863e8c546b80fd1.js": "7122e2c9d0891fad8a9da7da5aba94e32ba1aa1721cde482ee8e9ba825b93be0",
+      "deckcraft-web-f863e8c546b80fd1_bg.wasm": "3f36d649160abb0c0547574c6b0787208db7b1a48137401e2d5933c95b4cb955",
+      "index.html": "d78eab3b6a57a5801394486dae5ee8ed800f4d3f15ef1db7b143ee8ddb41c798",
+      "LICENSE-APACHE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "LICENSE-MIT": "90e96fef569474cd526350e716e4b05dd32f179ca96d39d61e6b928485e35406",
+      "NOTICE": "ffb327238bcbc6fe66f77d55bbdcadeb29ccc7319e9aa96b067e735dccb750eb",
+      "snippets/eframe-d31a8450ea12dfc1/inline0.js": "22a98f9d0c5a0532d291bdc9a3050439420b3d11143b4568fcfd3c66fff36995"
+    }
+  }
+}

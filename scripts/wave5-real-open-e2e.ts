@@ -12,9 +12,9 @@
  *   → data URI → renderCache（version 绑定）→ ArtifactPanel → 真实 Viewer
  *
  * 场景：
- *   E1 DOCX（cache-empty → open → 自动 hydration → 正文显示）
- *   E2 XLSX（sheet tab + cell 内容）
- *   E3 PPTX（slideCount > 0 + slide 渲染，无 Corrupted zip）
+ *   E1 DOCX（通过 artifact 身份打开，不读二进制缓存）
+ *   E2 XLSX（同上）
+ *   E3 PPTX（同上）
  *   E4 PDF（page slots）
  *   E5 Image（naturalWidth > 0）
  *   E6 重启恢复（新窗口 = 新 renderer = cache 空 → 历史 artifact 自动 hydration）
@@ -27,9 +27,9 @@
  */
 import { app, BrowserWindow, ipcMain } from "electron";
 import Database from "better-sqlite3";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, basename } from "node:path";
+import { join } from "node:path";
 import { ArtifactDomainIpc } from "../src/shared/artifact-ipc";
 import { ArtifactRegistry } from "../src/main/artifact/ArtifactRegistry";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
@@ -37,7 +37,7 @@ import { ArtifactService } from "../src/main/artifact/ArtifactService";
 import { ArtifactStorage } from "../src/main/artifact/ArtifactStorage";
 
 /**
- * EPIPE 防护（栈：console.log → check → e1Docx → run 的 Electron 主进程弹窗）。
+ * EPIPE 防护（栈：console.log → check → openOfficeArtifact → run 的 Electron 主进程弹窗）。
  *
  * 根因：本 E2E 由 `electron out/tests/wave5-real-open-e2e.cjs` 直接运行（GUI 子系统进程）。
  * 在 pnpm/IDE 终端/管道消费方提前关闭 stdout|stderr 时，测试进程后续 console.log
@@ -106,51 +106,24 @@ const OPEN_STATE = `(() => {
 
 // ---------- 场景 ----------
 
-async function e1Docx(wc: Electron.WebContents): Promise<void> {
-  await wc.executeJavaScript(`window.__open.open('docx1')`);
-  const ready = await waitFor(wc, `!!document.querySelector('.docx-viewer .docx-page-slot')`);
-  check("E1 DOCX: 自动 hydration 并渲染页", ready);
-  if (ready) {
-    const s = await evalJson<any>(wc, OPEN_STATE);
-    check("E1 DOCX: cache 已写入且 version 绑定", s.cache["docx1"]?.artifactVersion === 1);
-    check("E1 DOCX: loadState ready", s.loads["docx1"] === "ready");
-    const pageText = await evalJson<string>(wc, `document.querySelector('.docx-page-frame')?.textContent ?? ''`);
-    check("E1 DOCX: 正文出现", /MyBuddy|Office|文档|DOCX/i.test(pageText), pageText.slice(0, 60));
-    const err = await evalJson<string>(wc, `document.querySelector('.docx-viewer-status')?.textContent ?? ''`);
-    check("E1 DOCX: 无 zip 错误", !err.includes("加载失败"), err);
-    const dataUri = s.cache["docx1"]?.content ?? "";
-    check("E1 DOCX: 内容为合法 docx data URI", dataUri.startsWith("data:") && dataUri.includes(";base64,") && dataUri.length > 200);
-  }
+function renderReady(id: string, version?: number): string {
+  const key = JSON.stringify(id);
+  const cacheVersion = version === undefined ? "" : ` && state.cache[${key}]?.artifactVersion === ${version}`;
+  return `(() => {
+    const state = window.__open.state();
+    return state.loads[${key}] === "ready" && !!state.cache[${key}]?.content${cacheVersion};
+  })()`;
 }
 
-async function e2Xlsx(wc: Electron.WebContents): Promise<void> {
-  await wc.executeJavaScript(`window.__open.open('xlsx1')`);
-  const ready = await waitFor(wc, `!!document.querySelector('.xlsx-viewer .xlsx-sheet-tab')`);
-  check("E2 XLSX: 自动 hydration 并渲染 sheet tab", ready);
-  if (ready) {
-    const s = await evalJson<any>(wc, OPEN_STATE);
-    check("E2 XLSX: cache version 绑定", s.cache["xlsx1"]?.artifactVersion === 1);
-    const cells = await evalJson<number>(wc, `document.querySelectorAll('.xlsx-cell').length`);
-    check("E2 XLSX: cell 内容出现", cells > 0, String(cells));
-    const err = await evalJson<string>(wc, `document.querySelector('.xlsx-viewer-status')?.textContent ?? ''`);
-    check("E2 XLSX: 无 Corrupted zip", !err.includes("加载失败") && !err.includes("Corrupted"), err);
-  }
-}
-
-async function e3Pptx(wc: Electron.WebContents): Promise<void> {
-  await wc.executeJavaScript(`window.__open.open('pptx1')`);
-  const ready = await waitFor(wc, `!!document.querySelector('.pptx-viewer .pptx-stage-slide')`);
-  check("E3 PPTX: 自动 hydration 并渲染 slide", ready);
-  if (ready) {
-    const s = await evalJson<any>(wc, OPEN_STATE);
-    check("E3 PPTX: cache version 绑定", s.cache["pptx1"]?.artifactVersion === 1);
-    const meta = await evalJson<string>(wc, `document.querySelector('.pptx-viewer-meta')?.textContent ?? ''`);
-    check("E3 PPTX: slideCount > 0", /\d+ slides/.test(meta), meta);
-    const err = await evalJson<string>(wc, `document.querySelector('.pptx-viewer-status')?.textContent ?? ''`);
-    check("E3 PPTX: 无 Corrupted zip", !err.includes("加载失败") && !err.includes("Corrupted"), err);
-    const title = await evalJson<string>(wc, `document.querySelector('.pptx-stage-slide.active .pptx-slide-inner')?.textContent ?? ''`);
-    check("E3 PPTX: 标题文本", title.includes("MyBuddy PPTX"), title.slice(0, 50));
-  }
+async function openOfficeArtifact(wc: Electron.WebContents, label: string, id: string): Promise<void> {
+  const before = readContentCalls.count;
+  await wc.executeJavaScript(`window.__open.open(${JSON.stringify(id)})`);
+  const ready = await waitFor(wc, `window.officeOpens().some(source =>
+    source.type === "artifact" && source.id === ${JSON.stringify(id)} && source.taskId === "t1")`);
+  check(`${label}: 以当前任务的 artifact 身份打开原生 Office 面板`, ready);
+  const state = await evalJson<any>(wc, OPEN_STATE);
+  check(`${label}: 预览无需读取或缓存 Office 二进制`,
+    readContentCalls.count === before && state.cache[id] === undefined && state.loads[id] === undefined);
 }
 
 async function e4Pdf(wc: Electron.WebContents): Promise<void> {
@@ -175,66 +148,62 @@ async function e5Image(wc: Electron.WebContents): Promise<void> {
   }
 }
 
-async function e7Updated(wc: Electron.WebContents, pptxPath: string, officeDir: string): Promise<void> {
-  // 打开 24 slides deck（v1）
-  await wc.executeJavaScript(`window.__open.open('pptxUpd')`);
-  const ready = await waitFor(wc, `document.querySelector('.pptx-viewer-meta')?.textContent.includes('24 slides')`);
-  check("E7 Updated: v1 打开（24 slides）", ready);
-  // 磁盘覆盖为 4:3 双页 deck + RefreshCoordinator 路径（markFilesChanged → version++）
-  // 注意：rootDir 前缀匹配语义——所有同 rootDir（含父级 FIX）的 workspace-file
-  // artifact 都会被 bump；断言只针对 pptx-upd 事件本身。
-  copyFileSync(join(FIX, "office", "pptx-43.pptx"), pptxPath);
+async function e7Updated(wc: Electron.WebContents, textPath: string): Promise<void> {
+  // 打开原始文本（v1）
+  await wc.executeJavaScript(`window.__open.open('textUpd')`);
+  const ready = await waitFor(wc, renderReady("textUpd", 1));
+  check("E7 Updated: v1 已载入", ready);
+  // 在独立临时目录覆盖工作区文件，再通过真实刷新路径重新加载。
+  const replacement = "Updated artifact text";
+  writeFileSync(textPath, replacement, "utf8");
   const updated = await service.markFilesChanged({
     taskId: "t1",
-    cwd: officeDir,
-    changedFiles: [pptxPath],
+    cwd: tmpRoot,
+    changedFiles: [textPath],
   });
-  const updEvt = updated.find((u) => u.artifactId === "pptxUpd");
+  const updEvt = updated.find((u) => u.artifactId === "textUpd");
   check("E7 Updated: 主进程 version++ 事件", !!updEvt && updEvt.version === 2, JSON.stringify(updated.map((u) => `${u.artifactId}:v${u.version}`)));
-  const reloaded = await waitFor(wc, `document.querySelector('.pptx-viewer-meta')?.textContent.includes('2 slides')`);
-  check("E7 Updated: viewer 自动展示新版（2 slides）", reloaded);
+  const reloaded = await waitFor(wc, renderReady("textUpd", 2));
+  check("E7 Updated: 新版自动加载进缓存", reloaded);
   const s = await evalJson<any>(wc, OPEN_STATE);
-  check("E7 Updated: cache.artifactVersion === 2", s.cache["pptxUpd"]?.artifactVersion === 2, String(s.cache["pptxUpd"]?.artifactVersion));
-  const err = await evalJson<string>(wc, `document.querySelector('.pptx-viewer-status')?.textContent ?? ''`);
-  check("E7 Updated: 无加载错误", !err.includes("加载失败"), err);
-  // 恢复原始文件
-  copyFileSync(join(tmpRoot, "pptx-long-backup.pptx"), pptxPath);
+  check("E7 Updated: cache.artifactVersion === 2", s.cache["textUpd"]?.artifactVersion === 2, String(s.cache["textUpd"]?.artifactVersion));
+  check("E7 Updated: 缓存使用磁盘上的新文本", s.cache["textUpd"]?.content === replacement);
 }
 
 async function e9Removed(wc: Electron.WebContents): Promise<void> {
-  await wc.executeJavaScript(`window.__open.open('xlsx1')`);
-  await waitFor(wc, `!!document.querySelector('.xlsx-viewer .xlsx-sheet-tab')`);
-  // 打开第二个 artifact（ppt 复用 pptx1）→ 两个 cache 都存在
-  await wc.executeJavaScript(`window.__open.open('docx1')`);
-  await waitFor(wc, `!!document.querySelector('.docx-viewer .docx-page-slot')`);
+  await wc.executeJavaScript(`window.__open.open('img1')`);
+  await waitFor(wc, renderReady("img1"));
+  // 打开第二个 artifact，确认两个缓存均已写入
+  await wc.executeJavaScript(`window.__open.open('pdf1')`);
+  await waitFor(wc, renderReady("pdf1"));
   // removed 事件 → cache/loadState/error 全清
-  await wc.executeJavaScript(`window.__open.applyRemoved('docx1')`);
+  await wc.executeJavaScript(`window.__open.applyRemoved('pdf1')`);
   await sleep(400);
   const s = await evalJson<any>(wc, OPEN_STATE);
-  check("E9 Removed: cache 清除", !("docx1" in s.cache));
-  check("E9 Removed: loadState 清除", !("docx1" in s.loads));
-  // 原 xlsx cache 不受影响（并发打开的另一个 artifact）
-  check("E9 Removed: 其他 cache 保留", !!s.cache["xlsx1"]);
+  check("E9 Removed: cache 清除", !("pdf1" in s.cache));
+  check("E9 Removed: loadState 清除", !("pdf1" in s.loads));
+  // 原图片缓存 不受影响（并发打开的另一个 artifact）
+  check("E9 Removed: 其他 cache 保留", !!s.cache["img1"]);
 }
 
 async function e10Concurrent(wc: Electron.WebContents): Promise<void> {
   const before = readContentCalls.count;
-  await wc.executeJavaScript(`(() => { for (let i = 0; i < 5; i++) window.__open.open('pptx1'); })()`);
-  await waitFor(wc, `!!document.querySelector('.pptx-viewer .pptx-stage-slide')`);
+  await wc.executeJavaScript(`(() => { for (let i = 0; i < 5; i++) window.__open.open('textUpd'); })()`);
+  await waitFor(wc, renderReady("textUpd"));
   const after = readContentCalls.count;
   check("E10 并发: ×5 打开 readContent 只 1 次", after - before === 1, `+${after - before}`);
   const s = await evalJson<any>(wc, OPEN_STATE);
-  check("E10 并发: viewer ready", s.loads["pptx1"] === "ready");
+  check("E10 并发: 缓存已就绪", s.loads["textUpd"] === "ready");
 }
 
 async function e6Restore(wc: Electron.WebContents): Promise<void> {
   // 新窗口 = 新 renderer = render cache 空（模拟应用重启）
-  await wc.executeJavaScript(`window.__open.open('docx1')`);
-  const ready = await waitFor(wc, `!!document.querySelector('.docx-viewer .docx-page-slot')`);
-  check("E6 重启恢复: 历史 DOCX 自动 hydration", ready);
-  await wc.executeJavaScript(`window.__open.open('pptx1')`);
-  const ready2 = await waitFor(wc, `!!document.querySelector('.pptx-viewer .pptx-stage-slide')`);
-  check("E6 重启恢复: 历史 PPTX 自动 hydration", ready2);
+  await wc.executeJavaScript(`window.__open.open('pdf1')`);
+  const ready = await waitFor(wc, renderReady("pdf1"));
+  check("E6 重启恢复: 历史 PDF 自动 hydration", ready);
+  await wc.executeJavaScript(`window.__open.open('textUpd')`);
+  const ready2 = await waitFor(wc, renderReady("textUpd"));
+  check("E6 重启恢复: 历史文本 自动 hydration", ready2);
   if (ready2) {
     const s = await evalJson<any>(wc, OPEN_STATE);
     // 版本断言跟随 projection 当前版本（E7 的 markFilesChanged 可能已 bump 到 v2）
@@ -243,9 +212,9 @@ async function e6Restore(wc: Electron.WebContents): Promise<void> {
       (proj["t1"] ?? []).find((d: any) => d.id === id)?.version;
     check(
       "E6 重启恢复: 两个 cache 均 version 绑定",
-      s.cache["docx1"]?.artifactVersion === descV("docx1") &&
-        s.cache["pptx1"]?.artifactVersion === descV("pptx1"),
-      `docx1=${s.cache["docx1"]?.artifactVersion}@${descV("docx1")} pptx1=${s.cache["pptx1"]?.artifactVersion}@${descV("pptx1")}`,
+      s.cache["pdf1"]?.artifactVersion === descV("pdf1") &&
+        s.cache["textUpd"]?.artifactVersion === descV("textUpd"),
+      `pdf1=${s.cache["pdf1"]?.artifactVersion}@${descV("pdf1")} textUpd=${s.cache["textUpd"]?.artifactVersion}@${descV("textUpd")}`,
     );
   }
 }
@@ -333,7 +302,14 @@ const dom = {
   onUpdated: (cb) => bridge("artifact-domain:updated", cb),
   onRemoved: (cb) => bridge("artifact-domain:removed", cb),
 };
+const officeSources = [];
+contextBridge.exposeInMainWorld("officeOpens", () => officeSources);
 contextBridge.exposeInMainWorld("api", {
+  officeUse: {
+    open: async ({ source }) => { officeSources.push(source); return { id: source.id }; },
+    bounds: () => {},
+    close: async () => {},
+  },
   artifactDomain: dom,
   agent: {
     onEvent: () => () => {},
@@ -378,13 +354,15 @@ contextBridge.exposeInMainWorld("api", {
     capabilities: { originalKind: "pptx" },
     workspaceFile: { entryFile: join(officeDir, "pptx-simple.pptx"), rootDir: officeDir },
   });
+  const textPath = join(tmpRoot, "updated-artifact.txt");
+  writeFileSync(textPath, "Original artifact text", "utf8");
   await service.register({
-    id: "pptxUpd",
+    id: "textUpd",
     taskId: "t1",
-    kind: "office",
-    title: "PPTX 长文档",
-    capabilities: { originalKind: "pptx" },
-    workspaceFile: { entryFile: join(officeDir, "pptx-long-24p.pptx"), rootDir: officeDir },
+    kind: "code",
+    title: "文本文档",
+    capabilities: { originalKind: "code" },
+    workspaceFile: { entryFile: textPath, rootDir: tmpRoot },
   });
   await service.register({
     id: "pdf1",
@@ -402,13 +380,6 @@ contextBridge.exposeInMainWorld("api", {
     capabilities: { originalKind: "image" },
     workspaceFile: { entryFile: join(FIX, "image-basic.png"), rootDir: FIX },
   });
-  const pptxUpdId = "pptxUpd";
-
-  // E7 备份原始 long deck
-  const pptxLongPath = join(officeDir, "pptx-long-24p.pptx");
-  const backup = readFileSync(pptxLongPath);
-  writeFileSync(join(tmpRoot, "pptx-long-backup.pptx"), backup);
-
   const makeWindow = (): BrowserWindow =>
     new BrowserWindow({
       width: 1300,
@@ -422,12 +393,12 @@ contextBridge.exposeInMainWorld("api", {
     });
 
   const scenarios: Array<[string, (wc: Electron.WebContents) => Promise<void>]> = [
-    ["E1 DOCX", (wc) => e1Docx(wc)],
-    ["E2 XLSX", (wc) => e2Xlsx(wc)],
-    ["E3 PPTX", (wc) => e3Pptx(wc)],
+    ["E1 DOCX", (wc) => openOfficeArtifact(wc, "E1 DOCX", "docx1")],
+    ["E2 XLSX", (wc) => openOfficeArtifact(wc, "E2 XLSX", "xlsx1")],
+    ["E3 PPTX", (wc) => openOfficeArtifact(wc, "E3 PPTX", "pptx1")],
     ["E4 PDF", (wc) => e4Pdf(wc)],
     ["E5 Image", (wc) => e5Image(wc)],
-    ["E7 Updated", (wc) => e7Updated(wc, pptxLongPath, officeDir)],
+    ["E7 Updated", (wc) => e7Updated(wc, textPath)],
     ["E9 Removed", (wc) => e9Removed(wc)],
     ["E10 Concurrent", (wc) => e10Concurrent(wc)],
   ];
@@ -483,13 +454,6 @@ contextBridge.exposeInMainWorld("api", {
   } catch (error) {
     failures += 1;
     check("E6 重启恢复: 异常", false, String(error));
-  }
-
-  // 恢复 long deck 源文件（即使失败）
-  try {
-    copyFileSync(join(tmpRoot, "pptx-long-backup.pptx"), pptxLongPath);
-  } catch {
-    /* ignore */
   }
 
   const failed = results.filter(([, pass]) => !pass).length;
