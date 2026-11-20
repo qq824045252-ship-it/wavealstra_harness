@@ -12,6 +12,7 @@ import type {
   McpUiPromptDto,
 } from "../../../../shared/agent-ipc";
 import { HubGrid, HubCard, HubStatusBadge, HubActionsMenu, HubEmpty, HubHeader, HubToolbar, HubSearch, HubFilterPills, HubImportBar, HubDropOverlay, HubToast, HubAuthoringModal, HubSkillDetailModal, ManagedMcpRuntimeBar } from "@/components/hub";
+import { ALL_PLUGIN_CATEGORIES, connectorCategory, filterPluginCategories, mcpCategory, skillCategory } from "@/lib/pluginCategories";
 
 type HubTab = "experts" | "skills" | "mcp" | "connectors";
 
@@ -33,6 +34,18 @@ const TAB_LABEL: Record<HubTab, string> = {
   mcp: "MCP",
   connectors: "连接器",
 };
+
+function HubCategoryPills({ label, pills, activeId, onChange }: {
+  label: string;
+  pills: ReturnType<typeof filterPluginCategories>["pills"];
+  activeId: string;
+  onChange: (id: string) => void;
+}): React.JSX.Element | null {
+  if (pills.length === 1) return null;
+  return <div role="group" aria-label={label}>
+    <HubFilterPills pills={pills} activeId={activeId} onChange={onChange} />
+  </div>;
+}
 
 type HubToastKind = "ok" | "err" | "info";
 type HubToastState = { kind: HubToastKind; text: string };
@@ -606,6 +619,8 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
   const [subTab, setSubTab] = useState<"local" | "mybuddy">("local");
   /** 市场内来源筛选：全部 | 本地 | MyBuddy */
   const [marketSource, setMarketSource] = useState<"全部" | "本地" | "MyBuddy">("全部");
+  const [installedCategory, setInstalledCategory] = useState(ALL_PLUGIN_CATEGORIES);
+  const [marketCategory, setMarketCategory] = useState(ALL_PLUGIN_CATEGORIES);
   const bulkExpansion = useHubBulkExpansion();
 
   useEffect(() => {
@@ -643,6 +658,15 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
         s.description.toLowerCase().includes(q),
     );
   }, [marketSkills, query, marketSource]);
+
+  const installedByCategory = useMemo(
+    () => filterPluginCategories(filteredInstalled, skillCategory, installedCategory),
+    [filteredInstalled, installedCategory],
+  );
+  const marketByCategory = useMemo(
+    () => filterPluginCategories(filteredMarket, skillCategory, marketCategory),
+    [filteredMarket, marketCategory],
+  );
 
   const marketLocalCount = useMemo(
     () => marketSkills.filter((s) => marketSkillKind(s) === "本地").length,
@@ -719,11 +743,14 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
               <span className="mcp-count">{skills.length}</span>
             </div>
           </div>
-          {filteredInstalled.length === 0 ? (
-            <HubEmpty icon="🧩" title="尚未安装技能" description="可从「市场」安装；「卸载」只移除本地副本，市场仍可再装" />
+          <HubCategoryPills label="已安装技能分类" pills={installedByCategory.pills} activeId={installedCategory} onChange={setInstalledCategory} />
+          {installedByCategory.visible.length === 0 ? (
+            skills.length > 0
+              ? <HubEmpty icon="🧩" title="没有匹配的技能" />
+              : <HubEmpty icon="🧩" title="尚未安装技能" description="可从「市场」安装；「卸载」只移除本地副本，市场仍可再装" />
           ) : (
             <HubGrid density="compact">
-              {filteredInstalled.map((skill) => (
+              {installedByCategory.visible.map((skill) => (
                 <HubCard
                   key={skill.id}
                   expansionCommand={bulkExpansion.command}
@@ -790,15 +817,15 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
           <div className="hub-section-note">
             「卸载」退回市场可再装；市场里的「删除」才永久移除该条目
           </div>
-          {filteredMarket.length === 0 ? (
-            <HubEmpty
-              icon="🛍️"
-              title={marketSource === "全部" ? "市场暂无更多技能" : `暂无「${marketSource}」技能`}
-              description="市场为只读来源：安装是复制到 ~/.mybuddy/plugins/skills/，删除本地后可随时重新安装"
-            />
+          <HubCategoryPills label="市场技能分类" pills={marketByCategory.pills} activeId={marketCategory} onChange={setMarketCategory} />
+          {marketByCategory.visible.length === 0 ? (
+            filteredMarket.length > 0 || query.trim()
+              ? <HubEmpty icon="🛍️" title="没有匹配的技能" />
+              : <HubEmpty icon="🛍️" title={marketSource === "全部" ? "市场暂无更多技能" : `暂无「${marketSource}」技能`}
+                  description="市场为只读来源：安装是复制到 ~/.mybuddy/plugins/skills/，删除本地后可随时重新安装" />
           ) : (
             <HubGrid density="compact">
-              {filteredMarket.map((skill) => {
+              {marketByCategory.visible.map((skill) => {
                 const installed = findInstalledSkill(skill.id, skill.name);
                 const kind = marketSkillKind(skill);
                 return (
@@ -876,6 +903,8 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
   const [editor, setEditor] = useState<{ name: string | null } | null>(null);
   const [toolsServer, setToolsServer] = useState<string | null>(null);
   const focusName = useAppStore((s) => s.hubMcpFocusName);
+  const [category, setCategory] = useState(ALL_PLUGIN_CATEGORIES);
+  useEffect(() => { if (focusName) setCategory(ALL_PLUGIN_CATEGORIES); }, [focusName]);
   const [discovery, setDiscovery] = useState<McpDiscoveryDto | null>(null);
   const [servers, setServers] = useState<McpServerDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -925,7 +954,7 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
     const el = document.getElementById(`hub-mcp-${focusName}`);
     if (!el) return;
     requestAnimationFrame(() => el.scrollIntoView({ block: "nearest", behavior: "smooth" }));
-  }, [focusName, servers]);
+  }, [focusName, servers, category]);
 
   // 订阅运行时状态 / 通知 / 交互请求
   useEffect(() => {
@@ -1120,8 +1149,9 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
     );
   }, [servers, query]);
 
-  const installed = filtered.filter((s) => s.installed);
-  const available = filtered.filter((s) => !s.installed);
+  const byCategory = useMemo(() => filterPluginCategories(filtered, mcpCategory, category), [filtered, category]);
+  const installed = byCategory.visible.filter((s) => s.installed);
+  const available = byCategory.visible.filter((s) => !s.installed);
 
   const groups = useMemo(() => {
     const map = new Map<string, McpServerDto[]>();
@@ -1208,9 +1238,12 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
       </div>
       {!!runtime?.errors?.length && <div className="mcp-config-error" role="alert">{runtime.errors.join("\n")}</div>}
 
+      <HubCategoryPills label="MCP 分类" pills={byCategory.pills} activeId={category} onChange={setCategory} />
       <HubHeader title="已安装到 MyBuddy" count={installed.length} description="支持本地程序、Streamable HTTP、OAuth 与工具提供方式配置" />
       {installed.length === 0 ? (
-        <HubEmpty icon="🔌" title="还没有安装任何 MCP 服务器" description="点击“新增 MCP”配置服务器，或从下方来源导入；安装后即可在对话中调用" />
+        servers.some((server) => server.installed)
+          ? <HubEmpty icon="🔌" title="没有匹配的已安装 MCP" />
+          : <HubEmpty icon="🔌" title="还没有安装任何 MCP 服务器" description="点击“新增 MCP”配置服务器，或从下方来源导入；安装后即可在对话中调用" />
       ) : (
         <HubGrid density="normal">
           {installed.map((server) =>
@@ -1274,7 +1307,9 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
         }
       />
       {available.length === 0 ? (
-        <HubEmpty icon="✅" title="没有可安装的服务器" description="全部来源的服务器都已安装到 MyBuddy" />
+        servers.some((server) => !server.installed)
+          ? <HubEmpty icon="🔌" title="没有匹配的可安装 MCP" />
+          : <HubEmpty icon="✅" title="没有可安装的服务器" description="全部来源的服务器都已安装到 MyBuddy" />
       ) : (
         <>
           {groups.map(([sourceId, list]) => (
@@ -1432,6 +1467,7 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
   const [dragOver, setDragOver] = useState(false);
   /** 子标签：已安装 | 市场 */
   const [subTab, setSubTab] = useState<"installed" | "market">("installed");
+  const [categories, setCategories] = useState({ installed: ALL_PLUGIN_CATEGORIES, market: ALL_PLUGIN_CATEGORIES });
   const bulkExpansion = useHubBulkExpansion();
 
   useEffect(() => {
@@ -1462,7 +1498,10 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
     }
   };
 
-  const visibleConnectors = subTab === "installed" ? installedConnectors : marketConnectors;
+  const category = categories[subTab];
+  const connectorSource = subTab === "installed" ? installedConnectors : marketConnectors;
+  const byCategory = filterPluginCategories(connectorSource, connectorCategory, category);
+  const visibleConnectors = byCategory.visible;
 
   const handleConnectorImport = async (path: string, kind: "zip" | "folder"): Promise<void> => {
     const busy = kind === "zip" ? "import-zip" : "import-folder";
@@ -1551,12 +1590,13 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
           </button>
         </div>
       </div>
+      <HubCategoryPills label="连接器分类" pills={byCategory.pills} activeId={category}
+        onChange={(id) => setCategories((current) => ({ ...current, [subTab]: id }))} />
       {visibleConnectors.length === 0 ? (
-        <HubEmpty
-          icon="🔌"
-          title={subTab === "installed" ? "暂无已安装连接器" : "暂无可用连接器"}
-          description={subTab === "installed" ? "到「市场」标签选择连接器安装" : "本地市场（mybuddyskills-main/connectors）未发现连接器"}
-        />
+        q || connectorSource.length > 0
+          ? <HubEmpty icon="🔌" title="没有匹配的连接器" />
+          : <HubEmpty icon="🔌" title={subTab === "installed" ? "暂无已安装连接器" : "暂无可用连接器"}
+              description={subTab === "installed" ? "到「市场」标签选择连接器安装" : "本地市场（mybuddyskills-main/connectors）未发现连接器"} />
       ) : (
         <HubGrid density="compact">
           {visibleConnectors.map((connector) => (
