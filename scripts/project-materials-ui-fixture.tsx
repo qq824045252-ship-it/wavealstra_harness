@@ -75,7 +75,7 @@ let failDocumentSave = false;
     search: async (request: any) => { calls.push(["search", request]); return snap.items.filter((item: any) => item.title.includes(request.query)).map((item: any) => ({ ...item, source: "library", location: "资料" })); },
     markVisited: async (id: string) => ({ ok: true, value: snap.items.find((entry: any) => entry.id === id) }),
     readContent: async (id: string) => { calls.push(["read", id]); return { ok: true, value: { item: structuredClone(snap.items.find((i: any) => i.id === id)), content: bodies.get(id) ?? documentBody } }; },
-    showInFolder: async () => ({ ok: true }),
+    showInFolder: async (id: string) => { calls.push(["showInFolder", id]); return { ok: true }; },
   },
 };
 const root = createRoot(document.getElementById("root")!);
@@ -103,5 +103,9 @@ function render(id: string) {
   documentBody,
   artifacts: snap.artifacts,
   addSecondSpace() { snap.spaces.push({ id: "a-second", kind: "team", projectId: "a", name: "历史资料" }); },
+  addLargeFile() {
+    snap.items.push({ id: "large-file", spaceId: "a-space", title: "超大笔记", kind: "markdown",
+      filename: "huge.md", sizeBytes: 256 * 1024 * 1024 + 1, updatedAt: now });
+  },
 };
 render("a");

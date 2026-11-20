@@ -16,13 +16,13 @@
  */
 import type { AppDatabase } from "../db/AppDatabase";
 import { ContentExtractorRegistry } from "../library/ContentExtractorRegistry";
-import type { LibraryItemDto, LibraryItemKind } from "../../shared/library-ipc";
+import type { LibraryItemDto, LibraryItemKind, LibraryRetrievalHitDto } from "../../shared/library-ipc";
 import type {
   KnowledgeHitTier,
   ProjectKnowledgeHitDto,
   ProjectKnowledgeSearchResultDto,
 } from "../../shared/project-domain";
-import type { LibraryService } from "../library/LibraryService";
+import type { LibraryService, LibraryTaskScope } from "../library/LibraryService";
 import type { ProjectService } from "./ProjectService";
 
 export const KNOWLEDGE_SEARCH_MAX_LIMIT = 20;
@@ -81,12 +81,28 @@ export class ProjectKnowledgeRetrieval {
     opts?: { limit?: number; kind?: LibraryItemKind },
   ): ProjectKnowledgeSearchResultDto {
     const scope = this.library.resolveTaskScope(taskId);
-    const { projectId } = scope;
-    const requestedLimit = Math.max(1, Math.min(Math.round(opts?.limit ?? 10), KNOWLEDGE_SEARCH_MAX_LIMIT));
+    const requestedLimit = this.requestedLimit(opts?.limit);
     const raw = this.library.retrieveInScope(query, scope, { limit: requestedLimit * 2 });
+    return this.searchResult(taskId, scope, raw, requestedLimit, opts?.kind);
+  }
+
+  async searchAsync(taskId: string, query: string, opts?: { limit?: number; kind?: LibraryItemKind }): Promise<ProjectKnowledgeSearchResultDto> {
+    const requestedLimit = this.requestedLimit(opts?.limit);
+    const raw = await this.library.retrieveForTaskAsync(query, taskId, requestedLimit * 2, opts?.kind);
+    return this.searchResult(taskId, this.library.resolveTaskScope(taskId), raw, requestedLimit, opts?.kind);
+  }
+
+  private requestedLimit(limit?: number): number {
+    return Math.max(1, Math.min(Math.round(limit ?? 10), KNOWLEDGE_SEARCH_MAX_LIMIT));
+  }
+
+  private searchResult(
+    taskId: string, scope: LibraryTaskScope, raw: LibraryRetrievalHitDto[], requestedLimit: number, kind?: LibraryItemKind,
+  ): ProjectKnowledgeSearchResultDto {
+    const { projectId } = scope;
     const hits: ProjectKnowledgeHitDto[] = [];
     for (const hit of raw) {
-      if (opts?.kind && hit.kind !== opts.kind) continue;
+      if (kind && hit.kind !== kind) continue;
       if (hits.length >= requestedLimit) break;
       const item = this.library.getItem(hit.itemId);
       if (!item || !this.library.isItemVisibleInScope(item, scope)) continue;
@@ -147,10 +163,13 @@ export class ProjectKnowledgeRetrieval {
     // 文本类直接内联；Office/PDF 经抽取器（受管路径守卫在 LibraryService.getExtractedText 内），
     // 抽取失败/不可抽取 → 降级 requiresFileAccess 元数据（模型不得误以为已读正文）。
     let raw = "";
+    let textTruncated = false;
     let extractionNote = "";
     if (this.isTextKind(item.kind)) {
       try {
-        raw = this.library.readContent(itemId).content;
+        const prefix = this.library.readContent(itemId, KNOWLEDGE_READ_MAX_CHARS);
+        raw = prefix.content;
+        textTruncated = Boolean(prefix.contentTruncated);
       } catch {
         return {
           item,
@@ -185,7 +204,7 @@ export class ProjectKnowledgeRetrieval {
         ? `（${item.kind} 抽取文本，超出 200KB 预算已截断；非原始排版）`
         : `（${item.kind} 抽取文本，非原始排版）`;
     }
-    const truncated = raw.length > KNOWLEDGE_READ_MAX_CHARS;
+    const truncated = textTruncated || raw.length > KNOWLEDGE_READ_MAX_CHARS;
     return {
       item,
       tier,

@@ -16,7 +16,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { WorkspaceResourceLocator } from "../src/main/workspace/WorkspaceResourceLocator";
-import { WorkspaceSemanticProvider, SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, f32ToBlob } from "../src/main/retrieval/WorkspaceSemanticProvider";
+import { WorkspaceSemanticProvider, SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, blobToF32Export, f32ToBlob } from "../src/main/retrieval/WorkspaceSemanticProvider";
 import type { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { assembleWorkspaceSharedContext } from "../src/shared/workspace-shared-context";
 import type { SpaceDto } from "../src/shared/agent-ipc";
@@ -341,6 +341,38 @@ async function main() {
     lib.detachFromTask({ taskId: "scope-task", itemId: referenced.id });
     release();
     eq((await pending).hits, [], "异步语义检索期间取消引用，返回前撤销旧结果");
+  });
+
+  console.log("== Mixed retrieval preserves distinct identifier hits within the project ==");
+  await withTmpDb(async (db, dir) => {
+    addProject(db, "fusion-project");
+    addProject(db, "unrelated-project");
+    mkTask(db, "fusion-task", null, "fusion-project");
+    const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
+    const owned = lib.ensureOwnedSpace({ type: "project", projectId: "fusion-project" });
+    const unrelated = lib.ensureOwnedSpace({ type: "project", projectId: "unrelated-project" });
+    const exact = await mkItem(lib, owned.id, "KJ7708", "Exact index");
+    const vectorMatch = await mkItem(lib, owned.id, "Inspection notes", "Inspection covers KJ7708 pressure calibration.");
+    const lexicalOnly = await mkItem(lib, owned.id, "Maintenance notes", "Maintenance logs include KJ7708 output.");
+    const hidden = await mkItem(lib, unrelated.id, "KJ7708 private", "Another project's KJ7708 evidence.");
+    await lib.flushPendingIndexes();
+
+    const vector = new Float32Array(SEMANTIC_DIMENSION);
+    vector[0] = 1;
+    const packed = new Uint8Array(vector.byteLength + 1);
+    packed.set(f32ToBlob(vector), 1);
+    eq(blobToF32Export(packed.subarray(1)), vector, "Read float32 embeddings from an unaligned SQLite-style byte view");
+
+    db.connection.prepare(`
+      INSERT INTO library_chunk_embeddings (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at)
+      SELECT id, ?, ?, hash, ?, ?, 1 FROM library_chunks WHERE item_id IN (?, ?)
+    `).run(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION, f32ToBlob(vector), vectorMatch.id, hidden.id);
+    const runtime = { embed: async () => vector, getLoadMs: () => 0 } as unknown as SemanticRuntime;
+    const locator = new WorkspaceResourceLocator(db, lib, undefined, { semanticProvider: new WorkspaceSemanticProvider(db, { runtime }) });
+    const result = await locator.searchAsync({ taskId: "fusion-task", query: "KJ7708", mode: "semantic", limit: 4 });
+    eq(result.hits.map(({ id, matchedBy }) => [id, matchedBy]), [
+      [exact.id, "title"], [vectorMatch.id, "semantic"], [lexicalOnly.id, "fts"],
+    ], "Keep exact and both FTS hits when one authorized item has a vector and another project also matches");
   });
 
   console.log(`\nResult: passed=${passed} failed=${failed}`);

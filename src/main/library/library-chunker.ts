@@ -58,31 +58,48 @@ export function chunkText(
   opts?: Partial<LibraryChunkerOptions>,
   nowMs = Date.now(),
 ): LibraryChunk[] {
+  return [...chunkTextParts(itemId, [text], opts, nowMs)];
+}
+
+export function* chunkTextParts(
+  itemId: string,
+  parts: Iterable<string>,
+  opts?: Partial<LibraryChunkerOptions>,
+  nowMs = Date.now(),
+): IterableIterator<LibraryChunk> {
   const { chunkSize, overlap } = normalizeChunkerOptions(opts);
-  if (!text || text.length === 0) return [];
-  const chunks: LibraryChunk[] = [];
   const step = Math.max(1, chunkSize - overlap);
   let offset = 0;
   let index = 0;
-  while (offset < text.length) {
-    const end = Math.min(text.length, offset + chunkSize);
-    const content = text.slice(offset, end);
-    if (content.trim().length === 0) {
-      offset += step;
-      continue;
-    }
-    chunks.push({
+  let remaining = "";
+  const isTrailingSurrogate = (text: string, at: number): boolean => {
+    const unit = text.charCodeAt(at);
+    return unit >= 0xdc00 && unit <= 0xdfff;
+  };
+  function makeChunk(content: string, charOffset: number): LibraryChunk {
+    return {
       id: `${itemId}#${index}`,
       itemId,
-      chunkIndex: index,
+      chunkIndex: index++,
       content,
-      charOffset: offset,
+      charOffset,
       hash: hashContent(content),
       updatedAt: nowMs,
-    });
-    if (end >= text.length) break;
-    offset += step;
-    index += 1;
+    };
   }
-  return chunks;
+  for (const part of parts) {
+    const text = remaining + part;
+    let start = 0;
+    // Leave an exact-size final window pending until EOF or until another part arrives.
+    while (text.length - start > chunkSize) {
+      const end = start + chunkSize;
+      const content = text.slice(start, end + Number(isTrailingSurrogate(text, end)));
+      if (content.trim()) yield makeChunk(content, offset + start);
+      start += step;
+      if (isTrailingSurrogate(text, start)) start--;
+    }
+    remaining = text.slice(start);
+    offset += start;
+  }
+  if (remaining.trim()) yield makeChunk(remaining, offset);
 }

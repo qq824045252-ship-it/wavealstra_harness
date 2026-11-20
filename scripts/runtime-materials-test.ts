@@ -49,7 +49,7 @@ async function main() {
     createProjectKnowledgeExtension({ taskId: "task", retrieval: {
       read: async () => ({ item: { id: "doc", title: "Specification", kind: "pdf" }, requiresFileAccess: metadataOnly,
         content: "extracted body", truncated: true, managedPath: "managed.pdf" }),
-      search: () => ({ scope: "project", hits: [{ itemId: "doc", title: "Specification", kind: "pdf", snippet: "excerpt", readable: true }] }),
+      searchAsync: () => ({ scope: "project", hits: [{ itemId: "doc", title: "Specification", kind: "pdf", snippet: "excerpt", readable: true }] }),
     } as any })({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any);
     const readKnowledge = async () => collect({ toolName: "project_knowledge_read", toolCallId: "knowledge", args: { id: "doc" },
       result: await tools.get("project_knowledge_read").execute("knowledge", { id: "doc" }), isError: false });

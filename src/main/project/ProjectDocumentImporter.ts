@@ -9,14 +9,14 @@
  * - provenance：event.payload.libraryItemId / sizeBytes / extractStatus / extractTruncated；
  * - 生命周期：事件随 1000/项目滚动淘汰；资料条目是真源，不受事件淘汰影响；
  * - 门禁：归档项目拒绝（写真源写门禁）；A/B 由 projectId 作用域保证（无跨项目参数）；
- *   readonly 由 Agent 工具层拦截；文件大小/路径/symlink 边界全部复用 importFile 与抽取器既有守卫。
+ *   readonly 由 Agent 工具层拦截；受管路径与抽取预算复用资料库。
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE, type ProjectEventDto } from "../../shared/project-domain";
 import type { LibraryItemDto } from "../../shared/library-ipc";
-import { LIBRARY_MAX_IMPORT_BYTES, type LibraryService } from "../library/LibraryService";
+import type { LibraryService } from "../library/LibraryService";
 import {
   PROJECT_EVENT_BODY_MAX_CHARS,
   PROJECT_EVENT_TITLE_MAX_CHARS,
@@ -69,18 +69,24 @@ export class ProjectDocumentImporter {
     if (!existsSync(path)) throw new Error("源文件不存在");
     const st = statSync(path);
     if (!st.isFile()) throw new Error("只能导入文件");
-    if (st.size > LIBRARY_MAX_IMPORT_BYTES) {
-      throw new Error(`文件过大（${st.size} 字节），超过单文件上限 ${LIBRARY_MAX_IMPORT_BYTES} 字节`);
+    const digest = createHash("sha256");
+    for await (const chunk of createReadStream(path)) digest.update(chunk);
+    const hash = digest.digest("hex");
+    const currentFile = statSync(path);
+    if (currentFile.size !== st.size || currentFile.mtimeMs !== st.mtimeMs || currentFile.ctimeMs !== st.ctimeMs ||
+        currentFile.dev !== st.dev || currentFile.ino !== st.ino) {
+      throw new Error("文件在导入期间已变化，请重试");
     }
-
-    const hash = createHash("sha256").update(readFileSync(path)).digest("hex");
+    const currentProject = this.projects.get(projectId);
+    if (!currentProject) throw new Error(`项目不存在：${projectId}`);
+    if (currentProject.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
     const existing = this.projects.findProjectEventByRef(projectId, "document", hash);
     if (existing) {
       const itemId = typeof existing.payload?.libraryItemId === "string" ? existing.payload.libraryItemId : undefined;
       return { event: existing, item: itemId ? this.library.getItem(itemId) : null, reused: true };
     }
 
-    const resolved = this.resolveProjectLibrarySpace(project);
+    const resolved = this.resolveProjectLibrarySpace(currentProject);
     let item: LibraryItemDto | undefined;
     try {
       item = this.library.importFile({ spaceId: resolved.space.id, sourcePath: path });
@@ -93,11 +99,11 @@ export class ProjectDocumentImporter {
     let extractStatus: string | undefined;
     let extractTruncated = false;
     try {
-      const extracted = await this.library.getExtractedText(item);
+      const extracted = await this.library.getExtractedText(item, PROJECT_EVENT_BODY_MAX_CHARS);
       extractStatus = extracted.status;
       if (extracted.text) {
         excerpt = extracted.text.slice(0, PROJECT_EVENT_BODY_MAX_CHARS);
-        extractTruncated = extracted.text.length > PROJECT_EVENT_BODY_MAX_CHARS;
+        extractTruncated = extracted.truncated || extracted.text.length > PROJECT_EVENT_BODY_MAX_CHARS;
       }
     } catch (err) {
       extractStatus = "error";

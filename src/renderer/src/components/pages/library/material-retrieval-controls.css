@@ -1,0 +1,72 @@
+.material-retrieval-setting,
+.material-retrieval-setting label,
+.material-deep-search-action {
+  display: flex;
+  align-items: center;
+  gap: 6px 8px;
+  flex-wrap: wrap;
+}
+
+.material-retrieval-setting,
+.material-deep-search {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.material-retrieval-setting select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+.material-retrieval-setting small,
+.material-deep-search small {
+  color: var(--fg-muted);
+  font-size: inherit;
+}
+
+.material-deep-search-results {
+  max-height: min(32vh, 300px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+
+.material-deep-search-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.material-deep-search-results li {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.material-deep-search-results p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+}
+
+.material-deep-search-source {
+  justify-self: start;
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+  color: var(--notes-accent, var(--accent, currentColor));
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.material-deep-search-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 6px;
+  color: var(--danger, #b42318);
+}

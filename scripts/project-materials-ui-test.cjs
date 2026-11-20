@@ -45,7 +45,7 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     assert(!(await evaluate(visibleText)).includes(' / 12,000 字'), '补充参考不显示字符上限');
     assert((await evaluate(`document.querySelector('[aria-label="资料状态"]').innerText`)).includes('未查看'), '没有选执行记录时不得暗示资料已被使用');
     await evaluate(`(()=>{const input=document.querySelector('input[aria-label="搜索项目资料"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'写作规范');input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
-    await wait(`document.body.innerText.includes('没有匹配的项目资料') && document.body.innerText.includes('写作规范')`);
+    await wait(`document.body.innerText.includes('常规检索未找到匹配的项目资料') && document.body.innerText.includes('写作规范')`);
     assert.equal(await evaluate(`document.querySelectorAll('input[aria-label="搜索文件或文件夹"]').length`), 0, '统一资料页不应再暴露第二个内部搜索框');
     await click('清除搜索');
     await wait(`document.querySelector('input[aria-label="搜索项目资料"]').value === ''`);
@@ -116,7 +116,7 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     assert.deepEqual(await evaluate(`window.materialTest.calls.filter(c=>c[0]==='create').map(c=>c[1].projectId)`), ['a']);
     await capture('project-materials-after.png');
     await evaluate(`(()=>{const input=document.querySelector('input[aria-label="搜索项目资料"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'不存在的资料');input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
-    await wait(`document.body.innerText.includes('没有匹配的项目资料')`);
+    await wait(`document.body.innerText.includes('常规检索未找到匹配的项目资料')`);
     await evaluate(`(()=>{const input=document.querySelector('input[aria-label="搜索项目资料"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'');input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
     await wait(`document.body.innerText.includes('项目说明')`);
     await click('查看');
@@ -155,6 +155,15 @@ runRendererFixture({ name: 'project-materials-ui', width: 1240, height: 850 }, a
     await click('返回文档列表');
     await wait(`document.body.innerText.includes('写作规范')`);
     assert(!(await evaluate(visibleText)).includes('打开资料库'));
+    await evaluate(`window.materialTest.addLargeFile()`);
+    await click('刷新');
+    await click('超大笔记');
+    await wait(`document.body.innerText.includes('大型资料')`);
+    assert.equal(await evaluate(`document.querySelector('textarea[aria-label="文档正文"]')`), null);
+    assert.equal(await evaluate(`window.materialTest.calls.some(c=>c[0]==='read' && c[1]==='large-file')`), false);
+    await click('打开位置');
+    await wait(`window.materialTest.calls.some(c=>c[0]==='showInFolder' && c[1]==='large-file')`);
+    await click('返回文档列表');
     await evaluate(`window.materialTest.addSecondSpace()`);
     await click('刷新');
     await wait(`!!document.querySelector('select[aria-label="资料位置"]')`);
