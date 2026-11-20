@@ -1378,7 +1378,8 @@ const TAB_TITLE: Record<SettingsTab, string> = {
 export default function SettingsModal({ desktop = false }: { desktop?: boolean }): React.JSX.Element {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const tab = useAppStore((s) => s.settingsTab);
-  useBlockNativeSurfaces(!desktop);
+  // Settings hides the desktop underlay without unmounting embedded native document views.
+  useBlockNativeSurfaces(true);
   const changeTab = (id: SettingsTab): void => { useAppStore.setState({ settingsTab: id }); };
 
   const content = (

@@ -93,7 +93,31 @@ async function archiveDeletionFailures() {
   check(!useAppStore.getState().tasks.some((task) => task.id === 't1'), 'Deleted row remains removed when post-delete cleanup warns');
   check(document.querySelector('[role="alert"]')?.textContent?.includes('关联内容清理失败') && document.querySelector('.archive-selection-count')?.textContent === '已选 0 项', 'Cleanup warning remains visible without offering deleted record retry');
 }
+function settingsBlockNativeViews() {
+  const calls: string[][] = [];
+  const stub = (owner: string) => ({
+    addBlocker: (...args: string[]) => calls.push([owner, "add", ...args]),
+    removeBlocker: (...args: string[]) => calls.push([owner, "remove", ...args]),
+  });
+  (window as any).api = { artifact: { surface: stub("artifact") }, browser: stub("browser") };
+  const previous = new Set<string>();
+  for (const desktop of [false, true]) {
+    calls.length = 0;
+    flushSync(() => root.render(<SettingsModal desktop={desktop} />));
+    const token = calls[0]?.[3];
+    check(typeof token === "string" && token.startsWith("renderer-overlay:") && !previous.has(token), "Settings uses a private blocker token");
+    previous.add(token);
+    check(JSON.stringify(calls) === JSON.stringify([
+      ["artifact", "add", "artifact-main", token], ["browser", "add", token],
+    ]), "Both settings modes block native views as soon as mounted");
+    flushSync(() => root.render(null));
+    check(JSON.stringify(calls.slice(2)) === JSON.stringify([
+      ["artifact", "remove", "artifact-main", token], ["browser", "remove", token],
+    ]), "Settings releases only its own native view blockers on unmount");
+  }
+}
 export async function run() {
+  settingsBlockNativeViews();
   await preview('archive');
   check(document.querySelectorAll('.archive-card').length === 8, 'Archive page size');
   await click('下一页'); await click('下一页');
@@ -122,5 +146,5 @@ export async function run() {
   await click('任务'); await change('筛选任务', 't0');
   check(document.querySelector('.record-pager')?.textContent?.includes('共 13 条'), 'Task filtering');
   await archiveDeletionFailures();
-  return ['archive/task pagination and removal clamping', 'search and empty states', '217 backups reachable', 'space/task filters and exact restore target', 'archive confirmation, pending lock, partial deletion, IPC failure and cleanup warnings'];
+  return ['settings native-surface blockers in modal and desktop modes', 'archive/task pagination and removal clamping', 'search and empty states', '217 backups reachable', 'space/task filters and exact restore target', 'archive confirmation, pending lock, partial deletion, IPC failure and cleanup warnings'];
 }
