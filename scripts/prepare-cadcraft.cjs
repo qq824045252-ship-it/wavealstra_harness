@@ -3,7 +3,7 @@
 const { execFileSync } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
 const { createReadStream, createWriteStream } = require('node:fs');
-const { chmod, copyFile, lstat, mkdir, mkdtemp, rename, rm } = require('node:fs/promises');
+const { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rename, rm } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
@@ -55,10 +55,25 @@ async function prepare(destination, target, pin, missing) {
     }
     if (await sha256(archive) !== pin.sha256) throw new Error('CADCraft release archive SHA-256 mismatch');
 
-    execFileSync('tar', ['-xf', archive, '-C', temporary, ...missing.map(name => pin.prefix + name)], {
-      windowsHide: true,
-      timeout: 120000,
-    });
+    if (target === 'web') {
+      // The pinned web release is ZIP. GNU tar cannot read it on Linux.
+      const zip = await require('jszip').loadAsync(await readFile(archive));
+      for (const name of missing) {
+        const member = pin.prefix + name;
+        const entry = zip.file(member);
+        if (!entry || entry.unsafeOriginalName !== member) {
+          throw new Error(`Missing or invalid CADCraft archive member: ${member}`);
+        }
+        const output = path.join(temporary, member);
+        await mkdir(path.dirname(output), { recursive: true });
+        await pipeline(entry.nodeStream(), createWriteStream(output, { flags: 'wx' }));
+      }
+    } else {
+      execFileSync('tar', ['-xf', archive, '-C', temporary, ...missing.map(name => pin.prefix + name)], {
+        windowsHide: true,
+        timeout: 120000,
+      });
+    }
     for (const name of missing) {
       const source = path.join(temporary, pin.prefix, name);
       if (await sha256(source) !== pin.files[name]) throw new Error(`CADCraft asset SHA-256 mismatch: ${name}`);
