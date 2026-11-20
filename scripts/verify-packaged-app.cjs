@@ -267,6 +267,14 @@ function verifyPackagedApp(appDir, options = {}) {
     "--verify-assets", path.join(officeEditor, "craft-assets")], { encoding: "utf8", windowsHide: true,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
   if (officeCheck.status !== 0) fail("Office runtime payload verification failed: " + (officeCheck.stderr || officeCheck.error));
+  if (targetPlatform === "win32" || targetPlatform === "linux") {
+    const target = targetPlatform === "win32" ? "win-x64" : "linux-x64";
+    const cadCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-cadcraft.cjs"),
+      "--target", target, "--verify-assets", path.join(resources, "cadcraft")], {
+      encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    });
+    if (cadCheck.status !== 0) fail("CADCraft runtime payload verification failed: " + (cadCheck.stderr || cadCheck.error));
+  }
   for (const entry of ["editor/host/index.html","editor/host/host.js","editor/host/host.css",
     "editor/craft/bridge.html","editor/craft/bridge.js","editor/craft/word.js","editor/craft/excel.js",
     "editor/craft/ppt.js","editor/craft/readonly.js","licenses/LICENSE.noto-cjk"]) {

@@ -50,6 +50,7 @@
     "test:remote-connection": "esbuild scripts/remote-connection-setup-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs scripts/remote-connection-ui-test.cjs",
     "dev": "electron-vite dev",
     "prepare:office-runtime": "node scripts/prepare-craft-office.cjs",
+    "prepare:cadcraft": "node scripts/prepare-cadcraft.cjs",
     "test:office-craft-electron": "node scripts/office-craft-electron.cjs",
     "test:office-use-sources": "esbuild scripts/office-use-sources-test.ts --bundle --platform=node --format=cjs --packages=external --outfile=out/tests/office-use-sources-test.cjs && node scripts/test-guard.mjs out/tests/office-use-sources-test.cjs",
     "build": "electron-vite build",
@@ -817,6 +818,7 @@
       { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets" },
       { "from": "vendor/craft-office/LICENSE.noto-cjk", "to": "office-editor/licenses/LICENSE.noto-cjk" },
       { "from": "src/renderer/src/lib/office-use", "to": "office-editor/editor", "filter": ["host/**","craft/**"] },
+      { "from": "vendor/cadcraft/assets/${os}-${arch}", "to": "cadcraft" },
       {
         "from": "scripts/windows-ocr.ps1",
         "to": "windows-ocr.ps1"

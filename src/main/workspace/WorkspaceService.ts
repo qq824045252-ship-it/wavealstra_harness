@@ -1,6 +1,7 @@
 import { cp, open, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import JSZip from "jszip";
+import { cadCraftExtension } from "../../shared/cadcraft";
 import { MANIFEST_FILENAME, MANIFEST_TMP_SUFFIX } from "../task/TaskExecutionWorkspace";
 import type {
   ArtifactKind,
@@ -687,7 +688,7 @@ export async function createWorkspacePath(
 export async function previewWorkspaceFileForEditor(filePath: string): Promise<WorkspaceFilePreviewDto> {
   const name = basename(filePath);
   const extension = extname(name).toLowerCase();
-  if (extension !== ".docx" && extension !== ".xlsx" && extension !== ".pptx") {
+  if (extension !== ".docx" && extension !== ".xlsx" && extension !== ".pptx" && !cadCraftExtension(name)) {
     return previewWorkspaceFile(filePath);
   }
   const info = await stat(filePath);

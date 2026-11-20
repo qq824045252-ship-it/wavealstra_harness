@@ -845,6 +845,7 @@ export interface PreloadApi {
   };
   htmlEdit: import("../shared/html-edit").HtmlEditApi;
   officeUse: import("../shared/office-use").OfficeUseApi;
+  cadCraft: import("../shared/cadcraft").CadCraftApi;
   projectNotes: import("../shared/project-notes").ProjectNotesApi;
   workspace: {
     notes: import("../shared/workspace-notes").WorkspaceNotesApi;

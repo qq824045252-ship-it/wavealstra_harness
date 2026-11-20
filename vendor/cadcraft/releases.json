@@ -1,0 +1,63 @@
+{
+  "version": "0.20.1",
+  "targets": {
+    "win-x64": {
+      "url": "https://github.com/storytold/cadcraft/releases/download/v0.20.1/cadcraft-0.20.1-windows-x64-portable.zip",
+      "sha256": "76904b4accff32fbc995adc9bb0137ecd982aa403cf79a281e3f10b48ca14778",
+      "prefix": "cadcraft-0.20.1-windows-x64-portable/",
+      "editor": "cadcraft.exe",
+      "cli": "cadcraft-cli.exe",
+      "files": {
+        "ATTRIBUTION.md": "ecbd1d96ee290ac21530a3d3ec1ae16c05652544917c85ff3f4ebfa3012dbfb7",
+        "LICENSE-APACHE": "eb3d7b5485466acbd81f2b496f595ab637d2792e268206b27d99e793bdb67549",
+        "LICENSE-MIT": "84d49e47a7e1b163ce15df4d70e0300ba0af0babbef8c4dc16ffdb1034d603df",
+        "NOTICE": "cbc7db29080d9fa6e234e331cc2f577fb1b2a8f33bb896e9107953947dd32c2f",
+        "OFL-biz-ud-mincho.txt": "9c244a5edd2525aa4aa43dd714d7de00f3b3591a522d82d724db3644b5a95568",
+        "OFL-biz-ud-pgothic.txt": "062c81ae55b5ddd56c08331c8fe86598c1ef7f4453560c74706427a008b68534",
+        "OFL-lxgw-wenkai-lite.txt": "7752fbb4e6c855f73a57a30caac80f583115658c656e11383d741571ddfa8882",
+        "OFL-nanum-gothic.txt": "6bca0c1a8c713fa5e703c5427a273ea736181c558312962569c28b4cb390fee3",
+        "OFL-noto-sans-arabic.txt": "3b7e321615e412e5fbb9eab5bf1c0a4cb84c732d3d5a9e9e3822972d5fb70b97",
+        "OFL-noto-sans-cjk-sc.txt": "88f117575237307bdd86a17ef15e21790fc9a662fe4dfb103ca1ca077f0d9982",
+        "OFL-noto-sans-devanagari.txt": "41221cfdd268fa8e338829cccec0526e0200a0ce9e0bc3c627254c12a99d3a98",
+        "OFL-noto-sans-georgian.txt": "2c9d69cc13d29394783a99d12a823fd6bc4b2069e6ce795a5515ae187e858da7",
+        "OFL-noto-sans-hebrew.txt": "1acb8a4cf8e3d441eb573174faab52139071fee5cfa5e3e3f148becf90a54631",
+        "OFL-noto-sans-symbols-2.txt": "dee1e0758c6ce86a7aee4aa812387de573fbe1b9a78bfc8332515fac2762aba5",
+        "OFL-noto-sans-symbols.txt": "dee1e0758c6ce86a7aee4aa812387de573fbe1b9a78bfc8332515fac2762aba5",
+        "OFL-noto-sans-thai.txt": "0e4067898723c9acddf967edda99a5ed2088cd857a8e9949084f609358efe38a",
+        "OFL-shippori-mincho.txt": "0aef534f5885c2f30b360ed5fb09ea4661a40ec62845c35f8354e26d7977d87d",
+        "README.md": "2455a98dfb7c9b6b87896473abd4e059d92fcabd47bff2dc52948647df683d48",
+        "cadcraft-cli.exe": "520b9ec4a9b8df5c7580f059e0dc195fb343205796ec43de0134faad828fd123",
+        "cadcraft.exe": "f6e189ddae413e063cffc20e8560bab45f5f8fe00b8a1b8d7f4eb5e7bc5990d1"
+      }
+    },
+    "linux-x64": {
+      "url": "https://github.com/storytold/cadcraft/releases/download/v0.20.1/cadcraft-0.20.1-linux-x86_64.tar.gz",
+      "sha256": "57b6f1b41b4f3c542a82f103202ed1a779440e5ff8d25c08ef66abda1a8cb1b9",
+      "prefix": "cadcraft-0.20.1-linux-x86_64/",
+      "editor": "bin/cadcraft",
+      "cli": "bin/cadcraft-cli",
+      "files": {
+        "bin/cadcraft": "2f591afe50aeb3b9da7fce981cae24a20f02202cd77ccf4c62a6ff35f8bf2723",
+        "bin/cadcraft-cli": "e404ebe16cda61c06e897fe41695aa917f515762c058a054e71a6af1bc002fb0",
+        "share/doc/cadcraft/ATTRIBUTION.md": "755164fd7c8861260982aec18937d667efa6198aa66b13fd8c54f7fc46a57626",
+        "share/doc/cadcraft/LICENSE-APACHE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "share/doc/cadcraft/LICENSE-MIT": "54b0fc87ed7b61b59c20340070dd2b8c7f9d0b53795347819c3bd7c67ea2508a",
+        "share/doc/cadcraft/NOTICE": "8f6f3c12b194374bb221e2a788565e1799dcf05d704f77a5cd8f09531eaa4bdd",
+        "share/doc/cadcraft/OFL-biz-ud-mincho.txt": "ef0ed524b3bd012f37015e986809eed6f67905456ebfc1ebd7fcc2765282ee01",
+        "share/doc/cadcraft/OFL-biz-ud-pgothic.txt": "e753d7155d53c747d037a445e584c8ecfca6dd79846db610417e282a736b28bc",
+        "share/doc/cadcraft/OFL-lxgw-wenkai-lite.txt": "0333a85fe077b6849f8e417acc44e8bd879442ceb681e271acf93e2d57fd4e2e",
+        "share/doc/cadcraft/OFL-nanum-gothic.txt": "eeacf16032901d0ed0456876ec77b8f0fda6b3fecec7d972f8543eb602e6c30f",
+        "share/doc/cadcraft/OFL-noto-sans-arabic.txt": "07fc70bfeb985cc1a87a8587d0a0c80bab11c86c9dc3fd95b6f0cb332f983e96",
+        "share/doc/cadcraft/OFL-noto-sans-cjk-sc.txt": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2",
+        "share/doc/cadcraft/OFL-noto-sans-devanagari.txt": "a216f6f8d85c7228093e0ee5e258d9d377e6671f68acb4db1930b29583d0f331",
+        "share/doc/cadcraft/OFL-noto-sans-georgian.txt": "8c02263c5d73d40544f9ed91e30c4e947407057a3cc430d7b786189aeceff6df",
+        "share/doc/cadcraft/OFL-noto-sans-hebrew.txt": "9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47",
+        "share/doc/cadcraft/OFL-noto-sans-symbols-2.txt": "b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0",
+        "share/doc/cadcraft/OFL-noto-sans-symbols.txt": "b118dd41337806a5d4797052c77caf3bd096aed783e5eb21b4d11154351e1ac0",
+        "share/doc/cadcraft/OFL-noto-sans-thai.txt": "2e98fd23a52d253db8612cd5942c8f2ff4111b21d2367050fdca91d8ccc374a0",
+        "share/doc/cadcraft/OFL-shippori-mincho.txt": "41fba056279be5f45ff9a99e44b7b53897b42732f5806d8e666e0ab49ac6bd38",
+        "share/doc/cadcraft/README.md": "6ec0bb92300596ad8be000871560ef9da0c1e9f943a01b61c94d8dde11b7f40b"
+      }
+    }
+  }
+}

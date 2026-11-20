@@ -11,6 +11,7 @@
  */
 import type { ArtifactKind as DomainArtifactKind, ArtifactDescriptor, ArtifactRegistration } from "../../../shared/artifact-types";
 import type { WorkspaceFileThumbnailDto } from "../../../shared/agent-ipc";
+import { cadCraftExtension } from "@shared/cadcraft";
 import type { Artifact, ArtifactKind as RendererArtifactKind } from "@/types";
 import { languageFromName } from "./workspace";
 
@@ -25,6 +26,7 @@ export function toDomainKind(kind: RendererArtifactKind): DomainArtifactKind {
     case "video":
     case "audio":
     case "pdf":
+    case "cad":
       return kind;
     case "docx":
     case "xlsx":
@@ -53,6 +55,7 @@ export function toRendererKind(d: {
         ? d.capabilities.diskPath
         : d.title;
   if (typeof sourceName === "string" && /\.svg(?:$|[?#])/i.test(sourceName)) return "svg";
+  if (typeof sourceName === "string" && cadCraftExtension(sourceName)) return "cad";
   const original = d.capabilities?.originalKind;
   if (typeof original === "string") {
     const candidates: RendererArtifactKind[] = [

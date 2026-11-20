@@ -18,6 +18,8 @@ import FileActionBar from "./FileActionBar";
 import type { Artifact } from "@/types";
 import PdfViewer from "./PdfViewer";
 import OfficeDocumentView from "./OfficeDocumentView";
+import CadCraftDocumentView from "./CadCraftDocumentView";
+import { cadCraftExtension } from "@shared/cadcraft";
 import { isOfficeUseKind } from "@/lib/officeUseFile";
 import { ensureHtmlDocument } from "@/components/chat/DetailCard";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
@@ -145,7 +147,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   useEffect(() => {
     const current = panelMode === "file" ? artifacts.find((a) => a.id === activeArtifactId) : undefined;
     if (
-      current && !isOfficeUseKind(current.kind) &&
+      current && !isOfficeUseKind(current.kind) && !cadCraftExtension(current.path ?? current.name) &&
       !current.content &&
       renderLoadState !== "loading" &&
       renderLoadState !== "error"
@@ -247,6 +249,9 @@ export default function ArtifactPanel(): React.JSX.Element | null {
           ) : isOfficePreview ? (
             <ArtifactOfficeView artifact={current} taskId={activeTaskId ?? undefined}
               blocked={extensionFlyoutOpen && !extensionFlyoutPinned} />
+          ) : activeTaskId && current.path && cadCraftExtension(current.path) ? (
+            <CadCraftDocumentView key={current.id} name={current.name}
+              source={{ type: "artifact", id: current.id, taskId: activeTaskId }} />
           ) : (
             <ArtifactBody
               artifact={current}

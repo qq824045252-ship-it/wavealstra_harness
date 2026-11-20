@@ -33,6 +33,7 @@ vendor/
 /vendor/*
 !/vendor/acp-kernel/
 !/vendor/craft-office/
+!/vendor/cadcraft/
 
 # 本地 MCP 工具索引（codegraph/serena 等）
 .codegraph/
