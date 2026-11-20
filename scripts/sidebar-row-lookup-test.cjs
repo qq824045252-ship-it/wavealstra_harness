@@ -2,8 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const esbuild = require('esbuild');
-const checkProjectionEquivalence = require('./sidebar-projection-dev-equivalence.cjs');
+const { checkProjectionEquivalence, compileProjection } = require('./sidebar-projection-dev-equivalence.cjs');
 
 const current = fs.readFileSync(path.join(__dirname, '../src/renderer/src/components/Sidebar.tsx'), 'utf8').replace(/\r\n/g, '\n');
 const declaration = '    let tasksById: Map<string, Task> | undefined;\n';
@@ -19,17 +18,7 @@ assert.equal(current.split(indexedLookup).length - 1, 1, 'Exactly one indexed ta
 const original = current.replace(declaration, '').replace(indexedLookup, '          const task = tasks.find((t) => t.id === n.id);');
 const parity = checkProjectionEquivalence(original, current);
 
-function compile(source) {
-  const marker = '  const visibleRows = useMemo((): VisibleRow[] => {';
-  const endMarker = '  }, [tree, spaces, tasks, expandedSpaceIds, foregroundRequests, foregroundConversations, foregroundLimits, expandedConversations]);';
-  assert.equal(source.split(marker).length - 1, 1);
-  assert.equal(source.split(endMarker).length - 1, 1);
-  const start = source.indexOf(marker) + marker.length;
-  const body = source.slice(start, source.indexOf(endMarker, start));
-  const parameters = 'tree,spaces,tasks,expandedSpaceIds,foregroundRequests,foregroundConversations,foregroundLimits,expandedConversations';
-  return new Function(esbuild.transformSync(`function project(${parameters}) {${body}}; return project;`, { loader: 'ts', target: 'es2022' }).code)();
-}
-const before = compile(original), after = compile(current);
+const before = compileProjection(original), after = compileProjection(current);
 const node = id => ({ kind: 'task', id, title: id });
 const tree = [node('task'), node('unknown')];
 const first = { id: 'task', title: 'First', status: 'in_progress', doneAckedAt: 0, messages: [] };

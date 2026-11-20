@@ -45,6 +45,7 @@ function runRendererFixture({ name, width, height, show = false, timeoutMs = 600
       rmSync(join(output, `${name}-failure-${backend}.png`), { force: true });
       if (backend === 'dom') {
         fixture = require('./renderer-fixture-dom.cjs').createDomFixture();
+        close = () => fixture.close();
         browserVersion = 'LinkeDOM (DOM behaviour only; no browser or layout)';
       } else if (backend === 'chromium') {
         let chromium;

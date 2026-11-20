@@ -72,7 +72,9 @@ check("文件栏文件名可拖", bar.includes("startNativeFileDrag"));
 
 const taskItem = read("src/renderer/src/components/sidebar/TaskItem.tsx");
 check("侧栏任务支持右键菜单", taskItem.includes("onContextMenu") && taskItem.includes("setMenuOpen(true)"));
-check("侧栏任务可拖动", taskItem.includes("draggable={!editing}") && taskItem.includes("application/x-mybuddy-task"));
+check("普通未编辑侧栏任务可拖动，网关会话不可拖动",
+  /draggable\s*=\s*\{\s*!editing\s*&&\s*!isGatewayConversation\(task\.id\)\s*\}/.test(taskItem)
+  && taskItem.includes("application/x-mybuddy-task"));
 check(
   "侧栏任务接受工作空间文件拖入",
   taskItem.includes("copyIntoTaskWorkspace") && taskItem.includes("pathsFromWorkspaceDrop"),

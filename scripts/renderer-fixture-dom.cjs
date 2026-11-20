@@ -7,14 +7,33 @@ const { dirname, resolve } = require('node:path');
 const vm = require('node:vm');
 
 function createDomFixture() {
+  const OriginalMessageChannel = globalThis.MessageChannel;
+  const channels = new Set();
+  // Browser bundles can retain a MessagePort after unmount (e.g. React's
+  // browser server renderer). Close only channels owned by this fixture.
+  class FixtureMessageChannel extends OriginalMessageChannel {
+    constructor() {
+      super();
+      channels.add(this);
+    }
+  }
   return {
     backend: 'dom',
+    close: () => {
+      for (const channel of channels) {
+        channel.port1.close();
+        channel.port2.close();
+      }
+      channels.clear();
+      if (globalThis.MessageChannel === FixtureMessageChannel) globalThis.MessageChannel = OriginalMessageChannel;
+    },
     evaluate: async (code) => vm.runInThisContext(code),
     loadFile: async (file) => {
       const { window } = parseHTML(readFileSync(file, 'utf8'));
       for (const name of ['HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLSelectElement', 'HTMLButtonElement', 'HTMLIFrameElement', 'Element', 'Node', 'Event', 'CustomEvent', 'Document', 'DOMParser', 'MutationObserver']) globalThis[name] = window[name];
       globalThis.window = window;
       globalThis.document = window.document;
+      globalThis.MessageChannel = FixtureMessageChannel;
       Object.defineProperty(window.document, 'compatMode', { value: 'CSS1Compat' });
       Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'LinkeDOM renderer fixture' } });
       globalThis.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now()), 0);
