@@ -545,7 +545,7 @@
       "path": "/home/vivion/iq27-tmp/ui-b3-evidence/second-instance.log",
       "sha256": "825f7963b489bd36d9a09430f99bcf281330485a723eae9743ae0c84712e8589"
     },
-    "caveat": "Singleton handler event itself not instrumented; evidence is actual second launch exit0, surviving original window identity, absence second window, and production lock branch. Bundled OfficeCLI unavailable warning is unrelated and preserved."
+    "caveat": "Singleton handler event itself not instrumented; evidence is actual second launch exit0, surviving original window identity, absence second window, and production lock branch. Bundled retired-office-adapter unavailable warning is unrelated and preserved."
   },
   "zeroModel": {
     "configuredEndpoint": "http://127.0.0.1:37603/v1",

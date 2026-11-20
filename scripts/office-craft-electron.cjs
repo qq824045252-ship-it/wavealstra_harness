@@ -176,6 +176,13 @@ function openFixture(targets) {
         shot: async file => fs.writeFile(file, (await wc.capturePage()).toPNG()),
         call: async (command, fields = {}) => {
           if (command === 'document') return evaluate(query => window.officeDocument(query), fields)
+          if (command === 'render') return evaluate(target => window.officeRender(target), fields)
+          if (command === 'stage') return evaluate(({ operation, id }) => window.officeEditProposal(operation, id), fields)
+          if (command === 'review') return evaluate(id => window.officeReviewStatus(id), fields)
+          if (command === 'approve') return evaluate(async id => {
+            await document.getElementById('apply').onclick()
+            return window.officeReviewStatus(id)
+          }, fields)
           if (command === 'select') return evaluate(target => window.officeSelection(target), fields.target)
           if (command === 'apply') return evaluate(async ({ captured, proposal }) => {
             if (proposal.cells !== undefined) {

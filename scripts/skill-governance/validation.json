@@ -131,22 +131,6 @@
       "status": "pass"
     },
     {
-      "skill": "officecli",
-      "before": 25870,
-      "chars": 6252,
-      "positive": 4,
-      "negative": 4,
-      "status": "pass"
-    },
-    {
-      "skill": "open-kimi-ppt",
-      "before": 21688,
-      "chars": 6665,
-      "positive": 4,
-      "negative": 4,
-      "status": "pass"
-    },
-    {
       "skill": "origin-analysis",
       "before": 13465,
       "chars": 9892,
@@ -174,14 +158,6 @@
       "skill": "shared-memory",
       "before": 3182,
       "chars": 3391,
-      "positive": 4,
-      "negative": 4,
-      "status": "pass"
-    },
-    {
-      "skill": "wechat-public",
-      "before": 2624,
-      "chars": 2861,
       "positive": 4,
       "negative": 4,
       "status": "pass"

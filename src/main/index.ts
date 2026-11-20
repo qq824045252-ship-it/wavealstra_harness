@@ -19,7 +19,6 @@ import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteSe
 import { GoogleWorkspaceIpc } from "../shared/google-workspace";
 import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
 import "./agent-environment";
-import "./officecli-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { AnswerRoutingIpc } from "../shared/answer-routing";

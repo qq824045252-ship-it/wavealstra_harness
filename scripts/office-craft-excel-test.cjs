@@ -63,6 +63,8 @@ module.exports = async function testExcel({ open, assert }) {
     assert.deepEqual((await session.call('document', { action: 'read', target: otherSheet })).items, [['另一个工作表']])
     assert.deepEqual((await session.call('document', { action: 'find', query: '另一个' })).items, [{ sheet: '汇总', address: 'A1', preview: '另一个工作表' }])
     assert.deepEqual((await session.call('document', { action: 'read', target: { kind: 'excel', sheet: '财务明细', address: 'D1', values: 'formulas' } })).items, [['=B1+7']])
+    const calc = await session.call('document', { action: 'evaluate', evaluation: { sheet: '财务明细', cell: 'D1', formula: '=SUM(B1,7)' } })
+    assert.equal(calc.value, 10)
     assert.equal((await session.page(() => window.gridcraft.docInspect())).activeSheet, 0)
     const targeted = await session.call('select', { target: otherSheet })
     assert.equal(targeted.content, '另一个工作表')
@@ -156,6 +158,19 @@ module.exports = async function testExcel({ open, assert }) {
     const imeCaptured = await session.call('select')
     assert.equal(imeCaptured.target.address, 'A3')
     assert.equal(imeCaptured.content, imeText)
+    await session.call('stage', { id: 'freeze', operation: { kind: 'excel', action: 'freezeTopRow', sheet: '汇总' } })
+    assert.deepEqual((await session.call('approve', 'freeze')).verification, { matched: true, freeze: [1, 0] })
+    await session.call('stage', { id: 'chart', operation: {
+      kind: 'excel', action: 'insertChart', sheet: '财务明细', address: 'B1:D1', chartType: 'column', at: 'H4', title: '复核数据',
+    } })
+    const chart = await session.call('approve', 'chart')
+    assert.equal(chart.verification?.matched, true, JSON.stringify(chart))
+    assert.equal(chart.verification.chart.at, 'H4')
+    await session.call('stage', { id: 'format', operation: {
+      kind: 'excel', action: 'numberFormat', sheet: '财务明细', address: 'B1:C1', code: '0.000',
+    } })
+    const format = await session.call('approve', 'format')
+    assert.deepEqual(format.verification, { matched: true, numberFormat: '0.000' }, JSON.stringify(format))
 
     const output = join(__dirname, '../out/tests')
     mkdirSync(output, { recursive: true })
@@ -181,6 +196,7 @@ module.exports = async function testExcel({ open, assert }) {
         book: await api.docInspect(),
         a1: await api.request('cell.get', { cell: 'A1' }),
         a3: await api.request('cell.get', { cell: 'A3' }),
+        b1: await api.request('cell.get', { cell: 'B1' }),
         d1: await api.request('cell.get', { cell: 'D1' })
       }
     })
@@ -189,7 +205,10 @@ module.exports = async function testExcel({ open, assert }) {
     assert.equal(result.a1.value, rewritten)
     assert.equal(result.a3.value, imeText)
     assert.equal(result.d1.formula, baselineD1.formula)
+    assert.equal(result.b1.text, '4.000')
     assert.deepEqual(result.d1.style, baselineD1.style)
+    assert.equal(result.book.sheets[0].charts[0].title, '复核数据')
+    assert.deepEqual(result.book.sheets[1].freeze, [1, 0])
   } finally {
     await reopened.close()
   }

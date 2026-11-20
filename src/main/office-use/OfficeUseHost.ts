@@ -151,7 +151,9 @@ export class OfficeUseHost {
           const destination = await this.ports.saveAs(output,s.file.target,s.owner);
           res.end(destination ? "已另存至 " + destination : "已取消另存"); return;
         }
-        res.end(await s.file.write(bytes, action === "draft")); return;
+        const result = await s.file.write(bytes, action === "draft");
+        if (result.saved) res.setHeader("X-Office-Saved", "1");
+        res.end(result.message); return;
       }
     }
     res.writeHead(404).end();
@@ -257,8 +259,16 @@ export class OfficeUseHost {
       const wc = s.view.webContents;
       s.release = bindOfficeSelection(s.file.target.taskId,s.id,{
         read: request => wc.executeJavaScript(`window.officeDocument(${JSON.stringify(request)})`),
+        render: async target => {
+          const result = await wc.executeJavaScript(`window.officeRender(${JSON.stringify(target)})`);
+          if (target.kind !== "excel") return result;
+          const image = await wc.capturePage(result);
+          return image.isEmpty() ? undefined : image.toPNG().toString("base64");
+        },
         select: target => wc.executeJavaScript(`window.officeSelection(${JSON.stringify(target) ?? "undefined"})`),
-        propose: (id,text) => wc.executeJavaScript("window.officeProposal("+JSON.stringify(id)+","+JSON.stringify(text)+")"),
+        propose: (id, text, proposalId) => wc.executeJavaScript(`window.officeProposal(${JSON.stringify(id)},${JSON.stringify(text)},${JSON.stringify(proposalId)})`),
+        proposeEdit: (operation, proposalId) => wc.executeJavaScript(`window.officeEditProposal(${JSON.stringify(operation)},${JSON.stringify(proposalId)})`),
+        review: proposalId => wc.executeJavaScript(`window.officeReviewStatus(${JSON.stringify(proposalId)})`),
       });
     } else if (!visible && s.release) { s.release(); s.release = undefined; }
   }

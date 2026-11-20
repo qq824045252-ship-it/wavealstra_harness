@@ -68,7 +68,7 @@ browser_exec(action="read")
 7. 使用提醒（局限与引用建议）
 ```
 
-*   默认在聊天中直接输出提炼；若用户要求存档，同步写入任务工作区 `wechat_文章标题_提炼.md`，必要时用 `officecli` 转 `docx`。
+*   默认在聊天中直接输出提炼；若用户要求存档，同步写入任务工作区 `wechat_文章标题_提炼.md`，必要时用 MyBuddy Office Use 新建 Word 文档。
 *   全程保留原文链接作为出处。
 
 ## 兜底分支
@@ -98,7 +98,7 @@ browser_exec(action="read")
 *   人类指挥官：`https://mp.weixin.qq.com/s/XfGIt5m0ZYPiUgJhZnwuow 讲了什么`
     → 自动执行：`fetch readable` → 拦截 → `browser navigate+read` → 清洗 → 按模板输出松溪站提炼（含8月22日大布村、四点巡游、揭牌、下两站预告）
 *   人类指挥官：`帮我把这个公众号转成Word简报`
-    → 在提炼后追加 `officecli create wechat_xxx.docx` 并写入结构化内容
+    → 在提炼后用 MyBuddy Office Use 新建 `wechat_xxx.docx` 并传入结构化内容
 
 ## Boundary / Output Contract
 

@@ -172,7 +172,7 @@ Version **0.1.93** was checked on 2026-11-04 UTC / 2026-11-05 Asia/Shanghai agai
 | Shared execution/recovery contracts | **PASS**. Coordinator/run suite passed; recovery evidence passed the legacy Windows cases plus **18** delivery/batch/uncertainty cases. |
 | Final application build | **PASS, exit 0**. This produced development build output, not an accepted distribution. |
 | Development worker handshakes | **PASS** using actual Electron **44.5.1**, embedded Node **24.21.0**. Both workers returned the expected protocol/backend identity; AT-SPI reported dbus-native **0.16.3**. No bus, screenshot or input probe was performed by these handshakes. |
-| Linux packaging | **FAIL, exit 1** during preparation of pinned OfficeCLI **1.0.143**: proxy tunnel timeout after 5,000 ms. No accepted Linux application directory or package checksum was produced. |
+| Linux packaging | **FAIL, exit 1** during preparation of a retired office dependency **1.0.143**: proxy tunnel timeout after 5,000 ms. No accepted Linux application directory or package checksum was produced. |
 | Actual packaged payload validation | **FAIL, exit 1**: `release/linux-unpacked` was absent. Actual packaged Electron/worker probes did not run. |
 | Development and packaged GUI commands | Both **failed with exit 1** at missing `WAYLAND_DISPLAY`. No GTK/Electron fixture, normal packaged main process, or desktop input scenario started. |
 | Actual desktop / fractional scale / packaged desktop | **Not performed**. These remain acceptance blockers; issue #14 is not ready to close on this evidence. |

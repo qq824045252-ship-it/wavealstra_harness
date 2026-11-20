@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import type { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
 import type { AgentLoadoutRecommendationDto } from "../../shared/agent-loadout";
 
@@ -60,16 +59,8 @@ export function diagnoseSessionModel(input: {
 /** Fixed read-only probes in the application's process environment, never an install.
  * Run on explicit Inspector access, not while assembling or executing a model request.
  */
-export function probeSkillDependency(id: string, cwd: string, activeTools: string[], capabilities?: BuiltinCapabilityRuntime): SkillReadinessDiagnostic["dependency"] {
+export function probeSkillDependency(id: string, activeTools: string[], capabilities?: BuiltinCapabilityRuntime): SkillReadinessDiagnostic["dependency"] {
   const checkedAt = Date.now();
-  if (id === "officecli") {
-    try {
-      execFileSync(process.env.MYBUDDY_OFFICECLI || "officecli", ["--version"], { cwd, env: process.env, timeout: 2500, maxBuffer: 16_384, stdio: ["ignore", "pipe", "pipe"] });
-      return { state: "passed", reason: "目标应用进程环境 officecli --version 成功；不代表文件试运行成功", checkedAt };
-    } catch {
-      return { state: "failed", reason: "可选的 officecli --version 失败；请检查外部安装或 MYBUDDY_OFFICECLI 配置", checkedAt };
-    }
-  }
   if (id === "meeting-transcribe" || id === "npu-ocr") {
     const tool = id === "meeting-transcribe" ? "speech_to_text" : "ocr_file";
     const capability = id === "meeting-transcribe" ? "speech-to-text" : "ocr";

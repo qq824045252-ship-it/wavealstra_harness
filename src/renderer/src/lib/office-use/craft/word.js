@@ -5,7 +5,7 @@
   const encoder = new TextEncoder()
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
   const conflict = () => error('selection-conflict', '原 Word 选区已变化，请重新选取。')
-  const { clip, page, textPage, uniqueOffset, literalPattern } = globalThis.MyBuddyOfficeDocument
+  const { clip, page, textPage, uniqueOffset, literalPattern, reviewedEdit } = globalThis.MyBuddyOfficeDocument
 
   function error(code, message) {
     return Object.assign(new Error(message), { code })
@@ -84,7 +84,7 @@
     if (query.action === 'inspect') {
       return { pages: doc.pages, words: doc.words, ...page(doc.blocks, query, block => ({
         blockIndex: block.index, type: block.type, style: block.style, preview: clip(block.text),
-        rows: block.rows, columns: block.cols,
+        rows: block.rows, columns: block.cols, list: block.list, objectCount: block.objects?.length,
       })) }
     }
     if (query.action === 'find') {
@@ -102,7 +102,7 @@
     }
     const block = doc.blocks.find(item => item.index === query.target.blockIndex)
     if (!block) throw new Error('找不到指定的 Word 正文块。')
-    const location = { blockIndex: block.index, type: block.type, style: block.style }
+    const location = { blockIndex: block.index, type: block.type, style: block.style, list: block.list }
     if (Array.isArray(block.cells)) return { ...location, columns: block.cols, ...page(block.cells, query, row => row.map(text => clip(text, 300))) }
     return { ...location, ...textPage(block.text ?? '', query.offset) }
   }
@@ -141,24 +141,58 @@
     if (current.reason || JSON.stringify(current) !== JSON.stringify(saved.current)) throw conflict()
 
     captures.delete(api)
-    if (text === current.content) return { content: text, changed: false }
+    const verification = { matched: true, blockIndex: current.block.index, preview: clip(text) }
+    if (text === current.content) return { content: text, changed: false, verification }
 
     // The native replacement and deletion each create a single undo action.
     if (text) await api.execute('text.insert', { text, raw: true })
     else await api.execute('text.delete', {})
 
-    const changed = await api.docInspect({ text: true })
-    const block = changed.blocks.find(item => item.index === current.block.index)
     const rangeEnd = current.start + encoder.encode(text).length
-    if (block?.text !== current.prefix + text + current.suffix ||
-        JSON.stringify(block.props) !== JSON.stringify(current.block.props) ||
-        (text && formatAt(block, current.start, rangeEnd) !== current.format)) {
+    const check = async () => {
+      const doc = await api.docInspect({ text: true })
+      const block = doc.blocks.find(item => item.index === current.block.index)
+      const matched = block?.text === current.prefix + text + current.suffix &&
+        JSON.stringify(block.props) === JSON.stringify(current.block.props) &&
+        (!text || formatAt(block, current.start, rangeEnd) === current.format)
+      return { ...verification, matched }
+    }
+    if (!(await check()).matched) {
       await api.execute('edit.undo', {})
       throw error('unsupported-selection', 'WordCraft 无法保留此选区的格式，已撤销替换。')
     }
-    return { content: text, changed: true }
+    return { content: text, changed: true, verification, check }
+  }
+
+  async function prepareEdit(api, { action, blockIndex, style }) {
+    if (action !== 'paragraphStyle' || !['Normal', 'Title', 'Heading1', 'Heading2', 'Heading3'].includes(style)) {
+      throw new Error('请选择支持的 Word 段落样式。')
+    }
+    const read = async () => {
+      const doc = await api.docInspect({ text: true })
+      const block = doc.blocks.find(item => item.index === blockIndex)
+      if (doc.trackChanges || block?.type !== 'paragraph') throw new Error('请选择可编辑的 Word 正文段落，并先结束修订。')
+      return block
+    }
+    const original = await read()
+    return reviewedEdit({
+      preview: {
+        target: { kind: 'word', blockIndex }, label: `Word 正文 · 第 ${blockIndex + 1} 个内容块`,
+        before: `${original.style ?? 'Normal'}\n${clip(original.text, 1200)}`, after: `段落样式改为 ${style}`,
+      },
+      original, read, unchanged: (original.style ?? 'Normal') === style,
+      async write() {
+        const point = { story: 'body', path: [blockIndex], off: 0 }
+        await api.execute('select.range', { anchor: point, focus: point })
+        await api.execute('para.style', { style })
+      },
+      async verify() {
+        const block = await read()
+        return { matched: block.style === style && block.text === original.text, style: block.style }
+      },
+    })
   }
 
   globalThis.MyBuddyCraftAdapters ??= {}
-  globalThis.MyBuddyCraftAdapters.word = { document, read, captureTarget, apply }
+  globalThis.MyBuddyCraftAdapters.word = { document, read, captureTarget, apply, prepareEdit }
 })()

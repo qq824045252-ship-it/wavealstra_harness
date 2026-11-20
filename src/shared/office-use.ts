@@ -9,7 +9,11 @@ export interface OfficeOpen { source: OfficeSource; name: string; modelId?: stri
 export interface OfficeRect { x: number; y: number; width: number; height: number }
 export const OfficeUseIpc = { open: "office-use:open", bounds: "office-use:bounds", close: "office-use:close" } as const;
 export const OFFICE_USE_TOOLS = {
+  documentCreate: "office_document_create",
   documentRead: "office_document_read",
+  documentRender: "office_document_render",
+  editPropose: "office_edit_propose",
+  reviewStatus: "office_review_status",
   selectionRead: "office_selection_read",
   selectionPropose: "office_selection_propose",
 } as const;

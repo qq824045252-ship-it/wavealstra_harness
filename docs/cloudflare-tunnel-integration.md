@@ -115,7 +115,6 @@ cloudflared --output json --config /tmp/cft/app.yml --metrics 127.0.0.1:0 \
 | `cloudflared-darwin-arm64.tgz` | 18.9 MB | `3586ccf397e98…` |
 
 > 注意：cloudflared 的 release **没有** `SHA256SUMS` 资产，完整性校验要用 GitHub API 的 `assets[].digest`（`sha256:...`），
-> 这和 `scripts/prepare-officecli.cjs` 用官方校验和文件的写法不同。
 
 ---
 
@@ -211,19 +210,18 @@ export const RemoteAccessIpc = {
 
 ### 5.4 打包与校验
 
-仿 OfficeCLI 的既有链路（这是仓库里已经跑通的模式）：
 
 1. `src/shared/cloudflared-builds.json`：pin `version` + 每个 `platform-arch` 的 `asset` / `binary` / `sha256`
    （sha256 从 GitHub release API 的 `digest` 取，写进 pin 文件，构建时校验）。
-2. `scripts/prepare-cloudflared.cjs`：仿 `scripts/prepare-officecli.cjs`（HTTPS + 重定向 + 原子写 + receipt +
+2. `scripts/prepare-cloudflared.cjs`（HTTPS + 重定向 + 原子写 + receipt +
    `--refresh`），下载到 `vendor/cloudflared/<platform>-<arch>/cloudflared[.exe]`（`vendor/` 已 gitignore）。
-3. `scripts/before-pack.cjs`：按 `electronPlatformName + Arch` 调 `prepare-cloudflared.cjs`（与 officecli 顺序执行）。
+3. `scripts/before-pack.cjs`：按 `electronPlatformName + Arch` 调 `prepare-cloudflared.cjs`。
 4. `package.json → build.extraResources`：三平台各加一条 `{"to": "cloudflared", "from": "vendor/cloudflared/<key>"}`。
 5. `scripts/verify-packaged-app.cjs`：新增
    - `resources/cloudflared/cloudflared[.exe]` 存在且可执行
    - `--version` 输出与 pin 的 `EXPECTED_CLOUDFLARED_VERSION` 一致（从 pin 文件读，不硬编码）
    - （可选）Linux 上用打包程序的 Electron Node 无关，直接用二进制跑 `cloudflared --version` 即可
-6. 运行时路径：仿 `src/main/platform/officecli.ts`，加 `src/main/platform/cloudflared.ts`
+6. 运行时路径：由 `src/main/platform/cloudflared.ts`
    （packaged → `process.resourcesPath/cloudflared/<binary>`，dev → `vendor/cloudflared/<key>/<binary>`），
    `existsSync` 缺失就抛错，绝不回退到系统 PATH 里的 `cloudflared`（版本不可控）。
 
@@ -560,7 +558,7 @@ $ echo $?
 | 项 | 做法 |
 | --- | --- |
 | 二进制 | `vendor/cloudflared/<platform>-<arch>/cloudflared[.exe]`（gitignore），`extraResources` → `resources/cloudflared/` |
-| 下载/校验 | `scripts/prepare-cloudflared.cjs` 仿 `prepare-officecli.cjs`：GitHub release + `assets[].digest`（sha256）+ receipt + `--refresh` |
+| 下载/校验 | `scripts/prepare-cloudflared.cjs` 通过GitHub release + `assets[].digest`（sha256）+ receipt + `--refresh` |
 | 版本 pin | `src/shared/cloudflared-builds.json`（version + asset + binary + sha256），`before-pack.cjs` 按平台准备 |
 | 门禁 | `verify-packaged`：二进制存在 + `cloudflared --version === pin`（版本从 pin 文件读，不硬编码） |
 | 许可 | Apache-2.0，无 NOTICE 文件 → `docs/third-party/cloudflared-LICENSE.txt`（`build.files` 已包含 `docs/third-party/**/*`） |

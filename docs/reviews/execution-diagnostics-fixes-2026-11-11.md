@@ -9,7 +9,7 @@
 - 每个任务首批请求 `费用 $0.000000`：`magpie/opendesign/deepseek-v4.1-flash-eco` 模型目录 cost 四项全 0，pi 算出的 0 被当真实账单（pi-native、complete=true）。
 - `register_artifact` 在两个出文件任务里各失败一次（先登记后 write → `ENOENT realpath`；以及流式 tool_call 参数拼接）。
 - Windows 上 `ls -la` 等只读校验命令直接抛「当前平台尚未提供可信只读命令后端」。
-- OfficeCLI 在 OneDrive 工作区对 `%TEMP%\tmp*.tmp`、`.tmp_officecli` 报 `Access to the path … is denied`（5 次，09:41–09:45，三个任务并发期间）。
+- 旧办公工具 在 OneDrive 工作区对 `%TEMP%\tmp*.tmp`、`.tmp_旧办公工具` 报 `Access to the path … is denied`（5 次，09:41–09:45，三个任务并发期间）。
 
 ## 本次修复
 
@@ -36,7 +36,7 @@
 
 ## 未闭环 / 边界
 
-- OfficeCLI 的 `Access to the path … denied` 五次均发生在 09:41–09:45 三个 OneDrive 工作区任务并发期间；本机同版本 officecli（1.0.160）手工 `create/view/validate`（含 4 路并发、工作区 TEMP）均成功，未能复现。已在 officecli skill 增加降级指引（不要对同一路径反复重试；改用内置 write/Python 或换路径重试一次），代码层不伪造修复。
+- 旧办公工具 的 `Access to the path … denied` 五次均发生在 09:41–09:45 三个 OneDrive 工作区任务并发期间；本机同版本 旧办公工具（1.0.160）手工 `create/view/validate`（含 4 路并发、工作区 TEMP）均成功，未能复现。已在 旧办公工具 skill 增加降级指引（不要对同一路径反复重试；改用内置 write/Python 或换路径重试一次），代码层不伪造修复。
 - 非 durable 会话（`SessionEventCoordinator`）记录用量时仍没有模型定价上下文，cost 口径保持旧行为；durable/auxiliary 路径已按模型目录传 `pricingConfigured`。
 - 历史诊断记录里的 `费用 $0.000000` 不会被改写；只有重启后的新记录按新口径记未知。
 - Linux/macOS 实机未跑：Linux 分支逻辑未改，host 后端在 Windows 验证；符号链接逃逸用例待 Linux 执行。

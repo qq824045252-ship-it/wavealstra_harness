@@ -204,30 +204,6 @@
     "readCases": 8
   },
   {
-    "id": "officecli",
-    "valid": true,
-    "errors": [],
-    "warnings": [],
-    "hasReferences": true,
-    "hasScripts": false,
-    "hasTemplates": false,
-    "hasEvals": true,
-    "evalCount": 8,
-    "readCases": 8
-  },
-  {
-    "id": "open-kimi-ppt",
-    "valid": true,
-    "errors": [],
-    "warnings": [],
-    "hasReferences": false,
-    "hasScripts": true,
-    "hasTemplates": false,
-    "hasEvals": true,
-    "evalCount": 8,
-    "readCases": 8
-  },
-  {
     "id": "origin-analysis",
     "valid": true,
     "errors": [],
@@ -269,18 +245,6 @@
   },
   {
     "id": "shared-memory",
-    "valid": true,
-    "errors": [],
-    "warnings": [],
-    "hasReferences": false,
-    "hasScripts": false,
-    "hasTemplates": false,
-    "hasEvals": true,
-    "evalCount": 8,
-    "readCases": 8
-  },
-  {
-    "id": "wechat-public",
     "valid": true,
     "errors": [],
     "warnings": [],

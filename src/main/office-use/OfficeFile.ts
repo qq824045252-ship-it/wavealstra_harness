@@ -111,7 +111,7 @@ export class OfficeFile {
   async prepareExport(bytes: Buffer): Promise<Buffer> {
     return this.presentation ? prepareOfficeRoundTrip(this.presentation, bytes, this.target.kind) : bytes;
   }
-  async write(bytes: Buffer, draft: boolean): Promise<string> {
+  async write(bytes: Buffer, draft: boolean): Promise<{ message: string; saved: boolean }> {
     if (this.target.readOnly) throw new Error("文件只读");
     await assertOfficePackage(bytes, this.target.kind);
     return serial(this.target.path, async () => {
@@ -122,7 +122,7 @@ export class OfficeFile {
         this.savedBaseline = true;
       }
       await atomicBytes(this.draftPath, Buffer.concat([Buffer.from(this.base,"ascii"), bytes]));
-      if (draft) return "草稿已保留";
+      if (draft) return { message: "草稿已保留", saved: false };
       const unchanged = async () => {
         if (digest(await this.current()) !== this.base) throw new Error("原文件已被修改，已保留草稿。请另存副本。");
       };
@@ -131,7 +131,7 @@ export class OfficeFile {
       let message = "已保存";
       if (this.target.copy) {
         const result = await this.target.copy(bytes, unchanged);
-        if (!result) return "未选择保存位置，已保留草稿";
+        if (!result) return { message: "未选择保存位置，已保留草稿", saved: false };
         message = result;
       } else {
         const output = this.target.base64 ? this.prefix + bytes.toString("base64") : bytes;
@@ -143,7 +143,7 @@ export class OfficeFile {
       if (!this.target.copy && this.presentation) this.presentation = bytes;
       if (!this.target.copy) { this.base = digest(bytes); this.setDraftPath(); }
       this.recovered = false;
-      return message;
+      return { message, saved: true };
     });
   }
 }

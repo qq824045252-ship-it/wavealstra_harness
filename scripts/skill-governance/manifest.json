@@ -239,29 +239,9 @@
       "after": "250ed4b10386185c8ad0e2d386cf06bc8a2d08ceced2f762fb50003b625e6287"
     },
     {
-      "file": "officecli/SKILL.md",
-      "before": "c950d285ce60021712b4753fb2d9f592308d5622bab776229061dfecb1ce55d4",
-      "after": "b82189e5d41ed01fcc6c4b8aebb368427cd7e9ffdc168a5df70a08b71932c21d"
-    },
-    {
-      "file": "officecli/evals/trigger.json",
-      "before": null,
-      "after": "7810f02d03627bb9590c2fbedca8c0e2a7b57b8d4cfab6cf5a14fdad3abf82da"
-    },
-    {
-      "file": "officecli/references/cli-operations.md",
-      "before": null,
-      "after": "5c3e40fe09d2fbad496c7abbea150bba0a169e21a9d2ec5b4992763ae3db9c22"
-    },
-    {
-      "file": "officecli/references/specialized-routing.md",
-      "before": null,
-      "after": "54b4019616054390d64aad01a5e6dcaf99cd077398dcab57cc1ef1daaa4485cb"
-    },
-    {
       "file": "open-kimi-ppt/SKILL.md",
       "before": "4ab8be16bed152f83c5b3bb7c66426a33f70cbdd6f6dfb3317b5076349754976",
-      "after": "181e2dac365da30698983f357247a65149942129cc2453fc065379c63cdb1563"
+      "after": "0060179b3e3c3953cce2e2c7023b9e0eba980fffc9515abf497df90b7325a85a"
     },
     {
       "file": "open-kimi-ppt/evals/trigger.json",
@@ -326,7 +306,7 @@
     {
       "file": "wechat-public/SKILL.md",
       "before": "1a19b197cf377fbb2e0208c9c973d4a9789c76ce1f95a9638452a36960bdaa2e",
-      "after": "7f4bc466a1ffa3f6cd02c0ad7b90b59e5ab739de8a0d65d0f1d0a5a6ed9e0536"
+      "after": "364b12438c495b866b07784a12f9df5759ff3e65fcf9cc2140a48d099afd55fc"
     },
     {
       "file": "wechat-public/evals/trigger.json",

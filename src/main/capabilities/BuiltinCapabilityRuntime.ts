@@ -155,7 +155,7 @@ const LABELS: Record<string, { label: string; description: string; category: Bui
   "speech-to-text": { label: "语音转文字", description: "把任务内音频转写为文本。", category: "speech" },
   "text-to-speech": { label: "文字转语音", description: "把文本合成为任务音频产物。", category: "speech" },
   browser: { label: "界面与桌面操作", description: `操作 MyBuddy 浏览器/主界面，并在必要时执行受控${desktopPlatformLabel(process.platform)}交互。`, category: "automation" },
-  "office-use": { label: "Office Use", description: "查找和读取当前 Office 文档，定位段落、单元格或幻灯片文字，提交修改建议。", category: "automation" },
+  "office-use": { label: "Office Use", description: "新建、检查和渲染 Word、Excel 与 PowerPoint 文件。提交编辑建议，并在用户确认后复验。", category: "automation" },
   "cad-use": { label: "CAD Use", description: "在任务中创建、读取、修改和导出 DWG、DXF 图纸。", category: "automation" },
   "runtime-diagnostics": { label: "运行诊断", description: "读取应用、浏览器与产物的运行状态和日志。", category: "automation" },
   terminal: { label: "命令执行", description: "直接使用 Pi 原生 bash 执行命令。", category: "execution" },

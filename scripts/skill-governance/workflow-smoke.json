@@ -2,15 +2,6 @@
   "temp": "C:\\Users\\servi\\AppData\\Local\\Temp\\skill-governance-workflows-GLUSpz",
   "results": [
     {
-      "name": "officecli-real-dom",
-      "pass": true,
-      "detail": {
-        "path": "C:\\Users\\servi\\AppData\\Local\\Temp\\skill-governance-workflows-GLUSpz\\smoke.docx",
-        "readback": "Governance 42",
-        "msysConversionExcluded": true
-      }
-    },
-    {
       "name": "academic-formula-citation-roundtrip",
       "pass": true,
       "detail": "formula/cite/number roundtrip byte-identical"

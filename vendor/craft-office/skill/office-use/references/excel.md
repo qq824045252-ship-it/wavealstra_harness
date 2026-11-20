@@ -1,0 +1,9 @@
+# GridCraft
+
+Keep one record per row, a clear header row, and input values separate from calculations. For a new workbook, pass `{kind:"excel",sheets:[{name,rows}]}` as `office_document_create` content. Use `{formula:"=SUM(B2:B5)"}` for a formula cell, ordinary strings for text, and actual numbers for quantities.
+
+1. Inspect for sheet names, used ranges, tables, charts, and frozen panes. Read the exact named sheet and A1 range with `office_document_read`. Use separate `values:"formulas"`, `"raw"`, and `"formatted"` reads to check formula source, results, and display. An `action:"evaluate"` with `evaluation:{sheet,cell,formula}` tests a formula against the currently active sheet without writing a cell.
+2. Stage writes by capturing the explicit range with `office_selection_read`, then use the same TSV dimensions for `office_selection_propose`. Keep unchanged values and formulas in the replacement. Quote a field to write a literal formula-looking string. Use `office_edit_propose` to freeze the first row, apply a number format to up to 64 cells, or insert a native chart. For number formats, include `action:"numberFormat"` and a format code such as `"#,##0.00"` or `"0.0%"`. For a chart, read a source range with a header row, choose the type, and specify the destination `at` cell outside the data.
+3. After confirmation, reread the changed range and check the calculated values and any error objects. For a chart, check the returned chart ID and placement. Use `office_document_render` with `target:{kind:"excel",sheet}` to inspect charts and formatting within the current sheet viewport. The render covers the visible portion of the active sheet.
+
+Source [upstream GridCraft skill](https://github.com/hermes-pro/storytold-skills/blob/7cd83887800508c3f6f0dd1efa2fc7601b3753ca/gridcraft/SKILL.md)

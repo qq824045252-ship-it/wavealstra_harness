@@ -2,7 +2,8 @@
   'use strict'
 
   const MAX_TEXT = 32_000
-  const { clip, page } = globalThis.MyBuddyOfficeDocument
+  const chartKinds = new Map([['column', 'ColumnClustered'], ['bar', 'BarClustered'], ['line', 'Line'], ['pie', 'Pie']])
+  const { clip, page, reviewedEdit } = globalThis.MyBuddyOfficeDocument
   const NUMBER_FIELD = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[Ee][+-]?\d+)?$/
   function asTsvField(cell) {
     const value = String(cell.value ?? '')
@@ -107,7 +108,13 @@
     const height = Number(bottom) - Number(top) + 1
     if (width < 1 || height < 1 || column(last) > 16384 || Number(bottom) > 1048576) throw new Error('该区域超出 Excel 工作表范围。')
     if (width * height > maxCells) throw new Error(`单次最多处理 ${maxCells} 个单元格，请缩小范围。`)
-    return { address: width * height === 1 ? first + top : `${first}${top}:${last}${bottom}`, width, startRow: Number(top) }
+    return { address: width * height === 1 ? first + top : `${first}${top}:${last}${bottom}`, width, height, startRow: Number(top), startColumn: column(first) }
+  }
+
+  function columnLabel(column) {
+    let label = ''
+    for (let n = column; n > 0; n = Math.floor((n - 1) / 26)) label = String.fromCharCode(65 + (n - 1) % 26) + label
+    return label
   }
 
   function sheetIndex(book, name) {
@@ -120,7 +127,14 @@
     const book = await api.docInspect()
     if (query.action === 'inspect') return { activeSheet: book.sheets[book.activeSheet]?.name, selection: book.selection, ...page(book.sheets, query, sheet => ({
       name: sheet.name, usedRange: sheet.usedRange, protected: sheet.protected, visibility: sheet.visibility,
+      freeze: sheet.freeze, autofilter: sheet.autofilter, chartCount: sheet.charts.length, tableCount: sheet.tables.length,
     })) }
+    if (query.action === 'evaluate') {
+      const { sheet, cell, formula } = query.evaluation
+      const range = rectangle(cell, 1)
+      if (sheetIndex(book, sheet) !== book.activeSheet) throw new Error('试算使用当前工作表。请先在编辑器中切换到指定工作表。')
+      return { sheet, cell: range.address, formula, value: await api.execute('formulas.evaluate', { cell: range.address, formula }) }
+    }
     if (query.action === 'find') {
       if (book.sheets.reduce((sum, sheet) => sum + sheet.cells, 0) > 250_000) {
         throw new Error('工作簿有超过 250,000 个已用单元格。请用 read 按工作表分批读取。')
@@ -170,18 +184,115 @@
     return captured
   }
 
+  async function prepareEdit(api, operation) {
+    const { action, sheet, title, chartType } = operation
+    const readSheet = async () => {
+      const book = await api.docInspect()
+      const index = sheetIndex(book, sheet)
+      if (book.sheets[index].protected) throw new Error('当前 Excel 工作表受保护。')
+      return { index, state: book.sheets[index] }
+    }
+    const target = { kind: 'excel', sheet }
+    if (action === 'freezeTopRow') {
+      const read = async () => {
+        const { index, state } = await readSheet()
+        return { index, freeze: state.freeze }
+      }
+      const original = await read()
+      const frozen = JSON.stringify(original.freeze) === '[1,0]'
+      return reviewedEdit({
+        preview: { target, label: sheet, before: original.freeze ? `当前冻结行列 ${original.freeze.join('、')}` : '未冻结窗格', after: '仅冻结第一行' },
+        original, read, unchanged: frozen,
+        write: () => api.execute('view.freezeTopRow', { sheet: original.index }),
+        async verify() {
+          const { freeze } = await read()
+          return { matched: JSON.stringify(freeze) === '[1,0]', freeze }
+        },
+      })
+    }
+    if (action === 'numberFormat') {
+      const { code } = operation
+      if (typeof code !== 'string' || !code.trim() || code.length > 80 || /[\u0000-\u001f]/.test(code)) throw new Error('请提供有效的数字格式代码。')
+      const range = rectangle(operation.address, 64)
+      const cells = Array.from({ length: range.width * range.height }, (_, i) =>
+        columnLabel(range.startColumn + (i % range.width)) + (range.startRow + Math.floor(i / range.width)))
+      const read = async () => {
+        const { index } = await readSheet()
+        const values = await Promise.all(cells.map(cell => api.execute('cell.get', { cell, sheet: index })))
+        return { index, values: values.map(({ value, formula, style }) => ({ value, formula, format: style.num_fmt })) }
+      }
+      const original = await read()
+      return reviewedEdit({
+        preview: {
+          target: { ...target, address: range.address }, label: `${sheet} · ${range.address}`,
+          before: Array.from(new Set(original.values.map(cell => cell.format))).join('\n'), after: code,
+        },
+        original, read, unchanged: original.values.every(cell => cell.format === code),
+        write: () => api.execute('home.numberFormat', { sheet: original.index, range: range.address, code }),
+        async verify() {
+          const result = await read()
+          const expected = original.values.map(cell => ({ ...cell, format: code }))
+          return { matched: JSON.stringify(result.values) === JSON.stringify(expected), numberFormat: code }
+        },
+      })
+    }
+    if (action !== 'insertChart' || !chartKinds.has(chartType)) throw new Error('该 Excel 图表类型或编辑操作不可用。')
+    const range = rectangle(operation.address, 1024).address
+    const at = rectangle(operation.at, 1).address
+    const read = async () => {
+      const { index, state } = await readSheet()
+      const data = await api.execute('sheet.read', { sheet: index, range })
+      return { index, charts: state.charts, values: data.values }
+    }
+    const original = await read()
+    return reviewedEdit({
+      preview: {
+        target: { ...target, address: range }, label: `${sheet} · ${range}`,
+        before: original.values.slice(0, 4).map(row => row.map(value => clip(String(value ?? ''), 80)).join('\t')).join('\n'),
+        after: `在 ${at} 插入 ${chartType} 图表\n${title}`,
+      },
+      original, read,
+      write: () => api.execute('insert.chart', { sheet: original.index, range, at, type: chartType, title }),
+      async verify({ chart: id }) {
+        const { state } = await readSheet()
+        const chart = state.charts.find(item => item.id === id)
+        return { matched: chart?.at === at && chart?.title === title && chart?.kind === chartKinds.get(chartType), chart }
+      },
+    })
+  }
+
   adapters.excel = {
     document,
     read,
     captureTarget,
+    prepareEdit,
 
     async apply(api, captured, proposal) {
       const cells = decode(proposal, captured.cells)
       const { document, sheetUid, target } = captured
-      return api.execute('mybuddy.rangeReplace', {
+      const result = await api.execute('mybuddy.rangeReplace', {
         captured: { document, sheetUid, target, cells: captured.cells },
         cells
       })
+      const check = async () => {
+        const book = await api.docInspect()
+        const sheet = sheetIndex(book, target.sheet)
+        const [raw, formulas] = await Promise.all([
+          api.execute('sheet.read', { sheet, range: target.address }),
+          api.execute('sheet.read', { sheet, range: target.address, formulas: true }),
+        ])
+        const expected = cells.map(row => row.map(cell => cell.value ?? null))
+        const matched = JSON.stringify(expected) === JSON.stringify(formulas.values)
+        return {
+          matched, sheet: target.sheet, address: target.address,
+          errors: raw.values.flat().filter(value => value && typeof value === 'object' && 'error' in value).slice(0, 10),
+        }
+      }
+      try {
+        return { ...result, verification: await check(), check }
+      } catch (error) {
+        return { ...result, verification: { matched: false, error: String(error?.message ?? error) } }
+      }
     }
   }
 })()

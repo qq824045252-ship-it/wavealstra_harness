@@ -6,17 +6,17 @@ verification, not real-model task acceptance. No Windows fix claim is made.
 
 ## Actual Office writes
 
-Installed vendor OfficeCLI 1.0.160 was used directly (not available on shell PATH).
+Installed vendor 旧办公工具 1.0.160 was used directly (not available on shell PATH).
 For each of system temporary storage (Python selected `/var/tmp`), checkout-local
 fixture storage, and Chinese + space directory names:
 
-1. `officecli create <new fixture.xlsx> --json` exited 0.
-2. `officecli set <fixture.xlsx> /Sheet1/A1 --prop value=诊断回读42 --json` exited 0
+1. `旧办公工具 create <new fixture.xlsx> --json` exited 0.
+2. `旧办公工具 set <fixture.xlsx> /Sheet1/A1 --prop value=诊断回读42 --json` exited 0
    (the actual fixture value included a separating space).
 3. Python ZIP integrity check passed; independent XML readback contained the value.
 
 All three passed. This establishes Linux file-write/readback capability, not the
-cause of Windows OfficeCLI TEMP/OneDrive access denials. No ACLs were changed.
+cause of Windows 旧办公工具 TEMP/OneDrive access denials. No ACLs were changed.
 
 ## Actual command signatures
 

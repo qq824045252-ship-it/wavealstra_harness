@@ -219,11 +219,11 @@ async function main(): Promise<void> {
       "drawio-ai promptAddon 含完整工具链路由（start_session→export_diagram）",
     );
     const generalOffice = workingPresets.find((p) => p.id === "general-office")!;
-    assert(generalOffice.skillPolicy?.allow.length === 0, "通用办公默认不要求 OfficeCLI");
-    assert(generalOffice.promptAddon?.includes("Office Use") && !generalOffice.promptAddon.includes("officecli"), "通用办公推荐 Office Use 处理当前文档选区");
+    assert(generalOffice.skillPolicy?.allow.length === 0, "通用办公无需文件生成技能白名单");
+    assert(generalOffice.promptAddon?.includes("Office Use 新建"), "通用办公支持创建 Office 文件");
     const officePolicy = resolveEffectiveModePolicy(MODE_SEEDS.working.policy, generalOffice);
-    const officeSkills = filterSkillsForMode([{ id: "officecli", name: "officecli", description: "Office" }, { id: "other", name: "other", description: "Other" }], "working", officePolicy.skillPolicy);
-    assert(officeSkills.visible.some(skill => skill.id === "officecli") && officeSkills.visible.some(skill => skill.id === "other"), "通用办公允许显式安装的 OfficeCLI 和其他技能");
+    const officeSkills = filterSkillsForMode([{ id: "weekly-report-fill", name: "weekly-report-fill", description: "Office" }, { id: "other", name: "other", description: "Other" }], "working", officePolicy.skillPolicy);
+    assert(officeSkills.visible.some(skill => skill.id === "weekly-report-fill") && officeSkills.visible.some(skill => skill.id === "other"), "通用办公允许显式安装的技能");
     assert(
       JSON.stringify(generalOffice.mcpPolicy?.deny) === JSON.stringify(["drawio-ai"]),
       "general-office deny OFFICE_PROVIDER_MCP_IDS（防 drawio 泄漏）",
@@ -867,16 +867,14 @@ async function main(): Promise<void> {
     prior.skillPolicy.allow = ["my-custom"];
     const general = prior.presets!.find(preset => preset.id === "general-office")!;
     general.promptAddon = general.promptAddon!.replace(
+      "用 Office Use 新建和读取办公文档。修改已打开的文档时，提交建议供用户确认。",
       "操作当前打开的 Office 文档时，用 Office Use 查找、读取和定位内容。提交改写建议后由用户确认。",
-      "需要 .docx/.xlsx/.pptx 时用 officecli（L1 读 → L2 DOM 改 → L3 原始 XML）。",
     );
-    general.skillPolicy!.allow = ["officecli"];
     writeFileSync(wFile, JSON.stringify(prior));
     const upgraded = store.getProfile("working");
-    assert(resolveModePreset(upgraded.policy, "general-office")?.skillPolicy?.allow.length === 0, "旧通用办公默认 OfficeCLI 白名单读时移除");
-    assert(resolveModePreset(upgraded.policy, "general-office")?.promptAddon?.includes("Office Use"), "旧通用办公默认提示词读时更新");
+    assert(resolveModePreset(upgraded.policy, "general-office")?.promptAddon?.includes("Office Use 新建"), "旧通用办公默认提示词读时更新");
     assert(upgraded.policy.skillPolicy.allow.join(",") === "my-custom", "旧 base 白名单保留自定义技能");
-    assert(JSON.parse(readFileSync(wFile, "utf8")).presets.find((p: ModePresetDto) => p.id === "general-office").skillPolicy.allow.join(",") === "officecli", "默认升级不改写磁盘");
+    assert(JSON.parse(readFileSync(wFile, "utf8")).presets.find((p: ModePresetDto) => p.id === "general-office").promptAddon === general.promptAddon, "默认升级不改写磁盘");
     general.skillPolicy!.allow = ["my-custom"];
     writeFileSync(wFile, JSON.stringify(prior));
     assert(resolveModePreset(store.getProfile("working").policy, "general-office")?.skillPolicy?.allow.join(",") === "my-custom", "保留通用办公自定义白名单");
@@ -888,7 +886,7 @@ async function main(): Promise<void> {
     writeFileSync(
       wFile,
       JSON.stringify({
-        skillPolicy: { prefer: ["周报"], demote: [], hide: [], allow: ["fastcopy-copy", "officecli"] },
+        skillPolicy: { prefer: ["周报"], demote: [], hide: [], allow: ["fastcopy-copy", "weekly-report-fill"] },
         toolPolicy: { mode: "soft", prefer: [], demote: [], deny: [] },
         mcpPolicy: { mode: "hard", allow: [], deny: ["serena", "codegraph"] },
         suggestedModelId: null,
@@ -903,7 +901,7 @@ async function main(): Promise<void> {
     const ids = (merged.policy.presets ?? []).map((p) => p.id);
     assert(ids.length === 8, `seed 并入：磁盘 3 个 + 新增 5 个 = 8（实际=${ids.length}）`);
     assert(
-      JSON.stringify(merged.policy.skillPolicy.allow) === JSON.stringify(["fastcopy-copy", "officecli"]),
+      JSON.stringify(merged.policy.skillPolicy.allow) === JSON.stringify(["fastcopy-copy", "weekly-report-fill"]),
       "seed 并入不覆盖用户 base 个性化（skillPolicy.allow 保留）",
     );
     const userWeekly = merged.policy.presets?.find((p) => p.id === "weekly-report");

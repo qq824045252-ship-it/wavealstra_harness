@@ -1,8 +1,8 @@
 'use strict'
 const frame = document.querySelector('iframe')
 const engines = { word: 'wordcraft', excel: 'gridcraft', ppt: 'deckcraft' }
-let port, kind, engine, name, api, adapter, capture, opened, readOnly
-let startup, saving, initializing = false
+let port, kind, engine, name, api, adapter, capture, edit, opened, readOnly
+let startup, saving, verifiedEdit, initializing = false
 let composing = false
 function deadline(label, ms = 45000) {
   let resolve, reject
@@ -136,10 +136,28 @@ async function dispatch(request) {
     const query = request.query
     if (query.action === 'read' && query.target?.kind !== kind) throw new Error('请提供与当前文档格式匹配的读取位置。')
     if (query.action === 'find' && !query.query?.trim()) throw new Error('请提供查找关键词。')
+    if (query.action === 'evaluate' && (kind !== 'excel' || !query.evaluation)) throw new Error('请提供 Excel 工作表、公式和单元格。')
     return { kind, name, readOnly, ...await adapter.document(api, query) }
+  }
+  if (request.type === 'render') {
+    const target = request.target
+    if (target?.kind !== kind) throw new Error('渲染位置与当前 Office 文档格式不符。')
+    if (kind === 'excel') {
+      const book = await api.docInspect()
+      if (book.sheets[book.activeSheet]?.name !== target.sheet) throw new Error('请在编辑器中切换到要检查的 Excel 工作表。')
+      return true
+    }
+    const params = kind === 'word' ? { page: target.pageIndex + 1 } : { slide: target.slideIndex }
+    const rendered = await api.request('ui.render', { ...params, scale: 1 })
+    return rendered.png
+  }
+  if (request.type === 'review-current') {
+    if (verifiedEdit?.id !== request.proposalId || !verifiedEdit?.check) return false
+    return (await verifiedEdit.check()).matched
   }
   if (request.type === 'select') {
     capture = undefined
+    edit = undefined
     const target = request.target
     if (target) {
       if (target.kind !== kind) throw new Error('定位位置与当前 Office 文档格式不符。')
@@ -152,6 +170,14 @@ async function dispatch(request) {
     return capture
   }
   if (readOnly) throw new Error('文档只读')
+  if (request.type === 'edit-stage') {
+    if (request.operation?.kind !== kind) throw new Error('编辑操作与当前文档格式不符。')
+    if (composing || (await api.uiInspect()).dialog) throw new Error('请先完成编辑器里正在进行的输入或对话框操作。')
+    const plan = await adapter.prepareEdit(api, request.operation)
+    capture = undefined
+    edit = { id: crypto.randomUUID(), apply: plan.apply }
+    return { ...plan.preview, id: edit.id }
+  }
   if (request.type === 'save') {
     saving = deadline('编辑器未返回保存文件')
     try {
@@ -160,10 +186,24 @@ async function dispatch(request) {
     } finally { saving = undefined }
   }
   if (request.type === 'apply') {
-    if (!capture || capture.captureId !== request.captured?.captureId) throw new Error('选区已变化，请重新选择')
-    if (capture.editable === false) throw new Error(capture.reason || '选区只读')
-    await adapter.apply(api, capture, request.proposal)
+    let result
+    if (request.editId) {
+      if (!edit || request.editId !== edit.id) throw new Error('编辑提议已过期，请重新提交。')
+      if (composing || (await api.uiInspect()).dialog) throw new Error('请先完成编辑器里正在进行的输入或对话框操作。')
+      const { apply } = edit
+      edit = undefined
+      result = await apply()
+    } else {
+      if (!capture || capture.captureId !== request.captured?.captureId) throw new Error('选区已变化，请重新选择')
+      if (capture.editable === false) throw new Error(capture.reason || '选区只读')
+      result = await adapter.apply(api, capture, request.proposal)
+      capture = undefined
+    }
+    const { check, ...receipt } = result
+    if (receipt.changed) {
+      verifiedEdit = request.proposalId && check ? { id: request.proposalId, check } : undefined
+      changed()
+    }
+    return receipt
   } else throw new Error('未知编辑操作')
-  capture = undefined
-  changed()
 }

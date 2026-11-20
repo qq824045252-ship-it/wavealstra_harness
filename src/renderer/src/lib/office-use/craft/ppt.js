@@ -2,7 +2,7 @@
   'use strict'
 
   globalThis.MyBuddyCraftAdapters ??= {}
-  const { clip, page, textPage, uniqueOffset } = globalThis.MyBuddyOfficeDocument
+  const { clip, page, textPage, uniqueOffset, reviewedEdit } = globalThis.MyBuddyOfficeDocument
 
   const comparePosition = (left, right) => left[0] - right[0] || left[1] - right[1]
 
@@ -40,7 +40,7 @@
   async function document(api, query) {
     if (query.action === 'inspect') {
       const deck = await api.docInspect()
-      return { activeSlideIndex: deck.selection.slide, ...page(deck.slides, query, slide => ({
+      return { activeSlideIndex: deck.selection.slide, slideSize: deck.slideSize, theme: deck.theme, ...page(deck.slides, query, slide => ({
         slideIndex: slide.index, slideId: slide.id, title: clip(slide.title), layout: slide.layout,
         shapeCount: slide.shapes, hidden: slide.hidden, hasNotes: Boolean(slide.notes),
       })) }
@@ -56,12 +56,13 @@
     if (shapeId !== undefined) {
       const shape = slide.shapes.find(item => item.id === shapeId)
       if (!shape) throw new Error('找不到指定的 PowerPoint 对象。')
-      const description = { ...location, shapeId, type: shape.kind, label: clip(shape.name) }
+      const description = { ...location, shapeId, type: shape.kind, label: clip(shape.name), bounds: shape.box, preset: shape.preset, placeholder: shape.placeholder }
       if (shape.table?.cells) return { ...description, columns: shape.table.cols, ...page(shape.table.cells, query, row => row.map(text => clip(text, 300))) }
       return { ...description, ...textPage(shape.text ?? '', query.offset) }
     }
     return { ...location, notesPreview: clip(slide.notes), ...page(slide.shapes, query, shape => ({
-      shapeId: shape.id, type: shape.kind, label: clip(shape.name), preview: clip(shape.text), rows: shape.table?.rows, columns: shape.table?.cols,
+      shapeId: shape.id, type: shape.kind, label: clip(shape.name), preview: clip(shape.text),
+      bounds: shape.box, preset: shape.preset, placeholder: shape.placeholder, rows: shape.table?.rows, columns: shape.table?.cols,
     })) }
   }
 
@@ -101,10 +102,32 @@
       throw new Error('幻灯片选区已变化，请重新读取。')
     }
     const replacement = text.replace(/\r\n?/g, '\n')
-    if (replacement === current.content) return { changed: 0 }
+    const location = { slideIndex: current.target.slideIndex, shapeId: current.target.shapeId }
+    if (replacement === current.content) return { changed: 0, verification: { matched: true, ...location } }
     const target = selectedTarget(await api.docInspect())
     if (JSON.stringify(target) !== JSON.stringify(current.target)) {
       throw new Error('幻灯片选区已变化，请重新读取。')
+    }
+    const { paragraphs } = await api.execute('text.get', { id: target.shapeId })
+    const [from, start] = target.start
+    const [to, end] = target.end
+    const lines = paragraphs.map(paragraph => paragraph.text)
+    const expected = [
+      ...lines.slice(0, from),
+      Array.from(lines[from]).slice(0, start).join('') + replacement + Array.from(lines[to]).slice(end).join(''),
+      ...lines.slice(to + 1),
+    ].join('\n')
+    const check = async () => {
+      const slide = await api.execute('slide.inspect', { index: target.slideIndex })
+      const shape = slide.shapes.find(item => item.id === target.shapeId)
+      return { matched: slide.id === target.slideId && shape?.text === expected, ...location }
+    }
+    const verify = async () => {
+      try {
+        return { changed: 1, verification: await check(), check }
+      } catch (error) {
+        return { changed: 1, verification: { matched: false, error: String(error?.message ?? error), ...location } }
+      }
     }
     if (target.start[0] === target.end[0] && !/\n|\v/.test(replacement)) {
       // The positioned replacement keeps the selected run's style, even at its left edge.
@@ -121,7 +144,7 @@
             start: target.start[1]
           }
         })
-        return { changed: 1 }
+        return verify()
       } catch (error) {
         if (!/no matches/.test(String(error))) throw error
         const latest = await read(api)
@@ -132,8 +155,63 @@
     }
     if (replacement.length) await api.execute('text.insert', { text: replacement })
     else await api.execute('text.delete', { dir: 'forward' })
-    return { changed: 1 }
+    return verify()
   }
 
-  globalThis.MyBuddyCraftAdapters.ppt = { document, read, captureTarget, apply }
+  async function prepareEdit(api, operation) {
+    const { action, slideIndex, text } = operation
+    if (action === 'insertShape') {
+      const { x, y, width, height, preset } = operation
+      const rect = [x, y, width, height]
+      if (!['rect', 'roundRect', 'ellipse', 'triangle', 'rightArrow'].includes(preset) ||
+          !rect.every(Number.isFinite) || x < 0 || y < 0 || width < 1 || height < 1) throw new Error('请提供有效的 PowerPoint 形状和位置。')
+      const read = async () => {
+        const { slideSize } = await api.docInspect()
+        if (x + width > slideSize[0] || y + height > slideSize[1]) throw new Error('形状边界超出了幻灯片。')
+        const slide = await api.execute('slide.inspect', { index: slideIndex })
+        return { slideId: slide.id, title: slide.title, slideSize, shapes: slide.shapes.map(shape => ({ id: shape.id, box: shape.box, preset: shape.preset, text: shape.text })) }
+      }
+      const original = await read()
+      const label = (text ?? '').replace(/\r\n?/g, '\n')
+      return reviewedEdit({
+        preview: {
+          target: { kind: 'ppt', slideIndex, slideId: original.slideId }, label: `第 ${slideIndex + 1} 页 · 插入形状`,
+          before: clip(original.title) ?? '', after: `${preset} · ${rect.join(', ')} pt\n${label}`,
+        },
+        original, read,
+        async write() {
+          await api.execute('slide.go', { id: original.slideId })
+          return api.execute('shape.insert', { preset, rect, text: label })
+        },
+        async verify({ id }) {
+          const slide = await read()
+          const shape = slide.shapes.find(item => item.id === id)
+          const matched = slide.slideId === original.slideId && shape?.preset === preset && (shape.text ?? '') === label &&
+            shape.box.every((value, i) => Math.abs(value - rect[i]) < 0.02)
+          return { matched, shapeId: id, bounds: shape?.box }
+        },
+      })
+    }
+    if (action !== 'slideNotes') throw new Error('该 PowerPoint 编辑操作不可用。')
+    const read = async () => {
+      const slide = await api.execute('slide.inspect', { index: slideIndex })
+      return { slideId: slide.id, title: slide.title, notes: slide.notes ?? '' }
+    }
+    const original = await read()
+    const notes = text.replace(/\r\n?/g, '\n')
+    return reviewedEdit({
+      preview: {
+        target: { kind: 'ppt', slideIndex, slideId: original.slideId, section: 'notes' }, label: `第 ${slideIndex + 1} 页 · 演讲者备注`,
+        before: original.notes, after: notes,
+      },
+      original, read, unchanged: original.notes === notes,
+      write: () => api.execute('slide.notes', { index: slideIndex, text: notes }),
+      async verify() {
+        const slide = await read()
+        return { matched: slide.slideId === original.slideId && slide.notes === notes, preview: clip(slide.notes) }
+      },
+    })
+  }
+
+  globalThis.MyBuddyCraftAdapters.ppt = { document, read, captureTarget, apply, prepareEdit }
 })()

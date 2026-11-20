@@ -254,7 +254,7 @@
       "test:oauth-bundle",
       "test:openrouter-model-autoload",
       "test:overview-runtime",
-      "test:officecli",
+      "test:retired-office-adapter",
       "test:pdf-runtime-compat",
       "test:packaged-package-json-guard",
       "test:pi-codemode-auto",

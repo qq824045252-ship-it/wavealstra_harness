@@ -41,38 +41,21 @@ const WORKING_DENY_DRAWIO: ModePresetDto["mcpPolicy"] = {
   deny: [...OFFICE_PROVIDER_MCP_IDS],
 };
 
-const OFFICE_DOCUMENT_GUIDANCE = "操作当前打开的 Office 文档时，用 Office Use 查找、读取和定位内容。提交改写建议后由用户确认。";
-const SUMMARY_OUTPUT_GUIDANCE = "需要落盘时可用 Markdown。";
-const PROJECT_OUTPUT_GUIDANCE = "需要 Office 文件时按当前任务可用能力交付。";
-const ANALYSIS_OUTPUT_GUIDANCE = "需要 .xlsx 时使用当前任务可用的表格能力。";
+const OFFICE_DOCUMENT_GUIDANCE = "用 Office Use 新建和读取办公文档。修改已打开的文档时，提交建议供用户确认。";
+const SUMMARY_OUTPUT_GUIDANCE = "需要落盘时可用 Markdown，或用 Office Use 新建 Word 文档。";
+const PROJECT_OUTPUT_GUIDANCE = "需要 Office 文件时使用 Office Use 创建。";
+const ANALYSIS_OUTPUT_GUIDANCE = "需要 .xlsx 时使用 Office Use 创建。";
 
-const OFFICE_PROMPT_REFRESH: Record<string, { old: string; previous?: string; current: string }> = {
-  "general-office": {
-    old: "需要 .docx/.xlsx/.pptx 时用 officecli（L1 读 → L2 DOM 改 → L3 原始 XML）。",
-    previous: "编辑当前打开的 Office 文档选区时使用 Office Use，并让用户确认修改。",
-    current: OFFICE_DOCUMENT_GUIDANCE,
-  },
-  summary: { old: "需要落盘时用 Markdown 或 officecli。", current: SUMMARY_OUTPUT_GUIDANCE },
-  "project-management": { old: "需要 Office 文件时用 officecli。", current: PROJECT_OUTPUT_GUIDANCE },
-  "data-analysis": { old: "需要 .xlsx 时用 officecli。", current: ANALYSIS_OUTPUT_GUIDANCE },
-};
-
-/** Refresh only shipped Office wording and its previous default whitelist. */
+/** Refresh the previous factory prompt while preserving custom settings. */
 export function refreshLegacyOfficePreset(preset: ModePresetDto, seed: ModePresetDto): ModePresetDto {
-  const guidance = OFFICE_PROMPT_REFRESH[preset.id];
   const prompt = seed.promptAddon;
-  if (!guidance || !prompt || ![guidance.old, guidance.previous].some(previous =>
-    previous !== undefined && preset.promptAddon === prompt.replace(guidance.current, previous))) return preset;
-  const legacyPolicy = preset.id === "general-office" && seed.skillPolicy
-    ? { ...seed.skillPolicy, allow: ["officecli"] }
-    : undefined;
-  return {
-    ...preset,
-    promptAddon: prompt,
-    ...(legacyPolicy && JSON.stringify(preset.skillPolicy) === JSON.stringify(legacyPolicy)
-      ? { skillPolicy: seed.skillPolicy }
-      : {}),
-  };
+  if (preset.id !== "general-office" || !prompt) return preset;
+  const previous = [
+    "编辑当前打开的 Office 文档选区时使用 Office Use，并让用户确认修改。",
+    "操作当前打开的 Office 文档时，用 Office Use 查找、读取和定位内容。提交改写建议后由用户确认。",
+  ];
+  return previous.some(text => preset.promptAddon === prompt.replace(OFFICE_DOCUMENT_GUIDANCE, text))
+    ? { ...preset, promptAddon: prompt } : preset;
 }
 
 /**
@@ -95,7 +78,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       `4. ${OFFICE_DOCUMENT_GUIDANCE}引用源文件或字段名。\n` +
       "5. 收尾给出产物路径，并点明局限。不写空话套话。流程图请切到「流程图」标签。",
     skillPolicy: {
-      prefer: ["officecli", "fastcopy-copy", "weekly-report-fill", "周报", "summary", "report", "excel", "文档", "会议"],
+      prefer: ["fastcopy-copy", "weekly-report-fill", "周报", "summary", "report", "excel", "文档", "会议"],
       demote: [],
       hide: [],
       allow: [],
@@ -115,7 +98,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       `5. 篇幅克制，默认一页内读完。原文只在容易断章取义时短引。${SUMMARY_OUTPUT_GUIDANCE}\n` +
       "禁止按段落复述、堆形容词、把不确定写成定论。",
     skillPolicy: {
-      prefer: ["summary", "officecli", "report", "文档"],
+      prefer: ["summary", "report", "文档"],
       demote: [],
       hide: [],
       allow: [],
@@ -136,7 +119,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "5. 下周计划：可执行，带责任人/时间；禁止「持续推进」这类空句。\n" +
       "根据对话与工作区笔记整理，缺材料标「待确认」。版式干净，可直接粘贴到聊天或邮件。",
     skillPolicy: {
-      prefer: ["weekly-report-fill", "周报", "officecli", "summary", "report"],
+      prefer: ["weekly-report-fill", "周报", "summary", "report"],
       demote: [],
       hide: [],
       allow: [],
@@ -157,7 +140,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "5. 备忘：只留会影响后续的上下文。原话只在容易误解时引用。\n" +
       "把用户粘贴的记录压成上述结构。语气中性、可转发，不要写成聊天记录。",
     skillPolicy: {
-      prefer: ["会议", "officecli", "summary"],
+      prefer: ["会议", "summary"],
       demote: [],
       hide: [],
       allow: [],
@@ -177,7 +160,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       `5. 收尾只留 3 个以内「现在就要有人做的决定或动作」。${PROJECT_OUTPUT_GUIDANCE}\n` +
       "不要写成空的 OKR / 赋能套话。",
     skillPolicy: {
-      prefer: ["officecli", "文档", "summary", "report"],
+      prefer: ["文档", "summary", "report"],
       demote: [],
       hide: [],
       allow: [],
@@ -196,7 +179,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       "4. 关键对比用表格；趋势说方向与幅度，不堆原始行。相关关系不要写成因果。\n" +
       `5. 附录交代样本、口径、局限。${ANALYSIS_OUTPUT_GUIDANCE}图表为结论服务，不装饰。`,
     skillPolicy: {
-      prefer: ["officecli", "excel", "summary"],
+      prefer: ["excel", "summary"],
       demote: [],
       hide: [],
       allow: [],

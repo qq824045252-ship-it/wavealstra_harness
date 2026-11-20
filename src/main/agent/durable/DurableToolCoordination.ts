@@ -31,7 +31,8 @@ const resourceReads = new Set(["library_list", "library_search", "library_deep_s
 // Goal state is transactional; file access remains owned by the actual task tools.
 const hostControls = new Set(["conversation_goal_get", "conversation_goal_create",
   "conversation_goal_update", "conversation_goal_propose_complete",
-  ...Object.values(OFFICE_USE_TOOLS)]);
+  OFFICE_USE_TOOLS.documentRead, OFFICE_USE_TOOLS.documentRender, OFFICE_USE_TOOLS.reviewStatus,
+  OFFICE_USE_TOOLS.selectionRead, OFFICE_USE_TOOLS.selectionPropose, OFFICE_USE_TOOLS.editPropose]);
 
 function conflicts(left: Access[], right: Access[]): boolean {
   return left.some(a => right.some(b => (a.mode === "write" || b.mode === "write") && (a.kind === "unknown" || b.kind === "unknown"
@@ -89,7 +90,7 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
     return [file(path, "write"), ...(typeof args.source === "string" ? [file(args.source, "read")] : [])];
   }
   if (fileReads.has(name)) return [file(path ?? ".", "read")];
-  if (name === "write" || name === "edit" || name === "pstack_decision_append" || name === "pstack_eval_save") return path ? [file(path, "write")] : [{ kind: "unknown", mode: "write" }];
+  if (name === "write" || name === "edit" || name === "pstack_decision_append" || name === "pstack_eval_save" || name === OFFICE_USE_TOOLS.documentCreate) return path ? [file(path, "write")] : [{ kind: "unknown", mode: "write" }];
   const read = workShellRead(name, args);
   if (read) return [file(read.path, "read")];
   const mcp = classifyMcpToolCall(name, args);

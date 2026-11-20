@@ -61,8 +61,7 @@ npm registry 上 `acp-kernel` 的已发布版本停在 **0.0.101**（本次核�
   `acp-kernel` 注入 bundler alias，这是有意为之。
 - 主进程构建 `electron.vite.config.ts`：`externalizeDeps: false` + `external` 白名单里没有
   acp-kernel/`vendor/**`，因此它会被**打包进 `out/main`**，不会以外部包形式在运行时 require。
-- electron-builder `build.files` 只收 `out/**` 等，`vendor/` 不进入安装包 payload（`vendor/officecli`
-  仅作为 `extraResources` 单独拷入）；vendor 源码只影响构建期。
+- electron-builder `build.files` 只收 `out/**` 等，`vendor/` 不进入安装包 payload。被引用的 vendor 源码参与构建。
 - 源码形态：ESM-only，相对 import 全部带 `.js` 后缀（TS `moduleResolution: bundler` 与 esbuild
   都按 `.js → .ts` 解析）；零 runtime dependency；`engines.node >= 20`（本仓库 Node 24）。
 - 唯一一处**非相对 import** 是 `src/wire/bili-message.ts` 的 **type-only** 自引用

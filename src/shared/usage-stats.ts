@@ -318,7 +318,7 @@ export function longestSessionMs(rows: UsageEventRow[]): number {
 }
 
 /**
- * 用户消息里的技能调用：行首 `/officecli` 或 `$docs-sprint`。
+ * 用户消息里的技能调用：行首 `/weekly-report-fill` 或 `$docs-sprint`。
  * 只认消息开头/换行后，避免把路径片段算进去。
  */
 export function parseSkillInvocations(text: string): Map<string, number> {

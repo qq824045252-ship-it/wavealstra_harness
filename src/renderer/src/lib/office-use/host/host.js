@@ -4,10 +4,11 @@ const frame = $('editor')
 const channel = new MessageChannel()
 const port = channel.port1
 let sequence = 0
-let captured, config, timer, busy = false, opened = false, revision = 0, stored = 0
+let captured, editId, proposalId, config, timer, busy = false, opened = false, revision = 0, stored = 0
 let committed = 0
 let writeQueue = Promise.resolve()
 const pending = new Map()
+const reviews = new Map()
 let statusTimer
 const status = (text, visible = true, duration = 0) => {
   clearTimeout(statusTimer)
@@ -39,9 +40,15 @@ function persist(draft, serialized) {
     }
     const before = serialized ? serializedRevision : revision
     const bytes = serialized ?? await request('save')
+    const review = !draft && [...reviews.values()].find(item => item.status === 'applied' && item.revision === before)
+    const verified = review && before === revision &&
+      await request('review-current', { proposalId: review.proposalId }).catch(() => false)
     const response = await api(draft ? 'draft' : 'save', { method: 'POST', body: bytes })
     stored = before
-    if (!draft && !config.copy) { committed = before; config.recovered = false }
+    if (!draft && response.headers.get('X-Office-Saved') === '1') {
+      if (!config.copy) { committed = before; config.recovered = false }
+      if (review && verified && before === revision) review.status = 'saved'
+    }
     status(draft ? '草稿已保留' : await response.text(), !draft, draft ? 0 : 3000)
   }
   writeQueue = writeQueue.catch(() => {}).then(run)
@@ -53,7 +60,19 @@ function changed() {
   clearTimeout(timer)
   timer = setTimeout(() => persist(true).catch(e => status(e.message)), 1200)
 }
+function dismissReview() {
+  const review = reviews.get(proposalId)
+  if (review?.status === 'awaiting-user-review') review.status = 'cancelled'
+  proposalId = undefined
+  editId = undefined
+}
+function queueReview(id, target) {
+  proposalId = id
+  reviews.set(id, { proposalId: id, status: 'awaiting-user-review', target })
+  if (reviews.size > 20) reviews.delete(reviews.keys().next().value)
+}
 function preview(selection, text) {
+  dismissReview()
   captured = selection
   $('original').value = selection.content
   $('candidate').value = text ?? selection.content
@@ -66,9 +85,12 @@ function preview(selection, text) {
   $('generate').disabled = $('apply').disabled = locked
   if (locked) status(selection.reason || '选区只读')
   $('format-hint').hidden = config.kind !== 'excel'
+  $('rewrite').hidden = false
+  $('apply').textContent = '应用到选区'
   $('panel').hidden = false
 }
 async function select(target) {
+  if (busy) throw new Error('请先完成正在进行的 Office 操作。')
   if (!opened) throw new Error('编辑器仍在加载')
   const selection = await request('select', { target })
   preview(selection)
@@ -91,7 +113,12 @@ const exportDocument = serialized => action(async () => {
   if (!result.ok) throw new Error(await result.text())
   status(await result.text(), true, 3000)
 })
-$('cancel').onclick = () => { captured = undefined; $('panel').hidden = true }
+$('cancel').onclick = () => {
+  if (reviews.get(proposalId)?.status === 'applying') return
+  dismissReview()
+  captured = undefined
+  $('panel').hidden = true
+}
 $('generate').onclick = () => action(async () => {
   const selection = captured
   if (!selection || !$('instruction').value.trim()) throw new Error('请填写修改要求')
@@ -99,11 +126,27 @@ $('generate').onclick = () => action(async () => {
   const res = await api('propose', { method:'POST', body:JSON.stringify({selection,instruction:$('instruction').value}) })
   const text = await res.text()
   if (captured !== selection) return
+  dismissReview()
   $('candidate').value = text
   status('请核对修改建议')
 })
 $('apply').onclick = () => action(async () => {
-  await request('apply', { captured, proposal: { text: $('candidate').value } })
+  const review = reviews.get(proposalId)
+  if (review) review.status = 'applying'
+  frame.inert = true
+  try {
+    const fields = editId ? { editId } : { captured, proposal: { text: $('candidate').value } }
+    const result = await request('apply', { ...fields, proposalId })
+    if (review) Object.assign(review, {
+      status: result.changed ? 'applied' : 'unchanged',
+      revision,
+      verification: result.verification,
+    })
+    if (result.verification?.matched === false) status('修改已应用。回读结果需要核对。')
+  } catch (error) {
+    if (review) Object.assign(review, { status: 'failed', error: error.message })
+    throw error
+  } finally { frame.inert = false }
   $('cancel').click()
 })
 window.addEventListener('keydown', (event) => {
@@ -119,11 +162,47 @@ window.officeDocument = (query) => {
   if (!opened) throw new Error('编辑器仍在加载')
   return request('document', { query })
 }
-window.officeProposal = (id, text) => {
+window.officeRender = async target => {
+  if (!opened) throw new Error('编辑器仍在加载')
+  const rendered = await request('render', { target })
+  if (target.kind !== 'excel') return rendered
+  const { x, y, width, height } = frame.getBoundingClientRect()
+  return { x: Math.ceil(x), y: Math.ceil(y), width: Math.floor(width), height: Math.floor(height) }
+}
+window.officeReviewStatus = id => {
+  const review = reviews.get(id)
+  if (!review) return null
+  const { revision: appliedRevision, ...receipt } = review
+  return { ...receipt, ...(appliedRevision !== undefined ? { editorChangedSinceApply: appliedRevision !== revision } : {}) }
+}
+window.officeProposal = (id, text, reviewId) => {
+  if (busy) throw new Error('请先完成正在进行的 Office 操作。')
   if (!captured || captured.captureId !== id) throw new Error('选区已更新，请重新读取')
   if (config.readOnly || captured.editable === false) throw new Error(captured.reason || '选区只读')
   preview(captured, text)
+  if (reviewId) queueReview(reviewId, captured.target)
   return true
+}
+window.officeEditProposal = async (operation, reviewId) => {
+  if (busy || !opened || config.readOnly) throw new Error('请在可编辑的 Office 文档中完成当前操作后重试。')
+  busy = true
+  try {
+    const plan = await request('edit-stage', { operation })
+    dismissReview()
+    captured = undefined
+    editId = plan.id
+    queueReview(reviewId, plan.target)
+    $('label').textContent = plan.label
+    $('original').value = plan.before
+    $('candidate').value = plan.after
+    $('candidate').readOnly = true
+    $('rewrite').hidden = true
+    $('format-hint').hidden = true
+    $('apply').textContent = '应用编辑'
+    $('apply').disabled = false
+    $('panel').hidden = false
+    return true
+  } finally { busy = false }
 }
 window.flushOfficeDraft = () => persist(true)
 port.onmessage = async ({data}) => {

@@ -34,6 +34,8 @@ async function fixture() {
 module.exports = async function testWord({ open, assert }) {
   const session = await open('word', filename, await fixture())
   const inspect = () => session.page(() => window.wordcraft.docInspect({ text: true }))
+  const preview = await session.call('render', { kind: 'word', pageIndex: 0 })
+  assert.equal(Buffer.from(preview, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a')
   const select = text => session.page(value => window.wordcraft.execute('select.text', { text: value }), text)
   let saved
   try {
@@ -116,6 +118,11 @@ module.exports = async function testWord({ open, assert }) {
     assert.equal((await inspect()).blocks[2].text, imeCommit)
     const afterInput = await session.page(() => window.wordcraft.execute('file.strictReport', {}))
     assert.equal(afterInput.total_missing_glyphs, 0, JSON.stringify(afterInput))
+    await session.call('stage', { id: 'word-style', operation: { kind: 'word', action: 'paragraphStyle', blockIndex: 1, style: 'Heading2' } })
+    assert.equal((await session.call('review', 'word-style')).status, 'awaiting-user-review')
+    assert.notEqual((await inspect()).blocks[1].style, 'Heading2')
+    const style = await session.call('approve', 'word-style')
+    assert.deepEqual(style.verification, { matched: true, style: 'Heading2' }, JSON.stringify(style))
 
     const evidence = join(__dirname, '../out/tests')
     mkdirSync(evidence, { recursive: true })
@@ -138,6 +145,7 @@ module.exports = async function testWord({ open, assert }) {
     assert.deepEqual(doc.blocks.filter(block => block.type === 'paragraph').map(block => block.text), [prefix + rewrite + suffix, untouched, imeCommit, ''])
     assert.deepEqual(doc.blocks[3].cells, [['事项', '状态'], ['采购凭据', '待复核']])
     assert.equal(doc.blocks[0].runs[0].props.bold, true)
+    assert.equal(doc.blocks[1].style, 'Heading2')
     assert.equal(doc.canUndo, false)
   } finally {
     await reopened.close()

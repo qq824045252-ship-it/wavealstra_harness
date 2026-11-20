@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Disk-only Office acceptance. Never reads an officecli resident or preview cache.
-Usage: office-delivery.py FILE EXPECTATIONS.json REPORT.json [--close] [--render DIR]
+"""Validate a saved Office file on disk.
+Usage: office-delivery.py FILE EXPECTATIONS.json REPORT.json [--render DIR]
 Expectation keys: texts, pages, cells {Sheet!A1: value}, template (original PPTX).
 """
 import argparse, hashlib, json, re, subprocess, shutil, zipfile
@@ -76,15 +76,12 @@ def inspect(path, expected):
 def main():
     p = argparse.ArgumentParser(__doc__)
     p.add_argument('file', type=Path); p.add_argument('expectations', type=Path); p.add_argument('report', type=Path)
-    p.add_argument('--close', action='store_true', help='Flush and close officecli before any disk read')
     p.add_argument('--render', type=Path)
     args = p.parse_args()
     path = args.file.resolve()
-    if args.close: subprocess.run(['officecli', 'close', str(path)], check=True, capture_output=True)
     expected = json.loads(args.expectations.read_text())
     before = path.read_bytes()
     facts, errors, unverified = inspect(path, expected)
-    if not args.close: unverified.append('No save/close evidence supplied; resident changes cannot be accepted.')
     rendered = []
     if args.render:
         engine = shutil.which('libreoffice') or shutil.which('soffice')

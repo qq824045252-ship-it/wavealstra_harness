@@ -81,6 +81,7 @@ const GUI_TESTS = new Set([
   "test:artifact-card-visual-desktop", // isolated Electron CSS cascade fixture, no live profile
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI
   "test:office-craft-electron",
+  "test:office-use-desktop", // actual task tools and native Office editor views
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B

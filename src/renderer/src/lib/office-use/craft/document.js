@@ -38,5 +38,23 @@
     return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu')
   }
 
-  globalThis.MyBuddyOfficeDocument = { clip, page, textPage, uniqueOffset, literalPattern }
+  function reviewedEdit({ preview, original, read, write, verify, unchanged }) {
+    const baseline = JSON.stringify(original)
+    return {
+      preview,
+      async apply() {
+        if (JSON.stringify(await read()) !== baseline) throw new Error('编辑目标已变化，请重新读取并提交提议。')
+        if (unchanged) return { changed: false, verification: { matched: true } }
+        const result = await write()
+        const check = () => verify(result)
+        try {
+          return { changed: true, verification: await check(), check }
+        } catch (error) {
+          return { changed: true, verification: { matched: false, error: String(error?.message ?? error) } }
+        }
+      },
+    }
+  }
+
+  globalThis.MyBuddyOfficeDocument = { clip, page, textPage, uniqueOffset, literalPattern, reviewedEdit }
 })()

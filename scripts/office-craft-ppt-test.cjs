@@ -114,11 +114,8 @@ module.exports = async ({ open, assert }) => {
     assert.deepEqual((await session.call('document', { action: 'read', target: { kind: 'ppt', slideIndex: 3, shapeId: table.shapeId } })).items, [['投入', '产量'], ['车间一', '12']])
     assert.match((await session.call('document', { action: 'read', target: { kind: 'ppt', slideIndex: 0, notes: true } })).text, /复核生产统计/)
     assert.equal((await session.page(() => deckcraft.docInspect())).selection.slide, 0)
-    const [simple, complex] = await session.page(async () => {
-      const simple = await deckcraft.request('ui.render', { slide: 1 })
-      const complex = await deckcraft.request('ui.render', { slide: 2 })
-      return [simple.png, complex.png]
-    })
+    const simple = await session.call('render', { kind: 'ppt', slideIndex: 1 })
+    const complex = await session.call('render', { kind: 'ppt', slideIndex: 2 })
     const simpleInk = glyphMask(simple)
     const complexInk = glyphMask(complex)
     assert.ok(simpleInk > 100, 'Visible ink for 人')
@@ -185,6 +182,17 @@ module.exports = async ({ open, assert }) => {
     await waitForText(session, first.shape, original, assert)
     await session.call('redo')
     await waitForText(session, first.shape, rewritten, assert)
+    const notes = '复查中文演讲备注。'
+    await session.call('stage', { id: 'notes', operation: { kind: 'ppt', action: 'slideNotes', slideIndex: 0, text: notes } })
+    const review = await session.call('approve', 'notes')
+    assert.deepEqual(review.verification, { matched: true, preview: notes }, JSON.stringify(review))
+    const placement = { x: 700, y: 380, width: 110, height: 60 }
+    await session.call('stage', { id: 'shape', operation: {
+      kind: 'ppt', action: 'insertShape', slideIndex: 0, preset: 'roundRect', ...placement, text: '已复核',
+    } })
+    const shape = await session.call('approve', 'shape')
+    assert.equal(shape.verification?.matched, true, JSON.stringify(shape))
+    assert.deepEqual(shape.verification.bounds, [700, 380, 110, 60])
 
     const saved = Buffer.from(await session.call('save'))
     const zip = await JSZip.loadAsync(saved)
@@ -222,6 +230,10 @@ module.exports = async ({ open, assert }) => {
       assert.equal(found.length, 1)
       assert.equal(found[0].slide, 0)
       await waitForText(reopened, found[0].shape, rewritten, assert)
+      assert.equal((await reopened.call('document', { action: 'read', target: { kind: 'ppt', slideIndex: 0, notes: true } })).text, notes)
+      const detail = await reopened.call('document', { action: 'read', target: { kind: 'ppt', slideIndex: 0, shapeId: shape.verification.shapeId } })
+      assert.equal(detail.text, '已复核')
+      assert.deepEqual(detail.bounds, [700, 380, 110, 60])
       const otherSlide = { kind: 'ppt', slideIndex: 1 }
       const { items } = await reopened.call('document', { action: 'read', target: otherSlide })
       const target = { ...otherSlide, shapeId: items.find(shape => shape.preview === '人').shapeId }

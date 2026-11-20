@@ -608,13 +608,13 @@ console.log("== 阶段 4：窗口口径 / 活跃度 / skills ==");
 
   const skills = parseSkillInvocations(
     [
-      JSON.stringify({ type: "message", message: { role: "user", content: "/officecli 帮我改文档" } }),
+      JSON.stringify({ type: "message", message: { role: "user", content: "/weekly-report-fill 帮我改文档" } }),
       JSON.stringify({ type: "message", message: { role: "user", content: "$docs-sprint\n继续" } }),
-      JSON.stringify({ type: "message", message: { role: "user", content: "请看 C:/officecli/foo" } }),
+      JSON.stringify({ type: "message", message: { role: "user", content: "请看 C:/weekly-report-fill/foo" } }),
       JSON.stringify({ type: "message", message: { role: "assistant", content: "/not-a-skill" } }),
     ].join("\n"),
   );
-  assert(skills.get("officecli") === 1 && skills.get("docs-sprint") === 1, "只统计用户消息行首 /skill 或 $skill");
+  assert(skills.get("weekly-report-fill") === 1 && skills.get("docs-sprint") === 1, "只统计用户消息行首 /skill 或 $skill");
   assert(!skills.has("foo") && !skills.has("not-a-skill"), "路径和助手消息不算 skill");
 
   assert(mondayIndex("2026-08-17") === 0, "2026-08-17 是周一");

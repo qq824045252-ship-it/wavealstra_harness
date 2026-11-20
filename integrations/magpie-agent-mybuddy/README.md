@@ -10,9 +10,5 @@ actually scans. Magpie Library can discover/import its skills and synchronize
 selected skills there. MyBuddy applies its usual task skill policy and respects
 `disable-model-invocation`; a Library entry does not grant task permissions.
 
-MyBuddy uses Office Use for interactive Word, Excel, and PowerPoint editing. For
-batch jobs, install OfficeCLI separately and add its directory to your PATH or
-set `MYBUDDY_OFFICECLI` to the executable's absolute path before starting
-MyBuddy. Install or synchronize the OfficeCLI skill separately if you want an
-agent to use it. Existing installed skills remain available under the usual
-task skill policy. [OfficeCLI releases](https://github.com/iOfficeAI/OfficeCLI).
+MyBuddy uses its built-in Office Use tools to create, inspect and edit Word,
+Excel and PowerPoint files in a task.

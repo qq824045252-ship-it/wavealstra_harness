@@ -1,27 +1,70 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtemp, readFile, readdir, rmdir, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import JSZip from "jszip";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ArtifactService } from "../src/main/artifact/ArtifactService";
+import { createOfficeDocument } from "../src/main/office-use/OfficeDocumentCreation";
 import {
   bindOfficeSelection,
   createOfficeSelectionExtension,
 } from "../src/main/office-use/OfficeSelectionTools";
 import { isMyBuddyNativeExtensionToolName } from "../src/shared/native-tools";
 
-function toolsFor(taskId: string, readonly = false, isEnabled = () => true) {
+function toolsFor(taskId: string, readonly = false, isEnabled = () => true,
+  create?: Parameters<typeof createOfficeSelectionExtension>[0]["create"]) {
   const tools = new Map<string, ToolDefinition>();
   createOfficeSelectionExtension({
     taskId,
     getPermissionMode: () => readonly ? "readonly" : "default",
     isEnabled,
+    create,
   })({ registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool) } as unknown as ExtensionAPI);
   const run = (name: string, params: object, signal?: AbortSignal) =>
     tools.get(name)!.execute("test", params, signal, undefined, {} as never);
   return {
+    create: (path: string) => run("office_document_create", { path }),
     document: (params: object) => run("office_document_read", params),
+    review: (proposalId: string) => run("office_review_status", { proposalId }),
     read: (target?: object) => run("office_selection_read", target ? { target } : {}),
     propose: (captureId: string, text: string) => run("office_selection_propose", { captureId, text }),
   };
 }
+
+test("creates all three blank formats as task artifacts and protects existing files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mybuddy-office-create-"));
+  const registrations: string[] = [];
+  const artifacts = { register: async ({ title }: { title: string }) => {
+    registrations.push(title);
+    return { id: title };
+  } } as unknown as ArtifactService;
+  const create: NonNullable<Parameters<typeof createOfficeSelectionExtension>[0]["create"]> = (request, toolCallId, assertWritable) =>
+    createOfficeDocument(request, { taskId: "create-fixture", taskRoot: root, toolCallId, artifacts, assertWritable });
+  const task = toolsFor("create-fixture", false, () => true, create);
+  const readonly = toolsFor("create-fixture", true, () => true, create);
+  const disabled = toolsFor("create-fixture", false, () => false, create);
+  try {
+    assert.equal((await readonly.create("readonly.docx")).isError, true);
+    assert.equal((await disabled.create("disabled.docx")).isError, true);
+    assert.equal((await task.create("../outside.docx")).isError, true);
+    assert.deepEqual(await readdir(root), []);
+    const formats = { "blank.docx": "word/document.xml", "blank.xlsx": "xl/worksheets/sheet1.xml", "blank.pptx": "ppt/slides/slide1.xml" };
+    for (const [name, part] of Object.entries(formats)) {
+      const result = response(await task.create(name));
+      assert.equal(result.artifactId, name);
+      const bytes = await readFile(join(root, name));
+      assert((await JSZip.loadAsync(bytes)).file(part));
+      assert.equal((await task.create(name)).isError, true);
+      assert.deepEqual(await readFile(join(root, name)), bytes);
+    }
+    assert.deepEqual(registrations, Object.keys(formats));
+  } finally {
+    for (const name of await readdir(root)) await unlink(join(root, name));
+    await rmdir(root);
+  }
+});
 
 function response(result: Awaited<ReturnType<ReturnType<typeof toolsFor>["read"]>>) {
   const item = result.content[0];
@@ -64,6 +107,7 @@ test("routes only to the current task, and stages an edit for review", async () 
     read: async (query) => ({ query, items: [{ blockIndex: 9, preview: "unsaved text" }] }),
     select: async () => ({ captureId: 1, content: "selected text", target: { kind: "word" } }),
     propose: async (...args) => { reviews.push(args); },
+    review: async proposalId => reviews.some(args => args[2] === proposalId) ? { proposalId, status: "awaiting-user-review" } : null,
   });
   try {
     assert(isMyBuddyNativeExtensionToolName("office_document_read"));
@@ -82,10 +126,12 @@ test("routes only to the current task, and stages an edit for review", async () 
     assert.equal((await other.propose(selection.captureId, "blocked")).isError, true);
     assert.equal((await toolsFor("task-a", true).propose(selection.captureId, "blocked")).isError, true);
     assert.deepEqual(reviews, []);
-    assert.deepEqual(response(await task.propose(selection.captureId, "replacement")), {
-      status: "awaiting-user-review",
-    });
-    assert.deepEqual(reviews, [[1, "replacement"]]);
+    const pending = response(await task.propose(selection.captureId, "replacement"));
+    assert.equal(pending.status, "awaiting-user-review");
+    assert.match(pending.proposalId, /^[0-9a-f-]{36}$/u);
+    assert.deepEqual(reviews, [[1, "replacement", pending.proposalId]]);
+    assert.deepEqual(response(await task.review(pending.proposalId)), pending);
+    assert.equal((await other.review(pending.proposalId)).isError, true);
     assert.equal((await task.propose(selection.captureId, "repeat")).isError, true);
   } finally {
     stop();

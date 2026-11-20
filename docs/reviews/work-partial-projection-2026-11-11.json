@@ -2073,7 +2073,7 @@
           "seconds": 0.2
         },
         {
-          "name": "test:officecli",
+          "name": "test:retired-office-adapter",
           "seconds": 3.6
         },
         {

@@ -10,7 +10,6 @@ import { botMemorySource } from "../memory/BotMemorySource";
 
 import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared/subagent-execution-policy";
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
-import { SkillTrialLedger } from "./SkillTrialLedger";
 import { diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
 import { codingWorkflowRequiresGithub, resolveWelcomeMode } from "../../shared/mode-profile";
@@ -233,8 +232,10 @@ import { BrowserAutomationService } from "../capabilities/BrowserAutomationServi
 import { browserAgentPolicy } from "../capabilities/BrowserAgentPolicy";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
 import { BUILTIN_CAPABILITY_TOOLS } from "../../shared/builtin-capabilities";
+import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { CAD_USE_TOOLS } from "../../shared/cadcraft";
 import { cadUseInstructions, cadUseSkillDirectory } from "../skills/CadUseSkill";
+import { officeUseInstructions, officeUseSkillDirectory } from "../skills/OfficeUseSkill";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
 import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
 import { VideoGenerationJobs } from "../capabilities/VideoGenerationJobs";
@@ -1516,6 +1517,8 @@ export class AgentService {
       renderConversationGoalSection(this.liveConversationGoal(task.id)) ?? "",
       browserAgentPolicy,
       this.durableToolAllowed(task, CAD_USE_TOOLS.inspect) ? cadUseInstructions(this.durableToolAllowed(task, CAD_USE_TOOLS.edit)) : "",
+      assembly.skillFilter.visible.includes("office-use") && this.durableToolAllowed(task, OFFICE_USE_TOOLS.documentRead)
+        ? officeUseInstructions(this.durableToolAllowed(task, OFFICE_USE_TOOLS.selectionPropose)) : "",
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
@@ -1737,7 +1740,7 @@ export class AgentService {
       if (this.builtinCapabilities.config().cadUse?.enabled === false) return false;
       if (task.permissionMode === "readonly" && name !== CAD_USE_TOOLS.inspect) return false;
     }
-    if (name === "office_selection_propose" && task.permissionMode === "readonly") return false;
+    if ((name === OFFICE_USE_TOOLS.documentCreate || name === OFFICE_USE_TOOLS.selectionPropose || name === OFFICE_USE_TOOLS.editPropose) && task.permissionMode === "readonly") return false;
     const assembly = this.durableAssembly(task);
     const permissionMode = task.permissionMode ?? "default";
     let selections = this.toolSelectionMemo.get(assembly);
@@ -3255,9 +3258,14 @@ export class AgentService {
     context: { projectId?: string | null; workspaceId?: string | null; botId?: string; taskId?: string },
   ) {
     const identity = { ...context, botId: context.botId ?? this.runtimeBotId(context.taskId) };
+    const config = this.builtinCapabilities.config();
     return this.skillsService.resolveRuntimeSkills(
       cwd,
-      this.builtinCapabilities.config().cadUse?.enabled === false ? extraSkillPaths : [...extraSkillPaths, cadUseSkillDirectory()],
+      [
+        ...extraSkillPaths,
+        ...(config.cadUse?.enabled === false ? [] : [cadUseSkillDirectory()]),
+        ...(config.officeUse?.enabled === false ? [] : [officeUseSkillDirectory()]),
+      ],
       (skill) => this.learnedSkillVisibleInContext(skill, identity),
       { botId: identity.botId },
     );
@@ -3296,18 +3304,6 @@ export class AgentService {
   listAgentLoadoutObservations(taskId: string, limit = 50) {
     if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
     return this.loadoutObservations.list(taskId, limit);
-  }
-
-  /** Explicit main-process trial; permission facts are reloaded, never accepted from renderer. */
-  runOfficeSkillTrial(taskId: string) {
-    const live = this.registry.get(taskId);
-    const skill = live?.skillReadiness?.find(item => item.id === "officecli");
-    const file = live?.skillFiles?.find(item => item.id === "officecli");
-    if (!live || !skill || !file) throw new Error("No live whitelisted officecli skill");
-    return new SkillTrialLedger(join(getMyBuddyDir(), "skill-trials")).runOfficeVersion({
-      skillPath: resolve(live.cwd, file.path), cwd: live.cwd,
-      installed: skill.installed, policyAllowed: skill.policyAllowed, whitelisted: skill.whitelisted,
-    });
   }
 
   /**
@@ -3360,12 +3356,10 @@ export class AgentService {
         activeTools: live.session.getActiveToolNames(), mcpIds: live.mcpProviderIds ?? [],
         skillReadiness: (live.skillReadiness ?? []).map(skill => ({
           ...skill,
-          trial: new SkillTrialLedger(join(getMyBuddyDir(), "skill-trials")).latest(skill.id,
-            resolve(live.cwd, live.skillFiles?.find(file => file.id === skill.id)?.path ?? "__missing_skill__"), live.cwd),
           readThisTurn: live.skillReads?.assistantMessageId === observation?.assistantMessageId
             && (live.skillReads?.ids.includes(skill.id) ?? false),
-          dependency: skill.whitelisted && ["officecli", "meeting-transcribe", "npu-ocr", "dimagent-debug"].includes(skill.id)
-            ? probeSkillDependency(skill.id, live.cwd, live.session.getActiveToolNames(), this.builtinCapabilities) : skill.dependency,
+          dependency: skill.whitelisted && ["meeting-transcribe", "npu-ocr", "dimagent-debug"].includes(skill.id)
+            ? probeSkillDependency(skill.id, live.session.getActiveToolNames(), this.builtinCapabilities) : skill.dependency,
         })),
         vision: modelSupportsImageInput(live.session.model) ? "native_image"
           : this.builtinCapabilities.visionProvider() ? "description_delegate" : "unavailable",

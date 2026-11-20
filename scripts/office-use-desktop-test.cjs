@@ -12,6 +12,21 @@ const instruction = '精简所选单元格，保留核对预算和报销凭据�
 const reviewedText = '请逐项核对预算及报销凭据';
 const assistantOn = 'OFFICE_USE_AGENT_ENABLED';
 const assistantOff = 'OFFICE_USE_AGENT_DISABLED';
+const assistantVerify = 'OFFICE_USE_VERIFY_RECEIPT';
+const assistantEdit = 'OFFICE_USE_FREEZE_HEADER';
+const assistantSkill = 'OFFICE_USE_READ_SKILL';
+const assistantCreate = 'OFFICE_USE_CREATE_THREE_FILES';
+const creation = [
+  { path: '新建纪要.docx', content: { kind: 'word', title: '复核纪要', sections: [{
+    heading: '结论', paragraphs: ['资料已备齐。'], bullets: ['复查票据'],
+    table: { headers: ['事项', '状态'], rows: [['报销', '已核对']] },
+  }] } },
+  { path: '新建预算.xlsx', content: { kind: 'excel', sheets: [{ name: '预算', rows: [[4, 8, { formula: '=A1+B1' }]] }] } },
+  { path: '新建简报.pptx', content: { kind: 'ppt', slides: [{ title: '预算简报', bullets: ['核实凭据'], notes: '重点检查报销。' }] } },
+];
+const created = [];
+let selectionProposalId;
+let structuralProposalId;
 const remoteCellText = '保留原始记录 6499';
 const summarySheet = '财务明细';
 const sourceSheet = '原始数据';
@@ -50,6 +65,13 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
 
   const workspace = path.join(home, 'office-workspace');
   fs.mkdirSync(workspace);
+  const sendOfficePrompt = async text => {
+    const request = { taskId: 'office-use-desktop', spaceId: 'office-use-space', modelId: 'fixture/ui-fixture', text, welcomeMode: 'working',
+      userMessageId: text + '-user', assistantMessageId: text + '-assistant' };
+    const completed = await evaluate(`window.api.agent.prompt(${JSON.stringify(request)}).then(result => result.receipt ? window.api.agent.waitForSubmission(result.receipt) : result)`);
+    assert.equal(completed.error, undefined, JSON.stringify(completed));
+    assert.equal(completed.receipt?.status, 'done');
+  };
   const filename = '中文预算复核.xlsx';
   const file = path.join(workspace, filename);
   const drafts = path.join(home, '.mybuddy', 'office-drafts');
@@ -66,19 +88,16 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
   await evaluate(`(async () => {
     const { useAppStore: store } = await import('/src/store/appStore.ts');
     const model = store.getState().models[0];
-    const task = { id: 'office-use-desktop', title: 'Office Use acceptance', updatedAt: Date.now(),
+    const space = { id: 'office-use-space', name: 'Office acceptance workspace', path: ${JSON.stringify(workspace)}, createdAt: Date.now(), updatedAt: Date.now() };
+    const task = { id: 'office-use-desktop', spaceId: space.id, title: 'Office Use acceptance', updatedAt: Date.now(),
       cwd: ${JSON.stringify(workspace)}, status: 'idle', welcomeMode: 'working', executionBackend: 'pi',
       messages: [{ id: 'seed', role: 'assistant', createdAt: Date.now(), blocks: [{type:'text', content:'Office acceptance'}] }] };
+    await window.api.db.upsertSpace(space);
     await window.api.db.upsertTask(task);
-    store.setState({ page: 'chat', activeTaskId: task.id, tasks: [task], activeModelId: model.id,
+    store.setState({ page: 'chat', activeTaskId: task.id, tasks: [task], spaces: [space], activeModelId: model.id,
       panelOpen: true, panelMode: 'overview', panelExpanded: true, draft: null });
     window.officeFixtureStore = store;
-    await store.getState().openWorkspaceFile(${JSON.stringify(filename)}, ${JSON.stringify(filename)});
-    await store.getState().hydrateArtifacts(task.id);
   })()`);
-  const artifact = await evaluate('window.officeFixtureStore.getState().activeArtifactId');
-  assert.ok(artifact, 'the workspace action registered and opened the spreadsheet');
-  report.checks.push('Workspace file opened through the production task store and artifact registration');
 
   let previousTarget;
   let session;
@@ -107,15 +126,14 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
           return [window, editor, editor.frames[0]].filter(Boolean).map(frame => ({
             url: frame.location.href, isolated: frame.crossOriginIsolated, state: frame.document.readyState,
             visible: frame.document.visibilityState, width: frame.innerWidth, height: frame.innerHeight,
-            engine: Boolean(frame.gridcraft),
-            loading: frame.document.getElementById('gridcraft_loading')?.textContent,
+            engine: Boolean(frame.wordcraft || frame.gridcraft || frame.deckcraft),
             resources: frame.performance.getEntriesByType('resource').map(({name,responseStatus}) => ({name,responseStatus}))
           }));
         })()`);
-        throw Error('GridCraft: ' + state.status);
+        throw Error('Office editor: ' + state.status);
       }
       return state.ready && state.isolated;
-    }, 'GridCraft WASM ready');
+    }, 'Office editor WASM ready');
   }
   const snapshot = async name => {
     const { data } = await rpc('Page.captureScreenshot', { format: 'png' }, session);
@@ -134,8 +152,8 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
     const selected = await view("document.querySelector('#original').value");
     assert.equal(selected, expected, 'The MyBuddy panel captured the active GridCraft cell');
   }
-  async function close() {
-    await evaluate(`window.officeFixtureStore.getState().closeArtifactTab(${JSON.stringify(artifact)})`);
+  async function close(id = artifact) {
+    await evaluate(`window.officeFixtureStore.getState().closeArtifactTab(${JSON.stringify(id)})`);
     await until(async () => !(await rpc('Target.getTargets')).targetInfos.some(info => info.targetId === previousTarget), 'Office view destroyed');
   }
   async function reopen() {
@@ -143,12 +161,55 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
     await attach();
   }
 
+  await sendOfficePrompt(assistantSkill);
+  await sendOfficePrompt(assistantCreate);
+  assert.equal(created.length, creation.length);
+  await evaluate("window.officeFixtureStore.getState().hydrateArtifacts('office-use-desktop')");
+  for (const entry of created) {
+    assert.equal(path.dirname(entry.path), fs.realpathSync(workspace));
+    assert(fs.existsSync(entry.path));
+    await evaluate(`window.officeFixtureStore.getState().openArtifact(${JSON.stringify(entry.artifactId)})`);
+    await attach();
+    const document = query => view(`window.officeDocument(${JSON.stringify(query)})`);
+    const outline = await document({ action: 'inspect' });
+    if (outline.kind === 'word') {
+      assert(outline.items.some(item => item.preview === '资料已备齐。'));
+      assert(outline.items.some(item => item.preview === '复查票据' && item.list));
+      const table = outline.items.find(item => item.type === 'table');
+      assert.deepEqual((await document({ action: 'read', target: { kind: 'word', blockIndex: table.blockIndex } })).items,
+        [['事项', '状态'], ['报销', '已核对']]);
+    }
+    else if (outline.kind === 'excel') {
+      const formula = await document({ action: 'read', target: { kind: 'excel', sheet: '预算', address: 'C1', values: 'formulas' } });
+      assert.deepEqual(formula.items, [['=A1+B1']]);
+      const value = await document({ action: 'read', target: { kind: 'excel', sheet: '预算', address: 'C1' } });
+      assert.deepEqual(value.items, [[12]]);
+    } else {
+      assert.equal(outline.kind, 'ppt');
+      const slide = await document({ action: 'read', target: { kind: 'ppt', slideIndex: 0 } });
+      assert(slide.items.some(item => item.preview?.includes('预算简报')));
+      assert.match(slide.notesPreview, /重点检查报销/);
+    }
+    await close(entry.artifactId);
+  }
+  report.checks.push('A task without an open document created three Office artifacts. All opened in their native editor with Chinese content, working formula or speaker notes. A duplicate filename was rejected');
+
+  await evaluate(`(async () => {
+    const store = window.officeFixtureStore;
+    await store.getState().openWorkspaceFile(${JSON.stringify(filename)}, ${JSON.stringify(filename)});
+    await store.getState().hydrateArtifacts('office-use-desktop');
+  })()`);
+  const artifact = await evaluate('window.officeFixtureStore.getState().activeArtifactId');
+  assert.ok(artifact, 'the workspace action registered and opened the spreadsheet');
+  report.checks.push('Workspace file opened through the production task store and artifact registration');
+
   await attach();
   await readA1(initial);
   await setField('instruction', instruction);
+  const previousRequests = requests.length;
   await button('generate');
   await until(() => view("document.querySelector('#candidate').value === " + JSON.stringify(proposal)), 'AI proposal ready for review');
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, previousRequests + 1);
   assert.deepEqual(fs.readFileSync(file), original);
   await snapshot('proposal');
   report.checks.push('The MyBuddy pane captured the Chinese GridCraft cell and showed the model relay response while the workspace file stayed byte-identical');
@@ -178,23 +239,28 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
   await reopen();
   await readA1(replacement);
   await snapshot('reopened');
-  const sendOfficePrompt = async text => {
-    const request = { taskId: 'office-use-desktop', modelId: 'fixture/ui-fixture', text, welcomeMode: 'working',
-      userMessageId: text + '-user', assistantMessageId: text + '-assistant' };
-    const completed = await evaluate(`window.api.agent.prompt(${JSON.stringify(request)}).then(result => result.receipt ? window.api.agent.waitForSubmission(result.receipt) : result)`);
-    assert.equal(completed.error, undefined, JSON.stringify(completed));
-    assert.equal(completed.receipt?.status, 'done');
-  };
   await sendOfficePrompt(assistantOn);
+  const receipt = id => view(`window.officeReviewStatus(${JSON.stringify(id)})`);
+  assert.equal((await receipt(selectionProposalId)).status, 'awaiting-user-review');
   assert.equal(await view("document.querySelector('#candidate').value"), reviewedText);
   assert.equal(await view("document.querySelector('#label').textContent"), sourceSheet + ' · B6500');
   checkWorkbook(fs.readFileSync(file), replacement);
   await button('apply');
   await until(() => view("document.querySelector('#status').textContent === '草稿已保留'"), 'targeted proposal creates a draft only after confirmation');
+  const applied = await receipt(selectionProposalId);
+  assert.equal(applied.status, 'applied');
+  assert.deepEqual(applied.verification, { matched: true, sheet: sourceSheet, address: 'B6500', errors: [] });
   checkWorkbook(fs.readFileSync(file), replacement);
   await view("frames[0].frames[0].gridcraft.execute('file.save', {})");
   await until(() => view("document.querySelector('#status').textContent === '已保存'"), 'targeted cross-sheet change saved');
   checkWorkbook(fs.readFileSync(file), replacement, reviewedText);
+  await sendOfficePrompt(assistantVerify);
+  await sendOfficePrompt(assistantEdit);
+  assert.equal((await receipt(structuralProposalId)).status, 'awaiting-user-review');
+  assert.equal(await view("document.querySelector('#candidate').readOnly"), true);
+  await button('cancel');
+  assert.equal((await receipt(structuralProposalId)).status, 'cancelled');
+  report.checks.push('The live task observed a verified applied edit and then its saved receipt. A separate structural suggestion was cancelled without applying it');
   await evaluate(`(async () => {
     const { config, revision } = await window.api.agent.getBuiltinCapabilities();
     await window.api.agent.saveBuiltinCapabilitySettings({ config: { ...config, officeUse: { enabled: false } }, expectedRevision: revision });
@@ -213,10 +279,61 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
     const userMessage = request.messages.findLast(item => item.role === 'user');
     const lastInput = JSON.stringify(userMessage?.content);
     const tools = request.tools?.map(entry => entry.function.name) ?? [];
-    const officeTools = ['office_document_read', 'office_selection_read', 'office_selection_propose'];
+    const officeTools = ['office_document_create', 'office_document_read', 'office_document_render',
+      'office_edit_propose', 'office_review_status', 'office_selection_read', 'office_selection_propose'];
+    const system = request.messages.filter(item => item.role === 'system').map(item => JSON.stringify(item.content)).join('\n');
+    if (lastInput?.includes(assistantSkill)) {
+      const folder = path.resolve(__dirname, '../vendor/craft-office/skill/office-use');
+      const read = file => ({ tool: { name: 'read', arguments: { path: path.join(folder, file) } } });
+      if (message.role === 'user') {
+        assert.match(system, /office-use[/\\]+SKILL\.md/);
+        return read('SKILL.md');
+      }
+      if (message.content.includes('references/excel.md')) return read('references/excel.md');
+      assert.match(message.content, /GridCraft/);
+      assert.match(message.content, /action:"evaluate"/);
+      return '已读取 Excel 操作指南。';
+    }
+    if (lastInput?.includes(assistantCreate)) {
+      assert(officeTools.every(name => tools.includes(name)));
+      assert.match(system, /office-use[/\\]+SKILL\.md/);
+      const userIndex = request.messages.lastIndexOf(userMessage);
+      const toolResults = request.messages.slice(userIndex + 1).filter(item => item.role === 'tool');
+      const step = toolResults.length;
+      if (step && step <= creation.length) {
+        const result = JSON.parse(message.content);
+        assert.equal(result.status, 'created');
+        assert.equal(result.name, creation[step - 1].path);
+        assert(result.artifactId);
+        created.push(result);
+      }
+      if (step > creation.length) {
+        assert.match(message.content, /已有文件/);
+        return '三份文件已创建。';
+      }
+      return { tool: { name: 'office_document_create', arguments: creation[step % creation.length] } };
+    }
     if (lastInput?.includes(assistantOff)) {
       assert(officeTools.every(name => !tools.includes(name)));
+      assert.doesNotMatch(system, /office-use[/\\]+SKILL\.md/);
       return 'Office Use is disabled.';
+    }
+    if (lastInput?.includes(assistantVerify)) {
+      if (message.role === 'user') return { tool: { name: 'office_review_status', arguments: { proposalId: selectionProposalId } } };
+      const receipt = JSON.parse(message.content);
+      assert.equal(receipt.status, 'saved');
+      assert.equal(receipt.verification.matched, true);
+      assert.equal(receipt.verification.address, 'B6500');
+      return '已复验并保存。';
+    }
+    if (lastInput?.includes(assistantEdit)) {
+      if (message.role === 'user') return { tool: { name: 'office_edit_propose', arguments: {
+        operation: { kind: 'excel', action: 'freezeTopRow', sheet: summarySheet },
+      } } };
+      const receipt = JSON.parse(message.content);
+      assert.equal(receipt.status, 'awaiting-user-review');
+      structuralProposalId = receipt.proposalId;
+      return '已提交冻结表头提议。';
     }
     if (lastInput?.includes(assistantOn)) {
       assert(officeTools.every(name => tools.includes(name)));
@@ -243,7 +360,9 @@ run(async ({ evaluate, rpc, until, report, out, home, requests }) => {
         assert.equal(result.target.address, 'B6500');
         return { tool: { name: 'office_selection_propose', arguments: { captureId: result.captureId, text: reviewedText } } };
       }
-      assert.deepEqual(result, { status: 'awaiting-user-review' });
+      assert.equal(result.status, 'awaiting-user-review');
+      assert.match(result.proposalId, /^[0-9a-f-]{36}$/u);
+      selectionProposalId = result.proposalId;
       return '已提交改写建议。';
     }
     const data = JSON.parse(message.content);

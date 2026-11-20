@@ -28,6 +28,7 @@ import type { LibraryEvidenceJudge } from "../library/LibraryDeepSearch";
 import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-extension";
 import { createOfficeSelectionExtension } from "../office-use/OfficeSelectionTools";
 import { createCadUseExtension } from "../capabilities/CadUseTools";
+import { createOfficeDocument } from "../office-use/OfficeDocumentCreation";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { createWorkspaceResourceLocatorExtension } from "../workspace/workspace-resource-locator-extension";
 import { WorkGraphService } from "../workgraph/WorkGraphService";
@@ -185,6 +186,16 @@ export class SessionExtensionAssembler {
         taskId: input.taskId,
         getPermissionMode,
         isEnabled: officeUseEnabled,
+        create: (request, toolCallId, assertWritable) => {
+          const artifacts = input.builtinCapability.artifactService();
+          if (!artifacts) throw new Error("当前任务的产物服务不可用。");
+          return createOfficeDocument(request, {
+            taskId: input.taskId,
+            taskRoot: (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
+            producerMessageId: input.builtinCapability.getProducerMessageId(),
+            toolCallId, artifacts, assertWritable,
+          });
+        },
       })] : []),
       ...(durable || cadUseEnabled() ? [createCadUseExtension({
         taskId: input.taskId,

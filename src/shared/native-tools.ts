@@ -168,9 +168,11 @@ export const MUTATING_BUILTIN_TOOLS = [
   "project_notes_save",
   "workspace_notes_save",
   OFFICE_USE_TOOLS.selectionPropose,
+  OFFICE_USE_TOOLS.editPropose,
   CAD_USE_TOOLS.create,
   CAD_USE_TOOLS.edit,
   CAD_USE_TOOLS.export,
+  OFFICE_USE_TOOLS.documentCreate,
 ] as const;
 
 /** readonly 时补上不在 pi 默认 active 集里的只读内置工具 */

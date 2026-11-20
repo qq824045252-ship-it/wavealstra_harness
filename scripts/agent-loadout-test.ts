@@ -85,7 +85,7 @@ try {
     recommendation: fixture, installedIds: ["denied", "missing-cli", "untried", "verified"],
     whitelistIds: ["missing-cli", "untried", "verified"], readIds: ["verified"],
     evidence: {
-      "missing-cli": { dependency: { state: "failed", reason: "officecli executable missing", checkedAt: 1 }, trial: { state: "unknown" } },
+      "missing-cli": { dependency: { state: "failed", reason: "budget-review executable missing", checkedAt: 1 }, trial: { state: "unknown" } },
       verified: { dependency: { state: "passed", reason: "target environment --version", checkedAt: 2 }, trial: { state: "passed", at: 3, evidence: "fixture execution result" } },
     },
   });
@@ -116,12 +116,12 @@ try {
   assert(effective.capabilities.find((item) => item.id === "review-expert")?.selected === false, "blocked expert stays unselected");
 
   const chineseExplicit = resolveEffectiveLoadoutSelection(resolveAgentLoadout({
-    taskId: "task-loadout", query: "请用 officecli 帮我核对表格数字", mode: "working",
+    taskId: "task-loadout", query: "请用 budget-review 帮我核对表格数字", mode: "working",
     candidates: [
-      { kind: "skill", id: "officecli", label: "officecli", description: "Office documents", allowed: true, actual: true },
+      { kind: "skill", id: "budget-review", label: "budget-review", description: "Office documents", allowed: true, actual: true },
       { kind: "skill", id: "low-relevance", label: "unrelated astronomy", allowed: true, actual: true },
-      { kind: "skill", id: "blocked", label: "officecli", allowed: false, actual: true },
-      { kind: "skill", id: "not-current", label: "officecli", allowed: true, actual: false },
+      { kind: "skill", id: "blocked", label: "budget-review", allowed: false, actual: true },
+      { kind: "skill", id: "not-current", label: "budget-review", allowed: true, actual: false },
     ],
   }), { explicitSkillId: "low-relevance" });
   assert(chineseExplicit.effectiveSelection?.skillIds.includes("low-relevance"), "explicit low-relevance skill survives narrowing for Chinese request");

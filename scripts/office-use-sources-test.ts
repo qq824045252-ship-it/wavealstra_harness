@@ -71,7 +71,7 @@ async function run(): Promise<void> {
     assert.equal(workspaceTarget.kind, "excel");
     const workspaceFile = new OfficeFile(workspaceTarget, drafts);
     assert.deepEqual(await workspaceFile.open(), original);
-    assert.equal(await workspaceFile.write(edited, false), "已保存");
+    assert.deepEqual(await workspaceFile.write(edited, false), { message: "已保存", saved: true });
     assert.deepEqual(await readFile(filePath), edited);
     assert.equal(published, 1);
     await writeFile(filePath, original);
@@ -120,7 +120,7 @@ async function run(): Promise<void> {
     const workFile = new OfficeFile(await resolveOfficeTarget(workRequest, ports), drafts);
     assert.deepEqual(await workFile.open(), original);
     destination = join(workspace, "work-copy.xlsx");
-    assert.match(await workFile.write(edited, false), /已保存副本/);
+    assert.match((await workFile.write(edited, false)).message, /已保存副本/);
     assert.deepEqual(await readFile(snapshotPath), original);
     assert.deepEqual(await readFile(destination), edited);
     destination = join(workspace, "work-race.xlsx");
@@ -134,7 +134,7 @@ async function run(): Promise<void> {
     const libraryTarget = await resolveOfficeTarget(libraryRequest, ports);
     const libraryFile = new OfficeFile(libraryTarget, drafts);
     await libraryFile.open();
-    assert.match(await libraryFile.write(edited, false), /已保存资料副本/);
+    assert.match((await libraryFile.write(edited, false)).message, /已保存资料副本/);
     assert.deepEqual(copies, [edited]);
     assert.deepEqual(await readFile(libraryTarget.path), original);
     collectionId = "another";

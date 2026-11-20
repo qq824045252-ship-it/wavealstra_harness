@@ -290,7 +290,7 @@
     "test:overview-runtime",
     "test:packaged-package-json-guard",
     "test:pdf-runtime-compat",
-    "test:officecli",
+    "test:retired-office-adapter",
     "test:pi-cache-protocol",
     "test:pi-codemode-auto",
     "test:pi-autonomous-execution",

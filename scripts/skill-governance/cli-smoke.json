@@ -14,12 +14,6 @@
       "stderr": ""
     },
     {
-      "name": "officecli-version",
-      "status": 0,
-      "stdout": "1.0.143\r\n",
-      "stderr": ""
-    },
-    {
       "name": "kicad-cli-version",
       "status": 0,
       "stdout": "10.0.6\r\n",

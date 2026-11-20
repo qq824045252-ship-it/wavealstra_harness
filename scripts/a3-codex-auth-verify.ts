@@ -118,7 +118,7 @@ for (const name of cells.filter(name => !process.env.A3_CELL || (process.env.A3_
     const diag = row.sessionDiagnostics;
     row.status = !row.result.error && !errors.length && diag?.model.provider === 'openai-codex'
       && row.restoreVerified && row.reply?.includes('A3_OK') && (!expected || diag.model.actualId === expected) && cellRequests.some(r => r.status === 200 && r.responseIds.length && r.model === diag.model.model) ? 'PASS' : 'FAIL';
-    row.a2 = ['officecli', 'meeting-transcribe', 'dimagent-debug'].map(id => ({ id, dependency: probeSkillDependency(id, diag.cwd, diag.activeTools) }));
+    row.a2 = ['meeting-transcribe', 'dimagent-debug'].map(id => ({ id, dependency: probeSkillDependency(id, diag.activeTools) }));
     if (name === 'explicit') restoredTask = taskId;
   } catch (error) { row.status = 'FAIL'; row.errorType = error instanceof Error ? error.name : 'unknown'; row.error = error instanceof Error ? error.message : 'unknown'; await Promise.all(bodies); row.requests = cellRequests; try { row.sessionDiagnostics = agent.inspectRuntimeContext(taskId).sessionDiagnostics; } catch {} }
   save();
@@ -127,12 +127,7 @@ for (const name of cells.filter(name => !process.env.A3_CELL || (process.env.A3_
 // A2 probes use the real host profile for ASR path resolution, and actual session tools above.
 process.env.HOME = realProfile.slice(0, -'/.mybuddy'.length);
 process.env.USERPROFILE = process.env.HOME;
-evidence.a2Host = ['officecli', 'meeting-transcribe', 'dimagent-debug'].map(id => ({ id, dependency: probeSkillDependency(id, process.cwd(), evidence.cells[0]?.sessionDiagnostics?.activeTools ?? []) }));
-const { SkillTrialLedger } = await import('../src/main/agent/SkillTrialLedger');
-const skillPath = join(realProfile, 'skills/officecli/SKILL.md');
-const ledger = new SkillTrialLedger(join(root, 'skill-trials'));
-const trial = ledger.runOfficeVersion({ skillPath, cwd: process.cwd(), installed: true, policyAllowed: true, whitelisted: true });
-evidence.a2Office = { scope: 'host installed SKILL.md; explicit controlled admission; real officecli --version', trial, readback: new SkillTrialLedger(join(root, 'skill-trials')).latest('officecli', skillPath, process.cwd()) };
+evidence.a2Host = ['meeting-transcribe', 'dimagent-debug'].map(id => ({ id, dependency: probeSkillDependency(id, evidence.cells[0]?.sessionDiagnostics?.activeTools ?? []) }));
 evidence.a2LocalCommand = { command: 'node --version', output: execFileSync(process.execPath, ['--version'], { encoding: 'utf8' }).trim(), scope: 'real safe CLI execution only; not skill-ledger success or UI trial' };
 agent.dispose(); await agent.closeDurableBots(); db.close();
 // No credential bytes in the emitted evidence (check against known auth string values without printing them).

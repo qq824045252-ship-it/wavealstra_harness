@@ -793,7 +793,7 @@ export default function CapabilitiesTab(): React.JSX.Element {
 
     <SettingsSection title="本机工具" description="按需检查本机环境，不调用模型或安装组件。" collapsible>
       <CapabilityRow {...rowCommon("browser", draft.browser.enabled)} title="界面与桌面操作" description={`读取并操作浏览器、MyBuddy 界面和${desktopPlatformLabel(window.api?.platform)}。`} tools={statusById.get("browser")?.tools ?? ["browser_exec", "ui_exec", "computer_exec"]} onToggle={enabled => changeConfig(current => ({ ...current, browser: { enabled } }))}><div className="settings-row-desc">{desktopRuntimeSummary(window.api?.platform)}</div></CapabilityRow>
-      <CapabilityRow {...rowCommon("office-use", draft.officeUse?.enabled !== false)} title="Office Use" description="让任务助手查看文档结构、查找内容、跨工作表读取，并定位指定段落、单元格或文本框。修改建议由你确认后应用。" tools={BUILTIN_CAPABILITY_TOOLS["office-use"]} onToggle={enabled => changeConfig(current => ({ ...current, officeUse: { enabled } }))}>
+      <CapabilityRow {...rowCommon("office-use", draft.officeUse?.enabled !== false)} title="Office Use" description="让任务助手新建、读取和预览办公文件，提交内容或样式修改建议。你确认后，助手可以回读核对。" tools={BUILTIN_CAPABILITY_TOOLS["office-use"]} onToggle={enabled => changeConfig(current => ({ ...current, officeUse: { enabled } }))}>
         <div className="settings-row-desc">支持 DOCX、XLSX、PPTX。检查内置编辑器资源，无需打开文件。</div>
       </CapabilityRow>
       <CapabilityRow {...rowCommon("cad-use", draft.cadUse?.enabled !== false)} title="CAD Use" description="让任务助手创建、读取和修改 DWG、DXF，或导出 DWG、DXF、PDF、SVG、PNG。" tools={BUILTIN_CAPABILITY_TOOLS["cad-use"]} onToggle={enabled => changeConfig(current => ({ ...current, cadUse: { enabled } }))}>

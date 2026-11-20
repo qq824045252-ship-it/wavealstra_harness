@@ -16,7 +16,7 @@ const CATALOG = {
   ],
   "科学计算与数据": ["matlab-r2025b", "origin-analysis"],
   "办公与业务": [
-    "ego-price-check", "kami", "lemonclaw", "officecli", "open-kimi-ppt", "pdf",
+    "ego-price-check", "kami", "lemonclaw", "open-kimi-ppt", "pdf",
     "projectlibre-gen", "weekly-report-fill", "weekly-summary",
   ],
   "知识与写作": [

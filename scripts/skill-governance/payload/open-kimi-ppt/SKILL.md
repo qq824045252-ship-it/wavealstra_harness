@@ -1,6 +1,6 @@
 ---
 name: open-kimi-ppt
-description: "Create new visually designed presentations, recreate slide layouts from references, and author or export PPTD projects with the Kimi PPT workflow. Do not trigger for simple inspection or precise text/format edits of existing PPTX files; use officecli for those."
+description: "Create new visually designed presentations, recreate slide layouts from references, and author or export PPTD projects with the Kimi PPT workflow. Do not trigger for simple inspection or precise text/format edits of existing PPTX files; use MyBuddy Office Use for those."
 ---
 
 # Definition
@@ -65,7 +65,7 @@ Before export, read the local exporter commands, transition validation and deliv
 
 ## Routing Boundary
 
-只有新建视觉演示文稿、参考版式复刻、显式 PPTD/Kimi 工作流才进入本流程。现有 PPTX 的读取、文字/字体/DOM 小改交给 officecli。普通生图使用 MyBuddy native image_generate；不把图片请求自动转换为 PPTD。
+只有新建视觉演示文稿、参考版式复刻、显式 PPTD/Kimi 工作流才进入本流程。现有 PPTX 的读取、文字/字体/DOM 小改交给 MyBuddy Office Use。普通生图使用 MyBuddy native image_generate；不把图片请求自动转换为 PPTD。
 
 ## Output Contract
 

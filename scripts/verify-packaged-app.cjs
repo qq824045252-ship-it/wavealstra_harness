@@ -280,6 +280,9 @@ function verifyPackagedApp(appDir, options = {}) {
       if (!fs.existsSync(path.join(officeEditor, "editor/cad", entry))) fail("Missing CAD editor file: " + entry);
     }
     if (!fs.existsSync(path.join(resources, "builtin-skills/cad-use/SKILL.md"))) fail("Missing CAD Use skill");
+    for (const file of ["SKILL.md", "LICENSE", "references/word.md", "references/excel.md", "references/powerpoint.md"]) {
+      if (!fs.existsSync(path.join(resources, "builtin-skills", "office-use", file))) fail("Missing Office Use skill file: " + file);
+    }
   }
   for (const entry of ["editor/host/index.html","editor/host/host.js","editor/host/host.css",
     "editor/craft/bridge.html","editor/craft/bridge.js","editor/craft/word.js","editor/craft/excel.js",
