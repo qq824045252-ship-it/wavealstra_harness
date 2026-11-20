@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { computeEffectiveArchived } from "../../../../shared/workspace-tree";
-import { getTaskDisplayStatus, isTaskDoneUnread } from "@/utils/taskFilters";
+import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "@/utils/taskFilters";
 import type { Task } from "@/types";
 import { IconFolder, IconSearch, IconX } from "@/components/common/icons";
 
@@ -12,11 +12,11 @@ function formatTaskStamp(ts: number): string {
 }
 
 function TaskStatusMark({ task }: { task: Task }): React.JSX.Element | null {
-  const status = getTaskDisplayStatus(task);
+  const status = deriveTaskStatus(task);
   if (status === "pending") {
-    return <span className="search-status-badge">待确认</span>;
+    return <span className="search-status-badge">{taskActionLabel(task) ?? "待处理"}</span>;
   }
-  if (status === "running") {
+  if (status === "in_progress") {
     return (
       <span className="search-status-running">
         <span className="task-status-dot task-status-dot--running" />

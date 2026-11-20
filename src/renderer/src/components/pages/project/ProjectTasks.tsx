@@ -10,6 +10,7 @@ const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   failed: "失败",
   pending: "待开始",
   planning: "规划中",
+  stopped: "已停止",
 };
 
 interface Props {

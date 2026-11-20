@@ -1128,6 +1128,7 @@ export type AgentUiPatch =
       messageId: string;
       durationMs?: number;
       error?: string;
+      cancelled?: boolean;
     }
   | {
       type: "context_usage";

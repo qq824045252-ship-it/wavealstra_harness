@@ -359,9 +359,11 @@ export function createAgentProjectionActions(
                 : patch.type === "assistant_end"
                   ? hasActiveExecutionMessages(messages)
                     ? "in_progress"
-                    : patch.error
-                      ? "failed"
-                      : "completed"
+                    : patch.cancelled
+                      ? "stopped"
+                      : patch.error
+                        ? "failed"
+                        : "completed"
                   : current.status,
           };
         });

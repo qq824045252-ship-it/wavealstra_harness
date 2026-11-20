@@ -280,7 +280,7 @@ export interface Task {
   externalAgentPin?: import("../../shared/external-agent").ExternalAgentPinDto;
 }
 
-export type TaskStatus = "in_progress" | "completed" | "failed" | "pending" | "planning";
+export type TaskStatus = "in_progress" | "completed" | "failed" | "pending" | "planning" | "stopped";
 
 export interface ProgressStep {
   id: string;

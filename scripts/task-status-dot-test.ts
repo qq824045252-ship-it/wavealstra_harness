@@ -1,11 +1,10 @@
 /**
- * 侧栏状态点回归（bug: 绿点一直存在、点击不清除）。
+ * 侧栏状态与未查看强调回归。
  *
  * 约定：
- *  - 进行中 → 蓝点（getTaskDisplayStatus === "running"）
- *  - 已结束且未查看 → 绿点（isTaskDoneUnread === true）
- *  - 点击/打开任务 → ackTaskDone 写 done_acked_at → 绿点消失，且重启（重开 DB）后保持消失
- *  - 结束后再次运行并产出新消息 → 绿点自然回来
+ *  - 实时状态与筛选结果一致。
+ *  - 已结束且未查看时强调结果。打开任务后清除强调，并在重开 DB 后保持。
+ *  - 结束后再次运行并产出新消息，结果重新显示为未查看。
  *
  * 两层验证：
  *  A. 渲染层判定（utils/taskFilters）— 纯函数，无需 Electron
@@ -16,8 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import {
-  getTaskDisplayStatus,
+  deriveTaskStatus,
   isTaskDoneUnread,
+  matchesTaskFilter,
   taskCompletionMark,
 } from "../src/renderer/src/utils/taskFilters";
 import type { ChatMessage, Task } from "../src/renderer/src/types";
@@ -42,7 +42,7 @@ function task(overrides: Partial<Task> = {}): Task {
   return { id: "t1", title: "任务", updatedAt: 0, messages: [], ...overrides };
 }
 
-console.log("== A. 展示状态判定（蓝点 / 绿点 / 无点）==");
+console.log("== A. 任务状态与未查看强调 ==");
 
 // 进行中 = 蓝点，且绝不带绿点
 const running = task({
@@ -50,12 +50,12 @@ const running = task({
   updatedAt: 500,
   messages: [message(1000, { streaming: true })],
 });
-assert(getTaskDisplayStatus(running) === "running", "进行中 → running（蓝点）");
+assert(deriveTaskStatus(running) === "in_progress", "运行中的任务显示为进行中");
 assert(!isTaskDoneUnread(running), "进行中不带绿点");
 
 // status 缺失时由消息推导：streaming → in_progress
 const derivedRunning = task({ updatedAt: 500, messages: [message(1000, { streaming: true })] });
-assert(getTaskDisplayStatus(derivedRunning) === "running", "无 status 时 streaming 消息 → running");
+assert(deriveTaskStatus(derivedRunning) === "in_progress", "流式消息对应进行中");
 
 // 已结束 + 从未查看 → 绿点
 const finishedUnread = task({
@@ -63,11 +63,12 @@ const finishedUnread = task({
   updatedAt: 4000,
   messages: [message(1000), message(3000)],
 });
-assert(getTaskDisplayStatus(finishedUnread) === "done", "completed → done（已结束）");
+assert(deriveTaskStatus(finishedUnread) === "completed", "成功完成有自己的状态");
 assert(isTaskDoneUnread(finishedUnread), "已结束且从未查看 → 绿点");
 
 // 失败同样算「已结束」，也要有绿点（但要等用户看过）
 const failedUnread = task({ status: "failed", updatedAt: 4000, messages: [message(3000)] });
+assert(deriveTaskStatus(failedUnread) === "failed", "失败有自己的状态");
 assert(isTaskDoneUnread(failedUnread), "失败且未查看 → 绿点");
 
 // 打开过（doneAckedAt 追平完成标记）→ 无绿点（这就是「点击后绿点消失」）
@@ -78,7 +79,7 @@ const acked = task({
   messages: [message(1000), message(3000)],
 });
 assert(!isTaskDoneUnread(acked), "确认过（doneAckedAt = 完成标记）→ 绿点消失");
-assert(getTaskDisplayStatus(acked) === "done", "确认后状态仍是「已结束」（只是不再亮绿点）");
+assert(deriveTaskStatus(acked) === "completed", "确认后仍显示已完成");
 
 // 结束后再次运行并产出新消息 → 绿点回来
 const rerunUnread = task({
@@ -116,13 +117,18 @@ const awaitingApproval = task({
     }),
   ],
 });
-assert(getTaskDisplayStatus(awaitingApproval) === "pending", "待审批 → pending（徽标，不是绿点）");
+assert(deriveTaskStatus(awaitingApproval) === "pending", "待审批优先于已完成");
+assert(matchesTaskFilter(awaitingApproval, "pending", "all"), "待处理筛选能找到等待审批的任务");
+assert(!matchesTaskFilter(awaitingApproval, "completed", "all"), "已完成筛选排除等待审批的任务");
 assert(!isTaskDoneUnread(awaitingApproval), "待审批期间不亮绿点");
 
-// 空闲：planning（尚无消息）不亮任何点
 const planning = task({ status: "planning", updatedAt: 4000 });
-assert(getTaskDisplayStatus(planning) === "idle", "planning（无消息）→ idle，无点");
-assert(!isTaskDoneUnread(planning), "planning 不亮绿点");
+assert(matchesTaskFilter(planning, "planning", "all"), "规划中的任务可筛选");
+assert(!isTaskDoneUnread(planning), "规划中没有未查看结果");
+
+const stopped = task({ status: "stopped", updatedAt: 4000, messages: [message(3000)] });
+assert(matchesTaskFilter(stopped, "stopped", "all"), "已停止的任务可单独筛选");
+assert(!matchesTaskFilter(stopped, "completed", "all"), "已停止的任务不进入已完成");
 
 // 已知边界：无消息的失败用 updatedAt 兜底（没有消息可当完成标记）
 const failedNoMessage = task({ status: "failed", updatedAt: 7000 });
@@ -131,7 +137,7 @@ assert(isTaskDoneUnread(failedNoMessage), "无消息的失败在未确认前仍�
 
 // 骨架任务（缺 messages 的部分对象，如测试夹具/store 中途构造）：状态判定不得抛异常
 const skeleton = { id: "skeleton", title: "骨架任务", updatedAt: 5000 } as unknown as Task;
-assert(getTaskDisplayStatus(skeleton) === "idle", "缺 messages 的骨架任务 → idle（不抛异常）");
+assert(deriveTaskStatus(skeleton) === "planning", "无消息的骨架任务按规划中显示");
 assert(!isTaskDoneUnread(skeleton), "缺 messages 的骨架任务不亮绿点");
 
 // 消息缺 blocks 的部分对象（setActiveTask 会走状态判定，不能因此把 store 打崩）
@@ -140,7 +146,7 @@ const blockless = task({
   updatedAt: 6000,
   messages: [{ id: "m1", role: "user", createdAt: 6000 } as unknown as ChatMessage],
 });
-assert(getTaskDisplayStatus(blockless) === "done", "缺 blocks 的消息按空块处理（无 pending）→ done");
+assert(deriveTaskStatus(blockless) === "completed", "消息缺块时仍可回退至已完成");
 assert(isTaskDoneUnread(blockless), "缺 blocks 的已结束任务照常亮绿点");
 
 console.log("== B. DB 层（done_acked_at 持久化 + 老库回填）==");

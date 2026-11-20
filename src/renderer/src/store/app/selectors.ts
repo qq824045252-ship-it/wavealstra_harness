@@ -1,5 +1,5 @@
 import type { Artifact, Task } from "../../types";
-import { getTaskDisplayStatus } from "../../utils/taskFilters";
+import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "../../utils/taskFilters";
 import {
   toRendererArtifact,
   type ArtifactRenderPayload,
@@ -31,8 +31,18 @@ function sameSidebarTask(previous: Task, current: Task): boolean {
     previous.archived === current.archived &&
     previous.doneAckedAt === current.doneAckedAt &&
     Boolean(previous.isFavorited) === Boolean(current.isFavorited) &&
-    getTaskDisplayStatus(previous) === getTaskDisplayStatus(current)
+    sameSidebarStatus(previous, current)
   );
+}
+
+function sameSidebarStatus(previous: Task, current: Task): boolean {
+  const previousAction = taskActionLabel(previous);
+  const currentAction = taskActionLabel(current);
+  if (previousAction !== currentAction) return false;
+  const previousStatus = deriveTaskStatus(previous, previousAction);
+  const currentStatus = deriveTaskStatus(current, currentAction);
+  return previousStatus === currentStatus &&
+    isTaskDoneUnread(previous, previousStatus) === isTaskDoneUnread(current, currentStatus);
 }
 
 /** Create memoized readers for one store without importing a store singleton. */

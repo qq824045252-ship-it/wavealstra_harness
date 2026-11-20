@@ -1,7 +1,7 @@
 import { isGatewayConversation } from "../../../../../shared/gateway-task";
 import type { TaskHistoryDto } from "../../../../../shared/agent-ipc";
 import type { AppContext } from "../context";
-import type { DurableBotHistory } from "../../../../../shared/durable-bot";
+import { durableTaskStatus, type DurableBotHistory } from "../../../../../shared/durable-bot";
 import type { ChatMessage, Task } from "../../../types";
 import { durableMessageToChatMessage } from "../messages/historyMapper";
 import { taskTitleFromFirstMessage } from "../messages/promptDisplay";
@@ -96,13 +96,7 @@ export function projectDurableHistory(storeContext: AppContext, taskId: string, 
       // 任务时间只取主进程回填的权威活动时间（DB 单调投影），不再从消息时间自己推：
       // 占位行的 createdAt 不是事实，旧写法会让侧栏出现 epoch 0（“20774 天”）。
       updatedAt: advanceActivity(prior?.updatedAt, snapshot.activityAt),
-      status: snapshot.busy
-        ? "in_progress"
-        : snapshot.error || snapshot.outcome === "failed"
-          ? "failed"
-          : snapshot.outcome === "completed"
-            ? "completed"
-            : "pending",
+      status: durableTaskStatus(snapshot),
     };
     return {
       tasks: prior

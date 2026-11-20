@@ -53,3 +53,12 @@ export interface DurableHistoryBlock {
 export type DurableBotHistory = DurableHistoryView<DurableBotSnapshot>;
 export type DurableBotState = Omit<DurableBotSnapshot, "messages" | "epoch" | "revision">;
 export type DurableBotDelta = DurableStreamDelta<ChatMessageDto, DurableBotState>;
+
+export function durableTaskStatus(snapshot: Pick<DurableBotSnapshot, "busy" | "status" | "outcome" | "error">) {
+  if (snapshot.status === "waiting_input") return "pending";
+  if (snapshot.busy) return "in_progress";
+  if (snapshot.status === "stopped" || snapshot.outcome === "aborted") return "stopped";
+  if (snapshot.error || snapshot.outcome === "failed") return "failed";
+  if (snapshot.outcome === "completed") return "completed";
+  return "pending";
+}

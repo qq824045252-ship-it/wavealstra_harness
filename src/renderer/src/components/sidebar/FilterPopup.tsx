@@ -9,6 +9,7 @@ const STATUS_OPTIONS: Array<{ value: TaskFilterStatus; label: string }> = [
   { value: "failed", label: "失败" },
   { value: "pending", label: "待处理" },
   { value: "planning", label: "规划中" },
+  { value: "stopped", label: "已停止" },
 ];
 
 const TIME_OPTIONS: Array<{ value: TaskFilterTime; label: string }> = [

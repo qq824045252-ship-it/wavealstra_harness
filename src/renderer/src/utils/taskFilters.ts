@@ -6,8 +6,7 @@ import type {
   TaskFilterTime,
   TaskStatus,
 } from "@/types";
-
-export type TaskDisplayStatus = "running" | "pending" | "done" | "idle";
+import type { BotWorkspaceRequestDto } from "../../../shared/bot-workspace-navigation";
 
 /**
  * 消息列表读取口：真实 Task 一定有 messages（mapTaskRowToTask 固定给 []），
@@ -35,11 +34,37 @@ export function hasPendingConversationInteraction(task: Task): boolean {
   );
 }
 
-export function deriveTaskStatus(task: Task): TaskStatus {
-  if (task.status) return task.status;
-  if (hasPendingApproval(task) || hasPendingConversationInteraction(task)) return "pending";
+export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  in_progress: "进行中",
+  completed: "已完成",
+  failed: "失败",
+  pending: "待处理",
+  planning: "规划中",
+  stopped: "已停止",
+};
+
+export const FOREGROUND_TASK_STATUS: Record<BotWorkspaceRequestDto["status"], TaskStatus | "unknown"> = {
+  queued: "pending",
+  running: "in_progress",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "stopped",
+  unknown: "unknown",
+};
+
+export function taskActionLabel(task: Task): string | null {
+  if (hasPendingConversationInteraction(task)) return "等待你回答";
+  if (hasPendingApproval(task)) return "等待你确认操作";
+  if (task.durable?.status === "waiting_input") return "等待你回答";
+  return null;
+}
+
+export function deriveTaskStatus(task: Task, action = taskActionLabel(task)): TaskStatus {
+  if (action) return "pending";
   const messages = messagesOf(task);
-  if (messages.some((m) => m.streaming)) return "in_progress";
+  if (task.durable?.busy || messages.some((m) => m.streaming)) return "in_progress";
+  if (task.botPendingSubmissions?.some(input => input.submitting)) return "pending";
+  if (task.status) return task.status;
   if (messages.length === 0) return "planning";
   const failed = messages.some((m) =>
     blocksOf(m).some((b) => b.type === "tool" && b.toolCall.status === "error"),
@@ -47,15 +72,6 @@ export function deriveTaskStatus(task: Task): TaskStatus {
   if (failed) return "failed";
   if (task.progressSteps?.some((s) => s.status === "running")) return "in_progress";
   return "completed";
-}
-
-/** 侧边栏展示用：待确认 > 进行中 > 已结束 > 空闲。planning（尚无消息）视为空闲，completed/failed 视为已结束。 */
-export function getTaskDisplayStatus(task: Task): TaskDisplayStatus {
-  if (hasPendingApproval(task) || hasPendingConversationInteraction(task)) return "pending";
-  const status = deriveTaskStatus(task);
-  if (status === "in_progress") return "running";
-  if (status === "completed" || status === "failed") return "done";
-  return "idle";
 }
 
 /**
@@ -73,12 +89,10 @@ export function taskCompletionMark(task: Task): number {
 }
 
 /**
- * 侧栏绿点（已结束且未查看）：doneAckedAt 早于完成标记 = 结束后还没有人看过结果。
- * 只有「已结束」才有绿点；点击任务 → ackTaskDone 把 doneAckedAt 推到现在 → 绿点消失并持久化。
- * 再次运行并结束后，新消息的 createdAt 超过该水位 → 绿点自然回来。
+ * 侧栏未读强调随查看确认消失。再次运行产生新消息后，按完成标记恢复未读。
  */
-export function isTaskDoneUnread(task: Task): boolean {
-  return getTaskDisplayStatus(task) === "done" && (task.doneAckedAt ?? 0) < taskCompletionMark(task);
+export function isTaskDoneUnread(task: Task, status = deriveTaskStatus(task)): boolean {
+  return (status === "completed" || status === "failed") && (task.doneAckedAt ?? 0) < taskCompletionMark(task);
 }
 
 export function matchesTaskFilter(
@@ -87,7 +101,11 @@ export function matchesTaskFilter(
   time: TaskFilterTime,
 ): boolean {
   if (status !== "all" && deriveTaskStatus(task) !== status) return false;
-  const diff = Date.now() - task.updatedAt;
+  return matchesTaskTimeFilter(task.updatedAt, time);
+}
+
+export function matchesTaskTimeFilter(updatedAt: number, time: TaskFilterTime): boolean {
+  const diff = Date.now() - updatedAt;
   const DAY = 24 * 60 * 60 * 1000;
   if (time === "today" && diff > DAY) return false;
   if (time === "7d" && diff > 7 * DAY) return false;

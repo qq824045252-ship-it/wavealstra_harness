@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { applyPatchToMessage } from "../src/renderer/src/store/appStore";
 import { ConversationInteractionCard } from "../src/renderer/src/components/chat/ConversationRuntimeCards";
 import MessageBlockView from "../src/renderer/src/components/chat/MessageBlockView";
-import { getTaskDisplayStatus } from "../src/renderer/src/utils/taskFilters";
+import { deriveTaskStatus, matchesTaskFilter } from "../src/renderer/src/utils/taskFilters";
 import type { ChatMessage, Task } from "../src/renderer/src/types";
 
 const base: ChatMessage = { id: "assistant-a", role: "assistant", blocks: [], createdAt: 1, streaming: true };
@@ -20,7 +20,9 @@ const withInteraction = applyPatchToMessage(started, { type: "conversation_inter
 assert.equal(withInteraction.interactions?.[0]?.id, "interaction-a");
 
 const task: Task = { id: "task-a", title: "A", updatedAt: 1, messages: [withInteraction] };
-assert.equal(getTaskDisplayStatus(task), "pending");
+assert.equal(deriveTaskStatus(task), "pending");
+assert.equal(matchesTaskFilter(task, "pending", "all"), true);
+assert.equal(matchesTaskFilter(task, "in_progress", "all"), false);
 
 const interactionHtml = renderToStaticMarkup(createElement(ConversationInteractionCard, { interaction }));
 assert.match(interactionHtml, /需要你的回答/);

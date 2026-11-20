@@ -19,6 +19,7 @@ export interface MapperContext {
   activeReplyId?: string;
   settled?: boolean;
   terminalError?: string;
+  terminalCancelled?: boolean;
 }
 
 function nativeToolPatches(message: unknown, ctx: MapperContext, streaming: boolean): AgentUiPatch[] {
@@ -213,6 +214,7 @@ export function mapPiEventToPatches(
       ctx.activeReplyId = messageId;
       ctx.settled = false;
       ctx.terminalError = undefined;
+      ctx.terminalCancelled = undefined;
       ctx.emittedThinking = "";
       ctx.nativeRows = {};
       return [
@@ -231,6 +233,7 @@ export function mapPiEventToPatches(
         ctx.emittedThinking = "";
         ctx.nativeRows = {};
         ctx.terminalError = undefined;
+        ctx.terminalCancelled = undefined;
         return [{ type: "assistant_message_start", taskId, messageId }];
       }
       return [];
@@ -359,6 +362,7 @@ export function mapPiEventToPatches(
       const last = [...event.messages].reverse().find((message) => message.role === "assistant");
       if (last?.role === "assistant") {
         ctx.terminalError = last.stopReason === "error" ? last.errorMessage || "模型连接或生成失败，请重试。" : undefined;
+        ctx.terminalCancelled = last.stopReason === "aborted";
       }
       return [];
     }
@@ -368,7 +372,8 @@ export function mapPiEventToPatches(
       if (ctx.settled) return [];
       ctx.settled = true;
       return [{ type: "assistant_end", taskId, messageId,
-        durationMs: Date.now() - ctx.startedAt, error: ctx.terminalError }];
+        durationMs: Date.now() - ctx.startedAt, error: ctx.terminalError,
+        ...(ctx.terminalCancelled ? { cancelled: true } : {}) }];
     }
 
     default:

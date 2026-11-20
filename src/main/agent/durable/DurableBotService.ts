@@ -13,7 +13,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
 import type { GoalContinuationOrigin } from "../../../shared/conversation-goal";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
-import type { BotToolMode, DurableBotSnapshot } from "../../../shared/durable-bot";
+import { durableTaskStatus, type BotToolMode, type DurableBotSnapshot } from "../../../shared/durable-bot";
 import { durableDelta } from "../../../../shared/src/durable-sync";
 import { isGatewayBotTaskId } from "../../../shared/gateway-task";
 import type { AppDatabase } from "../../db/AppDatabase";
@@ -489,7 +489,7 @@ export class DurableBotService {
         onSnapshot: snapshot => {
           this.workMetrics.project(taskId, snapshot);
           // Projection only; this status is never consulted to resume or finish durable work.
-          taskProjection.writeStatus(taskId, snapshot.busy ? "in_progress" : snapshot.error || snapshot.outcome === "failed" ? "failed" : snapshot.outcome === "completed" ? "completed" : "pending");
+          taskProjection.writeStatus(taskId, durableTaskStatus(snapshot));
           // 「最后活动时间」只有一个写入口：先让 DB 单调前进，再把库里的权威值回填给 UI。
           // 两边不再各算一套（历史事故：占位行 createdAt=0 被渲染层当成任务时间，侧栏显示 20774 天，
           // 而 DB 一直是对的）。快照对象在 emit 前就地回填，runtime.latest 与 IPC 看到的是同一个值。

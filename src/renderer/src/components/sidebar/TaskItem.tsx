@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { relativeTime, useAppStore } from "@/store/appStore";
-import { getTaskDisplayStatus, hasPendingConversationInteraction, isTaskDoneUnread } from "@/utils/taskFilters";
+import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "@/utils/taskFilters";
 import type { Task } from "@/types";
 import {
   IconArchive,
@@ -15,6 +15,7 @@ import {
   IconSparkles,
 } from "@/components/common/icons";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
+import TaskStatusIndicator from "./TaskStatusIndicator";
 import { layoutRect, layoutViewportSize, placeFixedMenu } from "@/lib/placeFixedMenu";
 import {
   fileNameFromPath,
@@ -87,9 +88,9 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   );
 
   const active = page === "chat" && task.id === activeTaskId;
-  const displayStatus = getTaskDisplayStatus(task);
-  // 绿点 = 已结束且未查看（点了任务就清）；蓝点 = 进行中。见 utils/taskFilters.isTaskDoneUnread
-  const doneUnread = isTaskDoneUnread(task);
+  const actionLabel = taskActionLabel(task);
+  const status = deriveTaskStatus(task, actionLabel);
+  const doneUnread = isTaskDoneUnread(task, status);
   const ackTaskDone = useAppStore((s) => s.ackTaskDone);
 
   // 正看着它跑完 → 不需要再让用户点一次。仅当它是当前打开的任务、停在聊天页、
@@ -102,7 +103,6 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     }
     void ackTaskDone(task.id);
   }, [doneUnread, active, task.id, ackTaskDone]);
-  const awaitingInput = hasPendingConversationInteraction(task);
   // Phase 2：pin 以 DB isFavorited 为真相（pinnedTaskIds 仅过渡兼容）
   const pinned = Boolean(task.isFavorited) || pinnedTaskIds.includes(task.id);
   const expertSnapshot = task.expertBinding?.desired ?? (task.expertBinding?.pending ? task.expertBinding.active : null);
@@ -326,7 +326,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     <div
       role="button"
       tabIndex={0}
-      className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} ${displayStatus !== "idle" ? `status-${displayStatus}` : ""}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
+      className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} status-${status}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
       style={indent != null ? { paddingLeft: indent } : undefined}
       title={editing ? undefined : `${task.title || "未命名任务"} · ${relativeTime(task.updatedAt)}`}
       onClick={() => !editing && setActiveTask(task.id)}
@@ -391,28 +391,10 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
             <IconPin size={11} fill="currentColor" strokeWidth={1.6} />
           </span>
         )}
-        {displayStatus === "pending" && (
-          <span className="task-badge" title={awaitingInput ? "等待你回答" : "等待你确认操作"}>
-            {awaitingInput ? "待回答" : "待确认"}
-          </span>
-        )}
-        {displayStatus === "running" && (
-          <span className="task-status-running" title="进行中">
-            <span className="task-status-dot task-status-dot--running" />
-          </span>
-        )}
-        {doneUnread && (
-          <span className="task-status-done" title="已结束 · 未查看（点击任务即清除）">
-            <span className="task-status-dot task-status-dot--done" />
-          </span>
-        )}
-        {displayStatus === "idle" && (
-          <span className="task-item-time">{relativeTime(task.updatedAt, { compact: true })}</span>
-        )}
-        {(displayStatus === "running" || displayStatus === "done") && (
-          <span className="task-item-time dim">{relativeTime(task.updatedAt, { compact: true })}</span>
-        )}
+        <span className="task-item-time">{relativeTime(task.updatedAt, { compact: true })}</span>
       </div>
+
+      <TaskStatusIndicator status={status} label={actionLabel ?? undefined} unread={doneUnread} />
 
       <div className="task-item-actions">
         <div className="task-menu-anchor" ref={menuAnchorRef}>

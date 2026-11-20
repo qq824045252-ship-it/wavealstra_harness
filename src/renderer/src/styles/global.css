@@ -870,7 +870,7 @@ html[data-theme="dark"] .task-item.menu-open {
   color: var(--fg);
 }
 
-.task-item.status-running .task-item-title,
+.task-item.status-in_progress .task-item-title,
 .task-item.status-pending .task-item-title {
   color: var(--fg);
 }

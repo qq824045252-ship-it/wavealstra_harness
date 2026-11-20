@@ -36,7 +36,7 @@ export async function abortTask(
       return {
         ...task,
         messages,
-        status: task.status === "in_progress" ? "completed" : task.status,
+        status: "stopped",
         updatedAt: Date.now(),
       };
     }),
