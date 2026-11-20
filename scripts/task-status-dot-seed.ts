@@ -1,7 +1,7 @@
 /**
  * 桌面验收夹具：向隔离 profile 的 app.db 写入两个任务。
- *  - DOT_DONE_UNREAD：已结束、从未查看 → 期望绿点（点击后消失并持久化）
- *  - DOT_RUNNING：进行中 → 期望蓝点（同时保证启动时不会有任务被自动当作当前任务而误清绿点）
+ *  - DOT_DONE_UNREAD：已完成任务留白，点击后持久化查看时间。
+ *  - DOT_RUNNING：进行中任务显示状态。
  * 用法：node out/tests/task-status-dot-seed.cjs <app.db 绝对路径>
  */
 import { AppDatabase } from "../src/main/db/AppDatabase";

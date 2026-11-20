@@ -1,4 +1,4 @@
-import { IconFlag, IconStop, IconX } from "@/components/common/icons";
+import { IconStop, IconX } from "@/components/common/icons";
 import { TASK_STATUS_LABELS } from "@/utils/taskFilters";
 import type { TaskStatus } from "@/types";
 import "./TaskStatusIndicator.css";
@@ -13,13 +13,13 @@ const marks = {
   in_progress: <i className="task-status-ring" />,
   pending: <><i /><i /><i /></>,
   planning: <><i /><i /><i /></>,
-  completed: <IconFlag size={14} strokeWidth={2} />,
   failed: <IconX size={13} strokeWidth={2.3} />,
   stopped: <IconStop size={11} strokeWidth={2.3} />,
   unknown: <span className="task-status-question">?</span>,
 };
 
-export default function TaskStatusIndicator({ status, label, unread = false }: Props): React.JSX.Element {
+export default function TaskStatusIndicator({ status, label, unread = false }: Props): React.JSX.Element | null {
+  if (status === "completed") return null;
   const statusLabel = label ?? (status === "unknown" ? "状态待核实" : TASK_STATUS_LABELS[status]);
   const description = unread ? `${statusLabel} · 未查看` : statusLabel;
   return (

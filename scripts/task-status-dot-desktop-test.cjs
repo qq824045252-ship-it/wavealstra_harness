@@ -2,8 +2,8 @@
  * 真实 Electron 验收：侧栏状态与未查看强调。
  *
  * 隔离 profile + 种子库 → 启动真实应用 → 断言：
- *  1. 已完成未查看与进行中分别展示状态。
- *  2. 点击已完成任务后清除未查看强调，并写入 DB done_acked_at。
+ *  1. 已完成任务留白，进行中任务显示状态。
+ *  2. 点击已完成任务后写入 DB done_acked_at。
  *  3. 重启应用后确认水位仍有效。
  *
  * 运行：
@@ -76,7 +76,7 @@ function dotProbe(title) {
     if (!item) return { found: false };
     return {
       found: true,
-      label: item.querySelector('.task-status-indicator')?.getAttribute('aria-label'),
+      label: item.querySelector('.task-status-indicator')?.getAttribute('aria-label') ?? null,
     };
   })()`;
 }
@@ -89,20 +89,18 @@ function dotProbe(title) {
     await launch('boot-1');
     const doneBefore = await evaluate(dotProbe('DOT_DONE_UNREAD'));
     assert(doneBefore.found, '种子任务出现在侧栏');
-    assert.equal(doneBefore.label, '已完成 · 未查看');
+    assert.equal(doneBefore.label, null, '已完成任务留白');
     const runningBefore = await evaluate(dotProbe('DOT_RUNNING'));
     assert.equal(runningBefore.label, '进行中');
-    report.tests.push('侧栏分别显示已完成未查看与进行中状态');
+    report.tests.push('已完成任务留白，进行中任务显示状态');
     const shot1 = await rpc('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'before-click.png'), Buffer.from(shot1.data, 'base64'));
 
-    // 点击任务后移除未查看强调，保留已完成状态。
+    // 打开任务仍会记录查看确认。
     await evaluate(`(() => {
       const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-item-title')?.textContent.trim() === 'DOT_DONE_UNREAD');
       item.click(); return true;
     })()`);
-    await until(async () => (await evaluate(dotProbe('DOT_DONE_UNREAD'))).label === '已完成', '点击后显示已完成', 20000);
-    report.tests.push('点击后已完成状态保留，未查看强调清除');
 
     // 持久化：DB 写入 done_acked_at（IPC 异步，重试到落库）
     let persisted;
@@ -121,7 +119,7 @@ function dotProbe(title) {
     await launch('boot-2');
     const doneAfter = await evaluate(dotProbe('DOT_DONE_UNREAD'));
     assert.equal(doneAfter.found, true, '重启后任务仍在侧栏');
-    assert.equal(doneAfter.label, '已完成');
+    assert.equal(doneAfter.label, null, '重启后已完成任务仍留白');
     const runningAfter = await evaluate(dotProbe('DOT_RUNNING'));
     assert.equal(runningAfter.label, '进行中');
     const persistedAfter = await evaluate(`window.api.db.listTasks().then(rows => rows.find(t => t.id === 'dot-done-unread'))`);

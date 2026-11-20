@@ -44,7 +44,6 @@ import {
   FileSpreadsheet,
   FileText,
   Filter,
-  Flag,
   Folder,
   FolderKanban,
   FolderOpen,
@@ -203,7 +202,6 @@ export const IconTrash = wrapLucide(Trash2);
 export const IconRotate = wrapLucide(RotateCcw);
 export const IconX = wrapLucide(X);
 export const IconCheck = wrapLucide(Check);
-export const IconFlag = wrapLucide(Flag);
 export const IconClock = wrapLucide(Clock);
 export const IconTarget = wrapLucide(Target);
 export const IconDownload = wrapLucide(Download);

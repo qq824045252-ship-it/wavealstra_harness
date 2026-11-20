@@ -17,7 +17,6 @@
 
 .task-status-indicator--in_progress { color: var(--accent); }
 .task-status-indicator--pending { color: var(--warning); }
-.task-status-indicator--completed { color: var(--success); }
 .task-status-indicator--failed { color: var(--danger); }
 
 .task-status-ring {
@@ -57,11 +56,6 @@
 .task-status-mark i:nth-child(2) { animation-delay: 140ms; }
 .task-status-mark i:nth-child(3) { animation-delay: 280ms; }
 
-.task-status-indicator--completed svg {
-  transform-origin: left center;
-  animation: task-status-flag 5700ms ease-out infinite;
-}
-
 .task-status-indicator--failed svg { animation: task-status-shake 4050ms ease-out infinite; }
 .task-status-indicator--stopped svg { animation: task-status-settle 4560ms ease-out infinite; }
 .task-status-question {
@@ -87,11 +81,6 @@
 @keyframes task-status-write {
   0%, 100% { transform: scaleX(.45); opacity: .64; }
   25%, 78% { transform: scaleX(1); opacity: 1; }
-}
-@keyframes task-status-flag {
-  0%, 100% { transform: scaleX(1); }
-  5% { transform: scaleX(.72); }
-  12% { transform: scaleX(1); }
 }
 @keyframes task-status-shake {
   0%, 13%, 100% { transform: translateX(0); }
