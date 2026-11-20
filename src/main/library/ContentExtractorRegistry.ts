@@ -2,46 +2,48 @@
  * ContentExtractorRegistry — 内容抽取统一注册表（Library FTS / Project Knowledge Retrieval 共用）。
  *
  * 解析器来源（全部复用仓库既有成熟依赖，禁止自造脆弱 parser）：
- * - text/markdown/html/csv：内置 TextExtractor（utf8 受管文件，256KB 上限）；
+ * - text/markdown/html/csv：按输出预算流式读取受管 UTF-8 文件；
  * - PDF：pdfjs-dist legacy（renderer 已有同一 fake-worker 主线程模式，
  *   globalThis.pdfjsWorker = { WorkerMessageHandler }，无需真实 Worker/Canvas）；
- * - DOCX / PPTX：jszip（成熟 ZIP）+ 定向 XML 抽取（word/document.xml → w:t、ppt/slides/slideN.xml → a:t，
+ * - DOCX / PPTX：选择性读取 ZIP XML（word/document.xml → w:t、ppt/slides/slideN.xml → a:t，
  *   Office 机器生成 XML 结构稳定，实体解码后按段落拼接）；
  * - XLSX：SheetJS `xlsx`（sheetRows 限行 + sheet_to_csv）；
  * - 图片：不 OCR → unsupported（requiresFileAccess）。
  *
  * 硬限制（防 zip bomb / 超大 / 损坏 / 耗时）：
- * - 输入文件 ≤40MB；ZIP 条目数 ≤2000；ZIP 解压总量 ≤64MB；单条目 ≤16MB；
- * - 输出 ≤200KB（超限截断并置 truncated）；逐阶段耗时预算 ≤8s（超时返回 error）；
+ * - ZIP 条目数 ≤2000，仅读取正文相关条目，解压总量 ≤64 MiB，单条目 ≤16 MiB；
+ * - PDF 按需读取原始字节，解析读取预算 64 MiB，最多 500 页；
+ * - 正文输出默认 ≤200 Ki 字符，索引 ≤1 Mi 字符，超限置 truncated。抽取预算 8 秒；
  * - 任何异常 → error（调用方降级 requiresFileAccess，模型不得误以为已读正文）。
  * 所有读取路径由调用方（LibraryService）先过 managed-path + symlink/junction 守卫。
  */
-import { readFileSync, statSync } from "node:fs";
+import { createReadStream } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
+import { createExtractionFailureSignal, readOfficeParts } from "./office-archive";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import type { LibraryItemKind } from "../../shared/library-ipc";
 
-export const EXTRACT_MAX_INPUT_BYTES = 40 * 1024 * 1024;
+export const EXTRACT_INDEX_MAX_OUTPUT_CHARS = 1024 * 1024;
 export const EXTRACT_MAX_OUTPUT_CHARS = 200 * 1024;
 export const EXTRACT_MAX_ZIP_ENTRIES = 2000;
 export const EXTRACT_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
 export const EXTRACT_MAX_ENTRY_BYTES = 16 * 1024 * 1024;
 export const EXTRACT_TIMEOUT_MS = 8000;
-const TEXT_INPUT_MAX_BYTES = 256 * 1024;
+const PDF_RANGE_READ_BUDGET = 64 * 1024 * 1024;
 
 export type ContentExtractionStatus = "extracted" | "unsupported" | "error";
 
 export interface ExtractionResult {
   status: ContentExtractionStatus;
   text: string | null;
-  /** 输出被 200KB 预算截断（模型不得误以为已读完整正文） */
+  /** 输出或解析范围受预算截断。 */
   truncated: boolean;
   error?: string;
 }
 
 export interface ExtractionBudget {
   startMs: number;
-  maxInputBytes: number;
   maxOutputChars: number;
   maxZipEntries: number;
   maxUncompressedBytes: number;
@@ -52,13 +54,16 @@ export interface ExtractionBudget {
 export function defaultBudget(now = Date.now()): ExtractionBudget {
   return {
     startMs: now,
-    maxInputBytes: EXTRACT_MAX_INPUT_BYTES,
     maxOutputChars: EXTRACT_MAX_OUTPUT_CHARS,
     maxZipEntries: EXTRACT_MAX_ZIP_ENTRIES,
     maxUncompressedBytes: EXTRACT_MAX_UNCOMPRESSED_BYTES,
     maxEntryBytes: EXTRACT_MAX_ENTRY_BYTES,
     timeoutMs: EXTRACT_TIMEOUT_MS,
   };
+}
+
+export function libraryIndexExtractionBudget(): ExtractionBudget {
+  return { ...defaultBudget(), maxOutputChars: EXTRACT_INDEX_MAX_OUTPUT_CHARS };
 }
 
 export interface ContentExtractor {
@@ -69,7 +74,7 @@ export interface ContentExtractor {
 
 const TEXT_KINDS: readonly LibraryItemKind[] = ["markdown", "html", "csv"];
 
-/** 文本类：utf8 受管文件，256KB 输入上限（与检索/预览预算一致），输出 200KB 截断 */
+/** 文本类按需读取 UTF-8，达到输出预算即停止。 */
 class TextContentExtractor implements ContentExtractor {
   readonly id = "text-utf8";
   canExtract(kind: LibraryItemKind): boolean {
@@ -77,11 +82,12 @@ class TextContentExtractor implements ContentExtractor {
   }
   async extract(absPath: string, budget: ExtractionBudget): Promise<ExtractionResult> {
     try {
-      const st = statSync(absPath);
-      if (!st.isFile() || st.size > TEXT_INPUT_MAX_BYTES) {
-        return { status: "unsupported", text: null, truncated: false, error: "文本文件超过 256KB 输入上限" };
+      let text = "";
+      for await (const chunk of createReadStream(absPath, { encoding: "utf8" })) {
+        checkBudget(budget);
+        text += (chunk as string).slice(0, budget.maxOutputChars + 1 - text.length);
+        if (text.length > budget.maxOutputChars) break;
       }
-      const text = readFileSync(absPath, "utf8");
       return capOutput(text, budget);
     } catch {
       return { status: "error", text: null, truncated: false, error: "文本读取失败" };
@@ -89,7 +95,7 @@ class TextContentExtractor implements ContentExtractor {
   }
 }
 
-/** 通用预算检查：超时 / 超输入大小 */
+/** 检查抽取耗时预算。 */
 function checkBudget(budget: ExtractionBudget): void {
   if (Date.now() - budget.startMs > budget.timeoutMs) {
     throw new Error("抽取超时");
@@ -119,42 +125,6 @@ function decodeXmlEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-/** ZIP 炸弹守卫：条目数 / 解压总量 / 单条目上限（loadAsync 前静态检查） */
-function guardZipArchive(zip: JSZip, budget: ExtractionBudget): void {
-  const entries = Object.values(zip.files);
-  if (entries.length > budget.maxZipEntries) {
-    throw new Error(`ZIP 条目数超限（${entries.length} > ${budget.maxZipEntries}）`);
-  }
-  let total = 0;
-  for (const entry of entries) {
-    const raw = entry as unknown as { _data?: { uncompressedSize?: number } };
-    const size = raw._data?.uncompressedSize ?? 0;
-    total += size;
-    if (size > budget.maxEntryBytes) {
-      throw new Error(`ZIP 单条目解压超限（${size} 字节）`);
-    }
-    if (total > budget.maxUncompressedBytes) {
-      throw new Error(`ZIP 解压总量超限（${total} 字节，疑似 zip bomb）`);
-    }
-  }
-}
-
-async function zipEntryText(
-  zip: JSZip,
-  name: string,
-  budget: ExtractionBudget,
-): Promise<string | null> {
-  const entry = zip.file(name);
-  if (!entry) return null;
-  const raw = entry as unknown as { _data?: { uncompressedSize?: number } };
-  const size = raw._data?.uncompressedSize ?? 0;
-  if (size > budget.maxEntryBytes) throw new Error(`ZIP 条目解压超限：${name}`);
-  checkBudget(budget);
-  const xml = await entry.async("string");
-  checkBudget(budget);
-  return xml;
-}
-
 /** OOXML 文本节点抽取（docx w:t / pptx a:t 通用）；tag 如 "w:t" / "a:t" */
 function collectXmlText(xml: string, tag: string): string {
   const parts: string[] = [];
@@ -167,41 +137,37 @@ function collectXmlText(xml: string, tag: string): string {
   return parts.join(" ");
 }
 
-/** DOCX：jszip + word/document.xml 的 w:t 抽取 */
+/** DOCX：word/document.xml 的 w:t 抽取 */
 class DocxExtractor implements ContentExtractor {
-  readonly id = "docx-jszip";
+  readonly id = "docx-ooxml";
   canExtract(kind: LibraryItemKind, mimeType: string): boolean {
     return kind === "office" && /docx|word|officedocument\.wordprocessingml/i.test(mimeType || "");
   }
   async extract(absPath: string, budget: ExtractionBudget): Promise<ExtractionResult> {
     try {
-      const buffer = readFileSync(absPath);
-      if (buffer.byteLength > budget.maxInputBytes) return { status: "unsupported", text: null, truncated: false };
-      const zip = await JSZip.loadAsync(buffer, { checkCRC32: false });
-      guardZipArchive(zip, budget);
-      const xml = await zipEntryText(zip, "word/document.xml", budget);
-      if (xml === null) return { status: "unsupported", text: null, truncated: false, error: "缺少 word/document.xml" };
-      return capOutput(collectXmlText(xml, "w:t"), budget);
+      const parts = await readOfficeParts(absPath, (name) => name === "word/document.xml", budget, () => checkBudget(budget));
+      const xml = parts.get("word/document.xml")?.toString("utf8");
+      if (xml === undefined) return { status: "unsupported", text: null, truncated: false, error: "缺少 word/document.xml" };
+      const text = collectXmlText(xml, "w:t");
+      checkBudget(budget);
+      return capOutput(text, budget);
     } catch (err) {
       return { status: "error", text: null, truncated: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 }
 
-/** PPTX：jszip + ppt/slides/slideN.xml 的 a:t 抽取（按页号排序） */
+/** PPTX：ppt/slides/slideN.xml 的 a:t 抽取（按页号排序） */
 class PptxExtractor implements ContentExtractor {
-  readonly id = "pptx-jszip";
+  readonly id = "pptx-ooxml";
   canExtract(kind: LibraryItemKind, mimeType: string): boolean {
     return kind === "office" && /pptx|presentationml/i.test(mimeType || "");
   }
   async extract(absPath: string, budget: ExtractionBudget): Promise<ExtractionResult> {
     try {
-      const buffer = readFileSync(absPath);
-      if (buffer.byteLength > budget.maxInputBytes) return { status: "unsupported", text: null, truncated: false };
-      const zip = await JSZip.loadAsync(buffer, { checkCRC32: false });
-      guardZipArchive(zip, budget);
-      const slides = Object.keys(zip.files)
-        .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      const archive = await readOfficeParts(absPath, (name) => /^ppt\/slides\/slide\d+\.xml$/.test(name),
+        budget, () => checkBudget(budget));
+      const slides = [...archive.keys()]
         .sort((a, b) => {
           const na = Number(/slide(\d+)/.exec(a)?.[1] ?? 0);
           const nb = Number(/slide(\d+)/.exec(b)?.[1] ?? 0);
@@ -211,8 +177,7 @@ class PptxExtractor implements ContentExtractor {
       const parts: string[] = [];
       for (const name of slides) {
         checkBudget(budget);
-        const xml = await zipEntryText(zip, name, budget);
-        if (xml === null) continue;
+        const xml = archive.get(name)!.toString("utf8");
         const text = collectXmlText(xml, "a:t").trim();
         if (text) parts.push(text);
         if (parts.join(" ").length > budget.maxOutputChars) break;
@@ -225,9 +190,6 @@ class PptxExtractor implements ContentExtractor {
 }
 
 /** XLSX：SheetJS（sheetRows 限行 + sheet_to_csv），多 sheet 拼接 */
-/** XLSX 同步解析（SheetJS read 阻塞主线程）：输入上限收紧到 20MB */
-const XLSX_MAX_INPUT_BYTES = 20 * 1024 * 1024;
-
 class XlsxExtractor implements ContentExtractor {
   readonly id = "xlsx-sheetjs";
   readonly maxSheetRows = 5000;
@@ -236,12 +198,20 @@ class XlsxExtractor implements ContentExtractor {
   }
   async extract(absPath: string, budget: ExtractionBudget): Promise<ExtractionResult> {
     try {
-      const buffer = readFileSync(absPath);
-      if (buffer.byteLength > XLSX_MAX_INPUT_BYTES) {
-        return { status: "unsupported", text: null, truncated: false, error: "XLSX 超过 20MB 输入上限（同步解析防阻塞）" };
-      }
+      const partsToRead = await readOfficeParts(absPath, (name) =>
+        name === "[Content_Types].xml" || name === "_rels/.rels"
+        || /^xl\/(?:workbook|styles|sharedStrings|metadata)\.xml$/i.test(name)
+        || /^xl\/theme\/[^/]+\.xml$/.test(name)
+        || name === "xl/_rels/workbook.xml.rels"
+        || /^xl\/worksheets\/[^/]+\.xml$/.test(name),
+        budget, () => checkBudget(budget));
+      checkBudget(budget);
+      const workbookParts = new JSZip();
+      for (const [name, content] of partsToRead) workbookParts.file(name, content);
+      const buffer = await workbookParts.generateAsync({ type: "nodebuffer", compression: "STORE" });
       checkBudget(budget);
       const wb = XLSX.read(buffer, { type: "buffer", sheetRows: this.maxSheetRows, cellDates: false });
+      checkBudget(budget);
       const parts: string[] = [];
       let rowsTruncated = false;
       for (const sheetName of wb.SheetNames) {
@@ -297,62 +267,69 @@ class PdfExtractor implements ContentExtractor {
   }
   async extract(absPath: string, budget: ExtractionBudget): Promise<ExtractionResult> {
     const restoreWarn = suppressKnownPdfjsNoise();
+    let file: FileHandle | undefined;
+    let loadingTask: { destroy(): Promise<void> } | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    const failed = createExtractionFailureSignal();
+    void failed.promise.catch(() => {});
+    let aborted = false;
     try {
-      const buffer = readFileSync(absPath);
-      if (buffer.byteLength > budget.maxInputBytes) return { status: "unsupported", text: null, truncated: false };
-      // pdfjs 模块初始化时会捕获 DOMMatrix 引用：polyfill 必须先于 import 安装
       installPdfjsNodePolyfills();
       const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
       const workerModule = await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
-      // 与 renderer pdfRuntime 相同的 fake-worker 主线程模式（legacy flavor）
       (globalThis as unknown as { pdfjsWorker?: unknown }).pdfjsWorker = {
         WorkerMessageHandler: workerModule.WorkerMessageHandler,
       };
+      const handle = file = await open(absPath, "r");
+      const { size } = await handle.stat();
       checkBudget(budget);
-      const getDocument = pdfjs.getDocument as (params: {
-        data: Uint8Array;
-        isEvalSupported?: boolean;
-        disableAutoFetch?: boolean;
-        useSystemFonts?: boolean;
-      }) => {
-        promise: Promise<{
-          numPages: number;
-          getPage: (page: number) => Promise<{
-            getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
-            cleanup: () => void;
-          }>;
-        }>;
-        destroy: () => Promise<void>;
-      };
-      const loadingTask = getDocument({
-        data: new Uint8Array(buffer),
-        isEvalSupported: false,
+      timer = setTimeout(() => failed.reject(new Error("PDF 抽取超时")),
+        Math.max(0, budget.timeoutMs - (Date.now() - budget.startMs)));
+      let readBytes = 0;
+      const range = new class extends pdfjs.PDFDataRangeTransport {
+        override requestDataRange(begin: number, end: number): void {
+          void this.readRange(begin, end).catch(failed.reject);
+        }
+        private async readRange(begin: number, end: number): Promise<void> {
+          checkBudget(budget);
+          if (aborted) return;
+          const length = end - begin;
+          if (begin < 0 || end > size || length <= 0 || (readBytes += length) > PDF_RANGE_READ_BUDGET) {
+            throw new Error("PDF 解析读取预算超限");
+          }
+          const chunk = new Uint8Array(length);
+          let offset = 0;
+          while (offset < length) {
+            const { bytesRead } = await handle.read(chunk, offset, length - offset, begin + offset);
+            if (bytesRead === 0) throw new Error("PDF 文件在抽取期间已变化");
+            offset += bytesRead;
+          }
+          if (!aborted) this.onDataRange(begin, chunk);
+        }
+        override abort(): void { aborted = true; }
+      }(size, null, true);
+      const task = pdfjs.getDocument({
+        range,
         disableAutoFetch: true,
+        disableStream: true,
         useSystemFonts: false,
       });
-      const doc = await loadingTask.promise;
+      loadingTask = task;
+      const doc = await Promise.race([task.promise, failed.promise]);
       checkBudget(budget);
       const parts: string[] = [];
-      try {
-        const pageCount = Math.min(doc.numPages, this.maxPages);
-        for (let page = 1; page <= pageCount; page += 1) {
-          checkBudget(budget);
-          const pageObj = await doc.getPage(page);
-          const textContent = await pageObj.getTextContent();
-          const text = (textContent.items as Array<{ str?: string }>)
-            .map((item) => item.str ?? "")
-            .join(" ")
-            .trim();
-          if (text) parts.push(text);
-          pageObj.cleanup();
-          if (parts.join(" ").length > budget.maxOutputChars) break;
-        }
-      } finally {
-        try {
-          await loadingTask.destroy();
-        } catch {
-          /* ignore */
-        }
+      const pageCount = Math.min(doc.numPages, this.maxPages);
+      let chars = 0;
+      for (let page = 1; page <= pageCount; page += 1) {
+        checkBudget(budget);
+        const pageObj = await Promise.race([doc.getPage(page), failed.promise]);
+        const textContent = await Promise.race([pageObj.getTextContent(), failed.promise]);
+        const text = textContent.items.map((item) => "str" in item ? item.str : "").join(" ").trim();
+        pageObj.cleanup();
+        if (!text) continue;
+        parts.push(text);
+        chars += text.length + 1;
+        if (chars - 1 > budget.maxOutputChars) break;
       }
       if (parts.length === 0) {
         return { status: "unsupported", text: null, truncated: false, error: "PDF 无可抽取文本（扫描件？）" };
@@ -362,6 +339,10 @@ class PdfExtractor implements ContentExtractor {
     } catch (err) {
       return { status: "error", text: null, truncated: false, error: err instanceof Error ? err.message : String(err) };
     } finally {
+      aborted = true;
+      if (loadingTask) await Promise.race([loadingTask.destroy(), failed.promise]).catch(() => {});
+      clearTimeout(timer);
+      await file?.close().catch(() => {});
       restoreWarn();
     }
   }
