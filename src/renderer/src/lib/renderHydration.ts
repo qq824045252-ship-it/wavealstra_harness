@@ -16,6 +16,7 @@
 import type { ArtifactDomainReadContentResponse } from "../../../shared/artifact-ipc";
 import type { ArtifactDescriptor } from "../../../shared/artifact-types";
 import { toRendererKind, type ArtifactRenderPayload } from "./artifactIngest";
+import { isOfficeUseKind } from "./officeUseFile";
 
 /** Renderer-only hydration 状态（§9：不是 Artifact Domain truth） */
 export type ArtifactRenderLoadState = "unloaded" | "loading" | "ready" | "error";
@@ -141,7 +142,7 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
 
   function ensure(artifactId: string): Promise<ArtifactRenderPayload | null> {
     const descriptor = deps.findDescriptor(artifactId);
-    if (!descriptor) return Promise.resolve(null);
+    if (!descriptor || isOfficeUseKind(toRendererKind(descriptor))) return Promise.resolve(null);
     const cached = deps.getCache(artifactId);
     if (cached && cached.artifactVersion === descriptor.version) {
       deps.setLoadState(artifactId, "ready");

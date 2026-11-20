@@ -59,6 +59,7 @@ export interface AppSettings {
   defaultModelId: string;
   proxyUrl: string;
   memoryEnabled: boolean;
+  automaticSemanticRecall: boolean;
   /** External Agent Memory Gateway master switch (loopback only). */
   memoryGatewayEnabled: boolean;
   /** Master write gate; each delegated grant must also be read-write. */
@@ -205,6 +206,7 @@ const DEFAULTS: AppSettings = {
   defaultModelId: "",
   proxyUrl: "",
   memoryEnabled: true,
+  automaticSemanticRecall: true,
   memoryGatewayEnabled: false,
   memoryGatewayWriteEnabled: false,
   memoryGatewayPort: 3351,

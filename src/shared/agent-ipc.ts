@@ -1514,6 +1514,7 @@ export interface AppSettingsDto {
   pausedProviderModels?: Record<string, string[]>;
   proxyUrl: string;
   memoryEnabled: boolean;
+  automaticSemanticRecall: boolean;
   /** External Agent Memory Gateway，默认关闭、仅 loopback。 */
   memoryGatewayEnabled?: boolean;
   /** 外部写入总闸；授权本身还必须是 read-write。 */

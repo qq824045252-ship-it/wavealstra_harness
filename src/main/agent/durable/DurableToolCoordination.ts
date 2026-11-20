@@ -4,6 +4,7 @@ import { withoutAbortSignal } from "@earendil-works/chord/context";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapper";
 import { WEB_ACCESS_TOOL_NAMES } from "../../../shared/native-tools";
+import { OFFICE_USE_TOOLS } from "../../../shared/office-use";
 import { fileResourceAddress, resourcePathContains } from "../../platform/resource-identity";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { workShellRead } from "../work/WorkShellRead";
@@ -24,11 +25,12 @@ const fileReads = new Set(["read", "ls", "find", "grep", "glob"]);
 const independentReads = new Set<string>([...WEB_ACCESS_TOOL_NAMES,
   "pstack_watch_pr", "pstack_worktrees",
   "tool_search", "mcp_list_tools", "mcp_list_resources", "mcp_read_resource", "mcp_status"]);
-const resourceReads = new Set(["library_list", "library_search", "library_read", "memory_search", "memory_get", "memory_history",
-  "workspace_notes_read", "project_notes_read", "project_knowledge_search", "project_knowledge_read", "project_memory_list", "project_memory_get", "project_memory_search"]);
+const resourceReads = new Set(["library_list", "library_search", "library_deep_search", "library_read", "memory_search", "memory_get", "memory_history",
+  "answer_rule_list", "answer_rule_test", "answer_rule_distill", "workspace_notes_read", "project_notes_read", "project_knowledge_search", "project_knowledge_read", "project_memory_list", "project_memory_get", "project_memory_search"]);
 // Goal state is transactional; file access remains owned by the actual task tools.
 const hostControls = new Set(["conversation_goal_get", "conversation_goal_create",
-  "conversation_goal_update", "conversation_goal_propose_complete"]);
+  "conversation_goal_update", "conversation_goal_propose_complete",
+  ...Object.values(OFFICE_USE_TOOLS)]);
 
 function conflicts(left: Access[], right: Access[]): boolean {
   return left.some(a => right.some(b => (a.mode === "write" || b.mode === "write") && (a.kind === "unknown" || b.kind === "unknown"

@@ -7,6 +7,7 @@ import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
 import MessageItem from "./MessageItem";
+import ChatAnswerRuleDialog from "@/components/answer-routing/ChatAnswerRuleDialog";
 import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
@@ -48,6 +49,7 @@ import {
   type FollowState,
 } from "@/lib/scrollFollow";
 import { useFullTaskHistory } from "./useFullTaskHistory";
+import { useDesktopShell } from "@/components/desktop/DesktopSection";
 import { chatPinPosition, latestHumanMessageId } from "@/lib/chatPinPosition";
 
 /** 新一轮用户消息置顶时距滚动容器顶的留白 */
@@ -236,9 +238,10 @@ function HomeHero(): React.JSX.Element {
 
 /** 侧边栏折叠后，头部左侧只保留「展开侧边栏」 */
 function CollapsedSidebarActions(): React.JSX.Element | null {
+  const desktop = useDesktopShell();
   const collapsed = useAppStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  if (!collapsed) return null;
+  if (desktop || !collapsed) return null;
   return (
     <button className="icon-btn" title="展开侧边栏" onClick={toggleSidebar}>
       <IconPanel size={15} />
@@ -311,6 +314,8 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts }: {
   );
 }
 
+const readingPositions = new Map<string, { top: number; following: boolean }>();
+
 export default function ChatView(): React.JSX.Element {
   const task = useActiveTask();
   const draftProjectId = useAppStore((s) => s.draft?.projectId);
@@ -375,6 +380,15 @@ export default function ChatView(): React.JSX.Element {
   const hasMessages = displayMessages.length > 0;
   const latestUserMessageId = useMemo(() => latestHumanMessageId(displayMessages), [displayMessages]);
   const activeChatId = task?.id;
+  const readingKey = activeChatId && JSON.stringify([activeChatId, task?.durable?.historyId]);
+  const turnTarget = useAppStore(s => s.answerRuleTurnTarget);
+  const turnMessage = useMemo(() => {
+    if (!turnTarget || turnTarget.taskId !== activeChatId) return;
+    const index = displayMessages.findIndex(m => m.role === "user" && (m.inputRequestId ?? m.id) === turnTarget.inputId);
+    if (index < 0) return;
+    const reply = displayMessages[index + 1];
+    return reply?.role === "assistant" ? reply : displayMessages[index];
+  }, [displayMessages, turnTarget, activeChatId]);
 
   /* ------------------------------------------------------------------
    * 滚动意图状态机（单一真源 lib/scrollFollow）：
@@ -446,17 +460,36 @@ export default function ChatView(): React.JSX.Element {
 
   useLayoutEffect(() => {
     if (pendingLocalSendRef.current?.taskId !== task?.id) pendingLocalSendRef.current = null;
-    if (!activeChatId || !hasMessages || fullHistory.loading) {
-      if (openedHistoryRef.current !== activeChatId) openedHistoryRef.current = undefined;
+    if (!readingKey || !hasMessages || fullHistory.loading) {
+      if (openedHistoryRef.current !== readingKey) openedHistoryRef.current = undefined;
       return;
     }
     const pending = pendingLocalSendRef.current;
     const localQuestionArrived = pending && latestUserMessageId !== null && pending.previousUserId !== latestUserMessageId;
     if (localQuestionArrived) pendingLocalSendRef.current = null;
-    const firstOpen = openedHistoryRef.current !== activeChatId;
-    openedHistoryRef.current = activeChatId;
+    const firstOpen = openedHistoryRef.current !== readingKey;
+    openedHistoryRef.current = readingKey;
+    if (firstOpen && !localQuestionArrived) {
+      const saved = readingPositions.get(readingKey);
+      if (saved && !saved.following) {
+        commitFollow(onUserScrollUp(initialFollowState()));
+        applyProgrammaticScrollTop(saved.top);
+        return;
+      }
+    }
     if (firstOpen || localQuestionArrived) pinUserMessageToTop();
-  }, [task?.id, activeChatId, hasMessages, fullHistory.loading, latestUserMessageId, pinUserMessageToTop]);
+  }, [task?.id, readingKey, hasMessages, fullHistory.loading, latestUserMessageId, pinUserMessageToTop, commitFollow, applyProgrammaticScrollTop]);
+
+  useLayoutEffect(() => {
+    if (!turnMessage || fullHistory.loading) return;
+    const node = document.getElementById(`msg-${turnMessage.id}`);
+    if (!node || !scrollRef.current?.contains(node)) return;
+    jumpToHistoryQuestion(turnMessage.id);
+    node.tabIndex = -1;
+    node.addEventListener("blur", () => node.removeAttribute("tabindex"), { once: true });
+    node.focus({ preventScroll: true });
+    useAppStore.setState({ answerRuleTurnTarget: undefined });
+  }, [turnMessage, fullHistory.loading, jumpToHistoryQuestion]);
 
   // 用户滚动意图监听（wheel / 指针拖动 / 键盘）+ 程序化滚动防护。
   // 判定优先「scroll position + programmatic guard」：
@@ -510,6 +543,9 @@ export default function ChatView(): React.JSX.Element {
         commitFollow({ ...next, direction: null });
       } else {
         commitFollow(next);
+      }
+      if (readingKey && !fullHistory.loading) {
+        readingPositions.set(readingKey, { top: el.scrollTop, following: next.follow });
       }
     };
     const markWheelIntent = (event: WheelEvent): void => {
@@ -577,7 +613,7 @@ export default function ChatView(): React.JSX.Element {
       document.removeEventListener("pointercancel", cancelPointerIntent);
       document.removeEventListener("keydown", markKeyboardIntent);
     };
-  }, [task?.id, hasMessages, commitFollow, bottomDistance]);
+  }, [readingKey, hasMessages, fullHistory.loading, commitFollow, bottomDistance]);
 
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
@@ -734,6 +770,11 @@ export default function ChatView(): React.JSX.Element {
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>
+          {turnTarget?.taskId === task.id && !fullHistory.loading && !turnMessage && (
+            <div className="conv-branch-error" role="status">当前对话历史中找不到这轮提问。
+              <button type="button" onClick={() => useAppStore.setState({ answerRuleTurnTarget: undefined })}>关闭</button>
+            </div>
+          )}
           {task.historyError && <div className="conv-branch-error" role="alert">{task.historyError}</div>}
           {fullHistory.error && <div className="conv-branch-error" role="alert">{fullHistory.error} <button type="button" onClick={fullHistory.retry}>重试</button></div>}
           {branchError && branchError.taskId === task.id && (
@@ -793,6 +834,7 @@ export default function ChatView(): React.JSX.Element {
       </div>
 
       <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
+      <ChatAnswerRuleDialog key={`teaching-${task.id}`} taskId={task.id} />
       <TaskModelRecoveryNotice recovery={task.modelRecovery} />
       {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
       {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}

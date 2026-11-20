@@ -105,6 +105,8 @@ cd wavealstra_harness
 
 # 2. 安装依赖
 pnpm install
+# 首次使用内置 Word、Excel、PPT 编辑器时下载本地引擎与中文字体，后续可离线打开文档
+pnpm prepare:office-runtime
 
 # 3. 启动开发环境（支持主进程与渲染进程热重载）
 pnpm dev

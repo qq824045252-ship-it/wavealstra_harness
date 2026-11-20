@@ -8,6 +8,7 @@
  */
 
 export const LibraryIpc = {
+  note: "library:note",
   snapshot: "library:snapshot",
   listItems: "library:listItems",
   getItem: "library:getItem",
@@ -28,6 +29,8 @@ export const LibraryIpc = {
   pickAndImport: "library:pickAndImport",
   markVisited: "library:markVisited",
   search: "library:search",
+  scopedDeepSearch: "library:scopedDeepSearch",
+  readScopedEvidence: "library:readScopedEvidence",
   previewUrl: "library:previewUrl",
   showInFolder: "library:showInFolder",
   createUrl: "library:createUrl",
@@ -49,6 +52,8 @@ export const LIBRARY_TITLE_MAX_CHARS = 200;
 export const LIBRARY_NAME_MAX_CHARS = 100;
 /** 文本正文上限（writeContent/工具 content 统一；1M 字符 ≈ 2MB UTF-8） */
 export const LIBRARY_CONTENT_MAX_CHARS = 1_000_000;
+/** Content larger than this is opened from its managed file instead of the inline reader or editor. */
+export const LIBRARY_INLINE_FILE_MAX_BYTES = 256 * 1024 * 1024;
 
 export type LibrarySpaceKind = "personal" | "team";
 
@@ -111,6 +116,10 @@ export interface LibraryItemDto {
   sizeBytes: number;
   owner: string;
   favorite: boolean;
+  pinned?: boolean;
+  tags?: string[];
+  trashedAt?: number;
+  clipSource?: LibraryClipSource;
   /** url 条目的目标地址 */
   url?: string;
   sourceType?: LibrarySourceType;
@@ -208,6 +217,7 @@ export interface LibraryCreateItemRequest {
   collectionId?: string | null;
   kind: Extract<LibraryItemKind, "markdown" | "html" | "csv">;
   title?: string;
+  content?: string;
 }
 
 export interface LibraryCreateCollectionRequest {
@@ -235,7 +245,73 @@ export interface LibraryUpdateItemRequest {
 export interface LibraryWriteContentRequest {
   id: string;
   content: string;
+  title?: string;
+  expectedContentHash?: string;
+  expectedTitle?: string;
 }
+
+export interface LibraryClipSource {
+  title: string;
+  url: string;
+  capturedAt: number;
+  failedImages?: string[];
+}
+
+export interface LibraryFolderImportTarget {
+  owner: LibraryOwnerScope;
+  spaceId: string | null;
+  collectionId: string | null;
+}
+
+export interface LibraryFolderImportResult {
+  folder: LibraryCollectionDto;
+  fileCount: number;
+  skippedEntries: number;
+}
+
+export type LibraryNoteOperation =
+  | { type: "trashList"; owner: LibraryOwnerScope }
+  | { type: "metadata"; owner: LibraryOwnerScope; id: string; tags?: string[]; pinned?: boolean }
+  | { type: "move"; owner: LibraryOwnerScope; ids: string[]; collectionId: string | null }
+  | { type: "trash"; owner: LibraryOwnerScope; ids: string[] }
+  | { type: "restore"; owner: LibraryOwnerScope; ids: string[] }
+  | { type: "merge"; owner: LibraryOwnerScope; ids: string[] }
+  | { type: "versions"; id: string }
+  | { type: "readVersion"; id: string; version: number }
+  | { type: "restoreVersion"; owner: LibraryOwnerScope; id: string; version: number; expectedContentHash?: string }
+  | { type: "addImage"; owner: LibraryOwnerScope; id: string; name: string; mime: string; bytes: Uint8Array }
+  | { type: "openLink"; url: string }
+  | { type: "attachment"; id: string }
+  | { type: "noteImage"; id: string; href: string; version?: number }
+  | { type: "backup"; owner: LibraryOwnerScope }
+  | { type: "restoreBackup"; owner: LibraryOwnerScope }
+  | ({ type: "importFolder" } & LibraryFolderImportTarget)
+  | { type: "export"; ids: string[]; format: "markdown" | "html" | "pdf"; html?: string }
+  | { type: "clip"; owner: LibraryOwnerScope; spaceId: string; collectionId: string | null; tags: string[]; tabId: string; selection: boolean };
+
+export interface LibraryNoteOperationResults {
+  trashList: LibraryItemDto[];
+  metadata: LibraryItemDto;
+  move: void;
+  trash: void;
+  restore: void;
+  merge: LibraryItemDto;
+  versions: LibraryVersionDto[];
+  readVersion: string;
+  restoreVersion: LibraryItemDto;
+  addImage: string;
+  openLink: void;
+  attachment: string;
+  noteImage: string;
+  backup: boolean;
+  restoreBackup: { restored: number; skipped: number } | null;
+  importFolder: LibraryFolderImportResult | null;
+  export: boolean;
+  clip: { item: LibraryItemDto; failedImages: string[] };
+}
+
+export type LibraryNoteOperationResult<T extends LibraryNoteOperation["type"]> =
+  { ok: true; value: LibraryNoteOperationResults[T] } | { ok: false; error: string };
 
 export interface LibraryImportFileRequest {
   spaceId: string;
@@ -284,11 +360,43 @@ export interface LibrarySearchRequest {
   owner?: LibraryOwnerScope;
   /** 同一归属内进一步收窄为整个空间或文件夹子树。 */
   reference?: { spaceId: string; collectionId?: string | null; itemId?: string };
+  filter?: { spaceId?: string; collectionIds?: Array<string | null>; tag?: string; favorite?: boolean };
+}
+
+export const LIBRARY_DEEP_SEARCH_QUERY_MAX_CHARS = 500;
+export const LIBRARY_DEEP_SEARCH_HIT_MAX = 12;
+
+export interface LibraryScopedDeepSearchRequest extends LibrarySearchRequest {
+  owner: LibraryOwnerScope;
+  limit?: number;
+}
+
+export interface LibraryDeepSearchHit {
+  itemId: string;
+  spaceId: string;
+  title: string;
+  text: string;
+  score: number;
+  round: number;
+  /** UTF-16 offsets into the indexed text (extracted text for PDF/Office). End is exclusive. */
+  source: { startOffset: number; endOffset: number; chunkHash: string };
+}
+
+export interface LibraryDeepSearchResult {
+  hits: LibraryDeepSearchHit[];
+  rounds: number;
+}
+
+export interface LibraryScopedEvidenceRequest extends Omit<LibraryScopedDeepSearchRequest, "query" | "limit"> {
+  itemId: string;
+  source: LibraryDeepSearchHit["source"];
 }
 
 export interface LibraryContentDto {
   item: LibraryItemDto;
   content: string;
+  contentTruncated?: boolean;
+  contentTooLarge?: boolean;
   previewUrl?: string;
   /** 受管文件绝对路径（非文本条目返回；需文件/预览工具读取） */
   managedPath?: string;

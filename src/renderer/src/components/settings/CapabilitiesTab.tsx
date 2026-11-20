@@ -6,7 +6,7 @@ import SearchSettings, { searchProviderLabel } from "./SearchSettings";
 import MultiModelConsultSettings from "./MultiModelConsultSettings";
 import { searchPolicyFromConfig, normalizeSearchPolicy, DEFAULT_SEARCH_POLICY } from "@shared/web-search";
 import type { WebSearchPolicy } from "@shared/web-search";
-import { BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
+import { BUILTIN_CAPABILITY_TOOLS, BUILTIN_CODEX_IMAGE_PROVIDER_ID } from "@shared/builtin-capabilities";
 import type { BuiltinCapabilitiesConfigDto, BuiltinCapabilitiesSnapshotDto, BuiltinCapabilityId, BuiltinCapabilityStatusDto } from "@shared/builtin-capabilities";
 import { API_PROTOCOL_CAPABILITIES, BAIDU_OCR_DEFAULT_MODE, BAIDU_OCR_MODES, CODEX_CONNECTION_ID, LOCAL_WHISPER_CONNECTION_ID, MEDIA_CAPABILITY_IDS, MEDIA_PROVIDER_PRESETS, OPENROUTER_API_ROOT, connectionCapabilities, connectionRequiresModel } from "@shared/media-capabilities";
 import type { ApiCapabilityConnection, ApiCapabilityProtocol, CapabilityConnectionOption, CapabilityCredentialChange, CapabilityVideoJobDto, MediaCapabilityBinding, MediaCapabilityId } from "@shared/media-capabilities";
@@ -793,6 +793,9 @@ export default function CapabilitiesTab(): React.JSX.Element {
 
     <SettingsSection title="本机工具" description="按需检查本机环境，不调用模型或安装组件。" collapsible>
       <CapabilityRow {...rowCommon("browser", draft.browser.enabled)} title="界面与桌面操作" description={`读取并操作浏览器、MyBuddy 界面和${desktopPlatformLabel(window.api?.platform)}。`} tools={statusById.get("browser")?.tools ?? ["browser_exec", "ui_exec", "computer_exec"]} onToggle={enabled => changeConfig(current => ({ ...current, browser: { enabled } }))}><div className="settings-row-desc">{desktopRuntimeSummary(window.api?.platform)}</div></CapabilityRow>
+      <CapabilityRow {...rowCommon("office-use", draft.officeUse?.enabled !== false)} title="Office Use" description="让任务助手查看文档结构、查找内容、跨工作表读取，并定位指定段落、单元格或文本框。修改建议由你确认后应用。" tools={BUILTIN_CAPABILITY_TOOLS["office-use"]} onToggle={enabled => changeConfig(current => ({ ...current, officeUse: { enabled } }))}>
+        <div className="settings-row-desc">支持 DOCX、XLSX、PPTX。检查内置编辑器资源，无需打开文件。</div>
+      </CapabilityRow>
       <CapabilityRow {...rowCommon("terminal", draft.execution.terminalEnabled)} title="命令执行" description="在任务中执行命令。" tools={["bash"]} onToggle={terminalEnabled => changeConfig(current => ({ ...current, execution: { ...current.execution, terminalEnabled } }))}><div className="settings-row-desc">Pi Bash · 任务隔离与审批</div></CapabilityRow>
       <CapabilityRow {...rowCommon("code-execution", draft.execution.codeExecutionEnabled)} title="代码执行" description="执行 JavaScript、PowerShell 和受管 Python。" tools={["execute_code"]} onToggle={codeExecutionEnabled => changeConfig(current => ({ ...current, execution: { ...current.execution, codeExecutionEnabled } }))}><div className="settings-row-desc">代码执行 · 受管 Python</div></CapabilityRow>
       <CapabilityRow {...rowCommon("subagent", draft.subagent.enabled)} title="子代理" description="委派有边界的独立子任务。" tools={["subagent", "subagent_list", "subagent_steer"]} onToggle={enabled => changeConfig(current => ({ ...current, subagent: { enabled } }))}><div className="settings-row-desc">模型登录在委派时验证。</div></CapabilityRow>

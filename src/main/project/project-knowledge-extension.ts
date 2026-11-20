@@ -80,7 +80,7 @@ export function createProjectKnowledgeExtension(bridge: ProjectKnowledgeExtensio
         params: { query: string; limit?: number; kind?: LibraryItemKind },
       ) => {
         try {
-          const result = retrieval.search(bridge.taskId, params.query, {
+          const result = await retrieval.searchAsync(bridge.taskId, params.query, {
             limit: params.limit,
             kind: params.kind,
           });

@@ -64,10 +64,10 @@ export function probeSkillDependency(id: string, cwd: string, activeTools: strin
   const checkedAt = Date.now();
   if (id === "officecli") {
     try {
-      execFileSync("officecli", ["--version"], { cwd, env: process.env, timeout: 2500, maxBuffer: 16_384, stdio: ["ignore", "pipe", "pipe"] });
+      execFileSync(process.env.MYBUDDY_OFFICECLI || "officecli", ["--version"], { cwd, env: process.env, timeout: 2500, maxBuffer: 16_384, stdio: ["ignore", "pipe", "pipe"] });
       return { state: "passed", reason: "目标应用进程环境 officecli --version 成功；不代表文件试运行成功", checkedAt };
     } catch {
-      return { state: "failed", reason: "内置 officecli --version 失败；请检查安装包完整性或重新安装 MyBuddy", checkedAt };
+      return { state: "failed", reason: "可选的 officecli --version 失败；请检查外部安装或 MYBUDDY_OFFICECLI 配置", checkedAt };
     }
   }
   if (id === "meeting-transcribe" || id === "npu-ocr") {

@@ -1,238 +1,282 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Artifact, Task } from "@/types";
 import { relativeTime, sizeLabel, useAppStore } from "@/store/appStore";
-import type { WelcomeMode } from "../../../../shared/agent-ipc";
-import { artifactVisibleForDisplay } from "../../../../shared/mode-profile";
+import type { WelcomeMode } from "@shared/agent-ipc";
+import type { ArtifactSnapshot } from "@shared/artifact-types";
+import { artifactVisibleForDisplay } from "@shared/mode-profile";
 import { toRendererArtifact } from "@/lib/artifactIngest";
-import { FileBadge } from "@/components/common/FileBadge";
-import {
-  IconChevronDown,
-  IconChevronRight,
-  IconFilter,
-  IconFolder,
-  IconSearch,
-} from "@/components/common/icons";
+import { inferArtifactKind } from "@/lib/workspace";
+import { FileBadge, fileBadgeExt } from "@/components/common/FileBadge";
+import { IconChevronDown, IconChevronRight, IconFolder, IconHardDrive, IconSearch } from "@/components/common/icons";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionState, useDesktopShell } from "@/components/desktop/DesktopSection";
+import "./desktop-secondary.css";
 
-const KIND_LABEL: Record<string, string> = {
+const KIND_LABEL = {
   markdown: "文档",
   table: "表格",
-  code: "文档",
+  code: "代码",
   html: "网页",
   image: "图片",
+  svg: "图片",
+  video: "视频",
+  audio: "音频",
+  pdf: "PDF",
+  docx: "文档",
+  xlsx: "表格",
+  pptx: "演示文稿",
+  cad: "CAD",
+} as const satisfies Record<Artifact["kind"], string>;
+
+const CATEGORIES = ["全部", "文档", "表格", "演示文稿", "图片", "网页", "音视频", "代码", "压缩包", "CAD"] as const;
+type ResultCategory = (typeof CATEGORIES)[number];
+type ResultType = (typeof KIND_LABEL)[Artifact["kind"]] | "压缩包";
+
+const FILE_TYPES: Readonly<Partial<Record<string, ResultType>>> = {
+  txt: "文档", log: "文档", doc: "文档",
+  csv: "表格", tsv: "表格",
+  ppt: "演示文稿",
+  zip: "压缩包", rar: "压缩包", "7z": "压缩包", tar: "压缩包", gz: "压缩包", bz2: "压缩包", xz: "压缩包",
+  fcstd: "CAD", step: "CAD", stp: "CAD", stl: "CAD", iges: "CAD", igs: "CAD", brep: "CAD", dwg: "CAD", dxf: "CAD",
 };
 
-const EMPTY_ARTIFACTS: Artifact[] = [];
+function resultType(artifact: Artifact): ResultType {
+  // Older registrations can use code or docx as a generic preview type.
+  if (artifact.kind === "code" || artifact.kind === "docx") {
+    const filename = artifact.path || artifact.name;
+    if (/\.(?:zip|rar|7z)\.(?:part)?\d+$/i.test(filename)) return "压缩包";
+    const extension = fileBadgeExt(filename);
+    if (Object.hasOwn(FILE_TYPES, extension)) return FILE_TYPES[extension] ?? KIND_LABEL[artifact.kind];
+    const inferred = inferArtifactKind(filename, "");
+    if (inferred !== "code") return KIND_LABEL[inferred];
+  }
+  return KIND_LABEL[artifact.kind];
+}
 
-/** 3E：按 task 生成产物渲染视图（projection 优先，保留渲染缓存内容；否则空等 Domain 快照） */
-function toTaskArtifactsView(
-  st: ReturnType<typeof useAppStore.getState>,
-  taskId: string,
-): Artifact[] {
-  const descriptors = st.artifactProjection.artifactsByTask[taskId];
-  if (!descriptors || descriptors.length === 0) return EMPTY_ARTIFACTS;
-  return descriptors.map((d) => toRendererArtifact(d, st.artifactRenderCache[d.id]));
+function resultCategory(type: ResultType): ResultCategory {
+  if (type === "PDF") return "文档";
+  if (type === "音频" || type === "视频") return "音视频";
+  return type;
+}
+
+interface ArtifactTask {
+  task: Task;
+  artifacts: Artifact[];
 }
 
 interface Group {
   id: string;
   name: string;
-  tasks: Task[];
+  tasks: ArtifactTask[];
 }
 
 export default function FilesPage(): React.JSX.Element {
+  const desktop = useDesktopShell();
   const tasks = useAppStore((s) => s.tasks);
   const spaces = useAppStore((s) => s.spaces);
-  const openArtifactInTask = useAppStore((s) => s.setActiveTask);
-  // V3.6：按任务模式的产物黑白名单过滤显示（仅显示层；文件照常落地、变更显示不受影响）
   const artifactPolicies = useAppStore((s) => s.artifactPolicies);
   const refreshArtifactPolicy = useAppStore((s) => s.refreshArtifactPolicy);
-  const [tab, setTab] = useState<"artifacts" | "cloud">("artifacts");
-  const [query, setQuery] = useState("");
-  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
-  /** 3E：跨任务产物缓存（taskId → 渲染视图）；唯一来源 = Artifact Domain（snapshot 触发一次性 legacy migration） */
-  const [taskArtifacts, setTaskArtifacts] = useState<Record<string, Artifact[]>>({});
+  const descriptorsByTask = useAppStore((s) => s.artifactProjection.artifactsByTask);
+  const renderCache = useAppStore((s) => s.artifactRenderCache);
+  const [tab, setTab] = useDesktopSectionState<"artifacts" | "cloud">("results-tab", "artifacts");
+  const [groupId, setGroupId] = useDesktopSectionState<string | null>("results-workspace", null);
+  const [query, setQuery] = useDesktopSectionState("results-search", "");
+  const [category, setCategory] = useDesktopSectionState<ResultCategory>("results-category", "全部");
+  const [collapsedGroups, setCollapsedGroups] = useDesktopSectionState<string[]>("results-collapsed", []);
+  const [snapshots, setSnapshots] = useState<Record<string, ArtifactSnapshot>>({});
+  const [loading, setLoading] = useState(false);
+  const resultsScroll = useRef<HTMLDivElement>(null);
 
-  // 挂载时：已有 projection 的任务直接派生（内容缓存保留）；未 hydration 的任务从 Domain 拉快照。
-  // 依赖 = 任务 id 列表（新增/删除任务才重拉；流式正文更新不打扰本页）。
-  const taskIdKey = tasks.map((t) => t.id).join(",");
+  const taskIdKey = tasks.map((task) => task.id).join(",");
   useEffect(() => {
     const api = window.api?.artifactDomain;
-    const st = useAppStore.getState();
-    const initial: Record<string, Artifact[]> = {};
-    for (const t of st.tasks) {
-      const view = toTaskArtifactsView(st, t.id);
-      if (view.length > 0) initial[t.id] = view;
+    const state = useAppStore.getState();
+    const missing = state.tasks.filter((task) => !state.artifactProjection.artifactsByTask[task.id]);
+    if (!api || missing.length === 0) {
+      setLoading(false);
+      return;
     }
-    setTaskArtifacts((prev) => {
-      // 已缓存（快照拉取过）的任务不覆盖，避免重复 IPC
-      const merged = { ...initial };
-      for (const t of st.tasks) {
-        if (prev[t.id] && !merged[t.id]) merged[t.id] = prev[t.id];
-      }
-      return merged;
-    });
-    const missing = st.tasks.filter(
-      (t) => !initial[t.id] && !st.artifactProjection.artifactsByTask[t.id],
-    );
-    if (!api || missing.length === 0) return;
     let cancelled = false;
-    void (async () => {
-      const entries = await Promise.all(
-        missing.map(async (t) => {
-          try {
-            const snap = await api.snapshot?.({ taskId: t.id });
-            return [t.id, (snap?.artifacts ?? []).map((d) => toRendererArtifact(d))] as const;
-          } catch (err) {
-            console.warn("[FilesPage] artifact snapshot failed", t.id, err);
-            return [t.id, EMPTY_ARTIFACTS] as const;
-          }
-        }),
-      );
+    setLoading(true);
+    void Promise.all(missing.map(async (task) => {
+      try {
+        return await api.snapshot({ taskId: task.id });
+      } catch (error) {
+        console.warn("[FilesPage] artifact snapshot failed", task.id, error);
+        return null;
+      }
+    })).then((results) => {
       if (cancelled) return;
-      setTaskArtifacts((prev) => {
-        const next = { ...prev };
-        for (const [id, arts] of entries) next[id] = arts;
+      setSnapshots((previous) => {
+        const next = { ...previous };
+        for (const snapshot of results) {
+          if (snapshot) next[snapshot.taskId] = snapshot;
+        }
         return next;
       });
-    })();
-    return () => {
-      cancelled = true;
-    };
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [taskIdKey]);
 
-  // 挂载时补拉各任务模式的产物显示策略（失败静默 = 不过滤，显示全部）
+  const taskModeKey = [...new Set(tasks.map((task) => task.welcomeMode).filter(Boolean))].sort().join(",");
   useEffect(() => {
-    const modes = [
-      ...new Set(tasks.map((t) => t.welcomeMode).filter((m): m is WelcomeMode => Boolean(m))),
-    ];
-    for (const mode of modes) void refreshArtifactPolicy(mode);
-  }, [taskIdKey, refreshArtifactPolicy]);
-
-  const groups = useMemo<Group[]>(() => {
-    const withArtifacts = tasks.filter((t) => (taskArtifacts[t.id]?.length ?? 0) > 0);
-    const ungrouped = withArtifacts.filter((t) => !t.spaceId);
-    const result: Group[] = [];
-    if (ungrouped.length > 0) result.push({ id: "none", name: "未分组", tasks: ungrouped });
-    for (const space of spaces) {
-      const items = withArtifacts.filter((t) => t.spaceId === space.id);
-      if (items.length > 0) result.push({ id: space.id, name: space.name, tasks: items });
+    for (const mode of taskModeKey.split(",")) {
+      if (mode) void refreshArtifactPolicy(mode as WelcomeMode);
     }
-    return result;
-  }, [tasks, spaces, taskArtifacts]);
+  }, [taskModeKey, refreshArtifactPolicy]);
 
-  const toggleGroup = (id: string): void => {
-    setCollapsedGroups((list) =>
-      list.includes(id) ? list.filter((x) => x !== id) : [...list, id],
-    );
+  const groups = useMemo(() => {
+    const groupsById = new Map<string, Group>();
+    for (const task of tasks) {
+      const descriptors = descriptorsByTask[task.id] ?? snapshots[task.id]?.artifacts;
+      if (!descriptors?.length) continue;
+      const artifacts = descriptors.map((entry) => toRendererArtifact(entry, renderCache[entry.id]));
+      const names = artifacts.map((item) => item.path ?? item.name);
+      const policy = task.welcomeMode ? artifactPolicies[task.welcomeMode] : undefined;
+      const visible = task.welcomeMode === "general"
+        ? artifacts
+        : artifacts.filter((artifact) => artifactVisibleForDisplay(artifact.path ?? artifact.name, policy, names));
+      if (visible.length === 0) continue;
+      const space = spaces.find((entry) => entry.id === task.spaceId);
+      const id = space?.id ?? "none";
+      const group = groupsById.get(id) ?? { id, name: space?.name ?? "独立任务", tasks: [] };
+      group.tasks.push({ task, artifacts: visible });
+      groupsById.set(id, group);
+    }
+    return [...groupsById.values()];
+  }, [tasks, spaces, descriptorsByTask, renderCache, snapshots, artifactPolicies]);
+
+  const activeGroup = groups.find((group) => group.id === groupId);
+  const needle = query.trim().toLowerCase();
+  const filtering = needle.length > 0 || category !== "全部";
+  const visibleGroups = groups
+    .filter((group) => !activeGroup || activeGroup.id === group.id)
+    .map((group) => ({
+      ...group,
+      tasks: group.tasks.map(({ task, artifacts }) => ({
+        task,
+        artifacts: artifacts.filter((artifact) => {
+          if (category !== "全部" && resultCategory(resultType(artifact)) !== category) return false;
+          return !needle || [artifact.name, task.title, group.name].some((name) => name.toLowerCase().includes(needle));
+        }),
+      })).filter(({ artifacts }) => artifacts.length > 0),
+    })).filter((group) => group.tasks.length > 0);
+
+  const selectGroup = (id: string | null): void => {
+    setGroupId(id);
+    setTab("artifacts");
   };
 
-  const matches = (name: string): boolean =>
-    !query.trim() || name.toLowerCase().includes(query.trim().toLowerCase());
+  const toggleGroup = (id: string): void => {
+    setCollapsedGroups((list) => list.includes(id) ? list.filter((item) => item !== id) : [...list, id]);
+  };
+
+  const openResult = (taskId: string, artifactId: string): void => {
+    const state = useAppStore.getState();
+    const snapshot = snapshots[taskId];
+    if (!state.artifactProjection.artifactsByTask[taskId] && snapshot) {
+      state.applyArtifactSnapshot(snapshot);
+      state.reconcileTaskMessageArtifacts(taskId);
+    }
+    state.setActiveTask(taskId);
+    state.openArtifact(artifactId);
+  };
+
+  const tabs = (
+    <>
+      <DesktopSectionRow active={tab === "artifacts" && !activeGroup} icon={<IconFolder size={15} />} onClick={() => selectGroup(null)}>
+        全部成果
+      </DesktopSectionRow>
+      <DesktopSectionRow active={tab === "cloud"} icon={<IconHardDrive size={15} />} onClick={() => setTab("cloud")}>
+        云端网盘
+      </DesktopSectionRow>
+    </>
+  );
 
   return (
-    <div className="page-scroll">
-      <div className="page-container">
-        <div className="page-title">任务成果</div>
-        <div className="page-sub">按工作空间查看任务生成的成果；长期参考资料在项目或工作空间的「资料」中管理。</div>
-
-        <div className="files-tabs">
-          <button
-            className={`files-tab ${tab === "artifacts" ? "active" : ""}`}
-            onClick={() => setTab("artifacts")}
-          >
-            <IconFolder size={14} /> 任务成果
-          </button>
-          <button
-            className={`files-tab ${tab === "cloud" ? "active" : ""}`}
-            onClick={() => setTab("cloud")}
-          >
-            <IconFolder size={14} /> 云端网盘
-          </button>
+    <div className="content-col desktop-results">
+      {desktop && <DesktopSectionSidebar title="任务成果" scrollKey="results">
+        {tabs}
+        {groups.length > 0 && <div className="desktop-section-group">来源</div>}
+        {groups.map((group) => (
+          <DesktopSectionRow key={group.id} active={tab === "artifacts" && activeGroup?.id === group.id}
+            icon={<IconFolder size={15} />} title={group.name} onClick={() => selectGroup(group.id)}>
+            {group.name}
+          </DesktopSectionRow>
+        ))}
+      </DesktopSectionSidebar>}
+      <header className="desktop-secondary-heading">
+        <h1>{tab === "cloud" ? "云端网盘" : activeGroup?.name ?? "任务成果"}</h1>
+        {tab === "artifacts" && (
+          <label className="desktop-secondary-search desktop-results-search">
+            <IconSearch size={14} />
+            <input placeholder="搜索文件、任务或工作空间" aria-label="搜索任务成果" value={query}
+              onChange={(event) => setQuery(event.target.value)} />
+          </label>
+        )}
+      </header>
+      {!desktop && <div className="desktop-results-inline-tabs">{tabs}</div>}
+      {tab === "artifacts" && (
+        <div className="desktop-results-categories" role="group" aria-label="成果分类">
+          {CATEGORIES.map((label) => (
+            <button type="button" key={label} aria-pressed={category === label} onClick={() => {
+              setCategory(label);
+              resultsScroll.current?.scrollTo({ top: 0 });
+            }}>
+              {label}
+            </button>
+          ))}
         </div>
-
-        {tab === "cloud" ? (
-          <div className="files-empty">云端网盘尚未开通，开通后任务成果可跨端同步。</div>
-        ) : (
-          <>
-            <div className="files-toolbar">
-              <button className="pill">
-                <IconFilter size={13} /> 全部类型 <IconChevronDown size={12} />
-              </button>
-              <div className="files-search">
-                <IconSearch size={14} />
-                <input
-                  placeholder="搜索文件、任务或工作空间"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-              </div>
-              <label className="files-fav">
-                <input type="checkbox" /> 我的收藏
-              </label>
+      )}
+      <div className="page-scroll" ref={resultsScroll}>
+        <div className="page-container desktop-results-container">
+          {tab === "cloud" ? (
+            <div className="desktop-secondary-empty">云端网盘尚未开通。</div>
+          ) : visibleGroups.length === 0 ? (
+            <div className="desktop-secondary-empty">
+              {loading ? "正在读取任务成果…" : filtering ? "没有匹配的成果。" : "暂无任务成果。"}
             </div>
-
-            <div className="files-table">
-              <div className="files-head">
-                <span>名称</span>
-                <span>类型</span>
-                <span>更新人</span>
-                <span>更新时间</span>
-                <span>大小</span>
+          ) : (
+            <div className="files-table desktop-results-table">
+              <div className="desktop-results-columns desktop-results-table-head" aria-hidden="true">
+                <span>名称</span><span>类型</span><span>更新时间</span><span>大小</span>
               </div>
-
-              {groups.map((group) => {
-                const collapsed = collapsedGroups.includes(group.id);
+              {visibleGroups.map((group) => {
+                const collapsed = !activeGroup && !filtering && collapsedGroups.includes(group.id);
                 return (
-                  <div key={group.id}>
-                    <button className="files-group-row" onClick={() => toggleGroup(group.id)}>
+                  <section key={group.id} aria-label={group.name}>
+                    {!activeGroup && <button type="button" className="files-group-row" aria-expanded={!collapsed} disabled={filtering} onClick={() => toggleGroup(group.id)}>
                       {collapsed ? <IconChevronRight size={13} /> : <IconChevronDown size={13} />}
                       <span className="files-group-name">{group.name}</span>
-                      <span className="files-group-count">{group.tasks.length}个任务</span>
-                    </button>
-                    {!collapsed &&
-                      group.tasks.map((task) => (
-                        <div key={task.id}>
-                          <div className="files-task-row">
-                            <span className="files-task-icon">
-                              <IconFolder size={14} />
+                      <span className="files-group-count">{group.tasks.length} 个任务</span>
+                    </button>}
+                    {!collapsed && group.tasks.map(({ task, artifacts }) => (
+                      <div key={task.id} className="desktop-results-task">
+                        <button type="button" className="files-task-row desktop-results-task-link"
+                          title="打开来源任务" onClick={() => useAppStore.getState().setActiveTask(task.id)}>
+                          <IconFolder size={14} />
+                          <span className="files-task-name">{task.title}</span>
+                        </button>
+                        {artifacts.map((artifact) => (
+                          <button type="button" key={artifact.id} className="files-file-row desktop-results-columns"
+                            title={artifact.name} onClick={() => openResult(task.id, artifact.id)}>
+                            <span className="files-file-name">
+                              <FileBadge name={artifact.name} size={18} />
+                              <span className="files-file-label">{artifact.name}</span>
                             </span>
-                            <span className="files-task-name">{task.title}</span>
-                          </div>
-                          {taskArtifacts[task.id]?.filter(
-                            (a) =>
-                              matches(a.name) &&
-                              (task.welcomeMode === "general" || artifactVisibleForDisplay(
-                                a.path ?? a.name,
-                                task.welcomeMode ? artifactPolicies[task.welcomeMode] : undefined,
-                                (taskArtifacts[task.id] ?? []).map((item) => item.path ?? item.name),
-                              )),
-                          ).map((a) => (
-                            <button
-                              key={a.id}
-                              className="files-file-row"
-                              onClick={() => {
-                                openArtifactInTask(task.id);
-                                useAppStore.getState().openArtifact(a.id);
-                              }}
-                            >
-                              <span className="files-file-name">
-                                <FileBadge name={a.name} size={18} />
-                                <span className="files-file-label">{a.name}</span>
-                              </span>
-                              <span className="files-cell">{KIND_LABEL[a.kind] ?? "文档"}</span>
-                              <span className="files-cell">CORREFLOW罗彬</span>
-                              <span className="files-cell">{relativeTime(task.updatedAt)}</span>
-                              <span className="files-cell">{sizeLabel(a.content)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ))}
-                  </div>
+                            <span className="files-cell">{resultType(artifact)}</span>
+                            <span className="files-cell">{relativeTime(task.updatedAt)}</span>
+                            <span className="files-cell">{artifact.content ? sizeLabel(artifact.content) : "—"}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </section>
                 );
               })}
             </div>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

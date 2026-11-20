@@ -29,7 +29,7 @@ export function createFileArtifactsActions(
   const { get, set } = storeContext;
   return {
     openLocalFile: async () => {
-      const file = await storeContext.getApi()?.pickLocalFile?.();
+      const file = await storeContext.getApi()?.pickLocalFile?.(true);
       if (!file) return;
 
       const kind = file.kind;

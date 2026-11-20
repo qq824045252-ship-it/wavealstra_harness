@@ -1,3 +1,4 @@
+import { DesktopSectionRow, DesktopSectionSidebar } from "@/components/desktop/DesktopSection";
 import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
@@ -38,6 +39,7 @@ import BusinessGatewayRegistration from "./BusinessGatewayRegistration";
 import SubagentSettingsTab from "./SubagentSettingsTab";
 import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
+import MaterialRetrievalTab from "./MaterialRetrievalTab";
 import AnswerRoutingTab from "./AnswerRoutingTab";
 import CapabilitiesTab from "./CapabilitiesTab";
 import RemoteAccessTab from "./RemoteAccessTab";
@@ -70,6 +72,7 @@ const TABS: Array<{ id: SettingsTab; icon: React.ComponentType<{ size?: number }
   { id: "modes", icon: IconPencil, label: "模式与提示词" },
   { id: "personalize", icon: IconSparkles, label: "个性化" },
   { id: "memory", icon: IconClock, label: "记忆" },
+  { id: "materialRetrieval", icon: IconBook, label: "资料检索" },
   { id: "answerRouting", icon: IconLink, label: "回答调度" },
   { id: "archive", icon: IconArchive, label: "归档管理" },
   { id: "models", icon: IconGrid, label: "模型" },
@@ -270,6 +273,8 @@ function formatBytes(bytes: number): string {
 }
 
 function SystemTab(): React.JSX.Element {
+  const theme = useAppStore(s => s.theme);
+  const setTheme = useAppStore(s => s.setTheme);
   const [uiFontSize, setUiFontSize] = useState(DEFAULT_UI_FONT_SIZE);
   const [codeFontSize, setCodeFontSize] = useState(DEFAULT_CODE_FONT_SIZE);
   const [uiFontFamily, setUiFontFamily] = useState("");
@@ -574,6 +579,12 @@ function SystemTab(): React.JSX.Element {
           <select className="pill-select" value={language} onChange={(event) => void changeLanguage(event.target.value)}>
             <option value="zh-CN">中文(简体)</option>
             <option value="en">English</option>
+          </select>
+        </Row>
+        <Row label="外观">
+          <select className="pill-select" aria-label="应用外观" value={theme} onChange={event => setTheme(event.target.value === "dark" ? "dark" : "light")}>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
           </select>
         </Row>
         <Row label="关闭时最小化到托盘" desc="关闭窗口后后台继续运行；托盘图标可恢复，菜单可退出。">
@@ -986,7 +997,6 @@ function DataTab(): React.JSX.Element {
 function ShortcutsTab(): React.JSX.Element {
   const shortcuts = [
     { label: "新建任务", keys: "Ctrl + N" },
-    { label: "全局搜索", keys: "Ctrl + K" },
     { label: "发送消息", keys: "Enter" },
     { label: "换行", keys: "Shift + Enter" },
     { label: "打开设置", keys: "Ctrl + ," },
@@ -1048,7 +1058,7 @@ function NotificationsTab(): React.JSX.Element {
       <SettingsSection title="任务">
         <Row label="任务完成" desc="长任务执行完成后提醒。">{toggle("taskCompleted")}</Row>
         <Row label="任务失败" desc="模型、工具或运行过程失败。">{toggle("taskFailed")}</Row>
-        <Row label="需要我处理" desc="工具审批、越界写入等需要用户介入时优先提醒。">{toggle("actionRequired")}</Row>
+        <Row label="需要我处理" desc="任务等待你确认、选择或补充信息时提醒。">{toggle("actionRequired")}</Row>
       </SettingsSection>
 
       <SettingsSection title="自动化与项目">
@@ -1350,6 +1360,7 @@ const TAB_TITLE: Record<SettingsTab, string> = {
   personalize: "个性化",
   memory: "记忆",
   answerRouting: "回答调度",
+  materialRetrieval: "资料检索",
   archive: "归档管理",
   models: "模型",
   subagent: "子代理设置",
@@ -1364,20 +1375,22 @@ const TAB_TITLE: Record<SettingsTab, string> = {
   help: "帮助与反馈",
 };
 
-export default function SettingsModal(): React.JSX.Element {
+export default function SettingsModal({ desktop = false }: { desktop?: boolean }): React.JSX.Element {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const tab = useAppStore((s) => s.settingsTab);
-  useBlockNativeSurfaces(true);
+  useBlockNativeSurfaces(!desktop);
+  const changeTab = (id: SettingsTab): void => { useAppStore.setState({ settingsTab: id }); };
 
-  return (
-    <div className="modal-overlay" onClick={() => setSettingsOpen(false)}>
-      <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="settings-nav">
+  const content = (
+      <div className={desktop ? "settings-modal desktop-settings" : "settings-modal"} onClick={(e) => e.stopPropagation()}>
+        {desktop ? <DesktopSectionSidebar title="设置" scrollKey="settings">
+          {TABS.map(t => <DesktopSectionRow key={t.id} className={`settings-nav-btn${tab === t.id ? " active" : ""}`} active={tab === t.id} icon={<t.icon size={15} />} onClick={() => changeTab(t.id)}>{t.label}</DesktopSectionRow>)}
+        </DesktopSectionSidebar> : <div className="settings-nav">
           {TABS.map((t) => (
             <button
               key={t.id}
               className={`settings-nav-btn ${tab === t.id ? "active" : ""}`}
-              onClick={() => useAppStore.setState({ settingsTab: t.id })}
+              onClick={() => changeTab(t.id)}
             >
               <span className="nav-icon">
                 <t.icon size={15} />
@@ -1385,11 +1398,11 @@ export default function SettingsModal(): React.JSX.Element {
               <span>{t.label}</span>
             </button>
           ))}
-        </div>
+        </div>}
         <div className="settings-content">
           <div className="settings-content-head">
             <span className="settings-content-title">{TAB_TITLE[tab]}</span>
-            <button className="icon-btn" onClick={() => setSettingsOpen(false)}>
+            <button className="icon-btn" title="关闭设置" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}>
               <IconX size={16} />
             </button>
           </div>
@@ -1400,6 +1413,7 @@ export default function SettingsModal(): React.JSX.Element {
             {tab === "personalize" && <PersonalizeTab />}
             {tab === "memory" && <MemoryTab />}
             {tab === "answerRouting" && <AnswerRoutingTab />}
+            {tab === "materialRetrieval" && <MaterialRetrievalTab />}
             {tab === "archive" && <ArchivesTab />}
             {tab === "models" && <ModelsTab />}
             {tab === "subagent" && <SubagentSettingsTab />}
@@ -1415,6 +1429,6 @@ export default function SettingsModal(): React.JSX.Element {
           </div>
         </div>
       </div>
-    </div>
   );
+  return desktop ? content : <div className="modal-overlay" onClick={() => setSettingsOpen(false)}>{content}</div>;
 }

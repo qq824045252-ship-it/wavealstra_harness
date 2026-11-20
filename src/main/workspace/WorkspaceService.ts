@@ -8,11 +8,6 @@ import type {
   WorkspaceFilePreviewDto,
   WorkspaceFileThumbnailDto,
 } from "../../shared/agent-ipc";
-import {
-  OFFICE_PREVIEW_MAX_BYTES,
-  OFFICE_PREVIEW_SKIP_MARKER,
-  shouldSkipOfficePreview,
-} from "../../shared/office-preview";
 
 /** 任务目录内部元数据/临时文件：不进文件树、不进快照（§5.4/§10.1） */
 function isInternalTaskFile(name: string): boolean {
@@ -65,7 +60,7 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 const BINARY_CAD_EXTENSIONS = new Set([
-  ".fcstd", ".stl", ".glb", ".blend", ".blend1",
+  ".fcstd", ".stl", ".glb", ".blend", ".blend1", ".dwg", ".dxf",
 ]);
 
 const SUPPORTED_EXTENSIONS = new Set([
@@ -231,9 +226,7 @@ export function decodeOfficeDataUri(dataUri: string): Buffer {
 
 /** Wave 5D-1：office 二进制内容 → 文本抽取（PromptContext/旧预览用，主进程执行） */
 export async function officeTextPreview(kind: string, dataUri: string, name: string): Promise<string> {
-  if (shouldSkipOfficePreview(dataUri)) return "";
   const buffer = decodeOfficeDataUri(dataUri);
-  if (buffer.byteLength > OFFICE_PREVIEW_MAX_BYTES) return "";
   if (kind === "docx") return docxPreview(buffer, name);
   if (kind === "xlsx") return xlsxPreview(buffer, name);
   if (kind === "pptx") return pptxPreview(buffer, name);
@@ -450,18 +443,6 @@ export async function previewWorkspaceFile(
   const name = basename(filePath);
   const ext = extname(name).toLowerCase();
   const kind = artifactKindForFile(filePath);
-  if (kind === "docx" || kind === "xlsx" || kind === "pptx") {
-    const st = await stat(filePath);
-    if (st.size > OFFICE_PREVIEW_MAX_BYTES) {
-      return {
-        path: filePath,
-        name,
-        kind,
-        content: OFFICE_PREVIEW_SKIP_MARKER,
-        language: ext.slice(1) || undefined,
-      };
-    }
-  }
   const buffer = await readFile(filePath);
   let content: string;
   let thumbnail: WorkspaceFileThumbnailDto | undefined;
@@ -703,10 +684,24 @@ export async function createWorkspacePath(
   }
 }
 
+export async function previewWorkspaceFileForEditor(filePath: string): Promise<WorkspaceFilePreviewDto> {
+  const name = basename(filePath);
+  const extension = extname(name).toLowerCase();
+  if (extension !== ".docx" && extension !== ".xlsx" && extension !== ".pptx") {
+    return previewWorkspaceFile(filePath);
+  }
+  const info = await stat(filePath);
+  if (!info.isFile()) throw new Error("不是普通文件");
+  return {
+    path: filePath, name, kind: artifactKindForFile(filePath), content: "",
+    language: extension.slice(1), bytes: info.size,
+  };
+}
+
 export async function readWorkspaceFile(root: string, relativePath: string, textPreview = false): Promise<WorkspaceFilePreviewDto> {
   const target = resolve(root, relativePath);
   assertInsideRoot(root, target);
-  if (!textPreview) return previewWorkspaceFile(target);
+  if (!textPreview) return previewWorkspaceFileForEditor(target);
   // Result cards only need bounded plain text, never full binary hydration.
   if (!(await lstat(target)).isFile()) throw new Error("不是普通文件");
   const handle = await open(target, "r");

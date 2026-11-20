@@ -530,8 +530,8 @@ function readdirSafe(dir: string): string[] {
     for (const m of code.matchAll(/\b(readContent|ArtifactDomainIpc)\b/g)) {
       hits.push(`${rel}: ${m[1]}`);
     }
-    // 五个二进制 Viewer 本身不得触碰任何 window.api（纯 content props 消费者）
-    if (/PdfViewer|DocxViewer|XlsxViewer|PptxViewer|ImageViewer/.test(base)) {
+    // PDF 和图片 Viewer 本身不得触碰任何 window.api（纯 content props 消费者）
+    if (/PdfViewer|ImageViewer/.test(base)) {
       for (const m of code.matchAll(/\bwindow\.api\b/g)) {
         directApi.push(`${rel}: ${m[0]}`);
       }

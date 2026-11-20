@@ -38,6 +38,7 @@ export type SettingsTab =
   | "modes"
   | "personalize"
   | "memory"
+  | "materialRetrieval"
   | "answerRouting"
   | "archive"
   | "models"
@@ -53,6 +54,7 @@ export type SettingsTab =
   | "help";
 
 export interface TaskDraft {
+  composerId?: string;
   /** Task id reserved for the worktree selected in this draft. */
   worktreeTaskId?: string;
   /** 发起时绑定的空间（空间内「+ 添加对话」） */

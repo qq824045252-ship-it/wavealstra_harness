@@ -16,6 +16,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { LibraryService } from "../src/main/library/LibraryService";
+import { ContentExtractorRegistry, EXTRACT_MAX_OUTPUT_CHARS } from "../src/main/library/ContentExtractorRegistry";
 import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
@@ -593,6 +594,11 @@ for (const [pid, name] of [["proj-a", "项目A"], ["proj-b", "项目B"]] as cons
 }
 
 /* ---- 9. Project Context Agent 工具：隔离/未绑定/readonly/上限（async 段） ---- */
+const reportIncompleteRun = () => {
+  console.error("project-knowledge-test: FAILED (execution ended before all assertions finished)");
+  process.exitCode = 1;
+};
+process.once("beforeExit", reportIncompleteRun);
 void (async () => {
   const bItem = library.createItem({
     spaceId: library.createSpace({ name: "B资料3", projectId: "proj-b" }).id,
@@ -860,6 +866,12 @@ void (async () => {
   ok(kSearchUnbound.content[0].text.includes("无默认长期资料"), "工具: 独立任务不自动获得个人资料标注");
   // 10. registry：文本抽取 + 二进制 unsupported + symlink 守卫
   ok((await retrieval.getExtractionStatus(longDoc)).status === "extracted", "registry: 文本类抽取成功");
+  const previewText = library.createItem({ spaceId: aSpace.id, kind: "markdown", title: "大文本预览" });
+  const previewInput = "字段".repeat(150 * 1024);
+  library.writeContent({ id: previewText.id, content: previewInput });
+  const preview = await new ContentExtractorRegistry().extract("markdown", "text/markdown", library.absolutePath(previewText));
+  ok(preview.status === "extracted" && preview.truncated && preview.text === previewInput.slice(0, EXTRACT_MAX_OUTPUT_CHARS),
+    "registry: 大于 256 KiB 的 UTF-8 文件返回有截断标记的预算内原文");
   ok((await retrieval.getExtractionStatus(binItem)).status !== "extracted", "registry: 损坏 pdf 抽取失败（降级 requiresFileAccess）");
   // symlink/junction 守卫：受管文件被替换为指向库外的 junction → 抽取必须拒绝（不读取库外）
   const juncOutside = join(root, "k-outside");
@@ -940,7 +952,7 @@ void (async () => {
     );
     const xlsxBuf = XLSXLib.write(xlsxWb, { type: "buffer" });
     // PDF：手写最小合法 PDF（精确 xref 偏移与流长度）
-    function buildMinimalPdf(text: string): Buffer {
+    function buildMinimalPdf(text: string, attachmentBytes = 0): Buffer {
       const streamData = `BT /F1 12 Tf 20 100 Td (${text}) Tj ET\n`;
       const objects = [
         "<< /Type /Catalog /Pages 2 0 R >>",
@@ -949,6 +961,9 @@ void (async () => {
         `<< /Length ${Buffer.byteLength(streamData, "utf8")} >>\nstream\n${streamData}endstream`,
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
       ];
+      if (attachmentBytes) {
+        objects.push(`<< /Length ${attachmentBytes} >>\nstream\n${"a".repeat(attachmentBytes)}\nendstream`);
+      }
       let body = "%PDF-1.4\n";
       const offsets: number[] = [];
       objects.forEach((obj, i) => {
@@ -1000,6 +1015,38 @@ void (async () => {
     ok(!pdfRead.requiresFileAccess && pdfRead.content.includes("sealplan2026 pdf extraction text"), "read: pdf（pdfjs）抽取文本");
     const pdfSearch = retrieval.search("task-ka", "sealplan2026");
     ok(pdfSearch.hits.some((h) => h.itemId === pdfItem.id), "FTS: pdf 正文可检索");
+
+    const largeOfficeBytes = Buffer.alloc(41 * 1024 * 1024);
+    const largeFixtures = [
+      { name: "large.docx", inner: docxBuf, media: "word/media/image.png", query: "密封圈选型" },
+      { name: "large.pptx", inner: pptxBuf, media: "ppt/media/image.png", query: "乙腈方案" },
+      { name: "large.xlsx", inner: xlsxBuf, media: "xl/media/image.png", query: "氯丁橡胶" },
+    ];
+    for (const fixture of largeFixtures) {
+      const archive = await JSZipLib.loadAsync(fixture.inner);
+      archive.file(fixture.media, largeOfficeBytes);
+      const path = join(offDir, fixture.name);
+      writeFileSync(path, await archive.generateAsync({ type: "nodebuffer", compression: "STORE" }));
+      const item = library.importFile({ spaceId: aSpace.id, sourcePath: path });
+      await library.indexExtractedText(item.id);
+      ok(retrieval.search("task-ka", fixture.query).hits.some(hit => hit.itemId === item.id),
+        `FTS: ${fixture.name} 超过 40 MiB，仍命中正文`);
+      library.deleteItem(item.id);
+    }
+    const largePdfFile = join(offDir, "large.pdf");
+    writeFileSync(largePdfFile, buildMinimalPdf("LargePdfEvidence limited range", 65 * 1024 * 1024));
+    const largePdf = library.importFile({ spaceId: aSpace.id, sourcePath: largePdfFile });
+    await library.indexExtractedText(largePdf.id);
+    ok(retrieval.search("task-ka", "LargePdfEvidence").hits.some(hit => hit.itemId === largePdf.id),
+      "FTS: 超过 64 MiB 的 PDF 按字节区间读取并命中正文");
+    db.connection.prepare("UPDATE library_items SET extract_status = 'unsupported' WHERE id = ?").run(largePdf.id);
+    db.connection.prepare("DELETE FROM library_fts WHERE item_id = ?").run(largePdf.id);
+    const reopenedLibrary = new LibraryService(db, { libraryRoot: library.root });
+    await reopenedLibrary.recoverPendingExtractions();
+    await reopenedLibrary.flushPendingIndexes();
+    ok(retrieval.search("task-ka", "LargePdfEvidence").hits.some(hit => hit.itemId === largePdf.id),
+      "启动后重新索引旧版因体积跳过的 PDF");
+    library.deleteItem(largePdf.id);
 
     // 跨项目隔离：B 任务搜不到 A 的 office 文档
     const officeB = retrieval.search("task-kb", "密封圈选型");
@@ -1053,7 +1100,7 @@ void (async () => {
     ok(bombStatus.status !== "extracted", `zip bomb 被拒（${bombStatus.error ?? "uncompressed 超限"}）`);
 
     // 输出超限：大文本 docx → 200KB 预算截断标记
-    const bigText = "字".repeat(300 * 1024);
+    const bigText = `${"字".repeat(300 * 1024)} ExtendedRagBudgetNeedle`;
     const bigBuf = await makeZip(
       {
         "word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${bigText}</w:t></w:r></w:p></w:body></w:document>`,
@@ -1065,6 +1112,8 @@ void (async () => {
     await library.indexExtractedText(bigItem.id);
     const bigStatus = await retrieval.getExtractionStatus(bigItem);
     ok(bigStatus.status === "extracted" && bigStatus.truncated === true, "大文本 docx → extracted + truncated（200KB 预算）");
+    ok(retrieval.search("task-ka", "ExtendedRagBudgetNeedle").hits.some(hit => hit.itemId === bigItem.id),
+      "大文本 DOCX 索引超过项目预览预算的正文");
 
     // 更新重索引：saveArtifact 刷新副本后 FTS 跟随新内容
     const artDir2 = join(root, "office-art");
@@ -1258,6 +1307,7 @@ void (async () => {
   })().then(() => {
     db.close();
     rmSync(root, { recursive: true, force: true });
+    process.removeListener("beforeExit", reportIncompleteRun);
     if (process.exitCode) {
       console.error("project-knowledge-test: FAILED");
     } else {

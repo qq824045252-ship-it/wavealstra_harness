@@ -49,4 +49,41 @@ await act(async () => listener?.(record("b", "status changed", 5, "system"))); a
 assert(host.textContent?.includes("连接状态未知"));
 assert(!host.querySelector(".assistant-conn-hint")?.textContent?.includes("QQ已连接"));
 await act(async () => root.unmount()); assert.equal(listener, undefined);
-console.log("Gateway presentation PASS: no invented success, history/live dedupe, stable selection and late response isolation");
+
+const { DesktopSectionProvider } = await import("../src/renderer/src/components/desktop/DesktopSection");
+const desktopHost = d.body.appendChild(d.createElement("div"));
+const sectionHost = d.body.appendChild(d.createElement("aside"));
+const desktopRoot = createRoot(desktopHost);
+const renderDesktop = async (showAssistant: boolean): Promise<void> => {
+  statusFails = false;
+  await act(async () => desktopRoot.render(
+    <DesktopSectionProvider target={sectionHost}>
+      {showAssistant ? <AssistantPage /> : <p>其他模块</p>}
+    </DesktopSectionProvider>,
+  ));
+  await tick();
+};
+const history = [record("a", "first conversation", 10), record("b", "second conversation", 11)];
+const firstMount = requests.length;
+await renderDesktop(true);
+await act(async () => requests[firstMount].resolve(history)); await tick();
+assert.equal(sectionHost.querySelector("h2")?.textContent, "助手");
+assert.equal(desktopHost.querySelector(".assistant-conv-list"), null);
+const firstConversation = sectionHost.querySelector<HTMLButtonElement>('[aria-label="QQ · a"]');
+assert(firstConversation);
+await act(async () => firstConversation.click()); await tick();
+assert(desktopHost.querySelector(".message-list")?.textContent?.includes("first conversation"));
+await renderDesktop(false);
+assert(desktopHost.textContent?.includes("其他模块"));
+assert.equal(sectionHost.querySelector("h2"), null);
+
+const secondMount = requests.length;
+await renderDesktop(true);
+await act(async () => requests[secondMount].resolve(history)); await tick();
+assert.equal(sectionHost.querySelector('[aria-current="true"]')?.getAttribute("aria-label"), "QQ · a");
+assert(desktopHost.querySelector(".message-list")?.textContent?.includes("first conversation"));
+assert(!desktopHost.querySelector(".message-list")?.textContent?.includes("second conversation"));
+await act(async () => desktopRoot.unmount());
+assert.equal(listener, undefined);
+
+console.log("Gateway presentation PASS: stable selection, history/live dedupe, late response isolation and desktop conversation restore");

@@ -228,7 +228,7 @@ export interface PreloadApi {
   botWork: import("../shared/bot-work-ipc").BotWorkApi;
   setTheme: (theme: "light" | "dark") => void;
   onThemeRequest: (callback: () => void) => void;
-  pickLocalFile: () => Promise<WorkspaceFilePreviewDto | null>;
+  pickLocalFile: (editorPreview?: boolean) => Promise<WorkspaceFilePreviewDto | null>;
   pickLocalFolder: () => Promise<{ path: string; name: string } | null>;
   /** 目录是否仍在磁盘上（空间文件夹被挪走后为 false） */
   pathExists: (folderPath: string) => Promise<boolean>;
@@ -489,6 +489,7 @@ export interface PreloadApi {
     detectCloudflared: () => Promise<RemoteCloudflaredStatus>;
   };
   answerRouting: import("../shared/answer-routing").AnswerRoutingApi;
+  materialRetrieval: import("../shared/materialRetrieval").MaterialRetrievalApi;
   memory: {
     organization: () => Promise<import("../shared/memory-organization").MemoryOrganizationRun | null>;
     startOrganization: (resumeId?: string) => Promise<import("../shared/memory-organization").MemoryOrganizationRun>;
@@ -531,6 +532,7 @@ export interface PreloadApi {
     skillCandidates: (status?: MemorySkillCandidateStatus, limit?: number) => Promise<MemorySkillCandidateDto[]>;
     skillLearningStatus: () => Promise<import("../shared/memory-kernel").MemorySkillLearningStatusDto>;
     deleteSkillHistory: (request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest) => Promise<number>;
+    distillSkills: (action: "start" | "pause") => Promise<import("../shared/memory-kernel").SkillDistillationProgress | undefined>;
     refreshSkillCandidates: () => Promise<{ evaluated: number; created: number; updated: number; staled: number; ready: number }>;
     approveSkillCandidate: (id: string) => Promise<MemorySkillCandidateDto>;
     rejectSkillCandidate: (id: string) => Promise<MemorySkillCandidateDto>;
@@ -541,9 +543,11 @@ export interface PreloadApi {
     refreshSkillRevisionCandidates: () => Promise<{ evaluated: number; created: number; staled: number; ready: number }>;
     approveSkillRevisionCandidate: (id: string) => Promise<{ candidate: MemorySkillRevisionCandidateDto; skill: SkillDto }>;
     rejectSkillRevisionCandidate: (id: string) => Promise<MemorySkillRevisionCandidateDto>;
-    reindexSemantic: (limit?: number) => Promise<{ indexed: number; failed: number }>;
+    reindexSemantic: (limit?: number) => Promise<import("../shared/memory-kernel").MemoryIndexResult>;
   };
   db: {
+    getSemanticModelStatus: () => Promise<{ status: string; error: string | null; modelsRoot: string }>;
+    getSemanticIndexStats: () => Promise<{ running: boolean; total: number; completed: number; pending: number; failed: number }>;
     listSpaces: () => Promise<SpaceDto[]>;
     listTasks: () => Promise<TaskDto[]>;
     listProjects: (includeArchived?: boolean) => Promise<ProjectDto[]>;
@@ -804,6 +808,7 @@ export interface PreloadApi {
     onRemoved: (callback: (ev: import("../shared/artifact-types").ArtifactRemovedEvent) => void) => () => void;
   };
   library: {
+    note: <T extends import("../shared/library-ipc").LibraryNoteOperation>(request: T) => Promise<import("../shared/library-ipc").LibraryNoteOperationResult<T["type"]>>;
     snapshot: () => Promise<import("../shared/library-ipc").LibrarySnapshotDto>;
     listItems: (req: import("../shared/library-ipc").LibraryListItemsRequest) => Promise<import("../shared/library-ipc").LibraryItemDto[]>;
     getItem: (id: string) => Promise<import("../shared/library-ipc").LibraryItemDto | null>;
@@ -827,6 +832,8 @@ export interface PreloadApi {
     }) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryItemDto[] } | { ok: false; error: string }>;
     markVisited: (id: string) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryItemDto } | { ok: false; error: string }>;
     search: (req: import("../shared/library-ipc").LibrarySearchRequest) => Promise<import("../shared/library-ipc").LibraryListRowDto[]>;
+    scopedDeepSearch: (req: import("../shared/library-ipc").LibraryScopedDeepSearchRequest) => Promise<import("../shared/library-ipc").LibraryDeepSearchResult>;
+    readScopedEvidence: (req: import("../shared/library-ipc").LibraryScopedEvidenceRequest) => Promise<{ text: string }>;
     previewUrl: (id: string) => Promise<string>;
     showInFolder: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     createUrl: (req: import("../shared/library-ipc").LibraryCreateUrlRequest) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryItemDto } | { ok: false; error: string }>;
@@ -837,6 +844,7 @@ export interface PreloadApi {
     listTaskReferences: (taskId: string) => Promise<{ ok: true; value: import("../shared/library-ipc").LibraryTaskReferencesDto } | { ok: false; error: string }>;
   };
   htmlEdit: import("../shared/html-edit").HtmlEditApi;
+  officeUse: import("../shared/office-use").OfficeUseApi;
   projectNotes: import("../shared/project-notes").ProjectNotesApi;
   workspace: {
     notes: import("../shared/workspace-notes").WorkspaceNotesApi;

@@ -2,6 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const cp = require('node:child_process'), net = require('node:net'), http = require('node:http');
 const {once} = require('node:events');
+const {performance} = require('node:perf_hooks');
 const root = path.resolve(__dirname, '..');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const freePort = () => new Promise((resolve, reject) => {
@@ -9,14 +10,86 @@ const freePort = () => new Promise((resolve, reject) => {
   server.listen(0, '127.0.0.1', () => {const port = server.address().port; server.close(() => resolve(port));});
 });
 
-exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
+const timestamp = () => performance.timeOrigin + performance.now();
+const hasText = value => typeof value === 'string' && value.trim().length > 0;
+
+function observeProviderRecord(data, arrival, timing, rawUsageAudit) {
+  if (!data) return;
+  if (data === '[DONE]') {
+    timing.upstreamDoneAtMs ??= arrival;
+    return;
+  }
+  let record;
+  try {record = JSON.parse(data);} catch {return;}
+  if (!record || typeof record !== 'object') return;
+  if (record.model) timing.responseModel = record.model;
+  if (record.usage) {
+    timing.usage = record.usage;
+    rawUsageAudit.push({requestIndex: timing.requestIndex, usage: record.usage});
+  }
+  if (record.error) timing.providerPayloadError = record.error;
+  for (const choice of Array.isArray(record.choices) ? record.choices : []) {
+    const delta = choice?.delta || choice?.message || {};
+    const reasoning = hasText(delta.reasoning_content) || hasText(delta.reasoning) || hasText(delta.reasoning_text);
+    const answer = hasText(delta.content);
+    const tools = Array.isArray(delta.tool_calls) ? delta.tool_calls : delta.function_call ? [{function: delta.function_call}] : [];
+    const tool = tools.some(call => hasText(call?.id) || hasText(call?.type) ||
+      hasText(call?.function?.name) || hasText(call?.function?.arguments));
+    const toolContent = tools.some(call => hasText(call?.function?.name) || hasText(call?.function?.arguments));
+    if (reasoning || answer || tool) timing.firstDeltaAtMs ??= arrival;
+    if (reasoning) timing.firstReasoningAtMs ??= arrival;
+    if (answer) timing.firstAnswerAtMs ??= arrival;
+    if (tool) timing.firstToolAtMs ??= arrival;
+    if (toolContent) timing.firstToolContentAtMs ??= arrival;
+  }
+}
+
+function createSseAudit(emit) {
+  let pending = '', lines = [], skipLeadingLf = false;
+  const consumeLine = (line, arrival) => {
+    if (!line) {
+      if (lines.length) emit(lines.join('\n'), arrival);
+      lines = [];
+    } else if (line === 'data' || line.startsWith('data:')) {
+      lines.push(line.slice(5).replace(/^ /, ''));
+    }
+  };
+  return (text, arrival, end = false) => {
+    if (skipLeadingLf && text.length) {
+      if (text[0] === '\n') text = text.slice(1);
+      skipLeadingLf = false;
+    }
+    const unscanned = pending.length;
+    pending += text;
+    let start = 0;
+    for (let i = unscanned; i < pending.length; i++) {
+      if (pending[i] !== '\r' && pending[i] !== '\n') continue;
+      consumeLine(pending.slice(start, i), arrival);
+      if (pending[i] === '\r') {
+        if (pending[i + 1] === '\n') i++;
+        else if (i === pending.length - 1) skipLeadingLf = true;
+      }
+      start = i + 1;
+    }
+    pending = pending.slice(start);
+    if (end) {
+      if (pending) consumeLine(pending, arrival);
+      consumeLine('', arrival);
+    }
+  };
+}
+
+exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
   const agentDir = path.join(home, '.mybuddy'), userData = path.join(home, 'electron-profile');
   fs.mkdirSync(out, {recursive: true}); fs.mkdirSync(agentDir, {recursive: true});
   const report = {status: 'running', home, checks: [], actualControlChecks: [], seededPresentationFacts: [], rendererErrors: [],
-    displayMode: 'visible Electron', inputMode: 'CDP', realCredentialsRead: false};
+    displayMode: benchmark ? 'hidden isolated Electron window' : 'visible Electron', inputMode: 'CDP', realCredentialsRead: false};
   const requests = [], rawUsageAudit = [], pending = new Map(), owned = new Set();
+  const providerTimings = [], benchmarkJournal = [];
+  let providerScope;
+  if (benchmark) report.providerTimings = providerTimings;
   let child, socket, relay, log, sequence = 0;
   const until = async (fn, label) => {
     const deadline = Date.now() + 180000;
@@ -26,9 +99,30 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
       if (Date.now() > deadline) throw Error('Timeout: ' + label); await wait(150);
     }
   };
-  const rpc = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-    const id = ++sequence, timer = setTimeout(() => {pending.delete(id); reject(Error('CDP timeout: ' + method));}, 20000);
-    pending.set(id, {resolve, reject, timer}); socket.send(JSON.stringify({id, method, params, ...(sessionId ? {sessionId} : {})}));
+  const disconnect = connection => {
+    if (socket === connection) socket = undefined;
+    for (const [id, call] of pending) {
+      if (call.connection !== connection) continue;
+      pending.delete(id);
+      clearTimeout(call.timer);
+      call.reject(Error('CDP connection closed'));
+    }
+  };
+  const rpc = (method, params = {}, sessionId, timeoutMs = rpcTimeoutMs) => new Promise((resolve, reject) => {
+    const connection = socket;
+    if (connection?.readyState !== WebSocket.OPEN) {
+      reject(Error('CDP connection is not open'));
+      return;
+    }
+    const id = ++sequence, timer = setTimeout(() => {pending.delete(id); reject(Error('CDP timeout: ' + method));}, timeoutMs);
+    pending.set(id, {connection, resolve, reject, timer});
+    try {
+      connection.send(JSON.stringify({id, method, params, ...(sessionId ? {sessionId} : {})}));
+    } catch (error) {
+      pending.delete(id);
+      clearTimeout(timer);
+      reject(error);
+    }
   });
   const evaluate = async expression => {
     const result = await rpc('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true});
@@ -36,9 +130,12 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
     return result.result?.value;
   };
   const stop = async () => {
-    if (socket?.readyState === WebSocket.OPEN) await rpc('Browser.close').catch(() => {});
-    socket?.close(); socket = undefined;
-    for (const call of pending.values()) {clearTimeout(call.timer); call.reject(Error('Dev app closed'));} pending.clear();
+    const connection = socket;
+    if (connection?.readyState === WebSocket.OPEN) await rpc('Browser.close', {}, undefined, 2000).catch(() => {});
+    if (connection) {
+      disconnect(connection);
+      connection.close();
+    }
     // Bootstrap records only our main PID; never signal renderers or other app instances.
     const identityFile = path.join(home, 'main-identity.json');
     if (fs.existsSync(identityFile)) {
@@ -68,28 +165,111 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
     let model = {id: 'ui-fixture', name: 'UI only (no model server)', reasoning: false, input: ['text'],
       contextWindow: 128000, maxTokens: 4096, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}};
     let baseUrl = 'http://127.0.0.1:1/v1';
-    if (liveModel) {
+    if (fixtureModel) {
+      model = {...model, name: 'Deterministic test model'};
+      report.modelConfiguration = {kind: 'fixture'};
+      relay = http.createServer(async (req, res) => {
+        try {
+          const chunks = [];
+          for await (const chunk of req) chunks.push(chunk);
+          const request = JSON.parse(Buffer.concat(chunks));
+          requests.push(request);
+          const reply = await fixtureModel(request);
+          const tool = typeof reply === 'string' ? undefined : reply.tool;
+          const message = tool ? { role: 'assistant', tool_calls: [{ id: 'call-' + requests.length, type: 'function',
+            function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] } : { role: 'assistant', content: reply };
+          const finishReason = tool ? 'tool_calls' : 'stop';
+          const base = {id: 'fixture-' + requests.length, model: model.id, created: Math.floor(Date.now()/1000)};
+          const usage = {prompt_tokens: 20, completion_tokens: 4, total_tokens: 24};
+          if (request.stream) {
+            res.writeHead(200, {'Content-Type': 'text/event-stream'});
+            const send = (choices, tokens) => res.write('data: ' + JSON.stringify({
+              ...base, object: 'chat.completion.chunk', choices, ...(tokens ? {usage: tokens} : {}),
+            }) + '\n\n');
+            const delta = tool ? { ...message, tool_calls: [{ index: 0, ...message.tool_calls[0] }] } : message;
+            send([{index: 0, delta, finish_reason: null}]);
+            send([{index: 0, delta: {}, finish_reason: finishReason}], usage);
+            res.end('data: [DONE]\n\n');
+          } else {
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({...base, object: 'chat.completion', usage,
+              choices: [{index: 0, message, finish_reason: finishReason}]}));
+          }
+        } catch (error) {
+          const body = String(error);
+          report.providerError = {status: 400, body};
+          res.writeHead(400, {'Content-Type': 'application/json'}).end(JSON.stringify({error:{message:body}}));
+        }
+      });
+      relay.listen(0, '127.0.0.1');
+      await once(relay, 'listening');
+      baseUrl = 'http://127.0.0.1:' + relay.address().port + '/v1';
+    } else if (liveModel) {
       const upstream = process.env.MYBUDDY_LIVE_BASE_URL || 'http://127.0.0.1:3425/v1';
       const loaded = await require('./live-model-config.cjs').loadLiveModel(upstream, process.env.MYBUDDY_LIVE_MODEL || 'auto/deepseek-v4.1-flash');
       model = loaded.model; report.modelConfiguration = loaded.evidence;
+      if (benchmark) {
+        const url = new URL(upstream);
+        report.providerUpstream = url.origin + url.pathname;
+      }
       relay = http.createServer(async (req, res) => {
+        const timing = benchmark ? {sequence: providerTimings.length + 1, receivedAtMs: timestamp(),
+          method: req.method, scope: providerScope, responseBytes: 0} : null;
+        if (timing) providerTimings.push(timing);
         try {
           const chunks = []; for await (const chunk of req) chunks.push(chunk);
           const body = Buffer.concat(chunks), requestIndex = requests.length;
+          if (timing) Object.assign(timing, {requestIndex, requestBytes: body.length, requestBodyAtMs: timestamp()});
           const request = JSON.parse(body); requests.push(request);
-          fs.appendFileSync(path.join(out, 'provider-requests.jsonl'), JSON.stringify({at: Date.now(), body: request}) + '\n');
+          const journalRecord = {at: Date.now(), body: request};
+          if (timing) {
+            benchmarkJournal.push(journalRecord);
+            Object.assign(timing, {model: request.model, stream: Boolean(request.stream),
+              messageCount: request.messages?.length, toolCount: request.tools?.length,
+              maxOutputTokens: request.max_completion_tokens ?? request.max_tokens, reasoningEffort: request.reasoning_effort});
+          } else {
+            fs.appendFileSync(path.join(out, 'provider-requests.jsonl'), JSON.stringify(journalRecord) + '\n');
+          }
+          if (timing) timing.upstreamSentAtMs = timestamp();
           const response = await fetch(upstream.replace(/\/$/, '') + '/chat/completions', {
             method: 'POST', headers: {'content-type': 'application/json', authorization: 'Bearer isolated-live-check'},
             body, signal: AbortSignal.timeout(240000),
           });
-          res.writeHead(response.status, {'content-type': response.headers.get('content-type') || 'application/json'});
+          const contentType = response.headers.get('content-type') || 'application/json';
+          if (timing) Object.assign(timing, {upstreamHeadersAtMs: timestamp(), upstreamStatus: response.status, contentType});
+          res.writeHead(response.status, {'content-type': contentType});
           const decoder = new TextDecoder(); let audit = '';
-          for await (const chunk of response.body) {res.write(chunk); audit += decoder.decode(chunk, {stream: true});}
-          audit += decoder.decode(); res.end();
-          const records = request.stream ? audit.split('\n').filter(line => line.startsWith('data: {')).map(line => line.slice(6)) : [audit];
-          for (const record of records) {try {const usage = JSON.parse(record).usage; if (usage) rawUsageAudit.push({requestIndex, usage});} catch {}}
-          if (!response.ok) report.providerError = {status: response.status, body: audit};
-        } catch (error) {res.destroy(error); report.transportError = String(error);}
+          const emit = timing && ((data, arrival) => observeProviderRecord(data, arrival, timing, rawUsageAudit));
+          const sse = emit && /text\/event-stream/i.test(contentType) ? createSseAudit(emit) : null;
+          for await (const chunk of response.body) {
+            const arrival = timing && timestamp();
+            if (timing) {
+              timing.responseBytes += chunk.byteLength;
+              if (chunk.byteLength) timing.upstreamFirstByteAtMs ??= arrival;
+            }
+            res.write(chunk);
+            const decoded = decoder.decode(chunk, {stream: true});
+            if (sse) sse(decoded, arrival);
+            if (!sse || !response.ok) audit += decoded;
+          }
+          if (timing) timing.upstreamEndAtMs = timestamp();
+          const remainder = decoder.decode();
+          audit += remainder;
+          res.end();
+          if (sse) sse(remainder, timing.upstreamEndAtMs, true);
+          else if (emit) emit(audit, timing.upstreamEndAtMs);
+          else {
+            const records = request.stream ? audit.split('\n').filter(line => line.startsWith('data: {')).map(line => line.slice(6)) : [audit];
+            for (const record of records) {try {const usage = JSON.parse(record).usage; if (usage) rawUsageAudit.push({requestIndex, usage});} catch {}}
+          }
+          if (!response.ok) {
+            if (timing) timing.error = 'HTTP ' + response.status;
+            report.providerError = {status: response.status, body: audit};
+          }
+        } catch (error) {
+          if (timing) Object.assign(timing, {error: String(error), upstreamEndAtMs: timestamp()});
+          res.destroy(error); report.transportError = String(error);
+        }
       });
       relay.listen(0, '127.0.0.1'); await once(relay, 'listening'); baseUrl = 'http://127.0.0.1:' + relay.address().port + '/v1';
     }
@@ -101,6 +281,11 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
       remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly', ...settings}));
     const port = await freePort(), devOut = path.join(out, 'dev-output'), bootstrap = path.join(home, 'bootstrap.cjs');
     fs.writeFileSync(bootstrap, `const fs=require('node:fs');const r=require('node:module').createRequire(${JSON.stringify(path.join(root, 'package.json'))});const {app}=r('electron');app.setAppPath(${JSON.stringify(root)});app.setPath('userData',${JSON.stringify(userData)});fs.writeFileSync(${JSON.stringify(path.join(home, 'main-identity.json'))},JSON.stringify({pid:process.pid,userData:${JSON.stringify(userData)},startTime:process.platform==='linux'?fs.readFileSync('/proc/self/stat','utf8').split(') ')[1].trim().split(/\\s+/)[19]:undefined}));require(${JSON.stringify(path.join(devOut, 'main/index.js'))});`);
+    if (benchmark) {
+      const bootstrapCode = fs.readFileSync(bootstrap, 'utf8');
+      fs.writeFileSync(bootstrap, bootstrapCode.replace("const {app}=r('electron');",
+        "const {app}=r('electron');app.on('browser-window-created',(_event,window)=>window.on('show',()=>window.hide()));"));
+    }
     const env = {...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agentDir,
       APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'),
       XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local/share'),
@@ -108,8 +293,20 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
     delete env.ELECTRON_RUN_AS_NODE;
     const pnpm = process.env.npm_execpath;
     if (!pnpm || !fs.existsSync(pnpm)) throw Error('Run the registered pnpm test script');
+    const rendererConfig = (benchmark || !watchRenderer) ? path.join(home, 'isolated-electron-vite.mjs') : undefined;
+    if (rendererConfig) {
+      const baseConfig = path.relative(home, path.join(root, 'electron.vite.config.ts')).split(path.sep).join('/');
+      fs.writeFileSync(rendererConfig, [
+        'import config from ' + JSON.stringify(baseConfig),
+        'config.renderer.server = { ...config.renderer.server, hmr: false, watch: null }',
+        'export default config',
+      ].join('\n'));
+      report.rendererWatch = false;
+      report.rendererHmr = false;
+    }
     const launch = async () => {
       const args = ['dev', '--outDir', devOut, '--entry', bootstrap];
+      if (rendererConfig) args.push('--config', rendererConfig);
       log = fs.openSync(path.join(out, 'dev.log'), 'a');
       const native = !/\.[cm]?js$/i.test(pnpm);
       child = cp.spawn(native ? pnpm : process.execPath, native ? args : [pnpm, ...args], {cwd: root, env, windowsHide: true, stdio: ['ignore', log, log]});
@@ -119,8 +316,12 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
         if (child.exitCode !== null) throw Error('pnpm dev exited ' + child.exitCode);
         try {target = (await fetch('http://127.0.0.1:' + port + '/json/list', {signal: AbortSignal.timeout(2000)}).then(r => r.json())).find(t => t.type === 'page' && /localhost|127\.0\.0\.1/.test(t.url)); return Boolean(target);} catch {return false;}
       }, 'dev renderer');
-      socket = new WebSocket(target.webSocketDebuggerUrl); await once(socket, 'open');
-      socket.addEventListener('message', event => {
+      const connection = new WebSocket(target.webSocketDebuggerUrl);
+      socket = connection;
+      connection.addEventListener('close', () => disconnect(connection), {once: true});
+      await once(connection, 'open');
+      connection.addEventListener('message', event => {
+        if (socket !== connection) return;
         const value = JSON.parse(event.data);
         if (value.method === 'Runtime.exceptionThrown') report.rendererErrors.push(value.params);
         const call = pending.get(value.id); if (!call) return;
@@ -128,14 +329,17 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
       });
       await rpc('Runtime.enable'); await rpc('Page.enable');
       await rpc('Emulation.setDeviceMetricsOverride', {width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false});
-      await until(() => evaluate('Boolean(window.api?.agent && document.querySelector(".sidebar-user-main"))'), 'app and preload');
+      const ready = benchmark ? 'Boolean(window.api?.agent)' : 'Boolean(window.api?.agent && document.querySelector("[data-desktop-main]"))';
+      await until(() => evaluate(ready), 'app and preload');
       await until(() => evaluate(`import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().models.length>0)`), 'initial store bootstrap');
-      await rpc('Page.bringToFront');
+      if (benchmark) report.rendererReadyAtMs = Date.now();
+      if (!benchmark) await rpc('Page.bringToFront');
     };
     await launch();
-    await scenario({evaluate, rpc, until, report, out, home, requests, rawUsageAudit,
+    await scenario({evaluate, rpc, until, report, out, home, requests, rawUsageAudit, providerTimings,
+      setProviderScope: scope => {providerScope = scope;},
       getOwnedElectronPids: () => fs.existsSync(path.join(home, 'main-identity.json')) ? [JSON.parse(fs.readFileSync(path.join(home, 'main-identity.json'))).pid] : [],
-      restart: async () => {await stop(); await launch();}});
+      restart: async (whileStopped) => {await stop(); await whileStopped?.(); await launch();}});
     report.status = 'passed';
   } catch (error) {
     report.status = 'failed'; report.error = String(error.stack || error); process.exitCode = 1;
@@ -143,6 +347,8 @@ exports.run = async (scenario, {name, liveModel = false, settings = {}}) => {
   } finally {
     await stop().catch(error => {report.cleanupError = String(error); report.status = 'failed'; process.exitCode = 1;});
     relay?.closeAllConnections(); relay?.close(); report.ownedMainPids = [...owned];
+    if (benchmarkJournal.length) fs.writeFileSync(path.join(out, 'provider-requests.jsonl'),
+      benchmarkJournal.map(record => JSON.stringify(record) + '\n').join(''));
     fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests));
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
     console.log(name + ': ' + report.status + '; ' + path.join(out, 'report.json'));

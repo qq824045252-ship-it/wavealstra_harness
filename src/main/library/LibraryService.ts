@@ -1,10 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFile, lstat, mkdtemp, rm, stat } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import type { AppDatabase } from "../db/AppDatabase";
 import { getLibraryDir } from "../paths";
+import { resolvedPathKey } from "../platform/paths";
 import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
+import { getMaterialRetrievalSettings, hybridLibrarySpaceIds, resolveMaterialRetrievalScope } from "./MaterialRetrievalSettings";
+import type { LibraryQueryScope } from "./library-query-scope";
+import { SemanticRouter } from "../retrieval/SemanticRouter";
+import { WorkspaceSemanticProvider, type SemanticCandidate } from "../retrieval/WorkspaceSemanticProvider";
+import { fuseHits } from "../workspace/WorkspaceResourceLocator.semantic";
+import type { WorkspaceResourceHit } from "../../shared/workspace-resource-locator";
 import { LibraryRepository } from "./LibraryRepository";
+import { runLibraryDeepSearch, type LibraryEvidenceJudge } from "./LibraryDeepSearch";
+import type { LibraryNotesBackup } from "./library-note-backup";
+import { rewriteImportedFolderLinks, scanLibraryImportFolder } from "./library-folder-import";
+import { copyWithRewrittenNoteLinks } from "./library-note-links";
 import { assertArtifactSaveOwner, ensureOwnedLibrarySpace, ownedLibraryQueryScope, type LibraryOwnerReference } from "./library-ownership";
 import {
   isLibrarySpacePermittedForProject,
@@ -15,15 +27,16 @@ import {
   type LibraryTaskScopeOptions,
 } from "./library-task-scope";
 export type { LibraryTaskScope, LibraryTaskScopeOptions } from "./library-task-scope";
-import { assertManagedPathSafe, assertManagedWritePathSafe, atomicCopyFileSync, atomicWriteFileSync } from "./library-file-io";
+import { assertManagedPathSafe, assertManagedWritePathSafe, atomicCopyFileSync, atomicWriteFileSync, readUtf8Prefix, sha256File } from "./library-file-io";
 import {
   ContentExtractorRegistry,
-  defaultBudget,
+  EXTRACT_MAX_OUTPUT_CHARS,
+  libraryIndexExtractionBudget,
   type ExtractionResult,
 } from "./ContentExtractorRegistry";
-import { chunkText } from "./library-chunker";
+import { chunkText, chunkTextParts, LIBRARY_CHUNK_DEFAULTS } from "./library-chunker";
+import { LARGE_LIBRARY_TEXT_BYTES, libraryTextContains, readLibraryTextParts } from "./library-text-parts";
 import {
-  SemanticModelManager,
   SEMANTIC_DIMENSION,
   SEMANTIC_MODEL_ID,
   SEMANTIC_MODEL_VERSION,
@@ -31,12 +44,14 @@ import {
 import { getSemanticRuntime } from "../retrieval/SemanticRuntime";
 import {
   LIBRARY_CONTENT_MAX_CHARS,
+  LIBRARY_INLINE_FILE_MAX_BYTES,
   LIBRARY_NAME_MAX_CHARS,
   LIBRARY_PERSONAL_SPACE_ID,
   LIBRARY_TITLE_MAX_CHARS,
   type LibraryArtifactDto,
   type LibraryAttachRequest,
   type LibraryCollectionDto,
+  type LibraryClipSource,
   type LibraryContentDto,
   type LibraryCreateCollectionRequest,
   type LibraryCreateItemRequest,
@@ -44,6 +59,8 @@ import {
   type LibraryCreateUrlRequest,
   type LibraryDetachRequest,
   type LibraryFavoriteRequest,
+  type LibraryFolderImportResult,
+  type LibraryFolderImportTarget,
   type LibraryImportFileRequest,
   type LibraryItemDto,
   type LibraryItemKind,
@@ -53,6 +70,7 @@ import {
   type LibraryRenameCollectionRequest,
   type LibraryRetrievalHitDto,
   type LibrarySaveArtifactRequest,
+  type LibrarySearchRequest,
   type LibrarySnapshotDto,
   type LibrarySpaceDto,
   type LibraryTaskReferenceDto,
@@ -90,7 +108,6 @@ export class LibraryUpdatePartialStateError extends Error {
   }
 }
 /** 单次导入/保存到受管库的最大字节数（显式拒绝超大文件，避免整份复制拖垮） */
-export const LIBRARY_MAX_IMPORT_BYTES = 256 * 1024 * 1024;
 
 const WELCOME_TITLE = "一分钟玩转资料库";
 
@@ -121,7 +138,7 @@ const WELCOME_MD = `# 一分钟玩转资料库
 资料库内不提供内联编辑，读取走文件/预览工具。
 `;
 
-const TEXT_SEARCH_MAX_BYTES = 256 * 1024;
+const TEXT_FTS_COVERAGE_VERSION = 4;
 
 function mimeForKind(kind: LibraryItemKind): string {
   switch (kind) {
@@ -290,11 +307,6 @@ function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-/** 文件字节 hash（文本/二进制统一；用于 artifact 内容一致性判定） */
-function sha256File(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
 function guessMime(filename: string): string {
   const ext = extname(filename).toLowerCase();
   switch (ext) {
@@ -331,6 +343,12 @@ function guessMime(filename: string): string {
   }
 }
 
+const SEMANTIC_INDEX_JOIN = `
+  LEFT JOIN library_chunk_embeddings e ON e.chunk_id = c.id AND e.chunk_hash = c.hash
+    AND e.model_id = ? AND e.model_version = ? AND e.dimension = ? AND length(e.embedding) = ?
+`;
+const SEMANTIC_INDEX_PARAMS = [SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4] as const;
+
 export class LibraryService {
   private readonly repo: LibraryRepository;
   readonly root: string;
@@ -358,7 +376,7 @@ export class LibraryService {
     this.textFtsFallbackIds.clear();
     if (!this.repo.ftsAvailable()) return;
     for (const id of this.repo.listTextFtsMissingCandidates()) this.textFtsFallbackIds.add(id);
-    if (Number(this.repo.getIndexState("text-fts-coverage-version") ?? 0) < 2) {
+    if (Number(this.repo.getIndexState("text-fts-coverage-version") ?? 0) < TEXT_FTS_COVERAGE_VERSION) {
       for (const id of this.repo.listTextFtsCoverageUpgradeCandidates()) this.textFtsFallbackIds.add(id);
     }
   }
@@ -394,7 +412,7 @@ export class LibraryService {
 
   isItemVisibleInScope(item: LibraryItemDto, scope: LibraryTaskScope): boolean {
     const space = this.repo.getSpace(item.spaceId);
-    return Boolean(space && this.isSpaceVisibleInScope(space, scope) && itemVisibleInTaskScope(item, scope));
+    return Boolean(!item.trashedAt && space && this.isSpaceVisibleInScope(space, scope) && itemVisibleInTaskScope(item, scope));
   }
 
   isSpaceWritableInScope(space: LibrarySpaceDto, scope: LibraryTaskScope): boolean {
@@ -427,10 +445,178 @@ export class LibraryService {
     return this.searchInScope(query, this.resolveTaskScope(taskId, projectFallback));
   }
 
-  searchOwnedScope(query: string, owner: LibraryOwnerScope, reference?: LibraryOwnerReference): LibraryListRowDto[] {
+  searchOwnedScope(query: string, owner: LibraryOwnerScope, reference?: LibraryOwnerReference, filter?: LibrarySearchRequest["filter"]): LibraryListRowDto[] {
+    return this.search(query, this.ownedSearchScope(owner, reference, filter));
+  }
+
+  private ownedSearchScope(owner: LibraryOwnerScope, reference?: LibraryOwnerReference, filter?: LibrarySearchRequest["filter"]): LibraryQueryScope {
     const scope = ownedLibraryQueryScope(this.db, this.repo, owner, reference);
-    if (!scope.spaceIds.size && !scope.collectionIds?.size && !scope.itemIds?.size) return [];
-    return this.search(query, scope);
+    if (!filter) return scope;
+    if (filter.spaceId && !filter.collectionIds && !filter.tag && !filter.favorite && scope.spaceIds.has(filter.spaceId)) {
+      return { spaceIds: new Set([filter.spaceId]) };
+    }
+    const collections = filter.collectionIds && new Set(filter.collectionIds);
+    const itemIds = new Set(this.repo.listItemsInScope(scope).filter((item) =>
+      (!filter.spaceId || item.spaceId === filter.spaceId) && (!collections || collections.has(item.collectionId))
+      && (!filter.tag || item.tags?.includes(filter.tag)) && (!filter.favorite || item.favorite)).map((item) => item.id));
+    return { spaceIds: new Set(), itemIds };
+  }
+
+  deepSearchOwnedScope(request: import("../../shared/library-ipc").LibraryScopedDeepSearchRequest,
+    resolveJudge: () => Promise<LibraryEvidenceJudge>) {
+    if (request?.owner?.type !== "project" && request?.owner?.type !== "workspace") {
+      throw new Error("深搜需要明确的项目或工作空间归属");
+    }
+    return this.deepSearch(request.query, request.limit,
+      () => this.ownedSearchScope(request.owner, request.reference, request.filter), resolveJudge);
+  }
+
+  deepSearchInTaskScope(query: string, limit: number | undefined, resolveScope: () => LibraryTaskScope,
+    resolveJudge: () => Promise<LibraryEvidenceJudge>, signal?: AbortSignal) {
+    return this.deepSearch(query, limit, () => queryScopeForTask(resolveScope()), resolveJudge, signal);
+  }
+
+  readOwnedEvidence(request: import("../../shared/library-ipc").LibraryScopedEvidenceRequest): { text: string } {
+    if (request?.owner?.type !== "project" && request?.owner?.type !== "workspace") {
+      throw new Error("证据回读需要明确的项目或工作空间归属");
+    }
+    const { source, owner, reference, filter, itemId } = request;
+    const scope = this.ownedSearchScope(owner, reference, filter);
+    const text = this.repo.readDeepSearchPassage(scope, itemId, source.startOffset, source.chunkHash);
+    if (text === undefined || source.startOffset + text.length !== source.endOffset) {
+      throw new Error("证据片段已更新或超出当前资料范围，请重新深搜");
+    }
+    return { text };
+  }
+
+  private deepSearch(query: string, limit: number | undefined, scope: () => LibraryQueryScope,
+    resolveJudge: () => Promise<LibraryEvidenceJudge>, signal?: AbortSignal) {
+    return runLibraryDeepSearch({
+      query, limit, scope, resolveJudge, signal,
+      index: {
+        candidates: (current, terms, seen, count) => this.repo.deepSearchCandidates(current, terms, seen, count),
+        current: (current, passage) => this.repo.isDeepSearchPassageCurrent(current, passage),
+        frequencies: (current, terms) => this.repo.deepSearchTermFrequencies(current, terms),
+      },
+    });
+  }
+
+  materialRetrievalUsesHybrid(owner?: LibraryOwnerScope | null): boolean {
+    if (owner?.type === "project") return resolveMaterialRetrievalScope(this.db, { kind: "project", id: owner.projectId }).effective === "hybrid";
+    if (owner?.type === "workspace") return resolveMaterialRetrievalScope(this.db, { kind: "space", id: owner.workspaceId }).effective === "hybrid";
+    return getMaterialRetrievalSettings(this.db).mode === "hybrid";
+  }
+
+  async semanticCandidates(
+    query: string,
+    resolveScope: () => LibraryQueryScope,
+    limit: number,
+    provider: WorkspaceSemanticProvider,
+    isEnabled: () => boolean,
+  ): Promise<SemanticCandidate[]> {
+    const scope = resolveScope();
+    if (!isEnabled()) return [];
+    const hybrid = new Set(hybridLibrarySpaceIds(this.db));
+    const allowedLibrarySpaceIds = [...scope.spaceIds].filter((id) => hybrid.has(id));
+    const allowedLibraryCollectionIds = [...scope.collectionIds ?? []].filter((id) => {
+      const folder = this.repo.getCollection(id);
+      return Boolean(folder && hybrid.has(folder.spaceId));
+    });
+    const allowedLibraryItemIds = [...scope.itemIds ?? []].filter((id) => {
+      const item = this.repo.getItem(id);
+      return Boolean(item && hybrid.has(item.spaceId));
+    });
+    if (!allowedLibrarySpaceIds.length && !allowedLibraryCollectionIds.length && !allowedLibraryItemIds.length) return [];
+    const candidates = await provider.search({ query, limit, allowedLibrarySpaceIds, allowedLibraryCollectionIds, allowedLibraryItemIds });
+    if (!isEnabled()) return [];
+    const currentScope = resolveScope();
+    const currentHybrid = new Set(hybridLibrarySpaceIds(this.db));
+    return candidates.filter(({ itemId }) => {
+      const item = this.repo.getItem(itemId);
+      return item && currentHybrid.has(item.spaceId) && this.itemInQueryScope(item, currentScope);
+    });
+  }
+
+  private itemInQueryScope(item: LibraryItemDto, scope: LibraryQueryScope): boolean {
+    return item.trashedAt == null && (scope.spaceIds.has(item.spaceId) || scope.itemIds?.has(item.id) === true
+      || (item.collectionId !== null && scope.collectionIds?.has(item.collectionId) === true));
+  }
+
+  private readonly searchRouter = new SemanticRouter();
+  private queryProvider?: WorkspaceSemanticProvider;
+
+  async searchAsync(request: LibrarySearchRequest): Promise<LibraryListRowDto[]> {
+    const { query, owner, reference, filter } = request;
+    const scope = () => owner ? this.ownedSearchScope(owner, reference, filter)
+      : { spaceIds: new Set(this.repo.listSpaces().map((space) => space.id)) };
+    const rows = this.search(query, scope());
+    const lexical = rows.flatMap((row) => {
+      const item = this.repo.getItem(row.id);
+      return item ? [this.resourceHit(item, query, 2)] : [];
+    });
+    const candidates = await this.normalSemanticSearch(query, lexical, scope, 80, () => this.materialRetrievalUsesHybrid(owner));
+    const currentScope = scope();
+    if (!candidates.length) return rows.filter((row) => {
+      const item = this.repo.getItem(row.id);
+      return item && this.itemInQueryScope(item, currentScope);
+    });
+    const names = new Map(this.repo.listSpaces().map((space) => [space.id, space.name]));
+    return fuseHits(lexical, candidates, (id) => this.repo.getItem(id) ?? undefined, 80).flatMap(({ id }) => {
+      const item = this.repo.getItem(id);
+      return item && this.itemInQueryScope(item, currentScope) ? [this.toRow(item, names.get(item.spaceId) ?? "资料库")] : [];
+    });
+  }
+
+  async retrieveForTaskAsync(query: string, taskId: string, limit: number, kind?: LibraryItemKind): Promise<LibraryRetrievalHitDto[]> {
+    const scope = () => queryScopeForTask(this.resolveTaskScope(taskId));
+    const lexical = this.retrieve(query, { ...scope(), limit }).filter((hit) => !kind || hit.kind === kind);
+    const resolve = () => {
+      const current = scope();
+      return kind ? { spaceIds: new Set<string>(), itemIds: new Set(this.repo.listItemsInScope(current)
+        .filter((item) => item.kind === kind).map((item) => item.id)) } : current;
+    };
+    const byId = new Map(lexical.map((hit) => [hit.itemId, hit]));
+    const resources = lexical.flatMap((hit) => {
+      const item = this.repo.getItem(hit.itemId);
+      return item ? [this.resourceHit(item, query, hit.rank, hit.snippet)] : [];
+    });
+    const candidates = await this.normalSemanticSearch(query, resources, resolve, limit,
+      () => this.materialRetrievalUsesHybrid(this.resolveTaskScope(taskId).defaultOwner));
+    const current = resolve();
+    const hits = candidates.length ? fuseHits(resources, candidates, (id) => this.repo.getItem(id) ?? undefined, limit) : resources;
+    return hits.flatMap((hit) => {
+      const item = this.repo.getItem(hit.id);
+      if (!item || !this.itemInQueryScope(item, current)) return [];
+      const existing = byId.get(item.id);
+      if (hit.matchedBy !== "semantic" && existing) return [existing];
+      return [{
+        itemId: item.id, title: item.title, kind: item.kind, spaceId: item.spaceId,
+        rank: 4, snippet: hit.preview, favorite: item.favorite, sourceType: item.sourceType,
+        sourceTaskId: item.sourceTaskId, updatedAt: item.updatedAt,
+      }];
+    });
+  }
+
+  private resourceHit(item: LibraryItemDto, query: string, rank: number, preview = ""): WorkspaceResourceHit {
+    const needle = query.trim().toLowerCase();
+    const matchedBy = item.title.toLowerCase().includes(needle) ? "title" : item.filename.toLowerCase().includes(needle) ? "filename"
+      : rank <= 2 ? "fts" : "fallback";
+    return {
+      resourceType: "library", id: item.id, spaceId: item.spaceId, title: item.title, filename: item.filename,
+      preview, matchedBy, score: rank, freshness: item.updatedAt, provider: "library", kind: item.kind,
+    };
+  }
+
+  private async normalSemanticSearch(
+    query: string, lexical: WorkspaceResourceHit[], resolveScope: () => LibraryQueryScope, limit: number, enabled: () => boolean,
+  ): Promise<SemanticCandidate[]> {
+    if (!query.trim() || !enabled() || !this.searchRouter.shouldFallback({ query, lexicalHits: lexical }).shouldFallback) return [];
+    try {
+      return await this.semanticCandidates(query, resolveScope, limit, this.queryProvider ??= new WorkspaceSemanticProvider(this.db), enabled);
+    } catch {
+      // The lexical route remains available while a semantic model is absent or unavailable.
+      return [];
+    }
   }
 
   retrieveInScope(query: string, scope: LibraryTaskScope, opts?: { limit?: number }): LibraryRetrievalHitDto[] {
@@ -621,7 +807,7 @@ export class LibraryService {
   }
 
   private deleteSpaceUnchecked(space: LibrarySpaceDto): void {
-    const items = this.repo.listItems(space.id);
+    const items = this.repo.listItems(space.id, undefined, true);
     const collections = this.repo.listCollections(space.id);
     // Durable DB state is the commit point. Files are removed only after the entire hierarchy
     // has been deleted successfully, so a DB failure can never leave live rows pointing at missing files.
@@ -711,7 +897,7 @@ export class LibraryService {
     return this.repo.getSpace(spaceId)?.projectId ? title : limitText(title, LIBRARY_TITLE_MAX_CHARS, "标题");
   }
 
-  createItem(req: LibraryCreateItemRequest): LibraryItemDto {
+  createItem(req: LibraryCreateItemRequest, clipSource?: LibraryClipSource, tags?: string[]): LibraryItemDto {
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
     const title = this.itemTitle(req.spaceId, req.title?.trim() || defaultTitle(req.kind));
@@ -730,12 +916,15 @@ export class LibraryService {
       sizeBytes: 0,
       owner: this.ownerName(),
       favorite: false,
+      clipSource,
+      tags,
       sourceType: "created",
       createdAt: now,
       updatedAt: now,
       lastVisitedAt: now,
     };
-    const body = seedContent(req.kind, title);
+    const body = req.content ?? seedContent(req.kind, title);
+    this.assertContentLength(req.spaceId, body);
     item.sizeBytes = Buffer.byteLength(body);
     item.contentHash = sha256(body);
     return this.commitNewManagedItem(item, () => this.writeManagedFile(item, body));
@@ -825,9 +1014,209 @@ export class LibraryService {
     return next;
   }
 
-  /** 条目版本历史（最小可用；后续 UI/Agent 可展示与回溯） */
   listVersions(itemId: string): import("../../shared/library-ipc").LibraryVersionDto[] {
     return this.repo.listVersions(itemId);
+  }
+
+  readVersion(itemId: string, version: number): string {
+    if (!this.repo.getItem(itemId)) throw new Error("笔记不存在或已移入回收站");
+    const bytes = this.versionBytes(itemId, version, LIBRARY_INLINE_FILE_MAX_BYTES);
+    if (!bytes) throw new Error("此旧版本只保留了记录，正文副本已不可用");
+    return bytes.toString("utf8");
+  }
+
+  private versionBytes(itemId: string, version: number, maxFileBytes?: number): Buffer | null {
+    const entry = this.repo.versionContent(itemId, version);
+    if (!entry) throw new Error("此版本不存在");
+    let bytes: Buffer | null = entry.snapshot;
+    if (!bytes && this.isManagedFileSafe(entry.path) && existsSync(entry.path)) {
+      if (maxFileBytes !== undefined && statSync(entry.path).size > maxFileBytes) throw new Error("此历史版本过大，无法内联打开");
+      bytes = readFileSync(entry.path);
+    }
+    return bytes && createHash("sha256").update(bytes).digest("hex") === entry.content_hash ? bytes : null;
+  }
+
+  createNoteBackup(owner: LibraryOwnerScope): LibraryNotesBackup {
+    const { spaceIds } = ownedLibraryQueryScope(this.db, this.repo, owner);
+    const folders = [...spaceIds].flatMap((id) => this.repo.listCollections(id));
+    const items = [...spaceIds].flatMap((id) => this.repo.listItems(id, undefined, true)).map((item) => {
+      const path = this.absolutePath(item);
+      if (path) this.assertManagedFile(path);
+      return { item, body: path ? readFileSync(path).toString("base64") : null,
+        history: this.repo.listVersions(item.id).map((version) => ({
+          id: version.id, version: version.version, contentHash: version.contentHash, createdBy: version.createdBy,
+          createdAt: version.createdAt, body: this.versionBytes(item.id, version.version)?.toString("base64") ?? null,
+        })) };
+    });
+    return { format: "mybuddy-notes", version: 1, folders, items };
+  }
+
+  restoreNoteBackup(owner: LibraryOwnerScope, backup: LibraryNotesBackup): { restored: number; skipped: number } {
+    const defaultSpace = this.ensureOwnedSpace(owner).id;
+    const spaceIds = ownedLibraryQueryScope(this.db, this.repo, owner).spaceIds;
+    const written: LibraryItemDto[] = [];
+    let restored = 0, skipped = 0;
+    try {
+      this.db.connection.transaction(() => {
+        const targetSpace = (id: string) => spaceIds.has(id) ? id : defaultSpace;
+        const pending = new Map(backup.folders.map((folder) => [folder.id, folder]));
+        if (pending.size !== backup.folders.length || new Set(backup.items.map((entry) => entry.item.id)).size !== backup.items.length) {
+          throw new Error("备份中存在重复的资料 ID");
+        }
+        while (pending.size) {
+          let progressed = false;
+          for (const folder of pending.values()) {
+            if (folder.parentId && pending.has(folder.parentId)) continue;
+            const spaceId = targetSpace(folder.spaceId);
+            this.requireOwnedNoteDestination(owner, spaceId, folder.parentId);
+            const existing = this.repo.getCollection(folder.id);
+            if (existing && existing.spaceId !== spaceId) throw new Error("备份文件夹 ID 与其他范围的资料冲突");
+            if (!existing) this.repo.insertCollection({ ...folder, spaceId });
+            pending.delete(folder.id); progressed = true;
+          }
+          if (!progressed) throw new Error("备份中的文件夹层级无效");
+        }
+        for (const { item, body, history } of backup.items) {
+          const existing = this.repo.getItem(item.id, true);
+          if (existing) {
+            if (!spaceIds.has(existing.spaceId)) throw new Error("备份笔记 ID 与其他范围的资料冲突");
+            skipped++; continue;
+          }
+          const spaceId = targetSpace(item.spaceId);
+          this.requireOwnedNoteDestination(owner, spaceId, item.collectionId);
+          const bytes = body === null ? null : Buffer.from(body, "base64");
+          if (item.kind === "url" ? bytes !== null || !item.url : bytes === null) throw new Error("备份缺少资料内容");
+          const next: LibraryItemDto = { ...item, spaceId, sizeBytes: bytes?.length ?? 0,
+            contentHash: bytes ? createHash("sha256").update(bytes).digest("hex") : undefined };
+          if (bytes) {
+            if (existsSync(this.absolutePath(next))) throw new Error("本地存在同名受管文件，无法安全恢复");
+            this.writeManagedFile(next, bytes);
+            written.push(next);
+          }
+          this.repo.insertItem(next);
+          for (const { body, ...version } of history) {
+            const snapshot = body === null ? undefined : Buffer.from(body, "base64");
+            if (snapshot && createHash("sha256").update(snapshot).digest("hex") !== version.contentHash) throw new Error("备份版本校验失败");
+            this.repo.insertVersion({ ...version, itemId: item.id, path: this.absolutePath(next) }, snapshot);
+          }
+          if (!next.trashedAt) this.refreshFts(next);
+          restored++;
+        }
+      })();
+      return { restored, skipped };
+    } catch (error) {
+      for (const item of written) this.removeFileAfterDurableDelete(item);
+      throw error;
+    }
+  }
+
+  listTrashedNotes(owner: LibraryOwnerScope): LibraryItemDto[] {
+    const { spaceIds } = ownedLibraryQueryScope(this.db, this.repo, owner);
+    return [...spaceIds].flatMap((spaceId) => this.repo.listItems(spaceId, undefined, true).filter((item) => item.trashedAt));
+  }
+
+  requireOwnedNoteItems(owner: LibraryOwnerScope, ids: string[], includeTrash = false): LibraryItemDto[] {
+    const scope = ownedLibraryQueryScope(this.db, this.repo, owner);
+    return [...new Set(ids)].map((id) => {
+      const item = this.repo.getItem(id, includeTrash);
+      if (!item || !scope.spaceIds.has(item.spaceId)) throw new Error("资料已不属于当前查看范围");
+      this.requireWritableSpace(item.spaceId);
+      return item;
+    });
+  }
+
+  requireOwnedNoteDestination(owner: LibraryOwnerScope, spaceId: string, collectionId: string | null): void {
+    if (!ownedLibraryQueryScope(this.db, this.repo, owner).spaceIds.has(spaceId)) throw new Error("目标不属于当前查看范围");
+    this.requireWritableSpace(spaceId);
+    if (collectionId) this.requireCollectionInSpace(spaceId, collectionId);
+  }
+
+  resolveOfficeItem(id: string, owner: LibraryOwnerScope, reference?: LibraryOwnerReference, write = false): LibraryItemDto {
+    const item = this.repo.getItem(id);
+    if (!item || item.kind !== "office" ||
+      !this.itemInQueryScope(item, ownedLibraryQueryScope(this.db, this.repo, owner, reference))) {
+      throw new Error("办公文档已不属于当前资料范围");
+    }
+    if (write) {
+      if (reference) throw new Error("引用资料只可读取");
+      this.requireOwnedNoteDestination(owner, item.spaceId, item.collectionId);
+    }
+    this.assertManagedFile(this.absolutePath(item));
+    return item;
+  }
+
+  noteImageUrl(itemId: string, href: string, version?: number): string {
+    const source = this.readContent(itemId);
+    const body = version === undefined ? source.content : this.readVersion(itemId, version);
+    if (!body.includes(href)) throw new Error("图片未关联到此笔记");
+    const match = /^mybuddy-library:\/\/local\/([A-Za-z0-9_-]+)\/?$/.exec(href);
+    const filename = match ? undefined : decodeURIComponent(href);
+    const target = match ? this.repo.getItem(match[1]) : filename && !/[\\/:?#]/.test(filename)
+      ? this.repo.findByFilename(source.item.spaceId, filename) : null;
+    if (!target || target.spaceId !== source.item.spaceId || target.kind !== "image") throw new Error("图片不在当前笔记的资料位置");
+    return this.previewUrl(target.id);
+  }
+
+  setNoteMetadata(owner: LibraryOwnerScope, id: string, patch: { tags?: string[]; pinned?: boolean }): LibraryItemDto {
+    const [item] = this.requireOwnedNoteItems(owner, [id]);
+    const tags = patch.tags === undefined ? item.tags : [...new Set(patch.tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (tags && (tags.length > 100 || tags.some((tag) => tag.length > 80))) throw new Error("每篇笔记最多 100 个标签，每个标签最多 80 字");
+    const next = { ...item, tags, pinned: patch.pinned ?? item.pinned, updatedAt: Date.now() };
+    this.repo.updateItem(next);
+    return next;
+  }
+
+  setNoteTrashed(owner: LibraryOwnerScope, ids: string[], trash: boolean): void {
+    const items = this.requireOwnedNoteItems(owner, ids, true);
+    this.db.connection.transaction(() => {
+      for (const item of items) {
+        if (Boolean(item.trashedAt) === trash) continue;
+        const next = { ...item, trashedAt: trash ? Date.now() : undefined, updatedAt: Date.now() };
+        this.repo.updateItem(next);
+        if (!trash && this.repo.isTextSearchable(item.kind)) this.refreshFts(next);
+      }
+    })();
+  }
+
+  moveNotes(owner: LibraryOwnerScope, ids: string[], collectionId: string | null): void {
+    const items = this.requireOwnedNoteItems(owner, ids);
+    const folder = collectionId ? this.repo.getCollection(collectionId) : null;
+    if (collectionId && (!folder || items.some((item) => item.spaceId !== folder.spaceId))) throw new Error("只能移动到同一资料位置的文件夹");
+    this.db.connection.transaction(() => {
+      for (const item of items) this.repo.updateItem({ ...item, collectionId, updatedAt: Date.now() });
+    })();
+  }
+
+  mergeNotes(owner: LibraryOwnerScope, ids: string[]): LibraryItemDto {
+    const items = this.requireOwnedNoteItems(owner, ids);
+    if (items.length < 2 || items.some((item) => item.kind !== "markdown" || item.spaceId !== items[0].spaceId)) {
+      throw new Error("请选择同一资料位置的至少两篇 Markdown 笔记");
+    }
+    const [first] = items;
+    const content = items.map((item) => {
+      const body = this.readContent(item.id);
+      if (body.contentTooLarge) throw new Error("大型资料请通过「打开位置」在外部编辑器中合并");
+      return body.content;
+    }).join("\n\n---\n\n");
+    return this.createItem({ spaceId: first.spaceId, collectionId: first.collectionId, kind: "markdown",
+      title: `${first.title.slice(0, LIBRARY_TITLE_MAX_CHARS - 7)}（合并）`, content }, undefined,
+      [...new Set(items.flatMap((item) => item.tags ?? []))]);
+  }
+
+  addNoteImage(owner: LibraryOwnerScope, spaceId: string, collectionId: string | null, name: string, mime: string, bytes: Uint8Array): LibraryItemDto {
+    this.requireOwnedNoteDestination(owner, spaceId, collectionId);
+    const extension = new Map([["image/png", ".png"], ["image/jpeg", ".jpg"], ["image/webp", ".webp"],
+      ["image/gif", ".gif"], ["image/avif", ".avif"], ["image/bmp", ".bmp"]]).get(mime);
+    if (!extension || !(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > 20 * 1024 * 1024) {
+      throw new Error("无法保存此图片，请使用 20 MiB 以内的 PNG、JPEG、GIF、WebP、AVIF 或 BMP");
+    }
+    const imageName = safeName(basename(name, extname(name))).slice(0, 125) || "图片";
+    const now = Date.now();
+    const item: LibraryItemDto = { id: randomUUID(), spaceId, collectionId, kind: "image", title: imageName,
+      filename: imageName + extension, mimeType: mime, sizeBytes: bytes.byteLength, owner: this.ownerName(),
+      favorite: false, sourceType: "uploaded", createdAt: now, updatedAt: now, lastVisitedAt: null,
+      contentHash: createHash("sha256").update(bytes).digest("hex") };
+    return this.commitNewManagedItem(item, () => this.writeManagedFile(item, Buffer.from(bytes)));
   }
 
   deleteItem(id: string): void {
@@ -851,7 +1240,7 @@ export class LibraryService {
   }
 
   /** 文本类正文；非文本返回受管路径 + requiresFileAccess，禁止 utf8 直读二进制 */
-  readContent(id: string): LibraryContentDto {
+  readContent(id: string, maxChars?: number): LibraryContentDto {
     const item = this.repo.getItem(id);
     if (!item) throw new Error("条目不存在");
     if (item.kind === "url") {
@@ -868,9 +1257,16 @@ export class LibraryService {
       };
     }
     this.assertManagedFile(abs);
-    const content = existsSync(abs) ? readFileSync(abs, "utf8") : "";
+    if (!existsSync(abs)) throw new Error("资料正文文件已遗失");
+    if (maxChars !== undefined) {
+      return { item, ...readUtf8Prefix(abs, maxChars) };
+    }
+    if (statSync(abs).size > LIBRARY_INLINE_FILE_MAX_BYTES) {
+      return { item, content: "", contentTooLarge: true, managedPath: abs, requiresFileAccess: true };
+    }
+    const content = readFileSync(abs, "utf8");
     return {
-      item,
+      item: item.contentHash ? item : { ...item, contentHash: sha256(content) },
       content,
       previewUrl: item.kind === "html" ? this.previewUrl(item.id) : undefined,
     };
@@ -881,11 +1277,11 @@ export class LibraryService {
    * 崩溃顺序：任一步中断都不会静默不一致（文件为真相源，版本行只增不覆盖）。
    */
   writeContent(req: LibraryWriteContentRequest): LibraryItemDto {
-    return this.updateTextContent({ id: req.id, content: req.content ?? "" });
+    return this.updateTextContent(req);
   }
 
   /** Text update commit boundary: version + file + metadata + FTS either converge together or compensate. */
-  updateTextContent(req: { id: string; content: string; title?: string }): LibraryItemDto {
+  updateTextContent(req: LibraryWriteContentRequest): LibraryItemDto {
     const item = this.repo.getItem(req.id);
     if (!item) throw new Error("条目不存在");
     this.requireWritableSpace(item.spaceId);
@@ -893,15 +1289,17 @@ export class LibraryService {
       throw new Error("该类型是受管文件（非文本），资料库内编辑会破坏文件；请用文件/预览工具处理");
     }
     const text = req.content ?? "";
-    if (!this.repo.getSpace(item.spaceId)?.projectId && text.length > LIBRARY_CONTENT_MAX_CHARS) {
-      throw new Error(`正文不能超过 ${LIBRARY_CONTENT_MAX_CHARS} 字符`);
-    }
+    this.assertContentLength(item.spaceId, text);
     const title = req.title === undefined ? item.title : this.itemTitle(item.spaceId, req.title);
     const abs = this.absolutePath(item);
     let existing: string | null = null;
     if (existsSync(abs)) {
       this.assertManagedFile(abs);
       existing = readFileSync(abs, "utf8");
+    }
+    if ((req.expectedTitle !== undefined && req.expectedTitle !== item.title)
+      || (req.expectedContentHash !== undefined && req.expectedContentHash !== sha256(existing ?? ""))) {
+      throw new Error("此笔记已在别处更新。草稿已保留，请核对最新正文后再保存。");
     }
     const contentChanged = existing !== text;
     const titleChanged = title !== item.title;
@@ -929,7 +1327,7 @@ export class LibraryService {
           createdBy: this.ownerName(),
           sourceTaskId: item.sourceTaskId,
           createdAt: Date.now(),
-        });
+        }, Buffer.from(existing, "utf8"));
       }
       if (contentChanged) {
         this.assertManagedWritePath(abs);
@@ -971,43 +1369,131 @@ export class LibraryService {
       throw error;
     }
   }
+
+  private assertContentLength(spaceId: string, text: string): void {
+    if (!this.repo.getSpace(spaceId)?.projectId && text.length > LIBRARY_CONTENT_MAX_CHARS) {
+      throw new Error(`正文不能超过 ${LIBRARY_CONTENT_MAX_CHARS} 字符`);
+    }
+  }
+
+  async importFolder(req: LibraryFolderImportTarget & { sourcePath: string }): Promise<LibraryFolderImportResult> {
+    if (req.spaceId) this.requireOwnedNoteDestination(req.owner, req.spaceId, req.collectionId);
+    else if (req.collectionId) throw new Error("请选择有效的资料位置");
+    const plan = await scanLibraryImportFolder(req.sourcePath, this.root);
+    const spaceId = req.spaceId ?? this.ensureOwnedSpace(req.owner).id;
+    const files = plan.files.map((file) => ({
+      ...file, item: this.describeImportedFile(file.path, file.size, { spaceId, collectionId: null }),
+    }));
+    const urls = new Map(files.map(({ path, item }) => [resolvedPathKey(path), this.previewUrl(item.id)]));
+    const staging = await mkdtemp(join(this.root, ".folder-import-"));
+    const published: LibraryItemDto[] = [];
+    try {
+      for (const { path, item } of files) {
+        if (!(await lstat(plan.root)).isDirectory()) throw new Error("所选文件夹在导入期间已变化");
+        assertManagedPathSafe(plan.root, path);
+        const staged = join(staging, item.id);
+        if (item.kind === "markdown") {
+          if (rewriteImportedFolderLinks(path, staged, urls)) item.contentHash = sha256File(staged);
+        } else {
+          await copyFile(path, staged);
+        }
+        const { size } = await stat(staged);
+        item.sizeBytes = size;
+      }
+
+      return this.db.connection.transaction(() => {
+        this.requireOwnedNoteDestination(req.owner, spaceId, req.collectionId);
+        const collections = new Map<string, LibraryCollectionDto>();
+        for (const folder of plan.folders) {
+          const parentId = folder.parent ? collections.get(folder.parent)!.id : req.collectionId;
+          collections.set(folder.path, this.createCollection({ spaceId, parentId, name: basename(folder.path) }));
+        }
+        for (const { item, folder } of files) {
+          item.collectionId = collections.get(folder)!.id;
+          const target = this.absolutePath(item);
+          this.assertManagedWritePath(target);
+          mkdirSync(dirname(target), { recursive: true });
+          renameSync(join(staging, item.id), target);
+          published.push(item);
+          this.repo.insertItem(item);
+          this.refreshFts(item);
+        }
+        return { folder: collections.get(plan.root)!, fileCount: files.length, skippedEntries: plan.skippedEntries };
+      })();
+    } catch (error) {
+      for (const item of published) this.removeFileAfterDurableDelete(item);
+      throw error;
+    } finally {
+      await rm(staging, { recursive: true, force: true }).catch((error: unknown) => {
+        console.warn("[Library] 无法清理文件夹导入临时目录", error);
+      });
+    }
+  }
+
   importFile(req: LibraryImportFileRequest): LibraryItemDto {
     const source = req.sourcePath?.trim();
     if (!source || !existsSync(source)) throw new Error("源文件不存在");
     const st = statSync(source);
     if (!st.isFile()) throw new Error("只能导入文件");
-    if (st.size > LIBRARY_MAX_IMPORT_BYTES) {
-      throw new Error(`文件过大（${st.size} 字节），超过资料库单文件上限 ${LIBRARY_MAX_IMPORT_BYTES} 字节`);
-    }
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
+    const item = this.describeImportedFile(source, st.size, req);
+    const linked = new Map<string, LibraryItemDto>();
+    mkdirSync(this.spaceDir(item.spaceId), { recursive: true });
+    try {
+      return this.commitNewManagedItem(item, () => {
+        const target = this.absolutePath(item);
+        this.assertManagedWritePath(target);
+        if (item.kind !== "markdown") {
+          copyFileSync(source, target);
+          item.sizeBytes = statSync(target).size;
+          return;
+        }
+        const root = dirname(resolve(source));
+        const changed = copyWithRewrittenNoteLinks(source, target, (href) => {
+          let local: string;
+          try { local = decodeURIComponent(href); } catch { return; }
+          if (/^(?:[a-z][a-z0-9+.-]*:|[\\/]|#)/i.test(local) || local.split(/[\\/]/).includes("..")) return;
+          const path = resolve(root, local);
+          if (!existsSync(path) || !statSync(path).isFile()) return;
+          try { assertManagedPathSafe(root, path); } catch { return; }
+          const assetKind = kindFromFilename(path);
+          if (!["image", "office", "pdf"].includes(assetKind) && !/\.(txt|zip|mp[34]|wav)$/i.test(path)) return;
+          if (!linked.has(path)) linked.set(path, this.importFile({ ...req, sourcePath: path }));
+          return this.previewUrl(linked.get(path)!.id);
+        });
+        item.sizeBytes = statSync(target).size;
+        if (changed) item.contentHash = sha256File(target);
+      });
+    } catch (error) {
+      for (const asset of linked.values()) {
+        try { this.deleteItem(asset.id); } catch (cleanupError) { console.warn("[Library] 导入附件清理失败", cleanupError); }
+      }
+      throw error;
+    }
+  }
+
+  private describeImportedFile(source: string, sizeBytes: number, target: Pick<LibraryImportFileRequest, "spaceId" | "collectionId">): LibraryItemDto {
     const name = basename(source);
     const kind = kindFromFilename(name);
     const now = Date.now();
-    const item: LibraryItemDto = {
+    return {
       id: randomUUID(),
-      spaceId: req.spaceId,
-      collectionId: req.collectionId ?? null,
+      spaceId: target.spaceId,
+      collectionId: target.collectionId ?? null,
       kind,
       title: name.replace(/\.[^.]+$/, "") || name,
       filename: name,
       mimeType: preciseMimeFromFilename(name) || mimeForKind(kind),
-      sizeBytes: st.size,
+      sizeBytes,
       owner: this.ownerName(),
       favorite: false,
       sourceType: "uploaded",
       originalPath: source,
-      contentHash: undefined,
       createdAt: now,
       updatedAt: now,
       lastVisitedAt: now,
     };
-    mkdirSync(this.spaceDir(item.spaceId), { recursive: true });
-    return this.commitNewManagedItem(item, () => {
-      const target = this.absolutePath(item);
-      this.assertManagedWritePath(target);
-      copyFileSync(source, target);
-    });
   }
 
   /**
@@ -1032,9 +1518,6 @@ export class LibraryService {
     if (!sourcePath || !existsSync(sourcePath)) throw new Error("产物文件不存在或已被移动");
     const st = statSync(sourcePath);
     if (!st.isFile()) throw new Error("该产物是文件夹，暂不支持整目录保存到资料库");
-    if (st.size > LIBRARY_MAX_IMPORT_BYTES) {
-      throw new Error(`产物过大（${st.size} 字节），超过资料库单文件上限 ${LIBRARY_MAX_IMPORT_BYTES} 字节`);
-    }
     const name = basename(sourcePath);
     const kind = kindFromFilename(name);
     const now = Date.now();
@@ -1053,7 +1536,6 @@ export class LibraryService {
       sourceTaskId: artifact.task_id,
       sourceArtifactId: artifact.id,
       originalPath: sourcePath,
-      contentHash: sha256File(sourcePath),
       createdAt: now,
       updatedAt: now,
       lastVisitedAt: now,
@@ -1063,6 +1545,8 @@ export class LibraryService {
       const target = this.absolutePath(item);
       this.assertManagedWritePath(target);
       copyFileSync(sourcePath, target);
+      item.sizeBytes = statSync(target).size;
+      item.contentHash = sha256File(target);
     });
   }
 
@@ -1090,35 +1574,45 @@ export class LibraryService {
     const next = { ...existing, updatedAt: Date.now() };
     if (collectionMoved) next.collectionId = collectionId;
     const versionId = contentChanged ? randomUUID() : undefined;
-    const backup = contentChanged && existsSync(abs) ? `${abs}.rollback-${randomUUID()}` : undefined;
+    const hasBackup = contentChanged && existsSync(abs);
+    const textBackup = hasBackup && this.repo.isTextReadable(existing.kind);
+    // Keep large history bodies in managed files so a refresh never materializes one in SQLite.
+    const fileBackedVersion = textBackup && statSync(abs).size > 1024 * 1024;
+    const backup = !hasBackup ? undefined : fileBackedVersion
+      ? join(abs + ".versions", versionId!)
+      : `${abs}.rollback-${randomUUID()}`;
     let fileChanged = false;
     let metadataChanged = false;
     try {
       if (contentChanged) {
         this.assertManagedWritePath(abs);
-        if (backup) copyFileSync(abs, backup);
+        if (backup) {
+          this.assertManagedWritePath(backup);
+          mkdirSync(dirname(backup), { recursive: true });
+          copyFileSync(abs, backup);
+        }
         if (versionId) {
           this.repo.insertVersion({
             id: versionId,
             itemId: existing.id,
             version: this.repo.nextVersion(existing.id),
             contentHash: managedHash ?? sourceHash,
-            path: abs,
+            path: fileBackedVersion ? backup! : abs,
             createdBy: this.ownerName(),
             sourceTaskId: existing.sourceTaskId,
             createdAt: Date.now(),
-          });
+          }, backup && textBackup && !fileBackedVersion ? readFileSync(backup) : undefined);
         }
         atomicCopyFileSync(sourcePath, abs);
         fileChanged = true;
-        const st = statSync(sourcePath);
-        next.sizeBytes = st.size;
+        if (sha256File(abs) !== sourceHash) throw new Error("源产物在保存期间已变化，请重试");
+        next.sizeBytes = statSync(abs).size;
         next.contentHash = sourceHash;
       }
       this.repo.updateItem(next);
       metadataChanged = true;
       this.refreshFts(next);
-      if (backup) rmSync(backup, { force: true });
+      if (backup && !fileBackedVersion) rmSync(backup, { force: true });
       return next;
     } catch (error) {
       const rollbackErrors: string[] = [];
@@ -1163,7 +1657,7 @@ export class LibraryService {
     return next;
   }
 
-  /** 搜索：标题/文件名 + FTS 正文 + 短查询内容兜底（受控副本、256KB 上限、路径安全校验）。
+  /** 搜索：标题/文件名和完整正文。
    *  opts 缺省 = 用户级全量（UI）；显式 { projectId } 也必须通过统一作用域解析。 */
   search(
     query: string,
@@ -1193,10 +1687,9 @@ export class LibraryService {
       seen.add(item.id);
       rows.push(this.toRow(item, spaceName.get(item.spaceId) ?? "资料库"));
     }
-    // 短查询（<3，FTS trigram 不处理）/ FTS 不可用时扫描可见文本；健康 FTS 的 >=3 查询不做全库 I/O。
-    // 缺失派生 FTS 行，或 v2 200–256 KiB 覆盖尚未迁完时，只扫描这些候选，保留中断恢复语义。
+    // FTS 缺失或历史索引正在补齐时，回读受管正文以维持搜索结果。
     const ftsAvailable = this.repo.ftsAvailable();
-    const fullTextFallback = q.length < 3 || !ftsAvailable;
+    const fullTextFallback = !ftsAvailable;
     const targetedFallbackIds = this.textFtsFallbackIds;
     if (fullTextFallback || targetedFallbackIds.size > 0) {
       const needle = q.toLowerCase();
@@ -1209,9 +1702,8 @@ export class LibraryService {
         try {
           this.assertManagedFile(abs);
           const st = statSync(abs);
-          if (!st.isFile() || st.size > TEXT_SEARCH_MAX_BYTES) continue;
-          const text = readFileSync(abs, "utf8");
-          if (text.toLowerCase().includes(needle)) {
+          if (!st.isFile()) continue;
+          if (libraryTextContains(readLibraryTextParts(abs), needle)) {
             seen.add(item.id);
             rows.push(this.toRow(item, spaceName.get(item.spaceId) ?? "资料库"));
           }
@@ -1245,7 +1737,32 @@ export class LibraryService {
       : opts?.projectId === undefined
         ? { spaceIds: new Set(spaces.map((space) => space.id)) }
         : queryScopeForTask(this.resolveTaskScope(undefined, opts.projectId));
-    return this.repo.retrieve(query, { ...scope, limit: opts?.limit ?? 10 });
+    const limit = opts?.limit ?? 10;
+    const hits = this.repo.retrieve(query, { ...scope, limit });
+    // Exact phrases longer than a chunk's overlap can straddle its boundaries.
+    const needle = query.trim().toLowerCase();
+    if (needle.length <= LIBRARY_CHUNK_DEFAULTS.overlap || hits.length >= limit) return hits;
+    const matched = new Set(hits.map(hit => hit.itemId));
+    const prefix = needle.slice(0, LIBRARY_CHUNK_DEFAULTS.overlap - 1).replace(/[\ud800-\udbff]$/u, "");
+    for (const id of this.repo.findLargeTextKeywordCandidates(prefix, scope)) {
+      if (matched.has(id)) continue;
+      const item = this.repo.getItem(id);
+      if (!item) continue;
+      const path = this.absolutePath(item);
+      try {
+        this.assertManagedFile(path);
+        if (!libraryTextContains(readLibraryTextParts(path), needle)) continue;
+      } catch {
+        continue;
+      }
+      hits.push({
+        itemId: item.id, title: item.title, kind: item.kind, spaceId: item.spaceId,
+        snippet: "", rank: 2, favorite: item.favorite, sourceType: item.sourceType,
+        sourceTaskId: item.sourceTaskId, updatedAt: item.updatedAt,
+      });
+      if (hits.length >= limit) break;
+    }
+    return hits;
   }
 
   /** FTS 索引维护：文本类条目同步标题/文件名/正文；Office/PDF 标记 pending 并异步抽取索引；
@@ -1256,13 +1773,17 @@ export class LibraryService {
     this.extractCache.delete(item.id);
     if (this.repo.isTextSearchable(item.kind)) {
       const abs = this.absolutePath(item);
+      if (item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) {
+        this.indexLargeText(item, abs);
+        return;
+      }
       let body = "";
       try {
         if (existsSync(abs)) {
           this.assertManagedFile(abs);
           const st = statSync(abs);
-          if (st.isFile() && st.size <= TEXT_SEARCH_MAX_BYTES) {
-            body = readFileSync(abs, "utf8").slice(0, TEXT_SEARCH_MAX_BYTES);
+          if (st.isFile()) {
+            body = readFileSync(abs, "utf8");
           }
         }
       } catch {
@@ -1289,6 +1810,13 @@ export class LibraryService {
     this.repo.deleteFts(item.id);
     this.repo.deleteChunks(item.id);
     this.repo.updateExtractStatus(item.id, "unsupported");
+  }
+
+  private indexLargeText(item: LibraryItemDto, path: string): void {
+    this.assertManagedFile(path);
+    this.repo.replaceLargeTextIndex(item, chunkTextParts(item.id, readLibraryTextParts(path)));
+    this.textFtsFallbackIds.delete(item.id);
+    this.scheduleSemanticIndex();
   }
 
   /** R2+R3：基于文本 body 刷新 chunks，同步失效 stale embeddings */
@@ -1323,6 +1851,7 @@ export class LibraryService {
         console.warn(`[Library] 移除 chunk 的 embedding 清理失败 ${itemId}：`, err);
       }
       this.repo.upsertChunks(itemId, chunks as any);
+      this.scheduleSemanticIndex();
     } catch (err) {
       console.warn(`[Library] chunk 写入失败 ${itemId}：`, err);
     }
@@ -1367,8 +1896,8 @@ export class LibraryService {
         if (existsSync(abs)) {
           this.assertManagedFile(abs);
           const st = statSync(abs);
-          if (st.isFile() && st.size <= TEXT_SEARCH_MAX_BYTES) {
-            return readFileSync(abs, "utf8").slice(0, TEXT_SEARCH_MAX_BYTES);
+          if (st.isFile()) {
+            return readFileSync(abs, "utf8");
           }
         }
       } catch {}
@@ -1378,7 +1907,7 @@ export class LibraryService {
       const abs = this.absolutePath(item);
       if (!abs || !this.isManagedFileSafe(abs)) return null;
       try {
-        const result = await this.getExtractedText(item);
+        const result = await this.getIndexExtractedText(item);
         return result.status === "extracted" && result.text ? result.text : null;
       } catch {
         return null;
@@ -1389,13 +1918,12 @@ export class LibraryService {
 
 
   /**
-   * FTS text recovery：每次启动修复缺失派生行；旧版 v2 还会一次性补齐 200–256 KiB 正文覆盖。
-   * 只处理实际候选，分批让出事件循环；v2 成功后 checkpoint，后续只检查缺失行。
+   * FTS text recovery：分批补齐旧版限长索引和缺失的派生行，完成后记录覆盖版本。
    */
   async recoverTextFtsCoverageV2(opts?: { batchSize?: number; signal?: AbortSignal }): Promise<{ processed: number; failed: number }> {
     if (!this.repo.ftsAvailable()) return { processed: 0, failed: 0 };
     const stateKey = "text-fts-coverage-version";
-    const needsCoverageUpgrade = Number(this.repo.getIndexState(stateKey) ?? 0) < 2;
+    const needsCoverageUpgrade = Number(this.repo.getIndexState(stateKey) ?? 0) < TEXT_FTS_COVERAGE_VERSION;
     this.refreshTextFtsFallbackState();
     const ids = [...this.textFtsFallbackIds];
     const batchSize = Math.max(1, Math.min(100, Math.floor(opts?.batchSize ?? 20)));
@@ -1415,7 +1943,7 @@ export class LibraryService {
       }
       await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 0));
     }
-    if (!opts?.signal?.aborted && failed === 0 && needsCoverageUpgrade) this.repo.setIndexState(stateKey, "2");
+    if (!opts?.signal?.aborted && failed === 0 && needsCoverageUpgrade) this.repo.setIndexState(stateKey, String(TEXT_FTS_COVERAGE_VERSION));
     if (!opts?.signal?.aborted) this.refreshTextFtsFallbackState();
     return { processed, failed };
   }
@@ -1432,22 +1960,24 @@ export class LibraryService {
     const batchSize = Math.max(1, Math.min(100, Math.round(opts?.batchSize ?? 20)));
     const signal = opts?.signal;
     let processed = 0, succeeded = 0, failed = 0, skipped = 0;
-    // 快照一次全量候选规模（仅用于进度提示，不作为循环边界——循环以“无 chunk 的剩余”为真源，避免中途新增被遗漏）
+    // 空笔记、附件和失败项可能仍没有 chunk。本次运行只处理每个候选一次。
     let totalHint = 0;
+    let afterRowId = 0;
     try {
       totalHint = this.repo.listChunkBackfillCandidates(100000).length;
     } catch { totalHint = 0; }
     while (!signal?.aborted) {
-      let batch: string[] = [];
+      let batch: ReturnType<LibraryRepository["listChunkBackfillCandidates"]>;
       try {
-        batch = this.repo.listChunkBackfillCandidates(batchSize);
+        batch = this.repo.listChunkBackfillCandidates(batchSize, afterRowId);
       } catch (err) {
         console.warn("[Library] chunk backfill 查询失败：", err);
         break;
       }
       if (batch.length === 0) break;
-      for (const itemId of batch) {
+      for (const { id: itemId, rowId } of batch) {
         if (signal?.aborted) break;
+        afterRowId = rowId;
         processed++;
         try {
           if (this.repo.hasChunks(itemId)) { skipped++; continue; }
@@ -1455,12 +1985,20 @@ export class LibraryService {
           if (!item) { skipped++; continue; }
           // URL/file/image 等无可索引正文的类型不产生 chunk
           if (!this.repo.isTextSearchable(item.kind) && !this.isExtractableKind(item.kind)) { skipped++; continue; }
+          if (this.repo.isTextSearchable(item.kind) && item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) {
+            this.indexLargeText(item, this.absolutePath(item));
+            succeeded++;
+            continue;
+          }
           const text = await this.resolveBackfillText(item);
+          const current = this.repo.getItem(itemId);
+          if (!current || current.contentHash !== item.contentHash || current.updatedAt !== item.updatedAt) { skipped++; continue; }
           if (!text || text.trim().length === 0) { this.repo.deleteChunks(itemId); skipped++; continue; }
           // 幂等双检：并发写入刚好补上的情况
           if (this.repo.hasChunks(itemId)) { skipped++; continue; }
           const chunks = chunkText(itemId, text);
           this.repo.upsertChunks(itemId, chunks as any);
+          this.scheduleSemanticIndex();
           succeeded++;
         } catch (err) {
           failed++;
@@ -1474,143 +2012,131 @@ export class LibraryService {
     return { processed, succeeded, failed, skipped };
   }
 
-  // R3 Semantic Index：绑 chunk_hash，异步分批可恢复，单失败隔离，与 R2 backfillMissingChunks 分离
   private semanticBackfillRunning = false;
+  private semanticIndexController?: AbortController;
+  private semanticIndexFlight?: Promise<void>;
+  private semanticIndexRequested = false;
+  private semanticIndexFailures = 0;
 
-  get semanticIndexStats(): { running: boolean; pending?: number; failed?: number; processed?: number } {
-    try {
-      const dbAny = (this.db as any);
-      const conn = dbAny.connection ?? dbAny.db ?? dbAny;
-      const ch = conn.prepare(`SELECT COUNT(*) AS n FROM library_chunks`).get() as any;
-      const em = conn.prepare(`SELECT COUNT(*) AS n FROM library_chunk_embeddings WHERE model_id=? AND model_version=?`).get("BAAI/bge-m3","int8-v1") as any;
-      const total = Number(ch?.n ?? 0);
-      const done = Number(em?.n ?? 0);
-      const jr = conn.prepare(`SELECT processed, failed FROM semantic_index_jobs WHERE job_id=?`).get("BAAI/bge-m3:int8-v1") as any;
-      return { running: this.semanticBackfillRunning, pending: Math.max(0, total - done), failed: Number(jr?.failed ?? 0), processed: Number(jr?.processed ?? done) };
-    } catch { return { running: this.semanticBackfillRunning }; }
+  startSemanticIndexing(): void {
+    this.semanticIndexController ??= new AbortController();
+    this.scheduleSemanticIndex();
   }
 
-  /** R3.4：幂等确保语义索引就绪（建表由 AppDatabase 迁移保证，这里仅校验） */
-  ensureSemanticIndex(): void {
-    // tables ensured by AppDatabase migration v16; no-op, kept as API surface
-  }
-
-  /**
-   * R3.4：异步 backfillEmbeddings — 分批、hash 去重、失败隔离、abortable、checkpoint 到 semantic_index_jobs。
-   * 与 R2 backfillMissingChunks 分离（R2 负责 chunks，本方法负责 embeddings）。
-   * lifecycle 绑 chunk_hash：hash 相同复用，同 chunk 不同 hash 则重建；stale/orphan 由 hash 错配自然淘汰。
-   */
-  async backfillEmbeddings(opts?: { batchSize?: number; signal?: AbortSignal; onProgress?: (done: number, totalHint: number) => void }): Promise<{ processed: number; succeeded: number; failed: number; skipped: number }> {
-    if (this.semanticBackfillRunning) return { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
-    this.semanticBackfillRunning = true;
-    const batchSize = Math.max(1, Math.min(100, Math.round(opts?.batchSize ?? 20)));
-    const signal = opts?.signal;
-    let processed = 0, succeeded = 0, failed = 0, skipped = 0;
-    const MODEL_ID = SEMANTIC_MODEL_ID;
-    const MODEL_VER = SEMANTIC_MODEL_VERSION;
-    const DIM = SEMANTIC_DIMENSION;
-    const jobId = `${MODEL_ID}:${MODEL_VER}`;
-    const dbAny = (this.db as any);
-    const conn = dbAny.connection ?? dbAny.db ?? dbAny;
-    const ensureJob = () => {
-      try {
-        conn.prepare(`INSERT OR IGNORE INTO semantic_index_jobs (job_id, model_id, model_version, status, processed, failed, updated_at) VALUES (?, ?, ?, 'pending', 0, 0, ?)`).run(jobId, MODEL_ID, MODEL_VER, Date.now());
-      } catch {}
-    };
-    const updateJob = (status: string, lastId: string | null, err?: string) => {
-      try {
-        conn.prepare(`UPDATE semantic_index_jobs SET status=?, last_chunk_id=?, processed=?, failed=?, error=?, updated_at=? WHERE job_id=?`).run(status, lastId, processed, failed, err ?? null, Date.now(), jobId);
-      } catch {}
-    };
-    ensureJob();
-    try {
-      // Gate: no model -> pending, never hash
-      const mgrGate = new SemanticModelManager();
-      const chkGate = mgrGate.getStatus();
-      if (chkGate.status !== "ready") {
-        updateJob("pending", null, "model " + chkGate.status + (chkGate.error ? ": " + chkGate.error : ""));
-        return { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
-      }
-      const rtGate = getSemanticRuntime(mgrGate);
-      try { await rtGate.ensureSession(); } catch (e) {
-        updateJob("pending", null, String(e instanceof Error ? e.message : e));
-        return { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
-      }
-      // Reuse single runtime/session for entire backfill (no per-chunk import/new)
-      updateJob("running", null);
-      let totalHint = 0;
-      try {
-        const r = conn.prepare(`SELECT COUNT(*) AS n FROM library_chunks`).get() as any;
-        totalHint = Number(r?.n ?? 0);
-      } catch { totalHint = 0; }
-      // resume from checkpoint
-      let lastId: string | null = null;
-      try {
-        const j = conn.prepare(`SELECT last_chunk_id FROM semantic_index_jobs WHERE job_id=?`).get(jobId) as any;
-        lastId = j?.last_chunk_id ?? null;
-      } catch { lastId = null; }
-      while (!signal?.aborted) {
-        let batch: Array<{ id: string; content: string; hash: string; chunk_index: number; char_offset: number; item_id: string }> = [];
+  scheduleSemanticIndex(): void {
+    const controller = this.semanticIndexController;
+    if (!controller || controller.signal.aborted) return;
+    this.semanticIndexRequested = true;
+    if (this.semanticIndexFlight) return;
+    this.semanticIndexFlight = Promise.resolve().then(async () => {
+      while (this.semanticIndexRequested && !controller.signal.aborted) {
+        this.semanticIndexRequested = false;
         try {
-          if (lastId) {
-            batch = conn.prepare(`SELECT id, content, hash, chunk_index, char_offset, item_id FROM library_chunks WHERE id > ? ORDER BY id LIMIT ?`).all(lastId, batchSize) as any;
-          } else {
-            batch = conn.prepare(`SELECT id, content, hash, chunk_index, char_offset, item_id FROM library_chunks ORDER BY id LIMIT ?`).all(batchSize) as any;
-          }
-        } catch (e) { console.warn("[Library] embedding backfill 查询失败：", e); break; }
-        if (batch.length === 0) break;
-        for (const ch of batch) {
-          if (signal?.aborted) break;
-          processed++;
-          lastId = ch.id;
+          await this.backfillEmbeddings({ signal: controller.signal });
+        } catch (err) {
+          console.warn("[Library] 语义索引失败：", err);
+        }
+      }
+    }).finally(() => {
+      this.semanticIndexFlight = undefined;
+      if (this.semanticIndexRequested) this.scheduleSemanticIndex();
+    });
+  }
+
+  async stopSemanticIndexing(): Promise<void> {
+    this.semanticIndexController?.abort();
+    this.semanticIndexRequested = false;
+    await this.semanticIndexFlight;
+    this.semanticIndexController = undefined;
+  }
+
+  get semanticIndexStats(): { running: boolean; pending: number; failed: number; processed: number; total: number; completed: number } {
+    const row = this.db.connection.prepare(`
+      SELECT COUNT(*) AS total, COUNT(e.chunk_id) AS completed
+      FROM library_chunks c JOIN library_items i ON i.id = c.item_id
+      ${SEMANTIC_INDEX_JOIN}
+      WHERE i.trashed_at IS NULL AND i.space_id IN (SELECT value FROM json_each(?))
+    `).get(...SEMANTIC_INDEX_PARAMS, JSON.stringify(hybridLibrarySpaceIds(this.db))) as { total: number; completed: number };
+    return {
+      ...row,
+      running: this.semanticBackfillRunning,
+      pending: row.total - row.completed,
+      failed: this.semanticIndexFailures,
+      processed: row.completed,
+    };
+  }
+
+  async backfillEmbeddings(opts?: { batchSize?: number; signal?: AbortSignal; onProgress?: (done: number, totalHint: number) => void }): Promise<{ processed: number; succeeded: number; failed: number; skipped: number }> {
+    const result = { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
+    if (this.semanticBackfillRunning || opts?.signal?.aborted) return result;
+    const runtime = getSemanticRuntime();
+    if (runtime.getModelStatus().status !== "ready") return result;
+    const batchSize = Math.max(1, Math.min(100, Math.round(opts?.batchSize ?? 20)));
+    this.semanticBackfillRunning = true;
+    try {
+      const totalHint = this.semanticIndexStats.pending;
+      if (totalHint === 0) return result;
+      await runtime.ensureSession();
+      const conn = this.db.connection;
+      const select = conn.prepare(`
+        SELECT c.id, c.hash, c.content
+        FROM library_chunks c JOIN library_items i ON i.id = c.item_id
+        ${SEMANTIC_INDEX_JOIN}
+        WHERE e.chunk_id IS NULL AND i.trashed_at IS NULL
+          AND i.space_id IN (SELECT value FROM json_each(?))
+          AND (? IS NULL OR c.id > ?)
+        ORDER BY c.id LIMIT ?
+      `);
+      const store = conn.prepare(`
+        INSERT OR REPLACE INTO library_chunk_embeddings
+          (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at)
+        SELECT c.id, ?, ?, c.hash, ?, ?, ?
+        FROM library_chunks c JOIN library_items i ON i.id = c.item_id
+        WHERE c.id = ? AND c.hash = ? AND i.trashed_at IS NULL
+          AND i.space_id IN (SELECT value FROM json_each(?))
+      `);
+      let cursor: string | null = null;
+      while (!opts?.signal?.aborted) {
+        const eligible = JSON.stringify(hybridLibrarySpaceIds(this.db));
+        const batch = select.all(...SEMANTIC_INDEX_PARAMS, eligible, cursor, cursor, batchSize) as Array<{
+          id: string; hash: string; content: string;
+        }>;
+        if (!batch.length) break;
+        const embeddings: Array<{ chunk: typeof batch[number]; bytes: Buffer }> = [];
+        for (const chunk of batch) {
+          if (opts?.signal?.aborted) return result;
+          result.processed++;
+          cursor = chunk.id;
           try {
-            // hash 去重：同 chunk 同 hash 已有 embedding 则跳过
-            let exists: any = null;
-            try {
-              exists = conn.prepare(`SELECT chunk_hash FROM library_chunk_embeddings WHERE chunk_id=? AND model_id=? AND model_version=?`).get(ch.id, MODEL_ID, MODEL_VER) as any;
-            } catch {}
-            if (exists && exists.chunk_hash === ch.hash) { skipped++; continue; }
-            // stale：hash 变化则先删旧
-            if (exists && exists.chunk_hash !== ch.hash) {
-              try { conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id=? AND model_id=? AND model_version=?`).run(ch.id, MODEL_ID, MODEL_VER); } catch {}
-            }
-            // embed via singleton runtime — no per-chunk Provider, no hash fallback
-            let vec: Float32Array;
-            try {
-              vec = await rtGate.embed(ch.content);
-            } catch (err) {
-              failed++;
-              console.warn("[Library] embedding single failed", ch.id, err);
-              continue;
-            }
-            if (vec.length !== DIM) { failed++; continue; }
-            const blob = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-            try {
-              conn.prepare(`INSERT OR REPLACE INTO library_chunk_embeddings (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(ch.id, MODEL_ID, MODEL_VER, ch.hash, DIM, blob, Date.now());
-              // also carry chunk_index/char_offset for fast provider join: store denormalized via library_chunks join, but also ensure row exists
-              succeeded++;
-            } catch (e) {
-              failed++;
-              console.warn(`[Library] embedding 写入失败 ${ch.id}`, e);
-            }
+            const vector = await runtime.embed(chunk.content);
+            if (vector.length !== SEMANTIC_DIMENSION) throw new Error("语义向量维度不匹配");
+            embeddings.push({ chunk, bytes: Buffer.from(new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength)) });
           } catch (err) {
-            failed++;
-            console.warn(`[Library] embedding 单项失败 ${ch.id} 已隔离：`, err);
+            result.failed++;
+            console.warn("[Library] 片段语义索引失败：", chunk.id, err);
           }
         }
-        updateJob("running", lastId);
-        opts?.onProgress?.(processed, totalHint);
-        await new Promise<void>((r) => setTimeout(r, 0));
+        if (opts?.signal?.aborted) return result;
+        const currentEligible = JSON.stringify(hybridLibrarySpaceIds(this.db));
+        conn.transaction(() => {
+          for (const { chunk, bytes } of embeddings) {
+            const { changes } = store.run(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION,
+              bytes, Date.now(), chunk.id, chunk.hash, currentEligible);
+            if (changes) result.succeeded++;
+            else result.skipped++;
+          }
+        })();
+        opts?.onProgress?.(result.processed, totalHint);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
-      updateJob(signal?.aborted ? "pending" : "done", lastId);
     } finally {
       this.semanticBackfillRunning = false;
+      this.semanticIndexFailures = result.failed;
     }
-    return { processed, succeeded, failed, skipped };
+    return result;
   }
 
-  
-/** 可抽取的 Office/PDF 类型（文本类直接内联；image/file 不抽取） */
+  /** 可抽取的 Office/PDF 类型（文本类直接内联；image/file 不抽取） */
   private isExtractableKind(kind: LibraryItemKind): boolean {
     return kind === "office" || kind === "pdf";
   }
@@ -1631,10 +2157,13 @@ export class LibraryService {
       this.repo.deleteChunks(item.id);
       return;
     }
-    const result = await this.getExtractedText(item);
-    this.repo.updateExtractStatus(item.id, result.status);
+    const key = this.extractCacheKey(abs, item);
+    const result = await this.getIndexExtractedText(item);
+    const current = this.repo.getItem(item.id);
+    if (!current || this.extractCacheKey(abs, current) !== key || this.absolutePath(current) !== abs) return;
+    this.repo.updateExtractStatus(current.id, result.status);
     if (result.status === "extracted" && result.text) {
-      this.repo.upsertFts(item.id, item.title, item.filename, result.text);
+      this.repo.upsertFts(item.id, current.title, current.filename, result.text);
       this.refreshChunksForItem(item.id, result.text);
     } else {
       this.repo.deleteFts(item.id);
@@ -1646,7 +2175,21 @@ export class LibraryService {
    * 获取文档抽取正文（带缓存：size+mtime+contentHash 变化即失效重抽；per-item 并发去重）。
    * extracted → 返回正文（≤200KB，truncated 标记）；unsupported/error → text=null。
    */
-  async getExtractedText(item: LibraryItemDto): Promise<ExtractionResult> {
+  async getExtractedText(item: LibraryItemDto, textMaxChars?: number): Promise<ExtractionResult> {
+    if (this.repo.isTextReadable(item.kind)) {
+      const abs = this.absolutePath(item);
+      if (!abs || !this.isManagedFileSafe(abs)) {
+        return { status: "unsupported", text: null, truncated: false, error: "受管文件不可安全读取" };
+      }
+      const prefix = readUtf8Prefix(abs, textMaxChars ?? EXTRACT_MAX_OUTPUT_CHARS);
+      return { status: "extracted", text: prefix.content, truncated: prefix.contentTruncated };
+    }
+    const result = await this.getIndexExtractedText(item);
+    if (result.text === null || result.text.length <= EXTRACT_MAX_OUTPUT_CHARS) return result;
+    return { ...result, text: result.text.slice(0, EXTRACT_MAX_OUTPUT_CHARS), truncated: true };
+  }
+
+  private async getIndexExtractedText(item: LibraryItemDto): Promise<ExtractionResult> {
     const abs = this.absolutePath(item);
     if (!abs || !this.isManagedFileSafe(abs)) {
       return { status: "unsupported", text: null, truncated: false, error: "受管文件不可安全读取" };
@@ -1654,22 +2197,23 @@ export class LibraryService {
     const key = this.extractCacheKey(abs, item);
     const cached = this.extractCache.get(item.id);
     if (cached && cached.key === key) return cached.result;
-    const inflight = this.inflightExtract.get(item.id);
+    const inflightKey = `${item.id}:${key}`;
+    const inflight = this.inflightExtract.get(inflightKey);
     if (inflight) return inflight;
-    const promise = this.extractors.extract(item.kind, item.mimeType, abs, defaultBudget());
-    this.inflightExtract.set(item.id, promise);
+    const promise = this.extractors.extract(item.kind, item.mimeType, abs, libraryIndexExtractionBudget());
+    this.inflightExtract.set(inflightKey, promise);
     try {
       const result = await promise;
-      this.cacheExtraction(item.id, abs, item, result);
+      if (this.extractCacheKey(abs, item) === key) this.cacheExtraction(item.id, key, result);
       return result;
     } finally {
-      this.inflightExtract.delete(item.id);
+      this.inflightExtract.delete(inflightKey);
     }
   }
 
-  private cacheExtraction(itemId: string, abs: string, item: LibraryItemDto, result: ExtractionResult): void {
-    this.extractCache.set(itemId, { key: this.extractCacheKey(abs, item), result });
-    if (this.extractCache.size > 64) {
+  private cacheExtraction(itemId: string, key: string, result: ExtractionResult): void {
+    this.extractCache.set(itemId, { key, result });
+    if (this.extractCache.size > 8) {
       const oldest = this.extractCache.keys().next().value;
       if (oldest !== undefined) this.extractCache.delete(oldest);
     }
@@ -1687,13 +2231,15 @@ export class LibraryService {
    * 负责 library_chunks/library_chunks_fts；office/pdf 的“完整自愈”由两者先后触发共同覆盖。
    */
   async recoverPendingExtractions(): Promise<number> {
+    this.repo.prepareLargeOfficeExtractionUpgrade(EXTRACT_MAX_OUTPUT_CHARS);
     const candidates = this.repo.listExtractionRecoveryCandidates();
-    for (const row of candidates) {
-      const item = this.repo.getItem(row.id);
-      if (!item) continue;
-      const pending = this.indexExtractedText(item.id).catch((err) => {
-        console.warn(`[Library] 恢复抽取失败 ${item.id}：`, err);
-      });
+    if (candidates.length) {
+      const pending = (async () => {
+        for (const { id } of candidates) {
+          await this.indexExtractedText(id).catch((err) => console.warn(`[Library] 恢复抽取失败 ${id}：`, err));
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
+      })();
       this.pendingIndexes.add(pending);
       void pending.finally(() => this.pendingIndexes.delete(pending));
     }
@@ -2111,7 +2657,7 @@ export class LibraryService {
     try { this.removeFile(item); }
     catch (error) { console.warn(`[Library] 条目 ${item.id} 已从 DB 删除，但受管文件清理失败（orphan）`, error); }
   }
-  private writeManagedFile(item: LibraryItemDto, content: string): void {
+  private writeManagedFile(item: LibraryItemDto, content: string | Uint8Array): void {
     const abs = this.absolutePath(item);
     this.assertManagedWritePath(abs);
     atomicWriteFileSync(abs, content);
@@ -2120,12 +2666,11 @@ export class LibraryService {
   private removeFile(item: LibraryItemDto): void {
     const abs = this.absolutePath(item);
     if (abs) {
-      try {
-        this.assertManagedFile(abs);
-      } catch {
-        return; // 越界/异常路径不删除（宁可残留也不误删）
+      if (this.isManagedFileSafe(abs) && existsSync(abs)) rmSync(abs, { force: true });
+      const versions = abs + ".versions";
+      if (this.isManagedFileSafe(versions) && existsSync(versions)) {
+        rmSync(versions, { recursive: true, force: true });
       }
-      if (existsSync(abs)) rmSync(abs, { force: true });
     }
   }
 }

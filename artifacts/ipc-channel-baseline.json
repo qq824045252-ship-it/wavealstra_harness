@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 519,
-  "allRegistrations": 539,
-  "uniqueChannels": 519,
+  "mainRegistrations": 533,
+  "allRegistrations": 553,
+  "uniqueChannels": 533,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -123,6 +123,7 @@
     "answer-routing:list",
     "answer-routing:preview",
     "answer-routing:remove",
+    "answer-routing:review-memory",
     "answer-routing:save",
     "answer-routing:suggest",
     "artifact-domain:get",
@@ -175,6 +176,7 @@
     "btw:keepalive",
     "btw:prompt",
     "btw:start",
+    "cadcraft:open-copy",
     "captureMode:enter",
     "captureMode:exit",
     "captureMode:startInspect",
@@ -250,6 +252,7 @@
     "db:renameSpace",
     "db:reopenProjectEvent",
     "db:restoreTrashedTask",
+    "db:setWorkspaceIcon",
     "db:unpinProjectItem",
     "db:updateProject",
     "db:updateProjectMemory",
@@ -328,17 +331,24 @@
     "library:listTaskReferences",
     "library:markVisited",
     "library:moveCollection",
+    "library:note",
     "library:pickAndImport",
     "library:previewUrl",
     "library:readContent",
+    "library:readScopedEvidence",
     "library:renameCollection",
     "library:renameSpace",
     "library:saveArtifact",
+    "library:scopedDeepSearch",
     "library:search",
     "library:showInFolder",
     "library:snapshot",
     "library:updateItem",
     "library:writeContent",
+    "material-retrieval:get-scope",
+    "material-retrieval:get-settings",
+    "material-retrieval:set-scope",
+    "material-retrieval:set-settings",
     "mcp:authComplete",
     "mcp:authStart",
     "mcp:connect",
@@ -378,6 +388,7 @@
     "memory:detachScope",
     "memory:dismissProjection",
     "memory:dismissedProjections",
+    "memory:distillSkills",
     "memory:extractPendingTurns",
     "memory:forget",
     "memory:generateL2Proposals",
@@ -426,6 +437,9 @@
     "notification:markAllRead",
     "notification:markRead",
     "notification:unreadCount",
+    "office-use:bounds",
+    "office-use:close",
+    "office-use:open",
     "perf:mark",
     "plugins:openDirectory",
     "plugins:paths",
@@ -541,71 +555,71 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2322",
-          "scripts/wave5-real-open-e2e.ts:304"
+          "src/main/index.ts:2429",
+          "scripts/wave5-real-open-e2e.ts:273"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:304"
+          "scripts/wave5-real-open-e2e.ts:273"
         ]
       },
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2326",
-          "scripts/wave5-real-open-e2e.ts:300"
+          "src/main/index.ts:2433",
+          "scripts/wave5-real-open-e2e.ts:269"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:300"
+          "scripts/wave5-real-open-e2e.ts:269"
         ]
       },
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2330",
-          "scripts/wave5-real-open-e2e.ts:297"
+          "src/main/index.ts:2437",
+          "scripts/wave5-real-open-e2e.ts:266"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:297"
+          "scripts/wave5-real-open-e2e.ts:266"
         ]
       },
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2341",
-          "scripts/wave5-real-open-e2e.ts:296"
+          "src/main/index.ts:2448",
+          "scripts/wave5-real-open-e2e.ts:265"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:296"
+          "scripts/wave5-real-open-e2e.ts:265"
         ]
       },
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2345",
-          "scripts/wave5-real-open-e2e.ts:292"
+          "src/main/index.ts:2452",
+          "scripts/wave5-real-open-e2e.ts:261"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:292"
+          "scripts/wave5-real-open-e2e.ts:261"
         ]
       },
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2350",
-          "scripts/wave5-real-open-e2e.ts:307"
+          "src/main/index.ts:2457",
+          "scripts/wave5-real-open-e2e.ts:276"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:307"
+          "scripts/wave5-real-open-e2e.ts:276"
         ]
       },
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2354",
-          "scripts/wave5-real-open-e2e.ts:310"
+          "src/main/index.ts:2461",
+          "scripts/wave5-real-open-e2e.ts:279"
         ],
         "foreign": [
-          "scripts/wave5-real-open-e2e.ts:310"
+          "scripts/wave5-real-open-e2e.ts:279"
         ]
       }
     ],
@@ -623,7 +637,7 @@
       {
         "channel": "agent:abort",
         "entries": [
-          "src/main/index.ts:1211",
+          "src/main/index.ts:1272",
           "scripts/browser-stop-ui-electron-test.ts:42"
         ],
         "foreign": [
@@ -633,7 +647,7 @@
       {
         "channel": "agent:getAppSettings",
         "entries": [
-          "src/main/index.ts:1360",
+          "src/main/index.ts:1421",
           "scripts/browser-stop-ui-electron-test.ts:41"
         ],
         "foreign": [
@@ -643,7 +657,7 @@
       {
         "channel": "agent:loadTaskHistory",
         "entries": [
-          "src/main/index.ts:1493",
+          "src/main/index.ts:1554",
           "scripts/browser-stop-ui-electron-test.ts:43"
         ],
         "foreign": [
@@ -653,7 +667,7 @@
       {
         "channel": "agent:getModeProfile",
         "entries": [
-          "src/main/index.ts:1526",
+          "src/main/index.ts:1587",
           "scripts/browser-stop-ui-electron-test.ts:40"
         ],
         "foreign": [

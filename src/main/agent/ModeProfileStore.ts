@@ -43,7 +43,7 @@ import {
 } from "../../shared/runtime-requirement";
 import { getModesDir } from "../paths";
 import { normalizePstackSettings, validatePstackSettings } from "../../shared/pstack";
-import { MODE_SEEDS, PENPOT_PRESET } from "./mode-defaults";
+import { MODE_SEEDS, PENPOT_PRESET, refreshLegacyOfficePreset } from "./mode-defaults";
 
 function isWelcomeMode(id: string): id is WelcomeMode {
   return (WELCOME_MODES as string[]).includes(id);
@@ -629,12 +629,7 @@ export class ModeProfileStore {
             if (seedMatch && !merged[i].skillPolicy && seedMatch.skillPolicy) {
               merged[i] = { ...merged[i], skillPolicy: seedMatch.skillPolicy };
             }
-            // Adopt the new OfficeCLI whitelist only for the unchanged previous factory policy.
-            // Custom allow/hide/prefer choices remain authoritative; reads never rewrite disk.
-            if (id === "working" && seedMatch?.id === "general-office" && seedMatch.skillPolicy
-              && JSON.stringify(merged[i].skillPolicy) === JSON.stringify({ ...seedMatch.skillPolicy, allow: [] })) {
-              merged[i] = { ...merged[i], skillPolicy: seedMatch.skillPolicy };
-            }
+            if (id === "working" && seedMatch) merged[i] = refreshLegacyOfficePreset(merged[i], seedMatch);
           }
           diskRaw = {
             ...diskRaw,

@@ -7,6 +7,7 @@ import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../sh
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { AnswerRoutingIpc, type AnswerRoutingApi } from "../shared/answer-routing";
+import { MaterialRetrievalIpc, type MaterialRetrievalApi } from "../shared/materialRetrieval";
 import { WorkspaceNotesIpc, type WorkspaceNoteSaveRequest } from "../shared/workspace-notes";
 import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
 import { PluginStorageIpc, type PluginStoragePathsDto } from "../shared/plugin-storage";
@@ -343,8 +344,8 @@ const api = {
   onThemeRequest: (callback: () => void): void => {
     ipcRenderer.on("theme:request", () => callback());
   },
-  pickLocalFile: (): Promise<LocalFilePayload | null> =>
-    ipcRenderer.invoke("workspace:pickLocalFile"),
+  pickLocalFile: (editorPreview?: boolean): Promise<LocalFilePayload | null> =>
+    ipcRenderer.invoke("workspace:pickLocalFile", editorPreview),
   pickLocalFolder: (): Promise<{ path: string; name: string } | null> =>
     ipcRenderer.invoke("workspace:pickLocalFolder"),
   pathExists: (folderPath: string): Promise<boolean> =>
@@ -813,6 +814,12 @@ const api = {
     detectCloudflared: (): Promise<RemoteCloudflaredStatus> => ipcRenderer.invoke(RemoteAccessIpc.detectCloudflared),
   },
 
+  materialRetrieval: {
+    getSettings: () => ipcRenderer.invoke(MaterialRetrievalIpc.getSettings),
+    setSettings: settings => ipcRenderer.invoke(MaterialRetrievalIpc.setSettings, settings),
+    getScope: scope => ipcRenderer.invoke(MaterialRetrievalIpc.getScope, scope),
+    setScope: (scope, mode) => ipcRenderer.invoke(MaterialRetrievalIpc.setScope, scope, mode),
+  } satisfies MaterialRetrievalApi,
   answerRouting: {
     list: () => ipcRenderer.invoke(AnswerRoutingIpc.list),
     save: (draft, version) => ipcRenderer.invoke(AnswerRoutingIpc.save, draft, version),
@@ -820,6 +827,7 @@ const api = {
     preview: (query, projectId) => ipcRenderer.invoke(AnswerRoutingIpc.preview, query, projectId),
     history: turn => ipcRenderer.invoke(AnswerRoutingIpc.history, turn),
     suggest: (teaching, question, answer) => ipcRenderer.invoke(AnswerRoutingIpc.suggest, teaching, question, answer),
+    reviewMemory: draft => ipcRenderer.invoke(AnswerRoutingIpc.reviewMemory, draft),
   } satisfies AnswerRoutingApi,
   memory: {
     organization: (): Promise<MemoryOrganizationRun | null> => ipcRenderer.invoke(MemoryOrganizationIpc.latest),
@@ -863,6 +871,7 @@ const api = {
     skillCandidates: (status?: MemorySkillCandidateStatus, limit?: number): Promise<MemorySkillCandidateDto[]> => ipcRenderer.invoke(MemoryIpc.skillCandidates, status, limit),
     skillLearningStatus: (): Promise<import("../shared/memory-kernel").MemorySkillLearningStatusDto> => ipcRenderer.invoke(MemoryIpc.skillLearningStatus),
     deleteSkillHistory: (request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest): Promise<number> => ipcRenderer.invoke(MemoryIpc.deleteSkillHistory, request),
+    distillSkills: (action: "start" | "pause"): Promise<import("../shared/memory-kernel").SkillDistillationProgress | undefined> => ipcRenderer.invoke(MemoryIpc.distillSkills, action),
     refreshSkillCandidates: (): Promise<{ evaluated: number; created: number; updated: number; staled: number; ready: number }> => ipcRenderer.invoke(MemoryIpc.refreshSkillCandidates),
     approveSkillCandidate: (id: string): Promise<MemorySkillCandidateDto> => ipcRenderer.invoke(MemoryIpc.approveSkillCandidate, id),
     rejectSkillCandidate: (id: string): Promise<MemorySkillCandidateDto> => ipcRenderer.invoke(MemoryIpc.rejectSkillCandidate, id),
@@ -873,7 +882,7 @@ const api = {
     refreshSkillRevisionCandidates: (): Promise<{ evaluated: number; created: number; staled: number; ready: number }> => ipcRenderer.invoke(MemoryIpc.refreshSkillRevisionCandidates),
     approveSkillRevisionCandidate: (id: string): Promise<{ candidate: MemorySkillRevisionCandidateDto; skill: import("../shared/agent-ipc").SkillDto }> => ipcRenderer.invoke(MemoryIpc.approveSkillRevisionCandidate, id),
     rejectSkillRevisionCandidate: (id: string): Promise<MemorySkillRevisionCandidateDto> => ipcRenderer.invoke(MemoryIpc.rejectSkillRevisionCandidate, id),
-    reindexSemantic: (limit?: number): Promise<{ indexed: number; failed: number }> => ipcRenderer.invoke(MemoryIpc.reindexSemantic, limit),
+    reindexSemantic: (limit?: number): Promise<import("../shared/memory-kernel").MemoryIndexResult> => ipcRenderer.invoke(MemoryIpc.reindexSemantic, limit),
   },
 
   db: {
@@ -1009,7 +1018,7 @@ const api = {
       ipcRenderer.on(DbIpc.memoryChanged, handler);
       return () => ipcRenderer.removeListener(DbIpc.memoryChanged, handler);
     },
-    getSemanticIndexStats: (): Promise<{ running: boolean; pending?: number; failed?: number; processed?: number }> =>
+    getSemanticIndexStats: (): Promise<{ running: boolean; total: number; completed: number; pending: number; failed: number; processed: number }> =>
       ipcRenderer.invoke(DbIpc.getSemanticIndexStats),
     getSemanticModelStatus: (): Promise<{ status: string; error: string | null; modelsRoot: string }> =>
       ipcRenderer.invoke(DbIpc.getSemanticModelStatus),
@@ -1125,6 +1134,16 @@ const api = {
       ipcRenderer.invoke(ProfessionalToolIpc.stop, providerId),
   },
 
+  officeUse: {
+    onFailure: (callback: (id: string, message: string) => void) => {
+      const listener = (_: Electron.IpcRendererEvent, id: string, message: string) => callback(id, message);
+      ipcRenderer.on("office-use:failed", listener);
+      return () => ipcRenderer.removeListener("office-use:failed", listener);
+    },
+    open: (request: import("../shared/office-use").OfficeOpen) => ipcRenderer.invoke("office-use:open", request),
+    bounds: (id: string, rect: import("../shared/office-use").OfficeRect) => ipcRenderer.send("office-use:bounds", id, rect),
+    close: (id: string) => ipcRenderer.invoke("office-use:close", id),
+  },
   htmlEdit: {
     start: (request: import("../shared/html-edit").HtmlEditStart): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("html-edit:start", request),
     stop: (): Promise<void> => ipcRenderer.invoke("html-edit:stop"),
@@ -1398,6 +1417,8 @@ const api = {
   },
 
   library: {
+    note: <T extends import("../shared/library-ipc").LibraryNoteOperation>(request: T): Promise<import("../shared/library-ipc").LibraryNoteOperationResult<T["type"]>> =>
+      ipcRenderer.invoke(LibraryIpc.note, request),
     snapshot: (): Promise<LibrarySnapshotDto> => ipcRenderer.invoke(LibraryIpc.snapshot),
     listItems: (req: LibraryListItemsRequest): Promise<LibraryItemDto[]> =>
       ipcRenderer.invoke(LibraryIpc.listItems, req),
@@ -1438,6 +1459,10 @@ const api = {
     markVisited: (id: string): Promise<{ ok: true; value: LibraryItemDto } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.markVisited, id),
     search: (req: import("../shared/library-ipc").LibrarySearchRequest): Promise<LibraryListRowDto[]> => ipcRenderer.invoke(LibraryIpc.search, req),
+    scopedDeepSearch: (req: import("../shared/library-ipc").LibraryScopedDeepSearchRequest): Promise<import("../shared/library-ipc").LibraryDeepSearchResult> =>
+      ipcRenderer.invoke(LibraryIpc.scopedDeepSearch, req),
+    readScopedEvidence: (req: import("../shared/library-ipc").LibraryScopedEvidenceRequest): Promise<{ text: string }> =>
+      ipcRenderer.invoke(LibraryIpc.readScopedEvidence, req),
     previewUrl: (id: string): Promise<string> => ipcRenderer.invoke(LibraryIpc.previewUrl, id),
     showInFolder: (id: string): Promise<{ ok: true } | { ok: false; error: string }> =>
       ipcRenderer.invoke(LibraryIpc.showInFolder, id),

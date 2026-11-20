@@ -29,6 +29,7 @@ export function createTaskActivationActions(
       const keepPanel = s.panelPinned && s.panelOpen;
       set({
         activeTaskId: id,
+        answerRuleTurnTarget: undefined,
         // 切到具体任务 = 丢弃草稿（首条消息未发出即不存在）
         draft: null,
         // 工作空间选择跟随当前任务：独立任务清空 homeSpaceId，避免发消息时被上次空间偷绑
@@ -302,7 +303,6 @@ export function createTaskActivationActions(
                     }
                   : t,
               ),
-              ...(s.activeTaskId === id ? { panelOpen: false } : {}),
             }));
             hydrateConversationRuntime();
             // Domain 若已 ready（hydrate 先完成）立刻对账；否则等 hydrate 回调

@@ -6,7 +6,7 @@
  * Agent 工具面（未绑定/readonly/archived/幂等）→ 重启持久化。
  * 真实 SQLite + 注入 libraryRoot；必须经 scripts/test-guard.mjs 执行。
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -18,6 +18,7 @@ import { ProjectEventPromoter } from "../src/main/project/ProjectEventPromoter";
 import { ProjectDocumentImporter } from "../src/main/project/ProjectDocumentImporter";
 import { createProjectEventExtension } from "../src/main/project/project-event-extension";
 import { LibraryService } from "../src/main/library/LibraryService";
+import { sha256File } from "../src/main/library/library-file-io";
 import { PROJECT_EVENT_RETENTION_PER_PROJECT } from "../src/shared/project-domain";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ProjectEventExtensionBridge } from "../src/main/project/project-event-extension";
@@ -104,6 +105,18 @@ async function main(): Promise<void> {
   /* ============ 4. 不支持类型（无 OCR）：事件仍记录，正文缺省，状态入 payload ============ */
   const rPng = await importer.importFile("proj-a", pngPath);
   ok(rPng.event.body === undefined && rPng.event.payload?.extractStatus === "unsupported", "4. png（无 OCR）→ 事件创建、无正文、extractStatus=unsupported");
+  const largePath = join(root, "large-source.bin");
+  const largeSize = 256 * 1024 * 1024 + 5;
+  const fd = openSync(largePath, "w");
+  try { writeSync(fd, Buffer.from("tail!"), 0, 5, largeSize - 5); }
+  finally { closeSync(fd); }
+  const large = await importer.importFile("proj-a", largePath);
+  ok(large.item !== null && statSync(library.absolutePath(large.item)).size === largeSize &&
+    sha256File(library.absolutePath(large.item)) === large.event.ref &&
+    large.event.payload?.sizeBytes === largeSize && large.event.body === undefined,
+    "4b. 大于 256 MiB 的文件真源逐字节保存，活动记录仅存引用");
+  const largeAgain = await importer.importFile("proj-a", largePath);
+  ok(largeAgain.reused && largeAgain.item?.id === large.item?.id, "4c. 大文件内容哈希仍保证同项目重导幂等");
 
   /* ============ 5. 路径/文件校验 ============ */
   await throwsAsync(() => importer.importFile("proj-a", join(root, "不存在.md")), "5. 不存在文件拒绝");

@@ -10,6 +10,7 @@
  *    NATIVE_CAPABILITY_TOOL_NAMES 生成会话工具选择。
  *  - pi-event-mapper.isSideEffectTool：用 MUTATING_BUILTIN_TOOLS 判定写类工具。
  */
+import { OFFICE_USE_TOOLS } from "./office-use";
 
 /** pi 内置工具（SDK 自带，非 MCP） */
 export const PI_BUILTIN_TOOL_NAMES = [
@@ -73,6 +74,7 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "conversation_goal_propose_complete",
   "workspace_notes_read",
   "workspace_notes_save",
+  ...Object.values(OFFICE_USE_TOOLS),
   // Library / Memory
   "library_list",
   "library_search",
@@ -90,6 +92,10 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "memory_update",
   "memory_promote",
   "memory_history",
+  "answer_rule_list",
+  "answer_rule_save",
+  "answer_rule_test",
+  "answer_rule_distill",
   // Project runtime
   "project_status_get",
   "project_review",
@@ -146,6 +152,7 @@ export function isMyBuddyNativeExtensionToolName(toolName: string): boolean {
 
 /** Mutating tools used for explicit readonly loadout and observation metadata. */
 export const MUTATING_BUILTIN_TOOLS = [
+  "answer_rule_save",
   "gmail_send", "calendar_create", "calendar_update",
   "write",
   "edit",
@@ -158,6 +165,7 @@ export const MUTATING_BUILTIN_TOOLS = [
   "skill_authoring_create",
   "project_notes_save",
   "workspace_notes_save",
+  OFFICE_USE_TOOLS.selectionPropose,
 ] as const;
 
 /** readonly 时补上不在 pi 默认 active 集里的只读内置工具 */

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { listWorkspaceFiles, readWorkspaceFile } from '../src/main/workspace/WorkspaceService';
+import { listWorkspaceFiles, previewWorkspaceFile, readWorkspaceFile } from '../src/main/workspace/WorkspaceService';
 import { MANIFEST_FILENAME, MANIFEST_TMP_SUFFIX } from '../src/main/task/TaskExecutionWorkspace';
 import type { WorkspaceFileNodeDto } from '../src/shared/agent-ipc';
 
@@ -53,6 +53,16 @@ try {
   await assert.rejects(readWorkspaceFile(root, 'missing.txt', true));
   await assert.rejects(readWorkspaceFile(root, '../outside.txt', true), /工作区/);
   await writeFile(preview, 'legacy reader'); assert.equal((await readWorkspaceFile(root, 'preview.txt')).content, 'legacy reader');
+  const officePath = join(root, 'source.xlsx');
+  const officeBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  await writeFile(officePath, officeBytes);
+  const office = await readWorkspaceFile(root, 'source.xlsx');
+  assert.equal(office.kind, 'xlsx');
+  assert.equal(office.content, '');
+  assert.equal(office.bytes, officeBytes.length);
+  assert.equal(office.path, officePath);
+  assert.match((await previewWorkspaceFile(officePath)).content, /base64,UEsDBA==$/);
+  await rm(officePath);
   await rm(preview);
   const names = ['file1.txt', 'file2.txt', 'file10.txt', 'file02.txt', 'File2.txt', '中文2.txt', '中文10.txt', '重庆.txt', '重阳.txt',
     'école2.txt', 'e\u0301cole2.txt', 'Ärger2.txt', 'ångström10.txt', 'I.txt', 'İ.txt', 'ı.txt', 'Ａ1.txt', 'emoji😀2.txt', '.visible-file', '_1.txt', '-2.txt'];

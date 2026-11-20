@@ -41,11 +41,11 @@ function check(name: string, pass: boolean, detail = ""): void {
 function D(id = "a1", source?: ArtifactSource, over: Partial<ArtifactDescriptor> = {}): ArtifactDescriptor {
   return {
     taskId: "t1",
-    kind: "office",
+    kind: "pdf",
     source:
-      source ?? { type: "workspace-file", entryFile: "C:/ws/office/样本.pptx", rootDir: "C:/ws" },
+      source ?? { type: "workspace-file", entryFile: "C:/ws/样本.pdf", rootDir: "C:/ws" },
     version: 1,
-    capabilities: { originalKind: "pptx" },
+    capabilities: {},
     title: "样本",
     createdAt: 1,
     updatedAt: 1,
@@ -195,9 +195,9 @@ async function main(): Promise<void> {
     h.setDescriptor("a1", D());
     h.setRead(async () => null);
     const r = await h.hydration.ensure("a1");
-    check("H5b 空文件仍返回 payload", r?.path === "C:/ws/office/样本.pptx");
+    check("H5b 空文件仍返回 payload", r?.path === "C:/ws/样本.pdf");
     check("H5b loadState error", h.getState("a1") === "error");
-    check("H5b cache 有 path", h.getCache("a1")?.path === "C:/ws/office/样本.pptx");
+    check("H5b cache 有 path", h.getCache("a1")?.path === "C:/ws/样本.pdf");
   }
   // H6: empty binary 无路径 → error
   {
@@ -275,10 +275,10 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     h.setDescriptor("a1", D());
-    h.setRead(async () => ({ content: "data:application/test;base64,UEsDB-x", kind: "pptx" }));
+    h.setRead(async () => ({ content: "data:application/test;base64,UEsDB-x", kind: "pdf" }));
     const r = await h.hydration.ensure("a1");
-    check("H11 path = entryFile", r?.path === "C:/ws/office/样本.pptx", r?.path ?? "");
-    check("H11 kind 细分 originalKind", r?.kind === "pptx");
+    check("H11 path = entryFile", r?.path === "C:/ws/样本.pdf", r?.path ?? "");
+    check("H11 kind 保留 PDF", r?.kind === "pdf");
   }
   // H12: managed-content → payload.path = response.path
   {
@@ -297,7 +297,14 @@ async function main(): Promise<void> {
     }));
     const r = await h.hydration.ensure("a1");
     check("H12 path = response.path", r?.path === "C:/data/artifacts/t/a1/f", r?.path ?? "");
-    check("H12 kind 兜底 docx（无 originalKind）", r?.kind === "docx");
+    check("H12 kind 保留 PDF", r?.kind === "pdf");
+  }
+  // Office Use opens the bytes by source identity, bypassing renderer hydration.
+  for (const kind of ["docx", "xlsx", "pptx"]) {
+    const h = makeHarness();
+    h.setDescriptor("a1", D("a1", undefined, { kind: "office", capabilities: { originalKind: kind } }));
+    const r = await h.hydration.ensure("a1");
+    check(`Office Use ${kind} 不读取渲染内容`, r === null && h.readCalls.length === 0 && !h.getState("a1"));
   }
 
   console.log(`\n结果: ${passed}/${passed + failed} PASS`);

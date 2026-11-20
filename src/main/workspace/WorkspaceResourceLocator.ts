@@ -13,6 +13,7 @@
 
 import type { AppDatabase } from "../db/AppDatabase";
 import { LibraryService, type LibraryTaskScope } from "../library/LibraryService";
+import { queryScopeForTask } from "../library/library-task-scope";
 import { WorkspaceLibraryBindingService } from "./WorkspaceLibraryBindingService";
 import type {
   WorkspaceResourceHit,
@@ -60,7 +61,7 @@ export class WorkspaceResourceLocator {
   private async searchWithSemantic(req: WorkspaceResourceSearchRequest): Promise<WorkspaceResourceSearchResult> {
     const semanticStart = Date.now();
     const syncResult = this.search(req);
-    const mode = (req as any).mode ?? "auto";
+    const mode = req.mode ?? "auto";
     const baseTelemetry = (): WorkspaceResourceSearchTelemetry => ({
       durationMs: syncResult.durationMs,
       resultCount: syncResult.hits.length,
@@ -77,6 +78,10 @@ export class WorkspaceResourceLocator {
     });
     if (mode === "lexical") {
       return { ...syncResult, semanticTelemetry: { ...baseTelemetry(), semanticTriggered: false, semanticTriggerReason: "mode=lexical" } };
+    }
+    const enabled = () => this.libraryService.materialRetrievalUsesHybrid(this.resolveScope(req).defaultOwner);
+    if (!enabled()) {
+      return { ...syncResult, semanticTelemetry: { ...baseTelemetry(), semanticTriggerReason: "policy=keyword" } };
     }
     // Router 判定是否 fallback (Trigger D for mode=semantic 强制)
     const decision = this.semanticRouter.shouldFallback({ lexicalHits: syncResult.hits, query: (req as any).query ?? "", mode });
@@ -113,13 +118,10 @@ export class WorkspaceResourceLocator {
     const isExplicitSemantic = mode === "semantic";
     try {
       const semanticCandidateStart = Date.now();
-      const cands = await this.semanticProvider.search({
-        query: (req as any).query ?? "",
-        allowedLibrarySpaceIds: [...allowed.readableSpaceIds],
-        allowedLibraryCollectionIds: [...allowed.readableCollectionIds],
-        allowedLibraryItemIds: [...allowed.readableItemIds],
-        limit: Math.max(1, Math.min(50, Math.round((req as any).limit ?? 10))) * 2,
-      });
+      const cands = await this.libraryService.semanticCandidates(
+        req.query, () => queryScopeForTask(this.resolveScope(req)),
+        Math.max(1, Math.min(50, Math.round(req.limit ?? 10))) * 2, this.semanticProvider, enabled,
+      );
       const candidateCount = cands.length;
       const semanticDurationMs = Date.now() - semanticCandidateStart;
       if (cands.length === 0) {

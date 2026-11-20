@@ -7,6 +7,8 @@ import type {
   MemoryCoreProfileDto,
   MemoryDismissedProjectionDto,
   MemoryKernelStats,
+  MemoryIndexResult,
+  MemoryIndexIssue,
   MemoryProjectionProposalDto,
   MemoryProjectionDeleteRequest,
   MemoryKind,
@@ -21,6 +23,7 @@ import type {
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import MemoryL0Explorer from "./MemoryL0Explorer";
 import MemoryOrganizationPanel from "./MemoryOrganizationPanel";
+import MemoryIndexFeedback from "./MemoryIndexFeedback";
 import { useTextPrompt } from "@/components/common/useTextPrompt";
 import { useAppStore } from "@/store/appStore";
 
@@ -78,7 +81,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<MemoryRevisionDto[]>([]);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState<string | MemoryIndexResult | { issue: MemoryIndexIssue }>("");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [loading, setLoading] = useState(false);
   const [showProjectionHistory, setShowProjectionHistory] = useState(false);
@@ -97,6 +100,20 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
   const sourceFocusIdRef = useRef<string | null>(null);
   const recordRequestRef = useRef(0);
   const loadRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (fixedType || !window.api?.db?.getSemanticModelStatus) return;
+    let active = true;
+    const report = (issue: MemoryIndexIssue) => {
+      if (active) setStatus(previous => previous || { issue });
+    };
+    void window.api.db.getSemanticModelStatus().then(model => {
+      if (model.status === "ready" || model.status === "downloading") return;
+      report({ kind: model.status === "not_installed" ? "missing" : model.status === "corrupt" ? "invalid" : "runtime",
+        detail: model.error ?? "未找到 BGE-M3 INT8 模型包", modelDirectory: model.modelsRoot });
+    }).catch(error => report({ kind: "runtime", detail: error instanceof Error ? error.message : String(error) }));
+    return () => { active = false; };
+  }, [fixedType]);
 
   const clearSelection = useCallback((): void => {
     selectedIdRef.current = null;
@@ -628,11 +645,11 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
     setBusy(true);
     setStatus("正在补齐语义索引…");
     try {
-      const result = await window.api?.memory?.reindexSemantic(2000);
-      if (result) setStatus(`语义索引完成：${result.indexed} 条成功，${result.failed} 条失败/不可用`);
-      await load();
+      const api = window.api?.memory;
+      if (!api?.reindexSemantic) throw new Error("记忆服务连接不可用，请重新打开设置后重试。");
+      setStatus(await api.reindexSemantic());
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      setStatus({ issue: { kind: "runtime", detail: error instanceof Error ? error.message : String(error) } });
     } finally {
       setBusy(false);
     }
@@ -686,7 +703,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
           {layer === "l1" ? (
             <>
               {fixedType && <CreateScopedMemory key={fixedType + ":" + fixedId} scopeType={fixedType} scopeId={fixedId} onChanged={load} />}
-              {!fixedType && <button type="button" className="btn" disabled={busy} onClick={() => void reindex()}>补齐语义索引</button>}
+              {!fixedType && <button type="button" className="btn" disabled={busy} onClick={() => void reindex()}>{typeof status !== "string" && status.issue ? "重试语义索引" : "补齐语义索引"}</button>}
               <button
                 type="button"
                 className="btn danger"
@@ -709,7 +726,8 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
           <button type="button" className="btn" disabled={busy || loading} onClick={() => void load()}>{loading ? "刷新中…" : "刷新"}</button>
         </div>
 
-        {status ? <div className="memory-status" role="status">{status}</div> : null}
+        {typeof status === "string" ? status && <div className="memory-status" role="status">{status}</div>
+          : !fixedType && layer === "l1" && <MemoryIndexFeedback result={status} />}
 
         {projectionKind && <div className="memory-toolbar memory-projection-toolbar">
           <label className="memory-select-all">
@@ -807,7 +825,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
                   <button type="button" className="btn" disabled={busy || selectedShared} onClick={() => void editSelected()}>编辑</button>
                   {alreadyGlobal && selected.status === "active" && <button type="button" className="btn"
                     onClick={() => useAppStore.setState({ settingsOpen: true, settingsTab: "answerRouting",
-                      answerRuleSeed: { memoryId: selected.id, sourceHash: selected.contentHash, title: selected.title, instruction: selected.content } })}>设为回答规则</button>}
+                      answerRuleSeed: { memoryId: selected.id, sourceHash: selected.contentHash, title: selected.title, instruction: selected.content } })}>创建回答规则草稿</button>}
                   <button
                     type="button"
                     className="btn danger"

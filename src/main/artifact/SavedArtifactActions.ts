@@ -65,6 +65,11 @@ export class SavedArtifactActions {
     const error = await this.ports.openPath(target);
     if (error) throw new Error(error);
   }
+  async verifiedSnapshot(request: SavedArtifactRequest): Promise<{ name: string; path: string }> {
+    const saved = await this.identity(request);
+    await this.verify(saved.path);
+    return saved;
+  }
   async saveAs(request: SavedArtifactRequest): Promise<{ canceled: boolean; path?: string }> {
     const initial = await this.identity(request); await this.verify(initial.path);
     const destination = await this.ports.chooseDestination(initial.name);

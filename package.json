@@ -49,6 +49,9 @@
     "test:remote-renderer-stdio": "node scripts/test-guard.mjs scripts/remote-renderer-stdio-test.cjs",
     "test:remote-connection": "esbuild scripts/remote-connection-setup-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs scripts/remote-connection-ui-test.cjs",
     "dev": "electron-vite dev",
+    "prepare:office-runtime": "node scripts/prepare-craft-office.cjs",
+    "test:office-craft-electron": "node scripts/office-craft-electron.cjs",
+    "test:office-use-sources": "esbuild scripts/office-use-sources-test.ts --bundle --platform=node --format=cjs --packages=external --outfile=out/tests/office-use-sources-test.cjs && node scripts/test-guard.mjs out/tests/office-use-sources-test.cjs",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && node scripts/typecheck-scripts.mjs",
     "test:browser-refresh": "esbuild scripts/browser-refresh-e2e.ts --bundle --platform=node --format=cjs --outfile=out/tests/browser-refresh-e2e.cjs --external:electron && electron out/tests/browser-refresh-e2e.cjs",
@@ -127,6 +130,7 @@
     "test:project-folder-relocation": "esbuild scripts/project-folder-relocation-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/project-folder-relocation-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/project-folder-relocation-test.cjs",
     "test:project-domain": "esbuild scripts/project-domain-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/project-domain-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/project-domain-test.cjs",
     "test:library-domain": "esbuild scripts/library-domain-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/library-domain-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/library-domain-test.cjs",
+    "test:library-deep-search": "esbuild scripts/library-deep-search-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/library-deep-search-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/library-deep-search-test.cjs",
     "test:library-materialization-transaction": "esbuild scripts/library-materialization-transaction-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/library-materialization-transaction-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/library-materialization-transaction-test.cjs",
     "test:library-update-transaction": "esbuild scripts/library-update-transaction-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/library-update-transaction-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/library-update-transaction-test.cjs",
     "test:library-lifecycle-transaction": "esbuild scripts/library-lifecycle-transaction-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/library-lifecycle-transaction-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/library-lifecycle-transaction-test.cjs",
@@ -138,7 +142,7 @@
     "test:project-workspace-ui": "esbuild scripts/project-workspace-ui-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/project-workspace-ui-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/project-workspace-ui-test.cjs",
     "test:project-convergence": "esbuild scripts/project-convergence-acceptance-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/project-convergence-acceptance-test.cjs && node scripts/test-guard.mjs out/tests/project-convergence-acceptance-test.cjs",
     "test:project-binding-matrix": "esbuild scripts/project-binding-matrix-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/project-binding-matrix-test.cjs --external:electron --external:better-sqlite3 --external:onnxruntime-node && node scripts/test-guard.mjs out/tests/project-binding-matrix-test.cjs",
-    "test:project-materials-ui": "esbuild scripts/project-materials-ui-fixture.tsx --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/project-materials-store-stub.ts --outfile=out/tests/project-materials-ui.js --loader:.woff2=file --loader:.woff=file --loader:.ttf=file && electron scripts/project-materials-ui-test.cjs",
+    "test:project-materials-ui": "esbuild scripts/project-materials-ui-fixture.tsx \"--alias:@/lib/pdfWorkerEntry?worker&inline=./scripts/wave5a-worker-stub.ts\" --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/project-materials-store-stub.ts --outfile=out/tests/project-materials-ui.js --loader:.woff2=file --loader:.woff=file --loader:.ttf=file && electron scripts/project-materials-ui-test.cjs",
     "test:project-activity-ui": "esbuild scripts/project-activity-ui-fixture.tsx --bundle --platform=browser --format=iife --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/project-activity-store-stub.ts --outfile=out/tests/project-activity-ui.js --external:@terrastruct/d2 --loader:.woff2=file --loader:.woff=file --loader:.ttf=file && electron scripts/project-activity-ui-test.cjs",
     "test:btw": "esbuild scripts/btw-isolation-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/btw-isolation-test.cjs --alias:@=./src/renderer/src --alias:@shared=./src/shared && node scripts/test-guard.mjs out/tests/btw-isolation-test.cjs",
     "test:btw-arch": "esbuild scripts/btw-architecture-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/btw-architecture-test.cjs && node scripts/test-guard.mjs out/tests/btw-architecture-test.cjs",
@@ -287,9 +291,9 @@
     "test:artifact-render-hydration": "esbuild scripts/artifact-render-hydration-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/artifact-render-hydration-test.cjs && node scripts/test-guard.mjs out/tests/artifact-render-hydration-test.cjs",
     "test:artifact-open-e2e": "node scripts/build-wave5-real-open.mjs && node scripts/build-wave5-real-open-e2e.mjs && electron out/tests/wave5-real-open-e2e.cjs",
     "gen:office-fixtures": "node scripts/gen-office-fixtures.mjs",
-    "test:wave5d1": "esbuild scripts/wave5d1-quality-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/wave5d1-quality-test.cjs && node scripts/test-guard.mjs out/tests/wave5d1-quality-test.cjs",
-    "test:wave5d2": "esbuild scripts/wave5d2-quality-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/wave5d2-quality-test.cjs && node scripts/test-guard.mjs out/tests/wave5d2-quality-test.cjs",
-    "test:wave5d3": "esbuild scripts/wave5d3-quality-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/wave5d3-quality-test.mjs && node scripts/test-guard.mjs out/tests/wave5d3-quality-test.mjs",
+    "test:office-preview-size": "esbuild scripts/office-preview-size-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/office-preview-size-test.cjs && node scripts/test-guard.mjs out/tests/office-preview-size-test.cjs",
+    "test:office-selection-tools": "esbuild scripts/office-selection-tools-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/office-selection-tools-test.cjs && node --test out/tests/office-selection-tools-test.cjs",
+    "test:office-use-desktop": "node scripts/office-use-desktop-test.cjs",
     "gate:artifact": "pnpm run test:artifact-gate && pnpm run test:native-surface && pnpm run test:web-artifact-runtime && pnpm run test:artifact-image-cache && pnpm run test:capture-mode && pnpm run test:selection-store && pnpm run test:prompt-context && pnpm run test:artifact-domain && pnpm run test:artifact-projection && pnpm run test:artifact-cross-ref && pnpm run test:artifact-char && pnpm run typecheck",
     "spike:wcv-cdp": "electron scripts/wcv-cdp-spike.cjs",
     "extract:fixtures": "node scripts/extract-real-artifacts.mjs",
@@ -460,6 +464,7 @@
     "test:compaction-settings-dev": "node scripts/compaction-settings-dev-test.cjs",
     "test:answer-routing-dev": "node scripts/answer-routing-dev-test.cjs",
     "test:answer-routing-live": "node scripts/answer-routing-live-test.cjs",
+    "test:answer-rule-memory-review-live": "node scripts/answer-rule-memory-review-live.cjs",
     "test:compaction-settings-ui": "esbuild scripts/compaction-settings-ui-test.tsx --bundle --platform=node --format=cjs --external:linkedom --external:react --external:react-dom --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/compaction-settings-ui-test.cjs && node scripts/test-guard.mjs out/tests/compaction-settings-ui-test.cjs",
     "test:durable-compaction-settings": "esbuild scripts/durable-compaction-settings-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/durable-compaction-settings-test.mjs && node scripts/test-guard.mjs out/tests/durable-compaction-settings-test.mjs",
     "test:pi104-model-compat": "esbuild scripts/pi104-model-compat-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/pi104-model-compat-test.mjs && node scripts/test-guard.mjs out/tests/pi104-model-compat-test.mjs",
@@ -533,8 +538,7 @@
     "test:media-capability-extension": "esbuild scripts/media-capability-extension-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/media-capability-extension-test.mjs && node scripts/test-guard.mjs out/tests/media-capability-extension-test.mjs",
     "test:media-capabilities-dom": "esbuild scripts/media-capabilities-ui-fixture.tsx --bundle --platform=browser --format=iife --global-name=MediaCapabilitiesUI --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --alias:@/store/appStore=./scripts/media-capabilities-store-stub.ts --loader:.woff=dataurl --loader:.woff2=dataurl --loader:.ttf=dataurl --outfile=out/tests/media-capabilities-dom.js && node scripts/media-capabilities-dom-test.cjs",
     "prepare:officecli": "node scripts/prepare-officecli.cjs",
-    "test:officecli": "node --test scripts/officecli-integrity.test.cjs scripts/officecli-write-probe.test.cjs && esbuild scripts/officecli-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/officecli-test.mjs && node scripts/test-guard.mjs out/tests/officecli-test.mjs",
-    "validate:packaged-officecli": "node scripts/validate-packaged-officecli.cjs",
+    "verify:optional-officecli": "node --test scripts/officecli-integrity.test.cjs scripts/officecli-write-probe.test.cjs && esbuild scripts/officecli-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/officecli-test.mjs && node scripts/test-guard.mjs out/tests/officecli-test.mjs",
     "build:linux-computer-use": "node scripts/build-linux-computer-use.mjs",
     "test:linux-worker-packaging": "node scripts/test-guard.mjs scripts/linux-worker-packaging-test.cjs",
     "test:atspi-driver": "esbuild scripts/atspi-driver-test.ts --bundle --platform=node --format=cjs --external:electron --packages=external --outfile=out/tests/atspi-driver-test.cjs && node scripts/test-guard.mjs out/tests/atspi-driver-test.cjs",
@@ -706,6 +710,8 @@
     "test:conversation-goal-continuation": "esbuild --log-override:impossible-typeof=silent scripts/conversation-goal-continuation-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/conversation-goal-continuation-test.mjs --alias:electron=./scripts/arch-electron-stub.ts && node scripts/test-guard.mjs out/tests/conversation-goal-continuation-test.mjs"
   },
   "dependencies": {
+    "@xmldom/xmldom": "0.9.10",
+    "jszip": "3.10.2",
     "@agentclientprotocol/claude-agent-acp": "0.85.0",
     "@agentclientprotocol/codex-acp": "2.1.1",
     "@agentclientprotocol/sdk": "1.6.0",
@@ -728,6 +734,7 @@
     "parse5": "8.0.1",
     "promise.try": "2.0.2",
     "turndown": "7.2.4",
+    "turndown-plugin-gfm": "1.0.2",
     "typebox": "1.3.34",
     "undici": "8.12.3",
     "unpdf": "1.8.1",
@@ -746,6 +753,14 @@
     "@shikijs/engine-javascript": "4.5.0",
     "@shikijs/engine-oniguruma": "4.5.0",
     "@tanstack/react-virtual": "3.14.13",
+    "@tiptap/extension-image": "3.34.0",
+    "@tiptap/extension-list": "3.34.0",
+    "@tiptap/extension-mathematics": "3.34.0",
+    "@tiptap/extension-table": "3.34.0",
+    "@tiptap/markdown": "3.34.0",
+    "@tiptap/pm": "3.34.0",
+    "@tiptap/react": "3.34.0",
+    "@tiptap/starter-kit": "3.34.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.19.1",
     "@types/qrcode": "1.5.6",
@@ -756,15 +771,14 @@
     "@xterm/xterm": "6.0.0",
     "croner": "10.0.1",
     "docx": "9.8.1",
-    "docx-preview": "0.4.1",
     "electron": "44.5.1",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "highlight.js": "11.12.0",
-    "jszip": "3.10.2",
     "katex": "0.19.0",
     "lucide-react": "1.49.0",
     "markstream-react": "2.0.14",
+    "mermaid": "11.15.0",
     "monaco-editor": "0.57.0",
     "pdfjs-dist": "6.3.289",
     "pptxgenjs": "4.0.1",
@@ -800,13 +814,12 @@
       "output": "release"
     },
     "extraResources": [
+      { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets" },
+      { "from": "vendor/craft-office/LICENSE.noto-cjk", "to": "office-editor/licenses/LICENSE.noto-cjk" },
+      { "from": "src/renderer/src/lib/office-use", "to": "office-editor/editor", "filter": ["host/**","craft/**"] },
       {
         "from": "scripts/windows-ocr.ps1",
         "to": "windows-ocr.ps1"
-      },
-      {
-        "to": "builtin-skills/officecli",
-        "from": "scripts/skill-governance/payload/officecli"
       },
       {
         "to": "magpie-agent-mybuddy",
@@ -862,12 +875,6 @@
             "x64"
           ]
         }
-      ],
-      "extraResources": [
-        {
-          "to": "officecli",
-          "from": "vendor/officecli/win32-x64"
-        }
       ]
     },
     "nsis": {
@@ -886,12 +893,6 @@
           "arch": [
             "x64"
           ]
-        }
-      ],
-      "extraResources": [
-        {
-          "to": "officecli",
-          "from": "vendor/officecli/linux-x64"
         }
       ]
     },

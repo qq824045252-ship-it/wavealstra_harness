@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CodeView from "@/components/artifact/CodeView";
 import MarkdownArtifactView from "@/components/artifact/MarkdownArtifactView";
+import OfficeDocumentView from "@/components/artifact/OfficeDocumentView";
+import { isOfficeUseFile } from "@/lib/officeUseFile";
 import { useAppStore } from "@/store/appStore";
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
 
@@ -13,6 +15,10 @@ const languageFor = (name: string): string => {
 export default function WorkFilePreview({ file, target, onClose, cardControlled = false, id }: { file: WorkFile; target: string; onClose: () => void; cardControlled?: boolean; id?: string }): React.JSX.Element {
   const html = /\.html?$/i.test(file.name);
   const markdown = /\.md$/i.test(file.name);
+  const office = isOfficeUseFile(file.name);
+  const manifestPath = previewManifestFor(file);
+  const officeSource = useMemo(() => ({ type: "work" as const, file: { snapshotPath: target, name: file.name, manifestPath } }),
+    [target, file.name, manifestPath]);
   const supported = /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
   const [content, setContent] = useState<string>();
   const [truncated, setTruncated] = useState(false);
@@ -79,7 +85,7 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
   const plain = /\.(txt|log|csv|tsv)$/i.test(file.name);
   return <section id={id} className={`bot-work-file-preview${cardControlled || expanded ? " is-expanded" : ""}`} aria-label={`文件预览：${file.name}`}>
     <header className="bot-work-file-preview-header">
-      <div><strong>{file.name}</strong><span className="bot-work-file-version-label">保存版本 · 只读</span></div>
+      <div><strong>{file.name}</strong><span className="bot-work-file-version-label">{office ? "保存版本 · 可编辑副本" : "保存版本 · 只读"}</span></div>
       {!cardControlled && <div className="bot-work-file-preview-actions">
         <button type="button" aria-expanded={expanded} onClick={toggleExpanded}>{expanded ? "收起查看" : "展开查看"}</button>
         <button type="button" onClick={onClose}>关闭预览</button>
@@ -91,9 +97,11 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
     </div>}
     <details className="bot-work-file-version"><summary>版本信息</summary><p>读取版本：{target}</p>
       {file.artifact && <><p>SHA-256：{file.artifact.digest}</p><p>保存时间：{Number.isFinite(file.artifact.registeredAt) ? new Date(file.artifact.registeredAt).toLocaleString() : "未记录"}</p></>}
-      <p>此处查看交付时的保存版本，不修改原文件或历史成果。页面内操作仅用于本次预览，重新打开后重置。</p>
+      <p>{office ? "从交付时的保存版本开始编辑。使用「保存编辑副本」选择位置。"
+        : "此处查看交付时的保存版本，不修改原文件或历史成果。页面内操作仅用于本次预览，重新打开后重置。"}</p>
     </details>
-    {!supported ? <p role="status">此格式暂不支持内置预览。可尝试系统应用打开，或定位保存文件。</p>
+    {office ? <div className="bot-work-file-preview-body"><OfficeDocumentView source={officeSource} name={file.name} /></div>
+      : !supported ? <p role="status">此格式暂不支持内置预览。可尝试系统应用打开，或定位保存文件。</p>
       : error ? <><p role="alert">无法读取文件：{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></>
       : content === undefined ? <p role="status">正在读取文件…</p>
       : <>

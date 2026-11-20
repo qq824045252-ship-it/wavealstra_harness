@@ -80,6 +80,7 @@ const GUI_TESTS = new Set([
   "test:browser-hover-receipt-electron",
   "test:artifact-card-visual-desktop", // isolated Electron CSS cascade fixture, no live profile
   "test:saved-preview-desktop", // real Electron saved-version protocol and UI
+  "test:office-craft-electron",
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
@@ -181,6 +182,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
+  "test:answer-rule-memory-review-live", // real model comparison and adoption through the rule editor
   "test:bot-task-reply-harness", // loopback-only HTTP/WebSocket fixture and driver checks; no external account or desktop
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
   "test:answer-routing-live", // isolated dev app, same synthetic release record across three real model turns

@@ -1,6 +1,9 @@
 import "./platform/credentials";
 import { SpeechIpc } from "../shared/speech-stream";
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
+import { OfficeUseHost } from "./office-use/OfficeUseHost";
+import { resolveOfficeTarget, saveOfficeAs } from "./office-use/OfficeSources";
+import { OfficeUseIpc } from "../shared/office-use";
 import { BotMessageHtmlService } from "./artifact/BotMessageHtmlService";
 import { WindowsNotificationActivation } from "./platform/notification-activation";
 import { SavedArtifactIpc } from "../shared/saved-artifact";
@@ -14,9 +17,10 @@ import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
 import "./agent-environment";
 import "./officecli-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";
-import { ensureOfficeCliSkill } from "./skills/OfficeCliSkill";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { AnswerRoutingIpc } from "../shared/answer-routing";
+import { MaterialRetrievalIpc } from "../shared/materialRetrieval";
+import { getMaterialRetrievalSettings, resolveMaterialRetrievalScope, setMaterialRetrievalScope, setMaterialRetrievalSettings } from "./library/MaterialRetrievalSettings";
 import { ProjectNotesService } from "./project/ProjectNotesService";
 import { WorkspaceNotesIpc } from "../shared/workspace-notes";
 import { WorkspaceNotesService } from "./workspace/WorkspaceNotesService";
@@ -103,12 +107,15 @@ import {
   type LibraryCreateSpaceRequest,
   type LibraryImportFileRequest,
   type LibraryListItemsRequest,
+  type LibraryNoteOperation,
   type LibraryRenameSpaceRequest,
   type LibraryUpdateItemRequest,
   type LibraryWriteContentRequest,
 } from "../shared/library-ipc";
 import { LibraryProtocol } from "./library/LibraryProtocol";
 import { LibraryService } from "./library/LibraryService";
+import { getSemanticRuntime } from "./retrieval/SemanticRuntime";
+import { runLibraryNoteOperation } from "./library/LibraryNoteOperations";
 import { WorkspaceLibraryBindingService } from "./workspace/WorkspaceLibraryBindingService";
 import { workspaceLibraryBindingView } from "./workspace/WorkspaceLibraryBindingView";
 import { deleteEmptyWorkspace } from "./workspace/WorkspaceDeletion";
@@ -282,6 +289,7 @@ import {
   listWorkspaceFiles,
   moveWorkspacePath,
   previewWorkspaceFile,
+  previewWorkspaceFileForEditor,
   readWorkspaceFile,
   renameWorkspacePath,
   resolveWorkspaceTarget,
@@ -385,6 +393,7 @@ let quitCleanupPromise: Promise<void> | null = null;
 let quitCleanupComplete = false;
 let selectionPopover: SelectionPopover | null = null;
 let htmlEditService: HtmlEditService | null = null;
+let officeUseHost: OfficeUseHost | undefined;
 let reopenSelectionComment: (() => void) | null = null;
 let perfStartupReported = false;
 let botManagementWindow: BrowserWindow | null = null;
@@ -737,6 +746,12 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 }
 
 function registerIpc(): void {
+  const requireMaterialRetrievalWindow = (event: Electron.IpcMainInvokeEvent): void => {
+    const url = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+    if (!isMainAppWindowRequest(event, botManagementWindow, url)) {
+      throw new Error("仅 MyBuddy 主界面可以深搜、回读证据或更改资料检索设置");
+    }
+  };
   ipcMain.handle(SpeechIpc.cancel, (event, request: import("../shared/speech-stream").SpeechCancelRequest) => {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return false;
     return agentService.builtinCapabilities.speechStreams.cancel(request);
@@ -880,7 +895,7 @@ function registerIpc(): void {
     }
   });
 
-  ipcMain.handle("workspace:pickLocalFile", async () => {
+  ipcMain.handle("workspace:pickLocalFile", async (_event, editorPreview?: boolean) => {
     const win = BrowserWindow.getFocusedWindow();
     const result = win
       ? await dialog.showOpenDialog(win, {
@@ -902,7 +917,7 @@ function registerIpc(): void {
     if (result.canceled || !result.filePaths[0]) return null;
 
     const filePath = result.filePaths[0];
-    return previewWorkspaceFile(filePath);
+    return editorPreview === true ? previewWorkspaceFileForEditor(filePath) : previewWorkspaceFile(filePath);
   });
 
   /**
@@ -1042,6 +1057,29 @@ function registerIpc(): void {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("仅应用主界面可以打开保存版本");
     return savedArtifactActions.openSystem(request);
   });
+  const chooseOfficeCopy = (owner: BrowserWindow) => async (name: string) => {
+    const result = await dialog.showSaveDialog(owner, { title: "保存 Office 编辑副本", defaultPath: name });
+    return result.canceled ? undefined : result.filePath;
+  };
+  const officeUse = officeUseHost = new OfficeUseHost({
+    drafts: join(getMyBuddyDir(), "office-drafts"),
+    target: (request, owner) => resolveOfficeTarget(request, {
+      artifacts: artifactDomainService, library: libraryService, saved: savedArtifactActions, storageRoot: getMyBuddyDir(),
+      choose: chooseOfficeCopy(owner),
+    }),
+    saveAs: (bytes,target,owner) => saveOfficeAs(bytes,target,{ storageRoot:getMyBuddyDir(),choose:chooseOfficeCopy(owner) }, target.check),
+    propose: (modelId, selection, instruction, signal) => agentService.proposeOfficeEdit(modelId, selection, instruction, signal),
+  });
+  agentService.builtinCapabilities.registerLocalCheck("office-use", () => officeUse.checkAssets());
+  const officeSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) =>
+    isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href);
+  ipcMain.handle(OfficeUseIpc.open, (event, request) => {
+    if (!officeSender(event) || !botManagementWindow) throw new Error("请从 MyBuddy 主窗口打开 Office 文档");
+    return officeUse.open(request, botManagementWindow);
+  });
+  ipcMain.on(OfficeUseIpc.bounds, (event, id, rect) => { if (officeSender(event)) officeUse.bounds(event.sender.id, id, rect); });
+  ipcMain.handle(OfficeUseIpc.close, (event, id) => { if (officeSender(event)) return officeUse.close(event.sender.id, id); });
+  app.once("will-quit", () => officeUse.dispose());
   ipcMain.handle(SavedArtifactIpc.saveAs, (event, request) => {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("仅应用主界面可以保存成果副本");
     return savedArtifactActions.saveAs(request);
@@ -1575,6 +1613,7 @@ function registerIpc(): void {
   ipcMain.handle(DbIpc.updateProject, (_e, request: ProjectUpdateRequest) => {
     try {
       const result = { ok: true as const, project: projectService.update(request) };
+      libraryService.scheduleSemanticIndex();
       notifyProjectAttention(request.id);
       return result;
     } catch (err) {
@@ -1619,6 +1658,13 @@ function registerIpc(): void {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   };
+  ipcMain.handle(LibraryIpc.note, async (event, request: LibraryNoteOperation) => {
+    const url = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+    if (!isMainAppWindowRequest(event, botManagementWindow, url)) return { ok: false, error: "仅 MyBuddy 主界面可用" };
+    try {
+      return { ok: true, value: await runLibraryNoteOperation(libraryService, browserHost, BrowserWindow.fromWebContents(event.sender), request) };
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+  });
   ipcMain.handle(LibraryIpc.snapshot, () => libraryService.snapshot());
   ipcMain.handle(LibraryIpc.listItems, (_e, req: LibraryListItemsRequest) =>
     libraryService.listItems(req.spaceId, req.collectionId),
@@ -1684,8 +1730,22 @@ function registerIpc(): void {
   });
   ipcMain.handle(LibraryIpc.markVisited, (_e, id: string) => libraryResult(() => libraryService.markVisited(id)));
   ipcMain.handle(LibraryIpc.search, (_e, req: import("../shared/library-ipc").LibrarySearchRequest) =>
-    req.owner ? libraryService.searchOwnedScope(req.query, req.owner, req.reference) : libraryService.search(req.query),
+    libraryService.searchAsync(req),
   );
+  ipcMain.handle(LibraryIpc.scopedDeepSearch, (event, req: import("../shared/library-ipc").LibraryScopedDeepSearchRequest) => {
+    requireMaterialRetrievalWindow(event);
+    return libraryService.deepSearchOwnedScope(req, async () => {
+      const judge = await agentService.resolveLibraryEvidenceJudge();
+      return (input, signal, validate) => judge(input, signal, () => {
+        requireMaterialRetrievalWindow(event);
+        validate();
+      });
+    });
+  });
+  ipcMain.handle(LibraryIpc.readScopedEvidence, (event, req: import("../shared/library-ipc").LibraryScopedEvidenceRequest) => {
+    requireMaterialRetrievalWindow(event);
+    return libraryService.readOwnedEvidence(req);
+  });
   ipcMain.handle(LibraryIpc.previewUrl, (_e, id: string) => libraryService.previewUrl(id));
   ipcMain.handle(LibraryIpc.showInFolder, (_e, id: string) => {
     try {
@@ -2053,6 +2113,7 @@ function registerIpc(): void {
     try {
       // P3-2：显式 pick 仅 targetIndex，不透传 targetSortOrder（DB 内兼容分支保留，但 IPC 不暴露）
       db.moveSpace({ spaceId: req.spaceId, targetParentId: req.targetParentId, targetIndex: req.targetIndex });
+      libraryService.scheduleSemanticIndex();
       return { ok: true as const };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
@@ -2074,14 +2135,10 @@ function registerIpc(): void {
     // 必须经 AgentService：DB 删除 + 存活会话 policy 立即内存失效（撤销后同会话不得继续放行）
     return agentService.revokeTaskWriteGrant(taskId, path);
   });
-  ipcMain.handle(DbIpc.getSemanticIndexStats, () => {
-    try { return (libraryService as any).semanticIndexStats ?? { running: false }; } catch { return { running: false }; }
-  });
+  ipcMain.handle(DbIpc.getSemanticIndexStats, () => libraryService.semanticIndexStats);
   ipcMain.handle(DbIpc.getSemanticModelStatus, () => {
     try {
-      const { SemanticModelManager } = require("./retrieval/SemanticModelManager");
-      const mgr = new SemanticModelManager();
-      return mgr.getStatus();
+      return getSemanticRuntime().getModelStatus();
     } catch (e) { return { status: "failed", error: String(e), modelsRoot: "" }; }
   });
   ipcMain.handle(DbIpc.getSoul, () => agentService.getSoul());
@@ -2258,13 +2315,37 @@ function registerIpc(): void {
   ipcMain.handle(MemoryIpc.coreProfiles, (_e, limit?: number) => agentService.kernelMemoryCoreProfiles(limit));
   ipcMain.handle(MemoryIpc.skillCandidates, (_e, status?: import("../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) => agentService.kernelMemorySkillCandidates(status, limit));
   ipcMain.handle(AnswerRoutingIpc.list, () => agentService.answerRouting.list());
+  ipcMain.handle(MaterialRetrievalIpc.getSettings, () => getMaterialRetrievalSettings(db));
+  ipcMain.handle(MaterialRetrievalIpc.setSettings, async (event, patch) => {
+    requireMaterialRetrievalWindow(event);
+    if (patch.decisionModel != null) {
+      const models = await agentService.listModels();
+      requireMaterialRetrievalWindow(event);
+      if (!models.some(model => model.id === patch.decisionModel && model.available !== false &&
+          model.enabled !== false && model.kind !== "image-generation")) {
+        throw new Error("请选择已启用且可用的决策模型");
+      }
+    }
+    const settings = setMaterialRetrievalSettings(db, patch);
+    if (patch.mode !== undefined) libraryService.scheduleSemanticIndex();
+    return settings;
+  });
+  ipcMain.handle(MaterialRetrievalIpc.getScope, (_e, scope) => resolveMaterialRetrievalScope(db, scope));
+  ipcMain.handle(MaterialRetrievalIpc.setScope, (event, scope, mode) => {
+    requireMaterialRetrievalWindow(event);
+    const settings = setMaterialRetrievalScope(db, scope, mode);
+    libraryService.scheduleSemanticIndex();
+    return settings;
+  });
   ipcMain.handle(AnswerRoutingIpc.save, (_e, draft, version) => agentService.answerRouting.save(draft, version));
   ipcMain.handle(AnswerRoutingIpc.remove, (_e, id, revision) => agentService.answerRouting.remove(id, revision));
   ipcMain.handle(AnswerRoutingIpc.preview, (_e, query, projectId) => agentService.answerRouting.preview(query, projectId));
   ipcMain.handle(AnswerRoutingIpc.history, (_e, turn) => agentService.answerRouting.history(turn));
   ipcMain.handle(AnswerRoutingIpc.suggest, (_e, teaching, question, answer) => agentService.suggestAnswerRule(teaching, question, answer));
+  ipcMain.handle(AnswerRoutingIpc.reviewMemory, (_e, draft) => agentService.reviewAnswerRuleMemory(draft));
   ipcMain.handle(MemoryIpc.skillLearningStatus, () => agentService.kernelSkillLearningStatus());
   ipcMain.handle(MemoryIpc.deleteSkillHistory, (_e, request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest) => agentService.deleteKernelSkillHistory(request));
+  ipcMain.handle(MemoryIpc.distillSkills, (_e, action: "start" | "pause") => agentService.distillKernelSkills(action));
   ipcMain.handle(MemoryIpc.refreshSkillCandidates, () => agentService.refreshKernelMemorySkillCandidates());
   ipcMain.handle(MemoryIpc.approveSkillCandidate, (_e, id: string) => agentService.approveKernelMemorySkillCandidate(id));
   ipcMain.handle(MemoryIpc.rejectSkillCandidate, (_e, id: string) => agentService.rejectKernelMemorySkillCandidate(id));
@@ -2393,13 +2474,17 @@ function registerIpc(): void {
   );
   ipcMain.on(
     ArtifactSurfaceIpc.addBlocker,
-    (_e, req: ArtifactSurfaceBlockerRequest) =>
-      surfaceCoordinator.addBlocker(req.surfaceId ?? SURFACE_MAIN, req.token),
+    (event, req: ArtifactSurfaceBlockerRequest) => {
+      if ((req.surfaceId ?? SURFACE_MAIN) === SURFACE_MAIN) officeUse.block(event.sender.id,req.token,true);
+      surfaceCoordinator.addBlocker(req.surfaceId ?? SURFACE_MAIN, req.token);
+    },
   );
   ipcMain.on(
     ArtifactSurfaceIpc.removeBlocker,
-    (_e, req: ArtifactSurfaceBlockerRequest) =>
-      surfaceCoordinator.removeBlocker(req.surfaceId ?? SURFACE_MAIN, req.token),
+    (event, req: ArtifactSurfaceBlockerRequest) => {
+      if ((req.surfaceId ?? SURFACE_MAIN) === SURFACE_MAIN) officeUse.block(event.sender.id,req.token,false);
+      surfaceCoordinator.removeBlocker(req.surfaceId ?? SURFACE_MAIN, req.token);
+    },
   );
   // 4C：Capture Mode IPC（MVP：enter/exit/startInspect/stopInspect；事件经 CaptureModeEvent）
   ipcMain.handle(CaptureModeIpc.enter, async (_e, req: CaptureModeEnterRequest) => {
@@ -2806,12 +2891,6 @@ app.whenReady().then(async () => {
   getMyBuddyDir();
   getPluginStorage();
   try {
-    const source = app.isPackaged
-      ? join(process.resourcesPath, "builtin-skills", "officecli")
-      : join(app.getAppPath(), "scripts", "skill-governance", "payload", "officecli");
-    console.log(`[OfficeCLI] skill=${ensureOfficeCliSkill(source, join(getPluginStorage().root, "skills"))}`);
-  } catch (error) { console.error("[OfficeCLI] bundled skill unavailable", error); }
-  try {
     const assets = ensureExternalCliMemoryAssets();
     if (assets.skill === "created" || assets.cli.created.length > 0 || assets.cli.updated.length > 0) {
       console.log(`[Memory] external CLI assets ready skill=${assets.skill} cliCreated=${assets.cli.created.length} cliUpdated=${assets.cli.updated.length}`);
@@ -2852,13 +2931,7 @@ app.whenReady().then(async () => {
   }).catch((err) => {
     console.warn("[Library] chunk backfill 失败：", err);
   });
-  // R3.4：语义索引 backfill — 模型 ready 时异步分批，pending/crash-resume 由 semantic_index_jobs checkpoint 保证
-  // fire-and-forget, bounded, abortable, 不阻塞 ready；模型未安装时 pending 不产 hash
-  void libraryService.backfillEmbeddings({ batchSize: 20 }).then((r) => {
-    if (r.processed > 0) console.log(`[Library] embedding backfill 完成：${JSON.stringify(r)}`);
-  }).catch((err) => {
-    console.warn("[Library] embedding backfill 失败：", err);
-  });
+  libraryService.startSemanticIndexing();
   libraryProtocol = new LibraryProtocol(libraryService);
   const projectRepository = new ProjectRepository(db.connection);
   const memoryKernel = new MemoryService(db);
@@ -3580,6 +3653,12 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   if (quitCleanupPromise) return;
   quitCleanupPromise = (async () => {
+    try { await officeUseHost?.flush(); }
+    catch (error) {
+      dialog.showErrorBox("Office 草稿未保存", String(error));
+      return false;
+    }
+    const semanticIndexStopped = libraryService?.stopSemanticIndexing();
     try { browserHost.dispose(); } catch { /* best effort */ }
     try { trayService?.dispose(); } catch { /* best effort */ }
     try { cronService?.stop(); } catch { /* best effort */ }
@@ -3605,8 +3684,14 @@ app.on("before-quit", (event) => {
         computerAutomationService.shutdown(),
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
     } catch { /* best effort */ }
+    try { await semanticIndexStopped; } catch { /* best effort */ }
     try { db?.close(); } catch { /* best effort */ }
-  })().finally(() => {
+    return true;
+  })().catch(error => {
+    console.error("[shutdown] 退出清理失败", error);
+    return true;
+  }).then(ready => {
+    if (!ready) { quitCleanupPromise = null; return; }
     try { residentLifecycle.afterCleanup(); }
     catch (error) { console.error("[ResidentHost] handoff failed; assistant is offline", error); }
     quitCleanupComplete = true;

@@ -10,17 +10,9 @@ actually scans. Magpie Library can discover/import its skills and synchronize
 selected skills there. MyBuddy applies its usual task skill policy and respects
 `disable-model-invocation`; a Library entry does not grant task permissions.
 
-MyBuddy seeds the bundled OfficeCLI skill here on first startup, preserving any
-existing user or Magpie copy. Its references and Apache-2.0 license ship with it.
-Windows/Linux x64 packages carry OfficeCLI at `resources/officecli`; task shells,
-execute_code, and child agents inherit its PATH from MyBuddy. Nothing is installed
-globally and Magpie's own process environment is not changed. Skill synchronization
-alone does not install OfficeCLI into other agents.
-
-Supported assets are listed in `src/shared/officecli-builds.json`. When no binary
-is present, the build downloads the latest upstream release and verifies its published
-SHA-256: https://github.com/iOfficeAI/OfficeCLI
-Run `pnpm prepare:officecli` for development; packaging prepares the target binary
-automatically and checks the executable and skill references. Task processes disable
-OfficeCLI's in-place auto-update to avoid replacing a running executable. To upgrade,
-run `node scripts/prepare-officecli.cjs --refresh` and rebuild MyBuddy; no version is fixed.
+MyBuddy uses Office Use for interactive Word, Excel, and PowerPoint editing. For
+batch jobs, install OfficeCLI separately and add its directory to your PATH or
+set `MYBUDDY_OFFICECLI` to the executable's absolute path before starting
+MyBuddy. Install or synchronize the OfficeCLI skill separately if you want an
+agent to use it. Existing installed skills remain available under the usual
+task skill policy. [OfficeCLI releases](https://github.com/iOfficeAI/OfficeCLI).

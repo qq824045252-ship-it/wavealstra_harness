@@ -7,7 +7,9 @@ import type { LibraryUnsavedGuard } from "@/lib/scopedLibrary";
 import type { ScopedLibraryOperations } from "@/lib/scopedLibraryOperations";
 import { useLibraryDocumentEditor } from "./useLibraryDocumentEditor";
 import { parseLibraryCsv, serializeLibraryCsv } from "@/lib/libraryCsv";
+import { isOfficeUseFile } from "@/lib/officeUseFile";
 import ScopedLibraryMarkdown from "./ScopedLibraryMarkdown";
+import { NoteAttachmentPreview } from "./NoteDocument";
 
 interface Props {
   itemId: string;
@@ -114,7 +116,8 @@ export default function LibraryDocumentView({
     {editor.notice && <div className="scoped-library-notice" role="status">{editor.notice}</div>}
     {kind === "html" && mode === "preview" && dirty && <div className="scoped-library-notice">预览显示已保存的版本，保存后将更新。</div>}
     <div className={`library-doc-body${!readOnly && mode === "edit" && (kind === "markdown" || kind === "html") ? " is-editing" : ""}`}>
-      {payload.requiresFileAccess ? <div className="library-empty">
+      {isOfficeUseFile(payload.item.filename) ? <NoteAttachmentPreview item={payload.item} access={access} />
+      : payload.requiresFileAccess ? <div className="library-empty">
         <strong>{kindLabel}</strong><p className="library-url-line">{payload.managedPath ?? "（无受管路径）"}</p>
         <p className="library-save-hint">{payload.item.sizeBytes} 字节。此文件需要对应应用查看，可通过「打开位置」访问。</p>
       </div> : kind === "url" && payload.item.url ? <div className="library-empty">

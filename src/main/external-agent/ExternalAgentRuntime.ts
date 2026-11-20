@@ -1194,6 +1194,7 @@ export class ExternalAgentRuntime {
           taskId: run.dto.taskId,
           messageId: run.dto.assistantMessageId,
           durationMs: completedAt - startedAt,
+          ...(cancelled ? { cancelled: true } : {}),
         });
       });
     } catch (error) {
@@ -1233,7 +1234,7 @@ export class ExternalAgentRuntime {
         taskId: run.dto.taskId,
         messageId: run.dto.assistantMessageId,
         durationMs: completedAt - startedAt,
-        ...(run.cancelled ? {} : { error: full }),
+        ...(run.cancelled ? { cancelled: true } : { error: full }),
       });
     } finally {
       for (const [key, pending] of this.permissions) {

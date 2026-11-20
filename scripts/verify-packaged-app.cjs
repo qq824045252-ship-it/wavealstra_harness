@@ -8,7 +8,6 @@
 const cp = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const { verifyOfficeCli } = require("./verify-officecli.cjs");
 
 const REQUIRED_ASAR_ENTRIES = [
   "out/main/index.js",
@@ -263,9 +262,21 @@ function verifyPackagedApp(appDir, options = {}) {
 
   const targetPlatform = options.platform ?? platformFromAppDir(appDir);
   facts.platform = targetPlatform;
-  const office = verifyOfficeCli(resources, targetPlatform);
-  errors.push(...office.errors);
-  Object.assign(facts, office.facts);
+  const officeEditor = path.join(resources, "office-editor");
+  const officeCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-craft-office.cjs"),
+    "--verify-assets", path.join(officeEditor, "craft-assets")], { encoding: "utf8", windowsHide: true,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  if (officeCheck.status !== 0) fail("Office runtime payload verification failed: " + (officeCheck.stderr || officeCheck.error));
+  for (const entry of ["editor/host/index.html","editor/host/host.js","editor/host/host.css",
+    "editor/craft/bridge.html","editor/craft/bridge.js","editor/craft/word.js","editor/craft/excel.js",
+    "editor/craft/ppt.js","editor/craft/readonly.js","licenses/LICENSE.noto-cjk"]) {
+    if (!fs.existsSync(path.join(officeEditor,entry))) fail("Missing Office editor file: " + entry);
+  }
+  for (const name of ["package.json", "mybuddy.agent.js"]) {
+    if (!fs.existsSync(path.join(resources, "magpie-agent-mybuddy", name))) {
+      fail(`missing bundled Magpie agent plugin: ${name}`);
+    }
+  }
   const exe = findPackagedExecutable(appDir, targetPlatform);
   facts.executable = exe ?? null;
   if (!exe) {

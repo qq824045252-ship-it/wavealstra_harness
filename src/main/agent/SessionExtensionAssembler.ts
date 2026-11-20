@@ -1,5 +1,7 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { PermissionMode, WelcomeMode } from "../../shared/agent-ipc";
+import { isGatewayBotTaskId } from "../../shared/gateway-task";
+import { createAnswerRuleExtension } from "./answer-rule-extension";
 import type { ExternalWriteApprovalRequest, ExternalWriteDecision } from "../../shared/external-write";
 import { AppDatabase } from "../db/AppDatabase";
 import type { GadgetService } from "../gadget/GadgetService";
@@ -22,7 +24,9 @@ import { MANAGED_RUNTIME_DANGEROUS_TOOLS } from "../security/McpSideEffectPolicy
 import type { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
 import { createBuiltinCapabilityExtension } from "../capabilities/builtin-capability-extension";
 import { createLibraryExtension } from "../library/library-extension";
+import type { LibraryEvidenceJudge } from "../library/LibraryDeepSearch";
 import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-extension";
+import { createOfficeSelectionExtension } from "../office-use/OfficeSelectionTools";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { createWorkspaceResourceLocatorExtension } from "../workspace/workspace-resource-locator-extension";
 import { WorkGraphService } from "../workgraph/WorkGraphService";
@@ -49,8 +53,11 @@ type McpInlineOptions = NonNullable<Parameters<McpRuntimeService["getInlineExten
 export interface SessionExtensionAssemblerDependencies {
   db: AppDatabase;
   memory: MemoryService;
+  answerRouting: Parameters<typeof createAnswerRuleExtension>[1];
+  reviewAnswerRuleMemory: Parameters<typeof createAnswerRuleExtension>[2];
   project: ProjectService;
   libraryWorkspace: LibraryWorkspaceContextService;
+  resolveLibraryEvidenceJudge?: () => Promise<LibraryEvidenceJudge>;
   conversationInteractions: ConversationInteractionService;
   conversationGoals: ConversationGoalService;
   executionAttempts: ExecutionAttemptRepository;
@@ -121,7 +128,8 @@ export class SessionExtensionAssembler {
   }
 
   private conversationCapabilityFactories(input: Pick<SessionExtensionAssemblyInput,
-    "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability">, durable = false): InlineExtension[] {
+    "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability" | "getPermissionMode">, durable = false): InlineExtension[] {
+    const officeUseEnabled = () => input.builtinCapability.runtime.config().officeUse?.enabled !== false;
     const ask = async (request: Parameters<NonNullable<SessionBuiltinCapabilityBridge["browserHandoff"]>>[0],
       key: string, signal: AbortSignal) => {
       const context = input.resolveConversationContext();
@@ -167,6 +175,12 @@ export class SessionExtensionAssembler {
         browserRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures },
         skillAuthoringRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures },
       }),
+      // Durable filters tools on each request and keeps their registrations for existing call records.
+      ...(durable || officeUseEnabled() ? [createOfficeSelectionExtension({
+        taskId: input.taskId,
+        getPermissionMode: durable ? () => this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode() : input.getPermissionMode,
+        isEnabled: officeUseEnabled,
+      })] : []),
     ];
   }
 
@@ -204,6 +218,7 @@ export class SessionExtensionAssembler {
     resolveWorkspaceId: () => string | null,
   ): InlineExtension[] {
     return [
+      ...(!isGatewayBotTaskId(input.taskId) ? [createAnswerRuleExtension(input.taskId, this.deps.answerRouting, this.deps.reviewAnswerRuleMemory)] : []),
       ...(input.gadgetService
         ? [createGadgetAgentExtension({
             taskId: input.taskId,
@@ -230,6 +245,7 @@ export class SessionExtensionAssembler {
       }),
       createLibraryExtension({
         service: this.deps.libraryWorkspace.library(),
+        resolveEvidenceJudge: this.deps.resolveLibraryEvidenceJudge,
         taskId: input.taskId,
         resolveProjectId,
         getPermissionMode: input.getPermissionMode,

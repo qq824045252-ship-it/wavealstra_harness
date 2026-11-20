@@ -1,13 +1,9 @@
-import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
 import { GATEWAY_SIDEBAR_CHANNELS, type GatewaySidebarChannelId } from "../../../shared/gateway-task";
 import "./sidebar/SidebarNavigation.css";
-import { workspaceRequestRevision } from "@/lib/workspace-request-selection";
-import { openHistoricalNotification } from "@/lib/historicalNotification";
-import { deliverNotificationActivation } from "../lib/notificationActivationDelivery";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionScroll, useDesktopSectionState, useDesktopShell } from "./desktop/DesktopSection";
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
 import type { BotWorkspaceRequestDto, BotWorkspaceConversationDto } from "@shared/bot-workspace-navigation";
-import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
@@ -24,42 +20,28 @@ import {
 } from "../../../shared/workspace-tree";
 import type { WorkspaceTreeNode } from "../../../shared/workspace-tree";
 import type { SpaceDto, TaskDto } from "../../../shared/agent-ipc";
-import type { NotificationDto } from "../../../shared/notification";
-import { matchesTaskFilter } from "@/utils/taskFilters";
-import FilterPopup from "@/components/sidebar/FilterPopup";
+import { FOREGROUND_TASK_STATUS, matchesTaskFilter, matchesTaskTimeFilter } from "@/utils/taskFilters";
+import TaskStatusIndicator from "@/components/sidebar/TaskStatusIndicator";
+import TaskFilterControls from "@/components/sidebar/TaskFilterControls";
 import TaskItem from "@/components/sidebar/TaskItem";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import CreateWorkspaceDialog from "@/components/workspace/CreateWorkspaceDialog";
-import type { Page, Space, Task } from "@/types";
+import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
+import type { Space, Task, TaskFilterStatus, TaskFilterTime } from "@/types";
 import {
   IconAlert,
   IconArchive,
-  IconBarChart,
-  IconBell,
   IconBot,
   IconMessageDashed,
-  IconBroom,
   IconChevronDown,
   IconChevronRight,
-  IconFile,
   IconFilter,
   IconFolder,
-  IconFolderOpen,
-  IconFolderKanban,
-  IconGrid,
-  IconKeyRound,
   IconLink,
-  IconPanel,
-  IconPalette,
   IconPencil,
   IconPlus,
-  IconPuzzle,
   IconMore,
   IconTrash,
-  IconSearch,
-  IconSettings,
-  IconSparkles,
-  IconZap,
 } from "@/components/common/icons";
 
 
@@ -76,6 +58,11 @@ const SPACE_DRAG_TYPE = "application/x-mybuddy-space";
 const isTaskDrag = (types: readonly string[]): boolean => types.includes(TASK_DRAG_TYPE);
 const isSpaceDrag = (types: readonly string[]): boolean => types.includes(SPACE_DRAG_TYPE);
 const isTreeDrag = (types: readonly string[]): boolean => isTaskDrag(types) || isSpaceDrag(types);
+
+function matchesForegroundSearch(request: BotWorkspaceRequestDto, term: string, status: TaskFilterStatus, time: TaskFilterTime): boolean {
+  return request.title.toLowerCase().includes(term) &&
+    (status === "all" || FOREGROUND_TASK_STATUS[request.status] === status) && matchesTaskTimeFilter(request.updatedAt, time);
+}
 
 /**
  * 侧栏树排序用的时间键：量化到分钟。
@@ -108,69 +95,37 @@ function collectPinnedRows(nodes: WorkspaceTreeNode[], tasks: Task[]): Array<Ext
   return rows;
 }
 
-function notificationTimeLabel(timestamp: number): string {
-  const delta = Math.max(0, Date.now() - timestamp);
-  if (delta < 60_000) return "刚刚";
-  if (delta < 60 * 60_000) return `${Math.floor(delta / 60_000)} 分钟前`;
-  if (delta < 24 * 60 * 60_000) return `${Math.floor(delta / (60 * 60_000))} 小时前`;
-  const date = new Date(timestamp);
-  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-export function AccountNavigation({ go, openProjects }: { go: (page: Page) => void; openProjects: () => void }): React.JSX.Element {
-  return <>
-    <button className="sidebar-popup-item" onClick={() => go("assistant")}><IconSparkles size={14} /> 助手</button>
-    <button className="sidebar-popup-item" onClick={openProjects}><IconFolderKanban size={14} /> 项目</button>
-    <button className="sidebar-popup-item" onClick={() => go("automation")}><IconZap size={14} /> 自动化</button>
-    <button className="sidebar-popup-item" onClick={() => go("experts")}><IconPuzzle size={14} /> 插件</button>
-  </>;
-}
-
 export default function Sidebar({ onClose }: { onClose?: () => void } = {}): React.JSX.Element {
+  const desktop = useDesktopShell();
   const tasks = useSidebarTasks();
   const { requests: foregroundRequests, conversations: foregroundConversations, error: foregroundError } = useBotWorkspaceNavigation();
-  const [expandedConversations, setExpandedConversations] = useState<Record<string, boolean>>({});
-  const [foregroundLimits, setForegroundLimits] = useState<Record<string, number>>({});
+  const [expandedConversations, setExpandedConversations] = useDesktopSectionState<Record<string, boolean>>("task:expanded-conversations", {});
+  const [foregroundLimits, setForegroundLimits] = useDesktopSectionState<Record<string, number>>("task:foreground-limits", {});
+  const [searchQuery, setSearchQuery] = useDesktopSectionState("task:search-query", "");
+  const searchTerm = searchQuery.trim().toLowerCase();
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const draft = useAppStore((s) => s.draft);
-  const openUsageStats = useAppStore((s) => s.openUsageStats);
-  const openApiAggregation = useAppStore((s) => s.openApiAggregation);
   const expandedSpaceIds = useAppStore((s) => s.expandedSpaceIds);
   const taskFilterStatus = useAppStore((s) => s.taskFilterStatus);
   const taskFilterTime = useAppStore((s) => s.taskFilterTime);
   const pinnedTaskIds = useAppStore((s) => s.pinnedTaskIds);
   const archiveSpace = useAppStore((s) => s.archiveSpace);
   const deleteSpace = useAppStore((s) => s.deleteSpace);
-  const setPage = useAppStore((s) => s.setPage);
   const newTask = useAppStore((s) => s.newTask);
   const openLocalFolder = useAppStore((s) => s.openLocalFolder);
   const toggleSpaceCollapsed = useAppStore((s) => s.toggleSpaceCollapsed);
-  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
-  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const setSearchOpen = useAppStore((s) => s.setSearchOpen);
-  const theme = useAppStore((s) => s.theme);
-  const setTheme = useAppStore((s) => s.setTheme);
-  const soul = useAppStore((s) => s.soul);
   const moveSpace = useAppStore((s) => s.moveSpace);
   const moveTaskInWorkspaceTree = useAppStore((s) => s.moveTaskInWorkspaceTree);
   const openWorkspaceDetail = useAppStore((s) => s.openWorkspaceDetail);
-  const userLabel = soul.alias.trim() || "我";
-  const userInitial = userLabel.slice(0, 1).toUpperCase();
-  const [notificationOpen, setNotificationOpen] = useState(false);
-  const [notificationFilter, setNotificationFilter] = useState<"all" | "unread">("all");
-  const [notifications, setNotifications] = useState<NotificationDto[]>([]);
-  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
 
   // UX-2: derive current space states from single source of truth (store.page/activeWorkspaceId/activeTaskId/draft)
-  // compressed indent: 8 + min(depth,4)*8（每级 8px）
-  const spaceIndent = (depth: number): number => 8 + Math.min(depth, 4) * 8;
-  // 任务行与同级空间行同一起点，补 chevron(14)+gap(6)=20 占位，使任务图标与同级空间文件夹图标对齐。
-  // 不补 .space-header 的 3px 边框：任务首元素 .task-mode-icon 是 16px 居中盒（内含 13px svg，绘制左缘再右偏 1.5px），
-  // 两边一抵消，20 才是视觉对齐值（+23 实测偏右约 3px）。
-  const taskIndent = (depth: number): number => spaceIndent(depth) + 20;
+  const spaceIndent = (depth: number): number => Math.min(depth, 4) * 8;
+  // Task icons start after the same 19px gutter that holds the workspace toggle.
+  const taskIndent = (depth: number): number => spaceIndent(depth) + 19;
 
   // 构建 DTO（过滤仅做 task 归档+筛选，effectiveArchived 由 shared/workspace-tree 统一过滤）
   const spacesDto = useMemo(() => {
@@ -201,7 +156,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
 
   const tasksDto = useMemo(() => {
     const filtered = tasks.filter((t) => {
-      if (t.archived) return false;
+      if (t.archived || (searchTerm && !t.title.toLowerCase().includes(searchTerm))) return false;
       return matchesTaskFilter(t, taskFilterStatus, taskFilterTime);
     });
     return filtered.map((t) => ({
@@ -213,7 +168,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       updatedAt: stableSortAt(t.updatedAt),
       archived: Boolean(t.archived),
     })) as TaskDto[];
-  }, [tasks, taskFilterStatus, taskFilterTime, pinnedTaskIds]);
+  }, [tasks, taskFilterStatus, taskFilterTime, pinnedTaskIds, searchTerm]);
 
   const treeAll = useMemo(() => {
     return buildWorkspaceTree(spacesDto, tasksDtoAll, { includeArchived: false });
@@ -226,7 +181,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
   const pinnedRows = useMemo(() => collectPinnedRows(tree, tasks), [tree, tasks]);
   const pinnedTaskIdSet = useMemo(() => new Set(pinnedRows.map((row) => row.task.id)), [pinnedRows]);
   const [gatewayGroupsClosed, setGatewayGroupsClosed] = useState<Partial<Record<GatewaySidebarChannelId, boolean>>>({});
-
 
   const getParentChildren = useCallback(
     (parentId: string | null): WorkspaceTreeNode[] => {
@@ -247,15 +201,19 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
         if (n.kind === "space") {
           const space = spaces.find((s) => s.id === n.id);
           if (!space) continue;
-          const collapsed = !expandedSet.has(n.id);
-          const requests = foregroundRequests.filter(request => request.spaceId === n.id).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+          const collapsed = !searchTerm && !expandedSet.has(n.id);
+          const requests = foregroundRequests.filter(request => request.spaceId === n.id &&
+            (!searchTerm || matchesForegroundSearch(request, searchTerm, taskFilterStatus, taskFilterTime)))
+            .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
           const conversations = foregroundConversations.filter(conversation => conversation.spaceId === n.id);
           const hasChildren = n.children.length > 0 || conversations.length > 0;
+          const start = rows.length;
           rows.push({ key: `space-${n.id}`, kind: "space", space, depth, collapsed, node: n, hasChildren });
           if (!collapsed) {
             for (const conversation of conversations) {
               const items = requests.filter(request => request.conversationId === conversation.conversationId);
-              const expanded = Boolean(expandedConversations[conversation.conversationId]);
+              if (searchTerm && items.length === 0) continue;
+              const expanded = Boolean(searchTerm || expandedConversations[conversation.conversationId]);
               rows.push({key:`conversation-${conversation.conversationId}`,kind:"conversation",conversation,depth:depth+1,expanded,count:items.length});
               if (!expanded) continue;
               const limit = foregroundLimits[conversation.conversationId] ?? 20;
@@ -264,7 +222,9 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
             }
             if (n.children.length) walk(n.children, depth + 1);
           }
+          if (searchTerm && rows.length === start + 1) rows.pop();
         } else {
+          if (searchTerm && pinnedTaskIdSet.has(n.id)) continue;
           if (!tasksById) {
             tasksById = new Map<string, Task>();
             for (const task of tasks) if (!tasksById.has(task.id)) tasksById.set(task.id, task);
@@ -277,9 +237,9 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
     };
     walk(tree, 0);
     return rows;
-  }, [tree, spaces, tasks, expandedSpaceIds, foregroundRequests, foregroundConversations, foregroundLimits, expandedConversations]);
+  }, [tree, spaces, tasks, expandedSpaceIds, foregroundRequests, foregroundConversations, foregroundLimits, expandedConversations,
+    pinnedTaskIdSet, searchTerm, taskFilterStatus, taskFilterTime]);
 
-  const [popup, setPopup] = useState<"more" | "account" | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [spaceMenuId, setSpaceMenuId] = useState<string | null>(null);
   const [spaceAddMenuId, setSpaceAddMenuId] = useState<string | null>(null);
@@ -311,19 +271,9 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
     setRelocateNotice("重新定位失败，请稍后重试。");
   };
 
-  const accountAnchorRef = useRef<HTMLDivElement>(null);
-  const notificationAnchorRef = useRef<HTMLDivElement>(null);
   const spaceMenuAnchorRef = useRef<HTMLDivElement>(null);
   const spaceAddMenuAnchorRef = useRef<HTMLDivElement>(null);
-  const filterAnchorRef = useRef<HTMLDivElement>(null);
-
-  const closeSidebarPopups = (): void => {
-    setPopup(null);
-    setNotificationOpen(false);
-    setFilterOpen(false);
-    setSpaceMenuId(null);
-    setSpaceAddMenuId(null);
-  };
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
 
   const startRename = (space: Space): void => {
     setSpaceMenuId(null);
@@ -359,113 +309,14 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
     setRenameError(null);
   };
 
-  useDismissOnClickOutside(popup === "account", () => setPopup(null), accountAnchorRef);
-  useDismissOnClickOutside(notificationOpen, () => setNotificationOpen(false), notificationAnchorRef);
   useDismissOnClickOutside(spaceMenuId !== null, () => setSpaceMenuId(null), spaceMenuAnchorRef);
   useDismissOnClickOutside(spaceAddMenuId !== null, () => setSpaceAddMenuId(null), spaceAddMenuAnchorRef);
-  useDismissOnClickOutside(filterOpen, () => setFilterOpen(false), filterAnchorRef);
-
-  const refreshNotifications = useCallback(async (filter: "all" | "unread"): Promise<void> => {
-    const api = window.api?.notification;
-    if (!api) return;
-    try {
-      const [items, count] = await Promise.all([
-        api.list({ unreadOnly: filter === "unread", limit: 120 }),
-        api.unreadCount(),
-      ]);
-      setNotifications(items ?? []);
-      setNotificationUnreadCount(count ?? 0);
-    } catch (error) {
-      console.warn("[Sidebar] refresh notifications failed", error);
-    }
-  }, []);
-
   useEffect(() => {
-    void refreshNotifications(notificationFilter);
-    return window.api?.notification?.onChanged?.((event) => {
-      setNotificationUnreadCount(event.unreadCount);
-      void refreshNotifications(notificationFilter);
-    });
-  }, [notificationFilter, refreshNotifications]);
-
-  const [notificationError, setNotificationError] = useState<string | null>(null);
-  const openNotificationTarget = useCallback((notification: NotificationDto): void => {
-    void window.api?.notification?.activate(notification.id).catch(error => setNotificationError(String(error)));
-  }, []);
-
-  useEffect(() => {
-    const api = window.api?.notification;
-    if (!api?.consumeActivation || !api.onActivation || !api.acknowledgeActivation) return;
-    const controller = new AbortController();
-    let disposed = false;
-    let draining = false;
-    let dirty = false;
-    const drain = async (): Promise<void> => {
-      dirty = true;
-      if (draining) return;
-      draining = true;
-      try {
-        do {
-          dirty = false;
-          let activation;
-          while (!disposed && (activation = await api.consumeActivation())) {
-            if (disposed) return;
-            const target = activation.target;
-            if (!target) {
-              setNotificationError("通知来源已过期或不可用");
-              await api.acknowledgeActivation(activation.notificationId);
-              continue;
-            }
-            const delivered = await deliverNotificationActivation(activation, {
-              disposed: () => disposed,
-              showError: setNotificationError,
-              markRead: id => api.markRead(id),
-              acknowledge: id => api.acknowledgeActivation(id),
-              navigate: async () => {
-              const state = useAppStore.getState();
-              const selectionRevision = workspaceRequestRevision();
-              const assertSelection = () => {
-                const current = useAppStore.getState();
-                if (disposed || controller.signal.aborted || workspaceRequestRevision() !== selectionRevision || current.page !== state.page
-                  || current.activeTaskId !== state.activeTaskId || current.activeWorkspaceId !== state.activeWorkspaceId)
-                  throw new Error("通知导航已被新的选择取代，请重新点击通知");
-              };
-              switch (target.kind) {
-                case "task": state.setActiveTask(target.taskId); break;
-                case "project": state.openProjectDetails(target.projectId); break;
-                case "automation": state.setPage("automation"); break;
-                case "runtime": state.setSettingsOpen(true, "extensions"); break;
-                case "botConversation":
-                  await openHistoricalNotification(target, window.api?.botWork, openWorkspaceRequest,
-                    { signal: controller.signal, isCurrent: () => { assertSelection(); return true; } });
-                  break;
-                case "work": {
-                  const work = await window.api?.botWork.getWork(target.workId);
-                  if (!work || work.workId !== target.workId || work.archive?.deletedAt !== undefined) throw new Error("通知对应的事项已不可用");
-                  if (disposed) return;
-                  assertSelection();
-                  const navigation = await window.api?.botWork.workspaceNavigation();
-                  const request = navigation?.foregroundRequests.find(item => item.botId === work.ownerBotId && work.originalDelegation?.messages.some(message => message.messageId === item.messageId));
-                  if (!request) throw new Error("此历史事项尚无工作空间入口，记录未删除");
-                  assertSelection();
-                  openWorkspaceRequest(request);
-                  break;
-                }
-              }
-              },
-            });
-            if (!delivered) return;
-          }
-        } while (dirty && !disposed);
-      } catch (error) { if (!disposed) setNotificationError(String(error)); }
-      finally { draining = false; }
-    };
-    const unsubscribe = api.onActivation(() => { void drain(); });
-    void drain();
-    return () => { disposed = true; controller.abort(); unsubscribe(); };
-  }, []);
+    if (sidebarCollapsed) setFilterOpen(false);
+  }, [sidebarCollapsed]);
 
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const rememberScroll = useDesktopSectionScroll(sidebarScrollRef, "tasks:tree");
   const useTreeVirtual = shouldVirtualize(visibleRows.length);
   const treeVirtualizer = useVirtualizer({
     count: visibleRows.length,
@@ -479,7 +330,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
   });
 
   // DnD helpers
-  const isFiltered = taskFilterStatus !== "all" || taskFilterTime !== "all";
+  const isFiltered = Boolean(searchTerm) || taskFilterStatus !== "all" || taskFilterTime !== "all";
 
   const handleRowDragStart = (e: React.DragEvent, row: TreeRow): void => {
     if (isFiltered) {
@@ -733,7 +584,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
     if (row.kind === "conversation") return <button type="button" className="workspace-conversation-row" data-conversation-id={row.conversation.conversationId} aria-expanded={row.expanded} style={{paddingLeft:taskIndent(row.depth)}} title={`${row.conversation.title} · ${row.conversation.conversationId}`} onClick={()=>setExpandedConversations(current=>({...current,[row.conversation.conversationId]:!row.expanded}))}><span aria-hidden="true">{row.expanded ? '▾' : '▸'}</span><span>{row.conversation.title}</span><small>{row.conversation.archived ? '历史 · ' : ''}{row.count}</small></button>;
     if (row.kind === "foreground-more") return <button type="button" className="workspace-foreground-row" style={{ paddingLeft: taskIndent(row.depth) }} onClick={() => setForegroundLimits(current => ({ ...current, [row.spaceId]: (current[row.spaceId] ?? 20) + 30 }))}>再看 30 条前台任务 · 还有 {row.remaining} 条</button>;
     if (row.kind === "foreground") return <button type="button" className="workspace-foreground-row" style={{ paddingLeft: taskIndent(row.depth) }} title={row.request.title} onClick={() => { openWorkspaceRequest(row.request); onClose?.(); }}>
-      <IconMessageDashed size={14} /><span>{row.request.title}</span><small>{foregroundStatus(row.request.status)}</small>
+      <IconMessageDashed size={14} /><span className="workspace-foreground-title">{row.request.title}</span>
+      <TaskStatusIndicator status={FOREGROUND_TASK_STATUS[row.request.status]} label={foregroundStatus(row.request.status)} />
     </button>;
     const isDrop = dropTarget?.id === (row.kind === "space" ? row.space.id : row.task.id);
     const dropPos = isDrop ? dropTarget!.position : null;
@@ -750,7 +602,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
           <div
             className={`space-header space-renaming ${stateClass} ${dragClass} ${dropClass}`}
             data-depth={Math.min(depth, 4)}
-            style={{ paddingLeft: spaceIndent(depth) }}
+            style={{ paddingLeft: taskIndent(depth) }}
             onDragOver={(e) => handleRowDragOver(e, row)}
             onDragLeave={(e) => handleRowDragLeave(e, row)}
             onDrop={(e) => void handleRowDrop(e, row)}
@@ -803,10 +655,15 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
           }}
           title={space.pathMissing ? `文件夹已不在原位置：${space.path}\n点击警告或菜单「重新定位文件夹」即可找回任务` : (space.path ?? space.name)}
         >
-          <span className="space-chevron" role="button" tabIndex={0} style={{ width: 14, display: "inline-flex", justifyContent: "center" }} onClick={(e) => { e.stopPropagation(); toggleSpaceCollapsed(space.id); }} onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); toggleSpaceCollapsed(space.id); } }}>
-            {hasChildren ? (collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />) : <span style={{ width: 12 }} />}
+          <span className="space-entry-icons">
+            {hasChildren && (
+              <button type="button" className="space-chevron" disabled={Boolean(searchTerm)} aria-expanded={!collapsed} aria-label={`${collapsed ? "展开" : "收起"}${space.name}`}
+                onClick={(e) => { e.stopPropagation(); toggleSpaceCollapsed(space.id); }} onKeyDown={(e) => e.stopPropagation()}>
+                {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+              </button>
+            )}
+            <span className="space-icon"><WorkspaceIcon icon={space.icon} open={!collapsed} size={14} /></span>
           </span>
-          <span className="space-icon"><WorkspaceIcon icon={space.icon} open={!collapsed} size={14} /></span>
           <span className="space-name" title={space.name}>{space.name}</span>
           {space.pathMissing && (
             <button type="button" className="space-path-missing" title="文件夹已移动，点击重新定位" onClick={(e) => { e.stopPropagation(); void runRelocate(space); }}>
@@ -909,38 +766,21 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
     );
   };
 
-  const go = (p: Page): void => {
-    setPage(p);
-    setPopup(null);
-    onClose?.();
+  const actions = <button ref={filterButtonRef} type="button" className={`icon-btn task-filter-toggle ${filterOpen ? "toggled" : ""}`}
+    title="筛选" aria-label={isFiltered ? "筛选任务，筛选条件已启用" : "筛选任务"}
+    aria-expanded={filterOpen} aria-controls={filterOpen ? "task-sidebar-filters" : undefined}
+    onClick={() => { setSpaceMenuId(null); setSpaceAddMenuId(null); setFilterOpen(open => !open); }}>
+    <IconFilter size={15} />
+    {isFiltered && <span className="task-filter-dot" aria-hidden="true" />}
+  </button>;
+
+  const createRootWorkspace = (): void => {
+    setCreateWorkspaceParentId(null);
+    setCreateWorkspaceOpen(true);
   };
 
-  return (
-    <aside className="sidebar">
-      <div className="sidebar-header">
-        <div className="sidebar-title-group">
-          <div className="sidebar-title">
-            <span className="brand-mybuddy"><span className="brand-my">My</span><span className="brand-buddy">Buddy</span></span>
-          </div>
-          <div className="sidebar-version">v{APP_VERSION}</div>
-        </div>
-        <div className="sidebar-header-actions">
-          <button className="icon-btn" title="收起侧边栏" onClick={onClose ?? toggleSidebar}><IconPanel size={15} /></button>
-          <button className="icon-btn" title="搜索 (Ctrl+K)" onClick={() => { onClose?.(); setSearchOpen(true); }}><IconSearch size={15} /></button>
-          <div className="filter-anchor" ref={filterAnchorRef}>
-            <button className={`icon-btn ${filterOpen ? "toggled" : ""}`} title="筛选" onClick={() => { const next = !filterOpen; closeSidebarPopups(); setFilterOpen(next); }}>
-              <IconFilter size={15} />
-            </button>
-            {filterOpen && (
-              <>
-                <div className="filter-backdrop" onClick={() => setFilterOpen(false)} />
-                <FilterPopup onClose={() => setFilterOpen(false)} />
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-
+  const body = (
+    <div className="sidebar desktop-task-tree">
       <div className="sidebar-primary-action">
         <button
           type="button"
@@ -952,6 +792,13 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
           <span className="sidebar-cta-text">新建任务</span>
         </button>
       </div>
+      {filterOpen && <TaskFilterControls query={searchQuery} onQueryChange={(value) => {
+        setSearchQuery(value);
+        sidebarScrollRef.current?.scrollTo({ top: 0 });
+      }} onClose={() => {
+        setFilterOpen(false);
+        filterButtonRef.current?.focus();
+      }} />}
 
       {(() => {
         const unpinnedRootTasks = visibleRows.filter((r): r is Extract<VisibleRow, { kind: "task" }> =>
@@ -968,11 +815,10 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
         const workspaceRows = visibleRows.filter((r) => !(r.kind === "task" && (r.task.spaceId == null || pinnedTaskIdSet.has(r.task.id))));
         // 计数与下面看得见的行一致。置顶任务已经抽到顶部，不重复计入这两个数。
         const independentTaskCount = independentRows.length;
-        const workspaceTaskCount = tasksDto.filter((t) => t.spaceId != null && !t.isFavorited).length + foregroundRequests.filter(request => spaces.some(space => space.id === request.spaceId && !space.effectiveArchived && !space.archived)).length;
-        const pinnedIndependent = pinnedRows.some((row) => row.task.spaceId == null && !row.task.gatewaySidebarChannelId);
+        const workspaceTaskCount = searchTerm ? workspaceRows.filter(row => row.kind === "task" || row.kind === "foreground").length :
+          tasksDto.filter((t) => t.spaceId != null && !t.isFavorited).length + foregroundRequests.filter(request => spaces.some(space => space.id === request.spaceId && !space.effectiveArchived && !space.archived)).length;
         return (
-          <div className="sidebar-scroll" ref={sidebarScrollRef} onDragOver={handleRootDragOver} onDrop={handleRootDrop}>
-            <div className="sidebar-ia-label">工作</div>
+          <div className="sidebar-scroll" ref={sidebarScrollRef} onScroll={rememberScroll} onDragOver={handleRootDragOver} onDrop={handleRootDrop}>
             {pinnedRows.length > 0 && (
               <div className="sidebar-pinned">
                 <div className="sidebar-tree-header">
@@ -991,26 +837,17 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                 </div>
               </div>
             )}
-            <div className="sidebar-tree-header">
-              <span className="section-title">独立任务</span>
-              <span className="sidebar-section-count">{independentTaskCount}</span>
-              <button
-                type="button"
-                className="sidebar-section-add"
-                title="新建独立任务"
-                aria-label="新建独立任务"
-                onClick={() => newTask()}
-              >
-                <IconPlus size={13} strokeWidth={2} />
-              </button>
-            </div>
-            <div className="sidebar-section-list">
-              {independentRows.length === 0 ? (
-                pinnedIndependent ? null : <div className="sidebar-empty">暂无独立任务</div>
-              ) : (
-                independentRows.map((row) => <div key={row.key}>{renderRow(row)}</div>)
-              )}
-            </div>
+            {independentRows.length > 0 && (
+              <>
+                <div className="sidebar-tree-header">
+                  <span className="section-title">独立任务</span>
+                  {independentTaskCount > 0 && <span className="sidebar-section-count">{independentTaskCount}</span>}
+                </div>
+                <div className="sidebar-section-list">
+                  {independentRows.map((row) => <div key={row.key}>{renderRow(row)}</div>)}
+                </div>
+              </>
+            )}
             {gatewayGroups.size > 0 && (
               <section aria-label="网关助理">
                 <div className="sidebar-tree-header sidebar-tree-header--spaced">
@@ -1021,7 +858,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                   {(Object.keys(GATEWAY_SIDEBAR_CHANNELS) as GatewaySidebarChannelId[]).map((id) => {
                     const rows = gatewayGroups.get(id);
                     if (!rows?.length) return null;
-                    const closed = Boolean(gatewayGroupsClosed[id]);
+                    const closed = !searchTerm && Boolean(gatewayGroupsClosed[id]);
                     return <div key={id} data-gateway-channel={id}>
                       <button type="button" className="workspace-conversation-row" aria-expanded={!closed}
                         style={{ paddingLeft: taskIndent(0) }}
@@ -1040,183 +877,39 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                 </div>
               </section>
             )}
-            <div className="sidebar-tree-header sidebar-tree-header--spaced">
-              <span className="section-title">工作空间</span>
-              <span className="sidebar-section-count">{workspaceTaskCount}</span>
-              <button type="button" className="sidebar-section-add" title="新建工作空间" aria-label="新建工作空间" onClick={() => { setCreateWorkspaceParentId(null); setCreateWorkspaceOpen(true); }}>
-                <IconPlus size={13} strokeWidth={2} />
-              </button>
-            </div>
-            <div className="sidebar-section-list">
-              {foregroundError && <p className="bot-alert" role="status">前台任务加载失败：{foregroundError}</p>}
-              {workspaceRows.length === 0 ? (
-                <div className="sidebar-empty sidebar-empty--cta">
-                  <div>还没有工作空间</div>
-                  <div className="sidebar-empty-actions">
-                    <button type="button" className="sidebar-empty-cta" onClick={() => { setCreateWorkspaceParentId(null); setCreateWorkspaceOpen(true); }}>新建工作空间</button>
-                    <button type="button" className="sidebar-empty-cta sidebar-empty-cta--ghost" onClick={() => void openLocalFolder()}>绑定本地文件夹</button>
-                  </div>
+            {isFiltered && !pinnedRows.length && !independentRows.length && !gatewayGroups.size && !workspaceTaskCount && (
+              <div className="sidebar-empty" role="status">没有符合筛选条件的任务</div>
+            )}
+            {(!searchTerm || workspaceRows.length > 0 || foregroundError) && (
+              <>
+                <div className="sidebar-tree-header sidebar-tree-header--spaced">
+                  <span className="section-title">工作空间</span>
+                  {workspaceTaskCount > 0 && <span className="sidebar-section-count">{workspaceTaskCount}</span>}
+                  {workspaceRows.length > 0 && (
+                    <button type="button" className="sidebar-section-add" title="新建工作空间" aria-label="新建工作空间" onClick={createRootWorkspace}>
+                      <IconPlus size={13} strokeWidth={2} />
+                    </button>
+                  )}
                 </div>
-              ) : (
-                workspaceRows.map((row) => <div key={row.key}>{renderRow(row)}</div>)
-              )}
-            </div>
+                <div className="sidebar-section-list">
+                  {foregroundError && <p className="bot-alert" role="status">前台任务加载失败：{foregroundError}</p>}
+                  {!searchTerm && workspaceRows.length === 0 ? (
+                    <div className="sidebar-workspace-actions">
+                      <DesktopSectionRow icon={<IconFolder size={14} />} onClick={createRootWorkspace}>新建工作空间</DesktopSectionRow>
+                      <DesktopSectionRow icon={<IconLink size={14} />} onClick={() => void openLocalFolder()}>绑定本地文件夹</DesktopSectionRow>
+                    </div>
+                  ) : workspaceRows.map((row) => <div key={row.key}>{renderRow(row)}</div>)}
+                </div>
+              </>
+            )}
             <div className="sidebar-root-dropzone" style={{ height: 24 }} onDragOver={handleRootDragOver} onDrop={handleRootDrop} />
           </div>
         );
       })()}
 
-      <div className="sidebar-user nav-popup-anchor" ref={accountAnchorRef}>
-        {popup === "account" && (
-          <div className="sidebar-popup account-popup">
-            <div className="account-popup-name">{userLabel}</div>
-            <AccountNavigation go={go} openProjects={() => { useAppStore.getState().requestProjectsRoot(); setPopup(null); onClose?.(); }} />
-            <div className="sidebar-popup-sep" />
-            <button className="sidebar-popup-item" onClick={() => go("gadgets")}><IconGrid size={14} /> 我的工作台</button>
-            <button className="sidebar-popup-item" onClick={() => go("files")}><IconFile size={14} /> 任务成果</button>
-            <div className="sidebar-popup-sep" />
-            <button className="sidebar-popup-item" onClick={() => { onClose?.(); setSettingsOpen(true); setPopup(null); }}><IconSettings size={14} /> 设置</button>
-            <button className="sidebar-popup-item" onClick={() => { onClose?.(); openUsageStats(); setPopup(null); }}><IconBarChart size={14} /> 用量统计</button>
-            <button className="sidebar-popup-item" onClick={() => { onClose?.(); openApiAggregation(); setPopup(null); }}><IconKeyRound size={14} /> API 聚合</button>
-            <div className="sidebar-popup-item spread as-row">
-              <span className="sidebar-popup-item-label">
-                <IconPalette size={14} /> 外观
-              </span>
-              <span className="theme-switch">
-                <button type="button" className={`theme-switch-btn ${theme === "light" ? "active" : ""}`} onClick={() => setTheme("light")}>浅色</button>
-                <button type="button" className={`theme-switch-btn ${theme === "dark" ? "active" : ""}`} onClick={() => setTheme("dark")}>深色</button>
-              </span>
-            </div>
-          </div>
-        )}
-        <div role="button" tabIndex={0} className="sidebar-user-main" onClick={() => { setNotificationOpen(false); setFilterOpen(false); setSpaceMenuId(null); setPopup(popup === "account" ? null : "account"); }} onKeyDown={(e) => { if (e.key === "Enter") { setNotificationOpen(false); setFilterOpen(false); setSpaceMenuId(null); setPopup(popup === "account" ? null : "account"); } }}>
-          <div className="user-avatar">{userInitial}</div><span className="user-name">{userLabel}</span>
-        </div>
-        <div className="notification-anchor" ref={notificationAnchorRef}>
-          <button
-            className={`icon-btn notification-bell ${notificationOpen ? "active" : ""}`}
-            title="通知"
-            aria-label={`通知${notificationUnreadCount > 0 ? `，${notificationUnreadCount} 条未读` : ""}`}
-            onClick={() => {
-              setPopup(null);
-              setNotificationOpen((open) => {
-                const next = !open;
-                if (next) void refreshNotifications(notificationFilter);
-                return next;
-              });
-            }}
-          >
-            <IconBell size={15} />
-            {notificationUnreadCount > 0 && <span className="notification-bell-dot" />}
-          </button>
-          {notificationOpen && (
-            <div className="sidebar-popup notification-popup" role="dialog" aria-label="通知中心">
-              <div className="notification-popup-head">
-                <strong>通知</strong>
-                <span className="notification-popup-head-actions">
-                  <button
-                    type="button"
-                    className="notification-clear-all"
-                    title="清除全部通知"
-                    aria-label="清除全部通知"
-                    disabled={notifications.length === 0 && notificationUnreadCount === 0}
-                    onClick={() => {
-                      setNotifications([]);
-                      setNotificationUnreadCount(0);
-                      void window.api?.notification?.dismissAll?.().then(() => refreshNotifications(notificationFilter));
-                    }}
-                  >
-                    <IconBroom size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={notificationUnreadCount === 0}
-                    onClick={() => {
-                      void window.api?.notification?.markAllRead?.().then(() => refreshNotifications(notificationFilter));
-                    }}
-                  >
-                    全部已读
-                  </button>
-                </span>
-              </div>
-              <div className="notification-filter-tabs">
-                <button
-                  type="button"
-                  className={notificationFilter === "all" ? "active" : ""}
-                  onClick={() => { setNotificationFilter("all"); void refreshNotifications("all"); }}
-                >全部</button>
-                <button
-                  type="button"
-                  className={notificationFilter === "unread" ? "active" : ""}
-                  onClick={() => { setNotificationFilter("unread"); void refreshNotifications("unread"); }}
-                >未读{notificationUnreadCount > 0 ? ` ${notificationUnreadCount}` : ""}</button>
-              </div>
-              <div className="notification-list">
-                {notifications.length === 0 ? (
-                  <div className="notification-empty">{notificationFilter === "unread" ? "没有未读通知" : "暂无通知"}</div>
-                ) : notifications.map((notification) => (
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    key={notification.id}
-                    className={`notification-item ${notification.readAt ? "read" : "unread"} level-${notification.level}`}
-                    onClick={() => {
-                      void window.api?.notification?.markRead?.(notification.id);
-                      setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, readAt: item.readAt ?? Date.now() } : item));
-                      setNotificationUnreadCount((count) => notification.readAt ? count : Math.max(0, count - 1));
-                      setNotificationOpen(false);
-                      openNotificationTarget(notification);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
-                      event.preventDefault();
-                      void window.api?.notification?.markRead?.(notification.id);
-                      setNotificationOpen(false);
-                      openNotificationTarget(notification);
-                    }}
-                  >
-                    <span className="notification-item-mark" />
-                    <span className="notification-item-copy">
-                      <span className="notification-item-title">{notification.title}</span>
-                      {notification.body && <span className="notification-item-body">{notification.body}</span>}
-                      <span className="notification-item-time">{notificationTimeLabel(notification.createdAt)}</span>
-                    </span>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      className="notification-item-dismiss"
-                      aria-label="删除通知"
-                      title="删除"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void window.api?.notification?.dismiss?.(notification.id).then(() => refreshNotifications(notificationFilter));
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void window.api?.notification?.dismiss?.(notification.id).then(() => refreshNotifications(notificationFilter));
-                      }}
-                    >×</span>
-                  </div>
-                ))}
-              </div>
-              <button
-                type="button"
-                className="notification-settings-link"
-                onClick={() => { setNotificationOpen(false); onClose?.(); setSettingsOpen(true, "notifications"); }}
-              >
-                通知设置
-              </button>
-            </div>
-          )}
-        </div>
-        <button className="icon-btn" title="设置" onClick={() => { onClose?.(); setSettingsOpen(true); }}><IconSettings size={15} /></button>
-      </div>
       <ConfirmDialog open={relocateNotice !== null} title="无法重新定位" body={relocateNotice} confirmLabel="知道了" onCancel={() => setRelocateNotice(null)} onConfirm={() => setRelocateNotice(null)} />
       <ConfirmDialog open={confirmDeleteSpace !== null} title="删除空间？" body={confirmDeleteSpace ? (<>确定要删除空间「{confirmDeleteSpace.name}」吗？<br />仅空空间可删除：该空间下不能有子空间、任务或自有资料，请先处理这些内容后再删除。<br />若为空空间，删除时会一并清理该空间的记忆，操作不可恢复。</>) : null} confirmLabel="删除" danger onCancel={() => setConfirmDeleteSpace(null)} onConfirm={async () => { const target = confirmDeleteSpace; setConfirmDeleteSpace(null); if (!target) return; try { await deleteSpace(target.id); } catch (err) { const msg = err instanceof Error ? err.message : String(err); if (msg.includes("非空") || msg.includes("workspace_not_empty") || msg.includes("尚有")) { setDeleteError("该空间下还有子空间、任务或自有资料，请先处理后再删除。取消资料引用不会删除原文。"); } else { setDeleteError(msg || "删除失败，请稍后重试"); } } }} />
       <ConfirmDialog open={deleteError !== null} title="无法删除" body={deleteError} confirmLabel="知道了" onCancel={() => setDeleteError(null)} onConfirm={() => setDeleteError(null)} />
-      <ConfirmDialog open={notificationError !== null} title="无法打开通知" body={notificationError} confirmLabel="知道了" onCancel={() => setNotificationError(null)} onConfirm={() => setNotificationError(null)} />
       <ConfirmDialog open={dndError !== null} title="无法移动" body={dndError} confirmLabel="知道了" onCancel={() => setDndError(null)} onConfirm={() => setDndError(null)} />
       <CreateWorkspaceDialog
         open={createWorkspaceOpen}
@@ -1224,6 +917,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
         parentName={createWorkspaceParentId ? spaces.find((item) => item.id === createWorkspaceParentId)?.name : undefined}
         onClose={() => { setCreateWorkspaceOpen(false); setCreateWorkspaceParentId(null); }}
       />
-    </aside>
+    </div>
   );
+  if (!desktop) return <aside className="sidebar"><div className="sidebar-header">{actions}</div>{body}</aside>;
+  return <DesktopSectionSidebar title="MyBuddy" actions={actions} ownScroll>{body}</DesktopSectionSidebar>;
 }

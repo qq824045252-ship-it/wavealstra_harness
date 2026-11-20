@@ -1,6 +1,7 @@
 import { isGatewayConversation, isGatewaySidebarChannelId } from "../../shared/gateway-task";
 import Database from "better-sqlite3";
 import { ensureBotWorkTables } from "./bot-work-schema";
+import { ensureMaterialRetrievalTables } from "../library/MaterialRetrievalSettings";
 import { ensureBotWorkPhase2Tables } from "./bot-work-phase2-schema";
 import { ensureBotWorkPhase3Tables } from "./bot-work-phase3-schema";
 import { ensureBotWorkPhase4Tables } from "./bot-work-phase4-schema";
@@ -349,6 +350,7 @@ export class AppDatabase {
       this.ensurePythonProjectBindingTables();
       this.ensureLibraryChunksTables();
       this.ensureSemanticIndexTables();
+      ensureMaterialRetrievalTables(this.db);
       this.ensureWorkGraphTables();
       this.ensureGadgetTables();
       this.ensureBlueprintTables();
@@ -1254,6 +1256,8 @@ export class AppDatabase {
     this.ensureLibraryCollectionMigration();
     // 再确保 items 为 v7 形状（collection_id；全新库在此创建）
     this.ensureLibraryItemColumns();
+    this.ensureLibraryColumn("library_items", "trashed_at", "INTEGER");
+    this.ensureLibraryColumn("library_items", "note_metadata", "TEXT");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS library_versions (
         id TEXT PRIMARY KEY,
@@ -1282,6 +1286,12 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_task_library_refs_item
         ON task_library_references(item_id);
     `);
+    this.ensureLibraryColumn("library_versions", "snapshot", "BLOB");
+  }
+
+  private ensureLibraryColumn(table: "library_items" | "library_versions", column: string, type: "INTEGER" | "TEXT" | "BLOB"): void {
+    const columns = this.db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+    if (!columns.some((entry) => entry.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 
   /**

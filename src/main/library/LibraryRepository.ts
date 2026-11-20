@@ -1,5 +1,8 @@
 import type { Database } from "better-sqlite3";
+import { LARGE_LIBRARY_TEXT_BYTES } from "./library-text-parts";
+import type { LibraryChunk } from "./library-chunker";
 import { libraryScopeWhere, type LibraryQueryScope } from "./library-query-scope";
+import type { LibraryEvidencePassage } from "./LibraryDeepSearch";
 import type {
   LibraryCollectionDto,
   LibraryItemDto,
@@ -53,6 +56,8 @@ interface ItemRow {
   created_at: number;
   updated_at: number;
   last_visited_at: number | null;
+  trashed_at: number | null;
+  note_metadata: string | null;
 }
 
 interface VersionRow {
@@ -76,9 +81,7 @@ interface ReferenceRow {
 
 const ITEM_COLUMNS = `id, space_id, collection_id, kind, title, filename, mime_type, size_bytes, owner,
   favorite, url, source_type, source_task_id, source_artifact_id, original_path,
-  content_hash, extract_status, created_at, updated_at, last_visited_at`;
-
-const LIBRARY_FTS_BODY_MAX_CHARS = 256 * 1024;
+  content_hash, extract_status, created_at, updated_at, last_visited_at, trashed_at, note_metadata`;
 
 function toSpace(row: SpaceRow): LibrarySpaceDto {
   return {
@@ -105,7 +108,10 @@ function toCollection(row: CollectionRow): LibraryCollectionDto {
 }
 
 function toItem(row: ItemRow): LibraryItemDto {
+  const metadata = row.note_metadata ? JSON.parse(row.note_metadata) as Pick<LibraryItemDto, "pinned" | "tags" | "clipSource"> : {};
   return {
+    ...metadata,
+    ...(row.trashed_at != null ? { trashedAt: row.trashed_at } : {}),
     id: row.id,
     spaceId: row.space_id,
     collectionId: row.collection_id,
@@ -154,15 +160,15 @@ export class LibraryRepository {
   listTextFtsMissingCandidates(): string[] {
     if (!this.ftsAvailable()) return [];
     return (this.db.prepare(`SELECT id FROM library_items
-      WHERE kind IN ('markdown','html','csv') AND id NOT IN (SELECT item_id FROM library_fts)
+      WHERE kind IN ('markdown','html','csv') AND trashed_at IS NULL AND id NOT IN (SELECT item_id FROM library_fts)
       ORDER BY created_at, rowid`).all() as Array<{ id: string }>).map((row) => row.id);
   }
 
-  /** Only legacy text items in the old 200 KiB → new 256 KiB coverage band need FTS v2 refresh. */
+  /** Older binaries indexed up to 200 or 256 KiB. */
   listTextFtsCoverageUpgradeCandidates(): string[] {
     return (this.db.prepare(`SELECT id FROM library_items
-      WHERE kind IN ('markdown','html','csv') AND size_bytes > ? AND size_bytes <= ?
-      ORDER BY created_at, rowid`).all(200 * 1024, 256 * 1024) as Array<{ id: string }>).map((row) => row.id);
+      WHERE kind IN ('markdown','html','csv') AND trashed_at IS NULL AND size_bytes > ?
+      ORDER BY created_at, rowid`).all(200 * 1024) as Array<{ id: string }>).map((row) => row.id);
   }
 
   /* ---------------- Spaces ---------------- */
@@ -321,32 +327,33 @@ export class LibraryRepository {
 
   /* ---------------- Items ---------------- */
 
-  listItems(spaceId?: string, collectionId?: string | null): LibraryItemDto[] {
+  listItems(spaceId?: string, collectionId?: string | null, includeTrash = false): LibraryItemDto[] {
     const order = `ORDER BY title COLLATE NOCASE, rowid`;
+    const active = includeTrash ? "1" : "trashed_at IS NULL";
     if (spaceId) {
       if (collectionId === undefined) {
         return (
           this.db
-            .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? ${order}`)
+            .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE ${active} AND space_id = ? ${order}`)
             .all(spaceId) as ItemRow[]
         ).map(toItem);
       }
       if (collectionId === null) {
         return (
           this.db
-            .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? AND collection_id IS NULL ${order}`)
+            .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE ${active} AND space_id = ? AND collection_id IS NULL ${order}`)
             .all(spaceId) as ItemRow[]
         ).map(toItem);
       }
       return (
         this.db
-          .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? AND collection_id = ? ${order}`)
+          .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE ${active} AND space_id = ? AND collection_id = ? ${order}`)
           .all(spaceId, collectionId) as ItemRow[]
       ).map(toItem);
     }
     return (
       this.db
-        .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items ${order}`)
+        .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE ${active} ${order}`)
         .all() as ItemRow[]
     ).map(toItem);
   }
@@ -362,30 +369,30 @@ export class LibraryRepository {
   listItemsInCollectionTree(spaceId: string, collectionId: string): LibraryItemDto[] {
     const out: LibraryItemDto[] = [];
     const walk = (cid: string): void => {
-      out.push(...this.listItems(spaceId, cid));
+      out.push(...this.listItems(spaceId, cid, true));
       for (const kid of this.listCollections(spaceId, cid)) walk(kid.id);
     };
     walk(collectionId);
     return out;
   }
 
-  getItem(id: string): LibraryItemDto | null {
+  getItem(id: string, includeTrash = false): LibraryItemDto | null {
     const row = this.db
-      .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE id = ?`)
+      .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE id = ?${includeTrash ? "" : " AND trashed_at IS NULL"}`)
       .get(id) as ItemRow | undefined;
     return row ? toItem(row) : null;
   }
 
   findByFilename(spaceId: string, filename: string): LibraryItemDto | null {
     const row = this.db
-      .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? AND filename = ? COLLATE NOCASE LIMIT 1`)
+      .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? AND trashed_at IS NULL AND filename = ? COLLATE NOCASE LIMIT 1`)
       .get(spaceId, filename) as ItemRow | undefined;
     return row ? toItem(row) : null;
   }
 
   findBySourceArtifact(spaceId: string, artifactId: string): LibraryItemDto | null {
     const row = this.db
-      .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? AND source_artifact_id = ? LIMIT 1`)
+      .prepare(`SELECT ${ITEM_COLUMNS} FROM library_items WHERE space_id = ? AND trashed_at IS NULL AND source_artifact_id = ? LIMIT 1`)
       .get(spaceId, artifactId) as ItemRow | undefined;
     return row ? toItem(row) : null;
   }
@@ -396,11 +403,11 @@ export class LibraryRepository {
         `INSERT INTO library_items (
            id, space_id, collection_id, kind, title, filename, mime_type, size_bytes, owner,
            favorite, url, source_type, source_task_id, source_artifact_id, original_path,
-           content_hash, extract_status, created_at, updated_at, last_visited_at
+           content_hash, extract_status, created_at, updated_at, last_visited_at, trashed_at, note_metadata
          ) VALUES (
            @id, @spaceId, @collectionId, @kind, @title, @filename, @mimeType, @sizeBytes, @owner,
            @favorite, @url, @sourceType, @sourceTaskId, @sourceArtifactId, @originalPath,
-           @contentHash, @extractStatus, @createdAt, @updatedAt, @lastVisitedAt
+           @contentHash, @extractStatus, @createdAt, @updatedAt, @lastVisitedAt, @trashedAt, @noteMetadata
          )`,
       )
       .run(this.toParams(item));
@@ -415,7 +422,8 @@ export class LibraryRepository {
            source_type = @sourceType, source_task_id = @sourceTaskId,
            source_artifact_id = @sourceArtifactId, original_path = @originalPath,
            content_hash = @contentHash, extract_status = @extractStatus,
-           updated_at = @updatedAt, last_visited_at = @lastVisitedAt
+           updated_at = @updatedAt, last_visited_at = @lastVisitedAt,
+           trashed_at = @trashedAt, note_metadata = @noteMetadata
          WHERE id = @id`,
       )
       .run(this.toParams(item));
@@ -452,6 +460,24 @@ export class LibraryRepository {
     return [...out.values()];
   }
 
+  prepareLargeOfficeExtractionUpgrade(previousOutputChars: number): void {
+    const versionKey = "large-office-extraction-version";
+    this.db.transaction(() => {
+      if (this.getIndexState(versionKey) === "1") return;
+      this.db.prepare(`UPDATE library_items SET extract_status = 'pending'
+        WHERE trashed_at IS NULL AND kind IN ('office', 'pdf') AND extract_status = 'unsupported'
+          AND size_bytes > CASE WHEN lower(filename) LIKE '%.xlsx' THEN 20971520 ELSE 41943040 END`).run();
+      if (this.ftsAvailable()) {
+        // SQLite counts Unicode scalars; the former JS cap counted UTF-16 code units.
+        this.db.prepare(`UPDATE library_items SET extract_status = 'pending'
+          WHERE trashed_at IS NULL AND kind IN ('office', 'pdf') AND extract_status = 'extracted'
+            AND id IN (SELECT item_id FROM library_fts WHERE length(body) >= ?)`)
+          .run(Math.floor(previousOutputChars / 2));
+      }
+      this.setIndexState(versionKey, "1");
+    })();
+  }
+
   updateExtractStatus(id: string, status: string): void {
     this.db
       .prepare(`UPDATE library_items SET extract_status = ? WHERE id = ?`)
@@ -475,19 +501,13 @@ export class LibraryRepository {
   }
 
   /** Chunk backfill 候选：有可索引正文但 library_chunks 为空的 item。幂等推导，无需 pending 表。 */
-  listChunkBackfillCandidates(limit = 500): string[] {
+  listChunkBackfillCandidates(limit = 500, afterRowId = 0): Array<{ id: string; rowId: number }> {
     if (!this.tableExists("library_chunks")) return [];
-    // 无 chunk 的 item 即待回填（幂等：已有 chunk 的跳过；可中断恢复：每次按此查询剩余）
-    return (
-      this.db
-        .prepare(
-          `SELECT id FROM library_items
-           WHERE id NOT IN (SELECT item_id FROM library_chunks)
-           ORDER BY created_at, rowid
-           LIMIT ?`,
-        )
-        .all(limit) as Array<{ id: string }>
-    ).map((r) => r.id);
+    return this.db.prepare(
+      `SELECT id, rowid AS rowId FROM library_items
+       WHERE rowid > ? AND trashed_at IS NULL AND id NOT IN (SELECT item_id FROM library_chunks)
+       ORDER BY rowid LIMIT ?`,
+    ).all(afterRowId, limit) as Array<{ id: string; rowId: number }>;
   }
 
   listRecent(limit = 40): LibraryItemDto[] {
@@ -495,7 +515,7 @@ export class LibraryRepository {
       this.db
         .prepare(
           `SELECT ${ITEM_COLUMNS} FROM library_items
-           WHERE kind != 'url' AND last_visited_at IS NOT NULL
+           WHERE trashed_at IS NULL AND kind != 'url' AND last_visited_at IS NOT NULL
            ORDER BY last_visited_at DESC, updated_at DESC
            LIMIT ?`,
         )
@@ -510,7 +530,7 @@ export class LibraryRepository {
       this.db
         .prepare(
           `SELECT ${ITEM_COLUMNS} FROM library_items
-           WHERE title LIKE ? OR filename LIKE ?
+           WHERE trashed_at IS NULL AND (title LIKE ? OR filename LIKE ?)
            ORDER BY updated_at DESC
            LIMIT ?`,
         )
@@ -536,7 +556,7 @@ export class LibraryRepository {
       this.db.prepare(`DELETE FROM library_fts WHERE item_id = ?`).run(itemId);
       this.db
         .prepare(`INSERT INTO library_fts (item_id, title, filename, body) VALUES (?, ?, ?, ?)`)
-        .run(itemId, title, filename, body.slice(0, LIBRARY_FTS_BODY_MAX_CHARS));
+        .run(itemId, title, filename, body);
     })();
   }
 
@@ -560,7 +580,7 @@ export class LibraryRepository {
     if (where.sql === "0") return [];
     const rows = this.db
       .prepare(
-        `SELECT id, space_id, kind, title, filename, favorite, source_type, source_task_id, updated_at
+        `SELECT id, space_id, kind, title, filename, favorite, source_type, source_task_id, updated_at, size_bytes
          FROM library_items li
          WHERE ${where.sql}
            AND kind != 'url'`,
@@ -575,14 +595,23 @@ export class LibraryRepository {
       source_type: string;
       source_task_id: string | null;
       updated_at: number;
+      size_bytes: number;
     }>;
     const needle = q.toLowerCase();
+    const shortQuery = /^.{1,2}$/su.test(q);
     const exact = rows.filter((r) => r.title.toLowerCase() === needle);
     const prefix = rows.filter(
       (r) => !exact.includes(r) && r.title.toLowerCase().startsWith(needle),
     );
     const ftsHits = new Map<string, { score: number; snippet: string }>();
-    if (this.ftsAvailable() && q.length >= 3) {
+    if (this.ftsAvailable() && shortQuery) {
+      const shortMatches = this.db.prepare(
+        `SELECT item_id, substr(body, MAX(1, instr(lower(body), ?) - 20), 100) AS snip
+         FROM library_fts JOIN library_items li ON li.id = library_fts.item_id
+         WHERE ${where.sql} AND instr(lower(body), ?) > 0 ORDER BY li.updated_at DESC LIMIT ?`,
+      ).all(needle, ...where.params, needle, opts.limit) as Array<{ item_id: string; snip: string }>;
+      for (const row of shortMatches) ftsHits.set(row.item_id, { score: 0, snippet: row.snip });
+    } else if (this.ftsAvailable()) {
       try {
         const ftsQuery = `\"${q.replaceAll('"', "\"\"")}\"`;
         const ftsRows = this.db
@@ -596,6 +625,41 @@ export class LibraryRepository {
         for (const f of ftsRows) ftsHits.set(f.item_id, { score: f.score, snippet: f.snip ?? "" });
       } catch {
         /* FTS 语法/分词失败 → 忽略该路，保留 exact/prefix 结果 */
+      }
+    }
+    const largeTextRows = rows.filter(row =>
+      row.size_bytes > LARGE_LIBRARY_TEXT_BYTES && this.isTextSearchable(row.kind as LibraryItemKind));
+    if (largeTextRows.length > 0 && this.tableExists("library_chunks_fts")) {
+      if (shortQuery) {
+        const find = this.db.prepare(`
+          SELECT substr(content, MAX(1, instr(lower(content), ?) - 20), 100) AS snip
+          FROM library_chunks WHERE item_id = ? AND instr(lower(content), ?) > 0 LIMIT 1
+        `);
+        let matched = 0;
+        for (const row of largeTextRows) {
+          if (ftsHits.has(row.id)) continue;
+          const hit = find.get(needle, row.id, needle) as { snip: string } | undefined;
+          if (!hit) continue;
+          ftsHits.set(row.id, { score: 0, snippet: hit.snip });
+          if (++matched >= opts.limit) break;
+        }
+      } else {
+        const phrase = `"${q.replaceAll('"', '""')}"`;
+        const matches = this.db.prepare(`
+          SELECT li.id AS item_id, bm25(library_chunks_fts) AS score,
+                 snippet(library_chunks_fts, 2, '[', ']', '…', 14) AS snip
+          FROM library_chunks_fts JOIN library_items li ON li.id = library_chunks_fts.item_id
+          WHERE library_chunks_fts MATCH ? AND ${where.sql}
+            AND li.size_bytes > ? AND li.kind IN ('markdown','html','csv')
+          ${largeTextRows.length === 1 ? "LIMIT 1" : "ORDER BY score"}
+        `).iterate(phrase, ...where.params, LARGE_LIBRARY_TEXT_BYTES) as Iterable<{ item_id: string; score: number; snip: string }>;
+        const seen = new Set<string>();
+        for (const match of matches) {
+          if (seen.has(match.item_id)) continue;
+          seen.add(match.item_id);
+          if (!ftsHits.has(match.item_id)) ftsHits.set(match.item_id, { score: match.score, snippet: match.snip });
+          if (seen.size >= Math.min(opts.limit, largeTextRows.length)) break;
+        }
       }
     }
     const hits: LibraryRetrievalHitDto[] = [];
@@ -617,9 +681,10 @@ export class LibraryRepository {
     for (const r of prefix) push(r, 1, "");
     const metadataHitIds = new Set([...exact, ...prefix].map((r) => r.id));
     const ftsRanked = rows
-      .filter((r) => !metadataHitIds.has(r.id) && ftsHits.has(r.id))
-      .sort((a, b) => ftsHits.get(a.id)!.score - ftsHits.get(b.id)!.score)
-      .map((r) => ({ r, snip: ftsHits.get(r.id)!.snippet }));
+      .filter((r) => !metadataHitIds.has(r.id) && (ftsHits.has(r.id)
+        || r.title.toLowerCase().includes(needle) || r.filename.toLowerCase().includes(needle)))
+      .sort((a, b) => (ftsHits.get(a.id)?.score ?? 0) - (ftsHits.get(b.id)?.score ?? 0))
+      .map((r) => ({ r, snip: ftsHits.get(r.id)?.snippet ?? "" }));
     for (const { r, snip } of ftsRanked) push(r, 2, snip);
     // 注意：不提供 recency 兜底桶——搜索语义 = 只返回真实命中（exact/prefix/FTS），
     // 无匹配返回空，绝不把无关条目当结果。
@@ -628,36 +693,70 @@ export class LibraryRepository {
 
   /* ---------------- Chunk-level Locator (R2 §30) ---------------- */
 
+  findLargeTextKeywordCandidates(query: string, scope: LibraryQueryScope): string[] {
+    const where = libraryScopeWhere(scope, "li.");
+    if (where.sql === "0" || !this.tableExists("library_chunks_fts")) return [];
+    const phrase = `"${query.replaceAll('"', '""')}"`;
+    return (this.db.prepare(`
+      SELECT DISTINCT li.id FROM library_chunks_fts
+      JOIN library_items li ON li.id = library_chunks_fts.item_id
+      WHERE library_chunks_fts MATCH ? AND ${where.sql}
+        AND li.size_bytes > ? AND li.kind IN ('markdown','html','csv')
+    `).pluck().all(phrase, ...where.params, LARGE_LIBRARY_TEXT_BYTES) as string[]);
+  }
+
+  replaceLargeTextIndex(item: LibraryItemDto, chunks: Iterable<LibraryChunk>): void {
+    this.db.transaction(() => {
+      this.upsertFts(item.id, item.title, item.filename, "");
+      this.replaceChunks(item.id, chunks, true);
+    })();
+  }
+
   /** 批量写入 item 的 chunks（先删旧 chunk+FTS，再插入新）；item 删除时由 deleteItem 显式调用清理 */
   upsertChunks(
     itemId: string,
-    chunks: Array<{ id: string; chunkIndex: number; content: string; charOffset: number; hash: string; updatedAt: number }>,
+    chunks: Iterable<Omit<LibraryChunk, "itemId">>,
+  ): void {
+    this.replaceChunks(itemId, chunks, false);
+  }
+
+  private replaceChunks(
+    itemId: string,
+    chunks: Iterable<Omit<LibraryChunk, "itemId">>,
+    reuseEmbeddings: boolean,
   ): void {
     if (!this.tableExists("library_chunks")) return;
     this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM library_chunks WHERE item_id = ?`).run(itemId);
-      try {
+      if (!reuseEmbeddings) this.db.prepare(`DELETE FROM library_chunks WHERE item_id = ?`).run(itemId);
+      const hasFts = this.tableExists("library_chunks_fts");
+      if (hasFts) {
         this.db.prepare(`DELETE FROM library_chunks_fts WHERE item_id = ?`).run(itemId);
-      } catch {
-        /* FTS 表可能不存在 */
       }
-      if (chunks.length === 0) return;
       const insertChunk = this.db.prepare(
         `INSERT INTO library_chunks (id, item_id, chunk_index, content, char_offset, hash, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET chunk_index = excluded.chunk_index, content = excluded.content,
+           char_offset = excluded.char_offset, hash = excluded.hash, updated_at = excluded.updated_at`,
       );
-      const insertFts = this.tableExists("library_chunks_fts")
+      const insertFts = hasFts
         ? this.db.prepare(`INSERT INTO library_chunks_fts (item_id, chunk_id, content) VALUES (?, ?, ?)`)
         : null;
+      let count = 0;
       for (const c of chunks) {
         insertChunk.run(c.id, itemId, c.chunkIndex, c.content, c.charOffset, c.hash, c.updatedAt);
-        if (insertFts) {
-          try {
-            insertFts.run(itemId, c.id, c.content);
-          } catch {
-            /* 单条 FTS 写入失败不阻断其他 */
-          }
-        }
+        insertFts?.run(itemId, c.id, c.content);
+        count++;
+      }
+      if (reuseEmbeddings) {
+        this.db.prepare(`
+          DELETE FROM library_chunk_embeddings
+          WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?)
+            AND NOT EXISTS (
+              SELECT 1 FROM library_chunks c WHERE c.id = library_chunk_embeddings.chunk_id
+                AND c.chunk_index < ? AND c.hash = library_chunk_embeddings.chunk_hash
+            )
+        `).run(itemId, count);
+        this.db.prepare(`DELETE FROM library_chunks WHERE item_id = ? AND chunk_index >= ?`).run(itemId, count);
       }
     })();
   }
@@ -746,6 +845,81 @@ export class LibraryRepository {
     return row !== undefined;
   }
 
+  deepSearchCandidates(
+    scope: LibraryQueryScope,
+    terms: string[],
+    seen: ReadonlySet<string>,
+    limit: number,
+  ): LibraryEvidencePassage[] {
+    const where = libraryScopeWhere(scope, "li.");
+    if (where.sql === "0" || !terms.length) return [];
+    if (!this.tableExists("library_chunks_fts")) throw new Error("资料全文索引不可用");
+    const excluded = seen.size ? ` AND c.id NOT IN (${[...seen].map(() => "?").join(",")})` : "";
+    const columns = `c.id AS chunkId, c.item_id AS itemId, li.space_id AS spaceId, li.title,
+      c.content AS text, c.char_offset AS startOffset, c.hash AS chunkHash`;
+    const longTerms = terms.filter((term) => [...term].length >= 3);
+    const fts = longTerms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ");
+    const rows = fts ? this.db.prepare(`SELECT ${columns}
+      FROM library_chunks_fts
+      JOIN library_chunks c ON c.id = library_chunks_fts.chunk_id
+      JOIN library_items li ON li.id = c.item_id
+      WHERE library_chunks_fts MATCH ? AND ${where.sql}${excluded}
+      ORDER BY bm25(library_chunks_fts), c.id LIMIT ?`).all(fts, ...where.params, ...seen, limit) as LibraryEvidencePassage[] : [];
+    if (rows.length) return rows;
+    if (fts && this.ftsAvailable()) {
+      const titleMatches = this.db.prepare(`SELECT ${columns}
+        FROM library_fts JOIN library_items li ON li.id = library_fts.item_id
+        JOIN library_chunks c ON c.id = (
+          SELECT first.id FROM library_chunks first WHERE first.item_id = li.id ORDER BY first.chunk_index LIMIT 1
+        )
+        WHERE library_fts MATCH ? AND ${where.sql}${excluded}
+        ORDER BY bm25(library_fts), c.id LIMIT ?`)
+        .all(`{title filename} : (${fts})`, ...where.params, ...seen, limit) as LibraryEvidencePassage[];
+      if (titleMatches.length) return titleMatches;
+    }
+
+    // Trigram cannot match two-character Chinese names and identifiers.
+    const shortTerms = terms.filter((term) => [...term].length < 3);
+    if (!shortTerms.length) return [];
+    return this.db.prepare(`SELECT ${columns}
+      FROM library_chunks c JOIN library_items li ON li.id = c.item_id
+      WHERE ${where.sql}${excluded}
+        AND (${shortTerms.map(() => "instr(lower(c.content), ?) > 0").join(" OR ")})
+      ORDER BY c.id LIMIT ?`).all(...where.params, ...seen, ...shortTerms, limit) as LibraryEvidencePassage[];
+  }
+
+  isDeepSearchPassageCurrent(scope: LibraryQueryScope, passage: LibraryEvidencePassage): boolean {
+    const where = libraryScopeWhere(scope, "li.");
+    if (where.sql === "0") return false;
+    return Boolean(this.db.prepare(`SELECT 1 FROM library_chunks c JOIN library_items li ON li.id = c.item_id
+      WHERE c.id = ? AND c.hash = ? AND c.char_offset = ? AND li.title = ? AND li.space_id = ? AND ${where.sql}`)
+      .get(passage.chunkId, passage.chunkHash, passage.startOffset, passage.title, passage.spaceId, ...where.params));
+  }
+
+  deepSearchTermFrequencies(scope: LibraryQueryScope, terms: string[]): Map<string, number> {
+    const where = libraryScopeWhere(scope, "li.");
+    if (where.sql === "0" || !terms.length) return new Map();
+    // FTS postings only. Treat frequent terms as equally common once the scoped sample fills.
+    const count = this.db.prepare(`SELECT COUNT(*) AS hits FROM (
+      SELECT 1 FROM library_chunks_fts
+      JOIN library_items li ON li.id = library_chunks_fts.item_id
+      WHERE library_chunks_fts MATCH ? AND ${where.sql} LIMIT 64
+    )`);
+    return new Map(terms.map((term) => {
+      const { hits } = count.get(`"${term.replaceAll('"', '""')}"`, ...where.params) as { hits: number };
+      return [term, hits];
+    }));
+  }
+
+  readDeepSearchPassage(scope: LibraryQueryScope, itemId: string, offset: number, hash: string): string | undefined {
+    const where = libraryScopeWhere(scope, "li.");
+    if (where.sql === "0") return undefined;
+    const row = this.db.prepare(`SELECT c.content AS text FROM library_chunks c JOIN library_items li ON li.id = c.item_id
+      WHERE c.item_id = ? AND c.char_offset = ? AND c.hash = ? AND ${where.sql}`)
+      .get(itemId, offset, hash, ...where.params) as { text: string } | undefined;
+    return row?.text;
+  }
+
   /** 可内联读取的文本类型（非文本条目禁止 utf8 直读） */
   isTextReadable(kind: LibraryItemKind): boolean {
     return kind === "markdown" || kind === "html" || kind === "csv";
@@ -758,19 +932,24 @@ export class LibraryRepository {
 
   /* ---------------- LibraryVersion ---------------- */
 
-  insertVersion(version: LibraryVersionDto): void {
+  insertVersion(version: LibraryVersionDto, snapshot?: Buffer): void {
     this.db
       .prepare(
-        `INSERT INTO library_versions (id, item_id, version, content_hash, path, created_by, source_task_id, created_at)
-         VALUES (@id, @itemId, @version, @contentHash, @path, @createdBy, @sourceTaskId, @createdAt)`,
+        `INSERT INTO library_versions (id, item_id, version, content_hash, path, created_by, source_task_id, created_at, snapshot)
+         VALUES (@id, @itemId, @version, @contentHash, @path, @createdBy, @sourceTaskId, @createdAt, @snapshot)`,
       )
-      .run(version);
+      .run({ ...version, sourceTaskId: version.sourceTaskId ?? null, snapshot: snapshot ?? null });
+  }
+
+  versionContent(itemId: string, version: number): { path: string; content_hash: string; snapshot: Buffer | null } | undefined {
+    return this.db.prepare("SELECT path, content_hash, snapshot FROM library_versions WHERE item_id = ? AND version = ?")
+      .get(itemId, version) as ReturnType<LibraryRepository["versionContent"]>;
   }
 
   deleteVersion(id: string): void {
     this.db.prepare(`DELETE FROM library_versions WHERE id = ?`).run(id);
   }
-  listVersions(itemId: string, limit = 20): LibraryVersionDto[] {
+  listVersions(itemId: string, limit = -1): LibraryVersionDto[] {
     return (
       this.db
         .prepare(
@@ -874,6 +1053,8 @@ export class LibraryRepository {
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       lastVisitedAt: item.lastVisitedAt ?? null,
+      trashedAt: item.trashedAt ?? null,
+      noteMetadata: JSON.stringify({ pinned: item.pinned, tags: item.tags, clipSource: item.clipSource }),
     };
   }
 }

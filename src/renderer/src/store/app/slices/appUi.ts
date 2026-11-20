@@ -15,15 +15,13 @@ export interface AppUiState {
     | null;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
+  answerRuleTurnTarget?: { taskId: string; inputId: string };
   answerRuleSeed?: { question?: string; answer?: string; projectId?: string; memoryId?: string; sourceHash?: string;
-    title?: string; instruction?: string; turn?: { taskId: string; inputId: string } };
-  searchOpen: boolean;
+    title?: string; instruction?: string; evidencePaths?: string[]; turn?: { taskId: string; inputId: string } };
   activeWorkspaceId: string | null;
   subagentDrawer?: { instanceId: string };
   /** 子代理对话页：进入某个子会话（与主聊天共用同一个外壳，可导航回父任务） */
   subagentView?: { taskId: string; subagentId: string };
-  usageStatsOpen: boolean;
-  apiAggregationOpen: boolean;
   extensionSoftwareOpen: boolean;
   hubMcpFocusName: string | null;
 }
@@ -36,12 +34,11 @@ export function createAppUiState(): AppUiState {
     libraryNav: null,
     settingsOpen: false,
     settingsTab: "system",
-    searchOpen: false,
+    answerRuleSeed: undefined,
+    answerRuleTurnTarget: undefined,
     activeWorkspaceId: null,
     subagentDrawer: undefined as { instanceId: string } | undefined,
     subagentView: undefined as { taskId: string; subagentId: string } | undefined,
-    usageStatsOpen: false,
-    apiAggregationOpen: false,
     extensionSoftwareOpen: false,
     hubMcpFocusName: null,
   };
@@ -57,16 +54,11 @@ export function createAppUiActions(
   | "closeSubagentDrawer"
   | "openSubagentView"
   | "closeSubagentView"
-  | "openUsageStats"
-  | "closeUsageStats"
-  | "openApiAggregation"
-  | "closeApiAggregation"
   | "openExtensionSoftware"
   | "closeExtensionSoftware"
   | "toggleTheme"
   | "setTheme"
   | "setSettingsOpen"
-  | "setSearchOpen"
 > {
   const { get, set } = storeContext;
   return {
@@ -84,13 +76,9 @@ export function createAppUiActions(
 
     closeSubagentView: () => set({ subagentView: undefined }),
 
-    openUsageStats: () => set({ usageStatsOpen: true }),
 
-    closeUsageStats: () => set({ usageStatsOpen: false }),
 
-    openApiAggregation: () => set({ apiAggregationOpen: true }),
 
-    closeApiAggregation: () => set({ apiAggregationOpen: false }),
 
     openExtensionSoftware: () => set({ extensionSoftwareOpen: true }),
 
@@ -109,6 +97,5 @@ export function createAppUiActions(
     setSettingsOpen: (open, tab) =>
       set((s) => ({ settingsOpen: open, settingsTab: tab ?? s.settingsTab, answerRuleSeed: undefined })),
 
-    setSearchOpen: (open) => set({ searchOpen: open }),
   };
 }

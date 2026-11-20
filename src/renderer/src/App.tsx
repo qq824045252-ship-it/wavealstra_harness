@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import appIcon from "../../main/assets/app.png";
 import { applyTheme } from "@/lib/theme";
 import { useAppStore } from "@/store/appStore";
 import Sidebar from "@/components/Sidebar";
@@ -7,8 +7,7 @@ import ChatView from "@/components/chat/ChatView";
 import ArtifactPanel from "@/components/artifact/ArtifactPanel";
 import PanelResizeHandle from "@/components/artifact/PanelResizeHandle";
 import SettingsModal from "@/components/settings/SettingsModal";
-import UsageStatsModal from "@/components/account/UsageStatsModal";
-import ApiAggregationModal from "@/components/account/ApiAggregationModal";
+import UsageStatsPage from "@/components/account/UsageStatsPage";
 import AssistantPage from "@/components/pages/AssistantPage";
 import HubPage from "@/components/pages/HubPage";
 import ProjectsPage from "@/components/pages/ProjectsPage";
@@ -16,38 +15,110 @@ import AutomationPage from "@/components/pages/AutomationPage";
 import FilesPage from "@/components/pages/FilesPage";
 import LibraryPage from "@/components/pages/library/LibraryPage";
 import MailboxPage from "@/components/pages/MailboxPage";
-import SearchModal from "@/components/sidebar/SearchModal";
+import NotificationsPage from "@/components/pages/NotificationsPage";
 import SubagentDrawer from "@/components/chat/SubagentDrawer";
 import PlaceholderPage from "@/components/pages/PlaceholderPage";
 import WorkspaceDetail from "@/components/workspace/WorkspaceDetail";
 import MyGadgetsView from "@/components/gadget/MyGadgetsView";
-import { IconPanel } from "@/components/common/icons";
 import { HOME_BROWSER_KEY } from "@/lib/browserLinks";
-import { canvasPanelWidth } from "@/lib/panelWidth";
+import { canvasPanelWidth, PANEL_CHAT_MIN, PANEL_RAIL_WIDTH } from "@/lib/panelWidth";
 import { subscribeGadgetBrowser } from "@/lib/gadgetBrowser";
+import { DesktopSectionProvider, DesktopSectionSidebar, DesktopSectionVisibility, useDesktopNavigate } from "@/components/desktop/DesktopSection";
+import DesktopRail, { isExtensionsPage, isTaskPage } from "@/components/desktop/DesktopRail";
+import type { Page } from "@/types";
+import "@/components/desktop/desktop.css";
 
 export default function App(): React.JSX.Element {
+  const [sectionTarget, setSectionTarget] = useState<HTMLElement | null>(null);
+  const toggleSidebar = useAppStore(s => s.toggleSidebar);
+  return <DesktopSectionProvider target={sectionTarget} collapseList={toggleSidebar}>
+    <DesktopApp setSectionTarget={setSectionTarget} />
+  </DesktopSectionProvider>;
+}
+
+type Store = ReturnType<typeof useAppStore.getState>;
+
+function chatLocation(s: Store) {
+  return {
+    activeTaskId: s.activeTaskId,
+    draft: s.draft,
+    homeSpaceId: s.homeSpaceId,
+    activeModelId: s.activeModelId,
+    modelExplicit: s.modelExplicit,
+    permissionMode: s.permissionMode,
+    permissionExplicit: s.permissionExplicit,
+    activeConnectorIds: s.activeConnectorIds,
+    welcomeMode: s.welcomeMode,
+    modePresetId: s.modePresetId,
+    panelOpen: s.panelOpen,
+    panelExpanded: s.panelExpanded,
+    panelMode: s.panelMode,
+    panelWidth: s.panelWidth,
+    extensionView: s.extensionView,
+    artifactTabs: s.artifactTabs,
+    activeArtifactId: s.activeArtifactId,
+  };
+}
+
+function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElement | null) => void }): React.JSX.Element {
   const page = useAppStore((s) => s.page);
   const settingsOpen = useAppStore((s) => s.settingsOpen);
   const panelOpen = useAppStore((s) => s.panelOpen);
   const panelMode = useAppStore((s) => s.panelMode);
   const panelExpanded = useAppStore((s) => s.panelExpanded);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
-  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const activeTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const theme = useAppStore((s) => s.theme);
-  const searchOpen = useAppStore((s) => s.searchOpen);
-  const compactAutomationLayout = useMediaQuery("(max-width: 720px)");
-  const usesNavigationDrawer = page === "automation" && compactAutomationLayout;
-  const [navigationDrawerOpen, setNavigationDrawerOpen] = useState(false);
-  const navigationDrawerRef = useRef<HTMLDialogElement>(null);
-  useEffect(() => { setNavigationDrawerOpen(false); }, [page, compactAutomationLayout]);
-  useEffect(() => { if (searchOpen || settingsOpen) { setNavigationDrawerOpen(false); } }, [searchOpen, settingsOpen]);
-  useEffect(() => {
-    const dialog = navigationDrawerRef.current;
-    if (usesNavigationDrawer && navigationDrawerOpen) dialog?.showModal();
-    else if (dialog?.open) dialog.close();
-  }, [usesNavigationDrawer, navigationDrawerOpen]);
+  const navigate = useDesktopNavigate();
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [compactPreview, setCompactPreview] = useState(false);
+  const lastChat = useRef<ReturnType<typeof chatLocation> | null>(null);
+  const lastWorkspace = useRef<string | null>(null);
+  const lastExtension = useRef<"experts" | "skills" | "mcp" | "connectors">("experts");
+  const lastBeforeNotifications = useRef<Page>("chat");
+
+  useLayoutEffect(() => useAppStore.subscribe((current, previous) => {
+    if (current.page === "notifications" && previous.page !== "notifications") lastBeforeNotifications.current = previous.page;
+    if (isExtensionsPage(current.page)) lastExtension.current = current.page;
+    if (previous.page === "chat" && current.page !== "chat") lastChat.current = chatLocation(previous);
+    if (current.page === "workspace") lastWorkspace.current = current.activeWorkspaceId;
+    else if (current.page === "chat") lastWorkspace.current = null;
+  }), []);
+
+  const selectModule = (destination: Page): void => {
+    const state = useAppStore.getState();
+    if (!state.settingsOpen && (
+      state.page === destination ||
+      (destination === "chat" && isTaskPage(state.page)) ||
+      (destination === "experts" && isExtensionsPage(state.page))
+    )) return;
+    void navigate?.(() => {
+      const current = useAppStore.getState();
+      if (current.settingsOpen) current.setSettingsOpen(false);
+      if (destination !== "chat") {
+        current.setPage(destination === "experts" ? lastExtension.current : destination);
+        if (current.page !== destination && current.panelOpen) current.closePanel();
+        return;
+      }
+      if (isTaskPage(current.page)) return;
+      const space = lastWorkspace.current;
+      if (space && current.spaces.some(candidate => candidate.id === space && !candidate.effectiveArchived)) {
+        current.openWorkspaceDetail(space);
+        return;
+      }
+      const saved = lastChat.current;
+      if (!saved) { current.setPage("chat"); return; }
+      const { activeTaskId, draft, panelOpen, panelExpanded, panelMode, panelWidth, extensionView, artifactTabs, activeArtifactId } = saved;
+      if (activeTaskId && current.tasks.some(candidate => candidate.id === activeTaskId && !candidate.archived)) {
+        current.setActiveTask(activeTaskId);
+        useAppStore.setState({ panelOpen, panelExpanded, panelMode, panelWidth, extensionView, artifactTabs, activeArtifactId });
+      } else if (activeTaskId) {
+        current.newTask();
+      } else {
+        useAppStore.setState({ ...saved, page: "chat", draft, activeWorkspaceId: null });
+      }
+    });
+  };
 
   useEffect(() => {
     applyTheme(theme);
@@ -70,24 +141,11 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener("focus", refresh);
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-        // 终端聚焦时 Ctrl+K 留给 shell（xterm 隐藏 textarea 位于 .xterm 内），不抢搜索框
-        const ae = document.activeElement;
-        if (ae && typeof ae.closest === "function" && ae.closest(".xterm")) return;
-        e.preventDefault();
-        const open = useAppStore.getState().searchOpen;
-        useAppStore.getState().setSearchOpen(!open);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
   // 挂载与窗口缩放时重新夹紧右栏，保证聊天区不低于 PANEL_CHAT_MIN
   useEffect(() => {
     const reclamp = (): void => {
+      const width = mainRef.current?.clientWidth;
+      if (width) setCompactPreview(width < PANEL_CHAT_MIN + PANEL_RAIL_WIDTH + 20);
       const {
         activeTaskId,
         browserUrlByTask,
@@ -104,8 +162,9 @@ export default function App(): React.JSX.Element {
       setPanelWidth(browserOpen ? canvasPanelWidth(sidebarCollapsed) : panelWidth);
     };
     reclamp();
-    window.addEventListener("resize", reclamp);
-    return () => window.removeEventListener("resize", reclamp);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(reclamp);
+    if (mainRef.current) observer?.observe(mainRef.current);
+    return () => observer?.disconnect();
   }, []);
 
   // 主进程专业工具（Penpot open）→ 扩展栏浏览器
@@ -124,7 +183,7 @@ export default function App(): React.JSX.Element {
   }, []);
 
   const showArtifactPanel =
-    panelOpen &&
+    !settingsOpen && panelOpen &&
     (page === "chat"
       ? // Empty tasks also need the side tools; home can open browser/terminal without a task.
         Boolean(activeTask) ||
@@ -142,18 +201,24 @@ export default function App(): React.JSX.Element {
   }, [showArtifactPanel]);
 
   return (
-    <div className="app">
-      {usesNavigationDrawer ? <dialog ref={navigationDrawerRef} className="app-navigation-drawer" aria-label="主导航" onCancel={event => { event.preventDefault(); setNavigationDrawerOpen(false); }} onClick={event => { if (event.target === event.currentTarget) setNavigationDrawerOpen(false); }}>
-        <Sidebar onClose={() => setNavigationDrawerOpen(false)} />
-      </dialog> : !sidebarCollapsed && <Sidebar />}
+    <div className="app desktop-app">
+      <div className="desktop-titlebar-brand" aria-hidden="true">
+        <img src={appIcon} alt="" width={16} height={16} draggable={false} />
+        <span>MyBuddy</span>
+      </div>
+      <DesktopRail onNavigate={selectModule} onSettings={() => {
+        if (!useAppStore.getState().settingsOpen) void navigate?.(() => useAppStore.getState().setSettingsOpen(true));
+      }} />
+      <aside id="desktop-module-list" className="desktop-section" aria-label="当前模块的列表"
+        hidden={sidebarCollapsed || (page === "notifications" && !settingsOpen)} ref={setSectionTarget} />
       <div
-        className={`main-area ${panelExpanded ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
+        ref={mainRef}
+        data-desktop-main
+        className={`main-area ${showArtifactPanel && (panelExpanded || compactPreview) ? "panel-expanded" : ""} ${showArtifactPanel ? "has-artifact-panel" : ""}`}
       >
-        {sidebarCollapsed && !usesNavigationDrawer && page !== "chat" && (
-          <button className="icon-btn sidebar-expand-float" title="展开侧边栏" onClick={toggleSidebar}>
-            <IconPanel size={15} />
-          </button>
-        )}
+        <DesktopSectionVisibility visible={!settingsOpen}>
+        <div className="desktop-page-underlay" hidden={settingsOpen}>
+        {isTaskPage(page) && <Sidebar />}
         {page === "chat" ? (
           <>
             <div className="content-col">
@@ -173,13 +238,17 @@ export default function App(): React.JSX.Element {
         ) : page === "experts" || page === "skills" || page === "mcp" || page === "connectors" ? (
           <HubPage tab={page} />
         ) : page === "automation" ? (
-          <AutomationPage onToggleNavigation={usesNavigationDrawer ? () => setNavigationDrawerOpen(open => !open) : undefined} />
+          <AutomationPage />
         ) : page === "files" ? (
           <FilesPage />
         ) : page === "mailbox" ? (
-          <MailboxPage />
+          <><DesktopSectionSidebar title="收件箱" /><MailboxPage /></>
         ) : page === "library" ? (
           <LibraryPage />
+        ) : page === "usage" ? (
+          <UsageStatsPage />
+        ) : page === "notifications" ? (
+          <NotificationsPage onBack={() => selectModule(isTaskPage(lastBeforeNotifications.current) ? "chat" : lastBeforeNotifications.current)} />
         ) : page === "gadgets" ? (
           <>
             <div className="content-col"><MyGadgetsView /></div>
@@ -198,18 +267,17 @@ export default function App(): React.JSX.Element {
             )}
           </>
         ) : (
-          <PlaceholderPage
+          <><DesktopSectionSidebar title="记忆" /><PlaceholderPage
             title="记忆"
             description="跨任务长期记忆的查看与管理（MEMORY.md）"
             phase="规划中 · 阶段 6"
-          />
+          /></>
         )}
+        </div>
+        </DesktopSectionVisibility>
+        {settingsOpen && <SettingsModal desktop />}
       </div>
-      {settingsOpen && <SettingsModal />}
-      <SearchModal />
       <SubagentDrawer />
-      <UsageStatsModal />
-      <ApiAggregationModal />
     </div>
   );
 }

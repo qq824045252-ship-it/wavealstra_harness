@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useDesktopShell } from "@/components/desktop/DesktopSection";
 import { useActiveTaskArtifacts, useAppStore } from "@/store/appStore";
 import CodeView from "./CodeView";
 import MarkdownArtifactView from "./MarkdownArtifactView";
@@ -16,9 +17,8 @@ import TaskGadgetsView from "./TaskGadgetsView";
 import FileActionBar from "./FileActionBar";
 import type { Artifact } from "@/types";
 import PdfViewer from "./PdfViewer";
-import DocxViewer from "./DocxViewer";
-import XlsxViewer from "./XlsxViewer";
-import PptxViewer from "./PptxViewer";
+import OfficeDocumentView from "./OfficeDocumentView";
+import { isOfficeUseKind } from "@/lib/officeUseFile";
 import { ensureHtmlDocument } from "@/components/chat/DetailCard";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
 
@@ -103,11 +103,9 @@ function ArtifactBody({
     case "pdf":
       return <PdfViewer key={artifact.id} content={artifact.content} name={artifact.name} />;
     case "docx":
-      return <DocxViewer key={artifact.id} content={artifact.content} name={artifact.name} />;
     case "xlsx":
-      return <XlsxViewer key={artifact.id} content={artifact.content} name={artifact.name} />;
     case "pptx":
-      return <PptxViewer key={artifact.id} content={artifact.content} name={artifact.name} />;
+      return <></>;
     case "cad":
       // Mechanical CAD 二进制产物（FCStd/STL）：P0 不渲染 3D，按代码/文本回退显示说明
       return <CodeView key={artifact.id} content={artifact.content} language="text" />;
@@ -127,6 +125,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const panelWidth = useAppStore((s) => s.panelWidth);
   const panelExpanded = useAppStore((s) => s.panelExpanded);
   const togglePanelExpanded = useAppStore((s) => s.togglePanelExpanded);
+  const desktop = useDesktopShell();
   const artifactTabs = useAppStore((s) => s.artifactTabs);
   const activeArtifactId = useAppStore((s) => s.activeArtifactId);
   const openArtifact = useAppStore((s) => s.openArtifact);
@@ -146,7 +145,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   useEffect(() => {
     const current = panelMode === "file" ? artifacts.find((a) => a.id === activeArtifactId) : undefined;
     if (
-      current &&
+      current && !isOfficeUseKind(current.kind) &&
       !current.content &&
       renderLoadState !== "loading" &&
       renderLoadState !== "error"
@@ -211,12 +210,13 @@ export default function ArtifactPanel(): React.JSX.Element | null {
       : undefined;
 
   const widen = (): void => {
-    togglePanelExpanded();
+    togglePanelExpanded(desktop);
   };
 
   const showFilePreview = panelMode === "file" && current;
   const isHtmlPreview = showFilePreview && current.kind === "html";
   const isSvgPreview = showFilePreview && current.kind === "svg";
+  const isOfficePreview = showFilePreview && isOfficeUseKind(current.kind);
 
   return (
     <div
@@ -244,6 +244,9 @@ export default function ArtifactPanel(): React.JSX.Element | null {
         >
           {isHtmlPreview ? (
             <HtmlArtifactView artifact={current} />
+          ) : isOfficePreview ? (
+            <ArtifactOfficeView artifact={current} taskId={activeTaskId ?? undefined}
+              blocked={extensionFlyoutOpen && !extensionFlyoutPinned} />
           ) : (
             <ArtifactBody
               artifact={current}
@@ -279,4 +282,9 @@ export default function ArtifactPanel(): React.JSX.Element | null {
       )}
     </div>
   );
+}
+
+function ArtifactOfficeView({ artifact, taskId, blocked }: { artifact: Artifact; taskId?: string; blocked: boolean }): React.JSX.Element {
+  const source = useMemo(() => ({ type: "artifact" as const, id: artifact.id, taskId }), [artifact.id, taskId]);
+  return <OfficeDocumentView source={source} name={artifact.name} blocked={blocked} />;
 }
