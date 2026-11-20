@@ -1,7 +1,7 @@
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
 import { SpeechIpc, type SpeechAudioEvent, type SpeechCancelRequest } from "../shared/speech-stream";
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
-import { CadCraftIpc, type CadCraftOpenResult, type CadCraftSource } from "../shared/cadcraft";
+import { CadCraftIpc, type CadCraftSource } from "../shared/cadcraft";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
@@ -1136,7 +1136,7 @@ const api = {
   },
 
   cadCraft: {
-    openCopy: (source: CadCraftSource): Promise<CadCraftOpenResult> => ipcRenderer.invoke(CadCraftIpc.openCopy, source),
+    open: (source: CadCraftSource): Promise<{ id: string }> => ipcRenderer.invoke(CadCraftIpc.open, source),
   },
   officeUse: {
     onFailure: (callback: (id: string, message: string) => void) => {

@@ -5,6 +5,7 @@ import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapper";
 import { WEB_ACCESS_TOOL_NAMES } from "../../../shared/native-tools";
 import { OFFICE_USE_TOOLS } from "../../../shared/office-use";
+import { CAD_USE_TOOLS } from "../../../shared/cadcraft";
 import { fileResourceAddress, resourcePathContains } from "../../platform/resource-identity";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { workShellRead } from "../work/WorkShellRead";
@@ -83,6 +84,10 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
     return { kind: "file", mode, path: address.path, entity: address.entity };
   };
   const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
+  if (name === CAD_USE_TOOLS.inspect && path) return [file(path, "read")];
+  if ((name === CAD_USE_TOOLS.create || name === CAD_USE_TOOLS.edit || name === CAD_USE_TOOLS.export) && path) {
+    return [file(path, "write"), ...(typeof args.source === "string" ? [file(args.source, "read")] : [])];
+  }
   if (fileReads.has(name)) return [file(path ?? ".", "read")];
   if (name === "write" || name === "edit" || name === "pstack_decision_append" || name === "pstack_eval_save") return path ? [file(path, "write")] : [{ kind: "unknown", mode: "write" }];
   const read = workShellRead(name, args);

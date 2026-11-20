@@ -1,15 +1,19 @@
 import type { SavedArtifactRequest } from "./saved-artifact";
 
-export const CadCraftIpc = { openCopy: "cadcraft:open-copy" } as const;
+export const CadCraftIpc = { open: "cadcraft:open" } as const;
+export const CAD_USE_TOOLS = {
+  create: "cad_create",
+  inspect: "cad_inspect",
+  edit: "cad_edit",
+  export: "cad_export",
+} as const;
 
 export type CadCraftSource =
   | { type: "artifact"; id: string; taskId: string }
   | { type: "work"; file: SavedArtifactRequest };
 
-export type CadCraftOpenResult = { canceled: true } | { canceled: false; path: string };
-
 export interface CadCraftApi {
-  openCopy(source: CadCraftSource): Promise<CadCraftOpenResult>;
+  open(source: CadCraftSource): Promise<{ id: string }>;
 }
 
 export function cadCraftExtension(name: string): "dwg" | "dxf" | undefined {

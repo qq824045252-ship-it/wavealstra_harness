@@ -6,12 +6,14 @@ import { randomUUID } from "node:crypto";
 import { extname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { OfficeOpen, OfficeRect } from "../../shared/office-use";
+import cadRelease from "../../../vendor/cadcraft/releases.json";
+import { CadCraftFile } from "../artifact/CadCraftFile";
 import { OfficeFile, type OfficeFileTarget } from "./OfficeFile";
 import { bindOfficeSelection } from "./OfficeSelectionTools";
 import { checkOfficeUseAssets, isOfficeEngineAsset, officeEngineByKind, officeStaticFiles } from "./OfficeUseAssets";
 
 interface Session {
-  id: string; owner: BrowserWindow; view: WebContentsView; file: OfficeFile; initial: Buffer | undefined;
+  id: string; owner: BrowserWindow; view: WebContentsView; file: OfficeFile | CadCraftFile; initial: Buffer | undefined;
   modelId?: string; visible: boolean; release?: () => void; closing?: Promise<void>; retained?: boolean; abort: AbortController;
 }
 interface Ports {
@@ -42,6 +44,7 @@ export class OfficeUseHost {
   private server?: ReturnType<typeof createServer>;
   private runtime = app.isPackaged ? join(process.resourcesPath, "office-editor/craft-assets") : join(app.getAppPath(), "vendor/craft-office/assets");
   private editor = app.isPackaged ? join(process.resourcesPath, "office-editor/editor") : join(app.getAppPath(), "src/renderer/src/lib/office-use");
+  private cadRuntime = app.isPackaged ? join(process.resourcesPath, "cadcraft/web") : join(app.getAppPath(), "vendor/cadcraft/assets/web");
   constructor(private ports: Ports) {}
 
   checkAssets() {
@@ -74,10 +77,13 @@ export class OfficeUseHost {
   }
   private async asset(group: string, name: string, res: ServerResponse): Promise<void> {
     const engine = isOfficeEngineAsset(group,name);
-    if (!engine && (!Object.hasOwn(officeStaticFiles,group) || !officeStaticFiles[group].includes(name))) { res.writeHead(404).end(); return; }
-    const path = join(engine || group === "fonts" ? this.runtime : this.editor,group,name);
+    const cadEngine = group === "cadcraft" && Object.hasOwn(cadRelease.targets.web.files, name);
+    const cadHost = group === "cad" && ["index.html", "cad.js", "cad.css"].includes(name);
+    if (!engine && !cadEngine && !cadHost && (!Object.hasOwn(officeStaticFiles,group) || !officeStaticFiles[group].includes(name))) { res.writeHead(404).end(); return; }
+    const path = cadEngine ? join(this.cadRuntime, name)
+      : join(engine || group === "fonts" ? this.runtime : this.editor, group, name);
     const size = (await stat(path)).size;
-    if (engine || group === "fonts") res.setHeader("Cache-Control","private, max-age=86400");
+    if (engine || cadEngine || group === "fonts") res.setHeader("Cache-Control","private, max-age=86400");
     res.writeHead(200, {"Content-Type":mime[extname(name)] ?? "application/octet-stream", "Content-Length":size});
     await pipeline(createReadStream(path),res);
   }
@@ -97,11 +103,14 @@ export class OfficeUseHost {
     if (path.length !== 4 || !s || (req.headers.origin && req.headers.origin !== origin)) { res.writeHead(403).end(); return; }
     const action = path[3];
     if (req.method === "GET") {
-      if (action === "") return this.asset("host","index.html",res);
+      if (action === "") return this.asset(s.file instanceof CadCraftFile ? "cad" : "host", "index.html", res);
       if (action === "config") {
         const t = s.file.target;
         res.setHeader("Content-Type","application/json");
-        res.end(JSON.stringify({kind:t.kind,name:t.name,readOnly:!!t.readOnly,copy:!!t.copy,recovered:s.file.recovered,conflict:s.file.conflict}));
+        res.end(JSON.stringify(s.file instanceof CadCraftFile ? s.file.config() : {
+          kind: s.file.target.kind, name: t.name, readOnly: !!t.readOnly, copy: !!s.file.target.copy,
+          recovered: s.file.recovered, conflict: s.file.conflict,
+        }));
         return;
       }
       if (action === "source" && s.initial) {
@@ -111,6 +120,17 @@ export class OfficeUseHost {
       }
     }
     if (req.method === "POST" && req.headers.origin === origin && !s.file.target.readOnly) {
+      if (s.file instanceof CadCraftFile) {
+        if (action === "draft" || action === "save") {
+          const bytes = await body(req, 128 * 1024 * 1024);
+          if (!bytes.length) throw new Error("CAD 编辑器没有返回图纸数据");
+          if (action === "draft") { await s.file.writeDraft(bytes); res.end(); return; }
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify(await s.file.saveCopy(bytes)));
+          return;
+        }
+        res.writeHead(404).end(); return;
+      }
       if (action === "propose") {
         const {selection,instruction} = JSON.parse((await body(req,512*1024)).toString());
         if (!selection || typeof selection.content !== "string" || !selection.target || typeof instruction !== "string" || !instruction.trim()) throw new Error("请先选择内容并填写修改要求");
@@ -141,12 +161,23 @@ export class OfficeUseHost {
     await access(join(this.runtime, officeEngineByKind[target.kind], "index.html")).catch(() => {
       throw new Error("缺少本地 Office 引擎。请在「设置 → 工具能力 → 本机工具 → Office Use」检查编辑器资源。");
     });
+    return this.openEditor(new OfficeFile(target, this.ports.drafts), owner, request.modelId);
+  }
+  async openCadCraft(file: CadCraftFile, owner: BrowserWindow) {
+    await access(join(this.cadRuntime, "index.html")).catch(() => {
+      throw new Error("缺少嵌入式 CADCraft 资源，请运行 pnpm prepare:cadcraft。");
+    });
+    return this.openEditor(file, owner);
+  }
+  private async openEditor(file: OfficeFile | CadCraftFile, owner: BrowserWindow, modelId?: string) {
+    const { target } = file;
+    const cad = file instanceof CadCraftFile;
     if (!target.readOnly && this.activeFiles.has(target.path)) {
       const previous = [...this.sessions.values()].find(s => s.file.target.path === target.path && s.owner === owner);
       if (previous?.closing) await previous.closing.catch(() => {});
       if (previous?.retained && previous.file.target.identity === target.identity) {
         previous.retained = false;
-        previous.modelId = request.modelId;
+        previous.modelId = modelId;
         return {id:previous.id};
       }
       if (this.activeFiles.has(target.path)) throw new Error("文档已在另一个编辑窗口打开");
@@ -154,12 +185,13 @@ export class OfficeUseHost {
     if (!target.readOnly) this.activeFiles.add(target.path);
     let state: Session | undefined;
     try {
-      const file = new OfficeFile(target,this.ports.drafts);
       const [initial,origin] = await Promise.all([file.open(), this.start()]);
       if (owner.isDestroyed()) throw new Error("主窗口已关闭");
       const id = randomUUID();
-      const view = new WebContentsView({webPreferences:{sandbox:true, contextIsolation:true,nodeIntegration:false, partition:this.partition, spellcheck:false}});
-      const s = state = {id,owner,view,file,initial,visible:false,abort:new AbortController(),modelId:request.modelId} as Session;
+      // The editors process engine commands on their frame loop, including while a panel is opening or closing.
+      const view = new WebContentsView({webPreferences:{sandbox:true, contextIsolation:true,nodeIntegration:false, partition:this.partition, spellcheck:false,
+        backgroundThrottling: false }});
+      const s = state = {id,owner,view,file,initial,visible:false,abort:new AbortController(),modelId};
       this.sessions.set(id,s);
       view.setVisible(false);
       owner.contentView.addChildView(view);
@@ -173,7 +205,7 @@ export class OfficeUseHost {
       wc.on("will-navigate",event => event.preventDefault());
       wc.on("render-process-gone", (_event, details) => {
         if (!owner.isDestroyed() && this.sessions.has(id)) {
-          owner.webContents.send("office-use:failed", id, "Office 编辑器已停止（" + details.reason + "）。请重新打开以恢复最近的草稿。");
+          owner.webContents.send("office-use:failed", id, (cad ? "CADCraft" : "Office") + " 编辑器已停止（" + details.reason + "）。请重新打开以恢复最近的草稿。");
         }
         this.destroy(s);
       });
@@ -212,13 +244,16 @@ export class OfficeUseHost {
   }
   async flush(owner?: BrowserWindow) {
     await Promise.all([...this.sessions.values()].filter(s => !owner || owner === s.owner).map(s =>
-      s.closing ?? s.view.webContents.executeJavaScript("window.flushOfficeDraft?.()")));
+      s.closing ?? this.flushDraft(s)));
+  }
+  private flushDraft(s: Session): Promise<unknown> {
+    return s.view.webContents.executeJavaScript(s.file instanceof CadCraftFile ? "window.flushCadDraft?.()" : "window.flushOfficeDraft?.()");
   }
   private show(s: Session) {
     if (s.view.webContents.isDestroyed() || s.owner.isDestroyed()) return;
     const visible = !s.closing && s.visible && !this.blocked.get(s.owner.webContents.id)?.size;
     s.view.setVisible(visible);
-    if (visible && s.file.target.taskId && !s.release) {
+    if (visible && s.file instanceof OfficeFile && s.file.target.taskId && !s.release) {
       const wc = s.view.webContents;
       s.release = bindOfficeSelection(s.file.target.taskId,s.id,{
         read: request => wc.executeJavaScript(`window.officeDocument(${JSON.stringify(request)})`),
@@ -250,7 +285,7 @@ export class OfficeUseHost {
     if (!s.closing) {
       s.visible = false;
       this.show(s);
-      s.closing = s.view.webContents.executeJavaScript("window.flushOfficeDraft?.()").then(() => this.destroy(s)).catch(error => {
+      s.closing = this.flushDraft(s).then(() => this.destroy(s)).catch(error => {
         s.closing = undefined;
         s.retained = true;
         throw error;

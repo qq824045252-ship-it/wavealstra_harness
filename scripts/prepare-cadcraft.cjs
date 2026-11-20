@@ -78,12 +78,9 @@ async function prepare(destination, target, pin, missing) {
   }
 }
 
-async function main() {
-  const target = option('--target') ?? hostTarget;
+async function installTarget(target, verificationRoot, verifyOnly) {
   if (!Object.hasOwn(release.targets, target)) throw new Error(`CADCraft is unavailable for ${target}`);
   const pin = release.targets[target];
-  const verificationRoot = option('--verify-assets');
-  const verifyOnly = Boolean(verificationRoot || process.argv.includes('--verify'));
   const destination = verificationRoot ? path.resolve(verificationRoot) : path.join(vendorRoot, target);
   const missing = await invalidAssets(destination, target, pin);
   if (missing.length) {
@@ -109,6 +106,16 @@ async function main() {
     if (actual.split(/\s+/)[1] !== release.version) throw new Error(`Unexpected CADCraft CLI version: ${actual}`);
   }
   console.log(`Verified CADCraft ${release.version} for ${target}.`);
+}
+
+async function main() {
+  const target = option('--target') ?? hostTarget;
+  const verificationRoot = option('--verify-assets');
+  const verifyOnly = Boolean(verificationRoot || process.argv.includes('--verify'));
+  await installTarget(target, verificationRoot, verifyOnly);
+  if (target !== 'web' && !verificationRoot && !option('--archive')) {
+    await installTarget('web', undefined, verifyOnly);
+  }
 }
 
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -27,6 +27,7 @@ import { createLibraryExtension } from "../library/library-extension";
 import type { LibraryEvidenceJudge } from "../library/LibraryDeepSearch";
 import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-extension";
 import { createOfficeSelectionExtension } from "../office-use/OfficeSelectionTools";
+import { createCadUseExtension } from "../capabilities/CadUseTools";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { createWorkspaceResourceLocatorExtension } from "../workspace/workspace-resource-locator-extension";
 import { WorkGraphService } from "../workgraph/WorkGraphService";
@@ -130,6 +131,10 @@ export class SessionExtensionAssembler {
   private conversationCapabilityFactories(input: Pick<SessionExtensionAssemblyInput,
     "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability" | "getPermissionMode">, durable = false): InlineExtension[] {
     const officeUseEnabled = () => input.builtinCapability.runtime.config().officeUse?.enabled !== false;
+    const cadUseEnabled = () => input.builtinCapability.runtime.config().cadUse?.enabled !== false;
+    const getPermissionMode = durable
+      ? () => this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode()
+      : input.getPermissionMode;
     const ask = async (request: Parameters<NonNullable<SessionBuiltinCapabilityBridge["browserHandoff"]>>[0],
       key: string, signal: AbortSignal) => {
       const context = input.resolveConversationContext();
@@ -178,8 +183,16 @@ export class SessionExtensionAssembler {
       // Durable filters tools on each request and keeps their registrations for existing call records.
       ...(durable || officeUseEnabled() ? [createOfficeSelectionExtension({
         taskId: input.taskId,
-        getPermissionMode: durable ? () => this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode() : input.getPermissionMode,
+        getPermissionMode,
         isEnabled: officeUseEnabled,
+      })] : []),
+      ...(durable || cadUseEnabled() ? [createCadUseExtension({
+        taskId: input.taskId,
+        taskRoot: () => (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
+        artifacts: input.builtinCapability.artifactService,
+        producerMessageId: input.builtinCapability.getProducerMessageId,
+        getPermissionMode,
+        isEnabled: cadUseEnabled,
       })] : []),
     ];
   }

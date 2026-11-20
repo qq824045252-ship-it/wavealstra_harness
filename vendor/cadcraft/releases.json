@@ -58,6 +58,23 @@
         "share/doc/cadcraft/OFL-shippori-mincho.txt": "41fba056279be5f45ff9a99e44b7b53897b42732f5806d8e666e0ab49ac6bd38",
         "share/doc/cadcraft/README.md": "6ec0bb92300596ad8be000871560ef9da0c1e9f943a01b61c94d8dde11b7f40b"
       }
+    },
+    "web": {
+      "url": "https://github.com/storytold/cadcraft/releases/download/v0.20.1/cadcraft-web-0.20.1.zip",
+      "sha256": "300e870c50b66d371055915ba95e3ddbfd4c45431466d5214743b5dcab95a0e1",
+      "prefix": "cadcraft-web-0.20.1/",
+      "files": {
+        "ATTRIBUTION.md": "755164fd7c8861260982aec18937d667efa6198aa66b13fd8c54f7fc46a57626",
+        "HOSTING.md": "2ac3c4dbe67e2e1c717033bf6f84ab94ac5cb2792f64880946e26050b15f0ae3",
+        "LICENSE-APACHE": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+        "LICENSE-MIT": "54b0fc87ed7b61b59c20340070dd2b8c7f9d0b53795347819c3bd7c67ea2508a",
+        "NOTICE": "8f6f3c12b194374bb221e2a788565e1799dcf05d704f77a5cd8f09531eaa4bdd",
+        "README.md": "6ec0bb92300596ad8be000871560ef9da0c1e9f943a01b61c94d8dde11b7f40b",
+        "cadcraft-web-a91fdcd993cc5580.js": "06363d20956b7d659dc6f1e7137cda15fd9db1fc0695602a617b012ede1a4692",
+        "cadcraft-web-a91fdcd993cc5580_bg.wasm": "abf400894ba3b550ff2b90b8b24e0c36ce2be68f1ec10acb88afdd908f592831",
+        "index.html": "5b97b1b31d47e3ce6e0996c1e057747a523997592d41b9c7dc9df80befc7ed96",
+        "snippets/eframe-d31a8450ea12dfc1/inline0.js": "22a98f9d0c5a0532d291bdc9a3050439420b3d11143b4568fcfd3c66fff36995"
+      }
     }
   }
 }

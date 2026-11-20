@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
+import type { CadCraftSource } from "@shared/cadcraft";
 import "./OfficeDocumentView.css";
 
 type OfficeApi = NonNullable<Window["api"]>["officeUse"];
 export type OfficeDocumentSource = Parameters<OfficeApi["open"]>[0]["source"];
 const releases = new Map<string, Promise<void>>();
 
-interface Props {
-  source: OfficeDocumentSource;
+type Props = ({ kind?: "office"; source: OfficeDocumentSource } | { kind: "cad"; source: CadCraftSource }) & {
   name: string;
   blocked?: boolean;
 }
@@ -43,28 +43,31 @@ function dimensions(host: HTMLDivElement, blocked: boolean) {
   return { x, y, width, height };
 }
 
-export default function OfficeDocumentView({ source, name, blocked = false }: Props): React.JSX.Element {
+export default function OfficeDocumentView({ kind = "office", source, name, blocked = false }: Props): React.JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const [session, setSession] = useState<string>();
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const sourceKey = JSON.stringify(source);
+  const sourceKey = JSON.stringify([kind, source]);
 
   useEffect(() => {
     let current = true;
     const api = window.api?.officeUse;
     setError("");
     setSession(undefined);
-    if (!api) {
-      setError("Office Use 接口不可用，请重启 MyBuddy 后重试。");
+    const cadApi = window.api?.cadCraft;
+    if (!api || (kind === "cad" && !cadApi)) {
+      setError(`${kind === "cad" ? "CADCraft" : "Office Use"} 接口不可用，请重启 MyBuddy 后重试。`);
       return;
     }
     const previous = releases.get(sourceKey);
     const opening = Promise.resolve().then(async () => {
       await previous;
       if (!current) return undefined;
-      const stableSource: OfficeDocumentSource = JSON.parse(sourceKey);
-      const { id } = await api.open({ source: stableSource, name, modelId: useAppStore.getState().activeModelId ?? undefined });
+      const [, stableSource] = JSON.parse(sourceKey);
+      const { id } = kind === "cad" && cadApi
+        ? await cadApi.open(stableSource)
+        : await api.open({ source: stableSource, name, modelId: useAppStore.getState().activeModelId ?? undefined });
       if (current) setSession(id);
       return id;
     });
@@ -77,7 +80,7 @@ export default function OfficeDocumentView({ source, name, blocked = false }: Pr
       releases.set(sourceKey, released);
       void released.then(() => { if (releases.get(sourceKey) === released) releases.delete(sourceKey); });
     };
-  }, [sourceKey, name, attempt]);
+  }, [sourceKey, kind, name, attempt]);
 
   useEffect(() => {
     if (!session) return;

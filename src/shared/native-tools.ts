@@ -11,6 +11,7 @@
  *  - pi-event-mapper.isSideEffectTool：用 MUTATING_BUILTIN_TOOLS 判定写类工具。
  */
 import { OFFICE_USE_TOOLS } from "./office-use";
+import { CAD_USE_TOOLS } from "./cadcraft";
 
 /** pi 内置工具（SDK 自带，非 MCP） */
 export const PI_BUILTIN_TOOL_NAMES = [
@@ -75,6 +76,7 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "workspace_notes_read",
   "workspace_notes_save",
   ...Object.values(OFFICE_USE_TOOLS),
+  ...Object.values(CAD_USE_TOOLS),
   // Library / Memory
   "library_list",
   "library_search",
@@ -166,6 +168,9 @@ export const MUTATING_BUILTIN_TOOLS = [
   "project_notes_save",
   "workspace_notes_save",
   OFFICE_USE_TOOLS.selectionPropose,
+  CAD_USE_TOOLS.create,
+  CAD_USE_TOOLS.edit,
+  CAD_USE_TOOLS.export,
 ] as const;
 
 /** readonly 时补上不在 pi 默认 active 集里的只读内置工具 */

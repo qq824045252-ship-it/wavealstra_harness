@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import CodeView from "@/components/artifact/CodeView";
 import MarkdownArtifactView from "@/components/artifact/MarkdownArtifactView";
 import OfficeDocumentView from "@/components/artifact/OfficeDocumentView";
-import CadCraftDocumentView from "@/components/artifact/CadCraftDocumentView";
 import { cadCraftExtension } from "@shared/cadcraft";
 import { isOfficeUseFile } from "@/lib/officeUseFile";
 import { useAppStore } from "@/store/appStore";
@@ -105,7 +104,7 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
         : "此处查看交付时的保存版本，不修改原文件或历史成果。页面内操作仅用于本次预览，重新打开后重置。"}</p>
     </details>
     {office ? <div className="bot-work-file-preview-body"><OfficeDocumentView source={officeSource} name={file.name} /></div>
-      : cad ? <CadCraftDocumentView key={target} name={file.name} source={officeSource} />
+      : cad ? <div className="bot-work-file-preview-body"><OfficeDocumentView kind="cad" name={file.name} source={officeSource} /></div>
       : !supported ? <p role="status">此格式暂不支持内置预览。可尝试系统应用打开，或定位保存文件。</p>
       : error ? <><p role="alert">无法读取文件：{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></>
       : content === undefined ? <p role="status">正在读取文件…</p>

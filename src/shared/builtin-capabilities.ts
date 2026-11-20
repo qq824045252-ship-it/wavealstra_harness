@@ -1,5 +1,6 @@
 import { DEFAULT_MULTI_MODEL_CONSULT_CONFIG, type MultiModelConsultConfig } from "./multi-model-consult";
 import { OFFICE_USE_TOOLS } from "./office-use";
+import { CAD_USE_TOOLS } from "./cadcraft";
 import type { ApiCapabilityConnection, CapabilityConnectionOption, CapabilityCredentialChange, MediaCapabilityBinding, MediaCapabilityId } from "./media-capabilities";
 /**
  * MyBuddy native capability contract.
@@ -19,6 +20,7 @@ export type BuiltinCapabilityId =
   | "text-to-speech"
   | "browser"
   | "office-use"
+  | "cad-use"
   | "runtime-diagnostics"
   | "terminal"
   | "code-execution"
@@ -121,6 +123,7 @@ export interface BuiltinCapabilitiesConfigDto {
   browser: BuiltinBrowserConfig;
   /** Task assistant tools for the Office document open in MyBuddy. Defaults to enabled. */
   officeUse?: { enabled: boolean };
+  cadUse?: { enabled: boolean };
   /** Optional for schema-v1 compatibility; legacy configurations inherit browser.enabled. */
   diagnostics?: { enabled: boolean };
   execution: BuiltinExecutionConfig;
@@ -191,6 +194,7 @@ export const DEFAULT_BUILTIN_CAPABILITIES_CONFIG: BuiltinCapabilitiesConfigDto =
   },
   browser: { enabled: true },
   officeUse: { enabled: true },
+  cadUse: { enabled: true },
   diagnostics: { enabled: true },
   execution: { terminalEnabled: true, codeExecutionEnabled: true },
   subagent: { enabled: true },
@@ -207,6 +211,7 @@ export const BUILTIN_CAPABILITY_TOOLS: Record<BuiltinCapabilityId, string[]> = {
   "text-to-speech": ["text_to_speech"],
   browser: ["browser_exec", "ui_exec", "computer_exec"],
   "office-use": Object.values(OFFICE_USE_TOOLS),
+  "cad-use": Object.values(CAD_USE_TOOLS),
   "runtime-diagnostics": ["runtime_probe"],
   terminal: ["bash", "terminal_exec"],
   "code-execution": ["execute_code"],

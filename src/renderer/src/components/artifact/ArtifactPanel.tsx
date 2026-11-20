@@ -18,7 +18,6 @@ import FileActionBar from "./FileActionBar";
 import type { Artifact } from "@/types";
 import PdfViewer from "./PdfViewer";
 import OfficeDocumentView from "./OfficeDocumentView";
-import CadCraftDocumentView from "./CadCraftDocumentView";
 import { cadCraftExtension } from "@shared/cadcraft";
 import { isOfficeUseKind } from "@/lib/officeUseFile";
 import { ensureHtmlDocument } from "@/components/chat/DetailCard";
@@ -219,6 +218,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const isHtmlPreview = showFilePreview && current.kind === "html";
   const isSvgPreview = showFilePreview && current.kind === "svg";
   const isOfficePreview = showFilePreview && isOfficeUseKind(current.kind);
+  const isCadPreview = showFilePreview && Boolean(current.path && cadCraftExtension(current.path));
 
   return (
     <div
@@ -242,15 +242,15 @@ export default function ArtifactPanel(): React.JSX.Element | null {
 
       {showFilePreview ? (
         <div
-          className={`artifact-body artifact-body-with-flyout ${current.kind === "markdown" || current.kind === "table" ? "doc-mode" : ""} ${isHtmlPreview || isSvgPreview || ["pdf", "docx", "xlsx", "pptx"].includes(current.kind) ? "html-mode" : ""}`}
+          className={`artifact-body artifact-body-with-flyout ${current.kind === "markdown" || current.kind === "table" ? "doc-mode" : ""} ${isHtmlPreview || isSvgPreview || isOfficePreview || isCadPreview || current.kind === "pdf" ? "html-mode" : ""}`}
         >
           {isHtmlPreview ? (
             <HtmlArtifactView artifact={current} />
           ) : isOfficePreview ? (
             <ArtifactOfficeView artifact={current} taskId={activeTaskId ?? undefined}
               blocked={extensionFlyoutOpen && !extensionFlyoutPinned} />
-          ) : activeTaskId && current.path && cadCraftExtension(current.path) ? (
-            <CadCraftDocumentView key={current.id} name={current.name}
+          ) : activeTaskId && isCadPreview ? (
+            <OfficeDocumentView kind="cad" name={current.name} blocked={extensionFlyoutOpen && !extensionFlyoutPinned}
               source={{ type: "artifact", id: current.id, taskId: activeTaskId }} />
           ) : (
             <ArtifactBody

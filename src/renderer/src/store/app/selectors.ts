@@ -2,8 +2,11 @@ import type { Artifact, Task } from "../../types";
 import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "../../utils/taskFilters";
 import {
   toRendererArtifact,
+  toRendererKind,
   type ArtifactRenderPayload,
 } from "../../lib/artifactIngest";
+import { usesCanvasPanelWidth } from "../../lib/panelWidth";
+import { HOME_BROWSER_KEY } from "../../lib/browserLinks";
 import {
   artifactVisibleForDisplay,
   type ModeArtifactPolicy,
@@ -166,6 +169,13 @@ export function findDescriptorByIdAnyTask(
     if (d) return d;
   }
   return null;
+}
+
+export function selectCanvasPanelOpen(state: AppState): boolean {
+  if (state.panelMode === "browser") return Boolean(state.browserUrlByTask[state.activeTaskId ?? HOME_BROWSER_KEY]);
+  if (state.panelMode !== "file") return false;
+  const descriptor = findDescriptorByIdAnyTask(state, state.activeArtifactId);
+  return descriptor !== null && usesCanvasPanelWidth(toRendererKind(descriptor));
 }
 
 /** Read the active task's artifact directly from projection and render cache. */

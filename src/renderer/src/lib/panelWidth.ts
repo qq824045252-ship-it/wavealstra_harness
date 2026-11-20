@@ -18,16 +18,18 @@ const PANEL_HANDLE_WIDTH = 3;
 /** 左侧任务栏真实宽度（global.css 中 .sidebar 设定为 264px） */
 const PANEL_SIDEBAR_WIDTH = 264;
 
-/** 需要更宽预览区的类型（网页 / 文档 / 表格 / 图） */
+/** 需要更宽预览区的静态类型。 */
 const WIDE_KINDS = new Set<ArtifactKind>([
-  "html",
   "svg",
   "pdf",
-  "docx",
-  "xlsx",
-  "pptx",
   "image",
 ]);
+
+const CANVAS_KINDS = new Set<ArtifactKind>(["html", "docx", "xlsx", "pptx", "cad"]);
+
+export function usesCanvasPanelWidth(kind: ArtifactKind | undefined): boolean {
+  return kind !== undefined && CANVAS_KINDS.has(kind);
+}
 
 function mainAreaWidth(sidebarCollapsed: boolean): number {
   if (typeof window === "undefined") return 960;
@@ -57,7 +59,8 @@ export function clampPanelWidth(width: number, sidebarCollapsed: boolean): numbe
 /**
  * 自适应右侧栏宽度（对齐官方 MyBuddy）：
  * - 无文件 / 概览轨：窄
- * - 打开 html 等：约主区 58%（半屏偏右，聊天仍可见）
+ * - 网页和编辑器：共用工作画布宽度
+ * - 静态图和 PDF：约主区 58%
  * - md / code：约主区 48%
  */
 export function adaptivePanelWidth(
@@ -65,6 +68,7 @@ export function adaptivePanelWidth(
   sidebarCollapsed: boolean,
 ): number {
   if (!kind) return PANEL_RAIL_WIDTH;
+  if (usesCanvasPanelWidth(kind)) return canvasPanelWidth(sidebarCollapsed);
   const main = mainAreaWidth(sidebarCollapsed);
   const ratio = WIDE_KINDS.has(kind) ? 0.58 : 0.48;
   return clampPanelWidth(main * ratio, sidebarCollapsed);

@@ -20,8 +20,8 @@ import SubagentDrawer from "@/components/chat/SubagentDrawer";
 import PlaceholderPage from "@/components/pages/PlaceholderPage";
 import WorkspaceDetail from "@/components/workspace/WorkspaceDetail";
 import MyGadgetsView from "@/components/gadget/MyGadgetsView";
-import { HOME_BROWSER_KEY } from "@/lib/browserLinks";
 import { canvasPanelWidth, PANEL_CHAT_MIN, PANEL_RAIL_WIDTH } from "@/lib/panelWidth";
+import { selectCanvasPanelOpen } from "@/store/app/selectors";
 import { subscribeGadgetBrowser } from "@/lib/gadgetBrowser";
 import { DesktopSectionProvider, DesktopSectionSidebar, DesktopSectionVisibility, useDesktopNavigate } from "@/components/desktop/DesktopSection";
 import DesktopRail, { isExtensionsPage, isTaskPage } from "@/components/desktop/DesktopRail";
@@ -66,6 +66,7 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
   const panelOpen = useAppStore((s) => s.panelOpen);
   const panelMode = useAppStore((s) => s.panelMode);
   const panelExpanded = useAppStore((s) => s.panelExpanded);
+  const canvasPanelOpen = useAppStore(selectCanvasPanelOpen);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const activeTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const theme = useAppStore((s) => s.theme);
@@ -147,9 +148,6 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
       const width = mainRef.current?.clientWidth;
       if (width) setCompactPreview(width < PANEL_CHAT_MIN + PANEL_RAIL_WIDTH + 20);
       const {
-        activeTaskId,
-        browserUrlByTask,
-        panelMode,
         panelOpen,
         panelWidth,
         setPanelWidth,
@@ -157,15 +155,13 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
       } = useAppStore.getState();
       if (!panelOpen) return;
 
-      const browserKey = activeTaskId ?? HOME_BROWSER_KEY;
-      const browserOpen = panelMode === "browser" && Boolean(browserUrlByTask[browserKey]);
-      setPanelWidth(browserOpen ? canvasPanelWidth(sidebarCollapsed) : panelWidth);
+      setPanelWidth(canvasPanelOpen ? canvasPanelWidth(sidebarCollapsed) : panelWidth);
     };
     reclamp();
     const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(reclamp);
     if (mainRef.current) observer?.observe(mainRef.current);
     return () => observer?.disconnect();
-  }, []);
+  }, [canvasPanelOpen]);
 
   // 主进程专业工具（Penpot open）→ 扩展栏浏览器
   useEffect(() => {

@@ -233,6 +233,8 @@ import { BrowserAutomationService } from "../capabilities/BrowserAutomationServi
 import { browserAgentPolicy } from "../capabilities/BrowserAgentPolicy";
 import { BuiltinCapabilityRuntime } from "../capabilities/BuiltinCapabilityRuntime";
 import { BUILTIN_CAPABILITY_TOOLS } from "../../shared/builtin-capabilities";
+import { CAD_USE_TOOLS } from "../../shared/cadcraft";
+import { cadUseInstructions, cadUseSkillDirectory } from "../skills/CadUseSkill";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
 import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
 import { VideoGenerationJobs } from "../capabilities/VideoGenerationJobs";
@@ -1513,6 +1515,7 @@ export class AgentService {
       // its stop rules reach the model. Never cache it with the static capsule.
       renderConversationGoalSection(this.liveConversationGoal(task.id)) ?? "",
       browserAgentPolicy,
+      this.durableToolAllowed(task, CAD_USE_TOOLS.inspect) ? cadUseInstructions(this.durableToolAllowed(task, CAD_USE_TOOLS.edit)) : "",
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
       "## Skills\nRead the relevant SKILL.md before using a skill.\n" + skills.filter(s => s.enabled && s.filePath)
         .filter(s => assembly.skillFilter.visible.includes(s.name))
@@ -1730,6 +1733,10 @@ export class AgentService {
     if (["pstack_decision_append","pstack_eval_save"].includes(name) && !this.durableToolAllowed(task, "write")) return false;
     if (!workExecutionToolAllowed(name, () => this.workService.repo.bindingForTask(task.id))) return false;
     if (BUILTIN_CAPABILITY_TOOLS["office-use"].includes(name) && this.builtinCapabilities.config().officeUse?.enabled === false) return false;
+    if (BUILTIN_CAPABILITY_TOOLS["cad-use"].includes(name)) {
+      if (this.builtinCapabilities.config().cadUse?.enabled === false) return false;
+      if (task.permissionMode === "readonly" && name !== CAD_USE_TOOLS.inspect) return false;
+    }
     if (name === "office_selection_propose" && task.permissionMode === "readonly") return false;
     const assembly = this.durableAssembly(task);
     const permissionMode = task.permissionMode ?? "default";
@@ -3250,7 +3257,7 @@ export class AgentService {
     const identity = { ...context, botId: context.botId ?? this.runtimeBotId(context.taskId) };
     return this.skillsService.resolveRuntimeSkills(
       cwd,
-      extraSkillPaths,
+      this.builtinCapabilities.config().cadUse?.enabled === false ? extraSkillPaths : [...extraSkillPaths, cadUseSkillDirectory()],
       (skill) => this.learnedSkillVisibleInContext(skill, identity),
       { botId: identity.botId },
     );

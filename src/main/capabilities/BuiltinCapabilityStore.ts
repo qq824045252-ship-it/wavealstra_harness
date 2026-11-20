@@ -117,6 +117,7 @@ function normalize(raw: unknown): BuiltinCapabilitiesConfigDto {
     },
     browser: { enabled: value.browser?.enabled !== false },
     officeUse: { enabled: value.officeUse?.enabled !== false },
+    cadUse: { enabled: value.cadUse?.enabled !== false },
     diagnostics: { enabled: value.diagnostics?.enabled ?? value.browser?.enabled !== false },
     execution: {
       terminalEnabled: value.execution?.terminalEnabled !== false,

@@ -46,6 +46,7 @@ function enabled(id: BuiltinCapabilityId): boolean {
     case "web": return config.web.enabled;
     case "browser": return config.browser.enabled;
     case "office-use": return config.officeUse?.enabled !== false;
+    case "cad-use": return config.cadUse?.enabled !== false;
     case "runtime-diagnostics": return config.diagnostics?.enabled ?? config.browser.enabled;
     case "terminal": return config.execution.terminalEnabled;
     case "code-execution": return config.execution.codeExecutionEnabled;

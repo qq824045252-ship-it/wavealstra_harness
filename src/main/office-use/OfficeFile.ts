@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep, extname } from "node:path";
 import type { EventEmitter } from "node:events";
 import { prepareOfficeRoundTrip } from "./OfficeRoundTrip";
@@ -27,12 +27,13 @@ export async function plainFile(path: string): Promise<void> {
   }
 }
 
-export async function atomicBytes(path: string, bytes: Buffer | string, check?: () => Promise<void>): Promise<void> {
+export async function atomicBytes(path: string, bytes: Buffer | string, check?: () => Promise<void>, options?: { create: boolean }): Promise<void> {
   const tmp = join(dirname(path), ".mybuddy-office-" + randomUUID());
   try {
     await writeFile(tmp, bytes, { flag: "wx", mode: 0o600, flush: true });
     await check?.();
-    await rename(tmp, path);
+    if (options?.create) await link(tmp, path);
+    else await rename(tmp, path);
   } finally { await unlink(tmp).catch(e => { if (e.code !== "ENOENT") throw e; }); }
 }
 

@@ -1,4 +1,3 @@
-import { HOME_BROWSER_KEY } from "../../../lib/browserLinks";
 import {
   PANEL_RAIL_WIDTH,
   clampCanvasPanelWidth,
@@ -6,6 +5,7 @@ import {
 } from "../../../lib/panelWidth";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
+import { selectCanvasPanelOpen } from "../selectors";
 
 export function createWorkbenchLayoutActions(
   storeContext: AppContext,
@@ -21,7 +21,9 @@ export function createWorkbenchLayoutActions(
         return {
           sidebarCollapsed,
           // 侧栏显隐会改变主区宽度，需重新夹紧右栏，避免聊天区被压穿最小宽度
-          panelWidth: clampPanelWidth(s.panelWidth, sidebarCollapsed),
+          panelWidth: selectCanvasPanelOpen(s)
+            ? clampCanvasPanelWidth(s.panelWidth, sidebarCollapsed)
+            : clampPanelWidth(s.panelWidth, sidebarCollapsed),
         };
       }),
 
@@ -41,16 +43,11 @@ export function createWorkbenchLayoutActions(
       })),
 
     setPanelWidth: (w) =>
-      set((s) => {
-        const key = s.activeTaskId ?? HOME_BROWSER_KEY;
-        const canvasOpen =
-          s.panelMode === "browser" && Boolean(s.browserUrlByTask[key]);
-        return {
-          panelWidth: canvasOpen
+      set((s) => ({
+          panelWidth: selectCanvasPanelOpen(s)
             ? clampCanvasPanelWidth(w, s.sidebarCollapsed)
             : clampPanelWidth(w, s.sidebarCollapsed),
-        };
-      }),
+      })),
 
     togglePanelExpanded: (keepModuleList = false) =>
       set((s) => {

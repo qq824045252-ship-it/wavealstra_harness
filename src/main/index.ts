@@ -1,8 +1,9 @@
 import "./platform/credentials";
 import { SpeechIpc } from "../shared/speech-stream";
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
-import { openCadCraftCopy } from "./artifact/CadCraftCopy";
-import { locateCadCraftEditor, startCadCraftEditor } from "./platform/cadcraft";
+import { resolveCadCraftFile } from "./artifact/CadCraftFile";
+import { locateCadCraftCli } from "./platform/cadcraft";
+import { checkCadUse } from "./capabilities/CadUseTools";
 import { CadCraftIpc, type CadCraftSource } from "../shared/cadcraft";
 import { OfficeUseHost } from "./office-use/OfficeUseHost";
 import { resolveOfficeTarget, saveOfficeAs } from "./office-use/OfficeSources";
@@ -1053,27 +1054,27 @@ function registerIpc(): void {
     propose: (modelId, selection, instruction, signal) => agentService.proposeOfficeEdit(modelId, selection, instruction, signal),
   });
   agentService.builtinCapabilities.registerLocalCheck("office-use", () => officeUse.checkAssets());
+  agentService.builtinCapabilities.registerLocalCheck("cad-use", checkCadUse);
   const officeSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) =>
     isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href);
-  ipcMain.handle(CadCraftIpc.openCopy, async (event, source: CadCraftSource) => {
+  ipcMain.handle(CadCraftIpc.open, async (event, source: CadCraftSource) => {
     const owner = botManagementWindow;
     if (!officeSender(event) || !owner) throw new Error("请从 MyBuddy 主窗口打开 CAD 图纸");
-    const editor = await locateCadCraftEditor(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
-    const storageRoot = getMyBuddyDir();
-    return openCadCraftCopy(source, {
+    const file = await resolveCadCraftFile(source, {
       artifacts: artifactDomainService,
       saved: savedArtifactActions,
-      storageRoot,
+      storageRoot: getMyBuddyDir(),
+      locateCli: () => locateCadCraftCli(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined),
       choose: async (defaultPath, extension) => {
         const result = await dialog.showSaveDialog(owner, {
-          title: "创建 CAD 编辑副本",
+          title: "保存 CAD 编辑副本",
           defaultPath,
           filters: [{ name: `${extension.toUpperCase()} 图纸`, extensions: [extension] }],
         });
         return result.canceled ? undefined : result.filePath;
       },
-      openDrawing: path => startCadCraftEditor(editor, path, join(storageRoot, "cadcraft")),
     });
+    return officeUse.openCadCraft(file, owner);
   });
   ipcMain.handle(OfficeUseIpc.open, (event, request) => {
     if (!officeSender(event) || !botManagementWindow) throw new Error("请从 MyBuddy 主窗口打开 Office 文档");

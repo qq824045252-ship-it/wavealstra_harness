@@ -176,7 +176,7 @@
     "btw:keepalive",
     "btw:prompt",
     "btw:start",
-    "cadcraft:open-copy",
+    "cadcraft:open",
     "captureMode:enter",
     "captureMode:exit",
     "captureMode:startInspect",
@@ -555,7 +555,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2429",
+          "src/main/index.ts:2409",
           "scripts/wave5-real-open-e2e.ts:273"
         ],
         "foreign": [
@@ -565,7 +565,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2433",
+          "src/main/index.ts:2413",
           "scripts/wave5-real-open-e2e.ts:269"
         ],
         "foreign": [
@@ -575,7 +575,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2437",
+          "src/main/index.ts:2417",
           "scripts/wave5-real-open-e2e.ts:266"
         ],
         "foreign": [
@@ -585,7 +585,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2448",
+          "src/main/index.ts:2428",
           "scripts/wave5-real-open-e2e.ts:265"
         ],
         "foreign": [
@@ -595,7 +595,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2452",
+          "src/main/index.ts:2432",
           "scripts/wave5-real-open-e2e.ts:261"
         ],
         "foreign": [
@@ -605,7 +605,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2457",
+          "src/main/index.ts:2437",
           "scripts/wave5-real-open-e2e.ts:276"
         ],
         "foreign": [
@@ -615,7 +615,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2461",
+          "src/main/index.ts:2441",
           "scripts/wave5-real-open-e2e.ts:279"
         ],
         "foreign": [
@@ -637,7 +637,7 @@
       {
         "channel": "agent:abort",
         "entries": [
-          "src/main/index.ts:1272",
+          "src/main/index.ts:1252",
           "scripts/browser-stop-ui-electron-test.ts:42"
         ],
         "foreign": [
@@ -647,7 +647,7 @@
       {
         "channel": "agent:getAppSettings",
         "entries": [
-          "src/main/index.ts:1421",
+          "src/main/index.ts:1401",
           "scripts/browser-stop-ui-electron-test.ts:41"
         ],
         "foreign": [
@@ -657,7 +657,7 @@
       {
         "channel": "agent:loadTaskHistory",
         "entries": [
-          "src/main/index.ts:1554",
+          "src/main/index.ts:1534",
           "scripts/browser-stop-ui-electron-test.ts:43"
         ],
         "foreign": [
@@ -667,7 +667,7 @@
       {
         "channel": "agent:getModeProfile",
         "entries": [
-          "src/main/index.ts:1587",
+          "src/main/index.ts:1567",
           "scripts/browser-stop-ui-electron-test.ts:40"
         ],
         "foreign": [

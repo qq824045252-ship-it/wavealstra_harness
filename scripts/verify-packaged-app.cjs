@@ -269,11 +269,17 @@ function verifyPackagedApp(appDir, options = {}) {
   if (officeCheck.status !== 0) fail("Office runtime payload verification failed: " + (officeCheck.stderr || officeCheck.error));
   if (targetPlatform === "win32" || targetPlatform === "linux") {
     const target = targetPlatform === "win32" ? "win-x64" : "linux-x64";
-    const cadCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-cadcraft.cjs"),
-      "--target", target, "--verify-assets", path.join(resources, "cadcraft")], {
-      encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    });
-    if (cadCheck.status !== 0) fail("CADCraft runtime payload verification failed: " + (cadCheck.stderr || cadCheck.error));
+    for (const [cadTarget, root] of [[target, "cadcraft"], ["web", "cadcraft/web"]]) {
+      const cadCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-cadcraft.cjs"),
+        "--target", cadTarget, "--verify-assets", path.join(resources, root)], {
+        encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      });
+      if (cadCheck.status !== 0) fail("CADCraft runtime payload verification failed: " + (cadCheck.stderr || cadCheck.error));
+    }
+    for (const entry of ["index.html", "cad.js", "cad.css"]) {
+      if (!fs.existsSync(path.join(officeEditor, "editor/cad", entry))) fail("Missing CAD editor file: " + entry);
+    }
+    if (!fs.existsSync(path.join(resources, "builtin-skills/cad-use/SKILL.md"))) fail("Missing CAD Use skill");
   }
   for (const entry of ["editor/host/index.html","editor/host/host.js","editor/host/host.css",
     "editor/craft/bridge.html","editor/craft/bridge.js","editor/craft/word.js","editor/craft/excel.js",

@@ -1,4 +1,5 @@
 import type { ArtifactDescriptor } from "../../../../../shared/artifact-types";
+import { cadCraftExtension } from "../../../../../shared/cadcraft";
 import { buildRegistration } from "../../../lib/artifactIngest";
 import { fileUrlForAbsolutePath } from "../../../lib/browserLinks";
 import { fileNameFromPath, parentDir } from "../../../lib/localFilePath";
@@ -54,7 +55,7 @@ export function createFileArtifactsActions(
               content: file.content,
               language,
               path: file.path,
-              workspaceRoot,
+              workspaceRoot: file.path && cadCraftExtension(file.name) ? parentDir(file.path) : workspaceRoot,
             }),
           )) ?? null;
       } catch (err) {

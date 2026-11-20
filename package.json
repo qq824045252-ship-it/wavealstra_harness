@@ -817,8 +817,10 @@
     "extraResources": [
       { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets" },
       { "from": "vendor/craft-office/LICENSE.noto-cjk", "to": "office-editor/licenses/LICENSE.noto-cjk" },
-      { "from": "src/renderer/src/lib/office-use", "to": "office-editor/editor", "filter": ["host/**","craft/**"] },
+      { "from": "src/renderer/src/lib/office-use", "to": "office-editor/editor", "filter": ["host/**","craft/**","cad/**"] },
       { "from": "vendor/cadcraft/assets/${os}-${arch}", "to": "cadcraft" },
+      { "from": "vendor/cadcraft/assets/web", "to": "cadcraft/web" },
+      { "from": "vendor/cadcraft/skill", "to": "builtin-skills" },
       {
         "from": "scripts/windows-ocr.ps1",
         "to": "windows-ocr.ps1"
