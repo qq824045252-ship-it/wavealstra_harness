@@ -1,15 +1,20 @@
 # MyBuddy (`wavealstra_harness`)
 
-MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构建的开源桌面级 AI Agent 工作台，底层驱动内核采用 Pi coding-agent 1.3.0。
+MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构建的开源桌面级 AI Agent 工作台，底层采用 Pi Durable 1.5.0，深度集成 Pi 的模型、会话与执行能力。
 
 不同于传统的扁平聊天窗口，MyBuddy 将工作流组织为「项目（Project）→ 树形空间（Blueprint / Workspace）→ 任务（Task）」的多层级结构，通过情景模式（Scenario Mode）在会话初始化阶段硬性收紧 Skill 与 MCP 权限边界，并通过统一的 Memory Gateway 让桌面端会话与外部 CLI Agent 共享同一套多层记忆（L1/L2/L3），同时保持对 WorkBuddy / CodeBuddy 插件目录规范的兼容。
 
-## Bot / Work 设计基线
+## 文档与当前产品边界
 
-2026-11-06 冻结 **BOT-WORK-1.0**：长期 bot 与对话、任务运行分离，独立事项承载目标与责任，后台复用 Durable。以下文件定义目标行为与完整交付条件；冻结不表示相关功能已经实现或通过验收。
+从 [文档索引](docs/README.md) 开始。主要入口：
 
-- [Bot / Work 架构冻结设计](docs/bot-work-design.md)：对象、权威状态、前后台宿主、主动跟进、专家与团队协作，以及最新源码复核结论。
-- [Bot / Work 冻结验收规范](docs/bot-work-acceptance.md)：行为场景、故障恢复边界、端到端故事与验收证据要求。
+- [PStack 与子代理](docs/pstack-mybuddy.md)：代码开发流程、模型选择、工作树、终端与本地定时执行。
+- [Gadget 开发接口](docs/gadgets.md)：HTML、持久数据、Node 后台及 CLI / HTTP API 接入。
+- [统一 API 服务设置](docs/api-service-settings.md)：工具连接、联网搜索与模型原生能力。
+- [内置浏览器](docs/browser-tabs.md)：标签、页面操作、登录交接与会话续期。
+- [渠道能力矩阵](docs/hermes-gateway-parity.md)：已实现能力、协议限制与验证范围。
+
+独立 Bot 产品模式已移除；历史记录、普通任务、子代理、Goal 和本地自动化继续保留。`DurableBotService` 的名称不表示仍有独立 Bot 模式。参见 [退役边界](docs/bot-retirement.md)。
 
 ## 为什么开源
 
@@ -32,8 +37,8 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
 | 情景模式 | 标识 (`mode`) | 适用场景 | 策略重点 |
 | --- | --- | --- | --- |
 | 日常办公 | `working` | 默认模式，适用于文档处理、日常问答与综合检索 | 启用通用办公技能与基础知识库检索 |
-| 代码开发 | `coding` | 软件工程、代码重构、终端调试与仓库分析 | 聚焦 Pi Code Mode、终端 PTY 与开发类 MCP |
-| 自动化 / Bot | `bot` | 无人值守定时任务（Cron）、网关触发与后台流水线 | 严格收紧交互式弹窗权限，仅放行白名单受控工具 |
+| 代码开发 | `coding` | 软件工程、代码重构、终端调试与仓库分析 | 使用内置 PStack / thermos 流程及开发能力，行为取决于已保存的标签和配置 |
+| 通用模式 | `general` | 通用 Agent 任务 | 标签选择工具呈现方式，仍使用 Pi Durable 执行 |
 
 - **前置硬隔离**：每个情景模式（及自定义标签预设）均可绑定独立的 `skillPolicy` 与 `mcpPolicy`，支持白名单（`allow`）、黑名单（`hide` / `deny`），其中 MCP 策略支持 `hard` 级别——在会话创建时直接跳过 Adapter 注入，而非仅仅依赖 System Prompt 事后提醒。
 
@@ -64,7 +69,7 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
   - 本地视觉与语音：本地 PDF/图像 OCR 路径与本地 Whisper 语音转写（`src/main/voice/`）。
   - 内嵌环境：受控浏览器（`src/main/browser/`）、集成终端 PTY（`src/main/terminal/`）、HTML 编辑与办公文档 / Artifact 预览（`src/main/artifact/`）。
 - **多通道网关与远程协同**：
-  - 消息连接器（`src/main/connectors/`、`src/main/gateway/`、`src/main/cron/`）：Slack Socket Mode、Webhook 与 Cron 调度。新增 [钉钉企业机器人 Stream](docs/dingtalk-gateway.md)、[Discord 官方 Bot](docs/discord-gateway.md)；需配置平台权限与用户白名单，这两个新渠道当前仅支持入站及原会话回复，不提供主动 Work 通知。
+  - 消息连接器（`src/main/connectors/`、`src/main/gateway/`、`src/main/cron/`）：Slack Socket Mode、Webhook 与 Cron 调度。新增 [钉钉企业机器人 Stream](docs/dingtalk-gateway.md)、[Discord 官方 Bot](docs/discord-gateway.md)；以及 [QQ](docs/qq-gateway.md)、[个人微信 iLink](docs/weixin-ilink.md)。渠道支持范围不同：钉钉与 Discord 已实现受限附件收发及 Work 出站，QQ 支持受限文件交付，微信 iLink 不支持主动 Work 通知。需配置平台权限与允许名单，代码实现不等同真实账号验收。
   - 远程配对（`src/main/remote/`）：局域网 / 远程移动端或副屏客户端配对访问。
 
 ## 系统边界与已知限制（请勿误读）
@@ -81,10 +86,17 @@ MyBuddy (`wavealstra_harness`) 是一个基于 Electron + React + TypeScript 构
 
 - Node.js：`>= 24.0.0`（可参考仓库根目录 `.nvmrc`）
 - 包管理器：`pnpm@12.14.0`（已在 `package.json` 的 `packageManager` 字段中声明，建议使用 Corepack 启用）
-- 操作系统：需要具备真实图形桌面环境（Windows / macOS / Linux X11 或 Wayland）
+- 操作系统与发行物：v0.1.109 发布 Windows x64 安装包及 Linux x64 AppImage / Debian 包，见 [Releases](https://github.com/qq824045252-ship-it/wavealstra_harness/releases)。打包目标、可启动的桌面环境与 Computer Use 支持不是同一概念。
+- Computer Use：Windows 使用 UIA；Linux 原生后端支持 Hyprland / Wayland 与 AT-SPI，其他 Linux 桌面不能视为等价支持；macOS 当前没有 Computer Use 后端，也没有本版本发布包。Linux 发行验收的具体范围以 Release 说明为准。
 - Linux 额外依赖：强烈建议安装并启用系统级 `libsecret`（如 GNOME Keyring 或 KWallet），以避免 Electron `safeStorage` 降级回退到明文级别的 `basic_text` 存储模式。
 
 ### 安装与启动
+
+**升级前先备份，源码启动也一样。** 第一次用新版打开已有数据前，彻底退出旧版 MyBuddy（包括托盘），将实际数据目录完整复制到目录之外，不能只复制 `app.db`。默认目录是 Windows `%USERPROFILE%\.mybuddy`、Linux `~/.mybuddy`；外部工作区和成果另行备份，系统凭据库不包含在普通文件备份中。备份含秘密，不要公开上传。
+
+当前数据库 schema 为 36。v0.1.108 → v0.1.109 没有提高 schema；更早版本的库若不兼容，会被删除并重建，**没有自动迁移或自动备份**；不兼容的 Durable 数据也可能被清理。备份不保证可直接恢复到新版。不要让新版打开唯一一份旧数据或唯一备份。全新安装没有旧数据时无需备份空目录。具体发布范围和限制见 [v0.1.109 升级说明](https://github.com/qq824045252-ship-it/wavealstra_harness/releases/tag/v0.1.109)。
+
+使用发行版可从 Releases 下载对应系统安装包；以下是源码开发入口：
 
 ```bash
 # 1. 克隆仓库
@@ -137,7 +149,7 @@ wavealstra_harness/
 │   │   ├── terminal/         # 集成终端 PTY 会话管理
 │   │   ├── remote/           # 远程配对与外部客户端连接服务
 │   │   ├── security/         # 安全审计与相关策略
-│   │   └── db/               # SQLite 数据库初始化与迁移（~/.mybuddy/app.db）
+│   │   └── db/               # SQLite 初始化与当前 schema 校验（不兼容库重建）
 │   ├── preload/              # Electron Preload 隔离桥接
 │   ├── renderer/             # React 前端界面与状态存储
 │   └── shared/               # 跨进程 IPC 契约、数据结构与安全策略定义

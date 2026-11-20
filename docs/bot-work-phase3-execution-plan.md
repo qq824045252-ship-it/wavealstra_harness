@@ -1,8 +1,10 @@
+> 下文已删除源码的链接固定到删除前的历史提交，只用于理解当时设计，不代表当前可用接口。
+
 > 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
 
 # Bot / Work — Phase 3 执行规划（供 Codex 实施）
 
-> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](bot-work-no-quota.md) 取代，不应按旧条款重新实现。此句为当时记录；后续用户又要求退役应用权限、审批与预算历史，当前迁移和保留边界以 [退役契约](work-action-approval-loop.md) 为准。原生用量遥测、真实执行身份、取消和上下文容量仍保留，不按历史条款恢复门禁。
+> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](work-budget-retirement.md) 取代，不应按旧条款重新实现。此句为当时记录；后续用户又要求退役应用权限、审批与预算历史，当前迁移和保留边界以 [退役契约](work-action-approval-loop.md) 为准。原生用量遥测、真实执行身份、取消和上下文容量仍保留，不按历史条款恢复门禁。
 
 > **已退役（Issue #21）**：本文描述的 `WorkResourceGate` 共享资源隔离、跨 Work 资源屏障与动作审批已整体移除，现状见 [work-action-approval-loop.md](work-action-approval-loop.md)。本文仅作历史实施记录，不再是现行契约。
 
@@ -39,16 +41,16 @@
 
 | 现有入口 | 已有能力 | Phase 3 工作 |
 | --- | --- | --- |
-| [WorkExecutionAdapter.ts](../src/main/agent/work/WorkExecutionAdapter.ts) | `resourceAvailable()` 对可变 root 做保守宿主串行、允许已隔离的只读并行；原生 find/inspect/stop、持久结果消费 | 根调度使用资源计划；实际工具临界区使用同一 gate；等待与失联接管可恢复 |
+| [WorkExecutionAdapter.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/main/agent/work/WorkExecutionAdapter.ts) | `resourceAvailable()` 对可变 root 做保守宿主串行、允许已隔离的只读并行；原生 find/inspect/stop、持久结果消费 | 根调度使用资源计划；实际工具临界区使用同一 gate；等待与失联接管可恢复 |
 | [DurableToolPolicy.ts](../src/main/agent/durable/DurableToolPolicy.ts)、[AgentService.ts](../src/main/agent/AgentService.ts) | Work 工具准入及 before/after 接线，覆盖主机工具、MCP、Code Mode 和 children | 传递经宿主解析的资源范围、读取版本、执行/工具调用身份；动作结束、失败、停止及恢复正确结算租约 |
 | [DurableSubagents.ts](../src/main/agent/durable/DurableSubagents.ts)、[write-conflict.ts](../src/main/capabilities/subagent/write-conflict.ts) | 计划期 `auto/shared/worktree` 解析、单 dispatch 路径 claim、结构化 blocked/rejected/writeConflicts | 接授权与真实 workspace 创建边界；串行共享写须真正降低有效并发并如实返回隔离结果 |
-| [WorkDispatchQueue.ts](../src/main/agent/work/WorkDispatchQueue.ts) | 同 `intentRevision + inputSnapshotId` 的 completed/failed/stopped 事实保留原身份；准备失败保留原请求 | 增加受守卫的缺口计划身份，不放宽普通 resume 与崩溃恢复去重 |
+| [WorkDispatchQueue.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/main/agent/work/WorkDispatchQueue.ts) | 同 `intentRevision + inputSnapshotId` 的 completed/failed/stopped 事实保留原身份；准备失败保留原请求 | 增加受守卫的缺口计划身份，不放宽普通 resume 与崩溃恢复去重 |
 | [DurableWorkExecutionProjection.ts](../src/main/agent/durable/DurableWorkExecutionProjection.ts)、[WorkNativeResultInbox.ts](../src/main/agent/work/WorkNativeResultInbox.ts)、[WorkExecutionSettlement.ts](../src/main/agent/work/WorkExecutionSettlement.ts) | 原生冲突事实投影、统一 Inbox 结算、终态保护与精确 reservation 核销 | 扩展观察类型及 Inbox 严格 Schema，完整传递逐项状态/产物/依赖；缺口、预算及后续意图在同一业务消费事务内提交 |
-| [WorkSourceObserver.ts](../src/main/agent/work/WorkSourceObserver.ts) | `refresh()` 权威读回 + CAS；`file()` 已有真实 SHA-256 读取 | 扩展多输入与产物依赖指纹、写前/验收前复核及可信系统调用入口，避免覆盖其他来源 |
+| [WorkSourceObserver.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/main/agent/work/WorkSourceObserver.ts) | `refresh()` 权威读回 + CAS；`file()` 已有真实 SHA-256 读取 | 扩展多输入与产物依赖指纹、写前/验收前复核及可信系统调用入口，避免覆盖其他来源 |
 | [WorkService.ts](../src/main/agent/work/WorkService.ts)、[WorkRepository.ts](../src/main/agent/work/WorkRepository.ts) | `handoffOwner()` 已事务更新 owner/epoch 并写 Outbox；已有参与者、验收、实测快照绑定、Inbox 策略与通知状态 | 补协作协议、交接准备与有效执行接管、暂停积压处理，以及发送前最新事实核验 |
 | [MemoryContextProjection.ts](../src/main/agent/MemoryContextProjection.ts)、[BotWorkContextService.ts](../src/main/agent/work/BotWorkContextService.ts)、[MemoryService.ts](../src/main/memory/MemoryService.ts) | 既有 Bot / Work / 项目上下文及 Memory 查询/读写权限 | 按协作参与者与授权范围校验访问及投影，覆盖根与 owned child；明确阻止跨 Bot 私有记忆泄露 |
 | [ComputerAutomationService.ts](../src/main/capabilities/ComputerAutomationService.ts)、[platform/computer-use](../src/main/platform/computer-use/index.ts)、[BrowserAutomationService.ts](../src/main/capabilities/BrowserAutomationService.ts) | 桌面兼容入口与实际平台 backend；Linux 已有任务归属观测、窗口/布局检查和输入清理 | 在实际执行入口组合资源租约与原生观测有效性；补可等待的停止/输入释放确认 |
-| [BotWorkspacePage.tsx](../src/renderer/src/components/pages/BotWorkspacePage.tsx)、[共享协议](../src/shared/bot-work.ts)、[Phase 2 schema](../src/main/db/bot-work-phase2-schema.ts) | 权威投影、持久列表水位、通知卡片及有界事件保留 | 投影资源等待、部分成果、暂停结算和交接历史；保持稳定语义身份与补读协议 |
+| [BotWorkspacePage.tsx](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/ec2cddb3516aa7bd2b409587e66ad2e53bf79062/src/renderer/src/components/pages/BotWorkspacePage.tsx)、[共享协议](../src/shared/bot-work.ts)、[Phase 2 schema](../src/main/db/bot-work-phase2-schema.ts) | 权威投影、持久列表水位、通知卡片及有界事件保留 | 投影资源等待、部分成果、暂停结算和交接历史；保持稳定语义身份与补读协议 |
 
 ### 1.1 对提交前草案的事实校正
 

@@ -22,4 +22,4 @@ Useful partial results and recovered answers return to the originating Bot conve
 
 `test:bot-work-automatic-recovery` exercises root failure without subitems, physical retained output, restart identity, user-stop semantics, no-progress finalization and nonblocking unknown-effect diagnostics. `test:bot-work-review-execution` covers bounded history scans, failed/stopped artifacts, late evidence and idempotent legacy repair. Real Electron validation uses a temporary HOME and an explicitly local HTTP model fixture; it must not be described as an online-model run.
 
-See [Work quota retirement](bot-work-no-quota.md) for the distinction between removed quota behavior and inert historical data retained in existing user databases.
+See [Work quota retirement](work-budget-retirement.md) for the distinction between removed quota behavior and inert historical data retained in existing user databases.

@@ -109,7 +109,6 @@ pnpm -s test:deepseek-tts-stream
 pnpm -s test:deepseek-native
 pnpm -s test:deepseek-model-settings-ui
 pnpm -s test:capability-conversation
-pnpm -s test:bot-capability-conversation
 pnpm -s test:speech-stream-player
 pnpm -s test:capability-result-dom
 pnpm -s test:web-artifact-runtime

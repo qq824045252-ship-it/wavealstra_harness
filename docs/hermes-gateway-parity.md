@@ -1,21 +1,23 @@
 # Hermes Gateway 能力差距审计
 
-## 固定基线与口径
+## 当前核对与历史比较基线
+
+2026-11-19 按 MyBuddy v0.1.109（`6d2e5dc9`）源码更新下列能力说明；没有新增真实账号验收。Hermes 比较仍使用下述固定提交，不能解释为对 Hermes 最新版本的评测。
 
 - Hermes：`72d4433130823f506081cc1189a923b5aa67dbf0`。引用 `H:` 均指该提交里的路径，通过 `git -C ../hermes-reference show <commit>:<path>` 读取，不以稀疏工作区是否 checkout 判断文件存在。
-- 本项目：媒体增量已合入 `de5a7496333f1f359991288582b504006d568c1c`；2026-11-08 在该基线上继续补齐 Gateway 缓存、凭据与收发箱。引用 `L:` 均相对此仓库当前源码。新一轮修复与实际门禁见 [Gateway 加固复核](reviews/gateway-hardening-2026-11-08.md)。
+- 本项目：媒体增量已合入 `de5a7496333f1f359991288582b504006d568c1c`；2026-11-08 在该基线上继续补齐 Gateway 缓存、凭据与收发箱。引用 `L:` 为本仓库源码路径；下列当前矩阵已更新到 v0.1.109。该次历史修复与实际门禁见 [Gateway 加固复核](reviews/gateway-hardening-2026-11-08.md)。
 - `implemented`：所述具体能力已有实现，不代表整个渠道达到 Hermes 对等。`partial`：仅有子集或仅运行期有效。`missing`：当前整合代码没有对应端到端实现。Hermes 中无直接对应或不能证明的能力标为“不适用/未确认”，不虚构差距。
 - 这是源码能力矩阵，不是真实账号联调、长时间断网测试或发行包验收。文末保留媒体增量的历史验证记录；后续加固的实际执行结果以新复核报告为准，不把夹具通过推广为真实平台验收。
 
 ## 共同边界
 
-`L:src/main/gateway/GatewayPlatformRegistry.ts` 登记九种渠道。Feishu、Telegram、Slack、DingTalk、Discord、QQ、Weixin 声明 `media: "inbound"`；WeCom 根据模式动态声明，smart 为 `"inbound"`，callback 为 `false`，WeChat MP 仍为 `false`。所有渠道 `editStreaming`、`interactiveApproval` 仍为 `false`。Slack 使用原有独立 journal；其余渠道由默认启用的 registry SQLite 收发箱提供已接受输入的 `durableInbound`，不代表适配器本身具有历史补扫或持久化平台游标。
+`L:src/main/gateway/GatewayPlatformRegistry.ts` 登记九种渠道。`GatewayCapabilities.ts` 中 Feishu、Telegram、Slack、QQ、Weixin 声明 `media: "inbound"`，DingTalk、Discord 为 `"bidirectional"`；QQ 另有受限 Work 文件交付，不应仅凭该摘要字段推断其出站路径不存在；WeCom 根据模式动态声明，smart 为 `"inbound"`，callback 为 `false`，WeChat MP 仍为 `false`。所有渠道 `editStreaming`、`interactiveApproval` 仍为 `false`。Slack 使用原有独立 journal；其余渠道由默认启用的 registry SQLite 收发箱提供已接受输入的 `durableInbound`，不代表适配器本身具有历史补扫或持久化平台游标。
 
-`L:src/main/gateway/channels.ts` 的 `GatewayInboundMessage.attachments` 已由 `L:src/main/gateway/GatewayRouter.ts` 两条原生执行路径转交 Agent。`reply(text)` 仍仅文本，没有出站文件、编辑、按钮或审批回调契约。**已实现受限入站附件，不是双向媒体全量对等**；音视频作为附件输入不意味着已完成 STT、转码或模型音视频理解。
+`L:src/main/gateway/channels.ts` 的 `GatewayInboundMessage.attachments` 已由 `L:src/main/gateway/GatewayRouter.ts` 两条原生执行路径转交 Agent。普通 `reply(text)` 仍是文本契约；钉钉、Discord、QQ 的 `sendWorkNotification` 另有文件交付路径。没有通用编辑、按钮或审批回调契约。**已有受限附件收发，但不是九渠道双向媒体全量对等**；音视频作为附件输入不意味着已完成 STT、转码或模型音视频理解。
 - **implemented**：统一来源/账号摘要校验、会话 FIFO、跨会话并发、64/1024 队列上限、连接代次检查与过期回复拒绝。证据：`L:src/main/gateway/GatewayPlatformRegistry.ts` 的 `register`、`normalize`。
 - **partial**：统一传输事件，`GatewayService` 保留具体渠道构造、配置、授权与激活；路由、限流、HTTP 生命周期已经拆分。不是 Hermes `H:gateway/platforms/base.py`、`event.py` 及各 `plugins/platforms/*/plugin.yaml` 的完整插件注册体系。
-- **implemented（入站子集）**：受限媒体下载、缓存与 Agent 附件传递。**implemented（已接受输入的恢复）**：统一 SQLite Inbox/Outbox、原生收据复用和回复结果分类。输入落盘之前的下载/平台离线事件不在该保证内；不确定的发送保留 `unknown`，不自动重发。**missing**：通用出站媒体、编辑/流式展示、交互审批与全平台离线历史补扫。
-- **implemented（局部）**：Feishu、WeCom callback、WeChat MP、Telegram、Slack 的 Work 通知。WeCom smart 模式和 DingTalk、Discord、QQ、Weixin 当前没有自主 Work sender。证据：registry 及 `L:src/main/gateway/work-outbound.ts`、`GatewayWorkTargets.ts`。
+- **implemented（入站子集）**：受限媒体下载、缓存与 Agent 附件传递。**implemented（已接受输入的恢复）**：统一 SQLite Inbox/Outbox、原生收据复用和回复结果分类。输入落盘之前的下载/平台离线事件不在该保证内；不确定的发送保留 `unknown`，不自动重发。**partial**：出站媒体仅部分渠道和交付路径实现；**missing**：通用编辑/流式展示、交互审批与全平台离线历史补扫。
+- **implemented（局部）**：Feishu、WeCom callback、WeChat MP、Telegram、Slack、DingTalk、Discord、QQ 的 Work 出站路径。QQ 仍受原消息有效期及被动额度限制；不能把方法存在理解成不限期推送。WeCom smart 模式和 Weixin 没有自主 Work sender。证据：registry 及 `L:src/main/gateway/work-outbound.ts`、`GatewayWorkTargets.ts`。
 
 ## 九渠道逐项矩阵
 
@@ -28,9 +30,9 @@
 | WeChat MP（wechat） | **missing（项目能力）**：文本 callback/reply，无 Agent 媒体通路 | **implemented（限私聊地址）**：openid 回复；原生线程不适用 | **missing（项目能力）**：无通用交互通路；不声称 Hermes 有同款 MP 实现 | **implemented（接受后恢复）/partial（整体）**：鉴权后先落盘再 ACK，原 openid 路由恢复；仍受平台客服回复窗口限制 |
 | Telegram | **implemented（入站子集）/partial（整体）**：photo/document/voice/audio/video 通过 getFile 安全下载；**missing**：video_note/animation 入站、出站媒体与 STT | **partial**：保留 reply_to_message_id、message_thread_id、direct_messages_topic_id 回复目标；原生会话仍按 chat，未移植 Hermes 主题会话/创建/重命名流程 | **missing**：Hermes callback query、审批按钮、选择器、编辑/typing 未移植 | **implemented（接受后恢复）/partial（整体）**：接受后推进内存 offset，统一收发箱复用原生收据和回复路由；429 有限重试，部分发送不整条重发；仍无持久化游标及 Hermes 完整停滞检测/重建 |
 | Slack | **implemented（入站子集）/partial（整体）**：journal 文件ID，经 files.info 鉴权下载到 Agent并保留缓存；**missing**：上传、多图出站、音视频处理 | **implemented（核心）**：native task/thread 会话与 thread_ts 回复；**partial（全量）**：现有 channel history 不等于 Hermes thread context hydrate/assistant lifecycle | **missing**：Hermes interactive approval/slash action、编辑/draft/thread status 未移植 | **implemented（核心）**：先 journal 落盘再 ACK，持久化文件标识/附件，恢复时验证缓存；缺失/篡改不静默省略附件；恢复 pending/running/reply_pending 与回复分片，不推广成所有渠道恢复 |
-| DingTalk | **implemented（受限入站）/partial（整体）**：downloadCode 下载图片/文件/音视频及 richText 附件；可使用平台 recognition 文本，域名严格受限，实际 CDN 可能被拒；**missing**：出站媒体、自行 STT | **partial**：sessionWebhook 被动回复；未提供线程会话契约；不推测 Hermes 原生线程能力 | **missing**：Hermes AI Card 流式创建/编辑未移植；Hermes send_typing 本身 no-op，不记作缺失 typing | **implemented（接受后恢复）/partial（整体）**：持久接受后 ACK；sessionWebhook 加密、绑定原身份且按过期时间验证；去重满额淘汰最旧记录；平台能力过期后回复不能继续 |
-| Discord | **implemented（入站子集）/partial（整体）**：平台 attachments 经限定 CDN/路径下载，支持纯附件；**missing**：出站媒体、语音频道、STT/转码 | **partial**：channel_id 与 message_reference，replyToMode off/first/all，接收对机器人回复；没有 Hermes thread 元数据、论坛发帖/命名/主动创建 | **missing**：Hermes component/slash/审批视图、编辑和语音交互未移植 | **implemented（接受后恢复）/partial（整体）**：统一收发箱、原 channel/message 路由与稳定 nonce；仍有 socket resume；**missing**：独立持久化 sequence / recovery cursor 与离线历史补扫 |
-| QQ bot（qq） | **implemented（入站子集）/partial（整体）**：C2C/群 attachment 下载进 Agent，限定 QQ CDN；**missing**：出站图/音/视频/文件与 Hermes 语音 STT/转码 | **partial**：C2C/群路由、被动 msg_id 回复；缺少 Hermes guild/DM 事件处理，不等于通用 thread session | **missing**：Hermes keyboard、interaction callback、审批请求未移植 | **implemented（接受后恢复）/partial（整体）**：统一收发箱、绑定原 group/C2C 路由、稳定 msg_seq；被动回复仍受有效期限制；没有平台离线补扫 |
+| DingTalk | **implemented（受限入站）/partial（整体）**：downloadCode 下载图片/文件/音视频及 richText 附件；可使用平台 recognition 文本，域名严格受限，实际 CDN 可能被拒；**implemented（受限出站）**：Work 文本和文件；**missing**：自行 STT | **partial**：sessionWebhook 被动回复；未提供线程会话契约；不推测 Hermes 原生线程能力 | **missing**：Hermes AI Card 流式创建/编辑未移植；Hermes send_typing 本身 no-op，不记作缺失 typing | **implemented（接受后恢复）/partial（整体）**：持久接受后 ACK；sessionWebhook 加密、绑定原身份且按过期时间验证；去重满额淘汰最旧记录；平台能力过期后回复不能继续 |
+| Discord | **implemented（入站子集）/partial（整体）**：平台 attachments 经限定 CDN/路径下载，支持纯附件；**implemented（受限出站）**：Work multipart 附件；**missing**：语音频道、STT/转码 | **partial**：channel_id 与 message_reference，replyToMode off/first/all，接收对机器人回复；没有 Hermes thread 元数据、论坛发帖/命名/主动创建 | **missing**：Hermes component/slash/审批视图、编辑和语音交互未移植 | **implemented（接受后恢复）/partial（整体）**：统一收发箱、原 channel/message 路由与稳定 nonce；仍有 socket resume；**missing**：独立持久化 sequence / recovery cursor 与离线历史补扫 |
+| QQ bot（qq） | **implemented（入站子集）/partial（整体）**：C2C/群 attachment 下载进 Agent，限定 QQ CDN；**implemented（受限出站）**：Work 文件上传交付，多文件可打包 ZIP，受原消息窗口限制；**missing**：完整图/音/视频专属发送与 Hermes 语音 STT/转码 | **partial**：C2C/群路由、被动 msg_id 回复；缺少 Hermes guild/DM 事件处理，不等于通用 thread session | **missing**：Hermes keyboard、interaction callback、审批请求未移植 | **implemented（接受后恢复）/partial（整体）**：统一收发箱、绑定原 group/C2C 路由、稳定 msg_seq；被动回复仍受有效期限制；没有平台离线补扫 |
 | Weixin iLink（weixin） | **implemented（入站子集）/partial（整体）**：图片/语音/文件/视频及引用媒体，CDN 下载解密进 Agent；可使用平台现成语音文字，不是自行 STT；**missing**：接入出站媒体 | **implemented（私聊）**：context_token 回复；原生 thread 不适用，Hermes standalone 注明 iLink 无 thread | **missing**：Hermes typing ticket / start / stop 未移植；Hermes 本身不支持 message edit，不列为漏移植编辑 | **implemented（接受后恢复）/partial（整体）**：统一收发箱、加密且绑定原身份的临时回复能力；context 缓存有容量/TTL，落盘失败不推进 cursor；**missing**：持久化 sync_buf、通用 ContextTokenStore 与离线补扫 |
 
 ## 可追溯证据（方法名优先，避免行号随修改失效）
@@ -58,11 +60,15 @@
 
 ### DingTalk / Discord
 
+- 当前出站依据：两者适配器的 `sendWorkNotification`；钉钉为官方机器人主动发送及文件上传，Discord 为 multipart 附件和稳定 nonce。需平台权限及真实账号验证，不能从 mock 测试推导生产可用性。
+
 - L：`src/main/gateway/DingTalkStreamAdapter.ts` 的 `inboundContent/mediaSources`、sessionWebhook、重连/seen；`src/main/gateway/DiscordGatewayAdapter.ts` 的 `open/scheduleReconnect` 与消息处理的 `scope/message_reference/nonce/seen`。
 - H：`plugins/platforms/dingtalk/adapter.py` 的 `_extract_media/_resolve_media_codes/send_image_file/send_document/_create_and_stream_card/edit_message`，`send_typing` 明确 no-op。
 - H：`plugins/platforms/discord/adapter.py` 的 `_thread_id_and_chat_for_channel`、`_send_to_forum`、`_run_missed_message_backfill`、`_advance_discord_recovery_cursor`；`plugins/platforms/discord/adapter_media.py`、`adapter_exec_approval_view.py`、`adapter_component_auth.py`、`recovery.py`、`voice_mixer.py`。存在方法不代表每个部署默认开启 backfill，配置仍需核对。
 
 ### QQ / Weixin
+
+- 当前 QQ 出站依据：`QQChannelAdapter.sendWorkNotification` 的受限媒体上传及交付收据；Weixin 仍没有同等出站路径。
 
 - L：`src/main/gateway/QQChannelAdapter.ts`；`QQBotQrLogin.ts`；`WeixinIlinkAdapter.ts` 的 `poll/receive`；`WeixinIlinkClient.ts` 的 `download/upload`；`WeixinQrLogin.ts`。扫码授权不能替代消息能力验收。
 - H：`plugins/platforms/qqbot/adapter.py` 的 `send_with_keyboard/_send_exec_approval_prompt/set_interaction_callback/_upload_media/_stt_voice_attachment`；`keyboards.py`、`chunked_upload.py`。

@@ -1,8 +1,10 @@
+> 下文已删除源码的链接固定到删除前的历史提交，只用于理解当时设计，不代表当前可用接口。
+
 > 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
 
 # Bot / Work — Phase 4 执行规划（供 Codex / agent 实施）
 
-> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](bot-work-no-quota.md) 取代，不应按旧条款重新实现。原生用量遥测、授权/审批、未知外部效果防重与上下文容量限制仍保留；已有数据库中的预算历史仅保留为惰性记录，不自动删除或清库。
+> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](work-budget-retirement.md) 取代，不应按旧条款重新实现。原生用量遥测、授权/审批、未知外部效果防重与上下文容量限制仍保留；已有数据库中的预算历史仅保留为惰性记录，不自动删除或清库。
 
 > 状态：**P4-00～P4-08 已实施并完成后续加固；六项 Phase 4 行为专项、Phase 3 九项前序专项与类型检查通过。本轮 Linux 完整门禁仍受 AT-SPI socket EPERM 阻碍（两轮 344 passed / 1 failed，基线同样复现）。Phase 4 整体验收仍未完成：控制按钮的 dev 点击、原生桌面/移动端/发行包和真实外部连接器证据尚未取得。**
 >
@@ -43,15 +45,15 @@ M1～M3 是同一阶段内的依赖顺序，agent 应连续完成 P4-00～P4-08 
 | [WorkService.ts](../src/main/agent/work/WorkService.ts) | 已有 `addSubscription`、`ingestSourceEvent`、`tick`、`listDueInbox`、`completeInboxEvent`；已有注入 `now` / `computeNextWake` | 服务入口委托统一 ingress/scheduler；真实来源及宿主启停接线；不能仅增加可被测试手动调用的类 |
 | [WorkRepository.ts](../src/main/agent/work/WorkRepository.ts) | 已有来源去重、订阅查询、`mergeLatestInbox`、Inbox/Outbox、reservation CRUD | 补分目标版本比较、统一路由回执、批次冻结 CAS、窗口账本和一致投影 |
 | [WorkPausedBacklog.ts](../src/main/agent/work/WorkPausedBacklog.ts) | 原 Inbox + `work_paused_source_routes` 保存暂停积压；latest 恢复要求权威回读 | 与活跃态/离线共用一个接纳和消费状态机；保留真实回读语义，当前没有可直接提炼的通用源版本比较器 |
-| [WorkDispatchQueue.ts](../src/main/agent/work/WorkDispatchQueue.ts) | `drainSourceEvents` → `pausedBacklog.consume` → `applyObservedSources` → `work.source_dispatch_requested` → `prepareSourceIntents/enqueue` | 复用这条持久派发链，补不可变批次与到期跟进身份；不绕过同输入恢复去重 |
+| [WorkDispatchQueue.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/main/agent/work/WorkDispatchQueue.ts) | `drainSourceEvents` → `pausedBacklog.consume` → `applyObservedSources` → `work.source_dispatch_requested` → `prepareSourceIntents/enqueue` | 复用这条持久派发链，补不可变批次与到期跟进身份；不绕过同输入恢复去重 |
 | [WorkSchedule.ts](../src/main/agent/work/WorkSchedule.ts) | 已用锁定依赖 `croner` 的 `Cron`，导出 `cronNextWake`、`nextWakeForRule` | 保留现有 Cron 语法和依赖，增加逻辑槽位、DST 明确政策、枚举游标与跳时处理；`Intl.DateTimeFormat` 用于本地时间规范化 |
 | [WorkHostAuthority.ts](../src/main/agent/work/WorkHostAuthority.ts)、[AgentService.ts](../src/main/agent/AgentService.ts) | `work_host_lease.heartbeat_at/released_at` 与既有权威/执行适配器启停 | scheduler 归同一权威宿主管理；先保存旧活跃水位，再续租/接管；接入系统 suspend/resume |
-| [WorkExecutionAdapter.ts](../src/main/agent/work/WorkExecutionAdapter.ts) | 实际拥有 `wakeWork` 与持久执行恢复 | scheduler 只生成可恢复业务意图并唤醒既有适配器，不直接启动第二份执行 |
+| [WorkExecutionAdapter.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/main/agent/work/WorkExecutionAdapter.ts) | 实际拥有 `wakeWork` 与持久执行恢复 | scheduler 只生成可恢复业务意图并唤醒既有适配器，不直接启动第二份执行 |
 | `WorkService` 预算接口、`WorkRepository` | `reserveBudget`、`commitBudgetUsage`、`openBudgetWindow`；`getReservation/listReservations/updateReservation` | 新 `WorkBudgetService` 承接原职责并统一所有调用；当前不存在 `reserveUsage/commitUsage/releaseUsage/getBudgetReservation` |
 | [EvidenceBudget.ts](../src/main/agent/EvidenceBudget.ts) | 自动注入 Memory/Project/Library 补充上下文的字节预算；耗尽不得禁用工具 | **保持其职责**；供应商 token 共享池不得写进这个上下文裁剪器 |
 | [DurableBotRuntime.ts](../src/main/agent/durable/DurableBotRuntime.ts)、[DurableBotService.ts](../src/main/agent/durable/DurableBotService.ts)、[ModelInvocationAdmission.ts](../src/main/agent/ModelInvocationAdmission.ts) | 真实 provider 请求、compaction、owned-child 用量和 `workExecutionPort` | 真实请求前预留、请求身份持久化、可信用量回执与原生汇总对账 |
 | [WorkCollaborationService.ts](../src/main/agent/work/WorkCollaborationService.ts) | 协作类型、参与者权限、回复链、交接；引用链已有深度检查 | 增加跨事件/消息/执行的可信因果链；不能只在 Hook 入口防环 |
-| [BotWorkspacePage.tsx](../src/renderer/src/components/pages/BotWorkspacePage.tsx)、[共享 IPC](../src/shared/bot-work-ipc.ts) | 权威 Work 详情、阻碍与投影流 | 增加订阅、离线、队列和预算窗口监控；路径含 `components/pages/` |
+| [BotWorkspacePage.tsx](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/ec2cddb3516aa7bd2b409587e66ad2e53bf79062/src/renderer/src/components/pages/BotWorkspacePage.tsx)、[共享 IPC](../src/shared/bot-work-ipc.ts) | 权威 Work 详情、阻碍与投影流 | 增加订阅、离线、队列和预算窗口监控；路径含 `components/pages/` |
 
 ### 1.1 草案必须校正的细节
 
@@ -236,7 +238,7 @@ M1～M3 是同一阶段内的依赖顺序，agent 应连续完成 P4-00～P4-08 
 ## 7. IPC、UI 与真实监控（P4-07）
 
 - 扩展共享 DTO/严格 schema、现有 IPC/preload 和权威投影，而不是 renderer 直接访问 SQLite。订阅创建/修改/停止、承诺期限和预算政策均需当前身份及版本守卫；只读监控不提升权限。
-- [BotWorkspacePage.tsx](../src/renderer/src/components/pages/BotWorkspacePage.tsx) 展示订阅来源/目标、在线或暂停状态、策略、时区、下一唤醒、最近实际检查时间、当前规则 revision；没有真实宿主心跳不能显示在线运行。
+- [BotWorkspacePage.tsx](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/ec2cddb3516aa7bd2b409587e66ad2e53bf79062/src/renderer/src/components/pages/BotWorkspacePage.tsx) 展示订阅来源/目标、在线或暂停状态、策略、时区、下一唤醒、最近实际检查时间、当前规则 revision；没有真实宿主心跳不能显示在线运行。
 - 离线卡片显示 `offlineGapFrom ~ offlineGapTo`、依据/不确定性、当前回查/补处理状态、已补/合并/跳过/未知数量和不可回查原因；不能把恢复后的最后检查时间画成离线期间连续在线。
 - 队列显示 ready/frozen/blocked 数、容量/字节上限、最旧义务、固定合并 deadline、等待执行原因与来源重试状态；阻碍恢复后随同一投影清除。
 - 预算显示 window 起止/时区、上限与 committed/reserved/unknown 三桶、可用额、原窗口迟到回执和续期阻碍；未知费用范围明确，不能展示 0 消费。

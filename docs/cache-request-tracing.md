@@ -95,7 +95,7 @@ Omarchy 隔离目录通过真实 Pi 循环与本机 Magpie 的 `opendesign/deeps
 
 ## Bot 前台真实 GUI 时间前缀修复（2026-11-10）
 
-在 Omarchy 独立 main clone、隔离 HOME 的真实 `pnpm dev` 页面，通过 Bot 输入框发送 1200 行合成 CSV 后连续追问四轮，真实模型为 `opendesign/deepseek-v4.1-flash`，没有创建 Work 或读取真实用户对话。可复跑入口：`pnpm -s test:bot-frontdoor:live --cache`（需要可用的本机模型网关与真实桌面）。它不是模拟模型或 Pi 底座实验；CDP 驱动真实页面但不宣称验证物理键鼠输入。
+在 Omarchy 独立 main clone、隔离 HOME 的真实 `pnpm dev` 页面，通过 Bot 输入框发送 1200 行合成 CSV 后连续追问四轮，真实模型为 `opendesign/deepseek-v4.1-flash`，没有创建 Work 或读取真实用户对话。当时的验收入口为 `pnpm -s test:bot-frontdoor:live --cache`；独立 Bot 退役后此命令已删除，不能在当前版本直接复跑。这里保留当时证据，不表示当前普通任务缓存验收已完成。它不是模拟模型或 Pi 底座实验；CDP 驱动真实页面但不宣称验证物理键鼠输入。
 
 修前四轮均完成，原始输入为 15799 / 15880 / 15984 / 16065 tokens，供应商四次明确报告缓存读取 0。后三次实际 HTTP 请求的旧用户文本不变，但 system 消息中的“本次用户请求时间”逐轮改变，审计分类为 `client-request-changed`。
 

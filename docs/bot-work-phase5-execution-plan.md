@@ -1,8 +1,10 @@
+> 下文已删除源码的链接固定到删除前的历史提交，只用于理解当时设计，不代表当前可用接口。
+
 > 历史资料：独立 Bot 模式及其写接口已移除；当前保留范围与验证入口见 [独立 Bot 模式清理](bot-retirement.md)。文中的旧 Bot 操作和专用测试命令不再适用。
 
 # Bot / Work — Phase 5 执行规划（供 Codex / agent 实施）
 
-> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](bot-work-no-quota.md) 取代，不应按旧条款重新实现。原生用量遥测、授权/审批、未知外部效果防重与上下文容量限制仍保留；已有数据库中的预算历史仅保留为惰性记录，不自动删除或清库。
+> 2026-11-09 产品变更：Work 额度/预算模块已删除。本文旧有的共享预算、额度预留、用量结算阻塞、续期与预算控制要求均已被 [无预算运行约定](work-budget-retirement.md) 取代，不应按旧条款重新实现。原生用量遥测、授权/审批、未知外部效果防重与上下文容量限制仍保留；已有数据库中的预算历史仅保留为惰性记录，不自动删除或清库。
 
 > 最新状态（2026-11-08）：**剩余代码功能与生产原生十步故事已完成，整体验收仍待实机/真实账户证据。** 实现冻结 **[fff50d77538654565a562b2122109fea302576a7](https://github.com/qq824045252-ship-it/wavealstra_harness/commit/fff50d77538654565a562b2122109fea302576a7)**；最终完整门禁 **353 passed / 1 failed / 0 known failed / 1 new regression（158.45 秒，exit 1）**，唯一 AT-SPI socket EPERM 在基线 `ac03fd5` 亦复现。真实 Gateway 出站、独立负责人汇总、桌面评审/反馈/关闭和两次真实原生 SIGKILL 恢复已补齐，详见 [功能补全与原生验收复核](reviews/bot-work-phase5-completion-2026-11-08.md)。[第一轮加固](reviews/bot-work-phase5-followup-2026-11-08.md) 与 [首轮 Windows 证据](reviews/bot-work-phase5-2026-11-07.md) 保留为历史记录。
 >
@@ -41,12 +43,12 @@ M1～M3 是同一个收官阶段内的依赖顺序。后续实施应连续完成
 | [AgentService.ts](../src/main/agent/AgentService.ts)、[NotificationService.ts](../src/main/notification/NotificationService.ts)、[GatewayService.ts](../src/main/gateway/GatewayService.ts) | Work 投递对象已实例化，但未接入生产宿主的通知 drain/渠道注册；桌面统一通知和 Gateway 各有既有职责 | 把投递接入同一宿主 authority 的启动、恢复、唤醒和退出；桥接真实渠道与偏好，不让测试 adapter 代替生产接线 |
 | [WorkCollaborationService.ts](../src/main/agent/work/WorkCollaborationService.ts) | 已有协作消息、版本、参与者和接管记录；执行结果归 Work | 当前负责人按当前输入汇总，复用消息/子项账本，区分内部进展与需人裁决事项 |
 | [WorkProjectionJournal.ts](../src/main/agent/work/WorkProjectionJournal.ts)、[bot-conversation.ts](../src/shared/bot-conversation.ts) | 实际类名为 `WorkProjectionJournal`；Work 协议是 `epoch/sequence/scope`，每页最多 200 条、`hasMore`、`resync_required`、remove 墓碑；每用户保留 10,000 条事件 | 卡片/阅读事实进入同一日志；同 Work 控制版本的展示变化也可同步；完整快照与增量水位一致 |
-| [botWorkSync.ts](../src/renderer/src/store/app/slices/botWorkSync.ts)、[activeContext.ts](../src/renderer/src/store/app/slices/activeContext.ts) | 已有分页回读和旧异步请求隔离；snapshot 仍与旧本地投影按 `stateVersion` 合并 | 修复跨 epoch/scope 快照被旧本地高版本遮蔽；清理选择、负责人绑定和诊断缓存，使用服务端阅读回执 |
+| [botWorkSync.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/renderer/src/store/app/slices/botWorkSync.ts)、[activeContext.ts](../src/renderer/src/store/app/slices/activeContext.ts) | 已有分页回读和旧异步请求隔离；snapshot 仍与旧本地投影按 `stateVersion` 合并 | 修复跨 epoch/scope 快照被旧本地高版本遮蔽；清理选择、负责人绑定和诊断缓存，使用服务端阅读回执 |
 | [RemoteAccessServer.ts](../src/main/remote/RemoteAccessServer.ts)、[RemoteAccessService.ts](../src/main/remote/RemoteAccessService.ts)、[RemoteAccessController.ts](../src/main/remote/RemoteAccessController.ts)、[RemoteEventBus.ts](../src/main/remote/RemoteEventBus.ts) | 已有配对/鉴权/SSE；事件总线可转发 Work patch，但没有完整 Work 同步/详情/反馈产品链 | 新增受认证 Work 路由与能力校验；SSE 只唤醒读取持久 Work 日志，不能作为权威游标 |
 | [remote-contract.ts](../shared/src/remote-contract.ts)、[RemoteClient.ts](../app/remote/src/api/RemoteClient.ts)、[remoteStore.ts](../app/remote/src/store/remoteStore.ts)、[remotePatch.ts](../app/remote/src/store/remotePatch.ts) | 共享 Remote 契约位于 `shared/src/`；移动端未具备 Work cursor/reducer 与完整导航 | 补真实客户端 API、store、Bot/Work 页面、反馈/已读与断线恢复，保持 Task 状态隔离 |
 | [durable-sync.ts](../shared/src/durable-sync.ts) | 这是 Durable 对话消息的 `epoch/revision` 协议 | 可复用同步原则，不能与 Work 的 sequence 或 SSE Last-Event-ID 混用 |
 | [WorkRepository.ts](../src/main/agent/work/WorkRepository.ts)、[TaskDiagnosticsRepository.ts](../src/main/agent/TaskDiagnosticsRepository.ts) | 已有要求快照、执行/子项、交接/接管、资源、因果、预算及有界诊断读取；实际投影由 `WorkService.project` 组装 | 受权查询层分离 summary 与按需 diagnostics；完整历史从事实表读取，不能把有界投影日志当审计历史 |
-| [BotWorkspacePage.tsx](../src/renderer/src/components/pages/BotWorkspacePage.tsx)、[botConversation.ts](../src/renderer/src/store/app/slices/botConversation.ts) | 有 Bot/Work 页面、资源/验收/协作、Phase 4 监控、unknown 预算核对及 closed 事项入口 | 精简主视图，卡片寻址、外部 unknown、阅读同步、诊断抽屉、全历史与专家配置审阅 |
+| [BotWorkspacePage.tsx](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/ec2cddb3516aa7bd2b409587e66ad2e53bf79062/src/renderer/src/components/pages/BotWorkspacePage.tsx)、[botConversation.ts](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/src/renderer/src/store/app/slices/botConversation.ts) | 有 Bot/Work 页面、资源/验收/协作、Phase 4 监控、unknown 预算核对及 closed 事项入口 | 精简主视图，卡片寻址、外部 unknown、阅读同步、诊断抽屉、全历史与专家配置审阅 |
 | [AppDatabase.ts](../src/main/db/AppDatabase.ts) 与 Phase 2～4 schema | 当前 `CURRENT_DATABASE_SCHEMA_VERSION = 33`，不兼容库改名备份后新建 | 注册 Phase 5 schema；以执行时常量为准选择下一版本，测试不硬编码数字 |
 
 ### 1.1 草案中需要避免的误述
@@ -229,7 +231,7 @@ Work B 作为同来源/同宿主的活跃 watch 对照：关闭 A 不改变 B �
 - WorkHostAuthority、WorkDispatchQueue、WorkExecutionAdapter、DurableBotService/原生 Durable 运行端口、WorkNativeResultInbox；
 - 实际桌面 reducer/同步动作、Remote 认证路由/客户端/移动 store，及可控模型与效果端点。
 
-复用 [Phase 2 recovery](../scripts/bot-work-phase2-recovery-test.ts) 的原子 checkpoint、真实强杀/PID 退出与权威租约条件，以及 [Phase 3 native settlement](../scripts/bot-work-phase3-native-settlement-test.ts) 的真实 children、产物、缺口补跑和预算结算。重启沿用相同 SQLite 与 Durable 路径，不重建全新服务数据来伪装恢复；时间/事件可注入，不用硬编码 sleep 代替条件。
+复用 [Phase 2 recovery](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/c9ffc0667ce9df6b17d4ae0e4730168052d6368e/scripts/bot-work-phase2-recovery-test.ts) 的原子 checkpoint、真实强杀/PID 退出与权威租约条件，以及 [Phase 3 native settlement](https://github.com/qq824045252-ship-it/wavealstra_harness/blob/f27e57eb850c5e58f426b4e8ea54bc19ff5f0732/scripts/bot-work-phase3-native-settlement-test.ts) 的真实 children、产物、缺口补跑和预算结算。重启沿用相同 SQLite 与 Durable 路径，不重建全新服务数据来伪装恢复；时间/事件可注入，不用硬编码 sleep 代替条件。
 
 记录原 operation/binding/task/store/conversation/submission 身份、模型/效果请求次数、成功分支产物指纹、补跑身份与关键持久状态。第 4 步的原生提交回执丢失，与第 10 步的成果已验收但通知未发，是两个独立故障窗口；都必须覆盖。
 

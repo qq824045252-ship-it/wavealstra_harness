@@ -181,6 +181,8 @@ The final classification audit passed: 283 headless, 48 GUI, 27 network, 1 datas
 
 ## AT-SPI private-bus verification (2026-11-08)
 
+The records below describe that dated host and build, not current release acceptance. For v0.1.109 distribution checks and remaining WSLg/FUSE/keyring limitations, see the [release notes](https://github.com/qq824045252-ship-it/wavealstra_harness/releases/tag/v0.1.109).
+
 The remaining AT-SPI item above was an environment prerequisite, not a product defect: the 0.1.93/0.1.98 hosts denied `socket(AF_UNIX, SOCK_STREAM)` with `EPERM`, so no private `dbus-daemon` bus could be created. It has now been executed and passed on a host that permits AF_UNIX, at repository state `aa03635`:
 
 | Check | Observed result |
@@ -190,7 +192,7 @@ The remaining AT-SPI item above was an environment prerequisite, not a product d
 | `pnpm -s test:computer-use-linux` | **PASS, exit 0** — 23 checks against isolated Electron and GTK targets in the real Hyprland session at the host's actual output scale. |
 | `pnpm -s test:all` | **PASS, exit 0** — 382 passed / 0 failed / 0 known-failing / 0 new regressions. `scripts/test-baseline.json` was not modified. |
 
-Host: Omarchy (Arch) on `Linux 7.2.14-arch1-1`, Hyprland/Wayland user session, `dbus-daemon 1.16.2`, Electron **44.5.1** (embedded Node **24.21.0**), test process Node **v26.13.0**. Raw logs: [`artifacts/atspi-private-bus-2026-11-08/validation.md`](../artifacts/atspi-private-bus-2026-11-08/validation.md) (local, git-ignored).
+Host: Omarchy (Arch) on `Linux 7.2.14-arch1-1`, Hyprland/Wayland user session, `dbus-daemon 1.16.2`, Electron **44.5.1** (embedded Node **24.21.0**), test process Node **v26.13.0**. Raw logs: `artifacts/atspi-private-bus-2026-11-08/validation.md` was recorded as local, git-ignored evidence; it is not included in this repository. These are historical reported results, not independently accessible raw logs.
 
 This closes the headless wire-fixture prerequisite only.
 
@@ -204,7 +206,7 @@ Re-checked on the same host after `b688530` (Bot creation): `pnpm -s test:atspi-
 | `pnpm -s verify:packaged -- --app-dir release/linux-unpacked` | **PASS**. 18,444 asar entries, 402 unpacked, 0 missing, 0 legacy Linux payloads. |
 | `pnpm -s test:computer-use-linux:packaged` | **PASS, exit 0** in 38 s, mode `packaged-main`, **23/23 checks passed** on output scale 1.6 (Hyprland 0.57.1, GTK fixture 4.2.2). |
 
-Evidence: [`artifacts/packaged-acceptance-2026-11-08/validation.md`](../artifacts/packaged-acceptance-2026-11-08/validation.md). A bounded 5-cycle repeated cold start against one isolated profile also passed (5/5 reached tray readiness, exit 0, schema stayed at 35, no `app.db.discarded-*`, no crash dumps); that is a restart check, **not** a soak.
+Historical evidence location: `artifacts/packaged-acceptance-2026-11-08/validation.md` (not included in this repository; no public replacement is available here). A bounded 5-cycle repeated cold start against one isolated profile also passed (5/5 reached tray readiness, exit 0, schema stayed at 35, no `app.db.discarded-*`, no crash dumps); that is a restart check, **not** a soak.
 
 Still not claimed: Windows packaging/distribution acceptance (requires a Windows host or the `verify-windows*` CI jobs; cross-building on Linux is not supported), and long-duration multi-session behaviour (no soak gate exists).
 

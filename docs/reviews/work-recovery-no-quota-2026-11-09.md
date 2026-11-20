@@ -22,7 +22,7 @@ Base: main `af4390b`. Implementation commits: `0461342`, Bot deletion integratio
 
 ## Explicit remaining work
 
-- [Issue #24](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/24): existing database quota tables/columns and raw audit history remain inert; destructive retirement was not performed. No user database was opened or rebuilt. Fresh databases contain no quota schema. See `docs/bot-work-no-quota.md` for exact compatibility behavior.
+- [Issue #24](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/24): existing database quota tables/columns and raw audit history remain inert; destructive retirement was not performed. No user database was opened or rebuilt. Fresh databases contain no quota schema. See `docs/work-budget-retirement.md` for exact compatibility behavior.
 - [Issue #25](https://github.com/qq824045252-ship-it/wavealstra_harness/issues/25): team-member dependency-aware recovery is separate from the tested standalone continuation path and is not claimed complete.
 - Live public weather fetch validation was blocked by this host's fake-IP DNS destination/SSRF boundary; no network protection was bypassed. Controlled extraction and recovery tests passed.
 - The user's running source/profile was not updated or restarted by this delivery. Source publication does not imply the running app has adopted it.

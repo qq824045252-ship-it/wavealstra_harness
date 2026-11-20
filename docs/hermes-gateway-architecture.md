@@ -1,6 +1,6 @@
 # Hermes-style Gateway transport integration
 
-Updated: 2026-11-08. The implementation remains an original TypeScript adaptation of selected Hermes transports and boundaries. The comparison reference is NousResearch/hermes-agent `72d4433130823f506081cc1189a923b5aa67dbf0`; this is not a vendored Python runtime or a complete Hermes feature port. The current hardening review is [Gateway reliability review](reviews/gateway-hardening-2026-11-08.md).
+Current capability descriptions checked against v0.1.109 on 2026-11-19; the hardening results linked below remain a dated 2026-11-08 record, not fresh live-account acceptance. The implementation remains an original TypeScript adaptation of selected Hermes transports and boundaries. The comparison reference is NousResearch/hermes-agent `72d4433130823f506081cc1189a923b5aa67dbf0`; this is not a vendored Python runtime or a complete Hermes feature port. The current hardening review is [Gateway reliability review](reviews/gateway-hardening-2026-11-08.md).
 
 ## Responsibilities and native execution
 
@@ -30,7 +30,7 @@ DingTalk and HTTP callback adapters await the journal's `accepted` promise befor
 
 This is a guarantee about **inputs accepted by this Gateway**, not a claim that all provider events are recoverable before download/validation/admission. Discord/QQ transport sequence state, arbitrary offline history backfill, and provider-side redelivery guarantees are separate concerns. Media preparation that has not reached durable admission is not represented as an accepted durable message.
 
-The auxiliary tables are created idempotently without increasing `CURRENT_DATABASE_SCHEMA_VERSION`. This repository intentionally backs up and resets incompatible schema versions; an additive transport journal must not reset existing native sessions or erase their receipts.
+The auxiliary tables are created idempotently without increasing `CURRENT_DATABASE_SCHEMA_VERSION`. This repository deletes and recreates incompatible schema versions without automatic backup; users must back up the full data directory before upgrading. For a compatible current schema, an additive transport journal must not reset existing native sessions or erase their receipts.
 
 | Stored state | Recovery behavior |
 | --- | --- |
@@ -56,14 +56,14 @@ The journal defaults to 10,000 unresolved inputs, 100,000 completed receipts and
 | WeChat public account | Authenticated/encrypted HTTP callback; original openid | Platform customer-service window and provider rejection still apply; distinct from personal Weixin |
 | Telegram | Long polling; original chat/reply/topic route | No persistent provider update cursor or arbitrary offline backfill; bounded retry does not resend already sent chunks |
 | Slack | Socket Mode with existing journal, native threads, history and reply chunks | Maintains its existing independent transport journal and recovery semantics |
-| DingTalk | Stream; validated, expiring session webhook encrypted with OS storage | Recovery is only possible before capability expiry; a temporary webhook is not an autonomous Work target |
-| Discord | Gateway socket; original channel/message/reference mode and stable nonce | No independent durable Gateway sequence/backfill subsystem or autonomous Work sender |
-| QQ | Official bot WebSocket; original group/C2C recipient, message ID and expiry | Passive reply windows still apply; not a personal QQ protocol |
+| DingTalk | Stream; encrypted expiring passive reply route; separate official Work text/file sending path | Passive reply recovery requires an unexpired capability; Work delivery separately revalidates original account, sender and destination |
+| Discord | Gateway socket; original channel/message/reference mode and stable nonce; Work text/multipart-file delivery | No independent durable Gateway sequence/backfill subsystem; account and channel permission remain required |
+| QQ | Official bot WebSocket; original group/C2C recipient, message ID and expiry; bounded Work file delivery | Passive reply windows still apply; not a personal QQ protocol |
 | Weixin iLink | Personal direct-message polling; bounded context tokens and OS-encrypted, expiring reply capability | Groups and autonomous Work notifications remain unsupported; expired capabilities need new authenticated context |
 
 Temporary reply capabilities are encrypted with a versioned `safeStorage` codec and bound to the account, original message and destination. They are never plaintext route fields, model instructions or diagnostic content. Without the host codec, standalone adapters retain only bounded runtime reply context and do not claim restart restoration of those secrets.
 
-Public leaf-adapter capability declarations describe the adapter itself. The registry adds `durableInbound` to normalized events when its journal is enabled. Media capability remains `inbound`, not `bidirectional`; transport durability does not imply outgoing file or interactive-card support.
+Public leaf-adapter capability declarations describe the adapter itself. The registry adds `durableInbound` to normalized events when its journal is enabled. DingTalk and Discord now declare `bidirectional` media; QQ also has a bounded Work file-delivery path while its summary remains `inbound`. Other channels retain their declared limits. Transport durability alone does not imply outgoing file or interactive-card support; see the [current matrix](hermes-gateway-parity.md).
 
 ## Credentials, policy and output
 

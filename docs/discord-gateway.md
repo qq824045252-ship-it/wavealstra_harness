@@ -6,9 +6,11 @@
 
 官方 Gateway v10 长连接不需要公网回调；应用及机器人身份通过官方 REST API 验证，READY 再核验连接身份。连接正常后才激活入站处理。凭据使用操作系统 safeStorage 加密后保存，界面回填只有占位符。系统加密不可用时拒绝连接保存，不回退明文。
 
-任务沿用现有 Gateway 入口，会话身份绑定 Application ID、已验证的 Bot 用户 ID 及频道。当前仅支持文本入站和原频道回复，暂不支持主动 Work 通知、附件或历史频道消息读取。出站受 Discord 的频道权限、内容和限流限制；连接中断、身份更换、回执不确定时可能无法回复。
+任务沿用现有 Gateway 入口，会话身份绑定 Application ID、已验证的 Bot 用户 ID 及频道。当前支持文本及平台 attachment 记录的受限入站、原频道回复，以及绑定原目标的 Work 通知和附件发送。出站单条最多 10 个附件，发送前重新核对账号、频道与允许名单，使用稳定 nonce 和分片收据处理不确定效果；不支持任意离线历史补扫或完整交互审批。出站受 Discord 的频道权限、内容和限流限制；连接中断、身份更换、回执不确定时可能无法回复。
 
 `pnpm -s test:discord-gateway` 使用 mock HTTP/WebSocket，不需要真实凭据。上线前仍需在测试应用验证 DM、服务器 @ 提及、撤销权限、断线续传及真实限流。没有真实账号验收时，不能将单元测试通过称为生产连接验证通过。
+
+实现依据：`src/main/gateway/DiscordGatewayAdapter.ts` 的入站附件处理和 `sendWorkNotification`。横向限制见 [渠道能力矩阵](hermes-gateway-parity.md)。本页按 v0.1.109 源码核对，不代表真实账号验收。
 
 官方文档：
 - https://docs.discord.com/developers/events/gateway
