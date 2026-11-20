@@ -137,7 +137,9 @@ async function suite() {
 }
 if (process.argv.includes("--isolated-gh")) {
   const result = await monitorPullRequests(config("babysit", { maxQueryErrors: 1, timeoutSeconds: 4 }), "babysit", target,
-    { active: () => true });
+    // Exercise the real CLI without conflating host scheduling with watch policy.
+    // The parent process watchdog still bounds the complete probe.
+    { active: () => true, clock: clock() });
   assert.equal(result.verdict.kind, "BLOCKER"); assert.equal(result.allowed, false);
   console.log("isolated GitHub CLI reported a capability gap");
 } else await suite();
