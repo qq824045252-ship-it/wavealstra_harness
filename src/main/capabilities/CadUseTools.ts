@@ -10,6 +10,7 @@ import { atomicBytes } from "../office-use/OfficeFile";
 import { buildCadCraftOutput, locateCadCraftCli, runCadCraftCli, type CadOutputFormat } from "../platform/cadcraft";
 import { resolvedPathKey } from "../platform/paths";
 import { assertPathInsideTask } from "../task/TaskExecutionWorkspace";
+import { isChatAttachment } from "../task/ChatAttachmentAccess";
 import type { LocalCapabilityCheckResult } from "./BuiltinCapabilityRuntime";
 
 const pathField = Type.String({ minLength: 1, maxLength: 512 });
@@ -104,17 +105,6 @@ interface Ports {
   producerMessageId(): string | undefined;
   getPermissionMode(): PermissionMode;
   isEnabled(): boolean;
-}
-
-function isChatAttachment(context: ExtensionContext, requested: string): boolean {
-  const key = resolvedPathKey(requested);
-  return context.sessionManager.getBranch().some(entry => {
-    if (entry.type !== "custom" || entry.customType !== "user") return false;
-    const data = entry.data as { mybuddyInput?: { attachments?: unknown } } | undefined;
-    const attachments = data?.mybuddyInput?.attachments;
-    return Array.isArray(attachments) && attachments.some(item =>
-      item && typeof item.path === "string" && isAbsolute(item.path) && resolvedPathKey(item.path) === key);
-  });
 }
 
 async function inputDrawing(ports: Ports, context: ExtensionContext, root: string, raw: string): Promise<string> {

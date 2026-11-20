@@ -1041,7 +1041,8 @@ function registerIpc(): void {
     return savedArtifactActions.openSystem(request);
   });
   const chooseOfficeCopy = (owner: BrowserWindow) => async (name: string) => {
-    const result = await dialog.showSaveDialog(owner, { title: "保存 Office 编辑副本", defaultPath: name });
+    const title = /\.drawio$/i.test(name) ? "保存 Draw.io 图纸副本" : "保存 Office 编辑副本";
+    const result = await dialog.showSaveDialog(owner, { title, defaultPath: name });
     return result.canceled ? undefined : result.filePath;
   };
   const officeUse = officeUseHost = new OfficeUseHost({
@@ -1055,6 +1056,7 @@ function registerIpc(): void {
   });
   agentService.builtinCapabilities.registerLocalCheck("office-use", () => officeUse.checkAssets());
   agentService.builtinCapabilities.registerLocalCheck("cad-use", checkCadUse);
+  agentService.builtinCapabilities.registerLocalCheck("drawio-use", () => officeUse.drawio.check());
   const officeSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) =>
     isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href);
   ipcMain.handle(CadCraftIpc.open, async (event, source: CadCraftSource) => {
@@ -3221,15 +3223,6 @@ app.whenReady().then(async () => {
       });
     }
   });
-  // Draw.io AI：启动自愈（npx 可解析且条目缺失/过期时写入，用户停用不覆盖）
-  void professionalToolService
-    .drawioMcpPayload()
-    .then((payload) => {
-      if (!payload) return;
-      const result = mcpService.ensureDrawioServer(payload);
-      if (!result.ok) console.warn("[Drawio] MCP 条目自愈失败", result.error);
-    })
-    .catch((error) => console.warn("[Drawio] MCP 条目自愈异常", error));
   // 4D：SelectionStore 装配（唯一 Selection truth；纯数据，无 CDP 引用）
   selectionStore = new SelectionStore();
   selectionPopover = new SelectionPopover(() => selectionStore!.getState());

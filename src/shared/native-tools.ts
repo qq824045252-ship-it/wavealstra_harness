@@ -12,6 +12,7 @@
  */
 import { OFFICE_USE_TOOLS } from "./office-use";
 import { CAD_USE_TOOLS } from "./cadcraft";
+import { DRAWIO_USE_TOOLS } from "./drawio-use";
 
 /** pi 内置工具（SDK 自带，非 MCP） */
 export const PI_BUILTIN_TOOL_NAMES = [
@@ -77,6 +78,7 @@ export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
   "workspace_notes_save",
   ...Object.values(OFFICE_USE_TOOLS),
   ...Object.values(CAD_USE_TOOLS),
+  ...Object.values(DRAWIO_USE_TOOLS),
   // Library / Memory
   "library_list",
   "library_search",
@@ -173,6 +175,10 @@ export const MUTATING_BUILTIN_TOOLS = [
   CAD_USE_TOOLS.create,
   CAD_USE_TOOLS.edit,
   CAD_USE_TOOLS.export,
+  DRAWIO_USE_TOOLS.create,
+  DRAWIO_USE_TOOLS.edit,
+  DRAWIO_USE_TOOLS.layout,
+  DRAWIO_USE_TOOLS.export,
   OFFICE_USE_TOOLS.documentCreate,
 ] as const;
 

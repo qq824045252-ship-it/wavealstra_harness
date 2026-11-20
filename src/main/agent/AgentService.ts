@@ -235,6 +235,8 @@ import { BUILTIN_CAPABILITY_TOOLS } from "../../shared/builtin-capabilities";
 import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { CAD_USE_TOOLS } from "../../shared/cadcraft";
 import { cadUseInstructions, cadUseSkillDirectory } from "../skills/CadUseSkill";
+import { DRAWIO_READ_TOOLS, DRAWIO_USE_TOOLS } from "../../shared/drawio-use";
+import { drawioUseInstructions, drawioUseSkillDirectory } from "../skills/DrawioUseSkill";
 import { officeUseInstructions, officeUseSkillDirectory } from "../skills/OfficeUseSkill";
 import { MediaCapabilityServices } from "../capabilities/MediaCapabilityServices";
 import { configureDeepSeekConnectionSource, isDeepSeekConnectionConfigured } from "../capabilities/providers/DeepSeekConnection";
@@ -1517,6 +1519,7 @@ export class AgentService {
       renderConversationGoalSection(this.liveConversationGoal(task.id)) ?? "",
       browserAgentPolicy,
       this.durableToolAllowed(task, CAD_USE_TOOLS.inspect) ? cadUseInstructions(this.durableToolAllowed(task, CAD_USE_TOOLS.edit)) : "",
+      this.durableToolAllowed(task, DRAWIO_USE_TOOLS.read) ? drawioUseInstructions(this.durableToolAllowed(task, DRAWIO_USE_TOOLS.edit)) : "",
       assembly.skillFilter.visible.includes("office-use") && this.durableToolAllowed(task, OFFICE_USE_TOOLS.documentRead)
         ? officeUseInstructions(this.durableToolAllowed(task, OFFICE_USE_TOOLS.selectionPropose)) : "",
       connectors.length ? connectorRuntimeContext(connectors, this.connectorsService.list(), "execution") : "",
@@ -1736,6 +1739,10 @@ export class AgentService {
     if (["pstack_decision_append","pstack_eval_save"].includes(name) && !this.durableToolAllowed(task, "write")) return false;
     if (!workExecutionToolAllowed(name, () => this.workService.repo.bindingForTask(task.id))) return false;
     if (BUILTIN_CAPABILITY_TOOLS["office-use"].includes(name) && this.builtinCapabilities.config().officeUse?.enabled === false) return false;
+    if (BUILTIN_CAPABILITY_TOOLS["drawio-use"].includes(name)) {
+      if (this.builtinCapabilities.config().drawioUse?.enabled === false) return false;
+      if (task.permissionMode === "readonly" && !DRAWIO_READ_TOOLS.includes(name)) return false;
+    }
     if (BUILTIN_CAPABILITY_TOOLS["cad-use"].includes(name)) {
       if (this.builtinCapabilities.config().cadUse?.enabled === false) return false;
       if (task.permissionMode === "readonly" && name !== CAD_USE_TOOLS.inspect) return false;
@@ -3265,6 +3272,7 @@ export class AgentService {
       [
         ...extraSkillPaths,
         ...(config.cadUse?.enabled === false ? [] : [cadUseSkillDirectory()]),
+        ...(config.drawioUse?.enabled === false ? [] : [drawioUseSkillDirectory()]),
         ...(config.officeUse?.enabled === false ? [] : [officeUseSkillDirectory()]),
       ],
       (skill) => this.learnedSkillVisibleInContext(skill, identity),

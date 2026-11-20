@@ -66,7 +66,7 @@ const BINARY_CAD_EXTENSIONS = new Set([
 
 const SUPPORTED_EXTENSIONS = new Set([
   ...TEXT_EXTENSIONS,
-  ".docx", ".xlsx", ".xls", ".pptx", ".pdf",
+  ".docx", ".xlsx", ".xls", ".pptx", ".pdf", ".drawio",
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico", ".svg",
   ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a",
   ...BINARY_CAD_EXTENSIONS,
@@ -186,6 +186,7 @@ export function artifactKindForFile(filePath: string): ArtifactKind {
   if (ext === ".docx") return "docx";
   if (ext === ".xlsx" || ext === ".xls") return "xlsx";
   if (ext === ".pptx") return "pptx";
+  if (ext === ".drawio") return "drawio";
   // Mechanical CAD / Blender：二进制归 cad（渲染侧回退 code）；STEP/OBJ/glTF 文本归 code
   if (BINARY_CAD_EXTENSIONS.has(ext)) return "cad";
   return "code";
@@ -688,7 +689,7 @@ export async function createWorkspacePath(
 export async function previewWorkspaceFileForEditor(filePath: string): Promise<WorkspaceFilePreviewDto> {
   const name = basename(filePath);
   const extension = extname(name).toLowerCase();
-  if (extension !== ".docx" && extension !== ".xlsx" && extension !== ".pptx" && !cadCraftExtension(name)) {
+  if (![".docx", ".xlsx", ".pptx", ".drawio"].includes(extension) && !cadCraftExtension(name)) {
     return previewWorkspaceFile(filePath);
   }
   const info = await stat(filePath);

@@ -1,0 +1,7 @@
+{
+  "version": "32.7.4",
+  "url": "https://github.com/jgraph/drawio/releases/download/v32.7.4/draw.war",
+  "sha256": "caf784637155f444e0b6fb7c154cae5dbad27cfc31cb16286054d43f996be42f",
+  "skillCommit": "a7d1ead5397200659239269a6fe9ae431cbfe27d",
+  "files": ["index.html", "export3.html", "js/app.min.js", "js/export.js", "js/stencils.min.js", "js/extensions.min.js"]
+}

@@ -83,6 +83,7 @@ const GUI_TESTS = new Set([
   "test:office-craft-electron",
   "test:office-native-tools",
   "test:office-use-desktop", // actual task tools and native Office editor views
+  "test:drawio-use-desktop", // bundled Draw.io editor and native diagram operations
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B

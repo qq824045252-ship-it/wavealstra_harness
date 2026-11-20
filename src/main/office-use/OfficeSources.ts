@@ -4,7 +4,7 @@ import type { OfficeOpen } from "../../shared/office-use";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import type { SavedArtifactActions } from "../artifact/SavedArtifactActions";
 import type { LibraryService } from "../library/LibraryService";
-import { assertOfficePackage, atomicBytes, inside, kindFor, plainFile, type OfficeFileTarget } from "./OfficeFile";
+import { assertEditorFile, atomicBytes, editorKindFor, inside, plainFile, type OfficeFileTarget } from "./OfficeFile";
 
 interface OfficeSourcePorts {
   artifacts: ArtifactService;
@@ -59,14 +59,14 @@ export async function saveOfficeAs(
   bytes: Buffer, target: OfficeFileTarget, ports: Pick<OfficeSourcePorts, "storageRoot" | "choose">,
   verifySource?: () => Promise<void>,
 ): Promise<string | null> {
-  await assertOfficePackage(bytes, target.kind);
+  await assertEditorFile(bytes, target.kind);
   const selection = await ports.choose(copyName(target.name));
   if (!selection) return null;
   const requested = resolve(selection);
   const parent = await realpath(dirname(requested));
   const destination = join(parent, basename(requested));
-  if (kindFor(destination) !== target.kind || equalPath(destination, target.path)) {
-    throw new Error("请选择同格式的其他 Office 文件名");
+  if (editorKindFor(destination) !== target.kind || equalPath(destination, target.path)) {
+    throw new Error(target.kind === "drawio" ? "请选择其他 .drawio 文件名" : "请选择同格式的其他 Office 文件名");
   }
   await assertOutsideStorage(ports.storageRoot, destination);
   const parentInfo = await lstat(parent);
@@ -107,10 +107,10 @@ export async function resolveOfficeTarget(request: OfficeOpen, ports: OfficeSour
       ? descriptor.title?.trim() || source.id
       : basename(path);
     const originalKind = descriptor.capabilities.originalKind;
-    const declaredKind = base64 && typeof originalKind === "string" ? kindFor("file." + originalKind) : undefined;
-    const kind = declaredKind ?? kindFor(name);
-    if (!kind) throw new Error("Office Use 支持 DOCX、XLSX 和 PPTX");
-    const fileName = kindFor(name) === kind ? basename(name) :
+    const declaredKind = base64 && typeof originalKind === "string" ? editorKindFor("file." + originalKind) : undefined;
+    const kind = declaredKind ?? editorKindFor(name);
+    if (!kind) throw new Error("支持 DOCX、XLSX、PPTX 和 Draw.io 文件");
+    const fileName = editorKindFor(name) === kind ? basename(name) :
       basename(name, extname(name)) + "." + originalKind;
     const root = descriptor.source.rootDir;
     const check = async (): Promise<void> => {
@@ -133,7 +133,7 @@ export async function resolveOfficeTarget(request: OfficeOpen, ports: OfficeSour
   }
   if (source.type === "work") {
     const { name, path } = await ports.saved.verifiedSnapshot(source.file);
-    const kind = kindFor(name);
+    const kind = editorKindFor(name);
     if (!kind) throw new Error("此保存版本不是受支持的 Office 文件");
     const check = async (): Promise<void> => {
       const current = await ports.saved.verifiedSnapshot(source.file);
@@ -153,7 +153,7 @@ export async function resolveOfficeTarget(request: OfficeOpen, ports: OfficeSour
     const item = ports.library.resolveOfficeItem(source.id, owner, source.reference);
     const path = ports.library.absolutePath(item);
     const name = basename(item.filename);
-    const kind = kindFor(name);
+    const kind = editorKindFor(name);
     if (!kind) throw new Error("此资料不是受支持的 Office 文件");
     const readOnly = Boolean(source.readOnly || source.reference);
     const validateScope = (write = false): void => {

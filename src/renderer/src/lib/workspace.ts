@@ -57,6 +57,7 @@ export function inferArtifactKind(name: string, content: string): ArtifactKind {
   if (lower.endsWith(".docx")) return "docx";
   if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) return "xlsx";
   if (lower.endsWith(".pptx")) return "pptx";
+  if (lower.endsWith(".drawio")) return "drawio";
   if (lower.endsWith(".svg")) return "svg";
   if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".avif") || lower.endsWith(".bmp") || lower.endsWith(".ico")) {
     return "image";

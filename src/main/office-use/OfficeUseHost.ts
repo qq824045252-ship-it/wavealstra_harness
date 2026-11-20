@@ -12,6 +12,8 @@ import { OfficeFile, type OfficeFileTarget } from "./OfficeFile";
 import { bindOfficeSelection } from "./OfficeSelectionTools";
 import { locateOfficeNative, officeNativeEngines } from "../platform/office-native";
 import { checkOfficeUseAssets, isOfficeEngineAsset, officeEngineByKind, officeStaticFiles } from "./OfficeUseAssets";
+import { installDrawioRuntime, restrictDrawioContent } from "../drawio-use/DrawioRuntime";
+import { DRAWIO_FILE_LIMIT } from "../drawio-use/DrawioXml";
 
 interface Session {
   id: string; owner: BrowserWindow; view: WebContentsView; file: OfficeFile | CadCraftFile; initial: Buffer | undefined;
@@ -46,6 +48,7 @@ export class OfficeUseHost {
   private runtime = app.isPackaged ? join(process.resourcesPath, "office-editor/craft-assets") : join(app.getAppPath(), "vendor/craft-office/assets");
   private editor = app.isPackaged ? join(process.resourcesPath, "office-editor/editor") : join(app.getAppPath(), "src/renderer/src/lib/office-use");
   private cadRuntime = app.isPackaged ? join(process.resourcesPath, "cadcraft/web") : join(app.getAppPath(), "vendor/cadcraft/assets/web");
+  readonly drawio = installDrawioRuntime(() => this.start());
   constructor(private ports: Ports) {}
 
   async checkAssets() {
@@ -94,10 +97,12 @@ export class OfficeUseHost {
     return this.origin;
   }
   private async asset(group: string, name: string, res: ServerResponse): Promise<void> {
+    if (group === "drawio-runtime") return this.drawio.serveAsset(name, res);
     const engine = isOfficeEngineAsset(group,name);
     const cadEngine = group === "cadcraft" && Object.hasOwn(cadRelease.targets.web.files, name);
     const cadHost = group === "cad" && ["index.html", "cad.js", "cad.css"].includes(name);
-    if (!engine && !cadEngine && !cadHost && (!Object.hasOwn(officeStaticFiles,group) || !officeStaticFiles[group].includes(name))) { res.writeHead(404).end(); return; }
+    const drawioHost = group === "drawio" && ["index.html", "editor.js", "editor.css", "engine.js"].includes(name);
+    if (!engine && !cadEngine && !cadHost && !drawioHost && (!Object.hasOwn(officeStaticFiles,group) || !officeStaticFiles[group].includes(name))) { res.writeHead(404).end(); return; }
     const path = cadEngine ? join(this.cadRuntime, name)
       : join(engine || group === "fonts" ? this.runtime : this.editor, group, name);
     const size = (await stat(path)).size;
@@ -121,7 +126,7 @@ export class OfficeUseHost {
     if (path.length !== 4 || !s || (req.headers.origin && req.headers.origin !== origin)) { res.writeHead(403).end(); return; }
     const action = path[3];
     if (req.method === "GET") {
-      if (action === "") return this.asset(s.file instanceof CadCraftFile ? "cad" : "host", "index.html", res);
+      if (action === "") return this.asset(s.file instanceof CadCraftFile ? "cad" : s.file.target.kind === "drawio" ? "drawio" : "host", "index.html", res);
       if (action === "config") {
         const t = s.file.target;
         res.setHeader("Content-Type","application/json");
@@ -150,13 +155,14 @@ export class OfficeUseHost {
         res.writeHead(404).end(); return;
       }
       if (action === "propose") {
+        if (s.file.target.kind === "drawio") { res.writeHead(404).end(); return; }
         const {selection,instruction} = JSON.parse((await body(req,512*1024)).toString());
         if (!selection || typeof selection.content !== "string" || !selection.target || typeof instruction !== "string" || !instruction.trim()) throw new Error("请先选择内容并填写修改要求");
         if (!s.modelId) throw new Error("请先为当前会话选择模型");
         res.end(await this.ports.propose(s.modelId, JSON.stringify(selection), instruction, s.abort.signal)); return;
       }
       if (action === "draft" || action === "save" || action === "export" || action === "export-engine-copy") {
-        const bytes = await body(req, 512 * 1024 * 1024);
+        const bytes = await body(req, s.file.target.kind === "drawio" ? DRAWIO_FILE_LIMIT : 512 * 1024 * 1024);
         if (action === "export" || action === "export-engine-copy") {
           let output = bytes;
           if (action === "export") {
@@ -178,7 +184,8 @@ export class OfficeUseHost {
   }
   async open(request: OfficeOpen, owner: BrowserWindow) {
     const target = await this.ports.target(request,owner);
-    await access(join(this.runtime, officeEngineByKind[target.kind], "index.html")).catch(() => {
+    if (target.kind === "drawio") await this.drawio.assertAvailable();
+    else await access(join(this.runtime, officeEngineByKind[target.kind], "index.html")).catch(() => {
       throw new Error("缺少本地 Office 引擎。请在「设置 → 工具能力 → 本机工具 → Office Use」检查编辑器资源。");
     });
     return this.openEditor(new OfficeFile(target, this.ports.drafts), owner, request.modelId);
@@ -192,6 +199,7 @@ export class OfficeUseHost {
   private async openEditor(file: OfficeFile | CadCraftFile, owner: BrowserWindow, modelId?: string) {
     const { target } = file;
     const cad = file instanceof CadCraftFile;
+    const drawing = !cad && file.target.kind === "drawio";
     if (!target.readOnly && this.activeFiles.has(target.path)) {
       const previous = [...this.sessions.values()].find(s => s.file.target.path === target.path && s.owner === owner);
       if (previous?.closing) await previous.closing.catch(() => {});
@@ -209,7 +217,7 @@ export class OfficeUseHost {
       if (owner.isDestroyed()) throw new Error("主窗口已关闭");
       const id = randomUUID();
       // The editors process engine commands on their frame loop, including while a panel is opening or closing.
-      const view = new WebContentsView({webPreferences:{sandbox:true, contextIsolation:true,nodeIntegration:false, partition:this.partition, spellcheck:false,
+      const view = new WebContentsView({webPreferences:{sandbox:true, contextIsolation:true,nodeIntegration:false, partition:drawing ? this.partition + "-drawio" : this.partition, spellcheck:false,
         backgroundThrottling: false }});
       const s = state = {id,owner,view,file,initial,visible:false,abort:new AbortController(),modelId};
       this.sessions.set(id,s);
@@ -223,9 +231,10 @@ export class OfficeUseHost {
         callback({cancel:!allowed});
       });
       wc.on("will-navigate",event => event.preventDefault());
+      if (drawing) restrictDrawioContent(wc, origin);
       wc.on("render-process-gone", (_event, details) => {
         if (!owner.isDestroyed() && this.sessions.has(id)) {
-          owner.webContents.send("office-use:failed", id, (cad ? "CADCraft" : "Office") + " 编辑器已停止（" + details.reason + "）。请重新打开以恢复最近的草稿。");
+          owner.webContents.send("office-use:failed", id, (cad ? "CADCraft" : drawing ? "Draw.io" : "Office") + " 编辑器已停止（" + details.reason + "）。请重新打开以恢复最近的草稿。");
         }
         this.destroy(s);
       });
@@ -267,13 +276,14 @@ export class OfficeUseHost {
       s.closing ?? this.flushDraft(s)));
   }
   private flushDraft(s: Session): Promise<unknown> {
-    return s.view.webContents.executeJavaScript(s.file instanceof CadCraftFile ? "window.flushCadDraft?.()" : "window.flushOfficeDraft?.()");
+    return s.view.webContents.executeJavaScript(s.file instanceof CadCraftFile ? "window.flushCadDraft?.()" :
+      s.file.target.kind === "drawio" ? "window.flushDrawioDraft?.()" : "window.flushOfficeDraft?.()");
   }
   private show(s: Session) {
     if (s.view.webContents.isDestroyed() || s.owner.isDestroyed()) return;
     const visible = !s.closing && s.visible && !this.blocked.get(s.owner.webContents.id)?.size;
     s.view.setVisible(visible);
-    if (visible && s.file instanceof OfficeFile && s.file.target.taskId && !s.release) {
+    if (visible && s.file instanceof OfficeFile && s.file.target.kind !== "drawio" && s.file.target.taskId && !s.release) {
       const wc = s.view.webContents;
       s.release = bindOfficeSelection(s.file.target.taskId,s.id,{
         read: request => wc.executeJavaScript(`window.officeDocument(${JSON.stringify(request)})`),
@@ -329,6 +339,7 @@ export class OfficeUseHost {
     if (!s.view.webContents.isDestroyed()) s.view.webContents.close();
   }
   dispose() {
+    this.drawio.dispose();
     for (const s of this.sessions.values()) this.destroy(s);
     this.server?.close();
   }

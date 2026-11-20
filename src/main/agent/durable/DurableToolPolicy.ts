@@ -7,6 +7,7 @@ import type { HookApi, ToolExecutionResult, ToolHookCall, ToolHooks } from "@ear
 import type { PermissionMode } from "../../../shared/agent-ipc";
 import { OFFICE_USE_TOOLS } from "../../../shared/office-use";
 import { CAD_USE_TOOLS } from "../../../shared/cadcraft";
+import { DRAWIO_USE_TOOLS } from "../../../shared/drawio-use";
 import { isDangerousTool, isSideEffectTool, summarizeToolInput } from "../../../shared/pi-event-mapper";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { isManagedToolProvider } from "../../../shared/professional-tools";
@@ -95,7 +96,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const declaredPath = typeof call.arguments.path === "string" ? call.arguments.path
           : typeof call.arguments.file_path === "string" ? call.arguments.file_path : undefined;
         const paths = mcp?.decision.isLocalWrite ? mcp.decision.paths
-          : ["read", "write", "edit", "glob", "grep", "ls", OFFICE_USE_TOOLS.documentCreate, ...Object.values(CAD_USE_TOOLS)].includes(call.name) && declaredPath ? [declaredPath] : [];
+          : ["read", "write", "edit", "glob", "grep", "ls", OFFICE_USE_TOOLS.documentCreate,
+            ...Object.values(CAD_USE_TOOLS), ...Object.values(DRAWIO_USE_TOOLS)].includes(call.name) && declaredPath ? [declaredPath] : [];
         const child = (await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value;
         if (child && child.taskId !== options.taskId) return { block: "子代理身份与宿主任务不一致" };
         const taskRoot = child?.workspace.cwd ?? options.taskRoot;

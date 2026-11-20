@@ -939,6 +939,7 @@ function normalizeLegacyKind(kind: string): ArtifactDescriptor["kind"] {
     case "docx":
     case "xlsx":
     case "pptx":
+    case "drawio":
       return "office";
     case "table":
     default:

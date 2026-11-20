@@ -29,6 +29,7 @@ import { createWorkspaceNotesExtension } from "../workspace/workspace-notes-exte
 import { createOfficeSelectionExtension } from "../office-use/OfficeSelectionTools";
 import { createOfficeNativeExtension } from "../office-use/OfficeNativeTools";
 import { createCadUseExtension } from "../capabilities/CadUseTools";
+import { createDrawioUseExtension } from "../capabilities/DrawioUseTools";
 import { createOfficeDocument } from "../office-use/OfficeDocumentCreation";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { createWorkspaceResourceLocatorExtension } from "../workspace/workspace-resource-locator-extension";
@@ -134,6 +135,7 @@ export class SessionExtensionAssembler {
     "taskId" | "taskRoot" | "resolveConversationContext" | "builtinCapability" | "getPermissionMode">, durable = false): InlineExtension[] {
     const officeUseEnabled = () => input.builtinCapability.runtime.config().officeUse?.enabled !== false;
     const cadUseEnabled = () => input.builtinCapability.runtime.config().cadUse?.enabled !== false;
+    const drawioUseEnabled = () => input.builtinCapability.runtime.config().drawioUse?.enabled !== false;
     const getPermissionMode = durable
       ? () => this.deps.db.getTask(input.taskId)?.permissionMode ?? input.getPermissionMode()
       : input.getPermissionMode;
@@ -211,6 +213,14 @@ export class SessionExtensionAssembler {
         producerMessageId: input.builtinCapability.getProducerMessageId,
         getPermissionMode,
         isEnabled: cadUseEnabled,
+      })] : []),
+      ...(durable || drawioUseEnabled() ? [createDrawioUseExtension({
+        taskId: input.taskId,
+        taskRoot: () => (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
+        artifacts: input.builtinCapability.artifactService,
+        producerMessageId: input.builtinCapability.getProducerMessageId,
+        getPermissionMode,
+        isEnabled: drawioUseEnabled,
       })] : []),
     ];
   }

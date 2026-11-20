@@ -9,7 +9,7 @@ const NON_CODE_EXTENSIONS = new Set([
   // 压缩包 / 二进制
   "zip", "tar", "gz", "7z", "rar", "bz2", "xz", "exe", "dll", "so", "dylib", "bin",
   // 文档（二进制格式）
-  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "drawio",
   // 数据库 / 缓存
   "db", "sqlite", "sqlite3", "pyc", "class", "lock",
 ]);

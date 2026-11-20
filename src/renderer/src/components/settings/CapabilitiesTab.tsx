@@ -799,6 +799,9 @@ export default function CapabilitiesTab(): React.JSX.Element {
       <CapabilityRow {...rowCommon("cad-use", draft.cadUse?.enabled !== false)} title="CAD Use" description="让任务助手创建、读取和修改 DWG、DXF，或导出 DWG、DXF、PDF、SVG、PNG。" tools={BUILTIN_CAPABILITY_TOOLS["cad-use"]} onToggle={enabled => changeConfig(current => ({ ...current, cadUse: { enabled } }))}>
         <div className="settings-row-desc">使用本机 CADCraft。图纸交付到当前任务的产物区。</div>
       </CapabilityRow>
+      <CapabilityRow {...rowCommon("drawio-use", draft.drawioUse?.enabled !== false)} title="Draw.io Use" description="在 MyBuddy 中创建和编辑 Draw.io 图纸，支持 Mermaid、自动布局和带源图的 PNG、SVG、PDF 导出。" tools={BUILTIN_CAPABILITY_TOOLS["drawio-use"]} onToggle={enabled => changeConfig(current => ({ ...current, drawioUse: { enabled } }))}>
+        <div className="settings-row-desc">在任务的产物区打开 .drawio 图纸。</div>
+      </CapabilityRow>
       <CapabilityRow {...rowCommon("terminal", draft.execution.terminalEnabled)} title="命令执行" description="在任务中执行命令。" tools={["bash"]} onToggle={terminalEnabled => changeConfig(current => ({ ...current, execution: { ...current.execution, terminalEnabled } }))}><div className="settings-row-desc">Pi Bash · 任务隔离与审批</div></CapabilityRow>
       <CapabilityRow {...rowCommon("code-execution", draft.execution.codeExecutionEnabled)} title="代码执行" description="执行 JavaScript、PowerShell 和受管 Python。" tools={["execute_code"]} onToggle={codeExecutionEnabled => changeConfig(current => ({ ...current, execution: { ...current.execution, codeExecutionEnabled } }))}><div className="settings-row-desc">代码执行 · 受管 Python</div></CapabilityRow>
       <CapabilityRow {...rowCommon("subagent", draft.subagent.enabled)} title="子代理" description="委派有边界的独立子任务。" tools={["subagent", "subagent_list", "subagent_steer"]} onToggle={enabled => changeConfig(current => ({ ...current, subagent: { enabled } }))}><div className="settings-row-desc">模型登录在委派时验证。</div></CapabilityRow>

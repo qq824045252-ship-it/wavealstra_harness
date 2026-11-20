@@ -19,6 +19,7 @@ const MIME_BY_KIND: Record<ArtifactKind, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  drawio: "application/xml",
   cad: "application/octet-stream",
 };
 
@@ -35,6 +36,7 @@ const EXT_BY_KIND: Partial<Record<ArtifactKind, string>> = {
   docx: "docx",
   xlsx: "xlsx",
   pptx: "pptx",
+  drawio: "drawio",
   cad: "bin",
 };
 

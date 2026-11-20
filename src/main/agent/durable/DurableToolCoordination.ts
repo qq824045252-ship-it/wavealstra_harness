@@ -6,6 +6,7 @@ import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapp
 import { WEB_ACCESS_TOOL_NAMES } from "../../../shared/native-tools";
 import { OFFICE_USE_TOOLS } from "../../../shared/office-use";
 import { CAD_USE_TOOLS } from "../../../shared/cadcraft";
+import { DRAWIO_USE_TOOLS } from "../../../shared/drawio-use";
 import { fileResourceAddress, resourcePathContains } from "../../platform/resource-identity";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { workShellRead } from "../work/WorkShellRead";
@@ -24,6 +25,7 @@ const mcpEnvelope = z.object({ server: z.string(), tool: z.string(), arguments: 
 const containers = new Set(["codemode", "subagent", "subagent_list", "subagent_steer", "multi_model_consult", "request_user_input", "pstack_workflow", "pstack_delegate", "pstack_orchestrate"]);
 const fileReads = new Set(["read", "ls", "find", "grep", "glob"]);
 const independentReads = new Set<string>([...WEB_ACCESS_TOOL_NAMES,
+  DRAWIO_USE_TOOLS.shapes, DRAWIO_USE_TOOLS.reference,
   "pstack_watch_pr", "pstack_worktrees",
   "tool_search", "mcp_list_tools", "mcp_list_resources", "mcp_read_resource", "mcp_status"]);
 const resourceReads = new Set(["library_list", "library_search", "library_deep_search", "library_read", "memory_search", "memory_get", "memory_history",
@@ -85,8 +87,9 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
     return { kind: "file", mode, path: address.path, entity: address.entity };
   };
   const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
-  if (name === CAD_USE_TOOLS.inspect && path) return [file(path, "read")];
-  if ((name === CAD_USE_TOOLS.create || name === CAD_USE_TOOLS.edit || name === CAD_USE_TOOLS.export) && path) {
+  if (path && [CAD_USE_TOOLS.inspect, DRAWIO_USE_TOOLS.read, DRAWIO_USE_TOOLS.link].some(tool => name === tool)) return [file(path, "read")];
+  if (path && [CAD_USE_TOOLS.create, CAD_USE_TOOLS.edit, CAD_USE_TOOLS.export,
+    DRAWIO_USE_TOOLS.create, DRAWIO_USE_TOOLS.edit, DRAWIO_USE_TOOLS.layout, DRAWIO_USE_TOOLS.export].some(tool => name === tool)) {
     return [file(path, "write"), ...(typeof args.source === "string" ? [file(args.source, "read")] : [])];
   }
   if (fileReads.has(name)) return [file(path ?? ".", "read")];

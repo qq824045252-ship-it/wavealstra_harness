@@ -7,9 +7,6 @@ import {
 } from "../../shared/mode-profile";
 import { DRAWIO_MCP_SERVER_ID } from "../../shared/professional-tools";
 
-// 统一别名：Draw.io provider 在办公 preset 中统一引用（避免散落字符串）
-const DRAWIO_PROVIDER = DRAWIO_MCP_SERVER_ID;
-
 export const CODING_WORKFLOW_INSTRUCTIONS =
   "代码开发使用内置 pstack + thermos。调用 pstack_workflow status 查看当前标签的 preferredPlaybook。有默认流程时直接调用 start；显示 auto 时按用户任务选择已启用的 playbook 或 skill。用户指定流程时显式传入，并遵守标签的任务范围。按当前阶段、角色和已保存的参数执行，用 advance(stage,note) 记录实际结果。写代码后用 verify 记录项目检查。只读任务在对话中交付有出处的结论。交付前用 review 查看触发原因，需要时用 pstack_delegate(purpose=thermos) 取得独立审查回执。complete 成功后回复。如果确有外部依赖，用 block(note) 记录。";
 
@@ -58,12 +55,23 @@ export function refreshLegacyOfficePreset(preset: ModePresetDto, seed: ModePrese
     ? { ...preset, promptAddon: prompt } : preset;
 }
 
+export function refreshLegacyDrawioPreset(preset: ModePresetDto, seed: ModePresetDto): ModePresetDto {
+  if (preset.id !== "drawio-ai" || !preset.promptAddon?.includes("使用 drawio-ai MCP（next-ai-draw-io 官方 server）")) return preset;
+  return {
+    ...preset, promptAddon: seed.promptAddon, mcpPolicy: seed.mcpPolicy,
+    skillPolicy: preset.skillPolicy ?? seed.skillPolicy,
+    providerMcpIds: preset.providerMcpIds?.filter(id => id !== DRAWIO_MCP_SERVER_ID),
+    requiredRuntimes: preset.requiredRuntimes?.filter(runtime =>
+      (typeof runtime === "string" ? runtime : runtime.providerId) !== DRAWIO_MCP_SERVER_ID),
+  };
+}
+
 /**
  * working 出厂 Mode Presets：对人交付的办公闭环。
  * 顺序：通用办公 → 总结 → 周报 → 会议纪要 → 项目管理 → 数据分析 → 流程图 → Penpot。
  * 已退役：inventory-summary / documents / spreadsheets / presentations
  * （旧任务 id 回落到 general-office，见 RETIRED_MODE_PRESET_IDS）。
- * MCP：base working 不 deny 办公 provider；非 drawio tag 各自 deny，drawio-ai 用 allow 收窄。
+ * 流程图预设用内置 Draw.io Use。
  */
 export const WORKING_MODE_PRESETS: ModePresetDto[] = [
   {
@@ -192,25 +200,11 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
     label: "流程图",
     description: "给人看的流程图 / 架构图 / UML：节点少、标签人话、可扫读",
     promptAddon:
-      "当前为「流程图」：画给同事看的图，不是技术说明书插图。节点少、标签用人话、一眼能跟上。\n" +
-      "使用 drawio-ai MCP（next-ai-draw-io 官方 server）生成与修改 draw.io 图。\n" +
-      "1. 会话：先 start_session 建立浏览器画布会话（会返回 Browser URL，包含 ?mcp= 会话参数；画布可实时预览）。\n" +
-      "2. 建图：create_new_diagram（全新图，传完整 mxGraphModel/mxfile XML；会替换整份文档，仅限新图）；\n" +
-      "   已有 .drawio 文件用 load_diagram（服务器自行读取并解压，不要自己读文件再传 XML）。\n" +
-      "3. 编辑：edit_diagram 按 cell id 增/改/删（编辑前先 get_diagram 拿到最新 cell id；浏览器里用户手工改过会拒绝并要求重新 get_diagram）；\n" +
-      "   多页用 list_pages / add_page / rename_page / delete_page（add_page 追加页，不会丢现有内容）。\n" +
-      "4. 落盘：export_diagram 保存到任务工作区（相对路径即可，服务器在任务目录内解析）：默认存 .drawio（XML，保留可编辑结构），\n" +
-      "   并可选导 .png / .svg 用于预览；导出路径不要超出任务工作区。\n" +
-      "5. 职责边界：Pi 仍是唯一主 Agent——由你决定图结构、读取工具结果并执行；不要把流程委托给看不见的内部循环。\n" +
-      "规范：流程图/架构图/UML/组织图用真实节点与连线（mxCell），禁止把图当作普通位图重新生成；\n" +
-      "单页视口 x=0-800、y=0-600，起始边距 40，元素间距 150-200px，边用正交路由并显式 exitX/exitY/entryX/entryY，\n" +
-      "同一页面内 cell id 唯一（0/1 为保留根节点）。标签短、不重叠；一页只讲一条主路径。",
-    mcpPolicy: {
-      mode: "hard",
-      allow: [DRAWIO_PROVIDER],
-      deny: [],
-    },
-    providerMcpIds: [DRAWIO_PROVIDER],
+      "当前为「流程图」。用内置 Draw.io Use 创建、打开和修改图纸，先读 drawio-use 技能。\n" +
+      "用 Mermaid 创建标准流程图、架构图和 UML。需要精确样式和专业图元时用 Draw.io XML。交付可编辑文件，核对节点、连线和标签。\n" +
+      "标签用用户的语言。节点短、布局清楚。用 drawio_export 交付所需格式。",
+    mcpPolicy: WORKING_DENY_DRAWIO,
+    skillPolicy: { prefer: ["drawio-use"], demote: [], hide: [], allow: [] },
   },
   PENPOT_PRESET,
 ];

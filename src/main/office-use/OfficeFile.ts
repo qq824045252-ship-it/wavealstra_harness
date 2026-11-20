@@ -3,17 +3,21 @@ import { link, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } fro
 import { dirname, isAbsolute, join, relative, resolve, sep, extname } from "node:path";
 import type { EventEmitter } from "node:events";
 import { prepareOfficeRoundTrip } from "./OfficeRoundTrip";
+import { assertDrawioBytes, DRAWIO_FILE_LIMIT } from "../drawio-use/DrawioXml";
 
 export type OfficeKind = "word" | "excel" | "ppt";
+export type EditorFileKind = OfficeKind | "drawio";
 export const kindFor = (name: string): OfficeKind | undefined =>
   ({ ".docx": "word", ".xlsx": "excel", ".pptx": "ppt" } as const)[extname(name).toLowerCase() as ".docx" | ".xlsx" | ".pptx"];
+export const editorKindFor = (name: string): EditorFileKind | undefined =>
+  extname(name).toLowerCase() === ".drawio" ? "drawio" : kindFor(name);
 export const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 export const inside = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel);
 };
 export interface OfficeFileTarget {
-  path: string; name: string; kind: OfficeKind; base64?: boolean; readOnly?: boolean; taskId?: string;
+  path: string; name: string; kind: EditorFileKind; base64?: boolean; readOnly?: boolean; taskId?: string;
   identity: string;
   check(): Promise<void>;
   copy?(bytes: Buffer, checkUnchanged?: () => Promise<void>): Promise<string | null>;
@@ -61,6 +65,11 @@ export function assertOfficePackage(bytes: Buffer, kind: OfficeKind): Promise<vo
     });
   });
 }
+
+export async function assertEditorFile(bytes: Buffer, kind: EditorFileKind) {
+  if (kind === "drawio") assertDrawioBytes(bytes);
+  else await assertOfficePackage(bytes, kind);
+}
 export class OfficeFile {
   private base = "";
   private prefix = "";
@@ -73,6 +82,10 @@ export class OfficeFile {
   private async current(): Promise<Buffer> {
     await this.target.check();
     await plainFile(this.target.path);
+    if (this.target.kind === "drawio" && (await lstat(this.target.path)).size >
+        (this.target.base64 ? Math.ceil(DRAWIO_FILE_LIMIT / 3) * 4 + 1024 : DRAWIO_FILE_LIMIT)) {
+      throw new Error("Draw.io 源文件超过 32 MiB");
+    }
     const data = await readFile(this.target.path);
     if (!this.target.base64) return data;
     const encoded = data.toString("utf8");
@@ -81,7 +94,7 @@ export class OfficeFile {
   }
   async open(): Promise<Buffer> {
     const bytes = await this.current();
-    await assertOfficePackage(bytes, this.target.kind);
+    await assertEditorFile(bytes, this.target.kind);
     this.base = digest(bytes);
     if (this.target.kind === "ppt") this.presentation = bytes;
     this.setDraftPath();
@@ -91,7 +104,7 @@ export class OfficeFile {
         const base = draft.subarray(0,64).toString("ascii");
         const content = draft.subarray(64);
         if (!/^[0-9a-f]{64}$/.test(base)) throw new Error("Office 草稿版本无效");
-        await assertOfficePackage(content, this.target.kind);
+        await assertEditorFile(content, this.target.kind);
         this.recovered = true;
         this.conflict = base !== this.base;
         if (this.presentation && this.conflict) {
@@ -109,11 +122,11 @@ export class OfficeFile {
     this.draftPath = join(this.drafts, digest(this.target.identity) + ".draft");
   }
   async prepareExport(bytes: Buffer): Promise<Buffer> {
-    return this.presentation ? prepareOfficeRoundTrip(this.presentation, bytes, this.target.kind) : bytes;
+    return this.presentation && this.target.kind === "ppt" ? prepareOfficeRoundTrip(this.presentation, bytes, this.target.kind) : bytes;
   }
   async write(bytes: Buffer, draft: boolean): Promise<{ message: string; saved: boolean }> {
     if (this.target.readOnly) throw new Error("文件只读");
-    await assertOfficePackage(bytes, this.target.kind);
+    await assertEditorFile(bytes, this.target.kind);
     return serial(this.target.path, async () => {
       await mkdir(this.drafts, { recursive: true });
       // Preserve the editing buffer even when compare-and-save detects an external change.

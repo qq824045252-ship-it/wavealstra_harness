@@ -31,6 +31,7 @@ export function toDomainKind(kind: RendererArtifactKind): DomainArtifactKind {
     case "docx":
     case "xlsx":
     case "pptx":
+    case "drawio":
       return "office";
     case "table":
     default:
@@ -56,10 +57,11 @@ export function toRendererKind(d: {
         : d.title;
   if (typeof sourceName === "string" && /\.svg(?:$|[?#])/i.test(sourceName)) return "svg";
   if (typeof sourceName === "string" && cadCraftExtension(sourceName)) return "cad";
+  if (typeof sourceName === "string" && /\.drawio$/i.test(sourceName)) return "drawio";
   const original = d.capabilities?.originalKind;
   if (typeof original === "string") {
     const candidates: RendererArtifactKind[] = [
-      "markdown", "code", "html", "svg", "image", "video", "audio", "table", "pdf", "docx", "xlsx", "pptx",
+      "markdown", "code", "html", "svg", "image", "video", "audio", "table", "pdf", "docx", "xlsx", "pptx", "drawio",
     ];
     if ((candidates as string[]).includes(original)) return original as RendererArtifactKind;
   }

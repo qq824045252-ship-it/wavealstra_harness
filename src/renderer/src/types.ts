@@ -42,6 +42,7 @@ export type ArtifactKind =
   | "docx"
   | "xlsx"
   | "pptx"
+  | "drawio"
   | "cad";
 
 export interface Artifact {

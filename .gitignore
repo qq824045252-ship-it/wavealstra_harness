@@ -34,6 +34,8 @@ vendor/
 !/vendor/acp-kernel/
 !/vendor/craft-office/
 !/vendor/cadcraft/
+!/vendor/drawio/
+/vendor/drawio/assets/
 
 # 本地 MCP 工具索引（codegraph/serena 等）
 .codegraph/

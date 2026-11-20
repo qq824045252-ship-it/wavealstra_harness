@@ -43,7 +43,7 @@ import {
 } from "../../shared/runtime-requirement";
 import { getModesDir } from "../paths";
 import { normalizePstackSettings, validatePstackSettings } from "../../shared/pstack";
-import { MODE_SEEDS, PENPOT_PRESET, refreshLegacyOfficePreset } from "./mode-defaults";
+import { MODE_SEEDS, PENPOT_PRESET, refreshLegacyDrawioPreset, refreshLegacyOfficePreset } from "./mode-defaults";
 
 function isWelcomeMode(id: string): id is WelcomeMode {
   return (WELCOME_MODES as string[]).includes(id);
@@ -629,7 +629,9 @@ export class ModeProfileStore {
             if (seedMatch && !merged[i].skillPolicy && seedMatch.skillPolicy) {
               merged[i] = { ...merged[i], skillPolicy: seedMatch.skillPolicy };
             }
-            if (id === "working" && seedMatch) merged[i] = refreshLegacyOfficePreset(merged[i], seedMatch);
+            if (id === "working" && seedMatch) {
+              merged[i] = refreshLegacyDrawioPreset(refreshLegacyOfficePreset(merged[i], seedMatch), seedMatch);
+            }
           }
           diskRaw = {
             ...diskRaw,

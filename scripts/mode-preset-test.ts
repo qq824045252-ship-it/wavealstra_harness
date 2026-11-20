@@ -210,13 +210,13 @@ async function main(): Promise<void> {
     const drawio = workingPresets.find((p) => p.id === "drawio-ai")!;
     assert(
       drawio.mcpPolicy?.mode === "hard" &&
-        drawio.mcpPolicy?.allow.join(",") === "drawio-ai" &&
-        drawio.providerMcpIds?.join(",") === "drawio-ai",
-      "drawio-ai preset 硬白名单只放行 drawio-ai 且绑定 provider",
+        drawio.mcpPolicy.deny.includes("drawio-ai") &&
+        !drawio.providerMcpIds?.length,
+      "流程图预设使用内置 Draw.io Use，停用旧 provider",
     );
     assert(
-      drawio.promptAddon?.includes("start_session") && drawio.promptAddon?.includes("export_diagram"),
-      "drawio-ai promptAddon 含完整工具链路由（start_session→export_diagram）",
+      drawio.promptAddon?.includes("drawio-use") && drawio.promptAddon?.includes("drawio_export"),
+      "流程图预设使用官方技能和本机导出",
     );
     const generalOffice = workingPresets.find((p) => p.id === "general-office")!;
     assert(generalOffice.skillPolicy?.allow.length === 0, "通用办公无需文件生成技能白名单");
@@ -342,7 +342,7 @@ async function main(): Promise<void> {
 
   console.log("\n== 1.6 办公 presets：MCP/Skill 收窄合成 ==");
   {
-    // 出厂 working base（allow 空）+ drawio-ai => allow 直接采用 preset 白名单
+    // 流程图预设保留用户的其他 MCP 服务。
     const workingBase = MODE_SEEDS.working.policy;
     const drawioEff = resolveEffectiveModePolicy(
       workingBase,
@@ -350,8 +350,8 @@ async function main(): Promise<void> {
     )!;
     assert(
       drawioEff.mcpPolicy.mode === "hard" &&
-        JSON.stringify(drawioEff.mcpPolicy.allow) === JSON.stringify(["drawio-ai"]),
-      "drawio-ai 合成：mcpPolicy 硬白名单 = [drawio-ai]",
+        drawioEff.mcpPolicy.allow.length === 0 && drawioEff.mcpPolicy.deny.includes("drawio-ai"),
+      "流程图预设合成后屏蔽旧 Draw.io provider",
     );
     assert(
       drawioEff.mcpPolicy.deny.includes("serena") && drawioEff.mcpPolicy.deny.includes("codegraph"),
@@ -366,8 +366,8 @@ async function main(): Promise<void> {
     };
     const rDrawio = filterMcpConfigForMode(workingMcp, "working", drawioEff.mcpPolicy);
     assert(
-      rDrawio.enabled.join(",") === "drawio-ai",
-      `drawio-ai 实际加载：仅 drawio-ai（实际=[${rDrawio.enabled.join(",")}]）`,
+      rDrawio.enabled.join(",") === "weather",
+      `流程图预设只加载其余已启用服务（实际=[${rDrawio.enabled.join(",")}]）`,
     );
     // drawio-ai 条目 modes:["working"] → coding/design 会话自动隐藏
     const rCoding = filterMcpConfigForMode(workingMcp, "coding", workingBase.mcpPolicy);
@@ -397,12 +397,11 @@ async function main(): Promise<void> {
         weeklyEff.skillPolicy.prefer.includes("周报"),
       "weekly-report 技能偏好 weekly-report-fill / 周报",
     );
-    // drawio-ai 无 skillPolicy → 继承 base（不额外收窄技能）
     const drawioEff2 = resolveEffectiveModePolicy(workingBase, resolveModePreset(workingBase, "drawio-ai"))!;
     assert(
       drawioEff2.skillPolicy.allow.length === 0 &&
-        JSON.stringify(drawioEff2.skillPolicy) === JSON.stringify(workingBase.skillPolicy),
-      "drawio-ai 不额外收窄技能（继承 base；路由在 promptAddon）",
+        drawioEff2.skillPolicy.prefer.includes("drawio-use"),
+      "流程图预设优先使用 Draw.io 技能",
     );
   }
 
@@ -907,7 +906,8 @@ async function main(): Promise<void> {
     const userWeekly = merged.policy.presets?.find((p) => p.id === "weekly-report");
     assert(userWeekly?.promptAddon?.includes("本周完成"), "用户同名 preset 不被 seed 覆盖");
     const mergedDrawio = merged.policy.presets?.find((p) => p.id === "drawio-ai");
-    assert(mergedDrawio?.providerMcpIds?.join(",") === "drawio-ai", "并入的 drawio-ai 带 providerMcpIds");
+    assert(mergedDrawio?.skillPolicy?.prefer.includes("drawio-use") && !mergedDrawio.providerMcpIds?.length,
+      "自动并入的流程图标签可直接使用本机 Draw.io");
   }
   {
     // 退役 tag：磁盘上的库存摘要/文档/表格/演示文稿读时剔除，并补上新出厂 tag
@@ -1191,7 +1191,7 @@ async function main(): Promise<void> {
     });
     assert(allAvail.every((c) => !c.disabled), "current design chips enabled when required provider exists");
 
-    // working presets：legacy + 完整办公；drawio-ai 依赖 MCP 配置，其余无 MCP 依赖始终可选
+    // 仅 Penpot 标签需要服务配置。
     const workingChips = buildPresetBarChips({
       presets: MODE_SEEDS.working.policy.presets ?? [],
       selectedPresetId: "weekly-report",
@@ -1200,14 +1200,14 @@ async function main(): Promise<void> {
     });
     assert(
       workingChips.length === 8 &&
-        workingChips.filter((c) => !c.disabled).length === 6 &&
+        workingChips.filter((c) => !c.disabled).length === 7 &&
         workingChips.find((c) => c.id === "weekly-report")?.selected === true,
-      "working chips：8 个，非 provider 的 6 个始终可选 + 选中态",
+      "办公标签中七个可直接选择，并保留选中态",
     );
     const drawioChip = workingChips.find((c) => c.id === "drawio-ai");
     assert(
-      drawioChip?.disabled === true && (drawioChip.title ?? "").includes("Draw.io AI MCP"),
-      "drawio-ai 未配置 MCP => disabled + title 提示 Draw.io AI MCP（不 silent fallback）",
+      drawioChip?.disabled === false,
+      "初次安装没有任何 MCP 配置也能选择流程图",
     );
     const drawioEnabled = buildPresetBarChips({
       presets: MODE_SEEDS.working.policy.presets ?? [],
@@ -1215,7 +1215,7 @@ async function main(): Promise<void> {
       availableMcpServerNames: new Set(["drawio-ai"]),
       locked: false,
     }).find((c) => c.id === "drawio-ai");
-    assert(drawioEnabled?.disabled === false, "drawio-ai MCP 已配置 => chip 可选");
+    assert(drawioEnabled?.disabled === false, "已有旧服务配置时流程图标签仍可选择");
     const codingChips = buildPresetBarChips({
       presets: MODE_SEEDS.coding.policy.presets ?? [],
       selectedPresetId: "code-review",

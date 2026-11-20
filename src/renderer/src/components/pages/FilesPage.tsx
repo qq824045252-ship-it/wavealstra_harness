@@ -24,10 +24,11 @@ const KIND_LABEL = {
   docx: "文档",
   xlsx: "表格",
   pptx: "演示文稿",
+  drawio: "Draw.io 图纸",
   cad: "CAD",
 } as const satisfies Record<Artifact["kind"], string>;
 
-const CATEGORIES = ["全部", "文档", "表格", "演示文稿", "图片", "网页", "音视频", "代码", "压缩包", "CAD"] as const;
+const CATEGORIES = ["全部", "文档", "表格", "演示文稿", "图片", "网页", "音视频", "代码", "压缩包", "Draw.io 图纸", "CAD"] as const;
 type ResultCategory = (typeof CATEGORIES)[number];
 type ResultType = (typeof KIND_LABEL)[Artifact["kind"]] | "压缩包";
 

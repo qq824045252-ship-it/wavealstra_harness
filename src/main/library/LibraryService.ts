@@ -161,6 +161,8 @@ function preciseMimeFromFilename(name: string): string {
       return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     case ".pptx":
       return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case ".drawio":
+      return "application/xml";
     case ".pdf":
       return "application/pdf";
     default:
@@ -186,6 +188,7 @@ function kindFromFilename(name: string): LibraryItemKind {
     case ".xls":
     case ".pptx":
     case ".ppt":
+    case ".drawio":
       return "office";
     case ".pdf":
       return "pdf";

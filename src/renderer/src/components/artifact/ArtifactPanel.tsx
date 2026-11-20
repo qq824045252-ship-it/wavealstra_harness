@@ -106,6 +106,7 @@ function ArtifactBody({
     case "docx":
     case "xlsx":
     case "pptx":
+    case "drawio":
       return <></>;
     case "cad":
       // Mechanical CAD 二进制产物（FCStd/STL）：P0 不渲染 3D，按代码/文本回退显示说明

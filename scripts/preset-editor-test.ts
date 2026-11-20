@@ -205,8 +205,8 @@ async function main(): Promise<void> {
     // 出厂 preset 回读（旧 Working/Design 配置可读）
     const drawio = back.policy.presets?.find((p) => p.id === "drawio-ai");
     assert(
-      drawio?.providerMcpIds?.join(",") === "drawio-ai" && drawio?.mcpPolicy?.allow.includes("drawio-ai"),
-      "working drawio-ai 出厂 preset 可回读（providerMcpIds 不回归）",
+      drawio?.mcpPolicy?.deny.includes("drawio-ai") && !drawio.providerMcpIds?.length,
+      "回读出厂流程图标签时保留本机 Draw.io 路由",
     );
     const design = store.getProfile("general");
     const blender = design.policy.presets?.find((p) => p.id === "3d-blender");

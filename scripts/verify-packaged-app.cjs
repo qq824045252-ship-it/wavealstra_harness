@@ -267,6 +267,19 @@ function verifyPackagedApp(appDir, options = {}) {
     "--verify-assets", path.join(officeEditor, "craft-assets")], { encoding: "utf8", windowsHide: true,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
   if (officeCheck.status !== 0) fail("Office runtime payload verification failed: " + (officeCheck.stderr || officeCheck.error));
+  const drawioCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-drawio.cjs"),
+    "--verify-assets", path.join(resources, "drawio", "web")], { encoding: "utf8", windowsHide: true,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  if (drawioCheck.status !== 0) fail("Draw.io runtime payload verification failed: " + (drawioCheck.stderr || drawioCheck.error));
+  for (const entry of [
+    "drawio/LICENSE.editor", "builtin-skills/drawio-use/SKILL.md",
+    "builtin-skills/drawio-use/references/upstream/shape-search/search-index.json",
+    "builtin-skills/drawio-use/references/upstream/plugins/codex/drawio/skills/drawio/SKILL.md",
+    "office-editor/editor/drawio/index.html", "office-editor/editor/drawio/editor.css",
+    "office-editor/editor/drawio/editor.js", "office-editor/editor/drawio/engine.js",
+  ]) {
+    if (!fs.existsSync(path.join(resources, entry))) fail("Missing Draw.io payload file: " + entry);
+  }
   if (targetPlatform === "win32" || targetPlatform === "linux") {
     const target = targetPlatform === "win32" ? "win-x64" : "linux-x64";
     const nativeOffice = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-craft-office-native.cjs"),

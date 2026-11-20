@@ -142,7 +142,7 @@ export interface SpeechCapabilityProvider {
 type ProviderKind = "vision" | "media" | "speech";
 type AnyProvider = VisionCapabilityProvider | MediaCapabilityProvider | SpeechCapabilityProvider;
 
-export type LocalCapabilityId = "browser" | "office-use" | "cad-use" | "terminal" | "code-execution" | "subagent" | "runtime-diagnostics";
+export type LocalCapabilityId = "browser" | "office-use" | "cad-use" | "drawio-use" | "terminal" | "code-execution" | "subagent" | "runtime-diagnostics";
 export interface LocalCapabilityCheckResult { state: "ready" | "degraded" | "missing-dependency"; detail: string }
 export interface LocalCapabilityAvailability { available: boolean; tools?: string[]; detail?: string }
 
@@ -157,6 +157,7 @@ const LABELS: Record<string, { label: string; description: string; category: Bui
   browser: { label: "界面与桌面操作", description: `操作 MyBuddy 浏览器/主界面，并在必要时执行受控${desktopPlatformLabel(process.platform)}交互。`, category: "automation" },
   "office-use": { label: "Office Use", description: "新建、检查和渲染 Word、Excel 与 PowerPoint 文件。提交编辑建议，并在用户确认后复验。", category: "automation" },
   "cad-use": { label: "CAD Use", description: "在任务中创建、读取、修改和导出 DWG、DXF 图纸。", category: "automation" },
+  "drawio-use": { label: "Draw.io Use", description: "在 MyBuddy 内编辑 Draw.io 图纸，支持 Mermaid、ELK 布局和可回编导出。", category: "automation" },
   "runtime-diagnostics": { label: "运行诊断", description: "读取应用、浏览器与产物的运行状态和日志。", category: "automation" },
   terminal: { label: "命令执行", description: "直接使用 Pi 原生 bash 执行命令。", category: "execution" },
   "code-execution": { label: "代码执行", description: "在任务目录内执行一次性代码。", category: "execution" },
@@ -408,6 +409,7 @@ export class BuiltinCapabilityRuntime {
         simple("browser", config.browser.enabled, this.browserAvailable),
         simple("office-use", config.officeUse?.enabled !== false, this.localChecks.has("office-use")),
         simple("cad-use", config.cadUse?.enabled !== false, this.localChecks.has("cad-use")),
+        simple("drawio-use", config.drawioUse?.enabled !== false, this.localChecks.has("drawio-use")),
         simple("runtime-diagnostics", config.diagnostics?.enabled ?? config.browser.enabled, this.localChecks.has("runtime-diagnostics")),
         simple("terminal", config.execution.terminalEnabled, true),
         simple("code-execution", config.execution.codeExecutionEnabled, true),

@@ -25,7 +25,7 @@ const WIDE_KINDS = new Set<ArtifactKind>([
   "image",
 ]);
 
-const CANVAS_KINDS = new Set<ArtifactKind>(["html", "docx", "xlsx", "pptx", "cad"]);
+const CANVAS_KINDS = new Set<ArtifactKind>(["html", "docx", "xlsx", "pptx", "cad", "drawio"]);
 
 export function usesCanvasPanelWidth(kind: ArtifactKind | undefined): boolean {
   return kind !== undefined && CANVAS_KINDS.has(kind);
