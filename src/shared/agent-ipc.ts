@@ -1,4 +1,5 @@
 import type { SubagentExecutionPolicy } from "./subagent-execution-policy";
+import type { WorkspaceIconAppearance } from "./workspace-icon";
 import type { CronExecutionSettings } from "./cron-execution";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
 
@@ -554,6 +555,7 @@ export const DbIpc = {
   reopenProjectEvent: "db:reopenProjectEvent",
   upsertSpace: "db:upsertSpace",
   renameSpace: "db:renameSpace",
+  setWorkspaceIcon: "db:setWorkspaceIcon",
   upsertTask: "db:upsertTask",
   deleteTask: "db:deleteTask",
   deleteSpace: "db:deleteSpace",
@@ -2002,6 +2004,7 @@ export interface GatewayListMessagesRequest {
 export interface SpaceDto {
   id: string;
   name: string;
+  icon?: WorkspaceIconAppearance;
   path?: string;
   /** true = 已归档（从空间列表隐藏，数据保留，可在设置中恢复） */
   archived?: boolean;

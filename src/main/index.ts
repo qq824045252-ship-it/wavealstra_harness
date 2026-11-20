@@ -1978,6 +1978,9 @@ function registerIpc(): void {
       };
     }
   });
+  ipcMain.handle(DbIpc.setWorkspaceIcon, (_e, id: string, icon: NonNullable<SpaceDto["icon"]> | null) =>
+    db.setWorkspaceIcon(id, icon),
+  );
   ipcMain.handle(DbIpc.upsertTask, (_e, task) => {
     // Cockpit 即时刷新：任务绑定变化（含解绑/改绑）广播新旧项目（不 bump project.updated_at，避免会话重建扰动）
     const prevProjectId = task?.id ? db.getTask(task.id)?.projectId : undefined;

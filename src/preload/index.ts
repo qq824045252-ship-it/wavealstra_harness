@@ -975,6 +975,8 @@ const api = {
       ipcRenderer.invoke(DbIpc.upsertSpace, space),
     renameSpace: (id: string, name: string): Promise<DbRenameResult> =>
       ipcRenderer.invoke(DbIpc.renameSpace, id, name),
+    setWorkspaceIcon: (id: string, icon: NonNullable<SpaceDto["icon"]> | null): Promise<NonNullable<SpaceDto["icon"]> | null> =>
+      ipcRenderer.invoke(DbIpc.setWorkspaceIcon, id, icon),
     upsertTask: (task: TaskDto): Promise<void> => ipcRenderer.invoke(DbIpc.upsertTask, task),
     deleteTask: (id: string): Promise<void> => ipcRenderer.invoke(DbIpc.deleteTask, id),
     purgeArchivedContent: (request: ArchivedContentDeletionRequest): Promise<ArchivedContentDeletionResult> =>

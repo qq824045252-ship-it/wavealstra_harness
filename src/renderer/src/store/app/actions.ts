@@ -18,6 +18,7 @@ import type {
   ExternalAgentPinDto,
 } from "../../../../shared/external-agent";
 import type { ModelReasoningPreferenceDto } from "../../../../shared/model-metadata";
+import type { WorkspaceIconAppearance } from "../../../../shared/workspace-icon";
 import type {
   TerminalContextDto,
   TerminalExitEvent,
@@ -318,6 +319,7 @@ export interface AppActions {
   relocateSpace: (id: string) => Promise<RelocateSpaceResult>;
   refreshSpacePathStatus: (id: string) => Promise<void>;
   renameSpace: (id: string, name: string) => Promise<boolean>;
+  setWorkspaceIcon: (id: string, icon: WorkspaceIconAppearance | null) => Promise<void>;
   bindTaskSpace: (taskId: string, spaceId: string | null) => void;
   moveSpace: (req: {
     spaceId: string;

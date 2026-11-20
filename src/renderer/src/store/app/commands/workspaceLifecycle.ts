@@ -28,6 +28,7 @@ export function createWorkspaceLifecycleActions(
   | "relocateSpace"
   | "refreshSpacePathStatus"
   | "renameSpace"
+  | "setWorkspaceIcon"
 > {
   const { get, set } = storeContext;
   return {
@@ -117,9 +118,10 @@ export function createWorkspaceLifecycleActions(
       try {
         const all = await storeContext.getApi()?.db?.listSpaces?.();
         if (!all) return;
-        const mapped = (all as any[]).map((s: any) => ({
+        const mapped = all.map((s) => ({
           id: s.id,
           name: s.name,
+          icon: s.icon,
           path: s.path,
           archived: Boolean(s.archived),
           parentId: s.parentId ?? null,
@@ -129,7 +131,7 @@ export function createWorkspaceLifecycleActions(
           pathMissing: Boolean(s.pathMissing),
         }));
         set((state) => ({
-          spaces: mapped.length ? (mapped as Space[]) : state.spaces,
+          spaces: mapped.length ? mapped : state.spaces,
         }));
       } catch (error) {
         console.error("[refreshSpaces] 读取失败：", error);
@@ -316,6 +318,15 @@ export function createWorkspaceLifecycleActions(
         ),
       }));
       return true;
+    },
+
+    setWorkspaceIcon: async (id, icon) => {
+      const db = storeContext.getApi()?.db;
+      if (!db?.setWorkspaceIcon) throw new Error("工作空间图标暂时无法保存");
+      const saved = await db.setWorkspaceIcon(id, icon);
+      set((state) => ({
+        spaces: state.spaces.map((space) => space.id === id ? { ...space, icon: saved ?? undefined } : space),
+      }));
     },
   };
 }

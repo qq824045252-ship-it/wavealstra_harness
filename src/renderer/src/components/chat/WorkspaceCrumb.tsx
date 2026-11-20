@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { IconFolder } from "@/components/common/icons";
+import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
 import { useAppStore } from "@/store/appStore";
 import { getWorkspaceDisplayPath, getWorkspaceBreadcrumb, COPY } from "@/lib/workspaceDisplay";
 
@@ -26,7 +27,8 @@ export default function WorkspaceCrumb({ spaceId, onChange }: Props): React.JSX.
       </span>
     );
   }
-  const missing = !spaces.some((s) => s.id === activeSpaceId);
+  const space = spaces.find((s) => s.id === activeSpaceId);
+  const missing = !space;
   const fullPath = missing ? "" : getWorkspaceDisplayPath(spaces as any, activeSpaceId);
   const label = missing ? "工作空间不可用" : breadcrumb[breadcrumb.length - 1]?.name ?? fullPath;
   const title = missing ? "所属空间不存在或已被归档" : fullPath;
@@ -39,7 +41,7 @@ export default function WorkspaceCrumb({ spaceId, onChange }: Props): React.JSX.
         onClick={() => !missing && openWorkspaceDetail(activeSpaceId)}
         title={missing ? title : `${label} · 点击进入工作空间`}
       >
-        <IconFolder size={12} />
+        <WorkspaceIcon icon={space?.icon} size={12} />
         <span className="workspace-crumb-path">{label}</span>
       </button>
       {missing && <span className="workspace-crumb-missing">（已归档/丢失）</span>}

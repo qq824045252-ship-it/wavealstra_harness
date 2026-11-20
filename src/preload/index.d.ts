@@ -600,6 +600,9 @@ export interface PreloadApi {
     renameSpace: (id: string, name: string) => Promise<
       import("../shared/agent-ipc").DbRenameResult
     >;
+    setWorkspaceIcon: (
+      id: string, icon: NonNullable<SpaceDto["icon"]> | null,
+    ) => Promise<NonNullable<SpaceDto["icon"]> | null>;
     upsertTask: (task: TaskDto) => Promise<void>;
     deleteTask: (id: string) => Promise<void>;
     purgeArchivedContent: (request: ArchivedContentDeletionRequest) => Promise<ArchivedContentDeletionResult>;

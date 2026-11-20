@@ -135,6 +135,7 @@ const mappedSpaces = helpers.recomputeEffectiveArchived(
   (spaces as SpaceDto[]).map((space) => ({
     id: space.id,
     name: space.name,
+    icon: space.icon,
     path: space.path,
     archived: space.archived,
     pathMissing: space.pathMissing,

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useAppStore } from "@/store/appStore";
+import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
 import { getWorkspaceDisplayPath, COPY } from "@/lib/workspaceDisplay";
 import {
   IconCheck,
@@ -152,7 +153,7 @@ export default function WorkspacePicker({
                 onClick={() => pick(space.id)}
                 title={getWorkspaceDisplayPath(spaces as any, space.id)}
               >
-                <IconFolder size={15} />
+                <WorkspaceIcon icon={space.icon} size={15} />
                 <span className="workspace-popup-main">
                   <span className="workspace-popup-name">{getWorkspaceDisplayPath(spaces as any, space.id)}</span>
                   {space.pathMissing ? (

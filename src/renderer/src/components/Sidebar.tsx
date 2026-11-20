@@ -1,3 +1,4 @@
+import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
 import { GATEWAY_SIDEBAR_CHANNELS, type GatewaySidebarChannelId } from "../../../shared/gateway-task";
 import "./sidebar/SidebarNavigation.css";
 import { workspaceRequestRevision } from "@/lib/workspace-request-selection";
@@ -755,7 +756,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
             onDrop={(e) => void handleRowDrop(e, row)}
             onDragEnd={handleDragEnd}
           >
-            <span className="space-icon"><IconFolder size={14} /></span>
+            <span className="space-icon"><WorkspaceIcon icon={space.icon} size={14} /></span>
             <form
               className="space-rename-form"
               onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); void submitRename(space.id); }}
@@ -805,7 +806,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
           <span className="space-chevron" role="button" tabIndex={0} style={{ width: 14, display: "inline-flex", justifyContent: "center" }} onClick={(e) => { e.stopPropagation(); toggleSpaceCollapsed(space.id); }} onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); toggleSpaceCollapsed(space.id); } }}>
             {hasChildren ? (collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />) : <span style={{ width: 12 }} />}
           </span>
-          <span className="space-icon">{collapsed ? <IconFolder size={14} /> : <IconFolderOpen size={14} />}</span>
+          <span className="space-icon"><WorkspaceIcon icon={space.icon} open={!collapsed} size={14} /></span>
           <span className="space-name" title={space.name}>{space.name}</span>
           {space.pathMissing && (
             <button type="button" className="space-path-missing" title="文件夹已移动，点击重新定位" onClick={(e) => { e.stopPropagation(); void runRelocate(space); }}>

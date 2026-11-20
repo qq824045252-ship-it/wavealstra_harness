@@ -15,7 +15,9 @@ import TerminalView from "@/components/artifact/TerminalView";
 import TerminalTabsBar from "@/components/artifact/TerminalTabsBar";
 import BlueprintCaptureDialog from "@/components/blueprint/BlueprintCaptureDialog";
 import MoveWorkspaceDialog from "./MoveWorkspaceDialog";
-import { IconFolder, IconFolderOpen, IconChevronRight } from "@/components/common/icons";
+import { IconChevronRight } from "@/components/common/icons";
+import WorkspaceIcon from "./WorkspaceIcon";
+import WorkspaceIconDialog from "./WorkspaceIconDialog";
 import { getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import type { ProjectUnsavedGuard } from "@/lib/projectWorkspace";
@@ -85,6 +87,8 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   };
   useEffect(() => { materialGuard.current = null; setPendingTab(null); setGuardError(null); }, [activeWorkspaceId]);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [iconEditorSpaceId, setIconEditorSpaceId] = useState<string | null>(null);
+  useEffect(() => setIconEditorSpaceId(null), [activeWorkspaceId]);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameVal, setRenameVal] = useState("");
   const [renameErr, setRenameErr] = useState<string | null>(null);
@@ -161,7 +165,23 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   return <div className="workspace-detail">
     <header className="workspace-detail-header">
       {breadcrumb.length > 1 && <div className="workspace-detail-breadcrumb" aria-label="工作空间路径">{breadcrumb.slice(0, -1).map((segment, index, parents) => <span key={segment.id} className="workspace-breadcrumb-seg"><button className="workspace-breadcrumb-btn" onClick={() => openWorkspaceDetail(segment.id)}>{segment.name}</button>{index < parents.length - 1 && <IconChevronRight size={12} />}</span>)}</div>}
-      <div className="workspace-detail-title-row"><div className="workspace-detail-identity"><div className="workspace-detail-name-row"><span className={`workspace-detail-icon${space.pathMissing ? " workspace-detail-icon--warn" : ""}`} aria-hidden="true">{space.pathMissing ? <IconFolder size={20} strokeWidth={1.8} /> : <IconFolderOpen size={20} strokeWidth={1.8} />}</span><div className="workspace-detail-heading"><h1>{space.name}</h1></div>{space.archived && <span className="workspace-detail-badge">已归档</span>}{space.pathMissing && <span className="workspace-detail-badge workspace-detail-badge--warn">文件夹丢失</span>}</div><div className="workspace-detail-meta"><p>{description}</p><div className="workspace-detail-summary">{activeTasks.length} 个进行中任务 · {memoryCounts.direct + memoryCounts.inherited} 条记忆 · {fileCount ?? "…"} 个文件 · {directGadgets.length} 个 Gadget</div></div></div>
+      <div className="workspace-detail-title-row">
+        <div className="workspace-detail-identity">
+          <div className="workspace-detail-name-row">
+            <button type="button" className={`workspace-detail-icon${space.pathMissing ? " workspace-detail-icon--warn" : ""}`}
+              aria-label="设置工作空间图标" aria-haspopup="dialog" title="设置工作空间图标"
+              onClick={() => setIconEditorSpaceId(space.id)}>
+              <WorkspaceIcon icon={space.icon} open={!space.pathMissing} size={20} />
+            </button>
+            <div className="workspace-detail-heading"><h1>{space.name}</h1></div>
+            {space.archived && <span className="workspace-detail-badge">已归档</span>}
+            {space.pathMissing && <span className="workspace-detail-badge workspace-detail-badge--warn">文件夹丢失</span>}
+          </div>
+          <div className="workspace-detail-meta">
+            <p>{description}</p>
+            <div className="workspace-detail-summary">{activeTasks.length} 个进行中任务 · {memoryCounts.direct + memoryCounts.inherited} 条记忆 · {fileCount ?? "…"} 个文件 · {directGadgets.length} 个 Gadget</div>
+          </div>
+        </div>
         <div className="workspace-detail-actions"><button className="btn btn--primary" onClick={() => newTask(space.id)}>新建任务</button><div className="workspace-detail-more-anchor" ref={moreRef}><button className="btn btn--ghost workspace-kebab" aria-label="Workspace actions" onClick={() => setMoreOpen((value) => !value)}>•••</button>{moreOpen && <div className="workspace-detail-more-menu">
           <button className="workspace-detail-more-item" onClick={() => { setMoreOpen(false); setTab("terminal"); }}>打开终端</button>
           <button className="workspace-detail-more-item" onClick={async () => { setMoreOpen(false); const id = await useAppStore.getState().addSpace(space.id); if (id) openWorkspaceDetail(id); }}>新建子工作空间</button>
@@ -204,7 +224,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
           return <details key={conversation.conversationId} className="workspace-conversation-group" data-conversation-id={conversation.conversationId}><summary><span>{conversation.title}</span><small>{conversation.archived ? '历史对话 · ' : ''}{requests.length} 个任务</small></summary><div className="workspace-overview-flat-list">{requests.slice(0,limit).map(request => <button type="button" key={request.id} className="workspace-overview-task-row" onClick={()=>openWorkspaceRequest(request)}><span className={`ws-task-dot ${request.status === 'running' ? 'on' : ''}`} /><span className="ws-task-name">{request.title}</span><span className="ws-task-time">{foregroundStatus(request.status)}</span></button>)}</div>{requests.length===0 && <p>此对话还没有前台任务。</p>}{requests.length>limit && <button type="button" className="btn btn--ghost" onClick={()=>setForegroundLimits(current=>({...current,[conversation.conversationId]:limit+30}))}>再看 30 条 · 共 {requests.length} 条</button>}</details>;
         })}</section>}
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>当前工作</h2><span>{spaceTasks.length}</span></div>{shownTasks.length ? <div className="workspace-overview-flat-list">{shownTasks.map((task) => <button key={task.id} className="workspace-overview-task-row" onClick={() => setActiveTask(task.id)}><span className={`ws-task-dot ${task.status === "in_progress" ? "on" : ""}`} /><span className="ws-task-name">{task.title || "未命名任务"}</span><span className="ws-task-time">{relativeTimeLabel(task.updatedAt)}</span></button>)}</div> : <div className="workspace-overview-empty"><strong>还没有任务</strong><span>从这个工作空间创建第一项任务。</span><button className="btn btn--primary" onClick={() => newTask(space.id)}>新建任务</button></div>}</section>
-        <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>子工作空间</h2><span>{children.length}</span></div>{children.length ? <div className="workspace-overview-flat-list">{children.map((child) => <button key={child.id} className="workspace-overview-child-row" onClick={() => openWorkspaceDetail(child.id)}><span><IconFolder size={15} />{child.name}</span><small>{tasks.filter((task) => task.spaceId === child.id && !task.archived).length} 个任务</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无子工作空间</div>}</section>
+        <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>子工作空间</h2><span>{children.length}</span></div>{children.length ? <div className="workspace-overview-flat-list">{children.map((child) => <button key={child.id} className="workspace-overview-child-row" onClick={() => openWorkspaceDetail(child.id)}><span><WorkspaceIcon icon={child.icon} size={15} />{child.name}</span><small>{tasks.filter((task) => task.spaceId === child.id && !task.archived).length} 个任务</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无子工作空间</div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>最近产物</h2><span>{recentArtifacts.length}</span></div>{recentArtifacts.length ? <div className="workspace-overview-flat-list">{recentArtifacts.map((artifact) => <button key={artifact.id} className="workspace-overview-artifact-row" onClick={() => openArtifact(artifact.taskId, artifact.id)}><span>{artifact.title || "未命名产物"}</span><small>{artifact.kind} · {relativeTimeLabel(artifact.updatedAt)}</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">工作空间任务产生的文件与产物会显示在这里。</div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>Gadgets</h2><button className="workspace-overview-link" onClick={() => setTab("gadgets")}>查看全部</button></div>{directGadgets.length ? <div className="workspace-overview-flat-list">{directGadgets.slice(0, 3).map((gadget) => <button key={gadget.id} className="workspace-overview-gadget-row" onClick={() => setTab("gadgets")}><span>{gadget.name}</span><small>{gadget.runtime.status}</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无工作空间 Gadget。</div>}</section>
         <section className="workspace-overview-section workspace-overview-section--summaries"><button className="workspace-overview-summary-row" onClick={() => setTab("memory")}><span><strong>记忆</strong><small>{memoryCounts.direct} 当前 · {memoryCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("context")}><span><strong>上下文</strong><small>{contextCounts.local} 当前 · {contextCounts.inherited} 继承</small></span><b>打开 →</b></button><button className="workspace-overview-summary-row" onClick={() => setTab("library")}><span><strong>资料</strong><small>{libraryCounts.owned} 本空间文档 · {libraryCounts.direct} 引用 · {libraryCounts.inherited} 继承位置</small></span><b>打开 →</b></button></section>
@@ -223,6 +243,10 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
         </div>
       )}
     </div>
+    {iconEditorSpaceId === space.id && <WorkspaceIconDialog key={space.id}
+      name={space.name} icon={space.icon} folderOpen={!space.pathMissing}
+      onClose={() => setIconEditorSpaceId((current) => current === space.id ? null : current)}
+      onSave={(icon) => useAppStore.getState().setWorkspaceIcon(space.id, icon)} />}
     {renameOpen && <div className="workspace-rename-overlay"><div className="workspace-rename-card"><div className="workspace-rename-title">重命名工作空间</div><input className="workspace-rename-input" value={renameVal} onChange={(event) => { setRenameVal(event.target.value); setRenameErr(null); }} autoFocus />{renameErr && <div className="workspace-rename-error">{renameErr}</div>}<div className="workspace-rename-actions"><button className="btn" onClick={() => setRenameOpen(false)}>取消</button><button className="btn btn--primary" onClick={() => void handleRename()}>保存</button></div></div></div>}
     {captureOpen && <BlueprintCaptureDialog workspaceId={space.id} workspaceName={space.name} onClose={() => setCaptureOpen(false)} onSaved={() => setCaptureOpen(false)} />}
     {moveOpen && <MoveWorkspaceDialog workspaceId={space.id} workspaceName={space.name} onClose={() => setMoveOpen(false)} onMoved={() => setMoveOpen(false)} />}

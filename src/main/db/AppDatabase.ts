@@ -69,6 +69,7 @@ import type {
 import type { TaskWriteGrantRow } from "../../shared/external-write";
 import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
+import { DEFAULT_WORKSPACE_ICON, isWorkspaceIconAppearance, type WorkspaceIconAppearance } from "../../shared/workspace-icon";
 
 export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
 
@@ -146,7 +147,13 @@ interface SpaceRow {
   sort_order: number;
   created_at: number;
   updated_at: number;
+  icon_shape: string | null;
+  icon_color: string | null;
 }
+
+const SELECT_SPACES = `SELECT id, name, path, archived, parent_id, sort_order, created_at,
+  updated_at, workspace_icons.shape AS icon_shape, workspace_icons.color AS icon_color
+  FROM spaces LEFT JOIN workspace_icons ON workspace_icons.workspace_id = spaces.id`;
 
 /**
  * effectiveArchived 纯计算（V2 Archive 语义）：effective = 自身 explicit archived ∨ 任一祖先。
@@ -1651,6 +1658,12 @@ export class AppDatabase {
         updated_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS workspace_icons (
+        workspace_id TEXT PRIMARY KEY NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        shape TEXT NOT NULL,
+        color TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -2298,9 +2311,7 @@ export class AppDatabase {
 
   listSpaces(): SpaceDto[] {
     const rows = this.db
-      .prepare(
-        "SELECT id, name, path, archived, parent_id, sort_order, created_at, updated_at FROM spaces ORDER BY updated_at DESC",
-      )
+      .prepare(`${SELECT_SPACES} ORDER BY updated_at DESC`)
       .all() as SpaceRow[];
     const effective = computeEffectiveArchived(
       rows.map((r) => ({ id: r.id, parentId: r.parent_id, archived: Boolean(r.archived) })),
@@ -2310,9 +2321,11 @@ export class AppDatabase {
 
   /** 空间行 → SpaceDto（统一映射；effectiveArchived 可选，仅 list 时计算） */
   private mapSpaceRow(r: SpaceRow, effectiveArchived = false): SpaceDto {
+    const icon = { shape: r.icon_shape, color: r.icon_color };
     return {
       id: r.id,
       name: r.name,
+      ...(isWorkspaceIconAppearance(icon) ? { icon } : {}),
       path: r.path ?? undefined,
       archived: Boolean(r.archived),
       parentId: r.parent_id,
@@ -2328,7 +2341,7 @@ export class AppDatabase {
     params: unknown[],
   ): SpaceRow | undefined {
     return this.db.prepare(
-      `SELECT id, name, path, archived, parent_id, sort_order, created_at, updated_at FROM spaces WHERE ${where} LIMIT 1`,
+      `${SELECT_SPACES} WHERE ${where} LIMIT 1`,
     ).get(...params) as SpaceRow | undefined;
   }
 
@@ -2393,6 +2406,19 @@ export class AppDatabase {
       .run(name, Date.now(), id);
   }
 
+  setWorkspaceIcon(id: string, icon: WorkspaceIconAppearance | null): WorkspaceIconAppearance | null {
+    if (icon !== null && !isWorkspaceIconAppearance(icon)) throw new Error("工作空间图标选项无效");
+    this.assertSpaceExists(id);
+    if (icon === null || (icon.shape === DEFAULT_WORKSPACE_ICON.shape && icon.color === DEFAULT_WORKSPACE_ICON.color)) {
+      this.db.prepare("DELETE FROM workspace_icons WHERE workspace_id = ?").run(id);
+      return null;
+    }
+    const { shape, color } = icon;
+    this.db.prepare(`INSERT INTO workspace_icons (workspace_id, shape, color) VALUES (?, ?, ?)
+      ON CONFLICT(workspace_id) DO UPDATE SET shape = excluded.shape, color = excluded.color`).run(id, shape, color);
+    return { shape, color };
+  }
+
   /** 按 id 取空间；不存在返回 undefined */
   getSpace(id: string): SpaceDto | undefined {
     const row = this.rawSpaceWhere("id = ?", [id]);
@@ -2426,20 +2452,11 @@ export class AppDatabase {
 
   /** 直接子空间列表（parentId null = 根空间），按 sort_order → created_at → id 稳定排序（与 shared compareMixed 的 space tie-break 对齐，不使用 name）。 */
   getSpaceChildren(parentId: string | null): SpaceDto[] {
-    const rows =
-      parentId == null
-        ? (this.db
-            .prepare(
-              `SELECT id, name, path, archived, parent_id, sort_order, created_at, updated_at FROM spaces
-               WHERE parent_id IS NULL ORDER BY sort_order ASC, created_at ASC, id`,
-            )
-            .all() as SpaceRow[])
-        : (this.db
-            .prepare(
-              `SELECT id, name, path, archived, parent_id, sort_order, created_at, updated_at FROM spaces
-               WHERE parent_id = ? ORDER BY sort_order ASC, created_at ASC, id`,
-            )
-            .all(parentId) as SpaceRow[]);
+    const condition = parentId == null ? "parent_id IS NULL" : "parent_id = ?";
+    const params = parentId == null ? [] : [parentId];
+    const rows = this.db.prepare(
+      `${SELECT_SPACES} WHERE ${condition} ORDER BY sort_order ASC, created_at ASC, id`,
+    ).all(...params) as SpaceRow[];
     return rows.map((r) => this.mapSpaceRow(r, this.isSpaceEffectiveArchived(r.id)));
   }
 

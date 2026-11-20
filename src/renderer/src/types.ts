@@ -294,6 +294,7 @@ export type TaskFilterTime = "all" | "today" | "7d" | "30d";
 export interface Space {
   id: string;
   name: string;
+  icon?: import("@shared/workspace-icon").WorkspaceIconAppearance;
   /** 本地文件夹绝对路径（「打开本地文件夹」时写入） */
   path?: string;
   /** true = 已归档（从空间列表隐藏，数据保留，可在设置中恢复） */
