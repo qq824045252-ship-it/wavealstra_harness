@@ -43,10 +43,27 @@ settings.read = () => ({notificationPreferences:{inAppEnabled:true,desktopEnable
 notifications = service();
 const work = notifications.publish({type:"task.completed",level:"success",title:"work",sourceType:"task",target:{kind:"work",workId:"work"},dedupeKey:"one"});
 assert.ok(work); assert.deepEqual(notifications.resolveActivation(work.id),{kind:"work",workId:"work"});
+assert.deepEqual(notifications.list()[0]?.target, {kind:"work",workId:"work"}, "list retains the exact stored destination");
 assert.equal(notifications.publish({type:"task.completed",level:"success",title:"work",sourceType:"task",dedupeKey:"one"}),null);
 assert.equal(notifications.unreadCount(),1);
 notifications.markRead(work.id); assert.equal(notifications.unreadCount(),0);
 notifications.dismiss(work.id); assert.equal(notifications.list().length,0);
+const today = Date.now();
+const publish = (type: NotificationDto["type"], title: string, body: string, createdAt: number) => {
+  const record = notifications.publish({type, level:"info", sourceType:"system", title, body, createdAt});
+  assert.ok(record);
+  return record;
+};
+const first = publish("automation.failed", "Older failure A", "Deployment 100%", today - 60_000);
+const second = publish("automation.failed", "Older failure B", "deployment 100%", today - 60_000);
+publish("automation.failed", "No literal percent", "deployment 1000", today);
+publish("task.completed", "Other type", "deployment 100%", today);
+const query = { types: ["automation.failed"] as const, query: "DEPLOYMENT 100%", limit: 1 };
+const sorted = [first, second].sort((left, right) => left.id > right.id ? -1 : 1);
+assert.deepEqual(notifications.list(query).map(item => item.id), [sorted[0].id], "combines type and literal text search before limit");
+assert.deepEqual(notifications.list({...query, before: sorted[0]}).map(item => item.id), [sorted[1].id], "cursor keeps records with the same timestamp");
+notifications.markRead(sorted[0].id);
+assert.deepEqual(notifications.list({...query, unreadOnly: true}).map(item => item.id), [sorted[1].id], "unread combines with type and search");
 db.close(); rmSync(directory,{recursive:true,force:true});
 
 // Production store actions route retired Bot notifications into exact read-only

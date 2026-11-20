@@ -23,10 +23,16 @@ interface NotificationSqlRow {
   created_at: number;
   read_at: number | null;
   dismissed_at: number | null;
+  target_json?: string | null;
 }
 
 function mapRow(row: NotificationSqlRow): NotificationDto {
+  let target: NotificationActivationTarget | null = null;
+  if (row.target_json) {
+    try { target = parseNotificationTarget(JSON.parse(row.target_json)); } catch { /* Invalid persisted target. */ }
+  }
   return {
+    ...(target ? { target } : {}),
     id: row.id,
     type: row.type as NotificationType,
     level: row.level as NotificationLevel,
@@ -110,16 +116,34 @@ export class NotificationRepository {
   }
 
   list(request: NotificationListRequest = {}): NotificationDto[] {
-    const limit = Math.max(1, Math.min(500, Math.floor(request.limit ?? 100)));
-    const where = request.unreadOnly
-      ? "dismissed_at IS NULL AND read_at IS NULL"
-      : "dismissed_at IS NULL";
+    const requestedLimit = request.limit ?? 100;
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.floor(requestedLimit))) : 100;
+    const where = ["dismissed_at IS NULL"];
+    const bindings: Array<string | number> = [];
+    if (request.unreadOnly) where.push("read_at IS NULL");
+    if (Array.isArray(request.types) && request.types.length) {
+      const types = request.types.filter(type => typeof type === "string").slice(0, 32);
+      if (!types.length) return [];
+      where.push(`type IN (${types.map(() => "?").join(", ")})`);
+      bindings.push(...types);
+    }
+    const query = typeof request.query === "string" ? request.query.trim().slice(0, 160) : "";
+    if (query) {
+      where.push("(instr(lower(title), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0)");
+      bindings.push(query, query);
+    }
+    const before = request.before;
+    if (before && Number.isFinite(before.createdAt) && typeof before.id === "string") {
+      where.push("(created_at, id) < (?, ?)");
+      bindings.push(before.createdAt, before.id);
+    }
     const rows = this.db.prepare(`
-      SELECT * FROM notifications
-      WHERE ${where}
-      ORDER BY created_at DESC
+      SELECT n.*, (SELECT a.target_json FROM notification_activation_targets a WHERE a.notification_id = n.id) AS target_json
+      FROM notifications n
+      WHERE ${where.join(" AND ")}
+      ORDER BY created_at DESC, id DESC
       LIMIT ?
-    `).all(limit) as NotificationSqlRow[];
+    `).all(...bindings, limit) as NotificationSqlRow[];
     return rows.map(mapRow);
   }
 

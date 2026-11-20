@@ -175,7 +175,7 @@ import type {
 } from "../shared/artifact-ipc";
 import { AgentService } from "./agent/AgentService";
 import { armStartupReport, onStartupReport, startupMark, startupMarkEnabled } from "./perf/startupMarks";
-import { publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
+import { createTaskInteractionNotificationListener, publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
 import { ExternalAgentRuntime } from "./external-agent/ExternalAgentRuntime";
 import { ExternalAgentIpc, type ExternalAgentId, type ExternalAgentPromptRequest, type ExternalAgentResolvePermissionRequest, type ExternalAgentSetConfigOptionRequest } from "../shared/external-agent";
 import { ConversationBranchService } from "./agent/ConversationBranchService";
@@ -2962,6 +2962,7 @@ app.whenReady().then(async () => {
     publishTaskLifecycleNotification({ event, task: db.getTask(event.taskId),
       workRepo: agentService.getWorkService().repo, notifications: notificationService });
   });
+  agentService.onPatch(createTaskInteractionNotificationListener(id => db.getTask(id), notificationService));
   // 用量统计：启动后延迟调度异步分片回填历史 session jsonl + 扫描 subagent 归档
   // （水位+size/mtime 短路；分片让出事件循环，不阻塞启动；失败仅告警）
   try {
