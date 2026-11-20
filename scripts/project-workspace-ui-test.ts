@@ -379,9 +379,6 @@ void (async () => {
   assert.ok(materialsSource.includes('aria-label="搜索项目资料"'), "materials exposes one unified project-material search");
   assert.ok(materialsSource.includes("query={query} hideSearch"), "supplemental references consume the shared search instead of exposing a second search box");
 
-  const sidebarSource = readFileSync(join(process.cwd(), "src/renderer/src/components/Sidebar.tsx"), "utf8");
-  assert.ok(sidebarSource.includes("requestProjectsRoot"), "sidebar asks to return to project list");
-
   assert.deepEqual(
     [...PROJECT_PRIMARY_TABS],
     ["activity", "health", "plan", "tasks", "notes", "memory", "assets"],

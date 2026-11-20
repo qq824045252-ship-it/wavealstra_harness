@@ -1,11 +1,11 @@
 /**
- * UsageStatsModal — 「我的账户 → 用量」面板。
+ * 用量统计面板。
  * 布局参照活跃度仪表：KPI + 日热力图 + 活跃/Token/Cache + skills/模型。
  * 数据来自主进程 usage:dashboard（本地日历窗口，按 MyBuddy 所选模型记账）。
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAppStore } from "@/store/appStore";
-import { IconX, IconDownload, IconRefresh } from "@/components/common/icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionState } from "@/components/desktop/DesktopSection";
+import { IconDownload, IconRefresh } from "@/components/common/icons";
 import type { UsageDashboardDto, UsageDailyCellDto } from "../../../../shared/agent-ipc";
 import type { UsageKnownFields } from "../../../../shared/usage-stats";
 import { barHeights, mondayIndex, weeklyTotals } from "@shared/usage-stats";
@@ -209,49 +209,38 @@ function StatGrid({
   );
 }
 
-export default function UsageStatsModal(): React.JSX.Element | null {
-  const open = useAppStore((s) => s.usageStatsOpen);
-  const close = useAppStore((s) => s.closeUsageStats);
-  const [rangeDays, setRangeDays] = useState(1);
+export default function UsageStatsPage(): React.JSX.Element {
+  const [rangeDays, setRangeDays] = useDesktopSectionState("usage:range", 1);
+  const requestId = useRef(0);
   const [data, setData] = useState<UsageDashboardDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [skillPage, setSkillPage] = useState(0);
   const [modelPage, setModelPage] = useState(0);
-  const [heatMode, setHeatMode] = useState<HeatMode>("daily");
+  const [heatMode, setHeatMode] = useDesktopSectionState<HeatMode>("usage:heat-mode", "daily");
 
   const load = useCallback(async (days: number): Promise<void> => {
+    const id = ++requestId.current;
+    setData(null);
     setLoading(true);
     setLoadError(false);
     try {
       const next = await window.api?.usage?.dashboard(days);
+      if (id !== requestId.current) return;
       setData(next ?? null);
       setSkillPage(0);
       setModelPage(0);
     } catch {
-      setLoadError(true);
+      if (id === requestId.current) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      setRangeDays(1);
-      setHeatMode("daily");
-      return;
-    }
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, close]);
-
-  useEffect(() => {
-    if (!open) return;
     void load(rangeDays);
-  }, [open, rangeDays, load]);
+    return () => { requestId.current++; };
+  }, [rangeDays, load]);
 
   const heatCols = useMemo(() => buildHeatColumns(data?.days ?? [], heatMode), [data, heatMode]);
 
@@ -261,8 +250,6 @@ export default function UsageStatsModal(): React.JSX.Element | null {
   const modelPages = Math.max(1, Math.ceil((data?.models.length ?? 0) / modelPageSize));
   const skills = (data?.skills ?? []).slice(skillPage * skillPageSize, skillPage * skillPageSize + skillPageSize);
   const models = (data?.models ?? []).slice(modelPage * modelPageSize, modelPage * modelPageSize + modelPageSize);
-
-  if (!open) return null;
 
   const exportCsv = async (): Promise<void> => {
     try {
@@ -281,39 +268,20 @@ export default function UsageStatsModal(): React.JSX.Element | null {
   };
 
   return (
-    <div className="us-backdrop" onClick={close}>
-      <div
-        className="us-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label="用量"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <>
+      <DesktopSectionSidebar title="用量统计" scrollKey="usage">
+        <div className="desktop-section-group">统计范围</div>
+        {RANGES.map(range => <DesktopSectionRow key={range.days} active={rangeDays === range.days} onClick={() => setRangeDays(range.days)}>{range.label}</DesktopSectionRow>)}
+      </DesktopSectionSidebar>
+      <section className="us-panel desktop-usage" aria-label="用量统计">
         <div className="us-head">
-          <div>
-            <div className="us-title">用量</div>
-            <div className="us-sub">查看 token 活跃度、连续使用、skills 与模型用量。</div>
-          </div>
-          <div className="us-range">
-            {RANGES.map((r) => (
-              <button
-                key={r.days}
-                className={`us-range-btn ${rangeDays === r.days ? "active" : ""}`}
-                onClick={() => setRangeDays(r.days)}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+          <div className="us-title">用量统计</div>
           <div className="us-actions">
             <button className="us-text-btn" title="刷新" onClick={() => void load(rangeDays)} disabled={loading}>
               <IconRefresh size={14} /> 刷新
             </button>
             <button className="icon-btn" title="导出 CSV" onClick={() => void exportCsv()}>
               <IconDownload size={15} />
-            </button>
-            <button className="icon-btn" title="关闭" onClick={close}>
-              <IconX size={15} />
             </button>
           </div>
         </div>
@@ -532,7 +500,7 @@ export default function UsageStatsModal(): React.JSX.Element | null {
             </div>
           </div>
         )}
-      </div>
-    </div>
+      </section>
+    </>
   );
 }

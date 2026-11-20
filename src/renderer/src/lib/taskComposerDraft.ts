@@ -33,8 +33,13 @@ const drafts = new Map<string, TaskComposerDraft>();
 export function composerDraftScope(
   variant: "home" | "chat" | "project",
   activeTaskId: string | null,
+  draftId?: string,
+  projectId?: string | null,
 ): string {
-  if (variant === "chat") return activeTaskId ? `task:${activeTaskId}` : "task:new";
+  if (variant === "chat" && activeTaskId) return `task:${activeTaskId}`;
+  if (variant === "project") return `surface:project:${projectId ?? ""}`;
+  if (draftId) return `draft:${draftId}`;
+  if (variant === "chat") return "task:new";
   return `surface:${variant}`;
 }
 

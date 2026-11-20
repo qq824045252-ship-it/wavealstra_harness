@@ -12,6 +12,9 @@ import type {
   McpUiPromptDto,
 } from "../../../../shared/agent-ipc";
 import { HubGrid, HubCard, HubStatusBadge, HubActionsMenu, HubEmpty, HubHeader, HubToolbar, HubSearch, HubFilterPills, HubImportBar, HubDropOverlay, HubToast, HubAuthoringModal, HubSkillDetailModal, ManagedMcpRuntimeBar } from "@/components/hub";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionState, useDesktopShell } from "@/components/desktop/DesktopSection";
+import { IconBlocks, IconBook, IconFolderOpen, IconLink, IconPuzzle } from "@/components/common/icons";
+import "./desktop-secondary.css";
 import { ALL_PLUGIN_CATEGORIES, connectorCategory, filterPluginCategories, mcpCategory, skillCategory } from "@/lib/pluginCategories";
 
 type HubTab = "experts" | "skills" | "mcp" | "connectors";
@@ -33,6 +36,13 @@ const TAB_LABEL: Record<HubTab, string> = {
   skills: "技能",
   mcp: "MCP",
   connectors: "连接器",
+};
+
+const HUB_TAB_ICON = {
+  experts: IconPuzzle,
+  skills: IconBook,
+  mcp: IconBlocks,
+  connectors: IconLink,
 };
 
 function HubCategoryPills({ label, pills, activeId, onChange }: {
@@ -1754,8 +1764,9 @@ interface Props {
 }
 
 export default function HubPage({ tab }: Props): React.JSX.Element {
+  const desktop = useDesktopShell();
   const setPage = useAppStore((s) => s.setPage);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useDesktopSectionState("extensions-search", "");
   const [storage, setStorage] = useState<PluginStoragePathsDto | null>(null);
   const [directoryError, setDirectoryError] = useState("");
   useEffect(() => {
@@ -1772,8 +1783,26 @@ export default function HubPage({ tab }: Props): React.JSX.Element {
   };
 
   return (
-    <div className="content-col hub-page">
-      <div className="hub-page-chrome">
+    <div className={`content-col hub-page${desktop ? " desktop-hub" : ""}`}>
+      {desktop && <DesktopSectionSidebar title="扩展" scrollKey="extensions"
+        actions={
+          <button type="button" className="icon-btn" disabled={!storage} title={storage?.root ?? "打开插件目录"}
+            aria-label="打开插件目录" onClick={() => void openPluginDirectory()}>
+            <IconFolderOpen size={16} />
+          </button>
+        }>
+        <div className="desktop-section-group">分类</div>
+        {HUB_TABS.map((item) => {
+          const Icon = HUB_TAB_ICON[item];
+          return <DesktopSectionRow key={item} active={item === tab} icon={<Icon size={15} />} onClick={() => setPage(item)}>
+            {item === "experts" ? "专家插件" : TAB_LABEL[item]}
+          </DesktopSectionRow>;
+        })}
+      </DesktopSectionSidebar>}
+      {desktop ? <div className="desktop-secondary-heading">
+        <h1>{tab === "experts" ? "专家插件" : TAB_LABEL[tab]}</h1>
+        <HubSearch value={query} onChange={setQuery} placeholder={`搜索${TAB_LABEL[tab]}或描述`} />
+      </div> : <div className="hub-page-chrome">
         <HubHeader title={TAB_LABEL[tab]} />
         <HubToolbar
           left={
@@ -1789,8 +1818,8 @@ export default function HubPage({ tab }: Props): React.JSX.Element {
           <span>插件目录</span><code title={storage?.root}>{storage?.root ?? "读取中…"}</code>
           <button className="btn" type="button" disabled={!storage} onClick={() => void openPluginDirectory()}>打开插件目录</button>
         </div>
-        {directoryError && <div className="mcp-config-error" role="alert">{directoryError}</div>}
-      </div>
+      </div>}
+      {directoryError && <div className="mcp-config-error" role="alert">{directoryError}</div>}
 
       <div className="page-scroll">
         <div className="page-container hub-page-container">

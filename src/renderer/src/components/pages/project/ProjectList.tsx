@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { IconPlus, IconSearch } from "@/components/common/icons";
+import { IconFolderKanban, IconPlus, IconSearch } from "@/components/common/icons";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionState } from "@/components/desktop/DesktopSection";
 import { useAppStore } from "@/store/appStore";
-import { filterProjectsByQuery } from "@/lib/projectWorkspace";
+import { filterProjectsByQuery, matchesArchiveFilter } from "@/lib/projectWorkspace";
 import { listProjectTemplates } from "@shared/project-template";
 import type { ProjectDto } from "@shared/project-domain";
 import ProjectCard from "./ProjectCard";
 import ProjectTemplateCard from "./ProjectTemplateCard";
 import "@/styles/project-home.css";
+import "@/styles/desktop-project-automation.css";
 
 interface Props {
+  desktop?: boolean;
   showArchived: boolean;
   onShowArchivedChange: (value: boolean) => void;
   onCreate: (templateId?: string) => void;
@@ -20,6 +23,7 @@ interface Props {
 }
 
 export default function ProjectList({
+  desktop = false,
   showArchived,
   onShowArchivedChange,
   onCreate,
@@ -31,7 +35,7 @@ export default function ProjectList({
   const projects = useAppStore((state) => state.projects);
   const tasks = useAppStore((state) => state.tasks);
   const refreshProjects = useAppStore((state) => state.refreshProjects);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useDesktopSectionState(desktop ? "projects:query" : null, "");
   const [loading, setLoading] = useState(projects.length === 0);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ type: "archive" | "delete"; project: ProjectDto } | null>(null);
@@ -40,15 +44,23 @@ export default function ProjectList({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void refreshProjects(showArchived).finally(() => {
-      if (!cancelled) setLoading(false);
-    });
+    void refreshProjects(showArchived)
+      .catch((cause) => {
+        if (!cancelled) onError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
-  }, [refreshProjects, showArchived]);
+  }, [onError, refreshProjects, showArchived]);
 
-  const visible = useMemo(() => filterProjectsByQuery(projects, query), [projects, query]);
+  const projectsInFilter = useMemo(
+    () => projects.filter((project) => matchesArchiveFilter(project.archived, showArchived ? "archived" : "active")),
+    [projects, showArchived],
+  );
+  const visible = useMemo(() => filterProjectsByQuery(projectsInFilter, query), [projectsInFilter, query]);
   const templates = useMemo(() => listProjectTemplates(), []);
 
   const archiveOrRestore = async (project: ProjectDto): Promise<void> => {
@@ -88,19 +100,35 @@ export default function ProjectList({
   };
 
   return (
-    <div className="page-scroll">
+    <div className={`page-scroll${desktop ? " project-home-desktop" : ""}`}>
+      {desktop && (
+        <DesktopSectionSidebar
+          title="项目"
+          scrollKey="projects"
+          actions={<button type="button" className="icon-btn" aria-label="新建项目" title="新建项目" onClick={() => onCreate()}><IconPlus size={16} /></button>}
+        >
+          <DesktopSectionRow active={!showArchived} onClick={() => onShowArchivedChange(false)}>进行中</DesktopSectionRow>
+          <DesktopSectionRow active={showArchived} onClick={() => onShowArchivedChange(true)}>已归档</DesktopSectionRow>
+          <div className="desktop-section-group">项目列表</div>
+          {visible.map((project) => (
+            <DesktopSectionRow
+              key={project.id}
+              icon={<IconFolderKanban size={15} />}
+              title={project.name}
+              onClick={() => onEnter(project.id)}
+            >
+              {project.name}
+            </DesktopSectionRow>
+          ))}
+        </DesktopSectionSidebar>
+      )}
       <div className="page-container">
         <div className="project-page-head project-home-head">
           <div>
-            <div className="page-title">项目</div>
-            <div className="page-sub">让 AI 围绕一个长期目标持续工作</div>
+            <div className="page-title">{desktop ? "项目总览" : "项目"}</div>
+            {!desktop && <div className="page-sub">让 AI 围绕一个长期目标持续工作</div>}
           </div>
-          <div className="project-home-hero-art" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-            <i />
-          </div>
+          {!desktop && <div className="project-home-hero-art" aria-hidden="true"><i /><i /><i /><i /></div>}
           <button type="button" className="btn primary" onClick={() => onCreate()}>
             <IconPlus size={14} /> 新建项目
           </button>
@@ -110,7 +138,7 @@ export default function ProjectList({
           <div className="project-home-section-head">
             <h2 className="project-home-section-title">我的项目</h2>
             <div className="project-home-section-tools">
-              <div className="project-home-tabs" role="group" aria-label="项目归档筛选">
+              {!desktop && <div className="project-home-tabs" role="group" aria-label="项目归档筛选">
                 <button
                   type="button"
                   className={!showArchived ? "active" : ""}
@@ -125,7 +153,7 @@ export default function ProjectList({
                 >
                   已归档
                 </button>
-              </div>
+              </div>}
               <div className="search-input project-home-search">
                 <IconSearch size={14} />
                 <input
@@ -138,17 +166,17 @@ export default function ProjectList({
             </div>
           </div>
 
-          {loading && projects.length === 0 ? (
+          {loading && projectsInFilter.length === 0 ? (
             <div className="project-loading">正在加载项目…</div>
           ) : visible.length === 0 ? (
             <div className="project-home-empty">
               <div className="project-home-empty-title">
-                {projects.length ? "没有匹配项目" : "还没有项目"}
+                {projectsInFilter.length ? "没有匹配项目" : showArchived ? "没有已归档项目" : "还没有项目"}
               </div>
               <div className="project-home-empty-sub">
-                {projects.length ? "试试其他关键词" : "创建一个项目，让 AI 围绕同一个目标持续工作。"}
+                {projectsInFilter.length ? "试试其他关键词" : !showArchived && "创建一个项目，让 AI 围绕同一个目标持续工作。"}
               </div>
-              {!projects.length && (
+              {!projectsInFilter.length && !showArchived && (
                 <button type="button" className="btn primary" onClick={() => onCreate()}>
                   <IconPlus size={14} /> 新建项目
                 </button>

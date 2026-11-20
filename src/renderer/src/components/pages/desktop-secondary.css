@@ -1,0 +1,198 @@
+.desktop-secondary-heading {
+  min-height: 44px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  background: var(--surface-main, var(--bg-panel));
+}
+
+.desktop-secondary-heading h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.desktop-secondary-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-default, var(--border));
+  border-radius: var(--radius-sm, 6px);
+  color: var(--fg-muted);
+  background: var(--surface-input, var(--bg-panel));
+}
+
+.desktop-secondary-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}
+
+.desktop-secondary-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.desktop-secondary-empty {
+  padding: 24px 12px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.desktop-secondary-status {
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.desktop-assistant-heading {
+  justify-content: flex-start;
+}
+
+.desktop-assistant-heading .assistant-conn-hint {
+  margin-left: 0;
+}
+
+.desktop-hub .hub-page-container,
+.desktop-results .desktop-results-container,
+.desktop-workbench .gadget-page-body {
+  padding: 14px 18px 24px;
+}
+
+.desktop-hub .desktop-secondary-heading .hub-search {
+  max-width: 260px;
+  width: 100%;
+}
+
+.desktop-workbench-search {
+  margin: 2px 4px 8px;
+}
+
+.desktop-workbench .desktop-workbench-detail .gadget-card {
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.desktop-workbench .desktop-workbench-detail .gadget-card-description {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.desktop-results-search {
+  flex: 0 1 280px;
+  max-width: 100%;
+}
+
+.desktop-results-categories {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  padding: 7px 18px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+}
+
+.desktop-results-categories button {
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill, 999px);
+  background: transparent;
+  color: var(--fg-secondary);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.desktop-results-categories button:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.desktop-results-categories button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  background: var(--desktop-selected, var(--bg-hover));
+  color: var(--accent);
+}
+
+.desktop-results-categories button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.desktop-results .files-group-row:disabled {
+  cursor: default;
+}
+
+.desktop-results .desktop-results-inline-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 16px;
+}
+
+.desktop-results .page-scroll {
+  container: desktop-results / inline-size;
+}
+
+.desktop-results .desktop-results-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(64px, .18fr) minmax(76px, .24fr) 56px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+}
+
+.desktop-results .desktop-results-table-head {
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.desktop-results .desktop-results-task-link {
+  width: 100%;
+  padding: 6px 12px;
+  text-align: left;
+}
+
+.desktop-results .desktop-results-task-link:hover {
+  background: var(--bg-hover);
+}
+
+.desktop-results .desktop-results-task-link svg {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.desktop-results .files-task-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-results .files-file-row .files-file-name {
+  padding-left: 14px;
+}
+
+@container desktop-results (max-width: 475px) {
+  .desktop-results .desktop-results-columns {
+    grid-template-columns: minmax(0, 1fr) 68px;
+  }
+
+  .desktop-results-columns > :nth-child(n + 3) {
+    display: none;
+  }
+}

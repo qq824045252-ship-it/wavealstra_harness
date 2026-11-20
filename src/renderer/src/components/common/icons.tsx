@@ -2,6 +2,7 @@ import type { SVGProps } from "react";
 import {
   Activity,
   Settings,
+  MessageCircle,
   MessagesSquare,
   MessageSquarePlus,
   AlertTriangle,
@@ -143,6 +144,7 @@ export const IconBell = wrapLucide(Bell);
 export const IconSettings = wrapLucide(SlidersHorizontal);
 export const IconSettingsGear = wrapLucide(Settings);
 export const IconDiagnostics = wrapLucide(Activity);
+export const IconConversation = wrapLucide(MessageCircle);
 export const IconMessages = wrapLucide(MessagesSquare);
 export const IconNewConversation = wrapLucide(MessageSquarePlus);
 

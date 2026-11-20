@@ -64,16 +64,11 @@ export interface AppActions {
   /** 进入子代理对话页（共用聊天外壳；导航回父任务用 closeSubagentView） */
   openSubagentView: (taskId: string, subagentId: string) => void;
   closeSubagentView: () => void;
-  openUsageStats: () => void;
-  closeUsageStats: () => void;
-  openApiAggregation: () => void;
-  closeApiAggregation: () => void;
   openExtensionSoftware: () => void;
   closeExtensionSoftware: () => void;
   toggleTheme: () => void;
   setTheme: (theme: Theme) => void;
   setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
-  setSearchOpen: (open: boolean) => void;
   setTaskFilterStatus: (s: TaskFilterStatus) => void;
   setTaskFilterTime: (t: TaskFilterTime) => void;
   resetTaskFilters: () => void;
@@ -293,7 +288,7 @@ export interface AppActions {
   toggleSidebar: () => void;
   closePanel: () => void;
   setPanelWidth: (w: number) => void;
-  togglePanelExpanded: () => void;
+  togglePanelExpanded: (keepModuleList?: boolean) => void;
   showBrowser: () => void;
   setBrowserUrl: (url: string | null, gadgetId?: string) => void;
   navigateBrowser: () => void;

@@ -23,6 +23,13 @@ import {
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
+  DesktopSectionRow,
+  DesktopSectionSidebar,
+  useDesktopLeaveGuard,
+  useDesktopSectionState,
+  useDesktopShell,
+} from "@/components/desktop/DesktopSection";
+import {
   IconAlert,
   IconBot,
   IconCheck,
@@ -43,6 +50,7 @@ import {
   IconX,
   IconZap,
 } from "@/components/common/icons";
+import "@/styles/desktop-project-automation.css";
 
 type Tab = "tasks" | "history";
 type FreqMode = "period" | "every" | "once" | "cron";
@@ -350,6 +358,8 @@ export default function AutomationPage({
   onClose,
   onToggleNavigation,
 }: AutomationPageProps = {}): React.JSX.Element {
+  const desktopShell = useDesktopShell();
+  const desktop = desktopShell && variant === "page" && !projectId;
   const spaces = useAppStore((s) => s.spaces);
   const connectors = useAppStore((s) => s.connectors);
   const skills = useAppStore((s) => s.skills);
@@ -361,14 +371,17 @@ export default function AutomationPage({
 
   const defaultModelId = activeModelId || models[0]?.id || null;
 
-  const [tab, setTab] = useState<Tab>("tasks");
-  const [jobs, setJobs] = useState<CronJobDto[]>([]);
-  const [runs, setRuns] = useState<CronRunDto[]>([]);
+  const [tab, setTab] = useDesktopSectionState<Tab>(desktop ? "automation:tab" : null, "tasks");
+  const [jobs, setJobs] = useDesktopSectionState<CronJobDto[]>(desktop ? "automation:jobs" : null, []);
+  const [runs, setRuns] = useDesktopSectionState<CronRunDto[]>(desktop ? "automation:runs" : null, []);
+  const [catalogReady, setCatalogReady] = useState(!desktop);
   const [busy, setBusy] = useState(false);
   /** 正在触发测试运行的 job（仅防连点，不阻塞其它 job 并行） */
   const [launchingIds, setLaunchingIds] = useState<Set<string>>(() => new Set());
-  const [view, setView] = useState<ListView>("list");
-  const [form, setForm] = useState<FormState>(() => emptyForm(defaultModelId));
+  const [view, setView] = useDesktopSectionState<ListView>(desktop ? "automation:view" : null, "list");
+  const [form, setForm] = useDesktopSectionState<FormState>(desktop ? "automation:form" : null, emptyForm(defaultModelId));
+  const [formDirty, setFormDirty] = useDesktopSectionState(desktop ? "automation:form-dirty" : null, false);
+  const [formNavigation, setFormNavigation] = useState<(() => void) | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [tipDismissed, setTipDismissed] = useState(false);
   const [spaceMenuOpen, setSpaceMenuOpen] = useState(false);
@@ -378,7 +391,12 @@ export default function AutomationPage({
   const [promptMenuStyle, setPromptMenuStyle] = useState<React.CSSProperties | null>(null);
   const [fullAccessConfirm, setFullAccessConfirm] = useState(false);
   const [fullAccessAck, setFullAccessAck] = useState(false);
-  const [query, setQuery] = useState("");
+  const [jobQuery, setJobQuery] = useDesktopSectionState(desktop ? "automation:job-query" : null, "");
+  const [runQuery, setRunQuery] = useDesktopSectionState(desktop ? "automation:run-query" : null, "");
+  const [selectedJobId, setSelectedJobId] = useDesktopSectionState<string | null>(desktop ? "automation:job" : null, null);
+  const [selectedRunId, setSelectedRunId] = useDesktopSectionState<string | null>(desktop ? "automation:run" : null, null);
+  const query = desktop && tab === "history" ? runQuery : jobQuery;
+  const setQuery = desktop && tab === "history" ? setRunQuery : setJobQuery;
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [menuJobId, setMenuJobId] = useState<string | null>(null);
@@ -391,6 +409,9 @@ export default function AutomationPage({
   const formRootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const startedInFormRef = useRef(false);
+  const refreshRevision = useRef(0);
+
+  useDesktopLeaveGuard(desktop ? () => !busy && !formNavigation : undefined);
 
   const openPromptMenu = (menu: PromptMenu, anchor: HTMLElement): void => {
     if (promptMenu === menu) {
@@ -432,16 +453,24 @@ export default function AutomationPage({
   const refresh = async (): Promise<void> => {
     const api = window.api?.cron;
     if (!api) return;
+    const revision = ++refreshRevision.current;
     const [j, r] = await Promise.all([api.list(), api.runs(80)]);
+    if (revision !== refreshRevision.current) return;
     setJobs(j);
     setRuns(r);
+    setCatalogReady(true);
   };
 
   useEffect(() => {
-    void refresh();
-    return window.api?.cron?.onEvent(() => {
-      void refresh();
-    });
+    const reload = (): void => {
+      void refresh().catch((cause) => setToast(cause instanceof Error ? cause.message : "自动化加载失败"));
+    };
+    reload();
+    const unsubscribe = window.api?.cron?.onEvent(reload);
+    return () => {
+      refreshRevision.current++;
+      unsubscribe?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -537,6 +566,18 @@ export default function AutomationPage({
     return map;
   }, [visibleJobs]);
 
+  const filteredRuns = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return visibleRuns;
+    return visibleRuns.filter((run) =>
+      (jobNameById.get(run.jobId) ?? "").toLowerCase().includes(q) ||
+      run.jobId.toLowerCase().includes(q) ||
+      (run.error ?? "").toLowerCase().includes(q),
+    );
+  }, [jobNameById, query, visibleRuns]);
+  const selectedJob = visibleJobs.find((job) => job.id === selectedJobId);
+  const selectedRun = filteredRuns.find((run) => run.id === selectedRunId) ?? filteredRuns[0];
+
   const runningJobIds = useMemo(() => {
     const set = new Set<string>();
     for (const r of runs) {
@@ -591,6 +632,7 @@ export default function AutomationPage({
 
   const openCreate = (seed?: FormState): void => {
     setForm(seed ?? emptyForm(defaultModelId));
+    setFormDirty(false);
     setFormError(null);
     setTipDismissed(false);
     setSpaceMenuOpen(false);
@@ -609,13 +651,53 @@ export default function AutomationPage({
     openCreate(templateToForm(t, defaultModelId));
   };
 
-  const cancelForm = (): void => {
-    setView("list");
-    setFormError(null);
+  const closeFormMenus = (): void => {
     setSpaceMenuOpen(false);
     setConnectorMenuOpen(false);
     setPromptMenu(null);
     setPromptMenuStyle(null);
+  };
+
+  const leaveFormFor = (next: () => void): void => {
+    if (busy) return;
+    if (desktop && view === "form" && formDirty) {
+      setFormNavigation(() => next);
+      return;
+    }
+    next();
+  };
+
+  const cancelForm = (): void => {
+    leaveFormFor(() => {
+      setFormDirty(false);
+      setView("list");
+      setFormError(null);
+      closeFormMenus();
+    });
+  };
+
+  const selectDesktopItem = (nextTab: Tab, id: string | null = null): void => {
+    leaveFormFor(() => {
+      setView("list");
+      setTab(nextTab);
+      if (nextTab === "tasks") setSelectedJobId(id);
+      else if (id) setSelectedRunId(id);
+      setFormDirty(false);
+      if (batchMode) {
+        setBatchMode(false);
+        setSelectedIds(new Set());
+      }
+      setMenuJobId(null);
+      closeFormMenus();
+    });
+  };
+
+  const openTemplates = (): void => {
+    leaveFormFor(() => {
+      closeFormMenus();
+      setFormDirty(false);
+      setView("templates");
+    });
   };
 
   const closePromptMenu = (): void => {
@@ -625,6 +707,7 @@ export default function AutomationPage({
 
   const patchForm = <K extends keyof FormState>(key: K, value: FormState[K]): void => {
     setForm((prev) => ({ ...prev, [key]: value }));
+    if (desktop) setFormDirty(true);
   };
 
   const saveForm = async (): Promise<void> => {
@@ -662,11 +745,15 @@ export default function AutomationPage({
     const now = Date.now();
     const id = form.id ?? uid();
     const existing = jobs.find((j) => j.id === id);
+    if (form.id && (!catalogReady || !existing)) {
+      setFormError("尚未加载到该计划，请返回计划列表刷新后再试。");
+      return;
+    }
 
     setBusy(true);
     setFormError(null);
     try {
-      await api.upsert({
+      const saved = await api.upsert({
         id,
         name,
         prompt,
@@ -696,9 +783,14 @@ export default function AutomationPage({
           scopeProjectId: projectId,
         }),
       });
-      await refresh();
+      setJobs((before) => existing
+        ? before.map((item) => item.id === saved.id ? saved : item)
+        : [saved, ...before]);
+      if (desktop) setSelectedJobId(id);
+      setFormDirty(false);
       setView("list");
       setTab("tasks");
+      void refresh().catch(() => setToast("已保存计划，列表刷新失败"));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -716,7 +808,7 @@ export default function AutomationPage({
       setToast("已触发测试运行。测试运行不会影响正式调度时间。");
       // 稍等事件写入 running 状态
       window.setTimeout(() => {
-        void refresh();
+        void refresh().catch(() => {});
       }, 120);
     } catch (err) {
       setToast(err instanceof Error ? err.message : "测试运行失败");
@@ -735,6 +827,8 @@ export default function AutomationPage({
     try {
       await window.api?.cron?.setEnabled(job.id, !job.enabled);
       await refresh();
+    } catch (cause) {
+      setToast(cause instanceof Error ? cause.message : "未能更新自动化计划");
     } finally {
       setBusy(false);
     }
@@ -749,12 +843,15 @@ export default function AutomationPage({
     setBusy(true);
     try {
       await window.api?.cron?.remove(id);
+      if (selectedJobId === id) setSelectedJobId(null);
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
       await refresh();
+    } catch (cause) {
+      setToast(cause instanceof Error ? cause.message : "未能删除自动化计划");
     } finally {
       setBusy(false);
     }
@@ -835,6 +932,10 @@ export default function AutomationPage({
         else next.add(job.id);
         return next;
       });
+      return;
+    }
+    if (desktop) {
+      selectDesktopItem("tasks", job.id);
       return;
     }
     const taskId = latestTaskByJob.get(job.id);
@@ -988,10 +1089,183 @@ export default function AutomationPage({
     );
   };
 
+  const renderSidebarJobs = (title: string, jobsInGroup: CronJobDto[]): React.JSX.Element | null => {
+    if (!jobsInGroup.length) return null;
+    return (
+      <section aria-label={title}>
+        <div className="desktop-section-group">{title}</div>
+        {jobsInGroup.map((job) => (
+          <DesktopSectionRow
+            key={job.id}
+            title={job.name}
+            icon={job.reminder ? <IconClock size={14} /> : <IconZap size={14} />}
+            active={view === "form" ? form.id === job.id : view === "list" && selectedJob?.id === job.id}
+            onClick={() => selectDesktopItem("tasks", job.id)}
+          >
+            {job.name}
+          </DesktopSectionRow>
+        ))}
+      </section>
+    );
+  };
+
+  const runTitle = (run: CronRunDto): string => jobNameById.get(run.jobId) ?? run.jobId;
+
+  const desktopSidebar = desktop && (
+    <>
+      <DesktopSectionSidebar
+        title="自动化"
+        scrollKey={tab === "history" ? "automation:history" : "automation:plans"}
+        actions={
+          <button type="button" className="icon-btn" title="添加自动化" aria-label="添加自动化" onClick={() => leaveFormFor(() => openCreate())}>
+            <IconPlus size={16} />
+          </button>
+        }
+      >
+        <DesktopSectionRow
+          icon={<IconZap size={15} />}
+          active={tab === "tasks" && view === "list" && !selectedJob}
+          onClick={() => selectDesktopItem("tasks")}
+        >
+          定时任务
+        </DesktopSectionRow>
+        <DesktopSectionRow
+          icon={<IconClock size={15} />}
+          active={tab === "history" && view === "list" && !selectedRun}
+          onClick={() => selectDesktopItem("history")}
+        >
+          运行记录
+        </DesktopSectionRow>
+        <DesktopSectionRow icon={<IconSparkles size={15} />} active={view === "templates"} onClick={openTemplates}>
+          从模板添加
+        </DesktopSectionRow>
+        {tab === "history" && view === "list" ? (
+          <>
+            <div className="desktop-section-group">最近运行</div>
+            {filteredRuns.map((run) => (
+              <DesktopSectionRow
+                key={run.id}
+                title={`${runTitle(run)} · ${new Date(run.startedAt).toLocaleString()}`}
+                meta={formatRunStatus(run.status)}
+                active={selectedRun?.id === run.id}
+                onClick={() => selectDesktopItem("history", run.id)}
+              >
+                {runTitle(run)}
+              </DesktopSectionRow>
+            ))}
+          </>
+        ) : (
+          <>
+            {renderSidebarJobs("运行中", grouped.running)}
+            {renderSidebarJobs("已启用", grouped.current)}
+            {renderSidebarJobs("已暂停", grouped.paused)}
+            {renderSidebarJobs("已提醒", grouped.delivered)}
+            {renderSidebarJobs("已取消", grouped.cancelled)}
+          </>
+        )}
+      </DesktopSectionSidebar>
+      <ConfirmDialog
+        open={formNavigation !== null}
+        title="放弃当前更改？"
+        body="离开当前自动化表单将丢弃尚未保存的修改。"
+        confirmLabel="放弃更改"
+        onCancel={() => setFormNavigation(null)}
+        onConfirm={() => {
+          const navigate = formNavigation;
+          setFormNavigation(null);
+          navigate?.();
+        }}
+      />
+    </>
+  );
+
+  const renderJobDetails = (job: CronJobDto): React.JSX.Element => {
+    const running = runningJobIds.has(job.id) || launchingIds.has(job.id);
+    const recentRuns = visibleRuns.filter((run) => run.jobId === job.id).slice(0, 5);
+    const modelName = models.find((model) => model.id === job.modelId)?.name;
+    const spaceName = spaces.find((space) => space.id === job.spaceId)?.name;
+    return (
+      <article className="desktop-auto-detail">
+        <header className="desktop-auto-detail-head">
+          <h2>{job.name}</h2>
+          <div className="desktop-auto-detail-actions">
+            <button type="button" className="btn" onClick={() => openEdit(job)}>编辑</button>
+            <button type="button" className="btn" disabled={busy || running} onClick={() => void runNow(job.id)}>
+              <IconPlay size={14} /> {running ? "运行中" : "测试运行"}
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={() => void toggleEnabled(job)}>
+              {job.enabled ? "暂停" : "启用"}
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={() => askRemoveJob(job)}>删除</button>
+          </div>
+        </header>
+        <dl className="desktop-auto-detail-fields">
+          <dt>执行计划</dt><dd>{formatScheduleLabel(job)} · {job.timezone}</dd>
+          <dt>状态</dt>
+          <dd>{running ? "运行中" : job.reminder?.state === "delivered" ? "已提醒" : job.reminder?.state === "cancelled" ? "已取消" : job.enabled ? "已启用" : "已暂停"}</dd>
+          <dt>下次运行</dt><dd>{job.enabled ? formatNextRunLabel(job.nextRunAt, nowTick) || "—" : "—"}</dd>
+          {job.spaceId && <><dt>工作空间</dt><dd>{spaceName ?? job.spaceId}</dd></>}
+          {job.modelId && <><dt>模型</dt><dd>{modelName ?? job.modelId}</dd></>}
+          {job.sourceTaskId && (
+            <>
+              <dt>来源</dt>
+              <dd><button type="button" className="btn" onClick={() => void openRunTask(job.sourceTaskId)}>打开来源任务</button></dd>
+            </>
+          )}
+          {!job.reminder && job.target && (
+            <><dt>执行目标</dt><dd>{job.target.kind === "task" ? "继续任务" : "新建任务"}</dd></>
+          )}
+          {job.maxRuns != null && <><dt>运行次数</dt><dd>{job.runCount ?? 0} / {job.maxRuns}</dd></>}
+          <dt>重启后</dt>
+          <dd>{job.reminder ? "补发错过的提醒" : job.restartPolicy === "pause" ? "暂停计划" : "继续后续计划"}</dd>
+        </dl>
+        <h3>{job.reminder ? "提醒内容" : "提示词"}</h3>
+        <p className="desktop-auto-prompt">{job.prompt}</p>
+        <h3>最近运行</h3>
+        {recentRuns.length === 0 ? <p className="desktop-auto-placeholder">暂无运行记录</p> : (
+          <div className="auto-run-list">
+            {recentRuns.map((run) => (
+              <button
+                key={run.id}
+                type="button"
+                className="auto-run-card clickable"
+                onClick={() => {
+                  setRunQuery("");
+                  selectDesktopItem("history", run.id);
+                }}
+              >
+                <span className={`auto-run-status ${run.status}`}>{formatRunStatus(run.status)}</span>
+                <span className="auto-run-body">{new Date(run.startedAt).toLocaleString()}</span>
+                <IconChevronRight size={15} className="auto-run-chevron" />
+              </button>
+            ))}
+          </div>
+        )}
+      </article>
+    );
+  };
+
+  const renderRunDetails = (run: CronRunDto): React.JSX.Element => (
+    <article className="desktop-auto-detail">
+      <header className="desktop-auto-detail-head">
+        <h2>{runTitle(run)}</h2>
+        {run.taskId && <button type="button" className="btn" onClick={() => void openRunTask(run.taskId)}>打开任务会话</button>}
+      </header>
+      <dl className="desktop-auto-detail-fields">
+        <dt>状态</dt>
+        <dd><span className={`auto-run-status ${run.status}`}>{formatRunStatus(run.status)}</span></dd>
+        <dt>开始</dt><dd>{new Date(run.startedAt).toLocaleString()}</dd>
+        {run.finishedAt && <><dt>耗时</dt><dd>{Math.max(0, Math.round((run.finishedAt - run.startedAt) / 1000))} 秒</dd></>}
+      </dl>
+      {run.error && <><h3>运行信息</h3><p className="desktop-auto-prompt">{run.error}</p></>}
+    </article>
+  );
+
   /* ---------- 模板页 ---------- */
   if (view === "templates") {
     return (
-      <div className={`content-col ${variant === "modal" ? "auto-root-modal" : ""}`}>
+      <div className={`content-col ${variant === "modal" ? "auto-root-modal" : ""}${desktop ? " desktop-auto-screen" : ""}`}>
+        {desktopSidebar}
         <div className="auto-form-topbar">
           <div className="auto-form-breadcrumb">
             {onToggleNavigation && <button type="button" className="icon-btn" aria-label="打开主导航" onClick={onToggleNavigation}><IconPanel size={16} /></button>}
@@ -1039,7 +1313,8 @@ export default function AutomationPage({
   /* ---------- 创建 / 编辑表单 ---------- */
   if (view === "form") {
     return (
-      <div className={`content-col ${variant === "modal" ? "auto-root-modal" : ""}`} ref={formRootRef}>
+      <div className={`content-col ${variant === "modal" ? "auto-root-modal" : ""}${desktop ? " desktop-auto-screen" : ""}`} ref={formRootRef}>
+        {desktopSidebar}
         <div className="auto-form-topbar">
           <div className="auto-form-breadcrumb">
             <button type="button" className="auto-form-crumb-btn" onClick={cancelForm}>
@@ -1679,7 +1954,8 @@ export default function AutomationPage({
 
   /* ---------- 列表 / 运行记录（WorkBuddy 风格） ---------- */
   return (
-    <div className={`content-col auto-root ${variant === "modal" ? "auto-root-modal" : ""}`}>
+    <div className={`content-col auto-root ${variant === "modal" ? "auto-root-modal" : ""}${desktop ? " desktop-auto-screen" : ""}`}>
+      {desktopSidebar}
       {toast && (
         <div className="auto-toast" role="status">
           <IconCheck size={15} />
@@ -1707,7 +1983,9 @@ export default function AutomationPage({
 
       <div className="auto-toolbar">
         {onToggleNavigation && <button type="button" className="icon-btn" aria-label="打开主导航" onClick={onToggleNavigation}><IconPanel size={16} /></button>}
-        <div className="hub-tabs">
+        {desktop ? (
+          <div className="desktop-auto-heading">{tab === "tasks" ? "定时任务" : "运行记录"}</div>
+        ) : <div className="hub-tabs">
           <button
             type="button"
             className={`pill ${tab === "tasks" ? "dark" : ""}`}
@@ -1724,14 +2002,15 @@ export default function AutomationPage({
             <IconClock size={13} />
             运行记录
           </button>
-        </div>
+        </div>}
 
         <div className="auto-toolbar-search">
           <IconSearch size={14} />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={tab === "tasks" ? "搜索自动化/记录" : "搜索运行记录"}
+            placeholder={tab === "tasks" ? "搜索自动化" : "搜索运行记录"}
+            aria-label={tab === "tasks" ? "搜索自动化" : "搜索运行记录"}
           />
         </div>
 
@@ -1743,12 +2022,14 @@ export default function AutomationPage({
                 className={`btn auto-toolbar-btn ${batchMode ? "primary" : ""}`}
                 onClick={() => {
                   setBatchMode((v) => !v);
+                  if (desktop) setSelectedJobId(null);
                   setSelectedIds(new Set());
                   setMenuJobId(null);
                 }}
               >
                 批量管理
               </button>
+              {!desktop && <>
               <button
                 type="button"
                 className="btn auto-toolbar-btn"
@@ -1763,6 +2044,7 @@ export default function AutomationPage({
               >
                 <IconPlus size={14} /> 添加自动化
               </button>
+              </>}
             </>
           )}
         </div>
@@ -1810,7 +2092,11 @@ export default function AutomationPage({
 
       <div className="page-scroll">
         <div className="page-container auto-page auto-page-list">
-          {tab === "tasks" ? (
+          {desktop && tab === "tasks" && selectedJob && !batchMode
+            ? renderJobDetails(selectedJob)
+            : desktop && tab === "history" && selectedRun
+              ? renderRunDetails(selectedRun)
+              : tab === "tasks" ? (
             visibleJobs.length === 0 ? (
               <div className="empty-block auto-empty">
                 <div className="auto-empty-icon">
@@ -1851,28 +2137,17 @@ export default function AutomationPage({
                 {renderSection("已取消", grouped.cancelled)}
               </>
             )
-          ) : visibleRuns.length === 0 ? (
+          ) : filteredRuns.length === 0 ? (
             <div className="empty-block auto-empty">
               <div className="auto-empty-icon">
                 <IconClock size={36} />
               </div>
-              <div className="empty-block-title">暂无运行记录</div>
-              <div className="auto-empty-sub">创建并启用定时任务后，运行结果会显示在这里</div>
+              <div className="empty-block-title">{visibleRuns.length ? "无匹配的运行记录" : "暂无运行记录"}</div>
+              {!visibleRuns.length && <div className="auto-empty-sub">创建并启用定时任务后，运行结果会显示在这里</div>}
             </div>
           ) : (
             <div className="auto-run-list">
-              {visibleRuns
-                .filter((run) => {
-                  const q = query.trim().toLowerCase();
-                  if (!q) return true;
-                  const name = (jobNameById.get(run.jobId) ?? "").toLowerCase();
-                  return (
-                    name.includes(q) ||
-                    run.jobId.toLowerCase().includes(q) ||
-                    (run.error ?? "").toLowerCase().includes(q)
-                  );
-                })
-                .map((run) => (
+              {filteredRuns.map((run) => (
                   <button
                     key={run.id}
                     type="button"

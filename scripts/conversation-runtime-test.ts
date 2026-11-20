@@ -4,9 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { AppSettingsStore } from "../src/main/AppSettingsStore";
 import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
 import { ConversationGoalService } from "../src/main/agent/ConversationGoalService";
+import { NotificationService } from "../src/main/notification/NotificationService";
+import { createTaskInteractionNotificationListener } from "../src/main/notification/TaskLifecycleNotifications";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { DESKTOP_USER_GRANTS, WorkService } from "../src/main/agent/work/WorkService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
@@ -15,7 +18,13 @@ import type { AgentUiPatch } from "../src/shared/agent-ipc";
 const root = mkdtempSync(join(tmpdir(), "mybuddy-conversation-runtime-"));
 const db = new AppDatabase(join(root, "runtime.db"));
 const patches: AgentUiPatch[] = [];
-const emit = (patch: AgentUiPatch) => patches.push(patch);
+const settings = Object.assign(new AppSettingsStore(), { read: () => ({ notificationPreferences: { desktopEnabled: false } }) });
+const notifications = new NotificationService(db, settings);
+const publishInteractionNotice = createTaskInteractionNotificationListener(id => db.getTask(id), notifications);
+const emit = (patch: AgentUiPatch) => {
+  patches.push(patch);
+  publishInteractionNotice(patch);
+};
 
 try {
   db.upsertTask({ id: "task-a", title: "A", updatedAt: Date.now() });
@@ -33,12 +42,17 @@ try {
     options: [{ id: "a", label: "方案 A" }, { id: "b", label: "方案 B" }],
   });
   const pending = interactions.listByTask("task-a")[0]!;
+  const [notice] = notifications.list({ unreadOnly: true });
+  assert.equal(notice?.type, "task.action_required");
+  assert.equal(notice.body, "A · 选择方案");
+  assert.deepEqual(notifications.resolveActivation(notice.id), { kind: "task", taskId: "task-a" });
   const invalid = interactions.respond(pending.id, "missing");
   assert.equal(invalid.ok, false);
   const accepted = interactions.respond(pending.id, "a");
   assert.equal(accepted.ok, true);
   assert.equal(await answerPromise, "a");
   assert.equal(interactions.respond(pending.id, "b").ok, false);
+  assert.equal(notifications.list({ unreadOnly: true }).length, 0, "answering in chat clears notification unread state");
 
   const durableContext = { ...ctx, executionId: "durable:task-a:conversation:tool" };
   const question = { title: "重启后继续选择", kind: "confirm" as const };
@@ -51,9 +65,11 @@ try {
   const restarted = new ConversationInteractionService(new ConversationInteractionRepository(db.connection), emit);
   assert.equal(restarted.listByTask("task-a").find(item => item.id === durablePending.id)?.status, "pending");
   const resumed = restarted.requestDurable(durableContext, question, { key: "stable-call" });
+  assert.equal(notifications.list({ query: question.title, unreadOnly: true }).length, 1, "resuming a pending question keeps a single notice");
   assert.equal(restarted.respond(durablePending.id, true).ok, true);
   assert.equal(await resumed, true);
   assert.equal(await restarted.requestDurable(durableContext, question, { key: "stable-call" }), true, "completed answer is reused after native replay");
+  assert.equal(notifications.list({ query: question.title }).length, 1, "replaying an answered question adds no notification");
   await assert.rejects(() => restarted.requestDurable(durableContext, { ...question, title: "a different question" }, { key: "stable-call" }), /不同问题/);
   assert.equal(interactions.listByTask("task-a").filter(item => item.executionId === durableContext.executionId).length, 1);
 

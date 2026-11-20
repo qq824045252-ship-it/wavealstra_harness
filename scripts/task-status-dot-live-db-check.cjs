@@ -71,9 +71,8 @@ async function launch() {
       const items = [...document.querySelectorAll('.task-item')];
       return {
         rows: items.length,
-        green: items.filter(el => el.querySelector('.task-status-dot--done')).length,
-        blue: items.filter(el => el.querySelector('.task-status-dot--running')).length,
-        greenTitles: items.filter(el => el.querySelector('.task-status-dot--done')).map(el => el.querySelector('.task-item-title')?.textContent.trim()).slice(0, 10),
+        unread: items.filter(el => el.querySelector('.task-status-unread')).length,
+        running: items.filter(el => el.querySelector('[role="img"][aria-label="进行中"]')).length,
       };
     })()`);
     const db = await evaluate(`window.api.db.listTasks().then(rows => ({
@@ -85,28 +84,28 @@ async function launch() {
     report.dom = dom; report.db = db;
     assert(db.acked > 0, '升级已回填历史任务的 done_acked_at（不是全库未确认）');
     report.tests.push(`真实库迁移：${db.acked}/${db.total} 行已回填确认水位，${db.unacked} 行保持未确认`);
-    report.tests.push(`侧栏 ${dom.rows} 行中绿点 ${dom.green} 个、蓝点 ${dom.blue} 个（升级后不应集体亮绿点）`);
+    report.tests.push(`侧栏 ${dom.rows} 行中有 ${dom.unread} 个未查看、${dom.running} 个进行中`);
     const shot = await rpc('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'live-db-sidebar.png'), Buffer.from(shot.data, 'base64'));
 
-    if (dom.green > 0) {
+    if (dom.unread > 0) {
       const before = await evaluate(`(() => {
-        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-status-dot--done'));
+        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-status-unread'));
         return item.querySelector('.task-item-title').textContent.trim();
       })()`);
       await evaluate(`(() => {
-        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-status-dot--done'));
+        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-status-unread'));
         item.click(); return true;
       })()`);
       await until(async () => await evaluate(`(() => {
         const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-item-title')?.textContent.trim() === ${JSON.stringify(before)});
-        return item ? !item.querySelector('.task-status-dot--done') : true;
-      })()`), 'green dot cleared after click', 20000);
-      report.tests.push(`点击「${before}」→ 绿点消失（真实库任务）`);
+        return Boolean(item?.querySelector('.task-status-indicator')) && !item.querySelector('.task-status-unread');
+      })()`), 'unread emphasis cleared after click', 20000);
+      report.tests.push(`点击「${before}」后未查看强调清除，状态保留`);
       const after = await evaluate(`window.api.db.listTasks().then(rows => rows.filter(r => typeof r.doneAckedAt === 'number').length)`);
       assert(after >= db.acked, '点击后确认行数不减少');
     } else {
-      report.tests.push('真实库升级后没有任何残留绿点：点击清除路径由隔离库桌面用例覆盖');
+      report.tests.push('真实库升级后无未查看强调，点击清除路径由隔离库桌面用例覆盖');
     }
 
     closeApp();

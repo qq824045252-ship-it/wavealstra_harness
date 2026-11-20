@@ -6,6 +6,8 @@ import {
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 
+let nextComposerId = 0;
+
 export function createTaskDraftActions(
   storeContext: AppContext,
 ): Pick<
@@ -25,6 +27,7 @@ export function createTaskDraftActions(
       const trimmed = title?.trim();
       set({
         draft: {
+          composerId: String(++nextComposerId),
           projectId,
           planId,
           spaceId,
@@ -54,10 +57,11 @@ export function createTaskDraftActions(
         contextWindowTokens:
           get().models.find((model) => model.id === get().defaultModelId)
             ?.contextWindow ?? 128_000,
-        draft:
-          spaceId !== undefined || projectId !== undefined
-            ? { spaceId, projectId }
-            : null,
+        draft: {
+          composerId: String(++nextComposerId),
+          ...(spaceId !== undefined ? { spaceId } : {}),
+          ...(projectId !== undefined ? { projectId } : {}),
+        },
         // A fresh task uses the product default, not the previous task's code scene.
         welcomeMode: DEFAULT_WELCOME_MODE,
         modePresetId: defaultModePresetId(DEFAULT_WELCOME_MODE),
@@ -84,7 +88,7 @@ export function createTaskDraftActions(
       // 只登记草稿、不建任务：首条消息发出时才 materialize 并落库，
       // 避免每次都产生一条空白「新任务」行。
       set({
-        draft: { spaceId, expertId },
+        draft: { spaceId, expertId, composerId: String(++nextComposerId) },
         activeTaskId: null,
         chatSelections: [],
         homeSpaceId: spaceId ?? null,

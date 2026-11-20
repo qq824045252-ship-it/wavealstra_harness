@@ -31,6 +31,8 @@ const WIDE_KINDS = new Set<ArtifactKind>([
 
 function mainAreaWidth(sidebarCollapsed: boolean): number {
   if (typeof window === "undefined") return 960;
+  const desktopMain = document.querySelector<HTMLElement>("[data-desktop-main]");
+  if (desktopMain?.clientWidth) return desktopMain.clientWidth;
   // 测量真实 DOM 中的侧边栏宽度
   let sidebarWidth = 0;
   if (!sidebarCollapsed) {

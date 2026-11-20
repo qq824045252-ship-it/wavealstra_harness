@@ -1,0 +1,248 @@
+.project-home-desktop .page-container {
+  padding: 18px 24px 32px;
+}
+
+.project-home-desktop .project-home-head {
+  min-height: 34px;
+  align-items: center;
+  padding: 0;
+}
+
+.project-home-desktop .project-home-section {
+  margin-top: 18px;
+}
+
+.project-home-desktop .project-home-section-head {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.project-home-desktop .project-home-search {
+  min-width: 0;
+  width: min(240px, 100%);
+}
+
+.project-home-desktop .project-home-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.project-home-desktop .project-home-card:has(.project-overflow) {
+  z-index: 3;
+}
+
+.project-home-desktop .project-home-card-open {
+  display: grid;
+  grid-template-columns: 26px minmax(80px, 1fr) minmax(0, 1.3fr) auto auto;
+  align-items: center;
+  min-height: 42px;
+  padding: 6px 44px 6px 8px;
+  column-gap: 8px;
+}
+
+.project-home-desktop .project-home-card-icon {
+  grid-column: 1;
+  width: 26px;
+  height: 26px;
+  margin: 0;
+}
+
+.project-home-desktop .project-home-card-name {
+  grid-column: 2;
+  padding: 0;
+}
+
+.project-home-desktop .project-home-card-desc {
+  grid-column: 3;
+}
+
+.project-home-desktop .project-attention-badge {
+  grid-column: 4;
+}
+
+.project-home-desktop .project-home-card-time {
+  grid-column: 5;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.project-home-desktop .project-home-card-menu {
+  inset: 50% 8px auto auto;
+  transform: translateY(-50%);
+}
+
+.project-home-desktop .project-home-card:has(.project-attention-ack) .project-home-card-open {
+  padding-right: 72px;
+}
+
+.project-home-desktop .project-attention-ack {
+  inset: 50% 36px auto auto;
+  transform: translateY(-50%);
+}
+
+.project-home-desktop .project-template-grid {
+  gap: 8px;
+}
+
+.project-desk-desktop .project-desk-crumb {
+  min-height: 44px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.project-desk-desktop .project-desk-section-name {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+
+.project-desk-desktop .project-desk-config-toggle {
+  margin-left: auto;
+}
+
+.desktop-auto-screen .auto-toolbar,
+.desktop-auto-screen .auto-form-topbar {
+  min-height: 44px;
+  padding: 5px 16px;
+}
+
+.desktop-auto-screen .auto-toolbar {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.desktop-auto-heading {
+  flex: 0 0 auto;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.desktop-auto-screen .auto-toolbar-search {
+  flex: 0 1 270px;
+  min-width: 100px;
+  height: 30px;
+}
+
+.desktop-auto-screen .auto-toolbar-btn {
+  height: 30px;
+}
+
+.desktop-auto-screen .auto-page {
+  padding: 16px 24px 32px;
+}
+
+.desktop-auto-screen .auto-row {
+  min-height: 38px;
+}
+
+.desktop-auto-screen .auto-row-main {
+  gap: 6px 10px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.desktop-auto-screen .auto-row-id {
+  display: none;
+}
+
+.desktop-auto-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.desktop-auto-detail :is(h2, h3, p) {
+  margin: 0;
+}
+
+.desktop-auto-detail h2 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.desktop-auto-detail h3 {
+  color: var(--fg-secondary);
+  font-size: 13px;
+}
+
+.desktop-auto-detail-head,
+.desktop-auto-detail-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.desktop-auto-detail-actions > .btn {
+  min-height: 29px;
+}
+
+.desktop-auto-detail-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 7px 14px;
+  margin: 0;
+  padding: 12px 0;
+  border-block: 1px solid var(--border);
+}
+
+.desktop-auto-detail-fields dt,
+.desktop-auto-placeholder {
+  color: var(--fg-muted);
+}
+
+.desktop-auto-detail-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.desktop-auto-prompt {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1050px) {
+  .project-home-desktop .page-container,
+  .desktop-auto-screen .auto-page {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .project-home-desktop .project-home-card-open {
+    grid-template-columns: 26px minmax(60px, 1fr) auto auto;
+  }
+
+  .project-home-desktop .project-home-card-desc {
+    display: none;
+  }
+
+  .project-home-desktop .project-attention-badge {
+    grid-column: 3;
+  }
+
+  .project-home-desktop .project-home-card-time {
+    grid-column: 4;
+  }
+}
+
+@media (max-width: 760px) {
+  .desktop-auto-screen .auto-toolbar-search {
+    order: 0;
+    flex: 1 1 145px;
+  }
+
+  .desktop-auto-screen .auto-toolbar-actions {
+    order: 0;
+    width: auto;
+    margin-inline-start: auto;
+  }
+}

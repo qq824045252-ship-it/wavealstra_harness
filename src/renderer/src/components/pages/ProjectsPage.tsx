@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
+import { useDesktopSectionState, useDesktopShell } from "@/components/desktop/DesktopSection";
 import { useAppStore } from "@/store/appStore";
 import NewProjectModal from "./NewProjectModal";
 import ProjectList from "./project/ProjectList";
 import ProjectWorkspace from "./project/ProjectWorkspace";
 
 export default function ProjectsPage(): React.JSX.Element {
+  const desktop = useDesktopShell();
   const activeProjectId = useAppStore((state) => state.activeProjectId);
   const openProjectDetails = useAppStore((state) => state.openProjectDetails);
   const refreshProjects = useAppStore((state) => state.refreshProjects);
-  const [showArchived, setShowArchived] = useState(false);
+  const [showArchived, setShowArchived] = useDesktopSectionState(desktop ? "projects:archived" : null, false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createTemplateId, setCreateTemplateId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,11 +34,13 @@ export default function ProjectsPage(): React.JSX.Element {
         <ProjectWorkspace
           key={activeProjectId}
           projectId={activeProjectId}
+          desktop={desktop}
           showArchived={showArchived}
           onToast={setToast}
         />
       ) : (
         <ProjectList
+          desktop={desktop}
           showArchived={showArchived}
           onShowArchivedChange={setShowArchived}
           onCreate={(templateId) => {

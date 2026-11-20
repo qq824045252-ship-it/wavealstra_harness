@@ -192,7 +192,9 @@ export default function ChatInput({
   scenePresetId,
 }: Props): React.JSX.Element {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
-  const draftScope = composerDraftScope(variant, activeTaskId);
+  const composerId = useAppStore(s => s.draft?.composerId);
+  const composerProjectId = useAppStore(s => variant === "project" ? s.activeProjectId : null);
+  const draftScope = composerDraftScope(variant, activeTaskId, composerId, composerProjectId);
   const [text, setText] = useState("");
   /** BTW 激活时的独立输入草稿：与主 composer text 完全隔离，退出 BTW 即丢弃 */
   const [btwText, setBtwText] = useState("");

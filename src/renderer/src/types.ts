@@ -396,6 +396,8 @@ export type Page =
   | "mcp"
   | "connectors"
   | "automation"
+  | "usage"
+  | "notifications"
   | "files"
   | "mailbox"
   | "library"

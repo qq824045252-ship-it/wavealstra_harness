@@ -52,8 +52,9 @@ export function createWorkbenchLayoutActions(
         };
       }),
 
-    togglePanelExpanded: () =>
+    togglePanelExpanded: (keepModuleList = false) =>
       set((s) => {
+        if (keepModuleList) return { panelExpanded: !s.panelExpanded, sidebarBeforePanelExpand: null };
         if (s.panelExpanded) {
           return {
             panelExpanded: false,

@@ -85,16 +85,16 @@ async function phase(name, work) {
       for (let i = 0; i < 200; i++) { const value = await renderer(expression); if (value) return value; await delay(100); }
       throw Error('UI condition timed out: ' + expression);
     };
-    await until('!!window.api?.memory?.startOrganization && !!document.querySelector(".sidebar-user-main")');
+    await until('!!window.api?.memory?.startOrganization && !!document.querySelector(".desktop-rail")');
     const invoke = (method, ...args) => renderer(`window.api.${method}(${args.map(arg => JSON.stringify(arg)).join(',')})`);
     const click = async label => {
       await until(`[...document.querySelectorAll('button')].some(b=>b.textContent.trim()===${JSON.stringify(label)}&&!b.disabled&&b.getClientRects().length)`);
       await renderer(`(()=>{[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(label)}&&!b.disabled&&b.getClientRects().length).click();return true})()`);
     };
     const openMemory = async () => {
-      await renderer(`(()=>{document.querySelector('.sidebar-user-main').click();return true})()`); await click('设置');
-      await until(`!!document.querySelector('.settings-nav')`);
-      await renderer(`(()=>{[...document.querySelectorAll('.settings-nav button')].find(b=>b.textContent.trim()==='记忆').click();return true})()`);
+      await renderer(`document.querySelector('.desktop-rail [aria-label=设置]').click()`);
+      await until(`!!document.querySelector('.desktop-settings')`);
+      await click('记忆');
       await until(`!!document.querySelector('[aria-label="AI 整理记忆"]')`);
     };
     await work({ invoke, renderer, until, click, openMemory });

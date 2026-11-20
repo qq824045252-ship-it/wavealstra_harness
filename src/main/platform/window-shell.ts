@@ -37,6 +37,7 @@ export function platformWindowOptions(
 ): Partial<BrowserWindowConstructorOptions> {
   if (resolvedPlatform(options) !== "windows") return {};
   return {
+    titleBarStyle: "hidden",
     titleBarOverlay: {
       color: options.titleBar.color,
       symbolColor: options.titleBar.symbolColor,

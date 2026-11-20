@@ -1,6 +1,7 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isGatewayConversation } from "../../../../shared/gateway-task";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { relativeTime, useAppStore } from "@/store/appStore";
 import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "@/utils/taskFilters";
@@ -41,6 +42,7 @@ const MENU_MAX_HEIGHT = 420;
 export default function TaskItem({ task, nested = false, indent, onDragStartNotify }: Props): React.JSX.Element {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const page = useAppStore((s) => s.page);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const pinnedTaskIds = useAppStore((s) => s.pinnedTaskIds);
   const setActiveTask = useAppStore((s) => s.setActiveTask);
   const deleteTask = useAppStore((s) => s.deleteTask);
@@ -59,7 +61,8 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     spaces.find((s) => s.id === task.spaceId)?.path?.trim() ||
     "";
 
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuRequested, setMenuOpen] = useState(false);
+  const menuOpen = menuRequested && !sidebarCollapsed;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
   const [aiTitleBusy, setAiTitleBusy] = useState(false);
@@ -70,22 +73,22 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; maxHeight: number } | null>(
     null,
   );
-  /** 打开后短暂延迟再响应「点外侧关闭」，避免打开当次 pointer 事件误关 */
-  const [dismissArmed, setDismissArmed] = useState(false);
   const menuAnchorRef = useRef<HTMLDivElement>(null);
   const menuPortalRef = useRef<HTMLDivElement>(null);
+  const menuRevision = useRef(0);
 
-  useDismissOnClickOutside(
-    menuOpen && dismissArmed,
-    () => {
-      setMenuOpen(false);
-      setAiTitleNotice(null);
-      setMenuPos(null);
-      setDismissArmed(false);
-    },
-    menuAnchorRef,
-    [menuPortalRef],
-  );
+  const closeMenu = useCallback((): void => {
+    menuRevision.current++;
+    setMenuOpen(false);
+    setAiTitleNotice(null);
+    setMenuPos(null);
+  }, []);
+
+  useBlockNativeSurfaces(menuOpen);
+  useDismissOnClickOutside(menuOpen, closeMenu, menuAnchorRef, [menuPortalRef]);
+  useLayoutEffect(() => {
+    if (sidebarCollapsed && menuRequested) closeMenu();
+  }, [sidebarCollapsed, menuRequested, closeMenu]);
 
   const active = page === "chat" && task.id === activeTaskId;
   const actionLabel = taskActionLabel(task);
@@ -94,7 +97,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   const ackTaskDone = useAppStore((s) => s.ackTaskDone);
 
   // 正看着它跑完 → 不需要再让用户点一次。仅当它是当前打开的任务、停在聊天页、
-  // 且窗口在前台（用户确实在看）时自动确认；在后台跑完则保留绿点，等用户回来点。
+  // 且窗口在前台时自动确认；在后台跑完则保留未读强调。
   useEffect(() => {
     if (!doneUnread || !active) return;
     if (typeof document !== "undefined") {
@@ -129,10 +132,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   };
 
   useLayoutEffect(() => {
-    if (!menuOpen) {
-      setMenuPos(null);
-      return;
-    }
+    if (!menuOpen) return;
     syncMenuPos();
     // 子菜单展开后高度变化，再校准一次
     const raf = requestAnimationFrame(() => syncMenuPos());
@@ -141,14 +141,10 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   }, [menuOpen, aiTitleNotice]);
 
   useEffect(() => {
-    if (!menuOpen) {
-      setDismissArmed(false);
-      return;
-    }
-    // 等当前 pointer/click 序列结束后再允许「点外侧关闭」
-    const armTimer = window.setTimeout(() => setDismissArmed(true), 0);
+    if (!menuOpen) return;
 
     const onResize = (): void => syncMenuPos();
+    window.addEventListener("blur", closeMenu);
     window.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("resize", onResize);
     window.visualViewport?.addEventListener("scroll", onResize);
@@ -157,50 +153,40 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     const scrollRoot =
       menuAnchorRef.current?.closest(".sidebar-scroll") ??
       (document.querySelector(".sidebar-scroll") as HTMLElement | null);
-    const onSidebarScroll = (): void => {
-      setMenuOpen(false);
-      setAiTitleNotice(null);
-      setMenuPos(null);
-      setDismissArmed(false);
-    };
-    scrollRoot?.addEventListener("scroll", onSidebarScroll, { passive: true });
+    scrollRoot?.addEventListener("scroll", closeMenu, { passive: true });
 
     return () => {
-      window.clearTimeout(armTimer);
+      window.removeEventListener("blur", closeMenu);
       window.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("scroll", onResize);
-      scrollRoot?.removeEventListener("scroll", onSidebarScroll);
+      scrollRoot?.removeEventListener("scroll", closeMenu);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menuOpen]);
+  }, [menuOpen, closeMenu]);
 
   const commitRename = (): void => {
     if (draft.trim()) renameTask(task.id, draft.trim());
     setEditing(false);
   };
 
-  const closeMenu = (): void => {
-    setMenuOpen(false);
-    setAiTitleNotice(null);
-    setMenuPos(null);
-    setDismissArmed(false);
-  };
-
   /** AI 命名：模型读对话开头约 1024 token 生成任务名，填入重命名输入框由用户确认。 */
   const renameTaskWithAi = async (): Promise<void> => {
+    const revision = menuRevision.current;
     setAiTitleBusy(true);
     setAiTitleNotice(null);
     try {
       const suggestion = await window.api?.agent?.generateTaskTitle?.(task.id);
+      if (revision !== menuRevision.current) return;
       const title = suggestion?.title?.trim();
       if (!title) throw new Error("模型没有返回任务名");
       setDraft(title);
       closeMenu();
       setEditing(true);
     } catch (error) {
-      setAiTitleNotice(error instanceof Error ? error.message : String(error));
-      setMenuOpen(true);
+      if (revision === menuRevision.current) {
+        setAiTitleNotice(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setAiTitleBusy(false);
     }
@@ -402,6 +388,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
             type="button"
             className="task-item-action"
             title="更多"
+            aria-expanded={menuOpen}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();

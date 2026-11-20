@@ -8,6 +8,9 @@ import type {
 import MessageItem from "@/components/chat/MessageItem";
 import { useAppStore } from "@/store/appStore";
 import { gatewayRecordKey, gatewayRecordStatus, mergeGatewayRecords, type GatewayRecord } from "@/lib/gatewayPresentation";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionState, useDesktopShell } from "@/components/desktop/DesktopSection";
+import { IconSettingsGear } from "@/components/common/icons";
+import "./desktop-secondary.css";
 
 const CHANNEL_LABEL: Record<string, string> = {
   "feishu-default": "飞书",
@@ -29,7 +32,6 @@ interface Conversation {
   title: string;
   lastText: string;
   at: number;
-  unread: number;
 }
 
 function messageToChatMessage(ev: GatewayEventDto | GatewayMessageDto): ChatMessage {
@@ -51,9 +53,10 @@ function messageToChatMessage(ev: GatewayEventDto | GatewayMessageDto): ChatMess
 
 /** 助理页：IM Gateway 消息镜像（按会话分组，历史落库可查） */
 export default function AssistantPage(): React.JSX.Element {
+  const desktop = useDesktopShell();
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const [records, setRecords] = useState<GatewayRecord[]>([]);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useDesktopSectionState<string | null>("assistant-conversation", null);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const selectedRef = useRef<string | null>(null);
   const [status, setStatus] = useState<GatewayStatusDto | null>(null);
@@ -67,7 +70,7 @@ export default function AssistantPage(): React.JSX.Element {
       const key = `${record.channelId}:${record.chatId ?? ""}`;
       map.set(key, { key, channelId: record.channelId, chatId: record.chatId ?? "",
         title: record.senderName ?? record.chatId ?? record.channelId,
-        lastText: record.text.slice(0, 40), at: record.at, unread: 0 });
+        lastText: record.text.slice(0, 40), at: record.at });
     }
     return [...map.values()].sort((a, b) => b.at - a.at);
   }, [records]);
@@ -77,18 +80,24 @@ export default function AssistantPage(): React.JSX.Element {
     `${record.channelId}:${record.chatId ?? ""}` === selectedKey), [records, selectedKey]);
 
   useEffect(() => {
+    const gateway = window.api?.gateway;
+    if (!gateway) {
+      setLoadError("助手服务尚未就绪。");
+      setLoaded(true);
+      return;
+    }
     let alive = true;
     const refreshStatus = async () => {
       const epoch = ++statusEpoch.current;
       try {
-        const next = await window.api?.gateway?.status();
+        const next = await gateway.status();
         if (alive && epoch === statusEpoch.current) setStatus(next ?? null);
       } catch { if (alive && epoch === statusEpoch.current) setStatus(null); }
     };
-    void window.api?.gateway?.listMessages({ limit: 300 }).then(history => {
+    void gateway.listMessages({ limit: 300 }).then(history => {
       if (alive) { setRecords(current => mergeGatewayRecords(history, current)); setLoaded(true); }
     }).catch(() => { if (alive) { setLoadError("消息记录加载失败，请重新打开本地助理重试。"); setLoaded(true); } });
-    const unsubscribe = window.api?.gateway?.onEvent(event => {
+    const unsubscribe = gateway.onEvent(event => {
       if (!alive) return;
       const key = `${event.channelId}:${event.chatId ?? ""}`;
       if (selectedRef.current && key !== selectedRef.current) setUnread(current => ({ ...current, [key]: (current[key] ?? 0) + 1 }));
@@ -131,50 +140,64 @@ export default function AssistantPage(): React.JSX.Element {
     [conversations, selectedKey],
   );
 
+  const configure = (): void => setSettingsOpen(true, "assistant");
+  const emptyConversations = !loaded
+    ? "加载中…"
+    : conversations.length === 0 ? "暂无会话。连接渠道后，消息会显示在这里。" : null;
+  const conversationRows = conversations.map((conversation) => {
+    const channel = CHANNEL_LABEL[conversation.channelId] ?? conversation.channelId;
+    const count = unread[conversation.key] ?? 0;
+    const select = (): void => setActiveKey(conversation.key);
+    if (desktop) {
+      return (
+        <DesktopSectionRow
+          key={conversation.key}
+          active={conversation.key === selectedKey}
+          title={`${channel} · ${conversation.title}`}
+          aria-label={`${channel} · ${conversation.title}${count ? `，${count} 条未读` : ""}`}
+          onClick={select}
+          icon={<span className={`assistant-conv-badge ch-${conversation.channelId.split("-")[0]}`}>{channel}</span>}
+          meta={count > 0 ? <span className="assistant-conv-unread">{count}</span> : undefined}
+        >
+          {conversation.title}
+        </DesktopSectionRow>
+      );
+    }
+    return (
+      <button key={conversation.key} className={`assistant-conv-item ${conversation.key === selectedKey ? "active" : ""}`} onClick={select}>
+        <div className="assistant-conv-row">
+          <span className={`assistant-conv-badge ch-${conversation.channelId.split("-")[0]}`}>{channel}</span>
+          <span className="assistant-conv-title">{conversation.title}</span>
+          {count > 0 && <span className="assistant-conv-unread">{count}</span>}
+        </div>
+        <div className="assistant-conv-preview">{conversation.lastText}</div>
+        <div className="assistant-conv-time">{new Date(conversation.at).toLocaleString("zh-CN", { hour12: false })}</div>
+      </button>
+    );
+  });
+
   return (
     <div className="content-col">
-      <div className="chat-header">
-        <div className="chat-header-title">本地助理</div>
+      {desktop && <DesktopSectionSidebar title="助手" scrollKey="assistant"
+        actions={<button type="button" className="icon-btn" aria-label="配置助手渠道" title="配置助手渠道" onClick={configure}><IconSettingsGear size={16} /></button>}>
+        <div className="desktop-section-group">渠道会话</div>
+        {emptyConversations && <div className="assistant-conv-empty">{emptyConversations}</div>}
+        {conversationRows}
+      </DesktopSectionSidebar>}
+      <div className={desktop ? "desktop-secondary-heading desktop-assistant-heading" : "chat-header"}>
+        <div className="chat-header-title">{desktop && activeConv ? activeConv.title : "本地助理"}</div>
         <span className="assistant-conn-hint">
-          {hint}（仅连接状态）
-          {" · "}
-          <button className="link-btn" onClick={() => setSettingsOpen(true, "assistant")}>
-            配置
-          </button>
+          {hint}
+          {!desktop && <>（仅连接状态）{" · "}<button className="link-btn" onClick={configure}>配置</button></>}
         </span>
-        <div className="chat-header-sub" />
       </div>
 
       {loadError && <div role="alert">{loadError}</div>}
       <div className="assistant-body">
-        <div className="assistant-conv-list">
-          {!loaded && <div className="assistant-conv-empty">加载中…</div>}
-          {loaded && conversations.length === 0 && (
-            <div className="assistant-conv-empty">
-              暂无会话。在「助理设置」连接所需渠道后，
-              从 IM 发消息即可在这里看到。
-            </div>
-          )}
-          {conversations.map((c) => (
-            <button
-              key={c.key}
-              className={`assistant-conv-item ${c.key === selectedKey ? "active" : ""}`}
-              onClick={() => setActiveKey(c.key)}
-            >
-              <div className="assistant-conv-row">
-                <span className={`assistant-conv-badge ch-${c.channelId.split("-")[0]}`}>
-                  {CHANNEL_LABEL[c.channelId] ?? c.channelId}
-                </span>
-                <span className="assistant-conv-title">{c.title}</span>
-                {(unread[c.key] ?? 0) > 0 && <span className="assistant-conv-unread">{unread[c.key]}</span>}
-              </div>
-              <div className="assistant-conv-preview">{c.lastText}</div>
-              <div className="assistant-conv-time">
-                {new Date(c.at).toLocaleString("zh-CN", { hour12: false })}
-              </div>
-            </button>
-          ))}
-        </div>
+        {!desktop && <div className="assistant-conv-list">
+          {emptyConversations && <div className="assistant-conv-empty">{emptyConversations}</div>}
+          {conversationRows}
+        </div>}
 
         <div className="message-scroll" ref={scrollRef}>
           <div className="message-list">
@@ -185,7 +208,7 @@ export default function AssistantPage(): React.JSX.Element {
             )}
             {activeConv && (
               <div className="assistant-conv-header">
-                {CHANNEL_LABEL[activeConv.channelId] ?? activeConv.channelId} · {activeConv.title}
+                {CHANNEL_LABEL[activeConv.channelId] ?? activeConv.channelId}{desktop ? "" : ` · ${activeConv.title}`}
               </div>
             )}
             {messages.map((record) => (

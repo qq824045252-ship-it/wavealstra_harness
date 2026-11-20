@@ -59,6 +59,8 @@ initial.spaces = [];
 initial.expandedSpaceIds = [];
 const empty = renderToStaticMarkup(createElement(Sidebar));
 assert.doesNotMatch(empty, /置顶 \(/);
-assert.match(empty, /暂无独立任务/);
+assert.doesNotMatch(empty, /暂无独立任务|class="sidebar-section-count"/);
+assert.match(empty, /新建工作空间/);
+assert.match(empty, /绑定本地文件夹/);
 
 console.log("sidebar-pinned-section-test: ok");

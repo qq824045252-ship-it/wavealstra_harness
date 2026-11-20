@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ChatInput from "@/components/chat/ChatInput";
 import { IconChevronRight, IconFolderKanban } from "@/components/common/icons";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopLeaveGuard } from "@/components/desktop/DesktopSection";
+import { decideRailDockMode } from "@/lib/projectConfigRail";
 import { useAppStore } from "@/store/appStore";
 import {
   syncRailDockFromViewport,
@@ -39,12 +41,14 @@ import ProjectTasks from "./ProjectTasks";
 import UnsavedChangesDialog from "./UnsavedChangesDialog";
 
 interface Props {
+  desktop?: boolean;
   projectId: string;
   showArchived: boolean;
   onToast: (text: string) => void;
 }
 
 export default function ProjectWorkspace({
+  desktop = false,
   projectId,
   showArchived,
   onToast,
@@ -63,6 +67,8 @@ export default function ProjectWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [pendingNav, setPendingNav] = useState<ProjectNavDestination | null>(null);
+  const [desktopLeaveOpen, setDesktopLeaveOpen] = useState(false);
+  const pendingDesktopLeave = useRef<((proceed: boolean) => void) | null>(null);
   const [guardBusy, setGuardBusy] = useState(false);
   /** 多 Guard：pane（Capabilities/Settings 表单）与 rail（配置栏 Detail）独立注册，互不覆盖 */
   const guardsRef = useRef<Map<string, ProjectUnsavedGuard>>(new Map());
@@ -75,6 +81,20 @@ export default function ProjectWorkspace({
 
   const activeDirty = useCallback((): boolean => {
     return [...guardsRef.current.values()].some((guard) => guard.dirty);
+  }, []);
+
+  const requestDesktopLeave = useCallback((): boolean | Promise<boolean> => {
+    if (guardBusy || pendingNav || pendingDesktopLeave.current) return false;
+    if (!activeDirty()) return true;
+    return new Promise((resolve) => {
+      pendingDesktopLeave.current = resolve;
+      setDesktopLeaveOpen(true);
+    });
+  }, [activeDirty, guardBusy, pendingNav]);
+  useDesktopLeaveGuard(desktop ? requestDesktopLeave : undefined);
+  useEffect(() => () => {
+    pendingDesktopLeave.current?.(false);
+    pendingDesktopLeave.current = null;
   }, []);
 
   const tabSwitchDirty = useCallback((tab: ProjectWorkspaceTab): boolean => {
@@ -120,7 +140,7 @@ export default function ProjectWorkspace({
   };
 
   const requestNavigate = useCallback((dest: ProjectNavDestination): void => {
-    if (guardBusy) return;
+    if (guardBusy || pendingDesktopLeave.current) return;
     if (dest.type === "tab" && dest.tab === useAppStore.getState().activeProjectTab) return;
     const dirty = dest.type === "tab" ? tabSwitchDirty(dest.tab) : activeDirty();
     if (decideProjectNavigation(dirty) === "proceed") {
@@ -153,11 +173,10 @@ export default function ProjectWorkspace({
   }, [clearProjectNavRequest, projectNavRequest, requestNavigate]);
 
   const finishGuard = async (action: "cancel" | "discard" | "save"): Promise<void> => {
+    if (guardBusy) return;
     const dest = pendingNav;
-    if (!dest) {
-      setPendingNav(null);
-      return;
-    }
+    const desktopLeave = pendingDesktopLeave.current;
+    if (!dest && !desktopLeave) return;
     if (action !== "cancel") setGuardBusy(true);
     const guards = [...guardsRef.current.values()];
     const dirtyGuards = guards.filter((guard) => guard.dirty);
@@ -165,7 +184,15 @@ export default function ProjectWorkspace({
     const result = await resolveUnsavedGuardAction(action, dirtyGuards);
     setGuardBusy(false);
     setPendingNav(null);
-    if (result !== "navigate") return;
+    if (desktopLeave) {
+      if (pendingDesktopLeave.current === desktopLeave) {
+        pendingDesktopLeave.current = null;
+        setDesktopLeaveOpen(false);
+        desktopLeave(result === "navigate");
+      }
+      return;
+    }
+    if (!dest || result !== "navigate") return;
     // Rail 内部动作（§22/§23）：Guard 通过后执行，不走全局导航
     if (dest.type === "rail-back") {
       useProjectConfigRailStore.getState().backToSummary();
@@ -206,15 +233,46 @@ export default function ProjectWorkspace({
     useProjectConfigRailStore.getState().resetForProject();
   }, [projectId]);
 
-  /** P2-4：视口 dock 监听提升到稳定挂载点（ProjectWorkspace），Rail 卸载（collapsed）时仍生效 */
+  const [compactMaterials, setCompactMaterials] = useState(false);
+  const [desktopRailOverlay, setDesktopRailOverlay] = useState(false);
+  const [materialsConfigOpen, setMaterialsConfigOpen] = useState(false);
+  const deskRef = useRef<HTMLDivElement>(null);
+  /** Keep the materials workbench usable when the project and navigation rails compete for width. */
   useEffect(() => {
-    syncRailDockFromViewport();
-    const onResize = (): void => syncRailDockFromViewport();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+    const syncLayout = (): void => {
+      const availableWidth = deskRef.current?.clientWidth || window.innerWidth;
+      const compact = activeProjectTab === "assets" && (desktop ? availableWidth < 880 : window.innerWidth < 1120);
+      setCompactMaterials(compact);
+      if (desktop) {
+        const dock = compact ? "overlay" : decideRailDockMode(availableWidth);
+        setDesktopRailOverlay(dock === "overlay");
+        useProjectConfigRailStore.getState().setDock(dock);
+        if (dock === "docked") setMaterialsConfigOpen(false);
+      } else {
+        if (compact) useProjectConfigRailStore.getState().setDock("overlay");
+        else {
+          setMaterialsConfigOpen(false);
+          syncRailDockFromViewport();
+        }
+      }
+    };
+    syncLayout();
+    const observer = desktop && typeof ResizeObserver !== "undefined" ? new ResizeObserver(syncLayout) : null;
+    if (deskRef.current) observer?.observe(deskRef.current);
+    window.addEventListener("resize", syncLayout);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", syncLayout);
+    };
+  }, [activeProjectTab, desktop]);
 
   const railMode = useProjectConfigRailStore((state) => state.mode);
+  const requiresConfigToggle = compactMaterials || desktopRailOverlay;
+  const showRail = railMode !== "collapsed" && (!requiresConfigToggle || materialsConfigOpen || railMode === "detail");
+  const openConfig = (): void => {
+    if (requiresConfigToggle) setMaterialsConfigOpen(true);
+    useProjectConfigRailStore.getState().expand();
+  };
 
   const sendFromProject = useCallback<NonNullable<React.ComponentProps<typeof ChatInput>["onSend"]>>(
     (text, attachments, taskReferences, streamingBehavior, connectorIds, externalAgent, preparedTaskId) => {
@@ -239,7 +297,29 @@ export default function ProjectWorkspace({
   );
 
   return (
-    <div className="project-desk">
+    <div className={`project-desk${desktop ? " project-desk-desktop" : ""}`} ref={deskRef}>
+      {desktop && (
+        <DesktopSectionSidebar title="项目" scrollKey={`project:${projectId}`}>
+          <DesktopSectionRow icon={<IconFolderKanban size={15} />} onClick={() => requestNavigate({ type: "project-list" })}>
+            项目总览
+          </DesktopSectionRow>
+          {project && (
+            <>
+              <div className="desktop-section-group" title={project.name}>{project.name}</div>
+              {([...PROJECT_PRIMARY_TABS, "capabilities", "settings"] as const).map((tab) => (
+                <DesktopSectionRow
+                  key={tab}
+                  active={activeProjectTab === tab}
+                  title={PROJECT_WORKSPACE_TAB_HINTS[tab]}
+                  onClick={() => requestNavigate({ type: "tab", tab })}
+                >
+                  {PROJECT_WORKSPACE_TAB_LABELS[tab]}
+                </DesktopSectionRow>
+              ))}
+            </>
+          )}
+        </DesktopSectionSidebar>
+      )}
       {loadState === "loading" && !project && <div className="project-loading">正在加载项目…</div>}
       {loadState === "error" && (
         <div className="empty-block">
@@ -266,35 +346,46 @@ export default function ProjectWorkspace({
               {project.name}
               {project.archived && <span className="project-archived-badge">已归档</span>}
             </span>
+            {desktop && <>
+              <span className="project-desk-crumb-sep">/</span>
+              <span className="project-desk-section-name">{PROJECT_WORKSPACE_TAB_LABELS[activeProjectTab]}</span>
+              {!showRail && (
+                <button type="button" className="project-rail-toggle project-desk-config-toggle" title="展开项目配置" aria-label="展开项目配置" onClick={openConfig}>
+                  <IconChevronRight size={16} strokeWidth={1.7} />
+                </button>
+              )}
+            </>}
           </header>
 
-          <div className="project-desk-body">
+          <div className={`project-desk-body${compactMaterials ? " project-desk-body--compact-materials" : ""}`}>
             <div className="project-desk-main">
-              <nav className="project-desk-tabs" aria-label="项目分区">
-                {PROJECT_PRIMARY_TABS.map((tab) => (
+              {!desktop && <div className="project-desk-tabs">
+                <nav className="project-desk-tabs-scroll" aria-label="项目分区">
+                  {PROJECT_PRIMARY_TABS.map((tab) => (
                   <button
                     key={tab}
                     type="button"
                     className={`project-desk-tab ${activeProjectTab === tab ? "active" : ""}`}
+                    aria-current={activeProjectTab === tab ? "page" : undefined}
                     title={PROJECT_WORKSPACE_TAB_HINTS[tab]}
                     onClick={() => requestNavigate({ type: "tab", tab })}
                   >
                     {PROJECT_WORKSPACE_TAB_LABELS[tab]}
                   </button>
-                ))}
-                <span className="input-spacer" />
-                {railMode === "collapsed" && (
+                  ))}
+                </nav>
+                {!showRail && (
                   <button
                     type="button"
                     className="project-rail-toggle"
                     title="展开项目配置"
                     aria-label="展开项目配置"
-                    onClick={() => useProjectConfigRailStore.getState().expand()}
+                    onClick={openConfig}
                   >
                     <IconChevronRight size={16} strokeWidth={1.7} />
                   </button>
                 )}
-              </nav>
+              </div>}
               <div className="project-desk-scroll">
                 <WorkspacePane
                   tab={activeProjectTab}
@@ -325,7 +416,7 @@ export default function ProjectWorkspace({
                 <ChatInput variant="project" onSend={sendFromProject} />
               </div>
             </div>
-            {railMode !== "collapsed" && (
+            {showRail && (
               <ProjectConfigRail
                 project={project}
                 onOpenSettings={() => requestNavigate({ type: "tab", tab: "settings" })}
@@ -349,7 +440,7 @@ export default function ProjectWorkspace({
         />
       )}
       <UnsavedChangesDialog
-        open={pendingNav !== null}
+        open={pendingNav !== null || desktopLeaveOpen}
         busy={guardBusy}
         onCancel={() => void finishGuard("cancel")}
         onDiscard={() => void finishGuard("discard")}

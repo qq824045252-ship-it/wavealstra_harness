@@ -10,12 +10,19 @@ import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
 import GadgetSourceDialog from "./GadgetSourceDialog";
 import { gadgetBrowserTarget, openGadgetBrowser } from "@/lib/gadgetBrowser";
+import { DesktopSectionRow, DesktopSectionSidebar } from "@/components/desktop/DesktopSection";
 
 interface Props {
   scope: GadgetScope;
   includeInherited?: boolean;
   title?: string;
   hideHeader?: boolean;
+  workbench?: {
+    selectedId: string | null;
+    onSelect: (id: string) => void;
+    query: string;
+    onQueryChange: (query: string) => void;
+  };
 }
 
 function scopeKey(scope: GadgetScope): string {
@@ -35,7 +42,7 @@ function gadgetApi(): NonNullable<typeof window.api>["gadget"] {
   return api;
 }
 
-export default function GadgetSection({ scope, includeInherited = false, title, hideHeader = false }: Props): React.JSX.Element {
+export default function GadgetSection({ scope, includeInherited = false, title, hideHeader = false, workbench }: Props): React.JSX.Element {
   const spaces = useAppStore((state) => state.spaces);
   const activeTaskId = useAppStore((state) => state.activeTaskId);
   const taskWorkspaceId = useAppStore((state) => scope.type === "task" ? state.tasks.find((task) => task.id === scope.taskId)?.spaceId : undefined);
@@ -49,7 +56,8 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [sourceItem, setSourceItem] = useState<GadgetListItem | null>(null);
-  const [query, setQuery] = useState("");
+  const [inlineQuery, setInlineQuery] = useState("");
+  const query = workbench?.query ?? inlineQuery;
   const { requestText, textPromptDialog } = useTextPrompt();
   const key = scopeKey(scope);
   const currentScopeKey = useRef(key);
@@ -87,6 +95,9 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
     const needle = query.trim().toLowerCase();
     return needle ? direct.filter((item) => `${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle)) : direct;
   }, [direct, query]);
+  const selected = workbench
+    ? visibleDirect.find((item) => item.id === workbench.selectedId) ?? visibleDirect[0]
+    : undefined;
 
   useEffect(() => {
     // A filtered/removed row must not reopen against a detached anchor later.
@@ -314,9 +325,31 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
     );
   };
 
+  const create = (): void => {
+    setError(null);
+    setCreateOpen(true);
+  };
+
   return (
     <section className="gadget-section">
-      {scope.type === "task" || hideHeader ? (
+      {workbench ? (
+        <DesktopSectionSidebar title="工作台" scrollKey="workbench" actions={
+          <button type="button" className="icon-btn" onClick={create} aria-label="新建工具" title="新建工具">
+            <IconPlus size={16} />
+          </button>
+        }>
+          <label className="desktop-secondary-search desktop-workbench-search">
+            <input value={query} onChange={(event) => workbench.onQueryChange(event.target.value)}
+              aria-label="搜索工具" placeholder="搜索工具" />
+          </label>
+          <div className="desktop-section-group">我的工具</div>
+          {visibleDirect.map((item) => <DesktopSectionRow key={item.id} active={selected?.id === item.id}
+            title={item.name} onClick={() => workbench.onSelect(item.id)} icon={<IconPuzzle size={15} />}
+            meta={item.runtime.status === "running" ? <span className="desktop-secondary-status">运行中</span> : undefined}>
+            {item.name}
+          </DesktopSectionRow>)}
+        </DesktopSectionSidebar>
+      ) : scope.type === "task" || hideHeader ? (
         <div className="gadgets-view-header">
           <div className="gadgets-view-stats">
             <span className="gadgets-count-label">工作台</span>
@@ -326,10 +359,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
             type="button"
             className="extension-tab-add-btn gadgets-header-add-btn"
             title="新建工具"
-            onClick={() => {
-              setError(null);
-              setCreateOpen(true);
-            }}
+            onClick={create}
           >
             <IconPlus size={12} />
             <span>新建工具</span>
@@ -346,12 +376,12 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
               <input
                 className="gadget-search"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => setInlineQuery(event.target.value)}
                 placeholder="搜索工具"
                 aria-label="搜索工具"
               />
             )}
-            <button className="btn btn--primary" onClick={() => { setError(null); setCreateOpen(true); }}>新建工具</button>
+            <button className="btn btn--primary" onClick={create}>新建工具</button>
           </div>
         </div>
       )}
@@ -360,7 +390,11 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
       {notice && <div className="gadget-notice" role="status">{notice}<button type="button" onClick={() => setNotice(null)}>×</button></div>}
 
       <div className="gadgets-panel-content">
-        {visibleDirect.length === 0 && inherited.length === 0 ? (
+        {workbench ? selected ? (
+          <div className="desktop-workbench-detail">{renderCard(selected)}</div>
+        ) : (
+          <div className="desktop-secondary-empty">{query.trim() ? "没有匹配的工具。" : "还没有工具。点击「新建工具」开始。"}</div>
+        ) : visibleDirect.length === 0 && inherited.length === 0 ? (
           <div className="gadget-empty-state">
             <IconPuzzle size={36} className="gadget-empty-icon" />
             <h4 className="gadget-empty-title">当前任务暂无工作台工具</h4>
@@ -411,6 +445,8 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
           onClose={() => setCreateOpen(false)}
           onCreated={(item) => {
             setCreateOpen(false);
+            workbench?.onQueryChange("");
+            workbench?.onSelect(item.id);
             void reload();
             if (item.runtime.status === "error") {
               setError(item.runtime.error || "Gadget 启动失败");

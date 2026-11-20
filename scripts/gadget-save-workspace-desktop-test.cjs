@@ -59,8 +59,7 @@ const list = scope => evaluate(`window.api.gadget.list({scope:${JSON.stringify(s
 const snapshot = id => evaluate(`window.api.gadget.readSource(${JSON.stringify(id)})`);
 async function navigate(where) {
   if (where === 'personal') {
-    await click('document.querySelector(".sidebar-user-main")');
-    await click(button('.sidebar-popup-item', '我的工作台'));
+    await click('document.querySelector(".desktop-rail [aria-label=工作台]")');
     await until(() => evaluate('Boolean(document.querySelector(".gadget-page"))'), 'personal page');
   } else if (where === 'workspace') {
     await evaluate(`window.gadgetSaveStore.setState({page:'workspace',activeWorkspaceId:'bound-space',panelOpen:false})`);
