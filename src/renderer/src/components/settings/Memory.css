@@ -75,6 +75,12 @@
 .memory-scope-filter > span { color: var(--fg-secondary); }
 .memory-record-list, .memory-record-detail { min-width: 0; max-height: 520px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; overscroll-behavior: contain; }
 .memory-record-detail { padding: 16px; overflow-wrap: anywhere; line-height: 1.65; }
+/* Keep the full title readable; actions must not squeeze it into a vertical strip. */
+.memory-record-detail-header { display: grid; gap: 8px; min-width: 0; margin-bottom: 10px; }
+.memory-record-detail-title { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.memory-record-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.memory-record-detail-actions .btn { flex: 0 0 auto; max-width: 100%; }
+
 .memory-record-row { width: 100%; text-align: left; padding: 13px 12px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: inherit; cursor: pointer; }
 .memory-record-row:hover { background: var(--bg-hover); }
 .memory-record-row.active { background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary)); box-shadow: inset 3px 0 var(--accent); }
@@ -94,3 +100,9 @@
   .memory-record-detail { max-height: none; }
   .memory-overview { gap: 10px; }
 }
+
+/* Organizing memory is a toolbar action, not a permanent explanatory card. */
+.memory-organization-compact { border: 0; border-radius: 0; padding: 0; background: transparent; margin-bottom: 12px; }
+.memory-organization-heading-copy { flex: 1 1 260px; min-width: 0; }
+.memory-organization-compact .memory-organization-buttons { margin-left: auto; max-width: 100%; }
+.memory-organization-run-status { margin: 8px 0 0; font-size: 12px; color: var(--fg-secondary); }

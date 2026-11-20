@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Sparkles, ChevronDown, ChevronRight, RotateCcw, Check, Pause, Play, AlertCircle } from "lucide-react";
 import type { MemoryOrganizationProposal, MemoryOrganizationRun } from "@shared/memory-organization";
 import type { MemoryScopeDto } from "@shared/memory-kernel";
@@ -20,7 +20,8 @@ function Proposal({ proposal, scopeName, onOpen }: {
   </details>;
 }
 
-export default function MemoryOrganizationPanel({ activeCount, scopeName, onOpen, onChanged }: {
+export default function MemoryOrganizationPanel({ activeCount, scopeName, onOpen, onChanged, heading }: {
+  heading?: ReactNode;
   activeCount: number; scopeName: (scope: MemoryScopeDto) => string; onOpen: (id: string) => void; onChanged: () => Promise<void>;
 }) {
   const [run, setRun] = useState<MemoryOrganizationRun | null>(null);
@@ -74,10 +75,9 @@ export default function MemoryOrganizationPanel({ activeCount, scopeName, onOpen
     : run?.status === "paused" ? "整理已暂停，进度已保存"
     : run?.status === "ready" ? run.proposals.length ? "整理完成 · 查看变更后应用" : "检查完成 · 暂无需要整理的内容"
     : run?.status === "applied" ? "整理已应用" : run?.status === "undone" ? "已撤销上次整理" : "让记忆更简洁、更好用";
-  return <section className="memory-organization" aria-label="AI 整理记忆">
+  return <section className="memory-organization memory-organization-compact" aria-label="AI 整理记忆">
     <div className="memory-organization-heading">
-      <div className="memory-organization-icon"><Sparkles size={19} /></div>
-      <div className="memory-organization-intro"><h3>AI 整理记忆</h3><p>{status}</p></div>
+      {heading && <div className="memory-organization-heading-copy">{heading}</div>}
       <div className="memory-organization-buttons">
         {run?.status === "scanning" && <button className="btn" type="button" disabled={busy} onClick={() => void act("pause")}><Pause size={14} />暂停</button>}
         {run?.status === "paused" && <button className="btn primary" type="button" disabled={busy} onClick={() => void act("resume")}><Play size={14} />继续整理</button>}
@@ -87,7 +87,7 @@ export default function MemoryOrganizationPanel({ activeCount, scopeName, onOpen
         {(!pending || (run?.status === "ready" && !run.proposals.length)) && <button className="btn primary" type="button" disabled={busy || activeCount === 0 || !window.api?.memory?.startOrganization} onClick={() => void act("start")}><Sparkles size={14} />{busy ? "处理中…" : "整理全部记忆"}</button>}
       </div>
     </div>
-    <p className="memory-organization-description">自动覆盖全局、所有项目、工作空间和任务。合并重复、精简正文，保留来源与原有可见范围。</p>
+    {run && run.status !== "dismissed" && <p className="memory-organization-run-status" role="status">{status}</p>}
     {run && !["dismissed", "undone"].includes(run.status) && <div className="memory-organization-progress">
       <div className="memory-organization-metrics" role="status"><span>已检查 <strong>{run.scanned}</strong> / {run.total}</span>
         <span>无需更改 {run.unchanged}</span><span>变更 {changes.length}</span><span>冲突 {conflicts.length}</span>

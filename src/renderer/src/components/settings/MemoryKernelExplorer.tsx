@@ -640,21 +640,21 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
 
   return (
     <section className="settings-section memory-explorer" style={{ marginTop: 14 }}>
-      {!fixedType && <MemoryOrganizationPanel activeCount={stats?.active ?? 0} onChanged={load} onOpen={(id) => void openL1Memory(id)}
-        scopeName={(s) => `${SCOPE_LABEL[s.scopeType]}${s.scopeId ? ` · ${scopeDisplayName(s)}` : ""}`} />}
       {!fixedType && <div className="memory-overview" aria-label="记忆概览">
         <div><strong>{stats?.active ?? 0}</strong><span>有效记忆</span></div>
         <div><strong>{Math.max(0, (stats?.total ?? 0) - (stats?.active ?? 0))}</strong><span>历史记录</span></div>
         <div><strong>{stats?.candidates?.["needs_review"] ?? review.length}</strong><span>待复核</span></div>
       </div>}
-      <div className="settings-section-head">
-        <div>
+      {fixedType ? <div className="settings-section-head"><div>
           <div className="settings-section-title">{fixedType ? `${scopeName}的记忆` : "记忆内容与来源"}</div>
           <div className="settings-section-desc">
             {fixedType ? fixedType === "bot" ? "同一 Bot 的新旧对话共享这些记忆；其他 Bot 不会自动读取。" : fixedType === "global" ? "只有明确共享的条目会供 Bot 和团队读取；旧全局记忆默认不共享。" : "仅管理当前归属的记忆，不会读取或修改其他 Bot 的私人记忆。" : "默认查看有效记忆。原始对话、证据和历史版本保留，可随时追溯。"}
           </div>
-        </div>
-      </div>
+        </div></div> :
+        <MemoryOrganizationPanel activeCount={stats?.active ?? 0} onChanged={load} onOpen={(id) => void openL1Memory(id)}
+          scopeName={(s) => `${SCOPE_LABEL[s.scopeType]}${s.scopeId ? ` · ${scopeDisplayName(s)}` : ""}`}
+          heading={<div><div className="settings-section-title">记忆内容与来源</div>
+            <div className="settings-section-desc">默认查看有效记忆。原始对话、证据和历史版本保留，可随时追溯。</div></div>} />}
       <div className="settings-section-card" style={{ padding: 12 }}>
         {!fixedType && <div className="ext-subnav" role="tablist" aria-label="记忆层级" style={{ marginBottom: 10 }}>
           {([
@@ -801,9 +801,9 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
               <div className="memory-empty">选择一条记忆查看来源、证据与修改历史。</div>
             ) : (
               <>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
-                  <div style={{ fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{selected.title}</div>
-                  <span style={{ flex: 1 }} />
+                <div className="memory-record-detail-header">
+                  <div className="memory-record-detail-title">{selected.title}</div>
+                  <div className="memory-record-detail-actions">
                   <button type="button" className="btn" disabled={busy || selectedShared} onClick={() => void editSelected()}>编辑</button>
                   {alreadyGlobal && selected.status === "active" && <button type="button" className="btn"
                     onClick={() => useAppStore.setState({ settingsOpen: true, settingsTab: "answerRouting",
@@ -816,6 +816,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
                   >
                     删除
                   </button>
+                  </div>
                 </div>
                 {selectedShared && <p className="settings-row-desc">此条是历史共享记忆。在此仅能移除当前归属的关联，不修改其他作用域；如需更正共享内容，请到全局记忆设置。</p>}
                 {selected.scopes.some(s => s.scopeType === "global") && <PublicMemorySharing memory={selected} disabled={busy || selectedShared} onChanged={load} />}
