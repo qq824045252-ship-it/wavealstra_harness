@@ -87,7 +87,7 @@ export interface DurableBotServiceOptions {
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
-  answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask">;
+  answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask" | "clearPreparedTurns">;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
   mcpSelection?: (task: TaskDto) => readonly string[];
   toolAllowed?: (task: TaskDto, name: string) => boolean;
@@ -431,7 +431,8 @@ export class DurableBotService {
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         answerRouting: routing && {
           enabled: () => routing.hasRulesForTask(taskId),
-          prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd, canRead: () => toolGate.allowed("read") }),
+          prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd,
+            canRead: () => toolGate.allowed("read"), canReadLibrary: () => toolGate.allowed("library_read") }),
         },
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
@@ -521,6 +522,8 @@ export class DurableBotService {
           const key = `${snapshot.conversationId}:${snapshot.messages.at(-1)?.id ?? ""}:${snapshot.outcome ?? ""}`;
           if (!snapshot.busy && !snapshot.queued && snapshot.outcome && key !== settledKey) {
             settledKey = key;
+            const currentInput = [...snapshot.messages].reverse().find(message => message.role === "user")?.inputRequestId;
+            if (currentInput) routing?.clearPreparedTurns(taskId, currentInput);
             this.options.onSettled?.(taskId, snapshot);
           }
         },
@@ -1036,6 +1039,7 @@ export class DurableBotService {
   async purge(taskId: string): Promise<void> {
     if (this.options.db.getTask(taskId)) throw new Error("Only a permanently deleted task can purge Durable storage");
     await this.release(taskId);
+    this.options.answerRouting?.clearPreparedTurns(taskId);
     const root = resolve(this.options.agentDir, "durable");
     const directory = resolve(root, createHash("sha256").update(taskId).digest("hex"));
     if (dirname(directory) !== root) throw new Error("Invalid Durable storage path");

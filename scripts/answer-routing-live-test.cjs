@@ -1,85 +1,158 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { createHash } = require("node:crypto");
 const { run } = require("./desktop-dev-harness.cjs");
+const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
-run(async ({ evaluate, until, report, home, requests, restart }) => {
+run(async env => {
+  if (process.argv.includes("--weather")) return require("./answer-routing-weather-check.cjs")(env);
+  const { evaluate, until, report, home, requests, restart, rpc } = env;
+  const { click, fill, expand, openSettings, screenshot } = routingControls(env);
   const workspace = path.join(home, "周报验收资料");
+  const file = path.join(workspace, "release.md");
+  const original = "交付记录。蓝桥模块 RG-174 已提测，尚未上线。青禾模块 RG-285 已上线。";
+  const updated = "新版发布记录。蓝桥模块 RG-174 已上线，发布批次 R-920。青禾模块 RG-285 已上线。";
+  const hash = body => createHash("sha256").update(body).digest("hex");
   await fs.mkdir(workspace);
-  await fs.writeFile(path.join(workspace, "release.md"), "交付记录。蓝桥模块 RG-174 已提测，尚未上线。青禾模块 RG-285 已上线。");
+  await fs.writeFile(file, original);
   const spaceId = "routing-fixture";
-  const fixture = { id: spaceId, name: "验收项目资料", path: workspace };
-  await evaluate(`window.api.db.upsertSpace(${JSON.stringify(fixture)})`);
-  const teaching = "写项目周报时先查任务目录的 release.md，核对两个模块的状态与编号，提测和上线须分别表述。";
+  const dbCall = (name, arg) => evaluate("window.api.db." + name + "(" + JSON.stringify(arg) + ")");
+  await dbCall("upsertSpace", { id: spaceId, name: "验收空间", path: workspace });
+  const project = await dbCall("createProject", { name: "调度验收项目" });
+  assert.equal(project.ok, true);
+  const projectId = project.project.id;
   const question = "写项目周报。用两行汇报蓝桥和青禾各自的交付状态与记录编号。";
+  const teaching = "写项目周报或整理交付周报时，先读取任务目录的 release.md。区分已提测和尚未上线，列出状态和记录编号。翻译周报时跳过。资料缺失标为待核实。";
+  const makeTask = id => dbCall("upsertTask", { id, title: id, welcomeMode: "general", projectId, spaceId, updatedAt: Date.now() });
+  const getUses = (taskId, inputId) => evaluate("window.api.answerRouting.history(" + JSON.stringify({ taskId, inputId }) + ")");
+  const setMemory = value => evaluate("window.api.agent.updateAppSettings(" + JSON.stringify({memoryEnabled: value}) + ")");
   report.comparison = [];
-  const ask = async (arm, expectRoute) => {
-    const id = "routing-" + arm;
-    const task = { id, title: arm, welcomeMode: "general", spaceId, updatedAt: Date.now() };
-    await evaluate(`window.api.db.upsertTask(${JSON.stringify(task)})`);
-    const request = { taskId: id, spaceId, welcomeMode: "general", text: question, userMessageId: id + "-q", assistantMessageId: id + "-a" };
-    const start = Date.now(), offset = requests.length;
-    await evaluate(`(() => {
-      window.routingRun = null;
-      (async () => {
-        const admission = await window.api.agent.prompt(${JSON.stringify(request)});
-        if (admission.error || !admission.receipt) throw Error(JSON.stringify(admission));
-        const done = await window.api.agent.waitForSubmission(admission.receipt);
-        if (done.error) throw Error(JSON.stringify(done.error));
-        const history = await window.api.agent.loadTaskHistory(${JSON.stringify(id)});
-        return history.messages.filter(m => m.role === 'assistant').at(-1)?.text;
-      })().then(text => window.routingRun = { text }, e => window.routingRun = { error: String(e) });
-    })()`);
-    await until(() => evaluate("!!window.routingRun"), arm);
-    const result = await evaluate("window.routingRun");
-    assert.ifError(result.error ? Error(result.error) : null);
-    const calls = requests.slice(offset).filter(payload => payload.messages.some(message => message.role === "user" &&
-      (message.content === question || (Array.isArray(message.content) && message.content.some(part => part.text === question)))));
-    const uses = await evaluate(`window.api.answerRouting.history(${JSON.stringify({ taskId: id, inputId: request.userMessageId })})`);
-    const lines = (result.text ?? "").split("\n");
-    const grounded = lines.some(line => /蓝桥/.test(line) && /RG-174/i.test(line) && /提测/.test(line))
-      && lines.some(line => /青禾/.test(line) && /RG-285/i.test(line) && /已上线|完成上线/.test(line));
-    const modelTools = new Map();
-    for (const request of calls) for (const message of request.messages) for (const tool of message.tool_calls ?? [])
-      modelTools.set(tool.id, tool.function?.name);
-    report.comparison.push({ arm, elapsedMs: Date.now() - start, providerRequests: calls.length,
-      modelTools: [...modelTools.values()], grounded, answer: result.text, uses });
-    assert.equal(uses.length, expectRoute ? 1 : 0);
-    if (expectRoute) {
-      assert.match(uses[0].detail, /已预读 release.md/);
-      assert.match(JSON.stringify(calls[0]?.messages), /RG-174/);
-      assert(grounded, "回答缺少验收资料中的编号或状态");
-    }
+
+  const ask = async (arm, id, query, expectedStatus) => {
+    const inputId = "q-" + arm;
+    const request = { taskId: id, spaceId, projectId, welcomeMode: "general", text: query, userMessageId: inputId, assistantMessageId: "a-" + arm };
+    const offset = requests.length, start = Date.now();
+    await evaluate("window.answerRun = null; (async () => { const r = await window.api.agent.prompt(" + JSON.stringify(request)
+      + "); if (!r.receipt) throw Error(JSON.stringify(r)); const done = await window.api.agent.waitForSubmission(r.receipt);"
+      + " if (done.error) throw Error(JSON.stringify(done.error)); const h = await window.api.agent.loadTaskHistory(" + JSON.stringify(id)
+      + "); window.answerRun = {answer: h.messages.filter(m => m.role === 'assistant').at(-1)?.text}; })().catch(e => window.answerRun = {error: String(e)}); void 0");
+    await until(() => evaluate("!!window.answerRun"), arm);
+    const {answer, error} = await evaluate("window.answerRun");
+    assert.ifError(error ? Error(error) : null);
+    assert.ok(answer, arm + " has an answer");
+    const calls = requests.slice(offset).filter(payload => payload.messages.some(m => m.role === "user" &&
+      (m.content === query || (Array.isArray(m.content) && m.content.some(p => p.text === query)))));
+    const uses = await getUses(id, inputId);
+    report.comparison.push({arm, elapsedMs: Date.now()-start, providerRequests: calls.length, answer, uses});
+    assert(calls.length > 0);
+    assert.equal(uses.length, expectedStatus ? 1 : 0);
+    if (expectedStatus) assert.equal(uses[0].evidence.status, expectedStatus);
+    return { answer, uses, inputId, calls };
   };
-  await ask("baseline", false);
-  const memory = await evaluate(`window.api.memory.create(${JSON.stringify({ title: "周报发布记录", content: teaching,
-    scopeType: "global", kind: "procedure", sourceType: "manual", explicit: true })})`);
-  await ask("memory", false);
-  const draft = { title: "周报核查", include: ["项目周报"], exclude: ["翻译"], instruction: teaching,
-    enabled: true, evidenceFile: "release.md", sourceMemoryId: memory.id, sourceHash: memory.contentHash, projectId: null };
-  await evaluate(`window.api.answerRouting.save(${JSON.stringify(draft)})`);
-  await ask("routed", true);
-  await evaluate(`(() => {
-    window.teachingResult = null;
-    window.api.answerRouting.suggest("写交付周报时先核对发布记录").then(
-      draft => window.teachingResult = {draft}, error => window.teachingResult = {error: String(error)});
-  })()`);
-  await until(() => evaluate("!!window.teachingResult"), "model-authored rule draft");
-  const suggestion = await evaluate("window.teachingResult");
-  assert.ifError(suggestion.error ? Error(suggestion.error) : null);
-  assert.match(suggestion.draft.instruction, /发布/);
-  assert(suggestion.draft.include.length);
-  report.actualControlChecks.push("Natural-language teaching produced an editable draft through the configured model.");
+
+  const checkInitial = answer => {
+    const blue = answer.split("\n").find(line => line.includes("蓝桥") && line.includes("RG-174"));
+    const green = answer.split("\n").find(line => line.includes("青禾") && line.includes("RG-285"));
+    assert(blue && /提测/.test(blue), answer);
+    // Strip explicit negations before rejecting a positive claim about the same module.
+    assert.doesNotMatch(blue.replace(/(?:尚未|未|没有|并未|还没|暂未)(?:正式)?上线/g, ""), /已(?:经)?(?:正式)?上线|已发布|完成上线/);
+    assert(green && /已(?:经)?(?:正式)?上线|完成上线/.test(green), answer);
+  };
+  const baseline = "routing-baseline", memoryOnly = "routing-memory", runTask = "routing-only", both = "routing-both";
+  for (const id of [baseline, memoryOnly, runTask, both]) await makeTask(id);
+  await setMemory(false);
+  await ask("baseline", baseline, question);
+  await setMemory(true);
+  await evaluate("window.api.memory.create(" + JSON.stringify({ title: "周报交付约束", content: teaching,
+    scopeType: "global", kind: "procedure", sourceType: "manual", explicit: true }) + ")");
+  await ask("memory", memoryOnly, question);
+  await setMemory(false);
+
   await restart();
-  await evaluate(`import('/src/store/appStore.ts').then(m => m.useAppStore.getState().setSettingsOpen(true,'answerRouting'))`);
-  const openReply = "[...document.querySelectorAll('.answer-routing-row button')].find(b => b.textContent === '打开对话')";
-  await until(() => evaluate(`!!(${openReply})`), "persisted use after restart");
-  await evaluate(`(${openReply}).click()`);
-  const teach = "[aria-label=教给调度器]";
-  await until(() => evaluate(`!!document.querySelector('${teach}')`), "completed answer actions");
-  await evaluate(`document.querySelector('${teach}').click()`);
-  await until(() => evaluate("document.querySelector('.answer-rule-form')?.textContent.includes('本次采用「周报核查」')"),
-    "this answer displays its own rule receipt");
-  assert.match(await evaluate("document.querySelector('.answer-rule-form details').textContent"), /RG-174/);
-  report.actualControlChecks.push("After restart, opened the original chat from rule history and verified teaching from that specific answer.");
-}, { name: "answer-routing-live", liveModel: true, settings: { memoryEnabled: true } });
+  const activate = id => evaluate("import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().setActiveTask(" + JSON.stringify(id) + "))");
+  await activate(baseline);
+  await click("下次这样答", ".message-list");
+  await until(() => evaluate("!!document.querySelector('.answer-rule-form textarea')"), "editable teaching card");
+  await fill('textarea[aria-label="下次怎么做"]', teaching);
+  await expand("规则选项");
+  await expand("匹配问法与例外");
+  await click("用模型整理成草稿");
+  await until(() => evaluate("document.querySelector('[aria-label=\"任务目录相对路径\"]')?.value === 'release.md'"), "teacher supplied source prefilled");
+  await evaluate("(() => {const s = [...document.querySelectorAll('.answer-rule-form select')].find(s=>[...s.options].some(o=>o.value==='mark-unverified')); s.value='mark-unverified';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
+  await click("保存并返回对话");
+  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 1)"), "saved from the actual answer");
+  const [rule] = await evaluate("window.api.answerRouting.list()");
+  assert.equal(rule.projectId, projectId);
+  assert.equal(rule.sourceMemoryId, null);
+  assert.equal(rule.evidenceFile, "release.md");
+  await evaluate("import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().setSettingsOpen(false))");
+
+  await setMemory(true);
+  checkInitial((await ask("both", both, question, "read")).answer);
+  await setMemory(false);
+  const first = await ask("routing-only", runTask, question, "read");
+  checkInitial(first.answer);
+  assert.equal(first.uses[0].evidence.contentHash, hash(original));
+  assert.equal(JSON.stringify(first.calls[0].messages).split(original).length - 1, 1);
+  await fs.writeFile(file, updated);
+
+  // Send the second turn through the visible composer and capture its durable input id.
+  await activate(runTask);
+  await until(() => evaluate("!!document.querySelector('[data-routing-receipt=\"q-routing-only\"]')"), "first turn receipt");
+  const composer = "textarea.input-textarea";
+  await rpc("Page.bringToFront");
+  await rpc("Emulation.setFocusEmulationEnabled", {enabled: true});
+  await fill(composer, question);
+  const send = 'button.send-btn[title="发送 (Enter)"]:not(:disabled)';
+  await until(() => evaluate("!!document.querySelector(" + JSON.stringify(send) + ")"), "normal send action enabled");
+  await evaluate("document.querySelector(" + JSON.stringify(send) + ").click()");
+  let secondUse;
+  await until(async () => {
+    const rows = await evaluate("window.api.answerRouting.history()");
+    secondUse = rows.find(r => r.taskId === runTask && r.inputId !== first.inputId);
+    if (!secondUse) return false;
+    return evaluate("import('/src/store/appStore.ts').then(m=>{const t=m.useAppStore.getState().tasks.find(x=>x.id===" + JSON.stringify(runTask)
+      + "); return t?.durable?.busy === false && t.durable.outcome === 'completed' && t.messages.filter(x=>x.role==='user').at(-1)?.inputRequestId === " + JSON.stringify(secondUse.inputId) + ";})");
+  }, "updated release returned to the normal chat");
+  await activate(runTask);
+  const updatedReceipt = "[data-routing-receipt=" + JSON.stringify(secondUse.inputId) + "]";
+  await until(() => evaluate("!!document.querySelector(" + JSON.stringify(updatedReceipt) + ")"), "updated reply has its own receipt");
+  assert.equal(secondUse.evidence.contentHash, hash(updated));
+  const latest = await evaluate("window.api.agent.loadTaskHistory(" + JSON.stringify(runTask) + ").then(h=>h.messages.at(-1).text)");
+  assert(latest.split("\n").some(line=>line.includes("蓝桥") && /已(?:经)?上线/.test(line)), latest);
+  assert.doesNotMatch(latest, /(?:纠正|更正|修正)上(?:一)?轮.{0,40}(?:错误|有误)/u);
+  report.updatedTurn = {answer: latest, inputId: secondUse.inputId, contentHash: secondUse.evidence.contentHash};
+  assert.deepEqual(await getUses(runTask, first.inputId), first.uses);
+  const alternate = "帮我整理交付周报，列出蓝桥和青禾各自的编号和交付状态。";
+  const paraphrase = await ask("alternate", runTask, alternate, "read");
+  assert.equal(paraphrase.uses[0].evidence.contentHash, hash(updated));
+  await fs.rename(file, path.join(home, "已移走.txt"));
+  const missing = await ask("missing", runTask, question, "not-found");
+  assert.match(missing.answer, /待核实|无法核实|未能核实|无法确认|待确认/);
+  for (const project of ["蓝桥", "青禾"]) {
+    const line = missing.answer.split("\n").find(row => row.includes(project));
+    assert(line && /待核实|无法核实|未能核实|无法确认|待确认|暂无法|未核实/.test(line), missing.answer);
+  }
+  const translate = await ask("translation", runTask, "帮我翻译这份周报为英文：项目周报已整理。");
+  assert.equal(translate.uses.length, 0);
+  assert.equal(await evaluate("window.api.answerRouting.preview(" + JSON.stringify(question) + ",null)"), null);
+
+  await restart();
+  await openSettings();
+  for (const use of [secondUse, missing.uses[0], first.uses[0]]) {
+    const selector = "button[data-routing-input=" + JSON.stringify(use.inputId) + "]";
+    await until(() => evaluate("!!document.querySelector(" + JSON.stringify(selector) + ")"), "persisted turn " + use.inputId);
+    await evaluate("document.querySelector(" + JSON.stringify(selector) + ").click()");
+    const receipt = "[data-routing-receipt=" + JSON.stringify(use.inputId) + "]";
+    await until(() => evaluate("!!document.activeElement?.matches('.message-list > div') && !!document.activeElement.querySelector(" + JSON.stringify(receipt) + ")"), "focused corresponding answer");
+    await evaluate("document.querySelector(" + JSON.stringify(receipt) + ").click()");
+    const graph = "document.getElementById(document.querySelector(" + JSON.stringify(receipt) + ").getAttribute('aria-controls'))";
+    await until(() => evaluate("!!" + graph + "?.querySelector('[data-routing-graph=run]')"), "this answer's flow visible");
+    const evidenceDetails = await evaluate(graph + ".querySelector('.routing-graph__details').textContent");
+    assert(evidenceDetails.includes(use.evidence.contentHash || use.evidence.reason), evidenceDetails);
+    if (use === first.uses[0]) await screenshot("turn-flow");
+    await openSettings();
+  }
+  report.actualControlChecks.push("Taught from a real reply, saved the suggested source in the current project, asked again in the visible composer, and opened each original answer and flow after restart.");
+}, { name: "answer-routing-live", liveModel: true, rpcTimeoutMs: 60000, settings: { memoryEnabled: true } });

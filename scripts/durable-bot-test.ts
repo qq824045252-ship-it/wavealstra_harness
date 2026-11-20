@@ -17,7 +17,9 @@ import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
 import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { AnswerRoutingService } from "../src/main/agent/AnswerRoutingService";
+import { reviewAnswerRuleMemories } from "../src/main/agent/AnswerRuleMemoryReview";
 import { MemoryService } from "../src/main/memory/MemoryService";
+import { LibraryService } from "../src/main/library/LibraryService";
 import { answerRuleExamples } from "../src/shared/answer-routing";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { clearResults, getResult } from "../src/main/capabilities/web-access/storage";
@@ -63,12 +65,56 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   const taskId = "routing-example";
   db.upsertTask({ id: taskId, title: "调度对话", cwd, modelId: "fixture/fixture", updatedAt: 1 });
   const memories = new MemoryService(db);
+  const checkedDraft = { title: "核对颜色", include: [], exclude: [], instruction: "蓝色表示待确认。" };
+  const checkMemory = (content: string) => memories.create({ title: "颜色约定", content, scopeType: "global", kind: "constraint", sourceType: "manual" });
+  const firstColor = checkMemory(checkedDraft.instruction);
+  const secondColor = checkMemory("蓝色表示已交付。");
+  const reviewed = await reviewAnswerRuleMemories(checkedDraft, memories, () => true, async () => { throw new Error("offline"); });
+  assert.equal(reviewed.semanticUnavailable, true);
+  assert.deepEqual(reviewed.matches.map(hit => [hit.memoryId, hit.relation]), [[firstColor.id, "exact"]]);
+  const colorDraft = { ...checkedDraft, instruction: "用蓝色标出待确认项，并列出编号。" };
+  const differences = await reviewAnswerRuleMemories(colorDraft, memories, () => true, async (_system, input) => {
+    const { candidates } = JSON.parse(input) as { candidates: { candidate: number; content: string }[] };
+    return JSON.stringify({ distillation: { instruction: "用蓝色标出待确认项，列出编号。", include: ["核对颜色"], exclude: [],
+      usedCandidates: [candidates.find(item => item.content === firstColor.content)!.candidate], conflicts: ["蓝色对应的状态不同。"] },
+      matches: candidates.map(item => item.content === firstColor.content
+      ? { candidate: item.candidate, relation: "shared", reason: "蓝色含义相同。", draftOnly: "列出编号。", memoryOnly: "" }
+      : { candidate: item.candidate, relation: "conflict", reason: "同一颜色的状态相反。" }) });
+  });
+  assert.equal(differences.matches.find(row => row.memoryId === firstColor.id)?.additionalInstruction, "列出编号。");
+  assert.equal(differences.matches.find(row => row.memoryId === secondColor.id)?.relation, "conflict");
+  assert.deepEqual(differences.distillation?.sources.map(item => item.memoryId), [firstColor.id]);
+  assert.deepEqual(differences.distillation?.conflicts, ["蓝色对应的状态不同。"]);
+  await assert.rejects(reviewAnswerRuleMemories(checkedDraft, memories, () => true, async () => {
+    memories.update({ id: secondColor.id, content: "绿色表示已交付。" });
+    return '{"matches":[]}';
+  }), /记忆已变化/);
+  memories.forget(firstColor.id);
+  memories.forget(secondColor.id);
   const source = memories.create({ title: "天气", content: "天气简报优先出行时段。", kind: "procedure", sourceType: "manual", scopeType: "global" });
   const routing = new AnswerRoutingService(db, (id, task) => task ? memories.getForRecall(id, { taskId: task }) : memories.get(id));
   const weather = routing.save({ ...answerRuleExamples[0], sourceMemoryId: source.id, sourceHash: source.contentHash });
   const report = routing.save({ ...answerRuleExamples[1], evidenceFile: "release.md" });
+  const translated = routing.save({ ...report, exclude: ["翻译周报"] }, report);
+  assert.equal(routing.preview("帮我翻译这份周报为英文：项目周报已整理。", null), null);
+  assert.equal(routing.preview("帮我写项目周报", null)?.rule.id, translated.id);
   db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES('route-project','验收项目',1,1)").run();
   const projectRule = routing.save({ ...answerRuleExamples[1], projectId: "route-project", title: "本项目周报" });
+  db.upsertTask({ id: "project-chat", title: "本项目", projectId: "route-project", updatedAt: 1 });
+  assert.ok(!routing.rulesForTask(taskId).some(rule => rule.id === projectRule.id));
+  assert.throws(() => routing.saveForTask(taskId, { version: { id: projectRule.id, revision: projectRule.revision }, changes: { enabled: false } }));
+  const weatherVersion = { id: weather.id, revision: weather.revision };
+  const local = routing.saveForTask("project-chat", { version: weatherVersion, independent: true, changes: { instruction: "按出行时段列出降水。" } });
+  assert.notEqual(local.id, weather.id);
+  assert.equal(local.projectId, "route-project");
+  assert.equal(routing.preview("上海天气", "route-project")?.rule.id, local.id);
+  assert.equal(routing.preview("上海天气", null)?.rule.id, weather.id);
+  assert.equal(routing.preview("把天气规则改成先查气温", "route-project"), null);
+  const localVersion = { id: local.id, revision: local.revision };
+  const disabled = routing.saveForTask("project-chat", { version: localVersion, changes: { enabled: false } });
+  assert.throws(() => routing.saveForTask("project-chat", { version: localVersion, changes: { title: "旧版本写入" } }), /规则已变化/);
+  assert.equal(disabled.enabled, false);
+  routing.remove(local.id, disabled.revision);
   assert.equal(routing.preview("写项目周报", "route-project")?.rule.title, "本项目周报");
   assert.equal(routing.preview("写项目周报", null)?.rule.title, "周报核对发布记录");
   assert.equal(routing.preview("润色文字\n## 用户附带文件\n天气 项目周报", "route-project"), null);
@@ -76,8 +122,17 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   await writeFile(join(cwd, "release.md"), "需求 R-37 已提测，尚无发布记录。");
   const payloads: string[] = [];
   let canRead = true;
+  let replaceReleaseOnNextRequest = false;
   const service = new DurableBotService({ db, agentDir: cwd, mcpDir: join(cwd, "mcp"),
-    models: { ...models(context => { payloads.push(JSON.stringify(context.messages)); return text("fixture reply"); }),
+    models: { ...models(async context => {
+      payloads.push(JSON.stringify(context.messages));
+      if (replaceReleaseOnNextRequest) {
+        replaceReleaseOnNextRequest = false;
+        await writeFile(join(cwd, "release.md"), "需求 R-38 已上线。");
+        return call("read", { path: "tool-note.md" });
+      }
+      return text("fixture reply");
+    }),
       refresh: async () => ({}), getAvailable: async () => [model] },
     answerRouting: routing, evidenceProjection: () => ({ memory: memories, enabled: () => true, scope: () => ({ taskId }), supplementalEvidence: () => [] }),
     resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native",
@@ -98,6 +153,55 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.deepEqual(routing.history().map(item => [item.inputId, item.title]),
       [["report", "周报核对发布记录"], ["weather", "查询出行天气"]]);
     assert.match(routing.history()[0].detail, /已预读 release.md/);
+    await writeFile(join(cwd, "tool-note.md"), "本次工具调用结束");
+    const start = payloads.length;
+    replaceReleaseOnNextRequest = true;
+    await service.prompt({ taskId, text: "帮我写项目周报", userMessageId: "two-requests", assistantMessageId: "reply-to-two" }, false);
+    assert.equal(payloads.length, start + 2);
+    for (const payload of payloads.slice(start)) {
+      assert.match(payload, /需求 R-37 已提测/);
+      assert.doesNotMatch(payload, /需求 R-38 已上线/);
+    }
+    const firstReceipt = routing.history({ taskId, inputId: "two-requests" });
+    assert.equal(firstReceipt.length, 1);
+    const updated = await ask("updated-file", "帮我写项目周报");
+    assert.match(updated, /需求 R-38 已上线/);
+    assert.match(updated, /资料的内容已从上次读取的版本更新/);
+    assert.notEqual(routing.history({ taskId, inputId: "updated-file" })[0].evidence?.contentHash,
+      firstReceipt[0].evidence?.contentHash);
+    assert.deepEqual(routing.history({ taskId, inputId: "two-requests" }), firstReceipt);
+    const skipped = await ask("override", "帮我写项目周报，这次不要读取文件，只用下面的文字。");
+    assert.doesNotMatch(skipped, /需求 R-38 已上线/);
+    assert.equal(routing.history({ taskId, inputId: "override" })[0]?.evidence?.status, "skipped");
+
+    const instruction = "调度对照用暗号为铜鹤。";
+    const taught = memories.create({ title: "调度对照", content: instruction, kind: "constraint", sourceType: "manual", scopeType: "global" });
+    const linked = routing.save({ ...answerRuleExamples[0], title: "调度对照", include: ["调度对照"],
+      sourceMemoryId: taught.id, sourceHash: taught.contentHash, instruction });
+    const once = await ask("deduplicate", "按调度对照给我暗号");
+    assert.match(once, new RegExp(taught.id));
+    assert.equal(once.split(instruction).length - 1, 1, "same memory instruction appears once in the provider request");
+    routing.remove(linked.id, linked.revision);
+    const independent = routing.save({ ...report, include: ["调度对照"], instruction });
+    const independentPayload = await ask("independent-dedup", "按调度对照整理资料");
+    assert.match(independentPayload, /本轮规则采用记忆/);
+    assert.equal(independentPayload.split(instruction).length - 1, 1);
+    assert.match(independentPayload, /需求 R-38 已上线/);
+    routing.remove(independent.id, independent.revision);
+    const extra = "额外保留交付编号。";
+    const combined = routing.save({ ...report, include: ["调度对照"], sourceMemoryId: taught.id,
+      sourceHash: taught.contentHash, sourcePrefixLength: instruction.length, instruction: instruction + "\n" + extra });
+    const combinedPayload = await ask("composed-dedup", "按调度对照核对编号");
+    assert.equal(combinedPayload.split(instruction).length - 1, 1);
+    assert.match(combinedPayload, /额外保留交付编号/);
+    assert.equal(routing.history({ taskId, inputId: "composed-dedup" })[0]?.evidence?.status, "read");
+    routing.remove(combined.id, combined.revision);
+    const longInstruction = "调度截断核对".repeat(130) + "保留末尾这一句。";
+    const longMemory = memories.create({ title: "调度截断核对", content: longInstruction, kind: "constraint", sourceType: "manual", scopeType: "global" });
+    const longRule = routing.save({ ...report, include: ["调度截断核对"], instruction: longInstruction,
+      sourceMemoryId: longMemory.id, sourceHash: longMemory.contentHash });
+    assert.ok((await ask("clipped-dedup", "调度截断核对")).includes(longInstruction), "clipped memory keeps the complete rule");
+    routing.remove(longRule.id, longRule.revision);
     canRead = false;
     const denied = await ask("denied", "整理周报");
     assert.match(denied, /未取得资料 release.md/);
@@ -110,13 +214,85 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.equal(routing.preview("明天天气如何", null, taskId), null);
     assert.equal(routing.list().find(item => item.id === weather.id)?.sourceNeedsReview, true);
     assert.throws(() => routing.save(restored, restored), /来源全局记忆已变化/);
-    assert.throws(() => routing.save({ ...report, evidenceFile: "../other.md" }, report), /相对路径/);
-    routing.remove(report.id, report.revision);
-    assert.equal(routing.history().length, 1);
+    assert.throws(() => routing.save({ ...translated, evidenceFile: "../other.md" }, translated), /相对路径/);
+    routing.remove(translated.id, translated.revision);
+    assert.deepEqual(routing.history({ taskId, inputId: "two-requests" }), firstReceipt);
     memories.forget(source.id);
     assert.deepEqual(routing.list(), []);
-    assert.deepEqual(routing.history(), []);
+    assert.equal(routing.history({ taskId, inputId: "weather" })[0].title, "查询出行天气");
   } finally { await service.close(); db.close(); }
+}
+
+// Bound project materials use the live Library scope and keep the first successful read.
+{
+  const cwd = join(root, "answer-routing-project-material");
+  await mkdir(cwd);
+  const db = new AppDatabase(join(cwd, "app.db"));
+  const taskId = "project-material-task";
+  const projectId = "material-project";
+  const otherProjectId = "another-material-project";
+  const addProject = db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES(?,?,1,1)");
+  addProject.run(projectId, "资料项目");
+  addProject.run(otherProjectId, "其它项目");
+  const task = { id: taskId, title: "项目资料验证", cwd, projectId, updatedAt: 1 };
+  db.upsertTask(task);
+  const library = new LibraryService(db, { libraryRoot: join(cwd, "library") });
+  const space = library.createSpace({ name: "受管资料", projectId });
+  const item = library.createItem({ kind: "markdown", title: "发布记录", spaceId: space.id });
+  const firstText = "项目资料版本 10";
+  const secondText = "项目资料版本 11";
+  library.writeContent({ id: item.id, content: firstText });
+  const routing = new AnswerRoutingService(db, () => undefined, undefined, () => library);
+  const rule = routing.save({ ...answerRuleExamples[1], evidenceLibraryItemId: item.id });
+  let allowed = true;
+  const prepare = (inputId: string, source = routing) => source.prepare({ taskId, inputId, query: "写项目周报", cwd,
+    canRead: () => false, canReadLibrary: () => allowed });
+  try {
+    const a = await prepare("input-a");
+    assert(a);
+    assert.match(a.text, /项目资料版本 10/);
+    const aReceipt = routing.history({ taskId, inputId: "input-a" })[0];
+    assert.equal(aReceipt.evidence?.reference, item.id);
+    assert.equal(aReceipt.evidence?.path, library.absolutePath(item));
+    assert.equal(aReceipt.evidence?.contentHash, createHash("sha256").update(firstText).digest("hex"));
+    const reopened = new AnswerRoutingService(db, () => undefined, undefined, () => library);
+    assert.match((await prepare("input-a", reopened))?.text ?? "", /项目资料版本 10/);
+    assert.deepEqual(reopened.history({ taskId, inputId: "input-a" })[0], aReceipt);
+    library.writeContent({ id: item.id, content: secondText });
+    const b = await prepare("input-b");
+    assert(b);
+    assert.match(b.text, /项目资料版本 11/);
+    assert.match((await prepare("input-a"))?.text ?? "", /项目资料版本 10/);
+    await assert.rejects(prepare("input-a", new AnswerRoutingService(db, () => undefined, undefined, () => library)), /原始调度快照/);
+    assert.deepEqual(routing.history({ taskId, inputId: "input-a" })[0], aReceipt);
+    const revised = routing.save({ ...rule, instruction: "新的周报做法。" }, rule);
+    a.validate();
+    assert.equal((await prepare("input-a"))?.rule.revision, rule.revision);
+    assert.equal((await prepare("new-revision"))?.rule.revision, revised.revision);
+    allowed = false;
+    assert.throws(() => a.validate(), /权限或来源已撤销/);
+    assert.equal(routing.history({ taskId, inputId: "input-a" })[0].evidence?.status, "revoked");
+    assert.equal(routing.history({ taskId, inputId: "input-a" })[0].routeStatus, "revoked");
+    assert.doesNotMatch((await prepare("denied"))?.text ?? "", /项目资料版本 11/);
+    assert.equal(routing.history({ taskId, inputId: "denied" })[0].evidence?.status, "denied");
+    allowed = true;
+    db.upsertTask({ ...task, projectId: otherProjectId });
+    assert.throws(() => b.validate(), /作用域已变化/);
+    assert.doesNotMatch((await prepare("other-project"))?.text ?? "", /项目资料版本 11/);
+    assert.equal(routing.history({ taskId, inputId: "other-project" })[0].evidence?.status, "denied");
+    db.upsertTask(task);
+    const beforeDeletion = await prepare("before-delete");
+    assert(beforeDeletion);
+    library.deleteItem(item.id);
+    assert.throws(() => beforeDeletion.validate(), /权限或来源已撤销/);
+    await prepare("missing-material");
+    assert.equal(routing.history({ taskId, inputId: "missing-material" })[0].evidence?.status, "not-found");
+    const batchIds = Array.from({ length: 52 }, (_, index) => `batch-${index}`);
+    for (const id of batchIds) await prepare(id);
+    assert.equal(routing.history().length, 50);
+    assert.deepEqual(new Set(routing.history({ taskId, inputIds: [...batchIds, "absent"] }).map(use => use.inputId)),
+      new Set(batchIds));
+  } finally { db.close(); }
 }
 
 // Drop an actual emitted revision between the native writer and the desktop store.

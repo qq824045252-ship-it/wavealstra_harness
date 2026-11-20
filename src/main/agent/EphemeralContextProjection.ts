@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { MemoryService } from "../memory/MemoryService";
-import type { MemorySearchRequest } from "../../shared/memory-kernel";
-import { projectMemoryContext, renderMemoryEvidence, MEMORY_EVIDENCE_RENDERER, type MemoryEvidenceBlock, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
+import type { AutomaticRecallMode, MemorySearchHit, MemorySearchRequest } from "../../shared/memory-kernel";
+import { memoryProjectionQuery, projectMemoryContext, renderMemoryEvidence, MEMORY_EVIDENCE_RENDERER, MEMORY_EVIDENCE_CONTENT_LENGTH, type MemoryEvidenceBlock, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
+import { startAnswerRoutingTiming } from "./AnswerRoutingTimings";
 import { EvidenceBudget, clipEvidence, type SupplementalEvidence, type EvidenceAccess } from "./EvidenceBudget";
 
 export type ProjectionScope = Pick<MemorySearchRequest, "taskId" | "projectId" | "workspaceId">;
@@ -24,8 +25,13 @@ interface EvidenceRef {
   reference?: MemoryEvidenceBlock["reference"];
   supplemental?: { id: string; kind: SupplementalEvidence["kind"]; access?: EvidenceAccess };
 }
-interface SelectedEvidence { ref: EvidenceRef; text: string; validate?: () => void; validateAccess?: () => void }
+interface SelectedEvidence { ref: EvidenceRef; text: string; fullInstruction?: string; validate?: () => void; validateAccess?: () => void }
+interface TurnRecall {
+  mode: AutomaticRecallMode;
+  semanticSources: Array<{ id: string; revision: number }>;
+}
 interface LedgerRecord {
+  recall?: TurnRecall;
   version: typeof CONTEXT_LEDGER_VERSION;
   anchor: string;
   boundary: string;
@@ -36,6 +42,7 @@ interface LedgerRecord {
   currentPreferences?: WorkPreferenceState;
 }
 interface Turn {
+  recall?: TurnRecall;
   userId: string;
   modelKey: string;
   scope: ProjectionScope;
@@ -71,6 +78,7 @@ export class EphemeralContextProjection {
   private ticket?: object;
   private failure?: Error;
   private disposed = false;
+  private turnEpoch = 0;
   private readonly bodies = new Map<string, SelectedEvidence>();
   // Permission closures outlive compaction: summaries/tool results may contain derivatives.
   private readonly accessChecks = new Map<string, () => void>();
@@ -78,6 +86,7 @@ export class EphemeralContextProjection {
   constructor(private readonly options: {
     memory?: MemoryService;
     enabled: () => boolean;
+    automaticSemanticRecall?: () => boolean;
     scope: () => ProjectionScope;
     execution?: () => { executionId?: string; userTurnId?: string; query?: string };
     supplementalEvidence: () => SupplementalEvidence[];
@@ -87,8 +96,8 @@ export class EphemeralContextProjection {
   }) {}
 
   readonly extension: ExtensionFactory = (pi) => {
-    pi.on("context", event => {
-      try { return this.project(event.messages); }
+    pi.on("context", async event => {
+      try { return await this.project(event.messages); }
       catch (error) {
         // Pi swallows hook exceptions. The final transport guard must reject too.
         this.failure = error instanceof Error ? error : new Error(String(error));
@@ -125,7 +134,9 @@ export class EphemeralContextProjection {
 
   attachHost(session: EvidenceProjectionHost): void { this.session = session; }
 
-  projectContext(messages: readonly AgentMessage[]): { messages: AgentMessage[] } | undefined { return this.project([...messages]); }
+  projectContext(messages: readonly AgentMessage[]): Promise<{ messages: AgentMessage[] } | undefined> { return this.project([...messages]); }
+
+  get currentRecall(): TurnRecall | undefined { return this.turn?.recall; }
 
   captureRequestGuard(): () => void {
     const ticket = this.ticket;
@@ -143,7 +154,7 @@ export class EphemeralContextProjection {
     };
   }
 
-  private clearTurn(): void { this.ticket = undefined; this.turn = undefined; this.failure = undefined; }
+  private clearTurn(): void { this.turnEpoch++; this.ticket = undefined; this.turn = undefined; this.failure = undefined; }
   dispose(): void { this.disposed = true; this.clearTurn(); this.bodies.clear(); this.accessChecks.clear(); }
   private blockKey(ref: EvidenceRef): string { return digest(ref); }
 
@@ -200,7 +211,8 @@ export class EphemeralContextProjection {
     }
   }
 
-  private select(userId: string, query: string): Turn {
+  private async select(userId: string, query: string): Promise<Turn> {
+    const finishSelection = startAnswerRoutingTiming("memorySelection");
     const session = this.session!;
     const model = session.model;
     if (!model) throw new Error("上下文投影缺少最终模型");
@@ -208,9 +220,30 @@ export class EphemeralContextProjection {
     const budget = new EvidenceBudget(model, session.getContextUsage()?.tokens ?? 0);
     // Reserve a bounded short manifest; never trim previously sent bodies to make room.
     budget.takeInitial("manifest-reserve", " ".repeat(1536), 1536);
-    const resolved = this.options.memory && this.options.enabled() && budget.memoryCap > 512
-      ? projectMemoryContext(this.options.memory, { ...scope, query, includeInherited: true, statuses: ["active"], budgetChars: budget.memoryCap - 512 })
-      : undefined;
+    const input: MemorySearchRequest & { budgetChars: number } = {
+      ...scope, query, includeInherited: true, statuses: ["active"], budgetChars: budget.memoryCap - 512,
+    };
+    const memory = this.options.memory;
+    const epoch = this.turnEpoch;
+    let mode: AutomaticRecallMode = "off";
+    let hits: MemorySearchHit[] | undefined;
+    if (!memory || !this.options.enabled()) mode = "disabled";
+    else if (input.budgetChars <= 0) mode = "no-budget";
+    else if (this.options.automaticSemanticRecall?.()) {
+      mode = "hybrid";
+      const finishSearch = startAnswerRoutingTiming("memorySearch");
+      try { hits = await memory.searchHybrid(memoryProjectionQuery(input), reason => { mode = reason; }); }
+      finally {
+        finishSearch?.(() => ({ method: "hybrid", mode, userEntryId: userId, outcome: hits ? "completed" : "failed",
+          resultCount: hits?.length, returnedMemoryIds: hits?.map(hit => hit.memory.id) }));
+      }
+      if (this.disposed || this.session !== session || epoch !== this.turnEpoch || (session.model?.provider !== model.provider || session.model?.id !== model.id)
+        || scopeKey(scope) !== scopeKey(this.options.scope())) throw new Error("语义回忆期间请求上下文已变化");
+      if (!this.options.enabled()) mode = "disabled";
+      else if (!this.options.automaticSemanticRecall()) { mode = "off"; hits = undefined; }
+    }
+    const resolved = memory && mode !== "disabled" && input.budgetChars > 0
+      ? projectMemoryContext(memory, input, hits) : undefined;
     const currentPreferences = resolved?.currentPreferences
       ?? (this.options.memory?.resolveScopeChain(scope).some(item => item.scopeType === "work")
         ? { status: "unavailable" as const, sources: [] } : undefined);
@@ -223,7 +256,7 @@ export class EphemeralContextProjection {
       // L1 rendering is immutable. Omit an entire block rather than clipping a recoverable reference.
       const text = budget.takeInitial(block.id, block.text, budget.memoryCap);
       if (text !== block.text) continue;
-      selected.push({ text, ref: { id: block.id, revision: block.revision, hash: digest(text), contentHash: digest(block.text), sources: block.sources,
+      selected.push({ text, fullInstruction: block.fullInstruction, ref: { id: block.id, revision: block.revision, hash: digest(text), contentHash: digest(block.text), sources: block.sources,
         scenarioIds: block.scenarioIds, profileIds: block.profileIds, reference: block.reference } });
     }
     if (currentPreferences?.sources.length) {
@@ -232,6 +265,12 @@ export class EphemeralContextProjection {
         item.ref.reference?.id === source.id && item.ref.reference.revision === source.revision));
       if (currentPreferences.sources.length !== expected) currentPreferences.status = "partial";
     }
+    finishSelection?.(() => ({ mode, userEntryId: userId,
+      selectedMemoryIds: [...new Set(selected.flatMap(({ ref }) => ref.reference ? [ref.reference.id] : []))],
+      selectedGroundingMemoryIds: [...new Set(selected.flatMap(({ ref }) => ref.sources.map(source => source.id)))],
+      semanticSelectedMemoryIds: selected.flatMap(({ ref }) => ref.reference && resolved?.items.some(item =>
+        item.id === ref.reference?.id && item.reasons.includes("semantic")) ? [ref.reference.id] : []),
+    }));
     for (const source of this.options.supplementalEvidence()) {
       const contentHash = digest(source.text);
       const previous = [...this.bodies.values()].find(item => item.ref.id === source.id && item.ref.revision === source.revision
@@ -250,7 +289,11 @@ export class EphemeralContextProjection {
       this.bodies.set(this.blockKey(item.ref), item);
       if (item.validateAccess) this.accessChecks.set(this.blockKey(item.ref), item.validateAccess);
     }
-    return { userId, modelKey: `${model.provider}/${model.id}`, scope, scopeStamp: scopeKey(scope), selected, currentPreferences };
+    // Baseline selections and derived views are not evidence of a semantic match.
+    const semanticIds = new Set(resolved?.items.filter(item => item.reasons.includes("semantic")).map(item => item.id));
+    const semanticSources = selected.flatMap(({ ref }) => ref.reference && semanticIds.has(ref.reference.id)
+      ? [{ id: ref.reference.id, revision: ref.reference.revision }] : []);
+    return { userId, recall: { mode, semanticSources }, modelKey: `${model.provider}/${model.id}`, scope, scopeStamp: scopeKey(scope), selected, currentPreferences };
   }
 
   private restore(ref: EvidenceRef): string | undefined {
@@ -266,11 +309,12 @@ export class EphemeralContextProjection {
     if (!revision) throw new Error("历史 Memory 版本不存在，无法恢复原上下文，请新建任务");
     const text = renderMemoryEvidence(revision, reference.scopeType);
     if (digest(text) !== ref.hash) throw new Error("历史 Memory 正文校验失败，无法恢复原上下文，请新建任务");
-    this.bodies.set(this.blockKey(ref), { ref, text });
+    this.bodies.set(this.blockKey(ref), { ref, text,
+      fullInstruction: revision.content.length <= MEMORY_EVIDENCE_CONTENT_LENGTH ? revision.content : undefined });
     return text;
   }
 
-  private project(messages: AgentMessage[]): { messages: AgentMessage[] } | undefined {
+  private async project(messages: AgentMessage[]): Promise<{ messages: AgentMessage[] } | undefined> {
     const session = this.session;
     if (!session || this.disposed) throw new Error("上下文投影会话已结束");
     const manager = session.sessionManager;
@@ -329,8 +373,13 @@ export class EphemeralContextProjection {
           return this.bodies.get(this.blockKey(ref))!;
         });
         const scope = this.options.scope();
-        this.turn = { userId: user.id, modelKey: `${session.model?.provider}/${session.model?.id}`, scope, scopeStamp: scopeKey(scope), selected, currentPreferences: existing.record.currentPreferences };
-      } else this.turn = this.select(user.id, execution?.query ?? query);
+        this.turn = { userId: user.id, modelKey: `${session.model?.provider}/${session.model?.id}`, scope, scopeStamp: scopeKey(scope), selected, recall: existing.record.recall, currentPreferences: existing.record.currentPreferences };
+      } else {
+        const epoch = this.turnEpoch;
+        const selected = await this.select(user.id, execution?.query ?? query);
+        if (this.disposed || this.session !== session || epoch !== this.turnEpoch) throw new Error("本轮记忆选择已结束");
+        this.turn = selected;
+      }
     }
     if (!existing) {
       const seen = new Set(active.flatMap(row => row.record.additions.map(ref => this.blockKey(ref))));
@@ -338,7 +387,7 @@ export class EphemeralContextProjection {
       const manifest = this.turn.selected.map(({ ref: { id, revision, hash } }) => ({ id, revision, hash }));
       if (manifest.length || active.length || this.turn.currentPreferences) {
         const record: LedgerRecord = { version: CONTEXT_LEDGER_VERSION, anchor, boundary, scope: this.turn.scope,
-          timestamp: user.message.timestamp, additions, manifest, currentPreferences: this.turn.currentPreferences };
+          timestamp: user.message.timestamp, additions, manifest, recall: this.turn.recall, currentPreferences: this.turn.currentPreferences };
         const id = manager.appendCustomEntry(CONTEXT_LEDGER_TYPE, structuredClone(record));
         active.push({ id, record });
         rows = [...rows, { id, record }];
@@ -347,6 +396,7 @@ export class EphemeralContextProjection {
     }
     this.validateHistory(rows);
     const inserts = new Map<number, AgentMessage[]>();
+    const selectedBodies = new Map(this.turn.selected.map(item => [item.ref.id, item]));
     const liveKeys = new Set<string>();
     for (const { record } of active) {
       const parts = record.additions.map(ref => {
@@ -362,8 +412,14 @@ export class EphemeralContextProjection {
         ...(record.currentPreferences ? [renderWorkPreferenceState(record.currentPreferences)] : [])].join("\n\n");
       const at = anchors.get(record.anchor)!;
       const items = inserts.get(at) ?? [];
+      const memoryBodies = record.additions.flatMap(ref => {
+        if (!ref.reference) return [];
+        const current = selectedBodies.get(ref.id);
+        return [{ id: ref.reference.id, revision: ref.reference.revision, scopeType: ref.reference.scopeType,
+          fullInstruction: current?.ref.hash === ref.hash ? current.fullInstruction : undefined }];
+      });
       items.push({ role: "custom", customType: "mybuddy.context-capsule", display: false, content: text,
-        timestamp: record.timestamp, details: { fingerprint: digest(record), policy: "context-ledger-v1" } });
+        timestamp: record.timestamp, details: { fingerprint: digest(record), policy: "context-ledger-v1", memoryBodies } });
       inserts.set(at, items);
     }
     // Prune only bodies whose anchors left the effective context, never ordinary-turn history.

@@ -1,0 +1,135 @@
+.routing-graph {
+  --routing-accent: var(--accent, #4269d1);
+  --routing-line: var(--border, #8886);
+  --routing-surface: var(--bg, Canvas);
+  display: grid;
+  min-width: 0;
+  background: var(--routing-surface);
+  border: 1px solid var(--routing-line);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.routing-graph__header,
+.routing-graph__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.routing-graph__header {
+  padding: 7px 10px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  font-weight: 600;
+  border-bottom: 1px solid var(--routing-line);
+}
+
+.routing-graph__controls button,
+.routing-receipt__toggle {
+  border: 1px solid var(--border, #8886);
+  background: var(--bg, Canvas);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.routing-graph__controls button:not(:disabled):hover,
+.routing-receipt__toggle:hover {
+  border-color: var(--accent, currentColor);
+}
+
+.routing-graph__controls output {
+  min-width: 38px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted, inherit);
+}
+
+.routing-graph__controls button:disabled { opacity: .45; cursor: default; }
+
+.routing-graph__stage {
+  position: relative;
+  overflow: hidden;
+  height: 324px;
+  cursor: grab;
+  touch-action: none;
+  background-color: var(--routing-surface);
+  background-image: radial-gradient(circle, var(--routing-line) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+.routing-graph__stage[data-dragging="true"] { cursor: grabbing; }
+.routing-graph__stage:focus-visible { outline-offset: -2px; }
+.routing-graph__diagram { position: absolute; transform-origin: top left; user-select: none; }
+.routing-graph__diagram svg { position: absolute; inset: 0; pointer-events: none; }
+.routing-graph__diagram svg g { color: var(--routing-accent); }
+.routing-graph__diagram svg g[data-muted="true"] { color: var(--text-muted, #888); }
+.routing-graph__diagram svg g[data-muted="true"] > path { stroke-dasharray: 4 4; }
+.routing-graph__diagram svg g > path { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.routing-graph__diagram svg text { text-anchor: middle; fill: currentColor; font-size: 13px; }
+
+.routing-graph__node {
+  --node-accent: var(--routing-line);
+  position: absolute;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 1px;
+  box-sizing: border-box;
+  padding: 6px 11px;
+  background: var(--routing-surface);
+  border: 1px solid var(--node-accent);
+  border-left-width: 4px;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px #0002;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.routing-graph__node[data-tone="accent"] { --node-accent: var(--routing-accent); }
+.routing-graph__node[data-tone="success"] { --node-accent: #32855f; }
+.routing-graph__node[data-tone="warning"] { --node-accent: #bb8035; }
+.routing-graph__node[data-tone="muted"] { border-style: dashed; }
+.routing-graph__node[aria-pressed="true"] { outline: 2px solid var(--routing-accent); outline-offset: 2px; }
+.routing-graph__node:hover { background: color-mix(in srgb, var(--routing-accent) 8%, var(--routing-surface)); }
+.routing-graph__node > * { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.routing-graph__node > strong { font-size: 15px; }
+.routing-graph__node > small { font-size: 12px; color: var(--text-muted, inherit); }
+
+.routing-graph__details {
+  padding: 10px 12px;
+  border-top: 1px solid var(--routing-line);
+  overflow-wrap: anywhere;
+}
+
+.routing-graph__details dl { margin: 4px 0 0; }
+.routing-graph__details dl div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
+.routing-graph__details dt { color: var(--text-muted, inherit); min-width: 6em; }
+.routing-graph__details dd { flex: 1; min-width: min(100%, 10em); margin: 0; white-space: pre-wrap; }
+
+.routing-graph-dialog {
+  width: min(880px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  margin: auto;
+  padding: 0;
+  color: var(--text, CanvasText);
+  background: var(--bg, Canvas);
+  border: 0;
+  border-radius: 10px;
+}
+
+.routing-graph-dialog::backdrop { background: #0008; }
+.routing-graph-dialog .routing-graph__stage { height: clamp(240px, 57vh, 540px); }
+
+.routing-receipt { margin: 8px 0 4px; }
+.routing-receipt__toggle { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; max-width: 100%; text-align: start; }
+.routing-receipt__toggle > span:last-child { min-width: 0; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.routing-receipt__caret { color: var(--text-muted, inherit); }
+.routing-receipt .routing-graph { margin-top: 8px; }

@@ -10,7 +10,7 @@ export interface TurnAnswerRouting {
 
 /** Bind only the current native input. Context hooks may already have added synthetic user messages. */
 export async function projectAnswerRule(routing: TurnAnswerRouting, storage: Storage, api: HookApi,
-  context: Context, messages: readonly Message[]) {
+  context: Context, messages: readonly Message[], findInstruction?: (instruction: string, sourceId: string | null) => { id: string; revision: number } | undefined) {
   if (!routing.enabled()) return;
   const run = (await api.snapshot(LiveDoc, api.conversationId, context))?.run;
   if (run?.inputs.length !== 1) return;
@@ -36,6 +36,10 @@ export async function projectAnswerRule(routing: TurnAnswerRouting, storage: Sto
   if (!applied) return;
   const content = typeof anchor.content === "string" ? [{ type: "text" as const, text: anchor.content }] : anchor.content;
   const projected = [...messages];
-  projected[messages.indexOf(anchor)] = { ...anchor, content: [...content, { type: "text", text: "\n\n" + applied.text }] };
+  const { sourcePrefixLength, instruction: fullText, sourceMemoryId } = applied.rule;
+  const memoryText = sourcePrefixLength ? fullText.slice(0, sourcePrefixLength) : fullText;
+  const memory = findInstruction?.(memoryText, sourceMemoryId);
+  const text = memory ? applied.render(`本轮规则采用记忆 [L1 ${memory.id}@${memory.revision}] 中的做法。${fullText.slice(memoryText.length)}`) : applied.text;
+  projected[messages.indexOf(anchor)] = { ...anchor, content: [...content, { type: "text", text: "\n\n" + text }] };
   return { messages: projected, validate: applied.validate, record: applied.record };
 }

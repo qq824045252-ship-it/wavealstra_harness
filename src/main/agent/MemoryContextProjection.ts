@@ -1,8 +1,9 @@
 import {
   MEMORY_CONTEXT_DEFAULT_BUDGET, MEMORY_CONTEXT_HARD_BUDGET,
-  type MemorySearchRequest, type MemoryKind, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
+  type MemorySearchHit, type MemorySearchRequest, type MemoryKind, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
 } from "../../shared/memory-kernel";
 import type { MemoryService } from "../memory/MemoryService";
+import { startAnswerRoutingTiming } from "./AnswerRoutingTimings";
 
 const PROJECT_BASELINE_LIMIT = 8;
 export const WORK_PREFERENCE_SOURCE_LIMIT = 6;
@@ -29,10 +30,12 @@ export function renderWorkPreferenceState(state: WorkPreferenceState): string {
 }
 
 export const MEMORY_EVIDENCE_RENDERER = "memory-l1-v1";
+export const MEMORY_EVIDENCE_CONTENT_LENGTH = 700;
 export interface MemoryEvidenceBlock {
   id: string;
   revision: string;
   text: string;
+  fullInstruction?: string;
   sources: Array<{ id: string; revision: number }>;
   scenarioIds: string[];
   profileIds: string[];
@@ -41,7 +44,7 @@ export interface MemoryEvidenceBlock {
 
 /** Frozen rendering parameters are part of a reference; never reconstruct from today's recall order. */
 export function renderMemoryEvidence(atom: Pick<MemoryRevisionDto, "memoryId" | "revision" | "kind" | "title" | "content">, scopeType: MemoryScopeType): string {
-  return `- [L1 ${atom.memoryId}@${atom.revision}][${atom.kind}][${scopeType}] ${atom.title}${atom.content ? ` — ${atom.content.slice(0, 700)}` : ""}`;
+  return `- [L1 ${atom.memoryId}@${atom.revision}][${atom.kind}][${scopeType}] ${atom.title}${atom.content ? ` — ${atom.content.slice(0, MEMORY_EVIDENCE_CONTENT_LENGTH)}` : ""}`;
 }
 
 export interface ProjectedMemoryContext extends ResolvedMemoryContext {
@@ -51,10 +54,15 @@ export interface ProjectedMemoryContext extends ResolvedMemoryContext {
   currentPreferences?: WorkPreferenceState;
 }
 
+export function memoryProjectionQuery(input: MemorySearchRequest): MemorySearchRequest {
+  return { ...input, statuses: input.statuses ?? ["active"], limit: Math.max(32, (input.limit ?? 16) * 3) };
+}
+
 /** Stateless selection/serialization. Memory repositories own facts and grounding. */
 export function projectMemoryContext(
   memory: MemoryService,
   input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean },
+  recalled?: MemorySearchHit[],
 ): ProjectedMemoryContext {
   const budget = Math.max(0, Math.min(MEMORY_CONTEXT_HARD_BUDGET, input.budgetChars ?? MEMORY_CONTEXT_DEFAULT_BUDGET));
   const result: ProjectedMemoryContext = {
@@ -120,8 +128,14 @@ export function projectMemoryContext(
       atomIds.forEach((id) => coveredAtoms.add(id));
     }
   }
-  const queried = memory.search({ ...input, statuses: input.statuses ?? ["active"], limit: Math.max(32, (input.limit ?? 16) * 3) })
-    .filter((hit) => visible(hit.memory.id));
+  const finishSearch = recalled ? undefined : startAnswerRoutingTiming("memorySearch");
+  const queryHits = recalled ? recalled.flatMap(hit => {
+    const current = memory.get(hit.memory.id);
+    return current?.contentHash === hit.memory.contentHash ? [{ ...hit, memory: current }] : [];
+  }) : memory.search(memoryProjectionQuery(input));
+  finishSearch?.(() => ({ method: "lexical", outcome: "completed",
+    resultCount: queryHits.length, returnedMemoryIds: queryHits.map(hit => hit.memory.id) }));
+  const queried = queryHits.filter((hit) => visible(hit.memory.id));
   // Shared project cognition is a baseline for every bound task, not only for lexically similar prompts.
   const queriedIds = new Set(queried.map((hit) => hit.memory.id));
   const projectBaseline = input.query?.trim() && (input.projectId || input.taskId)
@@ -180,6 +194,7 @@ export function projectMemoryContext(
     const text = renderMemoryEvidence({ ...atom, memoryId: atom.id, revision }, scope.scopeType);
     if (!push(text)) continue;
     result.blocks.push({ id: `memory:${atom.id}`, revision: String(revision), text,
+      fullInstruction: atom.content.length <= MEMORY_EVIDENCE_CONTENT_LENGTH ? atom.content : undefined,
       sources: [{ id: atom.id, revision }], scenarioIds: [], profileIds: [],
       reference: { renderer: MEMORY_EVIDENCE_RENDERER, id: atom.id, revision, scopeType: scope.scopeType } });
     result.items.push({ id: atom.id, kind: atom.kind, title: atom.title, content: atom.content,

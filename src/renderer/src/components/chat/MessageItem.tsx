@@ -10,6 +10,7 @@ import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { taskHasActiveExecution } from "@/utils/taskFilters";
 import { ArtifactChipRow, FileBadge } from "@/components/common/FileBadge";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
+import AnswerRoutingReceipt from "@/components/answer-routing/AnswerRoutingReceipt";
 import ExecutionTimeline from "./ExecutionTimeline";
 import MessageBlockView from "./MessageBlockView";
 import { ChatImageScope, MessageImages } from "./ChatImage";
@@ -412,6 +413,10 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const showAllChanges = useAppStore((s) => s.showAllChanges);
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === (taskId || s.activeTaskId)));
+  const sourceInputId = sourceQuestion?.inputRequestId ?? sourceQuestion?.id;
+  const questionText = () => userPromptDisplayText(
+    sourceQuestion?.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n") ?? "",
+  );
   /** 任务级变更数：与右侧栏代码变更统一计算，防止 DB 未持久化时归零 */
   const taskChangesCount = useMemo(() => {
     return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
@@ -795,6 +800,13 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
             </div>
           )}
 
+          {!btw && taskId && sourceInputId && !sourceQuestion?.submitting && !sourceQuestion?.submissionFailed
+            && !sourceQuestion?.goalContinuation && !message.externalAgent && !message.streaming && (
+            <AnswerRoutingReceipt key={JSON.stringify([taskId, sourceInputId, message.id])}
+              taskId={taskId} inputId={sourceInputId} replyId={message.id}
+              question={questionText()} replyStatus={message.generationStats?.outcome === "completed"
+                && !nonEmptyFinalTextBlocks(message.finalBlocks).length ? undefined : message.generationStats?.outcome} />
+          )}
           {/* footer 始终渲染占位（streaming 时 is-streaming 隐藏），避免 assistant_end 高度突变 */}
           <div className={`msg-footer${message.streaming ? " is-streaming" : ""}`}>
             <button
@@ -815,11 +827,10 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
             </button>
             {btw ? null : (
               <>
-                {taskId && !message.streaming && <button type="button" className="icon-btn" title="教给调度器" aria-label="教给调度器" onClick={() => {
-                  const question = sourceQuestion?.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n") ?? "";
-                  useAppStore.setState({ settingsOpen: true, settingsTab: "answerRouting",
-                    answerRuleSeed: { question: userPromptDisplayText(question), answer: assistantCopyText(message), projectId: currentTask?.projectId,
-                      turn: sourceQuestion ? { taskId, inputId: sourceQuestion.inputRequestId ?? sourceQuestion.id } : undefined } });
+                {taskId && sourceInputId && !message.streaming && <button type="button" className="icon-btn" aria-label="下次这样答" onClick={() => {
+                  useAppStore.setState({ answerRuleSeed: { question: questionText(), answer: assistantCopyText(message), projectId: currentTask?.projectId,
+                      turn: { taskId, inputId: sourceInputId },
+                      evidencePaths: sourceQuestion?.attachments?.flatMap(attachment => attachment.path ? [attachment.path] : []) } });
                 }}><IconSparkles size={14} /></button>}
                 <button className="icon-btn" title="赞">
                   <IconThumbsUp size={14} />
