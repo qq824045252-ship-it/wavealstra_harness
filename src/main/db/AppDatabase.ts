@@ -8,6 +8,7 @@ import { ensureBotWorkPhase3Tables } from "./bot-work-phase3-schema";
 import { ensureBotWorkPhase4Tables } from "./bot-work-phase4-schema";
 import { ensureBotWorkPhase5Tables } from "./bot-work-phase5-schema";
 import { ensureGatewayDeliveryTables } from "./gateway-delivery-schema";
+import { listGatewayChannels, upsertGatewayChannel, type GatewayChannelRecord } from "./gateway-channel-store";
 import { ensureExtendedMemoryScopes } from "./memory-scope-schema";
 import { ensureBotSkillScope } from "./memory-skill-scope-schema";
 import { retireWorkIsolation } from "./work-isolation-retirement";
@@ -3855,56 +3856,12 @@ export class AppDatabase {
     if (stored.spaceId !== spaceId) this.db.prepare("UPDATE tasks SET space_id = ?, space_sort_order = 0 WHERE id = ?").run(spaceId, taskId);
   }
 
-  listGatewayChannels(): Array<{
-    id: string;
-    type: string;
-    name: string;
-    configJson: string;
-    connected: boolean;
-    statusText?: string;
-  }> {
-    const rows = this.db.prepare(`SELECT * FROM gateway_channels`).all() as Array<{
-      id: string;
-      type: string;
-      name: string;
-      config_json: string;
-      connected: number;
-      status_text: string | null;
-    }>;
-    return rows.map((r) => ({
-      id: r.id,
-      type: r.type,
-      name: r.name,
-      configJson: r.config_json,
-      connected: Boolean(r.connected),
-      statusText: r.status_text ?? undefined,
-    }));
+  listGatewayChannels(): GatewayChannelRecord[] {
+    return listGatewayChannels(this.db);
   }
 
-  upsertGatewayChannel(ch: {
-    id: string;
-    type: string;
-    name: string;
-    configJson: string;
-    connected: boolean;
-    statusText?: string;
-  }): void {
-    this.db
-      .prepare(
-        `INSERT INTO gateway_channels (id, type, name, config_json, connected, status_text)
-         VALUES (@id, @type, @name, @configJson, @connected, @statusText)
-         ON CONFLICT(id) DO UPDATE SET
-           type=excluded.type, name=excluded.name, config_json=excluded.config_json,
-           connected=excluded.connected, status_text=excluded.status_text`,
-      )
-      .run({
-        id: ch.id,
-        type: ch.type,
-        name: ch.name,
-        configJson: ch.configJson,
-        connected: ch.connected ? 1 : 0,
-        statusText: ch.statusText ?? null,
-      });
+  upsertGatewayChannel(channel: GatewayChannelRecord): void {
+    upsertGatewayChannel(this.db, channel);
   }
 
   insertGatewayMessage(msg: {
