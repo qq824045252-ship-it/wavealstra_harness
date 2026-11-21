@@ -20,6 +20,12 @@ The components have separate responsibilities:
 
 Native execution still belongs to `AgentService` / Pi Durable. No second execution runtime is introduced. Slack retains its native task/thread grouping; other providers retain the existing account-scoped chat identity. Queue keys are fixed-position JSON arrays, not objects or delimiter-concatenated IDs. Execution is bounded to 64 pending entries per native conversation and 1024 in the process; different conversations remain concurrent. Adapter-specific admission and provider limits also apply.
 
+## Start a new conversation
+
+Send `/new` as the entire text in an authorized Gateway conversation. It applies only to the current connected account, chat (Slack thread), and sender. The command does not call the model; the next message creates a new task with fresh conversation history. It does not stop, delete, restore, or merge the previous task. Existing archive, trash and permanent-deletion policy is unchanged.
+
+Use a plain message (or the ordinary mention/reply required by the adapter in a group). Native Slack/Discord slash-command registration and Telegram's `/new@BotName` shorthand are not part of this command. The input needs a stable message ID. Transport retries remain assigned to their original conversation and do not reopen a deleted old task after you switch.
+
 ## Durable admission and recovery
 
 The desktop host enables the SQLite journal by default. `GatewayServiceOptions.durableInbox: false` is an explicit memory-only embedding/fixture option. Slack keeps its existing pre-ACK `SlackGatewayJournal` and chunk-aware outbox; it does not acquire a second competing delivery ledger.

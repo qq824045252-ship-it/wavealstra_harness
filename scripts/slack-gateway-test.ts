@@ -186,6 +186,22 @@ try {
     assert(!JSON.stringify(f.historyReports).includes("channel material"));
     await f.adapter.disconnect();
   });
+  await check("Slack mention /new uses its existing thread and skips history / attachment fetch", async () => {
+    const f = fixture("new-command");
+    const received: any[] = [];
+    f.adapter.setInboundHandler(async msg => { received.push(msg); await msg.reply("fresh conversation reserved"); });
+    await f.adapter.connect(config);
+    f.sockets[0].emit(event("EvNEW", "1700000010.000001", { type: "app_mention", channel_type: undefined,
+      channel: "CHISTORY", thread_ts: "1700000000.000001", text: "<@U012BOT> /new",
+      files: [{ id: "FNEWCOMMAND" }] }));
+    await until(() => f.posts.length === 1, "command response without channel history");
+    assert.equal(received[0].text, "/new");
+    assert.equal(received[0].slackHistory, undefined);
+    assert.equal(received[0].attachments, undefined);
+    assert.equal(f.historyRequests.length, 0);
+    assert.equal(f.posts[0].thread_ts, "1700000000.000001");
+    await f.adapter.disconnect();
+  });
   await check("missing history scope is explicit metadata; DM keeps its existing input and performs no history fetch", async () => {
     const f = fixture("history-no-scope", { history: { ok: false, error: "missing_scope", needed: "channels:history" } });
     const received: any[] = [];

@@ -37,5 +37,16 @@ export function ensureGatewayDeliveryTables(db: Database.Database): void {
       sent_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS gateway_outbox_retry ON gateway_outbox(status,next_attempt_at,delivery_id);
+    -- No FK to tasks: deletion must not rewind a sender's generation or replay an old /new.
+    CREATE TABLE IF NOT EXISTS gateway_conversation_routes (
+      seq INTEGER PRIMARY KEY,
+      scope_id TEXT NOT NULL,
+      delivery_key TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('turn','new','obsolete_new')),
+      accepted_at INTEGER NOT NULL,
+      UNIQUE(scope_id, delivery_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_conversation_current ON gateway_conversation_routes(scope_id, kind, seq DESC);
   `);
 }

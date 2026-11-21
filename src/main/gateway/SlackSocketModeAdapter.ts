@@ -1,3 +1,4 @@
+import { isNewConversationCommand } from "./GatewayConversationSession";
 import { withGatewayMedia, GATEWAY_MEDIA_LIMITS, type GatewayMediaSource } from "./GatewayMedia";
 import { createHash } from "node:crypto";
 import { lstat, open } from "node:fs/promises";
@@ -19,6 +20,7 @@ interface SlackConfig { botToken: string; appToken: string; teamId: string; appI
 type SlackApiResult = Record<string, unknown> & { ok?: boolean; error?: string };
 export interface SlackSocketOptions {
   journal: SlackGatewayJournal;
+  reserveConversation?: (delivery: SlackDelivery, accountKey: string, recovered: boolean) => void;
   socketFactory?: (url: string) => SlackSocket;
   fetch?: typeof fetch;
   mediaDirectory?: string;
@@ -315,19 +317,33 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
       acceptedAt: Date.now(), state: "pending",
     };
     let fresh: boolean;
-    try { fresh = this.options.journal.accept(delivery); } catch {
+    try {
+      fresh = this.options.journal.accept(delivery);
+      const accepted = this.options.journal.get(delivery);
+      if (accepted?.state === "pending") this.reserveConversation(accepted, !fresh);
+    } catch {
       // A failed commit is not ACKed: let Slack retry, and do not run the task.
       this.report("Slack 消息无法安全落盘，未执行；等待 Slack 重试");
       return;
     }
     try { ack(); } catch { this.report("Slack 确认发送失败；消息已落盘，重投递不会重复执行"); }
-    if (fresh && this.activated) this.enqueue(delivery); // Never wait for model/tool work before acknowledging Slack.
+    const pending = this.options.journal.get(delivery);
+    if (this.activated && pending && (fresh || pending.state === "pending")) this.enqueue(pending); // ACK never waits for model work.
+  }
+
+  private reserveConversation(delivery: SlackDelivery, recovered: boolean): void {
+    const account = this.workConnectionKey();
+    if (account && this.activated && this.allows(delivery)) this.options.reserveConversation?.(delivery, account, recovered);
   }
 
   private resumeDeliveries(): void {
     if (!this.activated) return;
     for (const delivery of this.options.journal.list()) {
-      if (delivery.state !== "replied" && this.allows(delivery)) this.enqueue(delivery);
+      if (delivery.state === "replied" || !this.allows(delivery)) continue;
+      try {
+        if (delivery.state === "pending" || delivery.state === "running") this.reserveConversation(delivery, true);
+        this.enqueue(delivery);
+      } catch { this.report("Slack 会话尚未安全绑定，本条消息未执行"); }
     }
   }
 
@@ -393,7 +409,8 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
     if (current.state === "reply_pending") { await this.flushReply(current); return; }
     if (!this.onInbound) throw new Error("Slack 尚未绑定 MyBuddy 任务入口");
     const generation = this.generation;
-    const slackHistory = current.state === "running" && current.backend === "pi-durable"
+    const reset = isNewConversationCommand(current.text);
+    const slackHistory = reset ? undefined : current.state === "running" && current.backend === "pi-durable"
       ? current.slackHistory : await this.readChannelHistory(current);
     if (this.stopped || generation !== this.generation || !this.allows(current)) return;
     const assertActive = (): void => {
@@ -402,12 +419,12 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
       }
     };
     try {
-      let attachments = current.attachments;
-      if (current.files?.length && ((current.state === "running" && !attachments)
+      let attachments = reset ? undefined : current.attachments;
+      if (!reset && current.files?.length && ((current.state === "running" && !attachments)
         || (attachments && attachments.length !== current.files.length))) {
         throw new Error("Slack 附件缓存丢失或校验失败；未执行任务，请发送新消息并重新上传附件");
       }
-      if (!attachments && current.files?.length) {
+      if (!reset && !attachments && current.files?.length) {
         if (current.files.length > GATEWAY_MEDIA_LIMITS.count) throw new Error("Slack 附件数量超过限制");
         const sources: GatewayMediaSource[] = [];
         for (const file of current.files) {

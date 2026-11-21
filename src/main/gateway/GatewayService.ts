@@ -1,3 +1,4 @@
+import { hasStableConversationMessageId, isNewConversationCommand, reserveGatewayConversation, type ConversationAdmission } from "./GatewayConversationSession";
 import { BusinessBotRegistration } from "./BusinessBotRegistration";
 import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver, createWecomRegistrationDriver } from "./BusinessBotRegistrationDrivers";
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails } from "../../shared/gateway-registration";
@@ -145,7 +146,14 @@ export class GatewayService {
   ) {
     this.settingsStore = options.settingsStore ?? new AppSettingsStore();
     const journal = options.durableInbox !== false && db.connection ? new GatewayDeliveryJournal(db.connection) : undefined;
+    const reserve = (channelId: string, accountKey: string, chatId: string, senderId: string | undefined, messageId: string, text: string, admission: ConversationAdmission) => {
+      if (!db.connection || !senderId || this.stopping || !this.channelPolicies.get(channelId)?.allowUsers.includes(senderId)) return;
+      const command = isNewConversationCommand(text);
+      if (command && !hasStableConversationMessageId(messageId)) return; // Router responds without model work.
+      reserveGatewayConversation(db.connection, { channelId, connectionKey: accountKey, chatId, senderId, messageId }, command, admission);
+    };
     this.platforms = new GatewayPlatformRegistry({
+      reserveConversation: (message, accountKey, messageId, admission) => reserve(message.channelId, accountKey, message.chatId, message.sender?.id, messageId, message.text, admission),
       ...(journal ? { journal } : {}),
       onReplySent: deliveryId => {
         const operationId = journal?.continuationOperation(deliveryId);
@@ -167,6 +175,8 @@ export class GatewayService {
     this.telegram = options.adapters?.telegram ?? new TelegramChannelAdapter("telegram-default", "Telegram");
     this.slack = options.adapters?.slack ?? new SlackSocketModeAdapter("slack-default", "Slack", {
       journal: new SlackGatewayJournal(() => join(getGatewayDir(), "slack-deliveries.json")),
+      reserveConversation: (delivery, accountKey, recovered) => reserve("slack-default", accountKey,
+        [delivery.teamId, delivery.channel, delivery.threadTs].join(":"), delivery.userId, delivery.eventId, delivery.text, { acceptedAt: delivery.acceptedAt, recovered }),
       deferInboundUntilActivated: true,
       onStatus: text => this.emitEvent({ channelId: "slack-default", direction: "system", text, at: Date.now() }),
       onHistoryRead: value => console.info("[SlackChannelHistory] " + JSON.stringify(value)),
@@ -509,7 +519,7 @@ export class GatewayService {
 
   private createInboundHandler(): GatewayInboundHandler {
     return new GatewayRouter({
-      adapters: this.adapters,
+      db: this.db, adapters: this.adapters,
       agent: {
         runGatewayTurn: request => {
           // The router has already resolved the authorized sender's canonical conversation ID.

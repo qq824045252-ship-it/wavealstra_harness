@@ -130,7 +130,7 @@ export class GatewayDeliveryJournal {
 
   /** Synchronous commit is complete before an early-ACK transport may acknowledge. */
   accept(input: { platform: GatewayChannelType; accountKey: string; sessionKey: string; message: GatewayInboundMessage;
-    replayNativeReceipts: boolean }): { entry: GatewayInboxEntry; duplicate: boolean } {
+    replayNativeReceipts: boolean; reserveConversation?(messageId: string, acceptedAt: number): void }): { entry: GatewayInboxEntry; duplicate: boolean } {
     if (!/^[a-f0-9]{64}$/.test(input.accountKey)) throw new Error("Gateway 持久消息缺少账号身份");
     const messageId = input.message.messageId || `local:${randomUUID()}`;
     const id = digest(JSON.stringify(["gateway-delivery-v1", input.platform, input.message.channelId, input.accountKey, input.message.chatId, messageId]));
@@ -153,6 +153,7 @@ export class GatewayDeliveryJournal {
         payload_json,payload_hash,status,retry_count,receipt_mode,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,'pending',0,?,?,?)`).run(id, input.platform, payload.channelId, input.accountKey, payload.chatId,
         input.sessionKey, messageId, json, digest(json), input.replayNativeReceipts ? "pi-durable" : "none", now, now);
+      input.reserveConversation?.(messageId, now);
       return { entry: this.get(id)!, duplicate: false };
     })();
   }

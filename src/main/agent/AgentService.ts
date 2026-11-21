@@ -1,5 +1,6 @@
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
-import { gatewayConversationId, isGatewayConversation } from "../gateway/GatewayConversation";
+import { isGatewayConversation } from "../gateway/GatewayConversation";
+import { assignedGatewayConversation } from "../gateway/GatewayConversationSession";
 import { HistoricalBotReader } from "./work/HistoricalBotReader";
 
 
@@ -1830,7 +1831,7 @@ export class AgentService {
   }
 
   async runGatewayTurn(request: GatewayBotTurnRequest): Promise<string> {
-    if (!isGatewayConversation(request.taskId) || request.taskId !== gatewayConversationId(request.gatewayOrigin)
+    if (!isGatewayConversation(request.taskId) || request.taskId !== assignedGatewayConversation(this.db.connection, request.gatewayOrigin)
       || this.workService.repo.bindingForTask(request.taskId)) {
       throw new Error("历史 Bot 渠道绑定仅供查看，不能转换为新的渠道对话。");
     }

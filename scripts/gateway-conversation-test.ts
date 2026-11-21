@@ -25,6 +25,7 @@ const { getCurrentSystemPrompt, getCurrentTools } = await import("@earendil-work
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { GatewayService } = await import("../src/main/gateway/GatewayService");
 const { gatewayConversationId } = await import("../src/main/gateway/GatewayConversation");
+const { assignedGatewayConversation, reserveGatewayConversation, NEW_CONVERSATION_REPLY } = await import("../src/main/gateway/GatewayConversationSession");
 const { gatewayInboundIdentity } = await import("../src/main/gateway/gateway-inbound-identity");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const { GATEWAY_CAPABILITIES } = await import("../src/main/gateway/GatewayCapabilities");
@@ -219,7 +220,86 @@ async function verifyTrashedConversations(fixture: Awaited<ReturnType<typeof sta
           assert(history.prepare("SELECT 1 FROM entries WHERE instr(record, ?) > 0").get(content), content);
         }
       } finally { history.close(); }
+      const oldTrash = await lifecycle.trash(original.id, { strict: true });
+      const beforeReset = requests.length;
+      channelPolicies.set(channel, { allowUsers: ["someone-else"] });
+      assert.deepEqual(await send("denied-new", "/new"), []);
+      channelPolicies.set(channel, { allowUsers: ["owner"] });
+      assert.deepEqual(await send("reset", " /new "), [NEW_CONVERSATION_REPLY]);
+      assert.equal(requests.length, beforeReset, "reset never invokes the model or restores the prior target");
+      assert.equal(db.getTaskExecutionWorkspaceState(original.id)?.state, "trashed");
+      assert.equal(readFileSync(join(oldTrash.trashPath!, "kept.txt"), "utf8"), first);
+      const freshText = "NEW_AFTER_TRASH_" + type;
+      assert.deepEqual(await send("fresh", freshText), ["REPLY " + freshText]);
+      assert(!requests.at(-1)?.transcript.includes(first));
+      const fresh = db.listNonTrashedTasks().find(task => task.title === freshText);
+      assert(fresh?.cwd && fresh.id !== original.id && fresh.cwd !== original.cwd);
+      assert.equal(fresh.spaceId, original.spaceId);
+      assert.notEqual(storedConversation(fresh.id, channel), storedConversation(original.id, channel));
+      assert.equal(db.getTaskExecutionWorkspaceState(original.id)?.state, "trashed");
     }
+
+    const fake = handlers.get(channelId)!;
+    const raceChat = "route-order-fixture";
+    const sendQueued = (messageId: string, text: string, reply: (answer: string) => Promise<void> = async () => {}) =>
+      fake({ channelId, chatId: raceChat, sender: { id: "owner" }, messageId, text, reply });
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const inReply = new Promise<void>(resolve => { entered = resolve; });
+    const first = sendQueued("seed", "PREVIOUS_IN_FLIGHT", async answer => {
+      assert.equal(answer, "REPLY PREVIOUS_IN_FLIGHT");
+      entered(); await hold;
+    });
+    try {
+      await Promise.race([inReply, first]);
+      const delayed = sendQueued("pending", "PENDING_PREVIOUS");
+      const reset = sendQueued("reset-one", "/new");
+      const next = sendQueued("first-new", "FIRST_FRESH");
+      await Promise.all([delayed.accepted, reset.accepted, next.accepted]);
+      const r = (messageId: string) => ({ channelId, chatId: raceChat, connectionKey, senderId: "owner", messageId });
+      const original = gatewayConversationId(r("pending"));
+      const selected = assignedGatewayConversation(db.connection, r("first-new"))!;
+      assert.equal(assignedGatewayConversation(db.connection, r("pending")), original, "pin older queued message before reset");
+      assert.notEqual(selected, original);
+      assert.equal(db.getTask(selected), undefined, "fresh task is lazy before first prompt runs");
+      release();
+      await Promise.all([first, delayed, reset, next]);
+      assert(requests.find(request => request.latest === "PENDING_PREVIOUS")?.transcript.includes("PREVIOUS_IN_FLIGHT"));
+      assert(!requests.find(request => request.latest === "FIRST_FRESH")!.transcript.includes("PENDING_PREVIOUS"));
+      const oldSession = storedConversation(original, channelId);
+      const newSession = storedConversation(selected, channelId);
+      assert.notEqual(oldSession, newSession);
+      const reopen = new AppDatabase(dbPath);
+      try {
+        assert.equal(reserveGatewayConversation(reopen.connection, r("reset-one"), true).taskId, selected);
+        const newest = reserveGatewayConversation(reopen.connection, r("reset-two"), true).taskId;
+        assert.notEqual(newest, selected);
+        assert.equal(reserveGatewayConversation(reopen.connection, r("reset-one"), true).currentTaskId, newest,
+          "old command replay cannot change the newest pointer");
+        assert.equal(reserveGatewayConversation(reopen.connection, r("pending"), false).taskId, original,
+          "replayed ordinary receipt stays on the original generation after restart");
+        for (const independent of [{ chatId: "another-chat" }, { connectionKey: "b".repeat(64) },
+          { senderId: "alice" }, { channelId: "telegram-default" }]) {
+          const other = { ...r("other-prompt"), ...independent };
+          assert.equal(reserveGatewayConversation(reopen.connection, other, false).taskId, gatewayConversationId(other));
+        }
+        assert.throws(() => reserveGatewayConversation(reopen.connection, r("local:generated"), true), /缺少稳定标识/);
+        const legacy = { ...r("prefeature-ordinary"), chatId: "pre-feature-journal" };
+        const legacyTask = gatewayConversationId(legacy);
+        const moved = reserveGatewayConversation(reopen.connection, { ...legacy, messageId: "reset-later" }, true, { acceptedAt: 200 }).taskId;
+        assert.notEqual(moved, legacyTask);
+        assert.equal(reserveGatewayConversation(reopen.connection, legacy, false,
+          { acceptedAt: 100, recovered: true }).taskId, legacyTask, "legacy inbox must not inject older text into fresh history");
+        const stale = reserveGatewayConversation(reopen.connection, { ...legacy, messageId: "stale-slack-reset" }, true,
+          { acceptedAt: 99, recovered: true });
+        assert.equal(stale.currentTaskId, moved);
+        assert.notEqual(stale.taskId, moved);
+        assert.equal(reserveGatewayConversation(reopen.connection, { ...legacy, messageId: "normal-later" }, false).taskId, moved);
+
+      } finally { reopen.close(); }
+    } finally { release(); }
+
+    console.log("PASS Gateway /new across all nine registered adapters: no old restore/model, fresh files/history, durable queued delivery and replay");
     console.log("PASS Gateway restores the same conversation, directory, history and reply for", [feishu.id, ...handlers.keys()].join(", "));
     const removed = storedConversation(bob, "qq-default");
     const kept = storedConversation(alice, "qq-default");

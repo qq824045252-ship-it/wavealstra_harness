@@ -1,3 +1,4 @@
+import type { ConversationAdmission } from "./GatewayConversationSession";
 import type { GatewayChannelType } from "../../shared/agent-ipc";
 import type { ChannelAdapter, ChannelConfig, GatewayInboundDelivery, GatewayInboundHandler, GatewayInboundMessage } from "./channels";
 import { gatewayWorkTargetSchema } from "./work-outbound";
@@ -38,6 +39,7 @@ export interface RegisteredGatewayAdapter extends ChannelAdapter {
 
 export interface GatewayPlatformRegistryOptions {
   journal?: GatewayDeliveryJournal;
+  reserveConversation?(message: GatewayInboundMessage, accountKey: string, messageId: string, admission: ConversationAdmission): void;
   /** Only a handler using stable native submission receipts may replay a running input. */
   replayNativeReceipts?: boolean;
   onStatus?: (channelId: string, text: string) => void;
@@ -115,7 +117,8 @@ export class GatewayPlatformRegistry {
         this.recover(adapter.id, false);
         this.assertCapacity(key);
         const { entry } = this.options.journal.accept({ platform: adapter.type, accountKey: event.source.accountKey,
-          sessionKey: key, message: event.message, replayNativeReceipts: Boolean(this.options.replayNativeReceipts) });
+          sessionKey: key, message: event.message, replayNativeReceipts: Boolean(this.options.replayNativeReceipts),
+          reserveConversation: (messageId, acceptedAt) => this.options.reserveConversation?.(event.message, event.source.accountKey, messageId, { acceptedAt }) });
         this.liveReplies.set(entry.delivery_id, { channelId: adapter.id, accountKey: entry.account_key,
           generation: adapter.gatewayConnectionGeneration?.(), reply: event.message.reply });
         return this.dispatchStored(adapter, entry);
@@ -189,6 +192,8 @@ export class GatewayPlatformRegistry {
         reply });
       if (event.source.accountKey !== entry.account_key || entry.platform !== adapter.type
         || gatewaySessionQueueKey(adapter, entry.account_key, event.message) !== entry.session_key) throw new Error("Gateway 恢复消息的账号或会话身份已改变");
+      if (this.isAuthorized(event.message) && !journal.outbox(entry.delivery_id))
+        this.options.reserveConversation?.(event.message, entry.account_key, entry.message_id, { acceptedAt: entry.created_at, recovered: true });
     } catch {
       journal.block(entry.delivery_id, "payload_or_route_invalid");
       this.report(adapter.id, "Gateway 恢复消息校验失败，已保留记录；未执行缺失或改变的输入");

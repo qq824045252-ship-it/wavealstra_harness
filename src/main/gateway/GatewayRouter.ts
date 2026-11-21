@@ -1,7 +1,10 @@
+import type { AppDatabase } from "../db/AppDatabase";
 import type { GatewayEventDto } from "../../shared/agent-ipc";
 
 import type { AppSettingsStore } from "../AppSettingsStore";
 import { gatewayInboundIdentity } from "./gateway-inbound-identity";
+import { gatewayConversationId } from "./GatewayConversation";
+import { hasStableConversationMessageId, isNewConversationCommand, NEW_CONVERSATION_REPLY, reserveGatewayConversation } from "./GatewayConversationSession";
 
 import { isSecureGatewayProvider } from "./GatewayProviderConfig";
 import { runGatewayAgentTurn, type GatewayAgentPort } from "./GatewayAgentTurn";
@@ -11,6 +14,7 @@ import type { createIdempotencyGuard } from "./GatewayRateLimiter";
 import type { GatewayProjectMessageSink } from "./GatewayService";
 
 interface GatewayRouterOptions {
+  db?: AppDatabase;
   agent: GatewayAgentPort;
   adapters: ReadonlyMap<string, ChannelAdapter>;
   readSettings(): ReturnType<AppSettingsStore["read"]>;
@@ -42,6 +46,35 @@ export class GatewayRouter {
     return { channelId: msg.channelId, connectionKey, chatId: msg.chatId,
       senderId: msg.sender?.id ?? "", messageId: msg.messageId ?? fallbackMessageId,
       audience: msg.audience ?? (privateRoute ? "private" as const : "shared" as const), workTarget: msg.workTarget };
+  }
+
+  private async execute(msg: GatewayInboundMessage, connectionKey: string, userMessageId: string,
+    assistantMessageId: string, transportMessageId?: string): Promise<string> {
+    const command = isNewConversationCommand(msg.text);
+    if (command && !hasStableConversationMessageId(transportMessageId)) {
+      return "这条消息没有稳定标识，无法安全开启新会话。请从支持消息标识的渠道重试 /new。";
+    }
+    const origin = this.origin(msg, connectionKey, userMessageId);
+    const fallback = gatewayConversationId(origin);
+    const db = this.options.db;
+    const route = db?.connection ? reserveGatewayConversation(db.connection, origin, command)
+      : { taskId: fallback, currentTaskId: fallback, command: false };
+    if (command && !db?.connection) return "会话存储不可用，未开启新会话。";
+    // Same provider ID cannot turn an original ordinary message into a new command on reply retry.
+    if (route.command !== command) return "这条消息已按原内容处理，未改变当前会话。";
+    if (route.command) return route.taskId === route.currentTaskId
+      ? NEW_CONVERSATION_REPLY : "这条 /new 已处理过，当前会话未改变。";
+    if (route.taskId !== route.currentTaskId) {
+      const prior = db?.getTask(route.taskId);
+      if (!prior || prior.archived || db?.getTaskExecutionWorkspaceState(route.taskId)?.state === "trashed") {
+        return "这条旧消息所属会话不可用，未转入当前新会话。";
+      }
+    }
+    const modelId = this.options.readSettings().defaultModelId?.trim();
+    return runGatewayAgentTurn(this.options.agent, {
+      taskId: route.taskId, text: msg.text, displayText: msg.text, attachments: msg.attachments,
+      userMessageId, assistantMessageId, ...(modelId ? { modelId } : {}), gatewayOrigin: origin,
+    }, route.taskId);
   }
 
   handler(): GatewayInboundHandler {
@@ -93,13 +126,7 @@ export class GatewayRouter {
 
       let text: string;
       try {
-
-        const modelId = this.options.readSettings().defaultModelId?.trim();
-        text = await runGatewayAgentTurn(this.options.agent, {
-          taskId, text: msg.text, attachments: msg.attachments, assistantMessageId: `gw-asst-${turnId}`, userMessageId: `gw-user-${turnId}`,
-          ...(modelId ? { modelId } : {}),
-          gatewayOrigin: this.origin(msg, connectionKey, turnId),
-        });
+        text = await this.execute(msg, connectionKey, `gw-user-${turnId}`, `gw-asst-${turnId}`, msg.messageId);
       } catch (err) {
         if (this.options.isStopping()) throw err;
         text = `处理失败：${this.options.safeError(err)}`;
@@ -148,15 +175,7 @@ export class GatewayRouter {
     });
     let text: string;
     try {
-
-      const settings = this.options.readSettings();
-      const modelId = settings.defaultModelId?.trim() || undefined;
-      text = await runGatewayAgentTurn(this.options.agent, {
-        taskId: msg.taskId, text: msg.text, displayText: msg.text, userMessageId: msg.userMessageId,
-        assistantMessageId: msg.assistantMessageId, attachments: msg.attachments,
-        streamingBehavior: "followUp", ...(modelId ? { modelId } : {}),
-        gatewayOrigin: this.origin(msg, connectionKey, msg.userMessageId),
-      });
+      text = await this.execute(msg, connectionKey, msg.userMessageId, msg.assistantMessageId, msg.messageId || msg.userMessageId);
     } catch (error) {
       if (this.options.isStopping()) throw error;
       text = "任务处理失败：" + safeSlackError(error);
