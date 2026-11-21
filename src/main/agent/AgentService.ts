@@ -13,7 +13,7 @@ import { parseSubagentExecutionPolicy, SUBAGENT_POLICY_KEYS } from "../../shared
 import { computerUseRunCoordinator } from "../capabilities/ComputerUseRunCoordinator";
 import { diagnoseSessionModel, probeSkillDependency } from "./SessionDiagnostics";
 import { normalizeSearchPolicy, SEARCH_PROVIDER_IDS } from "../../shared/web-search";
-import { codingWorkflowRequiresGithub, resolveWelcomeMode } from "../../shared/mode-profile";
+import { codingWorkflowRequiresGithub, MYBUDDY_GUIDE_SKILL_ID, resolveWelcomeMode } from "../../shared/mode-profile";
 import { normalizePstackSettings } from "../../shared/pstack";
 import { readOnlyCodingTag } from "../../shared/pstack/coding-tags";
 import { READONLY_TOOLS as codingReadTools } from "../capabilities/subagent/policy";
@@ -65,7 +65,7 @@ import { ensurePresetRuntimeReadyWithRecovery } from "./RuntimeRequirementRecove
 import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 import { existsSync, readFileSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -3279,6 +3279,7 @@ export class AgentService {
       cwd,
       [
         ...extraSkillPaths,
+        join(app.isPackaged ? process.resourcesPath : app.getAppPath(), "builtin-skills", MYBUDDY_GUIDE_SKILL_ID),
         ...(config.cadUse?.enabled === false ? [] : [cadUseSkillDirectory()]),
         ...(config.drawioUse?.enabled === false ? [] : [drawioUseSkillDirectory()]),
         ...(config.officeUse?.enabled === false ? [] : [officeUseSkillDirectory()]),

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createAgentDurableFixture, verifySkillProjectionRecovery } from "./agent-durable-fixture";
+import { defaultModePresetId, WELCOME_MODES } from "../src/shared/mode-profile";
 
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-skill-loader-"));
@@ -609,6 +610,25 @@ async function main(): Promise<void> {
     assert(learnedSkillsService.resolveRuntimeSkills(root,[dirname(copy)],undefined,{botId:"other-bot"}).dtos.every(skill=>skill.id!==method.id),"copied Bot method cannot be discovered by another Bot");
   }
   await verifySkillProjectionRecovery(db, root, fixture.models);
+  for (const welcomeMode of WELCOME_MODES) {
+    const taskId = "desktop-navigation-" + welcomeMode;
+    db.upsertTask({ id: taskId, title: "桌面导航", updatedAt: 1, welcomeMode });
+    assert(agent.getModeProfile(welcomeMode).policy.skillPolicy.prefer.includes("mybuddy"), welcomeMode + " 默认推荐 MyBuddy 导航");
+    await fixture.prompt({ taskId, welcomeMode, modePresetId: defaultModePresetId(welcomeMode), text: "怎么找回归档的任务？",
+      userMessageId: taskId + "-user", assistantMessageId: taskId + "-answer" });
+    const guide = fixture.skills().find(skill => skill.name === "mybuddy");
+    assert(Boolean(guide), welcomeMode + " 默认标签的对话可发现 MyBuddy 导航");
+    if (guide) {
+      readSkillPath = guide.filePath;
+      await fixture.prompt({ taskId, text: "手机怎么连到这台电脑？", permissionMode: "auto",
+        userMessageId: taskId + "-pairing-user", assistantMessageId: taskId + "-pairing-answer" });
+      readSkillPath = undefined;
+      const read = requests.at(-1)?.input.messages.findLast(message => message.role === "toolResult" && message.toolName === "read");
+      assert(read?.role === "toolResult" && !read.isError && read.content.some(part => part.type === "text"
+        && part.text.includes("配对新设备") && part.text.includes("全部成果")),
+      "模型按目录中的实际路径读取导航，能拿到设置和侧栏两类入口");
+    }
+  }
   console.log(`\n[runtime-skill-loader-test] passed=${passed} failed=${failed}`);
   if (failed > 0) throw new Error(`${failed} skill runtime assertions failed`);
   } finally { await fixture.close(); db.close(); }

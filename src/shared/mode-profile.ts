@@ -8,6 +8,7 @@ export type WelcomeMode = "working" | "coding" | "general";
 
 /** A missing scene is ordinary office work, never implicit coding. Explicit persisted scenes win. */
 export const DEFAULT_WELCOME_MODE: WelcomeMode = "working";
+export const MYBUDDY_GUIDE_SKILL_ID = "mybuddy";
 /** Former built-in tag. Its stored tasks now follow the coding mode setting. */
 export const PSTACK_THERMOS_ID = "mybuddy-pstack-thermos";
 
@@ -551,6 +552,7 @@ export function emptyModePolicy(): ModePolicyDto {
 export function generalModeConfiguration(policy: ModePolicyDto): ModePolicyDto {
   return {
     ...emptyModePolicy(),
+    skillPolicy: { ...emptySkillPolicy(), prefer: [MYBUDDY_GUIDE_SKILL_ID] },
     artifactPolicy: { mode: "soft", allow: [], deny: [], unfiltered: true },
     suggestedModelId: policy.suggestedModelId,
     recommendedExpertIds: policy.recommendedExpertIds,

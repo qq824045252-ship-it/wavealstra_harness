@@ -262,6 +262,7 @@ function verifyPackagedApp(appDir, options = {}) {
 
   const targetPlatform = options.platform ?? platformFromAppDir(appDir);
   facts.platform = targetPlatform;
+  if (!fs.existsSync(path.join(resources, "builtin-skills", "mybuddy", "SKILL.md"))) fail("Missing MyBuddy navigation skill");
   const officeEditor = path.join(resources, "office-editor");
   const officeCheck = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-craft-office.cjs"),
     "--verify-assets", path.join(officeEditor, "craft-assets")], { encoding: "utf8", windowsHide: true,

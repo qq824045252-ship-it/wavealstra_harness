@@ -818,6 +818,7 @@
       "output": "release"
     },
     "extraResources": [
+      { "from": "builtin-skills/mybuddy", "to": "builtin-skills/mybuddy" },
       { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets", "filter": ["**/*", "!native/**"] },
       { "from": "vendor/craft-office/assets/native/${os}-${arch}", "to": "office-editor/native" },
       { "from": "vendor/craft-office/LICENSE.noto-cjk", "to": "office-editor/licenses/LICENSE.noto-cjk" },

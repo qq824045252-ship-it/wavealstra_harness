@@ -21,6 +21,7 @@ import {
   sanitizeModePresets,
   MODE_BLOCK_IDS,
   MODE_BLOCK_LABELS,
+  MYBUDDY_GUIDE_SKILL_ID,
   WELCOME_MODE_LABELS,
   WELCOME_MODES,
   WORKING_ARTIFACT_DENY_DEFAULT,
@@ -1035,20 +1036,22 @@ export default function ModesTab(): React.JSX.Element {
     }
   }, []);
 
-  const skillItems: CatalogItem[] = useMemo(
-    () =>
-      skillCatalog
-        .filter((s) => !isRetiredDesignSkill(s.id || s.name))
-        .map((s) => ({
-          key: s.id || s.name,
-          title: s.name || s.id,
-          subtitle: [s.enabled === false ? "已停用" : null, s.description, s.author]
-            .filter(Boolean)
-            .join(" · "),
-          disabled: s.enabled === false,
-        })),
-    [skillCatalog],
-  );
+  const skillItems = useMemo(() => {
+    const items: CatalogItem[] = skillCatalog
+      .filter((s) => !isRetiredDesignSkill(s.id || s.name))
+      .map((s) => ({
+        key: s.id || s.name,
+        title: s.name || s.id,
+        subtitle: [s.enabled === false ? "已停用" : null, s.description, s.author]
+          .filter(Boolean)
+          .join(" · "),
+        disabled: s.enabled === false,
+      }));
+    if (!items.some(item => item.key.toLowerCase() === MYBUDDY_GUIDE_SKILL_ID)) {
+      items.unshift({ key: MYBUDDY_GUIDE_SKILL_ID, title: MYBUDDY_GUIDE_SKILL_ID, subtitle: "内置导航 · 查找设置与侧栏功能" });
+    }
+    return items;
+  }, [skillCatalog]);
 
   const mcpItems: CatalogItem[] = useMemo(
     () =>

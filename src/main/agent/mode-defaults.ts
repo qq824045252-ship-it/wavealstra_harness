@@ -1,5 +1,6 @@
 import type { ModeBlockId, ModePolicyDto, ModePresetDto, WelcomeMode } from "../../shared/mode-profile";
 import {
+  MYBUDDY_GUIDE_SKILL_ID,
   OFFICE_PROVIDER_MCP_IDS,
   WORKING_ARTIFACT_DENY_DEFAULT,
   emptyModePolicy,
@@ -212,7 +213,7 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
 const workingPolicy: ModePolicyDto = {
   ...emptyModePolicy(),
   skillPolicy: {
-    prefer: ["周报", "summary", "report", "excel", "文档", "会议"],
+    prefer: [MYBUDDY_GUIDE_SKILL_ID, "周报", "summary", "report", "excel", "文档", "会议"],
     demote: ["deploy", "k8s", "docker"],
     hide: [],
     allow: [],
@@ -391,7 +392,7 @@ export const CODING_MODE_PRESETS: ModePresetDto[] = [
 const codingPolicy: ModePolicyDto = {
   ...emptyModePolicy(),
   skillPolicy: {
-    prefer: ["review", "test", "git", "refactor", "debug"],
+    prefer: [MYBUDDY_GUIDE_SKILL_ID, "review", "test", "git", "refactor", "debug"],
     demote: [],
     hide: [],
     allow: [],
