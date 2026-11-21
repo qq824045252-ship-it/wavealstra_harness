@@ -23,7 +23,7 @@ import { BrowserVisualInput, BrowserVisualInputError, type BrowserVisualViewport
 import { uploadBrowserFiles, validateBrowserUploadFiles, type BrowserUploadResult } from "./browser/BrowserUploads";
 import { BrowserHandoff, type BrowserHandoffRequest, type BrowserHandoffIdentity } from "./browser/BrowserHandoff";
 import { runBrowserLogin } from "./browser/BrowserLogin";
-import { evaluatePageSnapshot, pageFetchScript, pageSnapshotScript, type BrowserFetchRequest, type PageSnapshot } from "./browser/BrowserPageScript";
+import { BrowserExpressionError, evaluatePageSnapshot, pageFetchScript, pageSnapshotScript, type BrowserFetchRequest, type PageSnapshot } from "./browser/BrowserPageScript";
 import { browserEditorScript } from "./browser/BrowserEditor";
 import { browserEventReceiptScript, browserEventTypes, subscribeToBrowserEvent, type BrowserEventType, type BrowserEventReceipt } from "./browser/BrowserEventSubscription";
 import { strokeOnElement, type GesturePoint } from "./browser/BrowserGestures";
@@ -41,7 +41,7 @@ export const BROWSER_INPUT_ACTIONS: ReadonlySet<BrowserExecAction> = new Set(["c
 export const BROWSER_AUTOMATION_ERROR_CODES = [
   "HOST_UNAVAILABLE", "INVALID_INPUT", "INVALID_URL", "INVALID_SELECTOR", "NAVIGATION_FAILED",
   "PAGE_UNAVAILABLE", "SCREENSHOT_EMPTY", "SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE",
-  "FOCUS_FAILED", "SCREENSHOT_STALE", "EXECUTION_FAILED", "CAPTURE_TIMEOUT", "SURFACE_CHANGED",
+  "FOCUS_FAILED", "SCREENSHOT_STALE", "EXECUTION_FAILED", "SCRIPT_ERROR", "CAPTURE_TIMEOUT", "SURFACE_CHANGED",
   "WAIT_TIMEOUT", "CANCELLED", "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "CURSOR_STALE", "UNSUPPORTED_SCOPE", "READ_LIMIT",
 ] as const;
 export type BrowserAutomationErrorCode = (typeof BROWSER_AUTOMATION_ERROR_CODES)[number];
@@ -373,6 +373,11 @@ export class BrowserAutomationService {
       if (error instanceof AutomationTimeoutError) throw new BrowserAutomationError("WAIT_TIMEOUT", error.message, evidence);
       if (error instanceof PageCaptureError && error.code !== "CANCELLED") throw new BrowserAutomationError(error.code, error.message, evidence);
       if (error instanceof BrowserAutomationError) throw new BrowserAutomationError(error.code, error.message, { ...evidence, ...(error.details && typeof error.details === "object" ? error.details : {}), outcome });
+      if (error instanceof BrowserExpressionError) {
+        const guidance = /Cannot read properties of (?:null|undefined)/i.test(error.message)
+          ? "用 find 或 inspect 核对元素，处理查询为空的情况后重新计算。" : "请修正表达式后重新计算。";
+        throw new BrowserAutomationError("SCRIPT_ERROR", `evaluate 表达式出错：${error.message}。${guidance}`, evidence);
+      }
       if (error instanceof BrowserHtmlDragError) throw new BrowserAutomationError(error.code, error.message, evidence);
       if (error instanceof BrowserPromptError) throw new BrowserAutomationError(error.code, error.message, evidence);
       if (error instanceof BrowserCollectionExportError) throw new BrowserAutomationError("EXECUTION_FAILED", error.message, { ...evidence, ...error.details });

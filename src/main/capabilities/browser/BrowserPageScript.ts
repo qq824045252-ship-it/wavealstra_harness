@@ -1,4 +1,5 @@
 import type { AutomationScope } from "../AutomationScope";
+import { Script } from "node:vm";
 import { randomUUID } from "node:crypto";
 import type { BrowserEventReceipt } from "./BrowserEventSubscription";
 
@@ -17,10 +18,16 @@ export function pageSnapshotScript(editSelector?: string): string { return `(() 
     mirror.setAttribute('data-mybuddy-edit',editor.marker);
   }
   root.querySelectorAll('script,style,noscript,iframe,frame,object,embed,link,base,meta,template,input[type=hidden]').forEach(el=>el.remove());
+  const ordinary=new Set(['id','class','role','name','type','aria-label','aria-checked','checked','selected','disabled','colspan','rowspan','placeholder','hidden','open','inert','readonly','multiple','required','aria-hidden','aria-expanded','aria-selected','aria-disabled','data-testid','data-action','data-state','data-role']);
+  const localPreview=location.protocol==='file:';
   for (const el of [root,...root.querySelectorAll('*')]) {
     for (const attr of Array.from(el.attributes)) {
       if (attr.name==='data-mybuddy-edit' && editor && attr.value===editor.marker)continue;
-      if (!['id','class','role','name','type','aria-label','aria-checked','checked','selected','disabled','colspan','rowspan','placeholder','data-testid'].includes(attr.name)) el.removeAttribute(attr.name);
+      if (ordinary.has(attr.name))continue;
+      // Local HTML components commonly put both control identity and localized
+      // labels in dataset. Keep their inert markup, excluding host references.
+      if (localPreview && attr.name.startsWith('data-') && !attr.name.startsWith('data-mybuddy-'))continue;
+      el.removeAttribute(attr.name);
     }
   }
   const html=root.outerHTML;
@@ -29,6 +36,8 @@ export function pageSnapshotScript(editSelector?: string): string { return `(() 
 })()`; }
 
 export interface PageSnapshot { html: string; editor?: { before: string; marker: string }; event?: BrowserEventReceipt | null }
+export class BrowserExpressionError extends Error {}
+
 export async function evaluatePageSnapshot(snapshot: PageSnapshot, expression: string, scope: AutomationScope): Promise<{ value: unknown; edited?: string }> {
   const { BrowserWindow, session } = await import("electron");
   // Each data: document has a unique opaque origin. Reuse the offline partition
@@ -46,17 +55,33 @@ export async function evaluatePageSnapshot(snapshot: PageSnapshot, expression: s
   isolated.webRequest.onBeforeRequest((request, done) => done({ cancel: request.url !== bootstrap }));
   try {
     await scope.run(() => wc.loadURL(bootstrap));
-    const value = await scope.run(() => wc.executeJavaScript(`(async () => {
+    const source = `(async () => {
       const document = new DOMParser().parseFromString(${JSON.stringify(snapshot.html)}, 'text/html');
       const event = ${JSON.stringify(snapshot.event ?? null)};
       const editor = ${snapshot.editor ? `document.querySelector(${JSON.stringify('[data-mybuddy-edit="' + snapshot.editor.marker + '"]')})` : "null"};
       if (editor) editor.value=${JSON.stringify(snapshot.editor?.before ?? "")};
-      const value = await (${expression}\n);
-      const json = JSON.stringify({value:value ?? null,edited:editor?.value});
-      if (json.length > 200100) throw Error('Script result exceeds budget');
-      return json;
-    })()`));
-    return JSON.parse(value);
+      try {
+        const value = await (${expression}\n);
+        const json = JSON.stringify({value:value ?? null,edited:editor?.value});
+        if (json.length > 200100) throw Error('Script result exceeds budget');
+        return {json};
+      } catch (error) {
+        return {scriptError:String(error).slice(0,1000)};
+      }
+    })()`;
+    let result: { json: string } | { scriptError: string };
+    try {
+      result = await scope.run(() => wc.executeJavaScript(source));
+    } catch (error) {
+      // A parse error occurs before the renderer can return its tagged result.
+      // Compile only the supplied expression to distinguish it from a lost renderer.
+      scope.check();
+      try { new Script(`(async () => (${expression}\n))`); }
+      catch (syntax) { if (syntax instanceof SyntaxError) throw new BrowserExpressionError(syntax.message); }
+      throw error;
+    }
+    if ("scriptError" in result) throw new BrowserExpressionError(result.scriptError);
+    return JSON.parse(result.json);
   } finally { if (!win.isDestroyed()) win.destroy(); }
 }
 

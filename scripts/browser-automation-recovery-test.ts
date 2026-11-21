@@ -134,6 +134,20 @@ try {
   const historical=failures.record({ ...ctx, causeCode:"browser-selector-not-found",phase:"observe",recovery:"recoverable",sideEffects:"none",message:"old role=button failed, custom span clicked successfully",nextAction:"find",target:"old-button" });
   assert(!failures.list("task").some(item=>item.id===historical.id),"existing observation-only cards obey the current policy too");
   assert.deepEqual(db.prepare("SELECT resolved_at, dismissed_at FROM execution_failures WHERE id=?").get(historical.id),{resolved_at:null,dismissed_at:null},"classification preserves history without pretending it resolved or changing the user's dismissal");
+  const evaluation = { action: "evaluate" as const, expression: "document.querySelector('#absent').hidden" };
+  const beforeDispatch = { outcome: { dispatch: "not_started", effect: "none" } };
+  assert.equal(recordBrowserAutomationFailureRecovery(bridge, evaluation, new BrowserAutomationError("SCRIPT_ERROR", "missing node", beforeDispatch)), false);
+  assert(recordBrowserAutomationFailureRecovery(bridge, { ...evaluation, editSelector: "#memo" }, new BrowserAutomationError("SCRIPT_ERROR", "uncertain edit", {
+    currentUrl: "https://example.test/edit", outcome: { dispatch: "dispatched", effect: "unknown" },
+  })));
+  assert(failures.list("task").some(item => item.message.includes("uncertain edit") && item.sideEffects === "unknown"));
+  const oldScriptFailure = { ...ctx, causeCode: "browser-execution-failed", phase: "observe" as const, recovery: "recoverable" as const, sideEffects: "none" as const,
+    target: "browser:evaluate:url=preview", message: "Browser automation evaluate failed (EXECUTION_FAILED): Error: Cannot read properties of null (reading 'hidden')", nextAction: "Re-observe" };
+  const oldScript = failures.record(oldScriptFailure);
+  const rendererFailure = failures.record({ ...oldScriptFailure, message: "Browser automation evaluate failed (EXECUTION_FAILED): renderer closed" });
+  const uncertainEdit = failures.record({ ...oldScriptFailure, phase: "execute", sideEffects: "unknown" });
+  const visible = failures.list("task").map(item => item.id);
+  assert(!visible.includes(oldScript.id) && visible.includes(rendererFailure.id) && visible.includes(uncertainEdit.id));
   const requiresUser=failures.record({...ctx,causeCode:"browser-selector-not-found",phase:"observe",recovery:"requires-user-action",sideEffects:"none",message:"explicitly requires user",nextAction:"user action"});
   assert(failures.list("task").some(item=>item.id===requiresUser.id),"classification does not hide explicit user-action requests");
 

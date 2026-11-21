@@ -5,7 +5,7 @@ import type { ExecutionFailureDto } from "../../shared/execution-recovery";
 // environment failures or uncertain dispatched effects belong in recovery UI.
 const codes = new Set<BrowserAutomationErrorCode>([
   "SELECTOR_NOT_FOUND", "ELEMENT_NOT_CLICKABLE", "ELEMENT_NOT_EDITABLE",
-  "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "SURFACE_CHANGED", "WAIT_TIMEOUT",
+  "ELEMENT_AMBIGUOUS", "ELEMENT_DISABLED", "ELEMENT_NOT_VISIBLE", "SURFACE_CHANGED", "WAIT_TIMEOUT", "SCRIPT_ERROR",
 ]);
 const causes = new Set([...codes].map(code => `browser-${code.toLowerCase().replaceAll("_", "-")}`));
 
@@ -24,6 +24,10 @@ export function isAutomationObservationFailure(failure: Pick<ExecutionFailureDto
     failure.causeCode === "computer-control-not-found" && failure.message.endsWith(": No UI Automation control matched")
     || failure.causeCode === "computer-control-ambiguous" && (failure.message.endsWith(": Multiple UI Automation controls matched") || failure.message.endsWith(": UI Automation search was truncated; uniqueness cannot be established"))
   );
-  return (causes.has(failure.causeCode) || uiLookup || nativeLookup) && failure.phase === "observe"
+  // Before expression errors were tagged, Chromium surfaced a missing node as
+  // a generic execution failure. Keep renderer, navigation and write failures visible.
+  const oldPreviewLookup = failure.causeCode === "browser-execution-failed" && failure.target?.startsWith("browser:evaluate:") === true
+    && /^Browser automation evaluate failed \(EXECUTION_FAILED\): (?:Error|TypeError): Cannot read properties of (?:null|undefined) \(reading '[^'\r\n]+'\)$/.test(failure.message);
+  return (causes.has(failure.causeCode) || uiLookup || nativeLookup || oldPreviewLookup) && failure.phase === "observe"
     && failure.sideEffects === "none" && failure.recovery === "recoverable";
 }

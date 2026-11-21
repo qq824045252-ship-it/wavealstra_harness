@@ -119,6 +119,7 @@ export const browserToolDescription = browserAgentPolicy + [
   "login 成功登记该站登录续期，status 返回本标签站点的 renewal。cookie_extended 表示网站 Cookie 到期时间延后，checked 仅表示已检查，不能据此推断账户有效。sign_in_required 时在原业务页重新核验登录。",
   "使用 MyBuddy 内置 Electron 浏览器，每个任务保留独立标签、共享登录 session，popup 也留在内置浏览器。",
   "evaluate({expression}) 在当前文档的隔离 DOM 副本中计算 JavaScript 表达式并返回 JSON value，可用 document.querySelectorAll 过滤、转换与汇总。页面交互走 click/fill 等原生动作。fetch({url}) 在当前 HTTP(S) 文档中读取同源文本/JSON 资源，沿用网站会话和浏览器请求策略，返回 fetched.status/body/truncated。",
+  "本地 HTML 副本保留页面的自定义 data-* 和 hidden 等状态属性。必需元素查询为空时用 find 核对目标和 frame；可选元素显式处理 null。检查实际渲染可见性用 inspect 或 assert。",
   "evaluate 可用 editSelector 指定已 find 的普通文本框，脚本对其 value 的修改经原生输入写回网页。",
   "listen({selector,eventType}) 在已观察控件上监听下一次 DOM 事件，返回 listenerId。evaluate({listenerId,expression}) 中 event 是实际事件的 type/trusted/timeStamp，尚未发生时为 null。订阅在此文档内有效两分钟。",
   "fetch 可传 request:{method,contentType,body} 提交当前站点业务请求。写入只执行一次，结果不明时先查询。下载同源资源用 fetch({url,download:{}})。点击动态文件选择按钮时传 click({selector,files})。focus、insert_text、paste 均指定已观察的 selector，insert_text 在选区插入 text，paste 接受 text 与可选 html，支持表格、段落和强调等格式。",
