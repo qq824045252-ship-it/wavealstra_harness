@@ -1,6 +1,6 @@
 import {
   IconBarChart, IconBook, IconClock, IconFile, IconFolderKanban, IconGrid,
-  IconConversation, IconPanel, IconPuzzle, IconSettings, IconSparkles,
+  IconConversation, IconPanel, IconPuzzle, IconSettings,
 } from "@/components/common/icons";
 import { useAppStore } from "@/store/appStore";
 import type { Page } from "@/types";
@@ -9,7 +9,6 @@ import DesktopNotifications from "./DesktopNotifications";
 const MODULES = [
   { page: "chat", label: "MyBuddy", icon: IconConversation },
   { page: "library", label: "笔记", icon: IconBook },
-  { page: "assistant", label: "助手", icon: IconSparkles },
   { page: "projects", label: "项目", icon: IconFolderKanban },
   { page: "automation", label: "自动化", icon: IconClock },
   { page: "experts", label: "扩展", icon: IconPuzzle },

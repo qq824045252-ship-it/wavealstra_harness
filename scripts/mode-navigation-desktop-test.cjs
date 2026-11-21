@@ -6,7 +6,7 @@ const path = require('node:path');
 const { run } = require('./desktop-dev-harness.cjs');
 
 const routes = [
-  ['MyBuddy', 'chat'], ['笔记', 'library'], ['助手', 'assistant'], ['项目', 'projects'],
+  ['MyBuddy', 'chat'], ['笔记', 'library'], ['项目', 'projects'],
   ['自动化', 'automation'], ['扩展', 'experts'], ['工作台', 'gadgets'],
   ['任务成果', 'files'], ['用量统计', 'usage'],
 ];
