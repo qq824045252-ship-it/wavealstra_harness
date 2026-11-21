@@ -1,6 +1,5 @@
-import { ensureQQTaskWorkspace, isPlainDirectory, isQQTask, prepareQQWorkspaceParent, qqTaskWorkspace, sameWorkspacePath, validatePlainTaskManifest } from "../task/QQTaskWorkspace";
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
-import { conversationalRequest, gatewayConversationId, isGatewayConversation } from "../gateway/GatewayConversation";
+import { gatewayConversationId, isGatewayConversation } from "../gateway/GatewayConversation";
 import { HistoricalBotReader } from "./work/HistoricalBotReader";
 
 
@@ -109,7 +108,7 @@ import {
   TaskExecutionWorkspaceError,
   TaskExecutionWorkspace,
 } from "../task/TaskExecutionWorkspace";
-import { resolveTaskWorkspaceCwd } from "../task/TaskWorkspaceResolver";
+import { ensureGatewayTaskCwd, validateGatewayTaskCwd, resolveTaskWorkspaceCwd } from "../task/TaskWorkspaceResolver";
 import { isTaskWorktreeId } from "../../shared/task-worktree";
 import type {
   ExternalWriteDecision,
@@ -969,12 +968,6 @@ export class AgentService {
    */
   resolveTaskExecutionWorkspaceCwd(taskId: string): string {
     if (isTaskWorktreeId(taskId)) return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
-    if (isQQTask(this.db.getTask(taskId))) {
-      const bound = this.durableBots?.cwd(taskId);
-      if (bound) return bound; // Native move intent may exist before the task cwd projection.
-      if (this.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") throw new Error("请先在本地恢复 QQ 对话");
-      return ensureQQTaskWorkspace(this.taskWorkspace, taskId);
-    }
     // The live/native binding is authoritative until Durable safely commits an idle workspace move.
     const bound = this.durableBots?.cwd(taskId);
     if (bound) {
@@ -1309,23 +1302,9 @@ export class AgentService {
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
-      validateQQWorkspace: (id, cwd, from) => {
-        const legacy = this.taskWorkspace.resolveTaskExecutionWorkspaceDir(id);
-        const target = qqTaskWorkspace(this.taskWorkspace, id);
-        if (sameWorkspacePath(cwd, target)) {
-          if ((from && !sameWorkspacePath(from, legacy)) || !prepareQQWorkspaceParent(this.taskWorkspace, false)
-            || !isPlainDirectory(cwd)) throw new Error("QQ 执行目录或迁移来源无效");
-          validatePlainTaskManifest(cwd);
-          new TaskExecutionWorkspace(dirname(target)).readManifest(id);
-        } else {
-          // A previously active legacy task keeps its real data until explicit local restore.
-          if (from || !sameWorkspacePath(cwd, legacy) || !isPlainDirectory(this.taskWorkspace.getTaskExecutionWorkspacesRoot())
-            || !isPlainDirectory(cwd)) throw new Error("QQ 对话没有可安全使用的执行目录");
-          validatePlainTaskManifest(cwd);
-          this.taskWorkspace.readManifest(id);
-        }
-      },
+      validateGatewayWorkspace: (id, cwd, from) => validateGatewayTaskCwd(this.db, this.taskWorkspace, id, cwd, from),
       resolveNextCwd: id => {
+        if (isGatewayConversation(id)) return ensureGatewayTaskCwd(this.db, this.taskWorkspace, id);
         const task = this.db.getTask(id);
         if (task?.welcomeMode !== "general" || isTaskWorktreeId(id) || this.workService.repo.bindingForTask(id)
           || resolveWorkContinuationCwd(this.db, this.workService, id)) return undefined;
@@ -1831,9 +1810,9 @@ export class AgentService {
       connectorIds };
   }
 
-  prepareQQTrashRestore(taskId: string, legacy: string, destination: string): void {
+  prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    this.durableBots.prepareQQTrashRestore(taskId, legacy, destination);
+    this.durableBots.prepareGatewayTrashRestore(taskId, legacy, destination);
   }
 
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
@@ -1856,7 +1835,7 @@ export class AgentService {
       throw new Error("历史 Bot 渠道绑定仅供查看，不能转换为新的渠道对话。");
     }
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
-    return this.durableBots.runGatewayTurn(conversationalRequest(request), request.gatewayOrigin.channelId);
+    return this.durableBots.runGatewayTurn(request);
   }
 
   private async resolvePiModelScope(

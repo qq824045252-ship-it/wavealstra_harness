@@ -3104,9 +3104,9 @@ app.whenReady().then(async () => {
   // P1.5 生命周期：与 Agent/Artifact 解耦的 task-workspaces 目录回收；停 session 后 trash
   const artifactPurgeWarnings = new Map<string, string>();
   taskLifecycle = new TaskExecutionWorkspaceLifecycle({
+    prepareGatewayWorkspaceRestore: (id, from, to) => agentService.prepareGatewayTrashRestore(id, from, to),
     db,
     workspace: new TaskExecutionWorkspace(),
-    prepareQQWorkspaceRestore: (taskId, legacy, destination) => agentService.prepareQQTrashRestore(taskId, legacy, destination),
     beforeTrash: async (taskId, options) => {
       if (options?.strict && externalAgentRuntime?.hasLiveTaskRun(taskId)) {
         throw new Error("外部 Agent 正在运行，请先停止后再彻底删除");
@@ -3534,6 +3534,7 @@ app.whenReady().then(async () => {
   });
   gatewayService.setTrashedWorkspaceRestorer((taskId) => {
     taskLifecycle.restore(taskId);
+    broadcastToWindows(AgentIpc.event, { type: "gateway_conversation_restored", taskId });
   });
   agentService.setLocalWorkflowServices({ cron: cronService, terminal: new TaskTerminalService(terminalHost) });
   await agentService.init();

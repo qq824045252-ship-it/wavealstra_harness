@@ -7,6 +7,7 @@ import type { ArtifactService } from "../artifact/ArtifactService";
 import type { ArtifactFolderChange } from "../artifact/ArtifactFolderRelocation";
 import type { ArtifactUpdatedEvent } from "../../shared/artifact-types";
 import { ProjectRepository } from "./ProjectRepository";
+import { gatewayChannelForSpace } from "../../shared/gateway-task";
 
 const within = (root: string, path: string) => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`)); };
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -39,6 +40,7 @@ export class ProjectFolderRelocation {
     const spaces = this.db.listSpaces();
     // Physical containment decides what moved. UI parentage is preserved, never guessed as disk ancestry.
     const folders = spaces.filter((item) => item.path && within(space.path!, item.path)).map((item) => {
+      if (gatewayChannelForSpace(item.id)) throw new Error(`网关渠道空间必须使用其专属目录：${item.name}`);
       const newPath = resolve(target, relative(space.path!, item.path!));
       if (!existsSync(newPath) || !statSync(newPath).isDirectory() || !within(target, realpathSync(newPath))) throw new Error(`新位置缺少已关联的子文件夹或目录越界：${item.name}`);
       const info = statSync(newPath);

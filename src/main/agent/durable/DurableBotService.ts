@@ -1,9 +1,12 @@
-import { isQQTask, sameWorkspacePath } from "../../task/QQTaskWorkspace";
+import { sameWorkspacePath } from "../../task/QQTaskWorkspace";
 import { isGatewayConversation } from "../../gateway/GatewayConversation";
+import { DEFAULT_WELCOME_MODE, defaultModePresetId } from "../../../shared/mode-profile";
+import type { GatewayBotTurnRequest } from "../../gateway/GatewayAgentTurn";
+import { importGatewayAttachments } from "../../gateway/GatewayMedia";
 import { WorkExecutionMetricsStore } from "../work/WorkExecutionMetrics";
 import { recordCollaborationExecutionStarted } from "../work/BotCollaborationExecutionFacts";
 import { createHash } from "node:crypto";
-import { existsSync, statSync, readFileSync } from "node:fs";
+import { existsSync, statSync, readFileSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, extname, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,7 +19,9 @@ import type { GoalContinuationOrigin } from "../../../shared/conversation-goal";
 import { normalizedEditorTextHash } from "../../../shared/regenerate-hash";
 import { durableTaskStatus, type BotToolMode, type DurableBotSnapshot } from "../../../shared/durable-bot";
 import { durableDelta } from "../../../../shared/src/durable-sync";
-import { isGatewayBotTaskId } from "../../../shared/gateway-task";
+import { GATEWAY_SIDEBAR_CHANNELS, isGatewayBotTaskId } from "../../../shared/gateway-task";
+import { gatewayChannelDirectory } from "../../gateway/gateway-task-space";
+import { gatewayConversationDirectory, organizeGatewayConversationStores } from "./GatewayConversationStorage";
 import type { AppDatabase } from "../../db/AppDatabase";
 import { McpConfigService } from "../../mcp/McpConfigService";
 import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
@@ -74,6 +79,7 @@ interface OpenBot {
 }
 export interface DurableInputOrigin {
   goalContinuation?: GoalContinuationOrigin;
+  gatewayInbound?: true;
 }
 
 export interface DurableBotServiceOptions {
@@ -83,7 +89,7 @@ export interface DurableBotServiceOptions {
   mcpDir: string;
   assetsDir?: string;
   resolveCwd: (taskId: string) => string;
-  validateQQWorkspace?: (taskId: string, cwd: string, from?: string) => void;
+  validateGatewayWorkspace?: (taskId: string, cwd: string, from?: string) => void;
   /** Desired organization root; undefined pins an execution-owned workspace. No projection writes. */
   resolveNextCwd?: (taskId: string) => string | undefined;
   instructions: (task: TaskDto) => string;
@@ -158,6 +164,7 @@ export class DurableBotService {
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_message_workspaces (
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
       message_id TEXT NOT NULL, cwd TEXT NOT NULL, PRIMARY KEY(task_id, message_id))`);
+    organizeGatewayConversationStores(options.db, options.agentDir);
     this.config = new McpConfigService();
     this.credentials = new McpOAuthCredentialStore(
       new McpCredentialBackend(join(options.mcpDir, "mcp-native-auth.encrypted.json")), join(options.mcpDir, "mcp-native-refresh-locks"));
@@ -171,18 +178,18 @@ export class DurableBotService {
     return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId) || this.admissions.get(taskId)?.size);
   }
   cwd(taskId: string): string | undefined { return this.workspaceMove(taskId)?.to_cwd ?? this.binding(taskId)?.cwd; }
-  /** Called only within an explicit QQ Trash restore transaction. Native cwd stays authoritative until migration commits. */
-  prepareQQTrashRestore(taskId: string, legacy: string, destination: string): void {
+  /** Called only within a Gateway trash restore transaction. Native cwd stays authoritative until migration commits. */
+  prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
     const { db } = this.options;
-    if (!isQQTask(db.getTask(taskId)) || db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed"
+    if (!isGatewayConversation(taskId) || db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed"
       || this.opened.has(taskId) || this.opening.has(taskId) || this.rebinding.has(taskId)
       || this.invalidations.has(taskId) || this.admissions.get(taskId)?.size) {
-      throw new Error("QQ 任务未处于可安全恢复的状态");
+      throw new Error("渠道任务未处于可安全恢复的状态");
     }
     const binding = this.binding(taskId);
     const pending = this.workspaceMove(taskId);
     if (pending || (binding && !sameWorkspacePath(binding.cwd, legacy) && !sameWorkspacePath(binding.cwd, destination))) {
-      throw new Error("QQ 任务已有冲突的工作目录绑定");
+      throw new Error("渠道任务已有冲突的工作目录绑定");
     }
     if (binding && !sameWorkspacePath(binding.cwd, destination)) {
       db.connection.prepare("INSERT INTO durable_bot_workspace_moves VALUES (?, ?, ?)").run(taskId, binding.cwd, destination);
@@ -263,9 +270,7 @@ export class DurableBotService {
       let open: OpenBot;
       try { open = await this.openBound(taskId); }
       catch (error) {
-        const pendingMove = this.workspaceMove(taskId);
-        if (!(error instanceof WorkspaceMigrationBusyError) || !pendingMove
-          || isQQTask(this.options.db.getTask(taskId))) throw error;
+        if (!(error instanceof WorkspaceMigrationBusyError) || !this.workspaceMove(taskId) || isGatewayConversation(taskId)) throw error;
         this.options.db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
         open = await this.openBound(taskId);
       }
@@ -395,18 +400,23 @@ export class DurableBotService {
 
   private async openInternal(taskId: string): Promise<OpenBot> {
     const { db, agentDir, models } = this.options;
-    if (!isGatewayConversation(taskId)) this.options.expertBindings?.ensureLegacy(taskId);
+    this.options.expertBindings?.ensureLegacy(taskId);
     const task = db.getTask(taskId);
     if (!task) throw new Error("任务不存在");
+    if (isGatewayConversation(taskId) && !task.gatewaySidebarChannelId) throw new Error("网关对话缺少可信渠道，无法打开会话存储");
     const prior = this.binding(taskId);
     const move = this.workspaceMove(taskId);
     const cwd = move?.to_cwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
-    if (isQQTask(task)) this.options.validateQQWorkspace?.(taskId, cwd, move?.from_cwd);
+    if (isGatewayConversation(taskId)) this.options.validateGatewayWorkspace?.(taskId, cwd, move?.from_cwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
     // Pending native operations retain their root; idle moves are committed below.
     if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
     task.cwd = cwd;
-    const directory = prior?.directory ?? join(agentDir, "durable", createHash("sha256").update(taskId).digest("hex"));
+    const directoryName = createHash("sha256").update(taskId).digest("hex");
+    const originalDirectory = join(agentDir, "durable", directoryName);
+    const directory = isGatewayConversation(taskId) && task.gatewaySidebarChannelId
+      ? gatewayConversationDirectory(db, taskId, task.gatewaySidebarChannelId, originalDirectory, prior?.directory)
+      : prior?.directory ?? originalDirectory;
     db.connection.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
     const config = this.mcpConfiguration(taskId);
     const mcp = await DurableMcp.open(config, this.credentials, models, cwd);
@@ -451,7 +461,7 @@ export class DurableBotService {
         () => db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
       );
-      const routing = isGatewayConversation(taskId) ? undefined : this.options.answerRouting;
+      const routing = this.options.answerRouting;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         answerRouting: routing && {
           enabled: () => routing.hasRulesForTask(taskId),
@@ -625,7 +635,7 @@ export class DurableBotService {
     mark?.("task");
     await this.options.models.refresh({ allowNetwork: false });
     mark?.("catalog");
-    if (!isGatewayConversation(request.taskId)) this.options.expertBindings?.ensureLegacy(request.taskId);
+    this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     // Product selections are durable task configuration, never global scene state.
@@ -640,7 +650,7 @@ export class DurableBotService {
   private async configureRequest(open: OpenBot, request: AgentPromptRequest, mark?: AdmissionMark): Promise<BotModelResolution["target"]> {
       // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
       // only a newly admitted input after native idle can adopt a saved desired revision.
-      if (!isGatewayConversation(request.taskId) && await open.runtime.isIdle()) {
+      if (await open.runtime.isIdle()) {
         const before = this.options.expertBindings?.get(request.taskId);
         const binding = this.options.expertBindings?.promote(request.taskId);
         if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
@@ -677,6 +687,10 @@ export class DurableBotService {
     mark?.("taskPersisted");
     return this.withRecovery(request.taskId, async open => {
       mark?.("opened");
+      if (origin?.gatewayInbound && request.attachments?.length) {
+        request = { ...request, attachments: await importGatewayAttachments(this.binding(request.taskId)!.cwd,
+          request.userMessageId, request.attachments) };
+      }
       const model = await this.configureRequest(open, request, mark);
       let text = await this.options.prepareInput?.(request) ?? request.text;
       if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
@@ -1065,9 +1079,22 @@ export class DurableBotService {
     await this.release(taskId);
     this.options.answerRouting?.clearPreparedTurns(taskId);
     const root = resolve(this.options.agentDir, "durable");
-    const directory = resolve(root, createHash("sha256").update(taskId).digest("hex"));
+    const digest = createHash("sha256").update(taskId).digest("hex");
+    const directory = resolve(root, digest);
     if (dirname(directory) !== root) throw new Error("Invalid Durable storage path");
-    await rm(directory, { recursive: true, force: true });
+    if (isGatewayConversation(taskId)) {
+      // A new inbound turn can recreate this exact task ID after release. Exclude admission during cleanup.
+      this.options.db.connection.transaction(() => {
+        if (this.options.db.getTask(taskId)) throw new Error("网关会话已重新创建，不能清理存储");
+        rmSync(directory, { recursive: true, force: true });
+        for (const channel of Object.keys(GATEWAY_SIDEBAR_CHANNELS)) {
+          const channelRoot = gatewayChannelDirectory(this.options.db, channel, false);
+          rmSync(join(channelRoot, digest), { recursive: true, force: true });
+        }
+      }).immediate();
+    } else {
+      await rm(directory, { recursive: true, force: true });
+    }
     this.projections.delete(taskId);
   }
   async release(taskId: string): Promise<void> {
@@ -1084,29 +1111,28 @@ export class DurableBotService {
     await Promise.allSettled(this.passiveReads.values());
     await Promise.allSettled([...new Set([...this.opened.keys(), ...this.opening.keys()])].map(id => this.release(id)));
   }
-  async runGatewayTurn(request: AgentPromptRequest, sidebarChannelId?: string): Promise<string> {
-    if (!isGatewayBotTaskId(request.taskId) && !isGatewayConversation(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
-    const existing = this.options.db.getTask(request.taskId);
-    if (sidebarChannelId === "qq-default" && (existing?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed")) {
-      throw new Error("QQ 对话已归档或回收，请先在本地恢复该任务");
-    }
+  async runGatewayTurn({ gatewayOrigin, modelId, ...request }: GatewayBotTurnRequest): Promise<string> {
     this.options.db.connection.transaction(() => {
-      this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
-        title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),
-        ...(!existing?.spaceId && request.spaceId ? { spaceId: request.spaceId } : {}),
-        welcomeMode: "general", modePresetId: "native", updatedAt: Date.now() });
-      if (sidebarChannelId) this.options.db.recordGatewaySidebarConversation(request.taskId, sidebarChannelId);
+      const task = this.options.db.getTask(request.taskId);
+      if (task?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") throw new Error("请先恢复已归档或回收的渠道任务");
+      if (!task) {
+        this.options.db.upsertTask({ id: request.taskId,
+          title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理",
+          welcomeMode: DEFAULT_WELCOME_MODE, modePresetId: defaultModePresetId(DEFAULT_WELCOME_MODE),
+          modelId, updatedAt: Date.now() });
+      }
+      this.options.db.bindGatewayConversationSpace(request.taskId, gatewayOrigin.channelId);
     })();
-    const { submission, open } = await this.admitTracked({ ...request, modePresetId: "native" });
+    const { submission, open } = await this.admitTracked(request, { gatewayInbound: true });
     try {
-      return await open.runtime.reply(submission, { requireText: isGatewayConversation(request.taskId) });
+      return await open.runtime.reply(submission, { requireText: true });
     } catch (error) {
       if (!(error instanceof SessionFailed)) throw error;
       await this.invalidate(request.taskId, open);
       const reopened = await this.open(request.taskId);
       const recovered = await reopened.runtime.harness.submission(submission.id, context);
       if (!recovered) throw error;
-      return reopened.runtime.reply(recovered, { requireText: isGatewayConversation(request.taskId) });
+      return reopened.runtime.reply(recovered, { requireText: true });
     }
   }
 }

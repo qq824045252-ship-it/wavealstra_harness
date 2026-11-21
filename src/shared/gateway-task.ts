@@ -14,6 +14,15 @@ export const GATEWAY_SIDEBAR_CHANNELS = {
   "wecom-default": "企微", "wechat-default": "微信公众号", "slack-default": "Slack",
 } as const;
 export type GatewaySidebarChannelId = keyof typeof GATEWAY_SIDEBAR_CHANNELS;
+const GATEWAY_CHANNEL_SPACE_PREFIX = "sp-gw-";
+export function gatewayChannelSpaceId(channelId: string): string {
+  return GATEWAY_CHANNEL_SPACE_PREFIX + channelId;
+}
+export function gatewayChannelForSpace(spaceId: string): GatewaySidebarChannelId | undefined {
+  if (!spaceId.startsWith(GATEWAY_CHANNEL_SPACE_PREFIX)) return undefined;
+  const channelId = spaceId.slice(GATEWAY_CHANNEL_SPACE_PREFIX.length);
+  return isGatewaySidebarChannelId(channelId) ? channelId : undefined;
+}
 export function isGatewaySidebarChannelId(id: string): id is GatewaySidebarChannelId {
   return Object.hasOwn(GATEWAY_SIDEBAR_CHANNELS, id);
 }

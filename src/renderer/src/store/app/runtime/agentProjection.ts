@@ -71,6 +71,11 @@ export function createAgentProjectionActions(
         );
         return;
       }
+      if (patch.type === "gateway_conversation_restored") {
+        storeContext.runtime.deletedTaskRuntimeTombstones.delete(patch.taskId);
+        set(state => ({ trashedTasks: state.trashedTasks.filter(task => task.id !== patch.taskId) }));
+        return;
+      }
       // deleteTask is an explicit lifecycle boundary. Main may still emit queued/terminal events while aborting;
       // those events must never resurrect the removed task in the renderer projection or upsert it back to DB.
       if (storeContext.runtime.deletedTaskRuntimeTombstones.has(patch.taskId))

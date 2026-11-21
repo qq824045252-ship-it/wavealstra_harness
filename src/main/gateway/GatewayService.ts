@@ -509,14 +509,22 @@ export class GatewayService {
 
   private createInboundHandler(): GatewayInboundHandler {
     return new GatewayRouter({
-      db: this.db, agent: this.agent, adapters: this.adapters,
+      adapters: this.adapters,
+      agent: {
+        runGatewayTurn: request => {
+          // The router has already resolved the authorized sender's canonical conversation ID.
+          if (this.restoreTrashedWorkspace && this.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed") {
+            this.restoreTrashedWorkspace(request.taskId);
+          }
+          return this.agent.runGatewayTurn(request);
+        },
+      },
       readSettings: () => this.settingsStore.read(), isStopping: () => this.stopping,
       slackId: () => this.slack.id, isAuthorized: channelId => this.channelPolicies.has(channelId),
       isConversationAuthorized: (channelId, senderId) => Boolean(senderId && this.channelPolicies.get(channelId)?.allowUsers.includes(senderId)),
       isAllowed: (channelId, senderId) => this.isAllowed(channelId, senderId), processed: this.processed,
       emitEvent: event => this.emitEvent(event),
       projectMessageSink: this.projectMessageSink,
-      restoreTrashedWorkspace: taskId => this.restoreTrashedWorkspace?.(taskId),
       redact: text => this.secrets.redact(text), safeError: error => this.secrets.error(error),
       outboundFilter: () => this.secrets.outboundFilter(),
     }).handler();

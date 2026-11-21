@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, lstat, readFile, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, mkdtemp, readdir, lstat, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { getGatewayDir } from "../paths";
 
 export class GatewayMediaError extends Error {
@@ -21,6 +21,40 @@ export const GATEWAY_MEDIA_LIMITS = { file: 20 * 1024 * 1024, batch: 40 * 1024 *
   cache: 256 * 1024 * 1024, count: 10, timeout: 30_000 } as const;
 type Attachment = { name: string; path: string };
 let tail: Promise<unknown> = Promise.resolve();
+
+/** Commit editable copies together. The transport retains its original bytes for receipt replay. */
+export async function importGatewayAttachments(cwd: string, inputId: string, files: Attachment[]): Promise<Attachment[]> {
+  const root = join(cwd, "attachments");
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  if (!(await lstat(root)).isDirectory()) throw new GatewayMediaError("渠道任务附件目录无效");
+  const batch = join(root, createHash("sha256").update(inputId).digest("hex"));
+  const imported = files.map((file, i) => {
+    const safe = safeName(file.name).replace(/[:*?"<>|]/g, "_").replace(/[. ]+$/, "");
+    const name = Buffer.byteLength(safe) <= 240 ? safe : basename(file.path);
+    return { name: file.name, path: join(batch, `${i + 1}-${name}`) };
+  });
+  const existing = await lstat(batch).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
+  if (existing && !existing.isDirectory()) throw new GatewayMediaError("渠道任务附件目录无效");
+  const pending = existing ? undefined : await mkdtemp(join(root, ".pending-"));
+  try {
+    for (const [i, file] of files.entries()) {
+      const digest = /^([a-f0-9]{64})\.[a-z0-9]{1,10}$/.exec(basename(file.path))?.[1];
+      const source = await lstat(file.path);
+      if (!digest || !source.isFile() || !source.size || source.size > GATEWAY_MEDIA_LIMITS.file) throw new GatewayMediaError("渠道附件缓存无效");
+      const copy = join(pending ?? batch, basename(imported[i]!.path));
+      if (pending) await copyFile(file.path, copy);
+      const stat = await lstat(copy);
+      if (!stat.isFile() || stat.size !== source.size || createHash("sha256").update(await readFile(copy)).digest("hex") !== digest) {
+        throw new GatewayMediaError("渠道附件内容已改变");
+      }
+    }
+    if (pending) await rename(pending, batch);
+    return imported;
+  } finally { if (pending) await rm(pending, { recursive: true, force: true }); }
+}
 
 function safeName(name: string): string {
   const cleaned = name.replace(/[\\/\x00-\x1f\x7f]/g, "_").replace(/^\.+/, "");

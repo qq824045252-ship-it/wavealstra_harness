@@ -417,9 +417,8 @@ try {
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-thread", taskId: "native-task",
       userMessageId: "user-turn", assistantMessageId: "assistant-turn", text: "fixture",
       sender: { id: config.allowUsers[0] }, reply: async (text: string) => { replies.push(text); } });
-    assert.equal(requests[0].modelId, "fixture/native-model"); assert.equal(requests[0].permissionMode, "readonly");
-    assert.equal(requests[0].sessionFile, undefined); assert.equal(requests[0].welcomeMode, "general");
-    assert.equal(requests[0].modePresetId, "native"); assert.equal(requests[0].taskId, gatewayConversationId(requests[0].gatewayOrigin));
+    assert.equal(requests[0].modelId, "fixture/native-model");
+    assert.equal(requests[0].taskId, gatewayConversationId(requests[0].gatewayOrigin));
     assert.notEqual(requests[0].taskId, "gw-bot-native-task");
     await internals.createInboundHandler()({ channelId: "slack-default", chatId: "fixture-channel", taskId: "native-channel",
       userMessageId: "channel-user", assistantMessageId: "channel-assistant", text: "总结下内容", sender: { id: config.allowUsers[0] },
@@ -444,15 +443,15 @@ try {
     assert.equal(connected, false); assert.equal(activations, 3, "failed host commit must not release inbound execution");
     failSave = false; await service.stop();
   });
-  await check("Gateway awaits its native answer and forces read-only conversation without legacy policy", async () => {
+  await check("Gateway awaits its own native answer and leaves tool policy to the task", async () => {
     let finish!: (text: string) => void;
     const request = { taskId: "task", text: "fixture", assistantMessageId: "assistant", userMessageId: "user",
       gatewayOrigin: { channelId: "slack-default", connectionKey: "a".repeat(64), chatId: "T:D:thread", senderId: "owner",
         messageId: "message", audience: "private" as const } };
     const port: GatewayAgentPort = {
       runGatewayTurn: async input => {
-        assert.equal(input.welcomeMode,"general"); assert.equal(input.modePresetId,"native");
-        assert.equal(input.permissionMode, "readonly"); assert.equal(input.taskId, gatewayConversationId(request.gatewayOrigin));
+        assert(!("permissionMode" in input) && !("modePresetId" in input));
+        assert.equal(input.taskId, gatewayConversationId(request.gatewayOrigin));
         return new Promise<string>(resolve => { finish = resolve; });
       },
     };

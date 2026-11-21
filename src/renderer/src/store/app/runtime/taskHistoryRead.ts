@@ -104,7 +104,7 @@ export function projectDurableHistory(storeContext: AppContext, taskId: string, 
         : [task, ...state.tasks],
     };
   });
-  if (!known || (isGatewayConversation(taskId) && !known.gatewaySidebarChannelId)) {
+  if (!known || (isGatewayConversation(taskId) && (!known.gatewaySidebarChannelId || !known.spaceId))) {
     hydrateTaskMetadataFromDb(storeContext, taskId);
   }
   get().reconcileTaskMessageArtifacts(taskId);

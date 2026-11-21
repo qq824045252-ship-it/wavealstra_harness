@@ -33,10 +33,7 @@ const fixture={getAuth:async()=>undefined,refresh:async()=>{},getAvailable:async
   queueMicrotask(()=>{try{
    const i=messages.findLastIndex(m=>m.role==="user"),input=text(messages[i]!);const query=/RETRIEVE_(GATEWAY|AUXILIARY)/.exec(input)?.[1];
    const results=messages.slice(i+1).filter(m=>m.role==="toolResult");let content:AssistantMessage["content"]=[{type:"text",text:"DONE"}];let reason:"stop"|"toolUse"="stop";
-   if(input.includes("RETRIEVE_GATEWAY")) {
-    assert.equal(getCurrentTools(messages).length,0,"Gateway text-only conversation may not receive retrieval or execution tools");
-    content=[{type:"text",text:"TEXT_ONLY_GATEWAY"}];
-   } else if(query){
+   if(query){
     assert(getCurrentTools(messages).some(t=>t.name==="acp_retrieve"));
     if(!results.length){content=[{type:"toolCall",id:`search-${requests.length}`,name:"acp_search",arguments:{query:`EXACT_${query}_ORIGINAL`,scope:"originals"}}];reason="toolUse";}
     else if(results.length===1){const entry=/entry (\d+) · (?:pi|mybuddy)\.user/.exec(text(results[0]!));assert(entry,"original search must return actual entry: "+text(results[0]!));content=[{type:"toolCall",id:`retrieve-${requests.length}`,name:"acp_retrieve",arguments:{entryId:Number(entry[1]),limit:1000}}];reason="toolUse";}
@@ -49,7 +46,7 @@ const models=fixture as unknown as DurableBotOptions["models"];
 const db=new AppDatabase(join(agentDir,"app.db"));
 const durable=new DurableBotService(isolateGatewayConversations({db,models:fixture as unknown as DurableBotServiceOptions["models"],agentDir,mcpDir,defaultModel:()=>"fixture/entrypoint",toolMode:()=>"native",instructions:()=>"Only obey the latest synthetic test request.",tools:async()=>({tools:[],contextHooks:[]}) as never,
  productCompaction:()=>({ratio:0.8,absoluteTokens:20000}),emit:()=>{},resolveCwd:id=>{const p=join(root,createHash("sha256").update(id).digest("hex"));mkdirSync(p,{recursive:true});return p;}}));
-const gateway=new GatewayService(db,{runGatewayTurn:(request:Parameters<DurableBotService["runGatewayTurn"]>[0])=>durable.runGatewayTurn(request)} as never);
+const gateway=new GatewayService(db,durable);
 (gateway as any).settingsStore={read:()=>({permissionMode:"readonly",defaultModelId:"fixture/entrypoint"})};
 const account="c".repeat(64),channel="telegram-default",chat="context-matrix",sender="fixture-sender";
 (gateway as any).adapters.get(channel).workConnectionKey=()=>account;
@@ -66,9 +63,9 @@ try{
  assert.equal(replies.length,8);assert(summaries>0,"Gateway must call real summary fixture");
  assert(requests.some(ms=>JSON.stringify(ms).includes("[Compressed")&&!JSON.stringify(ms).includes("EXACT_GATEWAY_ORIGINAL")),"Gateway outgoing requests must use committed projection without old original");
  const gatewayStatus=await durable.contextManagementStatus(taskId);assert(gatewayStatus?.sessionId);assert.equal(gatewayStatus.triggerTokens,20000);
- await sendGateway("RETRIEVE_GATEWAY","gateway-retrieve");assert.equal(replies.at(-1),"TEXT_ONLY_GATEWAY");
+ await sendGateway("RETRIEVE_GATEWAY","gateway-retrieve");assert.equal(replies.at(-1),"VERIFIED_GATEWAY");
  const gatewaySummaryCount=summaries;await durable.release(taskId);await sendGateway("Continue after cold reopen.","gateway-reopen");assert.equal(summaries,gatewaySummaryCount,"reopen must not duplicate maintenance");
- console.log("PASS Gateway inbound → isolated Durable service: automatic projection, text-only admission, persisted reopen");
+ console.log("PASS Gateway inbound → Durable task: automatic projection, original retrieval and persisted reopen");
  const start=requests.length,summaryStart=summaries;
  const openAux=()=>openDurableAuxiliary({agentDir,id:"context-aux",models,initialize:async()=>({id:"context-aux",kind:"btw",parentTaskId:taskId,cwd:root,instructions:"Only synthetic context validation.",model:{provider:"fixture",modelId:model.id}}),runtime:async()=>({onSnapshot:()=>{}})});
  auxiliary=(await openAux()).runtime;

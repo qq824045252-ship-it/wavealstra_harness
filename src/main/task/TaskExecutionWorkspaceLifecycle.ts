@@ -21,7 +21,9 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { GATEWAY_TASK_FOLDER, isPlainDirectory, isQQTask, prepareQQWorkspaceParent, qqTaskWorkspace, sameWorkspacePath, validatePlainTaskManifest } from "./QQTaskWorkspace";
+import { isGatewayConversation } from "../../shared/gateway-task";
+import { currentTaskWorkspace, gatewayTaskWorkspace, validateGatewayTaskCwd } from "./TaskWorkspaceResolver";
+import { GATEWAY_TASK_FOLDER, isPlainDirectory, sameWorkspacePath, validatePlainTaskManifest } from "./QQTaskWorkspace";
 import { TRASH_RETENTION_MS, type TrashedTaskDto } from "../../shared/archive-deletion";
 import type { AppDatabase, TaskExecutionWorkspaceStateRow } from "../db/AppDatabase";
 import { getTaskExecutionWorkspacesTrashDir } from "../paths";
@@ -84,8 +86,8 @@ export interface TaskExecutionWorkspaceLifecycleOptions {
    * 失败只 log，不阻断 trash（目录隔离优先完成）。
    */
   beforeTrash?: (taskId: string, options?: { strict?: boolean }) => void | Promise<void>;
-  /** Exact QQ restore only; joined to the lifecycle SQLite transaction. */
-  prepareQQWorkspaceRestore?: (taskId: string, legacy: string, destination: string) => void;
+  /** Exact 渠道restore only; joined to the lifecycle SQLite transaction. */
+  prepareGatewayWorkspaceRestore?: (taskId: string, legacy: string, destination: string) => void;
   /**
    * 永久清理时删除 Artifact Domain 数据（可选）。
    * 未注入则 purge 只清目录 + task 行 + execution workspace state。
@@ -105,7 +107,7 @@ export class TaskExecutionWorkspaceLifecycle {
   private readonly trashRoot: string;
   private readonly purgeAfterMs: number;
   private readonly beforeTrash?: TaskExecutionWorkspaceLifecycleOptions["beforeTrash"];
-  private readonly prepareQQWorkspaceRestore?: TaskExecutionWorkspaceLifecycleOptions["prepareQQWorkspaceRestore"];
+  private readonly prepareGatewayWorkspaceRestore?: TaskExecutionWorkspaceLifecycleOptions["prepareGatewayWorkspaceRestore"];
   private readonly onPurgeArtifacts?: TaskExecutionWorkspaceLifecycleOptions["onPurgeArtifacts"];
   private readonly onPurge?: TaskExecutionWorkspaceLifecycleOptions["onPurge"];
 
@@ -117,7 +119,7 @@ export class TaskExecutionWorkspaceLifecycle {
       : getTaskExecutionWorkspacesTrashDir();
     this.purgeAfterMs = options.purgeAfterMs ?? DEFAULT_PURGE_AFTER_MS;
     this.beforeTrash = options.beforeTrash;
-    this.prepareQQWorkspaceRestore = options.prepareQQWorkspaceRestore;
+    this.prepareGatewayWorkspaceRestore = options.prepareGatewayWorkspaceRestore;
     this.onPurgeArtifacts = options.onPurgeArtifacts;
     this.onPurge = options.onPurge;
     mkdirSync(this.trashRoot, { recursive: true });
@@ -239,7 +241,7 @@ export class TaskExecutionWorkspaceLifecycle {
     this.assertTaskId(taskId);
     this.assertWorkspaceNotShared(taskId);
     if (this.beforeTrash) {
-      const strict = options?.strict || isQQTask(this.db.getTask(taskId));
+      const strict = options?.strict || isGatewayConversation(taskId);
       try {
         await this.beforeTrash(taskId, strict ? { ...options, strict: true } : options);
       } catch (err) {
@@ -271,18 +273,12 @@ export class TaskExecutionWorkspaceLifecycle {
     if (!existsSync(workspaceDir)) {
       directoryMissing = true;
     } else {
-      const qq = isQQTask(this.db.getTask(taskId));
-      if (qq) {
-        if (!isPlainDirectory(this.workspace.getTaskExecutionWorkspacesRoot()) || !isPlainDirectory(workspaceDir))
-          throw new TaskPathBoundaryError("QQ 任务工作区不是可信目录");
-        if (!sameWorkspacePath(workspaceDir, qqTaskWorkspace(this.workspace, taskId)))
-          this.assertDirectChildOfWorkspaces(workspaceDir, directoryName);
-        validatePlainTaskManifest(workspaceDir);
-      } else {
+      if (isGatewayConversation(taskId)) validateGatewayTaskCwd(this.db, this.workspace, taskId, workspaceDir);
+      else {
         this.assertDirectChildOfWorkspaces(workspaceDir, directoryName);
+        this.assertNotSymlinkEscape(workspaceDir);
       }
       this.assertManifestMatches(workspaceDir, taskId);
-      this.assertNotSymlinkEscape(workspaceDir);
 
       mkdirSync(this.trashRoot, { recursive: true });
       trashPath = join(this.trashRoot, `${directoryName}--${Date.now()}`);
@@ -384,7 +380,7 @@ export class TaskExecutionWorkspaceLifecycle {
       throw new TaskLifecycleError(`任务不在回收区，无法 restore：${taskId} state=${state?.state ?? "none"}`);
     }
 
-    if (isQQTask(this.db.getTask(taskId))) return this.restoreQQWorkspace(taskId, state);
+    if (isGatewayConversation(taskId)) return this.restoreGatewayWorkspace(taskId, state);
     const directoryName = getTaskDirectoryName(taskId);
     const workspaceDir = this.workspace.resolveTaskExecutionWorkspaceDir(taskId);
     // 回收区整体改名迁移后，DB 中旧 trash_path 绝对路径可能失效：按 basename 在当前回收区定位
@@ -464,34 +460,27 @@ export class TaskExecutionWorkspaceLifecycle {
   }
 
   private activeWorkspaceDir(taskId: string): string {
-    const legacy = this.workspace.resolveTaskExecutionWorkspaceDir(taskId);
-    const task = this.db.getTask(taskId);
-    if (!isQQTask(task)) return legacy;
-    const target = qqTaskWorkspace(this.workspace, taskId);
-    const nested = prepareQQWorkspaceParent(this.workspace, false) && isPlainDirectory(target);
-    if (nested && isPlainDirectory(legacy)) throw new TaskLifecycleConflictError("QQ 执行目录有两个副本，拒绝自动选取");
-    return nested || (task?.cwd && sameWorkspacePath(task.cwd, target)) ? target : legacy;
+    return currentTaskWorkspace(this.db, this.workspace, taskId).resolveTaskExecutionWorkspaceDir(taskId);
   }
 
-  /** An intentional local restore, never called by channel admission. Preserve every byte on collision. */
-  private restoreQQWorkspace(taskId: string, state: TaskExecutionWorkspaceStateRow): RestoreResult {
-    const prepare = this.prepareQQWorkspaceRestore;
-    if (!prepare) throw new TaskLifecycleError("QQ 安全恢复服务尚未就绪");
+  /** Local restore and authenticated inbound restore use the same transaction. Preserve every byte on collision. */
+  private restoreGatewayWorkspace(taskId: string, state: TaskExecutionWorkspaceStateRow): RestoreResult {
+    const prepare = this.prepareGatewayWorkspaceRestore;
+    if (!prepare) throw new TaskLifecycleError("渠道安全恢复服务尚未就绪");
     const directoryName = getTaskDirectoryName(taskId);
-    const legacy = this.workspace.resolveTaskExecutionWorkspaceDir(taskId);
-    const destination = qqTaskWorkspace(this.workspace, taskId);
+    const legacy = this.activeWorkspaceDir(taskId);
+    const destination = gatewayTaskWorkspace(this.db, taskId).resolveTaskExecutionWorkspaceDir(taskId);
     const source = this.resolveTrashPath(state.trashPath);
-    if (!source) throw new TaskLifecycleError("QQ 任务的原回收目录不存在，不创建空目录");
+    if (!source) throw new TaskLifecycleError("渠道任务的原回收目录不存在，不创建空目录");
     this.assertTrashPathSafe(source);
     if (!isPlainDirectory(this.trashRoot) || !isPlainDirectory(source)
       || state.directoryName !== directoryName || !basename(source).startsWith(directoryName + "--")) {
-      throw new TaskPathBoundaryError("QQ 原回收目录不是可信的任务目录");
+      throw new TaskPathBoundaryError("渠道原回收目录不是可信的任务目录");
     }
     validatePlainTaskManifest(source);
     this.assertManifestMatches(source, taskId);
-    prepareQQWorkspaceParent(this.workspace, true);
     if (isPlainDirectory(legacy) || isPlainDirectory(destination)) {
-      throw new TaskLifecycleConflictError("QQ 原位或目标已存在，不覆盖任何副本");
+      throw new TaskLifecycleConflictError("渠道原位或目标已存在，不覆盖任何副本");
     }
 
     let renamed = false;
@@ -508,10 +497,10 @@ export class TaskExecutionWorkspaceLifecycle {
     } catch (error) {
       if (renamed) {
         try {
-          if (isPlainDirectory(source) || !isPlainDirectory(destination)) throw new Error("QQ 恢复路径发生变化");
+          if (isPlainDirectory(source) || !isPlainDirectory(destination)) throw new Error("渠道恢复路径发生变化");
           renameSync(destination, source);
         } catch (rollback) {
-          throw new TaskLifecycleRepairRequiredError("QQ 恢复失败且无法原路移回；未删除仍存的目录", { cause: rollback });
+          throw new TaskLifecycleRepairRequiredError("渠道恢复失败且无法原路移回；未删除仍存的目录", { cause: rollback });
         }
       }
       throw error;
@@ -541,18 +530,19 @@ export class TaskExecutionWorkspaceLifecycle {
       );
     }
 
-    // A torn QQ restore may have moved bytes already. Never delete the task row over that copy.
-    if (isQQTask(this.db.getTask(taskId)) && isPlainDirectory(this.activeWorkspaceDir(taskId))) {
-      throw new TaskLifecycleConflictError("QQ 任务仍有原位数据，拒绝永久清理");
+    // A torn 渠道restore may have moved bytes already. Never delete the task row over that copy.
+    if (isGatewayConversation(taskId) && (isPlainDirectory(this.activeWorkspaceDir(taskId)) ||
+      isPlainDirectory(gatewayTaskWorkspace(this.db, taskId).resolveTaskExecutionWorkspaceDir(taskId)))) {
+      throw new TaskLifecycleConflictError("渠道任务仍有原位数据，拒绝永久清理");
     }
     let removedTrashDir = false;
     // 回收区整体改名迁移后，DB 中旧 trash_path 绝对路径可能失效：按 basename 在当前回收区定位
     const trashPath = this.resolveTrashPath(state.trashPath);
     if (trashPath) {
       this.assertTrashPathSafe(trashPath);
-      if (isQQTask(this.db.getTask(taskId))) {
+      if (isGatewayConversation(taskId)) {
         if (!isPlainDirectory(this.trashRoot) || !isPlainDirectory(trashPath))
-          throw new TaskPathBoundaryError("QQ 回收目录不是可信目录");
+          throw new TaskPathBoundaryError("渠道回收目录不是可信目录");
         validatePlainTaskManifest(trashPath);
         this.assertManifestMatches(trashPath, taskId);
       }
@@ -761,8 +751,8 @@ export class TaskExecutionWorkspaceLifecycle {
       );
     }
 
-    if (isQQTask(this.db.getTask(resolvedTaskId))) {
-      throw new TaskLifecycleConflictError("QQ 托管任务不能通过普通孤儿目录认领");
+    if (isGatewayConversation(resolvedTaskId)) {
+      throw new TaskLifecycleConflictError("渠道托管任务不能通过普通孤儿目录认领");
     }
     const expected = getTaskDirectoryName(resolvedTaskId);
     if (directoryName !== expected) {

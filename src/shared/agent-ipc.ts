@@ -1011,6 +1011,7 @@ export type RuntimeAuditInstructionDto = import("./mode-profile").AssemblySegmen
 };
 
 export type AgentUiPatch =
+  | { type: "gateway_conversation_restored"; taskId: string }
   | { type: "durable_snapshot"; taskId: string; snapshot: import("./durable-bot").DurableBotSnapshot }
   | { type: "durable_delta"; taskId: string; delta: import("./durable-bot").DurableBotDelta }
   | { type: "expert_binding"; taskId: string; binding: import("./expert-binding").TaskExpertBindingDto }
@@ -2031,7 +2032,7 @@ export type DbUpsertResult =
 export type DbRenameResult = { ok: true } | { ok: false; error: string };
 
 export interface TaskDto {
-  /** Host-owned sidebar projection only, never a workspace binding. */
+  /** Verified channel identity. spaceId identifies its persistent channel workspace. */
   gatewaySidebarChannelId?: import("./gateway-task").GatewaySidebarChannelId;
   /** Read-only projection of the task-owned expert configuration. */
   expertBinding?: import("./expert-binding").TaskExpertBindingDto;

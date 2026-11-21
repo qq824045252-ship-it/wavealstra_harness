@@ -588,7 +588,8 @@ async function gatewaySidebarOriginHydratesKnownTask(): Promise<void> {
   const id = `gateway-chat-${"a".repeat(64)}`;
   const row = deferred<TaskDto[]>();
   let reads = 0;
-  const { useAppStore: api } = store({ db: { listTasks: () => { reads++; return row.promise; } } });
+  const { useAppStore: api } = store({ db: { listTasks: () => { reads++; return row.promise; },
+    deleteTask: async () => {}, listSpaces: async () => [{ id: "sp-gw-root", name: "网关助理" }, { id: "sp-gw-qq-default", name: "QQ", parentId: "sp-gw-root" }] } });
   api.setState({ tasks: [task(id, { updatedAt: 100, status: "in_progress", messages: [], welcomeMode: "general", modePresetId: "native" })] });
   const snapshot: DurableBotSnapshot = { backend: "pi-durable", historyId: "gateway-history", epoch: "gateway-live", revision: 1, conversationId: "7", toolMode: "native", busy: true, queued: 0, pendingInputs: [], compacting: false, messages: [] };
   api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot });
@@ -596,14 +597,22 @@ async function gatewaySidebarOriginHydratesKnownTask(): Promise<void> {
   assert.equal(reads, 1, "known tasks without trusted channel metadata refresh once while a read is pending");
   const selectors = createAppSelectors();
   const before = selectors.selectSidebarTasks(api.getState());
-  row.resolve([{ id, title: id, updatedAt: 100, status: "in_progress", welcomeMode: "general", modePresetId: "native", gatewaySidebarChannelId: "qq-default" }]);
+  row.resolve([{ id, title: id, updatedAt: 100, status: "in_progress", welcomeMode: "general", modePresetId: "native", gatewaySidebarChannelId: "qq-default", spaceId: "sp-gw-qq-default" }]);
   await tick();
   const after = selectors.selectSidebarTasks(api.getState());
   assert.notEqual(after, before, "metadata-only change must invalidate the sidebar cache");
   assert.equal(after[0]?.gatewaySidebarChannelId, "qq-default");
-  assert.equal(after[0]?.spaceId, undefined);
+  assert.equal(after[0]?.spaceId, "sp-gw-qq-default");
+  assert.equal(api.getState().spaces.find(space => space.id === after[0]?.spaceId)?.parentId, "sp-gw-root");
   api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: { ...snapshot, revision: 3 } });
   assert.equal(reads, 1, "trusted projection does not need another SQLite read");
+  api.getState().deleteTask(id);
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot });
+  assert(!api.getState().tasks.some(task => task.id === id));
+  api.getState().applyAgentPatch({ type: "gateway_conversation_restored", taskId: id });
+  api.getState().applyAgentPatch({ type: "durable_snapshot", taskId: id, snapshot: { ...snapshot, epoch: "restored" } });
+  await tick();
+  assert.equal(selectors.selectSidebarTasks(api.getState()).find(task => task.id === id)?.spaceId, "sp-gw-qq-default");
 }
 
 async function main(): Promise<void> {

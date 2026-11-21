@@ -12,7 +12,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 
 import { dirname, join, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { AppDatabase } from "../db/AppDatabase";
-import { isPlainDirectory, isQQTask, prepareQQWorkspaceParent, qqTaskWorkspace, sameWorkspacePath, validatePlainTaskManifest } from "./QQTaskWorkspace";
+import { isGatewayConversation } from "../../shared/gateway-task";
+import { isPlainDirectory, validatePlainTaskManifest } from "./QQTaskWorkspace";
+import { currentTaskWorkspace } from "./TaskWorkspaceResolver";
 import {
   MANIFEST_FILENAME,
   TaskExecutionWorkspace,
@@ -183,6 +185,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
   const workspace = new TaskExecutionWorkspace(workspacesRoot);
   const ownDb = !options.db;
   const appDb = options.db ?? new AppDatabase(options.dbPath);
+  const workspaceFor = (id: string) => currentTaskWorkspace(appDb, workspace, id);
   const mode: TaskIsolationAuditReport["mode"] = options.repairSafeMetadata
     ? "repair-safe-metadata"
     : "dry-run";
@@ -195,13 +198,6 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
     if (options.taskId) {
       tasks = tasks.filter((t) => t.id === options.taskId);
     }
-
-    const qqIds = new Set(tasks.filter(isQQTask).map(task => task.id));
-    const expectedTaskCwd = (task: (typeof tasks)[number]) => {
-      const legacy = workspace.resolveTaskExecutionWorkspaceDir(task.id);
-      if (!qqIds.has(task.id) || (task.cwd && sameWorkspacePath(task.cwd, legacy) && existsSync(legacy))) return legacy;
-      return qqTaskWorkspace(workspace, task.id);
-    };
 
     // 按 stored cwd 分组，识别共享目录
     const cwdGroups = new Map<string, string[]>();
@@ -216,7 +212,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
     // 按 expected 目录名检测碰撞（理论上哈希防撞，但若目录被手动占用仍可能出现）
     const expectedDirOwners = new Map<string, string[]>();
     for (const t of tasks) {
-      const expected = expectedTaskCwd(t);
+      const expected = workspaceFor(t.id).resolveTaskExecutionWorkspaceDir(t.id);
       const key = normalizePathForComparison(expected);
       const list = expectedDirOwners.get(key) ?? [];
       list.push(t.id);
@@ -226,7 +222,9 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
     const taskFindings: TaskAuditFinding[] = [];
 
     for (const t of tasks) {
-      const expectedCwd = expectedTaskCwd(t);
+      const current = workspaceFor(t.id);
+      const expectedCwd = current.resolveTaskExecutionWorkspaceDir(t.id);
+      const taskRoot = current.getTaskExecutionWorkspacesRoot();
       const storedCwd = t.cwd?.trim() ? resolve(t.cwd.trim()) : null;
       const codes: AuditStatusCode[] = [];
       const details: string[] = [];
@@ -236,7 +234,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
         codes.push("TASK_CWD_NULL");
         details.push("tasks.cwd 为空，尚未绑定 canonical task root");
       } else {
-        if (!isPathInsideOrEqual(workspacesRoot, storedCwd)) {
+        if (!isPathInsideOrEqual(taskRoot, storedCwd)) {
           codes.push("TASK_CWD_OUTSIDE_PROJECTS");
           details.push(`stored cwd 不在 task-workspaces root 内：${storedCwd}`);
         }
@@ -249,7 +247,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
         }
         // 在 task-workspaces 内但与 canonical 不一致（且不是共享检测已覆盖的情况也要标）
         if (
-          isPathInsideOrEqual(workspacesRoot, storedCwd) &&
+          isPathInsideOrEqual(taskRoot, storedCwd) &&
           normalizePathForComparison(storedCwd) !== normalizePathForComparison(expectedCwd) &&
           !codes.includes("TASK_CWD_LEGACY_SHARED")
         ) {
@@ -272,7 +270,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
         codes.push("TASK_DIR_MISSING");
         details.push(`canonical 目录不存在：${expectedCwd}`);
       } else {
-        const rootReal = safeRealpath(workspacesRoot);
+        const rootReal = safeRealpath(taskRoot);
         const dirReal = safeRealpath(expectedCwd);
         if (rootReal && dirReal && !isPathInsideOrEqual(rootReal, dirReal)) {
           codes.push("REALPATH_ESCAPE");
@@ -280,24 +278,18 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
         }
 
         const manifestPath = join(expectedCwd, MANIFEST_FILENAME);
-        let mayReadManifest = true;
-        if (qqIds.has(t.id)) {
+        let safe = true;
+        if (isGatewayConversation(t.id)) {
           try {
-            if (!isPlainDirectory(workspacesRoot) || !isPlainDirectory(expectedCwd) ||
-              (sameWorkspacePath(expectedCwd, qqTaskWorkspace(workspace, t.id)) && !prepareQQWorkspaceParent(workspace, false))) {
-              throw new Error("QQ 管理目录不存在或不可信");
-            }
+            if (!isPlainDirectory(taskRoot) || !isPlainDirectory(expectedCwd)) throw new Error("渠道工作目录缺失");
+            validatePlainTaskManifest(expectedCwd);
           } catch {
+            safe = false;
             codes.push("REALPATH_ESCAPE");
-            details.push("QQ 管理目录包含不安全的路径组件");
-            mayReadManifest = false;
-          }
-          if (mayReadManifest) {
-            try { validatePlainTaskManifest(expectedCwd); }
-            catch { mayReadManifest = false; }
+            details.push("渠道工作目录或任务清单不可信");
           }
         }
-        const man = mayReadManifest ? tryReadManifest(manifestPath) : { ok: false as const, error: "目录或清单不可信" };
+        const man = safe ? tryReadManifest(manifestPath) : { ok: false as const, error: "目录或清单不可信" };
         if (!man.ok) {
           if (man.error === "missing") {
             codes.push("MANIFEST_MISSING");
@@ -363,7 +355,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
       for (const r of artifactRows) {
         if (!expectedByTask.has(r.task_id)) {
           try {
-            expectedByTask.set(r.task_id, workspace.resolveTaskExecutionWorkspaceDir(r.task_id));
+            expectedByTask.set(r.task_id, workspaceFor(r.task_id).resolveTaskExecutionWorkspaceDir(r.task_id));
           } catch {
             /* invalid taskId */
           }
@@ -459,8 +451,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
 
       const repairable = taskFindings.filter(
         (f) =>
-          // Only an explicit QQ lifecycle action may change a QQ task's native binding.
-          !qqIds.has(f.taskId) && !f.blocking &&
+          !isGatewayConversation(f.taskId) && !f.blocking &&
           f.codes.some((c) => SAFE_REPAIRABLE_TASK_CODES.has(c)),
       );
 
@@ -469,6 +460,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
         for (const f of repairable) {
           try {
             // 再次确认无阻塞（目录被占用时 ensure 会抛）
+            const current = workspaceFor(f.taskId);
             if (existsSync(f.expectedCwd)) {
               const man = tryReadManifest(join(f.expectedCwd, MANIFEST_FILENAME));
               if (man.ok && man.manifest.taskId !== f.taskId) {
@@ -479,7 +471,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
                 });
                 continue;
               }
-              const rootReal = safeRealpath(workspacesRoot);
+              const rootReal = safeRealpath(current.getTaskExecutionWorkspacesRoot());
               const dirReal = safeRealpath(f.expectedCwd);
               if (rootReal && dirReal && !isPathInsideOrEqual(rootReal, dirReal)) {
                 repairs.push({
@@ -491,7 +483,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
               }
             }
 
-            const cwd = workspace.ensureTaskExecutionWorkspace(f.taskId);
+            const cwd = current.ensureTaskExecutionWorkspace(f.taskId);
             repairs.push({ taskId: f.taskId, action: "ensure_dir_and_manifest", cwd });
             appDb.bindTaskExecutionWorkspaceCwd(f.taskId, cwd);
             repairs.push({ taskId: f.taskId, action: "bind_cwd", cwd });

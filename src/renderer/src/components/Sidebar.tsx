@@ -1,4 +1,4 @@
-import { GATEWAY_SIDEBAR_CHANNELS, type GatewaySidebarChannelId } from "../../../shared/gateway-task";
+import { isGatewayConversation } from "../../../shared/gateway-task";
 import "./sidebar/SidebarNavigation.css";
 import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionScroll, useDesktopSectionState, useDesktopShell } from "./desktop/DesktopSection";
 import "./workspace/WorkspaceForeground.css";
@@ -180,7 +180,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
 
   const pinnedRows = useMemo(() => collectPinnedRows(tree, tasks), [tree, tasks]);
   const pinnedTaskIdSet = useMemo(() => new Set(pinnedRows.map((row) => row.task.id)), [pinnedRows]);
-  const [gatewayGroupsClosed, setGatewayGroupsClosed] = useState<Partial<Record<GatewaySidebarChannelId, boolean>>>({});
 
   const getParentChildren = useCallback(
     (parentId: string | null): WorkspaceTreeNode[] => {
@@ -801,17 +800,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       }} />}
 
       {(() => {
-        const unpinnedRootTasks = visibleRows.filter((r): r is Extract<VisibleRow, { kind: "task" }> =>
-          r.kind === "task" && r.task.spaceId == null && !pinnedTaskIdSet.has(r.task.id));
-        const independentRows = unpinnedRootTasks.filter((row) => !row.task.gatewaySidebarChannelId);
-        const gatewayGroups = new Map<GatewaySidebarChannelId, typeof unpinnedRootTasks>();
-        for (const row of unpinnedRootTasks) {
-          const id = row.task.gatewaySidebarChannelId;
-          if (!id) continue;
-          const rows = gatewayGroups.get(id) ?? [];
-          rows.push(row);
-          gatewayGroups.set(id, rows);
-        }
+        const independentRows = visibleRows.filter((r): r is Extract<VisibleRow, { kind: "task" }> =>
+          r.kind === "task" && r.task.spaceId == null && !isGatewayConversation(r.task.id) && !pinnedTaskIdSet.has(r.task.id));
         const workspaceRows = visibleRows.filter((r) => !(r.kind === "task" && (r.task.spaceId == null || pinnedTaskIdSet.has(r.task.id))));
         // 计数与下面看得见的行一致。置顶任务已经抽到顶部，不重复计入这两个数。
         const independentTaskCount = independentRows.length;
@@ -848,36 +838,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                 </div>
               </>
             )}
-            {gatewayGroups.size > 0 && (
-              <section aria-label="网关助理">
-                <div className="sidebar-tree-header sidebar-tree-header--spaced">
-                  <span className="section-title">网关助理</span>
-                  <span className="sidebar-section-count">{unpinnedRootTasks.length - independentRows.length}</span>
-                </div>
-                <div className="sidebar-section-list">
-                  {(Object.keys(GATEWAY_SIDEBAR_CHANNELS) as GatewaySidebarChannelId[]).map((id) => {
-                    const rows = gatewayGroups.get(id);
-                    if (!rows?.length) return null;
-                    const closed = !searchTerm && Boolean(gatewayGroupsClosed[id]);
-                    return <div key={id} data-gateway-channel={id}>
-                      <button type="button" className="workspace-conversation-row" aria-expanded={!closed}
-                        style={{ paddingLeft: taskIndent(0) }}
-                        onClick={() => setGatewayGroupsClosed(current => ({ ...current, [id]: !closed }))}>
-                        <span aria-hidden="true" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          {closed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
-                          <IconFolder size={14} />
-                        </span>
-                        <span>{GATEWAY_SIDEBAR_CHANNELS[id]}</span><small>{rows.length}</small>
-                      </button>
-                      {!closed && rows.map(({ key, task }) => <div key={key}>
-                        <TaskItem task={task} nested indent={taskIndent(1)} />
-                      </div>)}
-                    </div>;
-                  })}
-                </div>
-              </section>
-            )}
-            {isFiltered && !pinnedRows.length && !independentRows.length && !gatewayGroups.size && !workspaceTaskCount && (
+            {isFiltered && !pinnedRows.length && !independentRows.length && !workspaceTaskCount && (
               <div className="sidebar-empty" role="status">没有符合筛选条件的任务</div>
             )}
             {(!searchTerm || workspaceRows.length > 0 || foregroundError) && (

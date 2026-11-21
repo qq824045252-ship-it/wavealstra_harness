@@ -1,6 +1,5 @@
 import type { GatewayEventDto } from "../../shared/agent-ipc";
 
-import type { AppDatabase } from "../db/AppDatabase";
 import type { AppSettingsStore } from "../AppSettingsStore";
 import { gatewayInboundIdentity } from "./gateway-inbound-identity";
 
@@ -12,7 +11,6 @@ import type { createIdempotencyGuard } from "./GatewayRateLimiter";
 import type { GatewayProjectMessageSink } from "./GatewayService";
 
 interface GatewayRouterOptions {
-  db: AppDatabase;
   agent: GatewayAgentPort;
   adapters: ReadonlyMap<string, ChannelAdapter>;
   readSettings(): ReturnType<AppSettingsStore["read"]>;
@@ -25,7 +23,6 @@ interface GatewayRouterOptions {
   emitEvent(event: GatewayEventDto): void;
 
   projectMessageSink?: GatewayProjectMessageSink;
-  restoreTrashedWorkspace?(taskId: string): void;
   redact(text: string): string;
   outboundFilter(): (text: string) => string;
   safeError(error: unknown): string;
@@ -94,7 +91,6 @@ export class GatewayRouter {
         messageId: msg.messageId,
       });
 
-      // Channel conversations have no project/workspace side effects.
       let text: string;
       try {
 

@@ -1,4 +1,5 @@
-import { isGatewayConversation, isGatewaySidebarChannelId } from "../../shared/gateway-task";
+import { GATEWAY_SIDEBAR_CHANNELS, gatewayChannelForSpace, gatewayChannelSpaceId, isGatewayConversation, isGatewaySidebarChannelId } from "../../shared/gateway-task";
+import { ensureGatewayChannelSpace, gatewayChannelDirectory } from "../gateway/gateway-task-space";
 import Database from "better-sqlite3";
 import { ensureBotWorkTables } from "./bot-work-schema";
 import { ensureMaterialRetrievalTables } from "../library/MaterialRetrievalSettings";
@@ -378,6 +379,11 @@ export class AppDatabase {
       }
       retireWorkEffectBlockers(this.db);
       this.migrateLegacyWelcomeModeIds();
+      // Recover space ownership for current conversations that only have a trusted sidebar origin.
+      const unbound = this.db.prepare(`SELECT g.task_id, g.channel_id FROM gateway_sidebar_conversations g
+        JOIN tasks t ON t.id = g.task_id WHERE t.space_id IS NOT ('sp-gw-' || g.channel_id)`).all() as
+        Array<{ task_id: string; channel_id: string }>;
+      for (const row of unbound) this.bindGatewayConversationSpace(row.task_id, row.channel_id);
       this.db.pragma(`user_version = ${CURRENT_DATABASE_SCHEMA_VERSION}`);
     })();
   }
@@ -2363,6 +2369,12 @@ export class AppDatabase {
    * 返回生效后的行，便于调用方拿到最终 id。
    */
   upsertSpace(space: SpaceDto): SpaceDto {
+    const channelId = gatewayChannelForSpace(space.id);
+    if (channelId) {
+      const path = gatewayChannelDirectory(this, channelId, true);
+      if (space.path != null && space.path !== path) throw new Error("网关渠道空间必须使用其专属目录");
+      space = { ...space, path };
+    }
     const now = Date.now();
     const prev = this.db
       .prepare("SELECT parent_id, sort_order FROM spaces WHERE id = ?")
@@ -2648,7 +2660,10 @@ export class AppDatabase {
     targetIndex?: number;
     targetSortOrder?: number;
   }): void {
-    if (isGatewayConversation(input.taskId) && input.targetSpaceId !== null) throw new Error("网关对话不能移入执行工作空间");
+    if (isGatewayConversation(input.taskId)) {
+      const channel = this.getTask(input.taskId)?.gatewaySidebarChannelId;
+      if (!channel || input.targetSpaceId !== gatewayChannelSpaceId(channel)) throw new Error("网关对话不能移入其他空间或解除渠道归属");
+    }
     const { taskId, targetSpaceId } = input;
     const row = this.db.prepare("SELECT space_id FROM tasks WHERE id = ?").get(taskId) as
       | { space_id: string | null }
@@ -2960,7 +2975,13 @@ export class AppDatabase {
   }
 
   upsertTask(task: TaskDto): void {
-    if (isGatewayConversation(task.id) && (task.spaceId || task.projectId)) throw new Error("网关对话不能绑定项目或执行工作空间");
+    if (isGatewayConversation(task.id)) {
+      if (task.projectId) throw new Error("网关对话不能绑定项目");
+      if (task.spaceId !== undefined) {
+        const channel = this.getTask(task.id)?.gatewaySidebarChannelId;
+        if (task.spaceId !== (channel ? gatewayChannelSpaceId(channel) : null)) throw new Error("网关对话不能绑定其他空间或解除渠道归属");
+      }
+    }
     if (isGatewayBotTaskId(task.id)) task = { ...task, welcomeMode: "general", modePresetId: "native" };
     // UI 仍可能带 mock/遗留 spaceId；spaces 表无对应行时先解析占位，避免 FOREIGN KEY 失败
     const hasSpaceId = task.spaceId !== undefined;
@@ -3505,10 +3526,10 @@ export class AppDatabase {
         `SELECT 1
          FROM tasks t
          WHERE t.space_id = ?
-           AND NOT EXISTS (
+           AND (EXISTS (SELECT 1 FROM gateway_sidebar_conversations g WHERE g.task_id = t.id) OR NOT EXISTS (
              SELECT 1 FROM task_execution_workspace_state s
              WHERE s.task_id = t.id AND s.state = 'trashed'
-           )
+           ))
          LIMIT 1`,
       )
       .get(id);
@@ -3585,6 +3606,9 @@ export class AppDatabase {
     subtree.add(id);
     const wsIds = [...subtree];
     this.transaction(() => {
+      const hasGatewayConversations = this.db.prepare(`SELECT 1 FROM tasks t JOIN gateway_sidebar_conversations g
+        ON g.task_id = t.id WHERE t.space_id = ? LIMIT 1`);
+      if (wsIds.some(spaceId => hasGatewayConversations.get(spaceId))) throw new Error("渠道空间仍有网关对话，不能解除归属");
       this.assertWorkspaceOwnedLibrariesEmpty(subtree);
       const unbindTask = this.db.prepare("UPDATE tasks SET space_id = NULL, space_sort_order = 0 WHERE space_id = ?");
       const deleteSpaceStmt = this.db.prepare("DELETE FROM spaces WHERE id = ?");
@@ -3822,10 +3846,13 @@ export class AppDatabase {
   }
 
   /** Called only from the validated Gateway admission path, not general task write IPC. */
-  recordGatewaySidebarConversation(taskId: string, channelId: string): void {
-    if (!isGatewayConversation(taskId) || !isGatewaySidebarChannelId(channelId)) return;
-    this.db.prepare(`INSERT OR IGNORE INTO gateway_sidebar_conversations(task_id,channel_id) VALUES(?,?)`)
-      .run(taskId, channelId);
+  bindGatewayConversationSpace(taskId: string, channelId: string): void {
+    if (!isGatewayConversation(taskId) || !isGatewaySidebarChannelId(channelId)) throw new Error("网关对话渠道身份无效");
+    const stored = this.getTask(taskId);
+    if (!stored || (stored.gatewaySidebarChannelId && stored.gatewaySidebarChannelId !== channelId)) throw new Error("网关对话渠道归属不一致");
+    const spaceId = ensureGatewayChannelSpace(this, channelId, GATEWAY_SIDEBAR_CHANNELS[channelId]);
+    if (!stored.gatewaySidebarChannelId) this.db.prepare("INSERT INTO gateway_sidebar_conversations(task_id,channel_id) VALUES(?,?)").run(taskId, channelId);
+    if (stored.spaceId !== spaceId) this.db.prepare("UPDATE tasks SET space_id = ?, space_sort_order = 0 WHERE id = ?").run(spaceId, taskId);
   }
 
   listGatewayChannels(): Array<{
