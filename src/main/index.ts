@@ -2030,7 +2030,7 @@ function registerIpc(): void {
     }
   });
   const executionFailureRepository = new ExecutionFailureRepository(db.connection);
-  ipcMain.handle(DbIpc.listExecutionFailures, (_e, taskId: string) => executionFailureRepository.list(taskId));
+  ipcMain.handle(DbIpc.listExecutionFailures, (_e, taskId: string) => executionFailureRepository.listForDisplay(taskId));
   ipcMain.handle(DbIpc.dismissExecutionFailure, (_e, taskId: string, id: string) => executionFailureRepository.dismiss(taskId, id));
   ipcMain.handle(DbIpc.previewProjectFolder, (_e, projectId: string, path: string) => projectFolderRelocation.preview(projectId, path));
   ipcMain.handle(DbIpc.commitProjectFolder, (_e, token: string) => { projectFolderRelocation.commit(token); return { ok: true }; });

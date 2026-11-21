@@ -62,6 +62,24 @@ export class ExecutionFailureRepository {
     });
   }
 
+  async listForDisplay(taskId: string): Promise<ExecutionFailureDto[]> {
+    const records = this.list(taskId);
+    const candidates = records.filter(row => !row.resolvedAt && row.phase === "verify" && row.recovery === "recoverable"
+      && row.sideEffects !== "unknown" && row.executionId?.startsWith(`durable:${taskId}:`)
+      && ["computer-semantic-verification-failed", "computer-semantic-verification-unavailable"].includes(row.causeCode)
+      && row.message.startsWith("Computer Use ") && row.message.includes("the requested semantic postcondition"));
+    if (!candidates.length) return records;
+    try {
+      const binding = this.db.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(taskId) as { directory: string } | undefined;
+      if (binding) {
+        const { computerToolFeedbackIds } = await import("./durable/DurableComputerUseFeedback");
+        const feedback = await computerToolFeedbackIds(binding.directory, candidates);
+        return records.filter(row => !feedback.has(row.id));
+      }
+    } catch { /* An inaccessible receipt cannot justify hiding a recovery notice. */ }
+    return records;
+  }
+
   resolveWorkspaceFailures(taskId: string): void {
     this.db.prepare("UPDATE execution_failures SET resolved_at = ? WHERE task_id = ? AND resolved_at IS NULL AND cause_code IN ('workspace-path-missing','workspace-path-invalid','workspace-binding-missing','workspace-binding-cycle')").run(Date.now(), taskId);
   }

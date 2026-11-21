@@ -211,6 +211,26 @@ function verificationState(output: ComputerExecOutput): { post?: string; visual?
   };
 }
 
+/** A completed input with a conclusive UI readback can be replanned in the tool loop.
+ * Keep mixed/unknown results and any incomplete input in recovery. */
+export function isComputerUseObservationFeedback(output: ComputerExecOutput): boolean {
+  const outcome = output.semanticOutcome;
+  if (!outcome?.checks?.length || (outcome.status !== "failed" && outcome.status !== "not_evaluable")) return false;
+  const state = verificationState(output);
+  if (state.post !== "verified" || state.visual === "failed" || output.verificationError || !asWindow(output.observation?.targetBefore ?? output.observation?.targetAfter)
+    || output.verified === false) return false;
+  if (output.action === "batch" && (!output.batch?.completed || !output.batch.steps?.length || !output.batch.steps.every(step => step.ok))) return false;
+  const evidence = deliveryEvidence(output);
+  if (evidence.partial || evidence.sideEffects === "unknown") return false;
+  if (outcome.status === "failed") return outcome.checks.some(check => check.status === "failed")
+    && outcome.checks.every(check => check.status === "passed" || check.status === "failed");
+  // Older tools dropped a nested control selector at the wire boundary. This
+  // particular verifier diagnostic is correctable without sending input again.
+  const missingSelector = (check: typeof outcome.checks[number]) => check.status === "not_evaluable"
+    && (check.kind === "control_present" || check.kind === "control_absent") && check.evidence === "control expectation is missing a selector";
+  return outcome.checks.some(missingSelector) && outcome.checks.every(check => check.status === "passed" || missingSelector(check));
+}
+
 export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridge | undefined, input: ComputerExecInput, output: ComputerExecOutput): void {
   if (!bridge) return;
   const ctx = bridge.resolveContext();
@@ -245,14 +265,17 @@ export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridg
     bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: ["computer-post-verification-unavailable"] });
   }
 
+  if (isComputerUseObservationFeedback(output)) return;
+  const checkEvidence = output.semanticOutcome?.checks.filter(check => check.status !== "passed")
+    .map(check => `${check.kind}（${check.evidence}）`).join("，");
   if (state.semantic === "failed") {
     recordRecovery(bridge, { ...ctx, causeCode: "computer-semantic-verification-failed", phase: "verify", recovery: "recoverable",
-      sideEffects, target, message: `Computer Use ${action} returned, but the requested semantic postcondition failed.`,
-      nextAction: "Re-observe the same target and re-plan from the actual UI state; do not repeat the input merely because the transport succeeded." });
+      sideEffects, target, message: `桌面操作 ${action} 的结果未达到预期。${checkEvidence ?? ""}`,
+      nextAction: "请先核对同一窗口的当前状态，再决定下一步。已送达的输入可能已经生效。" });
   } else if (state.semantic === "not_evaluable") {
     recordRecovery(bridge, { ...ctx, causeCode: "computer-semantic-verification-unavailable", phase: "verify", recovery: "recoverable",
-      sideEffects, target, message: `Computer Use ${action} returned, but the requested semantic postcondition could not be evaluated.`,
-      nextAction: "Acquire fresh observable evidence for the same target before deciding whether another action is needed." });
+      sideEffects, target, message: `桌面操作 ${action} 的结果还无法核实。${checkEvidence ?? ""}`,
+      nextAction: "请重新读取同一窗口或控件的状态，再决定下一步。" });
   } else if (state.semantic === "passed" && !incomplete && !observationFailed) {
     bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: ["computer-semantic-verification-failed", "computer-semantic-verification-unavailable"] });
   }

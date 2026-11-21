@@ -851,7 +851,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
         description: computerUseCopy.description,
         promptSnippet: "computer_exec(action?|actions?, window_handle?/window_title?/process_id?, control_name?/automation_id?, x?/y?, observation_id?, capture_after?, expected_outcomes?)",
         parameters: computerExecSchema,
-        execute: async (tc, p: Record<string, unknown>, signal, _onUpdate, ctx) => {
+        execute: async (tc, p: Static<typeof computerExecSchema>, signal, _onUpdate, ctx) => {
           let input: ComputerExecInput | undefined;
           let operationSignal: AbortSignal | undefined;
           let finishToolScope: (() => void) | undefined;
@@ -929,7 +929,15 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               restoreForeground: p.restore_foreground as boolean | undefined,
               timeoutMs: p.timeout_ms as number | undefined,
               waitState: p.wait_state as ComputerExecInput["waitState"],
-              expectedOutcomes: p.expected_outcomes as ComputerExecInput["expectedOutcomes"],
+              expectedOutcomes: p.expected_outcomes?.map(check => {
+                if ((check.kind === "control_present" || check.kind === "control_absent") &&
+                    ![check.control_name, check.automation_id, check.control_type, check.control_runtime_id, check.control_class_name].some(value => value?.trim())) {
+                  throw new Error("验证控件需要指定名称、类型、ID 或类名。桌面输入尚未执行。");
+                }
+                return { kind: check.kind, windowTitleContains: check.window_title_contains, controlName: check.control_name,
+                  automationId: check.automation_id, controlType: check.control_type, controlRuntimeId: check.control_runtime_id,
+                  controlClassName: check.control_class_name, exactName: check.exact_name };
+              }),
               observeAfter: p.observe_after as boolean | undefined,
               captureAfter: p.capture_after as boolean | undefined,
             };
@@ -962,6 +970,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               return imageResult;
             }
             if (action === "find_control" && result.matched === false) return jsonResult("控件查找完成：当前窗口未观察到匹配项", result);
+            if (result.semanticOutcome?.status === "failed") return jsonResult("未达到预期界面状态。请根据检查结果重新观察目标，再决定下一步，避免重复发送已执行的输入。", result);
             return jsonResult(batchActions?.length
               ? `批量桌面动作结果：${result.batch?.steps.filter((step) => step.ok).length ?? 0}/${batchActions.length} 步完成`
               : `桌面动作结果：${String(action)}`, result);

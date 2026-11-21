@@ -56,6 +56,14 @@ async function run(): Promise<void> {
     const marker = { action: "find_control", control_name: "RELEASE_FIXTURE_OK", control_type: "Text", exact_name: true };
     const send = await call({ action: "find_control", control_name: "Send", control_type: "Button" });
     assert(send.matched && send.control.name === "Send");
+    const checked = await call({ action: "inspect_window", expected_outcomes: [
+      { kind: "control_present", control_name: "Send", control_type: "Button", exact_name: true },
+      { kind: "control_absent", control_name: "Sen", control_type: "Button", exact_name: true },
+      { kind: "target_present", window_title_contains: "other fixture title" },
+    ] });
+    assert.deepEqual(checked.semanticOutcome.checks.map((check: { status: string }) => check.status), ["passed", "passed", "failed"]);
+    await call({ action: "invoke_control", control_name: "Send", control_type: "Button",
+      expected_outcomes: [{ kind: "control_present", exact_name: true }] }, "桌面输入尚未执行");
     const missing = await call({ ...marker, timeout_ms: 450 });
     assert.equal(missing.matched, false);
     assert.equal(missing.control, undefined);

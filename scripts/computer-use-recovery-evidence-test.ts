@@ -226,5 +226,28 @@ try {
   assert(builtin.includes("recordComputerUseFailureRecovery(bridge.computerRecovery, input, failure)"));
   assert(assembler.includes("computerRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures }"));
 
+  const dialog = { ...target, handle: "1380398", title: "导入配置" };
+  const input: ComputerExecInput = { windowHandle: dialog.handle, actions: [
+    { action: "key_press", key: "n", modifiers: ["alt"] }, { action: "paste_text", text: "fixture.json" }, { action: "key_press", key: "Enter" },
+  ], expectedOutcomes: [{ kind: "target_closed" }] };
+  const stillOpen: ComputerExecOutput = { action: "batch", batch: { completed: true, settleMs: 120,
+    steps: input.actions!.map((step, index) => ({ action: step.action, index, ok: true })) },
+    observation: { targetBefore: dialog, targetAfter: dialog },
+    semanticOutcome: { status: "failed", checks: [{ kind: "target_closed", status: "failed", evidence: "target still present: 导入配置" }] },
+  };
+  const oldCount = failures.list("task").length;
+  settleComputerUseResultRecovery(bridge, input, stillOpen);
+  assert.equal(failures.list("task").length, oldCount, "a completed batch with a confirmed open dialog is feedback for the Agent");
+  settleComputerUseResultRecovery(bridge, { action: "invoke_control", windowHandle: dialog.handle, expectedOutcomes: input.expectedOutcomes }, {
+    action: "invoke_control", observation: { targetBefore: dialog }, semanticOutcome: { status: "passed",
+      checks: [{ kind: "target_closed", status: "passed", evidence: "original target closed" }] },
+  });
+  assert.equal(failures.list("task").length, oldCount, "a different action can finish the import without leaving a recovery card");
+  settleComputerUseResultRecovery(bridge, input, { ...stillOpen, executionUncertain: true });
+  assert.equal(openFor(input, "computer-delivery-uncertain")?.sideEffects, "unknown");
+  assert.equal(openFor(input, "computer-semantic-verification-failed")?.sideEffects, "unknown");
+  settleComputerUseResultRecovery(bridge, input, { ...stillOpen, observationStatus: "failed" });
+  assert(openFor(input, "computer-post-verification-unavailable"));
+
   console.log(`computer use recovery evidence: PASS (legacy Windows contracts plus ${evidenceChecks} delivery/batch/uncertainty cases, stable provenance, main-session wiring)`);
 } finally { db.close(); }
