@@ -32,6 +32,7 @@ import {
 } from "@/components/chat/ChatMarkdown";
 import { normalizeStandaloneSvgBlocks } from "@/components/common/SvgFencePreview";
 import { splitCanvasDocuments } from "@/lib/canvasDocuments";
+import { pathFromMarkdownHref } from "@/lib/localFilePath";
 import { isRenderableCanvasCode } from "@/components/chat/DetailCard";
 
 // 本测试的 esbuild 命令沿用 classic JSX；生产构建使用自动 JSX runtime。
@@ -96,6 +97,21 @@ console.log("== 1) markstream parser 能力回归（GFM/代码/数学） ==");
   const partial = "| A | B |\n|---|---|\n| 1 |";
   const partialNodes = parseMarkdownToStructure(partial, md);
   assert(Array.isArray(partialNodes), "未闭合表格不崩（流式安全）");
+}
+
+{
+  const md = getMarkdown();
+  for (const [source, expected] of [
+    ["<C:/任务目录/图 1(端子).png>", "C:/任务目录/图 1(端子).png"],
+    ["file:///C:/输出/%E5%9B%BE%201%23.docx", "C:/输出/图 1#.docx"],
+    ["报告/完成100%25-%2520.txt", "报告/完成100%-%20.txt"],
+    ["/tmp/图2.pdf", "/tmp/图2.pdf"],
+  ]) {
+    const [paragraph] = parseMarkdownToStructure(`[打开](${source})`, md);
+    const link = paragraph?.type === "paragraph" && Array.isArray(paragraph.children)
+      ? paragraph.children[0] : undefined;
+    assert(link?.type === "link" && pathFromMarkdownHref(link.href) === expected, `正文链接指向磁盘原名 ${expected}`);
+  }
 }
 
 console.log("== 1-preview) HTML/SVG 预览遵守 Markdown 围栏边界 ==");

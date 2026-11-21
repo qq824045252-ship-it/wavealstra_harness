@@ -198,6 +198,11 @@ async function main(): Promise<void> {
     check("H5b 空文件仍返回 payload", r?.path === "C:/ws/样本.pdf");
     check("H5b loadState error", h.getState("a1") === "error");
     check("H5b cache 有 path", h.getCache("a1")?.path === "C:/ws/样本.pdf");
+    await h.hydration.ensure("a1");
+    check("H5b 再次打开空缓存仍显示读取错误", h.readCalls.length === 2 && h.getState("a1") === "error");
+    h.setRead(async () => ({ content: "recovered" }));
+    const recovered = await h.hydration.ensure("a1");
+    check("H5b 文件恢复后同版本可以打开", recovered?.content === "recovered" && h.getState("a1") === "ready");
   }
   // H6: empty binary 无路径 → error
   {

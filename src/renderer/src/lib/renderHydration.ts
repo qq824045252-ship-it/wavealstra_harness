@@ -65,6 +65,11 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
   /** 并发去重（§7）：同 artifactId 同时请求 → 共用 Promise，finally 清理 */
   const inFlight = new Map<string, Promise<ArtifactRenderPayload | null>>();
 
+  function readyCache(artifactId: string, version: number): ArtifactRenderPayload | undefined {
+    const cached = deps.getCache(artifactId);
+    return cached?.content && cached.artifactVersion === version ? cached : undefined;
+  }
+
   async function hydrateOnce(
     artifactId: string,
     requestedVersion: number,
@@ -86,8 +91,8 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
         return { ok: false, stale: true };
       }
       // 飞行期间并发 ensure 已填入同版本 → 直接用
-      const cached = deps.getCache(artifactId);
-      if (cached && cached.artifactVersion === descriptor.version) {
+      const cached = readyCache(artifactId, descriptor.version);
+      if (cached) {
         deps.setLoadState(artifactId, "ready");
         return { ok: true, payload: cached };
       }
@@ -143,8 +148,8 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
   function ensure(artifactId: string): Promise<ArtifactRenderPayload | null> {
     const descriptor = deps.findDescriptor(artifactId);
     if (!descriptor || isOfficeUseKind(toRendererKind(descriptor))) return Promise.resolve(null);
-    const cached = deps.getCache(artifactId);
-    if (cached && cached.artifactVersion === descriptor.version) {
+    const cached = readyCache(artifactId, descriptor.version);
+    if (cached) {
       deps.setLoadState(artifactId, "ready");
       return Promise.resolve(cached);
     }
@@ -155,8 +160,8 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
           const current = deps.findDescriptor(artifactId);
           if (!current) return null; // removed
-          const currentCache = deps.getCache(artifactId);
-          if (currentCache && currentCache.artifactVersion === current.version) {
+          const currentCache = readyCache(artifactId, current.version);
+          if (currentCache) {
             deps.setLoadState(artifactId, "ready");
             return currentCache;
           }

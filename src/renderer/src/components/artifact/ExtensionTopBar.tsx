@@ -8,7 +8,7 @@ import {
 } from "@/store/appStore";
 import type { Artifact } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
-import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
+import { canNativeDrag, fileTitleDragProps } from "@/lib/nativeFileDrag";
 import {
   IconExpand,
   IconFileBox,
@@ -262,10 +262,7 @@ export default function ExtensionTopBar({
                 tabIndex={0}
                 className={`extension-top-tab ${a.id === activeId ? "active" : ""}${canNativeDrag(a.path) ? " is-draggable" : ""}`}
                 title={canNativeDrag(a.path) ? `${a.path}\n可拖到桌面或其它应用` : a.name}
-                draggable={canNativeDrag(a.path)}
-                onDragStart={(e) => {
-                  if (!startNativeFileDrag(e, a.path)) e.preventDefault();
-                }}
+                {...fileTitleDragProps(a.path)}
                 onClick={() => onOpenTab(a.id)}
                 onKeyDown={(e) => e.key === "Enter" && onOpenTab(a.id)}
               >

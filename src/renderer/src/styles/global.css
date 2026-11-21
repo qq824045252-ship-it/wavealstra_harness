@@ -10295,6 +10295,11 @@ html[data-theme="dark"] .switch.on {
   cursor: grabbing;
 }
 
+.extension-top-tab.is-draggable,
+.extension-file-action-name.is-draggable {
+  user-select: none;
+}
+
 .artifact-chip {
   display: inline-flex;
   align-items: center;
@@ -10667,7 +10672,8 @@ html[data-theme="dark"] .switch.on {
 
 .extension-top-tabs {
   display: flex;
-  align-items: center;
+  align-self: stretch;
+  align-items: stretch;
   gap: 4px;
   min-width: 0;
   flex: 1;
@@ -11136,12 +11142,15 @@ html[data-theme="dark"] .extension-artifact-badge.fail {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding-right: 14px;
   flex-shrink: 0;
 }
 
 .extension-file-action-name {
   flex: 1;
+  align-self: stretch;
+  align-content: center;
+  padding-left: 14px;
   font-size: 13px;
   font-weight: 500;
   overflow: hidden;
@@ -11164,6 +11173,7 @@ html[data-theme="dark"] .extension-artifact-badge.fail {
   display: flex;
   align-items: center;
   gap: 2px;
+  padding-block: 8px;
   flex-shrink: 0;
 }
 

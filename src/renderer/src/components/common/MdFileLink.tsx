@@ -7,7 +7,8 @@
 import { useAppStore, selectActiveTaskArtifacts } from "@/store/appStore";
 import { FileBadge } from "./FileBadge";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
-import { looksLikeLocalFilePath } from "@/lib/localFilePath";
+import { fileNameFromPath, looksLikeLocalFilePath, pathFromMarkdownHref } from "@/lib/localFilePath";
+import { normalizeComparePath } from "@/lib/workspace";
 import { isAnchorHref, isBareOpenDesignDaemonUrl, isExternalHref } from "@/lib/markdownDoc";
 import type { Artifact } from "@/types";
 
@@ -17,20 +18,6 @@ function isFileLikeHref(href: string): boolean {
   // file:// 也按本地文件处理（basename 命中产物 → 右侧预览）
   if (/^file:/i.test(href)) return true;
   return /\.[a-z0-9]{1,6}$/i.test(href) || href.includes("/") || href.includes("\\");
-}
-
-function basenameFromHref(href: string): string {
-  const stripped = href.replace(/^file:\/\//i, "").replace(/^\/([A-Za-z]:)/, "$1");
-  try {
-    if (/^https?:\/\//i.test(href)) {
-      const u = new URL(href);
-      const last = u.pathname.split("/").filter(Boolean).pop();
-      if (last) return decodeURIComponent(last);
-    }
-  } catch {
-    /* ignore */
-  }
-  return stripped.split(/[/\\]/).pop() ?? href;
 }
 
 /** 优先找 HTML 设计稿产物（OpenDesign 裸根链接的正确落点）。 */
@@ -68,27 +55,26 @@ export function MdFileLink({
   const artifacts = useAppStore(selectActiveTaskArtifacts);
   const openArtifact = useAppStore((s) => s.openArtifact);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
-  const path = href ?? "";
-  const name = basenameFromHref(path);
-  const artifact = artifacts.find((a) => a.name === name || path.endsWith(a.name));
+  const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
+  const destination = href ?? "";
 
-  if (!isFileLikeHref(path)) {
-    if (isAnchorHref(path)) {
+  if (!isFileLikeHref(destination)) {
+    if (isAnchorHref(destination)) {
       // 文档内锚点：保持默认行为（组件外层容器拦截处理滚动）
       return (
-        <a href={path} className="md-link md-anchor">
+        <a href={destination} className="md-link md-anchor">
           {children}
         </a>
       );
     }
-    if (isExternalHref(path)) {
+    if (isExternalHref(destination)) {
       return (
         <a
-          href={path}
+          href={destination}
           className="md-link"
           onClick={(e) => {
             e.preventDefault();
-            openHttpLink(path, { artifacts, openArtifact });
+            openHttpLink(destination, { artifacts, openArtifact });
           }}
         >
           {children}
@@ -102,7 +88,17 @@ export function MdFileLink({
     );
   }
 
-  const dragPath = artifact?.path || (looksLikeLocalFilePath(path) ? path : "");
+  const path = pathFromMarkdownHref(destination);
+  if (!path) return <span title={destination}>{children ?? destination}</span>;
+  const name = fileNameFromPath(path);
+  const absolute = looksLikeLocalFilePath(path);
+  const relative = !/^(?:[a-z][\w+.-]*:|[\\/])/i.test(path);
+  const normalized = normalizeComparePath(path);
+  const artifact = absolute
+    ? artifacts.find((a) => a.path && normalizeComparePath(a.path) === normalized)
+      ?? artifacts.find((a) => !a.path && a.name === name)
+    : artifacts.find((a) => a.name === name && (!relative || !/[/\\]/.test(path) || !a.path));
+  const dragPath = artifact?.path || (absolute ? path : "");
   const dragEnabled = canNativeDrag(dragPath);
 
   // 本地文件类链接（含 .html / file://）：命中产物则右侧预览，不送系统浏览器
@@ -117,7 +113,8 @@ export function MdFileLink({
       }}
       onClick={() => {
         if (artifact) openArtifact(artifact.id);
-        else if (looksLikeLocalFilePath(path)) void openLocalAbsoluteFile(path);
+        else if (absolute) void openLocalAbsoluteFile(path);
+        else if (relative) void openWorkspaceFile(path, name);
       }}
     >
       <FileBadge name={name} size={14} />

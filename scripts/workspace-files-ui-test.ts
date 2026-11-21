@@ -68,7 +68,7 @@ check("概览产物行用 div 拖动", rail.includes('role="button"') && rail.in
 const md = read("src/renderer/src/components/common/Markdown.tsx");
 check("对话绝对路径可拖", md.includes("LocalFileChip") && md.includes("looksLikeLocalFilePath"));
 const bar = read("src/renderer/src/components/artifact/FileActionBar.tsx");
-check("文件栏文件名可拖", bar.includes("startNativeFileDrag"));
+check("文件栏文件名可拖", bar.includes("fileTitleDragProps"));
 
 const taskItem = read("src/renderer/src/components/sidebar/TaskItem.tsx");
 check("侧栏任务支持右键菜单", taskItem.includes("onContextMenu") && taskItem.includes("setMenuOpen(true)"));

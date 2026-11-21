@@ -11,7 +11,7 @@ import {
   revealArtifactInFolder,
   scrollArtifactBodyToOffset,
 } from "@/lib/artifactActions";
-import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
+import { canNativeDrag, fileTitleDragProps } from "@/lib/nativeFileDrag";
 import {
   IconArrowUpRight,
   IconCheck,
@@ -202,10 +202,7 @@ export default function FileActionBar({ artifact }: Props): React.JSX.Element {
               ? `${artifact.path}\n可拖到桌面或其它应用`
               : artifact.path || artifact.name
           }
-          draggable={dragEnabled}
-          onDragStart={(e) => {
-            if (!startNativeFileDrag(e, artifact.path)) e.preventDefault();
-          }}
+          {...fileTitleDragProps(artifact.path)}
         >
           {artifact.name}
         </span>

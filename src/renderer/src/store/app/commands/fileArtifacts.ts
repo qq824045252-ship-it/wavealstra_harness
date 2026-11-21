@@ -4,11 +4,7 @@ import { buildRegistration } from "../../../lib/artifactIngest";
 import { fileUrlForAbsolutePath } from "../../../lib/browserLinks";
 import { fileNameFromPath, parentDir } from "../../../lib/localFilePath";
 import { adaptivePanelWidth } from "../../../lib/panelWidth";
-import {
-  inferArtifactKind,
-  languageFromName,
-  normalizeComparePath,
-} from "../../../lib/workspace";
+import { languageFromName, normalizeComparePath } from "../../../lib/workspace";
 import type { AppActions } from "../actions";
 import { guessCanvasArtifactName } from "../artifacts/artifactName";
 import type { AppContext } from "../context";
@@ -28,6 +24,17 @@ export function createFileArtifactsActions(
   | "ensureCanvasArtifact"
 > {
   const { get, set } = storeContext;
+  async function readFileForPreview(taskId: string, root: string, relativePath: string) {
+    try {
+      return await storeContext.getApi()?.readWorkspaceFile(root, relativePath);
+    } catch (err) {
+      if (get().activeTaskId === taskId) {
+        const detail = err instanceof Error ? err.message : String(err);
+        window.alert(`无法打开文件「${fileNameFromPath(relativePath)}」\n${detail}`);
+      }
+      return null;
+    }
+  }
   return {
     openLocalFile: async () => {
       const file = await storeContext.getApi()?.pickLocalFile?.(true);
@@ -105,10 +112,8 @@ export function createFileArtifactsActions(
       if (!root) return;
       const taskId = state.activeTaskId;
       if (!taskId) return;
-      const file = await storeContext
-        .getApi()
-        ?.readWorkspaceFile(root, relativePath);
-      if (!file) return;
+      const file = await readFileForPreview(taskId, root, relativePath);
+      if (!file || get().activeTaskId !== taskId) return;
       const kind = file.kind;
       const language =
         file.language ?? (kind === "code" ? languageFromName(name) : undefined);
@@ -143,7 +148,7 @@ export function createFileArtifactsActions(
           console.error("[openWorkspaceFile] register 失败:", err);
           return;
         }
-        if (!descriptor) return;
+        if (!descriptor || get().activeTaskId !== taskId) return;
         artifactId = descriptor.id;
         // 内容已在手（同流程读盘）→ 直接 version 绑定入缓存（hotfix §5.2）
         get().cacheArtifactRender(artifactId, {
@@ -201,26 +206,10 @@ export function createFileArtifactsActions(
         return;
       }
       const parent = parentDir(path);
-      let file: {
-        name: string;
-        kind: import("../../../types").ArtifactKind;
-        content: string;
-        language?: string;
-        path: string;
-      } | null = null;
-      try {
-        file =
-          (await storeContext.getApi()?.readWorkspaceFile(parent, name)) ??
-          null;
-      } catch (err) {
-        console.warn("[openLocalAbsoluteFile] read failed", path, err);
-      }
-      const kind = file?.kind ?? inferArtifactKind(name, file?.content ?? "");
-      const language =
-        file?.language ??
-        (kind === "code" ? languageFromName(name) : undefined);
-      const content = file?.content ?? "";
-      const resolvedPath = file?.path || path;
+      const file = await readFileForPreview(taskId, parent, name);
+      if (!file || get().activeTaskId !== taskId) return;
+      const { kind, content, path: resolvedPath } = file;
+      const language = file.language ?? (kind === "code" ? languageFromName(name) : undefined);
       let descriptor: ArtifactDescriptor | null = null;
       try {
         descriptor =
@@ -228,7 +217,7 @@ export function createFileArtifactsActions(
             buildRegistration(taskId, {
               name,
               kind,
-              content: content || " ",
+              content,
               language,
               path: resolvedPath,
               workspaceRoot: parent,
@@ -238,7 +227,7 @@ export function createFileArtifactsActions(
         console.error("[openLocalAbsoluteFile] register 失败:", err);
         return;
       }
-      if (!descriptor) return;
+      if (!descriptor || get().activeTaskId !== taskId) return;
       get().cacheArtifactRender(descriptor.id, {
         name,
         kind,

@@ -52,7 +52,7 @@ export function createArtifactPreviewActions(
       const cached = get().artifactRenderCache[id];
       if (
         descriptor &&
-        (!cached || cached.artifactVersion !== descriptor.version)
+        (!cached?.content || cached.artifactVersion !== descriptor.version)
       ) {
         void getRenderHydration(storeContext).ensure(id);
       }
