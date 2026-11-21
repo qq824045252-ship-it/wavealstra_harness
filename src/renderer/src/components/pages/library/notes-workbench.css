@@ -286,7 +286,7 @@
 .notes-desktop-folders .notes-desktop-create { font-weight: 600; color: var(--accent); }
 .notes-desktop-folders .notes-desktop-trash { margin-top: 7px; }
 .notes-desktop-folders .notes-tree-heading { padding-block: 7px 2px; }
-.notes-desktop-folders .notes-tree-row { min-height: 32px; }
+.notes-desktop-folders .notes-tree-row { position: relative; left: -4px; min-height: 32px; }
 .notes-desktop-folders .notes-tree-row[data-selected="true"] { background: var(--notes-selected); }
 .notes-desktop-folders :is(.notes-tree-label, .notes-caret, .notes-folder-actions button, .notes-menu button, .notes-menu summary) {
   min-height: 26px;
