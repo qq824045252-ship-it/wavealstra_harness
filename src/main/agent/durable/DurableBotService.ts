@@ -9,9 +9,8 @@ import { createHash } from "node:crypto";
 import { existsSync, statSync, readFileSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, extname, resolve, dirname } from "node:path";
-import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
-import { loadQuickJSWasm } from "@earendil-works/pi-codemode";
+import { durableSandboxAssets, type NativeHookStore } from "../hooks/NativeHookStore";
 import { McpOAuthCredentialStore, SessionManager, convertToLlm, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentDeleteUserMessageRequest, AgentRegenerateRequest, AgentRegenerateResult, AgentPromptRequest, AgentPromptResult, AgentSubmissionReceipt, AgentUiPatch, TaskDto, TaskHistoryDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
@@ -43,6 +42,7 @@ import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
 import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
 import { stopDurableSubagentsForTask } from "./DurableSubagents";
+import { readDurableSteerReceipts } from "./DurableSteerReceipts";
 import { durableContentText } from "./DurableHistoryProjection";
 import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
@@ -96,6 +96,10 @@ export interface DurableBotServiceOptions {
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
   answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask" | "clearPreparedTurns">;
+  nativeHooks?: NativeHookStore;
+  nativeImprovement?: import("../hooks/NativeImprovementService").NativeImprovementService;
+  improvementSkillAllowed?: (taskId: string, name: string) => boolean;
+  readHints?: import("../hooks/ReadRecoveryHints").ReadRecoveryHints;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
   mcpSelection?: (task: TaskDto) => readonly string[];
   toolAllowed?: (task: TaskDto, name: string) => boolean;
@@ -221,6 +225,11 @@ export class DurableBotService {
     if (!open || open.closing) return null;
     return open.mcp.contextFacts();
   }
+  async subagentSteerReceipts(taskId: string, childId: string) {
+    const binding = this.binding(taskId);
+    return binding ? await readDurableSteerReceipts(binding.directory, childId) : [];
+  }
+
   private binding(taskId: string): BotBinding | undefined {
     return this.options.db.connection.prepare("SELECT * FROM durable_bot_bindings WHERE task_id = ?").get(taskId) as BotBinding | undefined;
   }
@@ -439,9 +448,6 @@ export class DurableBotService {
       let domain: DurableDomainTools | undefined;
       try { domain = await this.options.tools?.(task, cwd, mcp); }
       catch (error) { throw new DurableToolAssemblyError(error); }
-      const base = this.options.assetsDir?.replace(/([\\/])app\.asar(?=[\\/])/, "$1app.asar.unpacked");
-      const wasm = base && join(base, "quickjs.wasm");
-      const worker = base && join(base, "codemode-worker.cjs");
       const initialHistory = async () => {
         const legacy = task.sessionFile ? SessionManager.open(task.sessionFile, undefined, cwd) : undefined;
         return legacy ? {
@@ -463,6 +469,13 @@ export class DurableBotService {
       );
       const routing = this.options.answerRouting;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
+        nativeHooks: this.options.nativeHooks && { store: this.options.nativeHooks, readHints: this.options.readHints, cwd, directory,
+          improvement: this.options.nativeImprovement, skillAllowed: name => toolGate.allowed("read") && Boolean(this.options.improvementSkillAllowed?.(taskId, name)),
+          toolAllowed: name => toolGate.allowed(name), scope: () => {
+          const current = db.getTask(taskId);
+          if (!current) throw new Error("Hook 所属任务已不可用");
+          return { taskId, projectId: current.projectId, spaceId: current.spaceId };
+        } },
         answerRouting: routing && {
           enabled: () => routing.hasRulesForTask(taskId),
           prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd,
@@ -519,7 +532,7 @@ export class DurableBotService {
               .run(taskId, fresh.at(-1)!.entryId);
           })();
         },
-        ...(wasm && worker && existsSync(wasm) && existsSync(worker) ? { assets: { wasm: loadQuickJSWasm(wasm), workerUrl: pathToFileURL(worker) } } : {}),
+        assets: durableSandboxAssets(this.options.assetsDir),
         instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
         onSnapshot: snapshot => {
           this.workMetrics.project(taskId, snapshot);

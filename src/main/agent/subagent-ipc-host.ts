@@ -17,7 +17,8 @@ export interface SubagentIpcBackend {
   /** taskId 是唯一作用域：缺省或不匹配时必须返回空表，绝不做跨任务并集。 */
   active: (taskId: string) => unknown;
   transcript: (subagentId: string) => unknown;
-  steer: (subagentId: string, instruction: string) => unknown | Promise<unknown>;
+  steer: (subagentId: string, instruction: string, taskId: string, requestId: string) => unknown | Promise<unknown>;
+  steerReceipts?: (taskId: string, subagentId: string) => unknown | Promise<unknown>;
   cancel: (subagentId: string) => unknown | Promise<unknown>;
 }
 
@@ -27,12 +28,13 @@ export interface SubagentIpcHostSlot {
 }
 
 const EMPTY_TRANSCRIPT = { record: null, entries: [] as unknown[], ended: true };
-const NOT_READY = { ok: false, delivered: "queued" as const, message: "subagent 扩展尚未就绪" };
+const NOT_READY = { ok: false, reason: "not_ready", message: "subagent 扩展尚未就绪" };
 
 const HOSTED_CHANNELS = new Set<string>([
   SubagentIpc.active,
   SubagentIpc.transcript,
   SubagentIpc.steer,
+  SubagentIpc.steerReceipts,
   SubagentIpc.cancel,
 ]);
 
@@ -90,20 +92,29 @@ export function handleSubagentTranscript(subagentId: unknown): unknown {
   }
 }
 
-export async function handleSubagentSteer(subagentId: unknown, instruction: unknown): Promise<unknown> {
+export async function handleSubagentSteer(subagentId: unknown, instruction: unknown, taskId?: unknown, key?: unknown): Promise<unknown> {
+  const requestId = typeof key === "string" ? key : "";
   try {
     const id = typeof subagentId === "string" ? subagentId : "";
     const text = typeof instruction === "string" ? instruction : "";
-    if (backend) return await backend.steer(id, text);
-    const adoptedResult = invokeAdopted(SubagentIpc.steer, id, text);
-    return adoptedResult === undefined ? NOT_READY : await adoptedResult;
+    const scope = normalizeTaskScope(taskId);
+    if (backend) return await backend.steer(id, text, scope, requestId);
+    const adoptedResult = invokeAdopted(SubagentIpc.steer, id, text, scope, requestId);
+    return adoptedResult === undefined ? { ...NOT_READY, requestId } : await adoptedResult;
   } catch (err) {
     return {
       ok: false,
-      delivered: "queued",
+      requestId,
+      reason: "receipt_unknown",
       message: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+export async function handleSubagentSteerReceipts(taskId: unknown, subagentId: unknown): Promise<unknown> {
+  const scope = normalizeTaskScope(taskId);
+  if (!scope || typeof subagentId !== "string" || !subagentId) return [];
+  return await backend?.steerReceipts?.(scope, subagentId) ?? [];
 }
 
 export async function handleSubagentCancel(subagentId: unknown): Promise<unknown> {
@@ -150,8 +161,11 @@ export function registerSubagentIpcHost(ipcMain: {
   ipcMain.handle(SubagentIpc.transcript, (_e: unknown, subagentId: unknown) =>
     handleSubagentTranscript(subagentId),
   );
-  ipcMain.handle(SubagentIpc.steer, (_e: unknown, subagentId: unknown, instruction: unknown) =>
-    handleSubagentSteer(subagentId, instruction),
+  ipcMain.handle(SubagentIpc.steer, (_e: unknown, subagentId: unknown, instruction: unknown, taskId: unknown, requestId: unknown) =>
+    handleSubagentSteer(subagentId, instruction, taskId, requestId),
+  );
+  ipcMain.handle(SubagentIpc.steerReceipts, (_e: unknown, taskId: unknown, subagentId: unknown) =>
+    handleSubagentSteerReceipts(taskId, subagentId),
   );
   ipcMain.handle(SubagentIpc.cancel, (_e: unknown, subagentId: unknown) =>
     handleSubagentCancel(subagentId),

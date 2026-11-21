@@ -359,10 +359,13 @@ export const SubagentIpc = {
   /** 运行中实例的实时 transcript（scope 校验；已结束 → ended:true） */
   transcript: "subagent:transcript",
   steer: "subagent:steer",
+  steerReceipts: "subagent:steer-receipts",
   cancel: "subagent:cancel",
   /** main → renderer：active 实例变化（临时 Chat 订阅刷新） */
   event: "subagent:event",
 } as const;
+
+export type SubagentStopRequestSource = "child-panel" | "task-stop" | "model-scope-change" | "deadline";
 
 /** 渲染层 Subagent 列表项（与扩展 toSummaryDto 输出结构一致） */
 export interface SubagentSummaryDto {
@@ -416,11 +419,7 @@ export interface SubagentTranscriptDto {
   ended: boolean;
 }
 
-export interface SubagentSteerResultDto {
-  ok: boolean;
-  delivered: "rpc-steer" | "prompt" | "queued" | "spawned";
-  message: string;
-}
+export type { SubagentSteerReceipt, SubagentSteerResultDto } from "./subagent-steer";
 
 /**
  * HTML 产物预览宿主（WebContentsView 承载，内容经 mybuddy-artifact:// 协议投递）。

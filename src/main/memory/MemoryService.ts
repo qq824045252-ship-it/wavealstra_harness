@@ -18,7 +18,8 @@ import {
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
 import { botMemorySource, botMemoryTextEligible, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { ObservationSource } from "../../shared/native-improvement";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AppDatabase } from "../db/AppDatabase";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
@@ -111,6 +112,64 @@ export class MemoryService {
   }
 
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
+
+  /** Host-only backing record for a verified Durable incident. The weekly release controls exposure. */
+  stageWeeklyObservationMemory(scope: { kind: "task" | "project" | "workspace"; id: string }, observation: ObservationSource): MemoryRecordDto {
+    const reference = JSON.stringify([observation.taskId, observation.conversationId, observation.entry]);
+    if (!observation.conversationId || !Number.isSafeInteger(observation.entry) || observation.entry < 1
+      || !Number.isFinite(observation.at) || observation.at <= 0
+      || !this.canPromoteFromTask(observation.taskId, scope.kind, scope.id)) {
+      throw new Error("周改进的原生证据或记忆作用域无效");
+    }
+    const id = "mem_weekly_" + createHash("sha256").update(JSON.stringify([reference, scope.kind, scope.id])).digest("hex");
+    const request = { taskId: observation.taskId };
+    return this.db.connection.transaction(() => {
+      const existing = this.repository.get(id);
+      if (existing) {
+        const live = this.getWeeklyObservationMemory(id, request);
+        if (!live) throw new Error("周改进的原生记忆已撤销或不再可用");
+        return live;
+      }
+      const title = "曾遗漏明确的交付要求";
+      const content = "该任务的用户曾指出先前明确的交付要求被遗漏。";
+      const filter = this.forgetWatermarks.sourceFilter(this.resolveScopeChain(request));
+      if (filter(id, "", observation.at).userText !== id
+        || filter(`${title}\n${content}`, "", observation.at).userText !== `${title}\n${content}`) {
+        throw new Error("周改进证据已被遗忘");
+      }
+      const record = this.buildRecord({
+        kind: "fact", status: "resolved", title, content,
+        scopeType: scope.kind, scopeId: scope.id, sourceType: "event",
+        sourceId: reference, sourceTaskId: observation.taskId,
+        metadata: { weeklyObservationAt: observation.at },
+        evidence: [{ evidenceKind: "message", refId: reference }],
+      }, observation.at);
+      return this.repository.insert({
+        ...record,
+        id,
+        scopes: record.scopes.map(binding => ({ ...binding, memoryId: id })),
+        evidence: record.evidence.map(evidence => ({ ...evidence, memoryId: id })),
+      });
+    }).immediate();
+  }
+
+  getWeeklyObservationMemory(id: string, request: Pick<MemorySearchRequest, "taskId">): MemoryRecordDto | undefined {
+    if (!id.startsWith("mem_weekly_") || !request.taskId) return;
+    const memory = this.repository.get(id);
+    if (!memory || memory.status !== "resolved" || memory.sourceType !== "event" || !memory.sourceTaskId) return;
+    if (memory.scopes.length !== 1) return;
+    const [scope] = memory.scopes;
+    if (!this.canPromoteFromTask(request.taskId, scope.scopeType, scope.scopeId)
+      || !this.canPromoteFromTask(memory.sourceTaskId, scope.scopeType, scope.scopeId)) return;
+    const at = memory.metadata.weeklyObservationAt;
+    if (typeof at !== "number" || !Number.isFinite(at)) return;
+    const scopes = this.resolveScopeChain(request);
+    const sourceScopes = memory.sourceTaskId === request.taskId ? [] : this.resolveScopeChain({ taskId: memory.sourceTaskId });
+    const filter = this.forgetWatermarks.sourceFilter([...scopes, ...sourceScopes]);
+    const text = `${memory.title}\n${memory.content}`;
+    if (filter(id, "", at).userText !== id || filter(text, "", at).userText !== text) return;
+    return this.forgetWatermarks.projectEvidence(memory, scopes);
+  }
 
   /** Model-facing read; raw get stays available to audit and mutation internals. */
   getForRecall(id: string, request: MemorySearchRequest): MemoryRecordDto | undefined {
@@ -446,6 +505,7 @@ export class MemoryService {
     if (current) this.assertRecordWritable(current);
     this.db.connection.transaction(() => {
       if (current) this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), current.scopes);
+      if (current?.id.startsWith("mem_weekly_")) this.forgetWatermarks.withdraw(current.scopes, [current.id]);
       this.repository.hardDelete(id);
       if (current) {
         this.invalidateProjectionScopes(current.scopes);
@@ -482,6 +542,7 @@ export class MemoryService {
 
     const forgotten = this.db.connection.transaction(() => {
       this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), [target], source);
+      if (current.id.startsWith("mem_weekly_")) this.forgetWatermarks.withdraw([target], [current.id], source?.createdAt, source?.messageId);
       this.repository.removeScope(id, scopeType, scopeId);
       const remaining = this.repository.get(id)?.scopes ?? [];
       if (remaining.length === 0) {
@@ -1126,6 +1187,7 @@ export class MemoryService {
   private workMemoryScope(taskId: string) { return resolveWorkMemoryScope(this.db, taskId); }
 
   private visibleInChain(memory: MemoryRecordDto, chain: Array<{ scopeType: MemoryScopeType; scopeId?: string }>, request: MemorySearchRequest): boolean {
+    if (memory.id.startsWith("mem_weekly_")) return false;
     const legacyBoundary = botMemoryAutomaticBoundary(this.db, memory);
     if (legacyBoundary) return chain.some(scope => scope.scopeType === legacyBoundary.scopeType && scope.scopeId === legacyBoundary.scopeId);
     const assistantContext = Boolean(request.botId || request.teamId || request.conversationId || request.workId

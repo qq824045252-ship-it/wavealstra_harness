@@ -5,6 +5,7 @@ import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type Pro
 import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
 import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
 import { withDurableToolCoordination } from "./DurableToolCoordination";
+import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
@@ -36,6 +37,7 @@ import { durableStorageOwnerState } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { activityTimeOrUndefined, latestActivityTime } from "../../../../shared/src/activity-time";
 import { withDurableImageRead } from "./DurableImages";
+import { withMissingFileRecovery } from "./DurableMissingFile";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
@@ -109,6 +111,7 @@ export interface DurableBotOptions {
   initialHistory?: { messages: readonly Message[]; context: readonly Message[] } | (() => Promise<{ messages: readonly Message[]; context: readonly Message[] } | undefined>);
   initialBranch?: DurableBranchSeed;
   toolHooks?: Partial<ToolHooks>;
+  nativeHooks?: DurableHookBinding;
   foregroundHooks?: DurableDomainTools["foregroundHooks"];
   toolAllowed?: (name: string) => boolean;
   readonlyShell?: () => boolean;
@@ -1465,7 +1468,7 @@ export class DurableBotRuntime {
  */
 function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegistration[] {
   return [
-    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withDurableImageRead(tool) : withDurableArtifactRegistration(tool, directory)),
+    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withMissingFileRecovery(withDurableImageRead(tool)) : withDurableArtifactRegistration(tool, directory)),
     ...createPlatformShellTools(),
     createDurableArtifactRegistrationTool(directory),
   ].map(tool => withWindowsBashWorkspacePath(tool)).map(withShellTerminalGuidance);
@@ -1575,6 +1578,7 @@ function botExtension(
 ) {
   const childConversation = async (api: Pick<HookApi, "snapshot" | "conversationId">, context: Parameters<ToolRegistration["execute"]>[2]) =>
     Boolean((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value || (await api.snapshot(DurableConsultIdentity, api.conversationId, context))?.key);
+  const managed = options.nativeHooks && new DurableNativeHooks(options.nativeHooks, storage);
   // 工具任务是独立的 ToolTask（toolTaskId），触发它的却是一次 generation。
   // 只按 toolTaskId 记诊断会让每个工具单独成「一轮」；这里记录每个会话最近一次
   // generation，并在工具开始时固化到 toolTaskId，供执行诊断把工具挂回模型轮次。
@@ -1627,13 +1631,14 @@ function botExtension(
           diagnostics: durableToolDiagnosticMessages(observed),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }
-      return changed;
+      return await managed?.afterTool(call, observed, api, context) ?? changed;
     },
   };
-  return defineExtension({ name: "mybuddy.bot", tasks: [], tools: [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args) => {
+  const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args) => {
     if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
     options.beforeToolExecution?.(name, args);
-  })),
+  }));
+  return defineExtension({ name: "mybuddy.bot", tasks: [], tools: managed ? tools.map(tool => managed.wrap(tool)) : tools,
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);
@@ -1660,6 +1665,9 @@ function botExtension(
       if (context.abortSignal) guards?.set(context.abortSignal, messages => validate(messages));
       try {
         const child = await childConversation(api, context);
+        const hookNote = await managed?.beforeRequest(messages, api, context);
+        const requestWithHook = (projected: readonly Message[]) => hookNote
+          ? [...projected, { role: "user" as const, content: hookNote, timestamp: 0 }] : projected;
         rememberGeneration(String(api.conversationId), api.taskId);
         try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
@@ -1667,9 +1675,8 @@ function botExtension(
           // 子代理/会诊是独立 conversation：用各自的协调器投影，绝不套用主会话的 refs。
           validate = () => {};
           const childManager = await getContextManager?.(api.conversationId, context);
-          if (!childManager) return;
-          const projected = await childManager.beforeRequest(messages, api, context);
-          return projected ? { messages: projected.messages } : undefined;
+          const projected = await childManager?.beforeRequest(messages, api, context);
+          return projected || hookNote ? { messages: requestWithHook(projected?.messages ?? messages) } : undefined;
         }
         const ledger = await evidence?.();
         if (options.evidenceProjection && !ledger) throw new Error("任务的证据校验服务未就绪");
@@ -1716,12 +1723,13 @@ function botExtension(
           }
           if (route && !recorded) { route.record(); recorded = true; }
         };
-        return changed ? { messages } : undefined;
+        return changed || hookNote ? { messages: requestWithHook(messages) } : undefined;
       } catch (error) {
         validate = () => { throw error; };
         throw error;
       }
     }, beforeProviderRequest: async (request, api, context) => {
+      await managed?.beforeProviderRequest(api, context);
       const child = await childConversation(api, context);
       identifyModelInvocation({ taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
         executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), generationTaskId: api.taskId,
@@ -1730,6 +1738,7 @@ function botExtension(
       if (options.foregroundHooks && !await childConversation(api, context)) {
         await options.foregroundHooks.afterResponse(message, api, context);
       }
+      await managed?.beforeFinish(message, api, context);
       const observed=context.abortSignal?modelUsageEvidence.get(options.models)?.get(context.abortSignal):undefined;
       const raw=observed?{...observed}:emptyUsageEvidence();
       try { options.onResponse?.(message, { conversationId: String(api.conversationId), generationTaskId: api.taskId,
@@ -1741,6 +1750,8 @@ function botExtension(
         : []);
       for (const code of codes) await prewarmCodeMode?.(code, context, api.conversationId);
     }, onYield: async (answer, api, context) => {
+      const note = managed?.continuation(answer);
+      if (note) return { continue: note };
       if (options.foregroundHooks && !await childConversation(api, context)) return options.foregroundHooks.onYield(answer, api, context);
     }, afterRun: async (run, api, context) => {
       if (!options.onEntries || !await childConversation(api, context)) return undefined;

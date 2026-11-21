@@ -23,6 +23,8 @@ import "./agent-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { AnswerRoutingIpc } from "../shared/answer-routing";
+import { NativeHooksIpc } from "../shared/native-hooks";
+import { NativeImprovementIpc } from "../shared/native-improvement";
 import { MaterialRetrievalIpc } from "../shared/materialRetrieval";
 import { getMaterialRetrievalSettings, resolveMaterialRetrievalScope, setMaterialRetrievalScope, setMaterialRetrievalSettings } from "./library/MaterialRetrievalSettings";
 import { ProjectNotesService } from "./project/ProjectNotesService";
@@ -2321,6 +2323,15 @@ function registerIpc(): void {
   ipcMain.handle(MemoryIpc.coreProfiles, (_e, limit?: number) => agentService.kernelMemoryCoreProfiles(limit));
   ipcMain.handle(MemoryIpc.skillCandidates, (_e, status?: import("../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) => agentService.kernelMemorySkillCandidates(status, limit));
   ipcMain.handle(AnswerRoutingIpc.list, () => agentService.answerRouting.list());
+  ipcMain.handle(NativeHooksIpc.list, () => agentService.nativeHooks.list());
+  ipcMain.handle(NativeImprovementIpc.report, () => agentService.nativeImprovement.report());
+  ipcMain.handle(NativeImprovementIpc.child, (_e, task, conversation) => agentService.nativeImprovement.child(task,conversation));
+  ipcMain.handle(NativeImprovementIpc.review, () => agentService.nativeImprovement.review());
+  ipcMain.handle(NativeImprovementIpc.source, (_e, key, task, conversation, entry) => agentService.nativeImprovement.source(key,task,conversation,entry));
+  ipcMain.handle(NativeImprovementIpc.disable, (_e, key, generation) => agentService.nativeImprovement.disable(key, generation));
+  ipcMain.handle(NativeHooksIpc.publish, (_e, draft, base) => agentService.nativeHooks.publish(draft, base));
+  ipcMain.handle(NativeHooksIpc.activate, (_e, id, generation, revision, enabled) => agentService.nativeHooks.activate(id, generation, revision, enabled));
+  ipcMain.handle(NativeHooksIpc.receipts, (_e, id) => agentService.nativeHooks.receipts(id));
   ipcMain.handle(MaterialRetrievalIpc.getSettings, () => getMaterialRetrievalSettings(db));
   ipcMain.handle(MaterialRetrievalIpc.setSettings, async (event, patch) => {
     requireMaterialRetrievalWindow(event);
@@ -3513,6 +3524,7 @@ app.whenReady().then(async () => {
         dedupeKey: `automation:${summary.jobId}:run:${summary.runId}:terminal`,
       });
     },
+    agentService.nativeImprovement,
   );
   // 外部输入适配器（首个：IM/Gateway 投递指令 `@项目 <名>：内容` → 项目事件；fail-open）
   gatewayService = new GatewayService(db, agentService, (msg) => {

@@ -21,9 +21,15 @@ export function createDurableCodeMode(
     await prepareTools?.(args.code, context);
     const sandbox = new CodemodeSandbox(assets);
     const presentations = new Map<string, JsonObject>();
+    const fileOperations: JsonObject[] = [];
+    let order = 0;
     const proxy = new Proxy(api, { get(target, key) {
       if (key === "executeTool") return async (...input: Parameters<typeof api.executeTool>) => {
+        const [tool, args] = input;
+        const start = ++order;
         const result = await target.executeTool(...input);
+        if ((tool === "read" || tool === "write" || tool === "edit") && args && typeof args === "object" && "path" in args && typeof args.path === "string")
+          fileOperations.push({ tool, path: args.path, start, finish: ++order, isError: Boolean(result.isError) });
         const [name, , , callOptions] = input;
         const capabilityResult = capabilityResultFromDetails(name, result.details);
         const webSearch = searchReportFromDetails(result.details);
@@ -39,6 +45,8 @@ export function createDurableCodeMode(
     } });
     try {
       let result = await createCodemodeTool({ sandbox, models: false }).execute({ code: args.code }, proxy, context);
+      if (fileOperations.length && result.details && typeof result.details === "object" && !Array.isArray(result.details))
+        result = { ...result, details: { ...result.details, fileOperations } };
       if (presentations.size && result.details && typeof result.details === "object" && !Array.isArray(result.details)
         && Array.isArray(result.details.calls)) {
         result = { ...result, details: { ...result.details, calls: result.details.calls.map(call => {

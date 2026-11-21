@@ -30,7 +30,7 @@ import { resolveBotModel } from "./durable/BotModelCatalog";
 import { createAgentSettingsManager } from "../agent-shell-settings";
 import { resolveTaskMemoryScope } from "./MemoryContextProjection";
 import { durableDomainTools } from "./durable/DurableDomainTools";
-import { createDurableReadOnlyTools, createDurableSubagentTools, durableSubagentIpcBackend, stopDurableSubagentsForModelScopeChange } from "./durable/DurableSubagents";
+import { createDurableReadOnlyTools, createDurableSubagentTools, createDurableSubagentIpcBackend, stopDurableSubagentsForModelScopeChange } from "./durable/DurableSubagents";
 import { guardSubagentWriteCall } from "../capabilities/subagent/write-conflict";
 import { openDurableAuxiliary, type DurableAuxiliaryBinding } from "./durable/DurableAuxiliaryRuntime";
 import { DurableSkillProjection, durableInputAuditSchema, type DurableInputAudit } from "./durable/DurableSkillProjection";
@@ -156,6 +156,10 @@ import type { PromptRunState } from "./PromptRunRegistry";
 import { PromptExecutionCoordinator } from "./PromptExecutionCoordinator";
 import { PromptSubmissionCoordinator } from "./PromptSubmissionCoordinator";
 import { AnswerRoutingService, answerTeachingSchema } from "./AnswerRoutingService";
+import { NativeHookStore, durableSandboxAssets } from "./hooks/NativeHookStore";
+import { NativeImprovementService } from "./hooks/NativeImprovementService";
+import { ImprovementKnowledge } from "./hooks/ImprovementKnowledge";
+import { reflectionPrompt } from "./hooks/ImprovementReflection";
 import { reviewAnswerRuleMemories } from "./AnswerRuleMemoryReview";
 import { artifactKindForFile, diffWorkspaceSnapshot, isGeneratedWorkspacePath, previewWorkspaceFile, snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { ArtifactService } from "../artifact/ArtifactService";
@@ -222,6 +226,7 @@ import {
   splitProviderModelId,
 } from "../../shared/mode-profile";
 import {
+  resolveSkillCapability,
   type ResolvedCapabilityDto,
 } from "../../shared/runtime-policy";
 
@@ -562,6 +567,9 @@ export class AgentService {
   private readonly memoryService: MemoryService;
   private latestAutomaticRecall?: import("../../shared/memory-kernel").AutomaticRecallReceipt;
   readonly answerRouting: AnswerRoutingService;
+  readonly nativeHooks = new NativeHookStore(join(getMyBuddyDir(), "native-hooks.sqlite"),
+    () => durableSandboxAssets(typeof __dirname === "string" ? __dirname : undefined));
+  readonly nativeImprovement: NativeImprovementService;
   private readonly workMemoryCapture: WorkMemoryCapture;
   private readonly memoryOrganization: MemoryOrganizationService;
   private readonly skillDistillation: MemorySkillDistillation;
@@ -677,6 +685,32 @@ export class AgentService {
     dependencies: { models?: ModelRuntime } = {},
   ) {
     this.modelRuntime = dependencies.models ?? null;
+    let improvementKnowledge: ImprovementKnowledge | undefined;
+    this.nativeImprovement = new NativeImprovementService(db, this.nativeHooks, join(getMyBuddyDir(), "native-improvement.sqlite"), Date.now, {
+      scope: taskId => {
+        const settings = this.settingsStore.read(), task = this.db.getTask(taskId);
+        if (!settings.memoryEnabled || !task || !this.modelRuntime || this.memoryDisposed) return;
+        const bot = botMemorySource(this.db,taskId);
+        if (bot && !this.workHostAuthority.isAuthority()) return;
+        const model = (bot && this.botSettings.get(bot.bot_id).modelId) || task.modelId || settings.defaultModelId;
+        return model ? JSON.stringify([taskId,task.projectId,task.spaceId,bot,model,this.memorySourceEpoch]) : undefined;
+      },
+      complete: async (taskId, input, signal) => {
+        const bot = botMemorySource(this.db,taskId);
+        const id = (bot && this.botSettings.get(bot.bot_id).modelId) || this.db.getTask(taskId)?.modelId || this.settingsStore.read().defaultModelId;
+        const model = id && await this.resolveEnabledModel(id);
+        if (!model || !this.modelRuntime) throw new Error("来源会话的模型尚未启用");
+        const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
+        const response = await withModelInvocationSettings(settings, () => this.modelRuntime!.completeSimple(model, {
+          systemPrompt: reflectionPrompt, messages: [{ role: "user", content: JSON.stringify(input), timestamp: Date.now() }],
+        }, { maxTokens: Math.min(model.maxTokens || 1800,1800), reasoning: "low", cacheRetention: "none", signal }));
+        if (response.stopReason !== "stop") throw new Error(response.errorMessage || "归因未完整返回");
+        return response.content.flatMap(p => p.type === "text" ? [p.text] : []).join("\n");
+      },
+    }, () => {
+      if (this.memoryDisposed || !this.settingsStore.read().memoryEnabled || !this.memoryService) return;
+      return improvementKnowledge ??= new ImprovementKnowledge(join(getMyBuddyDir(), "native-improvement-knowledge"), this.memoryService);
+    });
     this.expertBindings = new TaskExpertBindingService(db, this.expertsService, {
       resolveSkillDirectory: (id) => {
         const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
@@ -1296,8 +1330,25 @@ export class AgentService {
     this.mcpRuntime.attachModelRuntime(this.modelRuntime);
     await this.migrateLegacyModelPreferences();
     this.durableModels = this.modelRuntime;
-    setSubagentIpcBackend(durableSubagentIpcBackend);
+    setSubagentIpcBackend(createDurableSubagentIpcBackend(
+      (taskId, childId) => this.durableBots?.subagentSteerReceipts(taskId, childId) ?? Promise.resolve([]),
+    ));
     this.durableBots = new DurableBotService(isolateGatewayConversations({
+      nativeHooks: this.nativeHooks,
+      nativeImprovement: this.nativeImprovement,
+      improvementSkillAllowed: (taskId, name) => {
+        const task = this.db.getTask(taskId);
+        if (!task) return false;
+        const welcomeMode = resolveWelcomeMode(task.welcomeMode);
+        const profile = this.modeProfiles.getProfile(welcomeMode);
+        const preset = resolveModePreset(profile.policy, task.modePresetId);
+        const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile, projectContext: this.projectContextResolver.resolveTask(taskId), preset,
+          expertId: this.expertBindings.active(taskId)?.sourceExpertId ?? task.expertId,
+          connectorIds: this.expertConnectorIds(taskId),
+          ...this.runtimeCapabilityAvailability(task.expertId, undefined, taskId) });
+        return resolveSkillCapability(name, resolved.skillPolicySources, { welcomeMode }).enabled;
+      },
+      readHints: this.nativeImprovement.readHints,
       answerRouting: this.answerRouting,
       expertBindings: this.expertBindings,
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
@@ -1828,6 +1879,8 @@ export class AgentService {
   }
   async closeDurableBots(): Promise<void> {
     await this.durableBots?.close();
+    await this.nativeImprovement.close();
+    this.nativeHooks.close();
   }
 
   async runGatewayTurn(request: GatewayBotTurnRequest): Promise<string> {

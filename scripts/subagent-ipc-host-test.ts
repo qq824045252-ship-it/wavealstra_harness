@@ -7,6 +7,7 @@ import {
   handleSubagentActive,
   handleSubagentCancel,
   handleSubagentSteer,
+  handleSubagentSteerReceipts,
   handleSubagentTranscript,
   registerSubagentIpcHost,
   resetSubagentIpcHostForTests,
@@ -47,13 +48,14 @@ async function main(): Promise<void> {
   };
   registerSubagentIpcHost(ipcMain);
   registerSubagentIpcHost(ipcMain);
-  assert(handles.length === 4, `handle 恰好 4 次（${handles.join(",")}）`);
+  assert(handles.length === 5, `handle 恰好 5 次（${handles.join(",")}）`);
   assert(
     handles.includes("subagent:active") &&
       handles.includes("subagent:transcript") &&
       handles.includes("subagent:steer") &&
+      handles.includes("subagent:steer-receipts") &&
       handles.includes("subagent:cancel"),
-    "四通道齐全",
+    "五通道齐全",
   );
   const slot = (globalThis as Record<string, unknown>)[SUBAGENT_IPC_HOST_KEY] as {
     setBackend: typeof setSubagentIpcBackend;
@@ -72,7 +74,8 @@ async function main(): Promise<void> {
         : [{ subagentId: "sa-other-task", displayName: "超梦" }];
     },
     transcript: (id: string) => ({ record: { subagentId: id, displayName: "皮卡丘" }, entries: [1], ended: false }),
-    steer: async () => ({ ok: true, delivered: "rpc-steer", message: "ok" }),
+    steer: async (_id, _instruction, scope, requestId) => ({ ok: scope === "task-1" && requestId === "request-1" }),
+    steerReceipts: async (scope, id) => scope === "task-1" && id === "sa-1" ? [{ submissionId: 1 }] : [],
     cancel: async () => ({ ok: true, message: "cancelled" }),
   });
   const active = handleSubagentActive("task-1") as Array<{ subagentId: string; displayName?: string }>;
@@ -95,8 +98,12 @@ async function main(): Promise<void> {
   };
   assert(live.ended === false && live.entries.length === 1, "transcript 委托 backend");
   assert(live.record?.displayName === "皮卡丘", "transcript DTO 透传 displayName");
-  const steered = (await handleSubagentSteer("sa-1", "x")) as { ok: boolean };
-  assert(steered.ok === true, "steer 委托 backend");
+  const steered = (await handleSubagentSteer("sa-1", "x", "task-1", "request-1")) as { ok: boolean };
+  assert(steered.ok === true, "steer 透传任务和请求 ID");
+  const scoped = await handleSubagentSteerReceipts("task-1", "sa-1") as unknown[];
+  assert(scoped.length === 1, "按父任务和子代理读取回执");
+  const unscoped = await handleSubagentSteerReceipts(undefined, "sa-1") as unknown[];
+  assert(unscoped.length === 0, "拒绝无任务作用域的回执查询");
   const cancelled = (await handleSubagentCancel("sa-1")) as { ok: boolean };
   assert(cancelled.ok === true, "cancel 委托 backend");
 
@@ -127,8 +134,8 @@ async function main(): Promise<void> {
   resetSubagentIpcHostForTests();
   registerSubagentIpcHost(reused);
   assert(
-    firstRound === 4 && reusedChannels.length === 8,
-    `reset 后复用同一 mock 仍注册 4 次（first=${firstRound} total=${reusedChannels.length}）`,
+    firstRound === 5 && reusedChannels.length === 10,
+    `reset 后复用同一 mock 仍注册 5 次（first=${firstRound} total=${reusedChannels.length}）`,
   );
 
   resetSubagentIpcHostForTests();

@@ -33,6 +33,8 @@ import {
   PERMISSION_LABEL,
 } from "@/components/chat/permissionCopy";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
+import { useImprovementReport } from "@/components/settings/useImprovementReport";
+import NativeImprovementTab from "@/components/settings/NativeImprovementTab";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   DesktopSectionRow,
@@ -54,6 +56,7 @@ import {
   IconPause,
   IconPanel,
   IconPlay,
+  IconRotate,
   IconPlus,
   IconSearch,
   IconShield,
@@ -66,7 +69,23 @@ import "@/styles/desktop-project-automation.css";
 
 type Tab = "tasks" | "history";
 type PromptMenu = "model" | "skill" | "expert" | "perm" | null;
-type ListView = "list" | "form" | "templates";
+type ListView = "list" | "form" | "templates" | "review";
+
+function ImprovementAutomation({onOpen}: {onOpen: () => void}): React.JSX.Element | null {
+  const { api, report, error, busy, status, update } = useImprovementReport();
+  if (!api) return null;
+  const latest = report?.runs[0];
+  return <section className="review-launch" aria-label="每周自我改进">
+    <span className="review-glyph"><IconRotate size={20}/></span>
+    <div className="review-launch-main"><h3>每周自我改进</h3>
+      <p>{latest ? latest.week + " 当周 · " + latest.added + " 条新线索 · 发布 " + latest.published + " 项" + (latest.issues.length ? " · " + latest.issues.length + " 项待重试" : "")
+        : report ? "应用运行期间，每周检查原生会话中的改进机会。" : "正在读取最近的复盘…"}</p></div>
+    <button className="review-link" onClick={onOpen}>查看周报<IconChevronRight size={14}/></button>
+    <button className="review-primary" disabled={busy || Boolean(status) || !report && !error} onClick={() => void update(api.review)}><IconPlay size={14}/>{busy ? "复盘中…" : "立即复盘"}</button>
+    {status && <p className="review-notice" role="status">{status}</p>}
+    {error && <p className="review-notice" role="alert">{error}</p>}
+  </section>;
+}
 
 function uid(): string {
   return `cron-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -892,6 +911,9 @@ export default function AutomationPage({
         >
           运行记录
         </DesktopSectionRow>
+        <DesktopSectionRow icon={<IconRotate size={15}/>} active={view === "review"} onClick={() => leaveFormFor(() => setView("review"))}>
+          每周复盘
+        </DesktopSectionRow>
         <DesktopSectionRow icon={<IconSparkles size={15} />} active={view === "templates"} onClick={openTemplates}>
           从模板添加
         </DesktopSectionRow>
@@ -1015,6 +1037,17 @@ export default function AutomationPage({
       </dl>
       {run.error && <><h3>运行信息</h3><p className="desktop-auto-prompt">{run.error}</p></>}
     </article>
+  );
+
+  if (view === "review" && !projectId) return (
+    <div className={`content-col auto-root${desktop ? " desktop-auto-screen" : ""}`}>
+      {desktopSidebar}
+      <div className="auto-form-topbar review-crumb">
+        <button className="auto-form-crumb-btn" onClick={() => selectDesktopItem("tasks")}>定时任务</button>
+        <IconChevronRight size={13}/><span>每周复盘</span>
+      </div>
+      <div className="review-workspace"><NativeImprovementTab/></div>
+    </div>
   );
 
   /* ---------- 模板页 ---------- */
@@ -1848,6 +1881,8 @@ export default function AutomationPage({
 
       <div className="page-scroll">
         <div className="page-container auto-page auto-page-list">
+          {!projectId && tab === "tasks" && (!desktop || !selectedJob) && !batchMode && (!query.trim() || "每周自我改进复盘".includes(query.trim())) &&
+            <ImprovementAutomation onOpen={() => setView("review")}/>}
           {desktop && tab === "tasks" && selectedJob && !batchMode
             ? renderJobDetails(selectedJob)
             : desktop && tab === "history" && selectedRun
@@ -1861,7 +1896,7 @@ export default function AutomationPage({
                 <div className="empty-block-title">
                   {projectId
                     ? "还没有自动化任务，点击右上角「添加自动化」创建"
-                    : "开启你的第一个自动化任务吧"}
+                    : "尚未添加定时任务"}
                 </div>
                 <div className="auto-empty-actions">
                   <button

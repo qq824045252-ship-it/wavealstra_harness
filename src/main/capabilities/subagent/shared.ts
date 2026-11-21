@@ -315,6 +315,7 @@ export const ListParams = Type.Object({
 });
 
 export const SteerParams = Type.Object({
-  subagentId: Type.String({ description: "Id of a live child from subagent_list; terminal children cannot be steered" }),
-  instruction: Type.String({ description: "Additional instruction to deliver" }),
+  subagentId: Type.String({ description: "Id of a child belonging to this task" }),
+  instruction: Type.Optional(Type.String({ minLength: 1, description: "Additional instruction. Omit to look up an existing requestId." })),
+  requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Unique per message. Repeat the same ID to retrieve its receipt without delivering again." })),
 });

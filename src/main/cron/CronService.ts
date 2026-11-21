@@ -104,6 +104,7 @@ export class CronService {
       status: "success" | "failed";
       error?: string;
     }) => void,
+    private readonly weeklyMaintenance?: {start(): void; stopSchedule(): void},
   ) {
     db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
       run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL)`);
@@ -120,6 +121,7 @@ export class CronService {
     if (this.started) return;
     this.started = true;
     this.stopped = false;
+    this.weeklyMaintenance?.start();
     for (const run of this.db.listRunningCronRuns()) {
       if (this.db.getCronJob(run.jobId)?.reminder) continue;
       this.runningJobs.add(run.jobId);
@@ -143,6 +145,7 @@ export class CronService {
 
   stop(): void {
     this.stopped = true;
+    this.weeklyMaintenance?.stopSchedule();
     this.started = false;
     for (const id of this.revisions.keys()) this.disarm(id);
   }

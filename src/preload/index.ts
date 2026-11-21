@@ -8,6 +8,8 @@ import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../sh
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { AnswerRoutingIpc, type AnswerRoutingApi } from "../shared/answer-routing";
+import { NativeHooksIpc, type NativeHooksApi } from "../shared/native-hooks";
+import { NativeImprovementIpc, type NativeImprovementApi } from "../shared/native-improvement";
 import { MaterialRetrievalIpc, type MaterialRetrievalApi } from "../shared/materialRetrieval";
 import { WorkspaceNotesIpc, type WorkspaceNoteSaveRequest } from "../shared/workspace-notes";
 import { ArchivedContentDeletionIpc, TrashIpc, type ArchivedContentDeletionRequest, type ArchivedContentDeletionResult } from "../shared/archive-deletion";
@@ -121,6 +123,7 @@ import {
   type AgentSwitchExpertRequest,
   type AgentUiPatch,
   type SubagentSteerResultDto,
+  type SubagentSteerReceipt,
   type SubagentSummaryDto,
   type SubagentTranscriptDto,
   type UsageDashboardDto,
@@ -734,8 +737,10 @@ const api = {
     active: (taskId: string): Promise<SubagentSummaryDto[]> => ipcRenderer.invoke(SubagentIpc.active, taskId),
     transcript: (subagentId: string): Promise<SubagentTranscriptDto> =>
       ipcRenderer.invoke(SubagentIpc.transcript, subagentId),
-    steer: (subagentId: string, instruction: string): Promise<SubagentSteerResultDto> =>
-      ipcRenderer.invoke(SubagentIpc.steer, subagentId, instruction),
+    steer: (subagentId: string, instruction: string, taskId: string, requestId: string): Promise<SubagentSteerResultDto> =>
+      ipcRenderer.invoke(SubagentIpc.steer, subagentId, instruction, taskId, requestId),
+    steerReceipts: (taskId: string, subagentId: string): Promise<SubagentSteerReceipt[]> =>
+      ipcRenderer.invoke(SubagentIpc.steerReceipts, taskId, subagentId),
     cancel: (subagentId: string): Promise<{ ok: boolean; message: string }> =>
       ipcRenderer.invoke(SubagentIpc.cancel, subagentId),
     onEvent: (callback: (ev: { ts: number }) => void): (() => void) => {
@@ -821,6 +826,19 @@ const api = {
     getScope: scope => ipcRenderer.invoke(MaterialRetrievalIpc.getScope, scope),
     setScope: (scope, mode) => ipcRenderer.invoke(MaterialRetrievalIpc.setScope, scope, mode),
   } satisfies MaterialRetrievalApi,
+  nativeHooks: {
+    list: () => ipcRenderer.invoke(NativeHooksIpc.list),
+    publish: (draft, base) => ipcRenderer.invoke(NativeHooksIpc.publish, draft, base),
+    activate: (id, generation, revision, enabled) => ipcRenderer.invoke(NativeHooksIpc.activate, id, generation, revision, enabled),
+    receipts: id => ipcRenderer.invoke(NativeHooksIpc.receipts, id),
+  } satisfies NativeHooksApi,
+  nativeImprovement: {
+    report: () => ipcRenderer.invoke(NativeImprovementIpc.report),
+    child: (task,conversation) => ipcRenderer.invoke(NativeImprovementIpc.child,task,conversation),
+    review: () => ipcRenderer.invoke(NativeImprovementIpc.review),
+    source: (key,task,conversation,entry) => ipcRenderer.invoke(NativeImprovementIpc.source,key,task,conversation,entry),
+    disable: (key, generation) => ipcRenderer.invoke(NativeImprovementIpc.disable, key, generation),
+  } satisfies NativeImprovementApi,
   answerRouting: {
     list: () => ipcRenderer.invoke(AnswerRoutingIpc.list),
     save: (draft, version) => ipcRenderer.invoke(AnswerRoutingIpc.save, draft, version),

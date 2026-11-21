@@ -1,0 +1,26 @@
+.native-hooks-tab { max-width: 940px; margin-inline: auto; font-family: var(--font-ui); }
+.native-hooks-tab .settings-section-card { padding: clamp(14px, 2.3vw, 23px); border: 1px solid var(--border-default); }
+.native-hook-form { padding: 0; margin: 0; border: 0; min-width: 0; display: grid; gap: 16px; }
+.native-hook-identity, .native-hook-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px,100%), 1fr)); gap: 12px; }
+.native-hook-identity { border-bottom: 1px solid var(--border-subtle); padding-bottom: 16px; }
+.native-hooks-tab textarea { box-sizing: border-box; width: 100%; resize: vertical; padding: 12px; background: var(--bg-code); color: var(--fg); border: 1px solid var(--border-default); border-radius: 8px; font: 13px/1.65 var(--font-mono); tab-size: 2; }
+.native-hook-code .settings-field-label { display: flex; align-items: center; gap: 7px; }
+.native-hook-code small { margin-inline-start: auto; color: var(--fg-secondary); font: 11px var(--font-mono); }
+.native-hooks-tab summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.native-hooks-tab summary::-webkit-details-marker { display: none; }
+.native-hooks-tab details[open] > summary > svg { transform: rotate(90deg); }
+.native-hooks-tab :is(p, li, summary) { overflow-wrap: anywhere; }
+.native-hooks-tab [role="alert"] { color: var(--danger); }
+.native-hooks-tab [role="status"] { color: var(--fg-secondary); }
+.native-hook-tests { border-block: 1px solid var(--border-subtle); font-size: 13px; }
+.native-hook-tests summary { padding: 10px 0; }
+.native-hook-tests .settings-field { margin-bottom: 10px; }
+.native-hook-actions { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.native-hook-actions .btn { display: inline-flex; align-items: center; gap: 7px; }
+.native-hook-receipt { border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
+.native-hook-receipt summary { padding: 10px 0; }
+.native-hook-receipt summary small { display: block; margin-top: 3px; color: var(--fg-secondary); font-size: 12px; }
+.native-hook-receipt > p { margin: 0 0 10px 22px; }
+.hook-outcome { margin-inline-start: auto; font-size: 12px; color: var(--fg-secondary); }
+.hook-outcome-error { color: var(--danger); }
+.hook-outcome-feedback { color: color-mix(in srgb, var(--fg) 40%, var(--warning)); }

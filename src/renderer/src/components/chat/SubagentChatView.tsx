@@ -12,6 +12,7 @@
  *
  * 导航：顶部 ← 与父任务标题都可点，返回父任务对话（closeSubagentView）。
  */
+import { SubagentSteerReceipts, useSubagentSteer } from "./SubagentSteerReceipts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import { useSubagentRuns } from "@/hooks/useSubagentRuns";
@@ -41,6 +42,7 @@ export default function SubagentChatView({
   const runs = useSubagentRuns(taskId);
   const entry = runs.find(subagentId);
   const running = entry?.kind === "running";
+  const steer = useSubagentSteer(taskId, subagentId, running);
 
   const [transcript, setTranscript] = useState<ChildMessage[] | null>(null);
   const [draft, setDraft] = useState("");
@@ -122,8 +124,8 @@ export default function SubagentChatView({
     setSending(true);
     setNotice(null);
     try {
-      const res = await window.api?.subagent?.steer(subagentId, text);
-      setNotice(res?.ok ? `已送达（${res.delivered}）` : `发送失败：${res?.message ?? ""}`);
+      const res = await steer.send(text);
+      if (!res?.ok) setNotice(res?.reason === "receipt_unknown" ? "引导状态未确认，可以重试" : res?.message ?? "引导服务尚未就绪");
       if (res?.ok) setDraft("");
       await refreshTranscript();
     } catch (error) {
@@ -189,6 +191,7 @@ export default function SubagentChatView({
         </div>
       </div>
 
+      <SubagentSteerReceipts receipts={steer.receipts} error={steer.error} refresh={steer.refresh} />
       {notice && <div className="sa-notice">{notice}</div>}
 
       <div className="input-area subagent-chat-input">

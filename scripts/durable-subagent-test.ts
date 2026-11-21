@@ -7,7 +7,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { AgentDoc, configure, createRegistry, defineExtension, defineTool, Harness, hook, ToolTask, type ToolExecutionApi, type ConversationId } from "@earendil-works/pi-durable";
+import { AgentDoc, configure, createRegistry, defineExtension, defineTool, GenerationTask, Harness, hook, ToolTask, type ToolExecutionApi, type ConversationId, type Storage } from "@earendil-works/pi-durable";
+import { openDurableStorage } from "../src/main/agent/durable/DurableStorage";
+import { readDurableSteerReceipts } from "../src/main/agent/durable/DurableSteerReceipts";
+import { freshHistory, scanImprovementHistory, type Observation } from "../src/main/agent/hooks/ImprovementHistory";
+import { reflectionEvidence } from "../src/main/agent/hooks/ImprovementReflection";
+import type { ImprovementChild } from "../src/shared/native-improvement";
 import { openNodeJsonlStorage } from "@earendil-works/pi-durable/storage/jsonl/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
@@ -15,7 +20,7 @@ import type { WorkRevisionBinding } from "../src/main/agent/durable/DurableWorkR
 import { recoverMissingSubitems } from "../src/main/agent/durable/DurableMissingSubitems";
 import { readDurableWorkExecution, readNativeSubitems } from "../src/main/agent/durable/DurableWorkExecutionProjection";
 import { Value } from "typebox/value";
-import { assertWorktreeIsolationPreflight, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, legacyPlannedWorkspace, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
+import { assertWorktreeIsolationPreflight, createDurableSubagentIpcBackend, createDurableSubagentTools, DurableSubagentIdentity, durableSubagentIpcBackend, legacyPlannedWorkspace, resolveDurableExecutionCwd } from "../src/main/agent/durable/DurableSubagents";
 import { findDurableUserEntry, forkDurableConversation, resolveActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
 import { guardSubagentWriteCall } from "../src/main/capabilities/subagent/write-conflict";
 import { ListParams, SubagentParams } from "../src/main/capabilities/subagent/shared";
@@ -34,6 +39,7 @@ let waiting: (() => void) | undefined;
 let serverError: unknown;
 const reachedWaiting = new Promise<void>(resolve => { waiting = resolve; });
 const seenChildTools: string[][] = [];
+const steerProviderRequests: Array<{ text: string; respond: () => void; fail: () => void }> = [];
 
 /** D-1 observations: child requests, in-flight peaks and per-task start/end (reset per scenario). */
 type PoolProbe = { requests: number; inFlight: number; maxInFlight: number; start: Map<number, number>; end: Map<number, number> };
@@ -74,6 +80,7 @@ const sse = (response: ServerResponse, items: unknown[], usage: Record<string, u
 const parentDispatch = (prompt: string): Record<string, unknown> | undefined => {
   const marker = (name: string) => prompt.includes(`SCENARIO=${name}`);
   const model = "fixture/child", isolation = "shared";
+  if (marker("steer-receipt")) return { agent: "worker", task: "SCENARIO=steer-receipt", model, isolation };
   if (marker("work-revision")) return { agent: "worker", task: "SCENARIO=work-revision Only handle B, parent has no copied history here", model, isolation };
   if (marker("parallel-status")) return { tasks: [
     { agent: "worker", task: "SCENARIO=parallel-status task one", model, isolation },
@@ -182,6 +189,16 @@ const server = createServer(async (request, response) => {
     seenChildTools.push(tools);
     childRequests.push(body);
     assert(!tools.includes("subagent"), "child must not inherit recursive delegation");
+    if (text.includes("SCENARIO=steer-receipt")) {
+      steerProviderRequests.push({ text, fail: () => {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "fixture rejected placed steer" } }));
+      }, respond: () => sse(response, [{
+        type: "message", id: "msg_steer_done", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: "child answered", annotations: [] }],
+      }]) });
+      return;
+    }
     if (returned && !allowFinal) { waiting?.(); return; }
     const taskIndex = /POOL_TASK=(\d+)/.exec(text)?.[1];
     const index = taskIndex === undefined ? undefined : Number(taskIndex);
@@ -280,7 +297,7 @@ try {
   let legacyChildId: number | undefined;
   let workBinding: WorkRevisionBinding | undefined;
   let workBindingReads = 0;
-  const open = async (store: string) => {
+  const open = async (store: string, providedStorage?: Storage, onChildAnswer?: () => Promise<void>) => {
     const registry = createRegistry();
     registry.install(defineExtension({ name: "fixture",
       tools: [proof, write, ...createDurableSubagentTools({ taskId: "test-task", cwd, models: native, permissionMode: () => permission, allowGitBranchOrWorktree: () => allowGitIsolation,
@@ -319,8 +336,12 @@ try {
       // `guardSubagentWriteCall(call, api.conversationId, task.id)`); the guard itself is registered by
       // DurableSubagents.runChild for parallel dispatches with concurrency > 1, keyed by taskId here too
       // because every task has its own durable store and conversation ids collide across tasks.
-      hooks: [hook(ToolTask, { beforeTool: (call, api) => guardSubagentWriteCall(call, api.conversationId, "test-task") })] }));
-    const storage = await openNodeJsonlStorage(store, ctx, { fsync: true });
+      hooks: [hook(ToolTask, { beforeTool: (call, api) => guardSubagentWriteCall(call, api.conversationId, "test-task") }),
+        ...(onChildAnswer ? [hook(GenerationTask, { afterRun: async (_run, api, context) => {
+          if ((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value) await onChildAnswer();
+          return undefined;
+        } })] : [])] }));
+    const storage = providedStorage ?? await openNodeJsonlStorage(store, ctx, { fsync: true });
     return Harness.open(storage, { models: native, registry, env: async (target, context) => new NodeExecutionEnv({ cwd: await resolveDurableExecutionCwd(target, context, cwd) }) }, ctx);
   };
   type ScenarioSubmission = { subagentId: string; base?: number; retry?: number };
@@ -369,6 +390,135 @@ try {
       await scenarioHarness?.close(ctx);
     }
   };
+  // Hold real provider requests so queued, placed and terminal states are observed separately.
+  for (const outcome of ["answer", "cancel", "cancel-placed", "fail"] as const) {
+    steerProviderRequests.length = 0;
+    const state = join(root, `steer-${outcome}`);
+    const handle = await openDurableStorage(state, ctx);
+    let receiptHarness: Harness | undefined;
+    let childAnswered!: () => void;
+    let finishAfterRun!: () => void;
+    const afterRunStarted = new Promise<void>(resolve => { childAnswered = resolve; });
+    const afterRunReleased = new Promise<void>(resolve => { finishAfterRun = resolve; });
+    try {
+      receiptHarness = await open(state, handle.storage, async () => { childAnswered(); await afterRunReleased; });
+      const parent = await receiptHarness.root(ctx, { agent: { cwd, model: { provider: "fixture", modelId: "parent" } } });
+      const turn = await parent.submit({ type: "input", content: "SCENARIO=steer-receipt" }, ctx);
+      const providerRequest = async (index: number) => {
+        const deadline = Date.now() + 10_000;
+        while (!steerProviderRequests[index] && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
+        const request = steerProviderRequests[index];
+        assert(request, `missing child provider request ${index}`);
+        return request;
+      };
+      const initial = await providerRequest(0);
+      const backend = createDurableSubagentIpcBackend((taskId, id) => taskId === "test-task" ? readDurableSteerReceipts(state, id) : Promise.resolve([]));
+      const id = backend.active("test-task")[0]?.subagentId;
+      assert(id);
+      const instruction = outcome === "answer" ? "你漏了验收要求，请核对。" : "check this exact same message";
+      const send = (requestId: string, body = instruction) => backend.steer(id, body, "test-task", requestId);
+      const first = await send("user-steer-1"), second = await send("user-steer-2"), duplicate = await send("user-steer-1", "retry body must never become a new input");
+      assert(first.ok && second.ok && duplicate.ok);
+      assert.equal(first.receipt.status, "queued");
+      assert.equal(second.receipt.status, "queued");
+      assert.equal(first.receipt.entryId, undefined);
+      assert.notEqual(first.receipt.submissionId, second.receipt.submissionId);
+      const review = async () => {
+        const children: ImprovementChild[] = [], findings: Observation[] = [];
+        await scanImprovementHistory("test-task",state,freshHistory,(_identity,_history,found) => { findings.push(...found); },
+          () => false,{needsRead:()=>true, save:child=>{children.push(child);}});
+        assert.equal(children.length,1);
+        return {child:children[0]!, findings};
+      };
+      const queuedReview = await review();
+      assert.equal(queuedReview.child.steers,2);
+      assert.equal(queuedReview.child.unansweredSteers,0);
+      assert.equal(queuedReview.child.status,"unknown");
+      assert(!queuedReview.findings.some(f => f.kind === "childSteer"));
+      assert.deepEqual(duplicate.receipt, first.receipt);
+      assert.equal((await backend.steer(id, "another task cannot steer", "another-task", "wrong-task")).ok, false);
+      if (outcome === "cancel") {
+        await backend.cancel(id);
+      } else {
+        initial.respond();
+        await afterRunStarted;
+        assert.equal(backend.active("test-task")[0]?.subagentId, id);
+        assert.deepEqual(await backend.steerReceipts("test-task", id).then(receipts => receipts.map(row => row.nativeStatus)), ["queued", "queued"]);
+        const late = await send("after-answer-before-drain");
+        assert(!late.ok);
+        assert.equal(late.reason, "conversation_idle");
+        finishAfterRun();
+        const steered = await providerRequest(1);
+        assert.equal(steered.text.split(instruction).length - 1, 1);
+        assert(!steered.text.includes("retry body"));
+        const placed = await backend.steerReceipts("test-task", id);
+        assert.deepEqual(placed.map(row => row.nativeStatus), ["placed", "queued"]);
+        assert(placed[0]?.entryId !== undefined && placed[1]?.entryId === undefined);
+        if (outcome === "fail") steered.fail();
+        else if (outcome === "cancel-placed") await backend.cancel(id);
+        else {
+          steered.respond();
+          const next = await providerRequest(2);
+          assert.equal(next.text.split(instruction).length - 1, 2);
+          assert(!next.text.includes("retry body"));
+          const nextPlaced = await backend.steerReceipts("test-task", id);
+          assert.deepEqual(nextPlaced.map(row => row.nativeStatus), ["done", "placed"]);
+          assert(nextPlaced[1]?.entryId !== undefined && nextPlaced[0]?.entryId !== nextPlaced[1].entryId);
+          next.respond();
+        }
+      }
+      assert.equal((await turn.wait(ctx)).status, "done");
+      const terminal = await backend.steerReceipts("test-task", id);
+      assert.deepEqual(terminal.map(row => row.submissionId), [first.receipt.submissionId, second.receipt.submissionId]);
+      assert.deepEqual(terminal.map(row => row.nativeStatus), outcome === "answer" ? ["done", "done"] : ["unanswered", "unanswered"]);
+      assert(terminal.every(row => row.instruction === instruction));
+      if (outcome === "cancel" || outcome === "cancel-placed") {
+        assert(terminal.every(row => row.reason === "aborted"));
+        assert.equal(terminal[0]?.entryId !== undefined, outcome === "cancel-placed");
+        assert.equal(terminal[1]?.entryId, undefined);
+        const parentEntries = (await parent.entries({}, 100, undefined, ctx)).items;
+        const result = parentEntries.flatMap(entry => entry.model ?? []).find(message => message.role === "toolResult" && message.toolName === "subagent");
+        assert(result?.role === "toolResult");
+        const details = result.details as { results?: Array<{ status?: string }> } | undefined;
+        assert.equal(details?.results?.[0]?.status, "cancelled");
+      }
+      if (outcome === "answer") assert(terminal.every(row => row.entryId !== undefined && row.answerEntryId !== undefined));
+      if (outcome === "fail") {
+        assert.deepEqual(terminal.map(row => row.status), ["unanswered", "unprocessed"]);
+        assert.ok(terminal[0]?.reason && terminal[0].entryId !== undefined && terminal[0].answerEntryId === undefined);
+        assert.equal(terminal[1]?.entryId, undefined);
+        assert.ok(terminal[1]?.reason);
+      }
+      assert.equal((await send("too-late")).ok, false);
+      assert.deepEqual(await send("user-steer-1"), { ok: true, receipt: terminal[0] });
+      assert.deepEqual(await backend.steerReceipts("another-task", id), []);
+      await receiptHarness.close(ctx);
+      receiptHarness = undefined;
+      const reopened = createDurableSubagentIpcBackend((_taskId, childId) => readDurableSteerReceipts(state, childId));
+      assert.deepEqual(await reopened.steerReceipts("test-task", id), terminal);
+      assert(terminal.every(s => s.origin === "user"));
+      const finalReview = await review();
+      assert.equal(finalReview.child.status,outcome === "answer" ? "completed" : outcome === "fail" ? "failed" : "cancelled");
+      if (outcome.startsWith("cancel")) assert.equal(finalReview.child.stopRequest,"child-panel");
+      assert.equal(finalReview.child.unansweredSteers,outcome === "answer" ? 0 : 2);
+      const missed = finalReview.findings.filter(f => f.kind === "childSteer");
+      if (outcome === "answer") assert.deepEqual(finalReview.findings.filter(f => f.kind==="correction").map(f=>f.source.entry),terminal.map(s=>s.entryId));
+      assert.equal(missed.length,outcome === "fail" ? 2 : 0);
+      if (outcome === "fail") {
+        assert.deepEqual(missed.map(f => f.source.entry),terminal.map(s => s.submissionId));
+        const raw = await reflectionEvidence(state,missed[1]!.source);
+        assert(raw.some(e => e.id === terminal[1]?.submissionId && e.content[0]?.text?.includes("unprocessed")));
+        assert(raw.some(e => e.kind==="parent.result" && e.content[0]?.text==="failed"));
+        assert(finalReview.findings.some(f => f.kind==="childDelivery"));
+      }
+    } finally {
+      finishAfterRun();
+      for (const request of steerProviderRequests) request.respond();
+      await receiptHarness?.close(ctx);
+      handle.lease.release();
+    }
+  }
+  console.log("PASS native child steer admission, one-at-a-time provider entry, idempotent retry, immediate cancel, afterRun race and SQLite reopen");
   harness = await open(directory);
   let conversation = await harness.root(ctx, { agent: { cwd, model: { provider: "fixture", modelId: "parent" } } });
   const submitted = await conversation.submit({ type: "input", content: "Delegate", requestId: "stable-root-input" }, ctx);

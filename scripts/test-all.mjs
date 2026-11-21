@@ -58,7 +58,7 @@ const SELF_EXCLUDE_PATTERNS = [/^test:all/, /^test:verify/];
  * 内部还会再跑一遍同类用例，所以性能用例仍放在最后。
  * 不跳过用例、不重试失败，也不调整 timeout 或失败基线。
  */
-const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-storage-(current|lease)$/,/^test:core-performance/, /^test:bot-work-summary-query$/, /^test:gateway-port-fallback$/];
+const SERIAL_TEST_PATTERNS = [/^test:memory-semantic-scale$/,/^test:durable-storage-(current|lease)$/,/^test:improvement-release$/,/^test:core-performance/, /^test:bot-work-summary-query$/, /^test:gateway-port-fallback$/];
 
 /**
  * 排除集合按执行前置条件分类（+ 一个临时桶），默认套件只跑 headless 用例：
@@ -86,6 +86,8 @@ const GUI_TESTS = new Set([
   "test:drawio-use-desktop", // bundled Draw.io editor and native diagram operations
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching
+  "test:native-hooks-dev", // Electron settings, version switching and a native tool receipt
+  "test:native-improvement-dev", // Weekly review controls, scoped publication and withdrawal in Electron
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
   "test:usage-dashboard-dev", // actual pnpm dev app, isolated synthetic usage ledger
   "test:browser-tabs-ui",
@@ -296,6 +298,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:improvement-release", "test:native-improvement", "test:improvement-weekly-report", "test:improvement-delivery-contract", "test:native-hooks",
   "test:gateway-conversation",
   "test:deepseek-connection",
   "test:deepseek-search",

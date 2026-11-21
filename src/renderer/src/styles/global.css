@@ -18850,6 +18850,43 @@ html[data-theme="dark"] .input-expert-chip {
 .sa-tx--meta { color: var(--text-muted, #777); font-size: 12px; }
 .sa-tx-tag { display: inline-block; font-size: 10px; color: var(--text-muted, #888); margin-right: 6px; }
 .sa-notice { margin-top: 10px; font-size: 12px; color: #e8c87a; }
+.sa-steer-receipts {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  align-self: center;
+  width: calc(100% - 2 * max(16px, var(--chat-gutter, 24px)));
+  max-width: var(--chat-content-max, 832px);
+  margin-block: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.sa-drawer .sa-steer-receipts { width: auto; align-self: stretch; margin-inline: 14px; }
+.sa-steer-receipts summary { cursor: pointer; font-weight: 600; color: var(--fg-secondary); }
+.sa-steer-receipt-count { margin-inline-start: 8px; font-weight: 400; color: var(--fg-secondary); }
+.sa-steer-receipt-list {
+  max-block-size: min(128px, 19vh);
+  margin: 6px 0 0;
+  padding: 0 4px 0 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+.sa-steer-receipt-list li { padding: 4px 0; overflow-wrap: anywhere; }
+.sa-steer-receipt-list li + li { border-top: 1px solid var(--border); }
+.sa-steer-receipt-instruction { display: block; white-space: pre-wrap; }
+.sa-steer-receipt-state { display: block; color: var(--fg-secondary); }
+.sa-steer-receipt-error {
+  max-block-size: 4.5em;
+  margin: 6px 0 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  color: var(--warning);
+}
 .sa-steer { display: flex; gap: 8px; align-items: flex-end; margin-top: 14px; }
 .sa-steer textarea { flex: 1; background: var(--bg-input, #151515); color: inherit; border: 1px solid var(--border, #333); border-radius: 8px; padding: 8px 10px; resize: vertical; font: inherit; font-size: 13px; }
 .sa-steer-spin { font-size: 12px; color: var(--text-muted, #888); }

@@ -7,6 +7,7 @@
  * - 实例 RESULT 返回或父 Task 结束后（ended:true）自动关闭并提示，不保留历史。
  * 不承载任何全局 history/列表。
  */
+import { SubagentSteerReceipts, useSubagentSteer } from "./SubagentSteerReceipts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SubagentTranscriptDto } from "../../../../shared/agent-ipc";
 import { useAppStore } from "@/store/appStore";
@@ -49,6 +50,7 @@ function buildViews(dto: SubagentTranscriptDto | null): TranscriptView[] {
 
 export default function SubagentDrawer(): React.JSX.Element | null {
   const drawer = useAppStore((s) => s.subagentDrawer);
+  const taskId = useAppStore((s) => s.activeTaskId);
   const closeDrawer = useAppStore((s) => s.closeSubagentDrawer);
   const [transcript, setTranscript] = useState<SubagentTranscriptDto | null>(null);
   const [ended, setEnded] = useState(false);
@@ -57,6 +59,7 @@ export default function SubagentDrawer(): React.JSX.Element | null {
   const [notice, setNotice] = useState<string | null>(null);
 
   const instanceId = drawer?.instanceId ?? null;
+  const steer = useSubagentSteer(taskId, instanceId, Boolean(instanceId && !ended));
 
   const refresh = useCallback(async () => {
     if (!instanceId) return;
@@ -111,9 +114,9 @@ export default function SubagentDrawer(): React.JSX.Element | null {
     setSteering(true);
     setNotice(null);
     try {
-      const res = await window.api?.subagent?.steer(instanceId, draft.trim());
-      setNotice(res?.ok ? `已送达（${res.delivered}）` : `失败: ${res?.message ?? ""}`);
-      setDraft("");
+      const res = await steer.send(draft.trim());
+      if (res?.ok) setDraft("");
+      else setNotice(res?.reason === "receipt_unknown" ? "引导状态未确认，可以重试" : res?.message ?? "引导服务尚未就绪");
       await refresh();
     } catch (e) {
       setNotice(`steer 失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -157,6 +160,7 @@ export default function SubagentDrawer(): React.JSX.Element | null {
           </button>
         </div>
 
+        <SubagentSteerReceipts receipts={steer.receipts} error={steer.error} refresh={steer.refresh} />
         {ended ? (
           <div className="sa-empty">实例已结束（RESULT/FAILED/CANCELLED）或父 Task 已关闭——临时 Chat 不保留历史。</div>
         ) : (

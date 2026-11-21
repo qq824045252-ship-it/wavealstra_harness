@@ -115,8 +115,10 @@ async function worker(root: string, scenario: Scenario, resumed: boolean) {
           assert.equal(active.length, 1);
           assert.equal(durableSubagentIpcBackend.active("other-task").length, 0);
           if (scenario === "steer") {
-            const delivered = await durableSubagentIpcBackend.steer(active[0].subagentId, "In your final answer include the exact phrase STEER_CONFIRMED_86753. Do not rewrite any file.");
-            assert.equal(delivered.ok, true);
+            const delivered = await durableSubagentIpcBackend.steer(active[0].subagentId,
+              "In your final answer include the exact phrase STEER_CONFIRMED_86753. Do not rewrite any file.", taskId, "live-steer-checkpoint");
+            assert(delivered.ok);
+            assert.equal(delivered.receipt.nativeStatus, "queued");
           } else {
             // Invoke cancellation outside the currently executing tool to avoid awaiting its own abort.
             setImmediate(() => { void durableSubagentIpcBackend.cancel(active[0].subagentId).catch(error => console.error(error)); });

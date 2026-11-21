@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, realpath, rmdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -10,16 +10,17 @@ import {
   resolveModelScopeWithDiagnostics, type ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import {
-  configure, defineTool, LiveDoc, type ConversationId, type EnvTarget,
+  configure, ConversationIdle, defineTool, InboxDoc, LiveDoc, type ConversationId, type EnvTarget,
   type Cursor, type ToolExecutionApi, type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { Type, type Static } from "typebox";
 import { DurableSubagentIdentity, DURABLE_SUBAGENT_TIER_LIMIT_RETRIES } from "./DurableSubagentIdentity";
 import { addChildResponse } from "./DurableChildMeasurements";
+import { DurableSteerChild, readSteerByRequest, recordSteerInstruction, STEER_ENTRY_KIND, steerRequestKey } from "./DurableSteerReceipts";
 export { DurableSubagentIdentity } from "./DurableSubagentIdentity";
 import { readDurableWorkRevisionContext, type WorkRevisionBinding } from "./DurableWorkRevisionContext";
 import { assertModelAdmission } from "../ModelInvocationAdmission";
-import type { SubagentSummaryDto } from "../../../shared/agent-ipc";
+import type { SubagentSteerReceipt, SubagentSteerResultDto, SubagentStopRequestSource, SubagentSummaryDto } from "../../../shared/agent-ipc";
 import { assertSubagentModelAllowed, filterSubagentModels, resolveSubagentTimeout } from "../../../shared/subagent-execution-policy";
 import { discoverAgents, type AgentConfig, type AgentScope } from "../../capabilities/subagent/agents";
 import { isPstackForegroundTool } from "../../../shared/pstack/tool-names";
@@ -92,6 +93,7 @@ type Dispatch = {
 export type DurableChildIdentity = {
   taskId: string;
   parentConversationId: ConversationId;
+  parentSubmissionIds?: number[];
   item: PlannedChild;
   workspace: PreparedSubagentWorkspace;
   startedAt: number;
@@ -127,20 +129,21 @@ export interface DurableSubagentOptions {
   workBinding?: () => WorkRevisionBinding | undefined;
 }
 
+
 type ActiveChild = {
   taskId: string;
   id: string;
   identity: Identity;
   summary: SubagentSummaryDto;
   snapshot: () => SubagentSummaryDto;
-  steer: (instruction: string, requestId: string) => Promise<void>;
-  cancel: () => Promise<void>;
+  steer: (instruction: string, requestId: string, origin: "user" | "parent") => Promise<SubagentSteerResultDto>;
+  cancel: (source: SubagentStopRequestSource) => Promise<void>;
   transcript: () => Promise<{ record: SubagentSummaryDto; entries: Array<{ ts: number; type: "message_end"; message: Message }>; ended: boolean }>;
 };
 const activeChildren = new Map<string, ActiveChild>();
 
 export async function stopDurableSubagentsForModelScopeChange(): Promise<void> {
-  await Promise.allSettled([...activeChildren.values()].map(child => child.cancel()));
+  await Promise.allSettled([...activeChildren.values()].map(child => child.cancel("model-scope-change")));
 }
 
 /**
@@ -152,29 +155,57 @@ export async function stopDurableSubagentsForModelScopeChange(): Promise<void> {
 export async function stopDurableSubagentsForTask(taskId: string): Promise<void> {
   await Promise.allSettled([...activeChildren.values()]
     .filter(child => child.taskId === taskId)
-    .map(child => child.cancel()));
+    .map(child => child.cancel("task-stop")));
 }
 
-/** This index is a view of live Durable calls. It never schedules or restores work. */
-export const durableSubagentIpcBackend = {
+function steerUnavailable(requestId: string, reason = "child_unavailable"): SubagentSteerResultDto {
+  const message = reason === "invalid_request" ? "引导请求无效"
+    : reason === "child_cancelling" ? "子代理正在停止，引导未接收"
+      : reason === "conversation_idle" ? "子代理当前轮次已经收尾，引导未接收"
+        : "子代理已结束或无法接收引导";
+  return { ok: false, requestId, reason, message };
+}
+
+const validSteerId = (id: string): boolean => id.length > 0 && id.length <= 160 && id.trim() === id;
+
+/** The live index handles admission, while the passive reader supplies stored receipts after exit. */
+export function createDurableSubagentIpcBackend(readReceipts?: (taskId: string, childId: string) => Promise<SubagentSteerReceipt[]>) {
+  return {
+  steerReceipts: (taskId: string, childId: string) => readReceipts?.(taskId, childId) ?? Promise.resolve([]),
   // 作用域必须按 taskId 过滤：面板只应看到当前任务的实例
   active: (taskId: string) => [...activeChildren.values()]
     .filter(child => child.taskId === taskId)
     .map(child => child.snapshot()),
   transcript: async (id: string) => await activeChildren.get(id)?.transcript() ?? { record: null, entries: [], ended: true },
-  steer: async (id: string, instruction: string) => {
+  steer: async (id: string, instruction: string, taskId: string, requestId: string): Promise<SubagentSteerResultDto> => {
+    if (!taskId || !validSteerId(requestId) || !instruction.trim()) return steerUnavailable(requestId, "invalid_request");
     const child = activeChildren.get(id);
-    if (!child) return { ok: false, delivered: "queued", message: "子代理已经结束" };
-    await child.steer(instruction, `ui:${randomUUID()}`);
-    return { ok: true, delivered: "steered", message: "已提交引导" };
+    let unavailable = steerUnavailable(requestId);
+    if (child?.taskId === taskId) {
+      try {
+        const result = await child.steer(instruction, requestId, "user");
+        if (result.ok) return result;
+        unavailable = result;
+      } catch (error) {
+        // The parent invocation can end immediately after the native admission commits.
+        const receipt = (await readReceipts?.(taskId, id))?.find(row => row.requestId === requestId);
+        if (receipt) return { ok: true, receipt };
+        throw error;
+      }
+    }
+    const receipt = (await readReceipts?.(taskId, id))?.find(row => row.requestId === requestId);
+    return receipt ? { ok: true, receipt } : unavailable;
   },
   cancel: async (id: string) => {
     const child = activeChildren.get(id);
     if (!child) return { ok: false, message: "子代理已经结束" };
-    await child.cancel();
+    await child.cancel("child-panel");
     return { ok: true };
   },
-};
+  };
+}
+
+export const durableSubagentIpcBackend = createDurableSubagentIpcBackend();
 
 /**
  * D-1: the provider membership quota rejects with HTTP 400 `tier_limit_exceeded` /
@@ -365,12 +396,28 @@ export function createDurableSubagentTools(options: DurableSubagentOptions): Too
     },
   });
   const steer = defineTool({
-    name: "subagent_steer", parameters: SteerParams, replay: "safe", description: "Submit a durable steering input to a live child of this task; completed children cannot restart through this tool.",
-    execute: async (params, api) => {
-      const child = activeChildren.get(params.subagentId);
-      if (!child || child.taskId !== options.taskId) throw new Error("子代理不属于当前任务或已经结束");
-      await child.steer(params.instruction, `steer:${api.taskId}`);
-      return { output: [{ type: "text", text: "已提交引导" }] };
+    name: "subagent_steer", parameters: SteerParams, replay: "safe",
+    description: "Send a steering message to a live child of this task or look up its receipt by requestId. The same requestId retrieves the existing submission. A processed receipt means Pi placed the input in the active transcript; settled means Pi answered it.",
+    execute: async (params, api, context) => {
+      const requestId = params.requestId ?? `tool:${api.taskId}`;
+      let result: SubagentSteerResultDto = steerUnavailable(requestId, "invalid_request");
+      if (validSteerId(requestId) && (params.instruction === undefined ? params.requestId !== undefined : Boolean(params.instruction.trim()))) {
+        const index = await api.snapshot(DurableSteerChild, params.subagentId, context);
+        const childId = index?.conversationId as ConversationId | undefined | null;
+        const identity = childId == null ? undefined : (await api.snapshot(DurableSubagentIdentity, childId, context))?.value;
+        const existing = childId != null && identity?.taskId === options.taskId
+          && identity.parentConversationId === api.conversationId && identity.item.id === params.subagentId
+          ? await api.commit(tx => readSteerByRequest(tx, childId, steerRequestKey(requestId)), context)
+          : undefined;
+        const child = activeChildren.get(params.subagentId);
+        result = existing ? { ok: true, receipt: existing } : steerUnavailable(requestId, "unknown_request");
+        if (!existing && params.instruction !== undefined) {
+          result = child?.taskId === options.taskId && child.identity.parentConversationId === api.conversationId
+            ? await child.steer(params.instruction, requestId, "parent")
+            : steerUnavailable(requestId);
+        }
+      }
+      return { output: [{ type: "text", text: JSON.stringify(result) }], isError: !result.ok, details: json(result) };
     },
   });
   const documents = defineTool({
@@ -751,9 +798,12 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     const selectedWorkspace = workspace;
     let created = owned ?? await api.commit(async tx => {
       const child = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
+      const parentRun = (await tx.doc(LiveDoc, api.conversationId)).run;
       const identity: Identity = { taskId: options.taskId, parentConversationId: api.conversationId, item, workspace: selectedWorkspace,
+        ...(parentRun && { parentSubmissionIds: [...parentRun.inputs] }),
         startedAt: api.now(), deadline: api.now() + dispatch.timeout.timeoutMs, timeout: dispatch.timeout };
       (await tx.doc(DurableSubagentIdentity, child.id)).value = json(identity);
+      (await tx.doc(DurableSteerChild, item.id, null)).conversationId = child.id;
       await configure(tx, child.id, { cwd: selectedWorkspace.cwd, tools, modelTools: null, instructions,
         model: { provider: item.selection.model.slice(0, separator), modelId: item.selection.model.slice(separator + 1) },
         thinkingLevel: normalizeThinking(item.selection.thinking) });
@@ -769,6 +819,7 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
         const next = { ...doc.value, item: { ...doc.value.item, tools: [...item.tools] } };
         await configure(tx, owned.id, { tools, modelTools: null, instructions });
         doc.value = json(next);
+        (await tx.doc(DurableSteerChild, item.id, null)).conversationId = owned.id;
         return json(next);
       }, context);
       created = { id: owned.id, identity };
@@ -803,13 +854,41 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
       const reported = options.observedUsage?.(String(created.id));
       return reported?.requests ? { ...summary, usage: { ...summary.usage, reported, turns: reported.requests } } : summary;
     };
+    let acceptingSteers = true;
+    let stopRequest: SubagentStopRequestSource | undefined;
+    const steerSubmissions = new Set<number>();
     const active: ActiveChild = { taskId: options.taskId, id: item.id, identity: created.identity, summary, snapshot,
-      steer: async (instruction, requestId) => {
-        await child.submit({ type: "input", content: instruction, requestId, whenBusy: "steer", whenIdle: "reject" }, context);
-        summary.steerCount++; options.onChange?.();
-      }, cancel: () => child.abort(context),
+      steer: async (instruction, requestId, origin) => {
+        const key = steerRequestKey(requestId);
+        try {
+          const receipt = await api.commit(async tx => {
+            const existing = await readSteerByRequest(tx, created.id, key);
+            if (existing) return existing;
+            if (!acceptingSteers) return { unavailable: "child_cancelling" };
+            const live = await tx.doc(LiveDoc, created.id);
+            if (!live.run || live.run.afterRun !== undefined) return { unavailable: "conversation_idle" };
+            await child.submit(tx, { type: "input", content: instruction, requestId: key, whenBusy: "steer",
+              whenIdle: "reject", entry: { kind: STEER_ENTRY_KIND, data: { requestId, origin } } });
+            await recordSteerInstruction(tx, created.id, key, instruction, origin);
+            return null;
+          }, context);
+          if (receipt && "unavailable" in receipt) return steerUnavailable(requestId, receipt.unavailable);
+          const committed = receipt ?? await api.commit(tx => readSteerByRequest(tx, created.id, key), context);
+          if (!committed) throw new Error("找不到原生引导回执");
+          steerSubmissions.add(committed.submissionId);
+          summary.steerCount = steerSubmissions.size;
+          options.onChange?.();
+          return { ok: true, receipt: committed };
+        } catch (error) {
+          if (error instanceof ConversationIdle) return steerUnavailable(requestId, "conversation_idle");
+          throw error;
+        }
+      }, cancel: source => {
+        stopRequest ??= source;
+        acceptingSteers = false;
+        return child.abort(context);
+      },
       transcript: async () => ({ record: snapshot(), entries: (await messages()).map(message => ({ ts: message.timestamp, type: "message_end", message })), ended: false }) };
-    activeChildren.set(item.id, active); options.onChange?.();
     const watch = await api.watchDoc(LiveDoc, created.id, context);
     if (watch) {
       stopWatch = () => watch.stop();
@@ -822,33 +901,54 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     // one, otherwise the resubmission returns the original failed receipt and the retry does nothing.
     const requestId = attempt > 0 ? `subagent:${item.id}:retry:${attempt}` : `subagent:${item.id}`;
     const submission = await child.submit({ type: "input", content: item.task, requestId }, context);
+    activeChildren.set(item.id, active); options.onChange?.();
     let timedout = false;
-    const initial = await submission.status(context);
-    if (initial.status !== "done" && initial.status !== "unanswered") {
+    {
       const timeout = new AbortController();
       const remaining = created.identity.deadline - api.now();
       if (remaining <= 0) timeout.abort(new Error("Subagent time limit reached"));
       else timer = setTimeout(() => timeout.abort(new Error("Subagent time limit reached")), remaining);
-      try { await submission.wait(withAbortSignal(timeout.signal, context)); }
+      try {
+        const waitContext = withAbortSignal(timeout.signal, context);
+        await submission.wait(waitContext);
+        await child.waitForIdle(waitContext);
+      }
       catch (error) {
         if (context.abortSignal?.aborted || !timeout.signal.aborted) throw error;
         timedout = true;
-        await child.abort(context);
+        await active.cancel("deadline");
       }
     }
+    acceptingSteers = false;
+    const receipt = await submission.status(context);
+    // Pi can retain queued input after a failed run. This task-scoped child will close,
+    // so settle its queued steers on the native line before releasing the live index.
+    const failure = await api.commit(async tx => {
+      const inbox = await tx.doc(InboxDoc, created.id);
+      const failure = (await tx.doc(LiveDoc, created.id)).runFailure;
+      const reason = receipt.status === "unanswered" || failure ? "run_failed" : "child_finished_before_processing";
+      for (let index = inbox.items.length - 1; index >= 0; index--) {
+        const item = inbox.items[index];
+        if (item.mode !== "steer" || item.entry?.kind !== STEER_ENTRY_KIND) continue;
+        tx.settleSubmission(item.id, { status: "unanswered", reason });
+        inbox.items.splice(index, 1);
+      }
+      return failure && { reason: failure.reason, detail: typeof failure.detail === "string" ? failure.detail : undefined };
+    }, context);
     const persisted = await messages();
     result.messages = persisted.map(message => ({ ...message, content: typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content.map(part => ({ ...part })) }));
     const assistants = persisted.filter(message => message.role === "assistant");
     const final = assistants.at(-1);
-    const receipt = await submission.status(context);
-    result.status = timedout ? "timedout" : receipt.status === "done" && final?.stopReason === "stop" ? "completed" : receipt.status === "unanswered" && receipt.reason === "aborted" ? "cancelled" : "failed";
+    const reason = receipt.status === "unanswered" ? receipt.reason : failure?.reason;
+    result.status = timedout ? "timedout" : reason === "aborted" ? "cancelled"
+      : !reason && receipt.status === "done" && final?.stopReason === "stop" ? "completed" : "failed";
     result.exitCode = result.status === "completed" ? 0 : 1;
     result.stopReason = final?.stopReason;
     if (result.exitCode) {
       if (timedout) result.errorMessage = "Subagent time limit reached";
-      else if (receipt.status === "unanswered") {
-        const detail = typeof receipt.detail === "string" ? receipt.detail.trim() : "";
-        result.errorMessage = final?.errorMessage || detail || receipt.reason;
+      else if (reason) {
+        const detail = receipt.status === "unanswered" ? receipt.detail : failure?.detail;
+        result.errorMessage = final?.errorMessage || (typeof detail === "string" ? detail.trim() : "") || reason;
       }
       else if (final?.stopReason === "length") result.errorMessage = "子代理回复达到模型输出长度上限，报告被截断";
       else result.errorMessage = final?.errorMessage || "Subagent did not complete";
@@ -857,9 +957,18 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
     for (const message of assistants) addChildResponse(result.usage, message);
     result.nativeConversationId = created.id;
     result.durationMs = Math.max(0, api.now() - created.identity.startedAt);
+    withWriteConflicts(result);
+    const completion = { submissionId: receipt.id, status: resultOutcome(result) === "blocked" ? "blocked" : result.status, durationMs: result.durationMs,
+      ...(stopRequest && {stopRequest}) };
+    try {
+      await api.commit(async tx => { (await tx.doc(DurableSubagentIdentity, created.id)).completion = completion; }, context);
+    } catch (error) {
+      if (context.abortSignal?.aborted) throw error;
+      console.warn("[DurableSubagent] 未写入结束来源", item.id, error);
+    }
     const reported = options.observedUsage?.(String(created.id));
     if (reported?.requests && reported.requests === result.usage.turns) result.usage.reported = reported;
-    return { result: withWriteConflicts(result), deadline: created.identity.deadline };
+    return { result, deadline: created.identity.deadline };
   } catch (error) {
     // Closing the Harness must leave the safe tool pending. Turning cancellation into a result would lose recovery.
     if (context.abortSignal?.aborted) throw error;

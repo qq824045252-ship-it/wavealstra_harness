@@ -6,8 +6,8 @@
  * ~/.mybuddy/plugins/extensions and cannot be replaced by executable disk extensions.
  */
 import { durableSubagentIpcBackend } from "../agent/durable/DurableSubagents";
-import { setSubagentIpcBackend } from "../agent/subagent-ipc-host";
+import { getSubagentIpcBackend, setSubagentIpcBackend } from "../agent/subagent-ipc-host";
 
 export function installBuiltinSubagentIpc(): void {
-  setSubagentIpcBackend(durableSubagentIpcBackend);
+  if (!getSubagentIpcBackend()) setSubagentIpcBackend(durableSubagentIpcBackend);
 }

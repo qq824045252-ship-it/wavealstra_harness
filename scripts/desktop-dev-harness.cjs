@@ -79,7 +79,7 @@ function createSseAudit(emit) {
   };
 }
 
-exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true}) => {
+exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUsage, fixtureModelRates, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
   const agentDir = path.join(home, '.mybuddy'), userData = path.join(home, 'electron-profile');
@@ -145,14 +145,37 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings 
       await wait(500);
       try {
         process.kill(identity.pid, 0);
+        let stillRunning = true;
         if (process.platform === 'linux') {
           const stat=fs.readFileSync('/proc/'+identity.pid+'/stat','utf8');
           if (stat.slice(stat.lastIndexOf(')')+2).trim().split(/\s+/)[19] !== identity.startTime) throw Error('Main PID was reused');
         } else if (process.platform === 'win32') {
-          const command=cp.execFileSync('powershell.exe',['-NoProfile','-Command',`(Get-CimInstance Win32_Process -Filter 'ProcessId = ${identity.pid}').CommandLine`],{encoding:'utf8',windowsHide:true});
-          if (!command.includes(path.join(home,'bootstrap.cjs'))) throw Error('Main PID no longer belongs to this isolated bootstrap');
+          const lookup = [
+            '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+            `$entry = Get-CimInstance Win32_Process -Filter 'ProcessId = ${identity.pid}' -ErrorAction Stop`,
+            '@{ exists = ($null -ne $entry); commandLine = $entry.CommandLine } | ConvertTo-Json -Compress',
+          ].join('\n');
+          const readProcess = () => {
+            const output = cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', lookup],
+              {encoding:'utf8',windowsHide:true});
+            const result = JSON.parse(output.trim());
+            if (typeof result?.exists !== 'boolean') throw Error('Could not verify isolated main process');
+            return result;
+          };
+          let result = readProcess();
+          // Windows may still list the exiting object after its command line becomes unavailable.
+          for (let attempt = 0; attempt < 3 && result.exists
+            && (result.commandLine == null || result.commandLine === ''); attempt++) {
+            await wait(250);
+            result = readProcess();
+          }
+          stillRunning = result.exists;
+          if (stillRunning && (typeof result.commandLine !== 'string'
+            || !result.commandLine.includes(path.join(home,'bootstrap.cjs')))) {
+            throw Error('Main PID no longer belongs to this isolated bootstrap');
+          }
         }
-        process.kill(identity.pid, 'SIGTERM');
+        if (stillRunning) process.kill(identity.pid, 'SIGTERM');
       } catch (error) {if (error.code !== 'ESRCH' && error.code !== 'ENOENT') throw error;}
     }
     if (child?.exitCode === null) {
@@ -166,13 +189,14 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings 
       contextWindow: 128000, maxTokens: 4096, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}};
     let baseUrl = 'http://127.0.0.1:1/v1';
     if (fixtureModel) {
-      model = {...model, name: 'Deterministic test model'};
+      model = {...model, name: 'Deterministic test model', ...(fixtureModelRates ? {cost: fixtureModelRates} : {})};
       report.modelConfiguration = {kind: 'fixture'};
       relay = http.createServer(async (req, res) => {
         try {
           const chunks = [];
           for await (const chunk of req) chunks.push(chunk);
           const request = JSON.parse(Buffer.concat(chunks));
+          const requestIndex = requests.length;
           requests.push(request);
           const reply = await fixtureModel(request);
           const tool = typeof reply === 'string' ? undefined : reply.tool;
@@ -180,7 +204,10 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings 
             function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] } : { role: 'assistant', content: reply };
           const finishReason = tool ? 'tool_calls' : 'stop';
           const base = {id: 'fixture-' + requests.length, model: model.id, created: Math.floor(Date.now()/1000)};
-          const usage = {prompt_tokens: 20, completion_tokens: 4, total_tokens: 24};
+          // Pass the raw provider envelope through the real transport and SDK. Null omits usage.
+          const sample = await fixtureUsage?.(request, {requestIndex});
+          const usage = sample === undefined ? {prompt_tokens: 20, completion_tokens: 4, total_tokens: 24} : sample;
+          if (fixtureUsage) rawUsageAudit.push({requestIndex, usage});
           if (request.stream) {
             res.writeHead(200, {'Content-Type': 'text/event-stream'});
             const send = (choices, tokens) => res.write('data: ' + JSON.stringify({
@@ -192,7 +219,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings 
             res.end('data: [DONE]\n\n');
           } else {
             res.writeHead(200, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({...base, object: 'chat.completion', usage,
+            res.end(JSON.stringify({...base, object: 'chat.completion', ...(usage === null ? {} : {usage}),
               choices: [{index: 0, message, finish_reason: finishReason}]}));
           }
         } catch (error) {
@@ -350,6 +377,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, settings 
     if (benchmarkJournal.length) fs.writeFileSync(path.join(out, 'provider-requests.jsonl'),
       benchmarkJournal.map(record => JSON.stringify(record) + '\n').join(''));
     fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests));
+    if (fixtureUsage) fs.writeFileSync(path.join(out, 'fixture-usage.json'), JSON.stringify(rawUsageAudit, null, 2));
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
     console.log(name + ': ' + report.status + '; ' + path.join(out, 'report.json'));
     if (report.error) console.error(report.error);

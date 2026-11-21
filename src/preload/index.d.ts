@@ -61,6 +61,7 @@ import type {
   GatewayEventDto,
   GatewayListMessagesRequest,
   SubagentSteerResultDto,
+  SubagentSteerReceipt,
   SubagentSummaryDto,
   SubagentTranscriptDto,
   UsageDashboardDto,
@@ -427,7 +428,8 @@ export interface PreloadApi {
   subagent: {
     active: (taskId: string) => Promise<SubagentSummaryDto[]>;
     transcript: (subagentId: string) => Promise<SubagentTranscriptDto>;
-    steer: (subagentId: string, instruction: string) => Promise<SubagentSteerResultDto>;
+    steer: (subagentId: string, instruction: string, taskId: string, requestId: string) => Promise<SubagentSteerResultDto>;
+    steerReceipts: (taskId: string, subagentId: string) => Promise<SubagentSteerReceipt[]>;
     cancel: (subagentId: string) => Promise<{ ok: boolean; message: string }>;
     onEvent: (callback: (ev: { ts: number }) => void) => () => void;
   };
@@ -489,6 +491,8 @@ export interface PreloadApi {
     detectCloudflared: () => Promise<RemoteCloudflaredStatus>;
   };
   answerRouting: import("../shared/answer-routing").AnswerRoutingApi;
+  nativeHooks: import("../shared/native-hooks").NativeHooksApi;
+  nativeImprovement: import("../shared/native-improvement").NativeImprovementApi;
   materialRetrieval: import("../shared/materialRetrieval").MaterialRetrievalApi;
   memory: {
     organization: () => Promise<import("../shared/memory-organization").MemoryOrganizationRun | null>;
