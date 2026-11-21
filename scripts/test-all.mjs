@@ -146,6 +146,7 @@ const GUI_TESTS = new Set([
   "test:consult-selection",
   "test:consult-entry:desktop",
   "test:mode-navigation:desktop",
+  "test:task-board:desktop",
   // Electron 运行时 / e2e
   "test:html-edit-electron",
   "test:local-capabilities-electron",
@@ -382,6 +383,7 @@ const HEADLESS_TESTS = new Set([
   "test:work-budget-retirement",
   "test:work-effect-retirement",
   "test:task-diagnostics",
+  "test:task-board",
   "test:durable-subagent",
   "test:durable-consult",
   "test:app-store-structure",

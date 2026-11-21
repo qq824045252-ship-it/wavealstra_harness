@@ -5,6 +5,12 @@ import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import type { SettingsTab } from "../types";
 
+export interface NotificationMessageFocus {
+  messageId: string;
+  toolCallId?: string;
+  interactionId?: string;
+}
+
 export interface AppUiState {
   page: Page;
   theme: Theme;
@@ -16,6 +22,7 @@ export interface AppUiState {
   settingsOpen: boolean;
   settingsTab: SettingsTab;
   answerRuleTurnTarget?: { taskId: string; inputId: string };
+  notificationMessageTarget?: NotificationMessageFocus & { taskId: string };
   answerRuleSeed?: { question?: string; answer?: string; projectId?: string; memoryId?: string; sourceHash?: string;
     title?: string; instruction?: string; evidencePaths?: string[]; turn?: { taskId: string; inputId: string } };
   activeWorkspaceId: string | null;
@@ -36,6 +43,7 @@ export function createAppUiState(): AppUiState {
     settingsTab: "system",
     answerRuleSeed: undefined,
     answerRuleTurnTarget: undefined,
+    notificationMessageTarget: undefined,
     activeWorkspaceId: null,
     subagentDrawer: undefined as { instanceId: string } | undefined,
     subagentView: undefined as { taskId: string; subagentId: string } | undefined,
@@ -63,7 +71,7 @@ export function createAppUiActions(
   const { get, set } = storeContext;
   return {
     openWorkspaceDetail: (spaceId) =>
-      set({ activeWorkspaceId: spaceId, page: "workspace" }),
+      set({ activeWorkspaceId: spaceId, page: "workspace", notificationMessageTarget: undefined }),
 
     closeWorkspaceDetail: () => set({ activeWorkspaceId: null }),
 

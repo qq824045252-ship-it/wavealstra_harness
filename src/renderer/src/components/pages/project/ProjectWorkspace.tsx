@@ -1,3 +1,4 @@
+import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ChatInput from "@/components/chat/ChatInput";
 import { IconChevronRight, IconFolderKanban } from "@/components/common/icons";
@@ -60,7 +61,6 @@ export default function ProjectWorkspace({
   const projectNavRequest = useAppStore((state) => state.projectNavRequest);
   const applyProjectNavigation = useAppStore((state) => state.applyProjectNavigation);
   const clearProjectNavRequest = useAppStore((state) => state.clearProjectNavRequest);
-  const setActiveTask = useAppStore((state) => state.setActiveTask);
   const sendMessage = useAppStore((state) => state.sendMessage);
   const [project, setProject] = useState<ProjectDetailsDto | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "error">("loading");
@@ -394,7 +394,7 @@ export default function ProjectWorkspace({
                   spaces={spaces}
                   showArchived={showArchived}
                   onNewTask={() => setTaskModalOpen(true)}
-                  onOpenTask={(taskId) => setActiveTask(taskId)}
+                  onOpenTask={(taskId) => openVisitedTask(taskId)}
                   onOpenTab={(tab) => requestNavigate({ type: "tab", tab })}
                   onRefresh={refresh}
                   onRegisterUnsaved={(guard) => registerUnsaved(guard, "pane")}

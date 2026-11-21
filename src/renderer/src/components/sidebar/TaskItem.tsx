@@ -1,3 +1,4 @@
+import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isGatewayConversation } from "../../../../shared/gateway-task";
 import { createPortal } from "react-dom";
@@ -44,7 +45,6 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   const page = useAppStore((s) => s.page);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const pinnedTaskIds = useAppStore((s) => s.pinnedTaskIds);
-  const setActiveTask = useAppStore((s) => s.setActiveTask);
   const deleteTask = useAppStore((s) => s.deleteTask);
   const renameTask = useAppStore((s) => s.renameTask);
   const togglePinTask = useAppStore((s) => s.togglePinTask);
@@ -315,8 +315,8 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} status-${status}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
       style={indent != null ? { paddingLeft: indent } : undefined}
       title={editing ? undefined : `${task.title || "未命名任务"} · ${relativeTime(task.updatedAt)}`}
-      onClick={() => !editing && setActiveTask(task.id)}
-      onKeyDown={(e) => e.key === "Enter" && !editing && setActiveTask(task.id)}
+      onClick={() => !editing && openVisitedTask(task.id)}
+      onKeyDown={(e) => e.key === "Enter" && !editing && openVisitedTask(task.id)}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();

@@ -39,6 +39,7 @@ import {
 
 interface Props {
   message: ChatMessage;
+  focusTool?: boolean;
   sourceQuestion?: ChatMessage;
   /** Only task chat supplies a local image scope; Gateway/BTW must not inherit activeTaskId. */
   taskId?: string;
@@ -407,7 +408,7 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus }: Props): React.JSX.Element {
+function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, focusTool }: Props): React.JSX.Element {
   const showAllArtifacts = useAppStore((s) => s.showAllArtifacts);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
@@ -738,7 +739,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
           </span>
         </div>
 
-        {gatewayStatus ? <div className="assistant-source-badge">{gatewayStatus}</div> : <ExecutionTimeline message={message} taskId={taskId} />}
+        {gatewayStatus ? <div className="assistant-source-badge">{gatewayStatus}</div> : <ExecutionTimeline message={message} taskId={taskId} focusTool={focusTool} />}
 
         {(message.interactions ?? []).map((interaction) => (
           <ConversationInteractionCard key={interaction.id} interaction={interaction} />

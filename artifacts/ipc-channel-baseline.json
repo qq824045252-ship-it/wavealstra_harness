@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 543,
-  "allRegistrations": 563,
-  "uniqueChannels": 543,
+  "mainRegistrations": 546,
+  "allRegistrations": 566,
+  "uniqueChannels": 546,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -252,7 +252,10 @@
     "db:renameSpace",
     "db:reopenProjectEvent",
     "db:restoreTrashedTask",
+    "db:setTaskDueDate",
     "db:setWorkspaceIcon",
+    "db:taskBoardAction",
+    "db:taskBoardPage",
     "db:unpinProjectItem",
     "db:updateProject",
     "db:updateProjectMemory",
@@ -565,7 +568,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2423",
+          "src/main/index.ts:2439",
           "scripts/wave5-real-open-e2e.ts:273"
         ],
         "foreign": [
@@ -575,7 +578,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2427",
+          "src/main/index.ts:2443",
           "scripts/wave5-real-open-e2e.ts:269"
         ],
         "foreign": [
@@ -585,7 +588,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2431",
+          "src/main/index.ts:2447",
           "scripts/wave5-real-open-e2e.ts:266"
         ],
         "foreign": [
@@ -595,7 +598,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2442",
+          "src/main/index.ts:2458",
           "scripts/wave5-real-open-e2e.ts:265"
         ],
         "foreign": [
@@ -605,7 +608,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2446",
+          "src/main/index.ts:2462",
           "scripts/wave5-real-open-e2e.ts:261"
         ],
         "foreign": [
@@ -615,7 +618,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2451",
+          "src/main/index.ts:2467",
           "scripts/wave5-real-open-e2e.ts:276"
         ],
         "foreign": [
@@ -625,7 +628,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2455",
+          "src/main/index.ts:2471",
           "scripts/wave5-real-open-e2e.ts:279"
         ],
         "foreign": [
@@ -647,7 +650,7 @@
       {
         "channel": "agent:abort",
         "entries": [
-          "src/main/index.ts:1256",
+          "src/main/index.ts:1264",
           "scripts/browser-stop-ui-electron-test.ts:42"
         ],
         "foreign": [
@@ -657,7 +660,7 @@
       {
         "channel": "agent:getAppSettings",
         "entries": [
-          "src/main/index.ts:1405",
+          "src/main/index.ts:1414",
           "scripts/browser-stop-ui-electron-test.ts:41"
         ],
         "foreign": [
@@ -667,7 +670,7 @@
       {
         "channel": "agent:loadTaskHistory",
         "entries": [
-          "src/main/index.ts:1538",
+          "src/main/index.ts:1547",
           "scripts/browser-stop-ui-electron-test.ts:43"
         ],
         "foreign": [
@@ -677,7 +680,7 @@
       {
         "channel": "agent:getModeProfile",
         "entries": [
-          "src/main/index.ts:1571",
+          "src/main/index.ts:1580",
           "scripts/browser-stop-ui-electron-test.ts:40"
         ],
         "foreign": [

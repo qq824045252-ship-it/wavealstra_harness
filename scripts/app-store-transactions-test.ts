@@ -69,6 +69,8 @@ async function activationIsAtomicAndLateReadsStayWithTheirOwner(): Promise<void>
     },
   });
   const { useAppStore: api } = app;
+  assert.ok(Object.hasOwn(api.getState(), "notificationMessageTarget"));
+  assert.equal(api.getState().notificationMessageTarget, undefined);
   api.setState({
     tasks: [
       task("a", { messages: [] }),
@@ -106,8 +108,9 @@ async function activationIsAtomicAndLateReadsStayWithTheirOwner(): Promise<void>
     assert.equal(next.modelExplicit, true);
     assert.equal(next.permissionExplicit, true);
     assert.deepEqual(next.activeConnectorIds, ["connector-b"]);
+    assert.deepEqual(next.notificationMessageTarget, { taskId: "b", messageId: "b-answer", toolCallId: "b-tool" });
   });
-  api.getState().setActiveTask("b");
+  api.getState().setActiveTask("b", { messageId: "b-answer", toolCallId: "b-tool" });
   assert.equal(transitions, 1, "one observer-visible cross-domain activation");
   unsubscribe();
   api.setState({ panelOpen: true });
@@ -139,6 +142,13 @@ async function activationIsAtomicAndLateReadsStayWithTheirOwner(): Promise<void>
     api.getState().tasks.find((item) => item.id === "b")?.messages[0].id,
     "b-answer",
   );
+  assert.deepEqual(api.getState().notificationMessageTarget, { taskId: "b", messageId: "b-answer", toolCallId: "b-tool" });
+  api.getState().setActiveTask("a");
+  assert.equal(api.getState().notificationMessageTarget, undefined);
+  api.getState().setActiveTask("b", { messageId: "b-answer", interactionId: "b-interaction" });
+  api.getState().setPage("notifications");
+  api.getState().setPage("chat");
+  assert.equal(api.getState().notificationMessageTarget, undefined);
 }
 
 async function regenerationCommitsInOneNotification(): Promise<void> {
@@ -776,6 +786,10 @@ async function bootstrapAppliesCriticalDataBeforeOptionalCatalogs(): Promise<voi
     },
   };
   const app = store(api);
+  app.useAppStore.setState({
+    activeTaskId: "removed",
+    notificationMessageTarget: { taskId: "removed", messageId: "gone" },
+  });
   const binding = {
     context: app.context,
     api: api as unknown as NonNullable<Window["api"]>,
@@ -788,6 +802,8 @@ async function bootstrapAppliesCriticalDataBeforeOptionalCatalogs(): Promise<voi
     emptySoul: EMPTY_SOUL,
   });
   const state = app.useAppStore.getState();
+  assert.equal(state.activeTaskId, null);
+  assert.equal(state.notificationMessageTarget, undefined);
   assert.deepEqual(state.tasks.map((row) => row.id), ["critical"], "关键数据不受目录失败影响");
   assert.deepEqual(state.models.map((row) => row.id), ["model"]);
   assert.deepEqual(state.spaces.map((row) => row.id), ["space"]);
@@ -796,6 +812,11 @@ async function bootstrapAppliesCriticalDataBeforeOptionalCatalogs(): Promise<voi
   assert.deepEqual(state.connectors.map((row) => row.id), ["c1"]);
   assert.equal(state.skills.length, 0, "失败的目录只留下空分片");
   assert.ok(calls.includes("market-skills") && calls.includes("connectors"), "失败目录不会中断其他目录");
+  app.useAppStore.getState().setActiveTask("critical", { messageId: "persisted-reply", interactionId: "real-question" });
+  await loadRuntimeBootstrap(binding, { mapTaskRowToTask, recomputeEffectiveArchived, emptySoul: EMPTY_SOUL });
+  assert.deepEqual(app.useAppStore.getState().notificationMessageTarget,
+    { taskId: "critical", messageId: "persisted-reply", interactionId: "real-question" },
+    "恢复同一活跃任务时保留待定位的具体交互");
 }
 
 async function bootstrapCriticalFailureLeavesNoPartialScreen(): Promise<void> {

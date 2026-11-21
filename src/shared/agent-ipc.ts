@@ -512,6 +512,8 @@ export const DbIpc = {
   commitProjectFolder: "db:commitProjectFolder",
   listSpaces: "db:listSpaces",
   listTasks: "db:listTasks",
+  taskBoardPage: "db:taskBoardPage",
+  taskBoardAction: "db:taskBoardAction",
   listProjects: "db:listProjects",
   getProject: "db:getProject",
   createProject: "db:createProject",
@@ -561,6 +563,7 @@ export const DbIpc = {
   archiveSpace: "db:archiveSpace",
   archiveTask: "db:archiveTask",
   ackTaskDone: "db:ackTaskDone",
+  setTaskDueDate: "db:setTaskDueDate",
   // Phase 2 Tree V2：同父混排重排与重挂（strict targetIndex 契约，不发明第二套排序）
   moveSpace: "db:moveSpace",
   moveTaskInWorkspaceTree: "db:moveTaskInWorkspaceTree",

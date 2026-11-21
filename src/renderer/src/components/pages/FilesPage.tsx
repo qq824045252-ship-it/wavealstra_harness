@@ -1,3 +1,4 @@
+import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Artifact, Task } from "@/types";
 import { relativeTime, sizeLabel, useAppStore } from "@/store/appStore";
@@ -179,7 +180,7 @@ export default function FilesPage(): React.JSX.Element {
       state.applyArtifactSnapshot(snapshot);
       state.reconcileTaskMessageArtifacts(taskId);
     }
-    state.setActiveTask(taskId);
+    openVisitedTask(taskId);
     state.openArtifact(artifactId);
   };
 
@@ -254,7 +255,7 @@ export default function FilesPage(): React.JSX.Element {
                     {!collapsed && group.tasks.map(({ task, artifacts }) => (
                       <div key={task.id} className="desktop-results-task">
                         <button type="button" className="files-task-row desktop-results-task-link"
-                          title="打开来源任务" onClick={() => useAppStore.getState().setActiveTask(task.id)}>
+                          title="打开来源任务" onClick={() => openVisitedTask(task.id)}>
                           <IconFolder size={14} />
                           <span className="files-task-name">{task.title}</span>
                         </button>

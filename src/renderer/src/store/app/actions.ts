@@ -31,6 +31,7 @@ import type {
 } from "../../lib/projectWorkspace";
 import type { RefFileItem } from "../../lib/refTaskArtifacts";
 import type { Theme } from "../../lib/theme";
+import type { NotificationMessageFocus } from "./slices/appUi";
 import type {
   Attachment,
   ChatSelection,
@@ -163,7 +164,7 @@ export interface AppActions {
   newTask: (spaceId?: string, projectId?: string) => void;
   summonExpert: (expertId: string, spaceId?: string) => void;
   setDraftProject: (projectId: string | null) => void;
-  setActiveTask: (id: string) => void;
+  setActiveTask: (id: string, focus?: NotificationMessageFocus) => void;
   setWelcomeMode: (mode: WelcomeMode) => void;
   setModePreset: (presetId: string) => void;
   refreshModelConfiguration: () => Promise<void>;
@@ -228,6 +229,7 @@ export interface AppActions {
   togglePinTask: (id: string) => Promise<void>;
   archiveTask: (id: string) => Promise<void>;
   ackTaskDone: (id: string) => Promise<void>;
+  setTaskDueDate: (id: string, dueAt: number | null) => Promise<void>;
   restoreTask: (id: string) => Promise<void>;
   sendMessage: (
     text: string,

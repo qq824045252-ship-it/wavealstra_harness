@@ -391,6 +391,7 @@ export type PermissionMode = "default" | "readonly" | "auto";
 
 export type Page =
   | "chat"
+  | "task-board"
   | "assistant"
   | "projects"
   | "experts"

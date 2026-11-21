@@ -174,7 +174,9 @@ set({
   permissionMode: selected ? current.permissionMode : appSettings?.permissionMode ?? "default",
   conversationBranchEnabled:
     appSettings?.conversationBranchEnabled === true,
-  ...(!selected ? { activeTaskId: null, panelOpen: false, artifactTabs: [], activeArtifactId: null } : {}),
+  ...(!selected ? {
+    activeTaskId: null, notificationMessageTarget: undefined, panelOpen: false, artifactTabs: [], activeArtifactId: null,
+  } : {}),
 });
 if (selected?.durable) {
   // Rebinding can miss the last delta even if no further event arrives.

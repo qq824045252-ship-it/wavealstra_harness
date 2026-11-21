@@ -3347,6 +3347,23 @@ export class AppDatabase {
       .run(ackedAt ?? Date.now(), id);
   }
 
+  setTaskDueDate(id: string, dueAt: number | null): string | undefined {
+    if (dueAt !== null && (!Number.isSafeInteger(dueAt) || !Number.isFinite(new Date(dueAt).getTime()))) {
+      throw new Error("截止日期无效");
+    }
+    return this.db.transaction(() => {
+      const task = this.getTask(id);
+      if (!task || this.isTaskEffectiveArchived(id) || this.getTaskExecutionWorkspaceState(id)?.state === "trashed") {
+        throw new Error("任务已归档或不存在");
+      }
+      if (dueAt !== null && task.startAt != null && dueAt < new Date(task.startAt).setHours(0, 0, 0, 0)) {
+        throw new Error("截止日期不能早于计划开始日期");
+      }
+      this.db.prepare("UPDATE tasks SET due_at = ? WHERE id = ?").run(dueAt, id);
+      return task.projectId ?? undefined;
+    })();
+  }
+
   // ---------- P1.5 task_execution_workspace_state ----------
 
   getTaskExecutionWorkspaceState(taskId: string): TaskExecutionWorkspaceStateRow | undefined {

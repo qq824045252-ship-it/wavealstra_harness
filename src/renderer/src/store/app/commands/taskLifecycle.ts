@@ -19,6 +19,7 @@ export function createTaskLifecycleActions(
   | "togglePinTask"
   | "archiveTask"
   | "ackTaskDone"
+  | "setTaskDueDate"
   | "restoreTask"
 > {
   const { get, set } = storeContext;
@@ -239,14 +240,12 @@ export function createTaskLifecycleActions(
       const task = get().tasks.find((t) => t.id === id);
       if (!task) return;
       const prevFav = Boolean(task.isFavorited);
-      const prevUpdatedAt = task.updatedAt;
       const next = !prevFav;
-      const now = Date.now(); // 单一 now：乐观与持久化同戳，回滚可精确还原
       storeContext.runtime.pendingPinTaskIds.add(id);
-      // 乐观更新：本地 tasks.isFavorited + pinnedTaskIds + updatedAt 同步，重启后以 DB is_favorited 为准（Phase 2 持久化闭环）
+      // Pinning is display metadata. A cold task uses updatedAt as its unread-result watermark.
       set((s) => ({
         tasks: s.tasks.map((t) =>
-          t.id === id ? { ...t, isFavorited: next, updatedAt: now } : t,
+          t.id === id ? { ...t, isFavorited: next } : t,
         ),
         pinnedTaskIds: next
           ? [...s.pinnedTaskIds.filter((x) => x !== id), id]
@@ -256,7 +255,7 @@ export function createTaskLifecycleActions(
         await storeContext.getApi()?.db?.upsertTask?.({
           id,
           title: task.title,
-          updatedAt: now,
+          updatedAt: task.updatedAt,
           isFavorited: next,
         });
       } catch (err) {
@@ -264,7 +263,7 @@ export function createTaskLifecycleActions(
         set((s) => ({
           tasks: s.tasks.map((t) =>
             t.id === id
-              ? { ...t, isFavorited: prevFav, updatedAt: prevUpdatedAt }
+              ? { ...t, isFavorited: prevFav }
               : t,
           ),
           pinnedTaskIds: prevFav
@@ -286,6 +285,15 @@ export function createTaskLifecycleActions(
         tasks: s.tasks.map((x) => (x.id === id ? { ...x, archived: true } : x)),
       }));
       await storeContext.getApi()?.db?.archiveTask?.(id, true);
+    },
+
+    setTaskDueDate: async (id, dueAt) => {
+      const api = storeContext.getApi()?.db;
+      if (!api?.setTaskDueDate) throw new Error("截止日期保存接口不可用");
+      await api.setTaskDueDate(id, dueAt);
+      set(state => ({
+        tasks: state.tasks.map(task => task.id === id ? { ...task, dueAt: dueAt ?? undefined } : task),
+      }));
     },
 
     ackTaskDone: async (id) => {

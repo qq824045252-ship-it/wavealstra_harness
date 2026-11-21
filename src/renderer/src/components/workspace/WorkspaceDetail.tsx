@@ -1,3 +1,4 @@
+import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useBotWorkspaceNavigation, selectedWorkspaceRequest, clearWorkspaceRequest, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
 import type { BotWorkspaceRequestDto } from "@shared/bot-workspace-navigation";
 import { WorkspaceForegroundConversation } from "./WorkspaceForegroundConversation";
@@ -60,7 +61,6 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   const spaceConversations = foregroundConversations.filter(conversation => conversation.spaceId === activeWorkspaceId);
   const spaceRequests = foregroundRequests.filter(request => request.spaceId === activeWorkspaceId);
   const newTask = useAppStore((state) => state.newTask);
-  const setActiveTask = useAppStore((state) => state.setActiveTask);
   const [tab, setTabNow] = useState<Tab>("overview");
   const materialGuard = useRef<ProjectUnsavedGuard | null>(null);
   const [pendingTab, setPendingTab] = useState<Tab | null>(null);
@@ -157,7 +157,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
     setRenameOpen(false); setRenameErr(null);
   };
   const openArtifact = (taskId: string, artifactId: string): void => {
-    setActiveTask(taskId);
+    openVisitedTask(taskId);
     queueMicrotask(() => useAppStore.getState().openArtifact(artifactId));
   };
 
@@ -223,7 +223,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
           const limit = foregroundLimits[conversation.conversationId] ?? 30;
           return <details key={conversation.conversationId} className="workspace-conversation-group" data-conversation-id={conversation.conversationId}><summary><span>{conversation.title}</span><small>{conversation.archived ? '历史对话 · ' : ''}{requests.length} 个任务</small></summary><div className="workspace-overview-flat-list">{requests.slice(0,limit).map(request => <button type="button" key={request.id} className="workspace-overview-task-row" onClick={()=>openWorkspaceRequest(request)}><span className={`ws-task-dot ${request.status === 'running' ? 'on' : ''}`} /><span className="ws-task-name">{request.title}</span><span className="ws-task-time">{foregroundStatus(request.status)}</span></button>)}</div>{requests.length===0 && <p>此对话还没有前台任务。</p>}{requests.length>limit && <button type="button" className="btn btn--ghost" onClick={()=>setForegroundLimits(current=>({...current,[conversation.conversationId]:limit+30}))}>再看 30 条 · 共 {requests.length} 条</button>}</details>;
         })}</section>}
-        <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>当前工作</h2><span>{spaceTasks.length}</span></div>{shownTasks.length ? <div className="workspace-overview-flat-list">{shownTasks.map((task) => <button key={task.id} className="workspace-overview-task-row" onClick={() => setActiveTask(task.id)}><span className={`ws-task-dot ${task.status === "in_progress" ? "on" : ""}`} /><span className="ws-task-name">{task.title || "未命名任务"}</span><span className="ws-task-time">{relativeTimeLabel(task.updatedAt)}</span></button>)}</div> : <div className="workspace-overview-empty"><strong>还没有任务</strong><span>从这个工作空间创建第一项任务。</span><button className="btn btn--primary" onClick={() => newTask(space.id)}>新建任务</button></div>}</section>
+        <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>当前工作</h2><span>{spaceTasks.length}</span></div>{shownTasks.length ? <div className="workspace-overview-flat-list">{shownTasks.map((task) => <button key={task.id} className="workspace-overview-task-row" onClick={() => openVisitedTask(task.id)}><span className={`ws-task-dot ${task.status === "in_progress" ? "on" : ""}`} /><span className="ws-task-name">{task.title || "未命名任务"}</span><span className="ws-task-time">{relativeTimeLabel(task.updatedAt)}</span></button>)}</div> : <div className="workspace-overview-empty"><strong>还没有任务</strong><span>从这个工作空间创建第一项任务。</span><button className="btn btn--primary" onClick={() => newTask(space.id)}>新建任务</button></div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>子工作空间</h2><span>{children.length}</span></div>{children.length ? <div className="workspace-overview-flat-list">{children.map((child) => <button key={child.id} className="workspace-overview-child-row" onClick={() => openWorkspaceDetail(child.id)}><span><WorkspaceIcon icon={child.icon} size={15} />{child.name}</span><small>{tasks.filter((task) => task.spaceId === child.id && !task.archived).length} 个任务</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无子工作空间</div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>最近产物</h2><span>{recentArtifacts.length}</span></div>{recentArtifacts.length ? <div className="workspace-overview-flat-list">{recentArtifacts.map((artifact) => <button key={artifact.id} className="workspace-overview-artifact-row" onClick={() => openArtifact(artifact.taskId, artifact.id)}><span>{artifact.title || "未命名产物"}</span><small>{artifact.kind} · {relativeTimeLabel(artifact.updatedAt)}</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">工作空间任务产生的文件与产物会显示在这里。</div>}</section>
         <section className="workspace-overview-section"><div className="workspace-overview-section-head"><h2>Gadgets</h2><button className="workspace-overview-link" onClick={() => setTab("gadgets")}>查看全部</button></div>{directGadgets.length ? <div className="workspace-overview-flat-list">{directGadgets.slice(0, 3).map((gadget) => <button key={gadget.id} className="workspace-overview-gadget-row" onClick={() => setTab("gadgets")}><span>{gadget.name}</span><small>{gadget.runtime.status}</small></button>)}</div> : <div className="workspace-overview-empty workspace-overview-empty--compact">暂无工作空间 Gadget。</div>}</section>

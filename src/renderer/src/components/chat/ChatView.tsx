@@ -1,3 +1,4 @@
+import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
 import TaskRecoveryNotice from "./TaskRecoveryNotice";
 import SessionHistoryRecoveryNotice from "./SessionHistoryRecoveryNotice";
@@ -80,7 +81,6 @@ function HomeHero(): React.JSX.Element {
   const modePresetId = useAppStore((s) => s.modePresetId);
   const setModePreset = useAppStore((s) => s.setModePreset);
   const fillComposer = useAppStore((s) => s.fillComposer);
-  const setActiveTask = useAppStore((s) => s.setActiveTask);
   const tasks = useAppStore((s) => s.tasks);
   const spaces = useAppStore((s) => s.spaces);
   const task = useActiveTask();
@@ -220,7 +220,7 @@ function HomeHero(): React.JSX.Element {
                   type="button"
                   className="hero-recent-item"
                   title={spaceLabel}
-                  onClick={() => setActiveTask(item.id)}
+                  onClick={() => openVisitedTask(item.id)}
                 >
                   <WelcomeModeIcon mode={item.welcomeMode} size={13} />
                   <span className="hero-recent-title">{item.title || "未命名任务"}</span>
@@ -292,11 +292,12 @@ function HistoryPopup({
   );
 }
 
-function MessageList({ taskId, messages, artifacts, visibleArtifacts }: {
+function MessageList({ taskId, messages, artifacts, visibleArtifacts, toolFocusMessageId }: {
   taskId: string;
   messages: readonly ChatMessage[];
   artifacts: Artifact[];
   visibleArtifacts: Artifact[];
+  toolFocusMessageId?: string;
 }): React.JSX.Element {
   let precedingUser: ChatMessage | undefined;
   return (
@@ -306,7 +307,8 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts }: {
         return (
         <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
           <MessageItem message={msg} taskId={taskId} sourceQuestion={msg.role === "assistant" ? precedingUser : undefined}
-            artifacts={artifacts} visibleArtifacts={visibleArtifacts} />
+            artifacts={artifacts} visibleArtifacts={visibleArtifacts}
+            focusTool={toolFocusMessageId === msg.id} />
         </div>
         );
       })}
@@ -382,13 +384,27 @@ export default function ChatView(): React.JSX.Element {
   const activeChatId = task?.id;
   const readingKey = activeChatId && JSON.stringify([activeChatId, task?.durable?.historyId]);
   const turnTarget = useAppStore(s => s.answerRuleTurnTarget);
+  const pendingNotificationTarget = useAppStore(s => s.notificationMessageTarget);
+  const notificationTarget = pendingNotificationTarget?.taskId === activeChatId ? pendingNotificationTarget : undefined;
+  const [unresolvedNotificationAnchor, setUnresolvedNotificationAnchor] = useState<typeof notificationTarget>();
   const turnMessage = useMemo(() => {
+    if (notificationTarget) {
+      const exact = displayMessages.find(message => message.id === notificationTarget.messageId
+        || message.sourceMessageIds?.includes(notificationTarget.messageId));
+      if (exact) return exact;
+      const matches = displayMessages.filter(message => notificationTarget.interactionId
+        ? message.interactions?.some(item => item.id === notificationTarget.interactionId)
+        : notificationTarget.toolCallId && message.blocks.some(block =>
+          block.type === "tool" && block.toolCall.id === notificationTarget.toolCallId));
+      return matches.length === 1 ? matches[0] : undefined;
+    }
     if (!turnTarget || turnTarget.taskId !== activeChatId) return;
     const index = displayMessages.findIndex(m => m.role === "user" && (m.inputRequestId ?? m.id) === turnTarget.inputId);
     if (index < 0) return;
     const reply = displayMessages[index + 1];
     return reply?.role === "assistant" ? reply : displayMessages[index];
-  }, [displayMessages, turnTarget, activeChatId]);
+  }, [displayMessages, turnTarget, activeChatId, notificationTarget]);
+  const clearMessageTarget = () => useAppStore.setState({ answerRuleTurnTarget: undefined, notificationMessageTarget: undefined });
 
   /* ------------------------------------------------------------------
    * 滚动意图状态机（单一真源 lib/scrollFollow）：
@@ -429,13 +445,15 @@ export default function ChatView(): React.JSX.Element {
     lastScrollTopRef.current = target;
   }, []);
 
-  const jumpToHistoryQuestion = useCallback((messageId: string): void => {
+  const jumpToNode = useCallback((node: HTMLElement | null): void => {
     const el = scrollRef.current;
-    const node = document.getElementById(`msg-${messageId}`);
     if (!el || !node || !el.contains(node)) return;
     commitFollow(onHistoryJump(followStateRef.current));
     applyProgrammaticScrollTop(el.scrollTop + node.getBoundingClientRect().top - el.getBoundingClientRect().top - TURN_TOP_OFFSET);
   }, [applyProgrammaticScrollTop, commitFollow]);
+  const jumpToHistoryQuestion = useCallback((messageId: string): void => {
+    jumpToNode(document.getElementById(`msg-${messageId}`));
+  }, [jumpToNode]);
 
   const pinUserMessageToTop = useCallback((): void => {
     const el = scrollRef.current;
@@ -484,12 +502,23 @@ export default function ChatView(): React.JSX.Element {
     if (!turnMessage || fullHistory.loading) return;
     const node = document.getElementById(`msg-${turnMessage.id}`);
     if (!node || !scrollRef.current?.contains(node)) return;
-    jumpToHistoryQuestion(turnMessage.id);
-    node.tabIndex = -1;
-    node.addEventListener("blur", () => node.removeAttribute("tabindex"), { once: true });
-    node.focus({ preventScroll: true });
-    useAppStore.setState({ answerRuleTurnTarget: undefined });
-  }, [turnMessage, fullHistory.loading, jumpToHistoryQuestion]);
+    const interaction = notificationTarget?.interactionId && Array.from(node.querySelectorAll<HTMLElement>("[data-interaction-id]"))
+      .find(element => element.dataset.interactionId === notificationTarget.interactionId);
+    const tool = notificationTarget?.toolCallId && Array.from(node.querySelectorAll<HTMLElement>("[data-tool-call-id]"))
+      .find(element => element.dataset.toolCallId === notificationTarget.toolCallId);
+    const anchor = interaction || tool;
+    if (notificationTarget && (notificationTarget.interactionId || notificationTarget.toolCallId) && !anchor) {
+      setUnresolvedNotificationAnchor(notificationTarget);
+      return;
+    }
+    const focus = anchor || node;
+    if (focus instanceof HTMLDetailsElement) focus.open = true;
+    jumpToNode(focus);
+    focus.tabIndex = -1;
+    focus.addEventListener("blur", () => focus.removeAttribute("tabindex"), { once: true });
+    focus.focus({ preventScroll: true });
+    clearMessageTarget();
+  }, [turnMessage, fullHistory.loading, jumpToNode, notificationTarget]);
 
   // 用户滚动意图监听（wheel / 指针拖动 / 键盘）+ 程序化滚动防护。
   // 判定优先「scroll position + programmatic guard」：
@@ -770,9 +799,11 @@ export default function ChatView(): React.JSX.Element {
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>
-          {turnTarget?.taskId === task.id && !fullHistory.loading && !turnMessage && (
-            <div className="conv-branch-error" role="status">当前对话历史中找不到这轮提问。
-              <button type="button" onClick={() => useAppStore.setState({ answerRuleTurnTarget: undefined })}>关闭</button>
+          {((turnTarget?.taskId === task.id || notificationTarget) && !fullHistory.loading && !turnMessage
+            || notificationTarget && unresolvedNotificationAnchor === notificationTarget) && (
+            <div className="conv-branch-error" role="status">
+              {turnMessage ? "指定的工具或交互还未出现在这条消息中。" : "当前对话历史中找不到指定的消息。"}
+              <button type="button" onClick={clearMessageTarget}>关闭</button>
             </div>
           )}
           {task.historyError && <div className="conv-branch-error" role="alert">{task.historyError}</div>}
@@ -809,6 +840,7 @@ export default function ChatView(): React.JSX.Element {
           {/* 静态兄弟元素不要带 key：两个兄弟同时用 task.id 会让 React 复用同一
               fiber，把整条消息列表渲染两遍（看起来像「消息自己重复刷新」）。 */}
           <MessageList
+            toolFocusMessageId={notificationTarget?.toolCallId ? turnMessage?.id : undefined}
             taskId={task.id}
             messages={displayMessages}
             artifacts={artifacts}

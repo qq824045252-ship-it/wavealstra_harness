@@ -27,6 +27,7 @@ function normalizeThinkingText(text: string): string {
 interface Props {
   message: ChatMessage;
   taskId?: string;
+  focusTool?: boolean;
 }
 
 /**
@@ -200,7 +201,7 @@ function messageHasFinalOutput(message: ChatMessage): boolean {
 /** 执行过程时间线：默认折叠为「已完成 xx」；展开可见多段思考与工具。
  *  流式期间启用「聚焦最新」：只显示最新活跃思考 + 当前运行工具，旧内容退入
  *  可展开历史摘要（historyOpen）；assistant_end 后沿用整体折叠。 */
-function ExecutionTimeline({ message, taskId }: Props): React.JSX.Element | null {
+function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Element | null {
   const hasPendingApproval = message.blocks.some(
     (b) => b.type === "tool" && b.toolCall.status === "pending_approval",
   );
@@ -211,7 +212,13 @@ function ExecutionTimeline({ message, taskId }: Props): React.JSX.Element | null
   const [historyOpen, setHistoryOpen] = useState(false);
   // assistant_end 首帧同步收起，避免先解析长 Markdown 再折叠造成卡顿
   const visibleOpen =
-    !message.streaming && wasStreamingRef.current && !hasPendingApproval ? false : open;
+    focusTool || (!message.streaming && wasStreamingRef.current && !hasPendingApproval ? false : open);
+
+  useLayoutEffect(() => {
+    if (!focusTool) return;
+    setOpen(true);
+    setHistoryOpen(true);
+  }, [focusTool]);
 
   useEffect(() => {
     const streaming = Boolean(message.streaming);
@@ -295,7 +302,7 @@ function ExecutionTimeline({ message, taskId }: Props): React.JSX.Element | null
     hasFinalOutput,
   );
   // 聚焦最新：流式且用户未展开历史时，过滤旧思考段与已完成工具
-  const focusActive = Boolean(message.streaming) && !historyOpen;
+  const focusActive = Boolean(message.streaming) && !historyOpen && !focusTool;
   const focus = computeFocusView(groups, activeThinkingIdx, Boolean(message.streaming));
   const hasHidden = focus.hiddenThinking > 0 || focus.hiddenTools > 0;
 

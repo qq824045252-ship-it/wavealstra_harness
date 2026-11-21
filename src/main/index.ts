@@ -219,6 +219,7 @@ import { WebArtifactRuntime } from "./artifact/WebArtifactRuntime";
 import { CronService } from "./cron/CronService";
 import { TaskTerminalService } from "./terminal/TaskTerminalService";
 import { AppDatabase } from "./db/AppDatabase";
+import { TaskBoardRepository } from "./task/TaskBoardRepository";
 import { GadgetRepository } from "./gadget/GadgetRepository";
 import { GadgetStorage } from "./gadget/GadgetStorage";
 import { GadgetRegistry } from "./gadget/GadgetRegistry";
@@ -731,6 +732,10 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 }
 
 function registerIpc(): void {
+  const taskBoard = new TaskBoardRepository(db.connection);
+  agentService.onPatch(patch => taskBoard.patch(patch));
+  ipcMain.handle(DbIpc.taskBoardPage, (_e, query) => taskBoard.page(query));
+  ipcMain.handle(DbIpc.taskBoardAction, (_e, id, action) => taskBoard.action(id, action));
   const requireMaterialRetrievalWindow = (event: Electron.IpcMainInvokeEvent): void => {
     const url = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href;
     if (!isMainAppWindowRequest(event, botManagementWindow, url)) {
@@ -1171,7 +1176,10 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle(AgentIpc.prompt, async (_e, req: AgentPromptRequest) => {
-    return await agentService.prompt(req);
+    const submittedAt = Date.now();
+    const result = await agentService.prompt(req);
+    if (!result.error && !result.cancelled) taskBoard.follow(req.taskId, req.displayText ?? req.text, submittedAt);
+    return result;
   });
   ipcMain.handle(AgentIpc.submissionStatus, (_e, receipt: import("../shared/agent-ipc").AgentSubmissionReceipt) => agentService.submissionStatus(receipt));
   ipcMain.handle(AgentIpc.waitForSubmission, (_e, receipt: import("../shared/agent-ipc").AgentSubmissionReceipt) => agentService.waitForSubmission(receipt));
@@ -1258,6 +1266,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(AgentIpc.approveTool, (_e, req: AgentApproveToolRequest) => {
     const result = agentService.approveTool(req);
+    if (result) taskBoard.follow(req.taskId, req.approved ? "批准了操作" : "拒绝了操作");
     notificationService.markReadByDedupeKey(`task:${req.taskId}:tool:${req.toolCallId}:action`);
     return result;
   });
@@ -2082,6 +2091,13 @@ function registerIpc(): void {
   // 侧栏绿点确认：只写 done_acked_at（不碰 updated_at），无需经过生命周期回收流程。
   ipcMain.handle(DbIpc.ackTaskDone, (_e, id: string, ackedAt?: number) => {
     db.ackTaskDone(id, ackedAt);
+  });
+  ipcMain.handle(DbIpc.setTaskDueDate, (_e, id: string, dueAt: number | null) => {
+    const projectId = db.setTaskDueDate(id, dueAt);
+    if (projectId) {
+      broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
+      notifyProjectAttention(projectId);
+    }
   });
   // 回收站：删除 = 可恢复回收（保留期见 shared/archive-deletion.ts 的 TRASH_RETENTION_DAYS），
   // 必须可见可恢复，否则被删除的数据既回不来也清不掉。

@@ -80,6 +80,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Square,
+  SquareKanban,
   SquarePlus,
   Table2,
   Target,
@@ -233,6 +234,7 @@ export const IconList = wrapLucide(List);
 export const IconListTodo = wrapLucide(ListTodo);
 export const IconTable = wrapLucide(Table2);
 export const IconColumns = wrapLucide(Columns3);
+export const IconKanban = wrapLucide(SquareKanban);
 export const IconCircle = wrapLucide(Circle);
 export const IconCircleCheck = wrapLucide(CircleCheck);
 export const IconCirclePause = wrapLucide(CirclePause);

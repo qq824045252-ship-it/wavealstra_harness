@@ -46,7 +46,7 @@ export function ConversationInteractionCard({ interaction, onRespond, onDismiss,
   const isPending = interaction.status === "pending";
   if (!isPending) {
     return (
-      <details className={`conversation-interaction-history is-${interaction.status}`}>
+      <details className={`conversation-interaction-history is-${interaction.status}`} data-interaction-id={interaction.id}>
         <summary>
           <svg className="conversation-interaction-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="m6 3 5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -63,7 +63,8 @@ export function ConversationInteractionCard({ interaction, onRespond, onDismiss,
     );
   }
   return (
-    <section className={`conversation-runtime-card interaction-card is-${interaction.status}`} aria-live="polite">
+    <section className={`conversation-runtime-card interaction-card is-${interaction.status}`}
+      data-interaction-id={interaction.id} aria-live="polite">
       <div className="conversation-runtime-kicker">需要你的回答</div>
       <h3>{interaction.title}</h3>
       {interaction.description && <p>{interaction.description}</p>}

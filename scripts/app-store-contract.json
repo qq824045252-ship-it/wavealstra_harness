@@ -6,6 +6,7 @@
     "retirement": "2026-11-17 user requested removal of standalone Bot state and actions; history and Goal retained. Existing ordinary-task contract stays frozen."
   },
   "actionAdditions": {
+    "setTaskDueDate": "Save or clear the task deadline without changing its execution state or activity time.",
     "releaseArtifactRender": "Release a ChatImage preview's cached payload and hydration state when it leaves the viewport. The pre-refactor action and initialization lists below remain frozen.",
     "openSubagentView": "Open a specific subagent conversation while retaining its parent task navigation.",
     "closeSubagentView": "Return from the subagent conversation to its parent task without deleting the run."
@@ -144,6 +145,7 @@
     "answerRuleSeed",
     "answerRuleTurnTarget",
     "browserPreviousPanelMode",
+    "notificationMessageTarget",
     "subagentDrawer",
     "subagentView"
   ],
@@ -589,6 +591,7 @@
   "stateAdditions": {
     "answerRuleSeed": "Keep the originating answer context while answer-routing settings are open.",
     "answerRuleTurnTarget": "Resolve the requested answer turn when its conversation history becomes available.",
+    "notificationMessageTarget": "Carry exact notification message, tool or interaction focus until the selected task renders or navigation replaces it.",
     "subagentView": "Independent subagent conversation navigation retains parent task and completed subagent visibility.",
     "browserGadgetByTask": "Retain explicit Gadget identity per task/home so a new runtime port updates only its owned browser entry.",
     "browserNavigationVersion": "Guard asynchronous Gadget open results against newer explicit renderer navigation.",

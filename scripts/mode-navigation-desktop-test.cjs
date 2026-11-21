@@ -6,7 +6,7 @@ const path = require('node:path');
 const { run } = require('./desktop-dev-harness.cjs');
 
 const routes = [
-  ['MyBuddy', 'chat'], ['笔记', 'library'], ['项目', 'projects'],
+  ['MyBuddy', 'chat'], ['任务看板', 'task-board'], ['笔记', 'library'], ['项目', 'projects'],
   ['自动化', 'automation'], ['扩展', 'experts'], ['工作台', 'gadgets'],
   ['任务成果', 'files'], ['用量统计', 'usage'],
 ];
@@ -16,6 +16,11 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     const expression = '(() => {const matches = [...document.querySelectorAll(' + JSON.stringify(selector) + ')]; return matches.find(node=>node.getClientRects().length' +
       (label == null ? '' : ' && (node.getAttribute("aria-label") || node.textContent.trim()) === ' + JSON.stringify(label)) + ');})()';
     await until(() => evaluate('Boolean(' + expression + ')'), label ?? selector);
+    if (await evaluate('document.visibilityState === "hidden"')) {
+      await evaluate('(() => {const node=' + expression + ';node.focus();node.click();})()');
+      report.inputMode = 'CDP with DOM activation while Electron is occluded';
+      return;
+    }
     const point = await evaluate('(() => {const button=' + expression + ';button.scrollIntoView({block:"nearest"});const rect=button.getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};})()');
     await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
     for (const type of ['mousePressed', 'mouseReleased']) {
@@ -32,6 +37,25 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   async function screenshot(name) {
     const shot = await rpc('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, name + '.png'), Buffer.from(shot.data, 'base64'));
+  }
+  async function reloadDesktop() {
+    const oldOrigin = await evaluate('performance.timeOrigin');
+    await rpc('Page.reload');
+    await until(() => evaluate('performance.timeOrigin !== ' + oldOrigin + ' && document.readyState === "complete" && !!document.querySelector(".desktop-rail")'), 'new desktop document mounted');
+  }
+
+  if (process.argv.includes('--task-board')) {
+    await taskBoardCases();
+    const taskId = await evaluate(`(async()=>{
+      const {useAppStore}=await import('/src/store/appStore.ts');const state=useAppStore.getState();
+      state.newTask(null);await useAppStore.getState().sendMessage('请核对报价单里的运输费用');
+      return useAppStore.getState().activeTaskId;
+    })()`);
+    await until(()=>evaluate(`window.api.db.taskBoardPage({view:'recent'}).then(page=>page.rows.some(r=>r.id===${JSON.stringify(taskId)} && r.reason.includes('运输费用')))`),'accepted Pi input enters recent work');
+    report.checks = ['bounded focus with 1000 history rows','real Pi submission with local fixture provider','cross-day frequent visits','custom and saved date filters','history cursor','scheduling','cold read and pin'];
+    assert.deepEqual(report.rendererErrors, []);
+    console.log('PASS task board on the isolated desktop');
+    return;
   }
 
   await metrics(1280, 800);
@@ -343,7 +367,172 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     return state.activeTaskId === 'result-categories-fixture' && state.activeArtifactId === ${JSON.stringify(fixture.summaryId)};
   })`), 'result opens in its source task');
 
+  await taskBoardCases();
   assert.deepEqual(report.rendererErrors, []);
   report.checks = { modules: routes.map(([label]) => label), column: [48, 200], draftRestored: true, usageRangeRestored: true, embeddedSearchKeyPools: true, nativeTabRestored: true, resultCategoryButtons: true, taskMenuDismissal: true, fullPageNotifications: true, treeLayout, taskSearch: true };
-  console.log('PASS desktop routes, compact task column, task menu dismissal, task result categories and full-page notifications');
-}, { name: 'mode-navigation-desktop' });
+  report.checks.taskBoard = ['persisted lanes', 'hidden archives', 'pending answer', 'workspace filter', 'title search', 'open source task', 'scoped draft', 'daily focus', 'due date edit and clear', 'persistent pins', 'unread results after restart'];
+  console.log('PASS desktop routes, task board, compact task column, task menu dismissal, task result categories and full-page notifications');
+  async function taskBoardCases() {
+    await evaluate(`(async () => {
+      const db = window.api.db;
+      const spaceId = 'board-delivery';
+      await db.upsertSpace({id: spaceId, name: '产品交付'});
+      await db.upsertSpace({id: 'board-archive', name: '旧项目'});
+      await db.upsertSpace({id: 'board-archive-child', parentId: 'board-archive', name: '旧项目资料'});
+      const rows = [
+        ['board-review', '核对交付清单中的缺失文件', 'failed', spaceId],
+        ['board-plan', '整理下周访谈提纲', 'planning', spaceId],
+        ['board-run', '汇总本周用户反馈', 'in_progress', spaceId],
+        ['board-done', '发布十一月版本说明', 'completed', spaceId],
+        ['board-stop', '整理上一版原型', 'stopped', spaceId],
+        ['board-audit', '检查移动端页面布局', 'in_progress', spaceId],
+        ['board-archived', '已归档的任务', 'completed', spaceId],
+        ['board-hidden', '归档空间中的任务', 'failed', 'board-archive-child'],
+      ];
+      const today = new Date().setHours(0, 0, 0, 0);
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      for (const [index, [id, title, status, owner]] of rows.entries()) {
+        const dueAt = id === 'board-audit' ? today : ['board-review', 'board-stop'].includes(id) ? yesterday.getTime() : undefined;
+        await db.upsertTask({id, title, status, spaceId: owner, dueAt, updatedAt: Date.now() - index * 3600000});
+      }
+      await db.archiveTask('board-archived', true);
+      await db.archiveSpace('board-archive', true);
+    })()`);
+    const boardDb = new (require('better-sqlite3'))(path.join(home,'.mybuddy','app.db'));
+    const dayOffset = (offset) => {const d=new Date();d.setHours(12,0,0,0);d.setDate(d.getDate()+offset);return d.getTime();};
+    try {
+      boardDb.transaction(()=>{
+        const insert=boardDb.prepare("INSERT INTO tasks(id,title,status,updated_at) VALUES(?,?,'completed',?)");
+        for(let i=0;i<1000;i++) insert.run('board-bulk-'+i,'例行运行 '+i,dayOffset(-30)-i);
+        boardDb.prepare("INSERT INTO conversation_interactions(id,task_id,execution_id,assistant_message_id,kind,title,status,created_at) VALUES('board-question','board-run','board-exec','board-msg','short_text','请确认反馈范围','pending',?)").run(dayOffset(-45));
+        const signal=boardDb.prepare("INSERT INTO task_board_days VALUES(?,?,date(?/1000,'unixepoch','localtime'),?,?)");
+        for(const offset of [-35,-3]) signal.run('board-plan','follow',dayOffset(offset),dayOffset(offset),'补充访谈提纲');
+        signal.run('board-done','visit',dayOffset(-3),dayOffset(-3),'');
+      })();
+    } finally {boardDb.close();}
+    await reloadDesktop();
+    await metrics(1360, 800);
+    await click('.desktop-rail-module', '任务看板');
+    await visible('.task-board-card[title="核对交付清单中的缺失文件"]');
+    assert.ok(await evaluate('document.querySelectorAll(".task-board-card").length < 25'));
+    assert.equal(await evaluate('document.querySelectorAll(\'.task-board-card[title*="归档"]\').length'), 0);
+    assert.equal(await evaluate('document.querySelectorAll(\'.task-board-card[title*="例行运行"]\').length'), 0);
+    await click('#desktop-module-list button[title="产品交付"]');
+    await visible('.task-board-focus [data-section="recent"] .task-board-card');
+    await screenshot('task-board-focus');
+    async function select(label,value) {
+      await evaluate(`(() => {const el=document.querySelector('select[aria-label="'+${JSON.stringify(label)}+'"]');el.value=${JSON.stringify(value)};el.dispatchEvent(new Event("change",{bubbles:true}));})()`);
+    }
+    const secondary={'今日关注':'today','未读结果':'unread','已置顶':'pinned'};
+    async function boardView(label){
+      if(secondary[label]) await select('更多视图',secondary[label]);
+      else await click('.task-board-views button',label);
+      await until(()=>evaluate('!document.querySelector(".task-board-empty[role=status]")'),'loaded '+label);
+    }
+    await boardView('最近在做');
+    await visible('[title="整理下周访谈提纲"]');
+    assert.equal(await evaluate('document.querySelectorAll(".task-board-card").length'),1);
+    await boardView('按日期查');
+    await select('日期依据','due');
+    await select('日期范围','today');
+    await visible('.task-board-card[title="检查移动端页面布局"]');
+    await click('.task-board-date-filters button','保存此筛选');
+    await select('日期范围','next');
+    await select('已存筛选','0');
+    await visible('.task-board-card[title="检查移动端页面布局"]');
+    await select('日期依据','follow');
+    await select('日期范围','custom');
+    const oldDay = new Date(dayOffset(-35));
+    const dateInput = [oldDay.getFullYear(),String(oldDay.getMonth()+1).padStart(2,'0'),String(oldDay.getDate()).padStart(2,'0')].join('-');
+    await evaluate(`(() => {
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+      for(const label of ['开始日期','结束日期']) {const el=document.querySelector('input[aria-label="'+label+'"]');set.call(el,${JSON.stringify(dateInput)});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}
+    })()`);
+    await visible('.task-board-card[title="整理下周访谈提纲"]');
+    const previous=await evaluate(`window.api.db.taskBoardPage({view:"dates",dateKind:"follow",from:${dayOffset(-35)-1},until:${dayOffset(-35)+1},scope:"board-delivery"})`);
+    assert.deepEqual(previous.rows.map(r=>r.id),['board-plan'],'a later follow-up preserves the earlier date');
+    const bulk=await evaluate(`(async()=>{const q={view:'all',search:'例行运行'};const first=await window.api.db.taskBoardPage(q);const second=await window.api.db.taskBoardPage({...q,cursor:first.next});return [first.rows,second.rows].map(rows=>rows.map(r=>r.id))})()`);
+    assert.equal(bulk[0].length,25);assert.equal(bulk[1].length,25);assert.equal(new Set(bulk.flat()).size,50);
+    await boardView('全部');
+    const laneSizes=()=>evaluate('[...document.querySelectorAll(".task-board-lane")].map(lane=>lane.querySelectorAll(".task-board-card").length)');
+    await visible('.task-board-lane[data-lane="attention"] [title="汇总本周用户反馈"]');
+    assert.deepEqual(await laneSizes(),[2,1,1,2],'the month-old pending question remains actionable');
+    assert.equal(await evaluate('document.querySelector(\'.task-board-card[title="整理上一版原型"] .task-board-status\').textContent'), '已停止');
+    await boardView('今日关注');
+    assert.deepEqual(await laneSizes(), [2, 0, 1, 0], 'due today, overdue and waiting for a reply need attention; stopped work does not');
+    await boardView('未读结果');
+    assert.deepEqual(await laneSizes(), [1, 0, 0, 1], 'new failures and completed results are unread');
+    await boardView('全部');
+    const planTitle = '整理下周访谈提纲';
+    const openPlanDate = () => click('[aria-label="设置截止日期：整理下周访谈提纲"]');
+    const planRow = () => evaluate("window.api.db.listTasks().then(rows=>rows.find(row=>row.id==='board-plan'))");
+    const originalPlan = await planRow();
+    await openPlanDate();
+    const deadline = await evaluate(`(() => {
+      const el = document.querySelector('.task-board-date-dialog input');
+      const date = new Date(); date.setHours(0, 0, 0, 0);
+      el.valueAsDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+      el.dispatchEvent(new Event('input', {bubbles:true}));
+      el.dispatchEvent(new Event('change', {bubbles:true}));
+      return date.getTime();
+    })()`);
+    await click('.task-board-date-dialog button', '保存');
+    await until(() => evaluate('!document.querySelector(".task-board-date-dialog")'), 'saved deadline editor closed');
+    await until(async () => (await planRow()).dueAt === deadline, 'saving the deadline writes it to the task row');
+    assert.equal((await planRow()).updatedAt, originalPlan.updatedAt, 'scheduling preserves task activity time');
+    await click('[aria-label="置顶：整理下周访谈提纲"]');
+    await until(async () => (await planRow()).isFavorited === true, 'pin persists');
+    await boardView('已置顶');
+    assert.deepEqual(await laneSizes(), [0, 1, 0, 0]);
+    assert.equal(await evaluate('document.querySelector(".task-board-card strong").textContent'), planTitle);
+    await boardView('今日关注');
+    assert.deepEqual(await laneSizes(), [2, 1, 1, 0], 'editing the date updates the current board without reloading');
+    await boardView('全部');
+    await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 260, y: 70 });
+    await evaluate('document.hidden || Promise.race([Promise.all(document.getAnimations().filter(a => a.effect?.target?.closest("#desktop-module-list")).map(a => a.finished.catch(() => {}))),new Promise(resolve=>setTimeout(resolve,750))])');
+    await screenshot('task-board');
+    await metrics(960, 640);
+    assert.equal(await evaluate('document.documentElement.scrollWidth'), 960);
+    const boardInput = '.task-board-search input';
+    await click(boardInput);
+    await rpc('Input.insertText', { text: '没有这个标题' });
+    await visible('.task-board-no-results');
+    await click('.task-board-no-results button', '清除搜索');
+    await click(boardInput);
+    await rpc('Input.insertText', { text: '版本说明' });
+    await visible('.task-board-card[title="发布十一月版本说明"]');
+    assert.deepEqual(await laneSizes(), [0, 0, 0, 1]);
+    await click('.task-board-card[title="发布十一月版本说明"]');
+    await until(() => evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().page==='chat' && useAppStore.getState().activeTaskId==='board-done')"), 'card opens its original task');
+    await click('.desktop-rail-module', '任务看板');
+    assert.equal(await evaluate('document.querySelector(".task-board-search input").value'), '版本说明', 'returning restores the board filters');
+    await click('.task-board-tools button', '新建任务');
+    await until(() => evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().page==='chat' && useAppStore.getState().draft?.spaceId==='board-delivery')"), 'new draft belongs to the selected workspace');
+    await reloadDesktop();
+    await click('.desktop-rail-module', '任务看板');
+    await click('#desktop-module-list button[title="产品交付"]');
+    await boardView('经常关注');
+    await visible('.task-board-card[title="发布十一月版本说明"]');
+    assert.match(await evaluate('document.querySelector(".task-board-why").textContent'),/2 天/);
+    await boardView('已置顶');
+    await visible('.task-board-card[title="整理下周访谈提纲"] time[data-urgent="true"]');
+    await openPlanDate();
+    await click('.task-board-date-dialog button', '清除日期');
+    await click('.task-board-date-dialog button', '取消');
+    assert.equal((await planRow()).dueAt, deadline, 'cancel preserves the deadline');
+    await openPlanDate();
+    await click('.task-board-date-dialog button', '清除日期');
+    await click('.task-board-date-dialog button', '保存');
+    await until(() => evaluate('!document.querySelector(".task-board-date-dialog")'), 'cleared deadline editor closed');
+    await until(async () => (await planRow()).dueAt == null, 'clearing is persisted');
+    await boardView('未读结果');
+    assert.deepEqual(await laneSizes(), [1, 0, 0, 0], 'reading a result acknowledges it across renderer restarts');
+    await boardView('全部');
+    await click('[aria-label="置顶：发布十一月版本说明"]');
+    await until(() => evaluate("window.api.db.listTasks().then(rows=>rows.find(row=>row.id==='board-done')?.isFavorited)"), 'previously read task pinned with cold history');
+    await boardView('未读结果');
+    assert.deepEqual(await laneSizes(), [1, 0, 0, 0], 'pinning a read task with unloaded history does not create an unread result');
+  }
+}, { name: process.argv.includes('--task-board') ? 'task-board-desktop' : 'mode-navigation-desktop',
+  fixtureModel: process.argv.includes('--task-board') ? ()=>'已核对运输费用。' : undefined });

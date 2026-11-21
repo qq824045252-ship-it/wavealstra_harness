@@ -911,6 +911,8 @@ const api = {
     commitProjectFolder: (token: string): Promise<{ ok: true }> => ipcRenderer.invoke(DbIpc.commitProjectFolder, token),
     listSpaces: (): Promise<SpaceDto[]> => ipcRenderer.invoke(DbIpc.listSpaces),
     listTasks: (): Promise<TaskDto[]> => ipcRenderer.invoke(DbIpc.listTasks),
+    taskBoardPage: (query: import("../shared/task-board").BoardQuery): Promise<import("../shared/task-board").BoardPage> => ipcRenderer.invoke(DbIpc.taskBoardPage, query),
+    taskBoardAction: (id: string, action: import("../shared/task-board").BoardAction): Promise<void> => ipcRenderer.invoke(DbIpc.taskBoardAction, id, action),
     listProjects: (includeArchived?: boolean): Promise<ProjectDto[]> =>
       ipcRenderer.invoke(DbIpc.listProjects, includeArchived),
     getProject: (id: string): Promise<ProjectDetailsDto | undefined> =>
@@ -1013,6 +1015,8 @@ const api = {
       ipcRenderer.invoke(DbIpc.archiveTask, id, archived),
     ackTaskDone: (id: string, ackedAt?: number): Promise<void> =>
       ipcRenderer.invoke(DbIpc.ackTaskDone, id, ackedAt),
+    setTaskDueDate: (id: string, dueAt: number | null): Promise<void> =>
+      ipcRenderer.invoke(DbIpc.setTaskDueDate, id, dueAt),
     listTrashedTasks: (): Promise<import("../shared/archive-deletion").TrashedTaskDto[]> =>
       ipcRenderer.invoke(TrashIpc.list),
     restoreTrashedTask: (id: string): Promise<TaskDto | null> =>

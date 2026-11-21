@@ -1,5 +1,5 @@
 import {
-  IconBarChart, IconBook, IconClock, IconFile, IconFolderKanban, IconGrid,
+  IconBarChart, IconBook, IconClock, IconKanban, IconFile, IconFolderKanban, IconGrid,
   IconConversation, IconPanel, IconPuzzle, IconSettings,
 } from "@/components/common/icons";
 import { useAppStore } from "@/store/appStore";
@@ -8,6 +8,7 @@ import DesktopNotifications from "./DesktopNotifications";
 
 const MODULES = [
   { page: "chat", label: "MyBuddy", icon: IconConversation },
+  { page: "task-board", label: "任务看板", icon: IconKanban },
   { page: "library", label: "笔记", icon: IconBook },
   { page: "projects", label: "项目", icon: IconFolderKanban },
   { page: "automation", label: "自动化", icon: IconClock },

@@ -34,6 +34,7 @@ export function createTaskDraftActions(
           title: trimmed || undefined,
         },
         activeTaskId: null,
+        notificationMessageTarget: undefined,
         chatSelections: [],
         pendingExternalAgentContinuation: null,
         activeConnectorIds: [],
@@ -66,6 +67,7 @@ export function createTaskDraftActions(
         welcomeMode: DEFAULT_WELCOME_MODE,
         modePresetId: defaultModePresetId(DEFAULT_WELCOME_MODE),
         activeTaskId: null,
+        notificationMessageTarget: undefined,
         chatSelections: [],
         // 新任务从零开始：不继承上一任务的 Active 连接器（安装 ≠ active）
         activeConnectorIds: [],
@@ -90,6 +92,7 @@ export function createTaskDraftActions(
       set({
         draft: { spaceId, expertId, composerId: String(++nextComposerId) },
         activeTaskId: null,
+        notificationMessageTarget: undefined,
         chatSelections: [],
         homeSpaceId: spaceId ?? null,
         page: "chat",

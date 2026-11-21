@@ -13,7 +13,7 @@ export function createTaskActivationActions(
 ): Pick<AppActions, "setActiveTask"> {
   const { get, set } = storeContext;
   return {
-    setActiveTask: (id) => {
+    setActiveTask: (id, focus) => {
       const s = get();
       const task = s.tasks.find((t) => t.id === id);
       // 3E：首个产物 tab 从 projection 取（task.artifacts 已退役；未 hydrate 时为空，hydrate 后事件补齐）
@@ -30,6 +30,7 @@ export function createTaskActivationActions(
       set({
         activeTaskId: id,
         answerRuleTurnTarget: undefined,
+        notificationMessageTarget: focus && { ...focus, taskId: id },
         // 切到具体任务 = 丢弃草稿（首条消息未发出即不存在）
         draft: null,
         // 工作空间选择跟随当前任务：独立任务清空 homeSpaceId，避免发消息时被上次空间偷绑

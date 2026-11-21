@@ -31,6 +31,8 @@ function sameSidebarTask(previous: Task, current: Task): boolean {
     Math.floor(previous.updatedAt / 60_000) ===
       Math.floor(current.updatedAt / 60_000) &&
     previous.status === current.status &&
+    previous.dueAt === current.dueAt &&
+    previous.startAt === current.startAt &&
     previous.archived === current.archived &&
     previous.doneAckedAt === current.doneAckedAt &&
     Boolean(previous.isFavorited) === Boolean(current.isFavorited) &&

@@ -11,6 +11,7 @@ import UsageStatsPage from "@/components/account/UsageStatsPage";
 import AssistantPage from "@/components/pages/AssistantPage";
 import HubPage from "@/components/pages/HubPage";
 import ProjectsPage from "@/components/pages/ProjectsPage";
+import TaskBoardPage from "@/components/pages/TaskBoardPage";
 import AutomationPage from "@/components/pages/AutomationPage";
 import FilesPage from "@/components/pages/FilesPage";
 import LibraryPage from "@/components/pages/library/LibraryPage";
@@ -227,6 +228,8 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
               </>
             )}
           </>
+        ) : page === "task-board" ? (
+          <TaskBoardPage />
         ) : page === "assistant" ? (
           <AssistantPage />
         ) : page === "projects" ? (

@@ -554,6 +554,8 @@ export interface PreloadApi {
     getSemanticIndexStats: () => Promise<{ running: boolean; total: number; completed: number; pending: number; failed: number }>;
     listSpaces: () => Promise<SpaceDto[]>;
     listTasks: () => Promise<TaskDto[]>;
+    taskBoardPage: (query: import("../shared/task-board").BoardQuery) => Promise<import("../shared/task-board").BoardPage>;
+    taskBoardAction: (id: string, action: import("../shared/task-board").BoardAction) => Promise<void>;
     listProjects: (includeArchived?: boolean) => Promise<ProjectDto[]>;
     getProject: (id: string) => Promise<ProjectDetailsDto | undefined>;
     createProject: (request: ProjectCreateRequest) => Promise<ProjectMutationResult>;
@@ -617,6 +619,7 @@ export interface PreloadApi {
     archiveTask: (id: string, archived: boolean) => Promise<void>;
     /** 侧栏「已结束」绿点确认：写 done_acked_at（unix ms），点击任务即视为已查看 */
     ackTaskDone: (id: string, ackedAt?: number) => Promise<void>;
+    setTaskDueDate: (id: string, dueAt: number | null) => Promise<void>;
     listTrashedTasks: () => Promise<TrashedTaskDto[]>;
     restoreTrashedTask: (id: string) => Promise<TaskDto | null>;
     listTaskWriteGrants: (taskId: string) => Promise<import("../shared/external-write").TaskWriteGrantRow[]>;
