@@ -3106,6 +3106,7 @@ app.whenReady().then(async () => {
   taskLifecycle = new TaskExecutionWorkspaceLifecycle({
     db,
     workspace: new TaskExecutionWorkspace(),
+    prepareQQWorkspaceRestore: (taskId, legacy, destination) => agentService.prepareQQTrashRestore(taskId, legacy, destination),
     beforeTrash: async (taskId, options) => {
       if (options?.strict && externalAgentRuntime?.hasLiveTaskRun(taskId)) {
         throw new Error("外部 Agent 正在运行，请先停止后再彻底删除");

@@ -1,3 +1,4 @@
+import { isQQTask, sameWorkspacePath } from "../../task/QQTaskWorkspace";
 import { isGatewayConversation } from "../../gateway/GatewayConversation";
 import { WorkExecutionMetricsStore } from "../work/WorkExecutionMetrics";
 import { recordCollaborationExecutionStarted } from "../work/BotCollaborationExecutionFacts";
@@ -82,6 +83,7 @@ export interface DurableBotServiceOptions {
   mcpDir: string;
   assetsDir?: string;
   resolveCwd: (taskId: string) => string;
+  validateQQWorkspace?: (taskId: string, cwd: string, from?: string) => void;
   /** Desired organization root; undefined pins an execution-owned workspace. No projection writes. */
   resolveNextCwd?: (taskId: string) => string | undefined;
   instructions: (task: TaskDto) => string;
@@ -169,6 +171,25 @@ export class DurableBotService {
     return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId) || this.admissions.get(taskId)?.size);
   }
   cwd(taskId: string): string | undefined { return this.workspaceMove(taskId)?.to_cwd ?? this.binding(taskId)?.cwd; }
+  /** Called only within an explicit QQ Trash restore transaction. Native cwd stays authoritative until migration commits. */
+  prepareQQTrashRestore(taskId: string, legacy: string, destination: string): void {
+    const { db } = this.options;
+    if (!isQQTask(db.getTask(taskId)) || db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed"
+      || this.opened.has(taskId) || this.opening.has(taskId) || this.rebinding.has(taskId)
+      || this.invalidations.has(taskId) || this.admissions.get(taskId)?.size) {
+      throw new Error("QQ 任务未处于可安全恢复的状态");
+    }
+    const binding = this.binding(taskId);
+    const pending = this.workspaceMove(taskId);
+    if (pending || (binding && !sameWorkspacePath(binding.cwd, legacy) && !sameWorkspacePath(binding.cwd, destination))) {
+      throw new Error("QQ 任务已有冲突的工作目录绑定");
+    }
+    if (binding && !sameWorkspacePath(binding.cwd, destination)) {
+      db.connection.prepare("INSERT INTO durable_bot_workspace_moves VALUES (?, ?, ?)").run(taskId, binding.cwd, destination);
+    } else {
+      db.bindTaskExecutionWorkspaceCwd(taskId, destination);
+    }
+  }
   lastAssistantId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id; }
   contextUsage(taskId: string) {
     const value = this.opened.get(taskId)?.runtime.snapshot.contextUsage;
@@ -242,7 +263,9 @@ export class DurableBotService {
       let open: OpenBot;
       try { open = await this.openBound(taskId); }
       catch (error) {
-        if (!(error instanceof WorkspaceMigrationBusyError) || !this.workspaceMove(taskId)) throw error;
+        const pendingMove = this.workspaceMove(taskId);
+        if (!(error instanceof WorkspaceMigrationBusyError) || !pendingMove
+          || isQQTask(this.options.db.getTask(taskId))) throw error;
         this.options.db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
         open = await this.openBound(taskId);
       }
@@ -378,6 +401,7 @@ export class DurableBotService {
     const prior = this.binding(taskId);
     const move = this.workspaceMove(taskId);
     const cwd = move?.to_cwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
+    if (isQQTask(task)) this.options.validateQQWorkspace?.(taskId, cwd, move?.from_cwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
     // Pending native operations retain their root; idle moves are committed below.
     if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
@@ -1063,6 +1087,9 @@ export class DurableBotService {
   async runGatewayTurn(request: AgentPromptRequest, sidebarChannelId?: string): Promise<string> {
     if (!isGatewayBotTaskId(request.taskId) && !isGatewayConversation(request.taskId)) throw new Error("Gateway Bot 任务身份无效");
     const existing = this.options.db.getTask(request.taskId);
+    if (sidebarChannelId === "qq-default" && (existing?.archived || this.options.db.getTaskExecutionWorkspaceState(request.taskId)?.state === "trashed")) {
+      throw new Error("QQ 对话已归档或回收，请先在本地恢复该任务");
+    }
     this.options.db.connection.transaction(() => {
       this.options.db.upsertTask({ ...(existing ?? { id: request.taskId,
         title: (request.displayText ?? request.text).trim().slice(0, 60) || "助理" }),

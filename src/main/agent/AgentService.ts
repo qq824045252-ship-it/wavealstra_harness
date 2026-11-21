@@ -1,3 +1,4 @@
+import { ensureQQTaskWorkspace, isPlainDirectory, isQQTask, prepareQQWorkspaceParent, qqTaskWorkspace, sameWorkspacePath, validatePlainTaskManifest } from "../task/QQTaskWorkspace";
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
 import { conversationalRequest, gatewayConversationId, isGatewayConversation } from "../gateway/GatewayConversation";
 import { HistoricalBotReader } from "./work/HistoricalBotReader";
@@ -968,6 +969,12 @@ export class AgentService {
    */
   resolveTaskExecutionWorkspaceCwd(taskId: string): string {
     if (isTaskWorktreeId(taskId)) return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
+    if (isQQTask(this.db.getTask(taskId))) {
+      const bound = this.durableBots?.cwd(taskId);
+      if (bound) return bound; // Native move intent may exist before the task cwd projection.
+      if (this.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") throw new Error("请先在本地恢复 QQ 对话");
+      return ensureQQTaskWorkspace(this.taskWorkspace, taskId);
+    }
     // The live/native binding is authoritative until Durable safely commits an idle workspace move.
     const bound = this.durableBots?.cwd(taskId);
     if (bound) {
@@ -1302,6 +1309,22 @@ export class AgentService {
       db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
+      validateQQWorkspace: (id, cwd, from) => {
+        const legacy = this.taskWorkspace.resolveTaskExecutionWorkspaceDir(id);
+        const target = qqTaskWorkspace(this.taskWorkspace, id);
+        if (sameWorkspacePath(cwd, target)) {
+          if ((from && !sameWorkspacePath(from, legacy)) || !prepareQQWorkspaceParent(this.taskWorkspace, false)
+            || !isPlainDirectory(cwd)) throw new Error("QQ 执行目录或迁移来源无效");
+          validatePlainTaskManifest(cwd);
+          new TaskExecutionWorkspace(dirname(target)).readManifest(id);
+        } else {
+          // A previously active legacy task keeps its real data until explicit local restore.
+          if (from || !sameWorkspacePath(cwd, legacy) || !isPlainDirectory(this.taskWorkspace.getTaskExecutionWorkspacesRoot())
+            || !isPlainDirectory(cwd)) throw new Error("QQ 对话没有可安全使用的执行目录");
+          validatePlainTaskManifest(cwd);
+          this.taskWorkspace.readManifest(id);
+        }
+      },
       resolveNextCwd: id => {
         const task = this.db.getTask(id);
         if (task?.welcomeMode !== "general" || isTaskWorktreeId(id) || this.workService.repo.bindingForTask(id)
@@ -1806,6 +1829,11 @@ export class AgentService {
     return { ...request, cwd, welcomeMode, permissionMode,
       expertId: resolved.expertDecision?.enabled === false ? undefined : request.expertId,
       connectorIds };
+  }
+
+  prepareQQTrashRestore(taskId: string, legacy: string, destination: string): void {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    this.durableBots.prepareQQTrashRestore(taskId, legacy, destination);
   }
 
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }

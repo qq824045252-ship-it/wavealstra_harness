@@ -12,6 +12,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 
 import { dirname, join, resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { AppDatabase } from "../db/AppDatabase";
+import { isPlainDirectory, isQQTask, prepareQQWorkspaceParent, qqTaskWorkspace, sameWorkspacePath, validatePlainTaskManifest } from "./QQTaskWorkspace";
 import {
   MANIFEST_FILENAME,
   TaskExecutionWorkspace,
@@ -195,6 +196,13 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
       tasks = tasks.filter((t) => t.id === options.taskId);
     }
 
+    const qqIds = new Set(tasks.filter(isQQTask).map(task => task.id));
+    const expectedTaskCwd = (task: (typeof tasks)[number]) => {
+      const legacy = workspace.resolveTaskExecutionWorkspaceDir(task.id);
+      if (!qqIds.has(task.id) || (task.cwd && sameWorkspacePath(task.cwd, legacy) && existsSync(legacy))) return legacy;
+      return qqTaskWorkspace(workspace, task.id);
+    };
+
     // 按 stored cwd 分组，识别共享目录
     const cwdGroups = new Map<string, string[]>();
     for (const t of tasks) {
@@ -208,7 +216,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
     // 按 expected 目录名检测碰撞（理论上哈希防撞，但若目录被手动占用仍可能出现）
     const expectedDirOwners = new Map<string, string[]>();
     for (const t of tasks) {
-      const expected = workspace.resolveTaskExecutionWorkspaceDir(t.id);
+      const expected = expectedTaskCwd(t);
       const key = normalizePathForComparison(expected);
       const list = expectedDirOwners.get(key) ?? [];
       list.push(t.id);
@@ -218,7 +226,7 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
     const taskFindings: TaskAuditFinding[] = [];
 
     for (const t of tasks) {
-      const expectedCwd = workspace.resolveTaskExecutionWorkspaceDir(t.id);
+      const expectedCwd = expectedTaskCwd(t);
       const storedCwd = t.cwd?.trim() ? resolve(t.cwd.trim()) : null;
       const codes: AuditStatusCode[] = [];
       const details: string[] = [];
@@ -272,7 +280,24 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
         }
 
         const manifestPath = join(expectedCwd, MANIFEST_FILENAME);
-        const man = tryReadManifest(manifestPath);
+        let mayReadManifest = true;
+        if (qqIds.has(t.id)) {
+          try {
+            if (!isPlainDirectory(workspacesRoot) || !isPlainDirectory(expectedCwd) ||
+              (sameWorkspacePath(expectedCwd, qqTaskWorkspace(workspace, t.id)) && !prepareQQWorkspaceParent(workspace, false))) {
+              throw new Error("QQ 管理目录不存在或不可信");
+            }
+          } catch {
+            codes.push("REALPATH_ESCAPE");
+            details.push("QQ 管理目录包含不安全的路径组件");
+            mayReadManifest = false;
+          }
+          if (mayReadManifest) {
+            try { validatePlainTaskManifest(expectedCwd); }
+            catch { mayReadManifest = false; }
+          }
+        }
+        const man = mayReadManifest ? tryReadManifest(manifestPath) : { ok: false as const, error: "目录或清单不可信" };
         if (!man.ok) {
           if (man.error === "missing") {
             codes.push("MANIFEST_MISSING");
@@ -434,7 +459,8 @@ export function runTaskIsolationAudit(options: TaskIsolationAuditOptions): TaskI
 
       const repairable = taskFindings.filter(
         (f) =>
-          !f.blocking &&
+          // Only an explicit QQ lifecycle action may change a QQ task's native binding.
+          !qqIds.has(f.taskId) && !f.blocking &&
           f.codes.some((c) => SAFE_REPAIRABLE_TASK_CODES.has(c)),
       );
 
