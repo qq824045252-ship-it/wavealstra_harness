@@ -349,7 +349,12 @@ export class AnswerRoutingService {
     const scope = JSON.stringify({ projectId: task.projectId ?? null, cwd: input.cwd,
       ...(rule.sourceMemoryId ? { sourceHash: rule.sourceHash } : {}) });
     if (prior && (rule.sourceUnavailable || prior.scope !== scope)) throw cannotRestore();
-    const introduction = "本轮回答调度。以用户本次明确要求为先。";
+    const routeInstruction = {
+      direct: "优先依据已有事实和有界读取直接回答。超出前台范围时，按本轮授权移交。",
+      delegate: "需要执行的事项在完成必要定位后优先交给普通任务。用户要求直答或禁止委派时按其要求处理。",
+      auto: "按本轮请求和现有任务状态选择直答、查询或委派，并遵守前台读取范围。",
+    }[rule.policy.routeMode];
+    const introduction = "本轮回答调度。以用户本次明确要求为先。" + routeInstruction;
     const evidenceParts: string[] = [];
     let detail = prior?.detail ?? (phrase ? `已提供做法，匹配“${phrase}”` : "采用默认调度策略");
     const priorEvidence = prior?.evidence ? JSON.parse(prior.evidence) as AnswerRuleEvidence : undefined;

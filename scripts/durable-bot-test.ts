@@ -181,6 +181,8 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     });
     assert.equal((await resolveDefault("translate"))?.rule.revision, fallback.revision);
     assert.equal((await resolveDefault("new-default"))?.rule.revision, nextFallback.revision);
+    assert.match((await resolveDefault("translate"))?.text ?? "", /选择直答、查询或委派/);
+    assert.match(await ask("next-policy-payload", "请把一段简短句子翻译为法语。"), /优先依据已有事实和有界读取直接回答/);
 
     await writeFile(join(cwd, "tool-note.md"), "本次工具调用结束");
     const start = payloads.length;
