@@ -2,12 +2,12 @@ import type Database from "better-sqlite3";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, type AnswerRule, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import { DOTS_TASK_ID, type DotsReplyOrigin } from "../../shared/dots";
 
-export type ForegroundRead = { source: string; description: string; characters: number };
+export type ForegroundRead = { source: string; description: string; characters: number; excerpt?: string };
 type Limits = DotsSchedulingPolicy["foregroundReadLimits"];
 type Turn = { policy: DotsSchedulingPolicy; calls: number; characters: number; exhausted: boolean; reads: ForegroundRead[] };
 export type ForegroundInput = { id: string; text: string; entryId: number; createdAt?: number };
 
-type Handoff = { spaceId: string; text: string; inputs: readonly ForegroundInput[]; origin: DotsReplyOrigin };
+type Handoff = { spaceId: string; targetTaskId?: string; priorOperationId?: string; text: string; inputs: readonly ForegroundInput[]; origin: DotsReplyOrigin };
 
 export class DotsForegroundUnavailable extends Error {}
 
@@ -20,6 +20,9 @@ export class DotsForegroundReads {
         input_id TEXT PRIMARY KEY, policy TEXT NOT NULL, exhausted INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS dots_foreground_handoffs (
         input_id TEXT PRIMARY KEY, data TEXT NOT NULL, linked INTEGER NOT NULL DEFAULT 0);`);
+    const columns = db.prepare("PRAGMA table_info(dots_foreground_reads)").all() as { name: string }[];
+    if (!columns.some(column => column.name === "excerpt"))
+      db.exec("ALTER TABLE dots_foreground_reads ADD COLUMN excerpt TEXT");
   }
 
   state(inputId: string): Turn {
@@ -34,7 +37,7 @@ export class DotsForegroundReads {
     const rule = snapshot?.snapshot ?? fallback;
     const policy = saved ? JSON.parse(saved.policy) as DotsSchedulingPolicy
       : (rule ? (JSON.parse(rule) as AnswerRule).policy : undefined) ?? defaultDotsSchedulingPolicy();
-    const reads = this.db.prepare("SELECT source,description,characters FROM dots_foreground_reads WHERE input_id=? ORDER BY rowid")
+    const reads = this.db.prepare("SELECT source,description,characters,excerpt FROM dots_foreground_reads WHERE input_id=? ORDER BY rowid")
       .all(inputId) as ForegroundRead[];
     const characters = reads.reduce((total, read) => total + read.characters, 0);
     const { calls, characters: maxCharacters } = policy.foregroundReadLimits;
@@ -47,7 +50,8 @@ export class DotsForegroundReads {
       .run(inputId, JSON.stringify(candidate));
     const stored = JSON.parse(this.db.prepare("SELECT data FROM dots_foreground_handoffs WHERE input_id=?")
       .pluck().get(inputId) as string) as Handoff;
-    if (stored.inputs.length !== candidate.inputs.length || stored.inputs.some((input, index) => input.id !== candidate.inputs[index].id))
+    if (stored.spaceId !== candidate.spaceId || stored.targetTaskId !== candidate.targetTaskId ||
+        stored.priorOperationId !== candidate.priorOperationId || stored.inputs.length !== candidate.inputs.length || stored.inputs.some((input, index) => input.id !== candidate.inputs[index].id))
       throw new DotsForegroundUnavailable("本事项已准备过旧修订的移交。当前修订未自动派发。");
     return stored;
   }
@@ -86,7 +90,7 @@ export class DotsForegroundReads {
       }
       let prefix = text.slice(0, Math.max(0, limits.characters - state.characters));
       if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
-      this.db.prepare("INSERT INTO dots_foreground_reads VALUES(?,?,?,?,?)").run(inputId, callId, source, description, prefix.length);
+      this.db.prepare("INSERT INTO dots_foreground_reads(input_id,call_id,source,description,characters,excerpt) VALUES(?,?,?,?,?,?)").run(inputId, callId, source, description, prefix.length, source.startsWith("file:") ? prefix : null);
       const exhausted = prefix.length < text.length || state.calls + 1 >= limits.calls ||
         state.characters + prefix.length >= limits.characters;
       if (exhausted) markExhausted();

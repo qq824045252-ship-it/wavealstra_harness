@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentTools } from "@earendil-works/pi-ai";
@@ -8,6 +10,7 @@ import { DOTS_NO_CHANGE, DOTS_TASK_ID } from "../src/shared/dots";
 import { DotsReplyOutbox } from "../src/main/dots/DotsReplyOutbox";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy } from "../src/shared/answer-routing";
 import { DotsDelegations } from "../src/main/dots/DotsDelegations";
+import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
 import { resolveDotsPreferences } from "../src/shared/dots-settings";
 
 const faultHost = process.argv[2];
@@ -28,8 +31,11 @@ let workerCalls = 0;
 const workerInputs: unknown[] = [];
 let replayAdmissions = 0;
 const answer = "盘点结果是 37 件，其中 2 件需要补货。";
+const externalSource = "external-effect-recovery";
+const effectToolCall = "post-unconfirmed-effect";
+const unconfirmed = "外部操作未收到回执，是否生效需要核查。";
 
-async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly") {
+async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect", effectPort?: number) {
   const db = new AppDatabase(join(root, "app.db"));
   const artifacts = createArtifactDomain(db.connection);
   db.openDots();
@@ -49,6 +55,26 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
         return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "42" }) }];
       }
       return [{ type: "toolCall", id: "activity-read", name: "read", arguments: { path: "signal.txt" } }];
+    }
+    if (fault === "externalEffect" && !tools.some(t => t.name === "dots_action") && tools.some(t => t.name === "write")) {
+      if (latest?.role === "toolResult" && latest.toolCallId === effectToolCall) {
+        assert.equal(latest.isError, true, "the interrupted tool did not receive a successful result");
+        return [{type:"text", text:JSON.stringify({dotsState:"complete",result:unconfirmed})}];
+      }
+      assert(effectPort);
+      const [job] = journal.list([externalSource]);
+      assert(job);
+      const native = await agent.findSubmission(job.taskId, job.id);
+      assert(native?.receipt);
+      writeFileSync(join(root,"external-effect-cut.json"), JSON.stringify({
+        taskId:job.taskId, operationId:job.id, submissionId:native.receipt.submissionId,
+      }));
+      const code = 'fetch("http://127.0.0.1:' + effectPort +
+        '/fixture-effect", {method:"POST",body:"fixture"}).catch(() => {process.exitCode=1})';
+      const windows = process.platform === "win32";
+      const quote = (value: string) => "'" + value.replaceAll("'", windows ? "''" : "'\"'\"'") + "'";
+      const command = (windows ? "& " : "") + quote(process.execPath) + " -e " + quote(code);
+      return [{type:"toolCall",id:effectToolCall,name:windows ? "powershell" : "bash",arguments:{command}}];
     }
     if (latest?.role === "toolResult") {
       if (fault === "foregroundError" && latest.toolCallId === "delegate-foregroundError")
@@ -133,9 +159,9 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
 }
 
 if (faultHost) {
-  assert(faultHost === "before" || faultHost === "after");
-  const source = "inventory-" + faultHost;
-  const host = await open(faultHost);
+  assert(faultHost === "before" || faultHost === "after" || faultHost === "externalEffect");
+  const source = faultHost === "externalEffect" ? externalSource : "inventory-" + faultHost;
+  const host = await open(faultHost, Number(process.argv[4]));
   try {
     await host.fixture.prompt({taskId: DOTS_TASK_ID, userMessageId:source, assistantMessageId:source+"-ack", text:"盘点库存，直接回复数字。"});
     const deadline = Date.now()+25000;
@@ -170,6 +196,79 @@ for (const fault of ["before","after"] as const) {
       workerCalls:cut.workerCalls,additionalWorkerCalls:workerCalls-previousCalls,replayAdmissions,
       messages:messages.slice(messages.indexOf(sourceEntry)).map(m=>({id:m.id,entryId:m.entryId,role:m.role,text:m.text,origin:m.dotsDelivery?.origin}))});
   } finally { await host.close(); }
+}
+// Run the external endpoint outside the writer process so it can prove what survived the crash.
+{
+  let posts = 0;
+  let crashWriter: (() => void) | undefined;
+  const endpoint = createServer((request, response) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/fixture-effect");
+    request.resume();
+    request.once("end", () => {
+      posts++;
+      if (posts === 1) crashWriter?.();
+      // Acceptance happened at the external endpoint. Keep the receipt outstanding until the writer dies.
+    });
+    response.on("error", () => {});
+  });
+  endpoint.listen(0, "127.0.0.1");
+  await once(endpoint, "listening");
+  const address = endpoint.address();
+  assert(address && typeof address === "object");
+  const writer = spawn(process.execPath, [process.argv[1]!, "externalEffect", root, String(address.port)], {
+    windowsHide:true, stdio:["ignore","pipe","pipe"],
+  });
+  crashWriter = () => { writer.kill("SIGKILL"); };
+  let childLog = "";
+  writer.stdout.on("data", chunk => { childLog += String(chunk); });
+  writer.stderr.on("data", chunk => { childLog += String(chunk); });
+  const timer = setTimeout(() => writer.kill("SIGKILL"), 30_000);
+  try {
+    const [code, signal] = await once(writer, "close");
+    clearTimeout(timer);
+    assert.equal(posts,1,childLog);
+    assert.equal(code,null,childLog);
+    assert.equal(signal,"SIGKILL",childLog);
+    endpoint.closeAllConnections();
+    const cut = JSON.parse(readFileSync(join(root,"external-effect-cut.json"),"utf8")) as {
+      taskId: string; operationId: string; submissionId: number;
+    };
+    const host = await open("externalEffect",address.port);
+    try {
+      const delivered = async () => (await host.agent.loadTaskHistory(DOTS_TASK_ID)).messages
+        .filter(message => message.dotsDelivery?.sourceMessageId === externalSource);
+      for (let i=0; i<250 && !(await delivered()).length; i++) {
+        host.journal.refresh(cut.taskId);
+        await host.journal.drain();
+        await sleep();
+      }
+      host.journal.refresh(cut.taskId);
+      host.journal.refresh(DOTS_TASK_ID);
+      await host.journal.drain();
+      const [job, duplicate] = host.journal.list([externalSource]);
+      assert.equal(job?.taskId,cut.taskId);
+      assert.equal(job?.id,cut.operationId);
+      assert.equal(duplicate,undefined);
+      const native = await host.agent.findSubmission(cut.taskId,cut.operationId);
+      assert.equal(native?.receipt?.submissionId,cut.submissionId);
+      const failures = new ExecutionFailureRepository(host.db.connection).list(cut.taskId)
+        .filter(failure => !failure.resolvedAt && failure.sideEffects === "unknown");
+      assert.equal(failures.length,1);
+      assert.equal(failures[0]?.recovery,"requires-user-action");
+      const replies = await delivered();
+      assert.equal(replies.length,1);
+      assert.equal(replies[0]?.text,unconfirmed);
+      assert.equal(replies[0]?.dotsDelivery?.operationId,cut.operationId);
+      assert.equal(posts,1,"the reopened Dots worker must not repeat the external request");
+      evidence.push({fault:"externalEffect",...cut,posts,signal,reply:replies[0]?.id,sideEffects:failures[0]?.sideEffects});
+      console.log("PASS Dots worker crash after HTTP acceptance preserves task, submission and unknown effect, delivers once");
+    } finally { await host.close(); }
+  } finally {
+    clearTimeout(timer);
+    endpoint.closeAllConnections();
+    await new Promise<void>(resolve => endpoint.close(() => resolve()));
+  }
 }
 const timedHost = await open();
 try {

@@ -79,11 +79,12 @@ function createSseAudit(emit) {
   };
 }
 
-exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureModelIds = [], fixtureUsage, fixtureModelRates, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
+exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureModelIds = [], fixtureUsage, fixtureModelRates, settings = {}, seedHome, gateLiveResponse, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
   const agentDir = path.join(home, '.mybuddy'), userData = path.join(home, 'electron-profile');
   fs.mkdirSync(out, {recursive: true}); fs.mkdirSync(agentDir, {recursive: true});
+  await seedHome?.(home);
   const report = {status: 'running', home, checks: [], actualControlChecks: [], seededPresentationFacts: [], rendererErrors: [],
     displayMode: benchmark ? 'hidden isolated Electron window' : 'visible Electron', inputMode: 'CDP', realCredentialsRead: false};
   const requests = [], rawUsageAudit = [], pending = new Map(), owned = new Set();
@@ -280,6 +281,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
             method: 'POST', headers: {'content-type': 'application/json', authorization: 'Bearer isolated-live-check'},
             body, signal: AbortSignal.timeout(240000),
           });
+          await gateLiveResponse?.(request);
           const contentType = response.headers.get('content-type') || 'application/json';
           if (timing) Object.assign(timing, {upstreamHeadersAtMs: timestamp(), upstreamStatus: response.status, contentType});
           res.writeHead(response.status, {'content-type': contentType});

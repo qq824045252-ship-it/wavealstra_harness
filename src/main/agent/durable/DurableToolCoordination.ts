@@ -39,6 +39,8 @@ const hostControls = new Set(["conversation_goal_get", "conversation_goal_create
   OFFICE_USE_TOOLS.documentRead, OFFICE_USE_TOOLS.documentRender, OFFICE_USE_TOOLS.reviewStatus,
   OFFICE_USE_TOOLS.selectionRead, OFFICE_USE_TOOLS.selectionPropose, OFFICE_USE_TOOLS.editPropose, OFFICE_USE_TOOLS.nativeTools]);
 
+const dotsTaskControls = new Set(["task", "steer", "pause", "stop"]);
+
 function conflicts(left: Access[], right: Access[]): boolean {
   return left.some(a => right.some(b => (a.mode === "write" || b.mode === "write") && (a.kind === "unknown" || b.kind === "unknown"
     || a.entity !== null && a.entity === b.entity || resourcePathContains(a.path, b.path) || resourcePathContains(b.path, a.path))));
@@ -93,6 +95,8 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
     return inspectAccess(durableMcpToolName(envelope.server, envelope.tool), envelope.arguments, cwd);
   }
   if (containers.has(name) || isDurableContextToolName(name) || hostControls.has(name)) return [];
+  // These actions inspect or control the target runtime, whose tools retain their own resource leases.
+  if (name === "dots_action" && typeof args.action === "string" && dotsTaskControls.has(args.action)) return [];
   const file = (path: string, mode: "read" | "write"): Access => {
     const address = fileResourceAddress(resolve(cwd, path));
     return { kind: "file", mode, path: address.path, entity: address.entity };

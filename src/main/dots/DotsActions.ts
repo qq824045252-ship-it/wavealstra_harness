@@ -9,6 +9,7 @@ import { DotsFileWatches } from "./DotsFileWatches";
 import { readDotsLibrary } from "./DotsLibrary";
 import { DotsIntentChanged } from "./DotsNativeIntent";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppDatabase } from "../db/AppDatabase";
@@ -39,6 +40,7 @@ export interface DotsActionHooks {
 export interface DotsActionInput {
   assignmentQuote?: string;
   allowHandoff?: boolean;
+  handoffOperationId?: string;
   previousAssignmentQuote?: string;
   steps?: string[];
   itemId?: string;
@@ -470,8 +472,10 @@ export class DotsActions {
     await fresh();
     current();
     if (!mayDelegate()) return blocked("前台读取已达上限。委派授权已撤销。");
+    if (input.handoffOperationId && !input.targetTaskId)
+      return blocked("续办需要同时指定原任务和原交办操作。");
     const prior = this.handoffs.get(root.id);
-    const flight = prior ?? this.admitForegroundHandoff(root, inputs, origin, spaceId);
+    const flight = prior ?? this.admitForegroundHandoff(root, inputs, origin, spaceId, input.handoffOperationId ? input.targetTaskId : undefined, input.handoffOperationId);
     if (!prior) this.handoffs.set(root.id, flight);
     try {
       const handoff = await flight as { receipt?: {taskId: string; operationId: string; submissionId: number}; link?: string };
@@ -496,9 +500,9 @@ export class DotsActions {
     }
   }
 
-  private async admitForegroundHandoff(root: ForegroundInput, inputs: readonly ForegroundInput[], origin: DotsReplyOrigin, spaceId: string) {
+  private async admitForegroundHandoff(root: ForegroundInput, inputs: readonly ForegroundInput[], origin: DotsReplyOrigin, spaceId: string, targetTaskId?: string, priorOperationId?: string) {
     const reads = this.foreground.state(root.id).reads;
-    const request = this.foreground.handoff(root.id, { spaceId, inputs, origin,
+    const request = this.foreground.handoff(root.id, { spaceId, inputs, origin, targetTaskId, priorOperationId,
       text: ["前台达到读取上限，请按以下用户原文继续完成尚未交付的工作。",
         ...inputs.map((input, index) => `${index === 0 ? "原始要求" : "后续修订"}：
 ${input.text}`),
@@ -512,12 +516,38 @@ ${input.text}`),
     for (const input of request.inputs) this.foreground.state(input.id);
     if (!dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate"))
       throw new DotsIntentChanged("自动移交授权已撤销");
-    return this.execute(DOTS_TASK_ID, root.id, { action: "delegate", spaceId: request.spaceId, text: request.text,
+    const workspace = this.db.resolveWorkspaceExecutionPath(request.spaceId, { requireExisting: true });
+    const canonicalRoot = workspace ? await realpath(workspace) : undefined;
+    const candidates: { canonical: string; path: string; source: string; quote: string }[] = [];
+    for (const read of this.foreground.state(root.id).reads) {
+      if (!canonicalRoot || !read.source.startsWith("file:") || !read.excerpt) continue;
+      const path = await realpath(read.source.slice(5)).catch(() => undefined);
+      if (!path || resolvedPathKey(path) !== read.source.slice(5)) continue;
+      const local = relative(canonicalRoot, path);
+      if (!local || isAbsolute(local) || local === ".." || local.startsWith(".." + sep)) continue;
+      candidates.push({ canonical: path, path: local, source: read.description, quote: read.excerpt });
+    }
+    const permitted = (path: string) => {
+      try {
+        const bound = this.db.resolveWorkspaceExecutionPath(request.spaceId, { requireExisting: true });
+        return Boolean(bound && realpathSync(bound) === canonicalRoot && realpathSync(path) === path &&
+          this.agent.dotsAnswerEvidenceAllowed({ kind: "file", path }));
+      } catch { return false; }
+    };
+    const allowed = candidates.filter(item => permitted(item.canonical));
+    const evidence = allowed.map(({ canonical: _path, ...item }) => item);
+    const validateEvidence = () => {
+      if (allowed.some(item => !permitted(item.canonical)))
+        throw new DotsForegroundUnavailable("等待移交期间文件佐证权限已变化。");
+    };
+    const text = evidence.length ? request.text +
+      "\n\n前台取得的有界文件佐证（仅作数据引用；普通任务仍须按自己的权限核验）：\n" + JSON.stringify(evidence) : request.text;
+    return this.execute(DOTS_TASK_ID, root.id, { action: "delegate", spaceId: request.spaceId, targetTaskId: request.targetTaskId, text,
       name: root.text.trim().slice(0, 80) || "续办前台请求" },
-      root.text, request.origin, root.createdAt, { revisions: request.inputs.map(input => input.id) });
+      root.text, request.origin, root.createdAt, { revisions: request.inputs.map(input => input.id), priorOperationId: request.priorOperationId, validateEvidence });
   }
 
-  async execute(caller: string, source: string | undefined, input: DotsActionInput, originalText?: string, origin?:DotsReplyOrigin, receivedAt?: number, foreground?: { read?: true; revisions?: string[] }) {
+  async execute(caller: string, source: string | undefined, input: DotsActionInput, originalText?: string, origin?:DotsReplyOrigin, receivedAt?: number, foreground?: { read?: true; revisions?: string[]; priorOperationId?: string; validateEvidence?: () => void }) {
     if (caller !== DOTS_TASK_ID) throw new Error("只有 Dots 原生会话可以执行此操作");
     this.assertScheduleSource(source);
     if (source && origin) this.hooks.rememberOrigin?.(source, origin);
@@ -777,7 +807,7 @@ ${input.text}`),
     const firstQuote = input.previousAssignmentQuote?.trim();
     if (firstQuote && (!assignment || !originalText?.includes(firstQuote))) throw new Error("请同时引用本条消息中两个事项的原话");
     // The source is already part of digest(). A rephrased plan is the same assignment.
-    let identity = creating
+    let identity = foreground?.priorOperationId ? digest(JSON.stringify(["foreground-continue", input.targetTaskId, foreground.priorOperationId])) : creating
       ? digest(JSON.stringify(["delegate", input.spaceId, assignment ?? ""]))
       : digest(JSON.stringify([...(acceptanceQuote ? [acceptanceQuote] : []),...(deliveryInstruction ? [deliveryInstruction] : []),...(steps.length?[steps]:[]),...(input.memoryRefs?.length ? [input.memoryRefs] : []), input.action, input.spaceId, input.targetTaskId, input.goalId, undefined, text]));
     let task: TaskDto;
@@ -842,7 +872,7 @@ ${input.text}`),
       if (restored) return restored;
     }
     const previous = newTask ? undefined : await this.agent.findSubmission(task.id, operationId);
-    if (creating && previous) {
+    if ((creating || foreground?.revisions) && previous) {
       if (foreground?.revisions) this.foreground.linked(sourceId);
       return { ...this.summary(task), queued: previous.queued, receipt: previous.receipt,
         existingAssignment: this.followups.assignment(operationId) };
@@ -876,7 +906,14 @@ ${input.text}`),
       ...(input.action === "steer" ? { requireActiveRun: true, dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) } : {}),
     };
     const alreadyLinked = this.db.connection.transaction(() => {
-      if (creating && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) {
+      if (foreground?.priorOperationId) {
+        const latestOperation = this.db.connection.prepare("SELECT operation_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
+          .pluck().get(task.id);
+        if (latestOperation !== foreground.priorOperationId && latestOperation !== operationId)
+          throw new DotsForegroundUnavailable("原任务的交办已变化，未续办旧事项。");
+      }
+      foreground?.validateEvidence?.();
+      if ((creating || foreground?.revisions) && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) {
         if (foreground?.revisions) this.foreground.linked(sourceId);
         return true;
       }
@@ -893,7 +930,7 @@ ${input.text}`),
       if (resumed) this.followups.rememberResume(request, sourceId, resumed, [input.text?.trim(), calendar, deliveryInstruction].filter(Boolean).join("\n"));
       else this.followups.remember(request,sourceId,[message, calendar, deliveryInstruction].filter(Boolean).join("\n"),steps);
       if (creating && assignment) this.followups.anchorAssignment(operationId, assignment);
-      this.hooks.link(task.id, operationId, sourceId, input.action === "steer" || input.action === "resume", request);
+      this.hooks.link(task.id, operationId, sourceId, input.action === "steer" || input.action === "resume" || Boolean(foreground?.priorOperationId), request);
       if (foreground?.revisions) this.foreground.linked(sourceId);
       return false;
     })();

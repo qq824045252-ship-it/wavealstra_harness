@@ -173,6 +173,11 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     const defaultReceipt = routing.history({ taskId, inputId: "translate" })[0];
     assert.equal(defaultReceipt.ruleId, "dots-default-policy");
     assert.equal(defaultReceipt.policy?.routeMode, "auto");
+    const rephrased = await ask("translate-paraphrase", "请将“上海阳光明媚”译成英文。");
+    assert.doesNotMatch(rephrased, /逐小时预报/);
+    const paraphraseReceipt = routing.history({ taskId, inputId: "translate-paraphrase" })[0];
+    assert.equal(paraphraseReceipt.ruleId, defaultReceipt.ruleId);
+    assert.equal(paraphraseReceipt.revision, defaultReceipt.revision);
     const fallback = routing.list().find(rule => rule.id === defaultReceipt.ruleId)!;
     const nextFallback = routing.save({ ...fallback, policy: { ...fallback.policy!, routeMode: "direct" } }, fallback);
     const reopenRouting = () => new AnswerRoutingService(db, () => undefined);
@@ -923,17 +928,28 @@ console.log("PASS real MCP stdio tools/call rechecks after initialization, in na
 }
 for (const mode of ["native", "codemode"] as const) {
   const cwd = join(root, mode + "-recovery"); await mkdir(cwd);
-  let calls = 0, started = 0;
-  const hold = defineTool({ name: "hold", description: "hold for cancellation", parameters: Type.Object({}), replay: "unsafe",
+  let calls = 0, started = 0, received = 0;
+  const external = createServer((request, response) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/fixture-effect");
+    request.resume();
+    request.once("end", () => { received++; });
+    // External acceptance has happened, but the tool cannot observe a receipt.
+    response.on("error", () => {});
+  });
+  await new Promise<void>(resolve => external.listen(0, "127.0.0.1", resolve));
+  const port = (external.address() as { port: number }).port;
+  const hold = defineTool({ name: "hold", description: "fixture HTTP effect", parameters: Type.Object({}), replay: "unsafe",
     execute: async (_args, _api, context) => { started++;
-      await new Promise<void>((_resolve,reject) => { assert(context.abortSignal); if(context.abortSignal.aborted) reject(Error("aborted")); else context.abortSignal.addEventListener("abort",()=>reject(Error("aborted")),{once:true}); });
-      return {output:text("unreachable")};
+      await fetch(`http://127.0.0.1:${port}/fixture-effect`, { method: "POST", body: "fixture", signal: context.abortSignal });
+      return {output:text("unexpected receipt")};
     } });
+  try {
   const options = { directory:join(cwd,"state"), cwd, model:ref, toolMode:mode, instructions:()=>"fixture", tools:[hold],onSnapshot:()=>{},
     models:models(()=> ++calls === 1 ? mode === "native" ? call("hold",{}) : call("codemode",{code:"await tools.hold({});"}) : text("recovered")) };
   let runtime = await DurableBotRuntime.open(options);
   const first = await runtime.submit("hold", "hold-request");
-  await until(()=>started === 1);
+  await until(()=>started === 1 && received === 1);
   const queued = await runtime.submit("after restart", "queued-request", "followUp");
   assert.equal((await queued.status(ctx)).status,"queued");
   assert.equal(runtime.snapshot.pendingInputs[0]?.text,"after restart");
@@ -944,13 +960,17 @@ for (const mode of ["native", "codemode"] as const) {
   assert.equal((await (await runtime.harness.submission(first.id,ctx))!.wait(ctx)).status,"done");
   assert.equal((await (await runtime.harness.submission(queued.id,ctx))!.wait(ctx)).status,"done");
   assert.equal(started,1,"unsafe tool must not execute twice after restart");
+  assert.equal(received,1,"fake third party received the write exactly once");
+  assert(!runtime.snapshot.messages.some(message => message.text.includes("unexpected receipt")));
+
   await runtime.conversation.waitForIdle(ctx);
   await runtime.refresh(); assert.equal(runtime.snapshot.busy,false);
   assert(runtime.snapshot.messages.some(m=>m.tools?.some(t=>t.status==="error")),"interrupted tool must be visible");
   await runtime.configure(ref,"native");
   assert.equal((await runtime.submit("new turn", "switch-tag")).id > first.id,true);
   await runtime.close();
-  console.log("PASS",mode,"restart during side effect, durable queue, no unsafe replay, persisted tag");
+  console.log("PASS",mode,"HTTP accepted once without receipt, preserved submission, no unsafe replay", { submissionId: first.id, received });
+  } finally { external.closeAllConnections(); await new Promise<void>(resolve => external.close(() => resolve())); }
 }
 {
   const cwd=join(root,"abort"); await mkdir(cwd);

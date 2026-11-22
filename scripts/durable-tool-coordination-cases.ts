@@ -87,8 +87,20 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
     const after = run("read", { path: target }, async () => { started = true; assert.equal(await readFile(target, "utf8"), name); });
     await run("web_search", { query: "independent network query" }, async () => {});
     await run("conversation_goal_get", { taskId: "held-operation" }, async () => {});
-    assert.equal(started, false, "opaque commands cannot gain parallel write access by declaring readOnly or a misleading path");
-    release.release(); await Promise.all([command, after]);
+    const actions = ["task", "steer", "pause", "stop"];
+    const completed: string[] = [];
+    const controls = actions.map(action => run("dots_action", { action, targetTaskId: "held-operation" }, async () => {
+      completed.push(action);
+    }));
+    const readThroughDots = run("dots_action", { action: "read_file", path: target }, async () => { started = true; });
+    try {
+      await turn();
+      assert.deepEqual(completed.sort(), actions.sort(), "Dots task controls remain available while an opaque tool holds a lease");
+      assert.equal(started, false, "actual reads still await the opaque writer");
+    } finally {
+      release.release();
+      await Promise.all([command, after, readThroughDots, ...controls]);
+    }
   }
 
   const shellEntered = deferred(), releaseShell = deferred();
