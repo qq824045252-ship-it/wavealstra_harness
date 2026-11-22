@@ -25,9 +25,7 @@ export function createBrowserNavigationActions(
         extensionFlyoutOpen: false,
         browserUrlInput: browserUrl,
         browserPreviousPanelMode: previousMode ?? "overview",
-        panelWidth: browserUrl
-          ? canvasPanelWidth(s.sidebarCollapsed)
-          : canvasPanelWidth(s.sidebarCollapsed),
+        panelWidth: canvasPanelWidth(s.sidebarCollapsed),
       });
     },
 
