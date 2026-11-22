@@ -69,7 +69,7 @@ export default function AnswerRoutingReceipt({ taskId, inputId, replyId, questio
     onClick={() => { setLoadFailed(false); setAttempt(n => n + 1); }}>调度记录加载失败 · 重试</button>;
   if (!use) return null;
   const evidenceName = use.evidence?.label || (use.evidence?.kind === "task-file" ? use.evidence.reference : "");
-  const summary = [routingRunStatus(use), evidenceName].filter(Boolean).join(" ");
+  const summary = [use.policy && `第 ${use.revision} 版`, routingRunStatus(use), evidenceName].filter(Boolean).join(" ");
   return <div className="routing-receipt">
     <button type="button" className="routing-receipt__toggle" data-routing-receipt={inputId}
       aria-label={`本轮调度记录 · ${use.title} · ${summary}`} aria-controls={expanded ? graphId : undefined}

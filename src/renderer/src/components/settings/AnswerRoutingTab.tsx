@@ -142,7 +142,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
     if (finishTeaching && seed?.turn && api) {
       let active = true;
       void api.history(seed.turn).then(async ([use]) => {
-        if (!active || !use?.ruleId || use.routeStatus === "revoked" || !seed.question) return;
+        if (!active || !use?.ruleId || use.ruleId === defaultAnswerRuleId || use.routeStatus === "revoked" || !seed.question) return;
         const rule = (await api.preview(seed.question, seed.projectId ?? null))?.rule;
         if (!active || !rule || rule.id !== use.ruleId || rule.revision !== use.revision || rule.projectId !== (seed.projectId ?? null)) return;
         setForm(rule);

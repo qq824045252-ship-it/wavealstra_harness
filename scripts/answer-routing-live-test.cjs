@@ -38,7 +38,8 @@ run(async env => {
     const uses = await getUses(id, inputId);
     report.comparison.push({arm, elapsedMs: Date.now()-start, providerRequests: calls.length, answer, uses});
     assert(calls.length > 0);
-    assert.equal(uses.length, expectedStatus ? 1 : 0);
+    assert.equal(uses.length, expectedStatus || id === dotsId ? 1 : 0);
+    if (!expectedStatus && id === dotsId) assert.equal(uses[0].ruleId, "dots-default-policy");
     if (expectedStatus) assert.equal(uses[0].evidence.status, expectedStatus);
     return { answer, uses, inputId, calls };
   };
@@ -76,8 +77,8 @@ run(async env => {
   await until(() => evaluate("document.querySelector('[aria-label=\"任务目录相对路径\"]')?.value === 'release.md'"), "teacher supplied source prefilled");
   await evaluate("(() => {const s = [...document.querySelectorAll('.answer-rule-form select')].find(s=>[...s.options].some(o=>o.value==='mark-unverified')); s.value='mark-unverified';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
   await click("保存并返回对话");
-  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 1)"), "saved from the actual answer");
-  const [rule] = await evaluate("window.api.answerRouting.list()");
+  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 2)"), "saved from the actual answer");
+  const rule = (await evaluate("window.api.answerRouting.list()")).find(item => item.id !== "dots-default-policy");
   assert.equal(rule.projectId, null);
   assert.equal(rule.sourceMemoryId, null);
   assert.equal(rule.evidenceFile, "release.md");
@@ -130,7 +131,7 @@ run(async env => {
     assert(line && /待核实|无法核实|未能核实|无法确认|待确认|暂无法|未核实/.test(line), missing.answer);
   }
   const translate = await ask("translation", runTask, "帮我翻译这份周报为英文：项目周报已整理。");
-  assert.equal(translate.uses.length, 0);
+  assert.equal(translate.uses[0].ruleId, "dots-default-policy");
   assert.equal(await evaluate("window.api.answerRouting.preview(" + JSON.stringify(question) + ",null).then(r=>r?.rule.id)"), rule.id);
 
   await restart();

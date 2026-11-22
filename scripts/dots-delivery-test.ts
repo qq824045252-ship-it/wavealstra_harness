@@ -83,6 +83,12 @@ try {
   assert.equal(deliveries.list()[0].activity?.lastProgressAt, reporting.lastProgressAt);
   assert.equal(fixture.requests.filter(request => request.tools.includes("dots_action")).length, 2,
     "heartbeat starts no foreground generation");
+  console.log("PASS native tool heartbeat with independent progress and receipt clocks", {
+    heartbeatMs: 6_000, silenceMs: 5_000,
+    activityToReportMs: reporting.lastReportAt - reporting.lastActivityAt,
+    verifiedProgressToReportMs: reporting.lastReportAt - reporting.lastProgressAt,
+    progressMessages: reports.length, extraForegroundModelCalls: 0,
+  });
   releaseWorker();
   const deadline = Date.now() + 25000;
   while (Date.now() < deadline && deliveries.list()[0]?.status !== "completed") {
