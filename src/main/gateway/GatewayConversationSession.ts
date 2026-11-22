@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 import { gatewayConversationId } from "./GatewayConversation";
 
-type Origin = Pick<GatewayBotOrigin, "channelId" | "connectionKey" | "chatId" | "senderId" | "messageId">;
+type Origin = Pick<GatewayBotOrigin, "channelId" | "connectionKey" | "chatId" | "senderId" | "messageId" | "personalMemoryBindingId">;
 type SessionRow = { task_id: string; kind: "turn" | "new" | "obsolete_new"; accepted_at: number };
 export type ConversationAdmission = { acceptedAt: number; recovered?: boolean };
 export type ConversationRoute = { taskId: string; currentTaskId: string; command: boolean };

@@ -1,3 +1,7 @@
+import { dotsScopeCondition } from "./DotsRevisionSource";
+import { isSensitive } from "./MemoryCandidateExtraction";
+import { MemoryInstructionDocument } from "./MemoryIntent";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { PermissionMode } from "../../shared/agent-ipc";
@@ -15,6 +19,7 @@ export interface MemoryExtensionBridge {
   service: MemoryService;
   getPermissionMode?: () => PermissionMode;
   readOnly?: boolean;
+  sourceInput?: () => { text: string; createdAt: number; messageId: string } | undefined;
   resolveProjectId?: () => string | null;
   resolveWorkspaceId?: () => string | null;
 }
@@ -34,6 +39,15 @@ function short(memory: { id: string; kind: string; status: string; title: string
   const scope = memory.scopes.map((s) => `${s.scopeType}${s.scopeId ? `:${s.scopeId}` : ""}`).join(",");
   const body = memory.content ? ` — ${memory.content.slice(0, 240)}` : "";
   return `[${memory.kind}/${memory.status}][${scope}] ${memory.title}${body} (importance=${memory.importance}, confidence=${memory.confidence.toFixed(2)}, id=${memory.id})`;
+}
+
+function dotsToolSource(service: MemoryService, id: string, revision: number, includeQuote: boolean) {
+  const source = service.getDotsRevisionSource(id, revision);
+  if (!source || isSensitive(source.quote)) return includeQuote ? { status: "该版本无可核对的原话" } : undefined;
+  return {
+    author: "用户", messageId: source.messageId, capturedAt: source.capturedAt, stance: source.stance,
+    ...(includeQuote ? { verbatimExcerpt: source.quote } : {}),
+  };
 }
 
 export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionFactory {
@@ -75,6 +89,17 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             includeInherited: true,
             limit: params.limit ?? 10,
           });
+          if (bridge.taskId === DOTS_TASK_ID) {
+            const matches = hits.flatMap(({ memory }) => {
+              const current = bridge.service.getForRecall(memory.id, context());
+              const revision = bridge.service.history(memory.id)[0]?.revision;
+              if (!current || !revision || current.status !== memory.status || current.contentHash !== memory.contentHash) return [];
+              return [{ id: current.id, revision, title: current.title, status: current.status,
+                source: dotsToolSource(bridge.service, current.id, revision, false),
+                excerpt: current.content.slice(0, 360), hasMore: current.content.length > 360 }];
+            });
+            return textResult(JSON.stringify({ matches }), { count: matches.length, hits: matches.map(({ id, revision }) => ({ id, revision })) });
+          }
           return textResult(
             hits.length ? hits.map((h) => `${short(h.memory)}\n  recall: ${h.reasons.join(", ")} score=${h.score.toFixed(1)}`).join("\n") : "没有匹配的长期记忆。",
             { count: hits.length, hits: hits.map((h) => ({ id: h.memory.id, score: h.score, reasons: h.reasons })) },
@@ -92,13 +117,17 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       execute: async (_id: string, params: { id: string }) => {
         try {
           const memory = requireVisible(params.id);
+          const revision = bridge.service.history(memory.id)[0]?.revision ?? 0;
+          const dotsSource = bridge.taskId === DOTS_TASK_ID ? dotsToolSource(bridge.service, memory.id, revision, true) : undefined;
           return textResult([
             short(memory),
+            `revision=${revision}`,
+            ...(bridge.taskId === DOTS_TASK_ID ? [`[L1 ${memory.id}@${revision}]`] : []),
             `完整内容：${memory.content || "（无）"}`,
             `source=${memory.sourceType}${memory.sourceTaskId ? ` task=${memory.sourceTaskId}` : ""} explicit=${memory.explicit}`,
-            `evidence=${memory.evidence.map((e) => `${e.evidenceKind}:${e.refTitle ?? e.refId}`).join(" | ") || "（无）"}`,
+            dotsSource ? `本修订出处=${JSON.stringify(dotsSource)}` : `evidence=${memory.evidence.map((e) => `${e.evidenceKind}:${e.refTitle ?? e.refId}`).join(" | ") || "（无）"}`,
             `relations=${memory.relations.map((r) => `${r.fromMemoryId === memory.id ? "→" : "←"}${r.relation}:${r.fromMemoryId === memory.id ? r.toMemoryId : r.fromMemoryId}`).join(" | ") || "（无）"}`,
-          ].join("\n"), { memory });
+          ].join("\n"), dotsSource ? { memory: { ...memory, evidence: [] }, revision, source: dotsSource } : { memory });
         } catch (error) { return errorResult(error); }
       },
     });
@@ -112,11 +141,12 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         kind: kindSchema,
         title: Type.String({ minLength: 1, maxLength: 240 }),
         content: Type.Optional(Type.String({ maxLength: 6000 })),
+        ...(bridge.taskId === DOTS_TASK_ID ? { sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持这一项的逐字引文", maxLength: 1200 })) } : {}),
         importance: Type.Optional(Type.Integer({ minimum: 0, maximum: 3 })),
         confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
         scopeType: Type.Optional(scopeSchema),
       }, { additionalProperties: false }),
-      execute: async (_id: string, params: { kind: MemoryKind; title: string; content?: string; importance?: number; confidence?: number; scopeType?: MemoryScopeType }) => {
+      execute: async (_id: string, params: { kind: MemoryKind; title: string; content?: string; sourceQuote?: unknown; importance?: number; confidence?: number; scopeType?: MemoryScopeType }) => {
         try {
           writable();
           const inferred = bridge.service.inferAgentScope(bridge.taskId);
@@ -132,7 +162,8 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             // Explicit promotion is a separate auditable operation; create cannot silently jump scope.
             throw new Error(`当前默认写入 scope=${inferred.scopeType}；跨 scope 请先创建，再用 memory_promote 显式提升`);
           }
-          const memory = bridge.service.create({
+          const source = bridge.sourceInput?.();
+          const memory = bridge.service.createFromTask({
             kind: params.kind,
             title: params.title,
             content: params.content,
@@ -142,8 +173,9 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             sourceTaskId: bridge.taskId,
             scopeType: scope.scopeType,
             scopeId: scope.scopeId,
-            evidence: [{ evidenceKind: "task", refId: bridge.taskId }],
-          });
+            evidence: source ? [{ evidenceKind: "message", refId: source.messageId, excerpt: source.text.slice(0, 1200) }]
+              : [{ evidenceKind: "task", refId: bridge.taskId }],
+          }, source, typeof params.sourceQuote === "string" ? params.sourceQuote : undefined);
           return textResult(`已沉淀：${short(memory)}`, { memory });
         } catch (error) { return errorResult(error); }
       },
@@ -158,14 +190,22 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         id: Type.String({ minLength: 1, maxLength: 120 }),
         title: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
         content: Type.Optional(Type.String({ maxLength: 6000 })),
+        ...(bridge.taskId === DOTS_TASK_ID ? { sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持本次修改的逐字引文", maxLength: 1200 })) } : {}),
         status: Type.Optional(statusSchema),
         importance: Type.Optional(Type.Integer({ minimum: 0, maximum: 3 })),
         confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
       }, { additionalProperties: false }),
-      execute: async (_id: string, params: { id: string; title?: string; content?: string; status?: MemoryStatus; importance?: number; confidence?: number }) => {
+      execute: async (_id: string, params: { id: string; title?: string; content?: string; sourceQuote?: unknown; status?: MemoryStatus; importance?: number; confidence?: number }) => {
         try {
           writable(); requireVisible(params.id);
-          const memory = bridge.service.updateFromTask(bridge.taskId, { ...params, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` });
+          const { sourceQuote, ...update } = params;
+          const memory = bridge.service.updateFromTask(bridge.taskId, { ...update, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` }, bridge.sourceInput?.(), typeof sourceQuote === "string" ? sourceQuote : undefined);
+          if (memory.id !== params.id) {
+            const exception = bridge.taskId === DOTS_TASK_ID && dotsScopeCondition(memory.content);
+            return textResult(
+              `已单独保存${exception ? "有适用条件的例外" : "来源说明"}（${memory.id}）。原记忆（${params.id}）仍然有效。\n${short(memory)}`,
+              { memory, originalId: params.id, newId: memory.id, outcome: exception ? "scope_exception_created" : "source_note_created" });
+          }
           return textResult(`已更新：${short(memory)}`, { memory });
         } catch (error) { return errorResult(error); }
       },
@@ -197,6 +237,28 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       },
     });
 
+    if (bridge.sourceInput) pi.registerTool({
+      name: "memory_forget", label: "长期记忆 · 遗忘",
+      description: "用户明确要求遗忘时，搜索确认所指记忆 ID 后移除该记忆在当前可见作用域的绑定。多范围记录必须指定要移除的 scopeType。",
+      parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 120 }), scopeType: Type.Optional(scopeSchema) }, { additionalProperties: false }),
+      execute: async (_id, params) => {
+        try {
+          writable();
+          const source = bridge.sourceInput?.();
+          const clauses = source && MemoryInstructionDocument.parse(source.text).removalIntents().filter(intent => intent.kind === "forget");
+          if (!source || !clauses?.length) throw new Error("本轮没有明确的遗忘指令");
+          const memory = requireVisible(params.id);
+          const chain = bridge.service.resolveScopeChain(context());
+          const scopes = memory.scopes.filter(scope => (!params.scopeType || params.scopeType === scope.scopeType)
+            && chain.some(item => item.scopeType === scope.scopeType && item.scopeId === scope.scopeId));
+          if (scopes.length !== 1) throw new Error("请选择唯一的可见记忆作用域");
+          bridge.service.assertMemoryWritable(memory.id);
+          const result = bridge.service.detachScope(memory.id, scopes[0].scopeType, scopes[0].scopeId,
+            { ...source, requestClauses: clauses.map(intent => intent.clause) });
+          return textResult("已从所选范围移除记忆", { id: memory.id, ...result });
+        } catch (error) { return errorResult(error); }
+      },
+    });
     pi.registerTool({
       name: "memory_history",
       label: "长期记忆 · 历史",

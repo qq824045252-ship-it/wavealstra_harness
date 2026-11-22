@@ -1,5 +1,14 @@
+import { dotsEvidenceRange, dotsPreferenceQuote, dotsQueryTerms, restoreDotsPreferenceQuote } from "../src/main/agent/DotsMemoryEvidence";
+import { DOTS_EVIDENCE_RENDERER, projectMemoryContext, renderMemoryEvidence } from "../src/main/agent/MemoryContextProjection";
+import "./dots-recall-ranking-test";
+import "./dots-revision-source-test";
+import { createMemoryExtension } from "../src/main/memory/memory-extension";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DOTS_TASK_ID } from "../src/shared/dots";
+import { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
+import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -15,6 +24,11 @@ const filename = join(root, "app.db");
 let db = new AppDatabase(filename);
 let memory = new MemoryService(db, { semantic: false });
 let pipeline = new MemoryPipelineManager(db);
+function openMemoryFile(path: string): void {
+  db = new AppDatabase(path);
+  memory = new MemoryService(db, { semantic: false });
+  pipeline = new MemoryPipelineManager(db);
+}
 const now = Date.now();
 let serial = 0;
 const facts = [
@@ -59,6 +73,10 @@ try {
   const second = active().find(record => record.content.includes('青丘8264'));
   assert(first && second && first.id !== second.id);
   assert.equal(first.title, second.title);
+  db.close();
+  const oldBackup = join(root, "before-withdrawal.db");
+  copyFileSync(filename, oldBackup);
+  openMemoryFile(filename);
   const late = capture(text, now - 500);
   let entered!: () => void;
   let release!: () => void;
@@ -81,15 +99,100 @@ try {
   await extract(completion);
   assert(!active().some(record => record.content.includes('紫杉7319')));
   assert(active().some(record => record.id === second.id));
-  db.close(); db = new AppDatabase(filename); memory = new MemoryService(db, { semantic: false }); pipeline = new MemoryPipelineManager(db);
+  db.close();
+  const restored = join(root, "restored-after-withdrawal.db");
+  copyFileSync(filename, restored);
+  openMemoryFile(oldBackup);
+  assert(active().some(record => record.id === first.id));
+  assert.equal(db.connection.prepare("SELECT count(*) FROM memory_forget_targets").pluck().get(), 0);
+  db.close();
+  openMemoryFile(restored);
+  assert(db.connection.prepare("SELECT count(*) FROM memory_forget_targets").pluck().get());
   await extract(completion);
   assert(!active().some(record => record.content.includes('紫杉7319')));
   assert(active().some(record => record.content.includes('青丘8264')));
-  console.log('PASS late completion capture and current-format SQLite reopen preserve withdrawal targets and surviving facts');
+  console.log('PASS current-format cold backup restored after withdrawal preserves forget targets and rejects late capture; an older backup still contains the fact');
 
   const fresh = capture(`现在请重新记住：${facts[0]!.content}。`, now + 1000);
   await extract(fresh, [facts[0]!]);
   assert(active().some(record => record.content.includes('紫杉7319')));
   assert(active().some(record => record.content.includes('青丘8264')));
   console.log('PASS an explicit new remember request can restore its fact without changing the other same-title fact');
+  db.openDots();
+  const scoped = new MemoryService(db);
+  const passages = ["原始偏好为蓝绿色。", "第二次测量结束。", "第三个独立原文。"].map((ending,index)=>scoped.create({
+    title:"原文 "+index, content:"背景描述 ".repeat(75)+ending,kind:"fact",sourceType:"manual",scopeType:"task",scopeId:DOTS_TASK_ID,
+    evidence:[{evidenceKind:"message",refId:index===1?"different-source":"same-source"}],
+  }));
+  const recalled=passages.map(memory=>({memory,score:1,scopeDistance:0,reasons:["lexical"]}));
+
+  const longContent="Irrelevant introductory material. ".repeat(36)+"The final entry gives the closing cinnabar protocol.";
+  const primary=scoped.create({title:"Assembly references",content:longContent,kind:"fact",sourceType:"manual",scopeType:"task",scopeId:DOTS_TASK_ID});
+  const projection=projectMemoryContext(scoped,{taskId:DOTS_TASK_ID,query:"closing cinnabar protocol",budgetChars:7800,trackRecall:false},
+    [{memory:primary,score:2,scopeDistance:0,reasons:["lexical"]},...recalled]);
+  const full=projection.blocks.find(b=>b.reference?.id===primary.id)!;
+  assert.equal(full.reference?.renderer,DOTS_EVIDENCE_RENDERER);
+  assert(full.text.includes(longContent));
+  assert.equal(renderMemoryEvidence(scoped.history(primary.id)[0]!,full.reference!.scopeType,full.reference!.range),full.text);
+  const cropped=dotsEvidenceRange(longContent,dotsQueryTerms("closing cinnabar protocol"),140);
+  assert(cropped.start>700 && longContent.slice(cropped.start,cropped.end).includes("cinnabar protocol"));
+  assert(Buffer.byteLength(longContent.slice(cropped.start,cropped.end))<=140);
+  assert(!projectMemoryContext(scoped,{taskId:"other-task",query:"cinnabar",trackRecall:false},[{memory:primary,score:2,scopeDistance:0,reasons:["lexical"]}]).items.some(r=>r.id===primary.id));
+  console.log("PASS Dots selects complete accessible source passages or bounded matching windows, preserves frozen text and gives independent sources room");
+  const quoteText="每次整理出差清单时，我想先看火车时刻，再看酒店地址。";
+  const sourceTurn=pipeline.capture({taskId:DOTS_TASK_ID,userMessageId:"dots-original-quotation",assistantMessageId:"dots-quoted-reply",
+    userText:quoteText,assistantText:"我替你记下了。",capturedAt:Date.now()}).turn;
+  const quote=scoped.create({title:"出差清单顺序",content:"先列火车时刻，再列酒店地址",kind:"preference",scopeType:"task",scopeId:DOTS_TASK_ID,
+    sourceType:"user",sourceTaskId:DOTS_TASK_ID,evidence:[{evidenceKind:"conversation",refId:sourceTurn.id,excerpt:"用户："+quoteText+"\n助手：伪造的助手结论"}]});
+  assert.equal(dotsPreferenceQuote(scoped,quote,1), undefined, "An atom-wide evidence link cannot certify a revision");
+  const preference=projectMemoryContext(scoped,{taskId:DOTS_TASK_ID,query:"出差清单",trackRecall:false});
+  assert(preference.blocks.some(block=>block.reference?.id===quote.id && !block.reference.userQuote && !block.text.includes(quoteText) && block.text.includes(quote.content) && !block.text.includes("用户原话")));
+  console.log("PASS unbound historical sources cannot masquerade as revision-bound user quotations");
+  const tools = new Map<string,{ name: string; execute(id:string,params:object): Promise<{content:{text:string}[];details:unknown}> }>();
+  let source = { messageId:"herb-first", createdAt:Date.now(), text:"我习惯把罗勒盆栽放在东边窗台。" };
+  const registerTool = (tool: NonNullable<ReturnType<typeof tools.get>>) => tools.set(tool.name,tool);
+  await createMemoryExtension({taskId:DOTS_TASK_ID, service:scoped, sourceInput:()=>source})({registerTool} as unknown as ExtensionAPI);
+  const call = (name:string,params:object) => tools.get(name)!.execute("source-test",params);
+  const made = await call("memory_create",{kind:"preference",title:"罗勒盆栽摆放",content:source.text});
+  const id = (made.details as {memory:{id:string}}).memory.id;
+  const priorSource = source;
+  source = { messageId:"herb-change",createdAt:Date.now(),text:"我习惯把罗勒盆栽放在西边阳台，以后照这个位置。" };
+  await call("memory_update",{id,content:source.text});
+  const exact = dotsPreferenceQuote(scoped,{id},2);
+  assert(exact && exact.text.includes(source.messageId) && exact.text.includes(source.text));
+  assert.equal(restoreDotsPreferenceQuote(scoped,id,exact.ref,2),exact.text);
+  assert.equal(restoreDotsPreferenceQuote(scoped,id,exact.ref,1),undefined);
+  const get = await call("memory_get",{id});
+  assert(JSON.stringify(get).includes(source.messageId));
+  assert(!JSON.stringify(get).includes(priorSource.messageId) && !JSON.stringify(get).includes(priorSource.text));
+  const search = await call("memory_search",{query:"罗勒盆栽"});
+  assert(search.content[0]!.text.includes(source.messageId));
+  source={messageId:"club-report",createdAt:Date.now(),text:"同学提议把棋社聚会定在周六，我还没决定。"};
+  const reported=await call("memory_create",{kind:"decision",title:"聚会时间",content:"我决定周六聚会。"});
+  const reportedId=(reported.details as {memory:{id:string}}).memory.id;
+  const thirdParty=await call("memory_get",{id:reportedId});
+  assert(thirdParty.content[0]!.text.includes(source.text) && thirdParty.content[0]!.text.includes("reported"));
+  assert(!thirdParty.content[0]!.text.includes("我决定周六聚会。"));
+  scoped.forget(id);
+  assert.equal(restoreDotsPreferenceQuote(scoped,id,exact.ref,2),undefined);
+  console.log("PASS scoped Dots search, get and restore bind corrected quotes and attributed proposals to their own revisions");
+  const marker = scoped.create({ title:"stalledneedle", content:"ephemeral concurrency reference", kind:"fact", sourceType:"manual", scopeType:"task",scopeId:DOTS_TASK_ID });
+  const originalEmbed = SemanticRuntime.prototype.embed;
+  const heldSearch = Promise.withResolvers<void>();
+  const enteredSearch = Promise.withResolvers<void>();
+  SemanticRuntime.prototype.embed = async text => {
+    if (text === "stalledneedle") { enteredSearch.resolve(); await heldSearch.promise; }
+    return new Float32Array(SEMANTIC_DIMENSION);
+  };
+  try {
+    const pending = scoped.searchHybrid({taskId:DOTS_TASK_ID,query:"stalledneedle"});
+    await enteredSearch.promise;
+    const other = scoped.create({ title:"independentneedle", content:"second query", kind:"fact", sourceType:"manual", scopeType:"task",scopeId:DOTS_TASK_ID });
+    const available = await scoped.searchHybrid({taskId:DOTS_TASK_ID,query:"independentneedle"});
+    assert.equal(available[0]?.memory.id, other.id);
+    scoped.forget(marker.id);
+    heldSearch.resolve();
+    assert(!(await pending).some(hit => hit.memory.id === marker.id));
+  } finally { heldSearch.resolve(); SemanticRuntime.prototype.embed = originalEmbed; }
+  console.log("PASS two queries on the same Dots ID can progress independently, with concurrent write and forget");
 } finally { db.close(); rmSync(root, { recursive: true, force: true }); }

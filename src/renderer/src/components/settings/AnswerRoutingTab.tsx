@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "@shared/dots";
 import { useEffect, useRef, useState } from "react";
 import {
   answerRuleExamples, eligibleAnswerEvidenceItem, matchAnswerRule, newAnswerRule,
@@ -9,7 +10,6 @@ import { openAnswerRuleTurn } from "@/lib/openAnswerRuleTurn";
 import { libraryCollectionSubtree } from "@/lib/scopedLibrary";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import AnswerRoutingGraph from "@/components/answer-routing/AnswerRoutingGraph";
-import AnswerRuleMemoryCheck from "@/components/answer-routing/AnswerRuleMemoryCheck";
 import "./AnswerRoutingTab.css";
 
 type Seed = NonNullable<ReturnType<typeof useAppStore.getState>["answerRuleSeed"]>;
@@ -28,17 +28,15 @@ function questionPhrase(question: string): string {
 
 function currentTask(taskId?: string) {
   const store = useAppStore.getState();
-  return store.tasks.find(task => task.id === (taskId ?? store.activeTaskId));
+  return store.tasks.find(task => task.id === (taskId ?? DOTS_TASK_ID));
 }
 
 function initialDraft(seed?: Seed): AnswerRuleDraft {
-  const store = useAppStore.getState();
-  const projectId = store.page === "projects" ? store.activeProjectId : currentTask()?.projectId;
   return {
     ...newAnswerRule(),
     title: seed?.title?.slice(0, 90) ?? "",
     instruction: seed?.instruction?.slice(0, 2000) ?? "",
-    projectId: seed?.turn ? seed.projectId ?? null : seed?.projectId ?? projectId ?? null,
+    projectId: null,
   };
 }
 
@@ -104,7 +102,6 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
   const [positiveExample, setPositiveExample] = useState(seed?.question?.trim() ?? "");
   const [negativeTrial, setNegativeTrial] = useState<string>();
   const [query, setQuery] = useState(seed?.question ?? "");
-  const [scope, setScope] = useState(() => initialDraft(seed).projectId);
   const [preview, setPreview] = useState<{ input: string; match: AnswerRuleMatch | null }>();
   const [notice, setNotice] = useState("");
   const [failure, setFailure] = useState("");
@@ -224,8 +221,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
     setFailure("");
   };
 
-  const projectName = (id: string | null) => id ? projects.find(p => p.id === id)?.name ?? id : "全局";
-  const options = projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>);
+  const projectName = (id: string | null) => id ? projects.find(p => p.id === id)?.name ?? id : "Dots";
   const update = (patch: Partial<AnswerRuleDraft>) => setForm(old => {
     if (!old) return null;
     const next = { ...old, ...patch };
@@ -290,10 +286,10 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
           return <button key={rule.id} type="button" disabled={busy} aria-label={rule.title}
             aria-current={!form && rule.id === selected?.id ? "true" : undefined}
             className="answer-routing-rule" onClick={() => {
-              setSelectedId(rule.id); setScope(rule.projectId); setForm(null); setSeed(undefined); setPreview(undefined);
+              setSelectedId(rule.id); setForm(null); setSeed(undefined); setPreview(undefined);
             }}>
             <strong>{rule.title}</strong>
-            <small>{projectName(rule.projectId)} · {rule.enabled ? rule.sourceNeedsReview ? "待审核" : "已启用" : "已停用"}</small>
+            <small>{projectName(rule.projectId)} · {rule.enabled ? rule.sourceUnavailable ? "来源不可用" : "已启用" : "已停用"}</small>
             <small className="answer-routing-rule-summary" title={rule.include.join("、")}>{phrases}</small>
             <small className="answer-routing-rule-summary" title={firstAction}>{firstAction}</small>
             <small title={lastUse?.detail}>{lastUseLabel(lastUse)}</small>
@@ -306,23 +302,8 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
           <label>遇到什么问题<input aria-label="遇到什么问题" value={positiveExample} onChange={e => setPositiveExample(e.target.value)}
             placeholder="例如：今天天气怎么样" /></label>
           <label>下次怎么做<textarea ref={instructionInput} id="answer-rule-instruction" aria-label="下次怎么做" value={form.instruction} maxLength={2000}
-            autoFocus={!!seed?.turn} placeholder="写下你希望它采用的做法"
+            readOnly={!!form.sourceMemoryId} autoFocus={!!seed?.turn} placeholder="写下你希望它采用的做法"
             onChange={e => update({ instruction: e.target.value })} /></label>
-            <AnswerRuleMemoryCheck key={JSON.stringify([editing?.id, form.sourceMemoryId, title, triggerPhrases, excludedPhrases, form.instruction, form.projectId])}
-              draft={{ title, instruction: form.instruction, include: triggerPhrases, exclude: excludedPhrases }}
-              api={api} onDistill={proposal => {
-                update({ instruction: proposal.instruction, evidenceFile: file, sourceMemoryId: null, sourceHash: undefined, sourcePrefixLength: undefined });
-                setMode(effectiveMode);
-                setEvidenceChosen(true);
-                if (proposal.include.length) setInclude(proposal.include.join("，"));
-                setExclude(proposal.exclude.join("，"));
-                setNotice("提炼稿已填入，保存后生效。");
-              }} onUse={memory => {
-                update({ sourceMemoryId: memory.memoryId, sourceHash: memory.sourceHash,
-                  sourcePrefixLength: memory.additionalInstruction ? memory.content.length : undefined,
-                  instruction: memory.additionalInstruction ? memory.content + "\n" + memory.additionalInstruction : memory.content });
-                setNotice(`草稿已引用「${memory.title}」。保存后生效。`);
-              }} />
           {seed?.answer && <details className="answer-rule-original"><summary>查看原回答</summary><p>{seed.answer.slice(0, 2500)}</p></details>}
           <Options className="answer-rule-config" onToggle={event => {
             if (event.target === event.currentTarget && event.currentTarget instanceof HTMLDetailsElement) setOptionsOpen(event.currentTarget.open);
@@ -330,25 +311,6 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
             {finishTeaching && <summary>规则选项<small>{projectName(form.projectId)} · {file ? `先读 ${file}` :
               form.evidenceLibraryItemId ? `先读 ${knownDocument(form.evidenceLibraryItemId)}` : positiveMatch ? `匹配「${positiveMatch.phrase}」` : "匹配问法与资料"}</small></summary>}
             <div className="answer-rule-config-body">
-              {seed?.memoryId && (!form.sourceMemoryId || form.sourceMemoryId === seed.memoryId) ? <label>与来源记忆的关系
-                <select value={form.sourceMemoryId ? "linked" : "independent"} onChange={e => update(e.target.value === "linked"
-                  ? { sourceMemoryId: seed.memoryId!, sourceHash: seed.sourceHash } : { sourceMemoryId: null, sourceHash: undefined })}>
-                  <option value="independent">独立规则</option><option value="linked">关联来源记忆</option>
-                </select>
-                <small>{form.sourceMemoryId ? "来源改动后需重新审核。来源删除时会移除此规则。" : "以这条记忆为草稿起点。以后修改或删除记忆，规则照常使用。"}</small>
-              </label> : form.sourceMemoryId && <div className="answer-routing-actions">
-                <small>关联来源记忆。来源改动后需重新审核，删除来源会移除此规则。</small>
-                <button className="btn" onClick={() => void run(async () => {
-                  const memory = await window.api?.memory.get(form.sourceMemoryId!);
-                  if (!memory || memory.status !== "active" || !memory.scopes.some(s => s.scopeType === "global")) throw new Error("来源全局记忆已失效");
-                  const extra = form.sourcePrefixLength ? form.instruction.slice(form.sourcePrefixLength) : "";
-                  const instruction = memory.content + extra;
-                  if (instruction.length > 2000) throw new Error("来源原文与额外做法超过 2000 字，请调整后再引用。");
-                  update({ instruction, sourceHash: memory.contentHash, sourcePrefixLength: extra ? memory.content.length : undefined });
-                  setNotice("已重新载入来源，请检查回答做法后保存");
-                })}>重新载入来源内容</button>
-                <button className="btn" onClick={() => update({ sourceMemoryId: null, sourceHash: undefined })}>改为独立规则</button>
-              </div>}
               <details className="answer-rule-options">
                 <summary>匹配问法与例外{positiveMatch && <small>含「{positiveMatch.phrase}」{triggerPhrases.length > 1 ? "等" : ""}</small>}</summary>
                 <div className="answer-rule-options-body">
@@ -392,21 +354,16 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
                 </div>
               </details>
               <div className="answer-rule-scope">
-                <label>适用范围<select value={form.projectId ?? ""} onChange={e => {
-                  const projectId = e.target.value || null;
-                  if (finishTeaching && editing && projectId !== editing.projectId) setEditing(undefined);
-                  if (mode === "library") setDocuments([]);
-                  update({ projectId, ...(mode === "library" ? { evidenceLibraryItemId: null } : {}) });
-                }}>
-                  <option value="">全局</option>{options}
-                </select></label>
+                {form.projectId && <label>适用范围<select value={form.projectId} onChange={e => {
+                  if (!e.target.value) update({ projectId: null, evidenceLibraryItemId: null });
+                }}><option value={form.projectId}>{projectName(form.projectId)}（历史规则）</option><option value="">Dots</option></select></label>}
                 <label>回答前读什么<select value={effectiveMode} onChange={e => {
                   setMode(e.target.value as EvidenceMode);
                   setEvidenceChosen(true);
                   update({ evidenceFile: "", evidenceLibraryItemId: null, evidenceFailure: e.target.value === "none" ? undefined : form.evidenceFailure });
                 }}>
                   <option value="none">无需预读资料</option><option value="library">项目资料库、绑定资料或当前对话附件</option>
-                  <option value="task-file">当前任务目录里的文件</option>
+                  <option value="task-file">Dots 对话目录里的文件</option>
                 </select></label>
               </div>
               {effectiveMode === "library" && <label>选择资料<select value={form.evidenceLibraryItemId ?? ""} onChange={e => update({ evidenceLibraryItemId: e.target.value || null })}>
@@ -430,7 +387,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
                     setMode("task-file"); setEvidenceChosen(true); update({ evidenceFile: relative });
                   })}>选择文件</button>}
                 </div>
-                <small>每轮从自己的任务目录找这个相对路径。支持 16 KiB 以内的 UTF-8 文本。</small>
+                <small>每轮从 Dots 对话目录读取这个相对路径。支持 16 KiB 以内的 UTF-8 文本。</small>
               </div>}
               {effectiveMode !== "none" && <label>读不到资料时<select value={form.evidenceFailure ?? "verify"}
                 onChange={e => update({ evidenceFailure: e.target.value as AnswerRuleDraft["evidenceFailure"] })}>
@@ -471,7 +428,6 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
                   return;
                 }
                 setSelectedId(saved.id);
-                setScope(saved.projectId);
                 setForm(null);
                 setSeed(undefined);
                 setPreview(undefined);
@@ -489,7 +445,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
             <div className="answer-routing-actions">
               <h3>{selected.title}</h3>
               <button className="btn" disabled={busy} onClick={() => open(selected, selected)}>编辑</button>
-              <button className="btn" disabled={busy || (!selected.enabled && selected.sourceNeedsReview)} onClick={() => void run(async () => {
+              <button className="btn" disabled={busy || (!selected.enabled && selected.sourceUnavailable)} onClick={() => void run(async () => {
                 await api.save({ ...selected, enabled: !selected.enabled }, selected);
                 setPreview(undefined);
                 await refresh();
@@ -497,7 +453,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
               <button className="btn" disabled={busy} onClick={() => setDeleting(selected)}>删除</button>
             </div>
             <p className="answer-routing-meta">{projectName(selected.projectId)} · 第 {selected.revision} 版 · {selected.enabled ? "已启用" : "已停用"}</p>
-            {selected.sourceNeedsReview && <p className="answer-routing-error">来源记忆已变化。编辑并重新载入来源后即可恢复使用。</p>}
+            {selected.sourceUnavailable && <p className="answer-routing-error">当前无法读取来源记忆。</p>}
             <dl className="answer-routing-properties">
               <dt>触发短语</dt><dd>{selected.include.join("、")}</dd>
               <dt>跳过短语</dt><dd>{selected.exclude.join("、") || "无"}</dd>
@@ -542,12 +498,8 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
           <div className="answer-routing-actions">
             <input aria-label="测试匹配的问题" placeholder="输入问题" value={query} disabled={busy}
               onChange={e => { setQuery(e.target.value); setPreview(undefined); }} />
-            <select aria-label="测试匹配的项目" value={scope ?? ""} disabled={busy}
-              onChange={e => { setScope(e.target.value || null); setPreview(undefined); }}>
-              <option value="">无项目</option>{options}
-            </select>
             <button className="btn" disabled={busy || !query.trim()} onClick={() => void run(async () => {
-              const match = await api.preview(query, scope);
+              const match = await api.preview(query, null);
               setPreview({ input: query, match });
               if (match && !form) setSelectedId(match.rule.id);
             })}>测试匹配</button>

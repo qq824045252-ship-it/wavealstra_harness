@@ -20,6 +20,7 @@ import type {
   WorkProjectionDto,
 } from "../../shared/bot-work";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../../shared/bot-work";
+import type { GoalCompletionObservation } from "./work/WorkClosureMutations";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
 
 export interface GoalCallContext {
@@ -51,7 +52,47 @@ export interface ConversationGoalServiceOptions {
  * WorkService (idempotency receipts, version guards, evidence-based acceptance). This
  * class never owns a second live record.
  */
+type DotsCompletionPolicy = { stale: true } | { stale: false; evidenceOrigin: string; userAcceptance: boolean };
+
 export class ConversationGoalService {
+  private dotsCompletion?: (taskId: string, operationId: string, workId: string, revision: number) => DotsCompletionPolicy | undefined;
+
+  private recoverDotsCompletionLink?: (taskId: string, operationId: string, workId: string, revision: number) => Promise<void>;
+
+  bindDotsCompletion(resolver: NonNullable<ConversationGoalService["dotsCompletion"]>,
+    recover: NonNullable<ConversationGoalService["recoverDotsCompletionLink"]>) {
+    this.dotsCompletion = resolver;
+    this.recoverDotsCompletionLink = recover;
+  }
+
+  async resolveDotsCompletion(taskId: string, operationId: string, work: WorkDto) {
+    const known = this.dotsCompletionPolicy(taskId, operationId, work);
+    if (known || !operationId.startsWith("goal-continuation:")) return known;
+    await this.recoverDotsCompletionLink?.(taskId, operationId, work.workId, work.intentRevision);
+    return this.dotsCompletionPolicy(taskId, operationId, work);
+  }
+
+  dotsCompletionPolicy(taskId: string, operationId: string, work: WorkDto) {
+    return this.dotsCompletion?.(taskId, operationId, work.workId, work.intentRevision);
+  }
+
+  completeFromDots(taskId: string, operationId: string, workId: string, guard: ExpectedVersionGuard, summary: string,
+    observations: readonly GoalCompletionObservation[], userConfirmed: boolean): ConversationGoalMutationResult {
+    const work = this.work.getWork(workId);
+    const policy = work && this.dotsCompletionPolicy(taskId, operationId, work);
+    if (!work || !policy || policy.stale || (policy.userAcceptance && !userConfirmed) || this.work.repo.bindingForTask(taskId)
+      || work.mode === "watch" || !observations.length)
+      return { ok: false, code: "conflict", message: "原交办已变化，或缺少当前成果依据或约定的用户验收" };
+    if (observations.some(item => item.criterionId && !work.criteria.some(criterion => criterion.id === item.criterionId)))
+      return { ok: false, code: "invalid_request", message: "验收依据应引用当前 Goal 的条件编号" };
+    const result = this.finish(this.work.closeWork(this.modelActor(taskId), {
+      operationId: `dots-goal-close:${operationId}`, workId, conclusion: "succeeded",
+      closureSummary: summary, versionGuard: guard,
+    }, observations), workId, this.primaryConversation(work));
+    if (result.ok) this.publish(result.goal);
+    return result;
+  }
+
   constructor(
     private readonly work: WorkService,
     private readonly emit: (patch: AgentUiPatch) => void,

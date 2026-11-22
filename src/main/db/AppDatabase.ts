@@ -1,3 +1,5 @@
+import { ensureMemorySearchEpoch } from "../memory/MemorySearchEpoch";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import { GATEWAY_SIDEBAR_CHANNELS, gatewayChannelForSpace, gatewayChannelSpaceId, isGatewayConversation, isGatewaySidebarChannelId } from "../../shared/gateway-task";
 import { ensureGatewayChannelSpace, gatewayChannelDirectory } from "../gateway/gateway-task-space";
 import Database from "better-sqlite3";
@@ -75,7 +77,8 @@ import type { ExternalAgentPinDto } from "../../shared/external-agent";
 import { computeEffectiveArchived as sharedComputeEffectiveArchived } from "../../shared/workspace-tree";
 import { DEFAULT_WORKSPACE_ICON, isWorkspaceIconAppearance, type WorkspaceIconAppearance } from "../../shared/workspace-icon";
 
-export const CURRENT_DATABASE_SCHEMA_VERSION = 36;
+import { CURRENT_DATABASE_SCHEMA_VERSION } from "../../shared/database-version";
+export { CURRENT_DATABASE_SCHEMA_VERSION };
 
 /** tasks.external_agent_pin_json → TaskDto.externalAgentPin；损坏/缺失一律按未固定处理。 */
 function parseExternalAgentPin(raw: string | null | undefined): TaskDto["externalAgentPin"] {
@@ -612,6 +615,14 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_memory_records_kind_updated ON memory_records(kind, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_records_hash ON memory_records(content_hash);
       CREATE INDEX IF NOT EXISTS idx_memory_records_source_task ON memory_records(source_task_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_records_dots_projection
+        ON memory_records(kind, updated_at DESC, id)
+        WHERE (source_task_id='${DOTS_TASK_ID}' OR json_extract(metadata_json, '$.dotsPrivateGateway')=1)
+          AND status='active' AND valid_until IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_memory_records_dots_projection_due
+        ON memory_records(valid_from)
+        WHERE (source_task_id='${DOTS_TASK_ID}' OR json_extract(metadata_json, '$.dotsPrivateGateway')=1)
+          AND status='active' AND valid_until IS NULL AND valid_from IS NOT NULL;
       CREATE TRIGGER IF NOT EXISTS memory_organization_forget AFTER DELETE ON memory_records BEGIN
         DELETE FROM memory_organization_runs WHERE EXISTS (
           SELECT 1 FROM json_each(state_json, '$.sourceIds') WHERE value = OLD.id
@@ -702,36 +713,6 @@ export class AppDatabase {
         updated_at INTEGER NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS memory_scenarios (
-        id TEXT PRIMARY KEY,
-        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project')),
-        scope_id TEXT,
-        title TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','stale')),
-        source_memory_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_memory_ids_json)),
-        content_hash TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        CHECK ((scope_type='global' AND scope_id IS NULL) OR (scope_type!='global' AND scope_id IS NOT NULL AND length(trim(scope_id)) > 0))
-      );
-      CREATE INDEX IF NOT EXISTS idx_memory_scenarios_scope ON memory_scenarios(scope_type, scope_id, updated_at DESC);
-
-      CREATE TABLE IF NOT EXISTS memory_core_profiles (
-        id TEXT PRIMARY KEY,
-        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project')),
-        scope_id TEXT,
-        title TEXT NOT NULL,
-        content TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','stale')),
-        source_scenario_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_scenario_ids_json)),
-        content_hash TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        CHECK ((scope_type='global' AND scope_id IS NULL) OR (scope_type!='global' AND scope_id IS NOT NULL AND length(trim(scope_id)) > 0))
-      );
-      CREATE INDEX IF NOT EXISTS idx_memory_core_profiles_scope ON memory_core_profiles(scope_type, scope_id, updated_at DESC);
-
       -- User-dismissed L2/L3 projections. Ids are content-derived, so a plain
       -- delete/upsert would resurrect them on the next scheduled regeneration;
       -- this ledger makes dismissal durable until explicitly restored.
@@ -744,8 +725,7 @@ export class AppDatabase {
         dismissed_at INTEGER NOT NULL
       );
 
-      -- L2/L3 are manual-approval projections: generation writes pending proposals;
-      -- only an explicit approve inserts the live memory_scenarios/memory_core_profiles row.
+      -- Manual L2/L3 generation writes pending proposals for explicit approval.
       CREATE TABLE IF NOT EXISTS memory_projection_proposals (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL CHECK (kind IN ('scenario','profile')),
@@ -859,7 +839,57 @@ export class AppDatabase {
     for (const [name, type] of [["value_fingerprint", "TEXT"], ["guard_fingerprint", "TEXT"], ["guard_length", "INTEGER"]]) {
       if (!targetColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE memory_forget_targets ADD COLUMN ${name} ${type}`);
     }
+    this.ensureMemoryProjectionTables();
     this.ensureMemoryFts();
+    ensureMemorySearchEpoch(this.db);
+  }
+
+  private ensureMemoryProjectionTables(): void {
+    // Extend the two derived tables in place for the current database format.
+    // Existing approved projections and their IDs remain available.
+    const legacy = ["memory_scenarios", "memory_core_profiles"].filter(table => {
+      const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
+        .get(table) as { sql: string } | undefined;
+      return row && !row.sql.includes("'task'");
+    });
+    for (const table of legacy) {
+      this.db.exec(`ALTER TABLE ${table} RENAME TO ${table}_before_dots; DROP INDEX IF EXISTS idx_${table}_scope`);
+    }
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_scenarios (
+        id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project') OR (scope_type='task' AND scope_id='${DOTS_TASK_ID}')),
+        scope_id TEXT,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','stale')),
+        source_memory_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_memory_ids_json)),
+        content_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CHECK ((scope_type='global' AND scope_id IS NULL) OR (scope_type!='global' AND scope_id IS NOT NULL AND length(trim(scope_id)) > 0))
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_scenarios_scope ON memory_scenarios(scope_type, scope_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_core_profiles (
+        id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL CHECK (scope_type IN ('global','workspace','project') OR (scope_type='task' AND scope_id='${DOTS_TASK_ID}')),
+        scope_id TEXT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','stale')),
+        source_scenario_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(source_scenario_ids_json)),
+        content_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CHECK ((scope_type='global' AND scope_id IS NULL) OR (scope_type!='global' AND scope_id IS NOT NULL AND length(trim(scope_id)) > 0))
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_core_profiles_scope ON memory_core_profiles(scope_type, scope_id, updated_at DESC);
+
+    `);
+    for (const table of legacy) {
+      this.db.exec(`INSERT INTO ${table} SELECT * FROM ${table}_before_dots; DROP TABLE ${table}_before_dots`);
+    }
   }
 
   /** Memory lexical index: local FTS5 trigram is CJK/model-name friendly; failure only degrades recall. */
@@ -2663,6 +2693,7 @@ export class AppDatabase {
     targetIndex?: number;
     targetSortOrder?: number;
   }): void {
+    if (input.taskId === DOTS_TASK_ID) throw new Error("Dots 入口固定在主页");
     if (isGatewayConversation(input.taskId)) {
       const channel = this.getTask(input.taskId)?.gatewaySidebarChannelId;
       if (!channel || input.targetSpaceId !== gatewayChannelSpaceId(channel)) throw new Error("网关对话不能移入其他空间或解除渠道归属");
@@ -2831,9 +2862,9 @@ export class AppDatabase {
                 model_id, permission_mode, archived, expert_id, mode_preset_id, start_at, due_at,
                 space_sort_order, is_favorited, external_agent_pin_json, done_acked_at,
                 (SELECT g.channel_id FROM gateway_sidebar_conversations g WHERE g.task_id = tasks.id) AS gateway_sidebar_channel_id
-         FROM tasks ORDER BY updated_at DESC`,
+         FROM tasks WHERE id != ? ORDER BY updated_at DESC`,
       )
-      .all() as TaskRow[];
+      .all(DOTS_TASK_ID) as TaskRow[];
     return this.projectTaskRows(rows);
   }
 
@@ -2869,6 +2900,12 @@ export class AppDatabase {
       )
       .get(taskId) as TaskRow | undefined;
     return row ? this.mapTaskRow(row, this.expertBindingReader?.(row.id)) : undefined;
+  }
+
+  openDots(): TaskDto {
+    this.db.prepare("INSERT OR IGNORE INTO tasks (id,title,updated_at,welcome_mode,mode_preset_id) VALUES (?, 'Dots', ?, 'general', 'native')")
+      .run(DOTS_TASK_ID, Date.now());
+    return this.getTask(DOTS_TASK_ID)!;
   }
 
   private mapTaskRow(r: TaskRow, binding?: import("../../shared/expert-binding").TaskExpertBindingDto | null): TaskDto {
@@ -2978,6 +3015,9 @@ export class AppDatabase {
   }
 
   upsertTask(task: TaskDto): void {
+    if (task.id === DOTS_TASK_ID) {
+      task = { ...task, title: "Dots", spaceId: null, projectId: null, welcomeMode: "general", modePresetId: "native", externalAgentPin: null, archived: false, isFavorited: false };
+    }
     if (isGatewayConversation(task.id)) {
       if (task.projectId) throw new Error("网关对话不能绑定项目");
       if (task.spaceId !== undefined) {
@@ -3110,6 +3150,7 @@ export class AppDatabase {
   }
 
   deleteTask(id: string): void {
+    if (id === DOTS_TASK_ID) throw new Error("Dots 对话不能作为普通任务删除");
     this.db.transaction(() => {
       // L0 完整原文随任务 hard purge 删除，避免任务删除后仍残留完整聊天副本。
       // 但 L1 的 conversation evidence 是长期记忆的审计链：删除 L0 前补一份有界证据摘录，
@@ -3333,6 +3374,7 @@ export class AppDatabase {
    * 可在设置「归档管理」页恢复；彻底删除请用 deleteTask（P1.5 起为安全回收）。
    */
   archiveTask(id: string, archived: boolean): void {
+    if (id === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
     this.db
       .prepare("UPDATE tasks SET archived = ?, updated_at = ? WHERE id = ?")
       .run(archived ? 1 : 0, Date.now(), id);
@@ -3709,6 +3751,7 @@ export class AppDatabase {
       target: job.target,
       maxRuns: job.maxRuns,
       restartPolicy: job.restartPolicy,
+      missedRuns: job.missedRuns,
       cancelledAt: job.cancelledAt,
     });
     this.db

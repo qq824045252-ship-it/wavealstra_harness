@@ -1,3 +1,7 @@
+import { dotsScopeCondition } from "../memory/DotsRevisionSource";
+import { dotsEvidenceRange, dotsPreferenceQuote, dotsQueryTerms, type DotsUserQuote, type EvidenceRange } from "./DotsMemoryEvidence";
+import { isGatewayConversation } from "../../shared/gateway-task";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import {
   MEMORY_CONTEXT_DEFAULT_BUDGET, MEMORY_CONTEXT_HARD_BUDGET,
   type MemorySearchHit, type MemorySearchRequest, type MemoryKind, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
@@ -30,6 +34,7 @@ export function renderWorkPreferenceState(state: WorkPreferenceState): string {
 }
 
 export const MEMORY_EVIDENCE_RENDERER = "memory-l1-v1";
+export const DOTS_EVIDENCE_RENDERER = "dots-memory-l1-v3";
 export const MEMORY_EVIDENCE_CONTENT_LENGTH = 700;
 export interface MemoryEvidenceBlock {
   id: string;
@@ -39,12 +44,29 @@ export interface MemoryEvidenceBlock {
   sources: Array<{ id: string; revision: number }>;
   scenarioIds: string[];
   profileIds: string[];
-  reference?: { renderer: typeof MEMORY_EVIDENCE_RENDERER; id: string; revision: number; scopeType: MemoryScopeType };
+  reference?: { renderer: typeof MEMORY_EVIDENCE_RENDERER | typeof DOTS_EVIDENCE_RENDERER; range?: EvidenceRange; userQuote?: DotsUserQuote; id: string; revision: number; scopeType: MemoryScopeType };
 }
 
 /** Frozen rendering parameters are part of a reference; never reconstruct from today's recall order. */
-export function renderMemoryEvidence(atom: Pick<MemoryRevisionDto, "memoryId" | "revision" | "kind" | "title" | "content">, scopeType: MemoryScopeType): string {
-  return `- [L1 ${atom.memoryId}@${atom.revision}][${atom.kind}][${scopeType}] ${atom.title}${atom.content ? ` — ${atom.content.slice(0, MEMORY_EVIDENCE_CONTENT_LENGTH)}` : ""}`;
+export function renderMemoryEvidence(atom: Pick<MemoryRevisionDto, "memoryId" | "revision" | "kind" | "title" | "content">, scopeType: MemoryScopeType, range?: EvidenceRange, userQuote?: string): string {
+  const content=range ? (range.start>0 ? "…" : "")+atom.content.slice(range.start,range.end)+(range.end<atom.content.length ? "…" : "")
+    : atom.content.slice(0,MEMORY_EVIDENCE_CONTENT_LENGTH);
+  const heading = `- [L1 ${atom.memoryId}@${atom.revision}][${atom.kind}][${scopeType}] ${atom.title}`;
+  if (range && userQuote && content === atom.content && userQuote.endsWith("：" + content)) {
+    return `${heading} — ${content}\n上文为${userQuote.slice(0, -(content.length + 1))}。`;
+  }
+  const body = atom.content ? ` — ${content}` : "";
+  const source = range && userQuote ? "\n" + userQuote : "";
+  return heading + body + source;
+}
+
+export function renderDerivedMemoryEvidence(kind: "scenario" | "profile",
+  view: { id: string; scopeType: MemoryScopeType; title: string; body: string },
+  sources: MemoryEvidenceBlock["sources"],
+): string {
+  const [layer, limit] = kind === "profile" ? ["L3", 1000] as const : ["L2", 700] as const;
+  const revisions = sources.map(({ id, revision }) => `${id}@${revision}`).join(",");
+  return `- [${layer} derived:${view.id}][${view.scopeType}] ${view.title} — ${view.body.slice(0, limit)} (sources: ${revisions})`;
 }
 
 export interface ProjectedMemoryContext extends ResolvedMemoryContext {
@@ -63,6 +85,7 @@ export function projectMemoryContext(
   memory: MemoryService,
   input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean },
   recalled?: MemorySearchHit[],
+  delegatedSources: Array<{ id: string; revision: number }> = [],
 ): ProjectedMemoryContext {
   const budget = Math.max(0, Math.min(MEMORY_CONTEXT_HARD_BUDGET, input.budgetChars ?? MEMORY_CONTEXT_DEFAULT_BUDGET));
   const result: ProjectedMemoryContext = {
@@ -71,7 +94,11 @@ export function projectMemoryContext(
     blocks: [], sourceRevisions: [], groundingScenarioIds: [],
   };
   if (!budget) return result;
-  const header = "历史记忆证据：L1 是事实来源，L2/L3 是经审批且仍有依据的派生视图；本轮明确指令优先。";
+  const isDots = input.taskId === DOTS_TASK_ID;
+  const header = isDots
+    ? "历史记忆证据：L1 是事实来源，L2/L3 是仍有依据的派生视图；本轮明确指令优先。"
+    : "历史记忆证据：L1 是事实来源，L2/L3 是经审批且仍有依据的派生视图；本轮明确指令优先。";
+  const optionalDotsViews: MemoryEvidenceBlock[] = [];
   const lines: string[] = [];
   // UTF-8 byte budget is conservative for tokens, including labels and separators.
   let bytes = Buffer.byteLength(header + "\n", "utf8");
@@ -86,16 +113,23 @@ export function projectMemoryContext(
   // Use the same authoritative Work/Bot scope for derived views and L1 recall.
   // Passing taskId here would let cognition fall back to unrelated UI task metadata.
   const sources = memory.cognition.getContextSources({
+    taskId: isDots && chain.some(scope => scope.scopeType === "task" && scope.scopeId === DOTS_TASK_ID)
+      ? DOTS_TASK_ID : undefined,
     projectId: chain.find(scope => scope.scopeType === "project")?.scopeId,
     workspaceId: chain.find(scope => scope.scopeType === "workspace")?.scopeId,
   });
   const allowedScopes = new Set(chain.map(scope => `${scope.scopeType}:${scope.scopeId ?? ""}`));
-  const visible = (id: string) => {
+  const now = Date.now();
+  const visibility = new Map<string, boolean>();
+  const visible = (id: string): boolean => {
+    const previous = visibility.get(id);
+    if (previous !== undefined) return previous;
     const atom = memory.get(id);
-    const now = Date.now();
-    return atom?.status === "active" && memory.canAccess(id, input)
+    const current = atom?.status === "active" && memory.canAccess(id, input)
       && (atom.validFrom === undefined || atom.validFrom <= now)
       && (atom.validUntil === undefined || atom.validUntil > now);
+    visibility.set(id, current);
+    return current;
   };
   // Only current typed L1 atoms may authorize inherited formatting. Query-free
   // lookup is bounded and scope-checked; historical progress snapshots never qualify.
@@ -110,8 +144,16 @@ export function projectMemoryContext(
   const byScenario = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
   const coveredAtoms = new Set<string>();
   const coveredScenarios = new Set<string>();
-  const sourceVersions = (ids: string[]) => ids.map(id => ({ id, revision: memory.history(id)[0]?.revision ?? 0 }));
-  const revisions = (ids: string[]) => sourceVersions(ids).map(({ id, revision }) => `${id}@${revision}`).join(",");
+  const versionById = new Map<string, number>();
+  const latestRevision = (id: string) => {
+    const known = versionById.get(id);
+    if (known !== undefined) return known;
+    const revision = memory.history(id)[0]?.revision ?? 0;
+    versionById.set(id, revision);
+    return revision;
+  };
+  const sourceVersions = (ids: string[]) => ids.map(id => ({ id, revision: latestRevision(id) }));
+  const revisions = (sources: MemoryEvidenceBlock["sources"]) => sources.map(({ id, revision }) => `${id}@${revision}`).join(",");
   // Only use a derived view if all of its grounding remains visible. Deduplication
   // follows source IDs, never similarity or untraceable paraphrase heuristics.
   for (const profile of sources.profiles) {
@@ -119,10 +161,16 @@ export function projectMemoryContext(
     if (!profile.sourceScenarioIds.every((id) => byScenario.has(id))) continue;
     const atomIds = [...new Set(profile.sourceScenarioIds.flatMap((id) => byScenario.get(id)!.sourceMemoryIds))];
     if (!atomIds.length || atomIds.every((id) => coveredAtoms.has(id))) continue;
-    const line = `- [L3 derived:${profile.id}][${profile.scopeType}] ${profile.title} — ${profile.content.slice(0, 1000)} (sources: ${revisions(atomIds)})`;
+    const grounding = sourceVersions(atomIds);
+    const line = renderDerivedMemoryEvidence("profile", { ...profile, body: profile.content }, grounding);
+    const block = { id: `profile:${profile.id}`, revision: revisions(grounding), text: line,
+      sources: grounding, scenarioIds: [...profile.sourceScenarioIds], profileIds: [profile.id] };
+    if (isDots) {
+      optionalDotsViews.push(block);
+      continue;
+    }
     if (push(line)) {
-      result.blocks.push({ id: `profile:${profile.id}`, revision: revisions(atomIds), text: line,
-        sources: sourceVersions(atomIds), scenarioIds: [...profile.sourceScenarioIds], profileIds: [profile.id] });
+      result.blocks.push(block);
       result.profileIds!.push(profile.id);
       profile.sourceScenarioIds.forEach((id) => coveredScenarios.add(id));
       atomIds.forEach((id) => coveredAtoms.add(id));
@@ -131,7 +179,7 @@ export function projectMemoryContext(
   const finishSearch = recalled ? undefined : startAnswerRoutingTiming("memorySearch");
   const queryHits = recalled ? recalled.flatMap(hit => {
     const current = memory.get(hit.memory.id);
-    return current?.contentHash === hit.memory.contentHash ? [{ ...hit, memory: current }] : [];
+    return current?.contentHash === hit.memory.contentHash ? [hit] : [];
   }) : memory.search(memoryProjectionQuery(input));
   finishSearch?.(() => ({ method: "lexical", outcome: "completed",
     resultCount: queryHits.length, returnedMemoryIds: queryHits.map(hit => hit.memory.id) }));
@@ -153,8 +201,9 @@ export function projectMemoryContext(
   // Stable shared preferences and the current episode survive unrelated follow-up wording.
   // Scope-chain filtering still owns visibility; this does not expand ownership.
   const sharedBaseline = input.query?.trim() && allowedBaselineKinds.length
-    ? memory.search({ ...input, query: undefined, scopeTypes: ["team", "global"], kinds: allowedBaselineKinds,
-      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id)) : [];
+    ? memory.search({ ...input, query: undefined, scopeTypes: input.taskId === DOTS_TASK_ID || input.taskId && isGatewayConversation(input.taskId) ? ["task", "team", "global"] : ["team", "global"], kinds: allowedBaselineKinds,
+      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id)
+        && (!isDots || !dotsScopeCondition(hit.memory.content))) : [];
   const episodeBaseline = input.query?.trim()
     ? memory.search({ ...input, query: undefined, scopeTypes: ["conversation", "work"],
       statuses: ["active"], limit: 6 }).filter(hit => visible(hit.memory.id)) : [];
@@ -164,16 +213,28 @@ export function projectMemoryContext(
     if (coveredScenarios.has(scenario.id)) continue;
     if (input.query?.trim() && !scenario.sourceMemoryIds.some((id) => relevantIds.has(id))) continue;
     if (scenario.sourceMemoryIds.every((id) => coveredAtoms.has(id))) continue;
-    const line = `- [L2 derived:${scenario.id}][${scenario.scopeType}] ${scenario.title} — ${scenario.summary.slice(0, 700)} (sources: ${revisions(scenario.sourceMemoryIds)})`;
+    const grounding = sourceVersions(scenario.sourceMemoryIds);
+    const line = renderDerivedMemoryEvidence("scenario", { ...scenario, body: scenario.summary }, grounding);
+    const block = { id: `scenario:${scenario.id}`, revision: revisions(grounding), text: line,
+      sources: grounding, scenarioIds: [scenario.id], profileIds: [] };
+    if (isDots) {
+      optionalDotsViews.push(block);
+      continue;
+    }
     if (push(line)) {
-      result.blocks.push({ id: `scenario:${scenario.id}`, revision: revisions(scenario.sourceMemoryIds), text: line,
-        sources: sourceVersions(scenario.sourceMemoryIds), scenarioIds: [scenario.id], profileIds: [] });
+      result.blocks.push(block);
       result.scenarioIds!.push(scenario.id);
       coveredScenarios.add(scenario.id);
       scenario.sourceMemoryIds.forEach((id) => coveredAtoms.add(id));
     }
   }
-  const decorated = hits.map((hit) => ({ hit, scope: memory.bestMatchedScope(hit.memory, chain) }));
+  const delegatedHits: MemorySearchHit[] = [];
+  for (const { id, revision } of delegatedSources.slice(0, 8)) {
+    const record = input.taskId && memory.currentDelegationSource(input.taskId, id, revision);
+    if (!record || !visible(id)) continue;
+    delegatedHits.push({ memory: record, score: 1, reasons: ["dots-delegation"], scopeDistance: 0 });
+  }
+  const decorated = [...delegatedHits, ...hits].map((hit) => ({ hit, scope: memory.bestMatchedScope(hit.memory, chain) }));
   const picked = new Set<string>();
   const ordered: typeof decorated = [];
   const add = (entry: typeof decorated[number]) => {
@@ -181,30 +242,55 @@ export function projectMemoryContext(
     picked.add(entry.hit.memory.id);
     ordered.push(entry);
   };
+  decorated.filter(entry => entry.hit.reasons.includes("dots-delegation")).forEach(add);
   decorated.filter(entry => preferenceIds.has(entry.hit.memory.id)).forEach(add);
-  for (const scope of chain) {
+  for (const scope of isDots ? [] : chain) {
     const first = decorated.find((entry) => entry.scope.scopeType === scope.scopeType && entry.scope.scopeId === scope.scopeId);
     if (first) add(first);
   }
   decorated.forEach(add);
+  const terms = isDots ? dotsQueryTerms(input.query ?? "") : [];
   for (const { hit, scope } of ordered) {
     if (result.items.length >= (input.limit ?? 16)) { result.trimmed = true; break; }
     const atom = hit.memory;
-    const revision = memory.history(atom.id)[0]?.revision ?? 0;
-    const text = renderMemoryEvidence({ ...atom, memoryId: atom.id, revision }, scope.scopeType);
+    const revision = latestRevision(atom.id);
+    const snapshot = { ...atom, memoryId: atom.id, revision };
+    // A few complete source passages retain list entries, dates and corrections.
+    // Further candidates share the remaining capacity with query-centred excerpts.
+    let range: EvidenceRange | undefined;
+    if(isDots){
+      const overhead=Buffer.byteLength(renderMemoryEvidence({...snapshot,content:""},scope.scopeType))+16;
+      const remaining=budget-bytes-overhead;
+      const cap=Math.min(remaining, result.items.length<4 ? 1800 : 800);
+      if(cap<96){result.trimmed=true;continue;}
+      range=dotsEvidenceRange(atom.content,terms,cap);
+    }
+    const quote=isDots ? dotsPreferenceQuote(memory,atom,revision) : undefined;
+    const plain=renderMemoryEvidence(snapshot,scope.scopeType,range);
+    const quoted=quote ? renderMemoryEvidence(snapshot,scope.scopeType,range,quote.text) : undefined;
+    const useQuote=quoted!==undefined && bytes+Buffer.byteLength(quoted+"\n")<=budget;
+    const text=useQuote ? quoted! : plain;
     if (!push(text)) continue;
     result.blocks.push({ id: `memory:${atom.id}`, revision: String(revision), text,
-      fullInstruction: atom.content.length <= MEMORY_EVIDENCE_CONTENT_LENGTH ? atom.content : undefined,
+      fullInstruction: atom.content.length <= MEMORY_EVIDENCE_CONTENT_LENGTH && (!range || (range.start===0 && range.end===atom.content.length)) ? atom.content : undefined,
       sources: [{ id: atom.id, revision }], scenarioIds: [], profileIds: [],
-      reference: { renderer: MEMORY_EVIDENCE_RENDERER, id: atom.id, revision, scopeType: scope.scopeType } });
+      reference: { renderer: range ? DOTS_EVIDENCE_RENDERER : MEMORY_EVIDENCE_RENDERER, ...(range ? {range} : {}), ...(useQuote ? {userQuote:quote!.ref} : {}), id: atom.id, revision, scopeType: scope.scopeType } });
     result.items.push({ id: atom.id, kind: atom.kind, title: atom.title, content: atom.content,
       scopeType: scope.scopeType, scopeId: scope.scopeId, importance: atom.importance, confidence: atom.confidence,
       score: hit.score, reasons: hit.reasons });
   }
+  for (const block of optionalDotsViews) {
+    if (!push(block.text)) continue;
+    result.blocks.push(block);
+    result.profileIds!.push(...block.profileIds);
+    if (!block.profileIds.length) result.scenarioIds!.push(...block.scenarioIds);
+    block.scenarioIds.forEach(id => coveredScenarios.add(id));
+    block.sources.forEach(({ id }) => coveredAtoms.add(id));
+  }
   if (lines.length) result.text = [header, ...lines].join("\n");
   result.includedChars = result.text.length;
   const sourceIds = [...new Set([...coveredAtoms, ...result.items.map((item) => item.id)])];
-  result.sourceRevisions = sourceIds.map((id) => ({ id, revision: memory.history(id)[0]?.revision ?? 0 }));
+  result.sourceRevisions = sourceVersions(sourceIds);
   result.groundingScenarioIds = [...coveredScenarios];
   if (workPreferences) {
     const currentSources = result.sourceRevisions.filter(source => preferenceIds.has(source.id)

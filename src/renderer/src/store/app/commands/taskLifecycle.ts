@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../../../../shared/dots";
 import { isTaskDoneUnread } from "../../../utils/taskFilters";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -31,6 +32,7 @@ export function createTaskLifecycleActions(
   };
   return {
     deleteTask: (id) => {
+      if (id === DOTS_TASK_ID) return;
       // Mark before the optimistic UI removal / async Main trash call, closing the late-patch race window.
       retire(id);
       const deletingActive = get().activeTaskId === id;
@@ -218,6 +220,7 @@ export function createTaskLifecycleActions(
     },
 
     renameTask: (id, title) => {
+      if (id === DOTS_TASK_ID) return;
       set((s) => ({
         tasks: s.tasks.map((x) =>
           x.id === id ? { ...x, title, updatedAt: Date.now() } : x,
@@ -236,6 +239,7 @@ export function createTaskLifecycleActions(
     },
 
     togglePinTask: async (id) => {
+      if (id === DOTS_TASK_ID) return;
       if (storeContext.runtime.pendingPinTaskIds.has(id)) return; // P1-1：同任务并发直接丢弃，避免重叠乐观更新形成幽灵 pin
       const task = get().tasks.find((t) => t.id === id);
       if (!task) return;
@@ -279,6 +283,7 @@ export function createTaskLifecycleActions(
     },
 
     archiveTask: async (id) => {
+      if (id === DOTS_TASK_ID) return;
       const task = get().tasks.find((x) => x.id === id);
       if (!task) return;
       set((s) => ({

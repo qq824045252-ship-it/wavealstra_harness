@@ -351,6 +351,80 @@ try {
 } finally { await parent.close(); }
 console.log("PASS branch evidence provenance, child access checks and fail-closed provider dispatch");
 
+// A persisted v2 ledger could pair an active revision with an older user's quote.
+{
+  const taskId = "mybuddy-dots";
+  const db = new AppDatabase(join(directory, "dots-old-quotes.db"));
+  db.openDots();
+  const memory = new MemoryService(db, {semantic:false});
+  const atom = memory.create({kind:"preference",title:"井边读书会",content:"我一般在周日下午参加井边读书会。",sourceType:"user",scopeType:"task",scopeId:taskId});
+  const settings = {...options, directory:join(directory,"dots-legacy-quote"),tools:[],
+    evidenceProjection:{memory,enabled:()=>true,scope:()=>({taskId}),supplementalEvidence:()=>[]}};
+  let chat = await DurableBotRuntime.open(settings);
+  const former = "旧窗口曾把读书会误记为周四清晨";
+  try {
+    await (await chat.submit(former,"quote-before-restart")).wait(context);
+    const entries = (await chat.conversation.entries({order:"ascending"},100,undefined,context)).items;
+    const ledger = entries.findLast(e=>e.kind==="mybuddy.context-ledger")!.data as any;
+    const stale = structuredClone(ledger);
+    const ref = stale.additions.find((r:{id:string})=>r.id===`memory:${atom.id}`);
+    assert(ref);
+    ref.reference.renderer="dots-memory-l1-v2";
+    ref.reference.userQuote={evidenceId:"obsolete-source",start:0,end:2,hash:"0".repeat(64)};
+    await chat.conversation.commit(tx=>tx.appendEntry(chat.conversation.id,{kind:"mybuddy.context-ledger",data:stale}),context);
+  } finally { await chat.close(); }
+  chat = await DurableBotRuntime.open(settings);
+  try {
+    const before = requests.length;
+    await (await chat.submit("我的井边读书会在什么时候？","quote-after-restart")).wait(context);
+    assert.equal(requests.length,before+1);
+    const request=JSON.stringify(requests.at(-1));
+    assert(request.includes(atom.content) && !request.includes("用户原话摘录"));
+    assert(!request.includes(former));
+    assert(JSON.stringify((await chat.refresh()).messages).includes(former),"native chat bubbles remain available");
+    const entries=(await chat.conversation.entries({order:"ascending"},100,undefined,context)).items;
+    assert(entries.some(e=>e.kind==="mybuddy.dots-evidence-boundary"));
+  } finally {await chat.close();db.close();}
+  console.log("PASS Dots reopens a saved wrong-quote ledger, regenerates current evidence and keeps original chat bubbles");
+}
+
+// Dots restores automatic views with their selected L1 versions, then cuts provider
+// history after a confirmed withdrawal without deleting the visible conversation.
+{
+  const taskId = "mybuddy-dots";
+  const dbPath = join(directory, "dots-grounded-views.db");
+  let db = new AppDatabase(dbPath);
+  db.openDots();
+  let memory = new MemoryService(db, { semantic: false });
+  const preference = "苗圃巡检表总是先记录新芽数量。";
+  const source = { messageId: "nursery-user", text: preference, createdAt: Date.now() };
+  const atom = memory.createFromTask({ kind: "preference", title: "苗圃巡检表", content: preference,
+    scopeType: "task", scopeId: taskId, sourceTaskId: taskId, sourceType: "user" }, source);
+  const settings = () => ({ ...options, directory: join(directory, "dots-grounded-views"), tools: [],
+    evidenceProjection: { memory, enabled: () => true, scope: () => ({ taskId }), supplementalEvidence: () => [] } });
+  let chat = await DurableBotRuntime.open(settings());
+  try {
+    await (await chat.submit("今天需要检查些什么？", "profile-first")).wait(context);
+    assert(JSON.stringify(requests.at(-1)).includes("Dots 个人画像"));
+  } finally { await chat.close(); db.close(); }
+  db = new AppDatabase(dbPath);
+  memory = new MemoryService(db, { semantic: false });
+  chat = await DurableBotRuntime.open(settings());
+  try {
+    await (await chat.submit("接着说。", "profile-restored")).wait(context);
+    assert(JSON.stringify(requests.at(-1)).includes("Dots 个人画像"));
+    const before = (await chat.conversation.entries({ order: "ascending" }, 100, undefined, context)).items;
+    assert(!before.some(entry => entry.kind === "mybuddy.dots-evidence-boundary" || entry.kind === "mybuddy.context-reset"));
+    memory.forget(atom.id);
+    await (await chat.submit("现在还有哪些长期偏好？", "profile-withdrawn")).wait(context);
+    assert(!JSON.stringify(requests.at(-1)).includes(preference));
+    const after = (await chat.conversation.entries({ order: "ascending" }, 100, undefined, context)).items;
+    assert(after.some(entry => entry.kind === "mybuddy.dots-evidence-boundary"));
+    assert(JSON.stringify((await chat.refresh()).messages).includes("今天需要检查些什么"));
+  } finally { await chat.close(); db.close(); }
+  console.log("PASS native Dots restores source-bound personal views and withdrew them from provider history");
+}
+
 const bounded = await DurableBotRuntime.open({ ...options, directory: join(directory, "bounded-history"), evidenceProjection: undefined });
 try {
   for (let batch = 0; batch < 15; batch++) {

@@ -1,6 +1,6 @@
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { PermissionMode, WelcomeMode } from "../../shared/agent-ipc";
-import { isGatewayBotTaskId } from "../../shared/gateway-task";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
 import type { ExternalWriteApprovalRequest, ExternalWriteDecision } from "../../shared/external-write";
 import { AppDatabase } from "../db/AppDatabase";
@@ -58,7 +58,6 @@ export interface SessionExtensionAssemblerDependencies {
   db: AppDatabase;
   memory: MemoryService;
   answerRouting: Parameters<typeof createAnswerRuleExtension>[1];
-  reviewAnswerRuleMemory: Parameters<typeof createAnswerRuleExtension>[2];
   project: ProjectService;
   libraryWorkspace: LibraryWorkspaceContextService;
   resolveLibraryEvidenceJudge?: () => Promise<LibraryEvidenceJudge>;
@@ -259,7 +258,7 @@ export class SessionExtensionAssembler {
     resolveWorkspaceId: () => string | null,
   ): InlineExtension[] {
     return [
-      ...(!isGatewayBotTaskId(input.taskId) ? [createAnswerRuleExtension(input.taskId, this.deps.answerRouting, this.deps.reviewAnswerRuleMemory)] : []),
+      ...(input.taskId === DOTS_TASK_ID ? [createAnswerRuleExtension(input.taskId, this.deps.answerRouting)] : []),
       ...(input.gadgetService
         ? [createGadgetAgentExtension({
             taskId: input.taskId,

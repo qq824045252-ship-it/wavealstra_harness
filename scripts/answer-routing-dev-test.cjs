@@ -1,6 +1,5 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const { mkdtempSync } = require("node:fs");
 const { DatabaseSync } = require("node:sqlite");
 const { run } = require("./desktop-dev-harness.cjs");
 const { routingControls } = require("./answer-routing-desktop-controls.cjs");
@@ -68,34 +67,18 @@ run(async env => {
   assert.match(await ask("上海要带伞吗"), /没有匹配规则/);
   assert.equal(await evaluate("window.api.answerRouting.history().then(r=>r.length)"), 0);
 
-  const memory = await evaluate("window.api.memory.create({kind:'procedure',title:'交付核对',content:'交付前核对签收凭据',scopeType:'global',sourceType:'manual'})");
-  await openSettings("memory");
-  const namedButton = label => "[...document.querySelectorAll('button')].find(b => b.textContent.includes(" + JSON.stringify(label) + "))";
-  await until(() => evaluate("!!(" + namedButton("交付核对") + ")"), "memory visible");
-  await evaluate("(" + namedButton("交付核对") + ").click()");
-  await click("创建回答规则草稿", "body");
-  await until(() => evaluate("!!document.querySelector('.answer-rule-form')"), "memory draft");
-  const relation = await evaluate("[...document.querySelectorAll('.answer-rule-form select')].find(s=>[...s.options].some(o=>o.value==='linked')).value");
-  assert.equal(relation, "independent");
-  assert.equal(await evaluate("document.querySelector('textarea[maxlength=\"2000\"]').value"), "交付前核对签收凭据");
-  await click("AI 去重并提炼");
-  await until(() => evaluate("document.querySelector('.answer-rule-memory-match')?.textContent.includes('文字相同')"), "exact match without a model server");
-  await expand("查看比对依据");
-  await click("采用这条记忆的原文并关联");
-  assert.equal(await evaluate("[...document.querySelectorAll('.answer-rule-form select')].find(s=>[...s.options].some(o=>o.value==='linked')).value"), "linked");
+  await click("新增规则");
   await fill('[aria-label="遇到什么问题"]', "交付报告");
+  await fill("#answer-rule-instruction", "交付前检查记录编号。");
+  await expand("匹配问法与例外");
+  await fill('.answer-rule-form input[maxlength="90"]', "交付核对");
   await click("保存规则");
-  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 2)"), "reviewed rule saved");
-  assert.equal(await evaluate("window.api.answerRouting.list().then(r=>r.find(i=>i.title==='交付核对').sourceMemoryId)"), memory.id);
+  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 2)"), "rule saved");
   assert.match(await ask("生成交付报告"), /交付核对/);
   await screenshot("rules-and-flow");
-  report.actualControlChecks.push("Empty list, editable memory draft, opt-in source link, save, disable, positive and negative previews without recording an execution, and visual rule flow.");
-  assert.equal(env.requests.length, 1, "only the explicitly requested AI distillation calls the model");
-
-  const taskId = "routing-history-task", spaceId = "routing-history-space";
+  assert.equal(env.requests.length, 0);
   const api = (method, arg) => evaluate("window.api." + method + "(" + JSON.stringify(arg) + ")");
-  await api("db.upsertSpace", {id: spaceId, name: "验收空间", path: mkdtempSync(path.join(env.home, "workspace-"))});
-  await api("db.upsertTask", {id: taskId, spaceId, title: "交付核对", welcomeMode: "general", updatedAt: Date.now()});
+  const {id: taskId} = await evaluate("window.api.dots.open()");
   const rule = (await evaluate("window.api.answerRouting.list()")).find(item => item.title === "交付核对");
   await env.restart(() => {
     const db = new DatabaseSync(path.join(env.home, ".mybuddy", "app.db"));
@@ -120,13 +103,13 @@ run(async env => {
   assert.equal(await evaluate("!!document.querySelector('.answer-routing-error')"), false);
 
   const question = "生成交付报告", inputId = "current-delivery";
-  const {receipt} = await api("agent.prompt", {taskId, spaceId, welcomeMode: "general", text: question,
+  const {receipt} = await api("agent.prompt", {taskId, welcomeMode: "general", text: question,
     userMessageId: inputId, assistantMessageId: "delivery-answer"});
   assert.ok(receipt);
   const done = await api("agent.waitForSubmission", receipt);
   assert.ok(!done.error && !done.cancelled, JSON.stringify(done));
   await evaluate(`import('/src/store/appStore.ts').then(({useAppStore}) => {
-    const store = useAppStore.getState(); store.setSettingsOpen(false); store.setActiveTask(${JSON.stringify(taskId)});
+    const store = useAppStore.getState(); store.setSettingsOpen(false); return store.openDots();
   })`);
   await until(() => evaluate("!!document.querySelector('[data-routing-receipt=current-delivery]')"), "chat loaded the new turn receipt");
   const button = '.message-list button[aria-label="下次这样答"]';

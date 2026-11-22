@@ -9,7 +9,6 @@ import {
   IconDownload,
   IconFile,
   IconMore,
-  IconCode,
 } from "@/components/common/icons";
 
 export type DetailContentKind = "markdown" | "html" | "svg";
@@ -535,6 +534,10 @@ export default function DetailCard({
   artifactName,
 }: Props): React.JSX.Element {
   const kind = useMemo(() => detectKind(content, contentKind), [content, contentKind]);
+  const documentTitle = useMemo(() => kind === "markdown" ? /^#{1,6} +([^\r\n]+)$/m.exec(content)?.[1]
+    : /<title(?:\s[^>]*)?>\s*([^<]{1,160})<\/title>/i.exec(content)?.[1], [content, kind]);
+  const previewTitle = artifactName || (title !== "展示详情" ? title
+    : documentTitle?.trim() || (kind === "html" ? "网页预览" : kind === "svg" ? "SVG 预览" : "文档预览"));
   const ensureCanvasArtifact = useAppStore((s) => s.ensureCanvasArtifact);
   const [open, setOpen] = useState(true);
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
@@ -697,8 +700,12 @@ export default function DetailCard({
           <span className={`msg-detail-chevron ${open ? "open" : ""}`}>
             <IconChevronDown size={14} />
           </span>
-          {title}
+          <span className="chat-preview-title" title={previewTitle}>{previewTitle}</span>
         </button>
+        {open && isRenderable && <div className="chat-preview-switch" role="group" aria-label="预览显示方式">
+          <button type="button" className="chat-reading-button" onClick={showPreview} aria-pressed={viewMode === "preview"}>预览</button>
+          <button type="button" className="chat-reading-button" onClick={showCode} aria-pressed={viewMode === "code"}>源码</button>
+        </div>}
         <div className="msg-detail-menu-anchor" ref={menuAnchorRef}>
           <button
             type="button"
@@ -723,19 +730,6 @@ export default function DetailCard({
               <button type="button" className="msg-detail-menu-item" onClick={copyCode}>
                 <IconCopy size={14} /> 复制代码
               </button>
-              {isRenderable && viewMode === "preview" ? (
-                <button type="button" className="msg-detail-menu-item" onClick={showCode}>
-                  <IconCode size={14} /> 查看代码
-                </button>
-              ) : isRenderable ? (
-                <button type="button" className="msg-detail-menu-item" onClick={showPreview}>
-                  <IconFile size={14} /> 预览效果
-                </button>
-              ) : (
-                <button type="button" className="msg-detail-menu-item" onClick={copyCode}>
-                  <IconCode size={14} /> 查看代码
-                </button>
-              )}
             </div>
           )}
         </div>
@@ -753,7 +747,7 @@ export default function DetailCard({
           {isIframePreview && viewMode === "preview" ? (
             <iframe
               ref={frameRef}
-              title={title}
+              title={previewTitle}
               className="msg-detail-frame"
               srcDoc={srcDoc}
               sandbox="allow-scripts allow-same-origin"

@@ -1,5 +1,5 @@
-import { IconAlert } from "@/components/common/icons";
 import ChatMarkdown from "./ChatMarkdown";
+import ChatCalloutFrame from "./ChatCalloutFrame";
 
 interface Props {
   variant: "warning" | "info";
@@ -8,13 +8,5 @@ interface Props {
 }
 
 export default function CalloutBlock({ variant, title, text }: Props): React.JSX.Element {
-  return (
-    <div className={`msg-callout ${variant}`}>
-      {variant === "warning" && <IconAlert size={16} className="msg-callout-icon" />}
-      <div className="msg-callout-body">
-        {title && <div className="msg-callout-title">{title}</div>}
-        <ChatMarkdown text={text} streaming={false} />
-      </div>
-    </div>
-  );
+  return <ChatCalloutFrame variant={variant} title={title}><ChatMarkdown text={text} streaming={false} /></ChatCalloutFrame>;
 }

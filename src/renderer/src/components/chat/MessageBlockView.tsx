@@ -1,4 +1,5 @@
 import { memo } from "react";
+import type { ChatMarkdownProps } from "./ChatMarkdown";
 import type { MessageBlock } from "@/types";
 import { splitCanvasDocuments } from "@/lib/canvasDocuments";
 import ChatMarkdown from "./ChatMarkdown";
@@ -17,6 +18,7 @@ interface Props {
   taskId?: string;
   streaming?: boolean;
   className?: string;
+  replySources?: ChatMarkdownProps["replySources"];
 }
 
 function MessageBlockView({
@@ -25,6 +27,7 @@ function MessageBlockView({
   messageId,
   taskId,
   streaming,
+  replySources,
   className = "assistant-block",
 }: Props): React.JSX.Element | null {
   // Older renderer messages may contain a retired plan block. Keep its content
@@ -76,7 +79,7 @@ function MessageBlockView({
                 const t = seg.text.trim();
                 if (!t) return null;
                 return (
-                  <ChatMarkdown key={`text-${i}`} text={seg.text} streaming={Boolean(streaming)} />
+                  <ChatMarkdown key={`text-${i}`} text={seg.text} streaming={Boolean(streaming)} replySources={replySources} />
                 );
               })}
             </div>
@@ -88,7 +91,7 @@ function MessageBlockView({
       // 不再「流式纯文本 div → settled react-markdown 全量重建」。
       return (
         <div key={index} className={className}>
-          <ChatMarkdown text={block.text} streaming={Boolean(streaming)} />
+          <ChatMarkdown text={block.text} streaming={Boolean(streaming)} replySources={replySources} />
         </div>
       );
     }

@@ -1,3 +1,9 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
+import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
+import { createAnswerRuleExtension } from "./answer-rule-extension";
+import { registerLocalWorkflowTools } from "../capabilities/local-workflow-extension";
+import type { DotsActions } from "../dots/DotsActions";
+import { DOTS_ACTION, DOTS_MEMORY_TOOLS, dotsExtension, dotsInstructions } from "../dots/DotsExtension";
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
 import { isGatewayConversation } from "../gateway/GatewayConversation";
 import { assignedGatewayConversation } from "../gateway/GatewayConversationSession";
@@ -160,7 +166,6 @@ import { NativeHookStore, durableSandboxAssets } from "./hooks/NativeHookStore";
 import { NativeImprovementService } from "./hooks/NativeImprovementService";
 import { ImprovementKnowledge } from "./hooks/ImprovementKnowledge";
 import { reflectionPrompt } from "./hooks/ImprovementReflection";
-import { reviewAnswerRuleMemories } from "./AnswerRuleMemoryReview";
 import { artifactKindForFile, diffWorkspaceSnapshot, isGeneratedWorkspacePath, previewWorkspaceFile, snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import type { ArtifactRefreshCoordinator } from "../artifact/ArtifactRefreshCoordinator";
@@ -557,6 +562,38 @@ export class AgentService {
   setExternalAgentRuntime(runtime: import("../external-agent/ExternalAgentRuntime").ExternalAgentRuntime): void { this.externalAgentRuntime = runtime; }
   private localWorkflow?: Omit<LocalWorkflowBridge, "getPermissionMode">;
 
+  private dotsActions?: DotsActions;
+
+  setDotsActions(actions: DotsActions): void { this.dotsActions = actions; }
+
+  dotsMemoryReferenceCurrent(taskId: string, id: string, revision: number): boolean {
+    if (!this.settingsStore.read().memoryEnabled) return false;
+    return Boolean(this.memoryService.currentDelegationSource(taskId, id, revision));
+  }
+
+  async dotsInputVersion(taskId: string) {
+    if (!this.durableBots) throw new Error("任务执行服务尚未就绪");
+    return this.durableBots.dotsInputVersion(taskId);
+  }
+
+  async stopDotsTarget(taskId: string, inputVersion?: string) {
+    if (!this.durableBots) throw new Error("任务执行服务尚未就绪");
+    return this.durableBots.stopObservedRun(taskId, inputVersion);
+  }
+
+  dotsScheduleIds(enabledOnly = false) {
+    return this.localWorkflow?.cron.listForTask(DOTS_TASK_ID).filter(job => !job.cancelledAt && (!enabledOnly || job.enabled) &&
+      (job.maxRuns === undefined || (job.runCount ?? 0) < job.maxRuns)).map(job => job.id) ?? [];
+  }
+
+  controlDotsSchedule(id: string, action: "pause" | "stop" | "resume") {
+    if (!this.localWorkflow) throw new Error("定时调度尚未就绪");
+    this.localWorkflow.cron.changeForTask(DOTS_TASK_ID, id, action === "stop" ? "cancel" : action);
+    return this.localWorkflow.cron.getForTask(DOTS_TASK_ID, id).status;
+  }
+
+  isDotsOrdinaryTask(taskId: string): boolean { return !this.workService.repo.bindingForTask(taskId); }
+
   setLocalWorkflowServices(services: Omit<LocalWorkflowBridge, "getPermissionMode">): void {
     this.localWorkflow = services;
   }
@@ -757,7 +794,7 @@ export class AgentService {
     );
     this.answerRouting = new AnswerRoutingService(
       db,
-      (id, taskId) => taskId ? this.memoryService.getForRecall(id, { taskId }) : this.memoryService.get(id),
+      (id, taskId = DOTS_TASK_ID) => this.memoryService.getForRecall(id, { taskId }),
       () => this.settingsStore.read().memoryEnabled,
       () => this.libraryWorkspaceContext.library(),
     );
@@ -814,9 +851,17 @@ export class AgentService {
       work: this.workService,
       goals: this.conversationGoals,
       emit: patch => this.emitPatch(patch),
-      submit: (request, origin) => {
-        if (!this.durableBots) return Promise.reject(new Error("执行服务尚未初始化"));
-        return this.durableBots.submit(request, origin);
+      submit: async (request, origin) => {
+        if (!this.durableBots) throw new Error("执行服务尚未初始化");
+        const result = await this.durableBots.submit(request, origin);
+        if (result.receipt && this.dotsActions) {
+          try { await this.dotsActions.goalAccepted(request, origin.goalContinuation); }
+          catch (error) {
+            // Goal already owns the accepted input. Its recovery ledger can restore the Dots link.
+            console.warn("[Dots] 无法记录已接收的 Goal 续办", request.taskId, request.userMessageId, error);
+          }
+        }
+        return result;
       },
       inspect: taskId => this.durableBots?.inspect(taskId) ?? Promise.resolve(undefined),
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
@@ -906,7 +951,6 @@ export class AgentService {
       db: this.db,
       memory: this.memoryService,
       answerRouting: this.answerRouting,
-      reviewAnswerRuleMemory: (draft, taskId) => this.reviewAnswerRuleMemory(draft, taskId),
       project: this.projectService,
       libraryWorkspace: this.libraryWorkspaceContext,
       resolveLibraryEvidenceJudge: () => this.resolveLibraryEvidenceJudge(),
@@ -968,6 +1012,7 @@ export class AgentService {
     // purge 删行与 onPurge 清理之间崩溃的窗口由下次启动兜底；trash/archive 行仍在不受影响。
     try {
       const taskIds = new Set(this.db.listTasks().map((t) => t.id));
+      if (this.db.getTask(DOTS_TASK_ID)) taskIds.add(DOTS_TASK_ID);
       const orphans = this.settingsStore.reconcileTaskConnectorIds(taskIds);
       if (orphans.length > 0) {
         console.log(`[AgentService] taskConnectorIds 孤儿 key 已清理：${orphans.join(",")}`);
@@ -1169,6 +1214,10 @@ export class AgentService {
     return this.conversationGoals;
   }
 
+  dotsLibrary() {
+    return this.libraryWorkspaceContext.library();
+  }
+
   /** Read-only ledger projection for diagnostics and tests; the Goal chip uses the DTO. */
   getGoalContinuation(goalId: string): ConversationGoalContinuationDto | undefined {
     return this.goalContinuations?.read(goalId);
@@ -1356,6 +1405,8 @@ export class AgentService {
       },
       readHints: this.nativeImprovement.readHints,
       answerRouting: this.answerRouting,
+      canReadAnswerEvidence: taskId => taskId === DOTS_TASK_ID && Boolean(this.db.getTask(taskId))
+        && !this.db.isTaskEffectiveArchived(taskId) && this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed",
       expertBindings: this.expertBindings,
       db: this.db, codeReview: this.codeReview, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
@@ -1379,6 +1430,7 @@ export class AgentService {
         this.publishCompactionState(this.durableCompactionStatus(taskId, status, this.lastCompactionStatus.get(taskId))),
       prepareTask: (request, mark) => this.prepareDurableTask(request, mark),
       beforeSubmit: request => {
+        this.dotsActions?.assertAdmission(request);
         if (isGatewayBotTaskId(request.taskId) || this.workService.repo.bindingForTask(request.taskId))
           throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
         const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
@@ -1394,10 +1446,10 @@ export class AgentService {
         // workers or legacy Gateway sessions through the shared Durable engine.
         return !isGatewayBotTaskId(taskId) && !this.workService.repo.bindingForTask(taskId);
       },
-      mcpSelection: task => this.durableAssembly(task).mcpFilter.enabled,
+      mcpSelection: task => task.id === DOTS_TASK_ID ? [] : this.durableAssembly(task).mcpFilter.enabled,
       toolAllowed: (task, name) => this.durableToolAllowed(task, name),
       toolMode: task => {
-        if (isGatewayBotTaskId(task.id)) return "native";
+        if (task.id === DOTS_TASK_ID || isGatewayBotTaskId(task.id)) return "native";
         const preset = resolveModePreset(this.modeProfiles.getProfile(resolveWelcomeMode(task.welcomeMode)).policy, task.modePresetId);
         return preset?.durableToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
@@ -1538,6 +1590,12 @@ export class AgentService {
   async resumePersistedTasks(): Promise<void> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     await this.durableBots.resumePersisted();
+    if (this.settingsStore.read().memoryEnabled) {
+      this.memoryService.cognition.queueDotsViews();
+      if (this.memoryPipeline.turns.listPending(DOTS_TASK_ID, 1).length) {
+        void this.queuePendingMemoryExtraction([DOTS_TASK_ID]).catch(error => console.warn("[Dots] Memory recovery failed", error));
+      }
+    }
     // A run the host pointed at before the crash is never replayed silently.
     this.goalContinuations.reconcileRestart();
   }
@@ -1566,6 +1624,7 @@ export class AgentService {
   }
 
   private botInstructions(task: TaskDto): string {
+    if (task.id === DOTS_TASK_ID) return `${dotsInstructions}\n\n${CHAT_REPLY_INSTRUCTIONS}`;
     const assembly = this.durableAssembly(task);
     const identity = this.expertBindings.active(task.id);
     const connectors = this.expertConnectorIds(task.id);
@@ -1573,6 +1632,7 @@ export class AgentService {
     const skills = this.resolveSkillsForContext(task.cwd, paths, { projectId: task.projectId, workspaceId: task.spaceId, taskId: task.id }).dtos;
     return [
       ...assembly.appendParts,
+      isGatewayConversation(task.id) || isGatewayBotTaskId(task.id) ? "" : CHAT_REPLY_INSTRUCTIONS,
       // Live Goal state, re-read per model request: a foreground conversation has no
       // execution binding, so this section is the only place the open requirement and
       // its stop rules reach the model. Never cache it with the static capsule.
@@ -1604,6 +1664,11 @@ export class AgentService {
   private durableInputAudit(request: AgentPromptRequest): DurableInputAudit {
     const task = this.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
+    if (task.id === DOTS_TASK_ID) return {
+      userMessageId: request.userMessageId, assistantMessageId: request.assistantMessageId,
+      cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills: [],
+      recommendation: { query: request.text, mode: "general", context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] },
+    };
     const assembly = this.durableAssembly(task);
     const identity = this.expertBindings.active(task.id);
     const connectors = this.expertConnectorIds(task.id);
@@ -1665,6 +1730,19 @@ export class AgentService {
   private readonly toolSelectionMemo = new WeakMap<AssemblyTraceDto, Map<string, SessionToolSelection>>();
 
   private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
+    if (task.id === DOTS_TASK_ID) {
+      if (!this.dotsActions) throw new Error("Dots 操作服务尚未初始化");
+      const workflow = this.localWorkflow;
+      return durableDomainTools([dotsExtension(this.dotsActions), createAnswerRuleExtension(task.id, this.answerRouting),
+        ...(workflow ? [(pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => registerLocalWorkflowTools(pi, {
+          taskId: task.id, taskRoot: cwd, services: workflow, terminalEnabled: false,
+          currentTaskOnly: true, sourceOperation: () => currentDurableInvocation()?.sourceUserMessageId,
+          sourceOrigin: () => currentDurableInvocation()?.sourceOrigin,
+        })] : []),
+        ...(this.settingsStore.read().memoryEnabled ? [createMemoryExtension({ taskId: task.id, service: this.memoryService,
+          sourceInput: () => currentDurableInvocation()?.memorySource })] : []),
+      ], { cwd, models: this.durableModels!, taskId: task.id });
+    }
     const codingPolicy = task.welcomeMode === "coding"
       ? this.modeProfiles.getProfile("coding").policy : undefined;
     const workflowSettings = codingPolicy?.pstackThermosEnabled ? normalizePstackSettings(codingPolicy.pstackThermos) : undefined;
@@ -1793,6 +1871,8 @@ export class AgentService {
   }
 
   private durableToolAllowed(task: TaskDto, name: string): boolean {
+    if (task.id === DOTS_TASK_ID) return [DOTS_ACTION, "automation_exec", "answer_rule_list", "answer_rule_save", "answer_rule_test"].includes(name) || (this.settingsStore.read().memoryEnabled && DOTS_MEMORY_TOOLS.has(name));
+    if (name === DOTS_ACTION) return false;
     if (task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId) &&
         ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
     if (isPstackForegroundTool(name) && !this.pstackActive(task)) return false;
@@ -1871,6 +1951,11 @@ export class AgentService {
   prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     this.durableBots.prepareGatewayTrashRestore(taskId, legacy, destination);
+  }
+
+  async appendDotsReply(reply: import("../../shared/dots").DotsAssistantReply, isCurrent: () => boolean = () => true) {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.appendDotsReply(reply, isCurrent);
   }
 
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
@@ -2676,11 +2761,6 @@ export class AgentService {
       "保留用户明确要求的核查步骤与缺证做法。资料由用户在规则里直接选择，勿凭示例猜测文件名、资料来源或工具。",
       JSON.stringify({ teaching: teaching.trim(), question: question.slice(0, 1500), answer: answer.slice(0, 2500) }));
     return answerTeachingSchema.parse(JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/gi, "")));
-  }
-
-  reviewAnswerRuleMemory(draft: unknown, taskId?: string) {
-    return reviewAnswerRuleMemories(draft, this.memoryService, () => this.settingsStore.read().memoryEnabled,
-      (system, prompt) => this.runAuthoringGenerator(system, prompt), taskId);
   }
 
   private skillAtlasSnapshot(): Array<{ id: string; name: string; description: string; enabled: boolean; source?: string }> {
@@ -4129,6 +4209,7 @@ export class AgentService {
     // Clear immediately; a slow model request must not delay a user's deletion.
     const deleted = this.memoryPipeline.turns.deleteAll();
     this.memorySourceEpoch += 1;
+    if (deleted > 0) this.memoryService.cognition.invalidateDotsSources();
     this.notifyMemoryChanged({ scope: "settings" });
     return deleted;
   }
@@ -4138,7 +4219,10 @@ export class AgentService {
       throw new Error("请选择有效的对话来源");
     }
     const deleted = this.memoryPipeline.turns.deleteMany(ids);
-    if (deleted > 0) this.notifyMemoryChanged({ scope: "settings" });
+    if (deleted > 0) {
+      this.memoryService.cognition.invalidateDotsSources();
+      this.notifyMemoryChanged({ scope: "settings" });
+    }
     return deleted;
   }
 
@@ -4698,7 +4782,9 @@ export class AgentService {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     // A real user input always wins over a pending automatic continuation.
     this.goalContinuations.noteUserInput(req.taskId);
-    return this.durableBots.prompt(req, options?.durableAdmissionOnly ?? true);
+    const result = await this.durableBots.prompt(req, options?.durableAdmissionOnly ?? true);
+    if (result.receipt && !result.error && !result.cancelled) await this.dotsActions?.accepted(req, result.receipt.submissionId);
+    return result;
   }
 
   async findSubmission(taskId: string, operationId: string): Promise<AgentPromptResult | undefined> {
@@ -4714,6 +4800,34 @@ export class AgentService {
   async waitForSubmission(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult> {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.submissionStatus(receipt, true);
+  }
+
+  async dotsSubmission(taskId: string, operationId: string) {
+    const result = await this.durableBots?.dotsSubmission(taskId, operationId);
+    if (!result) return undefined;
+    const domain = this.artifactService;
+    const artifacts: import("../../shared/dots").DotsDelegation["artifacts"] = [];
+    if (result.status !== "running") {
+      // A workspace diff can include another task's edits in the same bound folder.
+      // Forward native registrations and tool-attributed files, never the whole directory diff.
+      const ids = new Set(result.messageIds.flatMap(messageId => domain?.listMessageRefs(taskId, { messageId })
+        .filter(ref => ref.toolCallId).map(ref => ref.artifactId) ?? []));
+      const saved = new Map<string, import("../../shared/saved-artifact").SavedArtifactRequest>();
+      for (const file of result.files) {
+        const existing = domain?.findByEntryFile(taskId, file.path);
+        const name = basename(file.path);
+        const snapshot = { name, snapshotPath: file.snapshotPath, manifestPath: file.manifestPath };
+        if (existing) { ids.add(existing.id); saved.set(existing.id, snapshot); }
+        else artifacts.push({ id: "saved:" + file.snapshotPath, name, saved: snapshot });
+      }
+      for (const id of ids) {
+        const item = domain?.get(id);
+        if (item?.taskId === taskId) artifacts.push({ id, name: item.title || basename(item.source.type === "workspace-file" ? item.source.entryFile : id),
+          saved: saved.get(id), version: item.version });
+      }
+    }
+    return { status: result.status, text: result.text, interactionId: "interactionId" in result ? result.interactionId : undefined, artifacts,
+      citations: result.status === "completed" ? result.citations : undefined };
   }
   /**
    * 删除一条用户消息，并把当前会话叶子永久切到它之前。

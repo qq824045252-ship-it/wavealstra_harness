@@ -1,4 +1,5 @@
 import type { MemoryTurnDto } from "../src/shared/memory-kernel";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import "../src/renderer/src/styles/global.css";
@@ -47,7 +48,8 @@ async function toggleCheck(selector: string, index = 0): Promise<void> {
   flushSync(() => input.click()); await settle();
 }
 async function filter(label: string, value: string): Promise<void> {
-  const control = host.querySelector<HTMLInputElement | HTMLSelectElement>(`[aria-label="${label}"]`)!;
+  const control = host.querySelector<HTMLInputElement | HTMLSelectElement>(`[aria-label="${label}"]`);
+  if (!control) throw new Error(`Missing filter: ${label}`);
   const prototype = control instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLSelectElement.prototype;
   flushSync(() => {
     Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(control, value);
@@ -252,8 +254,29 @@ export async function checkAutomaticRecallSettings(): Promise<void> {
   await until(() => host.textContent?.includes(atom.title), "fallback opens index controls");
 }
 
+export async function checkDotsMemorySource(): Promise<void> {
+  fixtures();
+  const saved = useAppStore.getState();
+  const record = { ...atom, sourceTaskId: DOTS_TASK_ID, scopes: [{ scopeType: "task", scopeId: DOTS_TASK_ID, binding: "primary" }] };
+  api.memory.list = async () => [record];
+  api.memory.get = async () => record;
+  api.dots = { open: async () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1, welcomeMode: "general" }) };
+  api.agent.loadTaskHistory = async () => ({ messages: [] });
+  useAppStore.setState({ tasks: [], activeTaskId: null, settingsOpen: true });
+  try {
+    mount(<MemoryKernelExplorer fixedScope={{ scopeType: "task", scopeId: DOTS_TASK_ID }} />);
+    await until(() => host.textContent?.includes(record.title), "Dots record loaded");
+    check(host.querySelector(".settings-section-title")?.textContent === "Dots的记忆", "personal scope label");
+    await click(new RegExp(record.title));
+    await click("打开 Dots 对话");
+    await until(() => useAppStore.getState().activeTaskId === DOTS_TASK_ID && !useAppStore.getState().settingsOpen, "original conversation opened");
+  } finally { useAppStore.setState(saved); }
+}
+
 export async function run(): Promise<string[]> {
   const results: string[] = [];
+  await checkDotsMemorySource();
+  results.push("A Dots memory opens its original Dots conversation from settings");
   await checkAutomaticRecallSettings();
   results.push("persisted automatic recall switch and responsive last-request receipt");
   await checkSemanticIndexFeedback();
@@ -262,16 +285,16 @@ export async function run(): Promise<string[]> {
   mount(<MemoryTab />);
   await until(() => host.textContent?.includes("学习时偏好简短中文"), "Bot memories loaded");
   await filter("筛选记忆范围", "bot");
-  await filter("筛选 Bot 记忆", "bot-study");
+  await filter("筛选历史 Bot 记忆 ID", "bot-study");
   await until(() => !host.textContent?.includes("旅行偏好步行路线"), "only selected Bot memory");
   check(botRequests.at(-1)?.scopeType === "bot" && botRequests.at(-1)?.scopeId === "bot-study", "Bot filter reaches memory API");
-  check(host.textContent?.includes("学习搭子"), "readable Bot name");
-  await filter("筛选 Bot 记忆", "bot-travel");
+  check(host.textContent?.includes("bot-study"), "retained Bot identity");
+  await filter("筛选历史 Bot 记忆 ID", "bot-travel");
   await until(() => host.textContent?.includes("旅行偏好步行路线") && !host.textContent?.includes("学习时偏好简短中文"), "switch Bot");
   await filter("筛选记忆范围", "all");
   await until(() => host.textContent?.includes("学习时偏好简短中文"), "all restores both Bots");
   check(botRequests.at(-1)?.scopeId === undefined, "Bot scope never leaks into all filter");
-  results.push("Bot-private memory browsing uses readable names and exact scope; switching and all filter remain independent");
+  results.push("Historical Bot memory browsing uses the retained identity and exact scope; switching and all filter remain independent");
   const fixedRequests = botMemoryFixtures();
   let globalReads = 0;
   for (const name of ["stats", "candidates", "scenarios", "coreProfiles", "dismissedProjections", "projectionProposals"]) api.memory[name] = async () => { globalReads++; throw Error("dedicated Bot view must not read global data"); };

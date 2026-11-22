@@ -1,3 +1,5 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
+import { dotsScopeCondition, type DotsRevisionSource } from "./DotsRevisionSource";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryCoreProfileDto, MemoryDismissedProjectionDto, MemoryProjectionDeleteRequest, MemoryProjectionDeleteResult, MemoryProjectionProposalDto, MemoryRecordDto, MemoryScenarioDto } from "../../shared/memory-kernel";
@@ -12,6 +14,28 @@ import {
 const L2_MAX_MEMORIES_PER_SCOPE = 80;
 const L2_MAX_SCENARIOS_PER_SCOPE = 6;
 const L3_MAX_SCENARIOS_PER_SCOPE = 12;
+
+const DOTS_SCOPE = { scopeType: "task", scopeId: DOTS_TASK_ID } as const;
+const DOTS_SCENARIOS = [
+  { kind: "identity", title: "个人身份", profile: true },
+  { kind: "preference", title: "长期偏好", profile: true },
+  { kind: "constraint", title: "长期约束", profile: true },
+  { kind: "procedure", title: "常用流程", profile: true },
+  { kind: "decision", title: "当前决定", profile: false },
+  { kind: "fact", title: "已确认事实", profile: false },
+] as const;
+const DOTS_SCENARIO_BYTES = 360;
+const DOTS_PROFILE_BYTES = 850;
+
+interface DotsViewState {
+  dirty: boolean;
+  signature?: string;
+  refresh?: NodeJS.Immediate;
+  nextEffectiveAt?: number;
+  hasScenarios?: boolean;
+  timer?: NodeJS.Timeout;
+}
+const dotsViewStates = new WeakMap<AppDatabase, DotsViewState>();
 
 const L2_SYSTEM_PROMPT = `你是 MyBuddy Memory Kernel 的 L2 Scenario 生成器。输入只包含已经通过 L1 Memory Reconciler 的长期记忆。
 
@@ -101,9 +125,15 @@ export class MemoryCognitionService {
   readonly projections: MemoryProjectionRepository;
   private generationVersions = { scenario: 0, profile: 0 };
 
-  constructor(private readonly db: AppDatabase) {
+  private readonly dotsViews: DotsViewState;
+
+  constructor(private readonly db: AppDatabase,
+    private readonly dotsSource?: (id: string, revision: number) => DotsRevisionSource | undefined,
+  ) {
     this.memories = new MemoryRepository(db);
     this.projections = new MemoryProjectionRepository(db);
+    this.dotsViews = dotsViewStates.get(db) ?? { dirty: true };
+    dotsViewStates.set(db, this.dotsViews);
   }
 
   targetScopes(taskId?: string, projectId?: string, workspaceId?: string): MemoryProjectionScope[] {
@@ -286,8 +316,13 @@ export class MemoryCognitionService {
   getContextSources(input: { taskId?: string; projectId?: string; workspaceId?: string }): {
     scenarios: MemoryScenarioDto[]; profiles: MemoryCoreProfileDto[];
   } {
-    const scopes = this.targetScopes(input.taskId, input.projectId, input.workspaceId)
-      .sort((a, b) => Number(a.scopeType === "global") - Number(b.scopeType === "global"));
+    const isDots = input.taskId === DOTS_TASK_ID;
+    const scopes = this.targetScopes(isDots ? undefined : input.taskId, input.projectId, input.workspaceId);
+    if (isDots) {
+      this.refreshDotsViews();
+      if (this.dotsViews.hasScenarios) scopes.unshift(DOTS_SCOPE);
+    }
+    scopes.sort((a, b) => Number(a.scopeType === "global") - Number(b.scopeType === "global"));
     const groundedScenarios = scopes
       .flatMap((scope) => this.projections.listScenarios(scope, "active", 20))
       .filter((scenario) => this.scenarioIsGrounded(scenario));
@@ -303,20 +338,27 @@ export class MemoryCognitionService {
   }
 
   listScenarios(limit = 300): MemoryScenarioDto[] {
+    this.refreshDotsViews();
     return this.projections.listScenarios(undefined, "all", limit);
   }
 
   listCoreProfiles(limit = 100): MemoryCoreProfileDto[] {
+    this.refreshDotsViews();
     return this.projections.listCoreProfiles(undefined, "all", limit);
   }
 
   dismissProjection(id: string, kind: "scenario" | "profile"): boolean {
-    return this.projections.dismissProjection(id, kind);
+    const dismissed = this.projections.dismissProjection(id, kind);
+    if (dismissed) this.invalidateDotsViews();
+    return dismissed;
   }
 
   generationVersion(kind: "scenario" | "profile"): number { return this.generationVersions[kind]; }
 
   deleteProjectionRecords(request: MemoryProjectionDeleteRequest): MemoryProjectionDeleteResult {
+    // Settle the current input before deletion so a queued earlier write cannot
+    // immediately bring back a view the user just deleted.
+    this.refreshDotsViews();
     const result = this.projections.deleteRecords(request);
     if (request.all || Object.values(result).some((count) => count > 0)) {
       this.generationVersions[request.kind]++;
@@ -326,7 +368,9 @@ export class MemoryCognitionService {
   }
 
   restoreProjection(id: string): boolean {
-    return this.projections.restoreProjection(id);
+    const restored = this.projections.restoreProjection(id);
+    if (restored) this.invalidateDotsViews();
+    return restored;
   }
 
   listDismissedProjections(): MemoryDismissedProjectionDto[] {
@@ -347,6 +391,116 @@ export class MemoryCognitionService {
 
   restoreProposal(id: string): boolean {
     return this.projections.restoreProposal(id);
+  }
+
+  invalidateDotsViews(): void {
+    this.dotsViews.signature = undefined;
+    this.queueDotsViews();
+  }
+
+  invalidateDotsSources(): void {
+    this.projections.invalidateScopes([DOTS_SCOPE]);
+    this.invalidateDotsViews();
+  }
+
+  queueDotsViews(): void {
+    this.dotsViews.dirty = true;
+    if (this.dotsViews.refresh) return;
+    this.dotsViews.refresh = setImmediate(() => {
+      this.dotsViews.refresh = undefined;
+      if (!this.db.connection.open) return;
+      try { this.refreshDotsViews(); }
+      catch (error) { console.warn("[MemoryKernel] Dots projection refresh failed", error); }
+    });
+    this.dotsViews.refresh.unref();
+  }
+
+  /**
+   * Maintain Dots' own views from current user-backed atoms. The bounded indexed
+   * reads compare source revisions even after a cold restart, when no task ran
+   * after the last mutation. Publication is one synchronous SQLite transaction.
+   */
+  private refreshDotsViews(): void {
+    const now = Date.now();
+    const state = this.dotsViews;
+    if (!this.dotsSource || (!state.dirty && (state.nextEffectiveAt ?? Infinity) > now)
+      || !this.db.getTask(DOTS_TASK_ID)) return;
+    const conn = this.db.connection;
+    const nextDue = conn.prepare(`SELECT valid_from FROM memory_records INDEXED BY idx_memory_records_dots_projection_due
+      WHERE (source_task_id='${DOTS_TASK_ID}' OR json_extract(metadata_json, '$.dotsPrivateGateway')=1)
+        AND status='active' AND valid_until IS NULL AND valid_from>?
+      ORDER BY valid_from LIMIT 1`).pluck().get(now) as number | undefined;
+    const select = conn.prepare(`SELECT m.id, (
+        SELECT MAX(revision) FROM memory_revisions WHERE memory_id=m.id
+      ) AS revision FROM memory_records m INDEXED BY idx_memory_records_dots_projection
+      WHERE (m.source_task_id='${DOTS_TASK_ID}' OR json_extract(m.metadata_json, '$.dotsPrivateGateway')=1)
+        AND m.kind=? AND m.status='active'
+        AND m.valid_until IS NULL AND (m.valid_from IS NULL OR m.valid_from<=?)
+        AND EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id=m.id
+          AND s.scope_type='task' AND s.scope_id=? AND s.binding='owned')
+      ORDER BY m.updated_at DESC,m.id LIMIT 8`);
+    const groups = DOTS_SCENARIOS.map(category => ({
+      ...category, atoms: select.all(category.kind, now, DOTS_TASK_ID) as Array<{ id: string; revision: number }>,
+    }));
+    const signature = JSON.stringify(groups.map(group => group.atoms));
+    if (signature === state.signature) {
+      this.finishDotsRefresh(signature, nextDue);
+      return;
+    }
+
+    const drafts: MemoryScenarioDraft[] = [];
+    for (const group of groups) {
+      const quotes: string[] = [];
+      const ids: string[] = [];
+      let size = 0;
+      for (const atom of group.atoms) {
+        const source = this.dotsSource(atom.id, atom.revision);
+        if (!source || dotsScopeCondition(source.quote) || (source.stance !== "statement" && !(source.stance === "source_note"
+          && (group.kind === "preference" || group.kind === "constraint")))) continue;
+        const line = `• ${source.quote.replace(/\s+/gu, " ")}`;
+        const bytes = Buffer.byteLength(line + "\n");
+        if (size + bytes > DOTS_SCENARIO_BYTES || quotes.includes(line)) continue;
+        quotes.push(line);
+        ids.push(atom.id);
+        size += bytes;
+      }
+      if (ids.length) drafts.push({ title: group.title, summary: quotes.join("\n"), sourceMemoryIds: ids });
+    }
+    conn.transaction(() => {
+      const scenarios = this.projections.replaceScenarios(DOTS_SCOPE, drafts, now);
+      const content: string[] = [];
+      const ids: string[] = [];
+      let size = 0;
+      for (const category of DOTS_SCENARIOS.filter(item => item.profile)) {
+        const scenario = scenarios.find(item => item.title === category.title);
+        if (!scenario) continue;
+        const section = `${scenario.title}\n${scenario.summary}`;
+        const bytes = Buffer.byteLength(section + "\n");
+        if (size + bytes > DOTS_PROFILE_BYTES) continue;
+        content.push(section);
+        ids.push(scenario.id);
+        size += bytes;
+      }
+      this.projections.replaceCoreProfile(DOTS_SCOPE, ids.length
+        ? { title: "Dots 个人画像", content: content.join("\n"), sourceScenarioIds: ids } : undefined, now);
+      this.projections.purgeStaleDotsViews();
+      state.hasScenarios = scenarios.length > 0;
+    })();
+    this.finishDotsRefresh(signature, nextDue);
+  }
+
+  private finishDotsRefresh(signature: string, nextDue?: number): void {
+    const state = this.dotsViews;
+    state.signature = signature;
+    state.dirty = false;
+    if (state.nextEffectiveAt === nextDue) return;
+    if (state.timer) clearTimeout(state.timer);
+    state.nextEffectiveAt = nextDue;
+    state.timer = nextDue === undefined ? undefined : setTimeout(() => {
+      state.timer = undefined;
+      state.nextEffectiveAt = undefined;
+      if (this.db.connection.open) this.queueDotsViews();
+    }, Math.min(2_147_483_647, Math.max(0, nextDue - Date.now()))).unref();
   }
 
   private scenarioIsGrounded(scenario: MemoryScenarioDto): boolean {

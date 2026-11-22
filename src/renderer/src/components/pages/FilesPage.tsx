@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "@shared/dots";
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Artifact, Task } from "@/types";
@@ -73,7 +74,8 @@ interface Group {
 
 export default function FilesPage(): React.JSX.Element {
   const desktop = useDesktopShell();
-  const tasks = useAppStore((s) => s.tasks);
+  const allTasks = useAppStore((s) => s.tasks);
+  const tasks = useMemo(() => allTasks.filter(task => task.id !== DOTS_TASK_ID), [allTasks]);
   const spaces = useAppStore((s) => s.spaces);
   const artifactPolicies = useAppStore((s) => s.artifactPolicies);
   const refreshArtifactPolicy = useAppStore((s) => s.refreshArtifactPolicy);
@@ -92,7 +94,7 @@ export default function FilesPage(): React.JSX.Element {
   useEffect(() => {
     const api = window.api?.artifactDomain;
     const state = useAppStore.getState();
-    const missing = state.tasks.filter((task) => !state.artifactProjection.artifactsByTask[task.id]);
+    const missing = state.tasks.filter((task) => task.id !== DOTS_TASK_ID && !state.artifactProjection.artifactsByTask[task.id]);
     if (!api || missing.length === 0) {
       setLoading(false);
       return;

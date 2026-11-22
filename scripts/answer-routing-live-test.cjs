@@ -9,29 +9,21 @@ run(async env => {
   if (process.argv.includes("--weather")) return require("./answer-routing-weather-check.cjs")(env);
   const { evaluate, until, report, home, requests, restart, rpc } = env;
   const { click, fill, expand, openSettings, screenshot } = routingControls(env);
-  const workspace = path.join(home, "周报验收资料");
-  const file = path.join(workspace, "release.md");
   const original = "交付记录。蓝桥模块 RG-174 已提测，尚未上线。青禾模块 RG-285 已上线。";
   const updated = "新版发布记录。蓝桥模块 RG-174 已上线，发布批次 R-920。青禾模块 RG-285 已上线。";
   const hash = body => createHash("sha256").update(body).digest("hex");
-  await fs.mkdir(workspace);
-  await fs.writeFile(file, original);
-  const spaceId = "routing-fixture";
+  const { id: dotsId } = await evaluate("window.api.dots.open()");
   const dbCall = (name, arg) => evaluate("window.api.db." + name + "(" + JSON.stringify(arg) + ")");
-  await dbCall("upsertSpace", { id: spaceId, name: "验收空间", path: workspace });
-  const project = await dbCall("createProject", { name: "调度验收项目" });
-  assert.equal(project.ok, true);
-  const projectId = project.project.id;
   const question = "写项目周报。用两行汇报蓝桥和青禾各自的交付状态与记录编号。";
   const teaching = "写项目周报或整理交付周报时，先读取任务目录的 release.md。区分已提测和尚未上线，列出状态和记录编号。翻译周报时跳过。资料缺失标为待核实。";
-  const makeTask = id => dbCall("upsertTask", { id, title: id, welcomeMode: "general", projectId, spaceId, updatedAt: Date.now() });
+  const makeTask = id => dbCall("upsertTask", { id, title: id, welcomeMode: "general", updatedAt: Date.now() });
   const getUses = (taskId, inputId) => evaluate("window.api.answerRouting.history(" + JSON.stringify({ taskId, inputId }) + ")");
   const setMemory = value => evaluate("window.api.agent.updateAppSettings(" + JSON.stringify({memoryEnabled: value}) + ")");
   report.comparison = [];
 
   const ask = async (arm, id, query, expectedStatus) => {
     const inputId = "q-" + arm;
-    const request = { taskId: id, spaceId, projectId, welcomeMode: "general", text: query, userMessageId: inputId, assistantMessageId: "a-" + arm };
+    const request = { taskId: id, welcomeMode: "general", text: query, userMessageId: inputId, assistantMessageId: "a-" + arm };
     const offset = requests.length, start = Date.now();
     await evaluate("window.answerRun = null; (async () => { const r = await window.api.agent.prompt(" + JSON.stringify(request)
       + "); if (!r.receipt) throw Error(JSON.stringify(r)); const done = await window.api.agent.waitForSubmission(r.receipt);"
@@ -59,10 +51,13 @@ run(async env => {
     assert.doesNotMatch(blue.replace(/(?:尚未|未|没有|并未|还没|暂未)(?:正式)?上线/g, ""), /已(?:经)?(?:正式)?上线|已发布|完成上线/);
     assert(green && /已(?:经)?(?:正式)?上线|完成上线/.test(green), answer);
   };
-  const baseline = "routing-baseline", memoryOnly = "routing-memory", runTask = "routing-only", both = "routing-both";
-  for (const id of [baseline, memoryOnly, runTask, both]) await makeTask(id);
+  const baseline = dotsId, memoryOnly = "routing-memory", runTask = dotsId, both = dotsId;
+  await makeTask(memoryOnly);
   await setMemory(false);
   await ask("baseline", baseline, question);
+  const { cwd } = await evaluate("window.api.dots.open()");
+  const file = path.join(cwd, "release.md");
+  await fs.writeFile(file, original);
   await setMemory(true);
   await evaluate("window.api.memory.create(" + JSON.stringify({ title: "周报交付约束", content: teaching,
     scopeType: "global", kind: "procedure", sourceType: "manual", explicit: true }) + ")");
@@ -70,7 +65,7 @@ run(async env => {
   await setMemory(false);
 
   await restart();
-  const activate = id => evaluate("import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().setActiveTask(" + JSON.stringify(id) + "))");
+  const activate = () => evaluate("import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().openDots())");
   await activate(baseline);
   await click("下次这样答", ".message-list");
   await until(() => evaluate("!!document.querySelector('.answer-rule-form textarea')"), "editable teaching card");
@@ -83,7 +78,7 @@ run(async env => {
   await click("保存并返回对话");
   await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 1)"), "saved from the actual answer");
   const [rule] = await evaluate("window.api.answerRouting.list()");
-  assert.equal(rule.projectId, projectId);
+  assert.equal(rule.projectId, null);
   assert.equal(rule.sourceMemoryId, null);
   assert.equal(rule.evidenceFile, "release.md");
   await evaluate("import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().setSettingsOpen(false))");
@@ -110,7 +105,7 @@ run(async env => {
   let secondUse;
   await until(async () => {
     const rows = await evaluate("window.api.answerRouting.history()");
-    secondUse = rows.find(r => r.taskId === runTask && r.inputId !== first.inputId);
+    secondUse = rows.find(r => r.taskId === runTask && !r.inputId.startsWith("q-"));
     if (!secondUse) return false;
     return evaluate("import('/src/store/appStore.ts').then(m=>{const t=m.useAppStore.getState().tasks.find(x=>x.id===" + JSON.stringify(runTask)
       + "); return t?.durable?.busy === false && t.durable.outcome === 'completed' && t.messages.filter(x=>x.role==='user').at(-1)?.inputRequestId === " + JSON.stringify(secondUse.inputId) + ";})");
@@ -136,7 +131,7 @@ run(async env => {
   }
   const translate = await ask("translation", runTask, "帮我翻译这份周报为英文：项目周报已整理。");
   assert.equal(translate.uses.length, 0);
-  assert.equal(await evaluate("window.api.answerRouting.preview(" + JSON.stringify(question) + ",null)"), null);
+  assert.equal(await evaluate("window.api.answerRouting.preview(" + JSON.stringify(question) + ",null).then(r=>r?.rule.id)"), rule.id);
 
   await restart();
   await openSettings();

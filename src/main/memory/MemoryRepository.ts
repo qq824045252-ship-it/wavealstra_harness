@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemorySearchScope } from "./MemorySearchScope";
 import { buildMemoryFtsQuery, normalizeSearchText } from "./MemorySearchText";
@@ -49,7 +50,19 @@ function parseObject(value: string): Record<string, unknown> {
 const normalizedConnections = new WeakSet<object>();
 
 export class MemoryRepository {
+  private readonly findRecord: Database.Statement<[string], MemoryRow>;
+  private readonly findScopes: Database.Statement<[string]>;
+  private readonly findEvidence: Database.Statement<[string]>;
+  private readonly findRelations: Database.Statement<[string, string]>;
+
   constructor(private readonly db: AppDatabase) {
+    this.findRecord = this.conn.prepare("SELECT * FROM memory_records WHERE id = ?");
+    this.findScopes = this.conn.prepare(
+      "SELECT memory_id,scope_type,scope_id,binding,created_at FROM memory_scopes WHERE memory_id=? ORDER BY created_at");
+    this.findEvidence = this.conn.prepare(
+      "SELECT id,memory_id,evidence_kind,ref_id,ref_title,excerpt,created_at FROM memory_evidence WHERE memory_id=? ORDER BY created_at");
+    this.findRelations = this.conn.prepare(
+      "SELECT id,from_memory_id,relation,to_memory_id,created_at FROM memory_relations WHERE from_memory_id=? OR to_memory_id=? ORDER BY created_at");
     if (!normalizedConnections.has(db.connection)) {
       db.connection.function("memory_search_normalize", { deterministic: true },
         (value: unknown) => typeof value === "string" ? normalizeSearchText(value) : "");
@@ -60,7 +73,7 @@ export class MemoryRepository {
   private get conn() { return this.db.connection; }
 
   get(id: string): MemoryRecordDto | undefined {
-    const row = this.conn.prepare("SELECT * FROM memory_records WHERE id = ?").get(id) as MemoryRow | undefined;
+    const row = this.findRecord.get(id);
     return row ? this.hydrate(row) : undefined;
   }
 
@@ -152,12 +165,24 @@ export class MemoryRepository {
       const escaped = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
       args.push(escaped, escaped);
     }
+    // The scope-first join is costly for a large personal/global corpus with
+    // only a few preferences. Probe the kind index with a bounded read before
+    // choosing which side to start from. Both plans apply the same bindings.
+    const kinds = input.kinds;
+    const kindProbeLimit = 1024;
+    const selectiveKinds = kinds?.length && Number(this.conn.prepare(`
+      SELECT COUNT(*) FROM (
+        SELECT 1 FROM memory_records INDEXED BY idx_memory_records_kind_updated
+        WHERE kind IN (${kinds.map(() => "?").join(",")}) LIMIT ?
+      )`).pluck().get(...kinds, kindProbeLimit + 1)) <= kindProbeLimit;
+    const atomAndScope = selectiveKinds
+      ? "memory_records m INDEXED BY idx_memory_records_kind_updated CROSS JOIN memory_scopes s"
+      : "memory_records m JOIN memory_scopes s";
     const limit = Math.max(1, Math.min(2000, input.limit ?? 100));
     args.push(limit);
     const rows = this.conn.prepare(
       `SELECT m.*, s.scope_type AS matched_scope_type, s.scope_id AS matched_scope_id, s.binding AS matched_binding
-       FROM memory_records m
-       JOIN memory_scopes s ON s.memory_id = m.id
+       FROM ${atomAndScope} ON s.memory_id = m.id
        WHERE ${where.join(" AND ")}
        ORDER BY m.importance DESC, m.explicit DESC, m.updated_at DESC
        LIMIT ?`,
@@ -220,12 +245,12 @@ export class MemoryRepository {
     return new MemoryQueryCandidates({ db: this.conn, repository: this, query, scope: input, limit, accept }).searchAsync();
   }
 
-  insert(record: MemoryRecordDto): MemoryRecordDto {
-    this.conn.transaction(() => this.insertWithinTransaction(record))();
+  insert(record: MemoryRecordDto, changeReason?: string): MemoryRecordDto {
+    this.conn.transaction(() => this.insertWithinTransaction(record, changeReason))();
     return this.get(record.id)!;
   }
 
-  private insertWithinTransaction(record: MemoryRecordDto): void {
+  private insertWithinTransaction(record: MemoryRecordDto, changeReason = "created"): void {
     this.conn.prepare(
         `INSERT INTO memory_records (
           id, kind, title, content, status, importance, confidence, explicit,
@@ -249,7 +274,7 @@ export class MemoryRepository {
     for (const scope of record.scopes) this.addScope(scope);
     for (const evidence of record.evidence) this.addEvidence(evidence);
     for (const relation of record.relations) this.addRelation(relation);
-    this.insertRevision(record, record.sourceType, "created");
+    this.insertRevision(record, record.sourceType, changeReason);
   }
 
   update(record: MemoryRecordDto, changedBy: MemoryRecordDto["sourceType"], changeReason?: string): MemoryRecordDto {
@@ -299,10 +324,11 @@ export class MemoryRepository {
     relation: MemoryRelationDto,
     changedBy: MemoryRecordDto["sourceType"],
     changeReason: string,
+    replacementReason?: string,
   ): MemoryRecordDto {
     if (!this.get(oldRecord.id)) throw new Error(`被替代记忆不存在：${oldRecord.id}`);
     this.conn.transaction(() => {
-      this.insertWithinTransaction(replacement);
+      this.insertWithinTransaction(replacement, replacementReason);
       this.updateWithinTransaction(oldRecord, changedBy, changeReason);
       this.addRelation(relation);
     })();
@@ -479,18 +505,14 @@ export class MemoryRepository {
   }
 
   private hydrate(row: MemoryRow): MemoryRecordDto {
-    const scopes = (this.conn.prepare(
-      "SELECT memory_id,scope_type,scope_id,binding,created_at FROM memory_scopes WHERE memory_id=? ORDER BY created_at",
-    ).all(row.id) as Array<{ memory_id: string; scope_type: MemoryScopeType; scope_id: string | null; binding: "owned" | "promoted"; created_at: number }>).map((s) => ({
+    const scopes = (this.findScopes.all(row.id) as Array<{ memory_id: string; scope_type: MemoryScopeType; scope_id: string | null; binding: "owned" | "promoted"; created_at: number }>).map((s) => ({
       memoryId: s.memory_id,
       scopeType: s.scope_type,
       scopeId: s.scope_id ?? undefined,
       binding: s.binding,
       createdAt: s.created_at,
     }));
-    const evidence = (this.conn.prepare(
-      "SELECT id,memory_id,evidence_kind,ref_id,ref_title,excerpt,created_at FROM memory_evidence WHERE memory_id=? ORDER BY created_at",
-    ).all(row.id) as Array<{ id: string; memory_id: string; evidence_kind: MemoryEvidenceDto["evidenceKind"]; ref_id: string; ref_title: string | null; excerpt: string | null; created_at: number }>).map((e) => ({
+    const evidence = (this.findEvidence.all(row.id) as Array<{ id: string; memory_id: string; evidence_kind: MemoryEvidenceDto["evidenceKind"]; ref_id: string; ref_title: string | null; excerpt: string | null; created_at: number }>).map((e) => ({
       id: e.id,
       memoryId: e.memory_id,
       evidenceKind: e.evidence_kind,
@@ -499,9 +521,7 @@ export class MemoryRepository {
       excerpt: e.excerpt ?? undefined,
       createdAt: e.created_at,
     }));
-    const relations = (this.conn.prepare(
-      "SELECT id,from_memory_id,relation,to_memory_id,created_at FROM memory_relations WHERE from_memory_id=? OR to_memory_id=? ORDER BY created_at",
-    ).all(row.id, row.id) as Array<{ id: string; from_memory_id: string; relation: MemoryRelationDto["relation"]; to_memory_id: string; created_at: number }>).map((r) => ({
+    const relations = (this.findRelations.all(row.id, row.id) as Array<{ id: string; from_memory_id: string; relation: MemoryRelationDto["relation"]; to_memory_id: string; created_at: number }>).map((r) => ({
       id: r.id,
       fromMemoryId: r.from_memory_id,
       relation: r.relation,

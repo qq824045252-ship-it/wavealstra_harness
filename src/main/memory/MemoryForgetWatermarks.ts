@@ -171,6 +171,7 @@ export class MemoryForgetWatermarks {
    * The stored audit excerpt remains untouched. Use the original turn timestamp
    * when available, not a later extraction/evidence insertion timestamp. */
   projectEvidence(record: MemoryRecordDto, scopes: readonly Scope[]): MemoryRecordDto {
+    if (!record.evidence.length) return record;
     const filter = this.sourceFilter(scopes);
     const boundaries = scopes.flatMap(scope => {
       const row = this.db.prepare("SELECT cutoff_at,allowed_message_id FROM memory_forget_watermarks WHERE scope_type=? AND scope_id=?")

@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { copyJson } from "@earendil-works/chord";
-import { defineDocFamily, GenerationTask, type ConversationId, type Cursor, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { defineDocFamily, GenerationTask, type ConversationId, type Cursor, type Storage, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import type { GoalActivityIdentity, GoalNativeEvidence } from "../../../shared/conversation-goal-activity";
 import { openDurablePassiveStorage } from "./DurableStorage";
 
@@ -34,10 +34,10 @@ export async function recordGoalNativeEvidence(tx: Tx, api: { taskId: TaskId },
   }
 }
 
-/** Callers supply identities from the selected Goal's immutable generation ownership index. */
-export async function readGoalNativeEvidence(directory: string, runs: readonly GoalActivityIdentity[]) {
+/** Read the exact native generation's facts in the caller's existing snapshot when supplied. */
+export async function readGoalNativeEvidence(directory: string, runs: readonly GoalActivityIdentity[], snapshot?: Storage) {
   if (!runs.length) return [];
-  const storage = await openDurablePassiveStorage(directory, ctx);
+  const storage = snapshot ?? await openDurablePassiveStorage(directory, ctx);
   if (!storage) return [];
   try {
     const scope = { kind: "session" } as const;
@@ -98,5 +98,5 @@ export async function readGoalNativeEvidence(directory: string, runs: readonly G
       }
     }
     return output;
-  } finally { await storage.close(ctx); }
+  } finally { if (!snapshot) await storage.close(ctx); }
 }

@@ -1,4 +1,5 @@
 import "./platform/credentials";
+import { hostDataLease } from "./host/HostDataLease";
 import { SpeechIpc } from "../shared/speech-stream";
 import { CodeReviewIpc, type CodeReviewDecisionRequest, type CodeReviewGitComparison,
   type CodeReviewGitFile } from "../shared/code-review";
@@ -222,6 +223,9 @@ import { CronService } from "./cron/CronService";
 import { TaskTerminalService } from "./terminal/TaskTerminalService";
 import { AppDatabase } from "./db/AppDatabase";
 import { TaskBoardRepository } from "./task/TaskBoardRepository";
+import { DotsIpc } from "../shared/dots";
+import { DotsDelegations } from "./dots/DotsDelegations";
+import { DotsActions } from "./dots/DotsActions";
 import { GadgetRepository } from "./gadget/GadgetRepository";
 import { GadgetStorage } from "./gadget/GadgetStorage";
 import { GadgetRegistry } from "./gadget/GadgetRegistry";
@@ -367,6 +371,8 @@ let projectEventPromoter: ProjectEventPromoter;
 let projectDocumentImporter: ProjectDocumentImporter;
 let projectContextResolver: ProjectContextResolver;
 let agentService: AgentService;
+let dotsDelegations: DotsDelegations | undefined;
+let dotsActions: DotsActions | undefined;
 let externalAgentRuntime: ExternalAgentRuntime;
 /** 对话分支（Branch in new task）服务 */
 let conversationBranchService: ConversationBranchService;
@@ -446,13 +452,7 @@ const reportProcessGone = createProcessGoneReporter({
   publish: (notification) => notificationService?.publish(notification),
 });
 
-// P3-6：单实例 —— 第二个实例直接退出并聚焦/恢复主窗口（复用托盘恢复路径），
-// 保证同一时刻只有一个 MyBuddy 实例写用户设置（settings.json 无跨实例合并）。
-// 必须在 app ready 前尽早申请；测试/无头路径不加载本模块，不受影响。
-const holdsInstanceLock = app.requestSingleInstanceLock();
-if (!holdsInstanceLock) {
-  app.quit();
-} else {
+if (hostDataLease) {
   app.on("second-instance", (_event, argv) => {
     if (!notificationActivation) earlyNotificationArguments.push(...argv);
     if (!notificationActivation?.accept(argv) && !argv.includes(RESIDENT_HOST_ARGUMENT)) showClientInterface();
@@ -735,6 +735,25 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 
 function registerIpc(): void {
   const taskBoard = new TaskBoardRepository(db.connection);
+  const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
+    () => broadcastToWindows(DotsIpc.changed, null));
+  dotsDelegations = dots;
+  dotsActions = new DotsActions(db, agentService, {
+    link: (...args) => dots.link(...args), list: () => dots.list(),
+    rememberOrigin: (source, origin) => dots.rememberOrigin(source, origin),
+    changed: () => { dots.refresh(); broadcastToWindows(DotsIpc.changed, null); },
+    failed: (...args) => dots.failed(...args),
+  }, taskBoard);
+  const actions = dotsActions;
+  dots.connect((job, request) => actions.followup(job, request), (reply, current) => agentService.appendDotsReply(reply, current));
+  agentService.setDotsActions(dotsActions);
+  ipcMain.handle(DotsIpc.open, () => db.openDots());
+  ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds));
+  agentService.onPatch(patch => {
+    const snapshot = patch.type === "durable_snapshot" ? patch.snapshot : patch.type === "durable_delta" ? patch.delta.state : undefined;
+    if ("taskId" in patch && (patch.type === "conversation_interaction_snapshot" || patch.type === "conversation_goal_snapshot" || snapshot?.status === "waiting_input" ||
+        (snapshot && !snapshot.busy && !snapshot.queued))) dots.refresh(patch.taskId);
+  });
   agentService.onPatch(patch => taskBoard.patch(patch));
   ipcMain.handle(DbIpc.taskBoardPage, (_e, query) => taskBoard.page(query));
   ipcMain.handle(DbIpc.taskBoardAction, (_e, id, action) => taskBoard.action(id, action));
@@ -2386,7 +2405,6 @@ function registerIpc(): void {
   ipcMain.handle(AnswerRoutingIpc.preview, (_e, query, projectId) => agentService.answerRouting.preview(query, projectId));
   ipcMain.handle(AnswerRoutingIpc.history, (_e, turn) => agentService.answerRouting.history(turn));
   ipcMain.handle(AnswerRoutingIpc.suggest, (_e, teaching, question, answer) => agentService.suggestAnswerRule(teaching, question, answer));
-  ipcMain.handle(AnswerRoutingIpc.reviewMemory, (_e, draft) => agentService.reviewAnswerRuleMemory(draft));
   ipcMain.handle(MemoryIpc.skillLearningStatus, () => agentService.kernelSkillLearningStatus());
   ipcMain.handle(MemoryIpc.deleteSkillHistory, (_e, request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest) => agentService.deleteKernelSkillHistory(request));
   ipcMain.handle(MemoryIpc.distillSkills, (_e, action: "start" | "pause") => agentService.distillKernelSkills(action));
@@ -2415,8 +2433,8 @@ function registerIpc(): void {
   });
 
   // Gateway
-  ipcMain.handle(GatewayIpc.weixinQrStart, (_e, approved: boolean) => gatewayService.startWeixinQrLogin(approved));
-  ipcMain.handle(GatewayIpc.qqQrStart, (_e, approved: boolean) => gatewayService.startQQQrLogin(approved));
+  ipcMain.handle(GatewayIpc.weixinQrStart, (_e, approved: boolean, dotsConsent?: boolean) => gatewayService.startWeixinQrLogin(approved, dotsConsent));
+  ipcMain.handle(GatewayIpc.qqQrStart, (_e, approved: boolean, dotsConsent?: boolean) => gatewayService.startQQQrLogin(approved, dotsConsent));
   ipcMain.handle(GatewayIpc.weixinQrState, () => gatewayService.getWeixinQrLoginState());
   ipcMain.handle(GatewayIpc.qqQrState, () => gatewayService.getQQQrLoginState());
   ipcMain.handle(GatewayIpc.weixinQrCancel, (_e, sessionId?: string) => gatewayService.cancelWeixinQrLogin(sessionId));
@@ -2426,7 +2444,7 @@ function registerIpc(): void {
     if (!isMainAppWindowRequest(event, botManagementWindow,
       process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) throw new Error("只能从应用主窗口配置扫码接入");
   };
-  ipcMain.handle(GatewayIpc.registrationStart, (event, provider, approved) => { guardRegistration(event); return gatewayService.startBusinessRegistration(provider, approved); });
+  ipcMain.handle(GatewayIpc.registrationStart, (event, provider, approved, dotsConsent) => { guardRegistration(event); return gatewayService.startBusinessRegistration(provider, approved, dotsConsent); });
   ipcMain.handle(GatewayIpc.registrationState, (event, provider) => { guardRegistration(event); return gatewayService.getBusinessRegistration(provider); });
   ipcMain.handle(GatewayIpc.registrationFinish, (event, provider, sessionId, details) => { guardRegistration(event); return gatewayService.finishBusinessRegistration(provider, sessionId, details); });
   ipcMain.handle(GatewayIpc.registrationCancel, (event, provider, sessionId) => { guardRegistration(event); return gatewayService.cancelBusinessRegistration(provider, sessionId); });
@@ -2908,7 +2926,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
-  if (!holdsInstanceLock) return;
+  if (!hostDataLease) return;
   // Issue #17 A1: phase marks are opt-in and exit once the required phases are recorded.
   if (startupMarkEnabled()) {
     onStartupReport(() => app.exit(0));
@@ -2992,11 +3010,13 @@ app.whenReady().then(async () => {
   // 休眠/系统恢复 catch-up：先按当前时间重算全部项目（指纹去重广播，错过边界不丢），再重建未来边界。
   // 不信任旧 timeout（系统睡眠期间 Node timer 不保证按墙钟推进；时钟跳变同样由此收敛）。
   powerMonitor.on("resume", () => {
+    cronService?.resumeDotsTimers();
     cadenceEngine?.catchUp();
     cadenceEngine?.scheduleAll();
     agentService?.onSystemResume();
   });
   powerMonitor.on("suspend", () => {
+    cronService?.suspendDotsTimers();
     agentService?.onSystemSuspend();
   });
   // 外部输入入口层：通用事件契约（source/kind 白名单 + 有界校验），ingest 后仅触发既有收敛
@@ -3542,8 +3562,8 @@ app.whenReady().then(async () => {
       notificationService.publish({
         type: summary.status === "success" ? "automation.completed" : "automation.failed",
         level: summary.status === "success" ? "success" : "error",
-        title: summary.status === "success" ? "自动化已完成" : "自动化执行失败",
-        body: `${summary.jobName}${summary.error ? ` · ${summary.error}` : ""}`,
+        title: summary.message ? summary.jobName : summary.status === "success" ? "自动化已完成" : "自动化执行失败",
+        body: summary.message ?? `${summary.jobName}${summary.error ? ` · ${summary.error}` : ""}`,
         sourceType: "automation",
         sourceId: summary.jobId,
         taskId: summary.taskId,
@@ -3634,6 +3654,12 @@ app.whenReady().then(async () => {
   }
 
   await agentService.resumePersistedTasks();
+  void dotsDelegations?.recover(request => agentService.prompt(request, { durableAdmissionOnly: true }), id => {
+    const task = db.getTask(id);
+    return !!task && !task.externalAgentPin && agentService.isDotsOrdinaryTask(id) && !db.isTaskEffectiveArchived(id)
+      && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed";
+  }).catch(error => console.warn("[Dots] 恢复委派失败", error));
+  dotsActions?.startFileWatches();
   startupMark("restoreDelivered");
   cronService.start();
   startupMark("cronReady");
@@ -3699,6 +3725,8 @@ app.on("before-quit", (event) => {
     const semanticIndexStopped = libraryService?.stopSemanticIndexing();
     try { browserHost.dispose(); } catch { /* best effort */ }
     try { trayService?.dispose(); } catch { /* best effort */ }
+    dotsDelegations?.close();
+    await dotsActions?.closeFileWatches();
     try { cronService?.stop(); } catch { /* best effort */ }
     try { cadenceEngine?.shutdown(); } catch { /* best effort */ }
     try { surfaceCoordinator.dispose(); } catch { /* best effort */ }
@@ -3723,14 +3751,16 @@ app.on("before-quit", (event) => {
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
     } catch { /* best effort */ }
     try { await semanticIndexStopped; } catch { /* best effort */ }
-    try { db?.close(); } catch { /* best effort */ }
+    // Keep the data-directory mutex held until the last database writer is closed.
+    db?.close();
+    hostDataLease?.release();
     return true;
   })().catch(error => {
     console.error("[shutdown] 退出清理失败", error);
     return true;
   }).then(ready => {
     if (!ready) { quitCleanupPromise = null; return; }
-    try { residentLifecycle.afterCleanup(); }
+    try { if (!db?.connection.open) residentLifecycle.afterCleanup(); }
     catch (error) { console.error("[ResidentHost] handoff failed; assistant is offline", error); }
     quitCleanupComplete = true;
     app.quit();

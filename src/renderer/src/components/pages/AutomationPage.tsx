@@ -543,6 +543,7 @@ export default function AutomationPage({
         target: existing?.target,
         maxRuns: existing?.maxRuns,
         restartPolicy: existing?.restartPolicy,
+        missedRuns: existing?.missedRuns,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         permissionMode: form.permissionMode,

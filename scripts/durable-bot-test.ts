@@ -17,7 +17,10 @@ import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
 import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { AnswerRoutingService } from "../src/main/agent/AnswerRoutingService";
-import { reviewAnswerRuleMemories } from "../src/main/agent/AnswerRuleMemoryReview";
+import { DOTS_TASK_ID } from "../src/shared/dots";
+import { createMemoryExtension } from "../src/main/memory/memory-extension";
+import { currentDurableInvocation } from "../src/main/agent/durable/DurableExecutionContext";
+import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { answerRuleExamples } from "../src/shared/answer-routing";
@@ -62,38 +65,13 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
 {
   const cwd = join(root, "answer-routing"); await mkdir(cwd);
   const db = new AppDatabase(join(cwd, "app.db"));
-  const taskId = "routing-example";
+  const taskId = DOTS_TASK_ID;
   db.upsertTask({ id: taskId, title: "调度对话", cwd, modelId: "fixture/fixture", updatedAt: 1 });
   const memories = new MemoryService(db);
-  const checkedDraft = { title: "核对颜色", include: [], exclude: [], instruction: "蓝色表示待确认。" };
-  const checkMemory = (content: string) => memories.create({ title: "颜色约定", content, scopeType: "global", kind: "constraint", sourceType: "manual" });
-  const firstColor = checkMemory(checkedDraft.instruction);
-  const secondColor = checkMemory("蓝色表示已交付。");
-  const reviewed = await reviewAnswerRuleMemories(checkedDraft, memories, () => true, async () => { throw new Error("offline"); });
-  assert.equal(reviewed.semanticUnavailable, true);
-  assert.deepEqual(reviewed.matches.map(hit => [hit.memoryId, hit.relation]), [[firstColor.id, "exact"]]);
-  const colorDraft = { ...checkedDraft, instruction: "用蓝色标出待确认项，并列出编号。" };
-  const differences = await reviewAnswerRuleMemories(colorDraft, memories, () => true, async (_system, input) => {
-    const { candidates } = JSON.parse(input) as { candidates: { candidate: number; content: string }[] };
-    return JSON.stringify({ distillation: { instruction: "用蓝色标出待确认项，列出编号。", include: ["核对颜色"], exclude: [],
-      usedCandidates: [candidates.find(item => item.content === firstColor.content)!.candidate], conflicts: ["蓝色对应的状态不同。"] },
-      matches: candidates.map(item => item.content === firstColor.content
-      ? { candidate: item.candidate, relation: "shared", reason: "蓝色含义相同。", draftOnly: "列出编号。", memoryOnly: "" }
-      : { candidate: item.candidate, relation: "conflict", reason: "同一颜色的状态相反。" }) });
-  });
-  assert.equal(differences.matches.find(row => row.memoryId === firstColor.id)?.additionalInstruction, "列出编号。");
-  assert.equal(differences.matches.find(row => row.memoryId === secondColor.id)?.relation, "conflict");
-  assert.deepEqual(differences.distillation?.sources.map(item => item.memoryId), [firstColor.id]);
-  assert.deepEqual(differences.distillation?.conflicts, ["蓝色对应的状态不同。"]);
-  await assert.rejects(reviewAnswerRuleMemories(checkedDraft, memories, () => true, async () => {
-    memories.update({ id: secondColor.id, content: "绿色表示已交付。" });
-    return '{"matches":[]}';
-  }), /记忆已变化/);
-  memories.forget(firstColor.id);
-  memories.forget(secondColor.id);
+  const capture = new MemoryPipelineManager(db);
   const source = memories.create({ title: "天气", content: "天气简报优先出行时段。", kind: "procedure", sourceType: "manual", scopeType: "global" });
   const routing = new AnswerRoutingService(db, (id, task) => task ? memories.getForRecall(id, { taskId: task }) : memories.get(id));
-  const weather = routing.save({ ...answerRuleExamples[0], sourceMemoryId: source.id, sourceHash: source.contentHash });
+  const weather = routing.save({ ...answerRuleExamples[0], instruction: source.content + "\n" + answerRuleExamples[0].instruction, sourceMemoryId: source.id, sourceHash: source.contentHash });
   const report = routing.save({ ...answerRuleExamples[1], evidenceFile: "release.md" });
   const translated = routing.save({ ...report, exclude: ["翻译周报"] }, report);
   assert.equal(routing.preview("帮我翻译这份周报为英文：项目周报已整理。", null), null);
@@ -103,8 +81,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   db.upsertTask({ id: "project-chat", title: "本项目", projectId: "route-project", updatedAt: 1 });
   assert.ok(!routing.rulesForTask(taskId).some(rule => rule.id === projectRule.id));
   assert.throws(() => routing.saveForTask(taskId, { version: { id: projectRule.id, revision: projectRule.revision }, changes: { enabled: false } }));
-  const weatherVersion = { id: weather.id, revision: weather.revision };
-  const local = routing.saveForTask("project-chat", { version: weatherVersion, independent: true, changes: { instruction: "按出行时段列出降水。" } });
+  const local = routing.saveForTask("project-chat", { scope: "project", changes: { title: "城市天气", include: ["天气"], instruction: "按出行时段列出降水。" } });
   assert.notEqual(local.id, weather.id);
   assert.equal(local.projectId, "route-project");
   assert.equal(routing.preview("上海天气", "route-project")?.rule.id, local.id);
@@ -122,10 +99,16 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   await writeFile(join(cwd, "release.md"), "需求 R-37 已提测，尚无发布记录。");
   const payloads: string[] = [];
   let canRead = true;
+  let forgetOnNextRequest: string | undefined;
   let replaceReleaseOnNextRequest = false;
   const service = new DurableBotService({ db, agentDir: cwd, mcpDir: join(cwd, "mcp"),
     models: { ...models(async context => {
       payloads.push(JSON.stringify(context.messages));
+      if (forgetOnNextRequest) {
+        const id = forgetOnNextRequest;
+        forgetOnNextRequest = undefined;
+        return call("memory_forget", { id });
+      }
       if (replaceReleaseOnNextRequest) {
         replaceReleaseOnNextRequest = false;
         await writeFile(join(cwd, "release.md"), "需求 R-38 已上线。");
@@ -134,16 +117,48 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
       return text("fixture reply");
     }),
       refresh: async () => ({}), getAvailable: async () => [model] },
-    answerRouting: routing, evidenceProjection: () => ({ memory: memories, enabled: () => true, scope: () => ({ taskId }), supplementalEvidence: () => [] }),
+    answerRouting: routing, onTurns: (_id, turns) => { for (const turn of turns) capture.capture(turn); },
+    evidenceProjection: task => ({ memory: memories, enabled: () => true, scope: () => ({ taskId: task.id }), supplementalEvidence: () => [] }),
+    auditInput: request => ({ userMessageId: request.userMessageId, assistantMessageId: request.assistantMessageId, cwd, skills: [],
+      recommendation: { query: request.text, mode: "general", context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] } }),
+    tools: task => durableDomainTools([createMemoryExtension({ taskId: task.id, service: memories, sourceInput: () => currentDurableInvocation()?.memorySource })],
+      { taskId: task.id, cwd, models: models(() => text("")) as any }),
     resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native",
     toolAllowed: (_task, name) => name !== "read" || canRead, defaultModel: () => "fixture/fixture", emit: () => {} });
   const ask = async (id: string, question: string) => {
     const count = payloads.length;
-    await service.prompt({ taskId, text: question, userMessageId: id, assistantMessageId: "answer-" + id }, false);
-    assert.equal(payloads.length, count + 1);
+    const result = await service.prompt({ taskId, text: question, userMessageId: id, assistantMessageId: "answer-" + id }, false);
+    assert.ok(!result.error, JSON.stringify(result));
+    assert.equal(payloads.length, count + 1, JSON.stringify(result));
     return payloads[count];
   };
   try {
+    db.upsertTask({ id: "ordinary", title: "普通任务", cwd, updatedAt: 1 });
+    await service.prompt({ taskId: "ordinary", text: "帮我写项目周报", userMessageId: "ordinary-input", assistantMessageId: "ordinary-output" }, false);
+    assert.doesNotMatch(payloads.at(-1)!, /需求 R-37/);
+    assert.deepEqual(routing.history({ taskId: "ordinary", inputId: "ordinary-input" }), []);
+    db.connection.exec("CREATE TABLE dots_delegations(operation_id TEXT,task_id TEXT)");
+    db.connection.prepare("INSERT INTO dots_delegations VALUES(?,?)").run("dots-input-synthetic", "ordinary");
+    await service.prompt({ taskId: "ordinary", text: "委派转述", userMessageId: "dots-input-synthetic", assistantMessageId: "generated-output" }, false);
+    assert.deepEqual(capture.turns.listByTask("ordinary").map(turn => turn.userText), ["帮我写项目周报"]);
+    const localPreference = memories.create({ title: "交付标记", kind: "preference", content: "本轮标记为 JADE-1234。",
+      sourceType: "manual", scopeType: "task", scopeId: taskId });
+    assert.match(await ask("local-preference", "三加三等于多少？"), /JADE-1234/);
+    assert.equal(capture.turns.listByTask(taskId).length, 1);
+    const revised = memories.update({ id: localPreference.id, content: "本轮标记为 BLUE-5267。" });
+    const newPayload = await ask("local-revision", "四加四等于多少？");
+    assert.match(newPayload, /BLUE-5267/);
+    assert.doesNotMatch(newPayload, /JADE-1234/);
+    await service.release(taskId);
+    const view = memories.getForRecall(localPreference.id, { taskId });
+    assert.equal(view?.contentHash, revised.contentHash);
+    assert.equal(memories.getForRecall(localPreference.id, { taskId: "ordinary" }), undefined);
+    forgetOnNextRequest = localPreference.id;
+    await service.prompt({ taskId, text: "忘记交付标记", userMessageId: "forget", assistantMessageId: "forgot" }, false);
+    assert.equal(memories.get(localPreference.id), undefined);
+    assert.match(payloads.at(-1)!, /本轮遗忘工具已成功/);
+    assert.doesNotMatch(payloads.at(-1)!, /JADE-1234|BLUE-5267/);
+    await service.release(taskId);
     assert.match(await ask("weather", "上海明早出门要带伞吗"), /逐小时预报/);
     assert.doesNotMatch(await ask("translate", "翻译：上海天气好"), /逐小时预报/);
     await service.release(taskId);
@@ -178,6 +193,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     const taught = memories.create({ title: "调度对照", content: instruction, kind: "constraint", sourceType: "manual", scopeType: "global" });
     const linked = routing.save({ ...answerRuleExamples[0], title: "调度对照", include: ["调度对照"],
       sourceMemoryId: taught.id, sourceHash: taught.contentHash, instruction });
+    assert.doesNotMatch((db.connection.prepare("SELECT config FROM answer_rules WHERE id=?").get(linked.id) as {config:string}).config, /铜鹤/);
     const once = await ask("deduplicate", "按调度对照给我暗号");
     assert.match(once, new RegExp(taught.id));
     assert.equal(once.split(instruction).length - 1, 1, "same memory instruction appears once in the provider request");
@@ -211,9 +227,9 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.throws(() => routing.remove(weather.id, weather.revision), /规则已变化/);
     const restored = routing.save(weather, { id: weather.id, revision: 2 });
     memories.update({ id: source.id, content: "天气简报先核对所在城市。" });
-    assert.equal(routing.preview("明天天气如何", null, taskId), null);
-    assert.equal(routing.list().find(item => item.id === weather.id)?.sourceNeedsReview, true);
-    assert.throws(() => routing.save(restored, restored), /来源全局记忆已变化/);
+    assert.equal(routing.preview("明天天气如何", null, taskId)?.rule.instruction, "天气简报先核对所在城市。\n" + answerRuleExamples[0].instruction);
+    assert.equal(routing.list().find(item => item.id === weather.id)?.sourceUnavailable, false);
+    assert.throws(() => routing.save(restored, restored), /来源记忆已变化/);
     assert.throws(() => routing.save({ ...translated, evidenceFile: "../other.md" }, translated), /相对路径/);
     routing.remove(translated.id, translated.revision);
     assert.deepEqual(routing.history({ taskId, inputId: "two-requests" }), firstReceipt);
@@ -926,4 +942,5 @@ for (const mode of ["native", "codemode"] as const) {
   } finally { await service.close(); db.close(); }
   console.log("PASS 只读历史与模型目录解耦：没有可用模型也能打开，且不改写任务");
 }
+await (await import("./durable-dots-reply-test")).verifyDurableDotsReplies(join(root, "dots-assistant-replies"));
 console.log("Durable Bot tests passed");

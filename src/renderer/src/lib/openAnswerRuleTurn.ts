@@ -1,9 +1,11 @@
+import { DOTS_TASK_ID } from "@shared/dots";
 import type { AnswerRuleUse } from "@shared/answer-routing";
 import { useAppStore } from "@/store/appStore";
 
-export function openAnswerRuleTurn({ taskId, inputId }: Pick<AnswerRuleUse, "taskId" | "inputId">): void {
+export async function openAnswerRuleTurn({ taskId, inputId }: Pick<AnswerRuleUse, "taskId" | "inputId">): Promise<void> {
   const store = useAppStore.getState();
-  store.setActiveTask(taskId);
   store.setSettingsOpen(false);
+  if (taskId === DOTS_TASK_ID) await store.openDots();
+  else store.setActiveTask(taskId);
   useAppStore.setState({ answerRuleTurnTarget: { taskId, inputId } });
 }

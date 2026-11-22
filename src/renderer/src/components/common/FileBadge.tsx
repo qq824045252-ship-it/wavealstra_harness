@@ -218,7 +218,11 @@ export function LocalFileChip({ path }: { path: string }): React.JSX.Element {
   );
 }
 
-export function ArtifactChip({ artifact }: { artifact: Artifact }): React.JSX.Element {
+export function ArtifactChip({ artifact, onPreview, onSystemOpen }: {
+  artifact: Artifact;
+  onPreview?: () => void;
+  onSystemOpen?: () => void;
+}): React.JSX.Element {
   const openArtifact = useAppStore((s) => s.openArtifact);
   const hasPath = Boolean(artifact.path?.trim());
   const dragEnabled = canNativeDrag(artifact.path);
@@ -228,7 +232,8 @@ export function ArtifactChip({ artifact }: { artifact: Artifact }): React.JSX.El
     e.stopPropagation();
     e.preventDefault();
     if (!hasPath) return;
-    void openArtifactInSystem(artifact);
+    if (onSystemOpen) onSystemOpen();
+    else void openArtifactInSystem(artifact);
   };
 
   const handleDragStart = (e: React.DragEvent): void => {
@@ -254,7 +259,7 @@ export function ArtifactChip({ artifact }: { artifact: Artifact }): React.JSX.El
       <button
         type="button"
         className="artifact-chip-main"
-        onClick={() => openArtifact(artifact.id)}
+        onClick={onPreview ?? (() => openArtifact(artifact.id))}
         title={`在产物面板打开：${artifact.name}${sizeHint}`}
       >
         <FileBadge name={artifact.name} size={16} />

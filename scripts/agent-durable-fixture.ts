@@ -10,9 +10,12 @@ import { DurableSkillProjection, durableInputAuditSchema } from "../src/main/age
 import { AgentLoadoutObservationService } from "../src/main/agent/AgentLoadoutObservationService";
 import { MemorySkillEffectivenessService } from "../src/main/memory/MemorySkillEffectivenessService";
 
+type FixtureResponse = AssistantMessage["content"] | { content: AssistantMessage["content"]; errorMessage: string };
+
 /** Only the provider boundary is deterministic; admission, native storage, tools and product projections are real. */
 export async function createAgentDurableFixture(root: string, db: AppDatabase,
-  respond: (request: TranscriptContext) => AssistantMessage["content"] | { content: AssistantMessage["content"]; errorMessage: string } = () => [{ type: "text", text: "[]" }]) {
+  respond: (request: TranscriptContext, signal?: AbortSignal) => FixtureResponse | Promise<FixtureResponse> = () => [{ type: "text", text: "[]" }],
+  options: {deferRecovery?: boolean} = {}) {
   const { ModelRuntime, SettingsManager } = await import("@earendil-works/pi-coding-agent");
   const { AgentService } = await import("../src/main/agent/AgentService");
   const { TaskExecutionWorkspace } = await import("../src/main/task/TaskExecutionWorkspace");
@@ -22,12 +25,12 @@ export async function createAgentDurableFixture(root: string, db: AppDatabase,
   models.registerProvider("fixture", { api: "openai-completions", apiKey: "isolated-fixture", baseUrl: "http://127.0.0.1:1",
     models: [{ id: "model", name: "Fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 1024,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-    streamSimple: (model, input) => {
+    streamSimple: (model, input, options) => {
       const stream = createAssistantMessageEventStream();
       const tools = getCurrentTools(input.messages).map(tool => tool.name);
       if (tools.length) requests.push({ instructions: getCurrentSystemPrompt(input.messages), tools, input });
-      queueMicrotask(() => {
-        const response = respond(input);
+      queueMicrotask(async () => {
+        const response = await respond(input, options?.signal);
         const content = Array.isArray(response) ? response : response.content;
         const errorMessage = Array.isArray(response) ? undefined : response.errorMessage;
         const stopReason = errorMessage !== undefined ? "error" : content.some(part => part.type === "toolCall") ? "toolUse" : "stop";
@@ -49,7 +52,7 @@ export async function createAgentDurableFixture(root: string, db: AppDatabase,
   settings.setDefaultModelAndProvider("fixture", "model"); settings.setEnabledModels(["fixture/model"]);
   const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "task-workspaces")), { models });
   await agent.init();
-  await agent.resumePersistedTasks();
+  if (!options.deferRecovery) await agent.resumePersistedTasks();
   return {
     agent, models, requests,
     prompt: async (input: AgentPromptRequest) => {

@@ -1,8 +1,12 @@
+import { DOTS_TASK_ID } from "@shared/dots";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { readReplyCitations } from "@shared/chat-reply-content";
+import { providedReplySources, replyToolSources } from "@shared/chat-reply-sources";
 import type { Attachment, ChatMessage } from "@/types";
 import type { Artifact } from "@/types";
 import { clockTime, nonEmptyFinalTextBlocks, useAppStore } from "@/store/appStore";
-import { resolveTaskFileChanges } from "@/lib/taskFileChanges";
+import { readableChatReply } from "@/lib/chatReplyMarkdown";
+import { ChatReplyOutline } from "./ChatReplyOutline";
 import { stripInjectedUserPromptTail, userPromptDisplayText } from "@shared/user-prompt-display";
 import { selectionLabelsFromPrompt } from "@shared/selection-display";
 import { requestUserInputDisplayText } from "@shared/request-user-input-fallback";
@@ -11,7 +15,7 @@ import { taskHasActiveExecution } from "@/utils/taskFilters";
 import { ArtifactChipRow, FileBadge } from "@/components/common/FileBadge";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import AnswerRoutingReceipt from "@/components/answer-routing/AnswerRoutingReceipt";
-import ExecutionTimeline from "./ExecutionTimeline";
+import ExecutionTimeline, { executionFailureReason } from "./ExecutionTimeline";
 import MessageBlockView from "./MessageBlockView";
 import { ChatImageScope, MessageImages } from "./ChatImage";
 import { ConversationInteractionCard } from "./ConversationRuntimeCards";
@@ -41,6 +45,7 @@ interface Props {
   message: ChatMessage;
   focusTool?: boolean;
   sourceQuestion?: ChatMessage;
+  deliveryFiles?: React.ReactNode;
   /** Only task chat supplies a local image scope; Gateway/BTW must not inherit activeTaskId. */
   taskId?: string;
   artifacts?: Artifact[];
@@ -408,20 +413,22 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, focusTool }: Props): React.JSX.Element {
-  const showAllArtifacts = useAppStore((s) => s.showAllArtifacts);
+function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, focusTool }: Props): React.JSX.Element {
+  const replyBody = useRef<HTMLDivElement>(null);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
-  const showAllChanges = useAppStore((s) => s.showAllChanges);
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === (taskId || s.activeTaskId)));
   const sourceInputId = sourceQuestion?.inputRequestId ?? sourceQuestion?.id;
+  const replySources = useMemo(() => {
+    if (message.dotsDelivery) return readReplyCitations(message.dotsDelivery.citations).map(c => ({ ...c, text: c.excerpt }));
+    return message.role === "assistant" ? [
+      ...message.blocks.flatMap(block => block.type === "tool" ? replyToolSources(block.toolCall) : []),
+      ...(sourceQuestion?.blocks ?? []).flatMap(block => block.type === "text" ? providedReplySources(block.text) : []),
+    ] : [];
+  }, [message.role, message.blocks, message.dotsDelivery, sourceQuestion]);
   const questionText = () => userPromptDisplayText(
     sourceQuestion?.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n") ?? "",
   );
-  /** 历史工具变更可直接打开审查侧栏。 */
-  const taskChangesCount = useMemo(() => {
-    return resolveTaskFileChanges(currentTask?.fileChanges, EMPTY_ARTIFACTS, currentTask?.messages).length;
-  }, [currentTask?.fileChanges, currentTask?.messages]);
   const isGeneral = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "general");
   const regenerateMessage = useAppStore((s) => s.regenerateMessage);
   const continueExternalAgent = useAppStore((s) => s.continueExternalAgent);
@@ -467,7 +474,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
 
   const copyFinalText = useCallback(async (): Promise<void> => {
     if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-    const text = assistantCopyText(message);
+    const text = readableChatReply(assistantCopyText(message), replySources);
     if (!text) {
       setCopyState("empty");
       copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), COPY_FEEDBACK_MS);
@@ -481,7 +488,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
       setCopyState("failed");
     }
     copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), COPY_FEEDBACK_MS);
-  }, [message]);
+  }, [message, replySources]);
 
   if (message.role === "user" && message.goalContinuation) {
     const label = message.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n").trim()
@@ -711,6 +718,8 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
     chipSource.some((artifact) => artifact.id === id),
   );
   const artifactCount = chipIds.length;
+  const dotsReply = !btw && taskId === DOTS_TASK_ID;
+  const dotsFailure = dotsReply && !message.generateError ? executionFailureReason(message) : undefined;
 
   return (
     <div className={`msg-row${message.presentationKey && message.streaming ? " bot-message-enter" : ""}`}>
@@ -718,9 +727,9 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
         <div className="assistant-avatar-row">
           <div
             className={`assistant-avatar${message.externalAgent ? " external-agent-avatar" : ""}`}
-            title={message.externalAgent ? `${message.externalAgent.name} · ACP` : "MyBuddy (Pi Agent)"}
+            title={message.externalAgent ? `${message.externalAgent.name} · ACP` : taskId === DOTS_TASK_ID ? "MyBuddy Dots" : "MyBuddy (Pi Agent)"}
           >
-            {message.externalAgent ? <IconBlocks size={13} /> : <IconPiLogo size={13} />}
+            {message.externalAgent ? <IconBlocks size={13} /> : taskId === DOTS_TASK_ID ? <IconBot size={13} /> : <IconPiLogo size={13} />}
           </div>
           <span className="assistant-name">
             {message.externalAgent ? (
@@ -734,18 +743,32 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
                 {message.externalAgent.verificationStatus === "workspace_observed" && <span className="assistant-source-badge" title="仅表示 MyBuddy 已观察工作目录并登记产物，不表示业务结果正确">工作目录已观察</span>}
               </>
             ) : (
-              <span className="brand-mybuddy"><span className="brand-my">My</span><span className="brand-buddy">Buddy</span></span>
+              taskId === DOTS_TASK_ID ? <span>MyBuddy Dots</span> : <span className="brand-mybuddy"><span className="brand-my">My</span><span className="brand-buddy">Buddy</span></span>
             )}
           </span>
+          <ChatReplyOutline reply={replyBody} streaming={message.streaming} />
+          {dotsReply && !message.streaming && nonEmptyFinalTextBlocks(message.finalBlocks).length > 0 && (
+            <button type="button" className="icon-btn" aria-label="复制回复" title="复制回复" onClick={() => void copyFinalText()}>
+              {copyState === "copied" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            </button>
+          )}
+          {dotsReply && sourceInputId && !message.streaming && <button type="button" className="icon-btn" aria-label="下次这样答" title="下次这样答" onClick={() => {
+                  useAppStore.setState({ answerRuleSeed: { question: questionText(), answer: assistantCopyText(message), projectId: currentTask?.projectId,
+                      turn: { taskId, inputId: sourceInputId },
+                      evidencePaths: sourceQuestion?.attachments?.flatMap(attachment => attachment.path ? [attachment.path] : []) } });
+                }}><IconSparkles size={14} /></button>}
         </div>
 
-        {gatewayStatus ? <div className="assistant-source-badge">{gatewayStatus}</div> : <ExecutionTimeline message={message} taskId={taskId} focusTool={focusTool} />}
+        {dotsReply ? (
+          message.generationStats?.outcome === "error" ? <div role="alert">执行失败{dotsFailure && <p className="chat-execution-failure">{dotsFailure}</p>}</div>
+            : message.generationStats?.outcome === "aborted" ? <div>已停止</div> : null
+        ) : gatewayStatus ? <div className="assistant-source-badge">{gatewayStatus}</div> : <ExecutionTimeline message={message} taskId={taskId} focusTool={focusTool} />}
 
         {(message.interactions ?? []).map((interaction) => (
           <ConversationInteractionCard key={interaction.id} interaction={interaction} />
         ))}
 
-        <div className="assistant-card">
+        <div className="assistant-card" ref={replyBody}>
           {/* 助手回复不折叠，完整展示；仅用户消息长文折叠。
               正文区 = finalBlocks 的 prose 段（tool_start 冻结段，空段渲染过滤）。 */}
           {nonEmptyFinalTextBlocks(message.finalBlocks).map((block, i) => {
@@ -762,18 +785,18 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
                 messageId={message.id}
                 taskId={taskId}
                 streaming={message.streaming}
+                replySources={replySources}
               />
             );
           })}
 
+          {deliveryFiles}
           {!btw && <MessageImages message={message} />}
           {artifactCount > 0 && (
             <ArtifactChipRow ids={chipIds} allArtifacts={chipSource} />
           )}
 
-          {/* 任务级产物/变更入口：每条助手消息都继承显示（不依赖本条是否新产出）
-              产物芯片与计数跟随面板过滤（visibleArtifacts）；变更计数仍用全量 */}
-          {!btw && (Boolean(message.externalAgent?.runId && message.externalAgent.resumeSupported === true) || chipSource.length > 0 || taskChangesCount > 0) && (
+          {!btw && !dotsReply && Boolean(message.externalAgent?.runId && message.externalAgent.resumeSupported === true) && !message.streaming && (
             <div className="msg-links">
               {message.externalAgent?.runId && message.externalAgent.resumeSupported === true && !message.streaming && (
                 <button
@@ -788,20 +811,10 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
                   继续 {message.externalAgent.name}
                 </button>
               )}
-              {chipSource.length > 0 && (
-                <button type="button" className="msg-link" onClick={showAllArtifacts}>
-                  查看所有产物 ({chipSource.length})
-                </button>
-              )}
-              {taskChangesCount > 0 && (
-                <button type="button" className="msg-link" onClick={showAllChanges}>
-                  打开代码审查
-                </button>
-              )}
             </div>
           )}
 
-          {!btw && taskId && sourceInputId && !sourceQuestion?.submitting && !sourceQuestion?.submissionFailed
+          {!btw && taskId === DOTS_TASK_ID && sourceInputId && !sourceQuestion?.submitting && !sourceQuestion?.submissionFailed
             && !sourceQuestion?.goalContinuation && !message.externalAgent && !message.streaming && (
             <AnswerRoutingReceipt key={JSON.stringify([taskId, sourceInputId, message.id])}
               taskId={taskId} inputId={sourceInputId} replyId={message.id}
@@ -809,7 +822,8 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
                 && !nonEmptyFinalTextBlocks(message.finalBlocks).length ? undefined : message.generationStats?.outcome} />
           )}
           {/* footer 始终渲染占位（streaming 时 is-streaming 隐藏），避免 assistant_end 高度突变 */}
-          <div className={`msg-footer${message.streaming ? " is-streaming" : ""}`}>
+          {dotsReply && message.generateError && <div role="alert">{message.generateError}</div>}
+          {!dotsReply && <div className={`msg-footer${message.streaming ? " is-streaming" : ""}`}>
             <button
               type="button"
               className={`icon-btn ${copyState === "copied" ? "copied" : ""}`}
@@ -828,11 +842,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
             </button>
             {btw ? null : (
               <>
-                {taskId && sourceInputId && !message.streaming && <button type="button" className="icon-btn" aria-label="下次这样答" onClick={() => {
-                  useAppStore.setState({ answerRuleSeed: { question: questionText(), answer: assistantCopyText(message), projectId: currentTask?.projectId,
-                      turn: { taskId, inputId: sourceInputId },
-                      evidencePaths: sourceQuestion?.attachments?.flatMap(attachment => attachment.path ? [attachment.path] : []) } });
-                }}><IconSparkles size={14} /></button>}
+
                 <button className="icon-btn" title="赞">
                   <IconThumbsUp size={14} />
                 </button>
@@ -874,7 +884,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
               </span>
             )}
             <span className="msg-time">{clockTime(message.createdAt)}</span>
-          </div>
+          </div>}
         </div>
       </div></ChatImageScope>
     </div>

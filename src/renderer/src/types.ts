@@ -122,6 +122,7 @@ export interface MessageTerminalContext {
 
 export interface ChatMessage {
   id: string;
+  dotsDelivery?: import("../../shared/dots").DotsAssistantReply;
   inputRequestId?: string;
   /** Renderer only: this bubble has not yet been accepted into durable history. */
   submitting?: boolean;

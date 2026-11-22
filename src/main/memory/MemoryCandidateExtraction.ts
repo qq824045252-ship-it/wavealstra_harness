@@ -35,6 +35,7 @@ explicit=true 仅当用户明确说“记住/以后都这样/必须/不要再/�
 
 日常用户记忆必须忽略：问候、一次性请求、临时工具输出、纯执行步骤、未经证据支持的助手猜测、密码/token/cookie/API key/秘密、长文件原文。
 身份、偏好、事实等用户记忆候选必须提供 userEvidence：从 conversationTurns.user 原样摘录的支持片段。existingMemories 只用于对账，不是本轮新增证据；没有用户证据时不要创建这类候选。流程学习遵循下面的独立规则。
+请用 sourceTurnId 指明该段用户原话所属的 conversationTurns.id。保留提议者、否定、条件和不确定性，使用完整原句。
 
 流程学习的独立证据规则：若提供 executionTurns，它们是本轮成功结束的真实工具调用及返回，不是助手自述。
 - 从成功操作中提炼可复用的方法：使用条件、操作顺序、检查方法、失败时如何停止。输出 kind=procedure、operationHint=create，最多两条。
@@ -64,6 +65,7 @@ export interface ExtractedCandidate {
   operationHint: MemoryCandidateDto["operationHint"];
   replaces?: string;
   userEvidence?: string;
+  sourceTurnId?: string;
   retention?: string;
   sensitivity?: string;
   executionEvidence?: { turnId: string; toolCallId: string; quote: string };
@@ -163,6 +165,7 @@ export function extractCandidates(raw: string): ExtractedCandidate[] {
       retention: typeof row.retention === "string" ? row.retention : undefined,
       sensitivity: typeof row.sensitivity === "string" ? row.sensitivity : undefined,
       userEvidence: typeof row.userEvidence === "string" ? row.userEvidence.trim().slice(0, 600) : undefined,
+      sourceTurnId: typeof row.sourceTurnId === "string" ? row.sourceTurnId : undefined,
       executionEvidence: row.executionEvidence && typeof row.executionEvidence === "object"
         ? row.executionEvidence as ExtractedCandidate["executionEvidence"] : undefined,
     });

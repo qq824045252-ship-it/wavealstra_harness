@@ -1,3 +1,6 @@
+import type { SavedArtifactRequest } from "@shared/saved-artifact";
+import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, useDotsDelegations } from "./DotsResult";
+import { DOTS_NO_CHANGE, DOTS_TASK_ID, isDotsAutomaticInput } from "@shared/dots";
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
 import TaskRecoveryNotice from "./TaskRecoveryNotice";
@@ -14,6 +17,7 @@ import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
 import ChatProjectCrumb from "./ChatProjectCrumb";
+import ChatTaskResults from "./ChatTaskResults";
 import WorkspaceCrumb from "./WorkspaceCrumb";
 import SubagentRunsChip from "./SubagentRunsChip";
 import SubagentChatView from "./SubagentChatView";
@@ -24,6 +28,7 @@ import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   IconChevronDown,
   IconClock,
+  IconBot,
   IconAlert,
   IconPanel,
   IconX,
@@ -90,7 +95,7 @@ function HomeHero(): React.JSX.Element {
   const recentTasks = useMemo(
     () =>
       tasks
-        .filter((item) => !item.archived && ((item.messages?.length ?? 0) > 0 || Boolean(item.sessionFile)))
+        .filter((item) => item.id !== DOTS_TASK_ID && !item.archived && ((item.messages?.length ?? 0) > 0 || Boolean(item.sessionFile)))
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 3),
     [tasks],
@@ -292,25 +297,66 @@ function HistoryPopup({
   );
 }
 
-function MessageList({ taskId, messages, artifacts, visibleArtifacts, toolFocusMessageId }: {
+function MessageList({ taskId, messages, artifacts, visibleArtifacts, toolFocusMessageId, delegations = [] }: {
+  delegations?: import("@shared/dots").DotsDelegation[];
   taskId: string;
   messages: readonly ChatMessage[];
   artifacts: Artifact[];
   visibleArtifacts: Artifact[];
   toolFocusMessageId?: string;
 }): React.JSX.Element {
+  const [preview, setPreview] = useState<{ rowId: string; file: SavedArtifactRequest }>();
+  useEffect(() => { setPreview(undefined); }, [taskId]);
+  const grouped = new Map<string, typeof delegations>();
+  if (delegations.length) {
+    const anchors = new Map<string, string>();
+    let question: ChatMessage | undefined;
+    const delivered = new Set<string>();
+    for (const msg of messages) {
+      if (msg.dotsDelivery) delivered.add(msg.dotsDelivery.operationId);
+      if (msg.role === "user") question = msg;
+      else if (question && !msg.dotsDelivery) {
+        anchors.set(question.id, msg.id);
+        if (question.inputRequestId) anchors.set(question.inputRequestId, msg.id);
+      }
+      anchors.set(msg.id, msg.id);
+      if (msg.inputRequestId) anchors.set(msg.inputRequestId, msg.id);
+      for (const id of msg.sourceMessageIds ?? []) anchors.set(id, msg.id);
+    }
+    for (const entry of delegations) {
+      if (delivered.has(entry.id)) continue;
+      const key = anchors.get(entry.sourceMessageId);
+      if (key) grouped.set(key, [...grouped.get(key) ?? [], entry]);
+    }
+  }
   let precedingUser: ChatMessage | undefined;
   return (
     <div className="message-list">
-      {messages.map((msg) => {
+      {messages.flatMap((msg) => {
         if (msg.role === "user") precedingUser = msg;
-        return (
-        <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
-          <MessageItem message={msg} taskId={taskId} sourceQuestion={msg.role === "assistant" ? precedingUser : undefined}
-            artifacts={artifacts} visibleArtifacts={visibleArtifacts}
-            focusTool={toolFocusMessageId === msg.id} />
-        </div>
-        );
+        const automatic = taskId === DOTS_TASK_ID && isDotsAutomaticInput(precedingUser?.inputRequestId ?? "");
+        const reply = msg.finalBlocks?.length ? msg.finalBlocks : msg.blocks;
+        const quiet = automatic && msg.role === "assistant" &&
+          reply.flatMap(block => block.type === "text" ? [block.text] : []).join("").trim() === DOTS_NO_CHANGE;
+        const hideMessage = !msg.dotsDelivery && ((automatic && msg.role === "user") || quiet);
+        if (hideMessage && !grouped.has(msg.id)) return null;
+        const rows = grouped.get(msg.id) ?? [];
+        const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
+        const showPreview = preview && (delivery?.deliveryKey === preview.rowId || rows.some(row => row.id === preview.rowId));
+        return [
+          <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
+            {!hideMessage && <MessageItem message={msg} taskId={taskId} sourceQuestion={!automatic && !delivery && msg.role === "assistant" ? precedingUser : undefined}
+              deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} selected={Boolean(showPreview)}
+                onPreview={file => setPreview({ rowId: delivery.deliveryKey, file })} /> : undefined}
+              artifacts={artifacts} visibleArtifacts={visibleArtifacts}
+              focusTool={toolFocusMessageId === msg.id} />}
+            {rows.map(row => <DotsResult key={row.id} row={row} selected={preview?.rowId === row.id}
+              onPreview={file => setPreview({ rowId: row.id, file })} />)}
+          </div>,
+          // Keep the native viewer mounted when streaming history changes the delivery's parent message.
+          showPreview && <DotsSavedFilePreview key={`dots-preview:${preview.rowId}:${preview.file.snapshotPath}`}
+            file={preview.file} onClose={() => setPreview(undefined)} />,
+        ];
       })}
     </div>
   );
@@ -379,6 +425,10 @@ export default function ChatView(): React.JSX.Element {
     return !fullHistory.loading && isBotTimeline
       ? botMessagePresentation(messages, task?.durable?.pendingInputs, task?.botPendingSubmissions) : messages;
   }, [fullHistory.messages, fullHistory.loading, isBotTimeline, task?.durable?.pendingInputs, task?.botPendingSubmissions]);
+  const dotsSources = task?.id === DOTS_TASK_ID
+    ? JSON.stringify(displayMessages.filter(message => message.role === "user").flatMap(message => [message.id, ...(message.inputRequestId ? [message.inputRequestId] : [])]))
+    : undefined;
+  const dotsDelegations = useDotsDelegations(dotsSources);
   const hasMessages = displayMessages.length > 0;
   const latestUserMessageId = useMemo(() => latestHumanMessageId(displayMessages), [displayMessages]);
   const activeChatId = task?.id;
@@ -658,7 +708,15 @@ export default function ChatView(): React.JSX.Element {
   }
 
   // Admission and errors remain visible before the first native message arrives.
-  if (!task || (task.welcomeMode !== "general" && !hasMessages && !task.sessionFile && !task.durable && !task.botInputError)) {
+  const isDots = task?.id === DOTS_TASK_ID;
+  const dotsHeader = (
+    <div className="chat-header task-chat-header">
+      <CollapsedSidebarActions />
+      <IconBot size={22} />
+      <div className="chat-header-title">MyBuddy Dots</div>
+    </div>
+  );
+  if (!task || (!isDots && task.welcomeMode !== "general" && !hasMessages && !task.sessionFile && !task.durable && !task.botInputError)) {
     const showHeroHeader = Boolean(task || sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
@@ -684,7 +742,7 @@ export default function ChatView(): React.JSX.Element {
   if (!hasMessages) {
     return (
       <div className="chat-column task-ambient" data-mode={taskMode}>
-        <div className="chat-header task-chat-header">
+        {isDots ? dotsHeader : <div className="chat-header task-chat-header">
           <CollapsedSidebarActions />
           {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
           <WorkspaceCrumb spaceId={task.spaceId ?? null} />
@@ -704,9 +762,10 @@ export default function ChatView(): React.JSX.Element {
           <RuntimeStatusChips modePresetId={task.modePresetId} />
           <div className="input-spacer" />
           {sidePanelButton}
-        </div>
+        </div>}
         <div className="chat-scroll">
-          {!task.historyError && !fullHistory.error &&
+          {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
+          {!isDots && !task.historyError && !fullHistory.error &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
             <div className="empty-block-title">{!fullHistory.loading && (task.durable || task.welcomeMode === "general") ? "会话" : "正在加载历史对话…"}</div>
             <div style={{ fontSize: 12.5 }}>{!fullHistory.loading && (task.durable || task.welcomeMode === "general") ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
@@ -734,7 +793,7 @@ export default function ChatView(): React.JSX.Element {
 
   return (
     <div className="chat-column task-ambient" data-mode={taskMode}>
-      <div className="chat-header task-chat-header">
+      {isDots ? dotsHeader : <div className="chat-header task-chat-header">
         <CollapsedSidebarActions />
         {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
         <WorkspaceCrumb spaceId={task.spaceId ?? null} />
@@ -789,9 +848,10 @@ export default function ChatView(): React.JSX.Element {
             />
           )}
         </div>
+        <ChatTaskResults task={task} visibleArtifacts={visibleArtifacts} />
         <TaskDiagnosticsButton open={diagnosticsOpen} onClick={() => setDiagnosticsOpen(true)} />
         {sidePanelButton}
-      </div>
+      </div>}
       {diagnosticsOpen && (
         <TaskDiagnosticsDialog taskId={task.id} onClose={() => setDiagnosticsOpen(false)} />
       )}
@@ -839,7 +899,9 @@ export default function ChatView(): React.JSX.Element {
           )}
           {/* 静态兄弟元素不要带 key：两个兄弟同时用 task.id 会让 React 复用同一
               fiber，把整条消息列表渲染两遍（看起来像「消息自己重复刷新」）。 */}
+          {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
           <MessageList
+            delegations={isDots ? dotsDelegations.rows : undefined}
             toolFocusMessageId={notificationTarget?.toolCallId ? turnMessage?.id : undefined}
             taskId={task.id}
             messages={displayMessages}
@@ -866,7 +928,7 @@ export default function ChatView(): React.JSX.Element {
       </div>
 
       <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
-      <ChatAnswerRuleDialog key={`teaching-${task.id}`} taskId={task.id} />
+      {task.id === DOTS_TASK_ID && <ChatAnswerRuleDialog key={task.id} taskId={task.id} />}
       <TaskModelRecoveryNotice recovery={task.modelRecovery} />
       {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
       {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}

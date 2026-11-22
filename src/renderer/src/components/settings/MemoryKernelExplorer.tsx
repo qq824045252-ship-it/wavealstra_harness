@@ -26,6 +26,7 @@ import MemoryOrganizationPanel from "./MemoryOrganizationPanel";
 import MemoryIndexFeedback from "./MemoryIndexFeedback";
 import { useTextPrompt } from "@/components/common/useTextPrompt";
 import { useAppStore } from "@/store/appStore";
+import { DOTS_TASK_ID } from "@shared/dots";
 
 
 function fmt(ts?: number): string {
@@ -48,6 +49,10 @@ function scopeText(memory: MemoryRecordDto): string {
 }
 
 type MemoryLayer = "l0" | "l1" | "l2" | "l3";
+const fixedScopeNames: Record<MemoryScopeType, string> = {
+  global: "全局", workspace: "此工作空间", project: "此项目", task: "此任务",
+  bot: "此 Bot", team: "此团队", conversation: "本次对话", work: "此事项",
+};
 
 function projectionRecordKey(kind: MemoryProjectionDeleteRequest["kind"], type: "target" | "proposal", id: string): string {
   return `${kind}:${type}:${id}`;
@@ -57,10 +62,18 @@ function projectionRecordKey(kind: MemoryProjectionDeleteRequest["kind"], type: 
 export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedScope }: { focusMemoryId?: string | null; fixedBotId?: string; fixedScope?: { scopeType: MemoryScopeType; scopeId?: string } }): React.JSX.Element {
   const fixedType = fixedScope?.scopeType ?? (fixedBotId ? "bot" : undefined);
   const fixedId = fixedScope?.scopeId ?? fixedBotId;
-  const scopeName = fixedType === "bot" ? "此 Bot" : fixedType === "team" ? "此团队" : fixedType === "conversation" ? "本次对话" : fixedType === "work" ? "此事项" : fixedType === "project" ? "此项目" : "全局";
+  const scopeName = fixedType === "task" && fixedId === DOTS_TASK_ID ? "Dots" : fixedScopeNames[fixedType ?? "global"];
   const spaces = useAppStore((s) => s.spaces);
   const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
+  async function openSourceTask(id: string) {
+    const store = useAppStore.getState();
+    try {
+      if (id === DOTS_TASK_ID) await store.openDots();
+      else store.setActiveTask(id);
+      if (useAppStore.getState().activeTaskId === id) store.setSettingsOpen(false);
+    } catch (error) { setStatus(String(error)); }
+  }
   const [layer, setLayer] = useState<MemoryLayer>("l1");
   const [l0FocusId, setL0FocusId] = useState<string | null>(null);
   const [l0ResetVersion, setL0ResetVersion] = useState(0);
@@ -393,7 +406,9 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
     setBusy(true);
     try {
       await window.api?.memory?.restoreProjection(item.id);
-      setStatus(`已解除屏蔽「${item.title}」，可重新生成提案并批准。`);
+      setStatus(item.scopeType === "task" && item.scopeId === DOTS_TASK_ID
+        ? `已解除屏蔽「${item.title}」，Dots 会用当前记忆重新整理。`
+        : `已解除屏蔽「${item.title}」，可重新生成提案并批准。`);
       await load();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -488,7 +503,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
     if (!s.scopeId) return "";
     if (s.scopeType === "workspace") return spaces.find((item) => item.id === s.scopeId)?.name ?? s.scopeId;
     if (s.scopeType === "project") return projects.find((item) => item.id === s.scopeId)?.name ?? s.scopeId;
-    if (s.scopeType === "task") return tasks.find((item) => item.id === s.scopeId)?.title ?? s.scopeId;
+    if (s.scopeType === "task") return s.scopeId === DOTS_TASK_ID ? "Dots" : tasks.find((item) => item.id === s.scopeId)?.title ?? s.scopeId;
     if (s.scopeType === "bot") return s.scopeId;
     return s.scopeId;
   };
@@ -823,9 +838,6 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
                   <div className="memory-record-detail-title">{selected.title}</div>
                   <div className="memory-record-detail-actions">
                   <button type="button" className="btn" disabled={busy || selectedShared} onClick={() => void editSelected()}>编辑</button>
-                  {alreadyGlobal && selected.status === "active" && <button type="button" className="btn"
-                    onClick={() => useAppStore.setState({ settingsOpen: true, settingsTab: "answerRouting",
-                      answerRuleSeed: { memoryId: selected.id, sourceHash: selected.contentHash, title: selected.title, instruction: selected.content } })}>创建回答规则草稿</button>}
                   <button
                     type="button"
                     className="btn danger"
@@ -880,7 +892,12 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
                     <button type="button" className="btn" disabled={busy || (promoteType === "global" ? alreadyGlobal : !promoteTarget)} onClick={() => void promoteSelected()}>提升作用域</button>
                   </div>}
                   <div>重要度：{selected.importance} · 置信度：{selected.confidence.toFixed(2)} · 显式：{selected.explicit ? "是" : "否"}</div>
-                  <div>来源：{selected.sourceType}{selected.sourceTaskId ? ` · ${selected.sourceTaskId}` : ""}</div>
+                  <div>来源：{selected.sourceType}{selected.sourceTaskId && (
+                    selected.sourceTaskId === DOTS_TASK_ID || tasks.some(task => task.id === selected.sourceTaskId)
+                      ? <> · <button type="button" className="btn" onClick={() => void openSourceTask(selected.sourceTaskId!)}>
+                        {selected.sourceTaskId === DOTS_TASK_ID ? "打开 Dots 对话" : "打开来源任务"}
+                      </button></> : ` · ${selected.sourceTaskId}`
+                  )}</div>
                   <div>召回：{selected.recallCount} 次 · 最近 {fmt(selected.lastRecalledAt)}</div>
                 </div>
                 <details className="memory-detail-fold"><summary>证据 · {selected.evidence.length}</summary>
@@ -930,10 +947,10 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
             <button type="button" className="btn" disabled={busy} onClick={() => void generateProposals("l2")}>生成场景提案</button>
           </div>
           <div className="settings-row-desc" style={{ marginBottom: 8 }}>
-            根据记忆条目整理相关场景，生成并批准后才会使用。删除场景会清理相关提案和屏蔽记录，保留来源记忆。
+            Dots 根据当前个人记忆自动整理场景。此处手动生成的提案经批准后使用。
           </div>
           {scenarios.filter((item) => showProjectionHistory || item.status === "active").length === 0 ? (
-            <div className="memory-empty">暂无有效场景。点击「生成场景提案」整理当前记忆。</div>
+            <div className="memory-empty">暂无有效场景。</div>
           ) : scenarios.filter((item) => showProjectionHistory || item.status === "active").map((scenario) => (
             <div key={scenario.id} tabIndex={-1} ref={scenario.id === focusedScenarioId ? scenarioFocusRef : undefined} className={scenario.id === focusedScenarioId ? "memory-projection-focus" : undefined} style={{ padding: "8px 0", borderTop: "1px solid var(--border-subtle, rgba(128,128,128,.12))" }}>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -972,7 +989,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
             <button type="button" className="btn" disabled={busy} onClick={() => void generateProposals("l3")}>生成画像提案</button>
           </div>
           <div className="settings-row-desc" style={{ marginBottom: 8 }}>
-            根据已批准的场景整理长期特征。每个记忆范围最多一份画像，批准后才会使用。
+            Dots 会随个人场景更新画像。此处手动生成的提案经批准后使用。
           </div>
           {profiles.filter((item) => showProjectionHistory || item.status === "active").length === 0 ? (
             <div className="memory-empty">尚未形成高层画像。</div>
@@ -1105,7 +1122,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
               : `将永久删除「${pendingProjectionDelete.label}」${pendingProjectionDelete.request.targetIds?.length ? "及其相关提案和屏蔽记录" : "这条提案"}。`}
           此操作不可恢复。<br />
           对话来源和记忆条目仍保留。{pendingProjectionDelete.request.kind === "scenario" && (pendingProjectionDelete.request.all || pendingProjectionDelete.request.targetIds?.length) ? "引用这些场景的画像会失效，相关画像提案会清理。" : ""}<br />
-          删除前正在生成的相关提案会被丢弃。之后手动生成并批准，可再次形成新的场景或画像。
+          删除前正在生成的相关提案会被丢弃。Dots 会随来源记忆变动重新整理。可用「屏蔽」持续隐藏自动整理的条目。
         </>}
         confirmLabel={pendingProjectionDelete?.request.all ? "确认删除全部记录" : pendingProjectionDelete?.selectionCount ? "确认删除选中记录" : "确认删除记录"}
         danger

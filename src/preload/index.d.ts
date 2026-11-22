@@ -194,6 +194,7 @@ import type { CodeReviewApi } from "../shared/code-review";
 
 export interface PreloadApi {
   codeReview: CodeReviewApi;
+  dots: import("../shared/dots").DotsApi;
   googleWorkspaceWrite: GoogleWorkspaceWriteApi;
   googleWorkspace: GoogleWorkspaceApi;
   plugins: {
@@ -642,12 +643,12 @@ export interface PreloadApi {
     onEvent: (callback: (ev: unknown) => void) => () => void;
   };
   gateway: {
-    weixinQrStart: (approvedPersistentAccess: boolean) => Promise<GatewayWeixinQrLoginStateDto>;
-    qqQrStart: (approvedPersistentAccess: boolean) => Promise<GatewayQQQrLoginStateDto>;
+    weixinQrStart: (approvedPersistentAccess: boolean, dotsConsent?: boolean) => Promise<GatewayWeixinQrLoginStateDto>;
+    qqQrStart: (approvedPersistentAccess: boolean, dotsConsent?: boolean) => Promise<GatewayQQQrLoginStateDto>;
     weixinQrState: () => Promise<GatewayWeixinQrLoginStateDto>;
     qqQrState: () => Promise<GatewayQQQrLoginStateDto>;
     weixinQrCancel: (sessionId?: string) => Promise<GatewayWeixinQrLoginStateDto>;
-    registrationStart: (provider: GatewayRegistrationProvider, approved: boolean) => Promise<GatewayRegistrationState>;
+    registrationStart: (provider: GatewayRegistrationProvider, approved: boolean, dotsConsent?: boolean) => Promise<GatewayRegistrationState>;
     registrationState: (provider: GatewayRegistrationProvider) => Promise<GatewayRegistrationState>;
     registrationFinish: (provider: GatewayRegistrationProvider, sessionId: string, details: GatewayRegistrationDetails) => Promise<GatewayRegistrationState>;
     registrationCancel: (provider: GatewayRegistrationProvider, sessionId?: string) => Promise<GatewayRegistrationState>;

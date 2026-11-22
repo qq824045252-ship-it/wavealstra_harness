@@ -23,7 +23,7 @@ export interface AppUiState {
   settingsTab: SettingsTab;
   answerRuleTurnTarget?: { taskId: string; inputId: string };
   notificationMessageTarget?: NotificationMessageFocus & { taskId: string };
-  answerRuleSeed?: { question?: string; answer?: string; projectId?: string; memoryId?: string; sourceHash?: string;
+  answerRuleSeed?: { question?: string; answer?: string; projectId?: string;
     title?: string; instruction?: string; evidencePaths?: string[]; turn?: { taskId: string; inputId: string } };
   activeWorkspaceId: string | null;
   subagentDrawer?: { instanceId: string };

@@ -1,5 +1,5 @@
 import type { CloseWorkParams, WorkActor, WorkDto, WorkExecutionStatus } from "../../../shared/bot-work";
-import { isCriterionResolved, isRequiredCriterion } from "../../../shared/bot-work";
+import { criterionNeedsEnvironment, isCriterionResolved, isRequiredCriterion } from "../../../shared/bot-work";
 import { newId, type WorkRepository } from "./WorkRepository";
 import type { WorkArtifactValidation, ArtifactInspection } from "./WorkArtifactValidation";
 import type { WorkNotificationDelivery } from "./WorkNotificationDelivery";
@@ -7,8 +7,15 @@ import type { WorkPartialResults } from "./WorkPartialResults";
 import type { WorkPhase5Facts } from "./WorkPhase5Facts";
 import type { Mutation, ResolvedActor } from "./WorkControlTypes";
 
+export interface GoalCompletionObservation {
+  criterionId?: string;
+  sourceRef: string;
+  detail: string;
+  kind: "tool_receipt" | "inspection";
+}
+
 interface ClosureMutationDeps {
-  repo: Pick<WorkRepository, "updateWork" | "listBindings" | "listAdmissions" | "listOpenBlockers" | "getBlocker" | "clearBlocker" | "stopSubscriptionsForWork" | "insertNotification">;
+  repo: Pick<WorkRepository, "updateWork" | "listBindings" | "listAdmissions" | "listOpenBlockers" | "getBlocker" | "clearBlocker" | "stopSubscriptionsForWork" | "insertNotification" | "insertEvidence">;
   notifications: Pick<WorkNotificationDelivery, "supersede">;
   partialResults: Pick<WorkPartialResults, "gaps">;
   artifacts: Pick<WorkArtifactValidation, "validate">;
@@ -53,7 +60,7 @@ export class WorkClosureMutations {
     return { ok: true, outboxEventId: settled.ok ? settled.outboxEventId : undefined };
   }
 
-  close(work: WorkDto, _resolved: ResolvedActor, params: CloseWorkParams, now: number, artifactInspection?: ArtifactInspection): Mutation {
+  close(work: WorkDto, _resolved: ResolvedActor, params: CloseWorkParams, now: number, artifactInspection?: ArtifactInspection, observations?: readonly GoalCompletionObservation[]): Mutation {
     if (artifactInspection && !this.deps.artifacts.validate(artifactInspection, now)) {
       this.deps.emitCurrentProjection(work.workId);
       return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
@@ -80,7 +87,9 @@ export class WorkClosureMutations {
       }
       const gaps = this.deps.partialResults.gaps(work.workId);
       if (gaps.length) return { ok: false, code: "unmet_acceptance_criteria", message: `必要子项仍有未覆盖缺口，不能按完成关闭：${gaps.slice(0, 10).map(item => `${item.task || item.itemId}（${item.outcome}）：${item.summary || "缺少完成凭据"}`).join("；")}${gaps.length > 10 ? `；另有 ${gaps.length - 10} 项，请查看必要子项缺口列表` : ""}` };
-      const unmet = work.criteria.find((criterion) => isRequiredCriterion(criterion) && !isCriterionResolved(criterion));
+      const coverage = new Set(observations?.map(observation => observation.criterionId));
+      const unmet = work.criteria.find(criterion => isRequiredCriterion(criterion) && !isCriterionResolved(criterion)
+        && (criterionNeedsEnvironment(criterion) || !coverage.has(criterion.id)));
       if (unmet) {
         return {
           ok: false, code: "unmet_acceptance_criteria",
@@ -96,6 +105,20 @@ export class WorkClosureMutations {
           ok: false, code: "unsettled_effects",
           message: "仍有在途执行或未核对的外部效果，不能按完成关闭",
         };
+      }
+      if (observations?.length) {
+        const evidence = observations.map(observation => {
+          const evidenceId = newId("evidence");
+          this.deps.repo.insertEvidence({ evidenceId, workId: work.workId, criterionIds: observation.criterionId ? [observation.criterionId] : [],
+            kind: observation.kind, provenance: "system", sourceRef: observation.sourceRef, inputSnapshotId: work.inputSnapshotId,
+            intentRevision: work.intentRevision, detail: observation.detail, recordedAt: now });
+          return { evidenceId, criterionId: observation.criterionId };
+        });
+        work = { ...work, criteria: work.criteria.map(criterion => {
+          const evidenceRefs = evidence.filter(item => item.criterionId === criterion.id).map(item => item.evidenceId);
+          return isCriterionResolved(criterion) || !evidenceRefs.length || criterionNeedsEnvironment(criterion) ? criterion
+            : { ...criterion, status: "satisfied", verifiedIntentRevision: criterion.requiredIntentRevision, evidenceRefs };
+        }) };
       }
       return this.closeWithConclusion(work, "succeeded", params, now);
     }

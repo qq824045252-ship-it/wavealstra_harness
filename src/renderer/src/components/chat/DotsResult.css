@@ -1,0 +1,16 @@
+.dots-result {
+  margin-block: 8px;
+  color: var(--fg);
+  font-size: 13px;
+}
+.dots-result .md-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+.dots-result .md-link:hover { text-decoration: underline; }
+.dots-result-status { margin-inline-start: 6px; color: var(--fg-secondary); }
+.dots-result-text { margin-block: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -1,4 +1,7 @@
 import type { AppDatabase } from "../db/AppDatabase";
+import { hasGatewayDotsMemory } from "../gateway/GatewayDotsBindings";
+import { DOTS_TASK_ID } from "../../shared/dots";
+import { isGatewayConversation } from "../../shared/gateway-task";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
 import type { MemoryScopeType, MemorySearchRequest } from "../../shared/memory-kernel";
 import { botMemorySource, botWorkHasSharedOrigin } from "./BotMemorySource";
@@ -18,6 +21,11 @@ export function resolveWorkMemoryScope(db: AppDatabase, taskId: string): { bot_i
 
 
 export function resolveAssistantScopeChain(db: AppDatabase, request: MemorySearchRequest, channelBotId: (taskId: string) => string | undefined): Array<{ scopeType: MemoryScopeType; scopeId?: string; distance: number }> {
+    if (request.taskId && isGatewayConversation(request.taskId)) {
+      return !request.scopeTypes?.length || request.scopeTypes.includes("task")
+        ? [{ scopeType: "task", scopeId: request.taskId, distance: 0 },
+          ...(hasGatewayDotsMemory(db.connection, request.taskId) ? [{ scopeType: "task" as const, scopeId: DOTS_TASK_ID, distance: 1 }] : [])] : [];
+    }
     const task = request.taskId ? db.getTask(request.taskId) : undefined;
     const work = request.taskId ? resolveWorkMemoryScope(db, request.taskId) : undefined;
     const conversationId = request.taskId ? (!work ? request.taskId : undefined) : request.conversationId;

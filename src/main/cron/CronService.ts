@@ -12,6 +12,7 @@ import {
 } from "../../shared/agent-ipc";
 import { assertSingleExpertId, normalizeSingleExpertId } from "../../shared/expert-id";
 import { parseCronExecution } from "../../shared/cron-execution";
+import { DOTS_NO_CHANGE, DOTS_TASK_ID } from "../../shared/dots";
 import type { AppDatabase } from "../db/AppDatabase";
 import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer, type SegmentedTimer } from "./CronSchedule";
 
@@ -20,6 +21,7 @@ const storedCronInput = z.object({
   permissionMode: z.enum(["default", "auto", "readonly"]).optional(), welcomeMode: z.enum(["working", "coding", "general"]).optional(),
   spaceId: z.string().optional(), modelId: z.string().optional(), expertId: z.string().optional(),
   modePresetId: z.string().nullable().optional(), connectorIds: z.array(z.string()).optional(),
+  streamingBehavior: z.literal("followUp").optional(),
 });
 const storedCronRun = z.object({
   request: storedCronInput,
@@ -29,6 +31,7 @@ const storedCronRun = z.object({
 type RunJob = z.infer<typeof storedCronRun>["job"];
 
 export interface CronAgent {
+  dotsSubmission?(taskId: string, operation: string): Promise<{ text: string } | undefined>;
   prompt(request: AgentPromptRequest): Promise<AgentPromptResult>;
   waitForSubmission(receipt: AgentSubmissionReceipt): Promise<AgentPromptResult>;
   loadTaskHistory(taskId: string): Promise<TaskHistoryDto>;
@@ -89,6 +92,7 @@ export class CronService {
   private readonly revisions = new Map<string, number>();
   private stopped = false;
   private started = false;
+  private dotsSuspended = false;
 
   constructor(
     private readonly db: AppDatabase,
@@ -103,11 +107,14 @@ export class CronService {
       projectId?: string;
       status: "success" | "failed";
       error?: string;
+      message?: string;
     }) => void,
     private readonly weeklyMaintenance?: {start(): void; stopSchedule(): void},
   ) {
     db.connection.exec(`CREATE TABLE IF NOT EXISTS cron_run_inputs (
-      run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL)`);
+      run_id TEXT PRIMARY KEY REFERENCES cron_runs(id) ON DELETE CASCADE, request_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS dots_schedule_origins(job_id TEXT PRIMARY KEY REFERENCES cron_jobs(id) ON DELETE CASCADE,
+        source TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL)`);
     try {
       db.connection.prepare(`UPDATE cron_run_inputs
         SET request_json = json_set(request_json, '$.request.welcomeMode', 'general')
@@ -121,6 +128,7 @@ export class CronService {
     if (this.started) return;
     this.started = true;
     this.stopped = false;
+    this.dotsSuspended = false;
     this.weeklyMaintenance?.start();
     for (const run of this.db.listRunningCronRuns()) {
       if (this.db.getCronJob(run.jobId)?.reminder) continue;
@@ -135,7 +143,10 @@ export class CronService {
         console.info(`[CronService] disabled project job ${job.id}: ${unavailable}`);
         continue;
       }
-      try { validateSchedule(job); this.arm(job); }
+      try {
+        validateSchedule(job);
+        if (job.missedRuns !== "coalesce" || !this.runningJobs.has(job.id)) this.arm(job, true);
+      }
       catch (error) {
         this.setEnabled(job.id, false);
         console.warn("[CronService] invalid persisted schedule", job.id, error);
@@ -150,6 +161,20 @@ export class CronService {
     for (const id of this.revisions.keys()) this.disarm(id);
   }
 
+  suspendDotsTimers(): void {
+    if (!this.started) return;
+    this.dotsSuspended = true;
+    for (const job of this.listForTask(DOTS_TASK_ID)) this.disarm(job.id);
+  }
+
+  resumeDotsTimers(): void {
+    if (!this.started || !this.dotsSuspended) return;
+    this.dotsSuspended = false;
+    for (const job of this.listForTask(DOTS_TASK_ID)) {
+      if (job.enabled && !this.runningJobs.has(job.id)) this.arm(job, true);
+    }
+  }
+
   list(): CronJobDto[] {
     return this.db.listCronJobs().map(job => this.withNext(job));
   }
@@ -160,6 +185,12 @@ export class CronService {
 
   listForTask(taskId: string): CronJobDto[] {
     return this.list().filter(job => job.sourceTaskId === taskId);
+  }
+
+  private dotsFollowupPaused(taskId?: string): boolean {
+    return taskId === DOTS_TASK_ID &&
+      !!this.db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_proactive_pauses'").get() &&
+      !!this.db.connection.prepare("SELECT 1 FROM dots_proactive_pauses WHERE scope=''").get();
   }
 
   runsForTask(taskId: string, limit = 50): CronRunDto[] {
@@ -188,7 +219,7 @@ export class CronService {
     return {
       job: reason ? { ...job, nextRunAt: undefined } : job,
       status: reason ?? "scheduled", ...(unavailable && reason === "unavailable" ? { detail: unavailable } : {}),
-      hostMustBeRunning: true, missedRuns: "skip",
+      hostMustBeRunning: true, missedRuns: saved.missedRuns ?? "skip",
       activeRun: this.db.listCronJobRuns(id, 1, undefined, "running")[0] ?? null,
       latestRun: this.db.listCronJobRuns(id, 1)[0] ?? null,
     };
@@ -217,29 +248,44 @@ export class CronService {
   }
 
   createForTask(taskId: string, cwd: string, input: Pick<CronJobDto,
-    "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy"
-  > & { target: "current-task" | "new-task" }): CronJobDto {
+    "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy" | "missedRuns"
+  > & { target: "current-task" | "new-task" }, operation?: string,
+    provenance?: { source: string; origin: import("../../shared/dots").DotsReplyOrigin }): CronJobDto {
+    const id = operation ? "cron-request-" + operation : randomUUID();
+    const existing = operation ? this.db.getCronJob(id) : undefined;
+    if (existing) {
+      if (existing.sourceTaskId !== taskId) throw new Error("计划不属于当前任务");
+      return this.withNext(existing);
+    }
     const task = this.db.getTask(taskId);
+    if (this.dotsFollowupPaused(taskId)) throw new Error("Dots 主动跟进已暂停，恢复后可创建计划");
     if (!task || task.archived) throw new Error("来源任务不存在或已归档");
     if (this.listForTask(taskId).filter(job => job.enabled).length >= 20) throw new Error("每个任务最多启用 20 个计划");
-    return this.upsert({
-      ...input, id: randomUUID(), sourceTaskId: taskId,
+    const create = () => this.upsert({
+      ...input, id, sourceTaskId: taskId,
       target: input.target === "current-task" ? { kind: "task", taskId } : { kind: "new-task" },
       enabled: true, createdAt: Date.now(), updatedAt: Date.now(), cwd,
       permissionMode: task.permissionMode ?? "default", welcomeMode: task.welcomeMode,
       projectId: task.projectId ?? undefined, spaceId: task.spaceId ?? undefined,
       modelId: task.modelId, expertId: task.expertId,
     });
+    if (taskId !== DOTS_TASK_ID || !provenance) return create();
+    return this.db.connection.transaction(() => {
+      const job = create();
+      this.db.connection.prepare("INSERT INTO dots_schedule_origins VALUES(?,?,?,?)")
+        .run(job.id, provenance.source, provenance.origin.conversationId, provenance.origin.entryId);
+      return job;
+    })();
   }
 
   updateForTask(taskId: string, id: string, patch: Partial<Pick<CronJobDto,
-    "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy"
+    "name" | "prompt" | "scheduleType" | "scheduleExpr" | "timezone" | "effectiveTo" | "maxRuns" | "restartPolicy" | "missedRuns"
   >>): CronJobDto {
     const job = this.db.getCronJob(id);
     if (!job || job.sourceTaskId !== taskId || job.reminder) throw new Error("计划不属于当前任务");
     // Whitelist mutable configuration; never replace identity, execution history or authority.
     const next = { ...job };
-    for (const key of ["name", "prompt", "scheduleType", "scheduleExpr", "timezone", "effectiveTo", "maxRuns", "restartPolicy"] as const) {
+    for (const key of ["name", "prompt", "scheduleType", "scheduleExpr", "timezone", "effectiveTo", "maxRuns", "restartPolicy", "missedRuns"] as const) {
       if (patch[key] !== undefined) Object.assign(next, { [key]: patch[key] });
     }
     if (!next.name.trim() || !next.prompt.trim()) throw new Error("name and prompt must not be blank");
@@ -272,9 +318,12 @@ export class CronService {
   private saveJob(job: CronJobDto, preserveTimer = false): CronJobDto {
     assertSingleExpertId(job.expertId);
     validateSchedule(job);
-    parseCronExecution({ reminder: job.reminder, sourceTaskId: job.sourceTaskId, target: job.target, maxRuns: job.maxRuns, restartPolicy: job.restartPolicy, cancelledAt: job.cancelledAt });
+    parseCronExecution({ reminder: job.reminder, sourceTaskId: job.sourceTaskId, target: job.target, maxRuns: job.maxRuns, restartPolicy: job.restartPolicy, missedRuns: job.missedRuns, cancelledAt: job.cancelledAt });
+    if (job.missedRuns === "coalesce" && (job.sourceTaskId !== DOTS_TASK_ID || job.target?.kind !== "task" || job.target.taskId !== DOTS_TASK_ID))
+      throw new Error("离线补办仅支持回到 Dots 的计划");
     const now = Date.now();
     const existing = this.db.getCronJob(job.id);
+    if (job.enabled && !existing?.enabled && this.dotsFollowupPaused(job.sourceTaskId)) throw new Error("Dots 主动跟进已暂停");
     if ((existing?.cancelledAt !== undefined || job.cancelledAt !== undefined) && job.enabled) throw new Error("Cancelled automation cannot be enabled");
     const next: CronJobDto = {
       ...job,
@@ -301,6 +350,7 @@ export class CronService {
     const job = this.db.getCronJob(id);
     if (!job) return;
     if (enabled) {
+      if (this.dotsFollowupPaused(job.sourceTaskId)) throw new Error("Dots 主动跟进已暂停");
       if (job.cancelledAt !== undefined) throw new Error("Cancelled automation cannot be resumed");
       const unavailable = this.unavailableReason(job);
       if (unavailable) throw new Error(unavailable);
@@ -361,10 +411,16 @@ export class CronService {
     });
   }
 
-  private arm(job: CronJobDto): void {
+  private arm(job: CronJobDto, restoring = false): void {
     this.disarm(job.id);
-    if (this.stopped || job.reminder) return;
-    const nextRun = computeNextRunAt(job);
+    if (this.stopped || job.reminder || (this.dotsSuspended && job.sourceTaskId === DOTS_TASK_ID)) return;
+    const now = Date.now();
+    let nextRun = computeNextRunAt(job, now);
+    if (restoring && job.sourceTaskId === DOTS_TASK_ID && job.missedRuns === "coalesce" && withinEffectiveRange(job, now) === "ok") {
+      const since = Math.max(job.createdAt, job.updatedAt, job.lastRunAt ?? 0);
+      const missed = computeNextRunAt(job, since);
+      if (missed !== undefined && missed <= now) nextRun = now;
+    }
     if (nextRun === undefined) {
       this.setEnabled(job.id, false);
       return;
@@ -430,7 +486,9 @@ export class CronService {
         return;
       }
       const target = targetId ? this.db.getTask(targetId) : undefined;
-      if (targetId && this.agent.isTaskBusy(targetId)) {
+      if (this.dotsFollowupPaused(latest.sourceTaskId)) return;
+      const queueInDots = targetId === DOTS_TASK_ID && latest.sourceTaskId === DOTS_TASK_ID && latest.missedRuns === "coalesce";
+      if (targetId && !queueInDots && this.agent.isTaskBusy(targetId)) {
         await this.recordSkipped(persisted, "目标任务正忙，已跳过，未排队");
         return;
       }
@@ -450,16 +508,17 @@ export class CronService {
         welcomeMode: task.welcomeMode, spaceId: task.spaceId ?? undefined,
         modelId: task.modelId, expertId: task.expertId, modePresetId: target?.modePresetId,
         connectorIds: target ? undefined : latest.connectorIds,
+        streamingBehavior: queueInDots ? "followUp" : undefined,
         assistantMessageId: `cron-${run.id}-assistant`, userMessageId: `cron-${run.id}-input`,
       };
       const pendingRun = run;
       this.db.connection.transaction(() => {
         this.db.insertCronRun(pendingRun);
+        this.db.touchCronLastRun(job.id);
         this.db.connection.prepare("INSERT INTO cron_run_inputs VALUES (?, ?)").run(pendingRun.id, JSON.stringify({
           request, newTask, job: { id: latest!.id, name: latest!.name, projectId: latest!.projectId },
         }));
       })();
-      this.db.touchCronLastRun(job.id);
       broadcast(CronIpc.event, { type: "run", run });
       await this.runInput(request);
       if (this.stopped) return;
@@ -532,7 +591,7 @@ export class CronService {
     }
     broadcast(CronIpc.event, { type: "run", run: { ...run, status, error, finishedAt: Date.now() } });
     this.notifyProjectRun(job, run.id, status === "success" ? "success" : "failed", error);
-    if (run.taskId) this.notifyRun(job, run.id, run.taskId, status === "success" ? "success" : "failed", error);
+    if (run.taskId) void this.notifyRun(job, run.id, run.taskId, status === "success" ? "success" : "failed", error);
   }
 
   private withNext(job: CronJobDto): CronJobDto {
@@ -555,8 +614,18 @@ export class CronService {
     return undefined;
   }
 
-  private notifyRun(job: RunJob, runId: string, taskId: string, status: "success" | "failed", error?: string): void {
+  private async notifyRun(job: RunJob, runId: string, taskId: string, status: "success" | "failed", error?: string): Promise<void> {
     try {
+      if (!this.runNotificationSink) return;
+      let message: string | undefined;
+      if (taskId === DOTS_TASK_ID) {
+        if (this.dotsFollowupPaused(taskId)) return;
+        if (status === "success") {
+          const result = await this.agent.dotsSubmission?.(taskId, `cron-${runId}-input`);
+          message = result?.text.trim();
+          if (!message || message === DOTS_NO_CHANGE || this.stopped || this.dotsFollowupPaused(taskId)) return;
+        }
+      }
       this.runNotificationSink?.({
         runId,
         jobId: job.id,
@@ -565,6 +634,7 @@ export class CronService {
         projectId: job.projectId,
         status,
         error,
+        ...(message ? { message } : {}),
       });
     } catch (err) {
       console.warn(`[CronService] 通知投递失败 ${job.id}：`, err);
@@ -582,6 +652,7 @@ export class CronService {
   }
 
   private composePrompt(job: CronJobDto): string {
+    if (job.sourceTaskId === DOTS_TASK_ID) return job.prompt + "\n\n这是之前约定的主动跟进。到点提醒直接给提醒内容。检查有实质进展、成果或阻塞时直接给结果。检查没有变化时，只返回 " + DOTS_NO_CHANGE;
     return buildExecutionPrompt(
       job,
       (id) => {

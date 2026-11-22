@@ -5,6 +5,7 @@ import MessageBlockView from "./MessageBlockView";
 import WebSearchCard from "./WebSearchCard";
 import { isCapabilityTool } from "./CapabilityResultCard";
 import { IconChevronRight } from "@/components/common/icons";
+import "./ChatReadability.css";
 import {
   computeFocusView,
   findActiveThinkingGroupIndex,
@@ -201,6 +202,15 @@ function messageHasFinalOutput(message: ChatMessage): boolean {
 /** 执行过程时间线：默认折叠为「已完成 xx」；展开可见多段思考与工具。
  *  流式期间启用「聚焦最新」：只显示最新活跃思考 + 当前运行工具，旧内容退入
  *  可展开历史摘要（historyOpen）；assistant_end 后沿用整体折叠。 */
+export function executionFailureReason(message: ChatMessage): string | undefined {
+  if (message.streaming || message.generationStats?.outcome !== "error") return;
+  const failure = message.blocks.findLast(block => block.type === "tool" && block.toolCall.status === "error");
+  const text = message.generateError?.trim() || (failure?.type === "tool" ? failure.toolCall.output?.trim() : undefined);
+  const reason = text?.split(/\r?\n/, 1)[0]?.trim();
+  if (!reason || message.finalBlocks?.some(block => block.type === "text" && block.text.includes(reason))) return;
+  return reason.length <= 180 ? reason : `${reason.slice(0, 180)}…`;
+}
+
 function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Element | null {
   const hasPendingApproval = message.blocks.some(
     (b) => b.type === "tool" && b.toolCall.status === "pending_approval",
@@ -244,6 +254,7 @@ function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Ele
   const hasFinalOutput = messageHasFinalOutput(message);
   const completionLabel = message.generationStats?.outcome === "aborted" ? "已停止"
     : message.generationStats?.outcome === "error" ? "执行失败" : "已完成";
+  const failure = executionFailureReason(message);
 
   if (message.streaming && message.pendingBehavior) {
     return (
@@ -267,6 +278,7 @@ function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Ele
             message.generationStats.retry, message.generationStats.attempts)
             : `${completionLabel}${message.durationLabel ? ` ${message.durationLabel}` : ""}`}</span>
         </div>
+        {failure && <p className="chat-execution-failure" title={failure}>{failure}</p>}
       </div>;
     }
     // 正文一出现，准备态立即退出；没有过程块时正文自身就是唯一进度反馈。
@@ -323,6 +335,7 @@ function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Ele
           <IconChevronRight size={12} />
         </span>
       </button>
+      {failure && <p className="chat-execution-failure" title={failure}>{failure}</p>}
 
       {(visibleOpen || bodyMounted) && (
         <div

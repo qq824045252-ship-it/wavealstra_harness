@@ -52,3 +52,13 @@ const interaction = { id: "question", taskId: "task", executionId: "tool-executi
 const answered = botMessagePresentation([records[0], { ...records[1], interactions: [interaction] }, records[3]]);
 assert.deepEqual(answered[1].interactions, [interaction], "A completed turn retains questions asked by earlier tool steps");
 console.log("PASS: Bot reply grouping, ordered process, tool deduplication, artifacts, turn boundaries and stable row identity");
+
+
+const delivery = { ...reply("proactive"), dotsDelivery: {
+  deliveryKey: "first-result", operationId: "first-job", taskId: "worker", sourceMessageId: "ask",
+  title: "清单", kind: "conclusion" as const, text: "清单已齐。", artifacts: [],
+} };
+const separate = botMessagePresentation([user("ask"), reply("ack"), delivery, reply("later")]);
+assert.deepEqual(separate.map(row => row.id), ["ask", "ack", "proactive", "later"]);
+assert.equal(separate[2], delivery);
+assert.notEqual(separate[1].presentationKey, separate[3].presentationKey);

@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "@shared/dots";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useActiveTaskArtifacts, useAppStore } from "@/store/appStore";
@@ -408,7 +409,7 @@ export default function InputAddMenu({
   const refTasks = useMemo((): Task[] => {
     const q = taskSearch.trim().toLowerCase();
     return tasks
-      .filter((t) => !t.archived && t.id !== activeTaskId)
+      .filter((t) => !t.archived && t.id !== DOTS_TASK_ID && t.id !== activeTaskId)
       .filter((t) => (q === "" ? true : t.title.toLowerCase().includes(q)))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 40);
@@ -800,7 +801,7 @@ export default function InputAddMenu({
         <div className="add-menu-flyout-scroll">
           {refTasks.length === 0 ? (
             <div className="add-menu-flyout-empty">
-              {tasks.filter((t) => !t.archived && t.id !== activeTaskId).length === 0
+              {tasks.filter((t) => !t.archived && t.id !== DOTS_TASK_ID && t.id !== activeTaskId).length === 0
                 ? "暂无其它任务可引用"
                 : "没有匹配的任务"}
             </div>

@@ -1,3 +1,6 @@
+import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
+import { appendDurableDotsReply } from "./DurableDotsReply";
+import { DOTS_TASK_ID, type DotsAssistantReply } from "../../../shared/dots";
 import { withWindowsBashWorkspacePath } from "../../platform/bash-workspace-path";
 import { withShellTerminalGuidance } from "./DurableShellTerminal";
 import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
@@ -14,7 +17,7 @@ import { join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx, type Context } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, CompactionTask, GenerationTask, ToolTask, defineDoc,
+  Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, CompactionTask, GenerationTask, ToolTask, defineDoc, InboxDoc,
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
   type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission, type ToolHooks, type EntryId, type HookApi,
 } from "@earendil-works/pi-durable";
@@ -61,6 +64,7 @@ import type { ContextManagementEngine, ContextManagementStatusDto } from "../../
 import { ActiveDurableConversation, forkDurableConversation, resolveActiveDurableConversation, type DurableRegenerationInput, type DurableRegenerationState } from "./DurableConversationBranch";
 import { DurableConsultIdentity } from "./DurableConsultSession";
 import type { DiagnosticSource, ToolDiagnosticEvent } from "../../../shared/task-diagnostics";
+import { gatewayBotOriginSchema } from "../work/BotTurnOrigins";
 import { durableInputAuditSchema, type DurableInputAudit } from "./DurableSkillProjection";
 import { mergeContextUsage } from "../../usage/context-usage-merge";
 import { GenerationTiming, generationContentTokens } from "../../usage/generation-timing";
@@ -101,7 +105,7 @@ export interface DurableBotOptions {
   onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   beforeProviderRequest?: () => void;
-  beforeToolExecution?: (name: string, args: unknown) => void;
+  beforeToolExecution?: (name: string, args: unknown, cwd: string) => void;
   /** Authority revocation must be rechecked before every provider attempt. */
   providerAuthorityGuarded?: () => boolean;
   onProviderUsage?: (input: { taskId?: string; conversationId: string; generationTaskId: number;
@@ -117,6 +121,7 @@ export interface DurableBotOptions {
   toolAllowed?: (name: string) => boolean;
   readonlyShell?: () => boolean;
   waitingForInput?: () => boolean;
+  isDelegatedMemoryInput?: (requestId: string) => boolean;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   projectionAfterEntryId?: number;
@@ -696,12 +701,39 @@ export class DurableBotRuntime {
     }
   }
 
-  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void) {
+  dotsInputVersion() {
+    return this.conversation.commit(tx => dotsInputVersion(tx, this.conversation.id), ctx);
+  }
+
+  async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
+    if (this.options.readOnly || this.options.taskId !== DOTS_TASK_ID) throw new Error("Dots 交付只能写入原生 Dots 会话");
+    const outcome = await appendDurableDotsReply(this.conversation, reply, isCurrent);
+    if (outcome === "appended" || outcome === "existing") await this.refresh();
+    return outcome;
+  }
+
+  async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void, requireActiveRun = false, guard?: { inputVersion?: string; validate(): void }) {
     this.assertSessionHealthy();
     try {
-      const submission = await this.conversation.submit({ type: "input", content, requestId, whenBusy,
+      const draft = { type: "input" as const, content, requestId, whenBusy, ...(requireActiveRun ? { whenIdle: "reject" as const } : {}),
         ...(metadata ? { entry: { kind: "mybuddy.user", data: { mybuddyInput: { ...metadata, inputRequestId: requestId } } } } : {}),
-      }, ctx);
+      };
+      const submitGuarded = async () => {
+        const id = await this.conversation.commit(async tx => {
+          if (requireActiveRun) {
+            const live = await tx.doc(LiveDoc, this.conversation.id);
+            if (!live.run || live.run.afterRun) throw new DotsIntentChanged("原任务已收尾，改向未接收");
+          }
+          if (guard?.inputVersion && await dotsInputVersion(tx, this.conversation.id) !== guard.inputVersion)
+            throw new DotsIntentChanged("原任务已有新的用户要求，本次跟进未派发");
+          guard?.validate();
+          return this.conversation.submit(tx, draft);
+        }, ctx);
+        const accepted = await this.harness.submission(id, ctx);
+        if (!accepted) throw new Error("任务跟进回执不存在");
+        return accepted;
+      };
+      const submission = (guard || requireActiveRun) ? await submitGuarded() : await this.conversation.submit(draft, ctx);
       mark?.("committed");
       await this.refresh();
       mark?.("projected");
@@ -975,6 +1007,7 @@ export class DurableBotRuntime {
       const attachments = input.attachments.flatMap(item => item && typeof item === "object" && !Array.isArray(item)
         && typeof item.name === "string" && typeof item.path === "string" ? [{ name: item.name, path: item.path }] : []);
       const audit = durableInputAuditSchema.safeParse(input.audit);
+      const gatewayOrigin = gatewayBotOriginSchema.omit({ workTarget: true }).safeParse(input.gatewayOrigin);
       const rawContinuation = input.goalContinuation;
       const intentRevision = rawContinuation && typeof rawContinuation === "object" && !Array.isArray(rawContinuation)
         ? Number(rawContinuation.intentRevision) : NaN;
@@ -987,7 +1020,7 @@ export class DurableBotRuntime {
       target.set(entry.id, { text: input.text, displayText: input.displayText, attachments,
         ...(typeof input.inputRequestId === "string" ? { inputRequestId: input.inputRequestId } : {}),
         ...(typeof input.botRequestId === "string" ? { botRequestId: input.botRequestId } : {}), ...(audit.success ? { audit: audit.data } : {}),
-        ...(goalContinuation ? { goalContinuation } : {}) });
+        ...(goalContinuation ? { goalContinuation } : {}), ...(gatewayOrigin.success ? { gatewayOrigin: gatewayOrigin.data } : {}) });
     }
   }
 
@@ -1032,6 +1065,31 @@ export class DurableBotRuntime {
     } catch (error) {
       return await this.normalizeFailure(error);
     }
+  }
+
+  /** Stop only the native work visible at capture. Later submissions and generations
+   * belonging to a different run remain independently runnable. */
+  async stopObservedRun(): Promise<void> {
+    const conversation = this.conversation;
+    const observed = await conversation.commit(async tx => {
+      const live = await tx.doc(LiveDoc, conversation.id);
+      const inbox = await tx.doc(InboxDoc, conversation.id);
+      return { run: live.run && { taskId: live.run.taskId, first: live.run.first, inputs: [...live.run.inputs] },
+        queued: inbox.items.filter(item => item.mode !== "write").map(item => item.id) };
+    }, ctx);
+    const stopQueued = observed.queued.map(async id => (await this.harness.submission(id, ctx))?.abort(ctx));
+    const stopActive = async () => {
+      let run = observed.run;
+      while (run) {
+        await this.harness.abortTask(run.taskId, ctx);
+        const next = (await this.harness.snapshot(LiveDoc, conversation.id, ctx))?.run;
+        if (!next || next.taskId === run.taskId || !(run.first !== undefined && next.first === run.first ||
+          next.inputs.some(id => run!.inputs.includes(id)))) break;
+        run = { taskId: next.taskId, first: next.first, inputs: next.inputs };
+      }
+    };
+    await Promise.all([...stopQueued, stopActive()]);
+    await this.refresh();
   }
 
   async abort(): Promise<void> {
@@ -1443,7 +1501,7 @@ export class DurableBotRuntime {
       if (this.options.onTurns) {
         this.pendingTurnEntries.push(...evidenceEntries);
         try {
-          const turns = durableCompletedTurns(this.options.taskId ?? this.options.directory, String(this.conversation.id), this.pendingTurnEntries, nestedEntries, this.metadataByEntry);
+          const turns = durableCompletedTurns(this.options.taskId ?? this.options.directory, String(this.conversation.id), this.pendingTurnEntries, nestedEntries, this.metadataByEntry, this.options.isDelegatedMemoryInput);
           if (turns.length) {
             this.options.onTurns(turns);
             const consumed = turns.at(-1)!.entryId;
@@ -1635,9 +1693,9 @@ function botExtension(
       return await managed?.afterTool(call, observed, api, context) ?? changed;
     },
   };
-  const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args) => {
+  const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args, cwd) => {
     if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
-    options.beforeToolExecution?.(name, args);
+    options.beforeToolExecution?.(name, args, cwd);
   }, options.codeReview));
   return defineExtension({ name: "mybuddy.bot", tasks: [], tools: managed ? tools.map(tool => managed.wrap(tool)) : tools,
     sections: [section("mybuddy", async (input, context) => {
@@ -1705,7 +1763,7 @@ function botExtension(
         }
         // 自动上下文管理必须在 evidence 投影之后运行：它只替换被摘要覆盖的历史，保留证据注入与当前回合。
         const manager = await getContextManager?.(api.conversationId, context);
-        if (manager) {
+        if (manager && !ledger?.hasDotsBoundary) {
           const projected = await manager.beforeRequest(messages, api, context);
           if (projected) { messages = projected.messages; changed = true; }
         }

@@ -9,6 +9,7 @@ import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../sh
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
 import { AnswerRoutingIpc, type AnswerRoutingApi } from "../shared/answer-routing";
+import { DotsIpc, type DotsApi } from "../shared/dots";
 import { NativeHooksIpc, type NativeHooksApi } from "../shared/native-hooks";
 import { NativeImprovementIpc, type NativeImprovementApi } from "../shared/native-improvement";
 import { MaterialRetrievalIpc, type MaterialRetrievalApi } from "../shared/materialRetrieval";
@@ -854,6 +855,15 @@ const api = {
     source: (key,task,conversation,entry) => ipcRenderer.invoke(NativeImprovementIpc.source,key,task,conversation,entry),
     disable: (key, generation) => ipcRenderer.invoke(NativeImprovementIpc.disable, key, generation),
   } satisfies NativeImprovementApi,
+  dots: {
+    open: () => ipcRenderer.invoke(DotsIpc.open),
+    list: sourceIds => ipcRenderer.invoke(DotsIpc.list, sourceIds),
+    onChanged: listener => {
+      const notify = () => listener();
+      ipcRenderer.on(DotsIpc.changed, notify);
+      return () => ipcRenderer.removeListener(DotsIpc.changed, notify);
+    },
+  } satisfies DotsApi,
   answerRouting: {
     list: () => ipcRenderer.invoke(AnswerRoutingIpc.list),
     save: (draft, version) => ipcRenderer.invoke(AnswerRoutingIpc.save, draft, version),
@@ -861,7 +871,6 @@ const api = {
     preview: (query, projectId) => ipcRenderer.invoke(AnswerRoutingIpc.preview, query, projectId),
     history: turn => ipcRenderer.invoke(AnswerRoutingIpc.history, turn),
     suggest: (teaching, question, answer) => ipcRenderer.invoke(AnswerRoutingIpc.suggest, teaching, question, answer),
-    reviewMemory: draft => ipcRenderer.invoke(AnswerRoutingIpc.reviewMemory, draft),
   } satisfies AnswerRoutingApi,
   memory: {
     organization: (): Promise<MemoryOrganizationRun | null> => ipcRenderer.invoke(MemoryOrganizationIpc.latest),
@@ -1078,12 +1087,12 @@ const api = {
   },
 
   gateway: {
-    weixinQrStart: (approvedPersistentAccess: boolean): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrStart, approvedPersistentAccess),
-    qqQrStart: (approvedPersistentAccess: boolean): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrStart, approvedPersistentAccess),
+    weixinQrStart: (approvedPersistentAccess: boolean, dotsConsent?: boolean): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrStart, approvedPersistentAccess, dotsConsent),
+    qqQrStart: (approvedPersistentAccess: boolean, dotsConsent?: boolean): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrStart, approvedPersistentAccess, dotsConsent),
     weixinQrState: (): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrState),
     qqQrState: (): Promise<GatewayQQQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.qqQrState),
     weixinQrCancel: (sessionId?: string): Promise<GatewayWeixinQrLoginStateDto> => ipcRenderer.invoke(GatewayIpc.weixinQrCancel, sessionId),
-    registrationStart: (provider: GatewayRegistrationProvider, approved: boolean): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationStart, provider, approved),
+    registrationStart: (provider: GatewayRegistrationProvider, approved: boolean, dotsConsent?: boolean): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationStart, provider, approved, dotsConsent),
     registrationState: (provider: GatewayRegistrationProvider): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationState, provider),
     registrationFinish: (provider: GatewayRegistrationProvider, sessionId: string, details: GatewayRegistrationDetails): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationFinish, provider, sessionId, details),
     registrationCancel: (provider: GatewayRegistrationProvider, sessionId?: string): Promise<GatewayRegistrationState> => ipcRenderer.invoke(GatewayIpc.registrationCancel, provider, sessionId),

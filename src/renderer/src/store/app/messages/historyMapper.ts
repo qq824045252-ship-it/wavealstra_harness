@@ -5,6 +5,7 @@ import { formatDuration } from "../format";
 export function historyMessageToChatMessage(m: ChatMessageDto): ChatMessage {
   return {
     id: m.id,
+    dotsDelivery: m.dotsDelivery,
     inputRequestId: m.inputRequestId,
     goalContinuation: m.goalContinuation,
     role: m.role,

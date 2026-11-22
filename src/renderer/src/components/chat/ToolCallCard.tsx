@@ -1,4 +1,5 @@
 import WebSearchCard from "./WebSearchCard";
+import "./ChatReadability.css";
 import MultiModelConsultCard from "./MultiModelConsultCard";
 import CapabilityResultCard, { isCapabilityTool } from "./CapabilityResultCard";
 import { useState } from "react";
@@ -170,7 +171,14 @@ export default function ToolCallCard({ messageId, toolCall, taskId, onSearchFoll
         </span>
       </button>
 
-      {open && body && <div className="tool-row-output">{body}</div>}
+      {open && body && <div className="chat-tool-detail">
+        {toolCall.output && <section aria-label="工具结果"><strong>{toolCall.status === "error" ? "失败详情" : "结果"}</strong>
+          <pre className="tool-row-output">{toolCall.output}</pre>
+        </section>}
+        {toolCall.detail && toolCall.detail !== toolCall.output && <details open={!toolCall.output}>
+          <summary>调用详情</summary><pre className="tool-row-output">{toolCall.detail}</pre>
+        </details>}
+      </div>}
 
     </div>
   );

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { tmpdir } from "node:os";
@@ -24,6 +24,9 @@ new AppSettingsStore().write({ memoryEnabled: false });
 const { getCurrentSystemPrompt, getCurrentTools } = await import("@earendil-works/pi-ai");
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { GatewayService } = await import("../src/main/gateway/GatewayService");
+const { GatewayDotsBindings } = await import("../src/main/gateway/GatewayDotsBindings");
+const { DOTS_TASK_ID } = await import("../src/shared/dots");
+const { MemoryService } = await import("../src/main/memory/MemoryService");
 const { gatewayConversationId } = await import("../src/main/gateway/GatewayConversation");
 const { assignedGatewayConversation, reserveGatewayConversation, NEW_CONVERSATION_REPLY } = await import("../src/main/gateway/GatewayConversationSession");
 const { gatewayInboundIdentity } = await import("../src/main/gateway/gateway-inbound-identity");
@@ -44,13 +47,33 @@ const requests: Array<{ latest: string; transcript: string; tools: string[]; pro
 const text = (message: TranscriptContext["messages"][number]): string =>
   typeof message.content === "string" ? message.content :
     message.content.filter(part => part.type === "text").map(part => part.text).join("");
+const admittedPreference = "I always use cobalt grid paper for my expense worksheets.";
+const groupClaim = "I always use neon paper for my expense worksheets.";
 let providerFailures = 0;
 let duringModel: (() => void) | undefined;
 const start = () => createAgentDurableFixture(root, db, input => {
   const latest = text(input.messages.findLast(message => message.role === "user")!);
+  if (latest.startsWith("{") && latest.includes('"conversationTurns"')) {
+    const { conversationTurns } = JSON.parse(latest) as { conversationTurns: Array<{ id: string; user: string }> };
+    const candidates = conversationTurns.filter(turn => [admittedPreference, groupClaim].includes(turn.user))
+      .map(turn => ({ kind: "preference", title: "expense worksheets", content: turn.user, userEvidence: turn.user,
+        scopeType: "global", confidence: 0.99, importance: 2, explicit: true, operationHint: "create",
+        sourceTurnId: turn.id, retention: "stable", sensitivity: "none" }));
+    return [{ type: "text", text: JSON.stringify({ candidates }) }];
+  }
   requests.push({ latest, transcript: JSON.stringify(input.messages),
     tools: getCurrentTools(input.messages).map(tool => tool.name), prompt: getCurrentSystemPrompt(input.messages) });
-  if (latest === "REVOKE_IN_FLIGHT") duringModel?.();
+  if (latest === "REVOKE_IN_FLIGHT" || input.messages.some(message => message.role === "user"
+    && text(message) === "REVOKE_DOTS_GATEWAY")) duringModel?.();
+  const pathCheck = input.messages.filter(message => message.role === "user").map(text).findLast(value => value.startsWith("CHECK_GATEWAY_FILE "));
+  if (pathCheck) {
+    const file = pathCheck.slice("CHECK_GATEWAY_FILE ".length);
+    const callId = "gateway-file-" + createHash("sha256").update(file).digest("hex").slice(0, 16);
+    const result = input.messages.findLast(message => message.role === "toolResult" && message.toolCallId === callId);
+    return result?.role === "toolResult"
+      ? [{ type: "text", text: result.isError ? "TOOL DENIED" : text(result) }]
+      : [{ type: "toolCall", id: callId, name: "read", arguments: { path: file } }];
+  }
   if (latest === "EMPTY_PROVIDER") return [];
   if (latest === "FAIL_PROVIDER") {
     providerFailures++;
@@ -314,6 +337,141 @@ async function verifyTrashedConversations(fixture: Awaited<ReturnType<typeof sta
   }
 }
 
+async function verifyDotsIdentity(fixture: Awaited<ReturnType<typeof start>>) {
+  new AppSettingsStore().write({ memoryEnabled: true, automaticSemanticRecall: false });
+  const membership = new GatewayDotsBindings(db.connection);
+  const memory = new MemoryService(db, { semantic: false });
+  const sender = "personal-owner";
+  const weixin = "weixin-default";
+  const feishu = "feishu-default";
+  const bridge = new GatewayService(db, fixture.agent);
+  const internal = bridge as unknown as {
+    adapters: Map<string, { workConnectionKey: () => string }>;
+    channelPolicies: Map<string, { allowUsers: string[] }>;
+    createInboundHandler(): GatewayInboundHandler;
+  };
+  for (const channel of [channelId, weixin, feishu]) {
+    internal.adapters.get(channel)!.workConnectionKey = () => connectionKey;
+    internal.channelPolicies.set(channel, { allowUsers: [sender] });
+  }
+  const handler = internal.createInboundHandler();
+  const contexts = new Map<string, typeof requests[number]>();
+  const send = async (channel: string, messageId: string, prompt: string, shared = false, expectCurrent = true) => {
+    const qq = channel === channelId;
+    const chat = qq ? shared ? "group:office" : `c2c:${sender}` : channel === feishu ? shared ? "oc_group" : "oc_dm" : sender;
+    const replies: string[] = [];
+    const priorRequests = requests.length;
+    await handler({ channelId: channel, chatId: chat, sender: { id: sender, name: "Same person" },
+      audience: shared ? "shared" : "private", messageId, text: prompt,
+      replyRoute: qq ? { kind: "qq", recipient: shared ? "office" : sender, group: shared, messageId, expiresAt: Date.now() + 60_000 }
+        : channel === feishu ? { kind: "feishu", chatId: chat, messageId, inThread: false } : { kind: "weixin", peer: sender },
+      reply: async text => { replies.push(text); } });
+    assert(replies.length === 1, `inbound ${prompt}: ${JSON.stringify(replies)}`);
+    assert.equal(replies[0].startsWith("处理失败："), !expectCurrent, `inbound ${prompt}: ${JSON.stringify(replies)}`);
+    const encodedPrompt = JSON.stringify(prompt).slice(1, -1);
+    const sent = requests.slice(priorRequests).find(request => request.transcript.includes(encodedPrompt));
+    if (sent) contexts.set(prompt, sent);
+    return replies;
+  };
+  const seen = (prompt: string, value: string) => {
+    const request = contexts.get(prompt);
+    assert(request, "the inbound message must reach the provider: " + prompt);
+    return request.transcript.includes(value) || request.prompt.includes(value);
+  };
+  const waitFor = async <T>(scan: () => T | undefined): Promise<T> => {
+    const until = Date.now() + 15_000;
+    while (Date.now() < until) {
+      const result = scan();
+      if (result) return result;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    throw new Error("已完成原生回合未产生预期的记忆证据");
+  };
+  try {
+    db.upsertTask({ id: DOTS_TASK_ID, title: "Dots", updatedAt: Date.now() });
+    const seed = "DESKTOP_PRIVATE_PREFERENCE_BIRCH";
+    const global = "DESKTOP_GLOBAL_CEDAR";
+    memory.create({ kind: "preference", title: seed, content: seed, sourceType: "user", scopeType: "task", scopeId: DOTS_TASK_ID });
+    memory.create({ kind: "preference", title: global, content: global, sourceType: "user", scopeType: "global" });
+    await send(channelId, "before-binding", "UNBOUND_PRIVATE");
+    assert(!seen("UNBOUND_PRIVATE", seed) && !seen("UNBOUND_PRIVATE", global));
+    membership.replace(channelId, connectionKey, sender, true);
+    membership.replace(weixin, connectionKey, sender, true);
+    membership.replace(feishu, connectionKey, sender, true);
+    await send(channelId, "bound-one", "FIRST_BOUND_PRIVATE");
+    assert(seen("FIRST_BOUND_PRIVATE", seed) && !seen("FIRST_BOUND_PRIVATE", global));
+    await send(weixin, "bound-two", "SECOND_BOUND_PRIVATE");
+    assert(seen("SECOND_BOUND_PRIVATE", seed) && !seen("SECOND_BOUND_PRIVATE", "FIRST_BOUND_PRIVATE"));
+    await send(feishu, "bound-three", "THIRD_BOUND_PRIVATE");
+    assert(seen("THIRD_BOUND_PRIVATE", seed) && !seen("THIRD_BOUND_PRIVATE", "FIRST_BOUND_PRIVATE"));
+    await send(feishu, "shared-three", "THIRD_SHARED", true);
+    assert(!seen("THIRD_SHARED", seed) && !seen("THIRD_SHARED", global));
+    const previousGroup = gatewayConversationId({ channelId, connectionKey, senderId: sender, chatId: "group:office" });
+    db.upsertTask({ id: previousGroup, title: "Prior Gateway group", updatedAt: Date.now() });
+    db.bindGatewayConversationSpace(previousGroup, channelId);
+    const legacyEcho = "LEGACY_UNSCOPED_GATEWAY_ECHO_475";
+    await fixture.prompt({ taskId: previousGroup, text: legacyEcho, userMessageId: "legacy-echo", assistantMessageId: "legacy-echo-answer" });
+    await send(channelId, "shared-one", groupClaim, true);
+    assert(!seen(groupClaim, seed) && !seen(groupClaim, global) && !seen(groupClaim, legacyEcho));
+    const nativeHistory = new Database(join(storedConversation(previousGroup, channelId), "durable.sqlite"), { readonly: true, fileMustExist: true });
+    try { assert(nativeHistory.prepare("SELECT 1 FROM entries WHERE instr(record, ?) > 0").get(legacyEcho)); }
+    finally { nativeHistory.close(); }
+
+    await send(channelId, "bound-save", admittedPreference);
+    const atom = await waitFor(() => memory.search({ taskId: DOTS_TASK_ID, query: "cobalt grid paper" })
+      .find(hit => hit.memory.content.includes("cobalt grid paper"))?.memory);
+    const revision = memory.history(atom.id)[0]!.revision;
+    const source = memory.getDotsRevisionSource(atom.id, revision);
+    assert.equal(source?.quote, admittedPreference);
+    const original = source?.turnId ? memory.getTurn(source.turnId) : undefined;
+    assert.equal((original?.metadata.gatewayOrigin as { channelId?: string } | undefined)?.channelId, channelId);
+    assert.equal((original?.metadata.gatewayOrigin as { messageId?: string } | undefined)?.messageId, "bound-save");
+    await send(weixin, "bound-read", "What paper do I always use for expense worksheets?");
+    assert(seen("What paper do I always use for expense worksheets?", "cobalt grid paper"));
+    assert(!memory.search({ taskId: DOTS_TASK_ID, query: "neon paper" }).some(hit => hit.memory.content === groupClaim));
+
+    let ranBeforeRevocation = false;
+    duringModel = () => { ranBeforeRevocation = true; membership.revoke(channelId); };
+    try {
+      const invalid = await send(channelId, "bound-revoke", "REVOKE_DOTS_GATEWAY", false, false);
+      assert(ranBeforeRevocation, "the bound input reached the provider while authorized");
+      assert(!invalid[0].includes(seed) && !invalid[0].includes("cobalt grid paper"));
+    } finally { duringModel = undefined; }
+    await bridge.disconnect(channelId);
+    internal.channelPolicies.set(channelId, { allowUsers: [sender] });
+    await send(channelId, "after-unlink", "UNLINKED_PRIVATE");
+    assert(!seen("UNLINKED_PRIVATE", seed) && !seen("UNLINKED_PRIVATE", "FIRST_BOUND_PRIVATE"));
+    assert.equal(memory.getDotsRevisionSource(atom.id, revision)?.quote, admittedPreference);
+    membership.replace(channelId, connectionKey, sender, true);
+    await send(channelId, "after-rebind", "REBOUND_PRIVATE");
+    assert(seen("REBOUND_PRIVATE", seed) && !seen("REBOUND_PRIVATE", "FIRST_BOUND_PRIVATE"));
+    const other = join(root, "out-of-scope-secret.txt");
+    const marker = "OUT_OF_SCOPE_TEST_ONLY";
+    writeFileSync(other, marker);
+    const sharedCwd = db.getTask(previousGroup)!.cwd!;
+    const local = join(sharedCwd, "shared-readable.txt");
+    writeFileSync(local, "IN_SCOPE_TEST_FILE");
+    const aliased = join(sharedCwd, "outside-hard-link.txt");
+    linkSync(other, aliased);
+    linkSync(other, join(sharedCwd, "outside’variant.txt"));
+    const sharedRead = async (message: string, path: string) => {
+      const prompt = "CHECK_GATEWAY_FILE " + path;
+      const output = await send(channelId, message, prompt, true);
+      const offered = contexts.get(prompt)?.tools ?? [];
+      assert(offered.includes("read"), "the actual native read tool must be installed");
+      assert(!offered.some(tool => !["read", "write", "edit", "memory_search", "memory_get", "memory_history", "memory_create", "memory_update"].includes(tool)), offered.join(","));
+      return output;
+    };
+    assert.deepEqual(await sharedRead("read-local", local), ["IN_SCOPE_TEST_FILE"]);
+    assert.deepEqual(await sharedRead("read-external", other), ["TOOL DENIED"]);
+    assert.deepEqual(await sharedRead("read-alias", aliased), ["TOOL DENIED"]);
+    assert.deepEqual(await sharedRead("read-variant-alias", join(sharedCwd, "outside'variant.txt")), ["TOOL DENIED"]);
+    assert.deepEqual(await send(channelId, "bound-read-external", "CHECK_GATEWAY_FILE " + other), ["TOOL DENIED"]);
+    assert.equal(readFileSync(other, "utf8"), marker);
+    console.log("PASS Dots private memory across QQ, WeChat, and Feishu, revocation, source provenance and task-local Gateway tool access");
+  } finally { await bridge.stop(); }
+}
+
 let fixture: Awaited<ReturnType<typeof start>> | undefined;
 let bridge: ReturnType<typeof openGateway> | undefined;
 try {
@@ -462,6 +620,7 @@ try {
   assert(!empty[0]!.includes("任务已处理"), "empty provider results cannot become synthetic success");
   console.log("PASS Gateway task tools, configured write restriction, sender isolation, deduplication and cold reopen");
   await verifyTrashedConversations(fixture);
+  await verifyDotsIdentity(fixture);
 } finally {
   await bridge?.gateway.stop();
   await fixture?.close();

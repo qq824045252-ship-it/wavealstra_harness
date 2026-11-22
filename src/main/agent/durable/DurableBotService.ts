@@ -1,4 +1,9 @@
+import { DotsIntentChanged } from "../../dots/DotsNativeIntent";
+import { ConversationIdle } from "@earendil-works/pi-durable";
+import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
 import { sameWorkspacePath } from "../../task/QQTaskWorkspace";
+import { readDurableDotsResult } from "./DurableDotsResult";
+import { ConversationInteractionRepository } from "../ConversationInteractionRepository";
 import { isGatewayConversation } from "../../gateway/GatewayConversation";
 import { DEFAULT_WELCOME_MODE, defaultModePresetId } from "../../../shared/mode-profile";
 import type { GatewayBotTurnRequest } from "../../gateway/GatewayAgentTurn";
@@ -79,7 +84,7 @@ interface OpenBot {
 }
 export interface DurableInputOrigin {
   goalContinuation?: GoalContinuationOrigin;
-  gatewayInbound?: true;
+  gatewayOrigin?: Omit<GatewayBotTurnRequest["gatewayOrigin"], "workTarget">;
 }
 
 export interface DurableBotServiceOptions {
@@ -96,13 +101,14 @@ export interface DurableBotServiceOptions {
   instructions: (task: TaskDto) => string;
   evidence?: (task: TaskDto, messages: readonly Message[]) => string;
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
+  canReadAnswerEvidence?: (taskId: string, resource: "read" | "library_read") => boolean;
   answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask" | "clearPreparedTurns">;
   nativeHooks?: NativeHookStore;
   nativeImprovement?: import("../hooks/NativeImprovementService").NativeImprovementService;
   improvementSkillAllowed?: (taskId: string, name: string) => boolean;
   readHints?: import("../hooks/ReadRecoveryHints").ReadRecoveryHints;
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
-  mcpSelection?: (task: TaskDto) => readonly string[];
+  mcpSelection?: (task: TaskDto) => readonly string[] | undefined;
   toolAllowed?: (task: TaskDto, name: string) => boolean;
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
@@ -132,6 +138,7 @@ export interface DurableBotServiceOptions {
   prepareTask?: (request: AgentPromptRequest, mark?: AdmissionMark) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
   beforeModelRequest?: (taskId: string) => void;
+  beforeToolExecution?: (taskId: string, cwd: string, name: string, args: unknown) => void;
   providerAuthorityGuarded?: (taskId: string) => boolean;
   onProviderUsage?: (taskId: string, input: { conversationId: string; generationTaskId: number;
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
@@ -468,7 +475,7 @@ export class DurableBotService {
         () => db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
       );
-      const routing = this.options.answerRouting;
+      const routing = taskId === DOTS_TASK_ID ? this.options.answerRouting : undefined;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
         codeReview: this.options.codeReview && { taskId, workspace: cwd, review: this.options.codeReview },
         nativeHooks: this.options.nativeHooks && { store: this.options.nativeHooks, readHints: this.options.readHints, cwd, directory,
@@ -481,12 +488,16 @@ export class DurableBotService {
         answerRouting: routing && {
           enabled: () => routing.hasRulesForTask(taskId),
           prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd,
-            canRead: () => toolGate.allowed("read"), canReadLibrary: () => toolGate.allowed("library_read") }),
+            canRead: () => this.options.canReadAnswerEvidence?.(taskId, "read") ?? toolGate.allowed("read"),
+            canReadLibrary: () => this.options.canReadAnswerEvidence?.(taskId, "library_read") ?? toolGate.allowed("library_read") }),
         },
         workspaceMigrationFrom: move?.from_cwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
-        beforeToolExecution: () => this.options.beforeModelRequest?.(taskId),
+        beforeToolExecution: (name, args, toolCwd) => {
+          this.options.beforeModelRequest?.(taskId);
+          this.options.beforeToolExecution?.(taskId, toolCwd, name, args);
+        },
         // 产品阈值以同步 getter 注入运行时：运行中改设置不需要重开会话，也不会留在旧副本上。
         // 只有宿主显式提供设置源/状态回调时才启用内嵌上下文管理；直接构造服务的测试
         // （无 productCompaction）沿用 Pi 原生压缩，避免改变既有语义。
@@ -523,13 +534,17 @@ export class DurableBotService {
         waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
         evidenceProjection: this.options.evidenceProjection?.(task),
+        isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
+          && Boolean(db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
+          && Boolean(db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId))),
         onTurns: turns => {
           if (!this.options.onTurns || !turns.length) return;
           db.connection.transaction(() => {
             const prior = db.connection.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id=?").get(taskId) as { entry_id: number } | undefined;
             const fresh = turns.filter(turn => turn.entryId > (prior?.entry_id ?? 0));
             if (!fresh.length) return;
-            this.options.onTurns!(taskId, fresh);
+            const originals = fresh.filter(turn => !turn.skipCapture);
+            if (originals.length) this.options.onTurns!(taskId, originals);
             db.connection.prepare("INSERT INTO durable_bot_memory_projection VALUES (?,?) ON CONFLICT(task_id) DO UPDATE SET entry_id=excluded.entry_id")
               .run(taskId, fresh.at(-1)!.entryId);
           })();
@@ -692,6 +707,17 @@ export class DurableBotService {
     if (this.binding(request.taskId)) {
       const existing = await this.withRecovery(request.taskId, async open => {
         const record = await this.findSubmissionRecord(open, request.userMessageId);
+        if (record?.type === "input" && origin?.gatewayOrigin) {
+          const id = record.entry;
+          const entry = id === undefined ? undefined : await open.runtime.conversation.commit(tx => tx.entry(id), context);
+          const source = (entry?.data as { mybuddyInput?: import("./DurableHistoryProjection").DurableInputMetadata })?.mybuddyInput?.gatewayOrigin;
+          const incoming = origin.gatewayOrigin;
+          if (!source || source.channelId !== incoming.channelId || source.connectionKey !== incoming.connectionKey
+            || source.senderId !== incoming.senderId || source.chatId !== incoming.chatId || source.messageId !== incoming.messageId
+            || source.audience !== incoming.audience || source.personalMemoryBindingId !== incoming.personalMemoryBindingId) {
+            throw new Error("原渠道消息来源或记忆授权已改变，请发送新消息");
+          }
+        }
         const submission = record && await open.runtime.harness.submission(record.id, context);
         return submission ? { submission, open } : undefined;
       });
@@ -702,7 +728,7 @@ export class DurableBotService {
     mark?.("taskPersisted");
     return this.withRecovery(request.taskId, async open => {
       mark?.("opened");
-      if (origin?.gatewayInbound && request.attachments?.length) {
+      if (origin?.gatewayOrigin && request.attachments?.length) {
         request = { ...request, attachments: await importGatewayAttachments(this.binding(request.taskId)!.cwd,
           request.userMessageId, request.attachments) };
       }
@@ -724,8 +750,11 @@ export class DurableBotService {
       this.options.beforeSubmit?.(request);
       mark?.("payload");
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
-        { text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [],
-          ...(audit ? { audit } : {}), ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}) }, mark);
+        { dotsMemoryRefs: request.dotsMemoryRefs, text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [],
+          ...(audit ? { audit } : {}), ...(origin?.gatewayOrigin ? { gatewayOrigin: origin.gatewayOrigin } : {}),
+          ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}) }, mark, request.requireActiveRun,
+        (request.dotsFileWatch || request.dotsSteerInputVersion)
+          ? { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: () => this.options.beforeSubmit?.(request) } : undefined);
       return { submission, open };
     });
   }
@@ -871,6 +900,35 @@ export class DurableBotService {
     });
   }
 
+  /** Resolve the exact accepted input. A later answer in the same task is never its result. */
+  async dotsSubmission(taskId: string, operationId: string) {
+    const binding = this.binding(taskId);
+    if (!binding) return undefined;
+    return this.withRecovery(taskId, async open => {
+      const input = await this.findSubmissionRecord(open, operationId);
+      if (!input || input.type !== "input") return undefined;
+      let question: import("../../../shared/conversation-interaction").ConversationInteractionDto | undefined;
+      if (input.status === "queued") return { status: "running" as const, text: "", messageIds: [], files: [] };
+      if (input.status === "placed") {
+        const live = await open.runtime.harness.snapshot(LiveDoc, input.conversationId, context);
+        if (live?.run?.inputs.at(-1) === input.id) {
+          const interactions = new ConversationInteractionRepository(this.options.db.connection);
+          for (const slot of [...live.tools ?? [], ...live.nestedTools ?? []]) {
+            if (!slot.taskId || slot.status === "done") continue;
+            const found = interactions.pendingByExecution(`durable:${taskId}:${input.conversationId}:${slot.taskId}`);
+            if (found?.taskId === taskId) { question = found; break; }
+          }
+        }
+        if (!question) return { status: "running" as const, text: "", messageIds: [], files: [] };
+      }
+      // The waiting-input delta already woke this inspector. Refreshing the same
+      // blocked runtime would emit that delta again and starve its consumer.
+      if (input.status === "done") await open.runtime.refresh();
+      await this.projections.get(taskId);
+      return open.runtime.conversation.commit(tx => readDurableDotsResult(tx, input, binding.directory, question), context);
+    });
+  }
+
   private findSubmissionRecord(open: OpenBot, operationId: string): Promise<SubmissionRecord | undefined> {
     return open.runtime.conversation.commit(async tx => {
       const current = await tx.submissionByRequest(open.runtime.conversation.id, operationId);
@@ -919,7 +977,15 @@ export class DurableBotService {
   }
 
   async prompt(request: AgentPromptRequest, admissionOnly = true): Promise<AgentPromptResult> {
-    const accepted = await this.submit(request);
+    let accepted: AgentPromptResult;
+    try { accepted = await this.submit(request); }
+    catch (error) {
+      if (error instanceof DotsIntentChanged) return { queued: false, error: { code: "DOTS_INTENT_CHANGED", message: error.message } };
+      if (request.requireActiveRun && error instanceof ConversationIdle) {
+        return { queued: false, error: { code: "TASK_IDLE", message: "原任务已空闲，改向未接收" } };
+      }
+      throw error;
+    }
     return admissionOnly || !accepted.receipt ? accepted : this.submissionStatus(accepted.receipt, true);
   }
 
@@ -1055,6 +1121,27 @@ export class DurableBotService {
     } while (cursor);
     return messages;
   }
+  async dotsInputVersion(taskId: string) {
+    return (await this.open(taskId)).runtime.dotsInputVersion();
+  }
+
+  async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
+    if (!this.binding(DOTS_TASK_ID)) return "discarded" as const;
+    return this.withRecovery(DOTS_TASK_ID, open => open.runtime.appendDotsReply(reply, isCurrent));
+  }
+
+  async stopObservedRun(taskId: string, inputVersion?: string): Promise<"idle" | "stop_requested" | "intent_changed"> {
+    if (!this.binding(taskId)) return "idle";
+    return this.trackAdmission(taskId, async () => {
+      const open = await this.openBound(taskId);
+      if (inputVersion && await open.runtime.dotsInputVersion() !== inputVersion) return "intent_changed";
+      const settled = await this.withinStopBudget(`Dots stop ${taskId}`, () => Promise.all([
+        open.runtime.stopObservedRun(), stopDurableSubagentsForTask(taskId),
+      ]));
+      return settled && !open.runtime.snapshot.busy && !open.runtime.snapshot.queued ? "idle" : "stop_requested";
+    });
+  }
+
   async abort(taskId: string, exclude?: Promise<unknown>): Promise<void> {
     // Stop orders after any already-started input admission, then native abort owns cancellation.
     // `exclude` is the caller's own admission: a delete attempts its stop from inside its own
@@ -1138,7 +1225,8 @@ export class DurableBotService {
       }
       this.options.db.bindGatewayConversationSpace(request.taskId, gatewayOrigin.channelId);
     })();
-    const { submission, open } = await this.admitTracked(request, { gatewayInbound: true });
+    const { workTarget: _workTarget, ...source } = gatewayOrigin;
+    const { submission, open } = await this.admitTracked(request, { gatewayOrigin: source });
     try {
       return await open.runtime.reply(submission, { requireText: true });
     } catch (error) {

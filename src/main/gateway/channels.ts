@@ -249,7 +249,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
     const assertCurrent = (): void => this.assertReplyGeneration(generation, epoch);
     assertCurrent();
     if (!event || typeof event !== "object") return;
-    const payload = event as { message?: { chat_id?: string; message_id?: string; content?: string; message_type?: string; thread_id?: string }; sender?: { sender_type?: string; sender_id?: { open_id?: string } } };
+    const payload = event as { message?: { chat_id?: string; message_id?: string; content?: string; message_type?: string; thread_id?: string; chat_type?: string }; sender?: { sender_type?: string; sender_id?: { open_id?: string } } };
     if (payload.sender?.sender_type === "app") return;
     const senderId = payload.sender?.sender_id?.open_id;
     if (this.allowUsers.length && (!senderId || !this.allowUsers.includes(senderId))) return;
@@ -283,6 +283,7 @@ export class FeishuChannelAdapter implements ChannelAdapter {
           address: { chatId: msg.chat_id!, ...(msg.message_id ? { replyToMessageId: msg.message_id } : {}),
             ...(msg.thread_id ? { threadId: msg.thread_id } : {}) } }),
         text: parsed.text.trim(), attachments: attachments.length ? attachments : undefined, messageId: msg.message_id,
+        audience: msg.chat_type === "p2p" && payload.sender?.sender_type === "user" && !msg.thread_id ? "private" : "shared",
         sender: payload.sender?.sender_id?.open_id ? { id: payload.sender.sender_id.open_id } : undefined,
         replyRoute: { kind: "feishu", chatId: msg.chat_id!, messageId: msg.message_id, inThread: Boolean(msg.thread_id) },
         reply: async text => { await this.sendText(msg.chat_id!, text, generation, epoch, msg.message_id, Boolean(msg.thread_id)); },

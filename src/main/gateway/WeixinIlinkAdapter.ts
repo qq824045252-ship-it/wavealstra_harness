@@ -212,7 +212,7 @@ export class WeixinIlinkAdapter implements ChannelAdapter {
       }
       admissionFailed = false;
       dispatched = true;
-      const delivery = this.inbound!({ channelId: this.id, chatId: peer, messageId: String(id), sender: { id: peer }, text: text || '[微信媒体附件]', ...(attachments.length ? { attachments } : {}),
+      const delivery = this.inbound!({ channelId: this.id, chatId: peer, messageId: String(id), audience: "private", sender: { id: peer }, text: text || '[微信媒体附件]', ...(attachments.length ? { attachments } : {}),
         replyRoute, reply: this.createReply(peer, controller, config),
       });
       if (delivery.accepted) {

@@ -1,3 +1,5 @@
+import type { GatewayDotsBindings } from "./GatewayDotsBindings";
+import type { GatewayBotOrigin } from "../agent/work/BotTurnOrigins";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { GatewayEventDto } from "../../shared/agent-ipc";
 
@@ -15,6 +17,7 @@ import type { GatewayProjectMessageSink } from "./GatewayService";
 
 interface GatewayRouterOptions {
   db?: AppDatabase;
+  dotsBindings?: GatewayDotsBindings;
   agent: GatewayAgentPort;
   adapters: ReadonlyMap<string, ChannelAdapter>;
   readSettings(): ReturnType<AppSettingsStore["read"]>;
@@ -38,7 +41,7 @@ interface GatewayRouterOptions {
 export class GatewayRouter {
   constructor(private readonly options: GatewayRouterOptions) {}
 
-  private origin(msg: GatewayInboundMessage, connectionKey: string, fallbackMessageId: string) {
+  private origin(msg: GatewayInboundMessage, connectionKey: string, fallbackMessageId: string): GatewayBotOrigin {
     const route = msg.replyRoute;
     const privateRoute = route?.kind === "qq" && !route.group || route?.kind === "weixin" || route?.kind === "wechat"
       || route?.kind === "telegram" && route.chatId === msg.sender?.id && !route.messageThreadId
@@ -55,6 +58,9 @@ export class GatewayRouter {
       return "这条消息没有稳定标识，无法安全开启新会话。请从支持消息标识的渠道重试 /new。";
     }
     const origin = this.origin(msg, connectionKey, userMessageId);
+    if (hasStableConversationMessageId(transportMessageId)) {
+      origin.personalMemoryBindingId = this.options.dotsBindings?.admit(origin, msg.replyRoute);
+    }
     const fallback = gatewayConversationId(origin);
     const db = this.options.db;
     const route = db?.connection ? reserveGatewayConversation(db.connection, origin, command)
@@ -70,11 +76,16 @@ export class GatewayRouter {
         return "这条旧消息所属会话不可用，未转入当前新会话。";
       }
     }
+    if (origin.personalMemoryBindingId) this.options.dotsBindings!.bindTask(route.taskId, origin.personalMemoryBindingId);
     const modelId = this.options.readSettings().defaultModelId?.trim();
-    return runGatewayAgentTurn(this.options.agent, {
+    const answer = await runGatewayAgentTurn(this.options.agent, {
       taskId: route.taskId, text: msg.text, displayText: msg.text, attachments: msg.attachments,
       userMessageId, assistantMessageId, ...(modelId ? { modelId } : {}), gatewayOrigin: origin,
     }, route.taskId);
+    if (origin.personalMemoryBindingId && !this.options.dotsBindings!.replyCurrent({ binding_id: origin.personalMemoryBindingId })) {
+      throw new Error("Dots 个人记忆授权已撤销，未发送本次回复");
+    }
+    return answer;
   }
 
   handler(): GatewayInboundHandler {

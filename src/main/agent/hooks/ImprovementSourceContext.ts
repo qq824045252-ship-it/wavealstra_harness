@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { GenerationTask, type EntryId, type Storage, type TaskId } from "@earendil-works/pi-durable";
+import { GenerationTask, type ConversationId, type EntryId, type Storage, type TaskId } from "@earendil-works/pi-durable";
 import type { ObservationSource } from "../../../shared/native-improvement";
 import { openDurablePassiveStorage } from "../durable/DurableStorage";
 import { readGoalNativeEvidence } from "../durable/DurableGoalNativeEvidence";
@@ -51,6 +51,33 @@ export function sourceDiagnostics(db: Database.Database, source: ObservationSour
   return { requests, tools, interactions };
 }
 
+/** A task can do several jobs. Only the receipt of this recorded input identifies its Work. */
+export function sourceWorkOutcome(db: Database.Database, source: ObservationSource, operation: string) {
+  if (source.actor !== "main" || !operation || !table(db, "works")) return null;
+  const binding = db.prepare(`SELECT binding_id,work_id,intent_revision,owner_epoch,input_snapshot_id,status
+    FROM work_execution_bindings WHERE task_id=? AND conversation_id=? AND operation_id=?`)
+    .get(source.taskId, source.conversationId, operation) as Row | undefined;
+  if (binding) {
+    const deliveries = db.prepare(`SELECT deliverable_id,status,artifact_refs_json,evidence_refs_json,is_speculation,has_write_conflicts
+      FROM work_deliverables WHERE execution_id=? AND work_id=? AND intent_revision=? AND owner_epoch=? AND input_snapshot_id=?
+      ORDER BY created_at LIMIT 64`).all(binding.binding_id,binding.work_id,binding.intent_revision,binding.owner_epoch,binding.input_snapshot_id);
+    return { binding, deliveries };
+  }
+  if (!table(db, "dots_followup_plans")) return null;
+  const delegation = db.prepare(`SELECT d.goal_id,d.status,json_extract(p.plan,'$.request.dotsGoalIntentRevision') AS revision
+    FROM dots_delegations d JOIN dots_followup_plans p USING(operation_id)
+    WHERE d.task_id=? AND d.operation_id=? AND d.goal_id=json_extract(p.plan,'$.request.dotsGoalId')`)
+    .get(source.taskId,operation) as { goal_id: string; status: string; revision: number | null } | undefined;
+  if (!delegation) return null;
+  const closure = db.prepare(`SELECT closure_conclusion,closed_at,input_snapshot_id FROM works
+    WHERE work_id=? AND intent_revision=? AND lifecycle='closed' AND close_operation_id=?`)
+    .get(delegation.goal_id,delegation.revision,`dots-goal-close:${operation}`) as Row | undefined;
+  const evidence = closure ? db.prepare(`SELECT evidence_id,kind,provenance,source_ref,criterion_ids_json FROM work_evidence
+    WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? ORDER BY recorded_at LIMIT 64`)
+    .all(delegation.goal_id,delegation.revision,closure.input_snapshot_id) : [];
+  return { delegation, closure: closure ?? null, evidence };
+}
+
 /** Read-only context joined on task, native conversation and exact originating generation. */
 export async function improvementSourceContext(db: Database.Database, directory: string, source: ObservationSource,
   hooks?: Pick<import("./NativeHookStore").NativeHookStore, "generationReceipts">): Promise<Row> {
@@ -81,17 +108,12 @@ export async function improvementSourceContext(db: Database.Database, directory:
       const row = db.prepare("SELECT actual_json,blocked_json,used_skill_ids_json,outcome FROM agent_loadout_observations WHERE task_id=? AND assistant_message_id=?").get(source.taskId,audit.assistantMessageId) as Row | undefined;
       if (row) loadout = { actual: JSON.parse(String(row.actual_json)), blocked: JSON.parse(String(row.blocked_json)), used: JSON.parse(String(row.used_skill_ids_json)), outcome: row.outcome };
     }
-    let goal: unknown = null, goalEvidence: unknown = null, learnedSkills: unknown = null;
-    if (table(db,"conversation_goal_generations")) {
-      goal = db.prepare("SELECT work_id,metadata,outcome FROM conversation_goal_generations WHERE task_id=? AND conversation_id=? AND generation_id=?")
-        .get(source.taskId,source.conversationId,generation) ?? null;
-      if (goal) {
-        goalEvidence = await readGoalNativeEvidence(directory,[{conversationId:source.conversationId,generationTaskId:generation}]);
-        if (table(db,"conversation_goal_learned_skills")) learnedSkills = db.prepare("SELECT evidence_json FROM conversation_goal_learned_skills WHERE task_id=? AND conversation_id=? AND generation_id=?")
-          .all(source.taskId,source.conversationId,generation);
-      }
-    }
-    return { identity, skillContext, loadout, requests, tools, interactions, rules, goal, goalEvidence, learnedSkills,
-      limitations: "空记录不证明未发生；仅包含可由原生身份直接关联的事实。Work 和 Pstack 未关联到此 generation 时为未知。" };
+    const operation = object(data.mybuddyInput).inputRequestId;
+    const receipt = source.actor === "main" && typeof operation === "string" && operation
+      ? await storage.submissionByRequest(Number(source.conversationId) as ConversationId,operation,ctx) : undefined;
+    const work = receipt?.type === "input" && receipt.entry === source.input && typeof operation === "string"
+      ? sourceWorkOutcome(db,source,operation) : null;
+    const goalEvidence = await readGoalNativeEvidence(directory,[{conversationId:source.conversationId,generationTaskId:generation}],storage);
+    return { identity, skillContext, loadout, requests, tools, interactions, rules, work, goalEvidence };
   } finally { await storage.close(ctx); }
 }

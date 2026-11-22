@@ -1,3 +1,4 @@
+import type { DurableInputMetadata } from "./DurableHistoryProjection";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { captureProcedureExecution } from "../../memory/MemoryProcedureEvidence";
@@ -43,8 +44,9 @@ function nestedArguments(args: unknown): unknown {
 
 /** Pure projection of committed entries. Live streaming text, summaries and failed responses are not completed turns. */
 export function durableCompletedTurns(taskId: string, conversationId: string, entries: readonly EntryRecord[],
-  nested: ReadonlyMap<number, readonly EntryRecord[]> = new Map(), inputMetadata: ReadonlyMap<number, { text: string }> = new Map()): Array<CaptureMemoryTurnInput & { entryId: number }> {
-  const turns: Array<CaptureMemoryTurnInput & { entryId: number }> = [];
+  nested: ReadonlyMap<number, readonly EntryRecord[]> = new Map(), inputMetadata: ReadonlyMap<number, Pick<DurableInputMetadata, "text" | "inputRequestId" | "gatewayOrigin">> = new Map(),
+  isDelegation?: (requestId: string) => boolean): Array<CaptureMemoryTurnInput & { entryId: number; skipCapture?: boolean }> {
+  const turns: Array<CaptureMemoryTurnInput & { entryId: number; skipCapture?: boolean }> = [];
   let users: EntryRecord[] = [], evidence: Message[] = [];
   for (const entry of [...entries].sort((a, b) => a.id - b.id)) {
     if (entry.kind === "pi.user" || entry.kind === "mybuddy.user") {
@@ -63,12 +65,18 @@ export function durableCompletedTurns(taskId: string, conversationId: string, en
         evidence.push(message);
         if (message.role !== "assistant" || message.stopReason !== "stop" || !users.length) continue;
         const id = (value: number) => `durable:${taskId}:${conversationId}:${value}`;
-        const procedureExecution = captureProcedureExecution(evidence);
+        const originals = users.filter(user => {
+          const requestId = inputMetadata.get(user.id)?.inputRequestId;
+          return !requestId || !isDelegation?.(requestId);
+        });
+        const procedureExecution = originals.length === users.length ? captureProcedureExecution(evidence) : undefined;
+        const gatewayOrigin = originals.length === 1 ? inputMetadata.get(originals[0].id)?.gatewayOrigin : undefined;
         turns.push({ entryId: entry.id, taskId, sessionId: `durable:${taskId}:${conversationId}`,
-          userMessageId: id(users[0].id), assistantMessageId: id(entry.id),
-          userText: users.map(value => inputMetadata.get(value.id)?.text ?? (value.model ?? []).map(message => durableText(message.content)).join("\n")).join("\n"),
+          ...(originals.length ? {} : { skipCapture: true }),
+          userMessageId: id((originals[0] ?? users[0]).id), assistantMessageId: id(entry.id),
+          userText: originals.map(value => inputMetadata.get(value.id)?.text ?? (value.model ?? []).map(message => durableText(message.content)).join("\n")).join("\n"),
           assistantText: durableText(message.content), capturedAt: message.timestamp,
-          metadata: { backend: "pi-durable", ...(procedureExecution ? { procedureExecution } : {}) },
+          metadata: { backend: "pi-durable", ...(gatewayOrigin ? { gatewayOrigin } : {}), ...(procedureExecution ? { procedureExecution } : {}) },
         });
         users = []; evidence = [];
       }

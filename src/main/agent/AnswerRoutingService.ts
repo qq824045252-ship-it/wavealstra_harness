@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
 import { createHash, randomUUID } from "node:crypto";
 import { accessSync, constants, realpathSync } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
@@ -137,6 +138,13 @@ export class AnswerRoutingService {
       CREATE INDEX IF NOT EXISTS answer_rule_turns_recent ON answer_rule_turns(at DESC);
       CREATE INDEX IF NOT EXISTS answer_rule_turns_source_history ON answer_rule_turns(task_id,rule_id,at DESC);`);
     db.connection.transaction(() => {
+      const copies = db.connection.prepare("SELECT * FROM answer_rules WHERE source_id IS NOT NULL AND source_hash IS NOT NULL").all() as Row[];
+      const clean = db.connection.prepare("UPDATE answer_rules SET config=?,source_hash=NULL WHERE id=?");
+      for (const row of copies) {
+        const rule = JSON.parse(row.config) as AnswerRuleDraft;
+        const extra = rule.sourcePrefixLength ? rule.instruction.slice(rule.sourcePrefixLength).trimStart() : "";
+        clean.run(JSON.stringify({ ...rule, instruction: extra, sourcePrefixLength: undefined, sourceHash: undefined }), row.id);
+      }
       const columns = db.connection.pragma("table_info(answer_rule_turns)") as Array<{ name: string }>;
       if (columns.some(column => column.name === "status")) return;
       db.connection.exec(`
@@ -147,13 +155,18 @@ export class AnswerRoutingService {
     }).immediate();
   }
 
+  private currentRule(row: Row, taskId?: string): AnswerRule {
+    const rule = decode(row);
+    if (!rule.sourceMemoryId) return rule;
+    const memory = this.memoryEnabled() ? this.source(rule.sourceMemoryId, taskId) : undefined;
+    const extra = rule.instruction;
+    if (!memory || !this.validSource(memory)) return { ...rule, instruction: extra, sourceUnavailable: true };
+    return { ...rule, instruction: extra ? memory.content + "\n" + extra : memory.content,
+      sourceHash: memory.contentHash, sourcePrefixLength: extra ? memory.content.length : undefined, sourceUnavailable: false };
+  }
+
   list(): AnswerRule[] {
-    return (this.db.connection.prepare("SELECT * FROM answer_rules ORDER BY rowid DESC").all() as Row[]).map(row => {
-      const rule = decode(row);
-      if (!rule.sourceMemoryId) return rule;
-      const memory = this.source(rule.sourceMemoryId);
-      return { ...rule, sourceNeedsReview: !this.validSource(memory) || memory?.contentHash !== row.source_hash };
-    });
+    return (this.db.connection.prepare("SELECT * FROM answer_rules ORDER BY rowid DESC").all() as Row[]).map(row => this.currentRule(row));
   }
 
   taskScope(taskId: string): string | null {
@@ -165,17 +178,12 @@ export class AnswerRoutingService {
   rulesForTask(taskId: string): AnswerRule[] {
     const rows = this.db.connection.prepare("SELECT * FROM answer_rules WHERE project_id IS NULL OR project_id=? ORDER BY project_id IS NULL, rowid DESC")
       .all(this.taskScope(taskId)) as Row[];
-    return rows.map(decode).filter(rule => {
-      if (!rule.sourceMemoryId) return true;
-      const memory = this.memoryEnabled() ? this.source(rule.sourceMemoryId, taskId) : undefined;
-      return this.validSource(memory) && memory?.contentHash === rule.sourceHash;
-    });
+    return rows.map(row => this.currentRule(row, taskId)).filter(rule => !rule.sourceUnavailable);
   }
 
   saveForTask(taskId: string, input: unknown): AnswerRule {
-    const { changes, version, scope, independent } = z.object({
+    const { changes, version, scope } = z.object({
       changes: chatChanges, version: versionSchema.strict().optional(), scope: z.enum(["project", "global"]).optional(),
-      independent: z.literal(true).optional(),
     }).strict().parse(input);
     return this.db.connection.transaction(() => {
       const project = this.taskScope(taskId);
@@ -188,7 +196,6 @@ export class AnswerRoutingService {
       const updating = current && current.projectId === projectId;
       if (current && !updating && changes.enabled === false) throw new Error("这是全局规则。若要在所有对话停用，请明确选择 global。");
       const draft = { ...(current ?? newAnswerRule()), ...changes, projectId };
-      if (independent) { draft.sourceMemoryId = null; delete draft.sourceHash; delete draft.sourcePrefixLength; }
       if (draft.sourcePrefixLength && current && !draft.instruction.startsWith(current.instruction.slice(0, draft.sourcePrefixLength) + "\n")) {
         delete draft.sourcePrefixLength;
       }
@@ -209,15 +216,17 @@ export class AnswerRoutingService {
     const version = expected === undefined ? undefined : versionSchema.parse(expected);
     return this.db.connection.transaction(() => {
       const memory = draft.sourceMemoryId ? this.source(draft.sourceMemoryId) : undefined;
-      if (draft.sourceMemoryId && (draft.enabled || !version)
-        && (!this.validSource(memory) || !draft.sourceHash || draft.sourceHash !== memory?.contentHash))
-        throw new Error("来源全局记忆已变化，请在编辑页重新载入来源内容");
-      if (draft.sourcePrefixLength !== undefined && (draft.enabled || !version) &&
-          (!memory || draft.sourcePrefixLength !== memory.content.length || !draft.instruction.startsWith(memory.content + "\n"))) {
-        throw new Error("已引用的记忆原文与回答做法不一致，请重新比对。");
+      let stored = draft;
+      if (draft.sourceMemoryId) {
+        if (!memory || !this.validSource(memory) || !this.memoryEnabled() || memory.contentHash !== draft.sourceHash)
+          throw new Error("来源记忆已变化，请刷新后再编辑");
+        const extra = draft.instruction === memory.content ? "" : draft.instruction.startsWith(memory.content + "\n")
+          ? draft.instruction.slice(memory.content.length + 1) : undefined;
+        if (extra === undefined) throw new Error("请在记忆中修改来源内容");
+        stored = { ...draft, instruction: extra, sourceHash: undefined, sourcePrefixLength: undefined };
       }
       const id = version?.id ?? randomUUID();
-      const args = [draft.projectId, draft.sourceMemoryId, draft.sourceHash ?? null, Number(draft.enabled), JSON.stringify(draft), id];
+      const args = [draft.projectId, draft.sourceMemoryId, null, Number(draft.enabled), JSON.stringify(stored), id];
       if (version) {
         const result = this.db.connection.prepare(`UPDATE answer_rules SET project_id=?,source_id=?,source_hash=?,enabled=?,config=?,
           revision=revision+1 WHERE id=? AND revision=?`).run(...args, version.revision);
@@ -236,7 +245,7 @@ export class AnswerRoutingService {
 
   private validSource(memory?: MemoryRecordDto): boolean {
     const now = Date.now();
-    return memory?.status === "active" && memory.scopes.some(scope => scope.scopeType === "global")
+    return memory?.status === "active" && memory.scopes.some(scope => scope.scopeType === "global" || (scope.scopeType === "task" && scope.scopeId === DOTS_TASK_ID))
       && (memory.validFrom ?? 0) <= now && (memory.validUntil ?? Infinity) > now;
   }
 
@@ -248,13 +257,7 @@ export class AnswerRoutingService {
 
   preview(query: string, projectId: string | null, taskId?: string) {
     const rows = this.db.connection.prepare("SELECT * FROM answer_rules WHERE enabled=1 AND (project_id IS NULL OR project_id=?)").all(projectId) as Row[];
-    const sources = new Map(rows.map(row => [row.id, row.source_hash]));
-    return matchAnswerRule(query, projectId, rows.map(decode), rule => {
-      if (!rule.sourceMemoryId) return true;
-      if (!this.memoryEnabled()) return false;
-      const memory = this.source(rule.sourceMemoryId, taskId);
-      return this.validSource(memory) && memory?.contentHash === sources.get(rule.id);
-    }, !taskId);
+    return matchAnswerRule(query, projectId, rows.map(row => this.currentRule(row, taskId)), rule => !rule.sourceUnavailable, !taskId);
   }
 
   prepare(input: Turn): Promise<PreparedRoute | undefined> {
@@ -291,20 +294,19 @@ export class AnswerRoutingService {
       WHERE task_id=? AND input_id=?`).get(input.taskId, input.inputId) as
       { rule_id: string; revision: number; at: number; detail: string; phrase: string; evidence: string | null; scope: string;
         status: AnswerRuleUse["routeStatus"] } | undefined;
-    const scope = JSON.stringify({ projectId: task.projectId ?? null, cwd: input.cwd });
     const cannotRestore = () => new Error("无法恢复这轮回答的原始调度快照，请重新提问");
     const priorRule = prior ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=? AND revision=? AND enabled=1")
       .get(prior.rule_id, prior.revision) as Row | undefined : undefined;
-    if (prior && (!priorRule || prior.scope !== scope || prior.status === "revoked")) throw cannotRestore();
+    if (prior && (!priorRule || prior.status === "revoked")) throw cannotRestore();
     const finishMatch = startAnswerRoutingTiming("ruleMatch");
-    const match = prior && priorRule ? { rule: decode(priorRule), phrase: prior.phrase }
+    const match = prior && priorRule ? { rule: this.currentRule(priorRule, input.taskId), phrase: prior.phrase }
       : this.preview(input.query, task.projectId ?? null, input.taskId);
     finishMatch?.(() => ({ inputId: input.inputId, method: prior && priorRule ? "restore" : "match", matched: !!match, ruleId: match?.rule.id }));
     if (!match) return;
     const { rule, phrase } = match;
-    const memory = rule.sourceMemoryId ? this.source(rule.sourceMemoryId, input.taskId) : undefined;
-    if (prior && rule.sourceMemoryId && (!this.memoryEnabled() || !this.validSource(memory)
-      || memory?.contentHash !== rule.sourceHash || priorRule?.source_hash !== rule.sourceHash)) throw cannotRestore();
+    const scope = JSON.stringify({ projectId: task.projectId ?? null, cwd: input.cwd,
+      ...(rule.sourceMemoryId ? { sourceHash: rule.sourceHash } : {}) });
+    if (prior && (rule.sourceUnavailable || prior.scope !== scope)) throw cannotRestore();
     const introduction = "本轮回答调度。以用户本次明确要求为先。";
     const evidenceParts: string[] = [];
     let detail = prior?.detail ?? `已提供做法，匹配“${phrase}”`;
@@ -401,7 +403,7 @@ export class AnswerRoutingService {
         revoke("回答规则的适用范围或来源记忆已变化");
       if (rule.sourceMemoryId) {
         const memory = this.source(rule.sourceMemoryId, input.taskId);
-        if (!this.memoryEnabled() || !this.validSource(memory) || memory?.contentHash !== rule.sourceHash || row.source_hash !== rule.sourceHash)
+        if (!this.memoryEnabled() || !this.validSource(memory) || memory?.contentHash !== rule.sourceHash)
           revoke("回答规则来源记忆已变化");
       }
     }, record };

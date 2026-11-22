@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "@shared/dots";
 import { isGatewayConversation } from "../../../shared/gateway-task";
 import "./sidebar/SidebarNavigation.css";
 import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionScroll, useDesktopSectionState, useDesktopShell } from "./desktop/DesktopSection";
@@ -98,6 +99,8 @@ function collectPinnedRows(nodes: WorkspaceTreeNode[], tasks: Task[]): Array<Ext
 export default function Sidebar({ onClose }: { onClose?: () => void } = {}): React.JSX.Element {
   const desktop = useDesktopShell();
   const tasks = useSidebarTasks();
+  const openDots = useAppStore(s => s.openDots);
+  const [dotsError, setDotsError] = useState("");
   const { requests: foregroundRequests, conversations: foregroundConversations, error: foregroundError } = useBotWorkspaceNavigation();
   const [expandedConversations, setExpandedConversations] = useDesktopSectionState<Record<string, boolean>>("task:expanded-conversations", {});
   const [foregroundLimits, setForegroundLimits] = useDesktopSectionState<Record<string, number>>("task:foreground-limits", {});
@@ -827,8 +830,12 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                 </div>
               </div>
             )}
-            {independentRows.length > 0 && (
-              <>
+            <DesktopSectionRow icon={<IconBot size={17} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
+              onClick={() => { setDotsError(""); void openDots().catch(error => setDotsError(String(error))); }}>
+              MyBuddy Dots
+            </DesktopSectionRow>
+            {dotsError && <div className="sidebar-empty" role="alert">{dotsError}</div>}
+            <>
                 <div className="sidebar-tree-header">
                   <span className="section-title">独立任务</span>
                   {independentTaskCount > 0 && <span className="sidebar-section-count">{independentTaskCount}</span>}
@@ -836,8 +843,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                 <div className="sidebar-section-list">
                   {independentRows.map((row) => <div key={row.key}>{renderRow(row)}</div>)}
                 </div>
-              </>
-            )}
+            </>
             {isFiltered && !pinnedRows.length && !independentRows.length && !workspaceTaskCount && (
               <div className="sidebar-empty" role="status">没有符合筛选条件的任务</div>
             )}

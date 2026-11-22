@@ -1,3 +1,6 @@
+import { DOTS_TASK_ID } from "@shared/dots";
+import { findDescriptorByIdAnyTask } from "@/store/app/selectors";
+import { toRendererArtifact } from "@/lib/artifactIngest";
 import { useEffect, useMemo, useState } from "react";
 import { useDesktopShell } from "@/components/desktop/DesktopSection";
 import { useActiveTaskArtifacts, useAppStore } from "@/store/appStore";
@@ -124,7 +127,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const workspaceContextId =
     (page === "workspace" ? activeWorkspaceId : null) || taskSpaceId || draftSpaceId || null;
   const reviewTaskId = useCodeReviewTaskId();
-  const artifacts = useActiveTaskArtifacts();
+  const ownArtifacts = useActiveTaskArtifacts();
   const panelMode = useAppStore((s) => s.panelMode);
   const panelWidth = useAppStore((s) => s.panelWidth);
   const panelExpanded = useAppStore((s) => s.panelExpanded);
@@ -132,6 +135,15 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const desktop = useDesktopShell();
   const artifactTabs = useAppStore((s) => s.artifactTabs);
   const activeArtifactId = useAppStore((s) => s.activeArtifactId);
+  const linkedDescriptors = useAppStore(s => activeTaskId === DOTS_TASK_ID ? s.artifactProjection.artifactsByTask : undefined);
+  const linkedCache = useAppStore(s => activeTaskId === DOTS_TASK_ID ? s.artifactRenderCache : undefined);
+  const artifacts = useMemo(() => {
+    if (!linkedDescriptors || !linkedCache) return ownArtifacts;
+    const linked = Object.values(linkedDescriptors).flat().filter(item => item.taskId !== DOTS_TASK_ID && artifactTabs.includes(item.id));
+    return [...ownArtifacts, ...linked.map(item => toRendererArtifact(item, linkedCache[item.id]))];
+  }, [ownArtifacts, linkedDescriptors, linkedCache, artifactTabs]);
+  const previewTaskId = useAppStore(s => activeTaskId === DOTS_TASK_ID
+    ? findDescriptorByIdAnyTask(s, activeArtifactId)?.taskId ?? activeTaskId : activeTaskId);
   const openArtifact = useAppStore((s) => s.openArtifact);
   const closeArtifactTab = useAppStore((s) => s.closeArtifactTab);
   const extensionFlyoutOpen = useAppStore((s) => s.extensionFlyoutOpen);
@@ -250,11 +262,11 @@ export default function ArtifactPanel(): React.JSX.Element | null {
           {isHtmlPreview ? (
             <HtmlArtifactView artifact={current} />
           ) : isOfficePreview ? (
-            <ArtifactOfficeView artifact={current} taskId={activeTaskId ?? undefined}
+            <ArtifactOfficeView artifact={current} taskId={previewTaskId ?? undefined}
               blocked={extensionFlyoutOpen && !extensionFlyoutPinned} />
-          ) : activeTaskId && isCadPreview ? (
+          ) : previewTaskId && isCadPreview ? (
             <OfficeDocumentView kind="cad" name={current.name} blocked={extensionFlyoutOpen && !extensionFlyoutPinned}
-              source={{ type: "artifact", id: current.id, taskId: activeTaskId }} />
+              source={{ type: "artifact", id: current.id, taskId: previewTaskId }} />
           ) : (
             <ArtifactBody
               artifact={current}

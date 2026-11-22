@@ -1,6 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { AnswerRule, AnswerRuleMemoryReview, AnswerRuleReviewInput } from "../../shared/answer-routing";
+import type { AnswerRule } from "../../shared/answer-routing";
 import type { AnswerRoutingService } from "./AnswerRoutingService";
 
 const text = Type.String({ minLength: 1, maxLength: 2000 });
@@ -26,8 +26,7 @@ async function result(run: () => unknown) {
   }
 }
 
-export function createAnswerRuleExtension(taskId: string, service: AnswerRoutingService,
-  review: (input: AnswerRuleReviewInput, taskId: string) => Promise<AnswerRuleMemoryReview>): ExtensionFactory {
+export function createAnswerRuleExtension(taskId: string, service: AnswerRoutingService): ExtensionFactory {
   const preview = (question: string) => {
     const hit = service.preview(question, service.taskScope(taskId), taskId);
     return hit ? { id: hit.rule.id, revision: hit.rule.revision, title: hit.rule.title, matchedPhrase: hit.phrase } : null;
@@ -47,9 +46,8 @@ export function createAnswerRuleExtension(taskId: string, service: AnswerRouting
     });
     pi.registerTool({
       name: "answer_rule_save", label: "保存回答规则",
-      description: "用户要求创建、修改、启用或停用回答调度规则时调用。新建传 title、instruction、include。修改传 version 和需改的字段。项目对话默认只改本项目，全局修改显式传 global。采用提炼稿时传 independent:true。testQuestion 可在保存后验证实际命中的规则。",
+      description: "用户要求创建、修改、启用或停用回答调度规则时调用。新建传 title、instruction、include。修改传 version 和需改的字段。项目对话默认只改本项目，全局修改显式传 global。用户偏好、更正和长期约定使用记忆工具。testQuestion 可在保存后验证实际命中的规则。",
       parameters: Type.Object({ version: Type.Optional(version), scope: Type.Optional(scope), testQuestion: Type.Optional(text),
-        independent: Type.Optional(Type.Literal(true)),
         changes: Type.Partial(Type.Object({ ...draft.properties, enabled: Type.Boolean(),
           evidenceFile: Type.String(), evidenceLibraryItemId: Type.Union([Type.String(), Type.Null()]),
           evidenceFailure: Type.Union([Type.Literal("mark-unverified"), Type.Literal("verify")]) })) }),
@@ -63,24 +61,6 @@ export function createAnswerRuleExtension(taskId: string, service: AnswerRouting
       description: "测试一句普通问法在当前项目实际会命中哪条已保存规则。仅执行匹配，不读取资料或生成回答。",
       parameters: Type.Object({ question: text }),
       execute: async (_id, { question }) => result(() => ({ question, matched: preview(question) })),
-    });
-    pi.registerTool({
-      name: "answer_rule_distill", label: "回答规则 · AI 去重并提炼",
-      description: "用户要求去重、合并或提炼回答调度时，传已保存规则的 ruleId 或完整 draft，二选一。综合草稿和相关全局记忆，返回一份提炼稿、采用来源与分歧。此步骤只预览；用户要求保存时再调用 answer_rule_save，仅采用相容内容。",
-      parameters: Type.Object({ ruleId: Type.Optional(Type.String()), draft: Type.Optional(draft) }),
-      execute: async (_id, params) => result(async () => {
-        if (!!params.ruleId === !!params.draft) throw new Error("请选择一条已保存规则，或提供一份草稿。");
-        const project = service.taskScope(taskId);
-        const current = params.ruleId ? service.rulesForTask(taskId).find(rule => rule.id === params.ruleId) : undefined;
-        const input = current ?? params.draft;
-        if (!input) throw new Error("当前对话找不到这条规则。");
-        const reviewed = await review(input, taskId);
-        if (service.taskScope(taskId) !== project || (current && !service.rulesForTask(taskId)
-          .some(rule => rule.id === current.id && rule.revision === current.revision))) throw new Error("提炼期间规则或项目已变化，请重试。");
-        if (!reviewed.distillation) throw new Error("模型未生成提炼稿，请重新提炼。");
-        return { version: current && { id: current.id, revision: current.revision }, checked: reviewed.checked,
-          proposal: reviewed.distillation, saved: false };
-      }),
     });
   };
 }

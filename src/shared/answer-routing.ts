@@ -15,7 +15,6 @@ export const AnswerRoutingIpc = {
   preview: "answer-routing:preview",
   history: "answer-routing:history",
   suggest: "answer-routing:suggest",
-  reviewMemory: "answer-routing:review-memory",
 } as const;
 
 export interface AnswerRuleDraft {
@@ -36,7 +35,7 @@ export interface AnswerRuleDraft {
 export interface AnswerRule extends AnswerRuleDraft {
   id: string;
   revision: number;
-  sourceNeedsReview?: boolean;
+  sourceUnavailable?: boolean;
 }
 export interface AnswerRuleMatch {
   rule: AnswerRule;
@@ -67,33 +66,12 @@ export interface AnswerRuleUse {
   routeStatus?: "applied" | "revoked";
 }
 export type AnswerRoutingHistoryQuery = { taskId: string } & ({ inputId: string } | { inputIds: string[] });
-export type AnswerRuleReviewInput = Pick<AnswerRuleDraft, "title" | "instruction" | "include" | "exclude">;
-export interface AnswerRuleMemoryMatch {
-  relation: "exact" | "equivalent" | "extends" | "overlap" | "conflict";
-  additionalInstruction?: string;
-  reason: string;
-  memoryId: string;
-  title: string;
-  content: string;
-  truncated: boolean;
-  sourceHash: string;
-}
-export interface AnswerRuleMemoryReview {
-  checked: number;
-  matches: AnswerRuleMemoryMatch[];
-  semanticUnavailable?: boolean;
-  distillation?: Pick<AnswerRuleDraft, "instruction" | "include" | "exclude"> & {
-    sources: Array<{ memoryId: string; title: string }>;
-    conflicts: string[];
-  };
-}
 export interface AnswerRoutingApi {
   list(): Promise<AnswerRule[]>;
   save(draft: AnswerRuleDraft, version?: { id: string; revision: number }): Promise<AnswerRule>;
   remove(id: string, revision: number): Promise<void>;
   preview(query: string, projectId: string | null): Promise<AnswerRuleMatch | null>;
   history(turn?: AnswerRoutingHistoryQuery): Promise<AnswerRuleUse[]>;
-  reviewMemory(draft: AnswerRuleReviewInput): Promise<AnswerRuleMemoryReview>;
   suggest(teaching: string, question?: string, answer?: string): Promise<Pick<AnswerRuleDraft, "title" | "include" | "exclude" | "instruction">>;
 }
 export const newAnswerRule = (): AnswerRuleDraft => ({

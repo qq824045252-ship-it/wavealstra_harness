@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { LOCAL_USER_ID } from "../../shared/bot-work";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import { botWorkspaceSpaceId, teamWorkspaceSpaceId } from "../agent/work/BotWorkspaceNavigationService";
 
 // One observation per local day and kind. History can match an older day even after a newer visit.
@@ -42,7 +43,7 @@ export function ensureTaskBoard(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_board_cron_started ON cron_runs(started_at DESC,id);
       CREATE TEMP TABLE IF NOT EXISTS board_waits(id TEXT NOT NULL, token TEXT NOT NULL, message TEXT, detail TEXT, at INTEGER, PRIMARY KEY(id,token));
       CREATE TEMP VIEW IF NOT EXISTS board_native AS SELECT t.id,t.title,t.space_id,t.status,t.updated_at,t.start_at,t.due_at,
-        t.is_favorited AS pinned,t.done_acked_at AS ack,NULL AS request_data,NULL AS source_error FROM tasks t WHERE t.archived=0
+        t.is_favorited AS pinned,t.done_acked_at AS ack,NULL AS request_data,NULL AS source_error FROM tasks t WHERE t.archived=0 AND t.id!='${DOTS_TASK_ID}'
         AND (t.space_id IS NOT NULL OR NOT (t.id GLOB 'gateway-chat-*' AND length(t.id)=77 AND substr(t.id,14) NOT GLOB '*[^a-f0-9]*'))
         AND NOT EXISTS (SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id=t.id AND w.state='trashed');
       CREATE TEMP VIEW IF NOT EXISTS board_requests AS SELECT ${botId} AS id,coalesce(nullif(trim(substr(u.text,1,120)),''),'附件对话') AS title,

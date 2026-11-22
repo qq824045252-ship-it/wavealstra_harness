@@ -166,9 +166,12 @@ export class TaskBoardRepository {
     }
   }
 
-  page(input: BoardQuery, now = Date.now()): BoardPage {
+  page(input: BoardQuery, now = Date.now(), ordinary?: { taskId?: string }): BoardPage {
     const q = querySchema.parse(input);
-    if (q.view === "automation") return this.automation(q, now);
+    if (q.view === "automation") {
+      if (ordinary) throw new Error("自动化记录不属于普通任务看板");
+      return this.automation(q, now);
+    }
     const end = localOffset(now, 1);
     const monday = localOffset(now, -((new Date(now).getDay() + 6) % 7));
     let from = localOffset(now, -13),
@@ -177,7 +180,13 @@ export class TaskBoardRepository {
       at = "b.updated_at",
       rank = "0",
       match = "1";
-    const sources = q.view === "review" ? ["board_native"] : ["board_native", "board_requests"];
+    const sources = ordinary || q.view === "review" ? ["board_native"] : ["board_native", "board_requests"];
+    const ordinaryFilter = ordinary ? `AND b.id NOT GLOB 'gw-*' AND b.id NOT GLOB 'gateway-chat-*'
+      AND coalesce(b.space_id,'') NOT GLOB 'sp-gw-*'
+      AND NOT EXISTS (SELECT 1 FROM tasks external WHERE external.id=b.id AND external.external_agent_pin_json IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM gateway_sidebar_conversations g WHERE g.task_id=b.id)
+      AND NOT EXISTS (SELECT 1 FROM work_execution_bindings e WHERE e.task_id=b.id)
+      ${ordinary.taskId ? "AND b.id=@taskId" : ""}` : "";
     const waits = `SELECT task_id AS id,created_at AS at FROM conversation_interactions WHERE status='pending'
       UNION ALL SELECT id,at FROM board_waits`;
     if (q.view === "recent" || q.view === "frequent") {
@@ -245,9 +254,10 @@ export class TaskBoardRepository {
     const search = q.search?.trim() ? " AND instr(lower(b.title),lower(@term))>0" : "";
     const select = (source: string, paged: boolean) => `SELECT ${paged ? `b.*,${rank} AS rank,${at} AS at` : "b.id"} FROM
       ${candidates ? `ranked k CROSS JOIN ${source} b ON b.id=k.id` : `${source} b`}
-      WHERE (${match}) ${visibility} ${scope} ${project} ${search}
+      WHERE (${match}) ${visibility} ${scope} ${project} ${search} ${ordinaryFilter}
       ${paged && q.cursor ? `AND ((${rank})<@rank OR ((${rank})=@rank AND ((${at})<@at OR ((${at})=@at AND b.id>@id))))` : ""}`;
-    const prefix = `WITH RECURSIVE ${hidden}${candidates ? ", ranked AS MATERIALIZED (" + candidates + ")" : ""}`;
+    const hiddenSpaces = ordinary ? hidden.replace("WHERE archived=1", "WHERE archived=1 OR id GLOB 'sp-gw-*' OR id GLOB 'bot-space-*' OR id GLOB 'bot-team-space-*' OR id GLOB 'bot-workspace-group-*'") : hidden;
+    const prefix = `WITH RECURSIVE ${hiddenSpaces}${candidates ? ", ranked AS MATERIALIZED (" + candidates + ")" : ""}`;
     const selection = sources.map((source) => select(source, true)).join(" UNION ALL ");
     // Deferring keeps a card out of focus until a new request arrives. The historical card still shows live blockers.
     const waitSince = q.view === "today" || q.view === "attention" ? afterDeferral : "0";
@@ -285,6 +295,7 @@ export class TaskBoardRepository {
       lane: q.lane ?? null,
       scope: q.scope ?? null,
       project: q.projectId ?? null,
+      taskId: ordinary?.taskId ?? null,
       term: q.search?.trim() ?? "",
       rank: q.cursor?.rank ?? 0,
       at: q.cursor?.at ?? 0,

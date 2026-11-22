@@ -347,7 +347,7 @@ export interface MemoryPipelineStateDto {
 /** L2 derived scenario projection. MemoryRecord remains the L1 truth. */
 export interface MemoryScenarioDto {
   id: string;
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "task";
   scopeId?: string;
   title: string;
   summary: string;
@@ -363,7 +363,7 @@ export interface MemoryDismissedProjectionDto {
   id: string;
   kind: "scenario" | "profile";
   title: string;
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "task";
   scopeId?: string;
   dismissedAt: number;
 }
@@ -499,7 +499,7 @@ export interface MemorySkillHistoryDeleteRequest {
 /** L3 stable high-level profile projection. */
 export interface MemoryCoreProfileDto {
   id: string;
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "task";
   scopeId?: string;
   title: string;
   content: string;

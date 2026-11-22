@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID, isDotsAutomaticInput } from "../../../shared/dots";
 import { GadgetPreviewEntry, gadgetPreviewIdentities } from "./DurableGadgetPreviewIdentity";
 import { durableExtensionDiagnostics } from "./DurableToolDiagnostics";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -7,7 +8,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
 import { durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
-import { durableSourceUserMessageId } from "./DurableInputProvenance";
+import { durableSourceInput } from "./DurableInputProvenance";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { createAgentSettingsManager } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
@@ -84,9 +85,15 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           if (!cwd) throw new Error("工具执行缺少宿主绑定的工作目录");
           const live = await native.snapshot(LiveDoc, conversationId, context);
           const runId = `durable-run:${capabilities.taskId}:${conversationId}:${live?.run?.first ?? live?.run?.inputs[0] ?? native.taskId}`;
-          const sourceUserMessageId = tool.name === "conversation_goal_create"
-            ? await durableSourceUserMessageId(native, context, conversationId, live?.run?.inputs ?? []) : undefined;
-          return withDurableExecution({ execution, cwd, runId, native, context, sourceUserMessageId }, execute);
+          const personalWrite = capabilities.taskId === DOTS_TASK_ID && ["memory_create", "memory_update", "memory_promote", "memory_forget", "answer_rule_save"].includes(tool.name);
+          const goalCompletion = tool.name === "conversation_goal_get" || tool.name === "conversation_goal_propose_complete";
+          const source = (goalCompletion || personalWrite || tool.name === "conversation_goal_create" || tool.name === "dots_action" || (tool.name === "automation_exec" && capabilities.taskId === DOTS_TASK_ID))
+            ? await durableSourceInput(native, context, conversationId, live?.run?.inputs ?? [], goalCompletion) : undefined;
+          if (personalWrite && (!source || isDotsAutomaticInput(source.id))) throw new Error("更改个人记忆或对话规则需要本轮用户输入");
+          return withDurableExecution({ execution, cwd, runId, native, context, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, presentationConversationId: conversationId,
+            sourceOrigin: source && capabilities.taskId === DOTS_TASK_ID ? { conversationId, entryId: source.entryId } : undefined,
+            memorySource: tool.name.startsWith("memory_") && source?.createdAt !== undefined ? { text: source.text, createdAt: source.createdAt,
+              messageId: `durable:${capabilities.taskId}:${conversationId}:${source.entryId}` } : undefined }, execute);
         },
       });
     },

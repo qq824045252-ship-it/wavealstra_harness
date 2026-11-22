@@ -1,3 +1,5 @@
+import { openDotsTask } from "@/lib/taskBoardVisits";
+import { DOTS_TASK_ID } from "@shared/dots";
 /**
  * ChatMarkdown — Chat assistant prose 的统一 Markdown renderer（streaming ↔ settled 同一组件）。
  *
@@ -19,7 +21,7 @@
  * 安全边界：htmlPolicy="safe"（白名单标签渲染，其余转义；不执行 raw HTML / script）。
  */
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
-import MarkdownRender, { setCustomComponents } from "markstream-react";
+import MarkdownRender, { BlockquoteNode, setCustomComponents } from "markstream-react";
 import type { NodeComponentProps } from "markstream-react";
 import "markstream-react/index.css";
 import hljs from "highlight.js/lib/common";
@@ -29,6 +31,12 @@ import { LocalFileChip } from "@/components/common/FileBadge";
 import { IconCheck, IconCopy } from "@/components/common/icons";
 import SvgFencePreview, { isSvgFenceLanguage, normalizeStandaloneSvgBlocks } from "@/components/common/SvgFencePreview";
 import { looksLikeLocalFilePath } from "@/lib/localFilePath";
+import { parseReplyBlock, REPLY_CHART_FENCE, REPLY_TABLE_FENCE } from "@shared/chat-reply-content";
+import { replyCitationExcerpt, resolveReplyCitation } from "@shared/chat-reply-sources";
+import { ChatReplyChart, ChatReplyCitation, ChatReplyTable } from "./ChatReplyContent";
+import ChatReadingDialog from "./ChatReadingDialog";
+import ChatMermaid from "./ChatMermaid";
+import ChatCalloutFrame from "./ChatCalloutFrame";
 import { ChatImage } from "./ChatImage";
 
 // ---------- markstream 节点形状（与 stream-markdown-parser 输出对齐） ----------
@@ -56,9 +64,29 @@ interface MarkstreamInlineCodeNode {
 // ---------- 自定义节点 ----------
 
 const TaskFileScopeContext = createContext(true);
+type ReplySources = Parameters<typeof resolveReplyCitation>[2];
+const ReplyContentContext = createContext<{ sources: ReplySources; streaming: boolean } | null>(null);
 
-function ChatLinkNode({ node }: NodeComponentProps<MarkstreamLinkNode>): React.JSX.Element {
+function ChatLinkNode({ node }: NodeComponentProps<MarkstreamLinkNode>): React.JSX.Element | null {
   const resolveTaskFiles = useContext(TaskFileScopeContext);
+  const dots = useAppStore(s => s.activeTaskId === DOTS_TASK_ID);
+  const [error, setError] = useState("");
+  const reply = useContext(ReplyContentContext);
+  const excerpt = reply && replyCitationExcerpt(node.text, node.title);
+  if (excerpt && reply) {
+    const citation = resolveReplyCitation(node.href, excerpt.quote, reply.sources);
+    if (citation) return <ChatReplyCitation citation={citation} />;
+    if (excerpt.marked) return null;
+  }
+  const reference = resolveTaskFiles && dots && /^mybuddy:\/\/(task|space)\/([^/?#]+)$/.exec(node.href);
+  if (reference) return <><a href={node.href} className="md-link" onClick={event => {
+    event.preventDefault();
+    try {
+      const id = decodeURIComponent(reference[2]);
+      if (reference[1] === "task") void openDotsTask(id).catch(reason => setError(String(reason)));
+      else useAppStore.getState().openWorkspaceDetail(id);
+    } catch (reason) { setError(String(reason)); }
+  }}>{node.text}</a>{error && <span role="alert">{error}</span>}</>;
   if (!resolveTaskFiles) {
     // Bot history has no ordinary Task scope. Never resolve a basename against
     // whichever unrelated Task happens to remain selected behind Bot mode.
@@ -127,7 +155,20 @@ function ChatMdFenceCard({ code, depth }: { code: string; depth: number }): Reac
   );
 }
 
-function ChatCodeBlockNode({ node }: NodeComponentProps<MarkstreamCodeBlockNode>): React.JSX.Element {
+function ChatCodeBlockNode(props: NodeComponentProps<MarkstreamCodeBlockNode>): React.JSX.Element | null {
+  const reply = useContext(ReplyContentContext);
+  const language = props.node.language?.trim();
+  if (reply && (language === REPLY_TABLE_FENCE || language === REPLY_CHART_FENCE)) {
+    if (props.node.loading && reply.streaming) return null;
+    const block = parseReplyBlock(language, props.node.code ?? "");
+    if (!block) return null;
+    return block.kind === "table" ? <ChatReplyTable data={block.data} /> : <ChatReplyChart data={block.data} />;
+  }
+  if (language === "mermaid") return <ChatMermaid code={props.node.code ?? ""} loading={props.node.loading} />;
+  return <ChatOrdinaryCodeBlockNode {...props} />;
+}
+
+function ChatOrdinaryCodeBlockNode({ node }: NodeComponentProps<MarkstreamCodeBlockNode>): React.JSX.Element {
   const fenceDepth = useContext(FenceDepthContext);
   const isStreaming = node.loading === true;
   const lang = (node.language ?? "").toLowerCase().trim();
@@ -156,6 +197,8 @@ function ChatCodeBlockNode({ node }: NodeComponentProps<MarkstreamCodeBlockNode>
   }, [node.code, lang, isStreaming, isMdFence, isSvgFence]);
 
   const [copied, setCopied] = useState(false);
+  const [wrapped, setWrapped] = useState(false);
+  const [reading, setReading] = useState(false);
   const copy = (): void => {
     void navigator.clipboard.writeText(node.code);
     setCopied(true);
@@ -169,24 +212,33 @@ function ChatCodeBlockNode({ node }: NodeComponentProps<MarkstreamCodeBlockNode>
     return <SvgFencePreview code={node.code} />;
   }
 
+  const displayCode = highlighted
+    ? <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
+    : <code>{node.code}</code>;
+  const longCode = !isStreaming && (node.code.length > 500 || node.code.split("\n").some(line => line.length > 72));
   return (
-    <div className="md-pre">
+    <div className={`md-pre${wrapped ? " chat-code-wrap" : ""}`}>
       {lang && <span className="md-pre-lang">{lang}</span>}
+      {longCode && <div className="chat-code-actions">
+        <button type="button" className="chat-reading-button" onClick={() => setWrapped(value => !value)} aria-pressed={wrapped}>换行</button>
+        <button type="button" className="chat-reading-button" onClick={() => setReading(true)}>查看完整代码</button>
+      </div>}
       <button className="md-pre-copy" title="复制代码" onClick={copy} type="button">
         {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
       </button>
       <pre className={highlighted ? "hljs" : undefined}>
-        {highlighted ? (
-          <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
-        ) : (
-          <code>{node.code}</code>
-        )}
+        {displayCode}
       </pre>
+      {reading && <ChatReadingDialog title={lang ? `${lang} 代码` : "完整代码"} onClose={() => setReading(false)}
+        actions={<><button type="button" className="chat-reading-button" onClick={() => setWrapped(value => !value)} aria-pressed={wrapped}>换行</button>
+          <button type="button" className="chat-reading-button" onClick={copy}>{copied ? "已复制" : "复制代码"}</button></>}>
+        <pre className={wrapped ? "chat-code-wrap" : undefined}>{displayCode}</pre>
+      </ChatReadingDialog>}
     </div>
   );
 }
 
-/** 无 mermaid/d2/infographic 运行时 → 源码 pre 降级（不引入大依赖、不执行图表代码）。 */
+/** Keep the source readable for diagram languages with no chat renderer. */
 function ChatDiagramFallbackNode({
   node,
   label,
@@ -200,6 +252,24 @@ function ChatDiagramFallbackNode({
       </pre>
     </div>
   );
+}
+
+const alertLabels = { NOTE: "说明", TIP: "提示", IMPORTANT: "重要", WARNING: "注意", CAUTION: "警告" } as const;
+
+function ChatQuoteNode(props: Parameters<typeof BlockquoteNode>[0]) {
+  const [paragraph, ...remaining] = props.node.children ?? [];
+  const paragraphChildren = paragraph?.type === "paragraph" && Array.isArray(paragraph.children) ? paragraph.children : [];
+  const first = paragraphChildren[0];
+  const alert = first?.type === "text" ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]*\n|$)/.exec(first.content) : null;
+  if (!alert || first?.type !== "text" || paragraph?.type !== "paragraph") return <BlockquoteNode {...props} />;
+  const kind = alert[1] as keyof typeof alertLabels;
+  const content = first.content.slice(alert[0].length);
+  const children = [...(content ? [{ ...first, content, raw: content }] : []), ...paragraphChildren.slice(1)];
+  const body = [...(children.length ? [{ ...paragraph, children }] : []), ...remaining];
+  if (!body.length) return <BlockquoteNode {...props} />;
+  return <ChatCalloutFrame title={alertLabels[kind]} variant={kind === "NOTE" || kind === "TIP" ? "info" : "warning"}>
+    <div className="chat-alert-body"><BlockquoteNode {...props} node={{ ...props.node, children: body }} /></div>
+  </ChatCalloutFrame>;
 }
 
 // ---------- 主组件 ----------
@@ -221,8 +291,8 @@ const CHAT_CUSTOM_COMPONENTS = {
     <ChatImage source={node.src} alt={node.alt} title={node.title ?? undefined} loading={node.loading} />
   ),
   inline_code: ChatInlineCodeNode,
+  blockquote: ChatQuoteNode,
   code_block: ChatCodeBlockNode,
-  mermaid: (props: NodeComponentProps<Record<string, unknown>>) => <ChatDiagramFallbackNode {...props} label="mermaid" />,
   d2: (props: NodeComponentProps<Record<string, unknown>>) => <ChatDiagramFallbackNode {...props} label="d2" />,
   infographic: (props: NodeComponentProps<Record<string, unknown>>) => (
     <ChatDiagramFallbackNode {...props} label="infographic" />
@@ -418,6 +488,7 @@ export interface ChatMarkdownProps {
   fenceDepth?: number;
   /** False for Bot conversations, which must not borrow the selected ordinary Task. */
   resolveTaskFiles?: boolean;
+  replySources?: ReplySources;
 }
 
 function ChatMarkdown({
@@ -426,6 +497,7 @@ function ChatMarkdown({
   variant = "chat",
   fenceDepth = 0,
   resolveTaskFiles = true,
+  replySources,
 }: ChatMarkdownProps): React.JSX.Element {
   const theme = useAppStore((s) => s.theme);
   const content = useMemo(
@@ -440,9 +512,11 @@ function ChatMarkdown({
   const everStreamedRef = useRef(streaming);
   if (streaming) everStreamedRef.current = true;
   const markstreamFinal = !streaming && !everStreamedRef.current;
+  const replyContext = useMemo(() => replySources && { sources: replySources, streaming }, [replySources, streaming]);
 
   return (
     <div className={`md ${variant === "document" ? "md-doc" : "md-chat"}`}>
+      <ReplyContentContext.Provider value={replyContext ?? null}>
       <TaskFileScopeContext.Provider value={resolveTaskFiles}><FenceDepthContext.Provider value={fenceDepth}>
         <MarkdownRender
           content={content}
@@ -467,6 +541,7 @@ function ChatMarkdown({
           customId={CHAT_MARKSTREAM_CUSTOM_ID}
         />
       </FenceDepthContext.Provider></TaskFileScopeContext.Provider>
+      </ReplyContentContext.Provider>
     </div>
   );
 }

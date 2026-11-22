@@ -1,3 +1,5 @@
+import { isDotsSearch } from "./MemorySearchEpoch";
+import { searchDotsVectors } from "./DotsVectorSearch";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryIndexResult, MemoryRecordDto } from "../../shared/memory-kernel";
 import { memorySearchWhere, type MemorySearchScope } from "./MemorySearchScope";
@@ -110,6 +112,11 @@ export class MemorySemanticProvider {
     if (!conn.open) return [];
     const hits: MemorySemanticHit[] = [];
     const keep = Math.max(1, Math.min(100, limit));
+    if (isDotsSearch(scope)) {
+      const indexed = await searchDotsVectors(conn,queryVec,scope,accept,keep,threshold);
+      if (indexed) return indexed;
+      if (!conn.open) return [];
+    }
     const where = memorySearchWhere(scope);
     // Read each page completely before yielding, so writes and task cancellation
     // can run between pages without an active SQLite statement or transaction.

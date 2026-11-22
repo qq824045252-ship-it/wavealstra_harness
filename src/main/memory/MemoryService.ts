@@ -1,3 +1,7 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
+import { dotsScopeCondition, dotsSourcePointer, dotsSubject, groundDotsClaim, isDotsSingleUse, matchesDotsQuote, type DotsRevisionSource, type DotsSourceInput } from "./DotsRevisionSource";
+import { dotsQuestionTerms, rankDotsEvidence } from "./DotsRecallRanking";
+import { memorySearchWhere } from "./MemorySearchScope";
 import { rankMemorySearch, rankMemorySearchAsync, tokenSimilarity } from "./MemoryRecallRanking";
 import { botExtractionPolicy } from "./BotMemoryExtractionPolicy";
 import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
@@ -16,7 +20,9 @@ import {
   extractCandidates,
 } from "./MemoryCandidateExtraction";
 import { resolveAssistantScopeChain, resolveWorkMemoryScope } from "./AssistantMemoryScopes";
-import { botMemorySource, botMemoryTextEligible, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
+import { gatewayDotsMemorySource, hasGatewayDotsMemory } from "../gateway/GatewayDotsBindings";
+import { isGatewayConversation } from "../../shared/gateway-task";
+import { botMemorySource, botMemoryTextEligible, botMemoryConversationOnly, botMemoryWriteEvidenceAllowed, botMemoryAutomaticBoundary, botPeerMemoryInput } from "./BotMemorySource";
 import { projectMemoryContext } from "../agent/MemoryContextProjection";
 import { createHash, randomUUID } from "node:crypto";
 import type { ObservationSource } from "../../shared/native-improvement";
@@ -95,7 +101,7 @@ export class MemoryService {
   constructor(private readonly db: AppDatabase, opts?: { semantic?: boolean }) {
     this.repository = new MemoryRepository(db);
     this.forgetWatermarks = new MemoryForgetWatermarks(db.connection);
-    this.cognition = new MemoryCognitionService(db);
+    this.cognition = new MemoryCognitionService(db, (id, revision) => this.getDotsRevisionSource(id, revision));
     this.learning = new MemorySkillLearningService(db, this.repository);
     this.semantic = opts?.semantic === false ? null : new MemorySemanticProvider(db);
     // Candidates stuck 'pending' from an interrupted extraction become reviewable instead of invisible.
@@ -112,6 +118,28 @@ export class MemoryService {
   }
 
   get(id: string): MemoryRecordDto | undefined { return this.repository.get(id); }
+
+  getDotsRevisionSource(id: string, revision: number): DotsRevisionSource | undefined {
+    const ctx = { taskId: DOTS_TASK_ID };
+    const row = this.db.connection.prepare("SELECT change_reason,content FROM memory_revisions WHERE memory_id=? AND revision=?")
+      .get(id, revision) as { change_reason?: string; content: string } | undefined;
+    const ref = dotsSourcePointer(row?.change_reason);
+    if (!ref || this.contextSnapshotRevocationReason({ id, revision }, ctx)) return;
+    const evidence = this.getForRecall(id, ctx)?.evidence;
+    if (!evidence) return;
+    const turn = ref.turnId ? this.getTurn(ref.turnId) : undefined;
+    if (ref.turnId && (!turn || turn.userMessageId !== ref.messageId || (turn.taskId !== DOTS_TASK_ID
+      && !gatewayDotsMemorySource(this.db.connection, turn.taskId, turn.metadata.gatewayOrigin, false)))) return;
+    const linked = evidence.find(e => turn ? e.evidenceKind === "conversation" && e.refId === turn.id
+      : e.evidenceKind === "message" && e.refId === ref.messageId);
+    if (!linked) return;
+    const quote = turn ? turn.userText.slice(ref.start, ref.start + ref.length)
+      : linked.excerpt && matchesDotsQuote(linked.excerpt, ref.hash) ? linked.excerpt : row?.content;
+    if (!quote || !matchesDotsQuote(quote, ref.hash)) return;
+    const filter = this.forgetWatermarks.sourceFilter(this.resolveScopeChain(ctx));
+    if (filter(quote, "", ref.capturedAt, ref.messageId).userText !== quote) return;
+    return { turnId: ref.turnId, messageId: ref.messageId, role: "user", capturedAt: ref.capturedAt, quote, stance: ref.stance };
+  }
 
   /** Host-only backing record for a verified Durable incident. The weekly release controls exposure. */
   stageWeeklyObservationMemory(scope: { kind: "task" | "project" | "workspace"; id: string }, observation: ObservationSource): MemoryRecordDto {
@@ -180,6 +208,16 @@ export class MemoryService {
     return this.forgetWatermarks.projectEvidence(memory, scopes);
   }
 
+  currentDelegationSource(taskId: string, id: string, revision: number): MemoryRecordDto | undefined {
+    const now = Date.now();
+    const record = this.getForRecall(id, { taskId, statuses: ["active"] });
+    if (record?.status !== "active" || (record.validFrom !== undefined && record.validFrom > now)
+      || (record.validUntil !== undefined && record.validUntil <= now)
+      || !this.getForRecall(id, {taskId: DOTS_TASK_ID, statuses: ["active"]})
+      || this.history(id)[0]?.revision !== revision) return;
+    return record;
+  }
+
   /** Scope-safe visibility check used by Agent/MCP surfaces; guessed ids must not cross scope boundaries. */
   canAccess(id: string, request: MemorySearchRequest): boolean {
     const memory = this.repository.get(id);
@@ -227,6 +265,7 @@ export class MemoryService {
 
   /** Default durable scope for an Agent write: Project > Workspace > Task. Global requires explicit selection. */
   inferAgentScope(taskId: string): { scopeType: MemoryScopeType; scopeId?: string } {
+    if (isGatewayConversation(taskId)) return { scopeType: "task", scopeId: taskId };
     const work = this.workMemoryScope(taskId);
     if (work) return { scopeType: "work", scopeId: work.work_id };
     const conversation = botMemorySource(this.db, taskId);
@@ -326,7 +365,7 @@ export class MemoryService {
       evidenceKind: e.evidenceKind,
       refId: cleanText(e.refId, 500),
       refTitle: cleanText(e.refTitle, 500) || undefined,
-      excerpt: cleanText(e.excerpt, 1200) || undefined,
+      excerpt: request.sourceTaskId === DOTS_TASK_ID && e.evidenceKind === "message" ? e.excerpt?.slice(0, 1200) : cleanText(e.excerpt, 1200) || undefined,
       createdAt: now,
     })).filter((e) => e.refId);
     return {
@@ -354,8 +393,12 @@ export class MemoryService {
     };
   }
 
-  private invalidateProjectionScopes(scopes: MemoryRecordDto["scopes"]): void {
-    this.cognition.projections.invalidateScopes(scopes);
+  private invalidateProjectionScopes(scopes: MemoryRecordDto["scopes"], changedId?: string): void {
+    this.cognition.projections.invalidateScopes(scopes.filter(scope => scope.scopeType !== "task"));
+    if (scopes.some(scope => scope.scopeType === "task" && scope.scopeId === DOTS_TASK_ID)) {
+      if (changedId) this.cognition.projections.invalidateByMemoryIds([changedId]);
+      this.cognition.queueDotsViews();
+    }
   }
 
   /** Project-scoped L1 changes also advance the Project activity/version clock. */
@@ -371,15 +414,15 @@ export class MemoryService {
     for (const projectId of projectIds) touch.run(now, projectId);
   }
 
-  create(request: MemoryCreateRequest): MemoryRecordDto {
+  create(request: MemoryCreateRequest, revisionReason?: string): MemoryRecordDto {
     if (request.sourceTaskId && request.sourceType === "agent"
-      && (this.workMemoryScope(request.sourceTaskId) || this.channelBotId(request.sourceTaskId))
+      && (isGatewayConversation(request.sourceTaskId) || this.workMemoryScope(request.sourceTaskId) || this.channelBotId(request.sourceTaskId))
       && !this.canPromoteFromTask(request.sourceTaskId, request.scopeType, request.scopeId)) {
       throw new Error("记忆写入范围不属于当前 Bot、团队、项目或 Work");
     }
     const record = this.buildRecord(request);
     const saved = this.db.connection.transaction(() => {
-      const inserted = this.repository.insert(record);
+      const inserted = this.repository.insert(record, revisionReason);
       this.invalidateProjectionScopes(inserted.scopes);
       this.touchProjectScopes(inserted.scopes, inserted.updatedAt);
       return inserted;
@@ -392,9 +435,51 @@ export class MemoryService {
   }
 
   /** Model tools carry their host-bound task identity separately from memory provenance. */
-  updateFromTask(taskId: string, request: MemoryUpdateRequest): MemoryRecordDto {
+  createFromTask(request: MemoryCreateRequest, source?: DotsSourceInput, sourceQuote?: string): MemoryRecordDto {
+    if (request.sourceTaskId !== DOTS_TASK_ID || !source) return this.create(request);
+    const bound = groundDotsClaim(request, source, sourceQuote);
+    if (!bound) throw new Error("请在 sourceQuote 中提供本轮用户消息的一段明确原话，以定位这条记忆");
+    if (isDotsSingleUse(bound.quote, source.text)) throw new Error("本次例外只用于当前请求，无需写入长期记忆");
+    return this.create({ ...request, kind: bound.kind, title: bound.title, content: bound.content,
+      confidence: bound.confidence, explicit: bound.explicit,
+      evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt: bound.quote }] }, bound.reason);
+  }
+
+  updateFromTask(taskId: string, request: MemoryUpdateRequest, source?: DotsSourceInput, sourceQuote?: string): MemoryRecordDto {
     return this.db.connection.transaction(() => {
       this.assertTaskMemoryWritable(taskId, request.id);
+      if (taskId === DOTS_TASK_ID && source) {
+        const record = this.repository.get(request.id)!;
+        const claim = { kind: request.kind ?? record.kind, title: request.title ?? record.title, content: request.content,
+          explicit: request.explicit, confidence: request.confidence };
+        const bound = groundDotsClaim(claim, source, sourceQuote);
+        if (!bound) throw new Error("请在 sourceQuote 中提供本轮用户消息的一段明确原话，以定位这次更新");
+        if (isDotsSingleUse(bound.quote, source.text)) throw new Error("本次例外只用于当前请求，长期规则继续适用");
+        const changeMeaning = request.title !== undefined || request.content !== undefined;
+        const excerpt = bound.quote;
+        const newCondition = dotsScopeCondition(bound.quote);
+        const priorCondition = dotsScopeCondition(record.content);
+        if (changeMeaning && priorCondition && !newCondition) throw new Error("更新项目例外时请保留原适用条件");
+        if (changeMeaning && newCondition && newCondition !== priorCondition) {
+          return this.create({ ...this.inferAgentScope(taskId), title: bound.title, content: bound.content,
+            kind: bound.kind, explicit: bound.explicit, confidence: bound.confidence, sourceType: "agent", sourceTaskId: taskId,
+            evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt }] }, bound.reason);
+        }
+        if (changeMeaning && (bound.stance === "reported" || bound.stance === "uncertain"
+          || record.kind === "decision" && bound.stance !== "statement")) {
+          return this.create({ ...this.inferAgentScope(taskId), title: bound.title, content: bound.content,
+            kind: "fact", explicit: false, confidence: bound.confidence, sourceType: "agent", sourceTaskId: taskId,
+            evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt }] }, bound.reason);
+        }
+        this.repository.addEvidence({ id: `mev_${randomUUID()}`, memoryId: request.id, evidenceKind: "message",
+          refId: source.messageId, excerpt, createdAt: source.createdAt });
+        const title = !request.title && record.title !== record.content.slice(0, 76) ? record.title : bound.title;
+        return this.update({ ...request, ...(changeMeaning
+          ? { kind: bound.kind, title, content: bound.content, confidence: bound.confidence, explicit: bound.explicit } : {}),
+          changeReason: bound.reason });
+      }
+      if (source) this.repository.addEvidence({ id: `mev_${randomUUID()}`, memoryId: request.id, evidenceKind: "message",
+        refId: source.messageId, excerpt: source.text.slice(0, 1200), createdAt: source.createdAt });
       return this.update(request);
     })();
   }
@@ -439,7 +524,7 @@ export class MemoryService {
     };
     const saved = this.db.connection.transaction(() => {
       const updated = this.repository.update(next, request.changedBy ?? "manual", request.changeReason);
-      this.invalidateProjectionScopes(updated.scopes);
+      this.invalidateProjectionScopes(updated.scopes, updated.id);
       this.touchProjectScopes(updated.scopes, updated.updatedAt);
       return updated;
     })();
@@ -453,7 +538,7 @@ export class MemoryService {
     return saved;
   }
 
-  supersede(oldId: string, request: MemoryCreateRequest): MemoryRecordDto {
+  supersede(oldId: string, request: MemoryCreateRequest, replacementReason?: string): MemoryRecordDto {
     const old = this.repository.get(oldId);
     if (!old) throw new Error(`被替代记忆不存在：${oldId}`);
     this.assertRecordWritable(old);
@@ -479,8 +564,9 @@ export class MemoryService {
         relation,
         request.sourceType ?? "agent",
         `superseded by ${replacement.id}`,
+        replacementReason,
       );
-      this.invalidateProjectionScopes([...old.scopes, ...inserted.scopes]);
+      this.invalidateProjectionScopes([...old.scopes, ...inserted.scopes], old.id);
       this.touchProjectScopes([...old.scopes, ...inserted.scopes], now);
       return inserted;
     })();
@@ -506,6 +592,7 @@ export class MemoryService {
     this.db.connection.transaction(() => {
       if (current) this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), current.scopes);
       if (current?.id.startsWith("mem_weekly_")) this.forgetWatermarks.withdraw(current.scopes, [current.id]);
+      this.cognition.projections.forgetDotsSource(id);
       this.repository.hardDelete(id);
       if (current) {
         this.invalidateProjectionScopes(current.scopes);
@@ -518,14 +605,26 @@ export class MemoryService {
     }
   }
 
+  latestWithdrawalAt(taskId: string): number {
+    const lookup = this.db.connection.prepare(`SELECT MAX(stamp) AS stamp FROM (
+      SELECT MAX(cutoff_at) AS stamp FROM memory_forget_watermarks WHERE scope_type=@scopeType AND scope_id=@scopeId
+      UNION ALL SELECT MAX(cutoff_at) FROM memory_forget_targets WHERE scope_type=@scopeType AND scope_id=@scopeId)`);
+    return this.resolveScopeChain({ taskId }).reduce((latest, scope) => {
+      const row = lookup.get({ scopeType: scope.scopeType, scopeId: scope.scopeId ?? "" }) as { stamp: number | null };
+      return Math.max(latest, row.stamp ?? 0);
+    }, 0);
+  }
+
   recordForgetBoundary(scopeType: MemoryScopeType, scopeId: string | undefined, cutoffAt: number, allowedMessageId?: string): void {
     this.assertScope(scopeType, scopeId);
     this.forgetWatermarks.advance([{ scopeType, scopeId }], cutoffAt, allowedMessageId);
+    if (scopeType === "global" || (scopeType === "task" && scopeId === DOTS_TASK_ID)) this.cognition.invalidateDotsSources();
   }
 
   recordForgetIntent(scopeType: MemoryScopeType, scopeId: string | undefined, intent: Extract<MemoryRemovalIntent, { kind: "forget" }>, cutoffAt: number, messageId: string): void {
     this.assertScope(scopeType, scopeId);
     this.forgetWatermarks.recordIntent([{ scopeType, scopeId }], intent, cutoffAt, messageId);
+    if (scopeType === "global" || (scopeType === "task" && scopeId === DOTS_TASK_ID)) this.cognition.invalidateDotsSources();
   }
 
   /**
@@ -543,6 +642,7 @@ export class MemoryService {
     const forgotten = this.db.connection.transaction(() => {
       this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), [target], source);
       if (current.id.startsWith("mem_weekly_")) this.forgetWatermarks.withdraw([target], [current.id], source?.createdAt, source?.messageId);
+      if (scopeType === "task" && scopeId === DOTS_TASK_ID) this.cognition.projections.forgetDotsSource(id);
       this.repository.removeScope(id, scopeType, scopeId);
       const remaining = this.repository.get(id)?.scopes ?? [];
       if (remaining.length === 0) {
@@ -582,6 +682,7 @@ export class MemoryService {
   }
 
   canPromoteFromTask(taskId: string, targetScopeType: MemoryScopeType, targetScopeId?: string): boolean {
+    if (isGatewayConversation(taskId)) return targetScopeType === "task" && targetScopeId === taskId;
     const work = this.workMemoryScope(taskId);
     if (work) return (targetScopeType === "task" && targetScopeId === taskId)
       || (targetScopeType === "work" && targetScopeId === work.work_id)
@@ -642,12 +743,16 @@ export class MemoryService {
       statuses: request.statuses?.length ? request.statuses : ["active"],
       kinds: request.kinds,
     } satisfies import("./MemorySearchScope").MemorySearchScope;
+    const visible = this.recallVisibility(request, scopes);
     const candidates = query ? this.repository.searchScoped(query, scopeQuery, Math.max(Math.min(request.limit ?? 20, 100) * 4, 100),
-      memory => this.visibleInChain(memory, scopes, request)) : undefined;
+      visible) : undefined;
     const scoped = candidates?.scoped ?? this.repository.listByScopes({ ...scopeQuery, limit: Math.max((request.limit ?? 20) * 30, 500) });
     const ftsRank = candidates?.ftsRanks ?? new Map<string, number>();
-    return rankMemorySearch({ scoped, ftsRank, query, request, scopes, visible: memory => this.visibleInChain(memory, scopes, request) })
+    const dots = request.taskId === DOTS_TASK_ID && dotsQuestionTerms(query).length > 0;
+    const hits = rankMemorySearch({ scoped, ftsRank, query, request: dots ? { ...request, limit: 100 } : request, scopes,
+      visible })
       .map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) }));
+    return dots ? this.rankDotsQuery(request, hits) : hits;
   }
 
   private async searchLexicalAsync(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
@@ -655,14 +760,59 @@ export class MemoryService {
     if (!query) return this.search(request);
     const stamp = this.recallScopeStamp(request);
     const scopes = this.resolveScopeChain(request);
+    const canRead = this.recallVisibility(request, scopes);
     const candidates = await this.repository.searchScopedAsync(query, { scopes,
       statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds },
-      Math.max(Math.min(request.limit ?? 20, 100) * 4, 100), memory => this.visibleInChain(memory, scopes, request));
+      Math.max(Math.min(request.limit ?? 20, 100) * 4, 100), canRead);
     if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
-    const hits = await rankMemorySearchAsync({ scoped: candidates.scoped, ftsRank: candidates.ftsRanks, query, request, scopes,
-      visible: memory => this.visibleInChain(memory, scopes, request), current: id => this.repository.get(id) });
-    return this.db.connection.open && this.recallScopeStamp(request) === stamp
-      ? hits.map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) })) : [];
+    const dots = request.taskId === DOTS_TASK_ID && dotsQuestionTerms(query).length > 0;
+    const hits = await rankMemorySearchAsync({ scoped: candidates.scoped, ftsRank: candidates.ftsRanks, query,
+      request: dots ? { ...request, limit: 100 } : request, scopes,
+      visible: canRead, current: id => this.repository.get(id) });
+    if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+    const visible = hits.map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) }));
+    return dots ? this.rankDotsQuery(request, visible) : visible;
+  }
+
+  private rankDotsQuery(request: MemorySearchRequest, hits: MemorySearchHit[]): MemorySearchHit[] {
+    const query = request.query?.trim() ?? "";
+    const limit = Math.max(1, Math.min(100, request.limit ?? 20));
+    if (!hits.length) return [];
+    const candidates = new Map(hits.map(hit => [hit.memory.id, hit]));
+    const scopes = this.resolveScopeChain(request);
+    const where = memorySearchWhere({ scopes, statuses: request.statuses, kinds: request.kinds });
+    const neighbors = (before: boolean) => this.db.connection.prepare(`SELECT e.memory_id FROM memory_evidence e
+      JOIN memory_records m ON m.id=e.memory_id WHERE e.evidence_kind=? AND e.ref_id=?
+        AND e.rowid ${before ? "<" : ">"} (SELECT rowid FROM memory_evidence WHERE id=?) AND ${where.sql}
+      ORDER BY e.rowid ${before ? "DESC" : "ASC"} LIMIT 2`);
+    const previous = neighbors(true), next = neighbors(false);
+    // A reply may say "the second one" while the question names the topic. Use the
+    // immediately adjacent records of that same explicit source, never a whole workspace.
+    for (const anchor of hits.slice(0, 8)) {
+      const link = anchor.memory.evidence.find(ref => ref.evidenceKind === "message" || ref.evidenceKind === "conversation");
+      if (!link) continue;
+      for (const statement of [previous, next]) {
+        const rows = statement.all(link.evidenceKind, link.refId, link.id, ...where.args) as Array<{ memory_id: string }>;
+        for (const row of rows) {
+          const existing = candidates.get(row.memory_id);
+          if (existing) {
+            if (!existing.reasons.includes("source-context") && existing.memory.evidence.some(ref =>
+              ref.evidenceKind === link.evidenceKind && ref.refId === link.refId)) {
+              candidates.set(row.memory_id, { ...existing, reasons: [...existing.reasons, "source-context"] });
+            }
+            continue;
+          }
+          const record = this.repository.get(row.memory_id);
+          if (!record || !this.visibleInChain(record, scopes, request)) continue;
+          const memory = this.forgetWatermarks.projectEvidence(record, scopes);
+          if (!memory.evidence.some(ref => ref.evidenceKind === link.evidenceKind && ref.refId === link.refId)) continue;
+          const scope = this.bestMatchedScope(memory, scopes);
+          const distance = scopes.find(item => item.scopeType === scope.scopeType && item.scopeId === scope.scopeId)?.distance ?? 10;
+          candidates.set(memory.id, { memory, score: 0, reasons: ["source-context"], scopeDistance: distance });
+        }
+      }
+    }
+    return rankDotsEvidence(query, [...candidates.values()], limit);
   }
 
   /** A pending external computation must never retain an old task/scope authorization. */
@@ -671,7 +821,7 @@ export class MemoryService {
     return JSON.stringify({ task: request.taskId ? {
       exists: Boolean(task), projectId: task?.projectId ?? null,
       workspaceId: task?.spaceId ?? null, archived: task?.archived ?? false,
-    } : null, chain: this.resolveScopeChain(request) });
+    } : null, chain: this.resolveScopeChain(request), assistantContext: this.isAssistantMemoryContext(request) });
   }
 
   /** Scope-first hybrid recall. Re-read facts and visibility after every async boundary. */
@@ -700,7 +850,9 @@ export class MemoryService {
       // or update may have happened while the embedding runtime was busy.
       const lexical = await freshLexical();
       if (!this.db.connection.open || this.recallScopeStamp(request) !== initialScopeStamp) return [];
+      if (request.taskId === DOTS_TASK_ID && !semantic.length) return lexical.slice(0, requestedLimit);
       const currentScopes = this.resolveScopeChain(request);
+      const canRead = this.recallVisibility(request, currentScopes);
       const statuses = new Set(request.statuses?.length ? request.statuses : ["active"]);
       const now = Date.now();
       const fused = new Map<string, { lexicalRank?: number; lexicalReasons?: string[]; semanticRank?: number; memory: MemoryRecordDto }>();
@@ -711,11 +863,11 @@ export class MemoryService {
           || (request.kinds?.length && !request.kinds.includes(memory.kind))
           || (memory.status === "active" && ((memory.validFrom !== undefined && memory.validFrom > now)
             || (memory.validUntil !== undefined && memory.validUntil <= now)))
-          || !this.visibleInChain(memory, currentScopes, request)) return;
+          || !canRead(memory)) return;
         fused.set(hit.memoryId, { ...fused.get(hit.memoryId), semanticRank: index + 1, memory });
       });
       const RRF_K = 60;
-      return [...fused.values()].map((entry): MemorySearchHit => {
+      const ranked = [...fused.values()].map((entry): MemorySearchHit => {
         const scope = this.bestMatchedScope(entry.memory, currentScopes);
         const distance = currentScopes.find(item => item.scopeType === scope.scopeType && (item.scopeId ?? "") === (scope.scopeId ?? ""))?.distance ?? 10;
         let rrf = 0;
@@ -726,7 +878,10 @@ export class MemoryService {
         const metadataBoost = Math.max(0, 7 - distance) + entry.memory.importance * 1.8 + entry.memory.confidence * 1.5 + (entry.memory.explicit ? 2 : 0);
         return { memory: this.forgetWatermarks.projectEvidence(entry.memory, currentScopes), score: rrf * 1000 + metadataBoost,
           reasons: [...reasons, `scope:${scope.scopeType}${distance ? `/${distance}` : ""}`], scopeDistance: distance };
-      }).sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt).slice(0, requestedLimit);
+      }).sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt);
+      return request.taskId === DOTS_TASK_ID
+        ? rankDotsEvidence(query, ranked, requestedLimit, new Map(semantic.map(hit => [hit.memoryId, hit.score])))
+        : ranked.slice(0, requestedLimit);
     } catch (error) {
       onLexicalFallback?.("unavailable");
       if (!(error instanceof SemanticUnavailableError)) console.warn("[MemoryKernel] semantic recall failed", error);
@@ -755,6 +910,9 @@ export class MemoryService {
     });
     if (!input.isEnabled()) return empty();
     const botSource = botMemorySource(this.db, input.taskId);
+    const gatewayPrivate = isGatewayConversation(input.taskId) && hasGatewayDotsMemory(this.db.connection, input.taskId);
+    const dotsPersonal = input.taskId === DOTS_TASK_ID && !input.skillBatch;
+    const automaticOnly = Boolean(botSource) || input.taskId === DOTS_TASK_ID || gatewayPrivate;
     if (botSource?.peer) return empty();
     if (/^(?:bot-conversation-|bot-peer-)/.test(input.taskId) && (!botSource || botSource.status !== "active")) return empty();
     const rawTurns = botSource ? (input.sourceTurns ?? []).map((turn): MemoryTurnDto | undefined => {
@@ -832,7 +990,9 @@ export class MemoryService {
     if (!input.isEnabled()) return empty();
     const response = await input.modelRuntime.completeSimple(
       input.model,
-      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。稳定身份与偏好保存到当前Bot或团队专属范围，不读写成员私有记忆。任务要求、一次性约束、执行决定和局部事实必须与长期偏好分成不同候选；候选不要自行指定Work身份，宿主根据该候选原话所属的实际用户消息关联Work，无法唯一关联则限本对话。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : "") + (input.skillBatch ? "\n" + SKILL_DISTILLATION_PROMPT : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
+      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。稳定身份与偏好保存到当前Bot或团队专属范围，不读写成员私有记忆。任务要求、一次性约束、执行决定和局部事实必须与长期偏好分成不同候选；候选不要自行指定Work身份，宿主根据该候选原话所属的实际用户消息关联Work，无法唯一关联则限本对话。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : "") + (dotsPersonal ? "\n当前来源是 Dots 个人对话。长期偏好、身份、决定及带适用条件的例外写入 task。只对本次生效的要求和用户明确不要保存的内容不输出候选。保留项目例外的完整条件；不能用它取代原默认规则。" : "")
+        + (gatewayPrivate ? "\n当前是已关联的私人入口。身份、稳定偏好及长期约束须有本轮用户原话，并明确标记 retention（stable 或 temporary）和 sensitivity（none 或 sensitive）。敏感信息不输出候选。" : "")
+        + (input.skillBatch ? "\n" + SKILL_DISTILLATION_PROMPT : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
       // Reasoning shares the response ceiling on Responses-compatible providers.
       // Leave room for both low-effort reasoning and the complete candidate JSON.
       { maxTokens: Math.min(input.model.maxTokens || 8192, input.model.reasoning ? 8192 : 4096), reasoning: "low", cacheRetention: "none", ...(input.skillBatch && { signal: input.skillBatch.signal }) },
@@ -853,13 +1013,21 @@ export class MemoryService {
         assertExtractionScope();
         const { supportingTurns, durableEvidence, localFact, sourceWork, temporary, publicShared, rejected } =
           botExtractionPolicy(this.db, input.taskId, candidate, sourceTurns, botSource);
-        if (rejected) continue;
-        const scope = botSource && localFact && !temporary
+        if (rejected || (dotsPersonal && (candidate.operationHint === "forget" || candidate.retention === "temporary"))) continue;
+        const privateDotsSource = gatewayPrivate && !input.skillBatch && !candidate.executionEvidence
+          && candidate.retention === "stable" && candidate.sensitivity === "none"
+          && ["identity", "preference", "constraint"].includes(candidate.kind)
+          && candidate.operationHint !== "forget" && candidate.operationHint !== "resolve"
+          && supportingTurns.some(turn => botMemoryTextEligible(turn.userText) && !botMemoryConversationOnly(turn.userText)
+            && botMemoryWriteEvidenceAllowed(turn.userText, candidate.userEvidence ?? "")
+            && gatewayDotsMemorySource(this.db.connection, input.taskId, turn.metadata.gatewayOrigin, true));
+        const scope = privateDotsSource || dotsPersonal ? { scopeType: "task" as const, scopeId: DOTS_TASK_ID }
+          : botSource && localFact && !temporary
           ? sourceWork ? { scopeType: "work" as const, scopeId: sourceWork } : { scopeType: "conversation" as const, scopeId: input.taskId }
           : publicShared ? { scopeType: "global" as const, scopeId: undefined }
           : this.normalizeCandidateScope(botSource ? temporary ? "conversation" : "bot" : candidate.scopeType, { projectId, workspaceId, taskId: input.taskId });
         if (!scope) continue;
-        const availableTurns = botSource ? supportingTurns : sourceTurns;
+        const availableTurns = automaticOnly && !candidate.executionEvidence ? supportingTurns : sourceTurns;
         const evidenceSources = input.skillBatch ? availableTurns.filter(turn => candidate.executionEvidence
           ? turn.id === candidate.executionEvidence.turnId
           : Boolean(candidate.userEvidence && turn.userText.includes(candidate.userEvidence))) : availableTurns;
@@ -880,7 +1048,7 @@ export class MemoryService {
           operationHint: candidate.operationHint,
           replaces: candidate.replaces,
           status: "pending",
-          rawJson: JSON.stringify({ ...candidate, publicShared, sourceTurnIds: (input.skillBatch ? eligibleTurns : sourceTurns).map((turn) => turn.id) }),
+          rawJson: JSON.stringify({ ...candidate, publicShared, sourceTurnIds: (input.skillBatch || automaticOnly ? eligibleTurns : sourceTurns).map((turn) => turn.id) }),
           createdAt: Date.now(),
         };
         // A single bad candidate (e.g. scope deleted between capture and extraction) must not
@@ -901,19 +1069,19 @@ export class MemoryService {
               committedCount++;
               changed.add(scope.scopeType);
             } else if (result.status === "needs_review") {
-              if (botSource) this.repository.resolveCandidate(dto.id, "rejected");
+              if (automaticOnly) this.repository.resolveCandidate(dto.id, "rejected");
               else reviewCount++;
             }
           };
           // A crash must not expose this automatic Bot path as pending/needs_review.
           // Keep source validation, reconciliation and rejection in one commit.
-          if (botSource) this.db.connection.transaction(apply)();
+          if (automaticOnly) this.db.connection.transaction(apply)();
           else apply();
         } catch (error) {
           if (input.skillBatch) throw error;
           console.warn("[MemoryKernel] candidate reconcile failed", error);
-          try { this.repository.resolveCandidate(dto.id, botSource ? "rejected" : "needs_review"); } catch { /* candidate row may not exist */ }
-          if (!botSource) reviewCount++;
+          try { this.repository.resolveCandidate(dto.id, automaticOnly ? "rejected" : "needs_review"); } catch { /* candidate row may not exist */ }
+          if (!automaticOnly) reviewCount++;
         }
       }
       if (input.skillBatch) {
@@ -1008,27 +1176,89 @@ export class MemoryService {
       }
     }
     const botSource = botMemorySource(this.db, candidate.taskId);
+    let grounded: ReturnType<typeof groundDotsClaim>;
+    const privateDotsSource = isGatewayConversation(candidate.taskId) && candidate.scopeType === "task" && candidate.scopeId === DOTS_TASK_ID;
+    if (privateDotsSource && (force || !hasGatewayDotsMemory(this.db.connection, candidate.taskId))) {
+      this.repository.resolveCandidate(candidate.id, "rejected");
+      return { status: "rejected" };
+    }
+    if (!force && (candidate.taskId === DOTS_TASK_ID || privateDotsSource)) {
+      const raw = JSON.parse(candidate.rawJson ?? "{}") as ExtractedCandidate;
+      if (!raw.executionEvidence) {
+        const sources = sourceTurns.filter(turn => (!raw.sourceTurnId || turn.id === raw.sourceTurnId)
+          && raw.userEvidence && turn.userText.includes(raw.userEvidence));
+        const turn = sources.length === 1 ? sources[0] : undefined;
+        const original = turn && this.getTurn(turn.id);
+        if (turn && original?.taskId === candidate.taskId && original.userMessageId
+          && original.userMessageId === turn.userMessageId && (!privateDotsSource || botMemoryTextEligible(original.userText)
+            && !botMemoryConversationOnly(original.userText) && botMemoryWriteEvidenceAllowed(original.userText, raw.userEvidence ?? "")
+            && gatewayDotsMemorySource(this.db.connection, candidate.taskId, original.metadata.gatewayOrigin, true))) {
+          grounded = groundDotsClaim(candidate, { messageId: original.userMessageId, turnId: turn.id,
+            text: turn.userText, originalText: original.userText, createdAt: original.capturedAt }, raw.userEvidence);
+        }
+        if (!grounded || !turn || isDotsSingleUse(grounded.quote, turn.userText)
+          || privateDotsSource && (!["identity", "preference", "constraint"].includes(grounded.kind)
+            || grounded.stance === "reported" || grounded.stance === "uncertain")) {
+          this.repository.resolveCandidate(candidate.id, "rejected");
+          return { status: "rejected" };
+        }
+        sourceTurns = [{ ...turn, userText: grounded.quote, assistantText: "" }];
+      }
+    }
     let publicShared = false;
     try { publicShared = Boolean(botSource) && JSON.parse(candidate.rawJson ?? "{}").publicShared === true; } catch { /* legacy candidate */ }
     const inCandidateScope = (scope: { scopeType: MemoryScopeType; scopeId?: string }) => scope.scopeType === candidate.scopeType && scope.scopeId === candidate.scopeId;
     const deferSharedMutation = (record: MemoryRecordDto): boolean => {
       if (force || (botSource && record.scopes.some(inCandidateScope)
         && (candidate.scopeType !== "global" || publicShared && record.metadata.publicShared === true))
+        || (privateDotsSource && grounded && record.scopes.length === 1 && record.scopes.every(inCandidateScope))
         || this.canMutateFromTask(candidate.taskId, record)) return false;
       this.repository.resolveCandidate(candidate.id, "needs_review");
       return true;
     };
+    if (candidate.taskId === DOTS_TASK_ID && sourceTurns.length) {
+      const originalIds = sourceTurns.flatMap(turn => turn.userMessageId ? [turn.userMessageId] : []);
+      if (originalIds.length) {
+        const explicitWrites = this.db.connection.prepare(`SELECT DISTINCT m.id FROM memory_records m
+          JOIN memory_evidence e ON e.memory_id=m.id WHERE m.kind=? AND m.status='active' AND e.evidence_kind='message'
+          AND e.ref_id IN (${originalIds.map(() => "?").join(",")}) AND m.content=?`)
+          .all(candidate.kind, ...originalIds, candidate.content) as Array<{ id: string }>;
+        const saved = explicitWrites.find(row => this.canAccess(row.id, { taskId: DOTS_TASK_ID }));
+        if (saved) {
+          this.addConversationEvidence(saved.id, sourceTurns);
+          this.repository.resolveCandidate(candidate.id, "rejected", saved.id);
+          return { status: "rejected", memoryId: saved.id };
+        }
+      }
+    }
+    const incomingCondition = grounded && dotsScopeCondition(grounded.quote);
     const matches = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId)
+      .filter(record => !grounded || dotsScopeCondition(record.content) === incomingCondition)
       .filter(record => force || !this.isCapturedSnapshot(record.id))
       .filter(record => !botSource || candidate.scopeType !== "global" || publicShared && record.metadata.publicShared === true);
     const targetText = candidate.replaces || candidate.title;
-    const best = matches
+    let best = matches
       .map((m) => ({ m, score: Math.max(tokenSimilarity(targetText, m.title), tokenSimilarity(targetText, m.content), tokenSimilarity(candidate.title, m.title)) }))
       .sort((a, b) => b.score - a.score)[0];
+    if (grounded && candidate.replaces && (!best || best.score < 0.95)) {
+      // A stored quotation may have a different title from the extractor's
+      // original subject. Only a unique, committed, in-scope antecedent qualifies.
+      const refs = this.db.connection.prepare(`SELECT DISTINCT resolved_memory_id id FROM memory_candidates
+        WHERE task_id=? AND status='committed' AND title=? AND resolved_memory_id IS NOT NULL`).all(candidate.taskId, candidate.replaces) as Array<{ id: string }>;
+      const prior = matches.filter(record => refs.some(ref => ref.id === record.id));
+      if (prior.length === 1) best = { m: prior[0]!, score: 1 };
+    }
+    const previousSubject = grounded && best && candidate.replaces && candidate.operationHint === "update"
+      ? dotsSubject(candidate.replaces, best.m.title) : undefined;
+    if (grounded) candidate = { ...candidate, kind: grounded.kind, title: previousSubject ?? grounded.title, content: grounded.content,
+      operationHint: grounded.stance === "reported" || grounded.stance === "uncertain"
+        || best?.m.kind === "decision" && grounded.stance !== "statement" || incomingCondition && !best
+        ? "create" : candidate.operationHint,
+      confidence: grounded.confidence ?? 0.7, explicit: grounded.explicit };
     const comparableContent = (value: string) => value.normalize("NFKC").replace(/\s+/g, " ").trim();
     const duplicate = matches.find((m) => hashContent(candidate.kind, candidate.title, candidate.content) === m.contentHash
       || (candidate.content.trim() && m.kind === candidate.kind && comparableContent(candidate.content) === comparableContent(m.content)))
-      ?? (best && best.score >= 0.95 && tokenSimilarity(candidate.content, best.m.content) >= 0.92 ? best.m : undefined);
+      ?? (!grounded && best && best.score >= 0.95 && tokenSimilarity(candidate.content, best.m.content) >= 0.92 ? best.m : undefined);
     if (candidate.operationHint === "forget") {
       const forgetThreshold = force ? 0.4 : 0.55;
       if ((!candidate.explicit && !force) || !best || best.score < forgetThreshold) {
@@ -1047,7 +1277,7 @@ export class MemoryService {
       this.repository.resolveCandidate(candidate.id, "rejected", duplicate.id);
       return { status: "rejected", memoryId: duplicate.id };
     }
-    if (!force && !candidate.explicit && candidate.confidence < 0.68) {
+    if (!force && !grounded && !candidate.explicit && candidate.confidence < 0.68) {
       this.repository.resolveCandidate(candidate.id, "needs_review");
       return { status: "needs_review" };
     }
@@ -1058,14 +1288,14 @@ export class MemoryService {
       importance: candidate.importance,
       confidence: candidate.confidence,
       explicit: candidate.explicit,
-      sourceType: candidate.explicit ? "user" : "agent",
+      sourceType: candidate.explicit || privateDotsSource ? "user" : "agent",
       sourceTaskId: botMemorySource(this.db, candidate.taskId) ? undefined : candidate.taskId,
       sourceId: botMemorySource(this.db, candidate.taskId) ? candidate.taskId : undefined,
       scopeType: candidate.scopeType,
       scopeId: candidate.scopeId,
       metadata: botSource ? { ...(publicShared ? { publicShared: true } : {}), botAutomaticScopePolicy: "source-work-v1",
         sourceUserMessageIds: [...new Set(sourceTurns.flatMap(turn => turn.userMessageId ? [turn.userMessageId] : []))] }
-        : publicShared ? { publicShared: true } : undefined,
+        : privateDotsSource ? { dotsPrivateGateway: true } : publicShared ? { publicShared: true } : undefined,
       evidence: [
         { evidenceKind: botMemorySource(this.db, candidate.taskId) ? "conversation" : "task", refId: candidate.taskId },
         ...sourceTurns.map((turn) => ({ evidenceKind: "conversation" as const, refId: turn.id, refTitle: "L0 conversation turn", excerpt: this.l0EvidenceExcerpt(turn) })),
@@ -1102,10 +1332,10 @@ export class MemoryService {
         title: candidate.title,
         content: candidate.content,
         importance: Math.max(best.m.importance, candidate.importance),
-        confidence: Math.max(best.m.confidence, candidate.confidence),
-        explicit: best.m.explicit || candidate.explicit,
+        confidence: grounded ? candidate.confidence : Math.max(best.m.confidence, candidate.confidence),
+        explicit: grounded ? candidate.explicit : best.m.explicit || candidate.explicit,
         changedBy: candidate.explicit ? "user" : "agent",
-        changeReason: `candidate:${candidate.id}`,
+        changeReason: grounded?.reason ?? `candidate:${candidate.id}`,
       });
       this.addConversationEvidence(updated.id, sourceTurns);
       this.repository.resolveCandidate(candidate.id, "committed", updated.id);
@@ -1113,17 +1343,17 @@ export class MemoryService {
     }
     if (candidate.operationHint === "supersede" && best && best.score >= 0.45) {
       if (deferSharedMutation(best.m)) return { status: "needs_review" };
-      const created = this.supersede(best.m.id, createReq);
+      const created = this.supersede(best.m.id, createReq, grounded?.reason);
       this.repository.resolveCandidate(candidate.id, "committed", created.id);
       return { status: "committed", memoryId: created.id };
     }
     // If a candidate strongly overlaps an active memory but asks to create a materially different fact,
     // do not silently keep both active: require review unless it is an explicit user statement.
-    if (!force && best && best.score >= 0.72 && !candidate.explicit) {
+    if (!grounded && !force && best && best.score >= 0.72 && !candidate.explicit) {
       this.repository.resolveCandidate(candidate.id, "needs_review");
       return { status: "needs_review" };
     }
-    const created = this.create(createReq);
+    const created = this.create(createReq, grounded?.reason);
     this.repository.resolveCandidate(candidate.id, "committed", created.id);
     return { status: "committed", memoryId: created.id };
   }
@@ -1151,6 +1381,7 @@ export class MemoryService {
   }
   private canMutateFromTask(taskId: string, memory: MemoryRecordDto): boolean {
     if (this.isCapturedSnapshot(memory.id)) return false;
+    if (isGatewayConversation(taskId)) return memory.scopes.length === 1 && this.canPromoteFromTask(taskId, memory.scopes[0].scopeType, memory.scopes[0].scopeId);
     const work = this.workMemoryScope(taskId);
     const conversation = botMemorySource(this.db, taskId);
     const botId = work || conversation?.team_id || conversation?.shared ? undefined : this.channelBotId(taskId);
@@ -1186,14 +1417,31 @@ export class MemoryService {
 
   private workMemoryScope(taskId: string) { return resolveWorkMemoryScope(this.db, taskId); }
 
-  private visibleInChain(memory: MemoryRecordDto, chain: Array<{ scopeType: MemoryScopeType; scopeId?: string }>, request: MemorySearchRequest): boolean {
+  private isAssistantMemoryContext(request: MemorySearchRequest): boolean {
+    return Boolean(request.botId || request.teamId || request.conversationId || request.workId
+      || (request.taskId && (this.workMemoryScope(request.taskId) || this.channelBotId(request.taskId))));
+  }
+
+  private recallVisibility(request: MemorySearchRequest, chain: ReturnType<MemoryService["resolveScopeChain"]>) {
+    let assistantContext: boolean | undefined;
+    return (memory: MemoryRecordDto) => this.visibleInChain(memory, chain, request,
+      () => assistantContext ??= this.isAssistantMemoryContext(request));
+  }
+
+  private visibleInChain(memory: MemoryRecordDto, chain: Array<{ scopeType: MemoryScopeType; scopeId?: string }>,
+    request: MemorySearchRequest, assistantContext = () => this.isAssistantMemoryContext(request)): boolean {
     if (memory.id.startsWith("mem_weekly_")) return false;
+    const personalDots = memory.scopes.length === 1 && memory.scopes[0].scopeType === "task"
+      && memory.scopes[0].scopeId === DOTS_TASK_ID && ["identity", "preference", "constraint"].includes(memory.kind);
+    if (memory.sourceTaskId && isGatewayConversation(memory.sourceTaskId) && memory.sourceTaskId !== request.taskId
+      && (!personalDots || memory.metadata.dotsPrivateGateway !== true)) return false;
+    if (request.taskId && isGatewayConversation(request.taskId)
+      && !memory.scopes.some(scope => scope.scopeType === "task" && scope.scopeId === request.taskId)
+      && !personalDots) return false;
     const legacyBoundary = botMemoryAutomaticBoundary(this.db, memory);
     if (legacyBoundary) return chain.some(scope => scope.scopeType === legacyBoundary.scopeType && scope.scopeId === legacyBoundary.scopeId);
-    const assistantContext = Boolean(request.botId || request.teamId || request.conversationId || request.workId
-      || (request.taskId && (this.workMemoryScope(request.taskId) || this.channelBotId(request.taskId))));
     return memory.scopes.some(scope => chain.some(c => c.scopeType === scope.scopeType && (c.scopeId ?? "") === (scope.scopeId ?? ""))
-      && (scope.scopeType !== "global" || !assistantContext || memory.metadata.publicShared === true));
+      && (scope.scopeType !== "global" || memory.metadata.publicShared === true || !assistantContext()));
   }
 
   /** Stable private preferences are automatic only in personal Bot contexts.
@@ -1222,6 +1470,7 @@ export class MemoryService {
   }
 
   private normalizeCandidateScope(scopeType: MemoryScopeType, ctx: { projectId?: string; workspaceId?: string; taskId: string }): { scopeType: MemoryScopeType; scopeId?: string } | null {
+    if (isGatewayConversation(ctx.taskId)) return { scopeType: "task", scopeId: ctx.taskId };
     const conversation = botMemorySource(this.db, ctx.taskId);
     if (conversation) return scopeType === "conversation" || conversation.shared ? { scopeType: "conversation", scopeId: ctx.taskId }
       : { scopeType: conversation.team_id ? "team" : "bot", scopeId: conversation.team_id ?? conversation.bot_id };

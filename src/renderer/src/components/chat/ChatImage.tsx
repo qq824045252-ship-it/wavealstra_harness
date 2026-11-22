@@ -1,4 +1,3 @@
-import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { artifactImageUrl, parseArtifactImageUrl } from "@shared/artifact-ipc";
 import type { ArtifactDescriptor } from "@shared/artifact-types";
@@ -12,6 +11,7 @@ import {
   svgTextFromArtifactContent,
 } from "@/lib/chatImages";
 import { markdownImageSources } from "@/lib/markdownImages";
+import ChatReadingDialog from "./ChatReadingDialog";
 
 const EMPTY_IMAGES: ArtifactDescriptor[] = [];
 interface ImageScope {
@@ -95,7 +95,8 @@ export function ChatImage({
   const ensure = useAppStore((s) => s.ensureArtifactRenderPayload);
   const release = useAppStore((s) => s.releaseArtifactRender);
   const openArtifact = useAppStore((s) => s.openArtifact);
-  const [previewId, setPreviewId] = useState<string | null>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [gallery, setGallery] = useState<{ images: GalleryImage[]; index: number }>();
   const [failedSource, setFailedSource] = useState<string | null>(null);
   const svgText = useMemo(() => {
     if (!resolved || !isSvgArtifact(resolved) || !payload || payload.artifactVersion !== version) return null;
@@ -152,9 +153,27 @@ export function ChatImage({
       </span>
     );
   }
-  const openImage = () => { if (id) sources ? setPreviewId(id) : openArtifact(id); };
+  const caption = title?.trim() || (/^(图片|生成图片|image)$/i.test(alt.trim()) ? "" : alt.trim());
+  const openImage = () => {
+    const clicked = imageRef.current;
+    if (!clicked) return;
+    const group = clicked.closest(".assistant-card");
+    const images = Array.from(group?.querySelectorAll<HTMLElement>("[data-chat-image]") ?? [clicked]);
+    if (id && !sources && images.length === 1) { openArtifact(id); return; }
+    setGallery({ images: images.map(element => {
+      const { artifact, version, alt: label } = element.dataset;
+      return { label: label || "图片", url: artifact
+        ? artifactImageUrl(artifact, "full", { version: version ? Number(version) : undefined })
+        : (element as HTMLImageElement).src };
+    }), index: Math.max(0, images.indexOf(clicked)) });
+  };
   return (
-    <><img
+    <span className="chat-image-with-caption"><img
+      ref={imageRef}
+      data-chat-image=""
+      data-artifact={id}
+      data-version={version}
+      data-alt={caption || alt}
       src={src}
       alt={alt}
       title={title ?? (id ? "点击查看原图" : alt)}
@@ -176,34 +195,35 @@ export function ChatImage({
         ...(intrinsicSize ? {} : { width: "100%", minHeight: 160 }),
         objectFit: "contain",
         margin: "12px 0",
-        cursor: id ? "zoom-in" : undefined,
+        cursor: "zoom-in",
       }}
       onError={() => setFailedSource(src)}
-      onClick={id ? openImage : undefined}
-      role={id ? "button" : undefined}
-      tabIndex={id ? 0 : undefined}
-      onKeyDown={id ? (event) => {
+      onClick={openImage}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImage(); }
-      } : undefined}
+      }}
     />
-    {sources && id && previewId === id && <ScopedImagePreview id={id} version={version} alt={alt} onClose={() => setPreviewId(null)} />}</>
+    {caption && <span className="chat-image-caption">{caption}</span>}
+    {gallery && <ChatImageGallery images={gallery.images} initial={gallery.index} onClose={() => setGallery(undefined)} />}</span>
   );
 }
 
-/** Bot reports do not have an active sidebar Task. Open their exact snapshot
- * without mutating navigation or borrowing the ordinary Task's artifact panel. */
-function ScopedImagePreview({ id, version, alt, onClose }: { id: string; version?: number; alt: string; onClose: () => void }): React.JSX.Element {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { dialog.current?.showModal(); }, []);
-  return createPortal(<dialog ref={dialog} aria-label="报告原图" onCancel={event => { event.preventDefault(); onClose(); }}
-    onClose={onClose} style={{ maxWidth: "95vw", maxHeight: "95vh", padding: 16, borderRadius: 12 }}>
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 12 }}>
-      <span>{alt}</span><button type="button" onClick={onClose}>关闭原图</button>
-    </div>
-    {failed ? <p role="alert">原图无法显示，请关闭后重试。</p> : <img src={artifactImageUrl(id, "full", { version })} alt={alt}
-      style={{ display: "block", maxWidth: "90vw", maxHeight: "80vh", objectFit: "contain" }} onError={() => setFailed(true)} />}
-  </dialog>, document.body);
+type GalleryImage = { url: string; label: string };
+
+function ChatImageGallery({ images, initial, onClose }: { images: GalleryImage[]; initial: number; onClose: () => void }) {
+  const [index, setIndex] = useState(initial);
+  const [failed, setFailed] = useState<string>();
+  const image = images[index];
+  return <ChatReadingDialog title={image.label} onClose={onClose} actions={images.length > 1 && <>
+    <button type="button" className="chat-reading-button" disabled={index === 0} onClick={() => setIndex(index - 1)}>上一张</button>
+    <span aria-live="polite">{index + 1} / {images.length}</span>
+    <button type="button" className="chat-reading-button" disabled={index === images.length - 1} onClick={() => setIndex(index + 1)}>下一张</button>
+  </>}>
+    {failed === image.url ? <p role="status">原图无法显示</p> :
+      <img className="chat-gallery-image" src={image.url} alt={image.label} referrerPolicy="no-referrer" onError={() => setFailed(image.url)} />}
+  </ChatReadingDialog>;
 }
 
 /** Show generated images in their reply even if the model only emits a download link. */
@@ -244,6 +264,8 @@ export function MessageImages({ message }: { message: ChatMessage }): React.JSX.
       {shown.map((artifact) => (
         <ChatImage key={artifact.id} artifact={artifact} alt={artifact.title ?? "生成图片"} fallback />
       ))}
+      {collapsed && remaining.slice(MAX_INLINE_IMAGES).map(artifact => <span hidden key={artifact.id} data-chat-image=""
+        data-artifact={artifact.id} data-version={artifact.version} data-alt={artifact.title || "图片"} />)}
       {collapsed && (
         <button
           type="button"

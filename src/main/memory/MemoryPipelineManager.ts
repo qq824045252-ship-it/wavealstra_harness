@@ -14,7 +14,7 @@ export interface MemoryCaptureDecision {
 /**
  * Schedules memory cognition without becoming a second memory truth.
  * L0 = raw turn/evidence. L1 = MemoryRecord (MemoryService remains the only durable cognition truth).
- * L2/L3 are manually proposed and approved derived views; they have no automatic cadence.
+ * Dots maintains its own derived L2/L3 views in MemoryCognitionService. Other scopes use manual generation.
  */
 export class MemoryPipelineManager {
   readonly turns: MemoryTurnRepository;

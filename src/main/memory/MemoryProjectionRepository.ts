@@ -1,9 +1,10 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
 import { createHash } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryCoreProfileDto, MemoryDismissedProjectionDto, MemoryProjectionDeleteRequest, MemoryProjectionDeleteResult, MemoryProjectionProposalDto, MemoryScenarioDto } from "../../shared/memory-kernel";
 
 export type MemoryProjectionScope = {
-  scopeType: "global" | "workspace" | "project";
+  scopeType: "global" | "workspace" | "project" | "task";
   scopeId?: string;
 };
 
@@ -224,7 +225,9 @@ export class MemoryProjectionRepository {
           updated_at=CASE
             WHEN memory_scenarios.content_hash<>excluded.content_hash OR memory_scenarios.status<>'active' THEN excluded.updated_at
             ELSE memory_scenarios.updated_at
-          END`,
+          END
+        WHERE memory_scenarios.content_hash<>excluded.content_hash OR memory_scenarios.status<>'active'
+          OR memory_scenarios.source_memory_ids_json<>excluded.source_memory_ids_json`,
       );
       for (const row of normalized.values()) {
         stmt.run(
@@ -304,7 +307,8 @@ export class MemoryProjectionRepository {
   ): { scenarios: number; profiles: number } {
     const unique = new Map<string, MemoryProjectionScope>();
     for (const scope of scopes) {
-      if (scope.scopeType !== "global" && scope.scopeType !== "workspace" && scope.scopeType !== "project") continue;
+      if (scope.scopeType !== "global" && scope.scopeType !== "workspace" && scope.scopeType !== "project"
+        && (scope.scopeType !== "task" || scope.scopeId !== DOTS_TASK_ID)) continue;
       const normalized: MemoryProjectionScope = { scopeType: scope.scopeType, scopeId: scope.scopeId };
       unique.set(`${scope.scopeType}:${scope.scopeId ?? ""}`, normalized);
     }
@@ -323,6 +327,31 @@ export class MemoryProjectionRepository {
       }
     })();
     return { scenarios, profiles };
+  }
+
+  purgeStaleDotsViews(): void {
+    for (const table of ["memory_core_profiles", "memory_scenarios"]) {
+      this.conn.prepare(`DELETE FROM ${table} WHERE scope_type='task' AND scope_id=? AND status='stale'`)
+        .run(DOTS_TASK_ID);
+    }
+  }
+
+  /** Forgetting a personal atom removes derived plaintext even from stale projections. */
+  forgetDotsSource(memoryId: string): void {
+    const scenarios = this.conn.prepare(`SELECT id FROM memory_scenarios s
+      WHERE scope_type='task' AND scope_id=? AND EXISTS
+        (SELECT 1 FROM json_each(s.source_memory_ids_json) WHERE value=?)`)
+      .pluck().all(DOTS_TASK_ID, memoryId) as string[];
+    const removeProfile = this.conn.prepare(`DELETE FROM memory_core_profiles
+      WHERE scope_type='task' AND scope_id=? AND EXISTS
+        (SELECT 1 FROM json_each(source_scenario_ids_json) WHERE value=?)`);
+    const removeScenario = this.conn.prepare("DELETE FROM memory_scenarios WHERE id=?");
+    this.conn.transaction(() => {
+      for (const id of scenarios) {
+        removeProfile.run(DOTS_TASK_ID, id);
+        removeScenario.run(id);
+      }
+    })();
   }
 
   private invalidateProfilesByScenarioIds(scenarioIds: readonly string[], now = Date.now()): number {
@@ -380,7 +409,9 @@ export class MemoryProjectionRepository {
         updated_at=CASE
           WHEN memory_core_profiles.content_hash<>excluded.content_hash OR memory_core_profiles.status<>'active' THEN excluded.updated_at
           ELSE memory_core_profiles.updated_at
-        END`,
+        END
+      WHERE memory_core_profiles.content_hash<>excluded.content_hash OR memory_core_profiles.status<>'active'
+        OR memory_core_profiles.source_scenario_ids_json<>excluded.source_scenario_ids_json`,
     ).run(
       id,
       scope.scopeType,
@@ -427,11 +458,20 @@ export class MemoryProjectionRepository {
     return true;
   }
 
+  getActiveDotsView(id: string, kind: "scenario" | "profile"): { id: string; title: string; body: string; scopeType: "task" } | undefined {
+    const table = kind === "scenario" ? "memory_scenarios" : "memory_core_profiles";
+    const column = kind === "scenario" ? "summary" : "content";
+    return this.conn.prepare(`SELECT id,title,${column} AS body,scope_type AS scopeType FROM ${table}
+      WHERE id=? AND scope_type='task' AND scope_id=? AND status='active'`)
+      .get(id, DOTS_TASK_ID) as { id: string; title: string; body: string; scopeType: "task" } | undefined;
+  }
+
   /** Revocation differs from ordinary grounding becoming stale during a frozen turn. */
   isRevoked(id: string, kind: "scenario" | "profile"): boolean {
     const table = kind === "scenario" ? "memory_scenarios" : "memory_core_profiles";
     const row = this.conn.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id) as Record<string, unknown> | undefined;
     if (!row || this.conn.prepare("SELECT 1 FROM memory_projection_dismissals WHERE id=?").get(id)) return true;
+    if (row.scope_type === "task" && row.scope_id === DOTS_TASK_ID && row.status !== "active") return true;
     // A frozen L3 capsule may contain only the profile ID, so follow its L2 provenance too.
     return kind === "profile" && mapProfile(row).sourceScenarioIds.some((sourceId) => this.isRevoked(sourceId, "scenario"));
   }

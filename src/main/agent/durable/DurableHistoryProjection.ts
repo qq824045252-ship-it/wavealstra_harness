@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { readDotsReply } from "./DurableDotsReply";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { EntryRecord, TaskId } from "@earendil-works/pi-durable";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
@@ -11,7 +12,7 @@ import { consultReportFromDetails } from "../../../shared/multi-model-consult";
 import { latestActivityTime } from "../../../../shared/src/activity-time";
 import { formatStoredPstackReply } from "../pstack/PstackBlockReport";
 
-export type DurableInputMetadata = { text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; goalContinuation?: import("../../../shared/conversation-goal").GoalContinuationOrigin; audit?: import("./DurableSkillProjection").DurableInputAudit };
+export type DurableInputMetadata = { gatewayOrigin?: Omit<import("../../gateway/GatewayAgentTurn").GatewayBotTurnRequest["gatewayOrigin"], "workTarget">; dotsMemoryRefs?: import("../../../shared/agent-ipc").AgentPromptRequest["dotsMemoryRefs"]; text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; goalContinuation?: import("../../../shared/conversation-goal").GoalContinuationOrigin; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
 export type DurableResponseSpeed = { readonly tps?: number | null; readonly ttftMs?: number | null };
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
@@ -128,6 +129,16 @@ export class DurableHistoryProjection {
       this.newestEntry = Math.max(this.newestEntry ?? entry.id, entry.id);
       this.oldestEntry = Math.min(this.oldestEntry ?? entry.id, entry.id);
       const id = `durable-${entry.id}`;
+      const delivery = readDotsReply(entry);
+      if (delivery) {
+        const createdAt = entry.model?.find(message => message.role === "assistant")?.timestamp;
+        if (createdAt === undefined) throw new Error("Dots 交付消息缺少时间");
+        this.rows.set(id, { id, role: "assistant", entryId: String(entry.id), projectionVersion: 1,
+          text: delivery.text, createdAt, dotsDelivery: delivery });
+        this.observedAt = latestActivityTime(this.observedAt, createdAt);
+        this.dirty = true;
+        continue;
+      }
       for (const message of entry.model ?? []) {
         this.observedAt = latestActivityTime(this.observedAt, message.timestamp);
         if (message.role === "user" && (entry.kind === "pi.user" || entry.kind === "mybuddy.user")) {

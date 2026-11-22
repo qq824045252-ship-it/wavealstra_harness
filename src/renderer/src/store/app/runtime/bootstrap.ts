@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../../../../shared/dots";
 import { readTaskHistory } from "./taskHistoryRead";
 import type { SpaceDto, TaskDto } from "../../../../../shared/agent-ipc";
 import type { ModelInfoDto } from "../../../../../shared/agent-ipc";
@@ -155,6 +156,8 @@ const mappedTasks = (taskRows as TaskDto[]).map(row => {
   const prior = priorTasks.get(row.id);
   return prior ? { ...prior, ...metadata, messages: prior.messages, status: prior.durable ? prior.status : metadata.status } : metadata;
 });
+const dots = priorTasks.get(DOTS_TASK_ID);
+if (dots && !mappedTasks.some(task => task.id === DOTS_TASK_ID)) mappedTasks.push(dots);
 const selected = mappedTasks.find(task => task.id === current.activeTaskId);
 set({
   spaces: mappedSpaces,

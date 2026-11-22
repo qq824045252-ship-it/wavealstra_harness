@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { inferArtifactKind } from "@/lib/workspace";
+import ImageArtifactView from "@/components/artifact/ImageArtifactView";
+import MediaArtifactView from "@/components/artifact/MediaArtifactView";
 import CodeView from "@/components/artifact/CodeView";
 import MarkdownArtifactView from "@/components/artifact/MarkdownArtifactView";
 import OfficeDocumentView from "@/components/artifact/OfficeDocumentView";
@@ -7,6 +10,7 @@ import { isOfficeUseFile } from "@/lib/officeUseFile";
 import { useAppStore } from "@/store/appStore";
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
 
+const PdfViewer = lazy(() => import("@/components/artifact/PdfViewer"));
 const languageFor = (name: string): string => {
   const ext = name.split(".").pop()?.toLowerCase() ?? "text";
   return ({ md: "markdown", py: "python", js: "javascript", ts: "typescript", sh: "bash", htm: "html", yml: "yaml" } as Record<string, string>)[ext] ?? ext;
@@ -21,7 +25,9 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
   const manifestPath = previewManifestFor(file);
   const officeSource = useMemo(() => ({ type: "work" as const, file: { snapshotPath: target, name: file.name, manifestPath } }),
     [target, file.name, manifestPath]);
-  const supported = /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
+  const kind = inferArtifactKind(file.name, "");
+  const binary = kind === "image" || kind === "pdf" || kind === "video" || kind === "audio";
+  const supported = binary || /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
   const [content, setContent] = useState<string>();
   const [truncated, setTruncated] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -45,13 +51,13 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
           token = result.token; setPrepared(result); setContent(result.source); setWarnings(result.warnings);
         }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
       } else if (!window.api?.readWorkspaceFile) setError("文件读取接口不可用");
-      else void window.api.readWorkspaceFile(target, "", true).then(result => {
+      else void window.api.readWorkspaceFile(target, "", !binary).then(result => {
         if (!current) return;
         setContent(result.content); setTruncated(result.truncated === true);
       }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
     }
     return () => { current = false; if (token) void window.api?.savedArtifact?.release(token).catch(() => {}); };
-  }, [target, supported, html, file.name, file.previewManifestPath, file.artifact?.previewManifestPath, attempt]);
+  }, [target, supported, binary, html, file.name, file.previewManifestPath, file.artifact?.previewManifestPath, attempt]);
 
   useEffect(() => {
     if (!prepared) return;
@@ -112,6 +118,9 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
         {warnings.length > 0 && <div className="bot-work-file-warnings" role="status">{warnings.map(message => <p key={message}>{message}</p>)}</div>}
         <div className="bot-work-file-preview-body">
           {content.length === 0 ? <p>文件为空。</p>
+            : kind === "image" ? <ImageArtifactView content={content} name={file.name} />
+            : kind === "pdf" ? <Suspense fallback={<p role="status">正在打开 PDF…</p>}><PdfViewer content={content} name={file.name} /></Suspense>
+            : kind === "video" || kind === "audio" ? <MediaArtifactView kind={kind} content={content} name={file.name} />
             : html && prepared ? <>
               <iframe ref={iframe} title={`${file.name} 保存版本`} src={prepared.url} sandbox="allow-scripts allow-same-origin" hidden={mode !== "preview"} onError={() => setError("网页加载失败，请重试读取")} />
               {mode === "source" && <CodeView content={content} language="html" readOnly />}

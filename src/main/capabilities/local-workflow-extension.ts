@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { PermissionMode } from "../../shared/agent-ipc";
@@ -7,7 +8,7 @@ import type { TaskTerminalService } from "../terminal/TaskTerminalService";
 export interface LocalWorkflowBridge {
   cron: CronService;
   terminal: TaskTerminalService;
-  getPermissionMode(): PermissionMode;
+  getPermissionMode?(): PermissionMode;
 }
 
 async function result(run: () => unknown | Promise<unknown>) {
@@ -22,13 +23,15 @@ async function result(run: () => unknown | Promise<unknown>) {
 
 
 export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool">, context: {
+  currentTaskOnly?: boolean; sourceOperation?: () => string | undefined;
+  sourceOrigin?: () => import("../../shared/dots").DotsReplyOrigin | undefined;
   taskId: string; taskRoot: string; services: LocalWorkflowBridge; terminalEnabled: boolean;
 }): void {
   const { taskId, taskRoot, services } = context;
   pi.registerTool({
     name: "automation_exec",
     label: "Task automation",
-    description: "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。update 必须给已有 id，仅修改传入字段，保留任务 ID、执行历史和启用/暂停状态；修改已有任务必须用 update，不要取消后重建。可更新 name/prompt/调度/时区/max_runs/deadline/restart_policy；max_runs 是累计运行上限，不重置次数。修改不会中断已开始的回合，新配置用于后续触发。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队。get 按 id 查看计划、当前与最近运行；runs 传 id 可用 cursor 按页查单条计划。cancel 停止未来触发，保留计划和历史，不中断已开始的用户回合；取消后不能 resume。可 list/runs/update/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。",
+    description: (context.currentTaskOnly ? "Dots 定时跟进回到此对话。missed_runs=coalesce 会在宿主恢复后合并漏跑、补办一次，忙时排队。需要过期跳过的检查设 skip，受截止时间约束。仅按用户的定时意图创建。支持查询、修改、暂停、恢复和取消。" : "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。update 必须给已有 id，仅修改传入字段，保留任务 ID、执行历史和启用/暂停状态；修改已有任务必须用 update，不要取消后重建。可更新 name/prompt/调度/时区/max_runs/deadline/restart_policy；max_runs 是累计运行上限，不重置次数。修改不会中断已开始的回合，新配置用于后续触发。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队。get 按 id 查看计划、当前与最近运行；runs 传 id 可用 cursor 按页查单条计划。cancel 停止未来触发，保留计划和历史，不中断已开始的用户回合；取消后不能 resume。可 list/runs/update/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。"),
     promptSnippet: "automation_exec(action, name?, prompt?, schedule_type?, schedule_expr?, target?, max_runs?, deadline?, restart_policy?, id?, cursor?)",
     parameters: Type.Object({
       action: Type.Union((["create", "update", "list", "get", "runs", "pause", "resume", "cancel"] as const).map(value => Type.Literal(value))),
@@ -40,6 +43,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       target: Type.Optional(Type.Union([Type.Literal("current-task"), Type.Literal("new-task")])),
       max_runs: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
       deadline: Type.Optional(Type.String({ description: "ISO timestamp, including timezone" })),
+      missed_runs: Type.Optional(Type.Union([Type.Literal("skip"), Type.Literal("coalesce")])),
       restart_policy: Type.Optional(Type.Union([Type.Literal("resume"), Type.Literal("pause")])),
       id: Type.Optional(Type.String({ minLength: 1 })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
@@ -47,7 +51,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
     }, { additionalProperties: false }),
     execute: async (_id, input, signal) => result(() => {
       signal?.throwIfAborted();
-      if (input.action === "list") return { jobs: services.cron.listForTask(taskId), localOnly: true, missedRuns: "skip" };
+      if (input.action === "list") return { jobs: services.cron.listForTask(taskId), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
       if (input.action === "get") {
         if (!input.id) throw new Error("get requires id");
         return services.cron.getForTask(taskId, input.id);
@@ -57,16 +61,24 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         if (input.cursor !== undefined) throw new Error("runs pagination requires id");
         return services.cron.runsForTask(taskId, input.limit);
       }
+      const source = context.sourceOperation?.();
+      if (context.sourceOperation && (!source || source.startsWith("cron-") || source.startsWith("goal-continuation:")))
+        throw new Error("需要用户明确交代才能修改 Dots 跟进计划");
       if (input.action === "create") {
         if (!input.name?.trim() || !input.prompt?.trim() || !input.schedule_type || !input.schedule_expr) throw new Error("create requires name, prompt, schedule_type and schedule_expr");
         const effectiveTo = input.deadline ? Date.parse(input.deadline) : undefined;
         if (effectiveTo != null && (!Number.isFinite(effectiveTo) || effectiveTo <= Date.now())) throw new Error("deadline must be a future ISO timestamp");
+        if (context.currentTaskOnly && input.target === "new-task") throw new Error("Dots 的定时跟进只能返回当前对话");
+        const operation = source ? createHash("sha256").update(JSON.stringify([taskId, source, input.name, input.prompt,
+          input.schedule_type, input.schedule_expr, input.timezone, input.max_runs, effectiveTo, input.restart_policy, ...(input.missed_runs ? [input.missed_runs] : [])])).digest("hex") : undefined;
+        const origin = context.sourceOrigin?.();
         return services.cron.createForTask(taskId, taskRoot, {
           name: input.name, prompt: input.prompt, scheduleType: input.schedule_type,
           scheduleExpr: input.schedule_expr, timezone: input.timezone ?? "UTC",
           target: input.target ?? "current-task", maxRuns: input.max_runs,
           effectiveTo, restartPolicy: input.restart_policy ?? "resume",
-        });
+          missedRuns: input.missed_runs ?? (context.currentTaskOnly && input.schedule_type === "at" ? "coalesce" : undefined),
+        }, operation, source && origin ? { source, origin } : undefined);
       }
       if (!input.id) throw new Error("This action requires id");
       if (input.action === "update") {
@@ -76,7 +88,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         return services.cron.updateForTask(taskId, input.id, {
           name: input.name, prompt: input.prompt, scheduleType: input.schedule_type,
           scheduleExpr: input.schedule_expr, timezone: input.timezone,
-          maxRuns: input.max_runs, effectiveTo, restartPolicy: input.restart_policy,
+          maxRuns: input.max_runs, effectiveTo, restartPolicy: input.restart_policy, missedRuns: input.missed_runs,
         });
       }
       services.cron.changeForTask(taskId, input.id, input.action);

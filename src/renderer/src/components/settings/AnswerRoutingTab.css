@@ -96,7 +96,6 @@
 .answer-rule-form summary small { margin-inline-start: 10px; }
 .answer-rule-options-body { display: grid; gap: 10px; padding-block: 10px; }
 .answer-rule-options-body button { justify-self: start; }
-.answer-rule-memory-check { display: grid; gap: 10px; }
 .answer-rule-scope { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .answer-rule-save { border-top: 1px solid var(--border); padding-top: 12px; }
 .answer-rule-save button:disabled { opacity: .55; }
@@ -140,11 +139,6 @@
 .answer-rule-form textarea { min-height: 60px; resize: vertical; }
 .answer-rule-form details p { max-height: 150px; overflow: auto; white-space: pre-wrap; }
 .answer-routing-actions input { flex: 1; }
-.answer-rule-memory-check h3, .answer-rule-memory-match h4 { margin: 0; }
-.answer-rule-memory-match { border-top: 1px solid var(--border); padding-block: 10px; overflow-wrap: anywhere; }
-.answer-rule-distillation { display: grid; gap: 6px; }
-.answer-rule-memory-match p { margin-block: 6px; white-space: pre-wrap; }
-.answer-rule-memory-match blockquote { border-inline-start: 2px solid var(--border); margin: 6px 0 10px; padding-inline-start: 10px; white-space: pre-wrap; }
 .answer-rule-result { white-space: pre-wrap; overflow-wrap: anywhere; }
 .answer-rule-result > p { margin: 4px 0; }
 

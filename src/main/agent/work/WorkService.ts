@@ -9,7 +9,7 @@ import { dispatchExecutionMutation } from "./WorkDispatchMutation";
 import { WorkIntentMutations } from "./WorkIntentMutations";
 import { pauseWorkMutation, resumeWorkMutation } from "./WorkPauseResumeMutations";
 import { handoffOwnerMutation, addParticipantMutation } from "./WorkDelegationMutations";
-import { WorkClosureMutations } from "./WorkClosureMutations";
+import { WorkClosureMutations, type GoalCompletionObservation } from "./WorkClosureMutations";
 import { recordClosureCorrection, type ClosureReviewEvidence } from "./WorkClosureReview";
 import type { WorkClosureReviewRequest } from "../../../shared/work-closure-review";
 import type { WorkResultDecision } from "./WorkResultDecision";
@@ -483,11 +483,11 @@ export class WorkService {
     return this.closureMutations().applyCancellation(work, params, now);
   }
 
-  closeWork(actor: WorkActor, params: CloseWorkParams): WorkControlResult {
+  closeWork(actor: WorkActor, params: CloseWorkParams, observations?: readonly GoalCompletionObservation[]): WorkControlResult {
     const artifactInspection = params.conclusion === "succeeded" ? this.artifacts.capture(params.workId) : undefined;
     return this.runWorkControl(actor, "closeWork", params, {
       guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, resolved, now) => this.closureMutations().close(work, resolved, params, now, artifactInspection));
+    }, (work, resolved, now) => this.closureMutations().close(work, resolved, params, now, artifactInspection, observations));
   }
 
   /** Host-reviewed factual correction only. It never reopens or dispatches business work. */

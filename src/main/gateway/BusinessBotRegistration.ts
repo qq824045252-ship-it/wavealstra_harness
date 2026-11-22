@@ -17,7 +17,7 @@ export interface RegistrationDriver {
 export interface BusinessBotRegistrationOptions {
   provider: GatewayRegistrationProvider;
   driver: RegistrationDriver;
-  onAuthorized: (config: Record<string, unknown>, current: () => void, signal: AbortSignal) => Promise<void>;
+  onAuthorized: (config: Record<string, unknown>, current: () => void, signal: AbortSignal, personalMemoryOwnerId?: string) => Promise<void>;
   /** Injected only for deterministic protocol tests. */
   delay?: (ms: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
@@ -36,7 +36,7 @@ const value = (input: unknown): string => typeof input === "string" && input.len
  * fields are supplied. It is never returned to the renderer or logged. */
 export class BusinessBotRegistration {
   private state: GatewayRegistrationState = { state: "idle", message: "尚未开始扫码创建机器人" };
-  private attempt?: { id: string; controller: AbortController; deadline: number; credentials?: RegistrationCredentials; finishing?: Promise<GatewayRegistrationState>; expiryTimer?: ReturnType<typeof setTimeout> };
+  private attempt?: { id: string; controller: AbortController; deadline: number; dotsConsent: boolean; credentials?: RegistrationCredentials; finishing?: Promise<GatewayRegistrationState>; expiryTimer?: ReturnType<typeof setTimeout> };
   private readonly now: () => number;
   constructor(private readonly options: BusinessBotRegistrationOptions) { this.now = options.now ?? Date.now; }
   getState(): GatewayRegistrationState { return { ...this.state, ...(this.state.missingFields ? { missingFields: [...this.state.missingFields] } : {}) }; }
@@ -48,10 +48,10 @@ export class BusinessBotRegistration {
     this.state = { state: "cancelled", sessionId: this.state.sessionId, message: "扫码已取消；不会保存新凭据" };
     return this.getState();
   }
-  async start(approved: boolean): Promise<GatewayRegistrationState> {
+  async start(approved: boolean, dotsConsent = false): Promise<GatewayRegistrationState> {
     if (approved !== true) throw new Error("请先同意创建机器人并加密保存凭据用于持续连接");
     this.cancel();
-    const attempt = { id: randomUUID(), controller: new AbortController(), deadline: this.now() + 600_000 };
+    const attempt = { dotsConsent: this.options.provider === "feishu" && dotsConsent === true, id: randomUUID(), controller: new AbortController(), deadline: this.now() + 600_000 };
     this.attempt = attempt;
     this.state = { state: "waiting", sessionId: attempt.id, message: "正在获取官方机器人创建二维码" };
     try {
@@ -132,7 +132,8 @@ export class BusinessBotRegistration {
     const finishing = (async () => {
       try {
         this.current(attempt);
-        await this.options.onAuthorized(config, () => this.current(attempt), attempt.controller.signal);
+        await this.options.onAuthorized(config, () => this.current(attempt), attempt.controller.signal,
+          attempt.dotsConsent ? credentials.ownerId || undefined : undefined);
         this.current(attempt);
         clearTimeout(attempt.expiryTimer); attempt.credentials = undefined; this.attempt = undefined;
         this.state = { state: "connected", sessionId, message: "机器人已连接，后续启动将恢复连接" };

@@ -1,3 +1,4 @@
+import { mapTaskRowToTask } from "../tasks/taskMapper";
 import {
   selectionFingerprintMatches,
   type SelectionState,
@@ -9,11 +10,30 @@ export function bindProjectionEvents(
   applySelectionMirror: (state: SelectionState) => void,
 ): void {
   const {
-    context: { get },
+    context: { get, set },
     api,
     isActive,
     addCleanup,
   } = binding;
+  let dotsRefresh = 0;
+  addCleanup(api.dots?.onChanged(() => {
+    if (!isActive()) return;
+    const revision = ++dotsRefresh;
+    void get().refreshSpaces();
+    void api.db.listTasks().then(rows => {
+      if (!isActive() || revision !== dotsRefresh) return;
+      const state = get();
+      const known = new Set(state.tasks.map(task => task.id));
+      const missing = rows.filter(row => !known.has(row.id));
+      if (!missing.length) return;
+      const context = {
+        enabledModelIds: new Set(state.models.filter(model => model.enabled !== false).map(model => model.id)),
+        defaultModelId: state.defaultModelId,
+        permissionModeDefault: state.permissionMode,
+      };
+      set({ tasks: [...state.tasks, ...missing.map(row => mapTaskRowToTask(row, context))] });
+    }).catch(reason => console.warn("[Dots] 任务列表刷新失败", reason));
+  }));
   const domain = api.artifactDomain;
   if (domain) {
     addCleanup(

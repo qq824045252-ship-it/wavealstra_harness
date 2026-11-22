@@ -9,10 +9,14 @@ interface Invocation {
   execution: ConversationExecutionContext;
   cwd: string;
   runId: string;
+  presentationConversationId?: import("@earendil-works/pi-durable").ConversationId;
   native: ToolExecutionApi;
   context: Context;
   /** Trusted original host input, resolved through this run's durable submission receipt. */
   sourceUserMessageId?: string;
+  sourceDisplayText?: string;
+  sourceOrigin?: import("../../../shared/dots").DotsReplyOrigin;
+  memorySource?: { text: string; createdAt: number; messageId: string };
 }
 const invocation = new AsyncLocalStorage<Invocation>();
 

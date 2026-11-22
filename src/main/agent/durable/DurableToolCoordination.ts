@@ -117,7 +117,7 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
 
 /** Wrap execution, not beforeTool: Pi's safe recovery re-enters execute without running beforeTool. */
 export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd: string,
-  beforeExecute?: (name: string, args: unknown) => void, codeReview?: DurableCodeReview): ToolRegistration {
+  beforeExecute?: (name: string, args: unknown, cwd: string) => void, codeReview?: DurableCodeReview): ToolRegistration {
   if (containers.has(tool.name) || isDurableContextToolName(tool.name)) return tool;
   return { ...tool, execute: async (args, api, context) => {
     let release: (() => void) | undefined;
@@ -127,7 +127,7 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
       const reviewPath = codeReview && isNativeReviewWrite(tool.name) ? await nativeReviewPath(api, context, args) : undefined;
       release = await acquire(() => inspectAccess(tool.name, reviewPath ? { path: reviewPath } : args, cwd), context.abortSignal);
       context.abortSignal?.throwIfAborted();
-      beforeExecute?.(tool.name, args);
+      beforeExecute?.(tool.name, args, cwd);
       started = true;
       return await (codeReview
         ? withCodeReviewWrite(codeReview, tool.name, args, api, context, observed => tool.execute(args, observed, context))

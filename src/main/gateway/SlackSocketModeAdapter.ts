@@ -21,6 +21,7 @@ type SlackApiResult = Record<string, unknown> & { ok?: boolean; error?: string }
 export interface SlackSocketOptions {
   journal: SlackGatewayJournal;
   reserveConversation?: (delivery: SlackDelivery, accountKey: string, recovered: boolean) => void;
+  replyAllowed?: (delivery: SlackDelivery) => boolean;
   socketFactory?: (url: string) => SlackSocket;
   fetch?: typeof fetch;
   mediaDirectory?: string;
@@ -521,12 +522,12 @@ export class SlackSocketModeAdapter implements ChannelAdapter {
   }
 
   private async flushReply(delivery: SlackDelivery): Promise<void> {
-    if (this.stopped || !this.activated || !this.config || !this.allows(delivery)) return;
+    if (this.stopped || !this.activated || !this.config || !this.allows(delivery) || this.options.replyAllowed?.(delivery) === false) return;
     const chunks = splitSlackReply(delivery.replyText ?? "");
     let current = this.options.journal.get(delivery)!;
     try {
       for (let index = current.nextChunk ?? 0; index < chunks.length; index++) {
-        if (this.stopped || !this.allows(current)) return;
+        if (this.stopped || !this.allows(current) || this.options.replyAllowed?.(current) === false) return;
         await this.api("chat.postMessage", this.config.botToken, {
           channel: current.channel, thread_ts: current.threadTs, text: chunks[index],
           client_msg_id: replyClientId(current, index), unfurl_links: false, unfurl_media: false,

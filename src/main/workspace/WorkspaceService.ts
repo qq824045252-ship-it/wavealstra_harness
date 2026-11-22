@@ -733,13 +733,13 @@ export async function readWorkspaceFile(root: string, relativePath: string, text
 // for every sibling comparison in a large workspace tree.
 const compareWorkspaceFileNames = new Intl.Collator("zh-CN", { numeric: true }).compare;
 
-export async function listWorkspaceFiles(root: string): Promise<WorkspaceFileNodeDto[]> {
+export async function listWorkspaceFiles(root: string, maxDepth = 12): Promise<WorkspaceFileNodeDto[]> {
   const resolvedRoot = resolve(root);
   const rootStat = await stat(resolvedRoot);
   if (!rootStat.isDirectory()) throw new Error("工作区路径不是文件夹");
   let seen = 0;
   const walk = async (dir: string, prefix = "", depth = 0): Promise<WorkspaceFileNodeDto[]> => {
-    if (depth > 12 || seen > 5000) return [];
+    if (depth > maxDepth || seen > 5000) return [];
     const entries = await readdir(dir, { withFileTypes: true });
     const nodes: WorkspaceFileNodeDto[] = [];
     for (const entry of entries) {

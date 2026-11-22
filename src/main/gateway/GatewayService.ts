@@ -4,6 +4,7 @@ import { createFeishuRegistrationDriver, createDingTalkRegistrationDriver, creat
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails } from "../../shared/gateway-registration";
 import { createHash, randomUUID } from "node:crypto";
 import { GatewayPlatformRegistry, gatewayCapabilities } from "./GatewayPlatformRegistry";
+import { GatewayDotsBindings, gatewayPrivateAdmission } from "./GatewayDotsBindings";
 import { GatewayRouter } from "./GatewayRouter";
 import { GatewaySecrets, GATEWAY_SECRET_FIELDS, GATEWAY_REDACTED } from "./GatewaySecrets";
 import { createIdempotencyGuard, isAllowedUser } from "./GatewayRateLimiter";
@@ -122,6 +123,9 @@ export class GatewayService {
   /** Invalidates startup/restore work when shutdown crosses an awaited operation. */
   private lifecycleEpoch = 0;
   private readonly channelOperations = new Map<string, symbol>();
+  private readonly dotsBindings?: GatewayDotsBindings;
+  private qqDotsConsent = false;
+  private weixinDotsConsent = false;
   private readonly bindingSessionId = randomUUID();
   private readonly bindingGenerations = new Map<string, number>();
 
@@ -145,21 +149,31 @@ export class GatewayService {
     options: GatewayServiceOptions = {},
   ) {
     this.settingsStore = options.settingsStore ?? new AppSettingsStore();
+    this.dotsBindings = db.connection ? new GatewayDotsBindings(db.connection) : undefined;
     const journal = options.durableInbox !== false && db.connection ? new GatewayDeliveryJournal(db.connection) : undefined;
-    const reserve = (channelId: string, accountKey: string, chatId: string, senderId: string | undefined, messageId: string, text: string, admission: ConversationAdmission) => {
+    const reserve = (channelId: string, accountKey: string, chatId: string, senderId: string | undefined, messageId: string, text: string, admission: ConversationAdmission, message?: import("./channels").GatewayInboundMessage) => {
       if (!db.connection || !senderId || this.stopping || !this.channelPolicies.get(channelId)?.allowUsers.includes(senderId)) return;
+      if (admission.recovered && this.dotsBindings && !this.dotsBindings.coversDelivery(admission.acceptedAt)) {
+        throw new Error("旧渠道消息缺少当前记忆隔离授权，请重新发送");
+      }
       const command = isNewConversationCommand(text);
       if (command && !hasStableConversationMessageId(messageId)) return; // Router responds without model work.
-      reserveGatewayConversation(db.connection, { channelId, connectionKey: accountKey, chatId, senderId, messageId }, command, admission);
+      const origin = { channelId, connectionKey: accountKey, chatId, senderId, messageId, audience: message?.audience ?? "shared" as const };
+      const personalMemoryBindingId = message && hasStableConversationMessageId(messageId)
+        ? this.dotsBindings?.admit(origin, message.replyRoute, admission.acceptedAt) : undefined;
+      reserveGatewayConversation(db.connection, { ...origin, personalMemoryBindingId }, command, admission);
     };
     this.platforms = new GatewayPlatformRegistry({
-      reserveConversation: (message, accountKey, messageId, admission) => reserve(message.channelId, accountKey, message.chatId, message.sender?.id, messageId, message.text, admission),
+      reserveConversation: (message, accountKey, messageId, admission) => reserve(message.channelId, accountKey, message.chatId, message.sender?.id, messageId, message.text, admission, message),
       ...(journal ? { journal } : {}),
       onReplySent: deliveryId => {
         const operationId = journal?.continuationOperation(deliveryId);
         if (operationId) this.agent.completeBotContinuation?.(operationId);
       },
       replyCurrent: deliveryId => {
+        const entry = journal?.get(deliveryId);
+        if (entry && this.dotsBindings && (!this.dotsBindings.coversDelivery(entry.created_at)
+          || !this.dotsBindings.replyCurrent(gatewayPrivateAdmission(db.connection, entry.channel_id, entry.account_key, entry.chat_id, entry.message_id)))) return false;
         const operationId = journal?.continuationOperation(deliveryId);
         return !operationId || this.agent.canSendBotContinuation?.(operationId) !== false;
       },
@@ -177,6 +191,7 @@ export class GatewayService {
       journal: new SlackGatewayJournal(() => join(getGatewayDir(), "slack-deliveries.json")),
       reserveConversation: (delivery, accountKey, recovered) => reserve("slack-default", accountKey,
         [delivery.teamId, delivery.channel, delivery.threadTs].join(":"), delivery.userId, delivery.eventId, delivery.text, { acceptedAt: delivery.acceptedAt, recovered }),
+      replyAllowed: delivery => this.dotsBindings?.coversDelivery(delivery.acceptedAt) ?? true,
       deferInboundUntilActivated: true,
       onStatus: text => this.emitEvent({ channelId: "slack-default", direction: "system", text, at: Date.now() }),
       onHistoryRead: value => console.info("[SlackChannelHistory] " + JSON.stringify(value)),
@@ -203,7 +218,7 @@ export class GatewayService {
     for (const provider of ["feishu", "dingtalk", "wecom"] as const) {
       this.businessQr.set(provider, new BusinessBotRegistration({ provider,
         driver: provider === "feishu" ? createFeishuRegistrationDriver() : provider === "wecom" ? createWecomRegistrationDriver() : createDingTalkRegistrationDriver(),
-        onAuthorized: (config, current, signal) => this.acceptBusinessRegistration(provider, config, current, signal),
+        onAuthorized: (config, current, signal, personalMemoryOwnerId) => this.acceptBusinessRegistration(provider, config, current, signal, personalMemoryOwnerId),
       }));
     }
     this.lifecycle = new GatewayLifecycleManager({
@@ -228,7 +243,7 @@ export class GatewayService {
     }
   }
   getBusinessRegistration(provider: GatewayRegistrationProvider) { return this.registration(provider).getState(); }
-  async startBusinessRegistration(provider: GatewayRegistrationProvider, approved: boolean) {
+  async startBusinessRegistration(provider: GatewayRegistrationProvider, approved: boolean, dotsConsent?: boolean) {
     const registration = this.registration(provider);
     if (approved !== true) throw new Error("请明确同意创建机器人并保存凭据");
     assertGatewayProviderStorage();
@@ -238,7 +253,7 @@ export class GatewayService {
     await cancelled;
     if (epoch !== this.businessQrEpoch.get(provider)) return registration.getState();
     this.stopping = false;
-    const result = await registration.start(true);
+    const result = await registration.start(true, dotsConsent === true);
     if (epoch !== this.businessQrEpoch.get(provider)) return registration.getState();
     return result;
   }
@@ -254,7 +269,7 @@ export class GatewayService {
     if (pending) await pending.catch(() => {});
     return registration.getState();
   }
-  private acceptBusinessRegistration(provider: GatewayRegistrationProvider, input: Record<string, unknown>, current: () => void, signal: AbortSignal): Promise<void> {
+  private acceptBusinessRegistration(provider: GatewayRegistrationProvider, input: Record<string, unknown>, current: () => void, signal: AbortSignal, personalMemoryOwnerId?: string): Promise<void> {
     const adapter = provider === "feishu" ? this.feishu : provider === "wecom" ? this.wecom : this.dingtalk;
     const epoch = this.lifecycleEpoch;
     this.assertBusinessRegistrationEmpty(provider);
@@ -278,6 +293,9 @@ export class GatewayService {
           this.db.upsertGatewayChannel({ id: adapter.id, type: adapter.type, name: adapter.name,
             configJson: JSON.stringify(saved), connected: true, statusText: adapter.statusText() });
           adapter.activate();
+          if (provider === "feishu" && personalMemoryOwnerId) {
+            this.dotsBindings?.replace(adapter.id, adapter.workConnectionKey?.(), personalMemoryOwnerId, true);
+          }
         })();
         this.channelPolicies.set(adapter.id, { allowUsers: toStrArray(config.allowUsers) });
         this.platforms.resume(adapter.id);
@@ -297,7 +315,7 @@ export class GatewayService {
   }
 
   /** A scan is a separate, explicit persistent-access enrollment, never a generic config write. */
-  async startQQQrLogin(approvedPersistentAccess: boolean): Promise<GatewayQQQrLoginStateDto> {
+  async startQQQrLogin(approvedPersistentAccess: boolean, dotsConsent?: boolean): Promise<GatewayQQQrLoginStateDto> {
     if (approvedPersistentAccess !== true) throw new Error("请先明确同意 QQ 持久访问授权");
     assertGatewayProviderStorage();
     const epoch = ++this.qqQrEpoch;
@@ -308,6 +326,7 @@ export class GatewayService {
     }
     if (epoch !== this.qqQrEpoch) throw new Error("QQ 扫码已取消");
     this.stopping = false;
+    this.qqDotsConsent = dotsConsent === true;
     const state = await this.qqQrLogin.start(true);
     return this.publicQQQrState(state);
   }
@@ -337,6 +356,7 @@ export class GatewayService {
     assertCurrent: () => void, signal: AbortSignal): Promise<void> {
     const epoch = this.lifecycleEpoch;
     const owner = this.beginChannelOperation(this.qq.id);
+    const dotsConsent = this.qqDotsConsent;
     const operation = (async () => {
       const stop = () => { if (this.channelOperations.get(this.qq.id) === owner) void this.qq.disconnect().catch(() => {}); };
       signal.addEventListener("abort", stop, { once: true });
@@ -357,6 +377,7 @@ export class GatewayService {
           this.db.upsertGatewayChannel({ id: this.qq.id, type: this.qq.type, name: this.qq.name,
             configJson: JSON.stringify(savedConfig), connected: true, statusText: this.qq.statusText() });
           this.qq.activate();
+          this.dotsBindings?.replace(this.qq.id, this.qq.workConnectionKey?.(), credentials.userOpenid, dotsConsent);
         })();
         this.channelPolicies.set(this.qq.id, { allowUsers: [credentials.userOpenid] });
         this.platforms.resume(this.qq.id);
@@ -377,7 +398,7 @@ export class GatewayService {
   }
 
   /** A scan is a separate, explicit persistent-access enrollment, never a generic config write. */
-  async startWeixinQrLogin(approvedPersistentAccess: boolean): Promise<GatewayWeixinQrLoginStateDto> {
+  async startWeixinQrLogin(approvedPersistentAccess: boolean, dotsConsent?: boolean): Promise<GatewayWeixinQrLoginStateDto> {
     if (approvedPersistentAccess !== true) throw new Error("请先明确同意 微信 持久访问授权");
     assertGatewayProviderStorage();
     const epoch = ++this.weixinQrEpoch;
@@ -388,6 +409,7 @@ export class GatewayService {
     }
     if (epoch !== this.weixinQrEpoch) throw new Error("微信 扫码已取消");
     this.stopping = false;
+    this.weixinDotsConsent = dotsConsent === true;
     const state = await this.weixinQrLogin.start(true);
     return this.publicWeixinQrState(state);
   }
@@ -418,6 +440,7 @@ export class GatewayService {
     assertCurrent: () => void, signal: AbortSignal): Promise<void> {
     const epoch = this.lifecycleEpoch;
     const owner = this.beginChannelOperation(this.weixin.id);
+    const dotsConsent = this.weixinDotsConsent;
     const operation = (async () => {
       const stop = () => { if (this.channelOperations.get(this.weixin.id) === owner) void this.weixin.disconnect().catch(() => {}); };
       signal.addEventListener("abort", stop, { once: true });
@@ -438,6 +461,7 @@ export class GatewayService {
           this.db.upsertGatewayChannel({ id: this.weixin.id, type: this.weixin.type, name: this.weixin.name,
             configJson: JSON.stringify(savedConfig), connected: true, statusText: this.weixin.statusText() });
           this.weixin.activate();
+          this.dotsBindings?.replace(this.weixin.id, this.weixin.workConnectionKey?.(), credentials.userId, dotsConsent);
         })();
         this.channelPolicies.set(this.weixin.id, { allowUsers: [credentials.userId] });
         this.platforms.resume(this.weixin.id);
@@ -519,7 +543,7 @@ export class GatewayService {
 
   private createInboundHandler(): GatewayInboundHandler {
     return new GatewayRouter({
-      db: this.db, adapters: this.adapters,
+      db: this.db, adapters: this.adapters, dotsBindings: this.dotsBindings,
       agent: {
         runGatewayTurn: request => {
           // The router has already resolved the authorized sender's canonical conversation ID.
@@ -733,6 +757,7 @@ export class GatewayService {
     if (!this.isSocketOnly(adapter, merged)) await this.start();
     if (!this.ownsChannelOperation(channelId, operation, epoch)) throw new Error("Gateway 连接已取消");
     if (isSecureGatewayProvider(adapter.type)) this.channelPolicies.delete(adapter.id);
+    this.dotsBindings?.revoke(channelId);
     try { await adapter.connect(merged); }
     catch (error) {
       if (this.ownsChannelOperation(channelId, operation, epoch)) {
@@ -790,6 +815,7 @@ export class GatewayService {
     const operation = this.beginChannelOperation(channelId);
     const current = () => this.channelOperations.get(channelId) === operation && this.lifecycleEpoch === epoch;
     this.platforms.pause(channelId);
+    this.dotsBindings?.revoke(channelId);
     if (channelId === this.feishu.id) await this.cancelBusinessRegistration("feishu");
     if (channelId === this.dingtalk.id) await this.cancelBusinessRegistration("dingtalk");
     if (channelId === this.wecom.id) await this.cancelBusinessRegistration("wecom");

@@ -46,9 +46,19 @@ const root = mkdtempSync(join(tmpdir(), "qq-qr-integration-"));
 const db = new AppDatabase(join(root, "test.db"));
 const adapter = new FakeAdapter("weixin-default", "Weixin");
 let login!: FakeLogin;
-let turns = 0;
-const service = new GatewayService(db, { runGatewayTurn: async () => { turns++; throw new Error("unexpected"); } }, undefined,
+const authorities: Array<string | undefined> = [];
+const service = new GatewayService(db, { runGatewayTurn: async ({ gatewayOrigin }) => {
+  authorities.push(gatewayOrigin.personalMemoryBindingId);
+  return "fixture reply";
+} }, undefined,
   { adapters: { weixin: adapter }, weixinQrLoginFactory: options => (login = new FakeLogin(options)) });
+const sendPrivate = async (messageId: string) => {
+  const replies: string[] = [];
+  await adapter.capturedInbound!({ channelId: adapter.id, chatId: credentials.userId, sender: { id: credentials.userId },
+    audience: "private", messageId, text: "private fixture", replyRoute: { kind: "weixin", peer: credentials.userId },
+    reply: async text => { replies.push(text); } });
+  assert.deepEqual(replies, ["fixture reply"]);
+};
 try {
   await assert.rejects(service.startWeixinQrLogin(false)); assert.equal(login.starts, 0);
   setEncryptionAvailable(false);
@@ -59,7 +69,7 @@ try {
   setStorageBackend("gnome_libsecret");
   await assert.rejects(service.connect("weixin-default", { ...credentials, allowUsers: ["anyone"] }));
   assert.equal(adapter.connections, 0);
-  const state = await service.startWeixinQrLogin(true);
+  const state = await service.startWeixinQrLogin(true, true);
   assert.equal(state.state, "waiting");
   await login.authorize();
   assert.equal(adapter.active, true);
@@ -74,10 +84,15 @@ try {
   assert.equal((service.getWeixinQrLoginState() as unknown as Record<string, unknown>).token, undefined);
   assert.equal((service as unknown as { webhookServer: unknown }).webhookServer, null);
   await adapter.capturedInbound!({ channelId: adapter.id, chatId: "other", sender: { id: "not-scanner" }, text: "ignored", reply: async () => {} });
-  assert.equal(turns, 0);
+  assert.equal(authorities.length, 0);
+  await sendPrivate("approved");
+  const firstBinding = authorities.at(-1);
+  assert(firstBinding, "verified QR enrollment selected the authorized Dots memory identity");
   await service.stop();
   await service.restoreChannels();
   assert(adapter.active); assert.equal((service as unknown as { webhookServer: unknown }).webhookServer, null);
+  await sendPrivate("restored");
+  assert.equal(authorities.at(-1), firstBinding);
 
   const original = db.listGatewayChannels().find(value => value.id === "weixin-default")!.configJson;
   await service.startWeixinQrLogin(true);
@@ -105,5 +120,10 @@ try {
   assert.equal(service.getWeixinQrLoginState().state, "cancelled");
   assert.equal(db.listGatewayChannels().find(value => value.id === "weixin-default")!.connected, false);
   assert.equal(service.getChannelConfig("weixin-default").config.botToken, "••••••");
+  await service.startWeixinQrLogin(true);
+  await login.authorize();
+  await sendPrivate("ordinary-only");
+  assert.equal(authorities.at(-1), undefined, "QR transport authorization alone does not approve personal memory");
+  console.log("Dots QR binding PASS: explicit personal-memory opt-in, native route admission, cold grant restore and ordinary reauthorization");
   console.log("Weixin QR integration PASS: explicit consent, encrypted persistence, owner allowlist, activation, cancellation, restore and no HTTP listener");
 } finally { await service.stop(); db.close(); rmSync(root, { recursive: true, force: true }); setEncryptionAvailable(true); }

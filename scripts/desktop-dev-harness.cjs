@@ -79,7 +79,7 @@ function createSseAudit(emit) {
   };
 }
 
-exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUsage, fixtureModelRates, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true}) => {
+exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUsage, fixtureModelRates, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
   const agentDir = path.join(home, '.mybuddy'), userData = path.join(home, 'electron-profile');
@@ -199,6 +199,11 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
           const requestIndex = requests.length;
           requests.push(request);
           const reply = await fixtureModel(request);
+          if (reply?.fixtureFault === "disconnect") { req.socket.destroy(); return; }
+          if (reply?.fixtureFault === "model-error") {
+            res.writeHead(400, {"Content-Type":"application/json"}).end(JSON.stringify({error:{type:"invalid_request_error", message:reply.message}}));
+            return;
+          }
           const tool = typeof reply === 'string' ? undefined : reply.tool;
           const message = tool ? { role: 'assistant', tool_calls: [{ id: 'call-' + requests.length, type: 'function',
             function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] } : { role: 'assistant', content: reply };
@@ -325,6 +330,21 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
       const baseConfig = path.relative(home, path.join(root, 'electron.vite.config.ts')).split(path.sep).join('/');
       fs.writeFileSync(rendererConfig, [
         'import config from ' + JSON.stringify(baseConfig),
+        ...(isolatedDependencyCache ? [
+          'import { writeFileSync } from "node:fs"',
+          'config.renderer.cacheDir = ' + JSON.stringify(path.join(home, 'vite-cache')),
+          // Some Windows environments allow Node to write the cache while denying direct writes by esbuild.exe.
+          'config.renderer.optimizeDeps = { esbuildOptions: { write: false, plugins: [{',
+          '  name: "write-isolated-cache",',
+          '  setup(build) {',
+          '    build.onEnd(result => {',
+          '      for (const file of result.outputFiles ?? []) {',
+          '        if (file.path !== "<stdout>") writeFileSync(file.path, file.contents)',
+          '      }',
+          '    })',
+          '  }',
+          '}] } }',
+        ] : []),
         'config.renderer.server = { ...config.renderer.server, hmr: false, watch: null }',
         'export default config',
       ].join('\n'));

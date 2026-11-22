@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
 import type { CodemodeOutputItem } from "@earendil-works/pi-codemode";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
+import { durableReadPathVariants, durableToolPath } from "./DurableFilePath";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 
 const extensions: Record<string, string> = { "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp" };
@@ -52,11 +53,9 @@ export function withDurableImageRead(tool: ToolRegistration): ToolRegistration {
       const mimeType = diagnostic?.message.match(/\((image\/[a-z]+)\)/)?.[1];
       const rawPath = (args as { path?: unknown }).path;
       if (!mimeType || typeof rawPath !== "string" || !api.env) return result;
-      const normalized = rawPath.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
-      const resolved = getOrThrow(await api.env.absolutePath(normalized, context));
-      const variants = [resolved, resolved.replace(/ (AM|PM)\./gi, "\u202F$1."), resolved.normalize("NFD"), resolved.replace(/'/g, "\u2019"), resolved.normalize("NFD").replace(/'/g, "\u2019")];
+      const resolved = getOrThrow(await api.env.absolutePath(durableToolPath(rawPath), context));
       let path = resolved;
-      for (const variant of new Set(variants)) if (getOrThrow(await api.env.exists(variant, context))) { path = variant; break; }
+      for (const variant of new Set(durableReadPathVariants(resolved))) if (getOrThrow(await api.env.exists(variant, context))) { path = variant; break; }
       const reader = getOrThrow(await api.env.openBinaryReader(path, undefined, context));
       try {
         const before = getOrThrow(await reader.info(context));

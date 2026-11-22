@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../../../../shared/dots";
 import { resolveExternalAgentContinuationRunId } from "../../../../../shared/external-agent";
 import { defaultModePresetId } from "../../../../../shared/mode-profile";
 import { normalizeSelectionComment } from "../../../../../shared/selection";
@@ -243,7 +244,7 @@ export function createSendMessageActions(
           x.id === activeTaskId
             ? {
                 ...x,
-                title: isFirstMessage && !reviewTaskId
+                title: isFirstMessage && !reviewTaskId && x.id !== DOTS_TASK_ID
                   ? taskTitleFromFirstMessage(text)
                   : x.title,
                 // 仅在任务尚无绑定时写入；已有 spaceId 或已有对话的独立任务不改
@@ -391,6 +392,7 @@ export function createSendMessageActions(
           api.agent.prompt({
             taskId: activeTaskId,
             text,
+            ...(activeTaskId === DOTS_TASK_ID && visibleText && visibleText !== text ? { displayText: visibleText } : {}),
             modelId: reqModelId,
             permissionMode: reqPermissionMode,
             welcomeMode,

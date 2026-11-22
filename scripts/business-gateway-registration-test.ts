@@ -46,3 +46,29 @@ const serial=new BusinessBotRegistration({provider:"dingtalk",driver,delay:async
 await serial.start(true);await tick();const sid=serial.getState().sessionId!;
 const first=serial.finish(sid,{corpId:"c",robotCode:"r",allowUsers:["u"]});const second=serial.finish(sid,{corpId:"other",robotCode:"other",allowUsers:["other"]});assert.equal(calls,1);releases[0]();await Promise.all([first,second]);assert.equal(serial.getState().state,"connected");
 console.log("PASS late connection commit rejected after cancellation; duplicate finish remains one operation");
+
+for (const trial of [
+  { consent: true, upstreamOwner: "verified-owner", expected: "verified-owner" },
+  { consent: false, upstreamOwner: "verified-owner", expected: undefined },
+  { consent: true, upstreamOwner: undefined, expected: undefined },
+]) {
+  let completed = false;
+  const enrollment = new BusinessBotRegistration({ provider: "feishu", delay: async () => {},
+    driver: { begin: async () => ticket, poll: async () => ({ state: "authorized",
+      credentials: { clientId: "app", clientSecret: "credential", ownerId: trial.upstreamOwner } }) },
+    onAuthorized: async (config, current, _signal, dotsOwner) => {
+      current();
+      assert.deepEqual(config.allowUsers, [trial.upstreamOwner ?? "manual-allowlist"]);
+      assert.equal(dotsOwner, trial.expected);
+      completed = true;
+    },
+  });
+  await enrollment.start(true, trial.consent);
+  await tick();
+  if (!trial.upstreamOwner) {
+    assert.equal(enrollment.getState().state, "configuration");
+    await enrollment.finish(enrollment.getState().sessionId!, { allowUsers: ["manual-allowlist"] });
+  }
+  assert(completed, "the checked owner reached the production enrollment callback");
+}
+console.log("PASS Dots binds Feishu QR owner only with opt-in and provider-returned identity");

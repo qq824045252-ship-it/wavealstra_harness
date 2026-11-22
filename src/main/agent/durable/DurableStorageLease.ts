@@ -25,10 +25,18 @@ export interface DurableStorageOwner {
 
 export class DurableStorageOwnedError extends Error {
   readonly code = "DURABLE_STORAGE_OWNED";
-  constructor(readonly owner: DurableStorageOwner, readonly lockPath: string) {
+  readonly owner: DurableStorageOwner;
+  readonly lockPath: string;
+  constructor(owner: DurableStorageOwner, lockPath: string) {
     super(`Bot 会话存储已被另一个 MyBuddy 实例占用（PID ${owner.pid}）`);
+    this.owner = owner;
+    this.lockPath = lockPath;
     this.name = "DurableStorageOwnedError";
   }
+}
+
+export function isDurableLeaseFile(name: string): boolean {
+  return name === LOCK_FILE || name.startsWith(LOCK_FILE + ".tmp-") || name === MUTEX_FILE || name === MUTEX_FILE + "-journal";
 }
 
 export interface DurableStorageLease {

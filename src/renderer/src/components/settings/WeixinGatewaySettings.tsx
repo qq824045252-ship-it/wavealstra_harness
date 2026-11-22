@@ -10,6 +10,7 @@ const pending = (state: GatewayWeixinQrLoginStateDto) => state.state === "waitin
 export default function WeixinGatewaySettings(): React.JSX.Element {
   const [state, setState] = useState(idle);
   const [approved, setApproved] = useState(false);
+  const [dotsConsent, setDotsConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [known, setKnown] = useState(false);
@@ -96,7 +97,7 @@ export default function WeixinGatewaySettings(): React.JSX.Element {
     const attempt = ++epoch.current;
     setBusy(true);
     try {
-      const next = await window.api?.gateway?.weixinQrStart(true);
+      const next = await window.api?.gateway?.weixinQrStart(true, dotsConsent);
       if (!next) throw new Error("unavailable");
       if (!mounted.current || epoch.current !== attempt) {
         if (next.sessionId) await window.api?.gateway?.weixinQrCancel(next.sessionId);
@@ -120,7 +121,7 @@ export default function WeixinGatewaySettings(): React.JSX.Element {
     setBusy(true);
     try {
       await window.api?.gateway?.disconnect("weixin-default");
-      if (mounted.current) { apply({ state: "cancelled", message: "微信 已断开；如需撤销平台授权，请在 微信 官方平台管理" }); setApproved(false); }
+      if (mounted.current) { setDotsConsent(false); apply({ state: "cancelled", message: "微信 已断开；如需撤销平台授权，请在 微信 官方平台管理" }); setApproved(false); }
       await refresh();
     } catch { if (mounted.current) apply({ state: "error", message: "断开未确认，请重试" }); }
     finally { if (mounted.current) setBusy(false); }
@@ -138,12 +139,16 @@ export default function WeixinGatewaySettings(): React.JSX.Element {
         <input type="checkbox" aria-label="同意 微信 持久访问授权" checked={approved} disabled={busy || pending(state)} onChange={event => setApproved(event.target.checked)} />
         <span>我同意申请 微信 机器人凭据，并由此应用加密保存，用于持续接收和回复我的机器人消息；下次启动时可恢复连接。扫码后仍需在手机端确认。</span>
       </label>
+      <label style={{ display: "flex", gap: 8, margin: "12px 0" }}>
+        <input type="checkbox" checked={dotsConsent} disabled={busy || pending(state)} onChange={event => setDotsConsent(event.target.checked)} />
+        <span>在此扫码账号的私聊中使用我的 Dots 个人记忆。断开连接或重新扫码可撤销。</span>
+      </label>
       <div role="status">{state.message}</div>
       {qrImage && <img src={qrImage} width={224} height={224} alt="微信 官方授权二维码" />}
       {state.state === "waiting" && !qrImage && <div>正在准备二维码…</div>}
       </>}
       <div className="settings-card-footer">
-        {connected && !reauthorizing ? <button className="btn" disabled={busy} onClick={() => { setReauthorizing(true); setApproved(false); }}>重新授权</button>
+        {connected && !reauthorizing ? <button className="btn" disabled={busy} onClick={() => { setReauthorizing(true); setApproved(false); setDotsConsent(false); }}>重新授权</button>
           : <button className="btn primary" disabled={!known || !approved || busy || pending(state)} onClick={() => void start()}>开始扫码授权</button>}
         {pending(state) && <button className="btn" disabled={busy} onClick={() => void cancel()}>取消扫码</button>}
         {connected && <button className="btn" disabled={!known || busy || pending(state)} onClick={() => void disconnect()}>断开 微信</button>}

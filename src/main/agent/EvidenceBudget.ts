@@ -1,3 +1,4 @@
+import { MEMORY_CONTEXT_HARD_BUDGET } from "../../shared/memory-kernel";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
 const EVIDENCE_SEGMENTS = new Set([
@@ -52,12 +53,12 @@ export class EvidenceBudget {
   private initialRemaining: number;
   readonly allocations: Array<{ source: string; used: number; excluded: boolean }> = [];
 
-  constructor(model: Model<Api>, contextTokens: number) {
+  constructor(model: Model<Api>, contextTokens: number, dots = false) {
     const available = model.contextWindow - contextTokens - model.maxTokens - Math.ceil(model.contextWindow * 0.15) - 2048;
     this.limit = Math.max(0, Math.floor(Math.min(24_000, model.contextWindow * 0.2, available)));
     // Conservative byte caps for supplements, separate from Pi's token accounting.
     this.initialRemaining = Math.floor(this.limit * 0.45);
-    this.memoryCap = Math.max(0, Math.floor(Math.min(4000, model.contextWindow * 0.04, this.initialRemaining * 0.5)));
+    this.memoryCap = Math.max(0, Math.floor(Math.min(dots ? MEMORY_CONTEXT_HARD_BUDGET : 4000, model.contextWindow * (dots ? 0.08 : 0.04), this.initialRemaining * (dots ? 0.78 : 0.5))));
   }
 
   takeInitial(source: string, text: string, cap = this.initialRemaining, keepLatest = false): string {

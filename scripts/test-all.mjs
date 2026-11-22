@@ -85,6 +85,8 @@ const GUI_TESTS = new Set([
   "test:office-use-desktop", // actual task tools and native Office editor views
   "test:drawio-use-desktop", // bundled Draw.io editor and native diagram operations
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
+  "test:dots-host", // two Electron mains sharing a local MyBuddy data directory
+  "test:dots-desktop", // isolated Electron Dots conversation and source artifact preview
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching
   "test:native-hooks-dev", // Electron settings, version switching and a native tool receipt
   "test:native-improvement-dev", // Weekly review controls, scoped publication and withdrawal in Electron
@@ -189,7 +191,7 @@ const GUI_TESTS = new Set([
 ]);
 
 const NETWORK_TESTS = new Set([
-  "test:answer-rule-memory-review-live", // real model comparison and adoption through the rule editor
+  "test:dots-rule-memory-live", // live Dots preferences, corrections and forgetting across restart
   "test:bot-task-reply-harness", // loopback-only HTTP/WebSocket fixture and driver checks; no external account or desktop
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
   "test:answer-routing-live", // isolated dev app, same synthetic release record across three real model turns
@@ -227,6 +229,8 @@ const NETWORK_TESTS = new Set([
 ]);
 
 const DATASET_TESTS = new Set([
+  "test:dots-memory-scale",
+  "test:dots-memory-longmemeval",
   "test:durable-context-cold-store", // Explicit large generated JSONL corpus (1K/10K/100K), not a per-edit default run.
   "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。
@@ -385,6 +389,11 @@ const HEADLESS_TESTS = new Set([
   "test:work-effect-retirement",
   "test:task-diagnostics",
   "test:task-board",
+  "test:dots-actions",
+  "test:dots-profile",
+  "test:dots-delivery",
+  "test:dots-reply-recovery",
+  "test:dots-followup",
   "test:durable-subagent",
   "test:durable-consult",
   "test:app-store-structure",

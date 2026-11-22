@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../shared/dots";
 /**
  * TaskExecutionWorkspaceLifecycle — 任务执行工作区生命周期（P1.5 / Batch 9）
  *
@@ -238,6 +239,7 @@ export class TaskExecutionWorkspaceLifecycle {
    * move 成功但 DB 失败 → 尝试移回；仍失败 → RepairRequiredError
    */
   async trash(taskId: string, options?: { strict?: boolean; assertAllowed?: () => void }): Promise<TrashResult> {
+    if (taskId === DOTS_TASK_ID) throw new Error("Dots 对话不能移入任务回收站");
     this.assertTaskId(taskId);
     this.assertWorkspaceNotShared(taskId);
     if (this.beforeTrash) {

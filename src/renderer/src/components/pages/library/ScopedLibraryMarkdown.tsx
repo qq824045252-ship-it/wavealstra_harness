@@ -7,6 +7,7 @@ import rehypeHighlight from "rehype-highlight";
 import type { ScopedLibraryOperations } from "@/lib/scopedLibraryOperations";
 import { useAppStore } from "@/store/appStore";
 import { libraryLinkedVersion } from "@/lib/scopedLibrary";
+import { renderMermaidImage } from "@/lib/mermaidImage";
 
 interface Props {
   content: string;
@@ -40,18 +41,15 @@ export function ScopedImage({ src, alt, itemId, access, notes, revision }: {
 }
 
 function NoteMermaid({ source }: { source: string }): React.JSX.Element {
-  const [rendered, setRendered] = useState<{ source: string; svg?: string }>();
+  const [rendered, setRendered] = useState<{ source: string; url?: string }>();
   useEffect(() => {
     let active = true;
-    void import("mermaid").then(async ({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", maxTextSize: 50_000, suppressErrorRendering: true });
-      const id = "note-mermaid-" + crypto.randomUUID();
-      const { svg } = await mermaid.render(id, source);
-      if (active) setRendered({ source, svg });
+    void renderMermaidImage(source).then(url => {
+      if (active) setRendered({ source, url });
     }).catch(() => { if (active) setRendered({ source }); });
     return () => { active = false; };
   }, [source]);
-  return rendered?.source === source && rendered.svg ? <img className="note-diagram" alt="Mermaid 图表" src={"data:image/svg+xml," + encodeURIComponent(rendered.svg)} />
+  return rendered?.source === source && rendered.url ? <img className="note-diagram" alt="Mermaid 图表" src={rendered.url} />
     : <pre><code>{source}</code>{rendered?.source === source && <small>无法渲染此 Mermaid 图表</small>}</pre>;
 }
 

@@ -19,6 +19,7 @@ export const CronExecutionSchema = Type.Object({
   cancelledAt: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
   maxRuns: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
   restartPolicy: Type.Optional(Type.Union([Type.Literal("resume"), Type.Literal("pause")])),
+  missedRuns: Type.Optional(Type.Union([Type.Literal("skip"), Type.Literal("coalesce")])),
 }, { additionalProperties: false });
 
 export type CronExecutionSettings = Static<typeof CronExecutionSchema>;

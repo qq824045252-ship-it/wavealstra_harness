@@ -10,6 +10,7 @@ export function botMessagePresentation(
   const result: ChatMessage[] = [];
   let userId: string | undefined;
   let replies: ChatMessage[] = [];
+  let afterDelivery: string | undefined;
   const flush = (): void => {
     if (!replies.length) return;
     const first = replies[0];
@@ -35,7 +36,7 @@ export function botMessagePresentation(
     const interactions = [...new Map(replies.flatMap(reply => reply.interactions ?? []).map(interaction => [interaction.id, interaction])).values()];
     result.push({ ...last, blocks,
       sourceMessageIds: [...new Set(replies.flatMap(reply => [reply.id, ...reply.sourceMessageIds ?? []]))],
-      presentationKey: `durable-turn-${userId ?? first.presentationKey ?? first.id}`,
+      presentationKey: afterDelivery ? `durable-turn-after-${afterDelivery}` : `durable-turn-${userId ?? first.presentationKey ?? first.id}`,
       createdAt: first.createdAt,
       modelName: [...replies].reverse().find(reply => reply.modelName)?.modelName,
       streaming: replies.some(reply => reply.streaming),
@@ -45,8 +46,13 @@ export function botMessagePresentation(
     replies = [];
   };
   for (const message of messages) {
-    if (message.role === "user") {
+    if (message.dotsDelivery) {
       flush();
+      result.push(message);
+      afterDelivery = message.id;
+    } else if (message.role === "user") {
+      flush();
+      afterDelivery = undefined;
       userId = message.inputRequestId ?? message.id;
       result.push(message.inputRequestId ? { ...message, presentationKey: `durable-input-${message.inputRequestId}` } : message);
     }
@@ -58,6 +64,7 @@ export function botMessagePresentation(
   for (const input of pendingInputs) {
     result.push(
       { id: `durable-queued-user-${input.id}`, role: "user", createdAt: 0,
+        inputRequestId: input.inputRequestId,
         presentationKey: input.inputRequestId ? `durable-input-${input.inputRequestId}` : undefined,
         blocks: [{ type: "text", text: input.text }] },
       { id: `durable-queued-reply-${input.id}`, role: "assistant", createdAt: 0,

@@ -1,0 +1,1 @@
+export const CURRENT_DATABASE_SCHEMA_VERSION = 36;

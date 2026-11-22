@@ -1,3 +1,4 @@
+import { DOTS_TASK_ID } from "../../../../shared/dots";
 import type { Artifact, Task } from "../../types";
 import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "../../utils/taskFilters";
 import {
@@ -72,7 +73,7 @@ export function createAppSelectors() {
     const previousById = new Map(
       sidebarTasksCache.map((task) => [task.id, task]),
     );
-    const next = state.tasks.map((task) => {
+    const next = state.tasks.filter(task => task.id !== DOTS_TASK_ID).map((task) => {
       const previous = previousById.get(task.id);
       return previous && sameSidebarTask(previous, task) ? previous : task;
     });

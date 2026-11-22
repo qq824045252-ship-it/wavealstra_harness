@@ -754,6 +754,16 @@ export interface AgentPromptRequest {
    * 无在途执行且会话空闲时按普通 prompt 处理。
    */
   streamingBehavior?: "steer" | "followUp";
+  /** Reject an in-flight correction atomically if the original run is already idle. */
+  requireActiveRun?: boolean;
+  dotsSteerInputVersion?: string;
+  /** Persisted reference to an explicitly designated Goal owned by this task. */
+  dotsGoalId?: string;
+  dotsGoalIntentRevision?: number;
+  dotsGoalUserAcceptance?: string;
+  dotsMemoryRefs?: Array<{ id: string; revision: number }>;
+  /** A one-time subscribed file change is valid only for this native task intent. */
+  dotsFileWatch?: { id: string; inputVersion: string };
   /** 用户拖入/选择的本地文件路径，主进程拼进 prompt 上下文 */
   attachments?: Array<{ name: string; path: string }>;
   /**
@@ -2075,6 +2085,7 @@ export interface ChatToolCallDto {
 }
 
 export interface ChatMessageDto {
+  dotsDelivery?: import("./dots").DotsAssistantReply;
   /** Stable request identity for reconciling a locally submitted bubble with durable history. */
   inputRequestId?: string;
   /** Host-authored foreground input identity; never inferred from displayed text. */
