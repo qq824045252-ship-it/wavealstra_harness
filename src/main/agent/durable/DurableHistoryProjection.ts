@@ -207,8 +207,25 @@ export class DurableHistoryProjection {
     for (const call of calls) if (!tools.some(tool => tool.id === call.id)) tools.push(call);
     if (details?.conversationId && message.toolName === "codemode") this.children.set(message.toolCallId, details.conversationId);
     const artifacts = details?.imagePaths?.map(path => ({ id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "" }));
-    this.replace({ ...owner, tools, ...(artifacts?.length ? { artifacts: [...owner.artifacts ?? [], ...artifacts.filter(artifact => !owner.artifacts?.some(item => item.id === artifact.id))] } : {}) });
+    const foregroundNotice = dotsForegroundNotice(message);
+    const text = foregroundNotice && !owner.text.includes(foregroundNotice)
+      ? [owner.text, foregroundNotice].filter(Boolean).join("\n\n") : owner.text;
+    this.replace({ ...owner, text, tools, ...(artifacts?.length ? { artifacts: [...owner.artifacts ?? [], ...artifacts.filter(artifact => !owner.artifacts?.some(item => item.id === artifact.id))] } : {}) });
   }
+}
+
+function dotsForegroundNotice(message: ToolResult): string | undefined {
+  if (message.toolName !== "dots_action" || message.isError || !message.details ||
+      typeof message.details !== "object" || Array.isArray(message.details)) return undefined;
+  const details = message.details as { foreground?: string; message?: string;
+    handoff?: { receipt?: { taskId?: string; operationId?: string; submissionId?: number } } };
+  if ((details.foreground === "limit" || details.foreground === "blocked") && typeof details.message === "string")
+    return details.message;
+  const receipt = details.handoff?.receipt;
+  if (details.foreground === "delegated" && typeof receipt?.taskId === "string" &&
+      typeof receipt.operationId === "string" && Number.isSafeInteger(receipt.submissionId))
+    return "前台读取已达上限，[普通任务](mybuddy://task/" + encodeURIComponent(receipt.taskId) + ")已受理后续工作。";
+  return undefined;
 }
 
 function toolResultDetail(tool: ToolRow, message: ToolResult): string | undefined {

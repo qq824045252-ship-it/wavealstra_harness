@@ -103,6 +103,8 @@ export async function verifyForegroundScheduling(root: string) {
     const receipt = (await agent.findSubmission(job.taskId, job.id))?.receipt;
     assert.equal(receipt?.taskId, job.taskId);
     assert.equal(receipt?.operationId, job.id);
+    const ack = (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.find(message => message.text.includes("已受理后续工作"));
+    assert(ack?.text.includes("mybuddy://task/" + job.taskId));
     assert(delegations.list(["audit-ledger"]).length === 1);
     assert.equal(failLink, false);
     assert.equal(loseReceipt, false);
@@ -147,6 +149,7 @@ export async function verifyForegroundScheduling(root: string) {
     assert.equal(recipe.reads[0].characters, "synthetic recipe notes".length);
     assert.equal(reads.state("recipe-revision").calls, 0);
     assert.equal(delegations.list(["recipe-summary"]).length, 0);
+    assert((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message => message.text.includes("前台读取已达上限。当前输入未允许")));
     assert.equal(foregroundCalls, 2);
     const disabled = agent.answerRouting.save({ ...rule, enabled: false }, rule);
     agent.answerRouting.save({ ...disabled, enabled: true }, disabled);
