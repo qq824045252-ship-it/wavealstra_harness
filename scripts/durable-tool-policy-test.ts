@@ -211,35 +211,57 @@ try {
   } finally { releaseNativeShell.resolve(); await publicationRuntime.close(); }
   console.log("PASS actual native shell process writes only the revised publication");
 
-  const closingTask = "goal-close-fresh-input";
-  let closureGuard: { workId: string; expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number };
-  let closureResult: string | undefined;
-  const closing = await fixture(closingTask, request => {
-    const last = request.messages.at(-1);
-    if (last?.role === "toolResult" && last.toolName === "conversation_goal_propose_complete") closureResult = JSON.stringify(last.content);
-    if (last?.role === "user" && JSON.stringify(last.content).includes("propose closing")) {
-      return call("conversation_goal_propose_complete", { ...closureGuard, summary: "Original result" }, "confirm-close");
-    }
-    return text("work remains open");
-  });
-  const created = goals.create({ taskId: closingTask, title: "Isolated closure" });
-  assert(created.ok);
-  const work = goals.workService.getWork(created.goal.id)!;
-  closureGuard = { workId: work.workId, expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
-  const closingRuntime = await closing.open();
-  try {
-    const original = await closingRuntime.submit("propose closing", "close-original");
-    await waitUntil(() => interactions.listByTask(closingTask).some(row => row.status === "pending" && row.kind === "confirm"));
-    const confirm = interactions.listByTask(closingTask).find(row => row.status === "pending" && row.kind === "confirm")!;
-    const revised = await closingRuntime.submit("new requirement: keep Work open and recheck the result", "close-revised");
-    assert.equal((await revised.status(ctx)).status, "queued");
-    assert.equal(interactions.respond(confirm.id, true).ok, true);
-    assert.equal((await original.wait(ctx)).status, "done");
-    assert.equal((await revised.wait(ctx)).status, "done");
-    assert.match(closureResult ?? "", /较新的用户输入等待处理/);
-    assert.equal(goals.workService.getWork(work.workId)?.lifecycle, "active");
-  } finally { await closingRuntime.close(); }
-  console.log("PASS real Goal closure rechecks queued input after confirmation and leaves Work active");
+  for (const scenario of ["confirmed", "queued", "mixed", "edited"] as const) {
+    const closingTask = `goal-close-${scenario}`;
+    let closureGuard: { workId: string; expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number };
+    let revisedRequests = 0;
+    let obsoleteRequests = 0;
+    const closing = await fixture(closingTask, request => {
+      const last = request.messages.at(-1);
+      const user = request.messages.findLast(message => message.role === "user");
+      if (JSON.stringify(user?.content ?? "").includes("new requirement")) {
+        revisedRequests++;
+        return text("新要求已收到，Goal 保持开启。");
+      }
+      if (last?.role === "toolResult") {
+        obsoleteRequests++;
+        return text("结项结果已读。");
+      }
+      const proposal = call("conversation_goal_propose_complete", { ...closureGuard, summary: "相关测试已通过。" }, "confirm-close");
+      return scenario === "mixed" ? [...proposal, ...call("read", { path: "proof.txt" }, "parallel-read")] : proposal;
+    });
+    await writeFile(join(closing.cwd, "proof.txt"), "实测记录");
+    const created = goals.create({ taskId: closingTask, title: "Isolated closure", criteria: [{ text: "相关测试通过" }] });
+    assert(created.ok);
+    const work = goals.workService.getWork(created.goal.id)!;
+    closureGuard = { workId: work.workId, expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
+    const closingRuntime = await closing.open();
+    try {
+      const original = await closingRuntime.submit("propose closing", "close-original");
+      await waitUntil(() => interactions.listByTask(closingTask).some(row => row.status === "pending" && row.kind === "confirm"));
+      const confirm = interactions.listByTask(closingTask).find(row => row.status === "pending" && row.kind === "confirm")!;
+      assert.match(confirm.description ?? "", /全部验收条件/);
+      const revised = scenario === "queued" || scenario === "mixed"
+        ? await closingRuntime.submit("new requirement: keep Work open and recheck the result", "close-revised") : undefined;
+      if (revised) assert.equal((await revised.status(ctx)).status, "queued");
+      if (scenario === "edited") assert(goals.update({ goalId: work.workId,
+        criterionUpdates: [{ id: work.criteria[0].id, text: "需要重新测试" }] }).ok);
+      assert.equal(interactions.respond(confirm.id, true).ok, true);
+      assert.equal((await original.wait(ctx)).status, "done");
+      if (revised) {
+        assert.equal((await revised.wait(ctx)).status, "done");
+        assert.equal(revisedRequests, 1);
+        assert.equal(obsoleteRequests, 0, "the provider must see the revised input before it can retry the old proposal");
+      }
+      const final = goals.workService.getWork(work.workId)!;
+      assert.equal(final.lifecycle, scenario === "confirmed" ? "closed" : "active");
+      assert.equal(final.criteria[0].status, scenario === "confirmed" ? "satisfied" : "pending");
+      const attestations = goals.workService.repo.listEvidence(work.workId).filter(item => item.kind === "user_attestation");
+      assert.deepEqual(attestations.map(item => [item.provenance, item.criterionIds]),
+        scenario === "confirmed" ? [["user", [final.criteria[0].id]]] : []);
+    } finally { await closingRuntime.close(); }
+  }
+  console.log("PASS Goal confirmation closes and attests atomically; edited criteria and queued input prevent stale completion");
   const written = { path: "new/nested/proof.txt", content: "proof" };
   const writeIntent = await prepareFileEffect({ type: "toolCall", id: "write-proof", name: "write", arguments: written }, root);
   assert(writeIntent?.kind === "file");

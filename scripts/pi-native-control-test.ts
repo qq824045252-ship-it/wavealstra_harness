@@ -178,8 +178,8 @@ try {
     interaction: { cancelDurable: () => ({ ok: false, code: "not_found" }) },
     requestInteraction: async () => { interactions++; return true; },
     goal: { getLive: () => ({ id: "watch", title: "发布准备" }),
-      workService: { getWork: () => ({ mode }) }, modelActor: () => ({ kind: "worker" }),
-      update: () => { updates++; return { ok: true, goal: { id: "watch" } }; } } };
+      workService: { getWork: () => ({ mode, stateVersion: 1, intentRevision: 1, ownerEpoch: 1, criteria: [] }) },
+      completeFromConfirmation: () => { updates++; return { ok: true, goal: { id: "watch" } }; } } };
   createConversationRuntimeExtension(bridge)({ on: () => {}, registerTool: (tool: any) => registered.set(tool.name, tool) } as any);
   const params = { summary: "已读取 READY", expectedStateVersion: 1, expectedIntentRevision: 1, expectedOwnerEpoch: 1 };
   const tool = registered.get("conversation_goal_propose_complete");

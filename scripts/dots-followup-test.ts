@@ -596,6 +596,34 @@ try {
     assert.equal((await agent.loadTaskHistory(runningJob.taskId)).messages.at(-1)?.text, expected, `重开回复 ${key}`);
   }
   console.log("PASS 整条回复是内部回执时，只显示正文，明确索要的 JSON 代码块原样保留");
+  // The lifecycle callback runs after the Goal settle check is queued, before its timer executes.
+  for (const action of ["stop", "pause"] as const) {
+    const target = `goal-${action}-after-settle`;
+    db.upsertTask({ id: target, title: target, spaceId: space.id, updatedAt: Date.now() });
+    const created = agent.createConversationGoal({ taskId: target, title: target, criteria: [{ text: "核对剩余批次" }] });
+    assert(created.ok);
+    phase = "goal";
+    let control: ReturnType<typeof actions.execute> | undefined;
+    agent.setTaskLifecycleListener(event => {
+      if (event.kind === "completed" && event.taskId === target && !control)
+        control = actions.execute(DOTS_TASK_ID, `control-${action}`, { action, targetTaskId: target });
+    });
+    try {
+      await send("核对目标的剩余批次", { action: "delegate", targetTaskId: target, goalId: created.goal.id, text: "核对剩余批次" });
+      for (let i = 0; i < 200 && !control; i++) await delay(20);
+      assert(control);
+      const result = await control;
+      assert(typeof result === "object" && result !== null && "control" in result && "dotsState" in result);
+      assert.equal(result.control, "idle");
+      assert.equal(result.dotsState, action === "stop" ? "stopped" : "paused");
+      for (let i = 0; i < 200 && agent.getGoalContinuation(created.goal.id)?.lastCheck?.reason !== "dots_policy"; i++) await delay(20);
+      assert.equal(agent.getGoalContinuation(created.goal.id)?.lastCheck?.reason, "dots_policy");
+      const history = await agent.loadTaskHistory(target);
+      assert.equal(history.durable?.busy, false);
+      assert.equal(history.messages.filter(message => message.goalContinuation).length, 0);
+    } finally { agent.setTaskLifecycleListener(null); }
+  }
+  console.log("PASS Dots stop and pause block a Goal check queued by a completed native turn");
 } catch (error) {
   console.error("Dots followup verification failed", error);
   for (const j of journal.list())

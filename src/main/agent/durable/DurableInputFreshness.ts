@@ -1,4 +1,4 @@
-import { InboxDoc, ToolTask, type Cursor, type EntryId, type TaskId, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { InboxDoc, ToolTask, type Cursor, type EntryId, type Harness, type HookApi, type TaskId, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapper";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
@@ -17,6 +17,24 @@ function isUserInstruction(entry: { kind: string; data?: unknown }): boolean {
   const data = entry.data;
   const input = data && typeof data === "object" && "mybuddyInput" in data ? data.mybuddyInput : undefined;
   return !input || typeof input !== "object" || !("goalContinuation" in input) || !input.goalContinuation;
+}
+
+/** A mixed tool batch cannot terminate through Pi's per-tool control. Place the waiting
+ * user instruction at the same post-tools boundary so the old proposal cannot loop. */
+export async function prioritizeInputAfterDeferredGoal(results: readonly EntryId[], api: HookApi, context: Context, commit: Harness["commit"]) {
+  if (results.length < 2) return;
+  for (const id of results) {
+    const result = (await api.entry(id, context))?.model?.[0];
+    if (result?.role !== "toolResult" || result.toolName !== "conversation_goal_propose_complete" ||
+      (result.details as { goalDeferredForInput?: boolean } | undefined)?.goalDeferredForInput !== true) continue;
+    await commit(async tx => {
+      const inbox = await tx.doc(InboxDoc, api.conversationId);
+      for (const item of inbox.items) {
+        if (item.mode === "followUp" && (!item.entry || isUserInstruction(item.entry))) item.mode = "steer";
+      }
+    }, context);
+    return;
+  }
 }
 
 export function needsFreshUserInput(name: string, args: unknown): boolean {

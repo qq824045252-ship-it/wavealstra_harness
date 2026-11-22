@@ -21,7 +21,8 @@ import type {
   WorkDto,
   WorkProjectionDto,
 } from "../../shared/bot-work";
-import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../../shared/bot-work";
+import { DEFAULT_BOT_ID, LOCAL_USER_ID, isCriterionResolved, isRequiredCriterion } from "../../shared/bot-work";
+import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { GoalCompletionObservation } from "./work/WorkClosureMutations";
 import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
 
@@ -92,6 +93,22 @@ export class ConversationGoalService {
       operationId: `dots-goal-close:${operationId}`, workId, conclusion: "succeeded",
       closureSummary: summary, versionGuard: guard,
     }, observations), workId, this.primaryConversation(work));
+    if (result.ok) this.publish(result.goal);
+    return result;
+  }
+
+  completeFromConfirmation(context: ConversationExecutionContext, workId: string, guard: ExpectedVersionGuard,
+    summary: string): ConversationGoalMutationResult {
+    const work = this.scopedWork(context.taskId, workId);
+    if (!work || this.work.repo.bindingForTask(context.taskId) || work.mode === "watch")
+      return { ok: false, code: "conflict", message: "当前对话没有可由用户确认完成的 Goal" };
+    const operationId = `goal-confirm:${context.executionId}`;
+    const observations: GoalCompletionObservation[] = work.criteria
+      .filter(criterion => isRequiredCriterion(criterion) && !isCriterionResolved(criterion))
+      .map(criterion => ({ criterionId: criterion.id, sourceRef: operationId, detail: summary, kind: "user_attestation" }));
+    const result = this.finish(this.work.closeWork(this.userActor(), {
+      operationId, workId, conclusion: "succeeded", closureSummary: summary, versionGuard: guard,
+    }, observations), workId, context.taskId);
     if (result.ok) this.publish(result.goal);
     return result;
   }

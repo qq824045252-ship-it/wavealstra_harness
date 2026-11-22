@@ -12,6 +12,7 @@ import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type Pro
 import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
 import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
 import { withDurableToolCoordination } from "./DurableToolCoordination";
+import { prioritizeInputAfterDeferredGoal } from "./DurableInputFreshness";
 import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
 import { withNativeNotStarted } from "./DurableToolLifecycle";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
@@ -1946,6 +1947,8 @@ function botExtension(
         ? [(content.arguments as { code?: unknown }).code].filter((code): code is string => typeof code === "string")
         : []);
       for (const code of codes) await prewarmCodeMode?.(code, context, api.conversationId);
+    }, afterTools: async (_assistant, results, api, context) => {
+      if (commit) await prioritizeInputAfterDeferredGoal(results, api, context, commit);
     }, onYield: async (answer, api, context) => {
       const note = managed?.continuation(answer);
       if (note) return { continue: note };

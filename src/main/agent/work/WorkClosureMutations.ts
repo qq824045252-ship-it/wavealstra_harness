@@ -11,7 +11,7 @@ export interface GoalCompletionObservation {
   criterionId?: string;
   sourceRef: string;
   detail: string;
-  kind: "tool_receipt" | "inspection";
+  kind: "tool_receipt" | "inspection" | "user_attestation";
 }
 
 interface ClosureMutationDeps {
@@ -79,6 +79,9 @@ export class WorkClosureMutations {
       return { ok: false, code: "invalid_request", message: "以未达成结束时必须记录停止依据与缺口" };
     }
     if (params.conclusion === "succeeded") {
+      if (observations?.some(observation => observation.kind === "user_attestation") && _resolved.kind !== "user") {
+        return { ok: false, code: "unauthorized_actor", message: "只有用户可以确认验收条件" };
+      }
       if (work.mode === "watch" && (resolvedIsBot(_resolved) || !work.watchRule?.stopConditionText || !params.closureSummary?.trim())) {
         return { ok: false, code: "unmet_acceptance_criteria", message: "持续关注的一轮成果不结束职责；履行停止条件后须由可信入口记录结束依据" };
       }
@@ -110,7 +113,8 @@ export class WorkClosureMutations {
         const evidence = observations.map(observation => {
           const evidenceId = newId("evidence");
           this.deps.repo.insertEvidence({ evidenceId, workId: work.workId, criterionIds: observation.criterionId ? [observation.criterionId] : [],
-            kind: observation.kind, provenance: "system", sourceRef: observation.sourceRef, inputSnapshotId: work.inputSnapshotId,
+            kind: observation.kind, provenance: observation.kind === "user_attestation" ? "user" : "system",
+            sourceRef: observation.sourceRef, inputSnapshotId: work.inputSnapshotId,
             intentRevision: work.intentRevision, detail: observation.detail, recordedAt: now });
           return { evidenceId, criterionId: observation.criterionId };
         });

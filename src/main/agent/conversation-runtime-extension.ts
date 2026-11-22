@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { checkCurrentToolInput } from "./durable/DurableToolInputScope";
+import { checkCurrentToolInput, DurableInputDeferredError } from "./durable/DurableToolInputScope";
 import type { ConversationGoalService } from "./ConversationGoalService";
 import type { ConversationInteractionService } from "./ConversationInteractionService";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
@@ -8,7 +8,7 @@ import { projectLegacyExecutionControlHistory } from "./LegacyExecutionControlHi
 import type { ConversationInteractionAnswer, ConversationInteractionRequest } from "../../shared/conversation-interaction";
 import { currentDurableInvocation } from "./durable/DurableExecutionContext";
 import { readGoalObservations, type GoalObservationQuote } from "./durable/DurableGoalCompletion";
-import type { WorkDto, ExpectedVersionGuard } from "../../shared/bot-work";
+import { criterionNeedsEnvironment, isCriterionResolved, isRequiredCriterion, type WorkDto, type ExpectedVersionGuard } from "../../shared/bot-work";
 
 export interface ConversationRuntimeBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
@@ -211,7 +211,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
     pi.registerTool({
       name: "conversation_goal_propose_complete",
       label: "对话 Work · 提议完成",
-      description: "提议结束当前有限 Work。携带 conversation_goal_get 的版本守卫。Dots 最终只将 deliveryText 原样回给用户；它必须使用用户约定的格式，summary 与 observations 记录内部核对依据。Dots 原交办按实际成果逐项核对后结项，用户明确约定亲自验收时会等待确认。用 observations 引用原生文字成果或成功工具输出的原文，并标明各自满足的 criterionId。直接引用结果中的单行原文即可；只有知道真实调用编号时才传 toolCallId。普通对话仍按原约定确认。",
+      description: "成果已准备好时单独调用，提议结束当前有限 Work。携带 conversation_goal_get 的版本守卫。Dots 最终只将 deliveryText 原样回给用户；它必须使用用户约定的格式，summary 与 observations 记录内部核对依据。Dots 原交办按实际成果逐项核对后结项，用户明确约定亲自验收时会等待确认。用 observations 引用原生文字成果或成功工具输出的原文，并标明各自满足的 criterionId。普通对话由用户确认验收条件。",
       parameters: Type.Object({
         ...guardVersions,
         workId: Type.Optional(Type.String({ minLength: 1 })),
@@ -233,21 +233,25 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           // Watch executors report observations, not lifetime control. Waiting for
           // confirmation here prevents the terminal receipt the owner needs to
           // evaluate the user's stop condition, so return without an interaction.
-          if (bridge.goal.workService.getWork(goal.id)?.mode === "watch") {
+          const work = bridge.goal.workService.getWork(goal.id);
+          if (work?.mode === "watch") {
             bridge.interaction.cancelDurable(context, id, "持续委托由前台核对结束，不再等待旧版完成确认");
             return result("这是持续委托的一轮观察，不需要用户确认完成。请直接交付本轮实际观察、停止条件及对应证据后结束本轮回复；前台会依据原委托核对并自动处理持续委托的结束。不要调用 automation_exec 取消订阅，Work 的调度不是普通 automation。此回执没有宣布目标达成，也没有停止后续检查。", {
               confirmed: false, handledBy: "watch_supervision", observationRequired: true,
             });
           }
-          const work = bridge.goal.workService.getWork(goal.id);
+          const guard: ExpectedVersionGuard = {
+            expectedStateVersion: params.expectedStateVersion, expectedIntentRevision: params.expectedIntentRevision,
+            expectedOwnerEpoch: params.expectedOwnerEpoch,
+          };
+          if (!work || work.stateVersion !== guard.expectedStateVersion || work.intentRevision !== guard.expectedIntentRevision ||
+            work.ownerEpoch !== guard.expectedOwnerEpoch) throw new Error("原目标版本已变化，请读取最新目标后重新核对");
           const operation = currentDurableInvocation()?.sourceUserMessageId;
-          const policy = work && operation ? await bridge.goal.resolveDotsCompletion(context.taskId, operation, work) : undefined;
+          const policy = operation ? await bridge.goal.resolveDotsCompletion(context.taskId, operation, work) : undefined;
           if (policy?.stale) throw new Error("原交办已调整，请按最新要求重新核对");
-          if (policy && work && operation) {
+          if (policy && operation) {
             const delivery = params.deliveryText?.trim();
             if (!delivery) throw new Error("请在 deliveryText 填写给原用户的最终文字，并遵守用户约定格式");
-            if (work.stateVersion !== params.expectedStateVersion || work.intentRevision !== params.expectedIntentRevision ||
-              work.ownerEpoch !== params.expectedOwnerEpoch) throw new Error("原目标版本已变化，请读取最新目标后重新核对");
             let observations = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? []);
             const confirmed = policy.userAcceptance && await requestInteraction(bridge, context, {
               kind: "confirm", title: `确认完成 Work「${goal.title}」？`,
@@ -256,36 +260,32 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
             if (signal?.aborted) throw new Error("当前执行已中止");
             if (policy.userAcceptance && !confirmed) return result("用户暂未确认完成 Work，事项保持原状态。", { confirmed: false });
             if (confirmed) observations = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? []);
-            const updated = bridge.goal.completeFromDots(context.taskId, operation, goal.id, {
-              expectedStateVersion: params.expectedStateVersion, expectedIntentRevision: params.expectedIntentRevision,
-              expectedOwnerEpoch: params.expectedOwnerEpoch,
-            }, delivery, observations, confirmed);
+            await checkCurrentToolInput();
+            signal?.throwIfAborted();
+            const updated = bridge.goal.completeFromDots(context.taskId, operation, goal.id, guard, delivery, observations, confirmed);
             if (!updated.ok) throw new Error(updated.message);
             return result(`Work「${updated.goal.title}」已结束。请在本轮回复中交付成果。`, { confirmed, goal: updated.goal });
           }
+          const missingCheck = work.criteria.find(criterion => isRequiredCriterion(criterion) &&
+            !isCriterionResolved(criterion) && criterionNeedsEnvironment(criterion));
+          if (missingCheck) throw new Error(`验收条件「${missingCheck.text}」需要当前环境的实测记录，请先补充实测依据`);
           const answer = await requestInteraction(bridge, context, {
             kind: "confirm",
             title: `确认完成 Work「${goal.title}」？`,
-            description: [params.summary, ...(params.evidence ?? [])].join("\n"),
+            description: [work.criteria.some(isRequiredCriterion) && "选择确认表示你已核对目标面板中的全部验收条件，并确认均已满足。",
+              params.summary, ...(params.evidence ?? [])].filter(Boolean).join("\n"),
           }, signal, id);
           if (signal?.aborted) throw new Error("当前执行已中止");
           if (answer !== true) return result("用户暂未确认完成 Work，事项保持原状态。", { confirmed: false });
-          const current = checkCurrentToolInput();
-          if (current) await current;
-          const updated = bridge.goal.update(
-            { goalId: goal.id, status: "achieved", progressSummary: params.summary },
-            {
-              actor: bridge.goal.modelActor(context.taskId),
-              versionGuard: {
-                expectedStateVersion: params.expectedStateVersion,
-                expectedIntentRevision: params.expectedIntentRevision,
-                expectedOwnerEpoch: params.expectedOwnerEpoch,
-              },
-            },
-          );
+          await checkCurrentToolInput();
+          signal?.throwIfAborted();
+          const updated = bridge.goal.completeFromConfirmation(context, goal.id, guard, params.summary);
           if (!updated.ok) throw new Error(updated.message);
           return result(`Work「${updated.goal.title}」已由用户确认结束。`, { confirmed: true, goal: updated.goal });
-        } catch (error) { return failure("conversation_goal_propose_complete", error); }
+        } catch (error) {
+          if (error instanceof DurableInputDeferredError) throw error;
+          return failure("conversation_goal_propose_complete", error);
+        }
       },
     });
   };

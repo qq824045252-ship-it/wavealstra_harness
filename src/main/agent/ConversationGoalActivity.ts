@@ -67,6 +67,12 @@ export class ConversationGoalActivity {
     return { ...identity, goalId: row.work_id, ...JSON.parse(row.metadata), status: row.outcome ?? undefined };
   }
 
+  generationsForRevision(taskId: string, goalId: string, intentRevision: number): GoalActivityIdentity[] {
+    return this.db.prepare(`SELECT conversation_id AS conversationId, generation_id AS generationTaskId
+      FROM conversation_goal_generations WHERE work_id=? AND task_id=? AND json_extract(metadata,'$.intentRevision')=?
+      ORDER BY rowid`).all(goalId, taskId, intentRevision) as GoalActivityIdentity[];
+  }
+
   recordAuxiliaryScope(scope: string, parent: Identity): void {
     this.db.prepare(`INSERT OR IGNORE INTO conversation_goal_auxiliary_scopes(execution_scope,task_id,conversation_id,generation_id)
       SELECT ?,task_id,conversation_id,generation_id FROM conversation_goal_generations

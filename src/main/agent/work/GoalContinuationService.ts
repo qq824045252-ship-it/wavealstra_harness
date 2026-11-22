@@ -35,6 +35,7 @@ export interface GoalContinuationServiceOptions {
   submit: (request: AgentPromptRequest, origin: GoalContinuationSubmitOrigin) => Promise<AgentPromptResult>;
   /** Opens/refreshes the native session and returns just the scheduling facts. */
   inspect: (taskId: string) => Promise<GoalContinuationRuntimeState | undefined>;
+  artifactVersions?: (taskId: string, work: WorkDto) => Promise<readonly string[]>;
   waitingForInput: (taskId: string) => boolean;
   enabled: () => boolean;
   canAdvance?: (taskId: string, goalId: string) => boolean;
@@ -277,7 +278,16 @@ export class GoalContinuationService {
 
     const fromSettle = settled !== undefined;
     const wasIgniting = row.state === "igniting";
-    if (wasIgniting && fromSettle) row = this.recordSettledProgress(work, row, settled, now);
+    let fingerprint: string | undefined;
+    if (wasIgniting && fromSettle) {
+      fingerprint = await this.fingerprint(taskId, work);
+      if (this.disposed) return;
+      const current = this.store.get(work.workId);
+      if (current?.state === "igniting" && current.attemptSerial === row.attemptSerial) {
+        row = this.store.recordProgress(work.workId, fingerprint, row.progressFingerprint === fingerprint, now) ?? current;
+        this.store.settleRun(work.workId);
+      }
+    }
     // A non-settle evaluation (resume/pause hook) must not mistake an in-flight
     // host run for a finished one; wait for its own settle.
     if (wasIgniting && !fromSettle) return skip("igniting", row);
@@ -335,29 +345,22 @@ export class GoalContinuationService {
       return;
     }
 
+    fingerprint ??= await this.fingerprint(taskId, work);
+    if (this.disposed || !this.options.enabled()) return;
+    const latestWork = this.liveWork(taskId);
+    if (latestWork?.workId !== work.workId || latestWork.stateVersion !== work.stateVersion) return skip("goal_changed", row);
+    if (this.options.canAdvance?.(taskId, work.workId) === false) return skip("dots_policy", row);
+    const current = this.store.get(work.workId);
+    if (!current || current.updatedAt !== row.updatedAt || current.state !== row.state) return skip("ledger_changed", row);
     this.recordCheck(taskId, work, trigger, "submitting");
-    await this.ignite(taskId, work, row, runtime, maxAttempts, budget, trigger);
+    await this.ignite(taskId, work, row, runtime, fingerprint, maxAttempts, budget, trigger);
   }
 
-  private recordSettledProgress(work: WorkDto, row: GoalContinuationRow, settled: DurableBotSnapshot,
-    now: number): GoalContinuationRow {
-    const tools = this.toolsSince(settled.messages, row.runCursor);
-    const fingerprint = this.fingerprint(work);
-    // A talk-only continuation that also changed no Work fact is a stall. Any
-    // tool use or any Work revision/evidence change proves the run did something,
-    // even when the model has not reported it yet.
-    const stalled = tools === 0 && row.progressFingerprint === fingerprint;
-    const next = this.store.recordProgress(work.workId, fingerprint, stalled, now) ?? row;
-    this.store.settleRun(work.workId);
-    return next;
-  }
-
-  private async ignite(taskId: string, work: WorkDto, row: GoalContinuationRow,
-    runtime: GoalContinuationRuntimeState, maxAttempts: number, budget: number | null, trigger: CheckTrigger): Promise<void> {
+  private async ignite(taskId: string, work: WorkDto, row: GoalContinuationRow, runtime: GoalContinuationRuntimeState, fingerprint: string,
+    maxAttempts: number, budget: number | null, trigger: CheckTrigger): Promise<void> {
     if (this.disposed) return;
     const now = Date.now();
     const runCursor = this.entryCursor(runtime.messages);
-    const fingerprint = this.fingerprint(work);
     const attempt = this.store.beginAttempt(work.workId, runCursor, fingerprint, now);
     this.emitGoal(taskId, work.workId);
     try {
@@ -448,15 +451,15 @@ export class GoalContinuationService {
     return messages.reduce((cursor, message) => Math.max(cursor, entryNumberOf(message)), 0);
   }
 
-  private toolsSince(messages: readonly ChatMessageDto[], cursor: number): number {
-    return messages.reduce((count, message) => message.role === "assistant" && entryNumberOf(message) > cursor
-      ? count + (message.tools?.length ?? 0) : count, 0);
-  }
-
-  private fingerprint(work: WorkDto): string {
+  private async fingerprint(taskId: string, work: WorkDto): Promise<string> {
+    const evidence = this.options.work.repo.listEvidence(work.workId)
+      .filter(item => item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId)
+      .map(item => JSON.stringify([item.kind, item.sourceRef, item.sourceSha, [...item.criterionIds].sort(), item.detail]));
+    const artifacts = await this.options.artifactVersions?.(taskId, work) ?? [];
     return createHash("sha256").update(JSON.stringify([
-      work.intentRevision, work.stateVersion, work.progressSummary ?? null,
-      work.criteria.map(criterion => [criterion.id, criterion.status, criterion.evidenceRefs.length, criterion.waivedReason ?? null]),
+      work.intentRevision, work.progressSummary?.trim().replace(/\s+/gu, " ") ?? null,
+      work.criteria.map(criterion => [criterion.id, criterion.status, criterion.verifiedIntentRevision, criterion.waivedReason ?? null]),
+      [...new Set(evidence)].sort(), artifacts,
     ])).digest("hex");
   }
 
@@ -485,7 +488,7 @@ function entryNumberOf(message: ChatMessageDto): number {
 
 export function continuationNudge(attempt: number, maxAttempts: number, remainingTokens: number | null): string {
   return `（宿主自动续跑 #${attempt}/${maxAttempts}）继续推进「对话 Goal」里仍未满足的验收条件：
-先做下一步可执行的动作，再汇报进展与剩下的项。不要以计划、口头说明或"等你确认"收尾；
-确实卡住时，写清已完成项、卡在哪、需要什么输入。`
+先做下一步可执行的动作，再汇报进展与剩下的项。成果已准备好时单独提交结项。
+若没有可执行的下一步，或收到结项拒绝且没有新增依据，写清已完成项、阻碍和所需输入，然后结束本轮。`
     + (remainingTokens === null ? "" : `\n本次 Goal 自动续跑预算剩余约 ${remainingTokens} token；预算将尽时只做收尾与交接。`);
 }

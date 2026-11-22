@@ -23,13 +23,13 @@ const CRITERION_LABEL: Record<GoalCriterionStatus, string> = {
 };
 
 const UNMET_RULES = `执行约束：
-- 验收条件没有全部满足之前，不要以「完成 / 已交付 / 需要你确认 / 你先看看」之类的收尾结束本轮；继续调用工具推进下一个未满足的条件。
-- 只有三种情况允许结束本轮：1) 全部验收条件已满足，且已用 conversation_goal_propose_complete 提交结论，由工具按原交办的验收约定处理；2) 需要只有用户能提供的输入（凭据、账号、授权、取舍、缺失资料）；3) 外部依赖确实未就绪，且能给出观测到的事实与恢复条件。
+- 有可执行的下一步时，继续调用工具推进下一个未满足的条件。成果已经准备好时，单独调用 conversation_goal_propose_complete，按用户的约定提交验收。
+- 没有可执行的下一步、需要用户输入、外部依赖未就绪或结项被拒绝而没有新增依据时，说明阻碍并结束本轮。收到较新的用户要求时，结束旧要求的处理，按新要求重新评估。
 - 结束本轮必须写清：已完成项、仍未满足的条件、卡在哪一步、下一步需要什么。计划、口头说明和未执行的命令都不算完成。
 - 普通对话的验收事实（met / waived）由用户确认。用 conversation_goal_update 提交进展时，携带 conversation_goal_get 返回的版本守卫。关联 Dots 的原交办达到条件后，读取工具返回的结项方式与版本，用 conversation_goal_propose_complete 提交本次实际成果的原文及逐项依据。该工具会按用户的约定处理验收。`;
 
 const ALL_MET_RULES = `执行约束：
-- 验收条件已全部满足。用 conversation_goal_propose_complete 提交结论与证据，并按工具返回结果交付或等待用户确认。不要自行宣称 Goal 已完成。`;
+- 验收条件已全部满足。单独用 conversation_goal_propose_complete 提交结论与证据，并按工具返回结果交付或等待用户确认。结项被拒绝且没有新增依据时，说明原因并结束本轮。不要自行宣称 Goal 已完成。`;
 
 const PAUSED_RULES = `执行约束：
 - 用户暂停了这个 Goal：不要自行推进它的验收条件，也不要把本轮的普通问答当成恢复信号。

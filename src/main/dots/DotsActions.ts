@@ -216,6 +216,7 @@ export class DotsActions {
   }
 
   canAdvanceGoal(taskId: string, goalId: string) {
+    if (this.control(taskId)) return false;
     const latest = this.db.connection.prepare("SELECT goal_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
       .pluck().get(taskId);
     return latest !== goalId || this.autonomousForTask(taskId);

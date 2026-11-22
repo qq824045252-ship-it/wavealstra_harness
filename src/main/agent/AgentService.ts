@@ -933,6 +933,18 @@ export class AgentService {
         return result;
       },
       inspect: taskId => this.durableBots?.inspect(taskId) ?? Promise.resolve(undefined),
+      artifactVersions: async (taskId, work) => {
+        const generations = this.conversationGoalActivity.generationsForRevision(taskId, work.workId, work.intentRevision);
+        const records = await this.durableBots?.goalNativeEvidence(taskId, generations) ?? [];
+        const latest = new Map<string, { version: string; at: number }>();
+        for (const { evidence } of records) {
+          if (evidence.kind !== "delivery" || !evidence.path || !evidence.digest) continue;
+          const at = evidence.saved?.registeredAt ?? 0;
+          if ((latest.get(evidence.path)?.at ?? 0) <= at)
+            latest.set(evidence.path, { version: JSON.stringify([evidence.digest, evidence.saved?.manifestPath]), at });
+        }
+        return [...latest].map(([path, { version }]) => JSON.stringify([path, version])).sort();
+      },
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
       canAdvance: (taskId, goalId) => this.dotsActions?.canAdvanceGoal(taskId, goalId) ?? true,
       enabled: () => this.settingsStore.read().conversationGoalContinuationEnabled !== false

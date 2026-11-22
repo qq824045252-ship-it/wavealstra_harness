@@ -151,6 +151,10 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
         await api.memo(TOOL_NOT_STARTED_MEMO, { toolName, callId: api.callId, taskId: api.taskId,
           conversationId: api.conversationId, phase: "validation" }, withoutAbortSignal(context));
       }
+      if (error instanceof DurableInputDeferredError && tool.name === "conversation_goal_propose_complete") {
+        return { isError: true, output: [{ type: "text", text: error.message }],
+          details: { goalDeferredForInput: true }, control: { terminate: true } };
+      }
       throw error;
     }
     finally { release?.(); }

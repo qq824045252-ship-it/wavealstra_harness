@@ -79,9 +79,8 @@ try {
   for (const expected of ["修好登录超时", "定位并修复登录接口偶发超时", "复现登录超时", "修复后回归通过", "[待满足]"]) {
     assert(unmetPrompt.includes(expected), `Goal 段应包含「${expected}」`);
   }
-  assert(unmetPrompt.includes("不要以「完成 / 已交付 / 需要你确认 / 你先看看」之类的收尾结束本轮"),
-    "未满足时必须禁止提前收尾");
-  assert(unmetPrompt.includes("conversation_goal_propose_complete"), "未满足时必须说明唯一的收尾方式");
+  assert(unmetPrompt.includes("成果已经准备好时，单独调用 conversation_goal_propose_complete"));
+  assert(unmetPrompt.includes("结项被拒绝而没有新增依据时，说明阻碍并结束本轮"));
   assert(unmetPrompt.includes("conversation_goal_get 返回的版本守卫"), "模型必须知道汇报进展需要版本守卫");
 
   // 2. Attesting one criterion is visible on the very next model request.

@@ -35,12 +35,11 @@ const savedFiles = new SavedArtifactActions({
 });
 
 const db = new AppDatabase(join(root, "app.db"));
-for (const id of ["goal-cap", "goal-budget", "goal-stall", "goal-pause", "goal-abort", "goal-lineage", "goal-skill"]) {
+for (const id of ["goal-cap", "goal-budget", "goal-progress", "goal-stall", "goal-pause", "goal-abort", "goal-lineage", "goal-skill"]) {
   db.upsertTask({ id, title: id, updatedAt: 1, welcomeMode: "coding" });
 }
 
-/** "tools" proves observable action; "talk" is a text-only run for the stall detector. */
-let responseMode: "tools" | "talk" | "ask" = "tools";
+let responseMode: "tools" | "query" | "artifact" | "talk" | "ask" = "tools";
 let toolCallId = 0;
 let authoredSkillPath: string | undefined;
 
@@ -95,6 +94,11 @@ const fixture = await createAgentDurableFixture(root, db, input => {
       arguments: { title: "需要用户确认才能继续", kind: "confirm" } }];
   }
   if (lastUserText(input).includes("宿主自动续跑")) {
+    if (responseMode === "query")
+      return [{ type: "toolCall", id: `goal-query-${++toolCallId}`, name: "conversation_goal_get", arguments: {} }];
+    if (responseMode === "artifact")
+      return [{ type: "toolCall", id: `goal-artifact-${++toolCallId}`, name: "write",
+        arguments: { path: "goal-progress-output.txt", content: "已经核对第一项" } }];
     return [{ type: "toolCall", id: `goal-read-${++toolCallId}`, name: "read", arguments: { path: markerPath } }];
   }
   return [{ type: "text", text: "第一轮已收到。" }];
@@ -147,7 +151,7 @@ try {
   const firstContinuationRequest = requests.find(request => lastUserText(request.input).includes("（宿主自动续跑 #1/2）"));
   assert(firstContinuationRequest, "宿主应真实提交续跑输入");
   assert(firstContinuationRequest.instructions.includes("## 对话 Goal"), "续跑请求仍必须携带 Goal 契约");
-  assert(firstContinuationRequest.instructions.includes("不要以「完成 / 已交付 / 需要你确认 / 你先看看」"),
+  assert(firstContinuationRequest.instructions.includes("成果已经准备好时，单独调用 conversation_goal_propose_complete"),
     "续跑请求必须保留提前收尾禁令");
   assert(firstContinuationRequest.input.messages.some(message => message.role === "user"
     && messageText(message).includes("宿主自动续跑")),
@@ -219,8 +223,19 @@ try {
   assert.equal(afterManualWake.lastCheck?.trigger, "settled");
   assert.equal(afterManualWake.deferReason, "budget");
 
+  await agent.updateAppSettings({ conversationGoalMaxAttempts: 5 });
+  responseMode = "artifact";
+  const artifactGoal = agent.createConversationGoal({ taskId: "goal-progress", title: "交付阶段成果", criteria: [{ text: "核对所有项目" }] });
+  assert(artifactGoal.ok);
+  await fixture.prompt({ taskId: "goal-progress", text: "开始核对", userMessageId: "progress-user", assistantMessageId: "progress-assistant" });
+  await waitFor("重复产物后停止", () => continuationOf(artifactGoal.goal.id).deferReason === "no_progress");
+  assert.equal(continuationOf(artifactGoal.goal.id).attempts, 3, "first delivery counts as progress; rewriting the same bytes does not");
+  const artifactEvidence = await agent.getConversationGoalEvidence("goal-progress", artifactGoal.goal.id);
+  assert(artifactEvidence?.savedArtifacts?.some(artifact => artifact.path.endsWith("goal-progress-output.txt")));
+  await agent.updateAppSettings({ conversationGoalMaxAttempts: 3 });
+
   // ---------------------------------------------------------------- no progress
-  responseMode = "talk";
+  responseMode = "query";
   const stallGoal = agent.createConversationGoal({
     taskId: "goal-stall", title: "验证无进展停止", criteria: [{ text: "真正完成" }],
   });
@@ -231,6 +246,9 @@ try {
   const stalled = continuationOf(stallGoal.goal.id);
   assert.equal(stalled.deferReason, "no_progress");
   assert.equal(stalled.attempts, 2);
+  const stallHistory = await agent.loadTaskHistory("goal-stall");
+  assert.equal(stallHistory.messages.flatMap(message => message.tools ?? [])
+    .filter(tool => tool.tool === "conversation_goal_get").length, 2);
   const requestsBeforeStall = requests.length;
   await sleep(700);
   assert.equal(requests.length, requestsBeforeStall, "no_progress 后宿主必须停止");
