@@ -89,6 +89,18 @@ try {
     verifiedProgressToReportMs: reporting.lastReportAt - reporting.lastProgressAt,
     progressMessages: reports.length, extraForegroundModelCalls: 0,
   });
+  await actions.execute(DOTS_TASK_ID, "pause-observation", { action: "pause_proactive" });
+  const parkDeadline = Date.now() + 10_000;
+  const nextObservation = db.connection.prepare(
+    "SELECT next_at FROM dots_tool_observations WHERE operation_id=?"
+  ).pluck();
+  const observedOperation = deliveries.list()[0].id;
+  while (nextObservation.get(observedOperation) !== null && Date.now() < parkDeadline)
+    await new Promise(done => setTimeout(done, 25));
+  assert.equal(nextObservation.get(observedOperation), null);
+  assert.equal((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message => message.dotsDelivery?.kind === "progress").length, 1);
+  await actions.execute(DOTS_TASK_ID, "resume-observation", { action: "resume_proactive" });
+  assert.equal(typeof nextObservation.get(observedOperation), "number");
   releaseWorker();
   const deadline = Date.now() + 25000;
   while (Date.now() < deadline && deliveries.list()[0]?.status !== "completed") {

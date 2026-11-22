@@ -71,6 +71,7 @@ export class DotsDelegations {
     this.outbox.connect(followup, append, allowed, allowedReply);
     for (const row of this.db.prepare("SELECT * FROM dots_delegations WHERE status='blocked'").all() as Row[])
       this.outbox.observe(toDelegation(row));
+    this.resumeObservations();
     this.scheduleObservation();
   }
 
@@ -113,6 +114,17 @@ export class DotsDelegations {
     if (accepted.changes) this.notify();
   }
 
+  private resumeObservations(): void {
+    const parked = this.db.prepare(`SELECT d.* FROM dots_delegations d JOIN dots_tool_observations a USING(operation_id)
+      WHERE d.status='running' AND a.next_at IS NULL`).all() as Row[];
+    const next = this.db.prepare("UPDATE dots_tool_observations SET next_at=? WHERE operation_id=? AND next_at IS NULL");
+    for (const row of parked) {
+      const policy = this.tracking(row);
+      if (policy?.heartbeatMs && this.outbox.activityAvailability(toDelegation(row)) === "active")
+        next.run(Date.now() + policy.heartbeatMs, row.operation_id);
+    }
+  }
+
   private scheduleObservation(): void {
     if (this.disposed) return;
     if (this.observationTimer) clearTimeout(this.observationTimer);
@@ -135,15 +147,17 @@ export class DotsDelegations {
       const targets = new Set<string>();
       for (const row of due) {
         const policy = this.tracking(row);
-        const active = row.status === "running" || row.status === "pending";
+        const job = toDelegation(row);
+        const active = row.status === "pending" ||
+          (row.status === "running" && this.outbox.activityAvailability(job) === "active");
         next.run(active && policy?.heartbeatMs ? now + policy.heartbeatMs : null, row.operation_id);
-        if (row.status !== "running" || !policy?.heartbeatMs) continue;
+        if (!active || row.status !== "running" || !policy?.heartbeatMs) continue;
         const silent = now - row.at >= policy.silenceMs;
         const activity = row.phase === "start" ? `最近观察到工具 ${row.tool} 开始执行。` : `最近观察到工具 ${row.tool} 返回。`;
         const progress = row.progress_at === undefined || row.progress_at === null || now - row.progress_at >= policy.silenceMs
           ? "近期没有新的可核实进展。" : "近期已登记可核实的阶段产物。";
         const text = activity + (silent ? "已有一段时间未观察到新的工具活动。" : "") + progress;
-        if (this.outbox.observeActivity(toDelegation(row), row.next_at, text)) targets.add(row.task_id);
+        if (this.outbox.observeActivity(job, row.next_at, text)) targets.add(row.task_id);
       }
       return targets;
     })();
@@ -154,8 +168,8 @@ export class DotsDelegations {
   private flushActivity(task: string): void {
     if (this.flights.has(task)) { this.dirty.add(task); return; }
     const flight = this.outbox.flush(task, () => !this.disposed).then(retry => {
-      if (retry) this.retryLater(task);
-    }).catch(() => this.retryLater(task)).finally(() => {
+      if (retry) this.retryLater(task, true);
+    }).catch(() => this.retryLater(task, true)).finally(() => {
       this.flights.delete(task);
       if (this.dirty.delete(task)) this.refresh(task);
     });
@@ -292,6 +306,8 @@ export class DotsDelegations {
       return;
     }
     if (!taskId) {
+      this.resumeObservations();
+      this.scheduleObservation();
       const targets = this.db.prepare("SELECT DISTINCT task_id FROM dots_delegations WHERE status IN ('pending','running','blocked')").all() as { task_id: string }[];
       for (const target of new Set([...targets.map(row => row.task_id), ...this.outbox.targets()])) this.refresh(target);
       return;
@@ -313,9 +329,13 @@ export class DotsDelegations {
     this.flights.set(taskId, flight);
   }
 
-  private retryLater(taskId: string) {
+  private retryLater(taskId: string, outboxOnly = false) {
     if (this.disposed || this.retries.has(taskId)) return;
-    const timer = setTimeout(() => { this.retries.delete(taskId); this.refresh(taskId); }, 2000);
+    const timer = setTimeout(() => {
+      this.retries.delete(taskId);
+      if (outboxOnly) this.flushActivity(taskId);
+      else this.refresh(taskId);
+    }, 2000);
     timer.unref();
     this.retries.set(taskId, timer);
   }

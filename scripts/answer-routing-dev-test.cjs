@@ -6,10 +6,17 @@ const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
 run(async env => {
   const { evaluate, until, report, rpc } = env;
-  const { click, fill, expand, openSettings, screenshot } = routingControls(env);
+  const { click, press, fill, expand, openSettings, screenshot } = routingControls(env);
   await openSettings();
   await until(() => evaluate("document.querySelector('.answer-routing-list')?.textContent.includes('还没有规则')"), "empty rules list");
   assert.equal(await evaluate("!!document.querySelector('.answer-rule-form')"), false);
+  const defaultSummary = "[...document.querySelectorAll('.answer-routing-panel > summary')].find(el=>el.textContent.startsWith('默认调度策略'))";
+  await press(defaultSummary, "展开默认调度策略");
+  await fill('select[name="routeMode"]', "direct");
+  await fill('input[name="calls"]', "3");
+  await click("保存默认策略");
+  await until(() => evaluate("window.api.answerRouting.list().then(rows=>rows.some(r=>r.id==='dots-default-policy' && r.revision===2 && r.policy.routeMode==='direct' && r.policy.foregroundReadLimits.calls===3))"), "default strategy revision persisted");
+  await press(defaultSummary, "收起默认调度策略");
   await click("周报核对发布记录示例");
   assert.equal(await evaluate("document.querySelector('[aria-label=\"任务目录相对路径\"]').value"), "");
   assert.equal(await evaluate("[...document.querySelectorAll('.answer-rule-form button')].find(b=>b.textContent==='保存规则').disabled"), true);

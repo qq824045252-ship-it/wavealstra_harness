@@ -324,7 +324,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
               setNotice("默认策略已保存");
             });
           }}>
-            <fieldset className="answer-rule-form" disabled={busy}>
+            <fieldset className="answer-routing-panel" disabled={busy}>
               <label>处理方式<select name="routeMode" defaultValue={fallbackPolicy.routeMode}>
                 <option value="auto">自动</option><option value="direct">优先直答</option><option value="delegate">优先委派</option>
               </select></label>

@@ -53,6 +53,12 @@ export class DotsReplyOutbox {
       .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations }));
   }
 
+  activityAvailability(job: DotsDelegation): "active" | "hold" | "obsolete" {
+    if (!this.handler || !this.handler.allowed(job.taskId) || !this.handler.allowedReply("progress")) return "hold";
+    return this.disposition({ event_key: "", operation_id: job.id, task_id: job.taskId, status: "activity",
+      interaction_id: null, snapshot: "", reply: null });
+  }
+
   observeActivity(job: DotsDelegation, window: number, text: string): boolean {
     // Keep at most one unsent observation. Its stable key survives native receipt recovery.
     if (this.db.prepare("SELECT 1 FROM dots_reply_events WHERE operation_id=? AND status='activity' AND settled=0").get(job.id))

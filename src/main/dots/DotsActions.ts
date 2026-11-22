@@ -529,6 +529,7 @@ export class DotsActions {
         return rows;
       })();
       if (!pause) this.watches.refresh();
+      this.hooks.changed?.();
       return { scope:scope || "all", proactive:pause ? "paused" : "enabled", schedules };
     }
     if (input.action === "stop_all" || input.action === "pause_all") {
