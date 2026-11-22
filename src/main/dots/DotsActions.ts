@@ -766,14 +766,17 @@ export class DotsActions {
       this.hooks.link(task.id, operationId, sourceId, input.action === "steer" || input.action === "resume", request);
       return false;
     })();
-    if (alreadyLinked) return this.summary(task);
-    const result = previous ?? await this.agent.prompt(request, { durableAdmissionOnly: true });
-    if (result.error || result.cancelled) {
+    const result = previous ?? (alreadyLinked
+      ? await this.agent.findSubmission(task.id, operationId)
+      : await this.agent.prompt(request, { durableAdmissionOnly: true }));
+    if (result?.error || result?.cancelled) {
       const reason = result.error?.message ?? "执行已取消";
       this.hooks.failed?.(task.id, operationId, reason);
       throw new Error(reason);
     }
     this.hooks.changed?.();
+    if (!result?.receipt) return { operationId, taskId: task.id, admission: "pending",
+      message: "普通任务的持久受理尚未确认。继续核对同一操作后才能报告交办成功。" };
     return { ...this.summary(task), goalId: goal?.id, queued: result.queued, receipt: result.receipt };
   }
 
