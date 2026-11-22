@@ -1,6 +1,6 @@
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useBotWorkspaceNavigation, selectedWorkspaceRequest, clearWorkspaceRequest, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
-import type { BotWorkspaceRequestDto } from "@shared/bot-workspace-navigation";
+import type { WorkspaceRequestSelection } from "@/lib/workspace-request-selection";
 import { WorkspaceForegroundConversation } from "./WorkspaceForegroundConversation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceFileNodeDto } from "@shared/agent-ipc";
@@ -42,7 +42,7 @@ function countFiles(nodes: WorkspaceFileNodeDto[]): number {
 export default function WorkspaceDetail(): React.JSX.Element | null {
   const spaces = useAppStore((state) => state.spaces);
   const { requests: foregroundRequests, conversations: foregroundConversations, error: foregroundError } = useBotWorkspaceNavigation();
-  const [foreground, setForeground] = useState<BotWorkspaceRequestDto | null>(null);
+  const [foreground, setForeground] = useState<WorkspaceRequestSelection | null>(null);
   const tasks = useAppStore((state) => state.tasks);
   const projection = useAppStore((state) => state.artifactProjection);
   const activeWorkspaceId = useAppStore((state) => state.activeWorkspaceId);
@@ -53,7 +53,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
     // Preserve that exact request on replay, but never carry it to another space.
     setForeground(current => requested ?? (current?.spaceId === activeWorkspaceId ? current : null));
     if (requested) clearWorkspaceRequest();
-    const open = (event: Event) => { const request = (event as CustomEvent<BotWorkspaceRequestDto>).detail; if (request.spaceId === activeWorkspaceId) { setForeground(request); clearWorkspaceRequest(); } };
+    const open = (event: Event) => { const request = (event as CustomEvent<WorkspaceRequestSelection>).detail; if (request.spaceId === activeWorkspaceId) { setForeground(request); clearWorkspaceRequest(); } };
     window.addEventListener('mybuddy:workspace-request', open);
     return () => window.removeEventListener('mybuddy:workspace-request', open);
   }, [activeWorkspaceId]);

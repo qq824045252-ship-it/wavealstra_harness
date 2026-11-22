@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import type { AgentUiPatch } from "../../shared/agent-ipc";
 import {
+  boardLanes,
   boardViews,
   type BoardAction,
   type BoardPage,
@@ -12,6 +13,7 @@ import { ensureTaskBoard } from "./TaskBoardActivity";
 
 const querySchema = z.object({
   view: z.enum(boardViews),
+  lane: z.enum(boardLanes).optional(),
   scope: z.string().nullable().optional(),
   projectId: z.string().optional(),
   search: z.string().max(500).optional(),
@@ -29,7 +31,13 @@ const latestResult =
   "(SELECT d.at FROM task_board_days d WHERE d.id=b.id AND d.kind='result' ORDER BY d.day DESC LIMIT 1)";
 const afterDeferral =
   "coalesce((SELECT p.deferred_at FROM task_board_plans p WHERE p.id=b.id AND p.later_until>@now),0)";
-const question = `(SELECT i.id FROM conversation_interactions i WHERE i.task_id=b.id AND i.status='pending' AND i.created_at>=${afterDeferral} ORDER BY i.created_at,i.id LIMIT 1)`;
+const pendingQuestion = "SELECT i.id FROM conversation_interactions i WHERE i.task_id=b.id AND i.status='pending'";
+const hasWait = `(EXISTS(${pendingQuestion}) OR EXISTS(SELECT 1 FROM board_waits w WHERE w.id=b.id))`;
+const taskLane = `CASE
+  WHEN b.status IN ('failed','unknown') OR ${hasWait} THEN 'attention'
+  WHEN b.status='in_progress' THEN 'running'
+  WHEN b.status IN ('completed','stopped') THEN 'finished'
+  ELSE 'pending' END`;
 const unread = `(b.request_data IS NULL AND b.status IN ('completed','failed') AND
   coalesce(b.ack,0)<coalesce(${latestResult},b.ack,b.updated_at))`;
 const active = "coalesce(b.status,'planning') NOT IN ('completed','stopped')";
@@ -65,12 +73,18 @@ type SqlRow = {
   question_id: string | null;
   latest_result: number | null;
   signal: string | null;
-  problem: string | null;
+  failure: string | null;
+  wait_kind: NonNullable<TaskBoardRow["wait"]>["kind"] | null;
+  wait_reason: string | null;
+  pending_reviews: number;
   message: string | null;
   tool: string | null;
 };
 
 export class TaskBoardRepository {
+  private waiting = new Set<string>();
+  private activities = new Map<string, NonNullable<TaskBoardRow["activity"]>>();
+
   constructor(private db: Database.Database) {
     ensureTaskBoard(db);
   }
@@ -144,9 +158,13 @@ export class TaskBoardRepository {
       }
       if (state.status === "waiting_input") this.waiting.add(patch.taskId);
       else this.waiting.delete(patch.taskId);
+      if (state.status === "retrying") {
+        this.activities.set(patch.taskId, { kind: "retrying", reason: state.retry?.error.slice(0, 240) });
+      } else if (state.compacting) {
+        this.activities.set(patch.taskId, { kind: "compacting" });
+      } else this.activities.delete(patch.taskId);
     }
   }
-  private waiting = new Set<string>();
 
   page(input: BoardQuery, now = Date.now()): BoardPage {
     const q = querySchema.parse(input);
@@ -159,7 +177,7 @@ export class TaskBoardRepository {
       at = "b.updated_at",
       rank = "0",
       match = "1";
-    const sources = ["board_native", "board_requests"];
+    const sources = q.view === "review" ? ["board_native"] : ["board_native", "board_requests"];
     const waits = `SELECT task_id AS id,created_at AS at FROM conversation_interactions WHERE status='pending'
       UNION ALL SELECT id,at FROM board_waits`;
     if (q.view === "recent" || q.view === "frequent") {
@@ -211,19 +229,29 @@ export class TaskBoardRepository {
     } else if (q.view === "later") {
       candidates = "SELECT id,later_until AS at FROM task_board_plans WHERE later_until>@now";
       at = "-k.at";
+    } else if (q.view === "running") {
+      match = `b.status='in_progress' AND NOT ${hasWait}`;
+      if (q.preview) match += " AND NOT EXISTS(SELECT 1 FROM cron_runs r WHERE r.task_id=b.id)";
+    } else if (q.view === "review") {
+      candidates = "SELECT DISTINCT task_id AS id FROM task_code_review WHERE status='pending'";
     } else if (q.view === "unread") match = unread;
     else if (q.view === "pinned") match = "b.pinned=1";
+    if (q.lane) match += ` AND (${taskLane})=@lane`;
+    if (q.lane === "attention" && rank === "0") rank = `CASE WHEN ${hasWait} THEN 1 ELSE 0 END`;
     if (q.preview && !["today", "attention"].includes(q.view)) match += ` AND coalesce(${deferred},0)<=@now`;
-    const size = q.preview ? 4 : 25;
+    const size = q.preview ? 4 : q.lane ? 10 : 25;
     const scope = q.scope === undefined ? "" : " AND b.space_id IS @scope";
     const project = q.projectId ? " AND b.id IN (SELECT id FROM tasks WHERE project_id=@project)" : "";
     const search = q.search?.trim() ? " AND instr(lower(b.title),lower(@term))>0" : "";
-    const select = (source: string) => `SELECT b.*, ${rank} AS rank,${at} AS at FROM
+    const select = (source: string, paged: boolean) => `SELECT ${paged ? `b.*,${rank} AS rank,${at} AS at` : "b.id"} FROM
       ${candidates ? `ranked k CROSS JOIN ${source} b ON b.id=k.id` : `${source} b`}
       WHERE (${match}) ${visibility} ${scope} ${project} ${search}
-      ${q.cursor ? `AND ((${rank})<@rank OR ((${rank})=@rank AND ((${at})<@at OR ((${at})=@at AND b.id>@id))))` : ""}`;
+      ${paged && q.cursor ? `AND ((${rank})<@rank OR ((${rank})=@rank AND ((${at})<@at OR ((${at})=@at AND b.id>@id))))` : ""}`;
     const prefix = `WITH RECURSIVE ${hidden}${candidates ? ", ranked AS MATERIALIZED (" + candidates + ")" : ""}`;
-    const selection = sources.map(select).join(" UNION ALL ");
+    const selection = sources.map((source) => select(source, true)).join(" UNION ALL ");
+    // Deferring keeps a card out of focus until a new request arrives. The historical card still shows live blockers.
+    const waitSince = q.view === "today" || q.view === "attention" ? afterDeferral : "0";
+    const question = `(${pendingQuestion} AND i.created_at>=${waitSince} ORDER BY i.created_at,i.id LIMIT 1)`;
     const signalKind =
       q.view === "recent" || (q.view === "dates" && q.dateKind === "follow")
         ? "follow"
@@ -235,13 +263,16 @@ export class TaskBoardRepository {
       : "NULL";
     const sql = `${prefix}, page AS MATERIALIZED (${selection} ORDER BY rank DESC,at DESC,id LIMIT @limit )
       SELECT b.*, ${unread} AS is_unread,${planned} AS is_planned,${deferred} AS later_until,i.id AS question_id,${latestResult} AS latest_result,
-        coalesce(i.title,w.detail,CASE WHEN b.status='failed' THEN (
+        CASE WHEN b.request_data IS NULL THEN (SELECT count(*) FROM task_code_review c WHERE c.task_id=b.id AND c.status='pending') ELSE 0 END AS pending_reviews,
+        CASE WHEN i.id IS NOT NULL THEN 'question' WHEN w.token<>'' THEN 'approval' WHEN w.token='' THEN 'input' END AS wait_kind,
+        CASE WHEN i.id IS NOT NULL THEN i.title WHEN w.token<>'' THEN w.detail END AS wait_reason,
+        CASE WHEN b.status='failed' THEN coalesce(substr(b.source_error,1,240),(
           SELECT CASE WHEN type='task.failed' THEN substr(body,1,240) END FROM notifications
           WHERE task_id=b.id AND type IN ('task.failed','task.completed') ORDER BY created_at DESC LIMIT 1
-        ) END) AS problem,coalesce(i.assistant_message_id,w.message) AS message,
+        )) END AS failure,coalesce(i.assistant_message_id,w.message) AS message,
         CASE WHEN i.id IS NULL THEN nullif(w.token,'') END AS tool,${signal} AS signal
       FROM page b LEFT JOIN conversation_interactions i ON i.id=${question}
-      LEFT JOIN board_waits w ON w.rowid=(SELECT w2.rowid FROM board_waits w2 WHERE w2.id=b.id AND w2.at>=${afterDeferral} ORDER BY (w2.token=''),w2.at LIMIT 1)
+      LEFT JOIN board_waits w ON w.rowid=(SELECT w2.rowid FROM board_waits w2 WHERE w2.id=b.id AND w2.at>=${waitSince} ORDER BY (w2.token=''),w2.at LIMIT 1)
       ORDER BY b.rank DESC,b.at DESC,b.id`;
     const params = {
       now,
@@ -251,6 +282,7 @@ export class TaskBoardRepository {
       until,
       limit: size + 1,
       kind: signalKind ?? null,
+      lane: q.lane ?? null,
       scope: q.scope ?? null,
       project: q.projectId ?? null,
       term: q.search?.trim() ?? "",
@@ -259,10 +291,14 @@ export class TaskBoardRepository {
       id: q.cursor?.id ?? "",
     };
     const rows = this.db.prepare(sql).all(params) as SqlRow[];
-    const total =
-      q.preview && q.view === "attention" && rows.length > size
-        ? (this.db.prepare(`${prefix} SELECT count(*) AS n FROM (${selection})`).get(params) as { n: number }).n
-        : undefined;
+    let total: number | undefined;
+    if (q.lane || (q.preview && (q.view === "attention" || q.view === "review"))) {
+      if (!q.cursor && rows.length <= size) total = rows.length;
+      else {
+        const all = sources.map((source) => select(source, false)).join(" UNION ALL ");
+        total = this.db.prepare(`${prefix} SELECT count(*) FROM (${all})`).pluck().get(params) as number;
+      }
+    }
     const page = rows.slice(0, size).map((row) => this.card(row, q.view));
     const last = page.at(-1);
     return {
@@ -348,7 +384,11 @@ export class TaskBoardRepository {
       messageId: b.message ?? undefined,
       interactionId: b.question_id ?? undefined,
       toolCallId: b.tool ?? undefined,
-      reason: view === "frequent" ? `近 14 天主动关注了 ${b.rank} 天` : b.signal || b.problem || undefined,
+      wait: b.wait_kind ? { kind: b.wait_kind, reason: b.wait_reason?.trim() || undefined } : undefined,
+      activity: b.status === "in_progress" ? this.activities.get(b.id) : undefined,
+      reason: view === "frequent" ? `近 14 天主动关注了 ${b.rank} 天` : b.signal || undefined,
+      failureReason: b.failure ?? undefined,
+      pendingReviewCount: b.pending_reviews || undefined,
       resultSinceFollow:
         view === "recent" && b.latest_result != null && b.latest_result > b.at && (b.ack ?? 0) < b.latest_result
           ? b.latest_result

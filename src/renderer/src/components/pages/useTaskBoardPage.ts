@@ -3,8 +3,9 @@ import type { BoardPage, BoardQuery } from "@shared/task-board";
 
 // A background change should not move the card under the pointer. Navigation and explicit edits refresh immediately.
 export function useTaskBoardPages(queries: BoardQuery[], enabled: boolean, revision: number) {
-  const key = JSON.stringify(queries);
-  const [value, setValue] = useState<{ key: string; pages: BoardPage[] }>();
+  const keys = queries.map((q) => JSON.stringify(q));
+  const key = JSON.stringify(keys);
+  const [value, setValue] = useState<Map<string, BoardPage>>();
   const [changed, setChanged] = useState(false);
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
@@ -23,12 +24,13 @@ export function useTaskBoardPages(queries: BoardQuery[], enabled: boolean, revis
       try {
         const db = window.api?.db;
         if (!db) throw new Error("桌面数据库未就绪");
-        const pages = await Promise.all((JSON.parse(key) as BoardQuery[]).map((q) => db.taskBoardPage(q)));
+        const queryKeys: string[] = JSON.parse(key);
+        const pages = await Promise.all(queryKeys.map((query) => db.taskBoardPage(JSON.parse(query) as BoardQuery)));
         if (!active) return;
         const signature = JSON.stringify(pages);
         if (!background || !last.current) {
           last.current = signature;
-          setValue({ key, pages });
+          setValue(new Map(queryKeys.map((query, i) => [query, pages[i]])));
           setChanged(false);
         } else setChanged(signature !== last.current);
         setError("");
@@ -48,5 +50,6 @@ export function useTaskBoardPages(queries: BoardQuery[], enabled: boolean, revis
       window.removeEventListener("focus", check);
     };
   }, [key, enabled, revision, reload]);
-  return { pages: value?.key === key && enabled ? value.pages : undefined, error, changed, refresh };
+  const pages = enabled ? keys.map((query) => value?.get(query)) : [];
+  return { pages: pages.some(Boolean) ? pages : undefined, error, changed, refresh };
 }

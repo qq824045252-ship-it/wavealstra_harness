@@ -28,8 +28,12 @@ export function createSendMessageActions(
       explicitOverrides,
       externalAgent,
       preparedTaskId,
+      reviewTaskId,
     ) => {
       let { activeTaskId } = get();
+      if (reviewTaskId && activeTaskId !== reviewTaskId) {
+        return Promise.reject(new Error("任务已经切换，请回到原任务后提交审查。"));
+      }
       if (preparedTaskId && (activeTaskId || get().draft?.worktreeTaskId !== preparedTaskId)) return;
       let materializedPlanId: string | undefined;
       if (!activeTaskId) {
@@ -78,7 +82,7 @@ export function createSendMessageActions(
         welcomeMode: defaultWelcomeMode,
       } = get();
       const task = tasks.find((x) => x.id === activeTaskId);
-      if (!task) return;
+      if (!task) return reviewTaskId ? Promise.reject(new Error("原任务已不可用。")) : undefined;
       const welcomeMode = task.welcomeMode ?? defaultWelcomeMode;
       const isGeneral = task.welcomeMode === "general";
 
@@ -120,7 +124,7 @@ export function createSendMessageActions(
 
       // 「加入聊天」抓取元素：仅 pending 引用随本条消息发送；发送即消费（不无限复用）。
       // 实际内容由主进程 AgentService 发送时经 PromptContextService 解析（指纹不匹配不注入）。
-      const pendingSelections = get().chatSelections.filter(
+      const pendingSelections = reviewTaskId ? [] : get().chatSelections.filter(
         (item) => item.status === "pending",
       );
       const selectionRefs = pendingSelections.map((item) => ({
@@ -138,10 +142,10 @@ export function createSendMessageActions(
             : item.label.trim(),
         )
         .filter(Boolean);
-      set({ chatSelections: [] });
+      if (!reviewTaskId) set({ chatSelections: [] });
 
       // 「终端 → 加入对话」：显式附加上下文随本条消息发送，发送即消费（不无限复用）
-      const terminalCtx = get().terminalContext;
+      const terminalCtx = reviewTaskId ? undefined : get().terminalContext;
       const terminalForBubble = terminalCtx?.text?.trim()
         ? {
             source: terminalCtx.source,
@@ -149,7 +153,7 @@ export function createSendMessageActions(
             preview: terminalCtx.text.slice(0, 240),
           }
         : undefined;
-      set({ terminalContext: null });
+      if (!reviewTaskId) set({ terminalContext: null });
 
       const userMsgId = uid(storeContext);
       const failDurableSend = (message: string): void => set((state) => ({
@@ -239,7 +243,7 @@ export function createSendMessageActions(
           x.id === activeTaskId
             ? {
                 ...x,
-                title: isFirstMessage
+                title: isFirstMessage && !reviewTaskId
                   ? taskTitleFromFirstMessage(text)
                   : x.title,
                 // 仅在任务尚无绑定时写入；已有 spaceId 或已有对话的独立任务不改
@@ -312,9 +316,9 @@ export function createSendMessageActions(
             error:
               "（External Agent ACP API 未就绪，请完全退出并重启 MyBuddy）",
           });
-          return;
+          return reviewTaskId ? Promise.reject(new Error("External Agent ACP API 未就绪。")) : undefined;
         }
-        void externalApi
+        const delivery = externalApi
           .prompt({
             taskId: activeTaskId,
             agentId: effectiveExternalAgent.id,
@@ -358,13 +362,14 @@ export function createSendMessageActions(
               messageId: assistantMsgId,
               error: err instanceof Error ? err.message : String(err),
             });
+            if (reviewTaskId) throw err;
           });
-        return;
+        return reviewTaskId ? delivery : undefined;
       }
       if (!api?.agent) {
         if (isDurable) {
           failDurableSend("主进程 Agent API 未就绪");
-          return;
+          return reviewTaskId ? Promise.reject(new Error("主进程 Agent API 未就绪。")) : undefined;
         }
         get().applyAgentPatch({
           type: "text_delta",
@@ -378,7 +383,7 @@ export function createSendMessageActions(
           taskId: activeTaskId,
           messageId: assistantMsgId,
         });
-        return;
+        return reviewTaskId ? Promise.reject(new Error("主进程 Agent API 未就绪。")) : undefined;
       }
 
       return Promise.resolve(taskPersistence)
@@ -410,6 +415,9 @@ export function createSendMessageActions(
         .then(async (result) => {
           // 主进程明确拒绝（如会话仍在生成但未指定 streamingBehavior）：给出用户可见错误，
           // 不静默吞掉。仅当本地确已插入空 assistant 壳时才以 error 结束它（诚实暴露失败）。
+          if (reviewTaskId && (result?.error || result?.cancelled || !result?.receipt || result.receipt.taskId !== reviewTaskId)) {
+            throw new Error(result?.error?.message ?? "原任务未接收审查意见。");
+          }
           if (result?.error) {
             if (isDurable) {
               failDurableSend(result.error.message);
@@ -489,6 +497,7 @@ export function createSendMessageActions(
           const message = err instanceof Error ? err.message : String(err);
           if (isDurable) {
             failDurableSend(message);
+            if (reviewTaskId) throw err;
             return;
           }
           get().applyAgentPatch({
@@ -497,6 +506,7 @@ export function createSendMessageActions(
             messageId: assistantMsgId,
             error: message,
           });
+          if (reviewTaskId) throw err;
         });
     },
   };

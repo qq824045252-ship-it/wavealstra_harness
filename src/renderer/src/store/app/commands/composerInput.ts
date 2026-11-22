@@ -118,16 +118,21 @@ export function createComposerInputActions(
       }));
     },
 
-    appendComposer: (text) => {
+    appendComposer: (text, taskId) => {
       const insertion = text?.trim();
       if (!insertion) return;
-      set((state) => ({
-        composerInsertion: state.composerInsertion
-          ? `${state.composerInsertion}\n\n${insertion}`
-          : insertion,
-        chatFocusTick: state.chatFocusTick + 1,
-        page: "chat",
-      }));
+      set((state) => {
+        if (taskId && state.activeTaskId !== taskId) return state;
+        const previous = taskId ? state.composerInsertionsByTask[taskId] : state.composerInsertion;
+        const text = previous ? `${previous}\n\n${insertion}` : insertion;
+        return {
+          ...(taskId
+            ? { composerInsertionsByTask: { ...state.composerInsertionsByTask, [taskId]: text } }
+            : { composerInsertion: text }),
+          chatFocusTick: state.chatFocusTick + 1,
+          page: "chat",
+        };
+      });
     },
   };
 }

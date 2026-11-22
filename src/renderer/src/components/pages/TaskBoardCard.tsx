@@ -1,6 +1,7 @@
 import type { BoardAction, TaskBoardRow, TaskBoardView } from "@shared/task-board";
-import { IconCalendar, IconFolder, IconPin } from "@/components/common/icons";
+import { IconCalendar, IconChevronRight, IconFolder, IconPin } from "@/components/common/icons";
 import { formatDayLabel, msToDateInput, startOfLocalDay } from "@/lib/projectPlanSchedule";
+import { foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
 import { TASK_STATUS_LABELS } from "@/utils/taskFilters";
 
 const statuses: Record<string, string> = { ...TASK_STATUS_LABELS, unknown: "状态待核实" };
@@ -20,6 +21,21 @@ function dueLabel(row: TaskBoardRow, today: number) {
   return formatDayLabel(day) + " 截止";
 }
 
+function cardStage(row: TaskBoardRow): { label: string; action: string; detail?: string } {
+  if (row.wait?.kind === "question") return { label: "等待你回答", action: "去回答", detail: row.wait.reason };
+  if (row.wait?.kind === "approval") return { label: "等待你批准", action: "查看待批准操作", detail: row.wait.reason };
+  if (row.wait?.kind === "input") return { label: "等待你输入", action: "打开对话" };
+  if (row.activity?.kind === "retrying") return { label: "等待自动重试", action: "查看进展", detail: row.activity.reason };
+  if (row.activity?.kind === "compacting") return { label: "整理对话上下文", action: "查看进展" };
+
+  const label = row.request ? foregroundStatus(row.request.status) : (statuses[row.status] ?? "状态待核实");
+  if (row.jobId) return { label, action: "查看运行记录" };
+  if (row.status === "failed") return { label, action: "查看失败详情", detail: row.failureReason };
+  if (row.status === "completed") return { label, action: "查看结果" };
+  if (row.status === "in_progress") return { label, action: "查看进展" };
+  return { label, action: row.request ? "查看原对话" : "打开任务" };
+}
+
 export function TaskBoardCard({
   row,
   group,
@@ -27,6 +43,7 @@ export function TaskBoardCard({
   spaceName,
   expanded,
   onOpen,
+  onReview,
   onEdit,
   onToggle,
   onAction,
@@ -37,6 +54,7 @@ export function TaskBoardCard({
   spaceName: string;
   expanded: boolean;
   onOpen: () => void;
+  onReview: () => void;
   onEdit: () => void;
   onToggle: () => void;
   onAction: (action: BoardAction | "pin") => void;
@@ -47,17 +65,14 @@ export function TaskBoardCard({
       ? Math.abs(row.at)
       : row.updatedAt;
   const why = group === "recent" ? (row.reason ? "上次跟进 · " + row.reason : "你最近跟进过") : row.reason;
+  const stage = cardStage(row);
+  const review = row.pendingReviewCount ? `审查改动（${row.pendingReviewCount}）` : undefined;
   return (
-    <div className="task-board-item">
-      <button type="button" className="task-board-card" onClick={onOpen} title={row.title}>
-        <span className="task-board-status" data-status={row.status}>
-          {row.interactionId
-            ? "等待你回答"
-            : row.toolCallId
-              ? "等待你批准"
-              : (statuses[row.status] ?? "状态待核实")}
-        </span>
+    <div className="task-board-item" data-review={review ? true : undefined}>
+      <button type="button" className="task-board-card" onClick={onOpen} title={row.title} aria-label={`${stage.action}：${row.title}`}>
+        <span className="task-board-status" data-status={row.status} data-wait={row.wait?.kind}>{stage.label}</span>
         <strong>{row.title}</strong>
+        {stage.detail && <span className="task-board-blocker">{stage.detail}</span>}
         {why && <span className="task-board-why">{why}</span>}
         {row.resultSinceFollow && (
           <span className="task-board-why">{format.format(row.resultSinceFollow)} 收到新结果</span>
@@ -80,10 +95,14 @@ export function TaskBoardCard({
         )}
         <span className="task-board-meta">
           <IconFolder size={12} />
-          <span>{spaceName}</span>
+          <span className="task-board-source">{spaceName}</span>
           <time>{format.format(when)}</time>
         </span>
+        <span className="task-board-next">{stage.action}<IconChevronRight size={13} /></span>
       </button>
+      {review && <button type="button" className="task-board-review" aria-label={`${review}：${row.title}`} onClick={onReview}>
+        {review}<IconChevronRight size={13} />
+      </button>}
       {!row.jobId && (
         <div className="task-board-card-tools">
           {!row.request && (

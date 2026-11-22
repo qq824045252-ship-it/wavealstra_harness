@@ -261,6 +261,8 @@ export default function ChatInput({
   const composerDraft = useAppStore((s) => s.composerDraft);
   const clearComposerDraft = useAppStore((s) => s.clearComposerDraft);
   const composerInsertion = useAppStore((s) => s.composerInsertion);
+  const taskComposerId = variant === "chat" ? activeTaskId ?? undefined : undefined;
+  const taskComposerInsertion = useAppStore((s) => taskComposerId ? s.composerInsertionsByTask[taskComposerId] : undefined);
   const clearComposerInsertion = useAppStore((s) => s.clearComposerInsertion);
 
   // 消息操作「导入到输入框」：写入正文并聚焦。
@@ -277,14 +279,19 @@ export default function ChatInput({
   // 浏览器控制台等其它 Surface 使用“追加”语义，绝不覆盖用户已输入的草稿。
   useEffect(() => {
     if (btwActive) return;
-    if (composerInsertion == null || composerInsertion === "") return;
+    const state = useAppStore.getState();
+    const currentTaskInsertion = taskComposerId && state.activeTaskId === taskComposerId
+      ? state.composerInsertionsByTask[taskComposerId] : undefined;
+    const insertion = [state.composerInsertion, currentTaskInsertion].filter(Boolean).join("\n\n");
+    if (!insertion) return;
     setText((prev) => {
       const current = prev.replace(/\s+$/, "");
-      return current ? `${current}\n\n${composerInsertion}` : composerInsertion;
+      return current ? `${current}\n\n${insertion}` : insertion;
     });
-    clearComposerInsertion();
+    if (state.composerInsertion) clearComposerInsertion();
+    if (taskComposerId && currentTaskInsertion) clearComposerInsertion(taskComposerId);
     textareaRef.current?.focus();
-  }, [composerInsertion, clearComposerInsertion, btwActive]);
+  }, [composerInsertion, taskComposerInsertion, taskComposerId, clearComposerInsertion, btwActive]);
   const skills = useAppStore((s) => s.skills);
   const models = useAppStore((s) => s.models);
   const activeModelId = useAppStore((s) => s.activeModelId);

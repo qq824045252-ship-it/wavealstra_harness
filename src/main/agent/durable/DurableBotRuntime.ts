@@ -84,6 +84,7 @@ const ResponseTiming = defineDoc({ kind: "mybuddy.response-timing", version: 1, 
 });
 
 export interface DurableBotOptions {
+  codeReview?: import("./DurableCodeReview").DurableCodeReview;
   /** Native passive viewer: never configure, recover, admit or settle work. */
   readOnly?: boolean;
   directory: string;
@@ -1637,7 +1638,7 @@ function botExtension(
   const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args) => {
     if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
     options.beforeToolExecution?.(name, args);
-  }));
+  }, options.codeReview));
   return defineExtension({ name: "mybuddy.bot", tasks: [], tools: managed ? tools.map(tool => managed.wrap(tool)) : tools,
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);

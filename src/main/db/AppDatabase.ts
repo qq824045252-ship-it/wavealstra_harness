@@ -2,6 +2,7 @@ import { GATEWAY_SIDEBAR_CHANNELS, gatewayChannelForSpace, gatewayChannelSpaceId
 import { ensureGatewayChannelSpace, gatewayChannelDirectory } from "../gateway/gateway-task-space";
 import Database from "better-sqlite3";
 import { ensureBotWorkTables } from "./bot-work-schema";
+import { ensureCodeReviewSchema } from "./code-review-schema";
 import { ensureMaterialRetrievalTables } from "../library/MaterialRetrievalSettings";
 import { ensureBotWorkPhase2Tables } from "./bot-work-phase2-schema";
 import { ensureBotWorkPhase3Tables } from "./bot-work-phase3-schema";
@@ -341,6 +342,7 @@ export class AppDatabase {
     this.db.transaction(() => {
       // Existing files must already use CURRENT; new databases are materialized directly.
       this.ensureCurrentCoreSchema();
+      ensureCodeReviewSchema(this.db);
       this.ensureProjectTodosTable();
       this.ensureProjectEventsTable();
       this.ensureProjectResourceFolders();

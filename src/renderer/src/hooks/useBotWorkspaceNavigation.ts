@@ -1,13 +1,13 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import type { BotWorkspaceNavigationDto, BotWorkspaceRequestDto, BotWorkspaceConversationDto } from '@shared/bot-workspace-navigation';
-import { activateWorkspaceRequest } from '@/lib/workspace-request-selection';
+import { activateWorkspaceRequest, type WorkspaceRequestSelection } from '@/lib/workspace-request-selection';
 import { useAppStore } from '@/store/appStore';
 import { recordBoardVisit } from '@/lib/taskBoardVisits';
 
 const listeners = new Set<() => void>();
 let snapshot: { requests: BotWorkspaceRequestDto[]; conversations: BotWorkspaceConversationDto[]; error: string } = { requests: [], conversations: [], error: '' };
 let pending: Promise<void> | undefined;
-export function openWorkspaceRequest(request: BotWorkspaceRequestDto, countVisit = true): void {
+export function openWorkspaceRequest(request: WorkspaceRequestSelection, countVisit = true): void {
   if (countVisit) recordBoardVisit(request.id);
   activateWorkspaceRequest(request, spaceId => useAppStore.getState().openWorkspaceDetail(spaceId));
 }

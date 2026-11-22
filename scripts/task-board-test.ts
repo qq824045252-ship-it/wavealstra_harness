@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -9,6 +9,7 @@ import { BotConversationRepository } from "../src/main/agent/work/BotConversatio
 import { botWorkspaceSpaceId } from "../src/main/agent/work/BotWorkspaceNavigationService";
 import { LOCAL_USER_ID, DEFAULT_BOT_ID } from "../src/shared/bot-work";
 import { TaskBoardRepository } from "../src/main/task/TaskBoardRepository";
+import { CodeReviewService } from "../src/main/agent/CodeReviewService";
 
 const dir = mkdtempSync(join(tmpdir(), "mybuddy-board-"));
 const path = join(dir, "app.db");
@@ -89,6 +90,52 @@ try {
     cursor = page.next;
   } while (cursor);
   assert.equal(unique.size, 1000);
+
+  db.upsertTask({ id: "old-approval", title: "例行同步审批", status: "pending", updatedAt: day(-42) });
+  board.patch({
+    type: "tool_start",
+    taskId: "old-approval",
+    messageId: "approval-message",
+    toolCallId: "old-approval-tool",
+    tool: "shell",
+    summary: "同意更新共享库存表？",
+    status: "pending_approval",
+  });
+  const laneQuery = { view: "all", scope: null, search: "例行同步" } as const;
+  const attentionLane = board.page({ ...laneQuery, lane: "attention" }, now);
+  assert.deepEqual(attentionLane.rows.map((row) => row.id), ["old-approval"], "an old approval remains on the first page beside 1,000 newer results");
+  assert.equal(attentionLane.total, 1);
+  assert.deepEqual(attentionLane.rows[0].wait, { kind: "approval", reason: "同意更新共享库存表？" });
+  assert.equal(attentionLane.rows[0].messageId, "approval-message");
+  const firstFinished = board.page({ ...laneQuery, lane: "finished" }, now);
+  const nextFinished = board.page({ ...laneQuery, lane: "finished", cursor: firstFinished.next }, now);
+  assert.equal(firstFinished.total, 1000);
+  assert.equal(nextFinished.total, 1000, "a lane total includes rows before its cursor");
+  assert.deepEqual(firstFinished.rows.slice(0, 2).map((row) => row.id), ["auto-0", "auto-1"]);
+  assert.ok(firstFinished.rows.length < 25 && firstFinished.rows.length > 1, "only a bounded set of results renders in a lane");
+  assert.equal(new Set([...firstFinished.rows, ...nextFinished.rows].map((row) => row.id)).size, firstFinished.rows.length + nextFinished.rows.length);
+  assert.equal(board.page({ ...laneQuery, lane: "running" }, now).total, 0);
+  board.follow("old-approval", "用户上传了本周数据", now);
+  const recentApproval = board.page({ view: "recent", search: "例行同步审批" }, now).rows[0];
+  assert.equal(recentApproval.reason, "用户上传了本周数据");
+  assert.equal(recentApproval.wait?.reason, "同意更新共享库存表？", "follow-up history cannot conceal the current blocker");
+  board.patch({ type: "tool_update", taskId: "old-approval", messageId: "approval-message", toolCallId: "old-approval-tool", status: "denied" });
+  assert.equal(board.page({ ...laneQuery, lane: "attention" }, now).total, 0);
+  assert.deepEqual(ids({ ...laneQuery, lane: "pending" }), ["old-approval"]);
+
+  assert.deepEqual(ids({ view: "running", scope: null }), ["quote"], "a running task remains discoverable without a fresh action");
+  const review = new CodeReviewService(db.connection);
+  const reviewFile = join(dir, "old-report.txt");
+  const finishCapture = review.capture("report", dir, reviewFile);
+  writeFileSync(reviewFile, "更新的报告\n");
+  await finishCapture?.();
+  const reviewPreview = board.page({ view: "review", scope: null, preview: true }, now);
+  assert.deepEqual(reviewPreview.rows.map((row) => [row.id, row.pendingReviewCount]), [["report", 1]], "an old task with a real recorded file change reaches focus");
+  assert.equal(reviewPreview.total, 1);
+  const reviewFileId = review.list("report")[0].id;
+  await review.decide({ taskId: "report", ids: [reviewFileId], action: "accept" }, () => dir, async (_path, operation) => operation());
+  assert.equal(board.page({ view: "review", scope: null, preview: true }, now).total, 0, "accepted changes drop out of the pending review group");
+
   assert.deepEqual(ids({ view: "results", preview: true }), []);
   db.connection
     .prepare(
@@ -111,7 +158,7 @@ try {
   assert.deepEqual(ids({ view: "frequent" }), ["report"]);
   assert.deepEqual(ids({ view: "later" }).sort(), ["quote", "waiting"]);
   console.log(
-    "PASS 1000-task paging, historical date windows, waits, personal activity, scheduled runs and restart",
+    "PASS lane paging with 1,000 results, wait routing, running and review focus, historical dates, activity, scheduled runs and restart",
   );
 } finally {
   db.close();

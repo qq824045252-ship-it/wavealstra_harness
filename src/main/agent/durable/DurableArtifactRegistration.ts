@@ -229,3 +229,11 @@ export function withDurableArtifactRegistration(tool: ToolRegistration, director
     return result;
   } };
 }
+
+/** Only a whole, direct content cmdlet with static arguments proves a target.
+ * Do not infer paths out of pipelines, script blocks, variable or array values. */
+export function powerShellLiteralContentTarget(command: string): string | undefined {
+  const match = /^(?:Add-Content|Set-Content)[ \t]+-LiteralPath[ \t]+'((?:[^'\r\n’‘]|'')+)'[ \t]+-Value[ \t]+'(?:[^'\r\n’‘]|'')*'(?:[ \t]+-ErrorAction[ \t]+Stop)?$/i.exec(command.trim());
+  const target = match?.[1]?.replaceAll("''", "'");
+  return target && !/[\x00-\x1f]/.test(target) ? target : undefined;
+}

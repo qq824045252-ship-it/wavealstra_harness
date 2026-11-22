@@ -23,6 +23,7 @@ export interface ComposerState {
   chatFocusTick: number;
   composerDraft: string | null;
   composerInsertion: string | null;
+  composerInsertionsByTask: Record<string, string>;
 }
 
 export function createComposerState(): ComposerState {
@@ -36,6 +37,7 @@ export function createComposerState(): ComposerState {
     chatFocusTick: 0,
     composerDraft: null,
     composerInsertion: null,
+    composerInsertionsByTask: {},
   };
 }
 
@@ -92,8 +94,16 @@ export function createComposerActions(
       if (get().composerDraft != null) set({ composerDraft: null });
     },
 
-    clearComposerInsertion: () => {
-      if (get().composerInsertion != null) set({ composerInsertion: null });
+    clearComposerInsertion: (taskId) => {
+      if (!taskId) {
+        if (get().composerInsertion != null) set({ composerInsertion: null });
+        return;
+      }
+      set((state) => {
+        const remaining = { ...state.composerInsertionsByTask };
+        delete remaining[taskId];
+        return { composerInsertionsByTask: remaining };
+      });
     },
   };
 }

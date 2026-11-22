@@ -1,5 +1,7 @@
 import "./platform/credentials";
 import { SpeechIpc } from "../shared/speech-stream";
+import { CodeReviewIpc, type CodeReviewDecisionRequest, type CodeReviewGitComparison,
+  type CodeReviewGitFile } from "../shared/code-review";
 import { SavedArtifactActions } from "./artifact/SavedArtifactActions";
 import { resolveCadCraftFile } from "./artifact/CadCraftFile";
 import { locateCadCraftCli } from "./platform/cadcraft";
@@ -1278,6 +1280,15 @@ function registerIpc(): void {
     return agentService.setPermissionMode(req);
   });
   ipcMain.handle(AgentIpc.listBackups, (_e, taskId?: string) => agentService.listBackups(taskId));
+  ipcMain.handle(CodeReviewIpc.list, (_e, taskId: string) => agentService.listCodeReview(taskId));
+  ipcMain.handle(CodeReviewIpc.pendingCount, (_e, taskId: string) => agentService.codeReviewPendingCount(taskId));
+  ipcMain.handle(CodeReviewIpc.detail, (_e, taskId: string, id: string) => agentService.codeReviewDetail(taskId, id));
+  ipcMain.handle(CodeReviewIpc.decide, (_e, request: CodeReviewDecisionRequest) => agentService.decideCodeReview(request));
+  ipcMain.handle(CodeReviewIpc.gitRefs, (_e, taskId: string) => agentService.codeReviewGitRefs(taskId));
+  ipcMain.handle(CodeReviewIpc.gitList, (_e, taskId: string, comparison?: CodeReviewGitComparison) =>
+    agentService.listCodeReviewGit(taskId, comparison));
+  ipcMain.handle(CodeReviewIpc.gitDetail, (_e, taskId: string, file: CodeReviewGitFile) =>
+    agentService.codeReviewGitDetail(taskId, file));
   ipcMain.handle(AgentIpc.restoreBackup, (_e, req: AgentRestoreBackupRequest) =>
     agentService.restoreBackup(req),
   );

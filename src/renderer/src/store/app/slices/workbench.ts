@@ -160,26 +160,17 @@ export function createWorkbenchActions(
       set((s) => ({ browserFrameKey: s.browserFrameKey + 1 })),
 
     showChanges: () => {
-      set({
+      set((s) => ({
         panelOpen: true,
         panelMode: "changes",
         extensionView: "changes",
         extensionFlyoutOpen: false,
         extensionFlyoutPinned: false,
-        panelWidth: PANEL_RAIL_WIDTH,
-      });
+        panelWidth: canvasPanelWidth(s.sidebarCollapsed),
+      }));
     },
 
-    showAllChanges: () => {
-      set({
-        panelOpen: true,
-        panelMode: "changes",
-        extensionView: "changes",
-        extensionFlyoutOpen: false,
-        extensionFlyoutPinned: false,
-        panelWidth: PANEL_RAIL_WIDTH,
-      });
-    },
+    showAllChanges: () => get().showChanges(),
 
     openExtensionFlyout: (mode) => {
       const s = get();

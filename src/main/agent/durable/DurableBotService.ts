@@ -84,6 +84,7 @@ export interface DurableInputOrigin {
 
 export interface DurableBotServiceOptions {
   db: AppDatabase;
+  codeReview?: import("../CodeReviewService").CodeReviewService;
   models: ModelRuntime;
   agentDir: string;
   mcpDir: string;
@@ -469,6 +470,7 @@ export class DurableBotService {
       );
       const routing = this.options.answerRouting;
       const runtime = await DurableBotRuntime.open({ directory, cwd, models, initialHistory,
+        codeReview: this.options.codeReview && { taskId, workspace: cwd, review: this.options.codeReview },
         nativeHooks: this.options.nativeHooks && { store: this.options.nativeHooks, readHints: this.options.readHints, cwd, directory,
           improvement: this.options.nativeImprovement, skillAllowed: name => toolGate.allowed("read") && Boolean(this.options.improvementSkillAllowed?.(taskId, name)),
           toolAllowed: name => toolGate.allowed(name), scope: () => {

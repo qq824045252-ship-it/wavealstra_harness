@@ -190,8 +190,10 @@ import type {
   WorkGraphRepairPreview,
 } from "../shared/work-graph";
 import type { ConversationRuntimeApi } from "../shared/conversation-runtime";
+import type { CodeReviewApi } from "../shared/code-review";
 
 export interface PreloadApi {
+  codeReview: CodeReviewApi;
   googleWorkspaceWrite: GoogleWorkspaceWriteApi;
   googleWorkspace: GoogleWorkspaceApi;
   plugins: {

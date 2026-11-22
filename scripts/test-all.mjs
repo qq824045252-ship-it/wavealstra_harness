@@ -147,6 +147,7 @@ const GUI_TESTS = new Set([
   "test:consult-entry:desktop",
   "test:mode-navigation:desktop",
   "test:task-board:desktop",
+  "test:code-review:desktop",
   // Electron 运行时 / e2e
   "test:html-edit-electron",
   "test:local-capabilities-electron",
@@ -390,6 +391,9 @@ const HEADLESS_TESTS = new Set([
   "test:app-store-runtime",
   "test:app-store-transactions",
   "test:task-file-changes",
+  "test:task-code-review",
+  "test:git-code-review",
+  "test:canban-review-engine",
   "test:browser-benchmark-report",
   "test:browser-contract",
   "test:browser-durable-composition",

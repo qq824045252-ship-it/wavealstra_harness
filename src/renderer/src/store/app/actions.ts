@@ -90,7 +90,7 @@ export interface AppActions {
   clearPendingRefTask: () => void;
   clearPendingExternalAgentContinuation: () => void;
   clearComposerDraft: () => void;
-  clearComposerInsertion: () => void;
+  clearComposerInsertion: (taskId?: string) => void;
   refreshArtifactPolicy: (mode: WelcomeMode) => Promise<void>;
   cacheArtifactRender: (
     artifactId: string,
@@ -200,7 +200,7 @@ export interface AppActions {
     agentName: string;
   }) => boolean;
   fillComposer: (text: string) => void;
-  appendComposer: (text: string) => void;
+  appendComposer: (text: string, taskId?: string) => void;
   createTerminalTab: (surface?: TerminalSurface) => void;
   closeTerminalTab: (tabId: string, surface?: TerminalSurface) => void;
   shareTaskToConversation: (
@@ -247,6 +247,8 @@ export interface AppActions {
     > & { continueFromRunId?: string },
     /** New task id whose worktree was prepared by the main process. */
     preparedTaskId?: string,
+    /** A review submits only its own text and requires the original task to be active. */
+    reviewTaskId?: string,
   ) => void | Promise<void>;
   deleteUserMessage: (messageId: string) => Promise<void>;
   regenerateMessage: (messageId: string) => void;

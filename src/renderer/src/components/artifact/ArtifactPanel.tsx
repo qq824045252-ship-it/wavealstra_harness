@@ -7,6 +7,7 @@ import ImageArtifactView from "./ImageArtifactView";
 import MediaArtifactView from "./MediaArtifactView";
 import BrowserView from "./BrowserView";
 import ChangesView from "./ChangesView";
+import { useCodeReviewTaskId } from "./code-review/useCodeReviewTaskId";
 import ExtensionTopBar from "./ExtensionTopBar";
 import HtmlArtifactView from "./HtmlArtifactView";
 import OverviewView from "./OverviewView";
@@ -122,6 +123,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const taskSpaceId = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId)?.spaceId);
   const workspaceContextId =
     (page === "workspace" ? activeWorkspaceId : null) || taskSpaceId || draftSpaceId || null;
+  const reviewTaskId = useCodeReviewTaskId();
   const artifacts = useActiveTaskArtifacts();
   const panelMode = useAppStore((s) => s.panelMode);
   const panelWidth = useAppStore((s) => s.panelWidth);
@@ -282,7 +284,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
       ) : panelMode === "browser" ? (
         <BrowserView />
       ) : panelMode === "changes" ? (
-        <ChangesView />
+        <ChangesView key={reviewTaskId ?? "no-task"} taskId={reviewTaskId} />
       ) : (
         <OverviewView />
       )}

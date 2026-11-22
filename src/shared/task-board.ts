@@ -3,6 +3,8 @@ import type { BotWorkspaceRequestDto } from "./bot-workspace-navigation";
 export const boardViews = [
   "attention",
   "today",
+  "running",
+  "review",
   "week",
   "recent",
   "frequent",
@@ -15,9 +17,12 @@ export const boardViews = [
   "automation",
 ] as const;
 export type TaskBoardView = (typeof boardViews)[number];
+export const boardLanes = ["attention", "pending", "running", "finished"] as const;
+export type TaskBoardLane = (typeof boardLanes)[number];
 export type BoardDateKind = "follow" | "result" | "due" | "updated";
 export interface BoardQuery {
   view: TaskBoardView;
+  lane?: TaskBoardLane;
   scope?: string | null;
   projectId?: string;
   search?: string;
@@ -39,6 +44,10 @@ export interface TaskBoardRow {
   pinned: boolean;
   unread: boolean;
   reason?: string;
+  failureReason?: string;
+  wait?: { kind: "question" | "approval" | "input"; reason?: string };
+  activity?: { kind: "retrying" | "compacting"; reason?: string };
+  pendingReviewCount?: number;
   resultSinceFollow?: number;
   messageId?: string;
   interactionId?: string;

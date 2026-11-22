@@ -94,6 +94,29 @@ async function main(): Promise<void> {
   assert.deepEqual(task().botPendingSubmissions?.map(input=>input.id),[second.id]);
   assert.equal(new Set(display().map(message=>message.presentationKey ?? message.id)).size,display().length);
   await Promise.all([a,b]);
-  console.log("PASS: task mode authority, persist-before-prompt, pending Bot lock and failed-save admission");
+
+  seed("coding", "coding");
+  const review = (taskId: string) => Promise.resolve(useAppStore.getState().sendMessage("Review invoice.ts:12",
+    undefined, undefined, "followUp", undefined, undefined, undefined, undefined, taskId));
+  await assert.rejects(review("other-task"), /任务已经切换/);
+  assert.equal(task().botPendingSubmissions, undefined);
+
+  api.agent.prompt = async request => {
+    requests.push(request);
+    return { queued: false, error: { code: "REVIEW_REFUSED", message: "review was refused" } };
+  };
+  await assert.rejects(review("bound-task"), /review was refused/);
+  assert.equal(task().botPendingSubmissions?.at(-1)?.submissionFailed, true);
+
+  api.agent.prompt = async request => {
+    requests.push(request);
+    return { queued: true, receipt: {
+      taskId: request.taskId, operationId: request.userMessageId, submissionId: 4, status: "queued",
+    } };
+  };
+  await review("bound-task");
+  assert.deepEqual(requests.map(request => [request.taskId, request.text, request.streamingBehavior]),
+    Array.from({ length: 2 }, () => ["bound-task", "Review invoice.ts:12", "followUp"]));
+  console.log("PASS: task mode authority, queued input, failed-save admission and task-scoped review delivery");
 }
 main().catch(error => { console.error(error); process.exitCode=1; });

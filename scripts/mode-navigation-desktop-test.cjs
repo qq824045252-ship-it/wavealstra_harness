@@ -52,7 +52,21 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
       return useAppStore.getState().activeTaskId;
     })()`);
     await until(()=>evaluate(`window.api.db.taskBoardPage({view:'recent'}).then(page=>page.rows.some(r=>r.id===${JSON.stringify(taskId)} && r.reason.includes('运输费用')))`),'accepted Pi input enters recent work');
-    report.checks = ['bounded focus with 1000 history rows','real Pi submission with local fixture provider','cross-day frequent visits','custom and saved date filters','history cursor','scheduling','cold read and pin'];
+    const question = '使用含税报价来核对运费吗？';
+    const attentionRow = `window.api.db.taskBoardPage({view:'attention'}).then(page=>page.rows.find(r=>r.id===${JSON.stringify(taskId)} && r.interactionId))`;
+    await until(()=>evaluate(attentionRow),'Pi is waiting for a real conversation interaction');
+    const interactionId = (await evaluate(attentionRow)).interactionId;
+    await click('.desktop-rail-module', '任务看板');
+    await click('#desktop-module-list button','全部任务');
+    await click('.task-board-views button','我的焦点');
+    const questionCard = '.task-board-card[aria-label^="去回答："][title*="运输费用"]';
+    await visible(questionCard);
+    assert.equal(await evaluate(`document.querySelector(${JSON.stringify(questionCard + ' .task-board-blocker')}).textContent`), question);
+    await click(questionCard);
+    await until(()=>evaluate(`document.activeElement?.dataset.interactionId===${JSON.stringify(interactionId)}`),'board focuses the exact question in the original task');
+    await click(`[data-interaction-id="${interactionId}"] button`, '确认');
+    await until(()=>evaluate(`window.api.conversationRuntime.snapshot(${JSON.stringify(taskId)}).then(s=>s.interactions.some(i=>i.id===${JSON.stringify(interactionId)} && i.status==='resolved'))`),'answering the original question resolves the runtime interaction');
+    report.checks = ['bounded focus with 1000 history rows','independent status counts and controls','real Pi question opened and answered from the board','cross-day frequent visits','custom and saved date filters','history cursor','scheduling','cold read and pin'];
     assert.deepEqual(report.rendererErrors, []);
     console.log('PASS task board on the isolated desktop');
     return;
@@ -405,6 +419,7 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
       boardDb.transaction(()=>{
         const insert=boardDb.prepare("INSERT INTO tasks(id,title,status,updated_at) VALUES(?,?,'completed',?)");
         for(let i=0;i<1000;i++) insert.run('board-bulk-'+i,'例行运行 '+i,dayOffset(-30)-i);
+        boardDb.prepare("UPDATE tasks SET updated_at=? WHERE id='board-run'").run(dayOffset(-45));
         boardDb.prepare("INSERT INTO conversation_interactions(id,task_id,execution_id,assistant_message_id,kind,title,status,created_at) VALUES('board-question','board-run','board-exec','board-msg','short_text','请确认反馈范围','pending',?)").run(dayOffset(-45));
         const signal=boardDb.prepare("INSERT INTO task_board_days VALUES(?,?,date(?/1000,'unixepoch','localtime'),?,?)");
         for(const offset of [-35,-3]) signal.run('board-plan','follow',dayOffset(offset),dayOffset(offset),'补充访谈提纲');
@@ -418,6 +433,20 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     assert.ok(await evaluate('document.querySelectorAll(".task-board-card").length < 25'));
     assert.equal(await evaluate('document.querySelectorAll(\'.task-board-card[title*="归档"]\').length'), 0);
     assert.equal(await evaluate('document.querySelectorAll(\'.task-board-card[title*="例行运行"]\').length'), 0);
+    await click('.task-board-views button', '全部');
+    const waitingCard = '.task-board-lane[data-lane="attention"] [title="汇总本周用户反馈"]';
+    const finishedLane = '.task-board-lane[data-lane="finished"]';
+    await visible(waitingCard);
+    const finishedBefore = await evaluate(`Array.from(document.querySelectorAll('${finishedLane} .task-board-card'), card=>card.title)`);
+    const finishedCount = await evaluate(`document.querySelector('${finishedLane} .task-board-count').textContent`);
+    assert.equal(finishedBefore.length, 10);
+    assert.ok(Number(finishedCount) >= 1002);
+    await click(`${finishedLane} .task-board-pagination button`, '下一页');
+    await visible(waitingCard);
+    await until(()=>evaluate(`document.querySelector('${finishedLane} .task-board-card') && document.querySelector('${finishedLane} footer span').textContent==='第 2 页'`),'next page in the finished lane');
+    assert.equal(await evaluate(`document.querySelector('${finishedLane} .task-board-count').textContent`), finishedCount);
+    assert.notEqual(await evaluate(`document.querySelector('${finishedLane} .task-board-card').title`), finishedBefore[0]);
+    await click('.task-board-views button', '我的焦点');
     await click('#desktop-module-list button[title="产品交付"]');
     await visible('.task-board-focus [data-section="recent"] .task-board-card');
     await screenshot('task-board-focus');
@@ -535,4 +564,12 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     assert.deepEqual(await laneSizes(), [1, 0, 0, 0], 'pinning a read task with unloaded history does not create an unread result');
   }
 }, { name: process.argv.includes('--task-board') ? 'task-board-desktop' : 'mode-navigation-desktop',
-  fixtureModel: process.argv.includes('--task-board') ? ()=>'已核对运输费用。' : undefined });
+  watchRenderer: !process.argv.includes('--task-board'),
+  fixtureModel: process.argv.includes('--task-board') ? (request) => {
+    const lastUser = request.messages.findLastIndex(message => message.role === 'user');
+    const asked = request.messages.slice(lastUser + 1).some(message => message.role === 'tool');
+    if ((JSON.stringify(request.messages[lastUser]?.content) ?? '').includes('运输费用') && !asked) {
+      return { tool: { name: 'request_user_input', arguments: { title: '使用含税报价来核对运费吗？', kind: 'confirm' } } };
+    }
+    return '已核对运输费用。';
+  } : undefined });

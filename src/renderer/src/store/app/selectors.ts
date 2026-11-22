@@ -6,7 +6,6 @@ import {
   type ArtifactRenderPayload,
 } from "../../lib/artifactIngest";
 import { usesCanvasPanelWidth } from "../../lib/panelWidth";
-import { HOME_BROWSER_KEY } from "../../lib/browserLinks";
 import {
   artifactVisibleForDisplay,
   type ModeArtifactPolicy,
@@ -174,7 +173,7 @@ export function findDescriptorByIdAnyTask(
 }
 
 export function selectCanvasPanelOpen(state: AppState): boolean {
-  if (state.panelMode === "browser") return Boolean(state.browserUrlByTask[state.activeTaskId ?? HOME_BROWSER_KEY]);
+  if (state.panelMode === "changes" || state.panelMode === "browser") return true;
   if (state.panelMode !== "file") return false;
   const descriptor = findDescriptorByIdAnyTask(state, state.activeArtifactId);
   return descriptor !== null && usesCanvasPanelWidth(toRendererKind(descriptor));

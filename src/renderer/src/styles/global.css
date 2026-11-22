@@ -22877,9 +22877,19 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   color: #ffffff;
 }
 
-.extension-tab-badge.changes {
+.extension-tab-badge.changes,
+.extension-tab-btn.active .extension-tab-badge.changes {
   background: #f59e0b;
-  color: #ffffff;
+  color: #251800;
+}
+
+.extension-mode-section .extension-tab-badge.changes {
+  position: static;
+  flex: none;
+}
+
+.extension-mode-item .extension-tab-badge.changes {
+  margin-inline-start: auto;
 }
 
 .extension-file-subbar {

@@ -35,6 +35,7 @@ vendor/
 !/vendor/craft-office/
 !/vendor/cadcraft/
 !/vendor/drawio/
+!/vendor/canban-review/
 /vendor/drawio/assets/
 
 # 本地 MCP 工具索引（codegraph/serena 等）

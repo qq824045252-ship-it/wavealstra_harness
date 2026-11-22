@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import type { BoardAction, BoardPage, BoardQuery, TaskBoardRow, TaskBoardView } from "@shared/task-board";
+import {
+  boardLanes,
+  type BoardAction,
+  type BoardPage,
+  type BoardQuery,
+  type TaskBoardLane,
+  type TaskBoardRow,
+  type TaskBoardView,
+} from "@shared/task-board";
 import { computeEffectiveArchived } from "@shared/workspace-tree";
 import {
   DesktopSectionRow,
@@ -20,7 +28,24 @@ import { useTaskBoardPages } from "./useTaskBoardPage";
 import "./TaskBoardPage.css";
 
 type View = TaskBoardView | "focus";
-const focusViews: TaskBoardView[] = ["attention", "recent", "week", "results", "frequent", "automation"];
+type PageChannel = TaskBoardLane | "list";
+type Cursor = NonNullable<BoardQuery["cursor"]>;
+const focusSections = [
+  { view: "attention", limit: 3 },
+  { view: "review", limit: 2 },
+  { view: "running", limit: 2 },
+  { view: "recent", limit: 2 },
+  { view: "week", limit: 1 },
+  { view: "results", limit: 1 },
+  { view: "frequent", limit: 1 },
+  { view: "automation", limit: 1 },
+] as const;
+const laneTitles: Record<TaskBoardLane, string> = {
+  attention: "需跟进",
+  pending: "待处理",
+  running: "进行中",
+  finished: "已结束",
+};
 const labels: Record<View, string> = {
   focus: "我的焦点",
   attention: "等我处理",
@@ -28,6 +53,8 @@ const labels: Record<View, string> = {
   frequent: "经常关注",
   dates: "按日期查",
   today: "今日关注",
+  review: "待审查的改动",
+  running: "正在执行",
   week: "本周到期",
   results: "新结果",
   automation: "后台动态",
@@ -44,35 +71,18 @@ const empty: Partial<Record<View, string>> = {
   dates: "所选日期内没有匹配的任务。",
 };
 
-function lane(row: TaskBoardRow) {
-  if (
-    row.interactionId ||
-    row.toolCallId ||
-    row.status === "failed" ||
-    row.status === "unknown" ||
-    row.reason === "等待你回答"
-  )
-    return "attention";
-  if (row.status === "in_progress") return "running";
-  if (row.status === "completed" || row.status === "stopped") return "finished";
-  return "pending";
-}
-
-function focusRows(pages: BoardPage[]) {
+function focusRows(pages: Array<BoardPage | undefined>) {
   const seen = new Set<string>();
-  const groups = pages.map((page) =>
-    page.rows.filter((row) => {
-      const key = row.jobId ? "job:" + row.jobId : row.id;
-      if (seen.has(key)) return false;
+  return focusSections.map(({ limit }, i) => {
+    const items: TaskBoardRow[] = [];
+    for (const row of pages[i]?.rows ?? []) {
+      const key = row.jobId ? `job:${row.jobId}` : row.id;
+      if (seen.has(key)) continue;
       seen.add(key);
-      return true;
-    }),
-  );
-  let spare = 12 - groups.filter((rows) => rows.length).length;
-  return groups.map((rows) => {
-    const extra = Math.min(spare, Math.max(0, rows.length - 1));
-    spare -= extra;
-    return rows.slice(0, 1 + extra);
+      items.push(row);
+      if (items.length === limit) break;
+    }
+    return items;
   });
 }
 
@@ -105,8 +115,8 @@ export default function TaskBoardPage(): React.JSX.Element {
   const [error, setError] = useState("");
   const [history, setHistory] = useDesktopSectionState<{
     key: string;
-    cursors: NonNullable<BoardQuery["cursor"]>[];
-  }>("task-board:pages", { key: "", cursors: [] });
+    cursors: Partial<Record<PageChannel, Cursor[]>>;
+  }>("task-board:pages-by-lane", { key: "", cursors: {} });
   useEffect(() => {
     const check = () => setToday(startOfLocalDay());
     const timer = setTimeout(check, Math.max(1, addLocalDays(today, 1) - Date.now()));
@@ -130,21 +140,26 @@ export default function TaskBoardPage(): React.JSX.Element {
     job,
     today,
   ]);
-  const cursors = history.key === pageKey ? history.cursors : [];
-  const groups: TaskBoardView[] = actual === "focus" ? focusViews : [actual];
-  const queries = groups.map((group) => ({
-    view: group,
+  const cursors = history.key === pageKey ? history.cursors : {};
+  const classic = ["all", "today", "unread", "pinned"].includes(actual);
+  const panels: Array<Pick<BoardQuery, "view" | "lane">> = actual === "focus"
+    ? focusSections.map(({ view }) => ({ view }))
+    : classic ? boardLanes.map((lane) => ({ view: actual, lane })) : [{ view: actual }];
+  const queries = panels.map(({ view, lane }) => ({
+    view,
+    lane,
     scope: scopeId,
     search,
     preview: actual === "focus",
-    cursor: actual === "focus" ? undefined : cursors.at(-1),
-    jobId: group === "automation" ? job : undefined,
-    ...(group === "dates" ? { dateKind: dates.kind, projectId: dates.projectId, ...dateRange } : {}),
+    cursor: actual === "focus" ? undefined : cursors[lane ?? "list"]?.at(-1),
+    jobId: view === "automation" ? job : undefined,
+    ...(view === "dates" ? { dateKind: dates.kind, projectId: dates.projectId, ...dateRange } : {}),
   }));
   const { pages, changed, refresh, error: loadError } = useTaskBoardPages(queries, valid, revision);
   const go = (next: View, jobId?: string) => {
     setActions(null);
-    setHistory({ key: "", cursors: [] });
+    setHistory({ key: "", cursors: {} });
+    if (next === "focus") setSearch("");
     setJob(jobId);
     setView(next);
   };
@@ -169,7 +184,7 @@ export default function TaskBoardPage(): React.JSX.Element {
     const countVisit = actual !== "focus";
     if (!countVisit) void window.api?.db.taskBoardAction(row.id, "read").catch(console.warn);
     if (row.request) {
-      openWorkspaceRequest(row.request, countVisit);
+      openWorkspaceRequest({ ...row.request, focusMessageId: row.request.messageId }, countVisit);
       return;
     }
     if (countVisit) recordBoardVisit(row.id);
@@ -182,26 +197,49 @@ export default function TaskBoardPage(): React.JSX.Element {
           : undefined,
       );
   }
-  function card(row: TaskBoardRow, group: TaskBoardView, index: number) {
+  function card(row: TaskBoardRow, group: TaskBoardView) {
     return (
       <TaskBoardCard
-        key={row.id + ":" + index}
+        key={row.id}
         row={row}
         group={group}
         today={today}
         spaceName={names.get(row.spaceId ?? "") ?? "独立任务"}
         expanded={actions === row.id}
         onOpen={() => open(row)}
+        onReview={() => {
+          open(row);
+          const store = useAppStore.getState();
+          if (store.activeTaskId === row.id) store.showChanges();
+        }}
         onEdit={() => setEditing(row)}
         onAction={(action) => void act(row, action)}
         onToggle={() => setActions(actions === row.id ? null : row.id)}
       />
     );
   }
+  function pagination(page: BoardPage | undefined, channel: PageChannel) {
+    const trail = cursors[channel] ?? [];
+    if (!trail.length && !page?.next) return null;
+    const setTrail = (next: Cursor[]) => {
+      setActions(null);
+      setHistory({ key: pageKey, cursors: { ...cursors, [channel]: next } });
+    };
+    return (
+      <footer className="task-board-pagination" aria-label={channel === "list" ? "任务分页" : `${laneTitles[channel]}分页`}>
+        <button className="btn" disabled={!trail.length} onClick={() => setTrail(trail.slice(0, -1))}>
+          上一页
+        </button>
+        <span>第 {trail.length + 1} 页</span>
+        <button className="btn" disabled={!page?.next} onClick={() => page?.next && setTrail([...trail, page.next])}>
+          下一页
+        </button>
+      </footer>
+    );
+  }
   const preview = actual === "focus" && pages ? focusRows(pages) : [];
   const rows = pages?.[0]?.rows ?? [];
-  const noResults = pages?.every((p) => !p.rows.length);
-  const classic = ["all", "today", "unread", "pinned"].includes(actual);
+  const noResults = !Object.values(cursors).some((trail) => trail.length) && pages?.every((p) => p?.rows.length === 0);
   return (
     <>
       <DesktopSectionSidebar title="任务范围" scrollKey="task-board:spaces">
@@ -327,11 +365,11 @@ export default function TaskBoardPage(): React.JSX.Element {
           </div>
         ) : actual === "focus" ? (
           <div className="task-board-focus">
-            {groups.map((group, i) => {
+            {focusSections.map(({ view: group }, i) => {
               const p = pages?.[i];
               if (!p?.rows.length) return null;
               const items = preview[i] ?? [];
-              if (!items.length && !p.next) return null;
+              if (!items.length) return null;
               return (
                 <section className="task-board-lane" key={group} data-section={group}>
                   <header className="task-board-lane-header">
@@ -339,35 +377,32 @@ export default function TaskBoardPage(): React.JSX.Element {
                       {group === "attention" ? <IconAlert size={16} /> : <IconClock size={16} />}
                     </span>
                     <h2>{labels[group]}</h2>
-                    {p.total != null && <span>{p.total} 件</span>}
+                    {p.total != null && <span className="task-board-count">{p.total}</span>}
                     <button className="task-board-drill" onClick={() => go(group)}>
-                      查看全部
+                      {items.length < p.rows.length || p.next ? "查看全部" : "打开列表"}
                     </button>
                   </header>
-                  <div className="task-board-lane-body">{items.map((r, j) => card(r, group, j))}</div>
+                  <div className="task-board-lane-body">{items.map((r) => card(r, group))}</div>
                 </section>
               );
             })}
           </div>
         ) : classic ? (
           <div className="task-board-columns">
-            {[
-              ["attention", "需跟进"],
-              ["pending", "待处理"],
-              ["running", "进行中"],
-              ["finished", "已结束"],
-            ].map(([k, title]) => {
-              const items = rows.filter((r) => lane(r) === k);
+            {boardLanes.map((lane, i) => {
+              const page = pages?.[i];
               return (
-                <section className="task-board-lane" key={k} data-lane={k}>
+                <section className="task-board-lane" key={lane} data-lane={lane}>
                   <header className="task-board-lane-header">
-                    <h2>{title}</h2>
-                    <span className="task-board-count">{items.length}</span>
+                    <h2>{laneTitles[lane]}</h2>
+                    {page?.total != null && <span className="task-board-count">{page.total}</span>}
                   </header>
-                  <div className="task-board-lane-body">
-                    {items.map((r, i) => card(r, actual, i))}
-                    {!items.length && <p className="task-board-empty">本页暂无任务</p>}
+                  <div className="task-board-lane-body" key={cursors[lane]?.length ?? 0}>
+                    {page?.rows.map((r) => card(r, actual))}
+                    {page?.rows.length === 0 && <p className="task-board-empty">{page.total ? "本页暂无任务" : "暂无任务"}</p>}
+                    {!page && !loadError && <p className="task-board-empty" role="status">正在读取任务…</p>}
                   </div>
+                  {pagination(page, lane)}
                 </section>
               );
             })}
@@ -382,31 +417,10 @@ export default function TaskBoardPage(): React.JSX.Element {
                 </button>
               )}
             </header>
-            <div>{rows.map((r, i) => card(r, actual, i))}</div>
+            <div>{rows.map((r) => card(r, actual))}</div>
           </section>
         )}
-        {actual !== "focus" && (cursors.length > 0 || pages?.[0]?.next) && (
-          <footer className="task-board-pagination">
-            <button
-              className="btn"
-              disabled={!cursors.length}
-              onClick={() => setHistory({ key: pageKey, cursors: cursors.slice(0, -1) })}
-            >
-              上一页
-            </button>
-            <span>第 {cursors.length + 1} 页</span>
-            <button
-              className="btn"
-              disabled={!pages?.[0]?.next}
-              onClick={() => {
-                const next = pages?.[0]?.next;
-                if (next) setHistory({ key: pageKey, cursors: [...cursors, next] });
-              }}
-            >
-              下一页
-            </button>
-          </footer>
-        )}
+        {actual !== "focus" && !classic && pagination(pages?.[0], "list")}
         {editing && (
           <TaskBoardDueDate
             card={editing}

@@ -184,6 +184,10 @@ import {
   type RuntimeContextPolicyInput,
 } from "./RuntimeContextResolver";
 import { RuntimeContextSnapshotRepository } from "./RuntimeContextSnapshotRepository";
+import { CodeReviewService } from "./CodeReviewService";
+import { GitCodeReview } from "./GitCodeReview";
+import { withCodeReviewLease } from "./durable/DurableToolCoordination";
+import { CodeReviewIpc, type CodeReviewDecisionRequest, type CodeReviewGitComparison, type CodeReviewGitFile } from "../../shared/code-review";
 import { TaskDiagnosticsRepository } from "./TaskDiagnosticsRepository";
 import { observeCacheRequestTraces } from "./CacheRequestTrace";
 import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
@@ -523,6 +527,7 @@ export class AgentService {
   private readonly projectContextResolver: ProjectContextResolver;
   private readonly projectService: ProjectService;
   private readonly runtimeSnapshots: RuntimeContextSnapshotRepository;
+  private readonly codeReview: CodeReviewService;
   private readonly taskDiagnostics: TaskDiagnosticsRepository;
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
@@ -758,6 +763,7 @@ export class AgentService {
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection);
+    this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event));
     this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
     this.conversationInteractions = new ConversationInteractionService(
@@ -1351,7 +1357,7 @@ export class AgentService {
       readHints: this.nativeImprovement.readHints,
       answerRouting: this.answerRouting,
       expertBindings: this.expertBindings,
-      db: this.db, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
+      db: this.db, codeReview: this.codeReview, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
       validateGatewayWorkspace: (id, cwd, from) => validateGatewayTaskCwd(this.db, this.taskWorkspace, id, cwd, from),
@@ -5055,6 +5061,57 @@ export class AgentService {
   /** 列出文件修改前自动备份（taskId 缺省时返回全部任务） */
   listBackups(taskId?: string): FileBackupInfoDto[] {
     return this.backups.listBackups(taskId);
+  }
+
+  listCodeReview(taskId: string) {
+    if (typeof taskId !== "string" || !this.db.getTask(taskId)) return [];
+    return this.codeReview.list(taskId);
+  }
+
+  codeReviewPendingCount(taskId: string): number {
+    return typeof taskId === "string" ? this.codeReview.pendingCount(taskId) : 0;
+  }
+
+  codeReviewDetail(taskId: string, id: string) {
+    if (typeof taskId !== "string" || typeof id !== "string" || !this.db.getTask(taskId)) return null;
+    return this.codeReview.detail(taskId, id);
+  }
+
+  private async gitCodeReview(taskId: string) {
+    if (typeof taskId !== "string" || !this.db.getTask(taskId)) return null;
+    return GitCodeReview.open(this.resolveTaskExecutionWorkspaceCwd(taskId));
+  }
+
+  async codeReviewGitRefs(taskId: string) {
+    return (await this.gitCodeReview(taskId))?.refs() ?? null;
+  }
+
+  async listCodeReviewGit(taskId: string, comparison?: CodeReviewGitComparison) {
+    return (await this.gitCodeReview(taskId))?.list(comparison) ?? null;
+  }
+
+  async codeReviewGitDetail(taskId: string, file: CodeReviewGitFile) {
+    return (await this.gitCodeReview(taskId))?.detail(file) ?? null;
+  }
+
+  async decideCodeReview(request: CodeReviewDecisionRequest) {
+    if (!request || typeof request.taskId !== "string" || !Array.isArray(request.ids) ||
+      request.ids.some(id => typeof id !== "string") ||
+      (request.action !== "accept" && request.action !== "reject") || !this.db.getTask(request.taskId)) {
+      throw new Error("代码审查操作无效");
+    }
+    const restored = new Map<string, string[]>();
+    const result = await this.codeReview.decide(request, () => this.db.getTask(request.taskId)
+      ? this.resolveTaskExecutionWorkspaceCwd(request.taskId) : undefined, withCodeReviewLease, ({ cwd, path }) => {
+        const paths = restored.get(cwd) ?? [];
+        paths.push(path);
+        restored.set(cwd, paths);
+      });
+    for (const [cwd, changedFiles] of restored) {
+      try { await this.artifactCoordinator?.onWorkspaceChanged({ taskId: request.taskId, cwd, changedFiles }); }
+      catch (error) { console.warn("[CodeReview] Restored file preview refresh failed", error); }
+    }
+    return result;
   }
 
   /** 将备份写回原始路径 */

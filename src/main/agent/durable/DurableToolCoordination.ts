@@ -13,6 +13,7 @@ import { workShellRead } from "../work/WorkShellRead";
 import { durableMcpToolName } from "./DurableMcp";
 import { isDurableContextToolName } from "./context/DurableContextTools";
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
+import { isNativeReviewWrite, nativeReviewPath, withCodeReviewWrite, type DurableCodeReview } from "./DurableCodeReview";
 
 type Access = { kind: "file"; mode: "read" | "write"; path: string; entity: string | null } | { kind: "unknown"; mode: "read" | "write" };
 type Request = { inspect: () => Access[]; accesses: Access[]; grant: (release: () => void) => void;
@@ -75,6 +76,14 @@ function acquire(inspect: () => Access[], signal?: AbortSignal): Promise<() => v
   });
 }
 
+export async function withCodeReviewLease<T>(path: string, operation: () => T): Promise<T> {
+  const release = await acquire(() => {
+    try { return [{ kind: "file", mode: "write", ...fileResourceAddress(path) }]; }
+    catch { return [{ kind: "file", mode: "write", path, entity: null }]; }
+  });
+  try { return operation(); } finally { release(); }
+}
+
 function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
   const args = argsSchema.parse(value);
   if (name === "mcp_call_tool") {
@@ -108,18 +117,21 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
 
 /** Wrap execution, not beforeTool: Pi's safe recovery re-enters execute without running beforeTool. */
 export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd: string,
-  beforeExecute?: (name: string, args: unknown) => void): ToolRegistration {
+  beforeExecute?: (name: string, args: unknown) => void, codeReview?: DurableCodeReview): ToolRegistration {
   if (containers.has(tool.name) || isDurableContextToolName(tool.name)) return tool;
   return { ...tool, execute: async (args, api, context) => {
     let release: (() => void) | undefined;
     let started = false;
     try {
       const cwd = (await api.agent(context)).cwd ?? fallbackCwd;
-      release = await acquire(() => inspectAccess(tool.name, args, cwd), context.abortSignal);
+      const reviewPath = codeReview && isNativeReviewWrite(tool.name) ? await nativeReviewPath(api, context, args) : undefined;
+      release = await acquire(() => inspectAccess(tool.name, reviewPath ? { path: reviewPath } : args, cwd), context.abortSignal);
       context.abortSignal?.throwIfAborted();
       beforeExecute?.(tool.name, args);
       started = true;
-      return await tool.execute(args, api, context);
+      return await (codeReview
+        ? withCodeReviewWrite(codeReview, tool.name, args, api, context, observed => tool.execute(args, observed, context))
+        : tool.execute(args, api, context));
     }
     catch (error) {
       if (!started) {

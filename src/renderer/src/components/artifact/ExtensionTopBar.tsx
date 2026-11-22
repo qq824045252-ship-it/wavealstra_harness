@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { PanelMode } from "@/store/appStore";
 import {
   useActiveTerminalTabs,
   useAppStore,
   useVisibleTaskArtifacts,
-  useActiveTaskArtifacts,
 } from "@/store/appStore";
 import type { Artifact } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
@@ -17,15 +15,14 @@ import {
   IconGlobe,
   IconPanel,
   IconPin,
-  IconPlus,
   IconPuzzle,
   IconTerminal,
   IconX,
   IconZap,
 } from "@/components/common/icons";
 import { hasActiveExecutionMessages } from "@/utils/taskFilters";
-import { isCodeOrTextFile, resolveTaskFileChanges } from "@/lib/taskFileChanges";
 import TerminalTabsBar from "./TerminalTabsBar";
+import { PendingReviewBadge, usePendingReviewCount } from "./code-review/PendingReviewBadge";
 
 interface Props {
   tabs: Artifact[];
@@ -86,29 +83,16 @@ export default function ExtensionTopBar({
   const showTerminal = useAppStore((s) => s.showTerminal);
   const showBrowser = useAppStore((s) => s.showBrowser);
   const showChanges = useAppStore((s) => s.showChanges);
+  const pendingReviewCount = usePendingReviewCount();
 
   const { tabs: terminalTabs } = useActiveTerminalTabs();
 
   const visibleArtifacts = useVisibleTaskArtifacts();
   const artifactsCount = visibleArtifacts.length;
-  const allArtifacts = useActiveTaskArtifacts();
   const workspaceFilesCount = useAppStore((s) => s.workspaceFilesCount);
   const gadgetsCount = useAppStore((s) => s.gadgetsCount);
-  const ensureArtifactRenderPayload = useAppStore((s) => s.ensureArtifactRenderPayload);
-
-  // 预热未加载内容的代码/文本产物，使其行数在未被手动打开前就能自动展示真实修改量
-  useEffect(() => {
-    for (const a of allArtifacts) {
-      if (isCodeOrTextFile(a.name) && !a.content) {
-        void ensureArtifactRenderPayload(a.id);
-      }
-    }
-  }, [allArtifacts, ensureArtifactRenderPayload]);
 
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
-  const fileChangesCount = useMemo(() => {
-    return resolveTaskFileChanges(currentTask?.fileChanges, allArtifacts, currentTask?.messages).length;
-  }, [currentTask?.fileChanges, allArtifacts, currentTask?.messages]);
 
   // 判定当前任务是否在执行（主 agent 或 subagent 运行中）
   const isRunning = useMemo(() => {
@@ -156,19 +140,17 @@ export default function ExtensionTopBar({
             )}
           </button>
 
-          {/* 🔀 代码变更 */}
           <button
             type="button"
             className={`extension-tab-btn ${panelMode === "changes" ? "active" : ""}`}
             onClick={showChanges}
-            title={fileChangesCount > 0 ? `代码变更 (${fileChangesCount})` : "代码变更"}
+            title={pendingReviewCount ? `代码审查（${pendingReviewCount} 个文件待审查）` : "代码审查"}
+            aria-label="代码审查"
+            aria-description={pendingReviewCount ? `${pendingReviewCount} 个文件待审查` : undefined}
+            aria-pressed={panelMode === "changes"}
           >
             <IconGitBranch size={16} />
-            {fileChangesCount > 0 && (
-              <span className="extension-tab-badge changes">
-                {fileChangesCount > 99 ? "99+" : fileChangesCount}
-              </span>
-            )}
+            <PendingReviewBadge count={pendingReviewCount} />
           </button>
 
           {/* 📁 工作空间文件 */}

@@ -589,6 +589,7 @@
     "workspaceFilesCount"
   ],
   "stateAdditions": {
+    "composerInsertionsByTask": "Hold a code review draft for its originating task until that task's composer can consume it.",
     "answerRuleSeed": "Keep the originating answer context while answer-routing settings are open.",
     "answerRuleTurnTarget": "Resolve the requested answer turn when its conversation history becomes available.",
     "notificationMessageTarget": "Carry exact notification message, tool or interaction focus until the selected task renders or navigation replaces it.",

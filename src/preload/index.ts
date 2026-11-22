@@ -1,5 +1,6 @@
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
 import { SpeechIpc, type SpeechAudioEvent, type SpeechCancelRequest } from "../shared/speech-stream";
+import { CodeReviewIpc, type CodeReviewApi, type CodeReviewChangedEvent } from "../shared/code-review";
 import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview } from "../shared/saved-artifact";
 import { CadCraftIpc, type CadCraftSource } from "../shared/cadcraft";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
@@ -321,6 +322,20 @@ export interface LocalFilePayload {
 }
 
 const api = {
+  codeReview: {
+    pendingCount: taskId => ipcRenderer.invoke(CodeReviewIpc.pendingCount, taskId),
+    onChanged: listener => {
+      const handler = (_event: unknown, change: CodeReviewChangedEvent) => listener(change);
+      ipcRenderer.on(CodeReviewIpc.changed, handler);
+      return () => ipcRenderer.removeListener(CodeReviewIpc.changed, handler);
+    },
+    list: taskId => ipcRenderer.invoke(CodeReviewIpc.list, taskId),
+    detail: (taskId, id) => ipcRenderer.invoke(CodeReviewIpc.detail, taskId, id),
+    decide: request => ipcRenderer.invoke(CodeReviewIpc.decide, request),
+    gitRefs: taskId => ipcRenderer.invoke(CodeReviewIpc.gitRefs, taskId),
+    gitList: (taskId, comparison) => ipcRenderer.invoke(CodeReviewIpc.gitList, taskId, comparison),
+    gitDetail: (taskId, file) => ipcRenderer.invoke(CodeReviewIpc.gitDetail, taskId, file),
+  } satisfies CodeReviewApi,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

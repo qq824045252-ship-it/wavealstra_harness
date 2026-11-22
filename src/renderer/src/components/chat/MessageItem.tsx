@@ -418,10 +418,10 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
   const questionText = () => userPromptDisplayText(
     sourceQuestion?.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join("\n") ?? "",
   );
-  /** 任务级变更数：与右侧栏代码变更统一计算，防止 DB 未持久化时归零 */
+  /** 历史工具变更可直接打开审查侧栏。 */
   const taskChangesCount = useMemo(() => {
-    return resolveTaskFileChanges(currentTask?.fileChanges, artifacts, currentTask?.messages).length;
-  }, [currentTask?.fileChanges, artifacts, currentTask?.messages]);
+    return resolveTaskFileChanges(currentTask?.fileChanges, EMPTY_ARTIFACTS, currentTask?.messages).length;
+  }, [currentTask?.fileChanges, currentTask?.messages]);
   const isGeneral = useAppStore((s) => s.tasks.find(t => t.id === taskId)?.welcomeMode === "general");
   const regenerateMessage = useAppStore((s) => s.regenerateMessage);
   const continueExternalAgent = useAppStore((s) => s.continueExternalAgent);
@@ -795,7 +795,7 @@ function MessageItem({ message, taskId, sourceQuestion, artifacts = EMPTY_ARTIFA
               )}
               {taskChangesCount > 0 && (
                 <button type="button" className="msg-link" onClick={showAllChanges}>
-                  查看所有变更 ({taskChangesCount})
+                  打开代码审查
                 </button>
               )}
             </div>

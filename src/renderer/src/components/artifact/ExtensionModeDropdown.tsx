@@ -5,6 +5,7 @@ import type { PanelMode } from "@/store/appStore";
 import { useAppStore } from "@/store/appStore";
 import { IconCheck, IconChevronDown } from "@/components/common/icons";
 import { EXTENSION_MODES, EXTENSION_MODE_LABEL } from "./extensionModes";
+import { PendingReviewBadge, usePendingReviewCount } from "./code-review/PendingReviewBadge";
 
 interface Props {
   /** 固定展示某一模式标签（浏览器侧栏等） */
@@ -31,6 +32,8 @@ export default function ExtensionModeDropdown({ fixedMode, variant = "default" }
 
   const displayMode = fixedMode ?? (panelMode === "file" ? extensionView : panelMode);
   const label = EXTENSION_MODE_LABEL[displayMode];
+  const pendingReviewCount = usePendingReviewCount();
+  const pendingReviewDescription = pendingReviewCount ? `${pendingReviewCount} 个文件待审查` : undefined;
 
   const pickMode = (mode: PanelMode): void => {
     if (mode === "overview") showOverview();
@@ -50,8 +53,10 @@ export default function ExtensionModeDropdown({ fixedMode, variant = "default" }
         type="button"
         className={isPanel ? "extension-panel-header-btn" : "extension-mode-section-btn"}
         onClick={() => setOpen(!open)}
+        aria-description={displayMode === "changes" ? pendingReviewDescription : undefined}
       >
         {label}
+        {displayMode === "changes" && <PendingReviewBadge count={pendingReviewCount} />}
         <IconChevronDown size={13} className={open ? "chevron-up" : ""} />
       </button>
       {open && (
@@ -65,10 +70,12 @@ export default function ExtensionModeDropdown({ fixedMode, variant = "default" }
                 type="button"
                 className={`extension-mode-item ${selected ? "active" : ""}`}
                 onClick={() => pickMode(mode)}
+                aria-description={mode === "changes" ? pendingReviewDescription : undefined}
               >
                 <span className="extension-mode-item-label" data-text={text}>
                   {text}
                 </span>
+                {mode === "changes" && <PendingReviewBadge count={pendingReviewCount} />}
                 <span className={`extension-mode-check ${selected ? "" : "empty"}`} aria-hidden={!selected}>
                   <IconCheck size={14} />
                 </span>
