@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import appIcon from "../../shared/assets/app.png";
 import { applyTheme } from "@/lib/theme";
 import { useAppStore } from "@/store/appStore";
 import Sidebar from "@/components/Sidebar";
@@ -25,15 +24,17 @@ import { canvasPanelWidth, PANEL_CHAT_MIN, PANEL_RAIL_WIDTH } from "@/lib/panelW
 import { selectCanvasPanelOpen } from "@/store/app/selectors";
 import { subscribeGadgetBrowser } from "@/lib/gadgetBrowser";
 import { DesktopSectionProvider, DesktopSectionSidebar, DesktopSectionVisibility, useDesktopNavigate } from "@/components/desktop/DesktopSection";
-import DesktopRail, { isExtensionsPage, isTaskPage } from "@/components/desktop/DesktopRail";
+import { isExtensionsPage, isTaskPage } from "@/components/desktop/DesktopModuleMenu";
+import DesktopTopBar, { type DesktopMenu } from "@/components/desktop/DesktopTopBar";
 import type { Page } from "@/types";
 import "@/components/desktop/desktop.css";
 
 export default function App(): React.JSX.Element {
   const [sectionTarget, setSectionTarget] = useState<HTMLElement | null>(null);
-  const toggleSidebar = useAppStore(s => s.toggleSidebar);
-  return <DesktopSectionProvider target={sectionTarget} collapseList={toggleSidebar}>
-    <DesktopApp setSectionTarget={setSectionTarget} />
+  const [menu, setMenu] = useState<DesktopMenu | null>(null);
+  const closeMenu = (): void => setMenu(null);
+  return <DesktopSectionProvider target={sectionTarget} listOpen={menu === "section"} collapseList={closeMenu}>
+    <DesktopApp menu={menu} setMenu={setMenu} setSectionTarget={setSectionTarget} />
   </DesktopSectionProvider>;
 }
 
@@ -61,19 +62,23 @@ function chatLocation(s: Store) {
   };
 }
 
-function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElement | null) => void }): React.JSX.Element {
+function DesktopApp({ menu, setMenu, setSectionTarget }: {
+  menu: DesktopMenu | null;
+  setMenu: (menu: DesktopMenu | null) => void;
+  setSectionTarget: (element: HTMLElement | null) => void;
+}): React.JSX.Element {
   const page = useAppStore((s) => s.page);
   const settingsOpen = useAppStore((s) => s.settingsOpen);
   const panelOpen = useAppStore((s) => s.panelOpen);
   const panelMode = useAppStore((s) => s.panelMode);
   const panelExpanded = useAppStore((s) => s.panelExpanded);
   const canvasPanelOpen = useAppStore(selectCanvasPanelOpen);
-  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const activeTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const theme = useAppStore((s) => s.theme);
   const navigate = useDesktopNavigate();
   const mainRef = useRef<HTMLDivElement>(null);
   const [compactPreview, setCompactPreview] = useState(false);
+  const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
   const lastChat = useRef<ReturnType<typeof chatLocation> | null>(null);
   const lastWorkspace = useRef<string | null>(null);
   const lastExtension = useRef<"experts" | "skills" | "mcp" | "connectors">("experts");
@@ -85,7 +90,10 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
     if (previous.page === "chat" && current.page !== "chat") lastChat.current = chatLocation(previous);
     if (current.page === "workspace") lastWorkspace.current = current.activeWorkspaceId;
     else if (current.page === "chat") lastWorkspace.current = null;
-  }), []);
+    if (current.page !== previous.page || current.settingsOpen !== previous.settingsOpen
+      || current.activeTaskId !== previous.activeTaskId || current.activeWorkspaceId !== previous.activeWorkspaceId
+      || current.subagentView !== previous.subagentView) setMenu(null);
+  }), [setMenu]);
 
   const selectModule = (destination: Page): void => {
     const state = useAppStore.getState();
@@ -199,15 +207,10 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
 
   return (
     <div className="app desktop-app">
-      <div className="desktop-titlebar-brand" aria-hidden="true">
-        <img src={appIcon} alt="" width={16} height={16} draggable={false} />
-        <span>MyBuddy</span>
-      </div>
-      <DesktopRail onNavigate={selectModule} onSettings={() => {
+      <DesktopTopBar menu={menu} setMenu={setMenu} activeTask={activeTask} setSectionTarget={setSectionTarget}
+        setActionsTarget={setActionsTarget} onNavigate={selectModule} onSettings={() => {
         if (!useAppStore.getState().settingsOpen) void navigate?.(() => useAppStore.getState().setSettingsOpen(true));
       }} />
-      <aside id="desktop-module-list" className="desktop-section" aria-label="当前模块的列表"
-        hidden={sidebarCollapsed || (page === "notifications" && !settingsOpen)} ref={setSectionTarget} />
       <div
         ref={mainRef}
         data-desktop-main
@@ -215,11 +218,11 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
       >
         <DesktopSectionVisibility visible={!settingsOpen}>
         <div className="desktop-page-underlay" hidden={settingsOpen}>
-        {isTaskPage(page) && <Sidebar />}
+        {isTaskPage(page) && <Sidebar onClose={() => setMenu(null)} />}
         {page === "chat" ? (
           <>
             <div className="content-col">
-              <ChatView />
+              <ChatView actionsTarget={actionsTarget} actionsOpen={menu === "actions"} onCloseActions={() => setMenu(null)} />
             </div>
             {showArtifactPanel && (
               <>

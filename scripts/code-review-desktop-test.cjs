@@ -206,7 +206,8 @@ run(async ({ evaluate, rpc, until, report, out, home, restart, requests: modelRe
   assert.equal(fs.existsSync(disk('obsolete.txt')),false);
   expectBytes('created.ts','export const transient = true;\n');
   fs.writeFileSync(disk('conflict.ts'),'export const mine = "user edited";\n');
-  await clickNode(query('.desktop-rail-module[aria-label="任务看板"]'),'任务看板');
+  await clickNode(query('[aria-controls="desktop-module-menu"]'), '主导航');
+  await clickNode(action('任务看板', '#desktop-module-menu button'), '任务看板');
   await clickNode(query('.task-board-review'), '从任务看板审查改动');
   await file('created.ts');
   await button('全部拒绝');

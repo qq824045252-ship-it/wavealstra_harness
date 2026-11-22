@@ -45,7 +45,10 @@ async function click(expression) {
 const button = (selector, text) => `[...document.querySelectorAll(${JSON.stringify(selector)})].find(e=>e.textContent.trim()===${JSON.stringify(text)})`;
 const card = name => `[...document.querySelectorAll('.task-gadgets-view .gadget-card')].find(e=>e.querySelector('.gadget-card-name')?.textContent===${JSON.stringify(name)})`;
 async function showGadgets() {
-  if (!await evaluate('Boolean(document.querySelector(".artifact-panel"))')) await click('document.querySelector(\'button[title="打开概览"]\')');
+  if (!await evaluate('Boolean(document.querySelector(".artifact-panel"))')) {
+    await click('document.querySelector(\'[aria-controls="desktop-task-actions"]\')');
+    await click(button('#desktop-task-actions button', '打开概览'));
+  }
   await click('document.querySelector(\'.extension-tab-btn[title^="工作台"]\')');
   await until(() => evaluate('Boolean(document.querySelector(".task-gadgets-view"))'), 'Gadget panel');
 }
@@ -59,7 +62,8 @@ const list = scope => evaluate(`window.api.gadget.list({scope:${JSON.stringify(s
 const snapshot = id => evaluate(`window.api.gadget.readSource(${JSON.stringify(id)})`);
 async function navigate(where) {
   if (where === 'personal') {
-    await click('document.querySelector(".desktop-rail [aria-label=工作台]")');
+    await click('document.querySelector(\'[aria-controls="desktop-module-menu"]\')');
+    await click(button('#desktop-module-menu button', '工作台'));
     await until(() => evaluate('Boolean(document.querySelector(".gadget-page"))'), 'personal page');
   } else if (where === 'workspace') {
     await evaluate(`window.gadgetSaveStore.setState({page:'workspace',activeWorkspaceId:'bound-space',panelOpen:false})`);

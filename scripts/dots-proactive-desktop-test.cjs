@@ -29,7 +29,7 @@ const requestedModels = {front: new Set(), worker: new Set(), existingWorker: ne
 const history = taskId => "window.api.agent.loadTaskHistory(" + JSON.stringify(taskId) + ").then(h=>h.messages)";
 run(async env => {
   const {evaluate, rpc, until, report, home} = env;
-  const {press,click} = routingControls(env);
+  const {press,click,openTopBarMenu} = routingControls(env);
   const workspace = path.join(home,"交付空间");
   fs.mkdirSync(workspace);
   await evaluate("window.api.agent.updateAppSettings({dotsSettings:{modelId:'fixture/dots-front'}})");
@@ -38,9 +38,12 @@ run(async env => {
   await evaluate("window.api.db.upsertTask(" + JSON.stringify({id:otherId,title:"其他工作台",welcomeMode:"general",updatedAt:Date.now()}) + ")");
   await rpc("Page.reload");
   await until(() => evaluate("[...document.querySelectorAll('.task-item-title')].some(el=>el.textContent==='其他工作台')"), "seeded ordinary workspace visible");
-  const dots = () => click("MyBuddy Dots",".sidebar-scroll");
-  const other = () => press("[...document.querySelectorAll('.task-item-title')].find(el=>el.textContent==='其他工作台')","switch to other task");
-  const active = () => evaluate("document.querySelector('.chat-header-title')?.textContent");
+  const dots = async () => { await openTopBarMenu("desktop-module-list"); await click("MyBuddy Dots",".sidebar-scroll"); };
+  const other = async () => {
+    await openTopBarMenu("desktop-module-list");
+    await press("[...document.querySelectorAll('.task-item-title')].find(el=>el.textContent==='其他工作台')","switch to other task");
+  };
+  const active = () => evaluate("document.querySelector('.desktop-task-title-label')?.textContent");
   const resultIds = [];
   const proof = (event) => fs.appendFileSync(path.join(env.out,"proactive-events.jsonl"), JSON.stringify({at:new Date().toISOString(),...event})+"\n");
   for (const item of cases) {

@@ -19,12 +19,13 @@ function workbook(text) {
 
 run(async env => {
   const {evaluate, rpc, until, report, out} = env;
-  const {click, press} = routingControls(env);
+  const {click, press, openTopBarMenu} = routingControls(env);
   const workspace = path.join(env.home, "报价空间");
   fs.mkdirSync(workspace);
   const bytes = workbook(original);
   fs.writeFileSync(path.join(workspace, "template.xlsx"), bytes);
   await evaluate("window.api.db.upsertSpace(" + JSON.stringify({id:space, name:"报价空间", path:workspace}) + ")");
+  await openTopBarMenu("desktop-module-list");
   await click("MyBuddy Dots", ".sidebar-scroll");
   await press("document.querySelector('textarea.input-textarea')", "Dots input");
   await rpc("Input.insertText", {text:"在报价空间复制 Excel 模板并交付报价.xlsx"});
@@ -59,7 +60,7 @@ run(async env => {
   assert.deepEqual(glyphs, {text:original, missing:""});
   const shot = await rpc("Page.captureScreenshot", {format:"png"}, sessionId);
   fs.writeFileSync(path.join(out, "dots-excel-grid.png"), Buffer.from(shot.data, "base64"));
-  assert.equal(await evaluate("document.querySelector('.chat-header-title').textContent"), "MyBuddy Dots");
+  assert.equal(await evaluate("document.querySelector('.desktop-task-title-label').textContent"), "MyBuddy Dots");
   report.excel = {file:filename, liveA1:readA1(source), savedA1:readA1(file.saved.snapshotPath), gridcraftA1:glyphs.text, missingGlyphs:glyphs.missing};
   report.actualControlChecks.push("The ordinary task copied and registered a valid XLSX. After overwriting its workspace file, a click inside Dots opened GridCraft and rendered the original A1 glyphs.");
 }, {

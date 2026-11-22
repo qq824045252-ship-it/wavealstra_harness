@@ -76,7 +76,8 @@ const rate=n=>n===null?'未知':n>0&&n<.01?(n*100).toFixed(1)+'%':Math.round(n*1
 const duration=ms=>{if(ms<=0)return '—';if(ms<60000)return Math.max(1,Math.round(ms/1000))+'秒';const m=Math.round(ms/60000);if(m<60)return m+'分钟';const h=Math.floor(m/60),r=m%60;if(h<24)return r?h+'小时 '+r+'分钟':h+'小时';const d=Math.floor(h/24),rh=h%24;return rh?d+'天 '+rh+'小时':d+'天';};
 async function click(selector,label){await evaluate('(()=>{const b=[...document.querySelectorAll('+JSON.stringify(selector)+')].find(b=>(b.getAttribute("aria-label")||b.textContent.trim())==='+JSON.stringify(label)+');if(!b)throw Error("Missing button");b.click()})()');}
 async function ready(){await until(()=>evaluate('Boolean(document.querySelector(".us-kpis")&&!document.querySelector(".us-empty--error")&&!document.querySelector(".us-text-btn[disabled]"))'),'usage data');}
-async function open(){await click('.desktop-rail-footer button','用量统计');await ready();}
+async function openModule(label){await click('.desktop-brand','MyBuddy 主导航');await click('#desktop-module-menu button',label);}
+async function open(){await openModule('用量统计');await ready();}
 async function shot(name){const s=await rpc('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});fs.writeFileSync(path.join(out,name+'.png'),Buffer.from(s.data,'base64'));}
 async function inspect(range){
  await ready();const dto=await evaluate('window.api.usage.dashboard('+range+')');
@@ -111,7 +112,7 @@ async function inspect(range){
  socket=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
  socket.addEventListener('message',event=>{const v=JSON.parse(event.data);if(v.method==='Runtime.exceptionThrown')report.rendererErrors.push(v.params);if(v.method==='Log.entryAdded'&&v.params.entry.level==='error')report.rendererErrors.push(v.params);const call=pending.get(v.id);if(!call)return;pending.delete(v.id);clearTimeout(call.timer);v.error?call.reject(Error(JSON.stringify(v.error))):call.resolve(v.result);});
  await rpc('Runtime.enable');await rpc('Log.enable');await rpc('Page.enable');await rpc('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
- await until(()=>evaluate('Boolean(window.api?.usage?.dashboard&&document.querySelector(".desktop-rail"))'),'App and preload');
+ await until(()=>evaluate('Boolean(window.api?.usage?.dashboard&&document.querySelector(".desktop-topbar"))'),'App and preload');
  const browserInfo=await fetch('http://127.0.0.1:'+port+'/json/version').then(r=>r.json());
  const browserSocket=new WebSocket(browserInfo.webSocketDebuggerUrl);
  const processInfo=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Browser process identity timeout')),10000);browserSocket.addEventListener('open',()=>browserSocket.send(JSON.stringify({id:1,method:'SystemInfo.getProcessInfo'})),{once:true});browserSocket.addEventListener('message',event=>{const response=JSON.parse(event.data);if(response.id!==1)return;clearTimeout(timer);response.error?reject(Error(JSON.stringify(response.error))):resolve(response.result.processInfo);},{once:true});browserSocket.addEventListener('error',reject,{once:true});});browserSocket.close();
@@ -125,7 +126,7 @@ async function inspect(range){
  await click('#desktop-module-list .desktop-section-row','30 天');await inspect(30);await shot('30-days');
  for(const mode of ['每周','累计','每日']){await click('.us-heat-mode',mode);await wait(100);assert.equal(await evaluate('document.querySelector(".us-heat-mode[aria-selected=true]").textContent'),mode);assert(await evaluate('document.querySelectorAll(".us-heat-cell").length>=371'));}report.checks.push('Weekly/cumulative/daily modes render and switch');
  await click('#desktop-module-list .desktop-section-row','全部');await inspect(3650);await shot('all-days');
- await click('.desktop-rail-modules button','任务');await until(()=>evaluate('!document.querySelector(".desktop-usage")'),'usage inactive');
+ await openModule('对话');await until(()=>evaluate('!document.querySelector(".desktop-usage")'),'usage inactive');
  await open();assert.equal(await evaluate('document.querySelector("#desktop-module-list .desktop-section-row[aria-current=true]").textContent'),'全部');assert.equal(await evaluate('document.querySelector(".us-heat-mode[aria-selected=true]").textContent'),'每日');await inspect(3650);report.checks.push('Switching away and back restores the range and heat map mode');
  assert(report.ranges.some(r=>r.models.some(m=>m.metrics.some(t=>t.includes('未知')))),'Unknown fields rendered');assert(report.ranges.some(r=>r.models.some(m=>m.total.startsWith('已知 '))),'Partially known totals rendered');assert(report.ranges.some(r=>r.models.some(m=>m.total==='0.000M')),'Known zero rendered');report.checks.push('Unknown fields, partially known totals and known zero render distinctly');assert.deepEqual(report.rendererErrors,[],'no renderer errors');report.status='passed';
 }catch(error){report.status='failed';report.error=String(error.stack||error);console.error(error);process.exitCode=1;if(socket)try{report.visibleText=await evaluate('document.body.innerText');await shot('failed-page');}catch{}}

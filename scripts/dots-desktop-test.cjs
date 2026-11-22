@@ -30,9 +30,9 @@ const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
 run(async env => {
   const { evaluate, until, rpc, report } = env;
-  const { click, press, fill, screenshot } = routingControls(env);
-  const dots = () => click("MyBuddy Dots", ".sidebar-scroll");
-  const active = () => evaluate("document.querySelector('.chat-header-title')?.textContent");
+  const { click, press, fill, screenshot, openTopBarMenu } = routingControls(env);
+  const dots = async () => { await openTopBarMenu("desktop-module-list"); await click("MyBuddy Dots", ".sidebar-scroll"); };
+  const active = () => evaluate("document.querySelector('.desktop-task-title-label')?.textContent");
   const body = () => evaluate("document.querySelector('.message-list')?.textContent");
   await dots();
   await until(async () => await active() === "MyBuddy Dots", "empty Dots chat");
@@ -40,7 +40,9 @@ run(async env => {
   assert.equal(await evaluate("window.api.db.listTasks().then(rows => rows.length)"), 0);
   const openDotsSettings = async () => {
     assert.equal(await evaluate("!!document.querySelector('.chat-header button[aria-label=\"Dots 设置\"]')"), false);
-    await click("设置", ".desktop-rail");
+    await openTopBarMenu("desktop-module-menu");
+    await click("设置", "#desktop-module-menu");
+    await openTopBarMenu("desktop-module-list");
     await press("[...document.querySelectorAll('button.settings-nav-btn')].find(b=>b.textContent.trim()==='Dots 设置')", "Dots settings in app settings");
     await until(() => evaluate("!!document.querySelector('.dots-config nav')"), "Dots settings loaded");
   };

@@ -49,6 +49,11 @@ const card = `[...document.querySelectorAll('.task-gadgets-view .gadget-card')].
 const cardButton = name => `${card}?.querySelector(${JSON.stringify(name)})`;
 const sourceEditor = `document.querySelector(${JSON.stringify('textarea[aria-label="Gadget 源码"]')})`;
 const button = (selector, text) => `[...document.querySelectorAll(${JSON.stringify(selector)})].find(el=>el.textContent.trim()===${JSON.stringify(text)})`;
+const menuTrigger = id => `document.querySelector('[aria-controls="${id}"][aria-expanded="false"]')`;
+async function openList() {
+  const trigger = menuTrigger('desktop-module-list');
+  if (await ui(`Boolean(${trigger})`)) await click(trigger);
+}
 async function screenshot(name) {
   await main(`(async()=>{const win=globalThis.__gadgetWindow;const {desktopCapturer}=process.mainModule.require('electron');const [width,height]=win.getSize();const sources=await desktopCapturer.getSources({types:['window'],thumbnailSize:{width,height}});const source=sources.find(s=>s.id===win.getMediaSourceId());if(!source||source.thumbnail.isEmpty())throw Error('No native window screenshot');process.mainModule.require('node:fs').writeFileSync(${JSON.stringify(path.join(output, name + '.png'))}, source.thumbnail.toPNG());return source.thumbnail.getSize()})()`);
 }
@@ -56,7 +61,10 @@ async function frameText() {
   return main(`(async()=>{const wc=process.mainModule.require('electron').webContents.getAllWebContents().find(w=>w.getURL().startsWith('http://127.0.0.1:'));return wc?wc.executeJavaScript('document.body.innerText'):''})()`);
 }
 async function showGadgets() {
-  if (!await ui('Boolean(document.querySelector(".artifact-panel"))')) await click('document.querySelector(\'button[title="打开概览"]\')');
+  if (!await ui('Boolean(document.querySelector(".artifact-panel"))')) {
+    await click(menuTrigger('desktop-task-actions'));
+    await click(button('#desktop-task-actions button', '打开概览'));
+  }
   await click('document.querySelector(".extension-menu-btn")');
   await click(button('.extension-mode-item', 'Gadgets'));
   await until(() => ui(`Boolean(${card})`), 'side Gadgets list');
@@ -155,9 +163,10 @@ async function closeBrowser() { await click('document.querySelector(\'button[tit
     gadgetId = seed.gadgetId;
     await main('globalThis.__gadgetWindow.webContents.reload();true');
     await until(() => ui(`Boolean(${button('.space-name', 'Gadget UI Space')})`).catch(() => false), 'seed reload');
+    await openList();
     await click(`${button('.space-name', 'Gadget UI Space')}?.closest('.space-header')?.querySelector('.space-chevron')`);
     await click(button('.task-item-title', 'Gadget UI Task'));
-    await until(() => ui('Boolean(document.querySelector(\'button[title="打开概览"]\'))'), 'task loaded');
+    await until(() => ui('Boolean(document.querySelector(\'[aria-controls="desktop-task-actions"]\'))'), 'task loaded');
     assert.equal(await ui('document.querySelectorAll(".chat-column .gadget-section,.task-gadget-strip").length'), 0, 'Gadgets never occupy the chat column');
     await showGadgets();
     const titles = await ui(`[...document.querySelectorAll('.task-gadgets-view .gadget-card-name')].map(el=>el.textContent)`);
@@ -200,9 +209,11 @@ async function closeBrowser() { await click('document.querySelector(\'button[tit
     assert(await main(`(async()=>await process.mainModule.require('electron').clipboard.readText()==='ssh fixture@example.invalid')()`));
     await main(`(async()=>{await process.mainModule.require('electron').clipboard.write(globalThis.__gadgetClipboard);delete globalThis.__gadgetClipboard;return true})()`);
     await screenshot('opened');
+    await openList();
     await click(button('.task-item-title', 'Other Task'));
     await until(() => ui('Boolean(document.querySelector(".home-hero,.hero-input"))'), 'empty task remains accessible');
     assert.equal(await ui('document.querySelectorAll(".task-gadget-strip").length'), 0);
+    await openList();
     await click(button('.task-item-title', 'Gadget UI Task'));
     await until(async () => (await frameText()).includes('VPS original'), 'task browser restored');
     report.tests.push('Side browser preserves normal clipboard/storage; chat accepts input and tasks switch while the Gadget is open');

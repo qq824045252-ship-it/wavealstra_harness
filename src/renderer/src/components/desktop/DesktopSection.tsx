@@ -10,6 +10,7 @@ type NavigationAction = () => void | Promise<void>;
 
 interface DesktopSectionContext {
   target: HTMLElement | null;
+  listOpen: boolean;
   collapseList?: () => void;
   session: Map<string, unknown>;
   registerGuard: (guard: LeaveGuard) => () => void;
@@ -18,13 +19,15 @@ interface DesktopSectionContext {
 
 const DesktopContext = createContext<DesktopSectionContext | null>(null);
 const DesktopSectionVisible = createContext(true);
+const DesktopListSelection = createContext<(() => void) | undefined>(undefined);
 
 export function DesktopSectionVisibility({ visible, children }: { visible: boolean; children: ReactNode }): React.JSX.Element {
   return <DesktopSectionVisible.Provider value={visible}>{children}</DesktopSectionVisible.Provider>;
 }
 
-export function DesktopSectionProvider({ target, collapseList, children }: {
+export function DesktopSectionProvider({ target, listOpen = true, collapseList, children }: {
   target: HTMLElement | null;
+  listOpen?: boolean;
   collapseList?: () => void;
   children: ReactNode;
 }): React.JSX.Element {
@@ -52,11 +55,15 @@ export function DesktopSectionProvider({ target, collapseList, children }: {
     }
   }, []);
 
-  return <DesktopContext.Provider value={{ target, collapseList, session: session.current, registerGuard, navigate }}>{children}</DesktopContext.Provider>;
+  return <DesktopContext.Provider value={{ target, listOpen, collapseList, session: session.current, registerGuard, navigate }}>{children}</DesktopContext.Provider>;
 }
 
 export function useDesktopShell(): boolean {
   return useContext(DesktopContext) !== null;
+}
+
+export function useDesktopListOpen(): boolean | undefined {
+  return useContext(DesktopContext)?.listOpen;
 }
 
 export function useDesktopNavigate(): ((action: NavigationAction) => Promise<boolean>) | undefined {
@@ -64,14 +71,14 @@ export function useDesktopNavigate(): ((action: NavigationAction) => Promise<boo
 }
 
 export function useDesktopSectionScroll(ref: RefObject<HTMLDivElement | null>, scrollKey?: string): UIEventHandler<HTMLDivElement> {
-  const { target, session } = useContext(DesktopContext) ?? {};
+  const { target, session, listOpen } = useContext(DesktopContext) ?? {};
   const visible = useContext(DesktopSectionVisible);
   const key = scrollKey ? `scroll:${scrollKey}` : undefined;
   const restoring = useRef(false);
   useLayoutEffect(() => {
     const element = ref.current;
     const saved = key ? Number(session?.get(key) ?? 0) : 0;
-    if (!visible || !element || !saved) return;
+    if (!visible || listOpen === false || !element || !saved) return;
     const observer = new MutationObserver(restore);
     const resize = typeof ResizeObserver !== "undefined" ? new ResizeObserver(restore) : undefined;
     function stop(): void {
@@ -95,7 +102,7 @@ export function useDesktopSectionScroll(ref: RefObject<HTMLDivElement | null>, s
       element.removeEventListener("wheel", stop);
       element.removeEventListener("pointerdown", stop);
     };
-  }, [ref, key, target, session, visible]);
+  }, [ref, key, target, session, visible, listOpen]);
   return event => {
     if (key && !restoring.current && event.currentTarget.clientHeight > 0) session?.set(key, event.currentTarget.scrollTop);
   };
@@ -124,12 +131,13 @@ export function useDesktopSectionState<T>(key: string | null, initial: T): [T, D
   return [value, setValue];
 }
 
-export function DesktopSectionSidebar({ title, actions, children, scrollKey, ownScroll = false }: {
+export function DesktopSectionSidebar({ title, actions, children, scrollKey, ownScroll = false, keepOpenOnSelect = false }: {
   title: string;
   actions?: ReactNode;
   children?: ReactNode;
   scrollKey?: string;
   ownScroll?: boolean;
+  keepOpenOnSelect?: boolean;
 }): React.ReactPortal | null {
   const desktop = useContext(DesktopContext);
   const scroller = useRef<HTMLDivElement>(null);
@@ -146,7 +154,7 @@ export function DesktopSectionSidebar({ title, actions, children, scrollKey, own
           <div className="desktop-section-actions">
             {actions}
             {desktop.collapseList && (
-              <button type="button" className="icon-btn" title="收起模块列表" aria-label="收起模块列表"
+              <button type="button" className="icon-btn" title="关闭列表" aria-label="关闭列表"
                 aria-controls="desktop-module-list" aria-expanded={true} onClick={desktop.collapseList}>
                 <IconPanel size={15} />
               </button>
@@ -156,19 +164,26 @@ export function DesktopSectionSidebar({ title, actions, children, scrollKey, own
       </div>
       <div className={ownScroll ? "desktop-section-content desktop-section-content--own" : "desktop-section-content"}
         ref={scroller} onScroll={rememberScroll}>
-        {children}
+        <DesktopListSelection.Provider value={keepOpenOnSelect ? undefined : desktop.collapseList}>
+          {children}
+        </DesktopListSelection.Provider>
       </div>
     </>,
     target,
   );
 }
 
-export function DesktopSectionRow({ active, icon, meta, className = "", children, ...button }: ButtonHTMLAttributes<HTMLButtonElement> & {
+export function DesktopSectionRow({ active, icon, meta, className = "", children, onClick, ...button }: ButtonHTMLAttributes<HTMLButtonElement> & {
   active?: boolean;
   icon?: ReactNode;
   meta?: ReactNode;
 }): React.JSX.Element {
-  return <button type="button" aria-current={active ? "true" : undefined} {...button} className={`desktop-section-row ${className}`}>
+  const closeList = useContext(DesktopListSelection);
+  return <button type="button" aria-current={active ? "true" : undefined} {...button} className={`desktop-section-row ${className}`}
+    onClick={event => {
+      onClick?.(event);
+      if (!event.defaultPrevented) closeList?.();
+    }}>
     {icon}
     <span className="desktop-section-label">{children}</span>
     {meta != null && <span className="desktop-section-meta">{meta}</span>}

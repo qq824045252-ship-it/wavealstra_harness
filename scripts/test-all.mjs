@@ -148,6 +148,7 @@ const GUI_TESTS = new Set([
   "test:consult-selection",
   "test:consult-entry:desktop",
   "test:mode-navigation:desktop",
+  "test:task-header-layout",
   "test:task-board:desktop",
   "test:code-review:desktop",
   // Electron 运行时 / e2e

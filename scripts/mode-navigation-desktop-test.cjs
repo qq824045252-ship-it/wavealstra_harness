@@ -6,13 +6,14 @@ const path = require('node:path');
 const { run } = require('./desktop-dev-harness.cjs');
 
 const routes = [
-  ['MyBuddy', 'chat'], ['任务看板', 'task-board'], ['笔记', 'library'], ['项目', 'projects'],
+  ['对话', 'chat'], ['任务看板', 'task-board'], ['笔记', 'library'], ['项目', 'projects'],
   ['自动化', 'automation'], ['扩展', 'experts'], ['工作台', 'gadgets'],
   ['任务成果', 'files'], ['用量统计', 'usage'],
 ];
 
 run(async ({ evaluate, rpc, until, report, out, home }) => {
   async function click(selector, label) {
+    if (selector.startsWith('#desktop-module-list ') || selector === '.settings-nav-btn') await openList();
     const expression = '(() => {const matches = [...document.querySelectorAll(' + JSON.stringify(selector) + ')]; return matches.find(node=>node.getClientRects().length' +
       (label == null ? '' : ' && (node.getAttribute("aria-label") || node.textContent.trim()) === ' + JSON.stringify(label)) + ');})()';
     await until(() => evaluate('Boolean(' + expression + ')'), label ?? selector);
@@ -26,6 +27,15 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     for (const type of ['mousePressed', 'mouseReleased']) {
       await rpc('Input.dispatchMouseEvent', { type, button: 'left', clickCount: 1, ...point });
     }
+  }
+  const moduleTrigger = '[aria-controls="desktop-module-menu"]';
+  const listTrigger = '[aria-controls="desktop-module-list"]';
+  async function openList() {
+    if (await evaluate('document.querySelector("#desktop-module-list").hidden')) await click(listTrigger);
+  }
+  async function clickModule(label) {
+    await click(moduleTrigger);
+    await click('#desktop-module-menu button', label);
   }
   async function visible(selector) {
     await until(() => evaluate('Boolean(document.querySelector(' + JSON.stringify(selector) + ')?.getClientRects().length)'), selector);
@@ -41,7 +51,7 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   async function reloadDesktop() {
     const oldOrigin = await evaluate('performance.timeOrigin');
     await rpc('Page.reload');
-    await until(() => evaluate('performance.timeOrigin !== ' + oldOrigin + ' && document.readyState === "complete" && !!document.querySelector(".desktop-rail")'), 'new desktop document mounted');
+    await until(() => evaluate('performance.timeOrigin !== ' + oldOrigin + ' && document.readyState === "complete" && !!document.querySelector(".desktop-topbar")'), 'new desktop document mounted');
   }
 
   if (process.argv.includes('--task-board')) {
@@ -56,7 +66,7 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     const attentionRow = `window.api.db.taskBoardPage({view:'attention'}).then(page=>page.rows.find(r=>r.id===${JSON.stringify(taskId)} && r.interactionId))`;
     await until(()=>evaluate(attentionRow),'Pi is waiting for a real conversation interaction');
     const interactionId = (await evaluate(attentionRow)).interactionId;
-    await click('.desktop-rail-module', '任务看板');
+    await clickModule('任务看板');
     await click('#desktop-module-list button','全部任务');
     await click('.task-board-views button','我的焦点');
     const questionCard = '.task-board-card[aria-label^="去回答："][title*="运输费用"]';
@@ -87,15 +97,20 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   assert.equal(await evaluate('document.querySelector(".hero")?.dataset.mode'), 'general');
   await metrics(1280, 800);
 
-  assert.deepEqual(await evaluate('[...document.querySelectorAll(".desktop-rail-module, .desktop-rail-footer [aria-label=用量统计]")].map(button=>button.getAttribute("aria-label"))'), routes.map(([label]) => label));
-  assert(await evaluate('[...document.querySelectorAll(".desktop-rail-module")].every(button => !button.textContent.trim() && button.title)'));
-  assert(await evaluate('!document.querySelector(".desktop-rail [aria-label=全局搜索]") && !!document.querySelector(".desktop-section-heading [title=筛选]")'));
-  assert(await evaluate('(() => {const overlay=navigator.windowControlsOverlay;const height=overlay?.visible ? overlay.getTitlebarAreaRect().height : 0;return Math.abs(document.querySelector(".desktop-rail").getBoundingClientRect().top-height)<1;})()'), 'only the system window controls occupy the top inset');
-  await until(() => evaluate('(() => {const overlay=navigator.windowControlsOverlay;const brand=document.querySelector(".desktop-titlebar-brand");return overlay?.visible ? brand.getBoundingClientRect().height>0 && brand.textContent.trim()==="MyBuddy" && brand.querySelector("img").naturalWidth>0 : brand.offsetHeight===0;})()'), 'title and icon occupy the system controls row only');
-  assert(await evaluate('(() => {const active=document.querySelector(".desktop-rail-module[aria-current=page]");const style=getComputedStyle(active);return style.boxShadow==="none" && style.backgroundColor!=="rgba(0, 0, 0, 0)" && style.color===getComputedStyle(document.querySelector(".desktop-section-heading h2")).color;})()'), 'selected icon uses a neutral tile without an accent bar');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("#desktop-module-menu button")].map(button=>button.textContent.trim())'), [...routes.map(([label]) => label), '设置']);
+  assert(await evaluate('document.querySelector("#desktop-module-list").hidden'), 'task list is closed by default');
+  assert(await evaluate(`(() => {
+    const bar = document.querySelector('.desktop-topbar').getBoundingClientRect();
+    const body = document.querySelector('[data-desktop-main]').getBoundingClientRect();
+    const controls = document.querySelector('.desktop-topbar-content').getBoundingClientRect();
+    const overlay = navigator.windowControlsOverlay;
+    return bar.top === 0 && Math.abs(body.top - bar.bottom) < 1 && body.left === bar.left &&
+      Math.abs(body.width - bar.width) < 1 && (!overlay?.visible || controls.right <= overlay.getTitlebarAreaRect().right + 1);
+  })()`), 'the top bar shares the native controls row, with full-width content immediately below');
   await evaluate('window.dispatchEvent(new KeyboardEvent("keydown",{key:"k",ctrlKey:true,cancelable:true}))');
   assert(await evaluate('!document.querySelector(".search-modal")'), 'Ctrl+K does not reopen task search');
-  assert(await evaluate('(() => {const side=document.querySelector(".desktop-task-tree");return !side.querySelector(".sidebar-section-count") && !side.innerText.includes("暂无独立任务") && side.innerText.includes("绑定本地文件夹") && getComputedStyle(side.querySelector(".sidebar-cta-btn")).borderTopWidth==="0px";})()'), 'empty task list puts actions in compact rows');
+  await openList();
+  assert(await evaluate('(() => {const side=document.querySelector(".desktop-task-tree");return !side.querySelector(".sidebar-section-count") && !side.innerText.includes("暂无独立任务") && side.innerText.includes("绑定本地文件夹");})()'), 'empty task list puts actions in compact rows');
   await click('.sidebar-workspace-actions button', '新建工作空间');
   await visible('.workspace-create-dialog');
   await click('.workspace-create-dialog button', '取消');
@@ -110,9 +125,9 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await click('.notification-bell');
   await visible('.notifications-page');
   await visible('.notifications-open');
-  const geometry = await evaluate('(() => {const box=document.querySelector(".notifications-page").getBoundingClientRect();const rail=document.querySelector(".desktop-rail").getBoundingClientRect();const main=document.querySelector("[data-desktop-main]").getBoundingClientRect();return {left:box.left-rail.right,top:box.top-rail.top,right:box.right-main.right,bottom:box.bottom-rail.bottom,moduleHidden:document.getElementById("desktop-module-list").hidden};})()');
+  const geometry = await evaluate('(() => {const box=document.querySelector(".notifications-page").getBoundingClientRect();const bar=document.querySelector(".desktop-topbar").getBoundingClientRect();const main=document.querySelector("[data-desktop-main]").getBoundingClientRect();return {left:box.left-main.left,top:box.top-bar.bottom,right:box.right-main.right,bottom:box.bottom-main.bottom,moduleHidden:document.getElementById("desktop-module-list").hidden};})()');
   assert(geometry.moduleHidden && ['left', 'top', 'right', 'bottom'].every(edge => Math.abs(geometry[edge]) <= 1),
-    'notification page fills main area beside the module rail: ' + JSON.stringify(geometry));
+    'notification page fills the main area under the top bar: ' + JSON.stringify(geometry));
   await screenshot('notification-center');
   await click('.notifications-categories button', '系统');
   await until(() => evaluate('document.querySelector(".notifications-copy strong")?.textContent==="连接故障"'), 'system category shows only system notices');
@@ -141,18 +156,20 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await until(() => evaluate("import('/src/store/appStore.ts').then(m=>m.useAppStore.getState().page==='automation')"), 'notification opens source');
   await evaluate('void (window.testModuleColumn = document.getElementById("desktop-module-list"))');
   for (const [label, page] of routes) {
-    await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', label);
-    await until(() => evaluate('document.querySelector(".desktop-rail [aria-current=page]")?.getAttribute("aria-label") === ' + JSON.stringify(label)), label + ' selected');
+    await clickModule(label);
+    await until(() => evaluate('document.querySelector("#desktop-module-menu [aria-current=page]")?.textContent.trim() === ' + JSON.stringify(label)), label + ' selected');
+    assert(await evaluate('document.querySelector("#desktop-module-list").hidden'));
+    await openList();
     await visible('#desktop-module-list h2');
     const actualPage = await evaluate("import('/src/store/appStore.ts').then(module=>module.useAppStore.getState().page)");
     assert.equal(actualPage, page);
-    const layout = await evaluate('(() => {const column=document.getElementById("desktop-module-list");return {same:column===window.testModuleColumn,x:column.offsetLeft,width:column.offsetWidth,taskTree:!!column.querySelector(".desktop-task-tree")};})()');
-    assert.deepEqual(layout, { same: true, x: 48, width: 200, taskTree: page === 'chat' }, label);
+    const layout = await evaluate('(() => {const column=document.getElementById("desktop-module-list");return {same:column===window.testModuleColumn,overlay:getComputedStyle(column).position==="absolute",taskTree:!!column.querySelector(".desktop-task-tree")};})()');
+    assert.deepEqual(layout, { same: true, overlay: true, taskTree: page === 'chat' }, label);
   }
 
   await click('#desktop-module-list .desktop-section-row', '30 天');
-  await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', 'MyBuddy');
-  await click('.desktop-task-tree .sidebar-cta-btn', '新建任务');
+  await clickModule('对话');
+  await click('.desktop-topbar [aria-label="新建任务"]');
   await visible('.input-textarea');
   await evaluate('document.querySelector(".input-textarea").focus()');
   await rpc('Input.insertText', { text: '这段草稿要跨模块保留' });
@@ -160,19 +177,19 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   const attached = 'Array.from(document.querySelectorAll(".attach-chip-name")).some(chip=>chip.textContent===' + JSON.stringify(draftAttachment) + ')';
   await evaluate('(() => {const data=new DataTransfer();data.items.add(new File(["local fixture"],' + JSON.stringify(draftAttachment) + ',{type:"text/plain"}));document.querySelector(".input-textarea").dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}));})()');
   await until(() => evaluate(attached), 'draft attachment added through the composer');
-  await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', '用量统计');
+  await clickModule('用量统计');
   assert.equal(await evaluate('document.querySelector("#desktop-module-list [aria-current=true]").textContent.trim()'), '30 天');
   await screenshot('usage');
-  await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', 'MyBuddy');
+  await clickModule('对话');
   await until(() => evaluate('document.querySelector(".input-textarea")?.value === "这段草稿要跨模块保留"'), 'chat draft restored');
   assert(await evaluate(attached), 'the draft attachment survives navigation');
-  await click('.desktop-task-tree .sidebar-cta-btn', '新建任务');
+  await click('.desktop-topbar [aria-label="新建任务"]');
   await until(() => evaluate('document.querySelector(".input-textarea")?.value === ""'), 'new task has its own draft');
   assert.equal(await evaluate(attached), false);
   assert(await evaluate('document.querySelector(".input-textarea").offsetHeight <= 62'), 'empty composer fits two lines');
   await screenshot('chat');
 
-  await click('.desktop-rail [aria-label="设置"]');
+  await clickModule('设置');
   await visible('.desktop-settings');
   await click('.settings-nav-btn', '工具能力');
   await click('[data-capability-id="web"] .capability-config-summary');
@@ -192,12 +209,13 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await visible('[aria-label="应用外观"]');
   await evaluate('(() => {const select=document.querySelector("[aria-label=应用外观]");select.value="light";select.dispatchEvent(new Event("change",{bubbles:true}));})()');
   await until(() => evaluate('document.documentElement.dataset.theme === "light"'), 'theme switch remains available');
-  await click('.desktop-rail-module', 'MyBuddy');
-  await click('.desktop-section-heading [aria-label="收起模块列表"]');
+  await clickModule('对话');
+  await openList();
+  await click('.desktop-section-heading [aria-label="关闭列表"]');
   assert.equal(await evaluate('document.getElementById("desktop-module-list").offsetWidth'), 0);
-  await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', 'MyBuddy');
-  await click('.desktop-rail [aria-label="展开模块列表"]');
-  assert.equal(await evaluate('document.getElementById("desktop-module-list").offsetWidth'), 200);
+  await clickModule('对话');
+  await openList();
+  assert(await evaluate('document.getElementById("desktop-module-list").offsetWidth > 0'));
 
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'text/html' });
@@ -211,10 +229,10 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     const tabExpression = 'window.api.browser.getTabs().then(({tabs})=>tabs.find(tab=>tab.url===' + JSON.stringify(url) + ' && tab.title==="MyBuddy desktop local preview")?.id)';
     await until(() => evaluate(tabExpression), 'native browser loaded the local fixture');
     const browserTabId = await evaluate(tabExpression);
-    await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', '工作台');
+    await clickModule('工作台');
     await visible('.gadget-page');
     assert.equal(await evaluate('Boolean(document.querySelector(".browser-wcv-host"))'), false);
-    await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', 'MyBuddy');
+    await clickModule('对话');
     await visible('.browser-wcv-host');
     assert.equal(await evaluate(tabExpression), browserTabId, 'the same native tab is reused');
     await click('.notification-bell');
@@ -229,7 +247,8 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   }
 
   await metrics(960, 640, 1.25);
-  await click('.desktop-rail-module, .desktop-rail-footer [aria-label="用量统计"]', '笔记');
+  await clickModule('笔记');
+  await openList();
   await visible('#desktop-module-list h2');
   assert.equal(await evaluate('document.documentElement.scrollWidth'), 960);
   await screenshot('notes-compact');
@@ -271,9 +290,10 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     });
     return { summaryId: summary.id, names: [summary.title, ...files.map(file => file[1])] };
   })()`);
-  await click('.desktop-rail-module', 'MyBuddy');
-  assert.equal(await evaluate('document.querySelector(".desktop-section-heading h2").textContent'), 'MyBuddy');
-  assert.equal(await evaluate('document.querySelector(".desktop-rail-module[aria-label=MyBuddy] svg")?.getAttribute("fill")'), 'currentColor');
+  await clickModule('对话');
+  await openList();
+  assert.equal(await evaluate('document.querySelector(".desktop-section-heading h2").textContent'), '任务列表');
+  assert.equal(await evaluate('document.querySelector("#desktop-module-menu [aria-current=page] svg")?.getAttribute("fill")'), 'currentColor');
   const taskRow = '.desktop-task-tree .task-item[title^="月度交付"]';
   const more = taskRow + ' [title="更多"]';
   const menu = '.task-context-menu-portal';
@@ -301,12 +321,13 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     treeLayout.toggleStart + treeLayout.toggleWidth <= treeLayout.folderIcon + 1, 'workspace toggle keeps an unobstructed hit area before its icon');
   assert(Math.abs(treeLayout.child - treeLayout.folder - 8) < 1, 'workspace tasks keep one level of indentation');
   await click('.space-chevron', '收起交付空间');
-  await until(() => evaluate('!document.querySelector(\'[title^="空间内的任务"]\')'), 'workspace chevron collapses its tasks');
+  await until(() => evaluate('!document.querySelector(\'.task-item[title^="空间内的任务"]\')'), 'workspace chevron collapses its tasks');
   await click('.space-chevron', '展开交付空间');
   await visible('[title^="空间内的任务"]');
   await screenshot('task-tree-alignment');
   const rowPoint = await evaluate('(() => {const rect=document.querySelector(' + JSON.stringify(taskRow) + ').getBoundingClientRect();return {x:rect.left+16,y:rect.top+rect.height/2};})()');
   const openTaskMenu = async () => {
+    await openList();
     await rpc('Input.dispatchMouseEvent', { type: 'mouseMoved', ...rowPoint });
     await click(more);
     await visible(menu);
@@ -322,9 +343,9 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await menuClosed();
   await openTaskMenu();
-  await evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().toggleSidebar())");
+  await click(listTrigger);
   await menuClosed();
-  await click('.desktop-rail [aria-label="展开模块列表"]');
+  await openList();
   await visible(taskRow);
 
   await click('.space-chevron', '收起交付空间');
@@ -352,8 +373,25 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await screenshot('task-search-filter');
   await click(foundTask);
   await until(() => evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().activeTaskId==='task-tree-child-fixture')"), 'matching task opens normally');
+  assert(await evaluate('document.querySelector("#desktop-module-list").hidden'), 'selecting a task closes the list');
+  const rename = title => evaluate(`import('/src/store/appStore.ts').then(({useAppStore}) =>
+    useAppStore.getState().renameTask('task-tree-child-fixture', ${JSON.stringify(title)}))`);
+  for (const title of ['交付任务验收标题'.repeat(32), 'UnbrokenTaskTitle'.repeat(24)]) {
+    await rename(title);
+    assert(await evaluate(`(() => {
+      const title = document.querySelector('.desktop-task-title-label');
+      const controls = [...document.querySelectorAll('.desktop-topbar-button')];
+      return title.title === ${JSON.stringify(title)} && title.scrollWidth > title.clientWidth && controls.every(button => {
+        const box = button.getBoundingClientRect();
+        return button.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+      });
+    })()`), 'long task titles truncate while top bar controls stay clickable');
+  }
+  await rename('空间内的任务');
+  await openList();
+  await click(filterToggle);
   await click('.task-filter-controls button', '清除搜索');
-  await until(() => evaluate('document.querySelector(\'.space-chevron[aria-label="展开交付空间"]\')?.getAttribute("aria-expanded") === "false" && !document.querySelector(\'[title^="空间内的任务"]\')'), 'clearing search restores the original collapsed workspace');
+  await until(() => evaluate('document.querySelector(\'.space-chevron[aria-label="展开交付空间"]\')?.getAttribute("aria-expanded") === "false" && !document.querySelector(\'.task-item[title^="空间内的任务"]\')'), 'clearing search restores the original collapsed workspace');
   await click(filterToggle);
   await visible(taskRow);
 
@@ -364,7 +402,7 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
       '[...document.querySelectorAll(".files-file-label")].map(node=>node.textContent.trim()).sort()'
     )) === JSON.stringify(expected), 'visible results: ' + expected.join(', '));
   };
-  await click('.desktop-rail-module', '任务成果');
+  await clickModule('任务成果');
   await expectResults(fixture.names);
   assert.equal(await evaluate('document.documentElement.scrollWidth'), 960);
   await screenshot('task-results-categories');
@@ -438,7 +476,7 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     } finally {boardDb.close();}
     await reloadDesktop();
     await metrics(1360, 800);
-    await click('.desktop-rail-module', '任务看板');
+    await clickModule('任务看板');
     await visible('.task-board-card[title="核对交付清单中的缺失文件"]');
     assert.ok(await evaluate('document.querySelectorAll(".task-board-card").length < 25'));
     assert.equal(await evaluate('document.querySelectorAll(\'.task-board-card[title*="归档"]\').length'), 0);
@@ -544,12 +582,12 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     assert.deepEqual(await laneSizes(), [0, 0, 0, 1]);
     await click('.task-board-card[title="发布十一月版本说明"]');
     await until(() => evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().page==='chat' && useAppStore.getState().activeTaskId==='board-done')"), 'card opens its original task');
-    await click('.desktop-rail-module', '任务看板');
+    await clickModule('任务看板');
     assert.equal(await evaluate('document.querySelector(".task-board-search input").value'), '版本说明', 'returning restores the board filters');
     await click('.task-board-tools button', '新建任务');
     await until(() => evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().page==='chat' && useAppStore.getState().draft?.spaceId==='board-delivery')"), 'new draft belongs to the selected workspace');
     await reloadDesktop();
-    await click('.desktop-rail-module', '任务看板');
+    await clickModule('任务看板');
     await click('#desktop-module-list button[title="产品交付"]');
     await boardView('经常关注');
     await visible('.task-board-card[title="发布十一月版本说明"]');

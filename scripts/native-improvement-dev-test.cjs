@@ -6,7 +6,7 @@ const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
 run(async env => {
   const { evaluate, until, report } = env;
-  const { click, press, screenshot, fill } = routingControls(env);
+  const { click, press, screenshot, fill, openTopBarMenu } = routingControls(env);
   const taskId = "improve-desktop";
   const api = (method, arg) => evaluate("window.api." + method + "(" + JSON.stringify(arg) + ")");
   await until(() => evaluate("window.api.nativeImprovement.report().then(r=>r.runs.length>0)"), "automatic weekly review at startup");
@@ -21,7 +21,8 @@ run(async env => {
   await prompt("实施范围收窄到原生会话。");
   await prompt("你漏了验收要求，请补齐。");
   const automation = 'section[aria-label="每周自我改进"]';
-  await click("自动化", ".desktop-rail");
+  await openTopBarMenu("desktop-module-menu");
+  await click("自动化", "#desktop-module-menu");
   await screenshot("automation-weekly-entry");
   await evaluate(`(() => {
     const section = document.querySelector(${JSON.stringify(automation)});
@@ -127,7 +128,9 @@ run(async env => {
   await env.rpc("Emulation.setDeviceMetricsOverride", {width: 1440, height: 980, deviceScaleFactor: 1, mobile: false});
   await click("定时任务", ".review-crumb");
   await press("[...document.querySelectorAll('button.desktop-section-row')].find(e=>e.textContent.trim()==='每周复盘')", "open report from automation sidebar");
-  await click("设置", ".desktop-rail");
+  await openTopBarMenu("desktop-module-menu");
+  await click("设置", "#desktop-module-menu");
+  await openTopBarMenu("desktop-module-list");
   await press("[...document.querySelectorAll('button.settings-nav-btn')].find(e=>e.textContent.trim()==='自我改进')", "open report from settings sidebar");
   await until(() => evaluate("document.querySelector('.settings-modal .weekly-review [data-finding]')?.checkVisibility()"), "settings shows shared report");
   await evaluate("import('/src/store/appStore.ts').then(m => m.useAppStore.getState().setTheme('light'))");
