@@ -22,7 +22,7 @@ run(async ({ evaluate, until, home, out, report }) => {
   const clock = { inputAt: Date.now() };
   report.foregroundHandoff = { clock };
   const initial = await api("agent.prompt", { taskId: dots, userMessageId: source, assistantMessageId: "lighthouse-reply",
-    text: "在「灯塔登记演练」空间先由 Dots 前台打开 west.txt 作定位，再核对 west.txt 和 east.txt 全部编号的数量，最终回我一个总数。请不要列目录或主动派工。第一次用 dots_action 的 read_file 打开 west.txt，spaceId 用 sp-lighthouse-fixture。达到系统前台上限时，我明确允许自动移交给该空间的普通任务继续核算，所以本次读取的 allowHandoff 请填 true。" });
+    text: "在「灯塔登记演练」空间先由 Dots 前台打开 west.txt 作定位，再核对 west.txt 和 east.txt 全部编号的数量，最终回到 Dots 的内容只能是表示总数的阿拉伯数字，不要标点、解释、过程或附件。请不要列目录或主动派工。第一次用 dots_action 的 read_file 打开 west.txt，spaceId 用 sp-lighthouse-fixture。达到系统前台上限时，我明确允许自动移交给该空间的普通任务继续核算，所以本次读取的 allowHandoff 请填 true。" });
   assert(initial.receipt);
   const readHandoff = () => {
     const ledger = join(home, ".mybuddy", "durable", createHash("sha256").update(dots).digest("hex"), "durable.sqlite");
@@ -77,7 +77,7 @@ run(async ({ evaluate, until, home, out, report }) => {
   const requests = readFileSync(join(out, "provider-requests.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line).body);
   const foreground = requests.filter(request => request.tools?.some(tool => tool.function.name === "dots_action"));
   const ordinary = requests.filter(request => request.tools?.some(tool => tool.function.name === "read"));
-  report.foregroundHandoff = { clock, receipt: native, job, providerCalls: {
+  report.foregroundHandoff = { clock, receipt: native, firstUseful: handoff, job, providerCalls: {
     foreground: foreground.length, ordinary: ordinary.length, total: requests.length,
   }, deliveries: delivered.map(message => ({ kind: message.dotsDelivery.kind, id: message.dotsDelivery.deliveryKey,
     at: message.createdAt, text: message.text })) };
