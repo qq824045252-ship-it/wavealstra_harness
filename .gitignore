@@ -119,3 +119,7 @@ electron.vite.config.*.mjs
 
 # Isolated artifact-card visual test output
 .visual-card/
+
+# Vivion-generated local reports and the PowerShell cache
+/.tmp/answers/
+/Microsoft/Windows/PowerShell/ModuleAnalysisCache
