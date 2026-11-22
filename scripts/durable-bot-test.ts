@@ -76,7 +76,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   const weather = routing.save({ ...answerRuleExamples[0], instruction: source.content + "\n" + answerRuleExamples[0].instruction, sourceMemoryId: source.id, sourceHash: source.contentHash });
   const report = routing.save({ ...answerRuleExamples[1], evidenceFile: "release.md" });
   const translated = routing.save({ ...report, exclude: ["翻译周报"] }, report);
-  assert.equal(routing.preview("帮我翻译这份周报为英文：项目周报已整理。", null), null);
+  assert.equal(routing.preview("帮我翻译这份周报为英文：项目周报已整理。", null)?.rule.id, "dots-default-policy");
   assert.equal(routing.preview("帮我写项目周报", null)?.rule.id, translated.id);
   db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES('route-project','验收项目',1,1)").run();
   const projectRule = routing.save({ ...answerRuleExamples[1], projectId: "route-project", title: "本项目周报" });
@@ -88,7 +88,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   assert.equal(local.projectId, "route-project");
   assert.equal(routing.preview("上海天气", "route-project")?.rule.id, local.id);
   assert.equal(routing.preview("上海天气", null)?.rule.id, weather.id);
-  assert.equal(routing.preview("把天气规则改成先查气温", "route-project"), null);
+  assert.equal(routing.preview("把天气规则改成先查气温", "route-project")?.rule.id, "dots-default-policy");
   const localVersion = { id: local.id, revision: local.revision };
   const disabled = routing.saveForTask("project-chat", { version: localVersion, changes: { enabled: false } });
   assert.throws(() => routing.saveForTask("project-chat", { version: localVersion, changes: { title: "旧版本写入" } }), /规则已变化/);
@@ -96,7 +96,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   routing.remove(local.id, disabled.revision);
   assert.equal(routing.preview("写项目周报", "route-project")?.rule.title, "本项目周报");
   assert.equal(routing.preview("写项目周报", null)?.rule.title, "周报核对发布记录");
-  assert.equal(routing.preview("润色文字\n## 用户附带文件\n天气 项目周报", "route-project"), null);
+  assert.equal(routing.preview("润色文字\n## 用户附带文件\n天气 项目周报", "route-project")?.rule.id, "dots-default-policy");
   routing.remove(projectRule.id, projectRule.revision);
   await writeFile(join(cwd, "release.md"), "需求 R-37 已提测，尚无发布记录。");
   const payloads: string[] = [];
@@ -167,9 +167,21 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.match(await ask("report", "帮我写项目周报"), /需求 R-37 已提测，尚无发布记录/);
     const history = (await service.history(taskId)).messages;
     assert.equal(history.filter(item => item.role === "user").at(-1)?.text, "帮我写项目周报");
-    assert.deepEqual(routing.history().map(item => [item.inputId, item.title]),
+    assert.deepEqual(routing.history().filter(item => item.ruleId !== "dots-default-policy").map(item => [item.inputId, item.title]),
       [["report", "周报核对发布记录"], ["weather", "查询出行天气"]]);
     assert.match(routing.history()[0].detail, /已预读 release.md/);
+    const defaultReceipt = routing.history({ taskId, inputId: "translate" })[0];
+    assert.equal(defaultReceipt.ruleId, "dots-default-policy");
+    assert.equal(defaultReceipt.policy?.routeMode, "auto");
+    const fallback = routing.list().find(rule => rule.id === defaultReceipt.ruleId)!;
+    const nextFallback = routing.save({ ...fallback, policy: { ...fallback.policy!, routeMode: "direct" } }, fallback);
+    const reopenRouting = () => new AnswerRoutingService(db, () => undefined);
+    const resolveDefault = (inputId: string) => reopenRouting().prepare({
+      taskId, inputId, cwd, query: "翻译：上海天气好", canRead: () => false,
+    });
+    assert.equal((await resolveDefault("translate"))?.rule.revision, fallback.revision);
+    assert.equal((await resolveDefault("new-default"))?.rule.revision, nextFallback.revision);
+
     await writeFile(join(cwd, "tool-note.md"), "本次工具调用结束");
     const start = payloads.length;
     replaceReleaseOnNextRequest = true;
@@ -236,7 +248,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     routing.remove(translated.id, translated.revision);
     assert.deepEqual(routing.history({ taskId, inputId: "two-requests" }), firstReceipt);
     memories.forget(source.id);
-    assert.deepEqual(routing.list(), []);
+    assert.deepEqual(routing.list().map(rule => rule.id), ["dots-default-policy"]);
     assert.equal(routing.history({ taskId, inputId: "weather" })[0].title, "查询出行天气");
   } finally { await service.close(); db.close(); }
 }
@@ -310,6 +322,10 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.equal(routing.history().length, 50);
     assert.deepEqual(new Set(routing.history({ taskId, inputIds: [...batchIds, "absent"] }).map(use => use.inputId)),
       new Set(batchIds));
+    const disabled = routing.save({ ...revised, enabled: false }, revised);
+    routing.save({ ...disabled, enabled: true }, disabled);
+    const afterRevocation = new AnswerRoutingService(db, () => undefined, undefined, () => library);
+    await assert.rejects(prepare("new-revision", afterRevocation), /原始调度快照/);
   } finally { db.close(); }
 }
 

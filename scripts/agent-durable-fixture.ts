@@ -54,6 +54,7 @@ export async function createAgentDurableFixture(root: string, db: AppDatabase,
   settings.setDefaultModelAndProvider("fixture", "model"); settings.setEnabledModels(modelIds.map(id => `fixture/${id}`));
   const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "task-workspaces")), { models });
   await agent.init();
+  await agent.updateAppSettings({ defaultModelId: "fixture/model" });
   if (!options.deferRecovery) await agent.resumePersistedTasks();
   return {
     agent, models, requests,

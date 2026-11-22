@@ -29,6 +29,13 @@ export interface DotsDelegation {
   /** The desktop journal handles the result as a conversation follow-up. */
   proactiveReply?: boolean;
   goalId?: string;
+  activity?: {
+    lastActivityAt: number;
+    lastProgressAt?: number;
+    lastReportAt?: number;
+    tool: string;
+    phase: "start" | "finish";
+  };
   status: "pending" | "running" | "blocked" | "completed" | "failed" | "superseded";
   interactionId?: string;
   text: string;

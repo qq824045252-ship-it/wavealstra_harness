@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
-import { isDotsAutomaticInput, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
+import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
 import type { DotsFollowupDecision } from "./DotsFollowup";
 
 export type DotsFollowup = (job: DotsDelegation, request?: AgentPromptRequest) =>
@@ -53,6 +53,15 @@ export class DotsReplyOutbox {
       .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations }));
   }
 
+  observeActivity(job: DotsDelegation, window: number, text: string): boolean {
+    // Keep at most one unsent observation. Its stable key survives native receipt recovery.
+    if (this.db.prepare("SELECT 1 FROM dots_reply_events WHERE operation_id=? AND status='activity' AND settled=0").get(job.id))
+      return false;
+    const key = createHash("sha256").update(JSON.stringify([job.id, "activity", window])).digest("hex");
+    return this.db.prepare(`INSERT OR IGNORE INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
+      VALUES(?,?,?,'activity',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({ ...job, text })).changes > 0;
+  }
+
   targets(): string[] {
     if (!this.handler) return [];
     return this.db.prepare("SELECT DISTINCT task_id FROM dots_reply_events WHERE settled=0").pluck().all() as string[];
@@ -85,8 +94,13 @@ export class DotsReplyOutbox {
       LEFT JOIN works w ON w.work_id=d.goal_id WHERE d.operation_id=?`).get(event.operation_id) as
       {status:string;interaction_id:string|null;state:string|null;replaced:number;paused:number;goal_revised:number;text:string;lifecycle:string|null;closure_conclusion:string|null;task_exists:number} | undefined;
     if (!row?.task_exists || row.state === "stopped" || row.lifecycle === "closed" && row.closure_conclusion !== "succeeded" ||
-      row.replaced || row.goal_revised || row.status !== event.status || row.interaction_id !== event.interaction_id ||
-      (row.status === "running" && row.text !== (JSON.parse(event.snapshot) as DotsDelegation).text)) return "obsolete";
+      row.replaced || row.goal_revised || row.status !== (event.status === "activity" ? "running" : event.status) ||
+      row.interaction_id !== event.interaction_id ||
+      (event.status === "running" && row.text !== (JSON.parse(event.snapshot) as DotsDelegation).text)) return "obsolete";
+    if ((event.status === "activity" || event.status === "running") &&
+      this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='answer_rule_turns'").get() &&
+      this.db.prepare(`SELECT 1 FROM answer_rule_turns t JOIN dots_delegations d ON d.source_message_id=t.input_id
+        WHERE d.operation_id=? AND t.task_id=? AND t.status='revoked'`).get(event.operation_id, DOTS_TASK_ID)) return "obsolete";
     if (event.status === "blocked" && event.interaction_id && !this.db.prepare(
       "SELECT 1 FROM conversation_interactions WHERE id=? AND task_id=(SELECT task_id FROM dots_delegations WHERE operation_id=?) AND status='pending'"
     ).get(event.interaction_id, event.operation_id)) return "obsolete";
@@ -115,6 +129,8 @@ export class DotsReplyOutbox {
       // Keep only the disposition for board lookups. The conversation owns the delivered body and attachments.
       this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=?")
         .run(delivered ? JSON.stringify({ delivered }) : "", event.event_key);
+      if (event.status === "activity" && delivered)
+        this.db.prepare("UPDATE dots_tool_observations SET last_report_at=? WHERE operation_id=?").run(Date.now(), event.operation_id);
       if (event.status === "completed" || event.status === "failed")
         this.db.prepare("DELETE FROM dots_followup_requests WHERE operation_id=?").run(event.operation_id);
     })();
@@ -130,7 +146,8 @@ export class DotsReplyOutbox {
     else {
       const { citations, ...job } = JSON.parse(event.snapshot) as DotsDelegation & { citations?: ReplyCitation[] };
       const request = this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined;
-      const step = await handler.followup(job, request ? JSON.parse(request) : undefined);
+      const step = event.status === "activity" ? { kind: "progress" as const, text: job.text, artifacts: [] }
+        : await handler.followup(job, request ? JSON.parse(request) : undefined);
       if (!alive() || (step.kind !== "continued" && this.disposition(event) === "hold")) return false;
       if (step.kind === "deferred") return false;
       if (step.kind === "continued" || step.kind === "quiet") { this.settle(event); return false; }

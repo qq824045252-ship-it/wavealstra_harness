@@ -741,6 +741,8 @@ function registerIpc(): void {
   dotsDelegations = dots;
   dotsActions = new DotsActions(db, agentService, {
     link: (...args) => dots.link(...args), list: () => dots.list(),
+    observeTool: event => dots.observeTool(event),
+    observeProgress: (...args) => dots.observeProgress(...args),
     rememberOrigin: (source, origin) => dots.rememberOrigin(source, origin),
     changed: () => { dots.refresh(); broadcastToWindows(DotsIpc.changed, null); },
     failed: (...args) => dots.failed(...args),

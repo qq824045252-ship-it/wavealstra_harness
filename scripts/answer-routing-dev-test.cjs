@@ -16,7 +16,7 @@ run(async env => {
   await click("取消");
   await click("查询出行天气示例");
   await click("保存规则");
-  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 1)"), "rule saved");
+  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 2)"), "rule saved");
   await until(() => evaluate("!!document.querySelector('[data-routing-graph=definition]')"), "rule flow");
   const ask = async query => {
     await fill('[aria-label="测试匹配的问题"]', query);
@@ -61,10 +61,11 @@ run(async env => {
   await until(async () => (await connectors()) === edgesBefore, "nodes and connectors restored");
   await screenshot("match-flow");
   await click("关闭大图", graph);
-  assert.match(await ask("润色这段天气提醒"), /没有匹配规则/);
+  assert.match(await ask("润色这段天气提醒"), /默认调度策略/);
+  await click("查询出行天气");
   await click("停用");
-  await until(() => evaluate("window.api.answerRouting.list().then(r => !r[0].enabled)"), "disabled rule persisted");
-  assert.match(await ask("上海要带伞吗"), /没有匹配规则/);
+  await until(() => evaluate("window.api.answerRouting.list().then(r => !r.find(rule => rule.title === '查询出行天气').enabled)"), "disabled rule persisted");
+  assert.match(await ask("上海要带伞吗"), /默认调度策略/);
   assert.equal(await evaluate("window.api.answerRouting.history().then(r=>r.length)"), 0);
 
   await click("新增规则");
@@ -73,7 +74,7 @@ run(async env => {
   await expand("匹配问法与例外");
   await fill('.answer-rule-form input[maxlength="90"]', "交付核对");
   await click("保存规则");
-  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 2)"), "rule saved");
+  await until(() => evaluate("window.api.answerRouting.list().then(r => r.length === 3)"), "rule saved");
   assert.match(await ask("生成交付报告"), /交付核对/);
   await screenshot("rules-and-flow");
   assert.equal(env.requests.length, 0);

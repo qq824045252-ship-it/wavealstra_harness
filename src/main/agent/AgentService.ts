@@ -1692,6 +1692,7 @@ export class AgentService {
       onResponse: (taskId, message, info) => this.recordDurableUsage(taskId, message, info),
       onTool: event => {
         this.taskDiagnostics.observeTool(event);
+        if (event.dotsOperationId) this.dotsActions?.observeTool(event);
         if (event.phase === "finish" && event.taskId) this.goalContinuations.account(event.taskId);
       },
       onGoalToolEvidence: (taskId, owner, toolTaskId, receipt) => {
@@ -1733,6 +1734,7 @@ export class AgentService {
           mode: resolveWelcomeMode(task.welcomeMode), tagId: task.modePresetId ?? undefined, projectId: task.projectId ?? undefined,
           resolvedInstructions: assembly.segments, resolvedCapabilities: assembly.capabilities ?? [], warnings: assembly.warnings });
       },
+      onDotsProgress: (taskId, operationId, identity, at) => this.dotsActions?.observeProgress(taskId, operationId, identity, at),
       onEntries: (taskId, entries, info) => {
         if (info.sourceKind === "main") this.durableSkills.entries(taskId, info.conversationId, entries);
         for (const entry of [...entries].sort((a, b) => a.id - b.id)) {

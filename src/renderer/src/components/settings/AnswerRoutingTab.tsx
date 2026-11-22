@@ -1,7 +1,7 @@
 import { DOTS_TASK_ID } from "@shared/dots";
 import { useEffect, useRef, useState } from "react";
 import {
-  answerRuleExamples, eligibleAnswerEvidenceItem, matchAnswerRule, newAnswerRule,
+  answerRuleExamples, defaultAnswerRuleId, defaultDotsSchedulingPolicy, eligibleAnswerEvidenceItem, matchAnswerRule, newAnswerRule,
   type AnswerRule, type AnswerRuleDraft, type AnswerRuleMatch, type AnswerRuleUse,
 } from "@shared/answer-routing";
 import type { LibraryItemDto } from "@shared/library-ipc";
@@ -67,6 +67,7 @@ function taskRelativePath(root: string, filePath: string): string | undefined {
 }
 
 function selectionReason(match: AnswerRuleMatch): string {
+  if (match.rule.id === defaultAnswerRuleId) return "未命中项目或全局规则，采用默认策略";
   const runnerUp = match.candidates?.find(candidate => candidate.ruleId !== match.rule.id);
   if (!runnerUp) return "只有这条规则符合条件";
   if (match.rule.projectId !== runnerUp.projectId) return "项目规则优先于全局规则";
@@ -93,6 +94,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
   const [seed, setSeed] = useState(() => useAppStore.getState().answerRuleSeed);
   const projects = useAppStore(s => s.projects);
   const [rules, setRules] = useState<AnswerRule[]>([]);
+  const [fallback, setFallback] = useState<AnswerRule>();
   const [uses, setUses] = useState<AnswerRuleUse[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [form, setForm] = useState<AnswerRuleDraft | null>(() => seed ? initialDraft(seed) : null);
@@ -118,6 +120,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
   const [documentsStatus, setDocumentsStatus] = useState("");
   const api = window.api?.answerRouting;
   const selected = rules.find(rule => rule.id === selectedId) ?? rules[0];
+  const fallbackPolicy = fallback?.policy ?? defaultDotsSchedulingPolicy();
   const formProject = form ? form.projectId : selected?.projectId;
   const contextTask = currentTask(seed?.turn?.taskId);
   const root = contextTask?.cwd;
@@ -129,7 +132,8 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
   const refresh = async () => {
     if (!api) return;
     const [items, recent] = await Promise.all([api.list(), api.history()]);
-    setRules(items);
+    setRules(items.filter(rule => rule.id !== defaultAnswerRuleId));
+    setFallback(items.find(rule => rule.id === defaultAnswerRuleId));
     setUses(recent);
     setLoaded(true);
   };
@@ -297,6 +301,43 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
         })}
       </nav>}
       <div className="answer-routing-detail">
+        {!form && !finishTeaching && fallback && <details className="answer-routing-panel">
+          <summary>默认调度策略 · 第 {fallback.revision} 版</summary>
+          <form key={fallback.revision} onSubmit={event => {
+            event.preventDefault();
+            const values = new FormData(event.currentTarget);
+            void run(async () => {
+              const heartbeat = Number(values.get("heartbeat"));
+              await api.save({ ...fallback, policy: {
+                version: 1,
+                routeMode: values.get("routeMode") as typeof fallbackPolicy.routeMode,
+                foregroundReadLimits: {
+                  characters: Number(values.get("characters")),
+                  sources: Number(values.get("sources")),
+                  calls: Number(values.get("calls")),
+                },
+                trackingPolicy: { milestones: values.has("milestones"), heartbeatMs: heartbeat ? heartbeat * 1000 : null,
+                  silenceMs: Number(values.get("silence")) * 1000 },
+              } }, fallback);
+              setPreview(undefined);
+              await refresh();
+              setNotice("默认策略已保存");
+            });
+          }}>
+            <fieldset className="answer-rule-form" disabled={busy}>
+              <label>处理方式<select name="routeMode" defaultValue={fallbackPolicy.routeMode}>
+                <option value="auto">自动</option><option value="direct">优先直答</option><option value="delegate">优先委派</option>
+              </select></label>
+              <label>前台正文字符数<input name="characters" type="number" required min={1} max={1000000} defaultValue={fallbackPolicy.foregroundReadLimits.characters} /></label>
+              <label>前台资料来源数<input name="sources" type="number" required min={1} max={100} defaultValue={fallbackPolicy.foregroundReadLimits.sources} /></label>
+              <label>前台读取次数<input name="calls" type="number" required min={1} max={100} defaultValue={fallbackPolicy.foregroundReadLimits.calls} /></label>
+              <label><input name="milestones" type="checkbox" defaultChecked={fallbackPolicy.trackingPolicy.milestones} />回报阶段成果</label>
+              <label>状态回报间隔（秒，留空关闭）<input name="heartbeat" type="number" min={5} max={86400} defaultValue={fallbackPolicy.trackingPolicy.heartbeatMs ? fallbackPolicy.trackingPolicy.heartbeatMs / 1000 : ""} /></label>
+              <label>无活动提示阈值（秒）<input name="silence" type="number" required min={5} max={86400} defaultValue={fallbackPolicy.trackingPolicy.silenceMs / 1000} /></label>
+              <button className="btn" type="submit">保存默认策略</button>
+            </fieldset>
+          </form>
+        </details>}
         {form ? <fieldset className="answer-rule-form" aria-busy={busy} disabled={busy || loadingTurn}>
           <legend>{editing && finishTeaching ? `调整「${editing.title}」` : editing ? "编辑回答规则" : seed?.turn ? "教它下次怎么答" : "创建回答规则"}</legend>
           <label>遇到什么问题<input aria-label="遇到什么问题" value={positiveExample} onChange={e => setPositiveExample(e.target.value)}
@@ -492,7 +533,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
               }}>{example.title}示例</button>)}
           </div>
         </section>}
-        {!form && !!rules.length && <section className="answer-routing-panel" aria-label="测试匹配">
+        {!form && !!fallback && <section className="answer-routing-panel" aria-label="测试匹配">
           <h3>测试匹配</h3>
           <p className="settings-section-desc">检查已保存的规则会采用哪条。这一步只检查匹配。</p>
           <div className="answer-routing-actions">
@@ -505,7 +546,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
             })}>测试匹配</button>
           </div>
           {preview && <div className="answer-rule-result" role="status">{preview.match ? <>
-            <strong>{preview.match.rule.title} · 匹配“{preview.match.phrase}”</strong>
+            <strong>{preview.match.rule.title} · 第 {preview.match.rule.revision} 版{preview.match.phrase && ` · 匹配“${preview.match.phrase}”`}</strong>
             <p>{selectionReason(preview.match)}</p>
             {!!preview.match.candidates && preview.match.candidates.length > 1 && <ul className="answer-routing-candidates">
               {preview.match.candidates.map(candidate => <li key={candidate.ruleId}>

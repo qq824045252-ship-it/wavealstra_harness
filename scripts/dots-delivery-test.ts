@@ -22,10 +22,15 @@ const db = new AppDatabase(join(root, "app.db"));
 const space = db.createSpace({ id: "sp-quotes", name: "客户 A", path: root });
 const marker = "a quotation for exactly 137";
 let calls = 0;
-const fixture = await createAgentDurableFixture(root, db, input => {
+let releaseWorker!: () => void;
+const workerGate = new Promise<void>(resolve => { releaseWorker = resolve; });
+const fixture = await createAgentDurableFixture(root, db, async input => {
   const latest = input.messages.at(-1);
-  if (latest?.role === "toolResult" && latest.toolCallId.startsWith("draft-")) return [{ type: "toolCall", id: "final-" + ++calls, name: "write",
-    arguments: { path: "quote.txt", content: marker } }];
+  if (latest?.role === "toolResult" && latest.toolCallId.startsWith("draft-")) {
+    await workerGate;
+    return [{ type: "toolCall", id: "final-" + ++calls, name: "write",
+      arguments: { path: "quote.txt", content: marker } }];
+  }
   if (latest?.role === "toolResult") return [{ type: "text", text: "已处理" }];
   const tools = getCurrentTools(input.messages);
   if (tools.some(tool => tool.name === "dots_action")) return [{ type: "toolCall", id: "delegate-" + ++calls, name: "dots_action",
@@ -42,8 +47,15 @@ const domain = createArtifactDomain(db.connection);
 agent.setArtifactDomain(domain.service, domain.coordinator);
 const deliveries = new DotsDelegations(db.connection, (id, operation) => agent.dotsSubmission(id, operation), () => {});
 const actions = new DotsActions(db, agent, { link: (...args) => deliveries.link(...args), changed: () => deliveries.refresh(),
+  observeTool: event => deliveries.observeTool(event),
+  observeProgress: (...args) => deliveries.observeProgress(...args),
+  rememberOrigin: (source, origin) => deliveries.rememberOrigin(source, origin),
   list: () => deliveries.list(), failed: (...args) => deliveries.failed(...args) });
 agent.setDotsActions(actions);
+deliveries.connect(async () => ({ kind: "quiet" }), (reply, current) => agent.appendDotsReply(reply, current));
+const fallback = agent.answerRouting.list().find(rule => rule.id === "dots-default-policy")!;
+agent.answerRouting.save({ ...fallback, policy: { ...fallback.policy!,
+  trackingPolicy: { milestones: true, heartbeatMs: 6_000, silenceMs: 5_000 } } }, fallback);
 const off = agent.onPatch(patch => {
   if (patch.type === "durable_delta" && !patch.delta.state.busy) deliveries.refresh(patch.taskId);
 });
@@ -56,6 +68,22 @@ try {
   assert.throws(() => db.deleteTask(DOTS_TASK_ID), /Dots/);
   assert.equal(db.getTask(DOTS_TASK_ID)?.spaceId ?? null, null);
   await fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: "quote-request", assistantMessageId: "dots-reply", text: "在客户 A 空间做一份报价单" });
+  const observationDeadline = Date.now() + 10_000;
+  while (!deliveries.list()[0]?.activity?.lastReportAt && Date.now() < observationDeadline)
+    await new Promise(done => setTimeout(done, 25));
+  const reporting = deliveries.list()[0]?.activity;
+  assert(reporting?.lastProgressAt);
+  assert(reporting.lastReportAt, JSON.stringify(deliveries.list()));
+  assert(reporting.lastReportAt >= reporting.lastActivityAt + 5_000);
+  const activeHistory = await agent.loadTaskHistory(DOTS_TASK_ID);
+  const reports = activeHistory.messages.filter(message => message.dotsDelivery?.kind === "progress");
+  assert.equal(reports.length, 1);
+  assert.match(reports[0].text, /工具 write 返回.*未观察到新的工具活动/);
+  assert.equal(deliveries.list()[0].activity?.lastActivityAt, reporting.lastActivityAt);
+  assert.equal(deliveries.list()[0].activity?.lastProgressAt, reporting.lastProgressAt);
+  assert.equal(fixture.requests.filter(request => request.tools.includes("dots_action")).length, 2,
+    "heartbeat starts no foreground generation");
+  releaseWorker();
   const deadline = Date.now() + 25000;
   while (Date.now() < deadline && deliveries.list()[0]?.status !== "completed") {
     deliveries.refresh();
@@ -71,6 +99,9 @@ try {
   assert.equal(db.listTasks().length, 1);
   assert.equal(db.getTask(job.taskId)?.spaceId, space.id);
   assert.equal(job.status, "completed", JSON.stringify(job));
+  assert.equal(job.activity?.tool, "write");
+  assert.equal(job.activity?.phase, "finish");
+  assert.equal(job.activity?.lastReportAt, reporting.lastReportAt);
   assert.equal(job.artifacts.length, 1, JSON.stringify(job));
   const file = domain.service.get(job.artifacts[0]!.id)!;
   assert.equal(file.taskId, job.taskId);
@@ -245,5 +276,6 @@ try {
   console.log("PASS missed Dots timer coalesces native execution and respects skip, deadline and restart");
   console.log("PASS Dots native chat → native delegate → ordinary task → real file → persisted Dots delivery");
 } finally {
+  releaseWorker();
   cron.stop(); terminal.dispose(); off(); deliveries.close(); await deliveries.drain(); await fixture.close(); db.close();
 }

@@ -17,7 +17,24 @@ export const AnswerRoutingIpc = {
   suggest: "answer-routing:suggest",
 } as const;
 
+export interface DotsSchedulingPolicy {
+  version: 1;
+  routeMode: "direct" | "delegate" | "auto";
+  foregroundReadLimits: { characters: number; sources: number; calls: number };
+  trackingPolicy: { milestones: boolean; heartbeatMs: number | null; silenceMs: number };
+}
+
+export const defaultAnswerRuleId = "dots-default-policy";
+
+export const defaultDotsSchedulingPolicy = (): DotsSchedulingPolicy => ({
+  version: 1,
+  routeMode: "auto",
+  foregroundReadLimits: { characters: 24_000, sources: 4, calls: 6 },
+  trackingPolicy: { milestones: true, heartbeatMs: null, silenceMs: 120_000 },
+});
+
 export interface AnswerRuleDraft {
+  policy?: DotsSchedulingPolicy;
   title: string;
   include: string[];
   exclude: string[];
@@ -64,6 +81,7 @@ export interface AnswerRuleUse {
   phrase?: string;
   evidence?: AnswerRuleEvidence;
   routeStatus?: "applied" | "revoked";
+  policy?: DotsSchedulingPolicy;
 }
 export type AnswerRoutingHistoryQuery = { taskId: string } & ({ inputId: string } | { inputIds: string[] });
 export interface AnswerRoutingApi {

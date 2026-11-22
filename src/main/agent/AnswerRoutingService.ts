@@ -10,7 +10,7 @@ import type { LibraryService } from "../library/LibraryService";
 import type { LibraryItemDto } from "../../shared/library-ipc";
 import type { MemoryRecordDto } from "../../shared/memory-kernel";
 import { assertPathInsideTask, TaskPathBoundaryError } from "../task/TaskExecutionWorkspace";
-import { eligibleAnswerEvidenceItem, matchAnswerRule, maxAnswerEvidenceBytes, newAnswerRule, type AnswerRoutingHistoryQuery, type AnswerRule,
+import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, eligibleAnswerEvidenceItem, matchAnswerRule, maxAnswerEvidenceBytes, newAnswerRule, type AnswerRoutingHistoryQuery, type AnswerRule,
   type AnswerRuleDraft, type AnswerRuleEvidence, type AnswerRuleUse } from "../../shared/answer-routing";
 
 const phrases = z.array(z.string().trim().min(1).max(100)).max(24).transform(values => [...new Set(values)]);
@@ -19,7 +19,22 @@ export const answerTeachingSchema = z.object({
   instruction: z.string().trim().min(1).max(2000),
 });
 const identifier = z.string().trim().min(1).max(300);
+const policySchema = z.object({
+  version: z.literal(1),
+  routeMode: z.enum(["direct", "delegate", "auto"]),
+  foregroundReadLimits: z.object({
+    characters: z.number().int().min(1).max(1_000_000),
+    sources: z.number().int().min(1).max(100),
+    calls: z.number().int().min(1).max(100),
+  }).strict(),
+  trackingPolicy: z.object({
+    milestones: z.boolean(),
+    heartbeatMs: z.number().int().min(5_000).max(86_400_000).nullable(),
+    silenceMs: z.number().int().min(5_000).max(86_400_000),
+  }).strict(),
+}).strict();
 const draftSchema = answerTeachingSchema.extend({
+  policy: policySchema.optional(),
   evidenceFile: z.string().trim().max(300).refine(path => !path || (!isAbsolute(path) && !win32.parse(path).root
     && !path.split(/[\\/]/u).includes("..") && !path.includes(":") && !/[\x00-\x1f]/u.test(path)), "资料必须是任务目录内的相对路径"),
   evidenceLibraryItemId: identifier.nullable().optional(), evidenceFailure: z.enum(["verify", "mark-unverified"]).optional(),
@@ -28,6 +43,7 @@ const draftSchema = answerTeachingSchema.extend({
 }).refine(draft => !(draft.evidenceFile && draft.evidenceLibraryItemId), "每条规则只能选择一种资料来源");
 const versionSchema = z.object({ id: identifier, revision: z.number().int().positive() });
 const chatChanges = answerTeachingSchema.partial().extend({
+  policy: policySchema.optional(),
   enabled: z.boolean().optional(), evidenceFile: z.string().optional(),
   evidenceLibraryItemId: identifier.nullable().optional(),
   evidenceFailure: z.enum(["verify", "mark-unverified"]).optional(),
@@ -138,7 +154,7 @@ export class AnswerRoutingService {
       CREATE TABLE IF NOT EXISTS answer_rule_turns (
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, input_id TEXT NOT NULL,
         rule_id TEXT NOT NULL, revision INTEGER NOT NULL, title TEXT NOT NULL, at INTEGER NOT NULL,
-        detail TEXT NOT NULL, phrase TEXT NOT NULL, evidence TEXT, scope TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'applied',
+        detail TEXT NOT NULL, phrase TEXT NOT NULL, evidence TEXT, scope TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'applied', snapshot TEXT,
         PRIMARY KEY(task_id, input_id));
       CREATE INDEX IF NOT EXISTS answer_rule_turns_recent ON answer_rule_turns(at DESC);
       CREATE INDEX IF NOT EXISTS answer_rule_turns_source_history ON answer_rule_turns(task_id,rule_id,at DESC);`);
@@ -151,6 +167,12 @@ export class AnswerRoutingService {
         clean.run(JSON.stringify({ ...rule, instruction: extra, sourcePrefixLength: undefined, sourceHash: undefined }), row.id);
       }
       const columns = db.connection.pragma("table_info(answer_rule_turns)") as Array<{ name: string }>;
+      if (!columns.some(column => column.name === "snapshot"))
+        db.connection.exec("ALTER TABLE answer_rule_turns ADD COLUMN snapshot TEXT");
+      const fallback = { ...newAnswerRule(), title: "默认调度策略", instruction: "按本轮请求和已知任务状态选择直答或委派。",
+        policy: defaultDotsSchedulingPolicy() };
+      db.connection.prepare(`INSERT OR IGNORE INTO answer_rules(id,revision,enabled,config) VALUES(?,1,1,?)`)
+        .run(defaultAnswerRuleId, JSON.stringify(fallback));
       if (columns.some(column => column.name === "status")) return;
       db.connection.exec(`
         ALTER TABLE answer_rule_turns ADD COLUMN status TEXT NOT NULL DEFAULT 'applied';
@@ -217,7 +239,10 @@ export class AnswerRoutingService {
   }
 
   save(input: AnswerRuleDraft, expected?: { id: string; revision: number }): AnswerRule {
-    const draft = draftSchema.parse(input);
+    const draft = expected?.id === defaultAnswerRuleId
+      ? { ...newAnswerRule(), title: "默认调度策略", instruction: "按本轮请求和已知任务状态选择直答或委派。",
+        policy: policySchema.parse(input.policy) }
+      : draftSchema.parse(input);
     const version = expected === undefined ? undefined : versionSchema.parse(expected);
     return this.db.connection.transaction(() => {
       const memory = draft.sourceMemoryId ? this.source(draft.sourceMemoryId) : undefined;
@@ -236,6 +261,8 @@ export class AnswerRoutingService {
         const result = this.db.connection.prepare(`UPDATE answer_rules SET project_id=?,source_id=?,source_hash=?,enabled=?,config=?,
           revision=revision+1 WHERE id=? AND revision=?`).run(...args, version.revision);
         if (!result.changes) throw conflict();
+        if (!draft.enabled) this.db.connection.prepare(
+          "UPDATE answer_rule_turns SET status='revoked' WHERE rule_id=? AND status='applied'").run(id);
       } else {
         this.db.connection.prepare("INSERT INTO answer_rules(project_id,source_id,source_hash,enabled,config,id,revision) VALUES(?,?,?,?,?,?,1)").run(...args);
       }
@@ -245,6 +272,7 @@ export class AnswerRoutingService {
 
   remove(id: string, revision: number): void {
     versionSchema.parse({ id, revision });
+    if (id === defaultAnswerRuleId) throw new Error("默认调度策略不可删除");
     if (!this.db.connection.prepare("DELETE FROM answer_rules WHERE id=? AND revision=?").run(id, revision).changes) throw conflict();
   }
 
@@ -262,7 +290,11 @@ export class AnswerRoutingService {
 
   preview(query: string, projectId: string | null, taskId?: string) {
     const rows = this.db.connection.prepare("SELECT * FROM answer_rules WHERE enabled=1 AND (project_id IS NULL OR project_id=?)").all(projectId) as Row[];
-    return matchAnswerRule(query, projectId, rows.map(row => this.currentRule(row, taskId)), rule => !rule.sourceUnavailable, !taskId);
+    const rules = rows.map(row => this.currentRule(row, taskId));
+    const match = matchAnswerRule(query, projectId, rules, rule => !rule.sourceUnavailable, !taskId);
+    const fallback = rules.find(rule => rule.id === defaultAnswerRuleId);
+    return match ?? (fallback && !query.trimStart().startsWith("/") && (!taskId || taskId === DOTS_TASK_ID)
+      ? { rule: fallback, phrase: "" } : null);
   }
 
   prepare(input: Turn): Promise<PreparedRoute | undefined> {
@@ -295,26 +327,27 @@ export class AnswerRoutingService {
   private async prepareFirstRequest(input: Turn): Promise<PreparedRoute | undefined> {
     const task = this.db.getTask(input.taskId);
     if (!task) return;
-    const prior = this.db.connection.prepare(`SELECT rule_id,revision,at,detail,phrase,evidence,scope,status FROM answer_rule_turns
+    const prior = this.db.connection.prepare(`SELECT rule_id,revision,at,detail,phrase,evidence,scope,status,snapshot FROM answer_rule_turns
       WHERE task_id=? AND input_id=?`).get(input.taskId, input.inputId) as
       { rule_id: string; revision: number; at: number; detail: string; phrase: string; evidence: string | null; scope: string;
-        status: AnswerRuleUse["routeStatus"] } | undefined;
+        status: AnswerRuleUse["routeStatus"]; snapshot: string | null } | undefined;
     const cannotRestore = () => new Error("无法恢复这轮回答的原始调度快照，请重新提问");
-    const priorRule = prior ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=? AND revision=? AND enabled=1")
-      .get(prior.rule_id, prior.revision) as Row | undefined : undefined;
-    if (prior && (!priorRule || prior.status === "revoked")) throw cannotRestore();
+    const priorRule = prior ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=? AND enabled=1")
+      .get(prior.rule_id) as Row | undefined : undefined;
+    if (prior && (!priorRule || prior.status === "revoked" || (!prior.snapshot && prior.revision !== priorRule.revision))) throw cannotRestore();
     const finishMatch = startAnswerRoutingTiming("ruleMatch");
-    const match = prior && priorRule ? { rule: this.currentRule(priorRule, input.taskId), phrase: prior.phrase }
+    const match = prior && priorRule ? { rule: prior.snapshot ? JSON.parse(prior.snapshot) as AnswerRule : this.currentRule(priorRule, input.taskId), phrase: prior.phrase }
       : this.preview(input.query, task.projectId ?? null, input.taskId);
     finishMatch?.(() => ({ inputId: input.inputId, method: prior && priorRule ? "restore" : "match", matched: !!match, ruleId: match?.rule.id }));
     if (!match) return;
-    const { rule, phrase } = match;
+    const { phrase } = match;
+    const rule = { ...match.rule, policy: match.rule.policy ?? defaultDotsSchedulingPolicy() };
     const scope = JSON.stringify({ projectId: task.projectId ?? null, cwd: input.cwd,
       ...(rule.sourceMemoryId ? { sourceHash: rule.sourceHash } : {}) });
     if (prior && (rule.sourceUnavailable || prior.scope !== scope)) throw cannotRestore();
     const introduction = "本轮回答调度。以用户本次明确要求为先。";
     const evidenceParts: string[] = [];
-    let detail = prior?.detail ?? `已提供做法，匹配“${phrase}”`;
+    let detail = prior?.detail ?? (phrase ? `已提供做法，匹配“${phrase}”` : "采用默认调度策略");
     const priorEvidence = prior?.evidence ? JSON.parse(prior.evidence) as AnswerRuleEvidence : undefined;
     let evidence = priorEvidence;
     let available: (() => boolean) | undefined;
@@ -378,12 +411,12 @@ export class AnswerRoutingService {
     }
     const at = prior?.at ?? Date.now();
     const record = () => {
-      this.db.connection.prepare(`INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,at,detail,phrase,evidence,scope,status)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
+      this.db.connection.prepare(`INSERT INTO answer_rule_turns(task_id,input_id,rule_id,revision,title,at,detail,phrase,evidence,scope,status,snapshot)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id,input_id) DO UPDATE SET detail=excluded.detail,evidence=excluded.evidence,status=excluded.status
         WHERE answer_rule_turns.rule_id=excluded.rule_id AND answer_rule_turns.revision=excluded.revision
           AND (answer_rule_turns.status<>'revoked' OR excluded.status='revoked')`)
         .run(task.id, input.inputId, rule.id, rule.revision, rule.title, at, detail, phrase, evidence ? JSON.stringify(evidence) : null,
-          scope, revocationReason ? "revoked" : "applied");
+          scope, revocationReason ? "revoked" : "applied", JSON.stringify(rule));
     };
     const revoke = (reason: string): never => {
       revocationReason = reason;
@@ -396,6 +429,9 @@ export class AnswerRoutingService {
     const prepared = { rule, text: render(rule.instruction), render, validate: () => {
       const current = this.db.getTask(input.taskId);
       if (revocationReason) throw new Error(revocationReason);
+      const recorded = this.db.connection.prepare("SELECT status FROM answer_rule_turns WHERE task_id=? AND input_id=?")
+        .get(input.taskId, input.inputId) as { status: string } | undefined;
+      if (recorded?.status === "revoked") revoke("回答规则已撤销");
       if (!current || current.projectId !== task.projectId || (!isLibrary && reference && current.cwd !== task.cwd))
         revoke("回答调度作用域已变化");
       if (available) {
@@ -437,17 +473,18 @@ export class AnswerRoutingService {
     if (exact && !ids.length) return [];
     const filter = exact ? `WHERE u.task_id=? AND u.input_id IN (${ids.map(() => "?").join(",")})` : "";
     const rows = this.db.connection.prepare(`WITH uses AS (
-      SELECT task_id,input_id,rule_id,title,revision,at,detail,phrase,evidence,status FROM answer_rule_turns
+      SELECT task_id,input_id,rule_id,title,revision,at,detail,phrase,evidence,status,snapshot FROM answer_rule_turns
       UNION ALL
-      SELECT task_id,input_id,rule_id,title,revision,at,detail,NULL,NULL,NULL FROM answer_rule_uses old
+      SELECT task_id,input_id,rule_id,title,revision,at,detail,NULL,NULL,NULL,NULL FROM answer_rule_uses old
       WHERE NOT EXISTS (SELECT 1 FROM answer_rule_turns turn WHERE turn.task_id=old.task_id AND turn.input_id=old.input_id)
     ) SELECT u.task_id AS taskId,t.title AS taskTitle,u.input_id AS inputId,u.rule_id AS ruleId,u.title,u.revision,u.at,u.detail,
-        u.phrase,u.evidence,u.status AS routeStatus
+        u.phrase,u.evidence,u.status AS routeStatus,u.snapshot
       FROM uses u JOIN tasks t ON t.id=u.task_id ${filter}
       ORDER BY u.at DESC ${exact ? "" : "LIMIT 50"}`).all(...(exact ? [exact.taskId, ...ids] : [])) as
-      (Omit<AnswerRuleUse, "evidence" | "phrase"> & { evidence: string | null; phrase: string | null })[];
-    return rows.map(({ evidence, phrase, routeStatus, ...row }) => ({ ...row, phrase: phrase ?? undefined,
+      (Omit<AnswerRuleUse, "evidence" | "phrase"> & { evidence: string | null; phrase: string | null; snapshot: string | null })[];
+    return rows.map(({ evidence, phrase, routeStatus, snapshot, ...row }) => ({ ...row, phrase: phrase ?? undefined,
       routeStatus: routeStatus ?? undefined,
+      policy: snapshot ? (JSON.parse(snapshot) as AnswerRule).policy : undefined,
       evidence: evidence ? JSON.parse(evidence) as AnswerRuleEvidence : undefined }));
   }
 }

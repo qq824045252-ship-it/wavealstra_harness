@@ -112,6 +112,7 @@ export interface DurableBotServiceOptions {
   mcpSelection?: (task: TaskDto) => readonly string[] | undefined;
   toolAllowed?: (task: TaskDto, name: string) => boolean;
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
+  onDotsProgress?: (taskId: string, operationId: string, identity: string, at: number) => void;
   onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   onResponse?: (taskId: string, message: AssistantMessage, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onGoalToolResult?: (taskId: string, identity: import("../../../shared/conversation-goal-activity").GoalActivityIdentity, tool: {
@@ -536,6 +537,7 @@ export class DurableBotService {
         foregroundHooks: domain?.foregroundHooks,
         restoreTools: names => mcp.restoreTools(names),
         prepareCodeMode: (code, context) => (this.opened.get(taskId)?.mcp ?? mcp).codeModeTools(code, context),
+        onDotsProgress: (operationId, identity, at) => this.options.onDotsProgress?.(taskId, operationId, identity, at),
         onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
         onResponse: (message, info) => { this.workMetrics.response(taskId, message, info); this.options.onResponse?.(taskId, message, info); },
         onRequest: info => this.options.onRequest?.(taskId, info),

@@ -1,3 +1,5 @@
+import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
+import { defaultDotsSchedulingPolicy, type AnswerRule, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import type Database from "better-sqlite3";
 import type { AgentUiPatch, AgentPromptRequest } from "../../shared/agent-ipc";
 import type { DotsAssistantReply, DotsDelegation, DotsReplyOrigin } from "../../shared/dots";
@@ -19,9 +21,13 @@ type Row = {
   title: string; text: string; files: string; created_at: number; updated_at: number; supersedes: number; interaction_id: string | null; goal_id: string | null;
 };
 
-function toDelegation(row: Row): DotsDelegation {
+type Activity = { operation_id: string; at: number; tool: string; phase: "start" | "finish"; last_report_at: number | null; progress_at?: number | null };
+
+function toDelegation(row: Row, activity?: Activity): DotsDelegation {
   return { id: row.operation_id, taskId: row.task_id, title: row.title, sourceMessageId: row.source_message_id,
     status: row.status, goalId: row.goal_id ?? undefined, proactiveReply: row.proactive_reply ? true : undefined, text: row.text, artifacts: JSON.parse(row.files),
+    ...(activity && { activity: { lastActivityAt: activity.at, lastProgressAt: activity.progress_at ?? undefined, lastReportAt: activity.last_report_at ?? undefined,
+      tool: activity.tool, phase: activity.phase } }),
     createdAt: row.created_at, updatedAt: row.updated_at, interactionId: row.interaction_id ?? undefined };
 }
 
@@ -30,6 +36,7 @@ export class DotsDelegations {
   private readonly flights = new Map<string, Promise<void>>();
   private readonly dirty = new Set<string>();
   private disposed = false;
+  private observationTimer?: ReturnType<typeof setTimeout>;
   private readonly recoverable: Row[];
   private readonly outbox: DotsReplyOutbox;
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -41,6 +48,16 @@ export class DotsDelegations {
       seq INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, task_id TEXT NOT NULL, source_message_id TEXT NOT NULL,
       title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', text TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, supersedes INTEGER NOT NULL DEFAULT 0, interaction_id TEXT, request_json TEXT, space_id TEXT, space_path TEXT, cwd TEXT, goal_id TEXT);
+      CREATE TABLE IF NOT EXISTS dots_tool_observations(
+        operation_id TEXT PRIMARY KEY, at INTEGER NOT NULL, tool TEXT NOT NULL, phase TEXT NOT NULL,
+        next_at INTEGER, last_report_at INTEGER);
+      CREATE INDEX IF NOT EXISTS dots_observation_due ON dots_tool_observations(next_at) WHERE next_at IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS dots_verified_progress(
+        operation_id TEXT NOT NULL, identity TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(operation_id,identity));
+      CREATE INDEX IF NOT EXISTS dots_verified_progress_latest ON dots_verified_progress(operation_id,at DESC);
+      CREATE TABLE IF NOT EXISTS dots_tool_observation_receipts(
+        operation_id TEXT NOT NULL, conversation TEXT NOT NULL, tool_task INTEGER NOT NULL, phase TEXT NOT NULL,
+        PRIMARY KEY(operation_id,conversation,tool_task,phase));
       CREATE TABLE IF NOT EXISTS dots_control_receipts(operation_id TEXT PRIMARY KEY,target_task_id TEXT NOT NULL,outcome TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_target_controls(task_id TEXT PRIMARY KEY,state TEXT NOT NULL,operation_id TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS dots_delegations_pending ON dots_delegations(task_id,seq) WHERE status IN ('pending','running','blocked');
@@ -54,6 +71,95 @@ export class DotsDelegations {
     this.outbox.connect(followup, append, allowed, allowedReply);
     for (const row of this.db.prepare("SELECT * FROM dots_delegations WHERE status='blocked'").all() as Row[])
       this.outbox.observe(toDelegation(row));
+    this.scheduleObservation();
+  }
+
+  private tracking(row: Row): DotsSchedulingPolicy["trackingPolicy"] | undefined {
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='answer_rule_turns'").get()) {
+      const turn = this.db.prepare("SELECT status,snapshot FROM answer_rule_turns WHERE task_id=? AND input_id=?")
+        .get(DOTS_TASK_ID, row.source_message_id) as { status: string; snapshot: string | null } | undefined;
+      if (turn?.status === "revoked") return;
+      if (turn?.snapshot) return (JSON.parse(turn.snapshot) as AnswerRule).policy?.trackingPolicy;
+    }
+    return defaultDotsSchedulingPolicy().trackingPolicy;
+  }
+
+  observeTool(event: ToolDiagnosticEvent): void {
+    if (this.disposed || event.sourceKind !== "main" || !event.taskId || !event.dotsOperationId) return;
+    const row = this.db.prepare(`SELECT * FROM dots_delegations WHERE task_id=? AND operation_id=?
+      AND status IN ('pending','running')`).get(event.taskId, event.dotsOperationId) as Row | undefined;
+    if (!row) return;
+    const policy = this.tracking(row);
+    const changed = this.db.transaction(() => {
+      if (!this.db.prepare("INSERT OR IGNORE INTO dots_tool_observation_receipts VALUES(?,?,?,?)")
+        .run(row.operation_id, event.conversationId, event.toolTaskId, event.phase).changes) return false;
+      this.db.prepare(`INSERT INTO dots_tool_observations(operation_id,at,tool,phase,next_at) VALUES(?,?,?,?,?)
+        ON CONFLICT(operation_id) DO UPDATE SET at=excluded.at,tool=excluded.tool,phase=excluded.phase
+        WHERE excluded.at>=dots_tool_observations.at`).run(row.operation_id, event.at, event.name, event.phase,
+        policy?.heartbeatMs ? event.at + policy.heartbeatMs : null);
+      return true;
+    })();
+    if (!changed) return;
+    this.notify();
+    if (row.status === "pending") this.refresh(row.task_id);
+    if (!this.observationTimer && policy?.heartbeatMs) this.scheduleObservation();
+  }
+
+  observeProgress(taskId: string, operationId: string, identity: string, at: number): void {
+    if (this.disposed) return;
+    const accepted = this.db.prepare(`INSERT OR IGNORE INTO dots_verified_progress(operation_id,identity,at)
+      SELECT operation_id,?,? FROM dots_delegations WHERE task_id=? AND operation_id=?
+      AND status IN ('pending','running','blocked','completed')`).run(identity, at, taskId, operationId);
+    if (accepted.changes) this.notify();
+  }
+
+  private scheduleObservation(): void {
+    if (this.disposed) return;
+    if (this.observationTimer) clearTimeout(this.observationTimer);
+    const next = this.db.prepare("SELECT next_at FROM dots_tool_observations WHERE next_at IS NOT NULL ORDER BY next_at LIMIT 1")
+      .pluck().get() as number | undefined;
+    this.observationTimer = next === undefined ? undefined : setTimeout(() => this.observeDue(), Math.max(0, next - Date.now()));
+    this.observationTimer?.unref();
+  }
+
+  private observeDue(): void {
+    this.observationTimer = undefined;
+    if (this.disposed) return;
+    const now = Date.now();
+    const due = this.db.prepare(`SELECT d.*,a.at,a.tool,a.phase,a.next_at,
+      (SELECT at FROM dots_verified_progress p WHERE p.operation_id=d.operation_id ORDER BY at DESC LIMIT 1) AS progress_at FROM dots_tool_observations a
+      JOIN dots_delegations d USING(operation_id) WHERE a.next_at<=?`).all(now) as
+      (Row & Pick<Activity, "at" | "tool" | "phase" | "progress_at"> & { next_at: number })[];
+    const targets = this.db.transaction(() => {
+      const next = this.db.prepare("UPDATE dots_tool_observations SET next_at=? WHERE operation_id=?");
+      const targets = new Set<string>();
+      for (const row of due) {
+        const policy = this.tracking(row);
+        const active = row.status === "running" || row.status === "pending";
+        next.run(active && policy?.heartbeatMs ? now + policy.heartbeatMs : null, row.operation_id);
+        if (row.status !== "running" || !policy?.heartbeatMs) continue;
+        const silent = now - row.at >= policy.silenceMs;
+        const activity = row.phase === "start" ? `最近观察到工具 ${row.tool} 开始执行。` : `最近观察到工具 ${row.tool} 返回。`;
+        const progress = row.progress_at === undefined || row.progress_at === null || now - row.progress_at >= policy.silenceMs
+          ? "近期没有新的可核实进展。" : "近期已登记可核实的阶段产物。";
+        const text = activity + (silent ? "已有一段时间未观察到新的工具活动。" : "") + progress;
+        if (this.outbox.observeActivity(toDelegation(row), row.next_at, text)) targets.add(row.task_id);
+      }
+      return targets;
+    })();
+    for (const task of targets) this.flushActivity(task);
+    this.scheduleObservation();
+  }
+
+  private flushActivity(task: string): void {
+    if (this.flights.has(task)) { this.dirty.add(task); return; }
+    const flight = this.outbox.flush(task, () => !this.disposed).then(retry => {
+      if (retry) this.retryLater(task);
+    }).catch(() => this.retryLater(task)).finally(() => {
+      this.flights.delete(task);
+      if (this.dirty.delete(task)) this.refresh(task);
+    });
+    this.flights.set(task, flight);
   }
 
   rememberOrigin(source: string, origin: DotsReplyOrigin) { this.outbox.rememberOrigin(source, origin); }
@@ -164,7 +270,10 @@ export class DotsDelegations {
     const rows = sourceIds
       ? this.db.prepare(select + " WHERE source_message_id IN (SELECT value FROM json_each(?)) ORDER BY seq").all(JSON.stringify(sourceIds))
       : this.db.prepare(select + " ORDER BY seq").all();
-    return (rows as Row[]).map(toDelegation);
+    const activity = this.db.prepare(`SELECT a.*,
+      (SELECT at FROM dots_verified_progress p WHERE p.operation_id=a.operation_id ORDER BY at DESC LIMIT 1) AS progress_at
+      FROM dots_tool_observations a WHERE a.operation_id=?`);
+    return (rows as Row[]).map(row => toDelegation(row, activity.get(row.operation_id) as Activity | undefined));
   }
 
   onPatch(patch: AgentUiPatch): void {
@@ -231,7 +340,10 @@ export class DotsDelegations {
         const update = this.db.prepare("UPDATE dots_delegations SET status=?,text=?,interaction_id=?,files=?,request_json=NULL,updated_at=? WHERE seq=? AND status IN ('pending','running','blocked') AND (status<>? OR interaction_id IS NOT ? OR text<>? OR files<>?) RETURNING *")
           .get(result.status, result.text, result.interactionId ?? null, files, now, row.seq, result.status, result.interactionId ?? null, result.text, files) as Row | undefined;
         if (!update) return false;
-        this.outbox.observe(toDelegation(update), result.citations);
+        if (result.status !== "running" || this.tracking(update)?.milestones)
+          this.outbox.observe(toDelegation(update), result.citations);
+        if (result.status !== "running")
+          this.db.prepare("UPDATE dots_tool_observations SET next_at=NULL WHERE operation_id=?").run(row.operation_id);
         if (row.supersedes) this.db.prepare(`UPDATE dots_delegations SET status='superseded',interaction_id=NULL,request_json=NULL,updated_at=?
           WHERE task_id=? AND seq<? AND (status IN ('pending','running','blocked') OR (status='completed' AND updated_at>=?))`)
           .run(now, taskId, row.seq, row.created_at);
@@ -247,6 +359,7 @@ export class DotsDelegations {
 
   close(): void {
     this.disposed = true;
+    if (this.observationTimer) clearTimeout(this.observationTimer);
     this.dirty.clear();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();

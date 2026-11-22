@@ -44,6 +44,7 @@ export interface ModelRequestDiagnostic {
   cacheContext: { previousRequestId: string | null; prefixStable: boolean | null; changedFields: string[]; coverage: string };
 }
 export interface ToolDiagnosticEvent {
+  dotsOperationId?: string;
   phase: "start" | "finish";
   taskId?: string;
   executionScope?: string;

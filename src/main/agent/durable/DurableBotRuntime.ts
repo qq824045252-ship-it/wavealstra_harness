@@ -1,3 +1,4 @@
+import { DURABLE_ARTIFACT_ENTRY_KIND as DOTS_ARTIFACT_KIND, durableArtifactRegistrationSchema, durableRegisteredArtifact as registeredDotsArtifact } from "./DurableArtifactRegistration";
 import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
@@ -140,6 +141,7 @@ export interface DurableBotOptions {
   isDotsWorkerInput?: (requestId: string) => boolean;
   hasDotsDelegation?: () => boolean;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
+  onDotsProgress?: (operationId: string, identity: string, at: number) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   projectionAfterEntryId?: number;
   taskId?: string;
@@ -1578,6 +1580,21 @@ export class DurableBotRuntime {
         const audit = this.metadataByEntry.get(entry.id)?.audit;
         if (audit) this.pendingAuditInputs.set(audit.userMessageId, audit);
       }
+      if (this.options.onDotsProgress && this.options.isDotsWorkerInput) {
+        try {
+          for (const entry of evidenceEntries) {
+            if (entry.kind !== DOTS_ARTIFACT_KIND) continue;
+            const data = durableArtifactRegistrationSchema.safeParse(entry.data);
+            const id = data.success ? data.data.inputIds.at(-1) : undefined;
+            if (id === undefined) continue;
+            const artifact = registeredDotsArtifact(entry, id, undefined, this.options.directory);
+            if (!artifact) continue;
+            const input = await this.storage.submission(id as Parameters<Storage["submission"]>[0], ctx);
+            if (input?.type === "input" && input.requestId && this.options.isDotsWorkerInput(input.requestId))
+              this.options.onDotsProgress(input.requestId, JSON.stringify([artifact.path, artifact.digest]), artifact.registeredAt);
+          }
+        } catch (error) { console.warn("[Durable] Dots progress observation failed", error); }
+      }
       try { this.options.onEntries?.(evidenceEntries, { conversationId: String(this.conversation.id), sourceKind: "main" }); }
       catch (error) { console.warn("[Durable] Usage projection failed", error); }
       await this.reconcileAuditReceipts();
@@ -1737,6 +1754,20 @@ function botExtension(
   };
   const toolGeneration = (toolTaskId: number, conversationId: string): number | undefined =>
     generationByToolTask.get(toolTaskId) ?? currentGenerationByConversation.get(conversationId);
+  const dotsToolOwners = new Map<number, string>();
+  const dotsOwner = async (api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]) => {
+    if (!options.isDotsWorkerInput || options.taskId === DOTS_TASK_ID || await childConversation(api, context)) return;
+    const live = await api.snapshot(LiveDoc, api.conversationId, context);
+    if (!live?.tools?.some(slot => slot.taskId === api.taskId)) return;
+    const id = live.run?.inputs.at(-1);
+    if (id === undefined) return;
+    const input = await storage.submission(id, context);
+    if (input?.type === "input" && input.requestId && options.isDotsWorkerInput(input.requestId)) {
+      dotsToolOwners.set(api.taskId, input.requestId);
+      if (dotsToolOwners.size > 4096) dotsToolOwners.delete(dotsToolOwners.keys().next().value!);
+      return input.requestId;
+    }
+  };
   const toolHooks: Partial<ToolHooks> = {
     beforeTool: async (call, api, context) => {
       if (options.foregroundHooks && !await childConversation(api, context)) {
@@ -1749,7 +1780,7 @@ function botExtension(
       if (!(decision && "block" in decision)) try {
         options.onTool?.({ phase: "start", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
-          generationTaskId,
+          generationTaskId, dotsOperationId: await dotsOwner(api, context),
           callId: call.id, name: call.name, at: Date.now(),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }
@@ -1786,11 +1817,12 @@ function botExtension(
         }
         options.onTool?.({ phase: "finish", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
-          generationTaskId: toolGeneration(api.taskId, String(api.conversationId)),
+          generationTaskId: toolGeneration(api.taskId, String(api.conversationId)), dotsOperationId: dotsToolOwners.get(api.taskId),
           callId: call.id, name: call.name, at: Date.now(), isError: observed.isError,
           diagnostics: durableToolDiagnosticMessages(observed),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }
+      dotsToolOwners.delete(api.taskId);
       return await managed?.afterTool(call, observed, api, context) ?? changed;
     },
   };

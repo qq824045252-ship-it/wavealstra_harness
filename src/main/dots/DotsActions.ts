@@ -1,3 +1,4 @@
+import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { DotsFollowup, followupInstructions } from "./DotsFollowup";
 import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { dotsCalendarContext } from "./DotsCalendar";
@@ -22,6 +23,8 @@ import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../w
 
 type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals">;
 export interface DotsActionHooks {
+  observeProgress?(taskId: string, operationId: string, identity: string, at: number): void;
+  observeTool?(event: ToolDiagnosticEvent): void;
   preferences?: () => { followupMode: "continue" | "notify" | "paused"; spaceIds: readonly string[] | null };
   fileNotice?: (event: { id: string; revision: string; taskId: string; file: string }) => void;
   progressNotice?: (event: { operationId: string; taskId: string; text: string }) => void;
@@ -187,6 +190,12 @@ export class DotsActions {
     const task = this.db.getTask(taskId);
     return Boolean(task && this.allowsSpace(task.spaceId));
   }
+
+  observeProgress(taskId: string, operationId: string, identity: string, at: number) {
+    this.hooks.observeProgress?.(taskId, operationId, identity, at);
+  }
+
+  observeTool(event: ToolDiagnosticEvent) { this.hooks.observeTool?.(event); }
 
   allowsReply(kind: import("../../shared/dots").DotsAssistantReply["kind"]) {
     return kind !== "progress" || this.preferences.followupMode !== "paused";
@@ -363,7 +372,7 @@ export class DotsActions {
       .map(item => {
         const result = this.delegationResult(item);
         return { operationId: item.id, goalId: item.goalId, status: result.status, interactionId: item.interactionId,
-          text: result.text.slice(0, 900), artifacts: item.artifacts.slice(0, 10), updatedAt: item.updatedAt };
+          text: result.text.slice(0, 900), artifacts: item.artifacts.slice(0, 10), updatedAt: item.updatedAt, activity: item.activity };
       });
   }
 
