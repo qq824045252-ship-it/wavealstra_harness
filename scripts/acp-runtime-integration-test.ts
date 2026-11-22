@@ -18,7 +18,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor<T>(probe: () => T | undefined, label: string, timeoutMs = 5000): Promise<T> {
+async function waitFor<T>(probe: () => T | undefined, label: string, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = probe();
@@ -51,22 +51,26 @@ try {
   assert.equal(new Set(catalog.map((item) => item.id)).size, catalog.length, "ACP 目录 id 唯一");
 
   // Keep this test independent from whatever ACP CLIs happen to be installed locally.
-  (runtime as any).listAgents = () => [{
+  (runtime as any).probeAgents = () => [{
     id: "devin",
     name: "Devin",
     protocol: "acp",
     available: true,
     availability: "ready",
     commandLabel: "mock-acp",
-    detail: "mock",
+    detail: "mock", enabled: true,
   }];
   let currentBehavior = "default";
+  let runtimeVersion = "1.0.0";
+  (runtime as any).runtimeKey = () => `fixture-path:${runtimeVersion}`;
+  const evidence = (refresh = false) => runtime.listAgents(refresh).find(item => item.id === "devin")?.capabilityEvidence;
+  assert.equal(evidence(true), undefined, "before handshake, executor capability evidence is unknown");
   (runtime as any).launch = (_manifest: unknown, runCwd: string) => {
     const child = spawn(process.execPath, [fixture], {
       cwd: runCwd,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, MOCK_ACP_BEHAVIOR: currentBehavior },
+      env: { ...process.env, MOCK_ACP_BEHAVIOR: currentBehavior, MOCK_ACP_VERSION: runtimeVersion },
     });
     if (currentBehavior === "hang") {
       const kill = child.kill.bind(child);
@@ -146,6 +150,10 @@ try {
   assert.ok(events.some((event) => event.patch.type === "tool_update" && event.patch.toolCallId === "tc-1" && event.patch.status === "success"), "tool_update success emitted");
   const toolMessage = runtime.history("task-1").messages.find((message) => message.id === "a-3")!;
   assert.equal(toolMessage.tools?.[0]?.status, "success");
+  assert.equal(evidence()?.runtimeVersion, "1.0.0");
+  assert.equal(evidence()?.midRunSteer, "unavailable-in-host");
+  assert.equal(evidence()?.toolEvents, "observed");
+  assert.equal(evidence()?.usage, "context-and-turn");
 
   // --- session/load continuation (no resume capability) ----------------------
   currentBehavior = "load";
@@ -160,6 +168,7 @@ try {
   );
   assert.equal(loadDone.continuationMode, "load");
   assert.equal(loadDone.sessionId, "mock-session-1");
+  assert.equal(evidence()?.sessionRecovery, "load-observed");
 
   // --- fallback_new when agent supports neither resume nor load ---------------
   currentBehavior = "neither";
@@ -174,6 +183,7 @@ try {
   );
   assert.equal(fallbackDone.continuationMode, "fallback_new");
   assert.equal(fallbackDone.sessionId, "mock-session-1");
+  assert.equal(evidence()?.sessionRecovery, "not-advertised");
 
   // --- authenticate retry: session/new rejects once, then succeeds ------------
   events.length = 0;
@@ -205,6 +215,9 @@ try {
     () => runtime.history("task-1").runs.find((run) => run.runId === hangRun.runId && run.status === "working"),
     "hung run reaching working",
   );
+  const concurrentHandshake = await runtime.testAgent("devin");
+  assert(concurrentHandshake.ok);
+  assert.equal(concurrentHandshake.capabilityEvidence?.cancellation, undefined, "a second handshake reports no stop by itself");
   const cancelResult = await runtime.cancel(hangRun.runId);
   assert.equal(cancelResult.ok, true);
   assert.equal(runtime.active("task-1").some((run) => run.runId === hangRun.runId), false, "cancelled run is hidden immediately");
@@ -215,6 +228,28 @@ try {
   );
   assert.equal(hangDone.capabilities.cancelSupported, false);
   await waitFor(() => !runtime.hasLiveTaskRun("task-1") ? true : undefined, "cancelled process ownership released after close");
+  assert.equal(runtime.history("task-1").runs.find(run => run.runId === hangRun.runId)?.cancellationEvidence, "agent-confirmed");
+  assert.equal(evidence()?.cancellation, "agent-confirmed", "the working process can update evidence after a concurrent handshake");
+
+  currentBehavior = "ignore-cancel";
+  const ignored = runtime.prompt({
+    taskId: "task-1", agentId: "devin", text: "ignore cancel",
+    userMessageId: "u-ignore", assistantMessageId: "a-ignore",
+  });
+  await waitFor(() => runtime.active("task-1").find(run => run.runId === ignored.runId && run.status === "working"), "noncooperative ACP prompt");
+  await runtime.cancel(ignored.runId);
+  assert.equal(runtime.history("task-1").runs.find(run => run.runId === ignored.runId)?.cancellationEvidence, "requested");
+  await waitFor(() => !runtime.hasLiveTaskRun("task-1") ? true : undefined, "local process termination");
+  assert.equal(runtime.history("task-1").runs.find(run => run.runId === ignored.runId)?.cancellationEvidence, "process-terminated");
+  assert.equal(evidence()?.cancellation, "process-terminated");
+
+  runtimeVersion = "2.0.0";
+  assert.equal(evidence(), undefined, "a changed command fingerprint invalidates behavioral evidence");
+  const nextProbe = await runtime.testAgent("devin");
+  assert.equal(nextProbe.capabilityEvidence?.runtimeVersion, "2.0.0");
+  assert.equal(evidence()?.toolEvents, undefined);
+  assert.equal(evidence()?.usage, undefined);
+  assert.equal(evidence()?.cancellation, undefined);
 
   // --- process crash becomes a failed run with recovery state -----------------
   currentBehavior = "crash";

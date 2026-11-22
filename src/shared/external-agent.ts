@@ -176,6 +176,20 @@ export function normalizeExternalAgentConfigSelections(raw: unknown): Record<str
   return Object.keys(result).length ? result : undefined;
 }
 
+export type ExternalAgentCancellationEvidence = "requested" | "agent-confirmed" | "process-terminated" | "unconfirmed";
+
+export interface ExternalAgentCapabilityEvidence {
+  protocolVersion: number;
+  runtimeName?: string;
+  runtimeVersion?: string;
+  observedAt: number;
+  midRunSteer: "unavailable-in-host";
+  sessionRecovery: "resume-advertised" | "load-advertised" | "resume-observed" | "load-observed" | "not-advertised";
+  cancellation?: Exclude<ExternalAgentCancellationEvidence, "requested">;
+  toolEvents?: "observed";
+  usage?: "context" | "turn" | "context-and-turn";
+}
+
 export interface ExternalAgentDescriptorDto {
   id: ExternalAgentId;
   name: string;
@@ -186,6 +200,7 @@ export interface ExternalAgentDescriptorDto {
   commandLabel: string;
   /** ACP 管理页开关；停用的 Agent 不出现在委托入口且 prompt 会被拒绝。 */
   enabled: boolean;
+  capabilityEvidence?: ExternalAgentCapabilityEvidence;
   /** 最近一次 session/new|load|resume 或连通测试捕获的会话级配置项（模型/模式等）。 */
   configOptions?: ExternalAgentConfigOptionDto[];
   /** 用户为该 Agent 保存的会话选项偏好；建会话后自动应用。 */
@@ -210,6 +225,7 @@ export interface ExternalAgentTestResultDto {
   steps: ExternalAgentTestStepDto[];
   sessionId?: string;
   resumeSupported?: boolean;
+  capabilityEvidence?: ExternalAgentCapabilityEvidence;
   authMethods?: string[];
   /** 测试会话捕获到的会话级配置项（模型/模式等），已同步进设置缓存。 */
   configOptions?: ExternalAgentConfigOptionDto[];
@@ -319,6 +335,7 @@ export interface ExternalAgentRunDto {
    */
   pendingPermissions: DelegatedRunPendingPermissionDto[];
   capabilities: DelegatedRunCapabilitiesDto;
+  cancellationEvidence?: ExternalAgentCancellationEvidence;
   verification: DelegatedRunVerificationDto;
   recovery: DelegatedRunRecoveryDto;
   diagnostics: DelegatedRunDiagnosticsDto;

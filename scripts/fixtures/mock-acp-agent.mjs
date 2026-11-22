@@ -54,6 +54,7 @@ const app = acp.agent({ name: "mybuddy-mock-acp-agent" })
   .onRequest(acp.methods.agent.initialize, () => ({
     protocolVersion: acp.PROTOCOL_VERSION,
     agentCapabilities: capabilities,
+    agentInfo: { name: "fixture-acp", version: process.env.MOCK_ACP_VERSION || "1.0.0" },
     authMethods,
   }))
   .onRequest(acp.methods.agent.authenticate, (ctx) => {
@@ -84,7 +85,7 @@ const app = acp.agent({ name: "mybuddy-mock-acp-agent" })
       console.error("mock-crash-signal");
       process.exit(3);
     }
-    if (behavior === "hang") {
+    if (behavior === "hang" || behavior === "ignore-cancel") {
       await new Promise((resolve) => {
         if (state.cancelled) return resolve();
         state.cancelResolve = resolve;
@@ -114,6 +115,7 @@ const app = acp.agent({ name: "mybuddy-mock-acp-agent" })
     });
 
     if (behavior === "toolcall") {
+      await notify({ sessionUpdate: "usage_update", used: 13, size: 256 });
       await notify({
         sessionUpdate: "tool_call",
         toolCallId: "tc-1",
@@ -128,7 +130,7 @@ const app = acp.agent({ name: "mybuddy-mock-acp-agent" })
         status: "completed",
         rawOutput: { out: "hi" },
       });
-      return { stopReason: "end_turn" };
+      return { stopReason: "end_turn", usage: { inputTokens: 13, outputTokens: 5, totalTokens: 18 } };
     }
 
     if (behavior !== "default" && behavior !== "auth") {
@@ -164,6 +166,7 @@ const app = acp.agent({ name: "mybuddy-mock-acp-agent" })
     return { stopReason: "end_turn" };
   })
   .onNotification(acp.methods.agent.session.cancel, () => {
+    if (behavior === "ignore-cancel") return;
     state.cancelled = true;
     state.cancelResolve?.();
   });

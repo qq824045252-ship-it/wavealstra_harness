@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { commandCodeAcpEnv, devinDesktopBundledCli, spawnExternalCliCommand, whereFirst } from "../platform/apps";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -10,6 +10,8 @@ import type { AppDatabase } from "../db/AppDatabase";
 import { snapshotWorkspace } from "../workspace/WorkspaceService";
 import type { AgentUiPatch, ChatToolCallDto } from "../../shared/agent-ipc";
 import type {
+  ExternalAgentCapabilityEvidence,
+  ExternalAgentCancellationEvidence,
   ExternalAgentConfigOptionDto,
   ExternalAgentConfigOptionValueDto,
   ExternalAgentConfigSelections,
@@ -91,6 +93,9 @@ interface ActiveRun {
   replayingHistory?: boolean;
   continuation?: { sourceRunId: string; sessionId: string };
   cancelled: boolean;
+  capability?: ExternalAgentCapabilityEvidence;
+  runtimeKey?: string;
+  terminatedLocally?: boolean;
 }
 
 interface PendingPermission {
@@ -218,6 +223,9 @@ function mapToolStatus(status: acp.ToolCallStatus | null | undefined): StoredToo
 export class ExternalAgentRuntime {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly permissions = new Map<string, PendingPermission>();
+  private readonly runtimePaths = new Map<ExternalAgentId, string[]>();
+  private readonly capabilityEvidence = new Map<ExternalAgentId, { key: string; value: ExternalAgentCapabilityEvidence }>();
+  private disposed = false;
   private descriptorsCache: ExternalAgentDescriptorDto[] | null = null;
   private send: ((event: ExternalAgentUiEvent) => void) | null = null;
 
@@ -252,6 +260,7 @@ export class ExternalAgentRuntime {
              END
        WHERE status IN ('starting','working','blocked')
     `).run(Date.now());
+    this.db.connection.exec("UPDATE external_agent_runs SET cancellation_evidence='unconfirmed' WHERE cancellation_evidence='requested'");
   }
 
   setSend(send: (event: ExternalAgentUiEvent) => void): void {
@@ -306,6 +315,9 @@ export class ExternalAgentRuntime {
     if (!columns.some((column) => column.name === "resume_supported")) {
       this.db.connection.exec(`ALTER TABLE external_agent_runs ADD COLUMN resume_supported INTEGER NOT NULL DEFAULT 0`);
     }
+    if (!columns.some((column) => column.name === "cancellation_evidence")) {
+      this.db.connection.exec("ALTER TABLE external_agent_runs ADD COLUMN cancellation_evidence TEXT");
+    }
     if (!columns.some((column) => column.name === "cancel_supported")) {
       this.db.connection.exec(`ALTER TABLE external_agent_runs ADD COLUMN cancel_supported INTEGER NOT NULL DEFAULT 1`);
     }
@@ -327,12 +339,18 @@ export class ExternalAgentRuntime {
     }
     const disabled = new Set(this.readDisabledAgentIds());
     return this.descriptorsCache.map((descriptor) => {
+      const manifest = MANIFESTS.find(item => item.id === descriptor.id);
+      const observed = this.capabilityEvidence.get(descriptor.id);
+      const capabilityEvidence = manifest && observed && observed.key === this.runtimeKey(manifest, refresh)
+        ? observed.value : undefined;
+      if (observed && !capabilityEvidence) this.capabilityEvidence.delete(descriptor.id);
       const configOptions = this.sessionConfig?.readOptions(descriptor.id);
       const configSelections = this.sessionConfig?.readSelections(descriptor.id);
       return {
         ...descriptor,
         enabled: !disabled.has(descriptor.id),
         permissionPolicy: this.permissionPolicyOf(descriptor.id),
+        ...(capabilityEvidence ? { capabilityEvidence: { ...capabilityEvidence } } : {}),
         ...(configOptions?.length ? { configOptions } : {}),
         ...(configSelections && Object.keys(configSelections).length ? { configSelections } : {}),
       };
@@ -514,6 +532,8 @@ export class ExternalAgentRuntime {
     if (!manifest) return fail(`不支持的外部 Agent：${agentId}`);
 
     const cwd = homedir();
+    const runtimeKey = this.runtimeKey(manifest, true);
+    let capabilityEvidence: ExternalAgentCapabilityEvidence | undefined;
     let stderr = "";
     let child: ChildProcessWithoutNullStreams | undefined;
     const phaseRef: { current: { id: ExternalAgentTestStepDto["id"]; label: string; at: number } | null } = { current: null };
@@ -571,6 +591,7 @@ export class ExternalAgentRuntime {
             },
           } : {}),
         });
+        capabilityEvidence = this.observeHandshake(manifest, runtimeKey, initialized);
         authMethods = (initialized.authMethods ?? []).map((method) => method.name);
         resumeSupported = initialized.agentCapabilities?.sessionCapabilities?.resume != null
           || initialized.agentCapabilities?.loadSession === true;
@@ -623,6 +644,7 @@ export class ExternalAgentRuntime {
         steps,
         sessionId,
         resumeSupported,
+        capabilityEvidence,
         authMethods,
         ...(configOptions.length ? { configOptions } : {}),
         ...(notes.length ? { notes } : {}),
@@ -638,6 +660,75 @@ export class ExternalAgentRuntime {
     } finally {
       try { child?.kill(); } catch { /* best effort */ }
     }
+  }
+
+  private runtimeKey(manifest: Manifest, rediscover = false): string | undefined {
+    try {
+      let paths = this.runtimePaths.get(manifest.id);
+      if (rediscover || !paths) {
+        this.runtimePaths.delete(manifest.id);
+        const entry = manifest.adapterPackage ? resolveAdapterEntry(manifest.adapterPackage) : resolveNativeCommand(manifest);
+        const cli = manifest.requiredCli ? whereFirst(manifest.requiredCli) : undefined;
+        if (!entry || (manifest.requiredCli && !cli)) return undefined;
+        paths = cli ? [entry, cli] : [entry];
+        this.runtimePaths.set(manifest.id, paths);
+      }
+      return JSON.stringify([manifest.nativeArgs, paths.map(path => {
+        const resolved = realpathSync(path);
+        const stat = statSync(resolved);
+        return [resolved, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs];
+      })]);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private observeHandshake(manifest: Manifest, key: string | undefined, result: acp.InitializeResponse): ExternalAgentCapabilityEvidence {
+    const previous = this.capabilityEvidence.get(manifest.id);
+    const sameRuntime = previous && key === previous.key
+      && previous.value.protocolVersion === result.protocolVersion
+      && previous.value.runtimeVersion !== undefined && previous.value.runtimeVersion === result.agentInfo?.version
+      && previous.value.runtimeName === result.agentInfo?.name;
+    const advertised = result.agentCapabilities?.sessionCapabilities?.resume != null ? "resume-advertised"
+      : result.agentCapabilities?.loadSession === true ? "load-advertised" : "not-advertised";
+    const previousRecovery = sameRuntime ? previous.value.sessionRecovery : undefined;
+    const value: ExternalAgentCapabilityEvidence = {
+      ...(sameRuntime ? previous.value : {}),
+      protocolVersion: result.protocolVersion,
+      runtimeName: result.agentInfo?.name,
+      runtimeVersion: result.agentInfo?.version,
+      observedAt: Date.now(),
+      midRunSteer: "unavailable-in-host",
+      sessionRecovery: advertised === "resume-advertised" && previousRecovery === "resume-observed" ? previousRecovery
+        : advertised === "load-advertised" && previousRecovery === "load-observed" ? previousRecovery : advertised,
+    };
+    if (key) this.capabilityEvidence.set(manifest.id, { key, value });
+    return value;
+  }
+
+  private observeRun(run: ActiveRun, changes: Partial<ExternalAgentCapabilityEvidence>): void {
+    if (!run.capability) return;
+    const observed = this.capabilityEvidence.get(run.dto.agentId);
+    const latest = observed?.value;
+    if (latest && observed.key === run.runtimeKey && (latest === run.capability || (
+      latest.runtimeVersion !== undefined && latest.runtimeVersion === run.capability.runtimeVersion
+      && latest.runtimeName === run.capability.runtimeName && latest.protocolVersion === run.capability.protocolVersion
+    ))) {
+      const usage = changes.usage && latest.usage && changes.usage !== latest.usage ? "context-and-turn" : changes.usage;
+      const recovery = changes.sessionRecovery;
+      if (recovery && latest.sessionRecovery.split("-")[0] !== recovery.split("-")[0]) delete changes.sessionRecovery;
+      Object.assign(latest, changes, { ...(usage ? { usage } : {}), observedAt: Date.now() });
+    }
+    if (latest !== run.capability) Object.assign(run.capability, changes, { observedAt: Date.now() });
+  }
+
+  private recordCancellation(run: ActiveRun, evidence: ExternalAgentCancellationEvidence): void {
+    if (this.disposed) return;
+    const current = run.dto.cancellationEvidence;
+    if (current === "agent-confirmed" || (current === "process-terminated" && evidence !== "agent-confirmed")) return;
+    run.dto.cancellationEvidence = evidence;
+    this.db.connection.prepare("UPDATE external_agent_runs SET cancellation_evidence=? WHERE id=?").run(evidence, run.dto.runId);
+    if (evidence !== "requested") this.observeRun(run, { cancellation: evidence });
   }
 
   private launch(manifest: Manifest, cwd: string): ChildProcessWithoutNullStreams {
@@ -781,6 +872,13 @@ export class ExternalAgentRuntime {
         this.emit(run, { type: "thinking_delta", taskId: run.dto.taskId, messageId: run.dto.assistantMessageId, delta: update.content.text });
       }
       return;
+    }
+    if (update.sessionUpdate === "usage_update") {
+      this.observeRun(run, { usage: run.capability?.usage === "turn" || run.capability?.usage === "context-and-turn" ? "context-and-turn" : "context" });
+      return;
+    }
+    if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      this.observeRun(run, { toolEvents: "observed" });
     }
     if (update.sessionUpdate === "tool_call") {
       const status = mapToolStatus(update.status);
@@ -1037,6 +1135,8 @@ export class ExternalAgentRuntime {
     let stderr = "";
     let authMethodsSeen: acp.AuthMethod[] = [];
     try {
+      if (run.cancelled) { this.recordCancellation(run, "unconfirmed"); return; }
+      run.runtimeKey = this.runtimeKey(manifest, true);
       const child = this.launch(manifest, run.dto.cwd);
       run.process = child;
       child.stderr.on("data", (chunk: Buffer) => {
@@ -1079,6 +1179,7 @@ export class ExternalAgentRuntime {
             },
           } : {}),
         });
+        run.capability = this.observeHandshake(manifest, run.runtimeKey, initialized);
         const canResume = initialized.agentCapabilities?.sessionCapabilities?.resume != null;
         const canLoad = initialized.agentCapabilities?.loadSession === true;
         this.setCapabilities(run, canResume || canLoad);
@@ -1101,6 +1202,7 @@ export class ExternalAgentRuntime {
             if (canResume) {
               const resumed = await ctx.request(acp.methods.agent.session.resume, { sessionId: continuedSessionId, ...sessionRequest });
               this.setContinuationMode(run, "resume");
+              this.observeRun(run, { sessionRecovery: "resume-observed" });
               return { sessionId: continuedSessionId, configOptions: resumed.configOptions };
             } else if (canLoad) {
               // session/load must replay the previous transcript. Suppress that replay here;
@@ -1113,6 +1215,7 @@ export class ExternalAgentRuntime {
                 run.replayingHistory = false;
               }
               this.setContinuationMode(run, "load");
+              this.observeRun(run, { sessionRecovery: "load-observed" });
               return { sessionId: continuedSessionId, configOptions: loaded.configOptions };
             } else {
               const created = await ctx.request(acp.methods.agent.session.new, sessionRequest);
@@ -1176,6 +1279,12 @@ export class ExternalAgentRuntime {
           sessionId,
           prompt: [{ type: "text", text: this.executionPrompt(request) }],
         });
+
+        if (promptResponse.usage) {
+          this.observeRun(run, { usage: run.capability?.usage === "context" || run.capability?.usage === "context-and-turn" ? "context-and-turn" : "turn" });
+        }
+        if (promptResponse.stopReason === "cancelled") this.recordCancellation(run, "agent-confirmed");
+        else if (run.cancelled) this.recordCancellation(run, "unconfirmed");
 
         // File/artifact reconciliation is part of the execution commit. Do it before
         // assistant_end so completion does not cause a second layout jump.
@@ -1246,9 +1355,13 @@ export class ExternalAgentRuntime {
       const child = run.process;
       if (child && child.exitCode === null && child.signalCode === null) {
         // Retain ownership while kill is pending, including cancelled runs hidden by active().
-        child.once("close", () => this.activeRuns.delete(run.dto.runId));
+        child.once("close", (_code, signal) => {
+          if (run.cancelled) this.recordCancellation(run, run.terminatedLocally && signal ? "process-terminated" : "unconfirmed");
+          this.activeRuns.delete(run.dto.runId);
+        });
         try { child.kill(); } catch { /* keep ownership until the process closes */ }
       } else {
+        if (run.cancelled) this.recordCancellation(run, run.terminatedLocally && child?.signalCode ? "process-terminated" : "unconfirmed");
         this.activeRuns.delete(run.dto.runId);
       }
     }
@@ -1259,6 +1372,7 @@ export class ExternalAgentRuntime {
     if (!runs.length) return { ok: false, message: "没有运行中的 ACP Agent" };
     await Promise.all(runs.map(async (run) => {
       run.cancelled = true;
+      this.recordCancellation(run, "requested");
       this.setRecovery(run, "none");
       // Cancellation is a terminal user decision. Persist it immediately so a slow
       // adapter response cannot keep the run visible or overwrite it with completed.
@@ -1276,7 +1390,7 @@ export class ExternalAgentRuntime {
         }
       } catch { /* process kill below is final fallback */ }
       setTimeout(() => {
-        try { run.process?.kill(); } catch { /* best effort */ }
+        try { if (run.process?.kill()) run.terminatedLocally = true; } catch { /* best effort */ }
       }, 1200).unref?.();
     }));
     return { ok: true, message: `已请求停止 ${runs.length} 个 ACP Agent` };
@@ -1288,7 +1402,7 @@ export class ExternalAgentRuntime {
              user_message_id, assistant_message_id, prompt, display_text, attachments_json,
              final_text, thinking_text, tools_json, started_at, completed_at, error,
              continued_from_run_id, continuation_mode, output_cursor, artifact_refs_json,
-             resume_supported, cancel_supported, verification_status, recovery_state, recovery_message
+             resume_supported, cancel_supported, cancellation_evidence, verification_status, recovery_state, recovery_message
         FROM external_agent_runs WHERE task_id=? ORDER BY started_at ASC
     `).all(taskId) as Array<Record<string, unknown>>;
     const runs: ExternalAgentRunDto[] = [];
@@ -1323,6 +1437,8 @@ export class ExternalAgentRuntime {
         artifactRefs,
         // 历史 run 的等待中授权请求随进程存在与否失效；只有在内存里仍存活的 run 才可能恢复交互
         pendingPermissions: [],
+        ...(["requested", "agent-confirmed", "process-terminated", "unconfirmed"].includes(String(row.cancellation_evidence))
+          ? { cancellationEvidence: row.cancellation_evidence as ExternalAgentCancellationEvidence } : {}),
         capabilities: {
           cancelSupported: Number(row.cancel_supported ?? 1) === 1,
           resumeSupported: Number(row.resume_supported ?? 0) === 1 && Boolean(row.session_id),
@@ -1399,6 +1515,7 @@ export class ExternalAgentRuntime {
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const run of this.activeRuns.values()) {
       run.cancelled = true;
       try { run.process?.kill(); } catch { /* best effort */ }

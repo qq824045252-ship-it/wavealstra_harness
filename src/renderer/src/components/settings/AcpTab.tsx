@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconBot, IconCheck, IconRefresh, IconX } from "@/components/common/icons";
 import { loadExternalAgentCatalog, updateExternalAgentCatalog, useExternalAgentCatalog } from "@/lib/externalAgentCatalog";
 import type {
+  ExternalAgentCapabilityEvidence,
   ExternalAgentConfigOptionDto,
   ExternalAgentDescriptorDto,
   ExternalAgentId,
@@ -57,6 +58,62 @@ function AcpToggle({
   );
 }
 
+const RECOVERY_EVIDENCE = {
+  "resume-observed": "已续接原会话",
+  "load-observed": "已加载原会话",
+  "resume-advertised": "握手声明可续接",
+  "load-advertised": "握手声明可加载",
+  "not-advertised": "握手未声明恢复",
+};
+
+const CANCEL_EVIDENCE = {
+  "agent-confirmed": "Agent 已确认停止",
+  "process-terminated": "已终止本地进程",
+  unconfirmed: "未取得停止确认",
+};
+
+const USAGE_EVIDENCE = {
+  context: "观察到会话上下文用量",
+  turn: "观察到提示响应用量",
+  "context-and-turn": "观察到上下文和提示响应用量",
+};
+
+function CapabilityEvidence({ evidence }: { evidence?: ExternalAgentCapabilityEvidence }) {
+  const runtime = [evidence?.runtimeName, evidence?.runtimeVersion].filter(Boolean).join(" ");
+  return (
+    <details className="acp-agent-detail acp-capability-evidence">
+      <summary>{evidence ? `执行能力 · ACP ${evidence.protocolVersion}${runtime ? ` · ${runtime}` : ""}` : "执行能力 · 待握手"}</summary>
+      <dl>
+        <dt>运行中引导</dt><dd>当前接入不提供</dd>
+        <dt>会话恢复</dt><dd>{evidence ? RECOVERY_EVIDENCE[evidence.sessionRecovery] : "未知"}</dd>
+        <dt>停止证据</dt><dd>{evidence?.cancellation ? CANCEL_EVIDENCE[evidence.cancellation] : "尚无停止结果"}</dd>
+        <dt>工具日志</dt><dd>{evidence?.toolEvents ? "部分可见 · 已收到工具事件，完整性未知" : "未知"}</dd>
+        <dt>用量</dt><dd>{evidence?.usage ? USAGE_EVIDENCE[evidence.usage] : "未知"}</dd>
+      </dl>
+    </details>
+  );
+}
+
+function NativePiCapabilities() {
+  return (
+    <section className="acp-group" aria-label="Pi Durable 执行能力">
+      <div className="acp-group-head">
+        <h3>内置执行器 · Pi Durable</h3>
+      </div>
+      <details className="acp-agent-detail acp-capability-evidence">
+        <summary>执行能力 · 内置</summary>
+        <dl>
+          <dt>运行中引导</dt><dd>支持。子代理逐条显示排队、进入对话和终态。</dd>
+          <dt>会话恢复</dt><dd>支持。恢复持久化会话和可安全重放的工具，未确认的外部动作需核验。</dd>
+          <dt>停止证据</dt><dd>支持。原生中止等待会话停止，已发起的外部动作可能需要单独核验。</dd>
+          <dt>工具日志</dt><dd>应用管理的工具调用有原生执行记录。外部工具内部步骤为部分可见。</dd>
+          <dt>用量</dt><dd>按请求展示供应商实际报告的字段。缺失字段显示为未知。</dd>
+        </dl>
+      </details>
+    </section>
+  );
+}
+
 function AgentTestResult({ result }: { result: ExternalAgentTestResultDto }): React.JSX.Element {
   return (
     <div className={`acp-test-result ${result.ok ? "is-ok" : "is-error"}`}>
@@ -73,7 +130,6 @@ function AgentTestResult({ result }: { result: ExternalAgentTestResultDto }): Re
       {result.ok ? (
         <div className="acp-test-meta">
           {result.sessionId && <span>session：{result.sessionId}</span>}
-          <span>{result.resumeSupported ? "支持会话续聊" : "不支持会话续聊"}</span>
           {result.authMethods && result.authMethods.length > 0 && (
             <span>认证方式：{result.authMethods.join("、")}</span>
           )}
@@ -180,6 +236,7 @@ function AgentRow({
         </div>
         <div className="acp-agent-command">{agent.commandLabel}</div>
         {agent.detail && <div className="acp-agent-detail">{agent.detail}</div>}
+        <CapabilityEvidence evidence={agent.capabilityEvidence} />
         <label className="acp-config-row acp-permission-row">
           <span className="acp-config-label" title={PERMISSION_POLICY_HINTS[policy]}>权限</span>
           <select
@@ -250,7 +307,7 @@ export default function AcpTab(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load]);
 
   const toggle = async (agent: ExternalAgentDescriptorDto, enabled: boolean): Promise<void> => {
@@ -333,12 +390,7 @@ export default function AcpTab(): React.JSX.Element {
       const result = await testFn(agent.id);
       setResults((current) => ({ ...current, [agent.id]: result }));
       if (!result.ok) setNotice({ text: `${agent.name} 测试未通过`, error: true });
-      else if (result.configOptions?.length) {
-        const current = useExternalAgentCatalog.getState().agents;
-        updateExternalAgentCatalog(current.map((item) => item.id === agent.id
-          ? { ...item, configOptions: result.configOptions }
-          : item));
-      }
+      else await loadExternalAgentCatalog(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setResults((current) => ({
@@ -377,6 +429,8 @@ export default function AcpTab(): React.JSX.Element {
       </div>
 
       {notice && <div className={`acp-notice ${notice.error ? "error" : ""}`}>{notice.text}</div>}
+
+      <NativePiCapabilities />
 
       <section className="acp-group">
         <div className="acp-group-head">
