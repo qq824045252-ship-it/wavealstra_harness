@@ -7,11 +7,12 @@ import { durableStorageExists } from "./DurableStorage";
 export async function readDurableReadOnlyHistory(input: {
   directory: string; cwd: string; models: Models; beforeEntryId?: TaskHistoryTarget;
   isDotsWorkerInput?: (requestId: string) => boolean;
+  hasDotsDelegation?: () => boolean;
   observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
 }): Promise<TaskHistoryDto> {
   if (!durableStorageExists(input.directory)) return { messages: [], cwd: input.cwd };
   const runtime = await DurableBotRuntime.open({ directory: input.directory, cwd: input.cwd,
-    models: input.models, observedUsage: input.observedUsage, isDotsWorkerInput: input.isDotsWorkerInput,
+    models: input.models, observedUsage: input.observedUsage, isDotsWorkerInput: input.isDotsWorkerInput, hasDotsDelegation: input.hasDotsDelegation,
     readOnly: true, toolMode: "native", instructions: () => "", onSnapshot: () => {} });
   try {
     const block = input.beforeEntryId === undefined ? undefined : await runtime.loadHistoryWindow(input.beforeEntryId);

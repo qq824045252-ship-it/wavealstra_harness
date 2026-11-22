@@ -2,8 +2,8 @@ import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalL
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import { appendDurableDotsReply } from "./DurableDotsReply";
-import { readDotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
-import { DOTS_TASK_ID, type DotsAssistantReply } from "../../../shared/dots";
+import { readDotsWorkerOutcome, recoverDotsNarrativeReply } from "../../dots/DotsWorkerOutcome";
+import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
 import { withWindowsBashWorkspacePath } from "../../platform/bash-workspace-path";
 import { withShellTerminalGuidance } from "./DurableShellTerminal";
 import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
@@ -74,6 +74,12 @@ import { GenerationTiming, generationContentTokens } from "../../usage/generatio
 import { deepseekCitationMarkdown } from "../../../shared/deepseek";
 
 type BotInputMetadata = DurableInputMetadata;
+
+function allowsDotsReplyRecovery(input?: BotInputMetadata): boolean {
+  return Boolean(input?.inputRequestId && !isDotsAutomaticInput(input.inputRequestId)
+    && !input.inputRequestId.startsWith("dots-input-") && !input.goalContinuation && !input.gatewayOrigin
+    && !/\b(?:json|dotsState)\b/i.test(input.displayText));
+}
 /** 孤立的工具结果最多回扫多少条 entry 去找调用行（默认窗口 50 条；留足余量但固定上限）。 */
 const ORPHAN_CALL_SCAN_ENTRIES = 500;
 const CompactionRequestSequence = defineDoc({ kind: "mybuddy.compaction-request-sequence", version: 1, scope: "session",
@@ -132,6 +138,7 @@ export interface DurableBotOptions {
   waitingForInput?: () => boolean;
   isDelegatedMemoryInput?: (requestId: string) => boolean;
   isDotsWorkerInput?: (requestId: string) => boolean;
+  hasDotsDelegation?: () => boolean;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   projectionAfterEntryId?: number;
@@ -197,7 +204,7 @@ export class DurableBotRuntime {
   private lease?: DurableStorageLease;
   private readonly children = new Map<number, ConversationWatch>();
   private readonly history = new DurableHistoryProjection();
-  private liveDotsInput?: { id: number; worker: boolean };
+  private liveDotsInput?: { id: number; worker: boolean; recoverNarrative: boolean };
   private historyBefore?: EntryId;
   private readonly metadataByEntry = new Map<number, BotInputMetadata>();
   private readonly pendingAuditInputs = new Map<string, DurableInputAudit>();
@@ -847,15 +854,22 @@ export class DurableBotRuntime {
     timing?: { completed?: Readonly<Record<string, number>>; speed?: Readonly<Record<string, DurableResponseSpeed>> }) {
     const fresh = await this.historyEntries(history, entries);
     const dotsEntries = new Set<number>();
+    const recoveredReplies = new Map<number, string>();
     const isDots = this.options.isDotsWorkerInput;
     if (isDots) {
       const ordered = fresh.slice().sort((a, b) => a.id - b.id);
       const isUser = (entry: EntryRecord) => entry.kind === "mybuddy.user" || entry.kind === "pi.user";
       let user: EntryRecord | undefined;
       let scannedBefore = false;
+      let hasDelegation: boolean | undefined;
       for (const entry of ordered) {
         if (isUser(entry)) { user = entry; continue; }
-        if (!entry.model?.some(message => message.role === "assistant" && readDotsWorkerOutcome(contentText(message.content)))) continue;
+        const message = entry.model?.find(item => item.role === "assistant");
+        if (!message) continue;
+        const text = contentText(message.content);
+        const workerOutcome = readDotsWorkerOutcome(text);
+        const narrative = message.stopReason === "stop" ? recoverDotsNarrativeReply(text) : undefined;
+        if (!workerOutcome && narrative === undefined) continue;
         const known = history.priorUser(entry.id);
         if (known && known.id > (user?.id ?? 0)) user = known;
         if (!user && !scannedBefore) {
@@ -868,11 +882,14 @@ export class DurableBotRuntime {
           } while (!user && cursor);
           if (user) await this.loadInputMetadata([user], metadata);
         }
-        const requestId = user && metadata.get(user.id)?.inputRequestId;
-        if (requestId && isDots(requestId)) dotsEntries.add(entry.id);
+        const input = user && metadata.get(user.id);
+        const requestId = input?.inputRequestId;
+        if (workerOutcome && requestId && isDots(requestId)) dotsEntries.add(entry.id);
+        if (narrative !== undefined && allowsDotsReplyRecovery(input)
+          && (hasDelegation ??= this.options.hasDotsDelegation?.() ?? false)) recoveredReplies.set(entry.id, narrative);
       }
     }
-    return history.merge(fresh, metadata, timing?.completed ?? {}, timing?.speed ?? {}, dotsEntries);
+    return history.merge(fresh, metadata, timing?.completed ?? {}, timing?.speed ?? {}, dotsEntries, recoveredReplies);
   }
 
   /** Results outside a window update its tool rows without adding intervening messages. */
@@ -1369,16 +1386,28 @@ export class DurableBotRuntime {
     if (live.run && live.generation?.message) {
       const inputId = live.run.inputs.at(-1);
       const body = contentText(live.generation.message.content);
+      const narrative = recoverDotsNarrativeReply(body, true);
       let dotsWorker = false;
-      if (this.options.isDotsWorkerInput && inputId !== undefined && /^\s*(?:\{|\x60)/u.test(body)) {
+      let recoveredReply: string | undefined;
+      if (this.options.isDotsWorkerInput && inputId !== undefined && (narrative !== undefined || /^\s*(?:\{|\x60)/u.test(body))) {
         if (this.liveDotsInput?.id !== inputId) {
           const input = await this.storage.submission(inputId, ctx);
           const requestId = input?.type === "input" ? input.requestId : undefined;
-          this.liveDotsInput = { id: inputId, worker: Boolean(requestId && this.options.isDotsWorkerInput(requestId)) };
+          const worker = Boolean(requestId && this.options.isDotsWorkerInput(requestId));
+          let recoverNarrative = false;
+          if (!worker && input?.type === "input" && input.entry !== undefined && this.options.hasDotsDelegation?.()) {
+            if (!this.metadataByEntry.has(input.entry)) {
+              const user = await this.storage.entry(input.conversationId, input.entry, ctx);
+              if (user) await this.loadInputMetadata([user.entry]);
+            }
+            recoverNarrative = allowsDotsReplyRecovery(this.metadataByEntry.get(input.entry));
+          }
+          this.liveDotsInput = { id: inputId, worker, recoverNarrative };
         }
         dotsWorker = this.liveDotsInput.worker;
+        if (this.liveDotsInput.recoverNarrative) recoveredReply = narrative;
       }
-      const row = assistantRow(`durable-live-${live.run.taskId}`, live.run.taskId, live.generation.message, undefined, turnStartedAt, true, undefined, dotsWorker);
+      const row = assistantRow(`durable-live-${live.run.taskId}`, live.run.taskId, live.generation.message, undefined, turnStartedAt, true, undefined, dotsWorker, recoveredReply);
       messages.push(row);
       for (const tool of row.tools ?? []) tools.set(tool.id, tool);
     }

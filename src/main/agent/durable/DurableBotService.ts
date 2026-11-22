@@ -553,6 +553,7 @@ export class DurableBotService {
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
         evidenceProjection: this.options.evidenceProjection?.(task),
         isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId),
+        hasDotsDelegation: () => this.hasDotsDelegation(taskId),
         isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
           && Boolean(db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
           && Boolean(db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId))),
@@ -936,10 +937,15 @@ export class DurableBotService {
 
   /** Resolve the exact accepted input. A later answer in the same task is never its result. */
   private isDotsWorkerInput(taskId: string, requestId: string): boolean {
+    return /^(?:dots-input-|goal-continuation:)/.test(requestId) && this.hasDotsDelegation(taskId, requestId);
+  }
+
+  private hasDotsDelegation(taskId: string, requestId?: string): boolean {
     const db = this.options.db.connection;
-    return taskId !== DOTS_TASK_ID && /^(?:dots-input-|goal-continuation:)/.test(requestId)
-      && Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
-      && Boolean(db.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId));
+    if (taskId === DOTS_TASK_ID || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get()) return false;
+    return requestId === undefined
+      ? Boolean(db.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? LIMIT 1").get(taskId))
+      : Boolean(db.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId));
   }
 
   async dotsSubmission(taskId: string, operationId: string) {
@@ -1118,7 +1124,7 @@ export class DurableBotService {
     if (!binding) return { messages: [] };
     const reading = readDurableReadOnlyHistory({ directory: binding.directory, cwd: binding.cwd,
       models: this.options.models, beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId),
-      isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId) });
+      isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId), hasDotsDelegation: () => this.hasDotsDelegation(taskId) });
     const barrier = reading.then(() => {}, () => {}).finally(() => {
       if (this.passiveReads.get(taskId) === barrier) this.passiveReads.delete(taskId);
     });

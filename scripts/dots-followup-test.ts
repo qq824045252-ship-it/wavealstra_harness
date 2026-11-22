@@ -38,6 +38,9 @@ const writtenResult = "采购说明正文：使用无塑纸封套，标签注明
 const conclusion = "东区批次已核对，合计到货 18 件。";
 const partial = "验收清单列出仓储、装配两项。财务栏仍空着。";
 const runningMilestone = "周一批次原始记录显示 18 件。";
+const manualIntro = "已按你的要求更新。";
+const manualResult = "排版已经更新。\n\n1. 保留原有入口。";
+const leakedReply = manualIntro + "\n\n```json\n" + JSON.stringify({ dotsState: "complete", result: manualResult }) + "\n```";
 const completedWorkerReply = (result: string) => [{ type: "text" as const, text: JSON.stringify({ dotsState: "complete", result }) }];
 const fixture = await createAgentDurableFixture(root, db, async (input) => {
   const tools = getCurrentTools(input.messages);
@@ -52,6 +55,8 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
   }
   if (tools.some((t) => t.name === "read")) {
     workerTurns++;
+    if ((JSON.stringify(input.messages.findLast(m => m.role === "user")?.content) ?? "").includes("汇报排版进展"))
+      return [{ type: "text", text: leakedReply }];
     if (phase === "refused")
       return { content: [], errorMessage: '400: {"type":"invalid_request_error","message":"仓储端已拒绝此次校验"}' };
     if (phase === "first") {
@@ -556,6 +561,23 @@ try {
   const manualWorkerHistory = await agent.loadTaskHistory(runningJob.taskId, undefined, "current");
   assert.equal(manualWorkerHistory.messages.at(-1)?.text, JSON.stringify({ dotsState: "complete", result: conclusion }));
   console.log("PASS 同一普通任务中的直接用户请求仍原样显示结构相同的 JSON");
+  const continued = await agent.prompt({ taskId: runningJob.taskId, spaceId: space.id,
+    userMessageId: "ordinary-layout-report", assistantMessageId: "ordinary-layout-answer",
+    text: "请汇报排版进展。" }, { durableAdmissionOnly: true });
+  assert(continued.receipt);
+  await agent.waitForSubmission(continued.receipt);
+  const expectedReply = `${manualIntro}\n\n${manualResult}`;
+  assert.equal((await agent.loadTaskHistory(runningJob.taskId, undefined, "current")).messages.at(-1)?.text, expectedReply);
+  await agent.releaseDurableTask(runningJob.taskId);
+  assert.equal((await agent.loadTaskHistory(runningJob.taskId)).messages.at(-1)?.text, expectedReply);
+  console.log("PASS 曾经委派的任务由用户直接续聊时，还原附在正文尾部的内部回执，关闭后仍可读");
+  const requestedJson = await agent.prompt({ taskId: runningJob.taskId, spaceId: space.id,
+    userMessageId: "ordinary-layout-json", assistantMessageId: "ordinary-layout-json-answer",
+    text: "请汇报排版进展，并给出 JSON 示例原文。" }, { durableAdmissionOnly: true });
+  assert(requestedJson.receipt);
+  await agent.waitForSubmission(requestedJson.receipt);
+  assert.equal((await agent.loadTaskHistory(runningJob.taskId, undefined, "current")).messages.at(-1)?.text, leakedReply);
+  console.log("PASS 明确要求 JSON 的直接续聊保留正文和代码块");
 } catch (error) {
   console.error("Dots followup verification failed", error);
   for (const j of journal.list())

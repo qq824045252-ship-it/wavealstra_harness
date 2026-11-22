@@ -55,6 +55,9 @@
 .chat-code-wrap pre, pre.chat-code-wrap, .chat-code-wrap code { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .chat-reading-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
   width: min(900px, calc(100vw - 24px));
   max-height: calc(100vh - 24px);
   box-sizing: border-box;

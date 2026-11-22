@@ -71,9 +71,15 @@ run(async env => {
   assert.equal(await evaluate(`getComputedStyle(${inReply(".chat-code-wrap pre code")}).whiteSpace`), "pre-wrap");
   await click("查看完整代码", scope);
   assert.equal(await evaluate("document.querySelector('dialog[open] pre').textContent.trimEnd()"), sample.trimEnd());
+  const centered = () => evaluate(`(() => {
+    const r = document.querySelector('dialog.chat-reading-dialog[open]').getBoundingClientRect();
+    return Math.abs(r.left - (innerWidth - r.right)) <= 2 && Math.abs(r.top - (innerHeight - r.bottom)) <= 2;
+  })()`);
+  assert.equal(await centered(), true, "完整代码弹窗在窗口内居中");
   await click("关闭", "dialog[open]");
   await press(inReply('img[alt="第一张图注"]'), "打开多图预览");
   assert.equal(await evaluate("document.querySelector('dialog[open] img').alt"), "第一张图注");
+  assert.equal(await centered(), true, "图片弹窗使用相同的居中布局");
   await click("下一张", "dialog[open]");
   assert.equal(await evaluate("document.querySelector('dialog[open] img').alt"), "第二张图注");
   await click("上一张", "dialog[open]");

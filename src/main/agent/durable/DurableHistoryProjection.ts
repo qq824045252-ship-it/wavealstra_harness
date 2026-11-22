@@ -131,7 +131,7 @@ export class DurableHistoryProjection {
 
   /** `timing` 是 `${taskId}:${timestamp}` → completedAt；`speed` 是同一 key → 完成态实测速度。 */
   merge(entries: readonly EntryRecord[], metadata: ReadonlyMap<number, DurableInputMetadata>, timing: Readonly<Record<string, number>>,
-    speed: Readonly<Record<string, DurableResponseSpeed>> = {}, dotsEntries?: ReadonlySet<number>): EntryRecord[] {
+    speed: Readonly<Record<string, DurableResponseSpeed>> = {}, dotsEntries?: ReadonlySet<number>, recoveredReplies?: ReadonlyMap<number, string>): EntryRecord[] {
     const fresh = entries.filter(entry => !this.entries.has(entry.id)).sort((a, b) => a.id - b.id);
     for (const entry of fresh) {
       this.entries.set(entry.id, entry);
@@ -160,7 +160,7 @@ export class DurableHistoryProjection {
           const user = this.priorUser(entry.id);
           const startedAt = user?.model?.find(item => item.role === "user")?.timestamp ?? message.timestamp;
           const key = `${entry.byTaskId}:${message.timestamp}`;
-          const row = assistantRow(id, entry.byTaskId, message, timing[key], startedAt, false, speed[key], dotsEntries?.has(entry.id));
+          const row = assistantRow(id, entry.byTaskId, message, timing[key], startedAt, false, speed[key], dotsEntries?.has(entry.id), recoveredReplies?.get(entry.id));
           this.rows.set(id, row); this.dirty = true;
           if (row.presentationKey) this.presentationRows.set(row.presentationKey, id);
           for (const tool of row.tools ?? []) {
@@ -230,10 +230,10 @@ function toolResultDetail(tool: ToolRow, message: ToolResult): string | undefine
  * 流式行由 runtime 用实时估算覆盖，这里保持 tps=null。
  */
 export function assistantRow(id: string, taskId: TaskId | undefined, message: AssistantMessage, completedAt?: number, startedAt = message.timestamp,
-  streaming = false, metrics?: DurableResponseSpeed, dotsWorker = false): ChatMessageDto {
+  streaming = false, metrics?: DurableResponseSpeed, dotsWorker = false, recoveredReply?: string): ChatMessageDto {
   const rawText = durableContentText(message.content);
   const outcome = dotsWorker ? readDotsWorkerOutcome(rawText) : undefined;
-  const text = outcome?.result ?? (dotsWorker && streaming && /^\s*(?:\{|\x60)/u.test(rawText) ? "" : rawText);
+  const text = recoveredReply ?? outcome?.result ?? (dotsWorker && streaming && /^\s*(?:\{|\x60)/u.test(rawText) ? "" : rawText);
   return { id, ...(!streaming ? { entryId: id.slice(8), projectionVersion: 1, finalAssistantReply: message.stopReason === "stop" } : {}), role: "assistant", presentationKey: taskId ? `durable-generation-${taskId}${message.stopReason === "aborted" ? `-${id.slice(8)}` : ""}` : id,
     durationMs: completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined,
     generationStats: { phase: streaming ? "generating" : "complete", startedAt, updatedAt: completedAt ?? message.timestamp,

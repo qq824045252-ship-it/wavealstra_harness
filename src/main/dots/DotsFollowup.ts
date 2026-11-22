@@ -14,6 +14,7 @@ export type DotsFollowupDecision = {
   artifacts?: DotsDelegation["artifacts"];
 };
 export const followupInstructions = [
+  "下面的内部回执格式只用于这次委派。用户随后在原任务中直接续聊时，按新请求给正文。",
   '本轮完整交付时，返回一行 JSON {"dotsState":"complete","result":"按用户约定格式交付的正文"}。用 register_artifact 登记要交付的文件。如果文件已包含用户所求的全部内容，result 留空；如果用户还需要文字，result 只写所需正文。',
   '若本轮只完成一个实质里程碑、原授权范围内确有下一步，返回一行 JSON {"dotsState":"progress","result":"已取得的具体结果","remainingQuote":"原交办中仍待完成的逐字片段"}。不要把计划、收到指令或重复状态标为进展。下一步会在本普通任务中继续。',
   "若已取得可交付的实质里程碑且本轮仍在执行，可以在调用下一工具前用同一 progress 格式报告里程碑。宿主会继续当前执行。",
