@@ -82,7 +82,14 @@ try {
   await extract(scopeOnly, { kind: "preference", title: "排练记录的名单顺序", content: scopeOnly.userText,
     userEvidence: "雾岭项目", replaces: "排练记录的名单顺序", operationHint: "supersede" });
   assert.equal(memory.get(order!.id)?.status, "active");
-  assert(all().some(record => record.content === scopeOnly.userText));
+  const exception = all().find(record => record.content === scopeOnly.userText)!;
+  assert.deepEqual(exception.metadata.dotsApplicability, { kind: "project", name: "雾岭" });
+  assert.deepEqual(quote(exception, 1)?.applicability, { kind: "project", name: "雾岭" });
+  assert(readDots(memory, "雾岭项目的排练记录").items.some(item => item.id === exception.id));
+  assert(!readDots(memory, "雾岭项目的排练记录").items.some(item => item.id === order!.id));
+  assert(readDots(memory, "海港项目的排练记录").items.some(item => item.id === order!.id));
+  assert(!readDots(memory, "雾岭空间的排练记录").items.some(item => item.id === exception.id));
+  assert(!readDots(memory, "新雾岭项目的排练记录").items.some(item => item.id === exception.id));
   assert(!readDots().blocks.filter(block => block.profileIds.length).some(block => block.text.includes("雾岭项目")));
 
   const booking = "会议场地确定在旧车站。";
@@ -126,6 +133,87 @@ try {
     assert(!result.isError);
     return result.details.memory;
   };
+  const globalDefault = memory.create({ kind: "preference", title: "交付清单语言", content: "交付清单默认用中文。", scopeType: "global" });
+  const projectQuote = "只在远山项目，交付清单用英文。";
+  source = { messageId: "scope-exception", createdAt: Date.now(), text: projectQuote };
+  const projectOverride = await tool("memory_update", { id: globalDefault.id, content: projectQuote });
+  assert.notEqual(projectOverride.id, globalDefault.id);
+  assert.deepEqual(projectOverride.metadata, { dotsApplicability: { kind: "project", name: "远山" }, dotsOverrides: globalDefault.id });
+  assert.equal(memory.get(globalDefault.id)?.content, "交付清单默认用中文。");
+  assert(readDots(memory, "远山项目的交付清单").items.some(item => item.id === projectOverride.id));
+  assert(!readDots(memory, "远山项目的交付清单").items.some(item => item.id === globalDefault.id));
+  assert(!readDots(memory, "蓝湾项目的交付清单").items.some(item => item.id === projectOverride.id));
+  const projectCorrection = "只在远山项目，交付清单改用德文。";
+  source = { messageId: "scope-correction", createdAt: Date.now(), text: projectCorrection };
+  const corrected = await tool("memory_update", { id: projectOverride.id, content: projectCorrection });
+  assert.equal(corrected.id, projectOverride.id);
+  const correctedContext = readDots(memory, "远山项目的交付清单");
+  assert(correctedContext.text.includes("改用德文") && !correctedContext.text.includes("用英文"));
+  assert(!correctedContext.items.some(item => item.id === globalDefault.id));
+  source = { messageId: "scope-ambiguous", createdAt: Date.now(), text: "只在远山项目。交付清单换为德文。" };
+  const ambiguous = await execute.get("memory_update")!("ambiguous", {
+    id: globalDefault.id, content: "交付清单换为德文。", sourceQuote: "交付清单换为德文。",
+  });
+  assert(!ambiguous.isError);
+  assert.equal(ambiguous.details.memory.metadata.dotsApplicability && (ambiguous.details.memory.metadata.dotsApplicability as { kind: string }).kind, "unresolved");
+  assert.equal(memory.get(globalDefault.id)?.content, "交付清单默认用中文。");
+  const defaultCurrency = memory.create({ kind: "preference", title: "报价币种", content: "报价默认用人民币。", scopeType: "global" });
+  source = { messageId: "independent-next-decision", createdAt: Date.now(), text: "这里先用日元。以后默认发票都走财务系统。" };
+  const separateSubjects = await tool("memory_update", { id: defaultCurrency.id, content: "这里先用日元。", sourceQuote: "先用日元",
+    applicability: { kind: "general", evidence: "以后默认" } });
+  assert.notEqual(separateSubjects.id, defaultCurrency.id);
+  assert.equal(memory.get(defaultCurrency.id)?.content, "报价默认用人民币。");
+  source = { messageId: "unnamed-customer-project", createdAt: Date.now(), text: "给甲方的这个项目改用美元。" };
+  const unresolved = await tool("memory_update", { id: defaultCurrency.id, content: source.text });
+  assert.deepEqual(unresolved.metadata.dotsApplicability, { kind: "unresolved", name: "" });
+  assert.equal(memory.get(defaultCurrency.id)?.content, "报价默认用人民币。");
+  assert(!readDots(memory, "报价币种").items.some(item => item.id === unresolved.id));
+  const projectId = "pricing-violet";
+  db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES(?,?,?,?)").run(projectId, "紫岚", Date.now(), Date.now());
+  const crossSentence = "重点是紫岚这单。报价要以加元做预算。";
+  const currencyTurn = capture(crossSentence);
+  await extract(currencyTurn, { kind: "preference", content: "报价要以加元做预算。", title: "报价币种", replaces: "报价币种", operationHint: "update",
+    userEvidence: "报价要以加元做预算。", applicability: { kind: "project", name: "紫岚", id: projectId, evidence: "重点是紫岚这单。" } });
+  const resolvedCurrency = all().find(record => record.content === crossSentence)!;
+  assert.deepEqual(resolvedCurrency.metadata.dotsApplicability, { kind: "project", name: "紫岚", id: projectId });
+  assert.equal(quote(resolvedCurrency, 1)?.quote, crossSentence);
+  assert(readDots(memory, "紫岚项目报价币种").items.some(item => item.id === resolvedCurrency.id));
+  assert(!readDots(memory, "紫岚项目报价币种").items.some(item => item.id === defaultCurrency.id));
+  source = { messageId: "multi-topic-general", createdAt: Date.now(), text: "客户这单沿用日元。今后默认报价用英镑。" };
+  const general = await tool("memory_update", { id: defaultCurrency.id, content: "今后默认报价用英镑。", sourceQuote: "今后默认报价用英镑。",
+    applicability: { kind: "general", evidence: "今后默认" } });
+  assert.equal(general.id, defaultCurrency.id);
+  assert.equal(general.content, "今后默认报价用英镑。");
+  source = { messageId: "indirect-structured", createdAt: Date.now(), text: "预算改用欧元的是紫岚，报价其他照旧。" };
+  const novel = await tool("memory_update", { id: resolvedCurrency.id, content: source.text,
+    applicability: { kind: "project", name: "紫岚", id: projectId, evidence: "预算改用欧元的是紫岚" } });
+  assert.equal(novel.id, resolvedCurrency.id);
+  assert(readDots(memory, "紫岚项目报价币种").text.includes("预算改用欧元"));
+  assert.equal(memory.get(defaultCurrency.id)?.content, "今后默认报价用英镑。");
+  db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES(?,?,?,?)").run("pricing-other", "另一个项目", Date.now(), Date.now());
+  source = { messageId: "mismatched-project-id", createdAt: Date.now(), text: "换成澳元的报价是紫岚的。" };
+  const wrongId = await tool("memory_update", { id: defaultCurrency.id, content: source.text,
+    applicability: { kind: "project", name: "紫岚", id: "pricing-other", evidence: "换成澳元的报价是紫岚的。" } });
+  assert.equal(wrongId.metadata.dotsApplicability && (wrongId.metadata.dotsApplicability as { kind: string }).kind, "unresolved");
+  assert.equal(memory.get(defaultCurrency.id)?.content, "今后默认报价用英镑。");
+  const knownTaskId = "quote-project-task";
+  db.upsertTask({ id: knownTaskId, projectId, title: "当前项目报价", welcomeMode: "general", updatedAt: Date.now() });
+  source = { messageId: "scope-from-real-task", createdAt: Date.now(), text: "把 quote-project-task 的报价改用新西兰元。" };
+  const taskBound = await tool("memory_update", { id: resolvedCurrency.id, content: source.text,
+    applicability: { kind: "project", id: knownTaskId, evidence: source.text } });
+  assert.equal(taskBound.id, resolvedCurrency.id);
+  assert.deepEqual(taskBound.metadata.dotsApplicability, { kind: "project", name: "紫岚", id: projectId });
+  const mixedExtraction = capture("给这个客户的项目用瑞郎。所有项目默认报价换回人民币。");
+  await extract(mixedExtraction,
+    { kind: "preference", content: "给这个客户的项目用瑞郎。", title: "报价币种", replaces: "报价币种", operationHint: "update",
+      userEvidence: "给这个客户的项目用瑞郎。" },
+    { kind: "preference", content: "所有项目默认报价换回人民币。", title: "报价币种", replaces: "报价币种", operationHint: "update",
+      userEvidence: "所有项目默认报价换回人民币。", applicability: { kind: "general", evidence: "所有项目默认" } });
+  assert(all().some(record => record.content.includes("这个客户的项目用瑞郎") && (record.metadata.dotsApplicability as { kind: string }).kind === "unresolved"));
+  assert.equal(memory.get(defaultCurrency.id)?.content, "所有项目默认报价换回人民币。");
+  memory.forget(projectOverride.id);
+  assert(readDots(memory, "远山项目的交付清单").items.some(item => item.id === globalDefault.id));
+  source = { messageId: "tool-1", createdAt: Date.now(), text: "  预算定为四百元。🚲 交车选在周三。" };
   const delivery = await tool("memory_create", { kind: "decision", title: "交车", content: "🚲 交车选在周三。", sourceQuote: "周三" });
   assert.equal(quote(delivery, 1)?.quote, "🚲 交车选在周三。");
   assert.equal(quote(delivery, 1)?.messageId, "tool-1");
@@ -193,6 +281,8 @@ try {
   assert.equal(reopened.getDotsRevisionSource(hall.id, 1)?.quote, ja);
   assert.equal(reopened.getDotsRevisionSource(adjusted.id, 2)?.messageId, "tool-2");
   assert.equal(reopened.getDotsRevisionSource(parcel.id, 1), undefined);
+  assert.deepEqual(reopened.get(exception.id)?.metadata.dotsApplicability, { kind: "project", name: "雾岭" });
+  assert(readDots(reopened, "雾岭项目的排练记录").items.some(item => item.id === exception.id));
   assert.deepEqual(reopened.cognition.projections.listScenarios({ scopeType: "global" }), [priorScene]);
   assert.deepEqual(reopened.cognition.projections.listCoreProfiles({ scopeType: "global" }), [priorProfile]);
   const rebuilt = readDots(reopened, "样本箱");

@@ -90,7 +90,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           const source = (goalCompletion || personalWrite || tool.name === "conversation_goal_create" || tool.name === "dots_action" || (tool.name === "automation_exec" && capabilities.taskId === DOTS_TASK_ID))
             ? await durableSourceInput(native, context, conversationId, live?.run?.inputs ?? [], goalCompletion) : undefined;
           if (personalWrite && (!source || isDotsAutomaticInput(source.id))) throw new Error("更改个人记忆或对话规则需要本轮用户输入");
-          return withDurableExecution({ execution, cwd, runId, native, context, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, presentationConversationId: conversationId,
+          return withDurableExecution({ execution, cwd, runId, native, context, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, sourceCreatedAt: source?.createdAt, presentationConversationId: conversationId,
             sourceOrigin: source && capabilities.taskId === DOTS_TASK_ID ? { conversationId, entryId: source.entryId } : undefined,
             memorySource: tool.name.startsWith("memory_") && source?.createdAt !== undefined ? { text: source.text, createdAt: source.createdAt,
               messageId: `durable:${capabilities.taskId}:${conversationId}:${source.entryId}` } : undefined }, execute);

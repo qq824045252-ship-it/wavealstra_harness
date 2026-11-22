@@ -1727,6 +1727,12 @@ html[data-theme="dark"] .extension-top-bar {
   pointer-events: none;
 }
 
+.dots-activity .timeline-header {
+  align-self: flex-start;
+  color: var(--fg-secondary);
+  font-size: 14px;
+}
+
 /* A provider retry is a warning state, not normal generation: keep it visible in the header. */
 .timeline-status--retry {
   color: var(--warning);

@@ -6,15 +6,18 @@ import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ConversationGoalDto, GoalContinuationOrigin } from "../../shared/conversation-goal";
 import { DOTS_NO_CHANGE, type DotsDelegation } from "../../shared/dots";
+import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 
 export type DotsFollowupDecision = {
-  kind: "quiet" | "ask" | "deliver" | "continued";
+  kind: "quiet" | "ask" | "deliver" | "progress" | "continued" | "deferred";
   text?: string;
   artifacts?: DotsDelegation["artifacts"];
 };
 export const followupInstructions = [
-  "直接交付完整结论或本次文件。具体业务选择或缺少无法自行取得的资料时，使用 request_user_input 只问一个具体问题，并在题干交代已有结果。",
+  '本轮完整交付时，返回一行 JSON {"dotsState":"complete","result":"按用户约定格式交付的正文"}。用 register_artifact 登记要交付的文件。如果文件已包含用户所求的全部内容，result 留空；如果用户还需要文字，result 只写所需正文。',
   '若本轮只完成一个实质里程碑、原授权范围内确有下一步，返回一行 JSON {"dotsState":"progress","result":"已取得的具体结果","remainingQuote":"原交办中仍待完成的逐字片段"}。不要把计划、收到指令或重复状态标为进展。下一步会在本普通任务中继续。',
+  "若已取得可交付的实质里程碑且本轮仍在执行，可以在调用下一工具前用同一 progress 格式报告里程碑。宿主会继续当前执行。",
+  "具体业务选择或缺少无法自行取得的资料时，使用 request_user_input 只问一个具体问题，并在题干交代已有结果。",
 ].join("\n");
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 function humanFailure(raw: string) {
@@ -50,6 +53,7 @@ interface Plan {
   source: string;
   goal: string;
   assignment: string;
+  assignmentQuote?: string;
   steps: string[];
   step: number;
   previous: string[];
@@ -98,6 +102,26 @@ export class DotsFollowup {
         retry: false,
         request,
       });
+  }
+  latestPlan(taskId: string) {
+    const row = this.db.prepare(`SELECT p.plan FROM dots_delegations d
+      LEFT JOIN dots_followup_plans p ON p.operation_id=d.operation_id
+      WHERE d.task_id=? ORDER BY d.seq DESC LIMIT 1`).get(taskId) as { plan: string | null } | undefined;
+    return row?.plan ? JSON.parse(row.plan) as Plan : undefined;
+  }
+
+  assignment(operationId: string) {
+    return this.get(operationId)?.assignment;
+  }
+
+  anchorAssignment(operationId: string, quote: string) {
+    this.db.prepare("UPDATE dots_followup_plans SET plan=json_set(plan,'$.assignmentQuote',?) WHERE operation_id=? AND json_extract(plan,'$.assignmentQuote') IS NULL")
+      .run(quote, operationId);
+  }
+
+  rememberResume(request: AgentPromptRequest, source: string, previous: Plan, addition?: string) {
+    this.put(request, { ...previous, parent: undefined, request, source,
+      goal: [previous.goal, addition].filter(Boolean).join("\n"), retry: false });
   }
   validate(request: AgentPromptRequest) {
     if (!request.userMessageId.startsWith("dots-input-auto-")) return;
@@ -193,7 +217,7 @@ export class DotsFollowup {
   }
   /** Adopt only a Goal ignition that followed the same source's native task input. */
   async goalAccepted(request: AgentPromptRequest, origin: GoalContinuationOrigin) {
-    if (!this.hooks.allowed(request.taskId) || !this.hooks.proactive(request.taskId)) return;
+    if (!this.hooks.allowed(request.taskId)) return;
     const prior = this.db
       .prepare(
         "SELECT operation_id,source_message_id,goal_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1",
@@ -268,7 +292,7 @@ export class DotsFollowup {
   }
   async handle(row: DotsDelegation, original?: AgentPromptRequest): Promise<DotsFollowupDecision> {
     const decision = await this.decide(row, original);
-    if (!["ask", "deliver"].includes(decision.kind) || !this.hooks.allowed(row.taskId)) return decision;
+    if (!["ask", "deliver", "progress"].includes(decision.kind) || !this.hooks.allowed(row.taskId)) return decision;
     const versionKey = (f: DotsDelegation["artifacts"][number]) => JSON.stringify([f.id, f.version ?? null]);
     const files = new Map(row.artifacts.map((f) => [versionKey(f), f]));
     const initialSize = files.size;
@@ -294,7 +318,7 @@ export class DotsFollowup {
 
   private async decide(row: DotsDelegation, original?: AgentPromptRequest): Promise<DotsFollowupDecision> {
     const text = row.text.trim();
-    if (text === DOTS_NO_CHANGE || row.status === "pending" || row.status === "running" || row.status === "superseded")
+    if (text === DOTS_NO_CHANGE || row.status === "pending" || row.status === "superseded")
       return quiet;
     const nextId = "dots-input-auto-" + digest(JSON.stringify([row.taskId, row.id]));
     if (!this.current(row.id, row.taskId, nextId)) {
@@ -312,6 +336,12 @@ export class DotsFollowup {
       return { kind: "ask", text: why + (text ? "\n" + text : "") + "\n要在哪个工作空间接着办理？" };
     }
     let plan = this.get(row.id);
+    if (row.status === "running") {
+      const checkpoint = readDotsWorkerOutcome(text);
+      return checkpoint?.dotsState === "progress" && checkpoint.result.trim()
+        ? { kind: "progress", text: checkpoint.result, artifacts: [] }
+        : quiet;
+    }
     if (row.status === "blocked") {
       const pending = this.db
         .prepare("SELECT title FROM conversation_interactions WHERE id=? AND task_id=? AND status='pending'")
@@ -323,22 +353,10 @@ export class DotsFollowup {
       this.remember(original, row.sourceMessageId, original.displayText ?? original.text);
       plan = this.get(row.id);
     }
-    let progress: { result: string; remainingQuote: string } | undefined;
-    try {
-      const v = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/gi, ""));
-      if (v?.dotsState === "progress" && typeof v.result === "string" && typeof v.remainingQuote === "string")
-        progress = { result: v.result.trim(), remainingQuote: v.remainingQuote.trim() };
-    } catch {
-      /* Normal worker conclusions are plain text. */
-    }
-    const summary = progress?.result ?? text;
-    // Acknowledgements and status-only replies have no deliverable of their own.
-    const acknowledgement =
-      /^(?:已收到|收到|正在处理(?:中)?|稍后继续|我会继续(?:处理)?)[。！!…]*$/u.test(summary) ||
-      /^(?:(?:我(?:将|会|打算|准备|先去)|下一步(?:我|将|会|是)|正在(?:核对|检查|查找|等待)|还(?:没有|未)完成|I(?:’|')ll |I will |I'm going to |I am going to )[^。！？.!?]+[。！？.!?]?\s*)+$/iu.test(
-        summary,
-      );
-    const payload = Boolean((summary && !acknowledgement) || row.artifacts.length);
+    const outcome = row.status === "completed" ? readDotsWorkerOutcome(text) : undefined;
+    const progress = outcome?.dotsState === "progress" ? outcome : undefined;
+    const summary = outcome?.result ?? "";
+    const payload = outcome !== undefined && Boolean(summary.trim() || row.artifacts.length);
     const remaining = plan?.steps[plan.step + 1];
     const repair = row.status === "failed" || !payload;
     const stopped = (reason: string, question: string): DotsFollowupDecision => ({
@@ -347,7 +365,9 @@ export class DotsFollowup {
     });
     const unresolved = () => {
       const failed = row.status === "failed";
-      const reason = failed ? "原任务执行失败：" + humanFailure(text) : "原任务没有交付可确认的文字或文件。";
+      const reason = failed ? "原任务执行失败：" + humanFailure(text) : "原任务没有报告可确认的交付结果或进展。";
+      if (failed && /不在当前 Pi enabledModels 范围内|主对话默认模型/.test(text))
+        return stopped(reason, "调整好模型设置后，要继续这个原任务吗？");
       if (failed && /\b(?:401|403)\b|permission|forbidden|unauthori|权限|凭据/i.test(text))
         return stopped(reason, "要改用哪个已授权的数据源或工作空间？");
       if (failed && /^(?:HTTP\s*)?4\d\d\b/i.test(text) && !transientFailure(text))
@@ -362,8 +382,9 @@ export class DotsFollowup {
         const closed = this.db.prepare(`SELECT closure_summary AS summary FROM works
           WHERE work_id=? AND close_operation_id=? AND lifecycle='closed' AND closure_conclusion='succeeded'`)
           .get(row.goalId, `dots-goal-close:${row.id}`) as { summary?: string } | undefined;
-        const result = closed?.summary ?? (row.status === "completed" && payload ? summary || "Goal 已完成，文件已附上。" : undefined);
-        return result ? { kind: "deliver", text: result } : unresolved();
+        return closed && (closed.summary || row.artifacts.length)
+          ? { kind: "deliver", text: closed.summary ?? "" }
+          : quiet;
       }
       if (g.status === "blocked" || g.continuation?.state === "exhausted" || g.continuation?.state === "deferred") {
         const outstanding = g.criteria.find((c) => c.status === "pending" || c.status === "not_met");
@@ -374,15 +395,12 @@ export class DotsFollowup {
             : "要如何处理原目标当前的阻碍？",
         );
       }
-      if (repair) return unresolved();
-      return summary || row.artifacts.length
-        ? { kind: "deliver", text: "阶段结果（原目标仍在推进）：" + (summary || "文件已附上。") }
-        : quiet;
+      if (row.status === "failed") return unresolved();
+      return payload ? { kind: "progress", text: summary } : quiet;
     }
-    if (!repair && !progress && !remaining) return { kind: "deliver", text: summary || "已交付本次任务的文件。" };
+    if (!repair && !progress && !remaining) return { kind: "deliver", text: summary };
     if (!plan) return unresolved();
-    if (!this.hooks.proactive(row.taskId)) return quiet;
-    if (progress && (!progress.result || !progress.remainingQuote || !plan.goal.includes(progress.remainingQuote)))
+    if (progress && (!progress.remainingQuote || !plan.goal.includes(progress.remainingQuote)))
       return stopped("原任务提出的下一步超出这次交办可以确认的范围。", "接下来具体要办理哪一项？");
     const fingerprint = digest(JSON.stringify([summary, row.artifacts.map((f) => [f.id, f.version])]));
     if (!repair && (plan.previous.includes(fingerprint) || plan.previous.length >= 8))
@@ -401,6 +419,7 @@ export class DotsFollowup {
     if (receipt === undefined) {
       if (row.status === "failed") {
         const reason = "原任务没有接收本次执行。" + humanFailure(text);
+        if (/主对话默认模型/.test(text)) return stopped(reason, "调整好模型设置后，要继续这个原任务吗？");
         const question = /permission|forbidden|unauthori|权限|凭据/i.test(text)
           ? "要改用哪个已授权的数据源或工作空间？"
           : "要在当前任务中重新提交这一步吗？";
@@ -410,9 +429,12 @@ export class DotsFollowup {
     }
     const version = await this.hooks.version(row.taskId);
     if (JSON.parse(version)[1] !== receipt || !this.current(row.id, row.taskId, nextId)) return quiet;
-    if (repair && /cancel|abort|取消|停止|暂停|授权|permission|unauthori|forbidden/i.test(text)) return unresolved();
+    if (row.status === "failed" && /cancel|abort|取消|停止|暂停|授权|permission|unauthori|forbidden/i.test(text))
+      return unresolved();
     if (row.status === "failed" && !transientFailure(text)) return unresolved();
     if (repair && !(await this.safeToRetry(row.taskId, row.id, version))) return unresolved();
+    if (!this.hooks.proactive(row.taskId))
+      return row.status === "failed" ? unresolved() : { kind: "deferred", text: summary.trim() || undefined };
     const nextStep = repair ? plan.step : remaining ? plan.step + 1 : plan.step;
     const instruction = plan.steps[nextStep];
     const next = instruction ?? plan.goal;
@@ -432,14 +454,16 @@ export class DotsFollowup {
         (plan.assignment ?? plan.goal) +
         "\n在同一任务内" +
         (repair
-          ? "核对原记录并补回本次结果"
+          ? "根据原记录报告实际取得的结果和仍未完成的事项"
           : instruction
             ? "依照原交办的次序推进当前步骤：" + instruction
             : "继续完成上面的完整交办，所有原有限制仍然适用") +
         "。保留已经完成的操作，不重复执行。不得扩大目标、收件人或权限。\n" +
         followupInstructions,
     };
-    if (!this.current(row.id, row.taskId, nextId) || !this.hooks.proactive(row.taskId)) return quiet;
+    if (!this.current(row.id, row.taskId, nextId)) return quiet;
+    if (!this.hooks.proactive(row.taskId))
+      return row.status === "failed" ? unresolved() : { kind: "deferred", text: summary.trim() || undefined };
     this.put(persisted, {
       ...plan,
       parent: row.id,

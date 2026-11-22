@@ -29,6 +29,7 @@ interface Props {
   message: ChatMessage;
   taskId?: string;
   focusTool?: boolean;
+  compact?: boolean;
 }
 
 /**
@@ -211,13 +212,13 @@ export function executionFailureReason(message: ChatMessage): string | undefined
   return reason.length <= 180 ? reason : `${reason.slice(0, 180)}…`;
 }
 
-function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Element | null {
+function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Props): React.JSX.Element | null {
   const hasPendingApproval = message.blocks.some(
     (b) => b.type === "tool" && b.toolCall.status === "pending_approval",
   );
-  const [open, setOpen] = useState(Boolean(message.streaming) || hasPendingApproval);
+  const [open, setOpen] = useState((!compact && Boolean(message.streaming)) || hasPendingApproval);
   const wasStreamingRef = useRef(Boolean(message.streaming));
-  const [bodyMounted, setBodyMounted] = useState(Boolean(message.streaming) || hasPendingApproval);
+  const [bodyMounted, setBodyMounted] = useState((!compact && Boolean(message.streaming)) || hasPendingApproval);
   // 流式中用户展开历史后，本轮流式期间保持展开，允许再次收起；结束后重置
   const [historyOpen, setHistoryOpen] = useState(false);
   // assistant_end 首帧同步收起，避免先解析长 Markdown 再折叠造成卡顿
@@ -232,12 +233,12 @@ function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Ele
 
   useEffect(() => {
     const streaming = Boolean(message.streaming);
-    if (!wasStreamingRef.current && streaming) setOpen(true);
+    if (!wasStreamingRef.current && streaming && !compact) setOpen(true);
     if (wasStreamingRef.current && !streaming && !hasPendingApproval) setOpen(false);
     if (hasPendingApproval) setOpen(true);
     if (wasStreamingRef.current && !streaming) setHistoryOpen(false);
     wasStreamingRef.current = streaming;
-  }, [message.streaming, hasPendingApproval]);
+  }, [message.streaming, hasPendingApproval, compact]);
 
   // Keep the body mounted just long enough for the close animation, then remove
   // its potentially large Markdown/tool subtree while the timeline is collapsed.
@@ -302,7 +303,12 @@ function ExecutionTimeline({ message, taskId, focusTool }: Props): React.JSX.Ele
     Boolean(message.streaming) && !hasPendingApproval && !hasFinalOutput;
   const running = Boolean(message.streaming) && !hasPendingApproval;
   const activeToolNames = message.blocks.flatMap((block) => block.type === "tool" && block.toolCall.status === "running" ? [block.toolCall.tool] : []);
-  const runningLabel = nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput,
+  const lastAction = compact && message.blocks.findLast(block => block.type === "tool");
+  const action = lastAction && lastAction.type === "tool" && lastAction.toolCall.tool === "dots_action" ? lastAction.toolCall : undefined;
+  const runningLabel = action && !message.generationStats?.retry && !hasFinalOutput
+    ? (action.status === "running" ? "正在" : action.status === "success" ? "已" : "") + action.summary
+      + (action.status === "error" || action.status === "denied" ? "失败" : "")
+    : nativeRunPhaseLabel(message.generationStats?.phase, activeToolNames, hasFinalOutput,
     message.generationStats?.retry, message.generationStats?.attempts);
   const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch) || isCapabilityTool(block.toolCall.tool));
   const resultBlocks = message.blocks.filter(isResultCard);

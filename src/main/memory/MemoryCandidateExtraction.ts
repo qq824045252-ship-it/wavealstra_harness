@@ -65,6 +65,7 @@ export interface ExtractedCandidate {
   operationHint: MemoryCandidateDto["operationHint"];
   replaces?: string;
   userEvidence?: string;
+  applicability?: DotsApplicabilityInput;
   sourceTurnId?: string;
   retention?: string;
   sensitivity?: string;
@@ -165,6 +166,7 @@ export function extractCandidates(raw: string): ExtractedCandidate[] {
       retention: typeof row.retention === "string" ? row.retention : undefined,
       sensitivity: typeof row.sensitivity === "string" ? row.sensitivity : undefined,
       userEvidence: typeof row.userEvidence === "string" ? row.userEvidence.trim().slice(0, 600) : undefined,
+      applicability: row.applicability && typeof row.applicability === "object" ? row.applicability as DotsApplicabilityInput : undefined,
       sourceTurnId: typeof row.sourceTurnId === "string" ? row.sourceTurnId : undefined,
       executionEvidence: row.executionEvidence && typeof row.executionEvidence === "object"
         ? row.executionEvidence as ExtractedCandidate["executionEvidence"] : undefined,
@@ -173,3 +175,4 @@ export function extractCandidates(raw: string): ExtractedCandidate[] {
   }
   return result;
 }
+import type { DotsApplicabilityInput } from "./DotsRevisionSource";

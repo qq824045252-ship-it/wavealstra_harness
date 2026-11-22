@@ -29,7 +29,8 @@ export async function verifyDurableDotsReplies(root: string) {
     }
     if (!tools.some(t => t.name === "dots_action") && workerStage === "ask") {
       workerStage = "complete";
-      return [{ type: "text", text: "已登记第一卷目录。" }, { type: "toolCall", id: "ask-binding", name: "request_user_input",
+      return [{ type: "text", text: JSON.stringify({ dotsState: "progress", result: "已登记第一卷目录。", remainingQuote: "检查卷号。" }) },
+        { type: "toolCall", id: "ask-binding", name: "request_user_input",
         arguments: { kind: "short_text", title: "卷号如何填写？", description: "请提供馆藏编号。" } }];
     }
     entered(); await gate;
@@ -79,6 +80,14 @@ export async function verifyDurableDotsReplies(root: string) {
     await fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: "ask-after-delivery", assistantMessageId: "next-answer", text: "继续。" });
     assert(fixture.requests.at(-1)?.input.messages.some(m => m.role === "assistant" && m.content.some(p => p.type === "text" && p.text === reply.text)));
     assert.equal(await agent.appendDotsReply(cancelled), "appended", "the withdrawn transaction left no ghost receipt");
+    const filesOnly = { ...reply, deliveryKey: "files-only", text: "" };
+    await assert.rejects(agent.appendDotsReply({ ...filesOnly, artifacts: [] }), /Dots 交付需要正文或结果文件/);
+    assert.equal(await agent.appendDotsReply(filesOnly), "appended");
+    await agent.releaseDurableTask(DOTS_TASK_ID);
+    const fileMessage = (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.find(m => m.dotsDelivery?.deliveryKey === filesOnly.deliveryKey);
+    assert.ok(fileMessage);
+    assert.equal(fileMessage.text, "");
+    assert.deepEqual(fileMessage.dotsDelivery?.artifacts, filesOnly.artifacts);
     const wrongAnchor = { ...reply, origin: { ...reply.origin!, entryId: Number(delivered.entryId) }, deliveryKey: "wrong-user-entry" };
     assert.equal(await agent.appendDotsReply(wrongAnchor), "discarded");
     await agent.deleteUserMessage({ taskId: DOTS_TASK_ID, userMessageIndex: 0, entryId: source.entryId });

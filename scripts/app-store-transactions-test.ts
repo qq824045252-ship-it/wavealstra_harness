@@ -12,6 +12,8 @@ import { loadRuntimeBootstrap } from "../src/renderer/src/store/app/runtime/boot
 import { mapTaskRowToTask } from "../src/renderer/src/store/app/tasks/taskMapper";
 import { recomputeEffectiveArchived } from "../src/renderer/src/store/app/workspaces/spaceHelpers";
 import { EMPTY_SOUL } from "../src/renderer/src/store/app/defaults";
+import { DOTS_TASK_ID } from "../src/shared/dots";
+import { selectChatModelId } from "../src/renderer/src/store/app/slices/activeContext";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -49,6 +51,52 @@ function task(id: string, overrides: Partial<Task> = {}): Task {
 }
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+async function dotsModelMenuOnlyChangesDotsPreferences(): Promise<void> {
+  const models = ["main", "dots", "existing"].map(id => ({
+    id: `fixture/${id}`, name: id, vendor: "fixture", supportsImages: false, supportsReasoning: false,
+  }));
+  const writes: unknown[] = [];
+  const taskWrites: unknown[] = [];
+  let settings: { defaultModelId: string; dotsSettings: { modelId: string | null } } = {
+    defaultModelId: "fixture/main", dotsSettings: { modelId: null },
+  };
+  const { useAppStore: api } = store({
+    agent: {
+      listModels: async () => models,
+      getAppSettings: async () => settings,
+      updateAppSettings: async (patch: { dotsSettings: { modelId: string | null } }) => {
+        writes.push(patch);
+        settings = { ...settings, ...patch };
+        return settings;
+      },
+      loadTaskHistory: async () => ({ messages: [] }),
+    },
+    db: { upsertTask: (task: unknown) => taskWrites.push(task) },
+  });
+  api.setState({ tasks: [task(DOTS_TASK_ID, { messages: [], modelId: "legacy-dots" }),
+    task("ordinary", { messages: [], modelId: "fixture/existing", modelExplicit: true })] });
+  await api.getState().refreshModelConfiguration();
+  api.getState().setActiveTask("ordinary");
+  api.getState().setActiveTask(DOTS_TASK_ID);
+  assert.equal(selectChatModelId(api.getState()), "fixture/main");
+  api.getState().setActiveModel("fixture/dots");
+  await tick();
+  assert.equal(selectChatModelId(api.getState()), "fixture/dots");
+  assert.equal(api.getState().defaultModelId, "fixture/main");
+  assert.equal(api.getState().activeModelId, "fixture/existing");
+  api.getState().setActiveTask("ordinary");
+  assert.equal(selectChatModelId(api.getState()), "fixture/existing");
+  assert.equal(api.getState().modelExplicit, true);
+  api.getState().setActiveTask(DOTS_TASK_ID);
+  await api.getState().followSuggestedModel();
+  assert.equal(selectChatModelId(api.getState()), "fixture/main");
+  assert.deepEqual(writes, [{ dotsSettings: { modelId: "fixture/dots" } }, { dotsSettings: { modelId: null } }]);
+  assert.deepEqual(taskWrites, []);
+  settings = { ...settings, dotsSettings: { modelId: "fixture/dots" } };
+  await api.getState().refreshModelConfiguration();
+  assert.equal(selectChatModelId(api.getState()), "fixture/dots", "settings pane updates the existing composer");
+}
 
 async function activationIsAtomicAndLateReadsStayWithTheirOwner(): Promise<void> {
   const historyA = deferred<{
@@ -628,6 +676,7 @@ async function gatewaySidebarOriginHydratesKnownTask(): Promise<void> {
 async function main(): Promise<void> {
   await gatewaySidebarOriginHydratesKnownTask();
   const tests = [
+    dotsModelMenuOnlyChangesDotsPreferences,
     activationIsAtomicAndLateReadsStayWithTheirOwner,
     regenerationCommitsInOneNotification,
     tombstonesAndSelectorsAreInstanceLocal,

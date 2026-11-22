@@ -79,7 +79,7 @@ function createSseAudit(emit) {
   };
 }
 
-exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUsage, fixtureModelRates, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
+exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureModelIds = [], fixtureUsage, fixtureModelRates, settings = {}, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
   const agentDir = path.join(home, '.mybuddy'), userData = path.join(home, 'electron-profile');
@@ -188,6 +188,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
     let model = {id: 'ui-fixture', name: 'UI only (no model server)', reasoning: false, input: ['text'],
       contextWindow: 128000, maxTokens: 4096, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}};
     let baseUrl = 'http://127.0.0.1:1/v1';
+    let extraModels = fixtureModelIds.map(id => ({...model, id, name:id}));
     if (fixtureModel) {
       model = {...model, name: 'Deterministic test model', ...(fixtureModelRates ? {cost: fixtureModelRates} : {})};
       report.modelConfiguration = {kind: 'fixture'};
@@ -209,7 +210,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
           const message = tool ? { role: 'assistant', tool_calls: [{ id: 'call-' + requests.length, type: 'function',
             function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] } : { role: 'assistant', content: textChunks?.join('') ?? reply };
           const finishReason = tool ? 'tool_calls' : 'stop';
-          const base = {id: 'fixture-' + requests.length, model: model.id, created: Math.floor(Date.now()/1000)};
+          const base = {id: 'fixture-' + requests.length, model: request.model, created: Math.floor(Date.now()/1000)};
           // Pass the raw provider envelope through the real transport and SDK. Null omits usage.
           const sample = await fixtureUsage?.(request, {requestIndex});
           const usage = sample === undefined ? {prompt_tokens: 20, completion_tokens: 4, total_tokens: 24} : sample;
@@ -246,6 +247,12 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
       const upstream = process.env.MYBUDDY_LIVE_BASE_URL || 'http://127.0.0.1:3425/v1';
       const loaded = await require('./live-model-config.cjs').loadLiveModel(upstream, process.env.MYBUDDY_LIVE_MODEL || 'auto/deepseek-v4.1-flash');
       model = loaded.model; report.modelConfiguration = loaded.evidence;
+      const foreground = process.env.MYBUDDY_DOTS_LIVE_FOREGROUND;
+      if (foreground && foreground !== model.id) {
+        const second = await require('./live-model-config.cjs').loadLiveModel(upstream, foreground);
+        extraModels = [second.model];
+        report.foregroundModelConfiguration = second.evidence;
+      }
       if (benchmark) {
         const url = new URL(upstream);
         report.providerUpstream = url.origin + url.pathname;
@@ -312,10 +319,10 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
       relay.listen(0, '127.0.0.1'); await once(relay, 'listening'); baseUrl = 'http://127.0.0.1:' + relay.address().port + '/v1';
     }
     fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({providers: {fixture: {
-      api: 'openai-completions', baseUrl, apiKey: 'isolated-no-user-credentials', models: [model],
+      api: 'openai-completions', baseUrl, apiKey: 'isolated-no-user-credentials', models: [model, ...extraModels],
     }}}));
     fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({defaultProvider: 'fixture', defaultModel: model.id,
-      enabledModels: ['fixture/' + model.id], memoryEnabled: false, memoryGatewayEnabled: false,
+      enabledModels: [model, ...extraModels].map(m => 'fixture/' + m.id), memoryEnabled: false, memoryGatewayEnabled: false,
       remoteAccessEnabled: false, closeToTray: false, theme: 'light', permissionMode: 'readonly', ...settings}));
     const port = await freePort(), devOut = path.join(out, 'dev-output'), bootstrap = path.join(home, 'bootstrap.cjs');
     fs.writeFileSync(bootstrap, `const fs=require('node:fs');const r=require('node:module').createRequire(${JSON.stringify(path.join(root, 'package.json'))});const {app}=r('electron');app.setAppPath(${JSON.stringify(root)});app.setPath('userData',${JSON.stringify(userData)});fs.writeFileSync(${JSON.stringify(path.join(home, 'main-identity.json'))},JSON.stringify({pid:process.pid,userData:${JSON.stringify(userData)},startTime:process.platform==='linux'?fs.readFileSync('/proc/self/stat','utf8').split(') ')[1].trim().split(/\\s+/)[19]:undefined}));require(${JSON.stringify(path.join(devOut, 'main/index.js'))});`);

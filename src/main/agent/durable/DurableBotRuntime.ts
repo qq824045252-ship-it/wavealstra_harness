@@ -1,5 +1,6 @@
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import { appendDurableDotsReply } from "./DurableDotsReply";
+import { readDotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import { DOTS_TASK_ID, type DotsAssistantReply } from "../../../shared/dots";
 import { withWindowsBashWorkspacePath } from "../../platform/bash-workspace-path";
 import { withShellTerminalGuidance } from "./DurableShellTerminal";
@@ -44,7 +45,7 @@ import { withMissingFileRecovery } from "./DurableMissingFile";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
-import { DurableHistoryProjection, assistantRow, nestedToolRow, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata } from "./DurableHistoryProjection";
+import { DurableHistoryProjection, assistantRow, nestedToolRow, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata, type DurableResponseSpeed } from "./DurableHistoryProjection";
 import { estimateTextTokens } from "../../../shared/token-format";
 import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings } from "../ModelInvocationAdmission";
 import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
@@ -122,6 +123,7 @@ export interface DurableBotOptions {
   readonlyShell?: () => boolean;
   waitingForInput?: () => boolean;
   isDelegatedMemoryInput?: (requestId: string) => boolean;
+  isDotsWorkerInput?: (requestId: string) => boolean;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   projectionAfterEntryId?: number;
@@ -187,6 +189,7 @@ export class DurableBotRuntime {
   private lease?: DurableStorageLease;
   private readonly children = new Map<number, ConversationWatch>();
   private readonly history = new DurableHistoryProjection();
+  private liveDotsInput?: { id: number; worker: boolean };
   private historyBefore?: EntryId;
   private readonly metadataByEntry = new Map<number, BotInputMetadata>();
   private readonly pendingAuditInputs = new Map<string, DurableInputAudit>();
@@ -780,7 +783,7 @@ export class DurableBotRuntime {
       const page = await this.conversation.entries({ maxEntryId: before as EntryId, order: "descending" }, size + 1, undefined, ctx);
       const entries = page.items.slice(0, size).filter(entry => entry.kind !== "mybuddy.context-import");
       await this.loadInputMetadata(entries, metadata);
-      history.merge(await this.historyEntries(history, entries), metadata, timing?.completed ?? {}, timing?.speed ?? {});
+      await this.mergeHistory(history, entries, metadata, timing);
       before = page.items[size]?.id;
       if (history.messages.length) break;
     }
@@ -821,7 +824,7 @@ export class DurableBotRuntime {
     for (const orphan of orphans) this.orphanScans.add(orphan.callId);
     if (found.length === 0) return false;
     await this.loadInputMetadata(found, this.metadataByEntry);
-    this.history.merge(found, this.metadataByEntry, {}, {});
+    await this.mergeHistory(this.history, found, this.metadataByEntry);
     return true;
   }
 
@@ -830,6 +833,38 @@ export class DurableBotRuntime {
     return Promise.all(fresh.map(entry => entry.model?.some(m => m.role === "toolResult" && m.toolName === "pstack_delegate")
       ? recoverChildMeasurements(entry, this.storage, this.harness, ctx, this.options.observedUsage)
       : entry));
+  }
+
+  private async mergeHistory(history: DurableHistoryProjection, entries: readonly EntryRecord[], metadata: Map<number, BotInputMetadata>,
+    timing?: { completed?: Readonly<Record<string, number>>; speed?: Readonly<Record<string, DurableResponseSpeed>> }) {
+    const fresh = await this.historyEntries(history, entries);
+    const dotsEntries = new Set<number>();
+    const isDots = this.options.isDotsWorkerInput;
+    if (isDots) {
+      const ordered = fresh.slice().sort((a, b) => a.id - b.id);
+      const isUser = (entry: EntryRecord) => entry.kind === "mybuddy.user" || entry.kind === "pi.user";
+      let user: EntryRecord | undefined;
+      let scannedBefore = false;
+      for (const entry of ordered) {
+        if (isUser(entry)) { user = entry; continue; }
+        if (!entry.model?.some(message => message.role === "assistant" && readDotsWorkerOutcome(contentText(message.content)))) continue;
+        const known = history.priorUser(entry.id);
+        if (known && known.id > (user?.id ?? 0)) user = known;
+        if (!user && !scannedBefore) {
+          scannedBefore = true;
+          let cursor: Cursor | undefined;
+          do {
+            const page = await this.conversation.entries({ maxEntryId: (entry.id - 1) as EntryId, order: "descending" }, 80, cursor, ctx);
+            user = page.items.find(isUser);
+            cursor = page.next;
+          } while (!user && cursor);
+          if (user) await this.loadInputMetadata([user], metadata);
+        }
+        const requestId = user && metadata.get(user.id)?.inputRequestId;
+        if (requestId && isDots(requestId)) dotsEntries.add(entry.id);
+      }
+    }
+    return history.merge(fresh, metadata, timing?.completed ?? {}, timing?.speed ?? {}, dotsEntries);
   }
 
   /** Results outside a window update its tool rows without adding intervening messages. */
@@ -868,7 +903,7 @@ export class DurableBotRuntime {
     await this.loadInputMetadata(entries, metadata);
     const timing = await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx);
     const history = new DurableHistoryProjection();
-    history.merge(await this.historyEntries(history, entries), metadata, timing?.completed ?? {}, timing?.speed ?? {});
+    await this.mergeHistory(history, entries, metadata, timing);
     await this.completeHistoryTools(history, entries.at(-1)?.id ?? entryId, metadata);
     return { historyId: this.historyId, before: earlier.items[25]?.id, after: later.items[size]?.id === undefined ? undefined : later.items[size - 1]?.id,
       messages: history.messages };
@@ -1290,7 +1325,7 @@ export class DurableBotRuntime {
     const live = (value.docs["pi.live"] ?? {}) as LiveState;
     const timing = entries.some(entry => !this.history.has(entry.id)) ? await this.harness.snapshot(ResponseTiming, this.conversation.id, ctx) : undefined;
     await this.loadInputMetadata(entries);
-    const fresh = this.history.merge(await this.historyEntries(this.history, entries), this.metadataByEntry, timing?.completed ?? {}, timing?.speed ?? {});
+    const fresh = await this.mergeHistory(this.history, entries, this.metadataByEntry, timing);
     // 长耗时工具的调用行可能已在窗口外：只补回 owner 行，否则结果（含子代理的 8 条记录）
     // 会被 `applyResult` 静默丢弃，界面上这次调用从此不存在。
     await this.mendOrphanToolCalls();
@@ -1324,7 +1359,18 @@ export class DurableBotRuntime {
       messages[index] = { ...saved, projectionVersion: undefined, tools: saved.tools?.map(tool => ({ ...tool })) };
     }
     if (live.run && live.generation?.message) {
-      const row = assistantRow(`durable-live-${live.run.taskId}`, live.run.taskId, live.generation.message, undefined, turnStartedAt, true);
+      const inputId = live.run.inputs.at(-1);
+      const body = contentText(live.generation.message.content);
+      let dotsWorker = false;
+      if (this.options.isDotsWorkerInput && inputId !== undefined && /^\s*(?:\{|\x60)/u.test(body)) {
+        if (this.liveDotsInput?.id !== inputId) {
+          const input = await this.storage.submission(inputId, ctx);
+          const requestId = input?.type === "input" ? input.requestId : undefined;
+          this.liveDotsInput = { id: inputId, worker: Boolean(requestId && this.options.isDotsWorkerInput(requestId)) };
+        }
+        dotsWorker = this.liveDotsInput.worker;
+      }
+      const row = assistantRow(`durable-live-${live.run.taskId}`, live.run.taskId, live.generation.message, undefined, turnStartedAt, true, undefined, dotsWorker);
       messages.push(row);
       for (const tool of row.tools ?? []) tools.set(tool.id, tool);
     }
@@ -1528,7 +1574,7 @@ export class DurableBotRuntime {
 function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegistration[] {
   return [
     ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withMissingFileRecovery(withDurableImageRead(tool)) : withDurableArtifactRegistration(tool, directory)),
-    ...createPlatformShellTools(),
+    ...createPlatformShellTools().map(tool => withDurableArtifactRegistration(tool, directory)),
     createDurableArtifactRegistrationTool(directory),
   ].map(tool => withWindowsBashWorkspacePath(tool)).map(withShellTerminalGuidance);
 }

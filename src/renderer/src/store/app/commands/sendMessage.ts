@@ -76,12 +76,15 @@ export function createSendMessageActions(
       const {
         tasks,
         models,
-        activeModelId,
+        activeModelId: ordinaryModelId,
+        dotsModelId,
+        dotsFollowModelId,
         modelExplicit,
         permissionMode,
         permissionExplicit,
         welcomeMode: defaultWelcomeMode,
       } = get();
+      const activeModelId = activeTaskId === DOTS_TASK_ID ? dotsModelId ?? dotsFollowModelId : ordinaryModelId;
       const task = tasks.find((x) => x.id === activeTaskId);
       if (!task) return reviewTaskId ? Promise.reject(new Error("原任务已不可用。")) : undefined;
       const welcomeMode = task.welcomeMode ?? defaultWelcomeMode;
@@ -111,7 +114,7 @@ export function createSendMessageActions(
       // 显式 vs 默认契约（P0）：用户显式选择过才作为 explicit 传主进程，否则 undefined，
       // 由主进程按 Tag 建议 → Mode 建议 → 系统默认链解析；createRelatedTask 等已解析场景
       // 通过 explicitOverrides 直接注入（等价于显式）。
-      const reqModelId =
+      const reqModelId = activeTaskId === DOTS_TASK_ID ? undefined :
         explicitOverrides?.modelId !== undefined
           ? explicitOverrides.modelId
           : toRequestModelId({ explicit: modelExplicit, value: activeModelId });

@@ -1,4 +1,17 @@
-import type { TaskDto } from "./agent-ipc";
+import type { SpaceDto, TaskDto } from "./agent-ipc";
+
+export function dotsLocalSpacePath(space: SpaceDto, parent: (id: string) => SpaceDto | undefined): string[] | undefined {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current: SpaceDto | undefined = space;
+  while (current) {
+    if (seen.has(current.id) || current.id.startsWith("sp-gw-") || /^bot-(space-|team-space-|workspace-group-)/.test(current.id)) return;
+    seen.add(current.id);
+    names.unshift(current.name);
+    if (!current.parentId) return names;
+    current = parent(current.parentId);
+  }
+}
 
 /** One foreground per local profile. It never belongs to a project or task list. */
 export const DOTS_TASK_ID = "mybuddy-dots";
@@ -37,7 +50,7 @@ export interface DotsAssistantReply {
   sourceMessageId: string;
   origin?: DotsReplyOrigin;
   title: string;
-  kind: "conclusion" | "question";
+  kind: "conclusion" | "question" | "progress";
   text: string;
   citations?: import("./chat-reply-content").ReplyCitation[];
   artifacts: DotsDelegation["artifacts"];

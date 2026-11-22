@@ -103,6 +103,7 @@ export interface DurableBotServiceOptions {
   evidenceProjection?: (task: TaskDto) => DurableEvidenceOptions | undefined;
   canReadAnswerEvidence?: (taskId: string, resource: "read" | "library_read") => boolean;
   answerRouting?: Pick<AnswerRoutingService, "prepare" | "hasRulesForTask" | "clearPreparedTurns">;
+  dotsAnswerRoutingEnabled?: () => boolean;
   nativeHooks?: NativeHookStore;
   nativeImprovement?: import("../hooks/NativeImprovementService").NativeImprovementService;
   improvementSkillAllowed?: (taskId: string, name: string) => boolean;
@@ -123,6 +124,7 @@ export interface DurableBotServiceOptions {
   onRelease?: (taskId: string) => void;
   toolMode: (task: TaskDto) => BotToolMode;
   defaultModel: () => string | undefined;
+  dotsModel?: () => Promise<BotModelResolution["target"]>;
   /** 产品压缩阈值（同步 getter：每次使用重新读取，运行中改设置即时生效）。缺省用产品默认值。 */
   productCompaction?: () => ProductCompactionSettings;
   /** 上下文管理引擎选择（billion-context / native）；同步 getter，切换后下一轮生效。 */
@@ -486,7 +488,7 @@ export class DurableBotService {
           return { taskId, projectId: current.projectId, spaceId: current.spaceId };
         } },
         answerRouting: routing && {
-          enabled: () => routing.hasRulesForTask(taskId),
+          enabled: () => this.options.dotsAnswerRoutingEnabled?.() !== false && routing.hasRulesForTask(taskId),
           prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd,
             canRead: () => this.options.canReadAnswerEvidence?.(taskId, "read") ?? toolGate.allowed("read"),
             canReadLibrary: () => this.options.canReadAnswerEvidence?.(taskId, "library_read") ?? toolGate.allowed("library_read") }),
@@ -534,6 +536,7 @@ export class DurableBotService {
         waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
         evidenceProjection: this.options.evidenceProjection?.(task),
+        isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId),
         isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
           && Boolean(db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
           && Boolean(db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId))),
@@ -635,6 +638,7 @@ export class DurableBotService {
    * 替换事实存进 OpenBot.modelRepair，历史打开时作为 modelRecovery 展示，不静默换模型。
    */
   private async resolveTaskModel(task: TaskDto): Promise<BotModelResolution> {
+    if (task.id === DOTS_TASK_ID && this.options.dotsModel) return { target: await this.options.dotsModel() };
     const resolution = await resolveBotModel(this.options.models, task.modelId, this.options.defaultModel());
     const target = resolution.target;
     if (!resolution.repairedFrom) return resolution;
@@ -669,7 +673,7 @@ export class DurableBotService {
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     // Product selections are durable task configuration, never global scene state.
-    this.options.db.upsertTask({ ...task, modelId: request.modelId ?? task.modelId,
+    this.options.db.upsertTask({ ...task, modelId: task.id === DOTS_TASK_ID ? task.modelId : request.modelId ?? task.modelId,
       permissionMode: request.permissionMode ?? task.permissionMode,
       welcomeMode: request.welcomeMode ?? task.welcomeMode,
       expertId: this.options.expertBindings?.get(task.id) ? task.expertId : request.expertId ?? task.expertId,
@@ -696,7 +700,8 @@ export class DurableBotService {
         : undefined;
       const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd, mcp);
       mark?.("tools");
-      await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, request),
+      const configuredRequest = current.id === DOTS_TASK_ID ? { ...request, modelId: modelKey(resolvedModel.target) } : request;
+      await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, configuredRequest),
         [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks, domain?.foregroundHooks);
       mark?.("configure");
       return resolvedModel.target;
@@ -749,11 +754,13 @@ export class DurableBotService {
       const audit = this.options.auditInput?.(request);
       this.options.beforeSubmit?.(request);
       mark?.("payload");
+      const guarded = request.dotsFileWatch || request.dotsSteerInputVersion || origin?.goalContinuation
+        || request.userMessageId.startsWith("dots-input-") || request.taskId === DOTS_TASK_ID && isDotsAutomaticInput(request.userMessageId);
       const submission = await open.runtime.submit(content, request.userMessageId, request.streamingBehavior,
         { dotsMemoryRefs: request.dotsMemoryRefs, text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [],
           ...(audit ? { audit } : {}), ...(origin?.gatewayOrigin ? { gatewayOrigin: origin.gatewayOrigin } : {}),
           ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}) }, mark, request.requireActiveRun,
-        (request.dotsFileWatch || request.dotsSteerInputVersion)
+        guarded
           ? { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: () => this.options.beforeSubmit?.(request) } : undefined);
       return { submission, open };
     });
@@ -901,6 +908,13 @@ export class DurableBotService {
   }
 
   /** Resolve the exact accepted input. A later answer in the same task is never its result. */
+  private isDotsWorkerInput(taskId: string, requestId: string): boolean {
+    const db = this.options.db.connection;
+    return taskId !== DOTS_TASK_ID && /^(?:dots-input-|goal-continuation:)/.test(requestId)
+      && Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
+      && Boolean(db.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId));
+  }
+
   async dotsSubmission(taskId: string, operationId: string) {
     const binding = this.binding(taskId);
     if (!binding) return undefined;
@@ -919,7 +933,7 @@ export class DurableBotService {
             if (found?.taskId === taskId) { question = found; break; }
           }
         }
-        if (!question) return { status: "running" as const, text: "", messageIds: [], files: [] };
+        if (live?.run?.inputs.at(-1) !== input.id) return { status: "running" as const, text: "", messageIds: [], files: [] };
       }
       // The waiting-input delta already woke this inspector. Refreshing the same
       // blocked runtime would emit that delta again and starve its consumer.
@@ -1076,7 +1090,8 @@ export class DurableBotService {
     const binding = this.binding(taskId);
     if (!binding) return { messages: [] };
     const reading = readDurableReadOnlyHistory({ directory: binding.directory, cwd: binding.cwd,
-      models: this.options.models, beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId) });
+      models: this.options.models, beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId),
+      isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId) });
     const barrier = reading.then(() => {}, () => {}).finally(() => {
       if (this.passiveReads.get(taskId) === barrier) this.passiveReads.delete(taskId);
     });

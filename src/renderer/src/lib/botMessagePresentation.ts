@@ -1,11 +1,13 @@
 import type { ChatMessage, MessageBlock } from "@/types";
 import type { DurableBotSnapshot } from "@shared/durable-bot";
+import { isDotsAutomaticInput } from "@shared/dots";
 
 /** Render one Bot reply per user turn while retaining the native Durable records in the store. */
 export function botMessagePresentation(
   messages: readonly ChatMessage[],
   pendingInputs: readonly DurableBotSnapshot["pendingInputs"][number][] = [],
   localInputs: readonly ChatMessage[] = [],
+  dotsBusy = false,
 ): ChatMessage[] {
   const result: ChatMessage[] = [];
   let userId: string | undefined;
@@ -72,5 +74,13 @@ export function botMessagePresentation(
     );
   }
   for (const input of localInputs) result.push({ ...input, presentationKey: `durable-input-${input.id}` });
+  const tail = result.at(-1);
+  if (dotsBusy && tail?.role === "user" && !tail.submissionFailed && !tail.goalContinuation && !isDotsAutomaticInput(tail.inputRequestId ?? tail.id)) {
+    result.push({ id: `dots-activity-${tail.id}`, presentationKey: `durable-turn-${tail.inputRequestId ?? tail.id}`,
+      role: "assistant", createdAt: 0, blocks: [], streaming: true });
+  } else if (dotsBusy && tail?.role === "assistant" && !tail.finalAssistantReply && !tail.dotsDelivery
+    && !tail.streaming && tail.generationStats?.outcome !== "aborted" && tail.generationStats?.outcome !== "error") {
+    result[result.length - 1] = { ...tail, streaming: true };
+  }
   return result;
 }

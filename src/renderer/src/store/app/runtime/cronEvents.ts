@@ -115,6 +115,7 @@ export function bindCronEvents(
                     externalAgent: message.externalAgent,
                     durationLabel: formatDuration(message.durationMs),
                     entryId: message.entryId,
+                    finalAssistantReply: message.finalAssistantReply,
                     attachments: message.attachments,
                     blocks:
                       message.role === "user"

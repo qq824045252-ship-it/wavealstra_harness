@@ -33,6 +33,7 @@ export function createTaskActivationActions(
         }
       }
       get().setActiveTask(DOTS_TASK_ID);
+      void get().refreshModelConfiguration();
       set(state => ({ chatFocusTick: state.chatFocusTick + 1 }));
     },
     setActiveTask: (id, focus) => {
@@ -42,7 +43,7 @@ export function createTaskActivationActions(
       const first = s.artifactProjection.artifactsByTask[id]?.[0]?.id ?? null;
       const hasMessages = (task?.messages.length ?? 0) > 0;
       const taskModelId =
-        task?.modelId &&
+        id !== DOTS_TASK_ID && task?.modelId &&
         s.models.some(
           (model) => model.id === task.modelId && model.enabled !== false,
         )
@@ -98,7 +99,7 @@ export function createTaskActivationActions(
         contextEstimated: false,
         activeModelId: taskModelId,
         // F2：显式标记任务级隔离（不跨任务泄漏；新任务/继承值 = false）
-        modelExplicit: task?.modelExplicit ?? false,
+        modelExplicit: id === DOTS_TASK_ID ? s.modelExplicit : task?.modelExplicit ?? false,
         contextWindowTokens:
           get().models.find((model) => model.id === taskModelId)
             ?.contextWindow || get().contextWindowTokens,
@@ -235,7 +236,7 @@ export function createTaskActivationActions(
                       }
                     : t,
                 ),
-                ...(s.activeTaskId === id && repairedModelId
+                ...(id !== DOTS_TASK_ID && s.activeTaskId === id && repairedModelId
                   ? { activeModelId: repairedModelId }
                   : {}),
               }));
@@ -277,6 +278,7 @@ export function createTaskActivationActions(
                 externalAgent: m.externalAgent,
                 durationLabel: formatDuration(m.durationMs),
                 entryId: m.entryId,
+                finalAssistantReply: m.finalAssistantReply,
                 attachments: displayAttachments.length
                   ? displayAttachments
                   : undefined,

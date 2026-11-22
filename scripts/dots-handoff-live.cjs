@@ -2,20 +2,34 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const {createHash} = require("node:crypto");
+const {createHash, randomInt} = require("node:crypto");
 const { run } = require("./desktop-dev-harness.cjs");
 const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
 const goalScenario = process.env.MYBUDDY_DOTS_LIVE_GOAL === "1";
+const lastWeekScenario = !goalScenario && process.env.MYBUDDY_DOTS_LIVE_WEEK === "1";
 
 run(async env => {
   const { evaluate, until, rpc, report } = env;
   const { press, click } = routingControls(env);
   const folder = path.join(env.home, "周转库");
   fs.mkdirSync(folder);
-  fs.writeFileSync(path.join(folder,"调拨.csv"), "货架,数量\n甲,148\n乙,57\n丙,31\n");
+  const counts = goalScenario ? [148,57,31] : [randomInt(100,900),randomInt(20,100),randomInt(1,20)];
+  const expected = String(counts.reduce((sum,n)=>sum+n,0));
+  const now = new Date();
+  function dateFromMonday(offset) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (now.getDay()+6)%7 + offset, 12);
+    return [date.getFullYear(),String(date.getMonth()+1).padStart(2,"0"),String(date.getDate()).padStart(2,"0")].join("-");
+  }
+  const data = lastWeekScenario
+    ? [`日期,货架,数量`,`${dateFromMonday(-8)},丁,1401`,`${dateFromMonday(-7)},甲,${counts[0]}`,`${dateFromMonday(-4)},乙,${counts[1]}`,
+       `${dateFromMonday(-1)},丙,${counts[2]}`,`${dateFromMonday(0)},戊,2942`].join("\n")
+    : `货架,数量\n甲,${counts[0]}\n乙,${counts[1]}\n丙,${counts[2]}`;
+  fs.writeFileSync(path.join(folder,"调拨.csv"),data+"\n");
   const api = (method,...args) => evaluate("window.api."+method+"("+args.map(arg=>JSON.stringify(arg)).join(",")+")");
   await until(()=>evaluate("Boolean(window.api?.db && document.querySelector('.sidebar-scroll'))"), "initial sidebar and preload ready");
+  const foreground = process.env.MYBUDDY_DOTS_LIVE_FOREGROUND;
+  if (foreground) await api("agent.updateAppSettings",{dotsSettings:{modelId:"fixture/"+foreground}});
   await api("db.upsertSpace",{id:"sp-transfer",name:"周转库",path:folder});
   await api("db.upsertTask",{id:"desk-other",title:"另一项工作",welcomeMode:"general",updatedAt:Date.now()});
   let goal;
@@ -30,7 +44,9 @@ run(async env => {
   await until(()=>evaluate("Boolean(document.querySelector('.sidebar-scroll'))"), "sidebar mounted");
   await click("MyBuddy Dots",".sidebar-scroll");
   await press("document.querySelector('textarea.input-textarea')","Dots input");
-  const request=goal ? `把这次核对委派给原任务 desk-transfer-goal，关联已有 Goal ${goal.id}。读取调拨.csv，计算三个货架总量，按真实读到的数据自动结项，将数字回我。` : "请在「周转库」空间委派一个普通任务，读取调拨.csv，算出调拨总数量。只需把数字回我。";
+  const request=goal ? `把这次核对委派给原任务 desk-transfer-goal，关联已有 Goal ${goal.id}。读取调拨.csv，计算三个货架总量，按真实读到的数据自动结项，将数字回我。` :
+    lastWeekScenario ? "请在「周转库」空间委派普通任务，核算调拨.csv 里上周的调拨数量。只回复合计数字。" :
+    "请在「周转库」空间委派一个普通任务，读取调拨.csv，算出调拨总数量。只需把数字回我。";
   await rpc("Input.insertText",{text:request});
   await press("document.querySelector('button[title=\"发送 (Enter)\"]')","send original request");
   const history = async id => (await api("agent.loadTaskHistory",id)).messages;
@@ -76,12 +92,21 @@ run(async env => {
     return;
   }
   assert.equal(results.length,1);
-  assert.match(results[0].text,/236/);
+  assert.equal(results[0].text.trim(),expected);
+  const jobs = await api("dots.list");
+  assert.equal(jobs.length,1);
+  const target = await history(jobs[0].taskId);
+  assert(target.some(m=>m.tools?.some(t=>t.status==="success" && String(t.output).includes("甲,"+counts[0]))),"ordinary worker must actually read the source rows");
+  const requests=fs.readFileSync(path.join(env.out,"provider-requests.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line).body);
+  const routes = role=>[...new Set(requests.filter(r=>r.tools?.some(t=>t.function.name===role)).map(r=>r.model))];
+  assert.deepEqual(routes("dots_action"),[foreground || report.modelConfiguration.modelId]);
+  assert.deepEqual(routes("read"),[report.modelConfiguration.modelId]);
+  report.transfer = {sourceRows:data.split("\n"),counts,expected,reply:results[0].text.trim(),front:routes("dots_action"),worker:routes("read")};
   assert.equal(results[0].dotsDelivery.artifacts.length,0);
   assert.equal(records.filter(m=>m.role==="user").length,1);
   assert(records.some(m=>m.role==="assistant" && m.text.trim() && !m.dotsDelivery));
   assert(!(await history("desk-other")).some(m=>m.dotsDelivery));
   report.deliveries=records.filter(m=>m.text?.trim()).map(m=>({id:m.id,role:m.role,text:m.text,source:m.dotsDelivery?.sourceMessageId}));
-  report.actualControlChecks.push("One user input, foreground acknowledgement, worker read the workspace data, computed 236 and delivered a standalone text message to the original conversation.");
-}, {name:goalScenario?"dots-goal-live":"dots-handoff-live",liveModel:true,isolatedDependencyCache:true,watchRenderer:false,
+  report.actualControlChecks.push("One user input, actual model routes verified on the wire, ordinary worker read three source rows and delivered exactly their sum to the original conversation.");
+}, {name:goalScenario?"dots-goal-live":lastWeekScenario?"dots-week-handoff-live":"dots-handoff-live",liveModel:true,isolatedDependencyCache:true,watchRenderer:false,
   settings:{permissionMode:"auto",notificationPreferences:{desktopEnabled:false}},rpcTimeoutMs:150000});

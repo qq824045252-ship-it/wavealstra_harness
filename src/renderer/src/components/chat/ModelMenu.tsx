@@ -13,9 +13,9 @@ import { maxReasoningPreference } from "@shared/model-menu";
 
 /** Shared ordinary/Bot model menu. Hosts own selection persistence; no active-task fallback. */
 export function ModelMenu({ models: availableModels, modelId: activeModelId, preferences: modelPreferences,
-  label = "模型列表", explicit: modelExplicit, followLabel = "跟随场景建议（Tag/Mode）", onSelect: setActiveModel,
+  label = "模型列表", explicit: modelExplicit, followLabel = "跟随场景建议（Tag/Mode）", showReasoning = true, onSelect: setActiveModel,
   onPreference: setModelReasoningPreference, onFollow: followSuggestedModel, onConfigure, onClose }: {
-  label?: string; models: ModelConfig[]; modelId?: string; preferences: ModelPreferencesDto; explicit: boolean; followLabel?: string;
+  label?: string; models: ModelConfig[]; modelId?: string; preferences: ModelPreferencesDto; explicit: boolean; followLabel?: string; showReasoning?: boolean;
   onSelect(id: string): void; onPreference(id: string, value: ModelReasoningPreferenceDto | undefined): void;
   onFollow(): void; onConfigure(): void; onClose(): void;
 }) {
@@ -109,7 +109,7 @@ export function ModelMenu({ models: availableModels, modelId: activeModelId, pre
   /** Product capability truth comes from model metadata, not Pi transport levels. */
   const reasoningOptionsForModel = (m: ModelConfig) => m.metadata?.reasoningOptions ?? [];
   const canThinkOn = (m: ModelConfig): boolean =>
-    Boolean(m.supportsReasoning && reasoningOptionsForModel(m).length > 0);
+    Boolean(showReasoning && m.supportsReasoning && reasoningOptionsForModel(m).length > 0);
 
   useLayoutEffect(() => {
     if (!modelOpen || !hoverModelId) return;
@@ -133,7 +133,7 @@ export function ModelMenu({ models: availableModels, modelId: activeModelId, pre
                 ref={modelPopupRef}
                 onClick={(e) => e.stopPropagation()}
               >
-                <div className="model-max-row">
+                {showReasoning && <div className="model-max-row">
                   <span className="model-max-label">
                     <span className="model-max-icon">M</span>
                     Max 模式
@@ -146,7 +146,7 @@ export function ModelMenu({ models: availableModels, modelId: activeModelId, pre
                     className={`switch model-max-switch ${isMax ? "on" : ""}`}
                     onClick={() => toggleMax()}
                   />
-                </div>
+                </div>}
                 <input className="model-menu-search" aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={event => setQuery(event.target.value)} />
                 <div className="model-options" ref={modelOptionsRef}>
                   {/* F2：显式模型标记的复位路径 —— 跟随 Tag/Mode 建议（不写全局默认） */}

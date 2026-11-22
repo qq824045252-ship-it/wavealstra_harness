@@ -44,7 +44,7 @@ function nestedArguments(args: unknown): unknown {
 
 /** Pure projection of committed entries. Live streaming text, summaries and failed responses are not completed turns. */
 export function durableCompletedTurns(taskId: string, conversationId: string, entries: readonly EntryRecord[],
-  nested: ReadonlyMap<number, readonly EntryRecord[]> = new Map(), inputMetadata: ReadonlyMap<number, Pick<DurableInputMetadata, "text" | "inputRequestId" | "gatewayOrigin">> = new Map(),
+  nested: ReadonlyMap<number, readonly EntryRecord[]> = new Map(), inputMetadata: ReadonlyMap<number, Pick<DurableInputMetadata, "text" | "inputRequestId" | "gatewayOrigin" | "audit">> = new Map(),
   isDelegation?: (requestId: string) => boolean): Array<CaptureMemoryTurnInput & { entryId: number; skipCapture?: boolean }> {
   const turns: Array<CaptureMemoryTurnInput & { entryId: number; skipCapture?: boolean }> = [];
   let users: EntryRecord[] = [], evidence: Message[] = [];
@@ -65,7 +65,10 @@ export function durableCompletedTurns(taskId: string, conversationId: string, en
         evidence.push(message);
         if (message.role !== "assistant" || message.stopReason !== "stop" || !users.length) continue;
         const id = (value: number) => `durable:${taskId}:${conversationId}:${value}`;
-        const originals = users.filter(user => {
+        // The shared reply may quote any of its inputs. Never capture it when
+        // even one input was admitted while Dots memory writes were disabled.
+        const skipMemoryCapture = users.some(user => inputMetadata.get(user.id)?.audit?.skipMemoryCapture);
+        const originals = skipMemoryCapture ? [] : users.filter(user => {
           const requestId = inputMetadata.get(user.id)?.inputRequestId;
           return !requestId || !isDelegation?.(requestId);
         });

@@ -223,7 +223,8 @@ import { CronService } from "./cron/CronService";
 import { TaskTerminalService } from "./terminal/TaskTerminalService";
 import { AppDatabase } from "./db/AppDatabase";
 import { TaskBoardRepository } from "./task/TaskBoardRepository";
-import { DotsIpc } from "../shared/dots";
+import { DotsIpc, DOTS_TASK_ID } from "../shared/dots";
+import { resolveDotsPreferences } from "../shared/dots-settings";
 import { DotsDelegations } from "./dots/DotsDelegations";
 import { DotsActions } from "./dots/DotsActions";
 import { GadgetRepository } from "./gadget/GadgetRepository";
@@ -743,17 +744,26 @@ function registerIpc(): void {
     rememberOrigin: (source, origin) => dots.rememberOrigin(source, origin),
     changed: () => { dots.refresh(); broadcastToWindows(DotsIpc.changed, null); },
     failed: (...args) => dots.failed(...args),
+    preferences: () => resolveDotsPreferences(agentService.getAppSettings().dotsSettings),
+    fileNotice: event => notificationService.publish({
+      type:"reminder.due", level:"info", title:"Dots 文件订阅",
+      body:`${event.file} 已变化。你可以让 Dots 继续处理。`,
+      sourceType:"task", sourceId:event.taskId, taskId:DOTS_TASK_ID,
+      dedupeKey:`dots-watch:${event.id}:${event.revision}`,
+    }),
+    progressNotice: event => notificationService.publish({
+      type:"reminder.due", level:"info", title:"Dots 事项进展", body:event.text,
+      sourceType:"task", sourceId:event.taskId, taskId:DOTS_TASK_ID,
+      dedupeKey:`dots-checkpoint:${event.operationId}`,
+    }),
   }, taskBoard);
   const actions = dotsActions;
-  dots.connect((job, request) => actions.followup(job, request), (reply, current) => agentService.appendDotsReply(reply, current));
+  dots.connect((job, request) => actions.followup(job, request), (reply, current) => agentService.appendDotsReply(reply, current),
+    taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
   agentService.setDotsActions(dotsActions);
   ipcMain.handle(DotsIpc.open, () => db.openDots());
-  ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds));
-  agentService.onPatch(patch => {
-    const snapshot = patch.type === "durable_snapshot" ? patch.snapshot : patch.type === "durable_delta" ? patch.delta.state : undefined;
-    if ("taskId" in patch && (patch.type === "conversation_interaction_snapshot" || patch.type === "conversation_goal_snapshot" || snapshot?.status === "waiting_input" ||
-        (snapshot && !snapshot.busy && !snapshot.queued))) dots.refresh(patch.taskId);
-  });
+  ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
+  agentService.onPatch(patch => dots.onPatch(patch));
   agentService.onPatch(patch => taskBoard.patch(patch));
   ipcMain.handle(DbIpc.taskBoardPage, (_e, query) => taskBoard.page(query));
   ipcMain.handle(DbIpc.taskBoardAction, (_e, id, action) => taskBoard.action(id, action));
@@ -2425,7 +2435,7 @@ function registerIpc(): void {
   ipcMain.handle(CronIpc.runs, (_e, limit?: number) => cronService.listRuns(limit));
   ipcMain.handle(CronIpc.upsert, (_e, job: CronJobDto) => cronService.upsert(job));
   ipcMain.handle(CronIpc.setEnabled, (_e, id: string, enabled: boolean) => {
-    cronService.setEnabled(id, enabled);
+    cronService.setUserEnabled(id, enabled);
   });
   ipcMain.handle(CronIpc.remove, (_e, id: string) => cronService.remove(id));
   ipcMain.handle(CronIpc.runNow, async (_e, id: string) => {
@@ -3572,6 +3582,11 @@ app.whenReady().then(async () => {
       });
     },
     agentService.nativeImprovement,
+    event => notificationService.publish({
+      type:"reminder.due", level:"info", title:event.jobName, body:"定时跟进已到期。你可以让 Dots 继续处理。",
+      sourceType:"automation", sourceId:event.jobId, taskId:DOTS_TASK_ID,
+      dedupeKey:`dots-timer:${event.jobId}:${event.occurrence}`,
+    }),
   );
   // 外部输入适配器（首个：IM/Gateway 投递指令 `@项目 <名>：内容` → 项目事件；fail-open）
   gatewayService = new GatewayService(db, agentService, (msg) => {
@@ -3658,7 +3673,9 @@ app.whenReady().then(async () => {
     const task = db.getTask(id);
     return !!task && !task.externalAgentPin && agentService.isDotsOrdinaryTask(id) && !db.isTaskEffectiveArchived(id)
       && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed";
-  }).catch(error => console.warn("[Dots] 恢复委派失败", error));
+  }, async (id, operation) => Boolean((await agentService.findSubmission(id, operation))?.receipt),
+    (request, source) => dotsActions?.mayRecover(request, source) ?? true)
+    .catch(error => console.warn("[Dots] 恢复委派失败", error));
   dotsActions?.startFileWatches();
   startupMark("restoreDelivered");
   cronService.start();

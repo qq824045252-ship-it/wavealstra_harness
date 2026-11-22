@@ -118,7 +118,8 @@ export async function inspectDurableArtifact(cwd: string, path: string, director
 type Api = Parameters<ToolRegistration["execute"]>[1];
 type Context = Parameters<ToolRegistration["execute"]>[2];
 /** Replay-safe host receipt, scoped to the owning run and exact native call. */
-async function register(path: string, api: Api, context: Context, directory: string): Promise<DurableArtifactRegistration> {
+async function register(path: string, api: Api, context: Context, directory: string,
+  previousDigest?: string | null): Promise<DurableArtifactRegistration> {
   const agent = await api.agent(context);
   if (!agent.cwd) throw new Error("Artifact registration requires a host-bound workspace");
   const owner = await api.commit(async tx => {
@@ -159,6 +160,7 @@ async function register(path: string, api: Api, context: Context, directory: str
   const previewManifestPath = /\.html?$/i.test(file.path) ? await captureSavedWebBundle(agent.cwd, file.path, file.snapshotPath, directory, inspectDurableArtifact) : undefined;
   const data = { ...file, ...(previewManifestPath ? { previewManifestPath } : {}), snapshotPath: file.snapshotPath, registeredAt: Date.now(), toolCallId: api.callId, toolTaskId: api.taskId,
     toolConversationId: api.conversationId, inputIds };
+  if (previousDigest === data.digest) return data;
   // HTML is often written before its styles/scripts. Capture a new immutable
   // bundle at the later resource registration, never by reading live files at preview time.
   const priorHtml = await api.commit(async tx => {
@@ -216,6 +218,28 @@ export function createDurableArtifactRegistrationTool(directory: string): ToolRe
 
 /** Preserve native write/edit outcomes; only successful calls can supply implicit evidence. */
 export function withDurableArtifactRegistration(tool: ToolRegistration, directory: string): ToolRegistration {
+  if (tool.name === "powershell") {
+    return { ...tool, execute: async (args, api, context) => {
+      const command = z.object({ command: z.string() }).safeParse(args);
+      const target = command.success ? powerShellLiteralContentTarget(command.data.command) : undefined;
+      let before: string | null | undefined;
+      if (target) {
+        try {
+          const agent = await api.agent(context);
+          if (agent.cwd && api.env?.cwd === agent.cwd) before = (await inspectDurableArtifact(agent.cwd, target)).digest;
+        } catch (error) {
+          if (error instanceof ArtifactPathMissingError) before = null;
+        }
+      }
+      const result = await tool.execute(args, api, context);
+      const receipt = z.object({ exitCode: z.literal(0), output: z.string(), truncated: z.literal(false) }).safeParse(result.structuredOutput);
+      if (target && before !== undefined && !result.isError && receipt.success && !receipt.data.output.trim()) {
+        try { await register(target, api, context, directory, before); }
+        catch (error) { api.output(`Generated file registration unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      return result;
+    } };
+  }
   if (tool.name !== "write" && tool.name !== "edit") return tool;
   return { ...tool, execute: async (args, api, context) => {
     const result = await tool.execute(args, api, context);

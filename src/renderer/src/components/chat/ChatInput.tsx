@@ -1,4 +1,6 @@
 import { ModelMenu } from "./ModelMenu";
+import { DOTS_TASK_ID } from "@shared/dots";
+import { selectChatModelId } from "@/store/app/slices/activeContext";
 import { ComposerAttachmentChips } from "./ComposerAttachmentChips";
 import { composerFiles, mergeComposerAttachments, pickComposerAttachment } from "./composerAttachments";
 import ChatComposer from "./ChatComposer";
@@ -294,7 +296,9 @@ export default function ChatInput({
   }, [composerInsertion, taskComposerInsertion, taskComposerId, clearComposerInsertion, btwActive]);
   const skills = useAppStore((s) => s.skills);
   const models = useAppStore((s) => s.models);
-  const activeModelId = useAppStore((s) => s.activeModelId);
+  const isDots = activeTaskId === DOTS_TASK_ID;
+  const activeModelId = useAppStore(selectChatModelId);
+  const dotsModelError = useAppStore(s => isDots ? s.dotsModelError : null);
   const modelPreferences = useAppStore((s) => s.modelPreferences);
   const welcomeMode = useAppStore((s) => s.welcomeMode);
   const modePresetId = useAppStore((s) => s.modePresetId);
@@ -309,7 +313,7 @@ export default function ChatInput({
   }, [variant, sceneKey]);
   const setActiveModel = useAppStore((s) => s.setActiveModel);
   // F2：显式模型标记 + 复位「跟随场景建议」
-  const modelExplicit = useAppStore((s) => s.modelExplicit);
+  const modelExplicit = useAppStore((s) => isDots ? s.dotsModelId !== null : s.modelExplicit);
   const followSuggestedModel = useAppStore((s) => s.followSuggestedModel);
   // Active 连接器为任务级 store 状态（随任务切换/持久到 task.connectorIds），
   // 不再使用发送即清空的本地临时态。
@@ -535,16 +539,17 @@ export default function ChatInput({
   const availableModels = useMemo(() => {
     const seen = new Set<string>();
     return models.filter((model) => {
-      if (model.enabled === false) return false;
+      if (model.enabled === false || (isDots && model.available === false)) return false;
       const id = model.id.trim();
       const name = model.name.trim();
       if (!id || !name || seen.has(id)) return false;
       seen.add(id);
       return true;
     });
-  }, [models]);
+  }, [models, isDots]);
 
   const activeModel = availableModels.find((m) => m.id === activeModelId);
+  const modelLabel = activeModel?.name ?? (isDots && activeModelId ? "当前模型不可用" : "选择模型");
 
   const slashQuery =
     btwActive || !text.startsWith("/") || text.includes(" ") ? null : text.slice(1);
@@ -1145,6 +1150,7 @@ export default function ChatInput({
       }}
     >
       {attachmentError && <p role="alert">{attachmentError}</p>}
+      {dotsModelError && <p role="alert">{dotsModelError}</p>}
 
       {slashMatches.length > 0 && (
         <div className="slash-menu">
@@ -1696,8 +1702,8 @@ export default function ChatInput({
             <button
               type="button"
               className="pill-select ghost as-btn model-trigger"
-              title={activeModel?.name ?? "选择模型"}
-              aria-label={activeModel?.name ?? "选择模型"}
+              title={isDots && activeModelId && !activeModel ? `${activeModelId} 不可用，请在 Dots 设置中更改模型` : modelLabel}
+              aria-label={modelLabel}
               aria-expanded={modelOpen}
               aria-haspopup="listbox"
               onClick={() => {
@@ -1712,13 +1718,15 @@ export default function ChatInput({
                 <ModelBrandIcon modelName={activeModel.name} vendor={activeModel.vendor} size={16} />
               )}
               <span className="model-trigger-label">
-                {activeModel?.name ?? "选择模型"}
+                {modelLabel}
               </span>
               <IconChevronDown size={12} className="model-trigger-chevron" />
             </button>
             {modelOpen && <ModelMenu models={availableModels} modelId={activeModelId} preferences={modelPreferences}
               explicit={modelExplicit} onSelect={setActiveModel} onPreference={setModelReasoningPreference}
-              onFollow={() => void followSuggestedModel()} onConfigure={() => setSettingsOpen(true, "models")}
+              followLabel={isDots ? "跟随主模型" : undefined}
+              showReasoning={!isDots}
+              onFollow={() => void followSuggestedModel()} onConfigure={() => setSettingsOpen(true, isDots ? "dots" : "models")}
               onClose={() => setModelOpen(false)} />}
           </div>
           {/* Prompt Enhance：工具栏内只放一个图标。

@@ -423,8 +423,9 @@ export default function ChatView(): React.JSX.Element {
   const displayMessages = useMemo(() => {
     const messages = fullHistory.messages;
     return !fullHistory.loading && isBotTimeline
-      ? botMessagePresentation(messages, task?.durable?.pendingInputs, task?.botPendingSubmissions) : messages;
-  }, [fullHistory.messages, fullHistory.loading, isBotTimeline, task?.durable?.pendingInputs, task?.botPendingSubmissions]);
+      ? botMessagePresentation(messages, task?.durable?.pendingInputs, task?.botPendingSubmissions,
+        task?.id === DOTS_TASK_ID && Boolean(task.durable?.busy || task.botPendingSubmissions?.some(input => input.submitting))) : messages;
+  }, [fullHistory.messages, fullHistory.loading, isBotTimeline, task?.id, task?.durable?.busy, task?.durable?.pendingInputs, task?.botPendingSubmissions]);
   const dotsSources = task?.id === DOTS_TASK_ID
     ? JSON.stringify(displayMessages.filter(message => message.role === "user").flatMap(message => [message.id, ...(message.inputRequestId ? [message.inputRequestId] : [])]))
     : undefined;

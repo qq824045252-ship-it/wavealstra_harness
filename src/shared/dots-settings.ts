@@ -1,0 +1,66 @@
+export const dotsCapabilityOptions = [
+  { id: "taskControl", label: "委派和接续任务", description: "新建或接续普通任务、转发答复和恢复执行。关闭后仍可暂停或停止任务。" },
+  { id: "spaceManagement", label: "管理工作空间", description: "绑定目录、创建子空间和重命名空间。" },
+  { id: "workspaceReading", label: "读取文件和资料", description: "浏览工作空间目录，搜索资料并读取内容。" },
+  { id: "scheduling", label: "定时计划和文件订阅", description: "让 Dots 新建、修改或恢复定时计划与文件订阅。关闭后仍可查看、暂停或取消已有计划。" },
+  { id: "answerRouting", label: "对话调度", description: "允许 Dots 使用、测试和修改对话规则。" },
+  { id: "memoryTools", label: "记忆工具", description: "允许 Dots 主动查询、保存、更正和遗忘统一记忆。" },
+] as const;
+
+export type DotsCapability = typeof dotsCapabilityOptions[number]["id"];
+export const dotsOperations = {
+  board: ["taskControl", "查看任务看板"], task: ["taskControl", "查看任务进度"], deliveries: ["taskControl", "查找任务成果"],
+  delegate: ["taskControl", "委派普通任务"], steer: ["taskControl", "修改运行中的要求"],
+  resume: ["taskControl", "恢复事项"], answer: ["taskControl", "转发对阻塞问题的回答"],
+  spaces: ["spaceManagement", "列出空间"], bind: ["spaceManagement", "绑定文件夹"],
+  create_space: ["spaceManagement", "创建子空间"], rename: ["spaceManagement", "重命名空间"],
+  files: ["workspaceReading", "浏览目录"], read_file: ["workspaceReading", "读取文件内容"],
+  materials: ["workspaceReading", "搜索资料库"], read_material: ["workspaceReading", "读取资料及历史版本"],
+  watch_file: ["scheduling", "订阅文件变化"], resume_proactive: ["scheduling", "恢复主动跟进"],
+  "schedule.create": ["scheduling", "创建定时计划"], "schedule.update": ["scheduling", "修改定时计划"],
+  "schedule.resume": ["scheduling", "恢复定时计划"],
+  answer_rule_list: ["answerRouting", "查看回答规则"], answer_rule_test: ["answerRouting", "试用回答规则"],
+  answer_rule_save: ["answerRouting", "保存回答规则"],
+  memory_search: ["memoryTools", "查找记忆"], memory_get: ["memoryTools", "读取记忆"],
+  memory_history: ["memoryTools", "查看记忆历史"], memory_create: ["memoryTools", "写入记忆"],
+  memory_update: ["memoryTools", "更正记忆"], memory_promote: ["memoryTools", "提升记忆范围"], memory_forget: ["memoryTools", "遗忘记忆"],
+} as const satisfies Record<string, readonly [DotsCapability, string]>;
+export type DotsOperation = keyof typeof dotsOperations;
+export interface DotsSettings extends Record<DotsCapability, boolean> {
+  modelId: string | null;
+  memoryMode: "readWrite" | "readOnly" | "off";
+  followupMode: "continue" | "notify" | "paused";
+  spaceIds: string[] | null;
+  operations: Partial<Record<DotsOperation, boolean>>;
+}
+
+// The former task and space toggles only gated changes. Preserve read access for existing configurations.
+const independentReads = new Set<string>(["board", "task", "deliveries", "spaces"]);
+export function dotsOperationEnabled(settings: Partial<DotsSettings> | undefined, key: string): boolean {
+  if (!Object.hasOwn(dotsOperations, key)) return false;
+  const op = key as DotsOperation;
+  return (independentReads.has(key) || settings?.[dotsOperations[op][0]] !== false) && settings?.operations?.[op] !== false;
+}
+
+export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): DotsSettings {
+  const input = value && typeof value === "object" ? value as Partial<DotsSettings> : {};
+  const groups = Object.fromEntries(dotsCapabilityOptions.map(({ id }) =>
+    [id, typeof input[id] === "boolean" ? input[id] : fallback?.[id] ?? true],
+  )) as Record<DotsCapability, boolean>;
+  const operations = { ...fallback?.operations };
+  for (const key of Object.keys(dotsOperations) as DotsOperation[]) {
+    const flag = input.operations?.[key];
+    if (typeof flag === "boolean") operations[key] = flag;
+  }
+  const memoryMode = input.memoryMode ?? fallback?.memoryMode ?? "readWrite";
+  const followupMode = input.followupMode ?? fallback?.followupMode ?? "continue";
+  const spaces = input.spaceIds === undefined ? fallback?.spaceIds : input.spaceIds;
+  return { ...groups, operations,
+    modelId: input.modelId === null ? null : typeof input.modelId === "string" ? input.modelId.trim() || null : fallback?.modelId ?? null,
+    memoryMode: ["readWrite", "readOnly", "off"].includes(memoryMode) ? memoryMode : "readWrite",
+    followupMode: ["continue", "notify", "paused"].includes(followupMode) ? followupMode : "continue",
+    spaceIds: spaces === undefined || spaces === null ? null : Array.isArray(spaces) ? [...new Set(spaces.filter(id => typeof id === "string" && id.trim()))] : [],
+  };
+}
+
+export const resolveDotsPreferences = normalizeDotsSettings;

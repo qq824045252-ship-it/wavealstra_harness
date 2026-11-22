@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type {
+  ConversationGoalContinuationDto,
   GoalContinuationDeferReason,
   GoalContinuationState,
 } from "../../../shared/conversation-goal";
@@ -98,7 +99,22 @@ function ensureTables(db: Database.Database): void {
     tokens INTEGER NOT NULL,
     recorded_at INTEGER NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS idx_goal_usage_task ON conversation_goal_usage_events(task_id);`);
+  CREATE INDEX IF NOT EXISTS idx_goal_usage_task ON conversation_goal_usage_events(task_id);
+  CREATE TABLE IF NOT EXISTS conversation_goal_last_check (
+    work_id TEXT PRIMARY KEY REFERENCES conversation_goal_continuations(work_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    intent_revision INTEGER NOT NULL,
+    trigger TEXT NOT NULL CHECK(trigger IN ('settled','resumed','continued')),
+    reason TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS conversation_goal_last_wake (
+    work_id TEXT PRIMARY KEY REFERENCES conversation_goal_continuations(work_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL,
+    intent_revision INTEGER NOT NULL,
+    trigger TEXT NOT NULL CHECK(trigger IN ('settled','resumed','continued')),
+    at INTEGER NOT NULL
+  );`);
   // Defensive only: an earlier dev build may have created this table without the
   // later progress columns. The product database policy does not keep old formats.
   const columns = new Set((db.prepare("PRAGMA table_info(conversation_goal_continuations)").all() as Array<{ name: string }>)
@@ -129,6 +145,38 @@ export class GoalContinuationStore {
 
   get(workId: string): GoalContinuationRow | undefined {
     return rowOf(this.db.prepare("SELECT * FROM conversation_goal_continuations WHERE work_id=?").get(workId) as RawRow | undefined);
+  }
+
+  lastCheck(row: GoalContinuationRow): ConversationGoalContinuationDto["lastCheck"] {
+    return this.db.prepare(`SELECT trigger, reason, at FROM conversation_goal_last_check
+      WHERE work_id=? AND task_id=? AND intent_revision=?`)
+      .get(row.workId, row.taskId, row.intentRevision) as ConversationGoalContinuationDto["lastCheck"];
+  }
+
+  lastWake(row: GoalContinuationRow): ConversationGoalContinuationDto["lastWake"] {
+    return this.db.prepare(`SELECT trigger, at FROM conversation_goal_last_wake
+      WHERE work_id=? AND task_id=? AND intent_revision=?`)
+      .get(row.workId, row.taskId, row.intentRevision) as ConversationGoalContinuationDto["lastWake"];
+  }
+
+  recordWake(workId: string, taskId: string, intentRevision: number,
+    wake: NonNullable<ConversationGoalContinuationDto["lastWake"]>): void {
+    this.db.prepare(`INSERT INTO conversation_goal_last_wake(work_id,task_id,intent_revision,trigger,at)
+      SELECT work_id,task_id,intent_revision,?,? FROM conversation_goal_continuations
+      WHERE work_id=? AND task_id=? AND intent_revision=?
+      ON CONFLICT(work_id) DO UPDATE SET task_id=excluded.task_id,intent_revision=excluded.intent_revision,
+        trigger=excluded.trigger,at=excluded.at`)
+      .run(wake.trigger, wake.at, workId, taskId, intentRevision);
+  }
+
+  recordCheck(workId: string, taskId: string, intentRevision: number,
+    check: NonNullable<ConversationGoalContinuationDto["lastCheck"]>): void {
+    this.db.prepare(`INSERT INTO conversation_goal_last_check(work_id,task_id,intent_revision,trigger,reason,at)
+      SELECT work_id,task_id,intent_revision,?,?,? FROM conversation_goal_continuations
+      WHERE work_id=? AND task_id=? AND intent_revision=?
+      ON CONFLICT(work_id) DO UPDATE SET task_id=excluded.task_id,intent_revision=excluded.intent_revision,
+        trigger=excluded.trigger,reason=excluded.reason,at=excluded.at`)
+      .run(check.trigger, check.reason, check.at, workId, taskId, intentRevision);
   }
 
   /** Create the row (or adopt a new requirement revision) with the current usage watermark. */

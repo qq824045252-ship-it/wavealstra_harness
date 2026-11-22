@@ -166,7 +166,7 @@ export class TaskBoardRepository {
     }
   }
 
-  page(input: BoardQuery, now = Date.now(), ordinary?: { taskId?: string }): BoardPage {
+  page(input: BoardQuery, now = Date.now(), ordinary?: { taskId?: string; spaceIds?: readonly string[] | null }): BoardPage {
     const q = querySchema.parse(input);
     if (q.view === "automation") {
       if (ordinary) throw new Error("自动化记录不属于普通任务看板");
@@ -186,7 +186,8 @@ export class TaskBoardRepository {
       AND NOT EXISTS (SELECT 1 FROM tasks external WHERE external.id=b.id AND external.external_agent_pin_json IS NOT NULL)
       AND NOT EXISTS (SELECT 1 FROM gateway_sidebar_conversations g WHERE g.task_id=b.id)
       AND NOT EXISTS (SELECT 1 FROM work_execution_bindings e WHERE e.task_id=b.id)
-      ${ordinary.taskId ? "AND b.id=@taskId" : ""}` : "";
+      ${ordinary.taskId ? "AND b.id=@taskId" : ""}
+      ${ordinary.spaceIds ? "AND b.space_id IN (SELECT value FROM json_each(@spaceIds))" : ""}` : "";
     const waits = `SELECT task_id AS id,created_at AS at FROM conversation_interactions WHERE status='pending'
       UNION ALL SELECT id,at FROM board_waits`;
     if (q.view === "recent" || q.view === "frequent") {
@@ -296,6 +297,7 @@ export class TaskBoardRepository {
       scope: q.scope ?? null,
       project: q.projectId ?? null,
       taskId: ordinary?.taskId ?? null,
+      spaceIds: JSON.stringify(ordinary?.spaceIds ?? []),
       term: q.search?.trim() ?? "",
       rank: q.cursor?.rank ?? 0,
       at: q.cursor?.at ?? 0,

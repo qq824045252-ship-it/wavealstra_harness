@@ -1,5 +1,6 @@
 import { DOTS_TASK_ID } from "../../shared/dots";
-import { dotsScopeCondition, dotsSourcePointer, dotsSubject, groundDotsClaim, isDotsSingleUse, matchesDotsQuote, type DotsRevisionSource, type DotsSourceInput } from "./DotsRevisionSource";
+import { dotsRecordApplicability, dotsScopeCondition, dotsSourcePointer, dotsSubject, groundDotsClaim, matchesDotsApplicability,
+  isDotsSingleUse, matchesDotsQuote, sameDotsApplicability, type DotsRevisionSource, type DotsSourceInput } from "./DotsRevisionSource";
 import { dotsQuestionTerms, rankDotsEvidence } from "./DotsRecallRanking";
 import { memorySearchWhere } from "./MemorySearchScope";
 import { rankMemorySearch, rankMemorySearchAsync, tokenSimilarity } from "./MemoryRecallRanking";
@@ -138,7 +139,8 @@ export class MemoryService {
     if (!quote || !matchesDotsQuote(quote, ref.hash)) return;
     const filter = this.forgetWatermarks.sourceFilter(this.resolveScopeChain(ctx));
     if (filter(quote, "", ref.capturedAt, ref.messageId).userText !== quote) return;
-    return { turnId: ref.turnId, messageId: ref.messageId, role: "user", capturedAt: ref.capturedAt, quote, stance: ref.stance };
+    return { turnId: ref.turnId, messageId: ref.messageId, role: "user", capturedAt: ref.capturedAt, quote, stance: ref.stance,
+      applicability: ref.applicability ?? dotsScopeCondition(quote) };
   }
 
   /** Host-only backing record for a verified Durable incident. The weekly release controls exposure. */
@@ -435,34 +437,75 @@ export class MemoryService {
   }
 
   /** Model tools carry their host-bound task identity separately from memory provenance. */
-  createFromTask(request: MemoryCreateRequest, source?: DotsSourceInput, sourceQuote?: string): MemoryRecordDto {
+  createFromTask(request: MemoryCreateRequest, source?: DotsSourceInput, sourceQuote?: string, applicability?: unknown): MemoryRecordDto {
     if (request.sourceTaskId !== DOTS_TASK_ID || !source) return this.create(request);
-    const bound = groundDotsClaim(request, source, sourceQuote);
+    const bound = groundDotsClaim(request, source, sourceQuote, { declaration: applicability, resolveName: this.resolveDotsScope,
+      changeDefault: request.scopeType === "global" });
     if (!bound) throw new Error("请在 sourceQuote 中提供本轮用户消息的一段明确原话，以定位这条记忆");
     if (isDotsSingleUse(bound.quote, source.text)) throw new Error("本次例外只用于当前请求，无需写入长期记忆");
     return this.create({ ...request, kind: bound.kind, title: bound.title, content: bound.content,
       confidence: bound.confidence, explicit: bound.explicit,
+      ...(bound.applicability ? { scopeType: "task", scopeId: DOTS_TASK_ID,
+        metadata: { ...request.metadata, dotsApplicability: bound.applicability } } : {}),
       evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt: bound.quote }] }, bound.reason);
   }
 
-  updateFromTask(taskId: string, request: MemoryUpdateRequest, source?: DotsSourceInput, sourceQuote?: string): MemoryRecordDto {
+  private resolveDotsScope = (kind: "project" | "workspace", name: string, id?: string, allowTaskId = true): { id?: string; name: string } | undefined => {
+    const rows = kind === "project"
+      ? this.db.connection.prepare("SELECT id,name FROM projects WHERE archived=0").all() as Array<{ id: string; name: string }>
+      : this.db.listSpaces().filter(space => !space.effectiveArchived);
+    const canonicalName = (value: string) => value.normalize("NFKC").toLowerCase().trim().replace(/\s+/gu, " ");
+    if (id) {
+      const direct = rows.find(row => row.id === id);
+      const task = !direct && allowTaskId ? this.db.getTask(id) : undefined;
+      const boundId = kind === "project" ? task?.projectId : task?.spaceId;
+      const match = direct ?? rows.find(row => row.id === boundId);
+      if (name && match && canonicalName(match.name) !== name) return;
+      return match && { id: match.id, name: canonicalName(match.name) };
+    }
+    if (!name || /^(?:这(?:个|项|里|里这)?|那(?:个|项)?|该|此|当前|甲方|乙方|客户|this|that|current|the|client|customer)$/iu.test(name)) return;
+    const matches = rows.filter(row => canonicalName(row.name) === name);
+    return matches.length <= 1 ? { name, id: matches[0]?.id } : undefined;
+  };
+
+  dotsExceptionApplies(record: MemoryRecordDto, context: Pick<MemorySearchRequest, "projectId" | "workspaceId" | "query">): boolean {
+    const scope = dotsRecordApplicability(record);
+    if (!scope || scope.kind === "unresolved") return false;
+    const contextId = scope.kind === "project" ? context.projectId : context.workspaceId;
+    const current = this.resolveDotsScope(scope.kind, scope.id ? "" : scope.name, scope.id, false);
+    if (!current) return false;
+    if (contextId) return Boolean(current.id && current.id === contextId);
+    const query = context.query ?? "";
+    if (current.id && query.split(/[^\p{L}\p{N}_-]+/u).includes(current.id)) return true;
+    return Boolean(this.resolveDotsScope(scope.kind, current.name)) && matchesDotsApplicability({ ...scope, name: current.name }, query);
+  }
+
+  updateFromTask(taskId: string, request: MemoryUpdateRequest, source?: DotsSourceInput, sourceQuote?: string,
+    applicability?: unknown): MemoryRecordDto {
     return this.db.connection.transaction(() => {
       this.assertTaskMemoryWritable(taskId, request.id);
       if (taskId === DOTS_TASK_ID && source) {
         const record = this.repository.get(request.id)!;
         const claim = { kind: request.kind ?? record.kind, title: request.title ?? record.title, content: request.content,
           explicit: request.explicit, confidence: request.confidence };
-        const bound = groundDotsClaim(claim, source, sourceQuote);
+        const bound = groundDotsClaim(claim, source, sourceQuote, { declaration: applicability, resolveName: this.resolveDotsScope,
+          changeDefault: ["preference", "constraint", "identity", "procedure"].includes(record.kind) });
         if (!bound) throw new Error("请在 sourceQuote 中提供本轮用户消息的一段明确原话，以定位这次更新");
         if (isDotsSingleUse(bound.quote, source.text)) throw new Error("本次例外只用于当前请求，长期规则继续适用");
         const changeMeaning = request.title !== undefined || request.content !== undefined;
         const excerpt = bound.quote;
-        const newCondition = dotsScopeCondition(bound.quote);
-        const priorCondition = dotsScopeCondition(record.content);
+        const newCondition = bound.applicability;
+        const priorCondition = dotsRecordApplicability(record);
         if (changeMeaning && priorCondition && !newCondition) throw new Error("更新项目例外时请保留原适用条件");
-        if (changeMeaning && newCondition && newCondition !== priorCondition) {
+        if (!changeMeaning && !sameDotsApplicability(newCondition, priorCondition) && newCondition) {
+          throw new Error("项目例外不能改变原默认记录的状态");
+        }
+        if (changeMeaning && newCondition && !sameDotsApplicability(newCondition, priorCondition)) {
           return this.create({ ...this.inferAgentScope(taskId), title: bound.title, content: bound.content,
             kind: bound.kind, explicit: bound.explicit, confidence: bound.confidence, sourceType: "agent", sourceTaskId: taskId,
+            metadata: { dotsApplicability: newCondition,
+              ...(!priorCondition && newCondition.kind !== "unresolved" && (bound.stance === "statement" || bound.explicit) && bound.kind === record.kind
+                ? { dotsOverrides: record.id } : {}) },
             evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt }] }, bound.reason);
         }
         if (changeMeaning && (bound.stance === "reported" || bound.stance === "uncertain"
@@ -475,7 +518,8 @@ export class MemoryService {
           refId: source.messageId, excerpt, createdAt: source.createdAt });
         const title = !request.title && record.title !== record.content.slice(0, 76) ? record.title : bound.title;
         return this.update({ ...request, ...(changeMeaning
-          ? { kind: bound.kind, title, content: bound.content, confidence: bound.confidence, explicit: bound.explicit } : {}),
+          ? { kind: bound.kind, title, content: bound.content, confidence: bound.confidence, explicit: bound.explicit,
+            ...(newCondition ? { metadata: { ...record.metadata, dotsApplicability: newCondition } } : {}) } : {}),
           changeReason: bound.reason });
       }
       if (source) this.repository.addEvidence({ id: `mev_${randomUUID()}`, memoryId: request.id, evidenceKind: "message",
@@ -990,7 +1034,7 @@ export class MemoryService {
     if (!input.isEnabled()) return empty();
     const response = await input.modelRuntime.completeSimple(
       input.model,
-      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。稳定身份与偏好保存到当前Bot或团队专属范围，不读写成员私有记忆。任务要求、一次性约束、执行决定和局部事实必须与长期偏好分成不同候选；候选不要自行指定Work身份，宿主根据该候选原话所属的实际用户消息关联Work，无法唯一关联则限本对话。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : "") + (dotsPersonal ? "\n当前来源是 Dots 个人对话。长期偏好、身份、决定及带适用条件的例外写入 task。只对本次生效的要求和用户明确不要保存的内容不输出候选。保留项目例外的完整条件；不能用它取代原默认规则。" : "")
+      { systemPrompt: EXTRACTION_SYSTEM_PROMPT + (botSource ? "\n当前来源是用户与 Bot 或团队的直接对话。只提取有用户原话支持的身份、偏好、事实、决定或约束。稳定身份与偏好保存到当前Bot或团队专属范围，不读写成员私有记忆。任务要求、一次性约束、执行决定和局部事实必须与长期偏好分成不同候选；候选不要自行指定Work身份，宿主根据该候选原话所属的实际用户消息关联Work，无法唯一关联则限本对话。用户明确要求所有Bot共享时scopeType=global；明确仅本次对话时scopeType=conversation、retention=temporary；否则稳定信息retention=stable。一次性查询与任务本身、敏感细节和权限授予不得成为记忆。scope最终由宿主根据原话决定。每条候选 JSON 必须显式包含 retention（稳定事实为 \"stable\"，仅本会话为 \"temporary\"）和 sensitivity（非敏感为 \"none\"）；不得省略这两个字段。敏感内容不输出候选。不要把用户要求本轮直接回答或不调用工具误当作禁止后台提炼；只有明确不保存、不要记住或仅本会话等要求才限制记忆。userEvidence仅引用支持事实的最短原话。不重复输出已保存的相同事实。" : "") + (dotsPersonal ? "\n当前来源是 Dots 个人对话。长期偏好、身份、决定及带适用条件的例外写入 task。只对本次生效的要求和用户明确不要保存的内容不输出候选。每条候选提供 applicability 对象。kind 选 general（用户明确声明通用默认）、project、workspace 或 unresolved（局部引用的身份不明）。evidence 逐字引用说明本条事实适用范围的原话，相邻句子可引用范围标题。明确指名时保留 name；用户原文有 ID 时保留 id。识别范围要依据语义与指代，不依赖固定句式。多主题分别绑定各自的 userEvidence 和 applicability。项目例外不得改写默认记录。" : "")
         + (gatewayPrivate ? "\n当前是已关联的私人入口。身份、稳定偏好及长期约束须有本轮用户原话，并明确标记 retention（stable 或 temporary）和 sensitivity（none 或 sensitive）。敏感信息不输出候选。" : "")
         + (input.skillBatch ? "\n" + SKILL_DISTILLATION_PROMPT : ""), messages: [{ role: "user", content: JSON.stringify(payload), timestamp: Date.now() }] },
       // Reasoning shares the response ceiling on Responses-compatible providers.
@@ -1194,7 +1238,10 @@ export class MemoryService {
             && !botMemoryConversationOnly(original.userText) && botMemoryWriteEvidenceAllowed(original.userText, raw.userEvidence ?? "")
             && gatewayDotsMemorySource(this.db.connection, candidate.taskId, original.metadata.gatewayOrigin, true))) {
           grounded = groundDotsClaim(candidate, { messageId: original.userMessageId, turnId: turn.id,
-            text: turn.userText, originalText: original.userText, createdAt: original.capturedAt }, raw.userEvidence);
+            text: turn.userText, originalText: original.userText, createdAt: original.capturedAt }, raw.userEvidence, {
+            declaration: raw.applicability, resolveName: this.resolveDotsScope,
+            changeDefault: candidate.operationHint !== "create" && ["identity", "preference", "constraint", "procedure"].includes(candidate.kind),
+          });
         }
         if (!grounded || !turn || isDotsSingleUse(grounded.quote, turn.userText)
           || privateDotsSource && (!["identity", "preference", "constraint"].includes(grounded.kind)
@@ -1231,9 +1278,17 @@ export class MemoryService {
         }
       }
     }
-    const incomingCondition = grounded && dotsScopeCondition(grounded.quote);
-    const matches = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId)
-      .filter(record => !grounded || dotsScopeCondition(record.content) === incomingCondition)
+    const incomingCondition = grounded?.applicability;
+    const records = this.repository.listScopeRecords(candidate.scopeType, candidate.scopeId);
+    const globalMatches = grounded && !incomingCondition && candidate.taskId === DOTS_TASK_ID && candidate.replaces
+      && (candidate.operationHint === "update" || candidate.operationHint === "supersede")
+      ? this.repository.listScopeRecords("global").filter(record => record.title === candidate.replaces
+        && record.kind === candidate.kind && !dotsRecordApplicability(record)
+        && this.canAccess(record.id, { taskId: DOTS_TASK_ID })) : [];
+    const scopedRecords = globalMatches.length === 1 && !records.some(record => record.title === candidate.replaces && !dotsRecordApplicability(record))
+      ? [...records, globalMatches[0]!] : records;
+    const matches = scopedRecords
+      .filter(record => !grounded || sameDotsApplicability(dotsRecordApplicability(record), incomingCondition))
       .filter(record => force || !this.isCapturedSnapshot(record.id))
       .filter(record => !botSource || candidate.scopeType !== "global" || publicShared && record.metadata.publicShared === true);
     const targetText = candidate.replaces || candidate.title;
@@ -1250,8 +1305,19 @@ export class MemoryService {
     }
     const previousSubject = grounded && best && candidate.replaces && candidate.operationHint === "update"
       ? dotsSubject(candidate.replaces, best.m.title) : undefined;
+    let overrideId: string | undefined;
+    if (incomingCondition && incomingCondition.kind !== "unresolved" && candidate.replaces && grounded?.stance === "statement") {
+      const priorCandidates = this.db.connection.prepare(`SELECT DISTINCT resolved_memory_id id FROM memory_candidates
+        WHERE task_id=? AND status='committed' AND title=? AND resolved_memory_id IS NOT NULL`).all(candidate.taskId, candidate.replaces) as Array<{ id: string }>;
+      const unscopedDefaults = [...records, ...this.repository.listScopeRecords("global")]
+        .filter(record => record.status === "active" && !dotsRecordApplicability(record) && record.kind === grounded.kind
+          && (record.title === candidate.replaces || priorCandidates.some(prior => prior.id === record.id))
+          && this.canAccess(record.id, { taskId: DOTS_TASK_ID }));
+      const ids = [...new Set(unscopedDefaults.map(record => record.id))];
+      if (ids.length === 1) overrideId = ids[0];
+    }
     if (grounded) candidate = { ...candidate, kind: grounded.kind, title: previousSubject ?? grounded.title, content: grounded.content,
-      operationHint: grounded.stance === "reported" || grounded.stance === "uncertain"
+      operationHint: incomingCondition?.kind === "unresolved" || grounded.stance === "reported" || grounded.stance === "uncertain"
         || best?.m.kind === "decision" && grounded.stance !== "statement" || incomingCondition && !best
         ? "create" : candidate.operationHint,
       confidence: grounded.confidence ?? 0.7, explicit: grounded.explicit };
@@ -1293,7 +1359,9 @@ export class MemoryService {
       sourceId: botMemorySource(this.db, candidate.taskId) ? candidate.taskId : undefined,
       scopeType: candidate.scopeType,
       scopeId: candidate.scopeId,
-      metadata: botSource ? { ...(publicShared ? { publicShared: true } : {}), botAutomaticScopePolicy: "source-work-v1",
+      metadata: incomingCondition ? { ...(privateDotsSource ? { dotsPrivateGateway: true } : {}),
+        dotsApplicability: incomingCondition, ...(overrideId ? { dotsOverrides: overrideId } : {}) }
+        : botSource ? { ...(publicShared ? { publicShared: true } : {}), botAutomaticScopePolicy: "source-work-v1",
         sourceUserMessageIds: [...new Set(sourceTurns.flatMap(turn => turn.userMessageId ? [turn.userMessageId] : []))] }
         : privateDotsSource ? { dotsPrivateGateway: true } : publicShared ? { publicShared: true } : undefined,
       evidence: [
@@ -1301,6 +1369,10 @@ export class MemoryService {
         ...sourceTurns.map((turn) => ({ evidenceKind: "conversation" as const, refId: turn.id, refTitle: "L0 conversation turn", excerpt: this.l0EvidenceExcerpt(turn) })),
       ],
     };
+    if (candidate.operationHint === "supersede" && best && globalMatches.some(record => record.id === best.m.id)) {
+      createReq.scopeType = "global";
+      createReq.scopeId = undefined;
+    }
     try {
       const execution = JSON.parse(candidate.rawJson ?? "{}").executionEvidence as ExtractedCandidate["executionEvidence"];
       const turn = execution && sourceTurns.find((item) => item.id === execution.turnId);
@@ -1334,6 +1406,7 @@ export class MemoryService {
         importance: Math.max(best.m.importance, candidate.importance),
         confidence: grounded ? candidate.confidence : Math.max(best.m.confidence, candidate.confidence),
         explicit: grounded ? candidate.explicit : best.m.explicit || candidate.explicit,
+        ...(incomingCondition ? { metadata: { ...best.m.metadata, ...createReq.metadata } } : {}),
         changedBy: candidate.explicit ? "user" : "agent",
         changeReason: grounded?.reason ?? `candidate:${candidate.id}`,
       });

@@ -1,4 +1,5 @@
 import { DOTS_TASK_ID } from "../../../../../shared/dots";
+import { resolveDotsPreferences } from "../../../../../shared/dots-settings";
 import { readTaskHistory } from "./taskHistoryRead";
 import type { SpaceDto, TaskDto } from "../../../../../shared/agent-ipc";
 import type { ModelInfoDto } from "../../../../../shared/agent-ipc";
@@ -46,6 +47,7 @@ export function mapModelCatalog(models: ModelInfoDto[]): ModelConfig[] {
     supportsImages: model.supportsImages,
     supportsReasoning: model.supportsReasoning,
     enabled: model.enabled !== false,
+    available: model.available,
     contextWindow: model.contextWindow,
     api: model.api,
     thinkingLevels: model.thinkingLevels as ThinkingLevel[] | undefined,
@@ -169,6 +171,8 @@ set({
   soul: soul ?? helpers.emptySoul,
   models: mappedModels,
   activeModelId: selected ? current.activeModelId : defaultModelId,
+  dotsModelId: resolveDotsPreferences(appSettings?.dotsSettings).modelId,
+  dotsFollowModelId: appSettings?.defaultModelId ?? "",
   defaultModelId,
   modelPreferences: appSettings?.modelPreferences ?? {},
   contextWindowTokens: selected ? current.contextWindowTokens :

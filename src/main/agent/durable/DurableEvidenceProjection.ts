@@ -90,6 +90,8 @@ export class DurableEvidenceProjection {
     const withdrawHistory = withdrawal > (this.dotsBoundary?.withdrawal ?? 0) && ordered.some(entry =>
       retained(entry) && entry.model?.some(message => message.role === "user" && message.timestamp <= withdrawal));
     const nativeUser = (entry: EntryRecord) => entry.kind === "mybuddy.user" || entry.kind === "pi.user";
+    const priorMemoryToolResult = isDots && !this.options.enabled() && ordered.some(entry =>
+      retained(entry) && entry.model?.some(message => message.role === "toolResult" && message.toolName.startsWith("memory_") && !message.isError));
     const origin = (entry: EntryRecord) =>
       (entry.data as { mybuddyInput?: import("./DurableHistoryProjection").DurableInputMetadata })?.mybuddyInput?.gatewayOrigin;
     // Replies and summaries from before the scope check could echo memories
@@ -97,7 +99,7 @@ export class DurableEvidenceProjection {
     const firstIsolatedGatewayInput = !this.dotsBoundary && isGatewayConversation(this.options.scope().taskId ?? "")
       ? ordered.find(entry => nativeUser(entry) && origin(entry)) : undefined;
     const legacyGatewayHistory = firstIsolatedGatewayInput && ordered.some(entry => entry.id < firstIsolatedGatewayInput.id && nativeUser(entry));
-    if (legacyGatewayHistory || personalScope && (withdrawHistory || isDots && this.projection.requiresFreshDotsHistory())) {
+    if (legacyGatewayHistory || personalScope && (withdrawHistory || priorMemoryToolResult || isDots && this.projection.requiresFreshDotsHistory())) {
       const anchor = [...ordered].reverse().find(nativeUser);
       if (!anchor || !this.newest) throw new Error("Dots 无法确认重建上下文的原始输入");
       const boundary = { anchor: anchor.id, through: this.newest, withdrawal };

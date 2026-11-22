@@ -1,5 +1,6 @@
 import type { ConversationBranchInfoDto } from "../../../../../shared/conversation-branch";
 import { defaultModePresetId } from "../../../../../shared/mode-profile";
+import { DOTS_TASK_ID } from "../../../../../shared/dots";
 import type { PermissionMode, WelcomeMode } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -13,6 +14,9 @@ export interface ActiveContextState {
   branchChildren: ConversationBranchInfoDto[];
   branchError: { taskId: string; message: string } | null;
   activeModelId: string;
+  dotsModelId: string | null;
+  dotsFollowModelId: string;
+  dotsModelError: string | null;
   modelExplicit: boolean;
   permissionMode: PermissionMode;
   permissionExplicit: boolean;
@@ -40,6 +44,9 @@ export function createActiveContextState(): ActiveContextState {
     branchChildren: [],
     branchError: null,
     activeModelId: "",
+    dotsModelId: null,
+    dotsFollowModelId: "",
+    dotsModelError: null,
     modelExplicit: false,
     permissionMode: "default",
     permissionExplicit: false,
@@ -57,6 +64,10 @@ export function createActiveContextState(): ActiveContextState {
     contextCacheReadTokens: null,
     contextOutputTokens: null,
   };
+}
+
+export function selectChatModelId(state: ActiveContextState): string {
+  return state.activeTaskId === DOTS_TASK_ID ? state.dotsModelId ?? state.dotsFollowModelId : state.activeModelId;
 }
 
 export function createActiveContextActions(

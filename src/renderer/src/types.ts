@@ -129,6 +129,7 @@ export interface ChatMessage {
   submissionFailed?: boolean;
   /** Native message provenance retained by a merged display row; never changes persisted history. */
   sourceMessageIds?: string[];
+  finalAssistantReply?: boolean;
   /** Host-authored Goal auto-continuation provenance. Rendered as a narrow marker, not a user bubble. */
   goalContinuation?: import("../../shared/conversation-goal").GoalContinuationOrigin;
   role: "user" | "assistant";
@@ -368,6 +369,7 @@ export interface ModelConfig {
   supportsReasoning: boolean;
   /** 模型是否在普通选择器中启用；缺省视为启用。 */
   enabled?: boolean;
+  available?: boolean;
   /** 模型上下文窗口；0/undefined 表示未知，不再伪造 128K。 */
   contextWindow?: number;
   /** 实际传输协议。 */

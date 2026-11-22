@@ -73,7 +73,8 @@ run(async env => {
       if (names.includes("powershell")) return {tool:{name:"powershell",arguments:{command:"Copy-Item -LiteralPath template.xlsx -Destination 报价.xlsx"}}};
       return {tool:{name:"bash",arguments:{command:"cp template.xlsx 报价.xlsx"}}};
     }
-    if (last.name === "register_artifact" || String(last.content).includes("Registered generated file")) return "报价已完成。";
+    if (last.name === "register_artifact" || String(last.content).includes("Registered generated file"))
+      return JSON.stringify({dotsState:"complete",result:""});
     return {tool:{name:"register_artifact", arguments:{path:filename}}};
   },
 });

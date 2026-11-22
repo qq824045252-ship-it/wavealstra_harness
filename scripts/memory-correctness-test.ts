@@ -1,5 +1,6 @@
 import { dotsEvidenceRange, dotsPreferenceQuote, dotsQueryTerms, restoreDotsPreferenceQuote } from "../src/main/agent/DotsMemoryEvidence";
 import { DOTS_EVIDENCE_RENDERER, projectMemoryContext, renderMemoryEvidence } from "../src/main/agent/MemoryContextProjection";
+import { AnswerRoutingService } from "../src/main/agent/AnswerRoutingService";
 import "./dots-recall-ranking-test";
 import "./dots-revision-source-test";
 import { createMemoryExtension } from "../src/main/memory/memory-extension";
@@ -8,7 +9,7 @@ import { DOTS_TASK_ID } from "../src/shared/dots";
 import { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
 import assert from "node:assert/strict";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -148,16 +149,18 @@ try {
   const preference=projectMemoryContext(scoped,{taskId:DOTS_TASK_ID,query:"出差清单",trackRecall:false});
   assert(preference.blocks.some(block=>block.reference?.id===quote.id && !block.reference.userQuote && !block.text.includes(quoteText) && block.text.includes(quote.content) && !block.text.includes("用户原话")));
   console.log("PASS unbound historical sources cannot masquerade as revision-bound user quotations");
-  const tools = new Map<string,{ name: string; execute(id:string,params:object): Promise<{content:{text:string}[];details:unknown}> }>();
+  const tools = new Map<string,{ name: string; execute(id:string,params:object): Promise<{content:{text:string}[];details:unknown;isError?:boolean}> }>();
   let source = { messageId:"herb-first", createdAt:Date.now(), text:"我习惯把罗勒盆栽放在东边窗台。" };
   const registerTool = (tool: NonNullable<ReturnType<typeof tools.get>>) => tools.set(tool.name,tool);
-  await createMemoryExtension({taskId:DOTS_TASK_ID, service:scoped, sourceInput:()=>source})({registerTool} as unknown as ExtensionAPI);
+  const memoryPolicy: { read: boolean; write: boolean } = { read: true, write: true };
+  await createMemoryExtension({taskId:DOTS_TASK_ID, service:scoped, sourceInput:()=>source,
+    canRead: () => memoryPolicy.read, canWrite: () => memoryPolicy.write })({registerTool} as unknown as ExtensionAPI);
   const call = (name:string,params:object) => tools.get(name)!.execute("source-test",params);
   const made = await call("memory_create",{kind:"preference",title:"罗勒盆栽摆放",content:source.text});
   const id = (made.details as {memory:{id:string}}).memory.id;
   const priorSource = source;
   source = { messageId:"herb-change",createdAt:Date.now(),text:"我习惯把罗勒盆栽放在西边阳台，以后照这个位置。" };
-  await call("memory_update",{id,content:source.text});
+  await call("memory_update",{id,content:source.text,applicability:{kind:"general",evidence:"以后照这个位置"}});
   const exact = dotsPreferenceQuote(scoped,{id},2);
   assert(exact && exact.text.includes(source.messageId) && exact.text.includes(source.text));
   assert.equal(restoreDotsPreferenceQuote(scoped,id,exact.ref,2),exact.text);
@@ -167,6 +170,38 @@ try {
   assert(!JSON.stringify(get).includes(priorSource.messageId) && !JSON.stringify(get).includes(priorSource.text));
   const search = await call("memory_search",{query:"罗勒盆栽"});
   assert(search.content[0]!.text.includes(source.messageId));
+  memoryPolicy.write = false;
+  assert(!(await call("memory_get", { id })).isError);
+  assert((await call("memory_update", { id, content: source.text })).isError);
+  memoryPolicy.read = false;
+  assert((await call("memory_search", { query: "罗勒盆栽" })).isError);
+  assert((await call("memory_history", { id })).isError);
+  assert.equal(scoped.get(id)?.content, source.text);
+  memoryPolicy.read = true;
+  memoryPolicy.write = true;
+  const currentPreference = scoped.get(id)!;
+  const ruleFile = join(root, "dots-rule-evidence.txt");
+  const evidenceBody = "file-evidence-atom-7421";
+  writeFileSync(ruleFile, evidenceBody);
+  let allowEvidence = true;
+  const routing = new AnswerRoutingService(db, memoryId => scoped.getForRecall(memoryId, { taskId: DOTS_TASK_ID }),
+    () => memoryPolicy.read, undefined,
+    (taskId, evidence) => taskId === DOTS_TASK_ID && evidence.kind === "file" && evidence.path === realpathSync(ruleFile) && allowEvidence);
+  const routeBase = { exclude: [], evidenceFile: "", enabled: true, projectId: null, sourceMemoryId: null };
+  routing.save({ ...routeBase, title: "盆栽保存规则", include: ["盆栽保存规则"], instruction: currentPreference.content,
+    sourceMemoryId: currentPreference.id, sourceHash: currentPreference.contentHash });
+  routing.save({ ...routeBase, title: "查阅资料规则", include: ["查阅资料规则"], instruction: "核对资料", evidenceFile: "dots-rule-evidence.txt" });
+  const routeTurn = (inputId: string, query: string) => ({ taskId: DOTS_TASK_ID, inputId, query, cwd: root, canRead: () => true });
+  assert((await routing.prepare(routeTurn("memory-on", "盆栽保存规则")))?.text.includes(currentPreference.content));
+  const allowedEvidence = await routing.prepare(routeTurn("workspace-allowed", "查阅资料规则"));
+  assert(allowedEvidence?.text.includes(evidenceBody));
+  allowEvidence = false;
+  assert.throws(() => allowedEvidence?.validate(), /撤销/);
+  const blockedEvidence = await routing.prepare(routeTurn("workspace-denied", "查阅资料规则"));
+  assert(blockedEvidence && !blockedEvidence.text.includes(evidenceBody) && blockedEvidence.text.includes("获准的工作空间"));
+  memoryPolicy.read = false;
+  assert.equal(await routing.prepare(routeTurn("memory-off", "盆栽保存规则")), undefined);
+  memoryPolicy.read = true;
   source={messageId:"club-report",createdAt:Date.now(),text:"同学提议把棋社聚会定在周六，我还没决定。"};
   const reported=await call("memory_create",{kind:"decision",title:"聚会时间",content:"我决定周六聚会。"});
   const reportedId=(reported.details as {memory:{id:string}}).memory.id;

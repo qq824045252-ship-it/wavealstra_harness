@@ -1,4 +1,5 @@
 import { DOTS_NO_CHANGE } from "../../shared/dots";
+import { followupInstructions } from "./DotsFollowup";
 import { createHash } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
@@ -20,6 +21,9 @@ interface Host {
   failed(taskId: string, operationId: string, reason: string): void;
   changed(): void;
   proactivePaused(spaceId: string): boolean;
+  pathAllowed?(path: string): boolean;
+  mayNotify?(spaceId: string): boolean;
+  notify?(event: { id: string; revision: string; taskId: string; file: string }): void;
 }
 const active = (row: FileWatch) => row.state === "watching" || row.state === "sending";
 const operation = (id: string) => "dots-input-file-" + id;
@@ -55,7 +59,8 @@ export class DotsFileWatches {
     db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_file_watches(
       id TEXT PRIMARY KEY,task_id TEXT NOT NULL,space_id TEXT NOT NULL,root TEXT NOT NULL,file TEXT NOT NULL,
       instruction TEXT NOT NULL,source TEXT NOT NULL,baseline TEXT NOT NULL,input_version TEXT NOT NULL,
-      state TEXT NOT NULL,note TEXT NOT NULL DEFAULT '')`);
+      state TEXT NOT NULL,note TEXT NOT NULL DEFAULT '');
+      CREATE TABLE IF NOT EXISTS dots_file_watch_notices(watch_id TEXT NOT NULL,revision TEXT NOT NULL,PRIMARY KEY(watch_id,revision))`);
   }
 
   private get(id: string) {
@@ -80,6 +85,7 @@ export class DotsFileWatches {
     const root = await realpath(this.host.root(taskId, spaceId));
     const target = resolve(root, file);
     if (isAbsolute(file) || !contained(root, target) || target === root) throw new Error("请选择绑定空间内的相对文件路径");
+    if (this.host.pathAllowed?.(target) === false) throw new Error("文件属于未授权给 Dots 的空间");
     const local = relative(root, target);
     const baseline = await revision(root, local);
     const version = await this.host.inputVersion(taskId);
@@ -121,6 +127,8 @@ export class DotsFileWatches {
       operation(row.id) !== request.userMessageId || token.inputVersion !== row.input_version)
       throw new DotsIntentChanged("文件订阅已取消或已变化");
     if (this.host.proactivePaused(row.space_id)) throw new DotsIntentChanged("主动跟进已暂停");
+    if (this.host.pathAllowed?.(resolve(row.root,row.file)) === false)
+      throw new DotsIntentChanged("订阅文件不在 Dots 已授权的空间内");
     this.validateRoot(row);
   }
 
@@ -191,7 +199,8 @@ export class DotsFileWatches {
 
   private async check(id: string) {
     const row = this.get(id);
-    if (!row || !active(row) || this.host.proactivePaused(row.space_id)) return;
+    if (!row || !active(row) || this.host.proactivePaused(row.space_id) && !this.host.mayNotify?.(row.space_id)) return;
+    if (this.host.pathAllowed?.(resolve(row.root,row.file)) === false) return;
     if (row.state === "sending") {
       const previous = await this.host.find(row.task_id, operation(id));
       if (previous?.receipt) { this.update(id, "dispatched", "原任务已接收该触发"); return; }
@@ -208,16 +217,27 @@ export class DotsFileWatches {
     }
     // Close the registration gap: re-read after installing the native watcher.
     const observed = current === row.baseline ? await revision(row.root, row.file) : current;
-    if (!this.started || !active(this.get(id)!) || (observed === row.baseline && row.state === "watching")) return;
-    if (this.host.proactivePaused(row.space_id)) return;
+    if (!this.started || !active(this.get(id)!) || (observed === row.baseline && row.state === "watching")
+      || this.host.pathAllowed?.(resolve(row.root,row.file)) === false) return;
+    if (this.host.proactivePaused(row.space_id)) {
+      if (this.host.mayNotify?.(row.space_id) && this.host.notify) {
+        this.db.connection.transaction(() => {
+          if (this.db.connection.prepare("INSERT OR IGNORE INTO dots_file_watch_notices VALUES (?,?)").run(id, observed).changes) {
+            this.host.notify?.({id,revision:observed,taskId:row.task_id,file:row.file});
+          }
+        })();
+      }
+      return;
+    }
     this.update(id, "sending", "已观察到文件版本变化");
     const request: AgentPromptRequest = { taskId: row.task_id, spaceId: row.space_id,
       userMessageId: operation(id), assistantMessageId: "dots-file-reply-" + id, streamingBehavior: "followUp",
-      text: row.instruction + "\n\n已订阅的文件发生变化：" + row.file + "。本次确有文件成果时使用 register_artifact 登记，文字结果直接回复。若此项检查确无实质变化，只返回 "+DOTS_NO_CHANGE,
+      text: row.instruction + "\n\n已订阅的文件发生变化：" + row.file + "。\n" + followupInstructions
+        + "\n若此项检查确无实质变化，只返回 " + DOTS_NO_CHANGE,
       displayText: row.instruction, dotsFileWatch: { id, inputVersion: row.input_version } };
     const accepted = await this.host.send(request, row.source);
     if (accepted.error || accepted.cancelled) {
-      if (this.host.proactivePaused(row.space_id) && active(this.get(id)!)) {
+      if ((this.host.proactivePaused(row.space_id) || this.host.pathAllowed?.(resolve(row.root,row.file)) === false) && active(this.get(id)!)) {
         this.update(id, "watching", "主动跟进已暂停"); return;
       }
       const reason = accepted.error?.message ?? "任务执行已取消";

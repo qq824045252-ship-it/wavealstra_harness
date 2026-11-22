@@ -2,6 +2,7 @@ import type { Cursor, SubmissionRecord, Tx } from "@earendil-works/pi-durable";
 import type { ConversationInteractionDto } from "../../../shared/conversation-interaction";
 import { collectReplyCitations, providedReplySources, replyToolSources } from "../../../shared/chat-reply-sources";
 import { searchReportFromDetails } from "../../../shared/web-search";
+import { readDotsWorkerOutcome, type DotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import { durableContentText, nestedToolRow, type NestedCallDetail } from "./DurableHistoryProjection";
 
@@ -14,7 +15,8 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
   const sources: ReturnType<typeof replyToolSources> = [];
   const final = input.status === "done" ? await tx.entry(input.answer) : undefined;
   const answer = final?.model?.find(message => message.role === "assistant");
-  let progress = "", error = "";
+  let error = "";
+  let checkpoint: Extract<DotsWorkerOutcome, { dotsState: "progress" }> | undefined;
   let inOwnTurn = true;
   let cursor: Cursor | undefined;
   if (input.entry !== undefined) do {
@@ -44,30 +46,31 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
       messageIds.add(`durable-${item.id}`);
       const assistant = item.model?.find(m => m.role === "assistant");
       if (assistant?.errorMessage) error = assistant.errorMessage;
-      if (assistant?.stopReason === "toolUse" || assistant?.stopReason === "length") {
-        const partial = durableContentText(assistant.content).trim();
-        if (partial) progress = partial;
+      if (assistant?.stopReason === "toolUse") {
+        const candidate = readDotsWorkerOutcome(durableContentText(assistant.content));
+        if (candidate?.dotsState === "progress" && candidate.result.trim()) checkpoint = candidate;
       }
     }
     cursor = inOwnTurn || input.status === "done" ? page.next : undefined;
   } while (cursor);
   if (final) messageIds.add(`durable-${final.id}`);
   const assets = { files: [...files.values()], messageIds: [...messageIds] };
-  const prefix = progress ? `任务中途记录：${progress}\n\n` : "";
   if (question) {
     const options = question.options.filter(o => !o.disabled).map(o => o.description ? `${o.label}（${o.description}）` : o.label);
+    const prompt = [question.title, question.description, options.length ? options.join(" / ") : undefined].filter(Boolean).join("\n");
     return { status: "blocked" as const, interactionId: question.id,
-      text: prefix + [question.title, question.description, options.length ? options.join(" / ") : undefined].filter(Boolean).join("\n"), ...assets };
+      text: [checkpoint?.result, prompt].filter(Boolean).join("\n\n"), ...assets };
   }
+  if (input.status === "placed") return { status: "running" as const, text: checkpoint ? JSON.stringify(checkpoint) : "", messageIds: [], files: [] };
   if (input.status === "unanswered") {
     const detail = typeof input.detail === "string" ? input.detail
       : input.detail && typeof input.detail === "object" && !Array.isArray(input.detail) && typeof input.detail.message === "string" ? input.detail.message : "";
-    return { status: "failed" as const, text: prefix + (detail || error || input.reason), ...assets };
+    return { status: "failed" as const, text: detail || error || input.reason, ...assets };
   }
   if (!answer || answer.stopReason !== "stop") {
-    return { status: "failed" as const, text: prefix + (answer?.errorMessage || error || "本次执行未能完成"), ...assets };
+    return { status: "failed" as const, text: answer?.errorMessage || error || "本次执行未能完成", ...assets };
   }
   const text = durableContentText(answer.content).trim();
-  const citations = collectReplyCitations(text, sources);
+  const citations = collectReplyCitations(readDotsWorkerOutcome(text)?.result ?? text, sources);
   return { status: "completed" as const, text, citations, ...assets };
 }

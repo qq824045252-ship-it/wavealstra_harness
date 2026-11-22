@@ -37,6 +37,7 @@ export interface GoalContinuationServiceOptions {
   inspect: (taskId: string) => Promise<GoalContinuationRuntimeState | undefined>;
   waitingForInput: (taskId: string) => boolean;
   enabled: () => boolean;
+  canAdvance?: (taskId: string, goalId: string) => boolean;
   maxAttempts: () => number;
   /** Global default; a per-Goal budget wins when set. null = unlimited. */
   tokenBudget: () => number | null;
@@ -44,6 +45,7 @@ export interface GoalContinuationServiceOptions {
 
 const STALL_LIMIT = 2;
 const LOG = "[GoalContinuation]";
+type CheckTrigger = NonNullable<ConversationGoalContinuationDto["lastCheck"]>["trigger"];
 
 /**
  * Host-side Goal continuation.
@@ -65,14 +67,17 @@ export class GoalContinuationService {
   }
 
   /** Called from the Durable settle hook, including aborted/failed settles. */
-  onSettled(taskId: string, snapshot: DurableBotSnapshot): void {
+  onSettled(taskId: string, snapshot: DurableBotSnapshot, expectedGoalId?: string | null): void {
     if (this.disposed || !this.options.enabled()) return;
     // onProjected runs inside the runtime projection; defer the decision one tick
     // so an ignition submission never re-enters that loop.
     const timer = setTimeout(() => {
       this.timers.delete(timer);
       if (this.disposed) return;
-      this.enqueue(taskId, () => this.evaluate(taskId, snapshot));
+      this.enqueue(taskId, async () => {
+        if (expectedGoalId !== undefined && this.liveWork(taskId)?.workId !== expectedGoalId) return;
+        await this.evaluate(taskId, "settled", snapshot);
+      });
     }, 0);
     this.timers.add(timer);
   }
@@ -108,7 +113,7 @@ export class GoalContinuationService {
       this.store.clearDeferral(work.workId, Date.now(), true);
       this.emitGoal(taskId, work.workId);
     }
-    this.enqueue(taskId, () => this.evaluate(taskId));
+    this.enqueue(taskId, () => this.evaluate(taskId, "resumed"));
   }
 
   /** Crash/restart: a host-pointed run cannot be replayed, so it becomes visible debt. */
@@ -118,6 +123,12 @@ export class GoalContinuationService {
       this.emitGoal(row.taskId, row.workId);
       console.info(`${LOG} deferred task=${row.taskId} work=${row.workId} reason=restart`);
     }
+  }
+
+  refreshPolicy(): void {
+    const held = this.options.db.prepare("SELECT DISTINCT task_id FROM conversation_goal_last_check WHERE reason='dots_policy'")
+      .pluck().all() as string[];
+    for (const taskId of held) this.enqueue(taskId, () => this.evaluate(taskId, "resumed"));
   }
 
   /** Establish the usage watermark when a Goal is created, before its first turn. */
@@ -159,7 +170,7 @@ export class GoalContinuationService {
     this.store.explicitResume(work.workId, cursor, Date.now());
     this.emitGoal(taskId, work.workId);
     console.info(`${LOG} resumed task=${taskId} work=${work.workId}`);
-    this.enqueue(taskId, () => this.evaluate(taskId));
+    this.enqueue(taskId, () => this.evaluate(taskId, "continued"));
     const goal = this.options.goals.getLive(taskId, work.workId);
     return goal ? { ok: true, goal } : { ok: false, message: "Goal 已不存在" };
   }
@@ -171,11 +182,22 @@ export class GoalContinuationService {
     const fallbackBudget = this.options.tokenBudget();
     let row: GoalContinuationRow | undefined;
     try { row = this.store.get(workId); } catch { row = undefined; }
+    const enabled = this.options.enabled();
+    let lastCheck: ConversationGoalContinuationDto["lastCheck"];
+    let lastWake: ConversationGoalContinuationDto["lastWake"];
+    if (row) {
+      try { lastCheck = this.store.lastCheck(row); } catch { lastCheck = undefined; }
+      try { lastWake = this.store.lastWake(row); } catch { lastWake = undefined; }
+    }
     if (!row) return { state: "idle", attempts: 0, maxAttempts, tokensUsed: 0,
-      tokenBudget: fallbackBudget };
+      tokenBudget: fallbackBudget, enabled };
     const tokenBudget = row.tokenBudget ?? fallbackBudget;
     return {
       state: row.state, attempts: row.attempts, maxAttempts, tokensUsed: row.tokensUsed, tokenBudget,
+      enabled, taskId: row.taskId, progressStalls: row.progressStalls, stallLimit: STALL_LIMIT,
+      ...(lastCheck ? { lastCheck } : {}),
+      ...(lastWake ? { lastWake } : {}),
+      ...(row.deferredAt != null ? { lastStoppedAt: row.deferredAt } : {}),
       ...(row.deferReason ? { deferReason: row.deferReason } : {}),
       ...(row.lastContinuationAt ? { lastContinuationAt: row.lastContinuationAt } : {}),
     };
@@ -186,10 +208,10 @@ export class GoalContinuationService {
    * a later Goal does not inherit earlier spend. */
   noteResponse(taskId: string, eventKey: string, usage: {
     input?: number | null; output?: number | null; cacheRead?: number | null;
-  }): void {
+  }, expectedGoalId?: string): void {
     if (this.disposed) return;
     const work = this.liveWork(taskId);
-    if (!work) return;
+    if (!work || (expectedGoalId !== undefined && expectedGoalId !== work.workId)) return;
     const row = this.store.get(work.workId);
     if (!row) return;
     const tokens = [usage.input, usage.output, usage.cacheRead]
@@ -236,12 +258,18 @@ export class GoalContinuationService {
     void next.finally(() => { if (this.tails.get(taskId) === next) this.tails.delete(taskId); });
   }
 
-  private async evaluate(taskId: string, settled?: DurableBotSnapshot): Promise<void> {
+  private async evaluate(taskId: string, trigger: CheckTrigger, settled?: DurableBotSnapshot): Promise<void> {
     if (this.disposed || !this.options.enabled()) return;
     if (this.options.work.repo.bindingForTask(taskId)) return this.skip(taskId, undefined, "binding");
     let work = this.liveWork(taskId);
     if (!work) return this.skip(taskId, undefined, "no_goal");
     work = this.options.work.getWork(work.workId) ?? work;
+    const checkedWork = work;
+    const skip = (reason: string, checkRow?: GoalContinuationRow) => {
+      this.recordCheck(taskId, checkedWork, trigger, reason);
+      this.skip(taskId, checkedWork, reason, checkRow);
+      this.emitGoal(taskId, checkedWork.workId);
+    };
     const now = Date.now();
     this.account(taskId);
     const cursor = this.cumulativeTokens(taskId);
@@ -252,30 +280,40 @@ export class GoalContinuationService {
     if (wasIgniting && fromSettle) row = this.recordSettledProgress(work, row, settled, now);
     // A non-settle evaluation (resume/pause hook) must not mistake an in-flight
     // host run for a finished one; wait for its own settle.
-    if (wasIgniting && !fromSettle) return this.skip(taskId, work, "igniting", row);
+    if (wasIgniting && !fromSettle) return skip("igniting", row);
 
-    if (work.mode === "watch") return this.skip(taskId, work, "watch", row);
-    if (work.lifecycle !== "active") return this.skip(taskId, work, work.lifecycle, row);
+    if (work.mode === "watch") return skip("watch", row);
+    if (work.lifecycle !== "active") return skip(work.lifecycle, row);
+    if (this.options.canAdvance?.(taskId, work.workId) === false) return skip("dots_policy", row);
     if (work.criteria.length > 0 && work.criteria.every(criterion =>
-      criterion.status === "satisfied" || criterion.status === "waived")) return this.skip(taskId, work, "complete_pending", row);
+      criterion.status === "satisfied" || criterion.status === "waived")) return skip("complete_pending", row);
 
     row = this.store.get(work.workId) ?? row;
-    if (row.state === "deferred") return this.skip(taskId, work, `deferred:${row.deferReason ?? "unknown"}`, row);
-    if (row.state === "exhausted") return this.skip(taskId, work, `exhausted:${row.deferReason ?? "unknown"}`, row);
+    if (row.state === "deferred") return skip("deferred", row);
+    if (row.state === "exhausted") return skip("exhausted", row);
 
     const runtime = await this.options.inspect(taskId);
     if (this.disposed) return;
-    if (!runtime) return this.skip(taskId, work, "no_session", row);
-    if (this.options.waitingForInput(taskId)) return this.skip(taskId, work, "waiting_input", row);
-    if (runtime.status === "waiting_input") return this.skip(taskId, work, "waiting_input", row);
-    if (runtime.queued > 0) return this.skip(taskId, work, "queued", row);
-    if (runtime.busy) return this.skip(taskId, work, "busy", row);
-    if (runtime.compacting) return this.skip(taskId, work, "compacting", row);
-    if (runtime.outcome === "aborted") return this.defer(taskId, work, "user_interrupt", now, row);
-    if (runtime.outcome === "failed") return this.defer(taskId, work, "run_failed", now, row);
+    const latest = this.liveWork(taskId);
+    if (!latest || latest.workId !== work.workId || latest.stateVersion !== work.stateVersion) return skip("goal_changed", row);
+    if (!this.options.enabled()) return skip("disabled", row);
+    if (this.options.canAdvance?.(taskId, work.workId) === false) return skip("dots_policy", row);
+    const currentRow = this.store.get(work.workId);
+    if (!currentRow || currentRow.updatedAt !== row.updatedAt || currentRow.state !== row.state) return skip("ledger_changed", row);
+    if (!runtime) return skip("no_session", row);
+    if (this.options.waitingForInput(taskId) || runtime.status === "waiting_input") return skip("waiting_input", row);
+    if (runtime.queued > 0) return skip("queued", row);
+    if (runtime.busy) return skip("busy", row);
+    if (runtime.compacting) return skip("compacting", row);
+    if (runtime.outcome === "aborted" || runtime.outcome === "failed") {
+      const reason = runtime.outcome === "aborted" ? "user_interrupt" : "run_failed";
+      this.recordCheck(taskId, work, trigger, reason);
+      return this.defer(taskId, work, reason, now, row);
+    }
 
     const maxAttempts = this.maxAttempts();
     if (row.attempts >= maxAttempts) {
+      this.recordCheck(taskId, work, trigger, "attempts");
       this.store.exhaust(work.workId, "attempts", now);
       console.info(`${LOG} exhausted task=${taskId} work=${work.workId} reason=attempts attempts=${row.attempts}/${maxAttempts}`);
       this.emitGoal(taskId, work.workId);
@@ -283,19 +321,22 @@ export class GoalContinuationService {
     }
     const budget = row.tokenBudget ?? this.options.tokenBudget();
     if (budget !== null && row.tokensUsed >= budget) {
+      this.recordCheck(taskId, work, trigger, "budget");
       this.store.exhaust(work.workId, "budget", now);
       console.info(`${LOG} exhausted task=${taskId} work=${work.workId} reason=budget tokens=${row.tokensUsed}/${budget}`);
       this.emitGoal(taskId, work.workId);
       return;
     }
     if (row.progressStalls >= STALL_LIMIT) {
+      this.recordCheck(taskId, work, trigger, "no_progress");
       this.store.defer(work.workId, "no_progress", now);
       console.info(`${LOG} deferred task=${taskId} work=${work.workId} reason=no_progress stalls=${row.progressStalls}`);
       this.emitGoal(taskId, work.workId);
       return;
     }
 
-    await this.ignite(taskId, work, row, runtime, maxAttempts, budget);
+    this.recordCheck(taskId, work, trigger, "submitting");
+    await this.ignite(taskId, work, row, runtime, maxAttempts, budget, trigger);
   }
 
   private recordSettledProgress(work: WorkDto, row: GoalContinuationRow, settled: DurableBotSnapshot,
@@ -312,7 +353,7 @@ export class GoalContinuationService {
   }
 
   private async ignite(taskId: string, work: WorkDto, row: GoalContinuationRow,
-    runtime: GoalContinuationRuntimeState, maxAttempts: number, budget: number | null): Promise<void> {
+    runtime: GoalContinuationRuntimeState, maxAttempts: number, budget: number | null, trigger: CheckTrigger): Promise<void> {
     if (this.disposed) return;
     const now = Date.now();
     const runCursor = this.entryCursor(runtime.messages);
@@ -326,12 +367,17 @@ export class GoalContinuationService {
         goalContinuation: { workId: work.workId, intentRevision: work.intentRevision, attempt: attempt.attempt },
       });
       if (!accepted.receipt) throw new Error(accepted.error?.message ?? "自动续跑未被接受");
-      console.info(`${LOG} ignite task=${taskId} work=${work.workId} attempt=${attempt.attempt}/${maxAttempts} serial=${attempt.serial}`);
     } catch (error) {
       this.store.rollbackAttempt(work.workId, Date.now());
+      this.recordCheck(taskId, work, trigger, "submit_failed");
       this.emitGoal(taskId, work.workId);
       console.warn(`${LOG} submit failed task=${taskId} work=${work.workId} attempt=${attempt.attempt}`, error);
+      return;
     }
+    this.store.recordWake(work.workId, taskId, work.intentRevision, { trigger, at: Date.now() });
+    this.recordCheck(taskId, work, trigger, "submitted");
+    this.emitGoal(taskId, work.workId);
+    console.info(`${LOG} ignite task=${taskId} work=${work.workId} attempt=${attempt.attempt}/${maxAttempts} serial=${attempt.serial}`);
   }
 
   private buildRequest(input: {
@@ -367,6 +413,10 @@ export class GoalContinuationService {
     // twice per turn would bury the cases that actually matter.
     if (!work && (reason === "no_goal" || reason === "binding")) return;
     console.info(`${LOG} skip task=${taskId} work=${work?.workId ?? "-"} reason=${reason}${row ? ` attempt=${row.attempts}` : ""}`);
+  }
+
+  private recordCheck(taskId: string, work: WorkDto, trigger: CheckTrigger, reason: string): void {
+    this.store.recordCheck(work.workId, taskId, work.intentRevision, { trigger, reason, at: Date.now() });
   }
 
   private liveWork(taskId: string): WorkDto | undefined {

@@ -1,4 +1,6 @@
 import { isGatewayBotTaskId } from "../../../../../shared/gateway-task";
+import { DOTS_TASK_ID } from "../../../../../shared/dots";
+import { resolveDotsPreferences } from "../../../../../shared/dots-settings";
 import {
   defaultModePresetId,
   resolveEffectiveModePolicy,
@@ -22,6 +24,22 @@ export function createSessionConfigurationActions(
   | "setPermissionMode"
 > {
   const { get, set } = storeContext;
+  let dotsSave = Promise.resolve();
+  const saveDotsModel = (modelId: string | null): Promise<void> => {
+    const next = dotsSave.then(async () => {
+      const api = storeContext.getApi()?.agent;
+      if (!api) return;
+      try {
+        const settings = await api.updateAppSettings({ dotsSettings: { modelId } });
+        set({ dotsModelId: resolveDotsPreferences(settings.dotsSettings).modelId,
+          dotsFollowModelId: settings.defaultModelId ?? "", dotsModelError: null });
+      } catch (error) {
+        set({ dotsModelError: error instanceof Error ? error.message : String(error) });
+      }
+    });
+    dotsSave = next;
+    return next;
+  };
   return {
     setWelcomeMode: (mode) => {
       const taskId = get().activeTaskId;
@@ -115,6 +133,8 @@ export function createSessionConfigurationActions(
       const api = storeContext.getApi()?.agent;
       if (!api) return;
       try {
+        const pendingDotsSave = dotsSave;
+        await pendingDotsSave;
         const models = await api.listModels();
         const settings = await api.getAppSettings();
         set((s) => {
@@ -135,6 +155,10 @@ export function createSessionConfigurationActions(
             models,
             defaultModelId,
             activeModelId,
+            ...(pendingDotsSave === dotsSave ? {
+              dotsModelId: resolveDotsPreferences(settings.dotsSettings).modelId,
+              dotsFollowModelId: settings.defaultModelId ?? "",
+            } : {}),
             modelPreferences: settings.modelPreferences ?? {},
             contextWindowTokens:
               models.find((model) => model.id === activeModelId)
@@ -173,9 +197,14 @@ export function createSessionConfigurationActions(
       );
       if (!model) return;
       const taskId = get().activeTaskId;
+      if (taskId === DOTS_TASK_ID) {
+        if (model.available !== false) void saveDotsModel(id);
+        return;
+      }
       set((s) => ({
         activeModelId: id,
         defaultModelId: id,
+        dotsFollowModelId: id,
         // F2：显式选择只在当前任务内生效（任务级标记，不跨任务泄漏）
         modelExplicit: true,
         contextWindowTokens: model?.contextWindow || get().contextWindowTokens,
@@ -206,6 +235,7 @@ export function createSessionConfigurationActions(
 
     followSuggestedModel: async () => {
       const { activeTaskId, welcomeMode, modePresetId } = get();
+      if (activeTaskId === DOTS_TASK_ID) return saveDotsModel(null);
       const task = activeTaskId
         ? get().tasks.find((t) => t.id === activeTaskId)
         : undefined;

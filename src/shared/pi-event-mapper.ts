@@ -117,6 +117,19 @@ function subagentSummary(obj: Record<string, unknown>): string {
 
 function summarizeToolInput(tool: string, input: unknown): { summary: string; detail?: string } {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  if (tool === "dots_action") {
+    const labels: Record<string, string> = {
+      spaces: "查看工作空间", board: "查看任务看板", task: "查看任务进度", files: "查看文件列表",
+      read_file: "读取文件", materials: "查找资料", read_material: "读取资料", deliveries: "查找已有成果",
+      delegate: "委派普通任务", steer: "传达修改", bind: "绑定文件夹", create_space: "创建工作空间",
+      rename: "重命名工作空间", answer: "转交答复", pause: "暂停任务", stop: "停止任务", resume: "恢复任务",
+      watch_file: "跟进文件变化", file_watches: "查看文件订阅", cancel_watch: "取消订阅",
+      pause_all: "暂停相关执行", stop_all: "停止相关执行", pause_proactive: "暂停主动跟进", resume_proactive: "恢复主动跟进",
+    };
+    const label = labels[String(obj.action)] ?? "处理任务";
+    const target = obj.action === "read_file" ? obj.path : obj.action === "delegate" ? obj.name : undefined;
+    return { summary: typeof target === "string" && target.trim() ? `${label} · ${target.slice(0, 80)}` : label, detail: JSON.stringify(obj) };
+  }
   if (tool === "subagent") return { summary: subagentSummary(obj).slice(0, 120) || "子代理委派", detail: JSON.stringify(obj, null, 2) };
   if (tool === "multi_model_consult") return { summary: "多模型会诊", detail: typeof obj.task === "string" ? obj.task : undefined };
   if ((tool === "bash" || tool === "terminal") && typeof obj.command === "string") {

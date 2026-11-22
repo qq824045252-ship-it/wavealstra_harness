@@ -1,5 +1,5 @@
 import { DOTS_TASK_ID } from "../../shared/dots";
-import { dotsScopeCondition, type DotsRevisionSource } from "./DotsRevisionSource";
+import type { DotsRevisionSource } from "./DotsRevisionSource";
 import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryCoreProfileDto, MemoryDismissedProjectionDto, MemoryProjectionDeleteRequest, MemoryProjectionDeleteResult, MemoryProjectionProposalDto, MemoryRecordDto, MemoryScenarioDto } from "../../shared/memory-kernel";
@@ -455,7 +455,7 @@ export class MemoryCognitionService {
       let size = 0;
       for (const atom of group.atoms) {
         const source = this.dotsSource(atom.id, atom.revision);
-        if (!source || dotsScopeCondition(source.quote) || (source.stance !== "statement" && !(source.stance === "source_note"
+        if (!source || source.applicability || (source.stance !== "statement" && !(source.stance === "source_note"
           && (group.kind === "preference" || group.kind === "constraint")))) continue;
         const line = `• ${source.quote.replace(/\s+/gu, " ")}`;
         const bytes = Buffer.byteLength(line + "\n");

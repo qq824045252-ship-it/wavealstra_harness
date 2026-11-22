@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { getMyBuddyDir } from "./paths";
 import { readDiskSpaceFallback } from "./platform/fs-security";
 import type { PermissionMode, DiskSpaceDto } from "../shared/agent-ipc";
+import { normalizeDotsSettings, type DotsSettings } from "../shared/dots-settings";
 import {
   normalizeExternalAgentConfigOptions,
   normalizeExternalAgentConfigSelections,
@@ -59,6 +60,7 @@ export interface AppSettings {
   defaultModelId: string;
   proxyUrl: string;
   memoryEnabled: boolean;
+  dotsSettings?: Partial<DotsSettings>;
   automaticSemanticRecall: boolean;
   /** External Agent Memory Gateway master switch (loopback only). */
   memoryGatewayEnabled: boolean;
@@ -281,6 +283,7 @@ export class AppSettingsStore {
     try {
       const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<AppSettings> & Record<string, unknown>;
       const merged = { ...DEFAULTS, ...migrateLegacyShellPreferences(raw).settings } as AppSettings;
+      merged.dotsSettings = normalizeDotsSettings(raw.dotsSettings);
       merged.residentHostEnabled = raw.residentHostEnabled === true;
       delete (merged as AppSettings & Record<string, unknown>).gatewayBotBindings;
       delete (merged as AppSettings & Record<string, unknown>).backupFiles;
@@ -360,7 +363,11 @@ export class AppSettingsStore {
   }
 
   write(partial: Partial<AppSettings>): AppSettings {
-    const next = { ...this.read(), ...partial };
+    const current = this.read();
+    const next = { ...current, ...partial };
+    if ("dotsSettings" in partial) {
+      next.dotsSettings = normalizeDotsSettings(partial.dotsSettings, normalizeDotsSettings(current.dotsSettings));
+    }
     delete (next as AppSettings & Record<string, unknown>).backupFiles;
     // 已下线：场景模型推荐的残留字段，下一次写入即从 settings.json 清掉。
     delete (next as AppSettings & Record<string, unknown>).taskModelRecommendations;

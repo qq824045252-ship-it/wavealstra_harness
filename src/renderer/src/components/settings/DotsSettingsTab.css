@@ -1,0 +1,22 @@
+.dots-config { width: 100%; max-width: 860px; }
+.dots-config > nav { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin: 4px 0 14px; }
+.dots-config > nav > button { padding: 9px 12px; border-bottom: 2px solid transparent; color: var(--fg-muted); }
+.dots-config > nav > button[aria-pressed=true] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+.dots-config fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dots-config .settings-section { margin: 0 0 18px; }
+.dots-config .settings-section-card { padding: 12px 16px; }
+.dots-config .settings-field { margin: 0; }
+.dots-config .settings-row-desc { margin-top: 8px; }
+.dots-setting-feedback { min-height: 1.5em; color: var(--fg-muted); font-size: 12px; }
+.dots-tool-group { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.dots-tool-group:last-child { border-bottom: none; }
+.dots-tool-group details { flex: 1; min-width: 0; }
+.dots-tool-group summary { cursor: pointer; line-height: 24px; font-weight: 500; }
+.dots-tool-group small { color: var(--fg-muted); font-weight: normal; margin-left: 8px; }
+.dots-setting-switch { display: inline-flex; gap: 8px; flex: none; align-items: center; min-height: 24px; color: var(--fg-muted); font-size: 12px; }
+.dots-config-check { display: flex; align-items: center; gap: 10px; padding: 5px 0; width: fit-content; cursor: pointer; }
+.dots-config-check input { accent-color: var(--accent); }
+.dots-config-check small { display: block; color: var(--fg-muted); overflow-wrap: anywhere; }
+.dots-config-check:has(:disabled) { opacity: .65; cursor: default; }
+.dots-tool-group details[open] > summary { margin-bottom: 5px; }
+.dots-config [role=alert] { color: var(--danger); }

@@ -15,6 +15,8 @@ const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { createArtifactDomain } = await import("../src/main/artifact/ArtifactDomainSetup");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
 const { CronService } = await import("../src/main/cron/CronService");
+const { TerminalHost } = await import("../src/main/terminal/TerminalHost");
+const { TaskTerminalService } = await import("../src/main/terminal/TaskTerminalService");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const db = new AppDatabase(join(root, "app.db"));
 const space = db.createSpace({ id: "sp-quotes", name: "客户 A", path: root });
@@ -34,6 +36,8 @@ const fixture = await createAgentDurableFixture(root, db, input => {
 });
 const { agent } = fixture;
 const cron = new CronService(db, agent);
+const terminal = new TerminalHost({resolveCwd:()=>root});
+agent.setLocalWorkflowServices({cron,terminal:new TaskTerminalService(terminal)});
 const domain = createArtifactDomain(db.connection);
 agent.setArtifactDomain(domain.service, domain.coordinator);
 const deliveries = new DotsDelegations(db.connection, (id, operation) => agent.dotsSubmission(id, operation), () => {});
@@ -111,27 +115,40 @@ try {
   releaseAdmission();
   await priorSend;
   assert.equal(retiringSender.list().find(link => link.id === frozen.userMessageId)?.status, "pending");
-  let lookupFailures = 0, attemptsBeforeDeferral = 0;
-  const unavailableReader = new DotsDelegations(db.connection, async () => {
-    lookupFailures++;
-    throw Error("temporary receipt read failure");
-  }, () => { attemptsBeforeDeferral = lookupFailures; });
-  await unavailableReader.recover(async () => { oldAdmissions++; return {}; }, () => true);
-  unavailableReader.close();
-  await unavailableReader.drain();
-  assert.equal(attemptsBeforeDeferral, 3);
-  assert.equal(oldAdmissions, 0);
-  const uncertain = unavailableReader.list().find(link => link.id === frozen.userMessageId);
-  assert.equal(uncertain?.status, "pending");
-  assert.match(uncertain.text, /下次启动/);
-
-  let transientFailures = 0;
-  const restart = new DotsDelegations(db.connection, (id, op) => {
-    if (op === frozen.userMessageId && transientFailures++ === 0) throw Error("temporary receipt read failure");
-    return agent.dotsSubmission(id, op);
-  }, () => {});
+  let canInspect = false;
+  let unavailableReads = 0;
+  let announceThirdRead!: () => void;
+  const thirdRead = new Promise<void>(resolve => { announceThirdRead = resolve; });
+  const restart = new DotsDelegations(db.connection, (id, op) => agent.dotsSubmission(id, op), () => {});
+  const confirmAdmission = async (id: string, op: string) => {
+    if (op === frozen.userMessageId && !canInspect) {
+      if (++unavailableReads === 3) announceThirdRead();
+      throw Error("temporary receipt read failure");
+    }
+    return Boolean((await agent.findSubmission(id, op))?.receipt);
+  };
   let admissions = 0;
-  await restart.recover(async request => { admissions++; return agent.prompt(request); }, () => true);
+  await restart.recover(async request => {
+    admissions++;
+    assert.deepEqual(request, frozen);
+    const submitted = await agent.prompt(request);
+    assert.ok(submitted.receipt);
+    throw Error("admission completed before transport disconnected");
+  }, () => true, confirmAdmission);
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([thirdRead, new Promise<void>((_, reject) => {
+      deadlineTimer = setTimeout(() => reject(new Error("recovery stopped checking")), 5000);
+    })]);
+  } finally { clearTimeout(deadlineTimer); }
+  assert.equal(admissions, 0);
+  const uncertain = restart.list().find(link => link.id === frozen.userMessageId);
+  assert.equal(uncertain?.status, "pending");
+  assert.match(uncertain.text, /继续核对/);
+  canInspect = true;
+  for (let i=0; i<200 && restart.list().find(row => row.id === frozen.userMessageId)?.status !== "completed"; i++) {
+    await new Promise(done => setTimeout(done, 35));
+  }
   const recovered = await agent.findSubmission(job.taskId, frozen.userMessageId);
   assert.ok(recovered?.receipt);
   await agent.waitForSubmission(recovered.receipt);
@@ -139,6 +156,7 @@ try {
   assert.equal(restart.list().find(link => link.id === frozen.userMessageId)?.status, "completed");
   assert.equal(admissions, 1);
   restart.close();
+  await restart.drain();
 
   // An older native completion can arrive after a replacement. It must never win the next read.
   const race = new DotsDelegations(db.connection, async (_id, op) => op === "new-quote"
@@ -227,5 +245,5 @@ try {
   console.log("PASS missed Dots timer coalesces native execution and respects skip, deadline and restart");
   console.log("PASS Dots native chat → native delegate → ordinary task → real file → persisted Dots delivery");
 } finally {
-  cron.stop(); off(); deliveries.close(); await deliveries.drain(); await fixture.close(); db.close();
+  cron.stop(); terminal.dispose(); off(); deliveries.close(); await deliveries.drain(); await fixture.close(); db.close();
 }

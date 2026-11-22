@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useAppStore } from "@/store/appStore";
+import { selectChatModelId } from "@/store/app/slices/activeContext";
 import type { ChatMessage, Skill } from "@/types";
 import { IconX } from "@/components/common/icons";
 import { formatTokenCount } from "@shared/token-format";
@@ -289,7 +290,7 @@ export default function ContextUsageControl({ executing = false }: Props): React
   const compactionEngine = useAppStore((s) =>
     s.activeTaskId ? s.compactionByTask[s.activeTaskId]?.engine : undefined,
   );
-  const activeModelId = useAppStore((s) => s.activeModelId);
+  const activeModelId = useAppStore(selectChatModelId);
   const models = useAppStore((s) => s.models);
   const contextUsedTokens = useAppStore((s) => s.contextUsedTokens);
   const contextEstimated = useAppStore((s) => s.contextEstimated);

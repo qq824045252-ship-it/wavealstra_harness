@@ -41,6 +41,7 @@ import ModesTab from "./ModesTab";
 import MemoryTab from "./MemoryTab";
 import MaterialRetrievalTab from "./MaterialRetrievalTab";
 import AnswerRoutingTab from "./AnswerRoutingTab";
+import DotsSettingsTab from "./DotsSettingsTab";
 import NativeHooksTab from "./NativeHooksTab";
 import NativeImprovementTab from "./NativeImprovementTab";
 import CapabilitiesTab from "./CapabilitiesTab";
@@ -76,6 +77,7 @@ const TABS: Array<{ id: SettingsTab; icon: React.ComponentType<{ size?: number }
   { id: "memory", icon: IconClock, label: "记忆" },
   { id: "materialRetrieval", icon: IconBook, label: "资料检索" },
   { id: "answerRouting", icon: IconLink, label: "Dots 对话调度" },
+  { id: "dots", icon: IconSettings, label: "Dots 设置" },
   { id: "nativeHooks", icon: IconCode, label: "执行钩子" },
   { id: "nativeImprovement", icon: IconClock, label: "自我改进" },
   { id: "archive", icon: IconArchive, label: "归档管理" },
@@ -1364,6 +1366,7 @@ const TAB_TITLE: Record<SettingsTab, string> = {
   personalize: "个性化",
   memory: "记忆",
   answerRouting: "Dots 对话调度",
+  dots: "Dots 设置",
   nativeHooks: "执行钩子",
   nativeImprovement: "自我改进",
   materialRetrieval: "资料检索",
@@ -1420,6 +1423,7 @@ export default function SettingsModal({ desktop = false }: { desktop?: boolean }
             {tab === "personalize" && <PersonalizeTab />}
             {tab === "memory" && <MemoryTab />}
             {tab === "answerRouting" && <AnswerRoutingTab />}
+            {tab === "dots" && <DotsSettingsTab />}
             {tab === "nativeHooks" && <NativeHooksTab />}
             {tab === "nativeImprovement" && <NativeImprovementTab />}
             {tab === "materialRetrieval" && <MaterialRetrievalTab />}

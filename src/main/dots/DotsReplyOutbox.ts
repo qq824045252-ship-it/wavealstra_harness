@@ -11,12 +11,13 @@ export type AppendDotsReply = (reply: DotsAssistantReply, isCurrent: () => boole
   Promise<"appended" | "existing" | "pending" | "discarded">;
 
 type Event = { event_key: string; operation_id: string; status: string; interaction_id: string | null;
-  snapshot: string; reply: string | null };
+  task_id: string; snapshot: string; reply: string | null };
 
 /** The application and conversation have separate SQLite transactions. A stable delivery key
  * lets the conversation acknowledge an already committed message after an interrupted handoff. */
 export class DotsReplyOutbox {
-  private handler?: { followup: DotsFollowup; append: AppendDotsReply };
+  private handler?: { followup: DotsFollowup; append: AppendDotsReply; allowed: (taskId: string) => boolean;
+    allowedReply: (kind: DotsAssistantReply["kind"]) => boolean };
   constructor(private db: Database.Database) {
     db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
@@ -29,7 +30,10 @@ export class DotsReplyOutbox {
         WHERE request_json IS NOT NULL AND status IN ('pending','running','blocked')`);
   }
 
-  connect(followup: DotsFollowup, append: AppendDotsReply) { this.handler = { followup, append }; }
+  connect(followup: DotsFollowup, append: AppendDotsReply, allowed = (_taskId: string) => true,
+    allowedReply = (_kind: DotsAssistantReply["kind"]) => true) {
+    this.handler = { followup, append, allowed, allowedReply };
+  }
 
   rememberOrigin(source: string, origin: DotsReplyOrigin) {
     this.db.prepare("INSERT OR IGNORE INTO dots_reply_origins VALUES(?,?,?)").run(source, origin.conversationId, origin.entryId);
@@ -72,14 +76,15 @@ export class DotsReplyOutbox {
 
   private disposition(event: Event): "active" | "hold" | "obsolete" {
     const row = this.db.prepare(`SELECT d.status,d.interaction_id,c.state,d.text,w.lifecycle,w.closure_conclusion,
+      EXISTS(SELECT 1 FROM tasks t WHERE t.id=d.task_id) task_exists,
       EXISTS(SELECT 1 FROM dots_delegations newer WHERE newer.task_id=d.task_id AND newer.seq>d.seq AND newer.supersedes=1 AND newer.status<>'superseded') replaced,
       EXISTS(SELECT 1 FROM dots_followup_plans p WHERE p.operation_id=d.operation_id
         AND json_extract(p.plan,'$.request.dotsGoalIntentRevision') <> w.intent_revision) goal_revised,
       EXISTS(SELECT 1 FROM dots_proactive_pauses p WHERE p.scope='' OR p.scope=d.space_id) paused
       FROM dots_delegations d LEFT JOIN dots_target_controls c ON c.task_id=d.task_id
       LEFT JOIN works w ON w.work_id=d.goal_id WHERE d.operation_id=?`).get(event.operation_id) as
-      {status:string;interaction_id:string|null;state:string|null;replaced:number;paused:number;goal_revised:number;text:string;lifecycle:string|null;closure_conclusion:string|null} | undefined;
-    if (!row || row.state === "stopped" || row.lifecycle === "closed" && row.closure_conclusion !== "succeeded" ||
+      {status:string;interaction_id:string|null;state:string|null;replaced:number;paused:number;goal_revised:number;text:string;lifecycle:string|null;closure_conclusion:string|null;task_exists:number} | undefined;
+    if (!row?.task_exists || row.state === "stopped" || row.lifecycle === "closed" && row.closure_conclusion !== "succeeded" ||
       row.replaced || row.goal_revised || row.status !== event.status || row.interaction_id !== event.interaction_id ||
       (row.status === "running" && row.text !== (JSON.parse(event.snapshot) as DotsDelegation).text)) return "obsolete";
     if (event.status === "blocked" && event.interaction_id && !this.db.prepare(
@@ -105,19 +110,21 @@ export class DotsReplyOutbox {
     return retry;
   }
 
-  private settle(event: Event) {
+  private settle(event: Event, delivered?: DotsAssistantReply["kind"]) {
     this.db.transaction(() => {
-      this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot='' WHERE event_key=?").run(event.event_key);
+      // Keep only the disposition for board lookups. The conversation owns the delivered body and attachments.
+      this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=?")
+        .run(delivered ? JSON.stringify({ delivered }) : "", event.event_key);
       if (event.status === "completed" || event.status === "failed")
         this.db.prepare("DELETE FROM dots_followup_requests WHERE operation_id=?").run(event.operation_id);
     })();
   }
 
-  private async deliver(event: Event, alive: () => boolean, handler: { followup: DotsFollowup; append: AppendDotsReply }) {
-    const current = () => alive() && this.disposition(event) === "active";
+  private async deliver(event: Event, alive: () => boolean, handler: NonNullable<DotsReplyOutbox["handler"]>) {
     const disposition = this.disposition(event);
     if (disposition === "obsolete") this.settle(event);
-    if (disposition !== "active") return false;
+    if (disposition !== "active" || !handler.allowed(event.task_id)) return false;
+    const current = () => alive() && handler.allowed(event.task_id) && this.disposition(event) === "active";
     let reply: DotsAssistantReply;
     if (event.reply) reply = JSON.parse(event.reply) as DotsAssistantReply;
     else {
@@ -125,17 +132,22 @@ export class DotsReplyOutbox {
       const request = this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined;
       const step = await handler.followup(job, request ? JSON.parse(request) : undefined);
       if (!alive() || (step.kind !== "continued" && this.disposition(event) === "hold")) return false;
+      if (step.kind === "deferred") return false;
       if (step.kind === "continued" || step.kind === "quiet") { this.settle(event); return false; }
-      if (!current()) return false;
+      const afterFollowup = this.disposition(event);
+      if (afterFollowup === "obsolete") this.settle(event);
+      if (afterFollowup !== "active") return false;
       reply = { deliveryKey: event.event_key, operationId: job.id, taskId: job.taskId, ...this.destination(job.sourceMessageId),
-        title: job.title, kind: step.kind === "deliver" ? "conclusion" : "question", text: step.text ?? job.text,
+        title: job.title, kind: step.kind === "deliver" ? "conclusion" : step.kind === "progress" ? "progress" : "question", text: step.text ?? job.text,
         artifacts: step.artifacts ?? job.artifacts, ...(step.kind === "deliver" && citations?.length ? { citations } : {}) };
       this.db.prepare("UPDATE dots_reply_events SET reply=? WHERE event_key=?").run(JSON.stringify(reply), event.event_key);
     }
-    const result = await handler.append(reply, current);
+    if (!handler.allowedReply(reply.kind)) { this.settle(event); return false; }
+    const result = await handler.append(reply, () => current() && handler.allowedReply(reply.kind));
     if (!alive()) return false;
     if (result === "pending") return true;
-    if (result !== "discarded" || this.disposition(event) !== "hold") this.settle(event);
+    if (result !== "discarded") this.settle(event, reply.kind);
+    else if (handler.allowed(event.task_id) && this.disposition(event) !== "hold") this.settle(event);
     return false;
   }
 }

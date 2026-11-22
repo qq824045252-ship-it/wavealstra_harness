@@ -8,25 +8,33 @@ const {routingControls} = require("./answer-routing-desktop-controls.cjs");
 
 const spaceId = "drops-workspace";
 const otherId = "other-desk";
+const ackOnly = process.env.MYBUDDY_DOTS_DESKTOP_ACK_ONLY === "1";
 const cases = [
   {id:"text", name:"盘点回报", result:"仓库清点完成，共有 37 台。", status:"completed"},
   {id:"file", name:"发货回报", result:"发货凭证.md", status:"completed"},
   {id:"failed", name:"校验回报", result:"仓储端已拒绝此次校验", status:"failed"},
   {id:"visible", name:"前台盘点", result:"返仓签收为 89 箱。", status:"completed"},
   {id:"blocked", name:"图纸回报", result:"请选择图纸的计量单位", status:"blocked"},
-];
+  {id:"ack-error", name:"接单中断", result:"记录已核对，共 41 份。", status:"completed"},
+].filter(item => !ackOnly || item.id === "ack-error");
 const gates = new Map(cases.map(item => {
   let release;
   const wait = new Promise(resolve => { release = resolve; });
   return [item.id, {wait, release}];
 }));
+const firstReply = Promise.withResolvers();
+const afterLookup = Promise.withResolvers();
+const lookupObserved = Promise.withResolvers();
+const requestedModels = {front: new Set(), worker: new Set(), existingWorker: new Set()};
 const history = taskId => "window.api.agent.loadTaskHistory(" + JSON.stringify(taskId) + ").then(h=>h.messages)";
 run(async env => {
   const {evaluate, rpc, until, report, home} = env;
   const {press,click} = routingControls(env);
   const workspace = path.join(home,"交付空间");
   fs.mkdirSync(workspace);
+  await evaluate("window.api.agent.updateAppSettings({dotsSettings:{modelId:'fixture/dots-front'}})");
   await evaluate("window.api.db.upsertSpace(" + JSON.stringify({id:spaceId,name:"交付空间",path:workspace}) + ")");
+  await evaluate("window.api.db.upsertTask(" + JSON.stringify({id:"pinned-worker-task",spaceId,title:"前台盘点",modelId:"fixture/pinned-worker",updatedAt:Date.now()}) + ")");
   await evaluate("window.api.db.upsertTask(" + JSON.stringify({id:otherId,title:"其他工作台",welcomeMode:"general",updatedAt:Date.now()}) + ")");
   await rpc("Page.reload");
   await until(() => evaluate("[...document.querySelectorAll('.task-item-title')].some(el=>el.textContent==='其他工作台')"), "seeded ordinary workspace visible");
@@ -40,8 +48,27 @@ run(async env => {
     await press("document.querySelector('textarea.input-textarea')","input for " + item.name);
     await rpc("Input.insertText",{text:"请处理" + item.name});
     await press("document.querySelector('button[title=\"发送 (Enter)\"]')","send " + item.name);
-    await until(() => evaluate("document.querySelector('.message-list')?.innerText.includes(" + JSON.stringify("已接单："+item.name) + ")"),"native acknowledgement");
-    proof({case:item.id,step:"acknowledged"});
+    if (item.id === "text") {
+      const activity = ".message-list .dots-activity";
+      const visible = () => evaluate(`(() => { const el=document.querySelector('${activity}'); if (!el) return false; const r=el.getBoundingClientRect(); return r.height>0 && r.top>=0 && r.bottom<=innerHeight && !!el.innerText.trim(); })()`);
+      try {
+        await until(visible, "visible Dots status before the model returns any content");
+        firstReply.resolve();
+        await lookupObserved.promise;
+        await until(() => evaluate(`document.querySelector('${activity}')?.innerText.includes("查看工作空间")`), "actual Dots workspace lookup remains visible between tool calls");
+        assert(await visible());
+        const {data} = await rpc("Page.captureScreenshot", {format:"png"});
+        fs.writeFileSync(path.join(env.out,"dots-in-progress.png"),Buffer.from(data,"base64"));
+        proof({case:item.id,step:"in-progress",visibleText:await evaluate(`document.querySelector('${activity}').innerText`)});
+      } finally { firstReply.resolve(); afterLookup.resolve(); }
+    }
+    if (item.id === "ack-error") {
+      await until(async () => (await evaluate(history("mybuddy-dots"))).some(row => row.role === "assistant" && row.text.includes("接单回复生成失败")), "native acknowledgement failure");
+      proof({case:item.id,step:"ack-failed-after-admission"});
+    } else {
+      await until(() => evaluate("document.querySelector('.message-list')?.innerText.includes(" + JSON.stringify("已接单："+item.name) + ")"),"native acknowledgement");
+      proof({case:item.id,step:"acknowledged"});
+    }
     await other();
     await until(async () => (await active()) === "其他工作台","other ordinary task active");
     if (item.id === "visible") await dots();
@@ -57,7 +84,8 @@ run(async env => {
         assert(rows.length <= 1);
         if (!rows.length) return false;
         const record = JSON.parse(rows[0].record);
-        assert.equal(record.model[0].role, "assistant");
+        if (item.id === "file") assert.equal(record.model, undefined, "attachment-only delivery needs no synthetic model text");
+        else assert.equal(record.model?.[0].role, "assistant");
         delivered = {id:"durable-" + rows[0].id, dotsDelivery:record.data};
         return true;
       }, "physical Dots history has " + item.id + " without a follow-up");
@@ -71,12 +99,22 @@ run(async env => {
     const select = "document.getElementById("+JSON.stringify("msg-" + delivered.id)+")";
     await until(() => evaluate(select+"?.querySelector('.msg-row .assistant-card') != null"),"independent Dots assistant bubble");
     assert((await evaluate(select+".textContent")).includes(item.result), "assistant message must contain " + item.result);
+    assert.deepEqual([...requestedModels.front],["dots-front"],"foreground transport uses Dots' selected model");
+    assert.deepEqual([...requestedModels.worker],["ui-fixture"],"worker transport uses the main model configured for ordinary tasks");
+    if (item.id==="visible") assert.deepEqual([...requestedModels.existingWorker],["pinned-worker"],"continuation keeps the target task's saved selection");
     assert(!(await evaluate(select+".innerText")).includes("已接单："));
     assert(!(await evaluate(history(otherId))).some(m => m.dotsDelivery));
     if (item.id === "file") {
+      assert.equal(delivered.dotsDelivery.text, "", "a file-only delivery has no prose");
       fs.writeFileSync(path.join(workspace,item.result),"源文件已改");
       await press(select+".querySelector('.artifact-chip-main')","open file from proactive bubble");
       await until(() => evaluate("document.querySelector('.bot-work-file-preview-body')?.innerText.includes('原始发货编号 K-381')"),"file result opens original bytes");
+    }
+    if (item.id === "text" || item.id === "file") {
+      const worker = await evaluate(history(delivered.dotsDelivery.taskId));
+      assert(worker.some(row => row.role === "assistant" && row.finalAssistantReply
+        && row.text === (item.id === "file" ? "" : item.result)), "ordinary task shows only the intended content");
+      assert(!worker.some(row => row.role === "assistant" && row.text.includes('"dotsState"')));
     }
     assert.equal(delivered.dotsDelivery.kind, ["blocked","failed"].includes(item.id) ? "question" : "conclusion");
     proof({case:item.id,step:"shown",id:delivered.id});
@@ -94,7 +132,7 @@ run(async env => {
     } finally { archival.close(); }
   });
   await dots();
-  await until(() => evaluate(JSON.stringify(resultIds)+".every(id=>document.getElementById('msg-'+id)?.querySelector('.assistant-card'))"),"all five independent bubbles persisted");
+  await until(() => evaluate(JSON.stringify(resultIds)+".every(id=>document.getElementById('msg-'+id)?.querySelector('.assistant-card'))"),"all independent bubbles persisted");
   await until(() => evaluate("document.querySelector('[data-delegation-id=pre-outbox-result]')?.textContent.includes('旧仓记录 L-43')"),"legacy result survived as a card");
   assert.equal(await evaluate("document.querySelectorAll('.dots-result[data-delegation-id]').length"),1);
   const restored = await evaluate(history("mybuddy-dots"));
@@ -110,11 +148,14 @@ run(async env => {
   }
   const {data} = await rpc("Page.captureScreenshot",{format:"png"});
   fs.writeFileSync(path.join(env.out,"dots-proactive.png"),Buffer.from(data,"base64"));
-  report.actualControlChecks.push("Four real delegations each finished while an unrelated ordinary task was active. A fifth updated the active Dots view without another click. Text, file, failure and blocked results appeared as separate durable Dots assistant messages after returning, survived restart, and required no follow-up.");
+  if (!ackOnly) report.actualControlChecks.push("Background delegations and a live Dots view returned separate durable text, file, failure and blocked messages after restart without manual follow-up.");
+  report.actualControlChecks.push("When the acknowledgement failed after admission, the ordinary task still delivered to the original turn.");
   proof({step:"restored",ids:resultIds});
   report.deliveries = restored.filter(m=>m.dotsDelivery).map(m=>({id:m.id,text:m.text,kind:m.dotsDelivery.kind}));
+  report.requestedModels = Object.fromEntries(Object.entries(requestedModels).map(([role,ids])=>[role,[...ids]]));
 }, {
-  name:"dots-proactive-desktop", rpcTimeoutMs:60000, isolatedDependencyCache:true, watchRenderer:false, settings:{permissionMode:"auto",notificationPreferences:{desktopEnabled:false}},
+  name:ackOnly ? "dots-ack-failure-desktop" : "dots-proactive-desktop", rpcTimeoutMs:60000, isolatedDependencyCache:true, watchRenderer:false, fixtureModelIds:["dots-front","pinned-worker"],
+  settings:{permissionMode:"auto",notificationPreferences:{desktopEnabled:false}},
   async fixtureModel(request) {
     const names=request.tools?.map(t=>t.function.name)??[];
     const last=request.messages.at(-1);
@@ -122,13 +163,29 @@ run(async env => {
     const item=cases.find(c=>JSON.stringify(user?.content).includes(c.name));
     if (!item) return "OK";
     if (names.includes("dots_action")) {
-      if(last.role==="tool") return "已接单："+item.name;
-      return {tool:{name:"dots_action",arguments:{action:"delegate",spaceId,name:item.name,text:"执行"+item.name}}};
+      requestedModels.front.add(request.model);
+      if (item.id==="text" && last.role==="user") {
+        await firstReply.promise;
+        return {tool:{name:"dots_action",arguments:{action:"spaces"}}};
+      }
+      if (item.id==="text" && last.role==="tool" && !request.messages.some(m=>m.role==="assistant" && m.tool_calls?.some(t=>t.function.arguments.includes('"delegate"')))) {
+        lookupObserved.resolve();
+        await afterLookup.promise;
+        return {tool:{name:"dots_action",arguments:{action:"delegate",spaceId,name:item.name,text:"执行"+item.name}}};
+      }
+      if(last.role==="tool") return item.id==="ack-error"
+        ? {fixtureFault:"model-error",message:"接单回复生成失败"} : "已接单："+item.name;
+      return {tool:{name:"dots_action",arguments:{action:"delegate",spaceId,name:item.name,text:"执行"+item.name,
+        ...(item.id==="visible" ? {targetTaskId:"pinned-worker-task"} : {})}}};
     }
+    requestedModels[item.id==="visible"?"existingWorker":"worker"].add(request.model);
     await gates.get(item.id).wait;
     if(item.id==="failed") return {fixtureFault:"model-error",message:item.result};
-    if(item.id==="blocked") return {tool:{name:"request_user_input",arguments:{kind:"short_text",title:item.result}}};
+    if(item.id==="blocked") {
+      if (last.role==="tool") throw new Error("Unexpected return from a pending user question: "+last.content);
+      return {tool:{name:"request_user_input",arguments:{kind:"short_text",title:item.result}}};
+    }
     if(item.id==="file" && last.role!=="tool") return {tool:{name:"write",arguments:{path:item.result,content:"原始发货编号 K-381"}}};
-    return item.id==="file"?"已生成发货凭证。":item.result;
+    return JSON.stringify({dotsState:"complete",result:item.id==="file"?"":item.result});
   },
 });

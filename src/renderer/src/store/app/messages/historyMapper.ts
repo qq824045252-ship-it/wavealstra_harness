@@ -14,6 +14,7 @@ export function historyMessageToChatMessage(m: ChatMessageDto): ChatMessage {
     externalAgent: m.externalAgent,
     durationLabel: formatDuration(m.durationMs),
     entryId: m.entryId,
+    finalAssistantReply: m.finalAssistantReply,
     attachments: m.attachments,
     blocks:
       m.role === "user"

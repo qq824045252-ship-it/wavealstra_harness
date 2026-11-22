@@ -15,20 +15,22 @@ type FixtureResponse = AssistantMessage["content"] | { content: AssistantMessage
 /** Only the provider boundary is deterministic; admission, native storage, tools and product projections are real. */
 export async function createAgentDurableFixture(root: string, db: AppDatabase,
   respond: (request: TranscriptContext, signal?: AbortSignal) => FixtureResponse | Promise<FixtureResponse> = () => [{ type: "text", text: "[]" }],
-  options: {deferRecovery?: boolean} = {}) {
+  options: {deferRecovery?: boolean; modelVariants?: string[]} = {}) {
   const { ModelRuntime, SettingsManager } = await import("@earendil-works/pi-coding-agent");
   const { AgentService } = await import("../src/main/agent/AgentService");
   const { TaskExecutionWorkspace } = await import("../src/main/task/TaskExecutionWorkspace");
-  const requests: Array<{ instructions: string; tools: string[]; input: TranscriptContext }> = [];
+  const requests: Array<{ instructions: string; tools: string[]; input: TranscriptContext; modelId: string }> = [];
+  const modelIds = ["model", ...options.modelVariants ?? []];
   const models = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null,
     modelsStorePath: join(root, "models-cache.json"), allowModelNetwork: false, refreshOnCreate: false });
   models.registerProvider("fixture", { api: "openai-completions", apiKey: "isolated-fixture", baseUrl: "http://127.0.0.1:1",
-    models: [{ id: "model", name: "Fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 1024,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    models: modelIds.map(id => ({ id, name: id === "model" ? "Fixture" : id,
+      reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 1024,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
     streamSimple: (model, input, options) => {
       const stream = createAssistantMessageEventStream();
       const tools = getCurrentTools(input.messages).map(tool => tool.name);
-      if (tools.length) requests.push({ instructions: getCurrentSystemPrompt(input.messages), tools, input });
+      if (tools.length) requests.push({ instructions: getCurrentSystemPrompt(input.messages), tools, input, modelId: `${model.provider}/${model.id}` });
       queueMicrotask(async () => {
         const response = await respond(input, options?.signal);
         const content = Array.isArray(response) ? response : response.content;
@@ -49,7 +51,7 @@ export async function createAgentDurableFixture(root: string, db: AppDatabase,
   });
   await models.refresh({ allowNetwork: false });
   const settings = SettingsManager.create(root, join(root, ".mybuddy"));
-  settings.setDefaultModelAndProvider("fixture", "model"); settings.setEnabledModels(["fixture/model"]);
+  settings.setDefaultModelAndProvider("fixture", "model"); settings.setEnabledModels(modelIds.map(id => `fixture/${id}`));
   const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "task-workspaces")), { models });
   await agent.init();
   if (!options.deferRecovery) await agent.resumePersistedTasks();

@@ -7,6 +7,7 @@ import { getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID } from "../src/shared/dots";
+import { resolveDotsPreferences } from "../src/shared/dots-settings";
 const root = mkdtempSync(join(tmpdir(), "dots-followup-"));
 process.env.USERPROFILE = root;
 process.env.HOME = root;
@@ -27,13 +28,17 @@ writeFileSync(join(folder, "到货记录.txt"), "批次累计 18 件");
 writeFileSync(join(folder, "第二批.txt"), "周一批次累计 18 件");
 const space = db.upsertSpace({ id: "customer", name: "客户资料", path: folder });
 let nextCall: Record<string, unknown> | undefined;
-let phase: "first" | "question" | "done" | "event" | "empty" | "goal" | "goal-complete" | "goal-user" | "refused" = "first";
+let phase: "first" | "question" | "done" | "event" | "empty" | "partial" | "files" | "running" | "goal" | "goal-complete" | "goal-user" | "refused" = "first";
+let runningGate: (() => void) | undefined;
 let workerTurns = 0;
 const goal = "核对到货数，确认批次后汇总，不要发送邮件";
 const baseline = "已核对到货数为 18 件。";
 const question = "这一批到货应归入哪个批次？";
 const writtenResult = "采购说明正文：使用无塑纸封套，标签注明内部资料。";
 const conclusion = "东区批次已核对，合计到货 18 件。";
+const partial = "验收清单列出仓储、装配两项。财务栏仍空着。";
+const runningMilestone = "周一批次原始记录显示 18 件。";
+const completedWorkerReply = (result: string) => [{ type: "text" as const, text: JSON.stringify({ dotsState: "complete", result }) }];
 const fixture = await createAgentDurableFixture(root, db, async (input) => {
   const tools = getCurrentTools(input.messages);
   if (!tools.length) return [{ type: "text", text: JSON.stringify({ candidates: [] }) }];
@@ -163,9 +168,27 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
       assert.equal((lastTool.details as any).confirmed, true);
       return [{ type: "text", text: "已完成审核，内部留档。\n\n" + writtenResult }];
     }
-    if (phase === "event") return [{ type: "text", text: "已读取交付触发信号，批次已登记。" }];
+    if (phase === "event") return completedWorkerReply("已读取交付触发信号，批次已登记。");
     if (phase === "empty") return [{ type: "text", text: "" }];
-    return [{ type: "text", text: conclusion }];
+    if (phase === "partial") return [{ type: "text", text: partial }];
+    if (phase === "files") {
+      if (input.messages.at(-1)?.role === "toolResult") return completedWorkerReply("");
+      return [{ type: "toolCall", id: "register-only-file", name: "register_artifact", arguments: { path: "第二批.txt" } }];
+    }
+    if (phase === "running") {
+      const last = input.messages.at(-1);
+      if (last?.role !== "toolResult") return [
+        { type: "text", text: partial },
+        { type: "toolCall", id: "initial-checkpoint-read", name: "read", arguments: { path: "第二批.txt" } },
+      ];
+      await new Promise<void>(resolve => { runningGate = resolve; });
+      if (last.toolCallId === "initial-checkpoint-read") return [
+        { type: "text", text: JSON.stringify({ dotsState: "progress", result: runningMilestone, remainingQuote: "核对另一批的原始记录" }) },
+        { type: "toolCall", id: "remaining-checkpoint-read", name: "read", arguments: { path: "到货记录.txt" } },
+      ];
+      return completedWorkerReply("两份记录均已核对，各为 18 件。");
+    }
+    return completedWorkerReply(conclusion);
   }
   return [{ type: "text", text: "OK" }];
 });
@@ -187,6 +210,7 @@ const makeActions = () =>
     rememberOrigin: (s, o) => journal.rememberOrigin(s, o),
     failed: (...args) => journal.failed(...args),
     changed: () => journal.refresh(),
+    preferences: () => resolveDotsPreferences(agent.getAppSettings().dotsSettings),
   });
 let actions = makeActions();
 agent.setDotsActions(actions);
@@ -202,17 +226,7 @@ journal.connect(
   },
   (reply, current) => agent.appendDotsReply(reply, current),
 );
-agent.onPatch((patch) => {
-  const state =
-    patch.type === "durable_snapshot" ? patch.snapshot : patch.type === "durable_delta" ? patch.delta.state : undefined;
-  if (
-    "taskId" in patch &&
-    (patch.type === "conversation_interaction_snapshot" ||
-      state?.status === "waiting_input" ||
-      (state && !state.busy && !state.queued))
-  )
-    journal.refresh(patch.taskId);
-});
+agent.onPatch(patch => journal.onPatch(patch));
 actions.startFileWatches();
 let turn = 0;
 async function send(text: string, args: Record<string, unknown>) {
@@ -233,11 +247,12 @@ async function send(text: string, args: Record<string, unknown>) {
   await agent.waitForSubmission(result.receipt);
   console.log("Dots user input settled", id);
 }
-async function messageContains(text: string) {
+async function messageContains(text: string, sourceMessageId?: string) {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
     const history = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
-    if (history.messages.some((m) => m.role === "assistant" && m.text.includes(text))) return history.messages;
+    if (history.messages.some((m) => m.role === "assistant" && m.text.includes(text)
+      && (!sourceMessageId || m.dotsDelivery?.sourceMessageId === sourceMessageId))) return history.messages;
     await delay(80);
   }
   throw Error(
@@ -246,6 +261,14 @@ async function messageContains(text: string) {
       "; deliveries=" +
       JSON.stringify(journal.list().map((j) => [j.status, j.text])),
   );
+}
+async function releaseRunningWorker() {
+  const deadline = Date.now() + 20000;
+  while (!runningGate && Date.now() < deadline) await delay(80);
+  assert(runningGate, "工具返回后原生输入仍处于同一运行");
+  const release = runningGate;
+  runningGate = undefined;
+  release();
 }
 try {
   await send(goal, { action: "delegate", spaceId: space.id, name: "核对到货", text: goal });
@@ -325,6 +348,8 @@ try {
     criteria: [{ text: "第二批已核对" }],
   });
   assert(g.ok);
+  const settings = resolveDotsPreferences(agent.getAppSettings().dotsSettings);
+  await agent.updateAppSettings({dotsSettings:{...settings,followupMode:"paused"}});
   phase = "goal";
   dropGoalLink = true;
   await send("在已有目标上继续核对", {
@@ -333,6 +358,11 @@ try {
     goalId: g.goal.id,
     text: "在已有目标上继续核对。候选是周一批次累计 18 件，请读取原始文件独立核对。",
   });
+  for (let i=0; i<200 && agent.getGoalContinuation(g.goal.id)?.lastCheck?.reason !== "dots_policy"; i++) await delay(30);
+  assert.equal(agent.getGoalContinuation(g.goal.id)?.lastCheck?.reason,"dots_policy");
+  assert.equal(agent.getGoalContinuation(g.goal.id)?.attempts,0);
+  assert(!agent.getConversationRuntimeSnapshot(goalTask).interactions.some(i=>i.status==="pending"));
+  await agent.updateAppSettings({dotsSettings:{...settings,followupMode:"continue"}});
   const deadline = Date.now() + 30000;
   while (
     !agent.getConversationRuntimeSnapshot(goalTask).interactions.some((i) => i.status === "pending") &&
@@ -469,6 +499,63 @@ try {
   assert.equal(works.getWork(review.goal.id)?.closureConclusion, "succeeded");
   assert(works.repo.listEvidence(review.goal.id).some(e => e.kind === "inspection" && e.detail === writtenResult));
   console.log("PASS 明确约定由用户验收只问一次，纯文字成果即可结项并回原对话");
+  phase = "partial";
+  await send("请完成所有验收栏", { action: "delegate", spaceId: space.id, name: "验收审核", text: "请完成所有验收栏" });
+  const attention = await messageContains("原任务没有报告可确认的交付结果或进展。已尝试补救一次。", "source-13");
+  const unclassified = attention.filter(m => m.dotsDelivery?.sourceMessageId === "source-13");
+  assert.equal(unclassified.length, 1);
+  assert.equal(unclassified[0].dotsDelivery?.kind, "question");
+  assert(!unclassified[0].text.includes(partial));
+  assert.equal(journal.list(["source-13"]).length, 2);
+  console.log("PASS 未声明结果的自然语言停顿未当成结论，安全补报一次后回到原交办提问");
+  phase = "files";
+  await send("只给第二批文件", { action: "delegate", spaceId: space.id, name: "第二批文件", text: "只给第二批文件" });
+  const fileDeadline = Date.now() + 20000;
+  let fileReply;
+  while (Date.now() < fileDeadline) {
+    const transcript = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
+    fileReply = transcript.messages.find(m => m.dotsDelivery?.sourceMessageId === "source-14");
+    if (fileReply) break;
+    await delay(80);
+  }
+  assert.equal(fileReply?.dotsDelivery?.kind, "conclusion");
+  assert.equal(fileReply?.text, "");
+  assert.deepEqual(fileReply?.dotsDelivery?.artifacts.map(file => file.name), ["第二批.txt"]);
+  console.log("PASS 仅交付文件的原对话消息只有对应版本附件");
+  phase = "running";
+  const runningRequest = "核对周一批次的原始记录，再核对另一批的原始记录";
+  await send(runningRequest, { action: "delegate", spaceId: space.id, name: "两批核对", text: runningRequest });
+  const [runningJob] = journal.list(["source-15"]);
+  journal.refresh(runningJob.taskId);
+  await journal.drain();
+  const intermediate = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
+  assert(!intermediate.messages.some(m => m.dotsDelivery?.sourceMessageId === "source-15"));
+  await releaseRunningWorker();
+  const liveMessages = await messageContains(runningMilestone, "source-15");
+  const liveReply = liveMessages.find(m => m.dotsDelivery?.sourceMessageId === "source-15");
+  assert.equal(liveReply?.dotsDelivery?.kind, "progress");
+  assert.equal(journal.list(["source-15"])[0].status, "running");
+  assert.equal(journal.list(["source-15"]).length, 1);
+  await releaseRunningWorker();
+  const completeMessages = await messageContains("两份记录均已核对，各为 18 件。", "source-15");
+  assert(completeMessages.some(m => m.dotsDelivery?.sourceMessageId === "source-15" && m.dotsDelivery.kind === "conclusion"));
+  assert.equal(journal.list(["source-15"]).length, 1);
+  const workerHistory = await agent.loadTaskHistory(runningJob.taskId, undefined, "current");
+  assert(workerHistory.messages.some(m => m.dotsWorkerProgress && m.text === runningMilestone));
+  assert(workerHistory.messages.some(m => m.finalAssistantReply && m.text === "两份记录均已核对，各为 18 件。"));
+  assert(!workerHistory.messages.some(m => m.text.includes('"dotsState"')));
+  const nativeOutcome = await agent.dotsSubmission(runningJob.taskId, runningJob.id);
+  assert.equal(nativeOutcome?.text, JSON.stringify({ dotsState: "complete", result: "两份记录均已核对，各为 18 件。" }));
+  console.log("PASS 原生工具调用期间只回传声明的实质进展，在同一轮结束后单独交付结论");
+  phase = "done";
+  const literal = await agent.prompt({ taskId: runningJob.taskId, spaceId: space.id,
+    userMessageId: "ordinary-json-example", assistantMessageId: "ordinary-json-answer",
+    text: "请给出 JSON 对象示例原文。" }, { durableAdmissionOnly: true });
+  assert(literal.receipt);
+  await agent.waitForSubmission(literal.receipt);
+  const manualWorkerHistory = await agent.loadTaskHistory(runningJob.taskId, undefined, "current");
+  assert.equal(manualWorkerHistory.messages.at(-1)?.text, JSON.stringify({ dotsState: "complete", result: conclusion }));
+  console.log("PASS 同一普通任务中的直接用户请求仍原样显示结构相同的 JSON");
 } catch (error) {
   console.error("Dots followup verification failed", error);
   for (const j of journal.list())
@@ -476,6 +563,7 @@ try {
       if (i.status === "pending") agent.respondConversationInteraction(i.id, "测试结束");
   throw error;
 } finally {
+  runningGate?.();
   heldSource = undefined;
   resumeRelay?.();
   await actions.closeFileWatches();

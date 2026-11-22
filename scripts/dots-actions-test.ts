@@ -108,9 +108,11 @@ const fixture = await createAgentDurableFixture(root, db, async (input, signal) 
       readFile = false;
       return [{ type: "toolCall", id: "read-source", name: "read", arguments: { path: "input.txt" } }];
     }
+    if (JSON.stringify(last?.content).includes("collect-finished-before-pause"))
+      return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "47" }) }];
   }
   return [{ type: "text", text: "已收到。" }];
-});
+}, { modelVariants: ["dots-front", "pinned-worker"] });
 const agent = fixture.agent;
 const cron = new CronService(db, agent);
 const terminal = new TerminalHost({ resolveCwd: () => folder });
@@ -152,6 +154,18 @@ try {
   const renamed = await success({ action: "rename", name: "华南", spaceId: space.id });
   assert.equal(renamed.id, space.id);
   assert.equal(renamed.path, folder);
+  const originalRename = "dots-user-" + serial;
+  await actions.execute(DOTS_TASK_ID, "new-name", { action: "rename", name: "East", spaceId: space.id });
+  await actions.execute(DOTS_TASK_ID, originalRename, { action: "rename", name: "华南", spaceId: space.id });
+  assert.equal(db.getSpace(space.id)?.name, "East", "replaying the earlier edit preserves the newer name");
+  await actions.execute(DOTS_TASK_ID, "restore-name", { action: "rename", name: "华南", spaceId: space.id });
+  const secondFolder = join(folder, "secondary");
+  mkdirSync(secondFolder);
+  await actions.execute(DOTS_TASK_ID, "bind-old", { action: "bind", path: folder, spaceId: space.id });
+  await actions.execute(DOTS_TASK_ID, "bind-new", { action: "bind", path: secondFolder, spaceId: space.id });
+  await actions.execute(DOTS_TASK_ID, "bind-old", { action: "bind", path: folder, spaceId: space.id });
+  assert.equal(db.getSpace(space.id)?.path, secondFolder);
+  await actions.execute(DOTS_TASK_ID, "restore-folder", { action: "bind", path: folder, spaceId: space.id });
   assert((await success({ action: "spaces" })).some((s: { name: string }) => s.name === "华南"));
   assert((await success({ action: "files", spaceId: space.id })).files.some((f: { path: string }) => f.path === "input.txt"));
   assert.equal((await success({ action: "read_file", spaceId: space.id, path: "input.txt" })).content, "客户档案编号 A456");
@@ -167,6 +181,10 @@ try {
   assert.equal(journal.list().length, 1);
   assert.equal(journal.list()[0]?.sourceMessageId, "dots-user-" + serial);
   const task = db.getTask(job.id)!;
+  const rephrased = await actions.execute(DOTS_TASK_ID, "dots-user-" + serial,
+    {action:"delegate", spaceId:space.id, name:"报价资料核对", text:"换种说法，再核对一遍客户资料"}, "用户交代 " + serial);
+  assert("id" in rephrased && rephrased.id === job.id);
+  assert.equal(journal.list().length, 1, "a reworded delegation from the same input reuses the original acceptance");
   assert.equal(task.cwd, folder);
   assert.equal(task.spaceId, space.id);
   await until(() => waiting, "existing native model run must be active");
@@ -199,7 +217,9 @@ try {
   assert(!(await success({action: "board"})).tasks.some((r: {id: string}) => r.id === DOTS_TASK_ID));
   assert((await turn({action: "steer", targetTaskId: task.id, text: "迟到的改向"})).error);
   holdTarget = true;
-  await success({ action: "delegate", targetTaskId: task.id, text: "继续报价" });
+  const agreement = "先整理目录，再计算用量，按升序交付";
+  const plannedWork = await turn({ action: "delegate", targetTaskId: task.id, text: "按约定准备统计", steps:["先整理目录","再计算用量"], deliveryInstruction:"按升序交付" }, undefined, 1, agreement);
+  assert(!plannedWork.error, plannedWork.text);
   await until(() => waiting, "target busy before pause");
   const paused = await success({ action: "pause", targetTaskId: task.id }, 2);
   assert(["idle", "stop_requested"].includes(paused.control));
@@ -211,6 +231,10 @@ try {
   assert(pausedFollowup.error);
   const resumed = await success({ action: "resume", targetTaskId: task.id });
   await agent.waitForSubmission(resumed.receipt);
+  const resumedInput = JSON.stringify(fixture.requests.filter(req => req.tools.includes("read")).at(-1)?.input.messages.at(-1));
+  assert.match(resumedInput, /先整理目录/);
+  assert.match(resumedInput, /再计算用量/);
+  assert.match(resumedInput, /按升序交付/);
   askQuestion = "short_text";
   const questionTurn = await success({action: "delegate", targetTaskId: task.id, text: "按客户选择的币种计算"});
   await until(() => agent.getConversationRuntimeSnapshot(task.id).interactions.some(item => item.status === "pending"), "worker asks user through native tool");
@@ -262,6 +286,47 @@ try {
   assert(timed.messages.some(m => m.role === "user" && m.text.includes("主动跟进客户报价")));
   const cancelled = await turn({action:"cancel", id:JSON.parse(schedule.text).id}, "automation_exec");
   assert(!cancelled.error, cancelled.text);
+  const scopeAPath = join(root, "timer-scope-a");
+  const scopeBPath = join(root, "timer-scope-b");
+  mkdirSync(scopeAPath);
+  mkdirSync(scopeBPath);
+  const scopeA = db.createSpace({id:"timer-scope-a",name:"甲区定时",path:scopeAPath});
+  const scopeB = db.createSpace({id:"timer-scope-b",name:"乙区定时",path:scopeBPath});
+  const timerTask = "task-owned-timer";
+  db.upsertTask({id:timerTask,title:"甲区事项",spaceId:scopeA.id,updatedAt:Date.now()});
+  const scheduleFor = async (name: string, owner: Record<string, string>): Promise<string> => {
+    const result = await turn({...scheduled,name,...owner}, "automation_exec");
+    assert(!result.error, result.text);
+    return JSON.parse(result.text).id;
+  };
+  const owned = await scheduleFor("甲区事项", {owner_task_id:timerTask});
+  const keptPaused = await scheduleFor("甲区手动暂停", {owner_task_id:timerTask});
+  const otherScopeTimer = await scheduleFor("乙区持续运行", {owner_space_id:scopeB.id});
+  await success({action:"pause",targetTaskId:timerTask});
+  assert.equal(db.getCronJob(owned)?.enabled,false);
+  assert.equal(db.getCronJob(otherScopeTimer)?.enabled,true);
+  const manualPause = await turn({action:"pause",id:keptPaused},"automation_exec");
+  assert(!manualPause.error,manualPause.text);
+  await success({action:"pause_proactive",spaceId:scopeA.id});
+  const resumedTimerTask = await success({action:"resume",targetTaskId:timerTask});
+  await agent.waitForSubmission(resumedTimerTask.receipt);
+  assert.equal(db.getCronJob(owned)?.enabled,false,"space pause survives task resume");
+  await success({action:"resume_proactive",spaceId:scopeA.id});
+  assert.equal(db.getCronJob(owned)?.enabled,true);
+  assert.equal(db.getCronJob(keptPaused)?.enabled,false,"manual pause survives task and space resume");
+  const manualResume = await turn({action:"resume",id:keptPaused},"automation_exec");
+  assert(!manualResume.error,manualResume.text);
+  assert.equal(db.getCronJob(keptPaused)?.enabled,true);
+  await success({action:"pause_all",spaceId:scopeA.id});
+  assert.equal(db.getCronJob(owned)?.enabled,false);
+  const batchResumedTimerTask = await success({action:"resume",targetTaskId:timerTask});
+  await agent.waitForSubmission(batchResumedTimerTask.receipt);
+  assert.equal(db.getCronJob(owned)?.enabled,true,"an idle task's schedule paused by the space batch follows the task resume");
+  await success({action:"stop_all",spaceId:scopeA.id},2);
+  assert(db.getCronJob(owned)?.cancelledAt);
+  assert(db.getCronJob(keptPaused)?.cancelledAt);
+  assert.equal(db.getCronJob(otherScopeTimer)?.enabled,true);
+  console.log("PASS task and space schedule controls preserve manual pauses and never cancel another space");
   assert(cron.getForTask(DOTS_TASK_ID, JSON.parse(schedule.text).id).job.cancelledAt);
   const restartedTask = await success({action:"resume", targetTaskId:task.id});
   await agent.waitForSubmission(restartedTask.receipt);
@@ -449,6 +514,88 @@ try {
   assert.match(ordinaryReadResult,/新空间独有资料/);
   assert((await turn({action:"create_space",spaceId:space.id,name:"../越界"})).error);
   console.log("PASS Dots creates a workspace folder once and delegates native work inside it");
+  const { dotsCalendarContext } = await import("../src/main/dots/DotsCalendar");
+  assert.match(dotsCalendarContext("请核算上周的数量",new Date(2026,10,22,23,55).getTime())!, /2026-11-09 至 2026-11-15/);
+  assert.match(dotsCalendarContext("sum last week",new Date(2027,0,4,0,1).getTime())!, /2026-12-28 至 2027-01-03/);
+  const sourceText = "本周对账并整理下周预约";
+  const sourceId = "separate-calendar-assignments";
+  const receivedAt = new Date(2026,11,31,23,50).getTime();
+  for (const assignmentQuote of ["本周对账","整理下周预约"]) {
+    const result = await actions.execute(DOTS_TASK_ID, sourceId, {action:"delegate",spaceId:child.id,assignmentQuote,text:assignmentQuote},sourceText,undefined,receivedAt);
+    assert("receipt" in result && result.receipt);
+    await agent.waitForSubmission(result.receipt);
+    const seen = JSON.stringify(fixture.requests.filter(req=>req.tools.includes("read")).at(-1)?.input.messages);
+    assert.match(seen,assignmentQuote==="本周对账" ? /2026-12-28 至 2027-01-03/ : /2027-01-04 至 2027-01-10/);
+  }
+  assert.equal(new Set(journal.list([sourceId]).map(row=>row.taskId)).size,2);
+  const splitSource = "mixed-assignment-anchors";
+  const splitInput = "整理船期和统计空箱";
+  const first = await actions.execute(DOTS_TASK_ID,splitSource,{action:"delegate",spaceId:child.id,text:"整理本季的航运时刻"},splitInput);
+  assert("receipt" in first && first.receipt);
+  await agent.waitForSubmission(first.receipt);
+  const nextAssignment = {action:"delegate" as const,spaceId:child.id,assignmentQuote:"统计空箱",text:"列出闲置货柜数量"};
+  await assert.rejects(actions.execute(DOTS_TASK_ID,splitSource,nextAssignment,splitInput), /previousAssignmentQuote/);
+  const second = await actions.execute(DOTS_TASK_ID,splitSource,{...nextAssignment,previousAssignmentQuote:"整理船期"},splitInput);
+  assert("receipt" in second && second.receipt);
+  await agent.waitForSubmission(second.receipt);
+  const replay = await actions.execute(DOTS_TASK_ID,splitSource,{...nextAssignment,text:"再换一种说法统计闲置箱"},splitInput);
+  assert("receipt" in replay && replay.receipt);
+  assert.notEqual(first.receipt.taskId, second.receipt.taskId);
+  assert.equal(replay.receipt.submissionId, second.receipt.submissionId);
+  const replayFirst = await actions.execute(DOTS_TASK_ID,splitSource,{...nextAssignment,assignmentQuote:"整理船期",text:"整理航次时间"},splitInput);
+  assert("receipt" in replayFirst && replayFirst.receipt?.taskId === first.receipt.taskId);
+  assert.equal(journal.list([splitSource]).length,2);
+  const finished = await actions.execute(DOTS_TASK_ID,"before-pause",{action:"delegate",spaceId:child.id,text:"collect-finished-before-pause"});
+  assert("receipt" in finished && finished.receipt);
+  await agent.waitForSubmission(finished.receipt);
+  await actions.execute(DOTS_TASK_ID,"hold-finished",{action:"pause",targetTaskId:finished.receipt.taskId});
+  const beforeResume = fixture.requests.length;
+  for (let replay = 0; replay < 2; replay++) {
+    const result = await actions.execute(DOTS_TASK_ID,"release-finished",{action:"resume",targetTaskId:finished.receipt.taskId});
+    assert("receipt" in result && result.receipt);
+    assert.equal(result.receipt.operationId, finished.receipt.operationId);
+  }
+  assert.equal(fixture.requests.length, beforeResume, "resuming a finished native turn keeps its result without a second worker call");
+  await agent.releaseDurableTask(second.receipt.taskId);
+  db.deleteTask(second.receipt.taskId);
+  await assert.rejects(actions.execute(DOTS_TASK_ID,splitSource,nextAssignment,splitInput), /原任务已删除/);
+  assert.equal(db.getTask(second.receipt.taskId), undefined);
+  await agent.updateAppSettings({dotsSettings: {modelId:"fixture/dots-front"}});
+  const pinnedTask = "ordinary-independent-model";
+  db.upsertTask({ id:pinnedTask, title:"独立已有任务", spaceId:child.id, modelId:"fixture/pinned-worker", updatedAt:Date.now() });
+  const modelStart = fixture.requests.length;
+  const modelDelegation = await success({ action:"delegate", spaceId:child.id, text:"检查独立模型路由" });
+  await agent.waitForSubmission(modelDelegation.receipt);
+  const existingModelDelegation = await success({ action:"delegate", targetTaskId:pinnedTask, text:"沿用该任务已有模型" });
+  await agent.waitForSubmission(existingModelDelegation.receipt);
+  const modeled = fixture.requests.slice(modelStart);
+  assert.deepEqual([...new Set(modeled.filter(req => req.tools.includes("dots_action")).map(req => req.modelId))], ["fixture/dots-front"]);
+  assert.deepEqual([...new Set(modeled.filter(req => req.tools.includes("read")).map(req => req.modelId))].sort(),
+    ["fixture/model","fixture/pinned-worker"]);
+  assert.equal(agent.getAppSettings().defaultModelId,"fixture/model");
+  assert.equal(db.getTask(pinnedTask)?.modelId,"fixture/pinned-worker");
+  assert.equal(db.getTask(DOTS_TASK_ID)?.modelId ?? null,null);
+
+  // Keep Dots available while the user's configured main model is outside the enabled scope.
+  await agent.updateAppSettings({defaultModelId:"fixture/unavailable",enabledModels:["fixture/model","fixture/dots-front","fixture/pinned-worker"]});
+  const before = fixture.requests.length;
+  const denied = await turn({action:"delegate",spaceId:child.id,name:"入库核算",text:"请核算数量"},undefined,1,"请核算这批入库数量");
+  assert(denied.error && denied.text.includes("fixture/unavailable"),denied.text);
+  assert(!fixture.requests.slice(before).some(req=>req.tools.includes("read")),"a disabled main model must not send any worker request");
+  await actions.execute(DOTS_TASK_ID,"dots-user-"+serial,{action:"delegate",spaceId:child.id,name:"再次核算",text:"再试一遍"});
+  assert.equal(journal.list(["dots-user-"+serial]).length,1);
+  await agent.updateAppSettings({defaultModelId:"fixture/model",dotsSettings:{modelId:"fixture/unavailable"}});
+  const beforeInvalid = fixture.requests.length;
+  await assert.rejects(agent.prompt({taskId:DOTS_TASK_ID,userMessageId:"invalid-dots-model",
+    assistantMessageId:"invalid-dots-reply",text:"检查模型",modelId:"fixture/model"}), /Dots 模型 fixture\/unavailable 不可用/);
+  assert.equal(fixture.requests.length,beforeInvalid);
+  await agent.updateAppSettings({dotsSettings:{modelId:null}});
+  const beforeFollow = fixture.requests.length;
+  await success({action:"spaces"});
+  assert.deepEqual([...new Set(fixture.requests.slice(beforeFollow).filter(req=>req.tools.includes("dots_action")).map(req=>req.modelId))],["fixture/model"]);
+  assert.equal(agent.getAppSettings().dotsSettings?.modelId,null);
+  console.log("PASS Dots 专属模型与主模型、已有任务模型隔离，失效明确报错，取消选择恢复跟随主模型");
+  console.log("PASS disabled main model reported with zero worker requests, paraphrase replay and separate dated assignments");
   console.log("PASS proactive pause, scoped batch and unrelated active task isolation, preserved subscriptions, global stop of Dots timers only, explicit existing Goal");
   console.log("PASS file follow-up: native filesystem event and native target receipt, one-time dispatch, cancellation, stale user intent, offline catch-up");
   console.log("PASS Dots: native foreground tools, board, bound files, delegation and replay, accepted steer, persistent pause/stop, resume, exact blocked-question answer, prior result search and isolated scheduling");

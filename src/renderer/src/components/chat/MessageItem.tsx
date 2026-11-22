@@ -760,7 +760,8 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
         </div>
 
         {dotsReply ? (
-          message.generationStats?.outcome === "error" ? <div role="alert">执行失败{dotsFailure && <p className="chat-execution-failure">{dotsFailure}</p>}</div>
+          message.streaming && !message.dotsDelivery ? <div className="dots-activity"><ExecutionTimeline message={message} taskId={taskId} focusTool={focusTool} compact /></div>
+            : message.generationStats?.outcome === "error" ? <div role="alert">执行失败{dotsFailure && <p className="chat-execution-failure">{dotsFailure}</p>}</div>
             : message.generationStats?.outcome === "aborted" ? <div>已停止</div> : null
         ) : gatewayStatus ? <div className="assistant-source-badge">{gatewayStatus}</div> : <ExecutionTimeline message={message} taskId={taskId} focusTool={focusTool} />}
 

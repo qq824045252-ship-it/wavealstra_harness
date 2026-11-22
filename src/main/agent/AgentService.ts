@@ -1,9 +1,11 @@
-import { DOTS_TASK_ID } from "../../shared/dots";
+import { DOTS_TASK_ID, isDotsAutomaticInput } from "../../shared/dots";
+import { dotsOperationEnabled, resolveDotsPreferences } from "../../shared/dots-settings";
 import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
 import { registerLocalWorkflowTools } from "../capabilities/local-workflow-extension";
 import type { DotsActions } from "../dots/DotsActions";
-import { DOTS_ACTION, DOTS_MEMORY_TOOLS, dotsExtension, dotsInstructions } from "../dots/DotsExtension";
+import { DOTS_ACTION, DOTS_MEMORY_READ_TOOLS, DOTS_MEMORY_TOOLS, dotsExtension, dotsInstructions } from "../dots/DotsExtension";
+import { dotsCalendarContext } from "../dots/DotsCalendar";
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
 import { isGatewayConversation } from "../gateway/GatewayConversation";
 import { assignedGatewayConversation } from "../gateway/GatewayConversationSession";
@@ -72,7 +74,7 @@ import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import { app, BrowserWindow } from "electron";
-import { existsSync, readFileSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -109,6 +111,7 @@ import { pickDefaultModelAfterLogin } from "../../shared/provider-login";
 import {
   assertPathInsideTask,
   canonicalizeExternalGrantPath,
+  isPathInsideOrEqual,
   MANIFEST_FILENAME,
   MANIFEST_TMP_SUFFIX,
   normalizePathForComparison,
@@ -161,7 +164,7 @@ import { PendingActionRegistry } from "./PendingActionRegistry";
 import type { PromptRunState } from "./PromptRunRegistry";
 import { PromptExecutionCoordinator } from "./PromptExecutionCoordinator";
 import { PromptSubmissionCoordinator } from "./PromptSubmissionCoordinator";
-import { AnswerRoutingService, answerTeachingSchema } from "./AnswerRoutingService";
+import { AnswerRoutingService, answerTeachingSchema, type AnswerEvidenceScope } from "./AnswerRoutingService";
 import { NativeHookStore, durableSandboxAssets } from "./hooks/NativeHookStore";
 import { NativeImprovementService } from "./hooks/NativeImprovementService";
 import { ImprovementKnowledge } from "./hooks/ImprovementKnowledge";
@@ -567,7 +570,7 @@ export class AgentService {
   setDotsActions(actions: DotsActions): void { this.dotsActions = actions; }
 
   dotsMemoryReferenceCurrent(taskId: string, id: string, revision: number): boolean {
-    if (!this.settingsStore.read().memoryEnabled) return false;
+    if (this.dotsMemoryMode() === "off") return false;
     return Boolean(this.memoryService.currentDelegationSource(taskId, id, revision));
   }
 
@@ -581,15 +584,35 @@ export class AgentService {
     return this.durableBots.stopObservedRun(taskId, inputVersion);
   }
 
-  dotsScheduleIds(enabledOnly = false) {
-    return this.localWorkflow?.cron.listForTask(DOTS_TASK_ID).filter(job => !job.cancelledAt && (!enabledOnly || job.enabled) &&
-      (job.maxRuns === undefined || (job.runCount ?? 0) < job.maxRuns)).map(job => job.id) ?? [];
+  dotsScheduleIds(enabledOnly = false, scope?: { taskId?: string; spaceId?: string }) {
+    const cron = this.localWorkflow?.cron;
+    if (!cron) return [];
+    const running = new Set(this.db.listRunningCronRuns().map(run => run.jobId));
+    return cron.listForTask(DOTS_TASK_ID).filter(job => !job.cancelledAt && (!enabledOnly || job.enabled) &&
+      (job.maxRuns === undefined || (job.runCount ?? 0) < job.maxRuns || running.has(job.id)) &&
+      (!scope || cron.inDotsScope(job.id, scope))).map(job => job.id);
+  }
+
+  dotsScheduleOwnerTask(id: string) {
+    return this.localWorkflow?.cron.dotsScheduleOwnerTask(id);
   }
 
   controlDotsSchedule(id: string, action: "pause" | "stop" | "resume") {
     if (!this.localWorkflow) throw new Error("定时调度尚未就绪");
     this.localWorkflow.cron.changeForTask(DOTS_TASK_ID, id, action === "stop" ? "cancel" : action);
     return this.localWorkflow.cron.getForTask(DOTS_TASK_ID, id).status;
+  }
+
+  holdDotsSchedule(id: string, holder: string, pause: boolean) {
+    if (!this.localWorkflow) throw new Error("定时调度尚未就绪");
+    return this.localWorkflow.cron.holdDotsSchedule(id, holder, pause);
+  }
+
+  assertDotsScheduleInput(source: string) {
+    if (source.startsWith("cron-") && isDotsAutomaticInput(source)) {
+      if (!this.localWorkflow) throw new Error("定时调度尚未就绪");
+      this.localWorkflow.cron.assertDotsInputCurrent(source);
+    }
   }
 
   isDotsOrdinaryTask(taskId: string): boolean { return !this.workService.repo.bindingForTask(taskId); }
@@ -694,6 +717,40 @@ export class AgentService {
 
   private memoryWriteQueue: Promise<void> = Promise.resolve();
   private memorySourceEpoch = 0;
+  private dotsMemoryEpoch = 0;
+
+  private dotsMemoryMode(settings: Pick<AppSettingsDto, "memoryEnabled" | "dotsSettings"> = this.settingsStore.read()) {
+    return settings.memoryEnabled ? resolveDotsPreferences(settings.dotsSettings).memoryMode : "off";
+  }
+
+  private memoryCaptureEnabled(taskId: string): boolean {
+    return taskId === DOTS_TASK_ID ? this.dotsMemoryMode() === "readWrite" : this.settingsStore.read().memoryEnabled;
+  }
+
+  dotsAnswerEvidenceAllowed(evidence: AnswerEvidenceScope): boolean {
+    const { spaceIds } = resolveDotsPreferences(this.settingsStore.read().dotsSettings);
+    if (spaceIds === null) return true;
+    if (!spaceIds.length) return false;
+    if (evidence.kind === "library") {
+      const librarySpace = this.libraryWorkspaceContext.library().getSpace(evidence.item.spaceId);
+      const workspaceId = librarySpace?.workspaceId
+        ?? (evidence.item.sourceTaskId ? this.db.getTask(evidence.item.sourceTaskId)?.spaceId : undefined);
+      return Boolean(workspaceId && spaceIds.includes(workspaceId) && !this.db.isSpaceEffectiveArchived(workspaceId));
+    }
+    let target: string;
+    try { target = realpathSync(evidence.path); } catch { return false; }
+    const owners = this.db.listSpaces().flatMap(space => {
+      if (!space.path?.trim()) return [];
+      try {
+        const path = this.db.resolveWorkspaceExecutionPath(space.id, { requireExisting: true });
+        if (!path) return [];
+        const root = realpathSync(path);
+        return isPathInsideOrEqual(root, target) ? [{ allowed: !space.effectiveArchived && spaceIds.includes(space.id), depth: root.length }] : [];
+      } catch { return []; }
+    });
+    const deepest = Math.max(...owners.map(owner => owner.depth));
+    return owners.length > 0 && owners.filter(owner => owner.depth === deepest).every(owner => owner.allowed);
+  }
   private memoryCognitionQueue: Promise<void> = Promise.resolve();
   private memoryDisposed = false;
   private readonly pendingMemoryTurns = new Map<string, {
@@ -731,15 +788,18 @@ export class AgentService {
     this.nativeImprovement = new NativeImprovementService(db, this.nativeHooks, join(getMyBuddyDir(), "native-improvement.sqlite"), Date.now, {
       scope: taskId => {
         const settings = this.settingsStore.read(), task = this.db.getTask(taskId);
-        if (!settings.memoryEnabled || !task || !this.modelRuntime || this.memoryDisposed) return;
+        if (!settings.memoryEnabled || taskId === DOTS_TASK_ID && this.dotsMemoryMode(settings) !== "readWrite"
+          || !task || !this.modelRuntime || this.memoryDisposed) return;
         const bot = botMemorySource(this.db,taskId);
         if (bot && !this.workHostAuthority.isAuthority()) return;
-        const model = (bot && this.botSettings.get(bot.bot_id).modelId) || task.modelId || settings.defaultModelId;
+        const model = taskId === DOTS_TASK_ID ? this.configuredDotsModelId()
+          : (bot && this.botSettings.get(bot.bot_id).modelId) || task.modelId || settings.defaultModelId;
         return model ? JSON.stringify([taskId,task.projectId,task.spaceId,bot,model,this.memorySourceEpoch]) : undefined;
       },
       complete: async (taskId, input, signal) => {
         const bot = botMemorySource(this.db,taskId);
-        const id = (bot && this.botSettings.get(bot.bot_id).modelId) || this.db.getTask(taskId)?.modelId || this.settingsStore.read().defaultModelId;
+        const id = taskId === DOTS_TASK_ID ? this.configuredDotsModelId()
+          : (bot && this.botSettings.get(bot.bot_id).modelId) || this.db.getTask(taskId)?.modelId || this.settingsStore.read().defaultModelId;
         const model = id && await this.resolveEnabledModel(id);
         if (!model || !this.modelRuntime) throw new Error("来源会话的模型尚未启用");
         const settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
@@ -795,8 +855,9 @@ export class AgentService {
     this.answerRouting = new AnswerRoutingService(
       db,
       (id, taskId = DOTS_TASK_ID) => this.memoryService.getForRecall(id, { taskId }),
-      () => this.settingsStore.read().memoryEnabled,
+      () => this.dotsMemoryMode() !== "off",
       () => this.libraryWorkspaceContext.library(),
+      (taskId, evidence) => taskId !== DOTS_TASK_ID || this.dotsAnswerEvidenceAllowed(evidence),
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection);
@@ -865,6 +926,7 @@ export class AgentService {
       },
       inspect: taskId => this.durableBots?.inspect(taskId) ?? Promise.resolve(undefined),
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
+      canAdvance: (taskId, goalId) => this.dotsActions?.canAdvanceGoal(taskId, goalId) ?? true,
       enabled: () => this.settingsStore.read().conversationGoalContinuationEnabled !== false
         && process.env.MYBUDDY_DISABLE_GOAL_CONTINUATION !== "1",
       maxAttempts: () => {
@@ -1405,7 +1467,9 @@ export class AgentService {
       },
       readHints: this.nativeImprovement.readHints,
       answerRouting: this.answerRouting,
-      canReadAnswerEvidence: taskId => taskId === DOTS_TASK_ID && Boolean(this.db.getTask(taskId))
+      dotsAnswerRoutingEnabled: () => this.settingsStore.read().dotsSettings?.answerRouting !== false,
+      canReadAnswerEvidence: (taskId, resource) => taskId === DOTS_TASK_ID && Boolean(this.db.getTask(taskId))
+        && dotsOperationEnabled(this.settingsStore.read().dotsSettings, resource === "library_read" ? "read_material" : "read_file")
         && !this.db.isTaskEffectiveArchived(taskId) && this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed",
       expertBindings: this.expertBindings,
       db: this.db, codeReview: this.codeReview, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
@@ -1420,7 +1484,16 @@ export class AgentService {
         return this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })
           ?? this.taskWorkspace.ensureTaskExecutionWorkspace(id);
       },
-      defaultModel: () => this.settingsStore.read().defaultModelId,
+      defaultModel: () => this.readSettingsDefaultModelId(),
+      dotsModel: async () => {
+        const id = this.configuredDotsModelId();
+        if (!id) throw new Error("Dots 正在跟随主模型，请先在模型设置中选择主模型，或为 Dots 单独选择模型。");
+        const model = await this.resolveEnabledModel(id);
+        if (!model || !(await this.durableModels!.getAvailable()).some(candidate =>
+          candidate.provider === model.provider && candidate.id === model.id))
+          throw new Error(`Dots 模型 ${id} 不可用。请在「设置 → Dots」更改模型，或在模型设置中启用该模型。`);
+        return { provider: model.provider, modelId: model.id };
+      },
       // 产品阈值是同步 getter：Durable 每次使用重新读取，运行中改设置即时生效。
       // 只读设置文件、不缓存副本，避免与设置页显示的阈值口径漂移。
       productCompaction: () => this.productCompactionSettings(),
@@ -1431,6 +1504,10 @@ export class AgentService {
       prepareTask: (request, mark) => this.prepareDurableTask(request, mark),
       beforeSubmit: request => {
         this.dotsActions?.assertAdmission(request);
+        if (request.taskId === DOTS_TASK_ID) this.assertDotsScheduleInput(request.userMessageId);
+        const goalId = /^goal-continuation:(.+):\d+:\d+$/.exec(request.userMessageId)?.[1];
+        if (goalId && this.dotsActions?.canAdvanceGoal(request.taskId, goalId) === false)
+          throw new Error("Dots 设置当前暂停主动推进这项目标");
         if (isGatewayBotTaskId(request.taskId) || this.workService.repo.bindingForTask(request.taskId))
           throw new Error("独立 Bot 模式已移除，历史 Bot 执行仅供查看。");
         const blocked = this.workService.checkTaskInput(request.taskId, request.userMessageId);
@@ -1505,7 +1582,7 @@ export class AgentService {
         onAutomaticRecall: receipt => {
           this.latestAutomaticRecall = { ...receipt, at: Date.now(), taskId: task.id };
         },
-        enabled: () => this.settingsStore.read().memoryEnabled,
+        enabled: () => task.id === DOTS_TASK_ID ? this.dotsMemoryMode() !== "off" : this.settingsStore.read().memoryEnabled,
         supplementalEvidence: () => [...this.libraryWorkspaceContext.projectionSources(task.id),
           ...new WorkCollaborationContext(this.workService).sources(task.id)],
         validateEvidenceAccess: access => access.kind === "work-collaboration"
@@ -1514,7 +1591,7 @@ export class AgentService {
         scope: () => resolveTaskMemoryScope(task.id, this.db.getTask(task.id)),
       }),
       onTurns: (taskId, turns) => {
-        if (this.memoryDisposed || !this.settingsStore.read().memoryEnabled) return;
+        if (this.memoryDisposed || !this.memoryCaptureEnabled(taskId)) return;
         let extract = false;
         for (const turn of turns) extract = this.memoryPipeline.capture(turn).shouldExtractL1 || extract;
         if (!extract) return;
@@ -1525,6 +1602,10 @@ export class AgentService {
       auditInput: request => this.durableInputAudit(request),
       prepareInput: request => {
         let text = request.text;
+        if (request.taskId === DOTS_TASK_ID) {
+          const calendar = dotsCalendarContext(request.displayText ?? text, Date.now());
+          if (calendar) text += "\n\n" + calendar;
+        }
         const command = /^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
         if (command) {
           const skill = this.durableInputAudit(request).skills.find(item => item.id === command[1] || item.name === command[1]);
@@ -1592,7 +1673,7 @@ export class AgentService {
     await this.durableBots.resumePersisted();
     if (this.settingsStore.read().memoryEnabled) {
       this.memoryService.cognition.queueDotsViews();
-      if (this.memoryPipeline.turns.listPending(DOTS_TASK_ID, 1).length) {
+      if (this.memoryCaptureEnabled(DOTS_TASK_ID) && this.memoryPipeline.turns.listPending(DOTS_TASK_ID, 1).length) {
         void this.queuePendingMemoryExtraction([DOTS_TASK_ID]).catch(error => console.warn("[Dots] Memory recovery failed", error));
       }
     }
@@ -1624,7 +1705,12 @@ export class AgentService {
   }
 
   private botInstructions(task: TaskDto): string {
-    if (task.id === DOTS_TASK_ID) return `${dotsInstructions}\n\n${CHAT_REPLY_INSTRUCTIONS}`;
+    if (task.id === DOTS_TASK_ID) {
+      const mode = this.dotsMemoryMode();
+      const memoryInstruction = mode === "off" ? "本轮 Dots 长期记忆已关闭。按当前对话和可用工具回答。"
+        : mode === "readOnly" ? "本轮 Dots 长期记忆为只读，可以查看已有记忆。" : undefined;
+      return [dotsInstructions, memoryInstruction, CHAT_REPLY_INSTRUCTIONS].filter(Boolean).join("\n\n");
+    }
     const assembly = this.durableAssembly(task);
     const identity = this.expertBindings.active(task.id);
     const connectors = this.expertConnectorIds(task.id);
@@ -1666,6 +1752,7 @@ export class AgentService {
     if (!task) throw new Error("任务不存在");
     if (task.id === DOTS_TASK_ID) return {
       userMessageId: request.userMessageId, assistantMessageId: request.assistantMessageId,
+      ...(this.memoryCaptureEnabled(task.id) ? {} : { skipMemoryCapture: true }),
       cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills: [],
       recommendation: { query: request.text, mode: "general", context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] },
     };
@@ -1733,13 +1820,20 @@ export class AgentService {
     if (task.id === DOTS_TASK_ID) {
       if (!this.dotsActions) throw new Error("Dots 操作服务尚未初始化");
       const workflow = this.localWorkflow;
-      return durableDomainTools([dotsExtension(this.dotsActions), createAnswerRuleExtension(task.id, this.answerRouting),
+      return durableDomainTools([dotsExtension(this.dotsActions, () => this.settingsStore.read().dotsSettings), createAnswerRuleExtension(task.id, this.answerRouting),
         ...(workflow ? [(pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => registerLocalWorkflowTools(pi, {
           taskId: task.id, taskRoot: cwd, services: workflow, terminalEnabled: false,
           currentTaskOnly: true, sourceOperation: () => currentDurableInvocation()?.sourceUserMessageId,
           sourceOrigin: () => currentDurableInvocation()?.sourceOrigin,
+          scheduleScope: (source, taskId, spaceId) => this.dotsActions?.scheduleScope(source, taskId, spaceId),
+          canChangeSchedules: action => dotsOperationEnabled(this.settingsStore.read().dotsSettings, "schedule." + action),
         })] : []),
-        ...(this.settingsStore.read().memoryEnabled ? [createMemoryExtension({ taskId: task.id, service: this.memoryService,
+        ...(this.dotsMemoryMode() !== "off" ? [createMemoryExtension({ taskId: task.id, service: this.memoryService,
+          canRead: name => {
+            const settings = this.settingsStore.read();
+            return this.dotsMemoryMode(settings) !== "off" && dotsOperationEnabled(settings.dotsSettings, name);
+          },
+          canWrite: () => this.dotsMemoryMode() === "readWrite",
           sourceInput: () => currentDurableInvocation()?.memorySource })] : []),
       ], { cwd, models: this.durableModels!, taskId: task.id });
     }
@@ -1871,7 +1965,16 @@ export class AgentService {
   }
 
   private durableToolAllowed(task: TaskDto, name: string): boolean {
-    if (task.id === DOTS_TASK_ID) return [DOTS_ACTION, "automation_exec", "answer_rule_list", "answer_rule_save", "answer_rule_test"].includes(name) || (this.settingsStore.read().memoryEnabled && DOTS_MEMORY_TOOLS.has(name));
+    if (task.id === DOTS_TASK_ID) {
+      if (name === DOTS_ACTION || name === "automation_exec") return true;
+      const settings = this.settingsStore.read();
+      if (!dotsOperationEnabled(settings.dotsSettings, name)) return false;
+      if (["answer_rule_list", "answer_rule_save", "answer_rule_test"].includes(name)) {
+        return true;
+      }
+      const memoryMode = this.dotsMemoryMode(settings);
+      return memoryMode === "readWrite" ? DOTS_MEMORY_TOOLS.has(name) : memoryMode === "readOnly" && DOTS_MEMORY_READ_TOOLS.has(name);
+    }
     if (name === DOTS_ACTION) return false;
     if (task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId) &&
         ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
@@ -1913,6 +2016,14 @@ export class AgentService {
     const task = this.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);
+    let modelId = task.id === DOTS_TASK_ID ? this.configuredDotsModelId() : request.modelId;
+    if (task.id !== DOTS_TASK_ID && !modelId && !task.modelId) {
+      modelId = this.readSettingsDefaultModelId();
+      if (!modelId) throw new Error("未设置主对话默认模型，请在「设置 → 模型」中选择后继续原任务。");
+      const workspaceSettings = createAgentSettingsManager(cwd, getMyBuddyDir());
+      if (!await this.resolveEnabledModel(modelId, workspaceSettings))
+        throw new Error(`主对话默认模型 ${modelId} 在这个工作空间不可用，请在「设置 → 模型」中启用或更改后继续原任务。`);
+    }
     const profile = this.modeProfiles.getProfile(welcomeMode);
     const requestedPreset = request.modePresetId !== undefined ? request.modePresetId : task.modePresetId;
     const preset = resolveModePreset(profile.policy, requestedPreset);
@@ -1943,7 +2054,7 @@ export class AgentService {
     const connectorIds = resolved.connectorDecisions.filter(item => item.enabled).map(item => item.id);
     this.settingsStore.setTaskConnectorIds(request.taskId, connectorIds);
     this.durableAssemblies.delete(request.taskId);
-    return { ...request, cwd, welcomeMode, permissionMode,
+    return { ...request, modelId, cwd, welcomeMode, permissionMode,
       expertId: resolved.expertDecision?.enabled === false ? undefined : request.expertId,
       connectorIds };
   }
@@ -3665,11 +3776,11 @@ export class AgentService {
   getAppSettings(): AppSettingsDto {
     const app = this.settingsStore.read();
     const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
-    const defaultProvider = piSettings.getDefaultProvider();
-    const defaultModel = piSettings.getDefaultModel();
     return {
       ...app,
-      defaultModelId: defaultProvider && defaultModel ? `${defaultProvider}/${defaultModel}` : "",
+      dotsSettingsRuntime: true,
+      dotsSettings: resolveDotsPreferences(app.dotsSettings),
+      defaultModelId: this.readSettingsDefaultModelId(piSettings) ?? "",
       enabledModels: piSettings.getEnabledModels(),
       modelPreferences: Object.fromEntries(Object.entries(piSettings.getAllModelThinkingLevels())
         .map(([modelId, effort]) => [modelId, { reasoning: { effort } }])),
@@ -3678,7 +3789,7 @@ export class AgentService {
 
   async updateAppSettings(partial: Partial<AppSettingsDto>): Promise<AppSettingsDto> {
     const previous = this.getAppSettings();
-    const { enabledModels, defaultModelId, modelPreferences, ...productPartial } = partial;
+    const { enabledModels, defaultModelId, modelPreferences, dotsSettingsRuntime: _runtime, ...productPartial } = partial;
     const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
 
     if (modelPreferences !== undefined) {
@@ -3718,7 +3829,22 @@ export class AgentService {
     const errors = piSettings.drainErrors();
     if (errors.length > 0) throw errors[0]!.error;
 
+    const previousDotsMemory = this.dotsMemoryMode();
     const nextApp = this.settingsStore.write(productPartial);
+    const beforePolicy = resolveDotsPreferences(previous.dotsSettings);
+    const afterPolicy = resolveDotsPreferences(nextApp.dotsSettings);
+    if (beforePolicy.followupMode !== afterPolicy.followupMode || JSON.stringify(beforePolicy.spaceIds) !== JSON.stringify(afterPolicy.spaceIds)) {
+      this.localWorkflow?.cron.refreshDotsPolicy();
+      this.dotsActions?.preferencesChanged();
+      this.goalContinuations.refreshPolicy();
+    }
+    const nextDotsMemory = this.dotsMemoryMode(nextApp);
+    if (previousDotsMemory !== nextDotsMemory) {
+      this.dotsMemoryEpoch += 1;
+      if (nextDotsMemory === "readWrite" && this.memoryPipeline.turns.listPending(DOTS_TASK_ID, 1).length) {
+        void this.queuePendingMemoryExtraction([DOTS_TASK_ID]).catch(error => console.warn("[Dots] Memory recovery failed", error));
+      }
+    }
     const next = this.getAppSettings();
     if (previous.compactionTriggerRatio !== nextApp.compactionTriggerRatio ||
         previous.compactionTriggerTokens !== nextApp.compactionTriggerTokens ||
@@ -4006,10 +4132,15 @@ export class AgentService {
     }
   }
 
-  /** 读 settings.json 的 defaultModelId（跟随全局时以该模型作为 Subagent 目标模型）。 */
-  private readSettingsDefaultModelId(): string | undefined {
-    const value = this.settingsStore.read().defaultModelId;
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  private configuredDotsModelId(): string | undefined {
+    return resolveDotsPreferences(this.settingsStore.read().dotsSettings).modelId ?? this.readSettingsDefaultModelId();
+  }
+
+  /** The model settings page writes Pi's provider and model as a pair. */
+  private readSettingsDefaultModelId(settings = createAgentSettingsManager(process.cwd(), getMyBuddyDir())): string | undefined {
+    const provider = settings.getDefaultProvider();
+    const model = settings.getDefaultModel();
+    return provider && model ? `${provider}/${model}` : undefined;
   }
 
   private deriveSubagentCliThinking(
@@ -4236,11 +4367,14 @@ export class AgentService {
     const run = this.memoryWriteQueue.then(async () => {
       const summary = { processedTurns: 0, failedTurns: 0, skippedTasks: 0, interrupted: false };
       for (const taskId of new Set(taskIds)) {
+        const dotsEpoch = this.dotsMemoryEpoch;
+        const canCapture = () => taskId !== DOTS_TASK_ID || dotsEpoch === this.dotsMemoryEpoch && this.memoryCaptureEnabled(taskId);
         while (true) {
           if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch || !this.settingsStore.read().memoryEnabled || !this.modelRuntime) {
             summary.interrupted = true;
             return summary;
           }
+          if (!canCapture()) { summary.skippedTasks++; break; }
           if (!this.memoryPipeline.turns.canExtractTask(taskId)) { summary.skippedTasks++; break; }
           const pendingTurns = this.memoryPipeline.turns.listPending(taskId, 8, capturedThrough);
           if (pendingTurns.length === 0) break;
@@ -4250,7 +4384,7 @@ export class AgentService {
           const task = this.db.getTask(taskId);
           const sourceIdentity = JSON.stringify(botSource ?? null);
           const canContinue = (): boolean => {
-            if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch || !this.settingsStore.read().memoryEnabled) return false;
+            if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch || !this.settingsStore.read().memoryEnabled || !canCapture()) return false;
             const current = this.db.getTask(taskId);
             return this.memoryPipeline.turns.canExtractTask(taskId)
               && current?.projectId === task?.projectId && current?.spaceId === task?.spaceId && sourcesExist()
@@ -4264,11 +4398,13 @@ export class AgentService {
             const provider = settings.getDefaultProvider();
             const id = settings.getDefaultModel();
             const defaultModelId = provider && id ? `${provider}/${id}` : this.settingsStore.read().defaultModelId;
-            const modelId = (botSource ? this.botSettings.get(botSource.bot_id).modelId : task?.modelId) || defaultModelId;
+            const modelId = taskId === DOTS_TASK_ID ? this.configuredDotsModelId()
+              : (botSource ? this.botSettings.get(botSource.bot_id).modelId : task?.modelId) || defaultModelId;
             // Historical chats can reference a retired model. Background extraction
             // may use the current enabled default without changing that chat's model.
             const model = capturedModel ?? (modelId ? await this.resolveEnabledModel(modelId, settings) : undefined)
-              ?? (defaultModelId && defaultModelId !== modelId ? await this.resolveEnabledModel(defaultModelId, settings) : undefined);
+              ?? (taskId !== DOTS_TASK_ID && defaultModelId && defaultModelId !== modelId
+                ? await this.resolveEnabledModel(defaultModelId, settings) : undefined);
             if (!model) throw new Error("当前任务没有已启用的记忆提取模型");
             const result = await withModelInvocationSettings(settings, () => this.memoryService.extractAndStore({
               taskId, spaceId: task?.spaceId ?? undefined, projectBound: Boolean(task?.projectId),
@@ -4276,6 +4412,7 @@ export class AgentService {
               sourceTurns: pendingTurns, modelRuntime: this.modelRuntime!, model, isEnabled: canContinue,
             }));
             if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch) { summary.interrupted = true; return summary; }
+            if (!canCapture()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); summary.skippedTasks++; break; }
             if (!sourcesExist()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); continue; }
             if (!canContinue()) throw new Error("记忆开关或任务归属已改变，提炼已停止");
             this.memoryPipeline.completeL1(taskId, pendingTurns);
@@ -4284,6 +4421,7 @@ export class AgentService {
             if (result.spaceChanged && task?.spaceId) this.notifyMemoryChanged({ scope: "space", spaceId: task.spaceId });
           } catch (error) {
             if (this.memoryDisposed || sourceEpoch !== this.memorySourceEpoch) { summary.interrupted = true; return summary; }
+            if (!canCapture()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); summary.skippedTasks++; break; }
             if (!sourcesExist()) { this.memoryPipeline.turns.requeueProcessing(sourceIds); continue; }
             if (!this.memoryDisposed) this.memoryPipeline.failL1(pendingTurns, error);
             summary.failedTurns += pendingTurns.length;
@@ -5344,7 +5482,7 @@ export class AgentService {
     procedureExecution?: import("../../shared/memory-kernel").MemoryProcedureExecutionDto;
     model: NonNullable<AgentSession["model"]>;
   }): void {
-    if (this.memoryDisposed || !this.settingsStore.read().memoryEnabled) return;
+    if (this.memoryDisposed || !this.memoryCaptureEnabled(input.taskId)) return;
     const task = this.db.getTask(input.taskId);
     let decision: ReturnType<MemoryPipelineManager["capture"]>;
     try {

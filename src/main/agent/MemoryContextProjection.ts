@@ -1,4 +1,4 @@
-import { dotsScopeCondition } from "../memory/DotsRevisionSource";
+import { dotsRecordApplicability } from "../memory/DotsRevisionSource";
 import { dotsEvidenceRange, dotsPreferenceQuote, dotsQueryTerms, type DotsUserQuote, type EvidenceRange } from "./DotsMemoryEvidence";
 import { isGatewayConversation } from "../../shared/gateway-task";
 import { DOTS_TASK_ID } from "../../shared/dots";
@@ -96,7 +96,7 @@ export function projectMemoryContext(
   if (!budget) return result;
   const isDots = input.taskId === DOTS_TASK_ID;
   const header = isDots
-    ? "历史记忆证据：L1 是事实来源，L2/L3 是仍有依据的派生视图；本轮明确指令优先。"
+    ? "历史记忆证据：L1 是事实来源，L2/L3 是仍有依据的派生视图；本轮明确指令优先。明确提及项目或工作空间时，先应用该范围的例外，再采用其他默认偏好。"
     : "历史记忆证据：L1 是事实来源，L2/L3 是经审批且仍有依据的派生视图；本轮明确指令优先。";
   const optionalDotsViews: MemoryEvidenceBlock[] = [];
   const lines: string[] = [];
@@ -121,7 +121,9 @@ export function projectMemoryContext(
   const allowedScopes = new Set(chain.map(scope => `${scope.scopeType}:${scope.scopeId ?? ""}`));
   const now = Date.now();
   const visibility = new Map<string, boolean>();
+  const overriddenDefaults = new Set<string>();
   const visible = (id: string): boolean => {
+    if (overriddenDefaults.has(id)) return false;
     const previous = visibility.get(id);
     if (previous !== undefined) return previous;
     const atom = memory.get(id);
@@ -139,6 +141,19 @@ export function projectMemoryContext(
       statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT + 1 }).filter(hit => visible(hit.memory.id)
         && PREFERENCE_KINDS.includes(hit.memory.kind)) : [] : undefined;
   const preferenceIds = new Set(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT).map(hit => hit.memory.id));
+  const finishSearch = recalled ? undefined : startAnswerRoutingTiming("memorySearch");
+  const queryHits = recalled ? recalled.flatMap(hit => {
+    const current = memory.get(hit.memory.id);
+    return current?.contentHash === hit.memory.contentHash
+      ? [{ ...hit, memory: { ...hit.memory, metadata: current.metadata } }] : [];
+  }) : memory.search(memoryProjectionQuery(input));
+  finishSearch?.(() => ({ method: "lexical", outcome: "completed",
+    resultCount: queryHits.length, returnedMemoryIds: queryHits.map(hit => hit.memory.id) }));
+  const exceptionHits = isDots ? queryHits.filter(hit => memory.dotsExceptionApplies(hit.memory, input) && visible(hit.memory.id)) : [];
+  for (const { memory: exception } of exceptionHits) {
+    const defaultId = exception.metadata.dotsOverrides;
+    if (typeof defaultId === "string" && defaultId !== exception.id) overriddenDefaults.add(defaultId);
+  }
   const scenarios = sources.scenarios.filter((scenario) => allowedScopes.has(`${scenario.scopeType}:${scenario.scopeId ?? ""}`)
     && scenario.sourceMemoryIds.length > 0 && scenario.sourceMemoryIds.every(visible));
   const byScenario = new Map(scenarios.map((scenario) => [scenario.id, scenario]));
@@ -176,14 +191,7 @@ export function projectMemoryContext(
       atomIds.forEach((id) => coveredAtoms.add(id));
     }
   }
-  const finishSearch = recalled ? undefined : startAnswerRoutingTiming("memorySearch");
-  const queryHits = recalled ? recalled.flatMap(hit => {
-    const current = memory.get(hit.memory.id);
-    return current?.contentHash === hit.memory.contentHash ? [hit] : [];
-  }) : memory.search(memoryProjectionQuery(input));
-  finishSearch?.(() => ({ method: "lexical", outcome: "completed",
-    resultCount: queryHits.length, returnedMemoryIds: queryHits.map(hit => hit.memory.id) }));
-  const queried = queryHits.filter((hit) => visible(hit.memory.id));
+  const queried = queryHits.filter(hit => visible(hit.memory.id) && (!isDots || !dotsRecordApplicability(hit.memory)));
   // Shared project cognition is a baseline for every bound task, not only for lexically similar prompts.
   const queriedIds = new Set(queried.map((hit) => hit.memory.id));
   const projectBaseline = input.query?.trim() && (input.projectId || input.taskId)
@@ -203,11 +211,11 @@ export function projectMemoryContext(
   const sharedBaseline = input.query?.trim() && allowedBaselineKinds.length
     ? memory.search({ ...input, query: undefined, scopeTypes: input.taskId === DOTS_TASK_ID || input.taskId && isGatewayConversation(input.taskId) ? ["task", "team", "global"] : ["team", "global"], kinds: allowedBaselineKinds,
       statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id)
-        && (!isDots || !dotsScopeCondition(hit.memory.content))) : [];
+        && (!isDots || !dotsRecordApplicability(hit.memory))) : [];
   const episodeBaseline = input.query?.trim()
     ? memory.search({ ...input, query: undefined, scopeTypes: ["conversation", "work"],
       statuses: ["active"], limit: 6 }).filter(hit => visible(hit.memory.id)) : [];
-  const hits = [...(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT) ?? []), ...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
+  const hits = [...exceptionHits, ...(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT) ?? []), ...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
   const relevantIds = queriedIds;
   for (const scenario of scenarios) {
     if (coveredScenarios.has(scenario.id)) continue;

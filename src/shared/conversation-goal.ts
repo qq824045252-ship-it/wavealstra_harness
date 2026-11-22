@@ -41,6 +41,13 @@ export interface ConversationGoalContinuationDto {
   tokenBudget?: number | null;
   deferReason?: GoalContinuationDeferReason;
   lastContinuationAt?: number;
+  enabled?: boolean;
+  taskId?: string;
+  lastCheck?: { trigger: "settled" | "resumed" | "continued"; reason: string; at: number };
+  lastWake?: { trigger: NonNullable<ConversationGoalContinuationDto["lastCheck"]>["trigger"]; at: number };
+  lastStoppedAt?: number;
+  progressStalls?: number;
+  stallLimit?: number;
 }
 
 export interface ConversationGoalDto {

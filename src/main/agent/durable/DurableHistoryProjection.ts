@@ -1,5 +1,6 @@
 import { basename } from "node:path";
-import { readDotsReply } from "./DurableDotsReply";
+import { dotsReplyTimestamp, readDotsReply } from "./DurableDotsReply";
+import { readDotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { EntryRecord, TaskId } from "@earendil-works/pi-durable";
 import type { ChatMessageDto } from "../../../shared/agent-ipc";
@@ -57,6 +58,14 @@ export class DurableHistoryProjection {
   get newest(): number | undefined { return this.newestEntry; }
   get oldest(): number | undefined { return this.oldestEntry; }
   has(entryId: number): boolean { return this.entries.has(entryId); }
+  priorUser(entryId: number): EntryRecord | undefined {
+    let nearest: EntryRecord | undefined;
+    for (const entry of this.entries.values()) {
+      if ((entry.kind === "pi.user" || entry.kind === "mybuddy.user") && entry.id < entryId && entry.id > (nearest?.id ?? 0))
+        nearest = entry;
+    }
+    return nearest;
+  }
   ownerId(callId: string): string | undefined { return this.owners.get(callId); }
   row(id: string): ChatMessageDto | undefined { return this.rows.get(id); }
   presentationId(key: string): string | undefined { return this.presentationRows.get(key); }
@@ -122,7 +131,7 @@ export class DurableHistoryProjection {
 
   /** `timing` 是 `${taskId}:${timestamp}` → completedAt；`speed` 是同一 key → 完成态实测速度。 */
   merge(entries: readonly EntryRecord[], metadata: ReadonlyMap<number, DurableInputMetadata>, timing: Readonly<Record<string, number>>,
-    speed: Readonly<Record<string, DurableResponseSpeed>> = {}): EntryRecord[] {
+    speed: Readonly<Record<string, DurableResponseSpeed>> = {}, dotsEntries?: ReadonlySet<number>): EntryRecord[] {
     const fresh = entries.filter(entry => !this.entries.has(entry.id)).sort((a, b) => a.id - b.id);
     for (const entry of fresh) {
       this.entries.set(entry.id, entry);
@@ -131,8 +140,7 @@ export class DurableHistoryProjection {
       const id = `durable-${entry.id}`;
       const delivery = readDotsReply(entry);
       if (delivery) {
-        const createdAt = entry.model?.find(message => message.role === "assistant")?.timestamp;
-        if (createdAt === undefined) throw new Error("Dots 交付消息缺少时间");
+        const createdAt = dotsReplyTimestamp(entry);
         this.rows.set(id, { id, role: "assistant", entryId: String(entry.id), projectionVersion: 1,
           text: delivery.text, createdAt, dotsDelivery: delivery });
         this.observedAt = latestActivityTime(this.observedAt, createdAt);
@@ -149,10 +157,10 @@ export class DurableHistoryProjection {
           this.turnStartedAt = latestActivityTime(this.turnStartedAt, message.timestamp) ?? this.turnStartedAt;
           if (entry.id >= this.latestStatusEntry) { this.latestStatusEntry = entry.id; this.outcome = undefined; this.error = undefined; }
         } else if (message.role === "assistant") {
-          const user = [...this.entries.values()].filter(item => item.id <= entry.id && (item.kind === "pi.user" || item.kind === "mybuddy.user")).sort((a, b) => b.id - a.id)[0];
+          const user = this.priorUser(entry.id);
           const startedAt = user?.model?.find(item => item.role === "user")?.timestamp ?? message.timestamp;
           const key = `${entry.byTaskId}:${message.timestamp}`;
-          const row = assistantRow(id, entry.byTaskId, message, timing[key], startedAt, false, speed[key]);
+          const row = assistantRow(id, entry.byTaskId, message, timing[key], startedAt, false, speed[key], dotsEntries?.has(entry.id));
           this.rows.set(id, row); this.dirty = true;
           if (row.presentationKey) this.presentationRows.set(row.presentationKey, id);
           for (const tool of row.tools ?? []) {
@@ -222,14 +230,18 @@ function toolResultDetail(tool: ToolRow, message: ToolResult): string | undefine
  * 流式行由 runtime 用实时估算覆盖，这里保持 tps=null。
  */
 export function assistantRow(id: string, taskId: TaskId | undefined, message: AssistantMessage, completedAt?: number, startedAt = message.timestamp,
-  streaming = false, metrics?: DurableResponseSpeed): ChatMessageDto {
-  return { id, ...(!streaming ? { entryId: id.slice(8), projectionVersion: 1 } : {}), role: "assistant", presentationKey: taskId ? `durable-generation-${taskId}${message.stopReason === "aborted" ? `-${id.slice(8)}` : ""}` : id,
+  streaming = false, metrics?: DurableResponseSpeed, dotsWorker = false): ChatMessageDto {
+  const rawText = durableContentText(message.content);
+  const outcome = dotsWorker ? readDotsWorkerOutcome(rawText) : undefined;
+  const text = outcome?.result ?? (dotsWorker && streaming && /^\s*(?:\{|\x60)/u.test(rawText) ? "" : rawText);
+  return { id, ...(!streaming ? { entryId: id.slice(8), projectionVersion: 1, finalAssistantReply: message.stopReason === "stop" } : {}), role: "assistant", presentationKey: taskId ? `durable-generation-${taskId}${message.stopReason === "aborted" ? `-${id.slice(8)}` : ""}` : id,
     durationMs: completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined,
     generationStats: { phase: streaming ? "generating" : "complete", startedAt, updatedAt: completedAt ?? message.timestamp,
       tps: streaming ? null : validSpeed(metrics?.tps), estimated: false, outputTokens: message.usage.output,
       ttftMs: streaming ? null : validDuration(metrics?.ttftMs),
       ...(!streaming ? { outcome: message.stopReason === "aborted" ? "aborted" as const : message.stopReason === "error" || message.stopReason === "length" ? "error" as const : "completed" as const } : {}) },
-    text: formatStoredPstackReply(durableContentText(message.content)) + deepseekCitationMarkdown(message) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
+    text: formatStoredPstackReply(text) + deepseekCitationMarkdown(message) + (message.errorMessage ? `\n${message.errorMessage}` : ""),
+    ...(outcome?.dotsState === "progress" && message.stopReason === "toolUse" && !streaming ? { dotsWorkerProgress: true } : {}),
     thinking: message.content.filter(item => item.type === "thinking").map(item => item.thinking).join(""),
     tools: [...deepseekHostedToolRows(message, streaming), ...message.content.filter(item => item.type === "toolCall").map(call => {
       const text = summarizeToolInput(call.name, call.arguments);

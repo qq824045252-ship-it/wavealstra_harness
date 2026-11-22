@@ -25,22 +25,29 @@ async function result(run: () => unknown | Promise<unknown>) {
 export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool">, context: {
   currentTaskOnly?: boolean; sourceOperation?: () => string | undefined;
   sourceOrigin?: () => import("../../shared/dots").DotsReplyOrigin | undefined;
+  scheduleScope?: (source: string, taskId?: string, spaceId?: string) => { taskId?: string; spaceId?: string } | undefined;
+  canChangeSchedules?: (action: "create" | "update" | "resume") => boolean;
   taskId: string; taskRoot: string; services: LocalWorkflowBridge; terminalEnabled: boolean;
 }): void {
   const { taskId, taskRoot, services } = context;
+  const scheduleActions = ["create", "update", "list", "get", "runs", "pause", "resume", "cancel"] as const;
+  const allowed = (action: typeof scheduleActions[number]) =>
+    (action !== "create" && action !== "update" && action !== "resume") || context.canChangeSchedules?.(action) !== false;
   pi.registerTool({
     name: "automation_exec",
     label: "Task automation",
     description: (context.currentTaskOnly ? "Dots 定时跟进回到此对话。missed_runs=coalesce 会在宿主恢复后合并漏跑、补办一次，忙时排队。需要过期跳过的检查设 skip，受截止时间约束。仅按用户的定时意图创建。支持查询、修改、暂停、恢复和取消。" : "当前任务专属本地调度。create 支持 at/every/cron，可继续当前对话或新建任务。update 必须给已有 id，仅修改传入字段，保留任务 ID、执行历史和启用/暂停状态；修改已有任务必须用 update，不要取消后重建。可更新 name/prompt/调度/时区/max_runs/deadline/restart_policy；max_runs 是累计运行上限，不重置次数。修改不会中断已开始的回合，新配置用于后续触发。every 为真实持续间隔，例如 90s。应用关闭或休眠时不执行，resume 重启只恢复未来触发、不补跑；pause 重启停用。忙碌任务跳过、不排队。get 按 id 查看计划、当前与最近运行；runs 传 id 可用 cursor 按页查单条计划。cancel 停止未来触发，保留计划和历史，不中断已开始的用户回合；取消后不能 resume。可 list/runs/update/pause/resume/cancel；Automation 页面也可管理。必须有用户的定时意图，不用长时间 bash sleep 替代。"),
     promptSnippet: "automation_exec(action, name?, prompt?, schedule_type?, schedule_expr?, target?, max_runs?, deadline?, restart_policy?, id?, cursor?)",
     parameters: Type.Object({
-      action: Type.Union((["create", "update", "list", "get", "runs", "pause", "resume", "cancel"] as const).map(value => Type.Literal(value))),
+      action: Type.Union(scheduleActions.filter(allowed).map(value => Type.Literal(value))),
       name: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
       prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 100000 })),
       schedule_type: Type.Optional(Type.Union([Type.Literal("at"), Type.Literal("every"), Type.Literal("cron")])),
       schedule_expr: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
       timezone: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
       target: Type.Optional(Type.Union([Type.Literal("current-task"), Type.Literal("new-task")])),
+      owner_task_id: Type.Optional(Type.String({ minLength: 1, description: "Dots 跟进已有事项时填写普通任务 ID，随事项暂停和停止" })),
+      owner_space_id: Type.Optional(Type.String({ minLength: 1, description: "Dots 跟进特定空间时填写空间 ID，随空间控制" })),
       max_runs: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
       deadline: Type.Optional(Type.String({ description: "ISO timestamp, including timezone" })),
       missed_runs: Type.Optional(Type.Union([Type.Literal("skip"), Type.Literal("coalesce")])),
@@ -51,7 +58,17 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
     }, { additionalProperties: false }),
     execute: async (_id, input, signal) => result(() => {
       signal?.throwIfAborted();
-      if (input.action === "list") return { jobs: services.cron.listForTask(taskId), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
+      const source = context.sourceOperation?.();
+      if (context.currentTaskOnly && source && /^cron-[0-9a-f-]{36}-input$/i.test(source))
+        services.cron.assertDotsInputCurrent(source);
+      if ((input.owner_task_id || input.owner_space_id) && (!context.currentTaskOnly || input.action !== "create"))
+        throw new Error("只有 Dots 新建跟进计划时可以指定归属");
+      if (!allowed(input.action)) throw new Error("Dots 设置已关闭「定时计划和文件订阅」");
+      const visible = (id: string) => !context.currentTaskOnly || services.cron.dotsScheduleVisible(id);
+      const visibleJobs = () => services.cron.listForTask(taskId).filter(job => visible(job.id));
+      if (input.id && !visible(input.id) && input.action !== "pause" && input.action !== "cancel")
+        throw new Error("计划不在 Dots 已授权的空间内");
+      if (input.action === "list") return { jobs: visibleJobs(), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
       if (input.action === "get") {
         if (!input.id) throw new Error("get requires id");
         return services.cron.getForTask(taskId, input.id);
@@ -59,9 +76,8 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       if (input.action === "runs") {
         if (input.id) return services.cron.runPageForTask(taskId, input.id, input.limit, input.cursor);
         if (input.cursor !== undefined) throw new Error("runs pagination requires id");
-        return services.cron.runsForTask(taskId, input.limit);
+        return services.cron.runsForTask(taskId, input.limit, visible);
       }
-      const source = context.sourceOperation?.();
       if (context.sourceOperation && (!source || source.startsWith("cron-") || source.startsWith("goal-continuation:")))
         throw new Error("需要用户明确交代才能修改 Dots 跟进计划");
       if (input.action === "create") {
@@ -69,8 +85,14 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         const effectiveTo = input.deadline ? Date.parse(input.deadline) : undefined;
         if (effectiveTo != null && (!Number.isFinite(effectiveTo) || effectiveTo <= Date.now())) throw new Error("deadline must be a future ISO timestamp");
         if (context.currentTaskOnly && input.target === "new-task") throw new Error("Dots 的定时跟进只能返回当前对话");
+        const ownerTask = typeof input.owner_task_id === "string" ? input.owner_task_id : undefined;
+        const ownerSpace = typeof input.owner_space_id === "string" ? input.owner_space_id : undefined;
+        if ((ownerTask || ownerSpace) && (!source || !context.sourceOrigin?.() || !context.scheduleScope))
+          throw new Error("找不到定时跟进对应的原始 Dots 消息");
+        const owner = source ? context.scheduleScope?.(source, ownerTask, ownerSpace) : undefined;
         const operation = source ? createHash("sha256").update(JSON.stringify([taskId, source, input.name, input.prompt,
-          input.schedule_type, input.schedule_expr, input.timezone, input.max_runs, effectiveTo, input.restart_policy, ...(input.missed_runs ? [input.missed_runs] : [])])).digest("hex") : undefined;
+          input.schedule_type, input.schedule_expr, input.timezone, input.max_runs, effectiveTo, input.restart_policy,
+          ...(input.missed_runs ? [input.missed_runs] : []), ...(input.owner_task_id || input.owner_space_id ? [input.owner_task_id,input.owner_space_id] : [])])).digest("hex") : undefined;
         const origin = context.sourceOrigin?.();
         return services.cron.createForTask(taskId, taskRoot, {
           name: input.name, prompt: input.prompt, scheduleType: input.schedule_type,
@@ -78,7 +100,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
           target: input.target ?? "current-task", maxRuns: input.max_runs,
           effectiveTo, restartPolicy: input.restart_policy ?? "resume",
           missedRuns: input.missed_runs ?? (context.currentTaskOnly && input.schedule_type === "at" ? "coalesce" : undefined),
-        }, operation, source && origin ? { source, origin } : undefined);
+        }, operation, source && origin ? { source, origin, owner } : undefined);
       }
       if (!input.id) throw new Error("This action requires id");
       if (input.action === "update") {
@@ -92,7 +114,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         });
       }
       services.cron.changeForTask(taskId, input.id, input.action);
-      return { id: input.id, action: input.action, jobs: services.cron.listForTask(taskId) };
+      return { id: input.id, action: input.action, jobs: visibleJobs() };
     }),
   });
   if (!context.terminalEnabled) return;

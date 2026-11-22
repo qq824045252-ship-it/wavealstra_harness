@@ -1,4 +1,4 @@
-import { dotsScopeCondition } from "./DotsRevisionSource";
+import { dotsRecordApplicability } from "./DotsRevisionSource";
 import { isSensitive } from "./MemoryCandidateExtraction";
 import { MemoryInstructionDocument } from "./MemoryIntent";
 import { DOTS_TASK_ID } from "../../shared/dots";
@@ -9,16 +9,26 @@ import {
   MEMORY_KINDS,
   MEMORY_STATUSES,
   type MemoryKind,
+  type MemoryRecordDto,
   type MemoryScopeType,
   type MemoryStatus,
 } from "../../shared/memory-kernel";
 import type { MemoryService } from "./MemoryService";
+
+const dotsApplicabilitySchema = Type.Optional(Type.Object({
+  kind: Type.Union([Type.Literal("general"), Type.Literal("project"), Type.Literal("workspace"), Type.Literal("unresolved")]),
+  evidence: Type.String({ minLength: 1, maxLength: 1200, description: "同一条用户原话中支持适用范围的逐字引文" }),
+  name: Type.Optional(Type.String({ maxLength: 160, description: "用户原话明确指出的项目或工作空间名称" })),
+  id: Type.Optional(Type.String({ maxLength: 160, description: "已查明的项目、工作空间或其中的任务 ID" })),
+}, { additionalProperties: false, description: "声明此条陈述的适用范围。无法确认的项目或空间引用使用 unresolved，更新默认规则使用 general。" }));
 
 export interface MemoryExtensionBridge {
   taskId: string;
   service: MemoryService;
   getPermissionMode?: () => PermissionMode;
   readOnly?: boolean;
+  canRead?: (tool: "memory_search" | "memory_get" | "memory_history") => boolean;
+  canWrite?: () => boolean;
   sourceInput?: () => { text: string; createdAt: number; messageId: string } | undefined;
   resolveProjectId?: () => string | null;
   resolveWorkspaceId?: () => string | null;
@@ -35,10 +45,13 @@ function errorResult(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return { content: [{ type: "text" as const, text: `[memory] ${message}` }], isError: true as const, details: { error: message } };
 }
-function short(memory: { id: string; kind: string; status: string; title: string; content: string; importance: number; confidence: number; scopes: Array<{ scopeType: string; scopeId?: string }> }): string {
+function short(memory: MemoryRecordDto): string {
   const scope = memory.scopes.map((s) => `${s.scopeType}${s.scopeId ? `:${s.scopeId}` : ""}`).join(",");
   const body = memory.content ? ` — ${memory.content.slice(0, 240)}` : "";
-  return `[${memory.kind}/${memory.status}][${scope}] ${memory.title}${body} (importance=${memory.importance}, confidence=${memory.confidence.toFixed(2)}, id=${memory.id})`;
+  const applicability = dotsRecordApplicability(memory);
+  const condition = applicability?.kind === "unresolved" ? "[适用范围待确认，仅供查证]"
+    : applicability ? `[${applicability.kind === "project" ? "项目" : "工作空间"} ${applicability.name}]` : "";
+  return `[${memory.kind}/${memory.status}][${scope}]${condition} ${memory.title}${body} (importance=${memory.importance}, confidence=${memory.confidence.toFixed(2)}, id=${memory.id})`;
 }
 
 function dotsToolSource(service: MemoryService, id: string, revision: number, includeQuote: boolean) {
@@ -46,13 +59,18 @@ function dotsToolSource(service: MemoryService, id: string, revision: number, in
   if (!source || isSensitive(source.quote)) return includeQuote ? { status: "该版本无可核对的原话" } : undefined;
   return {
     author: "用户", messageId: source.messageId, capturedAt: source.capturedAt, stance: source.stance,
+    applicability: source.applicability,
     ...(includeQuote ? { verbatimExcerpt: source.quote } : {}),
   };
 }
 
 export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionFactory {
+  const readable = (tool: "memory_search" | "memory_get" | "memory_history"): void => {
+    if (bridge.canRead?.(tool) === false) throw new Error("当前会话不能读取长期记忆");
+  };
   const writable = (): void => {
     if (bridge.readOnly) throw new Error("当前会话为只读，不能修改长期记忆");
+    if (bridge.canWrite?.() === false) throw new Error("当前会话不能修改长期记忆");
   };
   const context = () => ({
     taskId: bridge.taskId === "transient" ? undefined : bridge.taskId,
@@ -81,6 +99,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       }, { additionalProperties: false }),
       execute: async (_id: string, params: { query?: string; kind?: MemoryKind; status?: MemoryStatus; limit?: number }) => {
         try {
+          readable("memory_search");
           const hits = await bridge.service.searchHybrid({
             ...context(),
             query: params.query,
@@ -89,6 +108,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             includeInherited: true,
             limit: params.limit ?? 10,
           });
+          readable("memory_search");
           if (bridge.taskId === DOTS_TASK_ID) {
             const matches = hits.flatMap(({ memory }) => {
               const current = bridge.service.getForRecall(memory.id, context());
@@ -116,6 +136,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 120 }) }, { additionalProperties: false }),
       execute: async (_id: string, params: { id: string }) => {
         try {
+          readable("memory_get");
           const memory = requireVisible(params.id);
           const revision = bridge.service.history(memory.id)[0]?.revision ?? 0;
           const dotsSource = bridge.taskId === DOTS_TASK_ID ? dotsToolSource(bridge.service, memory.id, revision, true) : undefined;
@@ -141,12 +162,15 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         kind: kindSchema,
         title: Type.String({ minLength: 1, maxLength: 240 }),
         content: Type.Optional(Type.String({ maxLength: 6000 })),
-        ...(bridge.taskId === DOTS_TASK_ID ? { sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持这一项的逐字引文", maxLength: 1200 })) } : {}),
+        ...(bridge.taskId === DOTS_TASK_ID ? {
+          sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持这一项的逐字引文", maxLength: 1200 })),
+          applicability: dotsApplicabilitySchema,
+        } : {}),
         importance: Type.Optional(Type.Integer({ minimum: 0, maximum: 3 })),
         confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
         scopeType: Type.Optional(scopeSchema),
       }, { additionalProperties: false }),
-      execute: async (_id: string, params: { kind: MemoryKind; title: string; content?: string; sourceQuote?: unknown; importance?: number; confidence?: number; scopeType?: MemoryScopeType }) => {
+      execute: async (_id: string, params: { kind: MemoryKind; title: string; content?: string; sourceQuote?: unknown; applicability?: unknown; importance?: number; confidence?: number; scopeType?: MemoryScopeType }) => {
         try {
           writable();
           const inferred = bridge.service.inferAgentScope(bridge.taskId);
@@ -175,7 +199,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             scopeId: scope.scopeId,
             evidence: source ? [{ evidenceKind: "message", refId: source.messageId, excerpt: source.text.slice(0, 1200) }]
               : [{ evidenceKind: "task", refId: bridge.taskId }],
-          }, source, typeof params.sourceQuote === "string" ? params.sourceQuote : undefined);
+          }, source, typeof params.sourceQuote === "string" ? params.sourceQuote : undefined, params.applicability);
           return textResult(`已沉淀：${short(memory)}`, { memory });
         } catch (error) { return errorResult(error); }
       },
@@ -190,21 +214,24 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         id: Type.String({ minLength: 1, maxLength: 120 }),
         title: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
         content: Type.Optional(Type.String({ maxLength: 6000 })),
-        ...(bridge.taskId === DOTS_TASK_ID ? { sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持本次修改的逐字引文", maxLength: 1200 })) } : {}),
+        ...(bridge.taskId === DOTS_TASK_ID ? {
+          sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持本次修改的逐字引文", maxLength: 1200 })),
+          applicability: dotsApplicabilitySchema,
+        } : {}),
         status: Type.Optional(statusSchema),
         importance: Type.Optional(Type.Integer({ minimum: 0, maximum: 3 })),
         confidence: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
       }, { additionalProperties: false }),
-      execute: async (_id: string, params: { id: string; title?: string; content?: string; sourceQuote?: unknown; status?: MemoryStatus; importance?: number; confidence?: number }) => {
+      execute: async (_id: string, params: { id: string; title?: string; content?: string; sourceQuote?: unknown; applicability?: unknown; status?: MemoryStatus; importance?: number; confidence?: number }) => {
         try {
           writable(); requireVisible(params.id);
-          const { sourceQuote, ...update } = params;
-          const memory = bridge.service.updateFromTask(bridge.taskId, { ...update, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` }, bridge.sourceInput?.(), typeof sourceQuote === "string" ? sourceQuote : undefined);
+          const { sourceQuote, applicability, ...update } = params;
+          const memory = bridge.service.updateFromTask(bridge.taskId, { ...update, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` }, bridge.sourceInput?.(), typeof sourceQuote === "string" ? sourceQuote : undefined, applicability);
           if (memory.id !== params.id) {
-            const exception = bridge.taskId === DOTS_TASK_ID && dotsScopeCondition(memory.content);
+            const scope = bridge.taskId === DOTS_TASK_ID ? dotsRecordApplicability(memory) : undefined;
             return textResult(
-              `已单独保存${exception ? "有适用条件的例外" : "来源说明"}（${memory.id}）。原记忆（${params.id}）仍然有效。\n${short(memory)}`,
-              { memory, originalId: params.id, newId: memory.id, outcome: exception ? "scope_exception_created" : "source_note_created" });
+              `已单独保存${scope?.kind === "unresolved" ? "待明确适用范围的原话" : scope ? "有适用条件的例外" : "来源说明"}（${memory.id}）。原记忆（${params.id}）仍然有效。\n${short(memory)}`,
+              { memory, originalId: params.id, newId: memory.id, outcome: scope?.kind === "unresolved" ? "scope_unresolved" : scope ? "scope_exception_created" : "source_note_created" });
           }
           return textResult(`已更新：${short(memory)}`, { memory });
         } catch (error) { return errorResult(error); }
@@ -225,6 +252,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         try {
           writable();
           const memory = requireVisible(params.id);
+          if (bridge.taskId === DOTS_TASK_ID && dotsRecordApplicability(memory)) throw new Error("项目或工作空间例外保留在 Dots 记忆内");
           if (bridge.taskId !== "transient" && !bridge.service.canPromoteFromTask(bridge.taskId, params.targetScopeType, params.targetScopeId)) {
             throw new Error("目标作用域不属于当前任务的 Project / Workspace 祖先 / 当前 Task，拒绝越界提升");
           }
@@ -267,6 +295,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 120 }) }, { additionalProperties: false }),
       execute: async (_id: string, params: { id: string }) => {
         try {
+          readable("memory_history");
           requireVisible(params.id);
           const history = bridge.service.history(params.id);
           return textResult(history.length ? history.map((r) => `r${r.revision} ${new Date(r.createdAt).toISOString()} [${r.status}] ${r.title} — ${r.content.slice(0, 300)} (${r.changedBy}${r.changeReason ? `, ${r.changeReason}` : ""})`).join("\n") : "暂无 revision。", { history });

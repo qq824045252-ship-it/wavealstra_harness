@@ -7,6 +7,7 @@ import { z } from "zod";
 import { startAnswerRoutingTiming } from "./AnswerRoutingTimings";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { LibraryService } from "../library/LibraryService";
+import type { LibraryItemDto } from "../../shared/library-ipc";
 import type { MemoryRecordDto } from "../../shared/memory-kernel";
 import { assertPathInsideTask, TaskPathBoundaryError } from "../task/TaskExecutionWorkspace";
 import { eligibleAnswerEvidenceItem, matchAnswerRule, maxAnswerEvidenceBytes, newAnswerRule, type AnswerRoutingHistoryQuery, type AnswerRule,
@@ -59,9 +60,9 @@ function evidenceFailure(error: unknown): EvidenceFailure {
   return new EvidenceFailure("failed", "读取失败，资料可能正在变更或无法解码");
 }
 
-function readEvidence(cwd: string, filename: string, inputId: string) {
+function readEvidence(cwd: string, filename: string, inputId: string, canReadPath?: (path: string) => boolean) {
   const finish = startAnswerRoutingTiming("readEvidence");
-  const read = readEvidenceFile(cwd, filename);
+  const read = readEvidenceFile(cwd, filename, canReadPath);
   if (!finish) return read;
   return read.then(result => {
     finish(() => ({ inputId, outcome: "read" }));
@@ -72,10 +73,11 @@ function readEvidence(cwd: string, filename: string, inputId: string) {
   });
 }
 
-async function readEvidenceFile(cwd: string, filename: string) {
+async function readEvidenceFile(cwd: string, filename: string, canReadPath?: (path: string) => boolean) {
   const root = await realpath(cwd);
   const requestedPath = resolve(cwd, filename);
   const path = assertPathInsideTask(root, await realpath(requestedPath));
+  if (canReadPath && !canReadPath(path)) throw new EvidenceFailure("denied", "资料超出 Dots 获准的工作空间");
   const fd = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   try {
     const info = await fd.stat();
@@ -97,6 +99,7 @@ async function readEvidenceFile(cwd: string, filename: string) {
       throw new EvidenceFailure("failed", "资料在读取期间已更换");
     return { body, path, contentHash: createHash("sha256").update(bytes).digest("hex"), readAt: Date.now(),
       available: () => {
+        if (canReadPath && !canReadPath(path)) return false;
         if (realpathSync(requestedPath) !== path) return false;
         accessSync(path, constants.R_OK);
         return true;
@@ -105,6 +108,7 @@ async function readEvidenceFile(cwd: string, filename: string) {
 }
 
 type Turn = { taskId: string; inputId: string; query: string; cwd: string; canRead: () => boolean; canReadLibrary?: () => boolean };
+export type AnswerEvidenceScope = { kind: "file"; path: string } | { kind: "library"; item: LibraryItemDto };
 type PreparedRoute = {
   text: string;
   render: (instruction: string) => string;
@@ -118,7 +122,8 @@ export class AnswerRoutingService {
 
   constructor(private readonly db: AppDatabase, private readonly source: (id: string, taskId?: string) => MemoryRecordDto | undefined,
     private readonly memoryEnabled: () => boolean = () => true,
-    private readonly library?: () => LibraryService) {
+    private readonly library?: () => LibraryService,
+    private readonly canAccessEvidence?: (taskId: string, evidence: AnswerEvidenceScope) => boolean) {
     db.connection.exec(`
       CREATE TABLE IF NOT EXISTS answer_rules (
         id TEXT PRIMARY KEY, revision INTEGER NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
@@ -344,7 +349,9 @@ export class AnswerRoutingService {
           await lstat(path);
           throw new EvidenceFailure("denied", "资料路径未通过受管资料安全检查");
         }
-        const read = await (library && path ? readEvidence(library.root, path, input.inputId) : readEvidence(input.cwd, reference, input.inputId));
+        const canReadPath = (file: string) => this.canAccessEvidence?.(input.taskId, item ? { kind: "library", item } : { kind: "file", path: file }) !== false;
+        const read = await (library && path ? readEvidence(library.root, path, input.inputId, canReadPath)
+          : readEvidence(input.cwd, reference, input.inputId, canReadPath));
         if (priorEvidence && (priorEvidence.contentHash !== read.contentHash || priorEvidence.path !== read.path)) throw cannotRestore();
         evidence = priorEvidence ?? { ...evidence, status: "read", path: read.path, contentHash: read.contentHash, readAt: read.readAt };
         const previous = this.db.connection.prepare(`SELECT evidence FROM answer_rule_turns
@@ -419,6 +426,8 @@ export class AnswerRoutingService {
     if (!item) throw new EvidenceFailure("not-found", "找不到资料");
     if (!library.isItemVisibleInScope(item, library.resolveTaskScope(taskId)))
       throw new EvidenceFailure("denied", "资料超出当前任务可见范围");
+    if (this.canAccessEvidence?.(taskId, { kind: "library", item }) === false)
+      throw new EvidenceFailure("denied", "资料超出 Dots 获准的工作空间");
     return item;
   }
 

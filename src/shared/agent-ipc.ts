@@ -1,6 +1,7 @@
 import type { SubagentExecutionPolicy } from "./subagent-execution-policy";
 import type { WorkspaceIconAppearance } from "./workspace-icon";
 import type { CronExecutionSettings } from "./cron-execution";
+import type { DotsSettings } from "./dots-settings";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
 
 /** Main ↔ Renderer agent / cron / gateway IPC 契约 */
@@ -1528,6 +1529,9 @@ export interface AppSettingsDto {
   pausedProviderModels?: Record<string, string[]>;
   proxyUrl: string;
   memoryEnabled: boolean;
+  dotsSettings?: Partial<DotsSettings>;
+  /** Read-only runtime support, independent of saved settings on disk. */
+  dotsSettingsRuntime?: true;
   automaticSemanticRecall: boolean;
   /** External Agent Memory Gateway，默认关闭、仅 loopback。 */
   memoryGatewayEnabled?: boolean;
@@ -2085,6 +2089,10 @@ export interface ChatToolCallDto {
 }
 
 export interface ChatMessageDto {
+  /** Committed checkpoint of an assigned Dots worker. */
+  dotsWorkerProgress?: boolean;
+  /** Native assistant reached its final reply rather than requesting another tool round. */
+  finalAssistantReply?: boolean;
   dotsDelivery?: import("./dots").DotsAssistantReply;
   /** Stable request identity for reconciling a locally submitted bubble with durable history. */
   inputRequestId?: string;
