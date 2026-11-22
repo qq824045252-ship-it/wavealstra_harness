@@ -297,3 +297,5 @@ try {
   releaseWorker();
   cron.stop(); terminal.dispose(); off(); deliveries.close(); await deliveries.drain(); await fixture.close(); db.close();
 }
+
+await (await import("./dots-foreground-scenario")).verifyForegroundScheduling(join(root, "foreground"));

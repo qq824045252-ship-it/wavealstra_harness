@@ -1,3 +1,7 @@
+if (process.argv.includes("--foreground-live")) {
+  require("./dots-foreground-live.cjs");
+  return;
+}
 if (process.argv.includes("--live-handoff")) {
   require("./dots-handoff-live.cjs");
   return;

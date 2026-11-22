@@ -15,6 +15,8 @@ interface Invocation {
   /** Trusted original host input, resolved through this run's durable submission receipt. */
   sourceUserMessageId?: string;
   sourceDisplayText?: string;
+  terminateForeground?: boolean;
+  foregroundInputs?: readonly import("../../dots/DotsForegroundReads").ForegroundInput[];
   sourceCreatedAt?: number;
   sourceOrigin?: import("../../../shared/dots").DotsReplyOrigin;
   memorySource?: { text: string; createdAt: number; messageId: string };

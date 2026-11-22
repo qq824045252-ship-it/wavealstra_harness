@@ -7,8 +7,8 @@ import { defineEntry, LiveDoc, type ToolRegistration, type Cursor, type EntryRec
 import type { Message } from "@earendil-works/pi-ai";
 import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-model-scope";
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
-import { durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
-import { durableSourceInput } from "./DurableInputProvenance";
+import { currentDurableInvocation, durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
+import { durableForegroundInputs, durableSourceInput } from "./DurableInputProvenance";
 import { checkCurrentToolInput } from "./DurableToolInputScope";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { createAgentSettingsManager } from "../../agent-shell-settings";
@@ -73,7 +73,9 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
               if (!result.isError && capabilities?.taskId) for (const receipt of gadgetPreviewIdentities(tool.name, details)) {
                 invocation.getStore()!.writes.push(native.commit(tx => tx.appendEntry(GadgetPreviewEntry, conversationId, { data: receipt }), context));
               }
-              return { output: result.content, isError: result.isError, diagnostics: durableExtensionDiagnostics(result), details,
+              return { output: result.content, isError: result.isError,
+                ...(tool.name === "dots_action" && currentDurableInvocation()?.terminateForeground && { control: { terminate: true } }),
+                diagnostics: durableExtensionDiagnostics(result), details,
                 ...((tool.name === "browser_exec" || tool.name === "gadget_read") ? { structuredOutput: { ...details, ...(details?.details?.outcome ? { outcome: details.details.outcome } : {}), isError: Boolean(result.isError) } } : {}) };
             } finally {
               const current = invocation.getStore()!;
@@ -93,7 +95,9 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           const source = (goalCompletion || personalWrite || tool.name === "conversation_goal_create" || tool.name === "dots_action" || (tool.name === "automation_exec" && capabilities.taskId === DOTS_TASK_ID))
             ? await durableSourceInput(native, context, conversationId, live?.run?.inputs ?? [], goalCompletion) : undefined;
           if (personalWrite && (!source || isDotsAutomaticInput(source.id))) throw new Error("更改个人记忆或对话规则需要本轮用户输入");
-          return withDurableExecution({ execution, cwd, runId, native, context, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, sourceCreatedAt: source?.createdAt, presentationConversationId: conversationId,
+          const foregroundInputs = tool.name === "dots_action" && capabilities.taskId === DOTS_TASK_ID
+            ? await durableForegroundInputs(native, context, conversationId, live?.run?.inputs ?? [], live?.run?.first) : undefined;
+          return withDurableExecution({ execution, cwd, runId, native, context, foregroundInputs, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, sourceCreatedAt: source?.createdAt, presentationConversationId: conversationId,
             sourceOrigin: source && capabilities.taskId === DOTS_TASK_ID ? { conversationId, entryId: source.entryId } : undefined,
             memorySource: tool.name.startsWith("memory_") && source?.createdAt !== undefined ? { text: source.text, createdAt: source.createdAt,
               messageId: `durable:${capabilities.taskId}:${conversationId}:${source.entryId}` } : undefined }, execute);

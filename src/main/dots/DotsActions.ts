@@ -1,3 +1,4 @@
+import { DotsForegroundReads, DotsForegroundUnavailable, type ForegroundInput } from "./DotsForegroundReads";
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { DotsFollowup, followupInstructions } from "./DotsFollowup";
 import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
@@ -17,11 +18,12 @@ import type { ConversationInteractionDto } from "../../shared/conversation-inter
 import type { BoardQuery } from "../../shared/task-board";
 import type { AgentService } from "../agent/AgentService";
 import type { AgentPromptRequest, SpaceDto, TaskDto } from "../../shared/agent-ipc";
+import { dotsOperationEnabled } from "../../shared/dots-settings";
 import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
 import { gatewayChannelForSpace, isGatewayConversation } from "../../shared/gateway-task";
 import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../workspace/WorkspaceService";
 
-type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals">;
+type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals">;
 export interface DotsActionHooks {
   observeProgress?(taskId: string, operationId: string, identity: string, at: number): void;
   observeTool?(event: ToolDiagnosticEvent): void;
@@ -36,6 +38,7 @@ export interface DotsActionHooks {
 }
 export interface DotsActionInput {
   assignmentQuote?: string;
+  allowHandoff?: boolean;
   previousAssignmentQuote?: string;
   steps?: string[];
   itemId?: string;
@@ -93,12 +96,16 @@ function userAnswer(question: ConversationInteractionDto, userText: string) {
 }
 
 export class DotsActions {
+  private readonly foreground: DotsForegroundReads;
+  private readonly foregroundReaders = new Map<string, Promise<void>>();
+  private readonly handoffs = new Map<string, Promise<unknown>>();
   private readonly followups: DotsFollowup;
   private readonly watches: DotsFileWatches;
   private controlRecovery?: Promise<void>;
 
   constructor(private readonly db: AppDatabase, private readonly agent: Agent, private readonly hooks: DotsActionHooks,
     private readonly board = new TaskBoardRepository(db.connection)) {
+    this.foreground = new DotsForegroundReads(db.connection);
     db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_control_batches(id TEXT PRIMARY KEY, selection TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_proactive_pauses(scope TEXT PRIMARY KEY,timer_ids TEXT NOT NULL)`);
     this.followups = new DotsFollowup(db.connection, {
@@ -167,7 +174,7 @@ export class DotsActions {
     this.watches.start();
     const rows = this.db.connection.prepare("SELECT task_id,operation_id FROM dots_target_controls WHERE operation_id LIKE 'dots-input-%'").all() as
       Array<{task_id:string;operation_id:string}>;
-    this.controlRecovery = Promise.all([this.followups.recoverGoals(),...rows.map(async row => {
+    this.controlRecovery = Promise.all([this.followups.recoverGoals(), this.recoverForegroundHandoffs(),...rows.map(async row => {
       try {
         const receipt = (await this.agent.findSubmission(row.task_id, row.operation_id))?.receipt;
         if (receipt) await this.accepted({ taskId:row.task_id, userMessageId:row.operation_id }, receipt.submissionId);
@@ -289,6 +296,9 @@ export class DotsActions {
     const source = this.db.connection.prepare("SELECT source_message_id FROM dots_delegations WHERE operation_id=? AND task_id=?")
       .pluck().get(request.userMessageId, request.taskId) as string | undefined;
     this.assertScheduleSource(source);
+    for (const inputId of request.dotsForegroundInputs ?? []) this.foreground.state(inputId);
+    if (request.dotsForegroundInputs && !dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate"))
+      throw new DotsIntentChanged("自动移交授权已撤销");
     this.task(request.taskId, request.spaceId);
     this.watches.validate(request);
     this.followups.validate(request);
@@ -395,7 +405,119 @@ export class DotsActions {
     return decision;
   }
 
-  async execute(caller: string, source: string | undefined, input: DotsActionInput, originalText?: string, origin?:DotsReplyOrigin, receivedAt?: number) {
+  private async inForegroundReadOrder<T>(inputId: string, read: () => Promise<T>) {
+    const predecessor = this.foregroundReaders.get(inputId);
+    let release!: () => void;
+    const pending = new Promise<void>(done => { release = done; });
+    this.foregroundReaders.set(inputId, pending);
+    try {
+      await predecessor;
+      return await read();
+    } finally {
+      release();
+      if (this.foregroundReaders.get(inputId) === pending) this.foregroundReaders.delete(inputId);
+    }
+  }
+
+  async executeForegroundRead(input: DotsActionInput, inputs: readonly ForegroundInput[], originConversation: number,
+    call: string, mayDelegate: () => boolean, mayRead: () => boolean, fresh: () => Promise<void>) {
+    const root = inputs[0];
+    const latest = inputs.at(-1);
+    if (!root || !latest) throw new DotsForegroundUnavailable("无法确认本轮原生输入，前台读取已停止");
+    const current = () => {
+      this.foreground.state(root.id);
+      if (latest.id !== root.id) this.foreground.state(latest.id);
+      if (!mayRead()) throw new DotsForegroundUnavailable("本轮读取授权已撤销");
+    };
+    const origin = { conversationId: originConversation, entryId: root.entryId };
+    const { result, reached } = await this.inForegroundReadOrder(root.id, async () => {
+      await fresh();
+      current();
+      const state = this.foreground.freeze(root.id);
+      let result: unknown;
+      let reached = state.exhausted;
+      if (!reached) {
+        result = await this.execute(DOTS_TASK_ID, root.id, input, root.text, origin, root.createdAt, { read: true });
+        await fresh();
+        current();
+        const response = result as { content?: string; text?: string; path?: string; truncated?: boolean; canonicalFile?: string };
+        if (response.canonicalFile && !this.agent.dotsAnswerEvidenceAllowed({ kind: "file", path: response.canonicalFile }))
+          throw new DotsForegroundUnavailable("读取授权在交付之前已撤销");
+        const source = input.action === "read_file" ? "file:" + resolvedPathKey(response.canonicalFile!)
+          : input.action === "read_material" ? "material:" + input.itemId
+          : JSON.stringify([input.action, input.spaceId, input.targetTaskId, input.path]);
+        const body = response.content ?? response.text ?? JSON.stringify(result);
+        const charge = this.foreground.charge(root.id, call, source,
+          JSON.stringify({ action: input.action, spaceId: input.spaceId, path: response.path ?? input.path,
+            itemId: input.itemId, version: input.version, offset: input.offset, contentHash: (result as {contentHash?: string}).contentHash }), body);
+        reached = charge.exhausted;
+        if (input.action === "read_file") {
+          const { canonicalFile: _file, ...visible } = response;
+          result = { ...visible, content: charge.text, truncated: response.truncated || charge.text.length < body.length };
+        } else if (response.text !== undefined) {
+          result = { ...response, text: charge.text, truncated: response.truncated || charge.text.length < body.length };
+        } else if (charge.text.length < body.length) result = { excerpt: charge.text, truncated: true };
+      }
+      return { result, reached };
+    });
+    if (!reached) return { details: result, terminate: false };
+    const blocked = (message: string) => ({ details: { foreground: "limit", evidence: result, message }, terminate: true });
+    if (input.allowHandoff !== true || !mayDelegate() || isDotsAutomaticInput(root.id))
+      return blocked("前台读取已达上限。当前输入未允许自动移交或委派已关闭。已保留取得的证据。");
+    const spaceId = input.spaceId ?? (input.targetTaskId ? this.task(input.targetTaskId).spaceId : undefined);
+    if (!spaceId) return blocked("前台读取已达上限。缺少明确的普通任务工作空间。已保留取得的证据。");
+    this.space(spaceId);
+    await fresh();
+    current();
+    if (!mayDelegate()) return blocked("前台读取已达上限。委派授权已撤销。");
+    const prior = this.handoffs.get(root.id);
+    const flight = prior ?? this.admitForegroundHandoff(root, inputs, origin, spaceId);
+    if (!prior) this.handoffs.set(root.id, flight);
+    try {
+      const handoff = await flight as { receipt?: {taskId: string; operationId: string; submissionId: number}; link?: string };
+      if (!handoff.receipt) return blocked("前台读取已达上限。暂未取得普通任务持久受理回执。");
+      return { details: { foreground: "delegated", evidence: result, handoff }, terminate: true };
+    } finally {
+      if (this.handoffs.get(root.id) === flight) this.handoffs.delete(root.id);
+    }
+  }
+
+  async recoverForegroundHandoffs() {
+    for (const saved of this.foreground.unlinked()) {
+      const last = saved.inputs.at(-1);
+      if (!last || !dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate")) continue;
+      try {
+        const receipt = (await this.agent.findSubmission(DOTS_TASK_ID, last.id))?.receipt;
+        const [conversation, current] = JSON.parse(await this.agent.dotsInputVersion(DOTS_TASK_ID)) as [number, number];
+        if (receipt?.status !== "placed" || receipt.submissionId !== current || conversation !== saved.origin.conversationId) continue;
+        for (const input of saved.inputs) this.foreground.state(input.id);
+        await this.sendForegroundHandoff(saved);
+      } catch (error) { console.warn("[Dots] 恢复前台移交失败", error); }
+    }
+  }
+
+  private async admitForegroundHandoff(root: ForegroundInput, inputs: readonly ForegroundInput[], origin: DotsReplyOrigin, spaceId: string) {
+    const reads = this.foreground.state(root.id).reads;
+    const request = this.foreground.handoff(root.id, { spaceId, inputs, origin,
+      text: ["前台达到读取上限，请按以下用户原文继续完成尚未交付的工作。",
+        ...inputs.map((input, index) => `${index === 0 ? "原始要求" : "后续修订"}：
+${input.text}`),
+        "前台已读的证据位置及字符数（位置是引用，正文须按普通任务现有权限核验）：",
+        ...reads.map(read => `${read.description} · ${read.characters} 字符`)].join("\n\n") });
+    return this.sendForegroundHandoff(request);
+  }
+
+  private async sendForegroundHandoff(request: ReturnType<DotsForegroundReads["handoff"]>) {
+    const root = request.inputs[0];
+    for (const input of request.inputs) this.foreground.state(input.id);
+    if (!dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate"))
+      throw new DotsIntentChanged("自动移交授权已撤销");
+    return this.execute(DOTS_TASK_ID, root.id, { action: "delegate", spaceId: request.spaceId, text: request.text,
+      name: root.text.trim().slice(0, 80) || "续办前台请求" },
+      root.text, request.origin, root.createdAt, { revisions: request.inputs.map(input => input.id) });
+  }
+
+  async execute(caller: string, source: string | undefined, input: DotsActionInput, originalText?: string, origin?:DotsReplyOrigin, receivedAt?: number, foreground?: { read?: true; revisions?: string[] }) {
     if (caller !== DOTS_TASK_ID) throw new Error("只有 Dots 原生会话可以执行此操作");
     this.assertScheduleSource(source);
     if (source && origin) this.hooks.rememberOrigin?.(source, origin);
@@ -505,7 +627,7 @@ export class DotsActions {
         }
         const data = await readWorkspaceFile(root, local, true);
         checkBinding();
-        return { path: local, content: data.content.slice(offset, offset + 12000), more: offset + 12000 < data.content.length, truncated: data.truncated };
+        return { ...(foreground?.read ? { canonicalFile: selected } : {}), path: local, content: data.content.slice(offset, offset + 12000), more: offset + 12000 < data.content.length, truncated: data.truncated };
       }
     }
     const sourceId = required(source, "唯一的原始 Dots 消息");
@@ -720,8 +842,11 @@ export class DotsActions {
       if (restored) return restored;
     }
     const previous = newTask ? undefined : await this.agent.findSubmission(task.id, operationId);
-    if (creating && previous) return { ...this.summary(task), queued: previous.queued, receipt: previous.receipt,
-      existingAssignment: this.followups.assignment(operationId) };
+    if (creating && previous) {
+      if (foreground?.revisions) this.foreground.linked(sourceId);
+      return { ...this.summary(task), queued: previous.queued, receipt: previous.receipt,
+        existingAssignment: this.followups.assignment(operationId) };
+    }
     if (!previous && input.action === "steer" && !this.agent.isTaskBusy(task.id)) throw new Error("原任务已空闲，请读取最新进度后接续原任务");
     if (!previous && input.action === "resume" && this.agent.isTaskBusy(task.id)) throw new Error("原任务仍在运行");
     const instructions = [message];
@@ -744,13 +869,17 @@ export class DotsActions {
       taskId: task.id, spaceId: task.spaceId ?? undefined,
       userMessageId: operationId, assistantMessageId: "dots-reply-" + identity,
       dotsMemoryRefs: input.memoryRefs ?? resumed?.request.dotsMemoryRefs?.filter(ref => this.agent.dotsMemoryReferenceCurrent(task.id, ref.id, ref.revision)), dotsGoalId: goal?.id,
+      dotsForegroundInputs: foreground?.revisions,
       dotsGoalIntentRevision: goalWork?.intentRevision, dotsGoalUserAcceptance: acceptanceQuote ?? resumed?.request.dotsGoalUserAcceptance,
       text: instructions.join("\n\n"), displayText: message,
       streamingBehavior: input.action === "steer" ? "steer" : "followUp",
       ...(input.action === "steer" ? { requireActiveRun: true, dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) } : {}),
     };
     const alreadyLinked = this.db.connection.transaction(() => {
-      if (creating && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) return true;
+      if (creating && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) {
+        if (foreground?.revisions) this.foreground.linked(sourceId);
+        return true;
+      }
       if (!previous && input.action === "resume") {
         if (this.followups.latestPlan(task.id)?.request.userMessageId !== resumed?.request.userMessageId)
           throw new DotsIntentChanged("接续期间原任务已有更新，请读取当前进度");
@@ -765,11 +894,16 @@ export class DotsActions {
       else this.followups.remember(request,sourceId,[message, calendar, deliveryInstruction].filter(Boolean).join("\n"),steps);
       if (creating && assignment) this.followups.anchorAssignment(operationId, assignment);
       this.hooks.link(task.id, operationId, sourceId, input.action === "steer" || input.action === "resume", request);
+      if (foreground?.revisions) this.foreground.linked(sourceId);
       return false;
     })();
-    const result = previous ?? (alreadyLinked
-      ? await this.agent.findSubmission(task.id, operationId)
-      : await this.agent.prompt(request, { durableAdmissionOnly: true }));
+    const persisted = alreadyLinked && foreground?.revisions ? this.db.connection.prepare(
+      "SELECT request_json FROM dots_delegations WHERE operation_id=? AND status='pending'"
+    ).pluck().get(operationId) as string | undefined : undefined;
+    const result = previous ?? await (alreadyLinked
+      ? (async () => await this.agent.findSubmission(task.id, operationId) ??
+          (persisted ? this.agent.prompt(JSON.parse(persisted) as AgentPromptRequest, { durableAdmissionOnly: true }) : undefined))()
+      : this.agent.prompt(request, { durableAdmissionOnly: true }));
     if (result?.error || result?.cancelled) {
       const reason = result.error?.message ?? "执行已取消";
       this.hooks.failed?.(task.id, operationId, reason);

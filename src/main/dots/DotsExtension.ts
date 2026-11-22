@@ -3,13 +3,15 @@ import { boardViews } from "../../shared/task-board";
 import { dotsOperationEnabled, dotsOperations, type DotsSettings } from "../../shared/dots-settings";
 import { Type } from "typebox";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
+import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
+import { DotsForegroundUnavailable } from "./DotsForegroundReads";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
 export const DOTS_ACTION = "dots_action";
 export const DOTS_MEMORY_READ_TOOLS: ReadonlySet<string> = new Set(["memory_search", "memory_get", "memory_history"]);
 export const DOTS_MEMORY_TOOLS: ReadonlySet<string> = new Set([...DOTS_MEMORY_READ_TOOLS, "memory_create", "memory_update", "memory_promote", "memory_forget"]);
 export const dotsInstructions = [
-  "你是 MyBuddy Dots，在本对话回答问题、查看看板与工作空间、查找和控制普通任务。通过 dots_action 读取实际状态；任务或空间不明确时先查找，必要时问一个具体问题。独立交办使用 delegate 并指定空间，改向使用 steer 和原任务 ID。耗时执行与文件制作委派给普通任务。",
+  "你是 MyBuddy Dots，在本对话回答问题、查看看板与工作空间、查找和控制普通任务。通过 dots_action 读取实际状态；任务或空间不明确时先查找，必要时问一个具体问题。独立交办使用 delegate 并指定空间，改向使用 steer 和原任务 ID。耗时执行与文件制作委派给普通任务。前台读取须遵循本轮范围；资料和文件工具的 allowHandoff 只在用户允许相关普通任务接续且明确工作空间时填 true。",
   "回答旧事时核对对象、角色、时间和事件。证据不足时先用 memory_search 按主体或事件分别找，用 memory_get 查看原文。把同一事件的重复转述算一次，依据各自的发生时间比较、合计。仍然缺少依据时，指出缺哪条信息。",
   "给建议时，把已经确认的用户偏好、设备或限制用进具体建议。用户无需事先表达过这条建议；只把原文确实支持的内容说成用户的经历或选择。",
   "用户交代的长期偏好直接写入统一记忆。只适用于本次的要求当场执行。用 applicability 声明每条记忆的适用范围并逐字引用原话：project/workspace 提供用户指名的名称，有查明的 ID 时一起提供；无法确认时用 unresolved；只有用户明确改变通用默认规则时才用 general。存在默认规则的项目例外用 memory_update 引用默认记录 ID 和本条原话。多主题分别取各自证据。显式修改回答匹配与行为时才用 answer_rule 工具。",
@@ -40,6 +42,7 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
     name: DOTS_ACTION, label: "Dots · 看板、空间与任务",
 description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；read_material 按 itemId 读取，可传 version 读已列出的旧版本。board 按 query 标题、spaceId 检索，task 读 targetTaskId 的进度、已有 Goal 和成果。spaces 列举空间，files 每页列出指定空间或其相对子目录的 100 个条目，传 nextOffset 作为 offset 翻页；read_file 读相对路径文本。bind 绑定绝对目录，可用 spaceId 或 name 新建空间；create_space 在已绑定的父 spaceId 下创建名为 name 的实际子文件夹和空间，随后可在返回的空间里委派任务；rename 保留原空间身份。用户明确交代按顺序做多件事时可用 steps 固定各步；只给目标时直接传完整目标和限制。delegate 在指定空间新建普通任务或接续 targetTaskId；steer 将 text 发给正在执行的原任务，pause/stop 停止本轮，resume 在原任务接续。deliveries 按标题、文字或文件名查找本地普通任务已有成果，包括用户自行建立的任务。结果给出原任务及登记文件链接；有 nextOffset 时保留 cursor 并传 offset，否则把 next 作为 cursor 从 offset 0 继续。answer 传原委派 operationId、目标任务和 interactionId；系统原样转发本轮用户输入，选择或确认题需要用户明确给出选项。watch_file 订阅原任务空间里的单个相对文件路径，传 text 指定变化后要办的事；文件新增、元数据变化或删除一次触发后结束。file_watches 查看，cancel_watch 传原任务与 watchId 取消。pause_all/stop_all 仅控制 Dots 已关联的活动事项，可指定 spaceId；不指定空间时一起暂停或取消 Dots 自有计划。pause_proactive/resume_proactive 暂停或恢复主动跟进，保留正在运行的普通任务。goalId 可将本次委派关联到指定原任务已有 Goal。用户对这一个任务明确约定交付格式、语言或篇幅时，把对应原文摘录放入 deliveryInstruction，即使 text 已提及也要填。不要引用其他交办或只让 Dots 知道的内容。仅当用户明确表示由自己验收时，使用 goalUserAcceptanceQuote 原样引用这一约定。",
     parameters: Type.Object({
+      allowHandoff: Type.Optional(Type.Boolean({description:"读取上限时可否用同一事项自动交给已指定空间内的普通任务。按原始输入及最新修订判断；用户禁止委派、只要求当前对话处理或授权不明确时用 false。"})),
       assignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500})),
       previousAssignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"首项未引用原文时，用此字段补上首项原文，并用 assignmentQuote 引用本次独立事项"})),
       action: Type.Union(dotsAvailableActions(settings()).map(action => Type.Literal(action))), targetTaskId: Type.Optional(Type.String()),
@@ -57,14 +60,31 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
       text: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })),
     }, { additionalProperties: false }),
     execute: async (_id, input: DotsActionInput) => {
+      const invocation = currentDurableInvocation();
+      if (!invocation) throw new Error("缺少原生工具调用身份");
+      const reading = ["files", "materials", "read_file", "read_material"].includes(input.action);
+      const toolResult = (details: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(details) }], details });
+      if (reading) {
+        try {
+          const result = await actions.executeForegroundRead(input, invocation.foregroundInputs ?? [],
+            invocation.presentationConversationId ?? invocation.native.conversationId, invocation.execution.executionId,
+            () => actionAllowed("delegate", settings()), () => actionAllowed(input.action, settings()),
+            async () => { invocation.context.abortSignal?.throwIfAborted(); await checkCurrentToolInput(); });
+          invocation.terminateForeground = result.terminate;
+          return toolResult(result.details);
+        } catch (error) {
+          if (!(error instanceof DotsForegroundUnavailable)) throw error;
+          invocation.context.abortSignal?.throwIfAborted();
+          invocation.terminateForeground = true;
+          return toolResult({ foreground: "blocked", message: error.message });
+        }
+      }
       if (!actionAllowed(input.action, settings())) {
         const op = configuredActions.find(key => key === input.action);
         throw new Error(op ? `Dots 设置已关闭「${dotsOperations[op][1]}」` : "Dots 操作不可用");
       }
-      const invocation = currentDurableInvocation();
-      if (!invocation) throw new Error("缺少原生工具调用身份");
       const details = await actions.execute(invocation.execution.taskId, invocation.sourceUserMessageId, input, invocation.sourceDisplayText, invocation.sourceOrigin, invocation.sourceCreatedAt);
-      return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+      return toolResult(details);
     },
   });
 }

@@ -1,4 +1,4 @@
-import type { ConversationId, SubmissionId, ToolExecutionApi, Cursor } from "@earendil-works/pi-durable";
+import type { ConversationId, EntryId, SubmissionId, ToolExecutionApi, Cursor } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 
 /**
@@ -37,4 +37,36 @@ export async function durableSourceInput(
 
 export async function durableSourceUserMessageId(...args: Parameters<typeof durableSourceInput>): Promise<string | undefined> {
   return (await durableSourceInput(...args))?.id;
+}
+
+
+// Reading may use the first placed input as its accounting root even when
+// steering has placed more inputs. The normal side-effect provenance stays strict.
+export async function durableForegroundInputs(native: Pick<ToolExecutionApi, "commit">, context: Context,
+  conversationId: ConversationId, inputs: readonly SubmissionId[], first?: EntryId) {
+  return native.commit(async tx => {
+    const remaining = new Set(inputs);
+    const resolved = new Map<SubmissionId, import("../../dots/DotsForegroundReads").ForegroundInput>();
+    let cursor: Cursor | undefined;
+    while (remaining.size) {
+      const page = await tx.scanEntries({ conversationId, minEntryId: first, order: "descending" }, 100, cursor);
+      for (const entry of page.items) {
+        if (entry.kind !== "mybuddy.user") continue;
+        const data = entry.data;
+        const meta = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
+        if (!meta || typeof meta !== "object" || Array.isArray(meta) || typeof meta.displayText !== "string") continue;
+        const audit = meta.audit;
+        const raw = audit && typeof audit === "object" && !Array.isArray(audit) ? audit.userMessageId : undefined;
+        const requestId = typeof meta.inputRequestId === "string" ? meta.inputRequestId : raw;
+        if (typeof requestId !== "string") continue;
+        const receipt = await tx.submissionByRequest(conversationId, requestId);
+        if (receipt?.type !== "input" || receipt.entry !== entry.id || !remaining.delete(receipt.id)) continue;
+        resolved.set(receipt.id, { id: requestId, entryId: entry.id, text: meta.displayText,
+          createdAt: entry.model?.find(message => message.role === "user")?.timestamp });
+      }
+      cursor = page.next;
+      if (!cursor) break;
+    }
+    return remaining.size ? undefined : inputs.map(id => resolved.get(id)!);
+  }, context);
 }

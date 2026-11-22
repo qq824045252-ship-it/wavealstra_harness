@@ -758,6 +758,8 @@ export interface AgentPromptRequest {
   /** Reject an in-flight correction atomically if the original run is already idle. */
   requireActiveRun?: boolean;
   dotsSteerInputVersion?: string;
+  /** Host-only originating inputs for an automatic Dots read handoff. */
+  dotsForegroundInputs?: string[];
   /** Persisted reference to an explicitly designated Goal owned by this task. */
   dotsGoalId?: string;
   dotsGoalIntentRevision?: number;
