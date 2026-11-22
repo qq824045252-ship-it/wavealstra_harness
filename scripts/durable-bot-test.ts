@@ -179,8 +179,11 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.equal(paraphraseReceipt.ruleId, defaultReceipt.ruleId);
     assert.equal(paraphraseReceipt.revision, defaultReceipt.revision);
     const fallback = routing.list().find(rule => rule.id === defaultReceipt.ruleId)!;
-    const nextFallback = routing.save({ ...fallback, policy: { ...fallback.policy!, routeMode: "direct" } }, fallback);
-    const reopenRouting = () => new AnswerRoutingService(db, () => undefined);
+    const nextFallback = routing.save({ ...fallback, policy: { ...fallback.policy!, routeMode: "direct",
+      foregroundReadLimits: { characters: 6000, sources: 2, calls: 3 },
+      trackingPolicy: { milestones: false, heartbeatMs: 15_000, silenceMs: 30_000 },
+    } }, fallback);
+    const reopenRouting = () => new AnswerRoutingService(db, (id, task) => task ? memories.getForRecall(id, { taskId: task }) : memories.get(id));
     const resolveDefault = (inputId: string) => reopenRouting().prepare({
       taskId, inputId, cwd, query: "翻译：上海天气好", canRead: () => false,
     });
@@ -188,6 +191,18 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.equal((await resolveDefault("new-default"))?.rule.revision, nextFallback.revision);
     assert.match((await resolveDefault("translate"))?.text ?? "", /选择直答、查询或委派/);
     assert.match(await ask("next-policy-payload", "请把一段简短句子翻译为法语。"), /优先依据已有事实和有界读取直接回答/);
+
+    const matchedPayload = await ask("matched-policy", "上海明早出门要带伞吗");
+    assert.match(matchedPayload, /逐小时预报/);
+    assert.match(matchedPayload, /优先依据已有事实和有界读取直接回答/);
+    const [matchedReceipt] = routing.history({ taskId, inputId: "matched-policy" });
+    assert.equal(matchedReceipt.ruleId, routing.history({ taskId, inputId: "weather" })[0].ruleId);
+    assert.deepEqual(matchedReceipt.policy, nextFallback.policy);
+    const reopenWeather = async (inputId: string) => (await reopenRouting().prepare({
+      taskId, inputId, cwd, query: "上海明早出门要带伞吗", canRead: () => false,
+    }))?.rule.policy;
+    assert.deepEqual(await reopenWeather("weather"), fallback.policy);
+    assert.deepEqual(await reopenWeather("matched-policy"), nextFallback.policy);
 
     await writeFile(join(cwd, "tool-note.md"), "本次工具调用结束");
     const start = payloads.length;

@@ -224,7 +224,7 @@ function dotsForegroundNotice(message: ToolResult): string | undefined {
   const receipt = details.handoff?.receipt;
   if (details.foreground === "delegated" && typeof receipt?.taskId === "string" &&
       typeof receipt.operationId === "string" && Number.isSafeInteger(receipt.submissionId))
-    return "前台读取已达上限，[普通任务](mybuddy://task/" + encodeURIComponent(receipt.taskId) + ")已受理后续工作。";
+    return "我会在[后台任务](mybuddy://task/" + encodeURIComponent(receipt.taskId) + ")继续处理，结果会回到这里。";
   return undefined;
 }
 

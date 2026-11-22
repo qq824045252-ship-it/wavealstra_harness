@@ -465,13 +465,13 @@ export class DotsActions {
     if (!reached) return { details: result, terminate: false };
     const blocked = (message: string) => ({ details: { foreground: "limit", evidence: result, message }, terminate: true });
     if (input.allowHandoff !== true || !mayDelegate() || isDotsAutomaticInput(root.id))
-      return blocked("前台读取已达上限。当前输入未允许自动移交或委派已关闭。已保留取得的证据。");
+      return blocked("这次留在当前对话处理。已取得的资料不足以完成请求。");
     const spaceId = input.spaceId ?? (input.targetTaskId ? this.task(input.targetTaskId).spaceId : undefined);
-    if (!spaceId) return blocked("前台读取已达上限。缺少明确的普通任务工作空间。已保留取得的证据。");
+    if (!spaceId) return blocked("还需要核对更多资料。可以在哪个工作空间继续？");
     this.space(spaceId);
     await fresh();
     current();
-    if (!mayDelegate()) return blocked("前台读取已达上限。委派授权已撤销。");
+    if (!mayDelegate()) return blocked("后台任务的授权已撤回，暂时无法继续。");
     if (input.handoffOperationId && !input.targetTaskId)
       return blocked("续办需要同时指定原任务和原交办操作。");
     const prior = this.handoffs.get(root.id);
@@ -479,7 +479,7 @@ export class DotsActions {
     if (!prior) this.handoffs.set(root.id, flight);
     try {
       const handoff = await flight as { receipt?: {taskId: string; operationId: string; submissionId: number}; link?: string };
-      if (!handoff.receipt) return blocked("前台读取已达上限。暂未取得普通任务持久受理回执。");
+      if (!handoff.receipt) return blocked("暂时无法确认后台任务是否已接手。");
       return { details: { foreground: "delegated", evidence: result, handoff }, terminate: true };
     } finally {
       if (this.handoffs.get(root.id) === flight) this.handoffs.delete(root.id);
@@ -889,7 +889,7 @@ ${input.text}`),
     const calendar = receivedAt !== undefined && dotsCalendarContext(assignment ?? originalText ?? "", receivedAt);
     if (calendar) instructions.push(calendar);
     if (deliveryInstruction) instructions.push("用户对此任务的最终交付要求（以下原文优先于任务转述中的交付表述）：" + deliveryInstruction);
-    instructions.push("给原用户的最终回复只交付用户所求的内容并遵守约定格式。中间结果、执行经过、证据及内部结项状态仅在用户要求时写入。");
+    instructions.push("最终回执的 result 字符串会原样显示给用户。遵守用户本轮明确限定的交付范围和格式。如果用户说只给某一项，就只写那一项本身，省略标题、推导、中间结果、括号补充和执行过程。");
     if (steps.length) instructions.push("本次依次完成："+JSON.stringify(steps)+"。本轮只做第一步："+steps[0]);
     if (input.memoryRefs?.length) instructions.push("以下是本轮引用的记忆版本，仅使用宿主本轮提供的可见证据："+JSON.stringify(input.memoryRefs));
     const goalWork = goal ? goals.workService.getWork(goal.id) : undefined;

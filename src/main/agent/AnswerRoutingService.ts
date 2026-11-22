@@ -36,7 +36,6 @@ const policySchema = z.object({
   }).strict(),
 }).strict();
 const draftSchema = answerTeachingSchema.extend({
-  policy: policySchema.optional(),
   evidenceFile: z.string().trim().max(300).refine(path => !path || (!isAbsolute(path) && !win32.parse(path).root
     && !path.split(/[\\/]/u).includes("..") && !path.includes(":") && !/[\x00-\x1f]/u.test(path)), "资料必须是任务目录内的相对路径"),
   evidenceLibraryItemId: identifier.nullable().optional(), evidenceFailure: z.enum(["verify", "mark-unverified"]).optional(),
@@ -45,7 +44,6 @@ const draftSchema = answerTeachingSchema.extend({
 }).refine(draft => !(draft.evidenceFile && draft.evidenceLibraryItemId), "每条规则只能选择一种资料来源");
 const versionSchema = z.object({ id: identifier, revision: z.number().int().positive() });
 const chatChanges = answerTeachingSchema.partial().extend({
-  policy: policySchema.optional(),
   enabled: z.boolean().optional(), evidenceFile: z.string().optional(),
   evidenceLibraryItemId: identifier.nullable().optional(),
   evidenceFailure: z.enum(["verify", "mark-unverified"]).optional(),
@@ -55,7 +53,10 @@ const historyQuerySchema = z.union([
   z.object({ taskId: identifier, inputIds: z.array(identifier).max(200) }).strict(),
 ]);
 type Row = { id: string; revision: number; config: string; source_hash: string | null };
-const decode = (row: Row): AnswerRule => ({ ...JSON.parse(row.config) as AnswerRuleDraft, id: row.id, revision: row.revision });
+const decode = (row: Row): AnswerRule => {
+  const { policy, ...draft } = JSON.parse(row.config) as AnswerRuleDraft;
+  return { ...draft, id: row.id, revision: row.revision, ...(row.id === defaultAnswerRuleId && { policy }) };
+};
 const conflict = () => new Error("规则已变化或已删除，请刷新后重试");
 
 class EvidenceFailure extends Error {
@@ -345,16 +346,23 @@ export class AnswerRoutingService {
     finishMatch?.(() => ({ inputId: input.inputId, method: prior && priorRule ? "restore" : "match", matched: !!match, ruleId: match?.rule.id }));
     if (!match) return;
     const { phrase } = match;
-    const rule = { ...match.rule, policy: match.rule.policy ?? defaultDotsSchedulingPolicy() };
+    // The original snapshot owns the policy for retries. A new input takes the current default even when a rule matches.
+    const fallback = !prior?.snapshot && match.rule.id !== defaultAnswerRuleId
+      ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=?").get(defaultAnswerRuleId) as Row | undefined
+      : undefined;
+    const policy = (fallback ? decode(fallback).policy : match.rule.policy) ?? defaultDotsSchedulingPolicy();
+    const rule = { ...match.rule, policy };
     const scope = JSON.stringify({ projectId: task.projectId ?? null, cwd: input.cwd,
       ...(rule.sourceMemoryId ? { sourceHash: rule.sourceHash } : {}) });
     if (prior && (rule.sourceUnavailable || prior.scope !== scope)) throw cannotRestore();
     const routeInstruction = {
       direct: "优先依据已有事实和有界读取直接回答。超出前台范围时，按本轮授权移交。",
       delegate: "需要执行的事项在完成必要定位后优先交给普通任务。用户要求直答或禁止委派时按其要求处理。",
-      auto: "按本轮请求和现有任务状态选择直答、查询或委派，并遵守前台读取范围。",
+      auto: "按本轮请求和现有任务状态选择直答、查询或委派。已有事实或少量核对足以回答就直接答；查询、修改或停止已有事项用原任务。预计要核对大量资料、修改文件、运行测试或长时间等待时，定位到已获准的工作空间后优先交普通任务，不必先把前台读取用满。",
     }[rule.policy.routeMode];
-    const introduction = "本轮回答调度。以用户本次明确要求为先。" + routeInstruction;
+    const introduction = "本轮回答调度。用户本次明确要求优先，包括只在对话内处理、暂停或停止。"
+      + routeInstruction
+      + (phrase ? "下面的回答规则仅提供答复方法和佐证；处理方式、任务权限和回报由本轮要求及调度策略决定。" : "");
     const evidenceParts: string[] = [];
     let detail = prior?.detail ?? (phrase ? `已提供做法，匹配“${phrase}”` : "采用默认调度策略");
     const priorEvidence = prior?.evidence ? JSON.parse(prior.evidence) as AnswerRuleEvidence : undefined;

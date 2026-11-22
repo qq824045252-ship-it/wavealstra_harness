@@ -136,8 +136,8 @@ export async function verifyForegroundScheduling(root: string) {
     const receipt = (await agent.findSubmission(job.taskId, job.id))?.receipt;
     assert.equal(receipt?.taskId, job.taskId);
     assert.equal(receipt?.operationId, job.id);
-    const ack = (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.find(message => message.text.includes("已受理后续工作"));
-    assert(ack?.text.includes("mybuddy://task/" + job.taskId));
+    const ack = (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.find(message => message.text.includes("结果会回到这里"));
+    assert.equal(ack?.text, `我会在[后台任务](mybuddy://task/${job.taskId})继续处理，结果会回到这里。`);
     assert(delegations.list(["audit-ledger"]).length === 1);
     assert.equal(failLink, false);
     assert.equal(loseReceipt, false);
@@ -169,11 +169,10 @@ export async function verifyForegroundScheduling(root: string) {
     foregroundCalls = 0;
     const cwd = agent.resolveTaskExecutionWorkspaceCwd(DOTS_TASK_ID);
     writeFileSync(join(cwd, "recipe-context.txt"), "synthetic recipe notes");
-    const fallback = agent.answerRouting.list().find(rule => rule.id === defaultAnswerRuleId)!;
+    policy({ characters: 2_000, sources: 3, calls: 3 });
     const rule = agent.answerRouting.save({ title: "食谱临摹规则", include: ["食谱临摹"], exclude: [],
       instruction: "按本轮指定范围处理。", evidenceFile: "recipe-context.txt", enabled: true,
-      projectId: null, sourceMemoryId: null,
-      policy: { ...fallback.policy!, foregroundReadLimits: { characters: 2_000, sources: 3, calls: 3 } } });
+      projectId: null, sourceMemoryId: null });
     const original = await agent.prompt({ taskId: DOTS_TASK_ID, userMessageId: "recipe-summary",
       assistantMessageId: "recipe-answer", text: "食谱临摹。只在当前对话阅读这份食谱。不要委派。" });
     assert(original.receipt);
@@ -193,7 +192,7 @@ export async function verifyForegroundScheduling(root: string) {
     assert.equal(recipe.reads[0].characters, "synthetic recipe notes".length);
     assert.equal(reads.state("recipe-revision").calls, 0);
     assert.equal(delegations.list(["recipe-summary"]).length, 0);
-    assert((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message => message.text.includes("前台读取已达上限。当前输入未允许")));
+    assert((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message => message.text === "这次留在当前对话处理。已取得的资料不足以完成请求。"));
     assert.equal(foregroundCalls, 2);
     const disabled = agent.answerRouting.save({ ...rule, enabled: false }, rule);
     agent.answerRouting.save({ ...disabled, enabled: true }, disabled);
@@ -204,10 +203,10 @@ export async function verifyForegroundScheduling(root: string) {
     library.updateTextContent({ id: note.id, content: "当前资料正文" });
     materialId = note.id;
     materialVersion = library.listVersions(note.id)[0].version;
-    agent.answerRouting.save({ ...fallback, title: "跨入口账本", include: ["跨入口核验"], exclude: [],
+    policy({ characters: 30_000, calls: 5, sources: 3 });
+    agent.answerRouting.save({ title: "跨入口账本", include: ["跨入口核验"], exclude: [],
       instruction: "核验台账。", evidenceFile: "recipe-context.txt", enabled: true,
-      projectId: null, sourceMemoryId: null,
-      policy: { ...fallback.policy!, foregroundReadLimits: { characters: 30_000, calls: 5, sources: 3 } } });
+      projectId: null, sourceMemoryId: null });
     continuation = { targetTaskId: job.taskId, handoffOperationId: job.id };
     phase = "mixed";
     foregroundCalls = 0;
@@ -225,9 +224,9 @@ export async function verifyForegroundScheduling(root: string) {
     assert.match(received?.text ?? "", /前台取得的有界文件佐证/);
     assert.match(received?.text ?? "", /ledger\.txt/);
     assert.match(received?.text ?? "", /a{12000}/);
-    agent.answerRouting.save({ ...fallback, title: "缺失预读", include: ["缺档核验"], exclude: [], instruction: "核验食谱。",
-      evidenceFile: "missing-note.txt", enabled: true, projectId: null, sourceMemoryId: null,
-      policy: { ...fallback.policy!, foregroundReadLimits: { characters: 20, calls: 1, sources: 1 } } });
+    policy({ characters: 20, calls: 1, sources: 1 });
+    agent.answerRouting.save({ title: "缺失预读", include: ["缺档核验"], exclude: [], instruction: "核验食谱。",
+      evidenceFile: "missing-note.txt", enabled: true, projectId: null, sourceMemoryId: null });
     phase = "missing";
     foregroundCalls = 0;
     await ask("missing-evidence", "缺档核验，授权移交。");
