@@ -23,7 +23,7 @@ module.exports = async function checkWeatherTeaching(env) {
   const {cwd} = await evaluate("window.api.dots.open()");
   const weatherFile = path.join(cwd, "weather.txt");
   await fs.writeFile(weatherFile, "天气演练记录。站点代号 LM-318，多云。");
-  assert.equal((await ask(question)).uses.length, 0);
+  assert.deepEqual((await ask(question)).uses.map(use => use.ruleId), ["dots-default-policy"]);
   await press(`[...document.querySelectorAll('${teach}')].at(-1)`, "teach from the weather reply");
   const instruction = 'textarea[aria-label="下次怎么做"]';
   assert.ok(await evaluate("!!document.querySelector('dialog.answer-rule-dialog:modal') && !document.querySelector('.desktop-settings')"));
@@ -78,7 +78,7 @@ module.exports = async function checkWeatherTeaching(env) {
   await screenshot("weather-answer");
   const translation = "把「今天天气怎么样」翻译成英文";
   const skipped = await ask(translation);
-  assert.equal(skipped.uses.length, 0);
+  assert.deepEqual(skipped.uses.map(use => use.ruleId), ["dots-default-policy"]);
   report.weatherTeaching.turns.push({question:translation, uses:skipped.uses.length});
   await openSettings();
   await click("查询出行天气", ".answer-routing-list");
