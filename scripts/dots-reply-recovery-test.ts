@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { DOTS_NO_CHANGE, DOTS_TASK_ID } from "../src/shared/dots";
+import { DotsReplyOutbox } from "../src/main/dots/DotsReplyOutbox";
+import { defaultAnswerRuleId, defaultDotsSchedulingPolicy } from "../src/shared/answer-routing";
 import { DotsDelegations } from "../src/main/dots/DotsDelegations";
 import { resolveDotsPreferences } from "../src/shared/dots-settings";
 
@@ -27,7 +29,7 @@ const workerInputs: unknown[] = [];
 let replayAdmissions = 0;
 const answer = "盘点结果是 37 件，其中 2 件需要补货。";
 
-async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress") {
+async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly") {
   const db = new AppDatabase(join(root, "app.db"));
   const artifacts = createArtifactDomain(db.connection);
   db.openDots();
@@ -36,9 +38,18 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
   let reportedProgress = false;
   let releaseTimer!: () => void;
   const timerGate = new Promise<void>(resolve => { releaseTimer = resolve; });
+  if (fault === "activityOnly") writeFileSync(join(root, "signal.txt"), "fixture signal 42");
   const fixture = await createAgentDurableFixture(root, db, async input => {
     const tools = getCurrentTools(input.messages);
     const latest = input.messages.at(-1);
+    if (fault === "activityOnly" && !tools.some(t => t.name === "dots_action") && tools.some(t => t.name === "read")) {
+      if (latest?.role === "toolResult" && latest.toolCallId === "activity-read") {
+        enteredTimer = true;
+        await timerGate;
+        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "42" }) }];
+      }
+      return [{ type: "toolCall", id: "activity-read", name: "read", arguments: { path: "signal.txt" } }];
+    }
     if (latest?.role === "toolResult") {
       if (fault === "foregroundError" && latest.toolCallId === "delegate-foregroundError")
         return { content: [], errorMessage: "fixture foreground provider unavailable after delegation" };
@@ -81,6 +92,7 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
   const journal = new DotsDelegations(db.connection, (id, op) => agent.dotsSubmission(id, op), () => {});
   const actions = new DotsActions(db, agent, {
     link:(...args) => journal.link(...args), rememberOrigin:(...args) => journal.rememberOrigin(...args),
+    observeTool:event => journal.observeTool(event),
     list:() => journal.list(), changed:() => journal.refresh(), failed:(...args) => journal.failed(...args),
     preferences:() => resolveDotsPreferences(agent.getAppSettings().dotsSettings),
     fileNotice:notice => fileNotices.push(notice.id),
@@ -412,6 +424,76 @@ try {
   assert.equal(workerCalls,before+2);
 } finally { await progressPolicy.close(); }
 console.log("PASS changing settings resumes the one deferred ordinary-task continuation without redoing its first milestone");
+const activityHost = await open("activityOnly");
+try {
+  const { agent, db, journal, fixture } = activityHost;
+  assert.deepEqual(defaultDotsSchedulingPolicy().trackingPolicy, { milestones: true, heartbeatMs: null, silenceMs: 120_000 });
+  const fallback = agent.answerRouting.list().find(rule => rule.id === defaultAnswerRuleId)!;
+  agent.answerRouting.save({ ...fallback, policy: { ...fallback.policy!,
+    trackingPolicy: { milestones: true, heartbeatMs: 5_000, silenceMs: 5_000 } } }, fallback);
+  const source = "plain-native-activity";
+  await fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: source, assistantMessageId: "activity-ack", text: "核对本地信号记录。" });
+  for (let i=0; i<140 && !activityHost.enteredTimer(); i++) await sleep();
+  assert(activityHost.enteredTimer());
+  const before = fixture.requests.length;
+  const initial = journal.list([source])[0];
+  assert.equal(initial.activity?.phase, "finish");
+  assert.equal(initial.activity?.tool, "read");
+  assert.equal(initial.activity?.lastProgressAt, undefined);
+  for (let i=0; i<240 && !journal.list([source])[0]?.activity?.lastReportAt; i++) await sleep();
+  const state = journal.list([source])[0].activity!;
+  assert(state.lastReportAt && state.lastReportAt > state.lastActivityAt);
+  assert.equal(state.lastActivityAt, initial.activity?.lastActivityAt);
+  assert.equal(state.lastProgressAt, undefined);
+  assert.equal(fixture.requests.length, before);
+  const history = () => agent.loadTaskHistory(DOTS_TASK_ID).then(result => result.messages);
+  const progress = (await history()).find(m => m.dotsDelivery?.sourceMessageId === source && m.dotsDelivery.kind === "progress");
+  assert.match(progress?.text ?? "", /工具 read 返回.*没有新的可核实进展/);
+  activityHost.releaseTimer();
+  for (let i=0; i<200 && journal.list([source])[0]?.status !== "completed"; i++) await sleep();
+  await journal.drain();
+  assert.equal((await history()).filter(m=>m.dotsDelivery?.sourceMessageId===source && m.dotsDelivery.kind==="conclusion" && m.text==="42").length,1);
+  console.log("PASS read-only native activity without progress JSON returns to origin with unchanged activity/progress clocks and no extra requests");
+
+  const outbox = new DotsReplyOutbox(db.connection);
+  const target = "stale-heartbeat-fixture";
+  db.upsertTask({ id: target, title: "仅用于心跳边界", updatedAt: Date.now() });
+  let sends = 0;
+  let permitAppend = false;
+  outbox.connect(async () => { throw Error("heartbeat must bypass model/followup"); }, async (_reply, valid) => {
+    if (!valid()) return "discarded";
+    if (!permitAppend) return "pending";
+    sends++;
+    return "appended";
+  });
+  const pendingSample = async (id: string, window: number) => {
+    journal.link(target, id, source);
+    db.connection.prepare("UPDATE dots_delegations SET status='running' WHERE operation_id=?").run(id);
+    db.connection.prepare("INSERT INTO dots_tool_observations(operation_id,at,tool,phase) VALUES(?,1,'read','finish')").run(id);
+    const row = journal.list([source]).find(r=>r.id===id)!;
+    permitAppend = false;
+    assert(outbox.observeActivity(row, window, "旧活动样本"));
+    assert(await outbox.flush(target, () => true));
+    permitAppend = true;
+  };
+  await pendingSample("sample-pause", 1);
+  db.connection.prepare("INSERT OR IGNORE INTO dots_proactive_pauses VALUES('', '[]')").run();
+  await outbox.flush(target, () => true);
+  db.connection.prepare("DELETE FROM dots_proactive_pauses WHERE scope=''").run();
+  await outbox.flush(target, () => true);
+  await pendingSample("sample-revised", 2);
+  journal.link(target, "sample-revision-new", source, true);
+  await outbox.flush(target, () => true);
+  await pendingSample("sample-terminal", 3);
+  db.connection.prepare("UPDATE dots_delegations SET status='completed' WHERE operation_id='sample-terminal'").run();
+  await outbox.flush(target, () => true);
+  await pendingSample("sample-new-fact", 4);
+  db.connection.prepare("UPDATE dots_tool_observations SET at=2 WHERE operation_id='sample-new-fact'").run();
+  await outbox.flush(target, () => true);
+  assert.equal(sends, 0);
+  assert.equal(outbox.hasPending(target), false);
+  console.log("PASS queued heartbeats expire on pause, supersession, terminal status and newer native activity");
+} finally { await activityHost.close(); }
 mkdirSync("out/tests",{recursive:true});
 writeFileSync("out/tests/dots-reply-recovery.json", JSON.stringify(evidence,null,2)+"\n");
 console.log("PASS both crash boundaries and repeated events: original conversation received one new assistant reply, ordinary task ran once");

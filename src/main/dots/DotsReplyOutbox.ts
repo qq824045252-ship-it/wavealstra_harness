@@ -110,7 +110,20 @@ export class DotsReplyOutbox {
     if (event.status === "blocked" && event.interaction_id && !this.db.prepare(
       "SELECT 1 FROM conversation_interactions WHERE id=? AND task_id=(SELECT task_id FROM dots_delegations WHERE operation_id=?) AND status='pending'"
     ).get(event.interaction_id, event.operation_id)) return "obsolete";
-    return row.paused || row.state === "paused" || row.lifecycle === "paused" ? "hold" : "active";
+    const held = row.paused || row.state === "paused" || row.lifecycle === "paused";
+    if (event.status === "activity" && event.snapshot) {
+      // A queued heartbeat is a sample, not a milestone. Re-sample after a
+      // pause or after the worker has produced newer facts.
+      if (held) return "obsolete";
+      const sample = (JSON.parse(event.snapshot) as DotsDelegation).activity;
+      const latest = this.db.prepare(`SELECT a.at,a.tool,a.phase,
+        (SELECT max(p.at) FROM dots_verified_progress p WHERE p.operation_id=a.operation_id) AS progress_at
+        FROM dots_tool_observations a WHERE a.operation_id=?`).get(event.operation_id) as
+        { at: number; tool: string; phase: string; progress_at: number | null } | undefined;
+      if (!sample || !latest || sample.lastActivityAt !== latest.at || sample.tool !== latest.tool ||
+        sample.phase !== latest.phase || (sample.lastProgressAt ?? null) !== latest.progress_at) return "obsolete";
+    }
+    return held ? "hold" : "active";
   }
 
   /** Return true when an original receipt or a transient write still needs another wake-up. */

@@ -138,16 +138,16 @@ export class DotsDelegations {
     this.observationTimer = undefined;
     if (this.disposed) return;
     const now = Date.now();
-    const due = this.db.prepare(`SELECT d.*,a.at,a.tool,a.phase,a.next_at,
+    const due = this.db.prepare(`SELECT d.*,a.at,a.tool,a.phase,a.next_at,a.last_report_at,
       (SELECT at FROM dots_verified_progress p WHERE p.operation_id=d.operation_id ORDER BY at DESC LIMIT 1) AS progress_at FROM dots_tool_observations a
       JOIN dots_delegations d USING(operation_id) WHERE a.next_at<=?`).all(now) as
-      (Row & Pick<Activity, "at" | "tool" | "phase" | "progress_at"> & { next_at: number })[];
+      (Row & Activity & { next_at: number })[];
     const targets = this.db.transaction(() => {
       const next = this.db.prepare("UPDATE dots_tool_observations SET next_at=? WHERE operation_id=?");
       const targets = new Set<string>();
       for (const row of due) {
         const policy = this.tracking(row);
-        const job = toDelegation(row);
+        const job = toDelegation(row, row);
         const active = row.status === "pending" ||
           (row.status === "running" && this.outbox.activityAvailability(job) === "active");
         next.run(active && policy?.heartbeatMs ? now + policy.heartbeatMs : null, row.operation_id);

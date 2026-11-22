@@ -1,3 +1,7 @@
+if (process.argv.includes("--activity-live")) {
+  require("./dots-activity-live.cjs");
+  return;
+}
 if (process.argv.includes("--foreground-live")) {
   require("./dots-foreground-live.cjs");
   return;
