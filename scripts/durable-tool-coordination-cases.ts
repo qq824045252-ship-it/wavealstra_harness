@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { link, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { defineTool, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createRegistry, defineTool, Harness, MemoryStorage, type Conversation, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { withDurableToolCoordination } from "../src/main/agent/durable/DurableToolCoordination";
 
@@ -15,10 +16,21 @@ const turn = () => new Promise<void>(resolve => setImmediate(resolve));
 export async function verifyDurableToolCoordination(root: string): Promise<void> {
   const cwd = join(root, "actual-tool-coordination");
   await mkdir(cwd);
+  const models = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null,
+    modelsStorePath: join(cwd, "models.json"), refreshOnCreate: false });
+  const harness = await Harness.open(new MemoryStorage(), { models, registry: createRegistry() }, BACKGROUND_CONTEXT);
+  try {
+    const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { cwd } });
+    await verifyResourceLeases(cwd, conversation);
+  } finally { await harness.close(BACKGROUND_CONTEXT); }
+}
+
+async function verifyResourceLeases(cwd: string, conversation: Conversation): Promise<void> {
   const target = join(cwd, "target.txt"), other = join(cwd, "other.txt");
   await writeFile(target, "old");
   const notStarted: unknown[] = [];
-  const api = { agent: async () => ({ cwd }), taskId: 12, conversationId: 3, callId: "controlled-call",
+  const api = { agent: conversation.agent.bind(conversation), commit: conversation.commit.bind(conversation),
+    taskId: 12, conversationId: conversation.id, callId: "controlled-call",
     memo: async (_name: string, candidate: unknown) => { notStarted.push(candidate); return candidate; } } as unknown as ToolExecutionApi;
   const run = (name: string, args: Record<string, unknown>, body: () => Promise<void>, signal?: AbortSignal, beforeExecute?: () => void) => {
     const tool = withDurableToolCoordination(defineTool({ name, description: "Controlled tool with real filesystem effects", parameters: Type.Object({}, { additionalProperties: true }), replay: "safe",
@@ -105,7 +117,7 @@ export async function verifyDurableToolCoordination(root: string): Promise<void>
   const cancelled = run("read", { path: target }, async () => { cancelledExecuted = true; }, controller.signal);
   await turn(); controller.abort(new Error("cancel queued call"));
   await assert.rejects(cancelled, /cancel queued call/); assert.equal(cancelledExecuted, false);
-  assert.deepEqual(notStarted.at(-1), { toolName: "read", callId: "controlled-call", taskId: 12, conversationId: 3, phase: "validation" });
+  assert.deepEqual(notStarted.at(-1), { toolName: "read", callId: "controlled-call", taskId: 12, conversationId: conversation.id, phase: "validation" });
   release.release(); await held;
   await assert.rejects(run("write", { path: target }, async () => { throw new Error("controlled tool failure"); }), /controlled tool failure/);
   await run("read", { path: target }, async () => { await readFile(target); });
@@ -125,10 +137,10 @@ export async function verifyDurableToolCoordination(root: string): Promise<void>
     () => { if (!allowed) throw new Error("Work paused while awaiting resource"); });
   await turn(); allowed = false; revocationRelease.release(); await previous;
   await assert.rejects(revoked, /Work paused/); assert.equal(revokedExecuted, false);
-  assert.deepEqual(notStarted.at(-1), { toolName: "write", callId: "controlled-call", taskId: 12, conversationId: 3, phase: "validation" });
+  assert.deepEqual(notStarted.at(-1), { toolName: "write", callId: "controlled-call", taskId: 12, conversationId: conversation.id, phase: "validation" });
   await assert.rejects(run("mcp_call_tool", { server: "opaque", tool: "run_script", arguments: {} }, async () => {
     assert.fail("a revoked MCP leaf must not execute");
   }, undefined, () => { throw new Error("MCP review expired"); }), /MCP review expired/);
-  assert.deepEqual(notStarted.at(-1), { toolName: "mcp__opaque__run_script", callId: "controlled-call", taskId: 12, conversationId: 3, phase: "validation" });
+  assert.deepEqual(notStarted.at(-1), { toolName: "mcp__opaque__run_script", callId: "controlled-call", taskId: 12, conversationId: conversation.id, phase: "validation" });
   console.log("PASS actual tool boundaries: disjoint progress, read/read overlap, read/write waits, cross-dispatch identities, hardlinks/junctions, opaque shell/MCP writes, cancellation and error release");
 }

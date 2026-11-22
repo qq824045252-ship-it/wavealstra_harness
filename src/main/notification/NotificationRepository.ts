@@ -24,6 +24,17 @@ interface NotificationSqlRow {
   read_at: number | null;
   dismissed_at: number | null;
   target_json?: string | null;
+  group_key?: string;
+  group_count?: number;
+  unread_count?: number;
+  activation_id?: string;
+  activation_json?: string | null;
+  activation_title?: string;
+  activation_body?: string | null;
+  activation_created_at?: number;
+  activation_task_id?: string | null;
+  activation_project_id?: string | null;
+  activation_source_type?: NotificationSourceType;
 }
 
 function mapRow(row: NotificationSqlRow): NotificationDto {
@@ -31,7 +42,7 @@ function mapRow(row: NotificationSqlRow): NotificationDto {
   if (row.target_json) {
     try { target = parseNotificationTarget(JSON.parse(row.target_json)); } catch { /* Invalid persisted target. */ }
   }
-  return {
+  const record: NotificationDto = {
     ...(target ? { target } : {}),
     id: row.id,
     type: row.type as NotificationType,
@@ -48,6 +59,21 @@ function mapRow(row: NotificationSqlRow): NotificationDto {
     readAt: row.read_at ?? undefined,
     dismissedAt: row.dismissed_at ?? undefined,
   };
+  if (row.group_key && row.group_count !== undefined && row.unread_count !== undefined && row.activation_id) {
+    let activationTarget: NotificationActivationTarget | null = null;
+    if (row.activation_json) {
+      try { activationTarget = parseNotificationTarget(JSON.parse(row.activation_json)); } catch { /* Invalid persisted target. */ }
+    }
+    const fallbackTarget = row.activation_source_type ? notificationTarget({
+      taskId: row.activation_task_id ?? undefined, projectId: row.activation_project_id ?? undefined,
+      sourceType: row.activation_source_type,
+    }) : null;
+    record.group = { key: row.group_key, count: row.group_count, unreadCount: row.unread_count,
+      activationId: row.activation_id, target: activationTarget ?? fallbackTarget ?? undefined,
+      preview: { title: row.activation_title ?? row.title, body: row.activation_body ?? undefined,
+        createdAt: row.activation_created_at ?? row.created_at } };
+  }
+  return record;
 }
 
 export class NotificationRepository {
@@ -133,7 +159,9 @@ export class NotificationRepository {
       bindings.push(query, query);
     }
     const before = request.before;
-    if (before && Number.isFinite(before.createdAt) && typeof before.id === "string") {
+    const cursorWhere = typeof before?.id === "string" && Number.isFinite(before.createdAt);
+    if (request.grouped) return this.listGrouped(where, bindings, limit, cursorWhere ? before : undefined);
+    if (before && cursorWhere) {
       where.push("(created_at, id) < (?, ?)");
       bindings.push(before.createdAt, before.id);
     }
@@ -144,6 +172,48 @@ export class NotificationRepository {
       ORDER BY created_at DESC, id DESC
       LIMIT ?
     `).all(...bindings, limit) as NotificationSqlRow[];
+    return rows.map(mapRow);
+  }
+
+  private listGrouped(where: string[], bindings: Array<string | number>, limit: number,
+    before: NotificationListRequest["before"]): NotificationDto[] {
+    const rows = this.db.prepare(`
+      WITH visible AS (
+        SELECT n.*, CASE WHEN json_valid(a.target_json) THEN a.target_json END AS target_json
+        FROM notifications n
+        LEFT JOIN notification_activation_targets a ON a.notification_id = n.id
+        WHERE ${where.join(" AND ")}
+      ), grouped AS (
+        SELECT *, CASE
+          WHEN json_extract(target_json, '$.kind') = 'work'
+            THEN json_array('work', json_extract(target_json, '$.workId'))
+          WHEN json_extract(target_json, '$.kind') = 'botConversation'
+            THEN json_array('conversation', json_extract(target_json, '$.botId'),
+              json_extract(target_json, '$.teamId'), json_extract(target_json, '$.conversationId'))
+          WHEN COALESCE(json_extract(target_json, '$.taskId'), task_id) IS NOT NULL
+            THEN json_array('task', COALESCE(json_extract(target_json, '$.taskId'), task_id), json_extract(target_json, '$.workId'))
+          ELSE json_array('notification', id)
+        END AS group_key
+        FROM visible
+      ), ranked AS (
+        SELECT *, count(*) OVER members AS group_count, sum(read_at IS NULL) OVER members AS unread_count,
+          row_number() OVER (PARTITION BY group_key ORDER BY created_at DESC, id DESC) AS position,
+          first_value(id) OVER focus AS activation_id
+        FROM grouped
+        WINDOW members AS (PARTITION BY group_key),
+          focus AS (PARTITION BY group_key ORDER BY read_at IS NOT NULL,
+            CASE WHEN read_at IS NULL THEN created_at END ASC,
+            CASE WHEN read_at IS NULL THEN id END ASC, created_at DESC, id DESC)
+      ), page AS (
+        SELECT * FROM ranked WHERE position = 1 ${before ? "AND (created_at, id) < (?, ?)" : ""}
+        ORDER BY created_at DESC, id DESC LIMIT ?
+      )
+      SELECT p.*, a.target_json AS activation_json, a.title AS activation_title,
+        a.body AS activation_body, a.created_at AS activation_created_at, a.task_id AS activation_task_id,
+        a.project_id AS activation_project_id, a.source_type AS activation_source_type
+      FROM page p JOIN visible a ON a.id = p.activation_id
+      ORDER BY p.created_at DESC, p.id DESC
+    `).all(...bindings, ...(before ? [before.createdAt, before.id] : []), limit) as NotificationSqlRow[];
     return rows.map(mapRow);
   }
 

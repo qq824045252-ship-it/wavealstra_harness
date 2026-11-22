@@ -1,0 +1,17 @@
+.goal-execution-panel { padding: 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--fg); }
+.goal-execution-panel h3 { font-size: 14px; margin: 0 0 8px; }
+.goal-execution-panel p { margin-block: 6px; color: var(--fg-secondary); }
+.goal-execution-cost { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.goal-execution-cost strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+.goal-execution-panel dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin-block: 8px; }
+.goal-execution-panel dl > div { display: contents; }
+.goal-execution-panel dt { color: var(--fg-secondary); }
+.goal-execution-panel dd { margin: 0; }
+.goal-execution-panel summary { cursor: pointer; }
+.goal-child-list { padding: 0; margin: 0; list-style: none; }
+.goal-child-list li, .goal-child-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.goal-child-list li + li { margin-top: 6px; }
+.goal-child-list small { display: block; color: var(--fg-secondary); overflow-wrap: anywhere; }
+.goal-child-steer form { display: grid; gap: 6px; justify-items: start; }
+.goal-child-steer label, .goal-child-steer textarea { display: block; width: 100%; }
+.goal-child-steer .sa-steer-receipts { max-width: none; width: 100%; }

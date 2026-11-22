@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { recordHostToolNotStarted } from "../agent/durable/DurableToolOutcome";
+import { checkCurrentToolInput, DurableInputDeferredError } from "../agent/durable/DurableToolInputScope";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 import { BROWSER_EXEC_ACTIONS, browserFetchRequestSchema } from "./BrowserToolContract";
 import { browserConditionSchema, browserConditionsScript, parseBrowserConditionEvidence, type BrowserCondition, type BrowserConditionEvidence } from "./browser/BrowserConditions";
@@ -366,7 +367,9 @@ export class BrowserAutomationService {
     } catch (error) {
       const outcome = { dispatch: scope.dispatched ? "dispatched" : "not_started", effect: scope.confirmed ? "confirmed" : scope.dispatched ? "unknown" : "none" };
       const evidence = { outcome, currentUrl: scope.pageUrl };
-      if (!scope.dispatched && (input.action === "navigate" || BROWSER_INPUT_ACTIONS.has(input.action))) await recordHostToolNotStarted("browser_exec");
+      if (!scope.dispatched && (error instanceof DurableInputDeferredError || input.action === "navigate" || BROWSER_INPUT_ACTIONS.has(input.action))) {
+        await recordHostToolNotStarted("browser_exec");
+      }
       if (error instanceof Error && error.name === "AbortError") {
         Object.assign(error, { details: evidence }); throw error;
       }
@@ -780,7 +783,11 @@ export class BrowserAutomationService {
         wc.downloadURL(target.href);
         return { action: input.action };
       }
-      if (writes) scope.dispatch();
+      if (writes) {
+        const current = checkCurrentToolInput();
+        if (current) await current;
+        scope.dispatch();
+      }
       const fetched = await js<NonNullable<BrowserExecOutput["fetched"]>>(pageFetchScript(target.href, input.maxChars ?? 30000, scope.remaining, request));
       if (writes) scope.confirmed = true;
       return { action: input.action, fetched };

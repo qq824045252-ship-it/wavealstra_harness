@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,6 +12,7 @@ import { SettingsManager } from '@earendil-works/pi-coding-agent';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { MemoryStorage } from '@earendil-works/pi-durable';
 import { stream } from '../node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js';
+import { stream as streamChat } from '../node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js';
 import { CacheRequestTracer, observeCacheRequestTraces } from '../src/main/agent/CacheRequestTrace';
 import {
   identifyModelInvocation, installModelInvocationAdmission, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings,
@@ -119,6 +122,44 @@ assert.equal(rawNative.usagePresent, true);
 assert.equal(rawNative.cachedTokensPresent, true);
 assert.deepEqual(rawNative.usage, { inputTokens: 150000, outputTokens: 2, totalTokens: null, cachedTokens: 24704 });
 console.log('PASS native Responses serializer, caller transform, real HTTP-body boundary, retries and response correlation');
+
+const reportedCharges = [0.025, 0, undefined];
+let meteredCalls = 0;
+const meter = createServer((request, response) => {
+  request.resume();
+  const price = reportedCharges[meteredCalls++];
+  const id = `chat-meter-${meteredCalls}`;
+  const base = { id, object: "chat.completion.chunk", model: "metered", created: 1 };
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  for (const chunk of [
+    { ...base, choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: null }] },
+    { ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: {
+      prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100,
+      prompt_tokens_details: { cached_tokens: 0 }, ...(price === undefined ? {} : { cost: price }),
+    } },
+  ]) response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  response.end("data: [DONE]\n\n");
+});
+await new Promise<void>(resolve => meter.listen(0, "127.0.0.1", resolve));
+try {
+  const meteredModel: Model<"openai-completions"> = { ...model, id: "metered", api: "openai-completions",
+    baseUrl: `http://127.0.0.1:${(meter.address() as AddressInfo).port}/v1`,
+    cost: { input: 3, output: 1.4, cacheRead: 0, cacheWrite: 0 } };
+  const chatRecords: any[] = [];
+  const chatTracer = new CacheRequestTracer(record => chatRecords.push(record));
+  const chatRuntime = { getModel: () => meteredModel, stream: streamChat, streamSimple: streamChat };
+  installModelInvocationAdmission(chatRuntime as any, () => settings, (...args) => chatTracer.start(...args));
+  const input = normalizeContext({ messages: [{ role: "user", content: "fixture", timestamp: 1 }] });
+  for (const expected of reportedCharges) {
+    const answer = await chatRuntime.streamSimple(meteredModel, input, { apiKey: secret }).result();
+    assert.equal(answer.stopReason, "stop", answer.errorMessage);
+    assert(Math.abs(answer.usage.cost.total - 0.00314) < 1e-9, "SDK catalog estimate is deliberately unchanged");
+    const receipt = chatRecords.filter(row => row.event === "result").at(-1);
+    assert.equal(receipt?.nativeCostSource, expected === undefined ? "pi-native" : "provider-reported");
+    assert(Math.abs(receipt.nativeCostTotal - (expected ?? 0.00314)) < 1e-9);
+  }
+} finally { await new Promise<void>(resolve => meter.close(() => resolve())); }
+console.log("PASS actual loopback Chat SSE preserves USD .025 and zero over SDK .00314, and labels the absent cost as an estimate");
 
 // Durable has no AgentSession to describe a model request. Its task hooks register a boundary under the
 // invocation's abort signal — the same signal-keyed contract as DurableBotRuntime.modelRequestGuards — and
@@ -412,7 +453,7 @@ try {
   await durableBot.close();
   rmSync(durableRoot,{recursive:true,force:true});
 }
-console.log('PASS cache request tracing; all provider responses simulated; no network');
+console.log('PASS cache request tracing; simulated provider responses, no external network');
 
 // The live Magpie/DeepSeek Chat Completions path must expose raw usage too.
 for (const [cached, state] of [[256, 'positive'], [0, 'explicit-zero'], [undefined, 'missing'], [20001, 'invalid']] as const) {

@@ -186,7 +186,8 @@ export class TaskDiagnosticsRepository {
       value.error = event.error ?? null;
       value.usage = event.reportedUsage ?? unknownTokenUsage(); value.usageSource = event.usageSource ?? null;
       value.costComplete = event.nativeCostComplete === true && event.nativeCostTotal != null;
-      value.knownCostUsd = value.costComplete ? event.nativeCostTotal! : null;
+      value.knownCostUsd = event.nativeCostSource === "provider-reported" || event.nativeCostSource === "pi-native"
+        ? event.nativeCostTotal ?? null : value.costComplete ? event.nativeCostTotal! : null;
       value.costSource = event.nativeCostSource ?? null;
     }
     this.pending.set(value.id, value);
@@ -286,6 +287,35 @@ export class TaskDiagnosticsRepository {
   list(taskId: string, limit?: number, offset = 0): TaskDiagnosticsDto {
     try { return this.readList(taskId, limit, offset); }
     catch { return this.emptyList(taskId, "诊断记录暂时无法读取，执行功能仍可使用"); }
+  }
+
+  requestsForGenerations(taskId: string, generations: readonly { conversationId: string; generationTaskId: number }[]): ModelRequestDiagnostic[] {
+    if (this.unavailable || !generations.length) return [];
+    try {
+      const rows = this.db.prepare(`SELECT d.record_json FROM task_request_diagnostics d
+        WHERE d.task_id=? AND json_valid(d.record_json)
+        AND json_extract(d.record_json,'$.executionScope')=d.task_id
+        AND json_array(json_extract(d.record_json,'$.conversationId'),json_extract(d.record_json,'$.generationTaskId'))
+          IN (SELECT value FROM json_each(?))
+        ORDER BY d.started_at,d.request_id`)
+        .all(taskId, JSON.stringify(generations.map(item => [item.conversationId, item.generationTaskId])));
+      return rows.flatMap(row => {
+        const parsed = requestSchema.safeParse(JSON.parse(recordRow.parse(row).record_json));
+        return parsed.success ? [{ ...parsed.data, executionId: parsed.data.executionId ?? requestExecutionId(parsed.data) }] : [];
+      });
+    } catch { return []; }
+  }
+
+  auxiliaryRequestsForTask(taskId: string): ModelRequestDiagnostic[] {
+    if (this.unavailable) return [];
+    try {
+      const rows = this.db.prepare(`SELECT record_json FROM task_request_diagnostics WHERE task_id=?
+        AND json_extract(record_json,'$.sourceKind')='auxiliary' ORDER BY started_at,request_id`).all(taskId);
+      return rows.flatMap(row => {
+        const parsed = requestSchema.safeParse(JSON.parse(recordRow.parse(row).record_json));
+        return parsed.success ? [{ ...parsed.data, executionId: parsed.data.executionId ?? requestExecutionId(parsed.data) }] : [];
+      });
+    } catch { return []; }
   }
 
   listScopes(id: string, scopes: string[]): TaskDiagnosticsDto {

@@ -10,6 +10,7 @@ const learned = z.object({ skillId: z.string(), candidateId: z.string().optional
 export const durableInputAuditSchema = z.object({
   userMessageId: z.string(), assistantMessageId: z.string(), cwd: z.string(),
   skipMemoryCapture: z.boolean().optional(),
+  goalOwner: z.object({ goalId: z.string(), intentRevision: z.number().int().positive() }).optional(),
   skills: z.array(z.object({ id: z.string(), name: z.string(), path: z.string(), learned: learned.optional() })),
   recommendation: z.object({
     query: z.string(), mode: z.enum(["coding", "working", "general", "bot"]).transform(mode => mode === "bot" ? "general" : mode),

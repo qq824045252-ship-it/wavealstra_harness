@@ -30,7 +30,7 @@ export class SavedArtifactActions {
     return { name, path };
   }
   /** Bounded memory; a failed verification only leaves an unpublished temporary copy. */
-  private async verify(path: string, destination?: string): Promise<void> {
+  private async verify(path: string, destination?: string, textChunks?: Buffer[]): Promise<void> {
     const before = await lstat(path);
     if (!before.isFile() || before.isSymbolicLink()) throw new Error('保存版本不是普通文件');
     const input = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -38,6 +38,7 @@ export class SavedArtifactActions {
     try {
       const first = await input.stat();
       if (!first.isFile() || first.ino !== before.ino || first.dev !== before.dev) throw new Error('保存版本发生变化');
+      if (textChunks && first.size > 1_048_576) throw new Error('文件超过文本预览大小上限');
       if (destination) output = await open(destination, 'wx', 0o600);
       const buffer = Buffer.allocUnsafe(64 * 1024), hash = createHash('sha256');
       let length = 0;
@@ -46,6 +47,7 @@ export class SavedArtifactActions {
         if (!bytesRead) break;
         const chunk = buffer.subarray(0, bytesRead); hash.update(chunk);
         if (output) await output.writeFile(chunk);
+        if (textChunks) textChunks.push(Buffer.from(chunk));
         length += bytesRead;
       }
       const after = await input.stat(), current = await lstat(path);
@@ -69,6 +71,14 @@ export class SavedArtifactActions {
     const saved = await this.identity(request);
     await this.verify(saved.path);
     return saved;
+  }
+  async readText(request: SavedArtifactRequest): Promise<string> {
+    const saved = await this.identity(request);
+    const chunks: Buffer[] = [];
+    await this.verify(saved.path, undefined, chunks);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+    if (text.includes('\0')) throw new Error('此保存版本不能作为文本预览');
+    return text;
   }
   async saveAs(request: SavedArtifactRequest): Promise<{ canceled: boolean; path?: string }> {
     const initial = await this.identity(request); await this.verify(initial.path);

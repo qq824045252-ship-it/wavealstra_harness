@@ -26,9 +26,9 @@ export type NotificationLevel = "info" | "success" | "warning" | "error";
 export type NotificationSourceType = "task" | "project" | "automation" | "runtime" | "system";
 
 export type NotificationActivationTarget =
-  | { kind: "task"; taskId: string }
+  | { kind: "task"; taskId: string; messageId?: string; workId?: string; toolCallId?: string; interactionId?: string }
   | { kind: "project"; projectId: string }
-  | { kind: "work"; workId: string }
+  | { kind: "work"; workId: string; commentId?: string; bindingId?: string }
   | { kind: "botConversation"; botId: string; teamId?: string; conversationId: string; messageId?: string }
   | { kind: "automation" }
   | { kind: "runtime" };
@@ -41,9 +41,16 @@ export function parseNotificationTarget(value: unknown): NotificationActivationT
   const v = value as Record<string, unknown>;
   const id = (key: string) => typeof v[key] === "string" && (v[key] as string).length > 0 && (v[key] as string).length <= 256;
   switch (v.kind) {
-    case "task": return id("taskId") ? { kind: v.kind, taskId: v.taskId as string } : null;
+    case "task": return id("taskId") && (v.messageId === undefined || id("messageId")) && (v.workId === undefined || id("workId"))
+      && (v.toolCallId === undefined || id("toolCallId")) && (v.interactionId === undefined || id("interactionId"))
+      ? { kind: v.kind, taskId: v.taskId as string, ...(id("messageId") ? { messageId: v.messageId as string } : {}),
+        ...(id("workId") ? { workId: v.workId as string } : {}),
+        ...(id("toolCallId") ? { toolCallId: v.toolCallId as string } : {}),
+        ...(id("interactionId") ? { interactionId: v.interactionId as string } : {}) } : null;
     case "project": return id("projectId") ? { kind: v.kind, projectId: v.projectId as string } : null;
-    case "work": return id("workId") ? { kind: v.kind, workId: v.workId as string } : null;
+    case "work": return id("workId") && (v.commentId === undefined || id("commentId")) && (v.bindingId === undefined || id("bindingId"))
+      ? { kind: v.kind, workId: v.workId as string, ...(id("commentId") ? { commentId: v.commentId as string } : {}),
+        ...(id("bindingId") ? { bindingId: v.bindingId as string } : {}) } : null;
     case "botConversation": return id("botId") && id("conversationId") && (v.teamId === undefined || id("teamId")) && (v.messageId === undefined || id("messageId"))
       ? { kind: v.kind, botId: v.botId as string, conversationId: v.conversationId as string, teamId: v.teamId as string | undefined, messageId: v.messageId as string | undefined } : null;
     case "automation": case "runtime": return { kind: v.kind };
@@ -61,6 +68,14 @@ export function notificationTarget(record: Pick<NotificationDto, "target" | "tas
 
 export interface NotificationDto {
   target?: NotificationActivationTarget;
+  group?: {
+    key: string;
+    count: number;
+    unreadCount: number;
+    activationId: string;
+    target?: NotificationActivationTarget;
+    preview: { title: string; body?: string; createdAt: number };
+  };
   id: string;
   type: NotificationType;
   level: NotificationLevel;
@@ -78,6 +93,7 @@ export interface NotificationDto {
 }
 
 export interface NotificationListRequest {
+  grouped?: boolean;
   unreadOnly?: boolean;
   limit?: number;
   types?: readonly NotificationType[];

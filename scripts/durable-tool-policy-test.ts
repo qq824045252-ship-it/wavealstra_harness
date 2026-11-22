@@ -43,6 +43,9 @@ const goals = new ConversationGoalService(new WorkService(db.connection, { bots:
 let interactions = new ConversationInteractionService(new ConversationInteractionRepository(db.connection), () => {});
 const call = (name: string, args: JsonObject, id = `fixture-${name}`): AssistantMessage["content"] => [{ type: "toolCall", id, name, arguments: args }];
 const text = (value: string): TextContent[] => [{ type: "text", text: value }];
+const shellName = process.platform === "win32" ? "powershell" : "bash";
+const quoteShell = (value: string) => "'" + value.replaceAll("'", process.platform === "win32" ? "''" : "'\"'\"'") + "'";
+const nodeCommand = (code: string) => `${process.platform === "win32" ? "& " : ""}${quoteShell(process.execPath)} -e ${quoteShell(code)}${process.platform === "win32" ? "; exit $LASTEXITCODE" : ""}`;
 
 async function waitUntil(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -77,6 +80,7 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
     },
   });
   const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>; legacyApproval?: boolean;
+    beforeTool?: (name: string) => Promise<void>;
     admit?: (input: { operationId: string; actionKind: string }) => string | undefined;
     settle?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void } = { permission: "auto", allowed: true, deniedTools: new Set<string>() };
   const open = async () => {
@@ -98,7 +102,9 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
           await interactions.requestDurable(execution, { kind: "confirm", title: "允许执行 write？" }, { key: `approval:${call.id}`, signal: context.abortSignal });
           return;
         }
-        return policy.hooks.beforeTool?.(call, api, context);
+        const decision = await policy.hooks.beforeTool?.(call, api, context);
+        await state.beforeTool?.(call.name);
+        return decision;
       } }, instructions: () => "fixture", onSnapshot: () => {},
     });
   };
@@ -112,6 +118,128 @@ function attemptCount(taskId: string): number {
 }
 
 try {
+  for (const [mode, publishTool] of [
+    ["native", "gmail_send"],
+    ["native", "mcp__fixture__publish"],
+    ["codemode", "mcp__fixture__publish"],
+  ] as const) {
+    const published: string[] = [];
+    let reachedPublish = false;
+    let resumePublish!: () => void;
+    const releasePublish = new Promise<void>(resolve => { resumePublish = resolve; });
+    const verdicts: string[] = [];
+    let requestedLatest = false;
+    const send = (version: string) => mode === "native" ? call(publishTool, { version }, `publish-${version}`)
+      : call("codemode", { code: `console.log(await tools.${publishTool}({version:${JSON.stringify(version)}}));` }, `publish-${version}`);
+    const scenario = await fixture(`fresh-input-${mode}-${publishTool}`, request => {
+      const last = request.messages.at(-1);
+      if (last?.role === "user") {
+        requestedLatest = JSON.stringify(last.content).includes("publish revised");
+        return send(requestedLatest ? "revised" : "original");
+      }
+      if (last?.role === "toolResult") {
+        verdicts.push(JSON.stringify(last.content));
+        if (!requestedLatest && verdicts.length === 1) return send("original-retry");
+        if (!requestedLatest && verdicts.length === 2) {
+          return mode === "native" ? call("read", { path: "readable.txt" }, "read-during-deferral")
+            : call("codemode", { code: 'console.log(await tools.read({path:"readable.txt"}));' }, "read-during-deferral");
+        }
+      }
+      return text("finished this turn");
+    }, mode, [defineTool({
+      name: publishTool, description: "Publish the requested release", parameters: Type.Object({ version: Type.String() }), replay: "unsafe",
+      execute: async ({ version }, api, context) => {
+        published.push(version);
+        const cwd = (await api.agent(context)).cwd!;
+        await writeFile(join(cwd, "published.txt"), version);
+        return { output: text("published") };
+      },
+    })]);
+    scenario.state.beforeTool = async name => {
+      if (name === publishTool) { reachedPublish = true; await releasePublish; }
+    };
+    await writeFile(join(scenario.cwd, "readable.txt"), "read proceeded while revised input was queued");
+    const runtime = await scenario.open();
+    try {
+      const original = await runtime.submit("publish original", "original");
+      await waitUntil(() => reachedPublish);
+      assert.deepEqual(published, []);
+      const revised = await runtime.submit("publish revised", "revised");
+      assert.equal((await revised.status(ctx)).status, "queued");
+      resumePublish();
+      assert.equal((await original.wait(ctx)).status, "done");
+      assert.equal((await revised.wait(ctx)).status, "done");
+      assert(requestedLatest, "a real provider request must carry the revised input");
+      assert.deepEqual(published, ["revised"], "only the action generated from the revised user input may execute");
+      assert.equal(await readFile(join(scenario.cwd, "published.txt"), "utf8"), "revised");
+      assert(verdicts[0]?.includes("较新的用户输入等待处理"), JSON.stringify(verdicts));
+      assert(verdicts[1]?.includes("较新的用户输入等待处理"), JSON.stringify(verdicts));
+      assert(verdicts[2]?.includes("read proceeded while revised input was queued"), JSON.stringify(verdicts));
+      assert(verdicts[3]?.includes("published"), JSON.stringify(verdicts));
+    } finally {
+      resumePublish();
+      await runtime.close();
+    }
+  }
+  console.log("PASS fresh input defers ordinary Gmail send and native/Code Mode MCP publication on controlled transports; reads and revised actions proceed");
+
+  const nativeShellReached = Promise.withResolvers<void>();
+  const releaseNativeShell = Promise.withResolvers<void>();
+  const nativeShellResults: string[] = [];
+  const nativePublication = await fixture("fresh-real-shell-publication", request => {
+    const last = request.messages.at(-1);
+    if (last?.role === "toolResult") nativeShellResults.push(JSON.stringify(last.content));
+    if (last?.role !== "user") return text("finished");
+    const revision = JSON.stringify(last.content).includes("revised") ? "revised" : "original";
+    const command = nodeCommand(`require("node:fs").appendFileSync("publication-audit.txt",${JSON.stringify(revision + "\n")})`);
+    return call(shellName, { command }, `shell-${revision}`);
+  });
+  nativePublication.state.beforeTool = async name => {
+    if (name === shellName) { nativeShellReached.resolve(); await releaseNativeShell.promise; }
+  };
+  const publicationRuntime = await nativePublication.open();
+  try {
+    const current = await publicationRuntime.submit("publish original with shell", "shell-original");
+    await nativeShellReached.promise;
+    const revised = await publicationRuntime.submit("publish revised with shell", "shell-revised");
+    assert.equal((await revised.status(ctx)).status, "queued");
+    releaseNativeShell.resolve();
+    assert.equal((await current.wait(ctx)).status, "done");
+    assert.equal((await revised.wait(ctx)).status, "done");
+    assert.match(nativeShellResults[0] ?? "", /较新的用户输入等待处理/);
+    assert.equal(await readFile(join(nativePublication.cwd, "publication-audit.txt"), "utf8"), "revised\n");
+  } finally { releaseNativeShell.resolve(); await publicationRuntime.close(); }
+  console.log("PASS actual native shell process writes only the revised publication");
+
+  const closingTask = "goal-close-fresh-input";
+  let closureGuard: { workId: string; expectedStateVersion: number; expectedIntentRevision: number; expectedOwnerEpoch: number };
+  let closureResult: string | undefined;
+  const closing = await fixture(closingTask, request => {
+    const last = request.messages.at(-1);
+    if (last?.role === "toolResult" && last.toolName === "conversation_goal_propose_complete") closureResult = JSON.stringify(last.content);
+    if (last?.role === "user" && JSON.stringify(last.content).includes("propose closing")) {
+      return call("conversation_goal_propose_complete", { ...closureGuard, summary: "Original result" }, "confirm-close");
+    }
+    return text("work remains open");
+  });
+  const created = goals.create({ taskId: closingTask, title: "Isolated closure" });
+  assert(created.ok);
+  const work = goals.workService.getWork(created.goal.id)!;
+  closureGuard = { workId: work.workId, expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch };
+  const closingRuntime = await closing.open();
+  try {
+    const original = await closingRuntime.submit("propose closing", "close-original");
+    await waitUntil(() => interactions.listByTask(closingTask).some(row => row.status === "pending" && row.kind === "confirm"));
+    const confirm = interactions.listByTask(closingTask).find(row => row.status === "pending" && row.kind === "confirm")!;
+    const revised = await closingRuntime.submit("new requirement: keep Work open and recheck the result", "close-revised");
+    assert.equal((await revised.status(ctx)).status, "queued");
+    assert.equal(interactions.respond(confirm.id, true).ok, true);
+    assert.equal((await original.wait(ctx)).status, "done");
+    assert.equal((await revised.wait(ctx)).status, "done");
+    assert.match(closureResult ?? "", /较新的用户输入等待处理/);
+    assert.equal(goals.workService.getWork(work.workId)?.lifecycle, "active");
+  } finally { await closingRuntime.close(); }
+  console.log("PASS real Goal closure rechecks queued input after confirmation and leaves Work active");
   const written = { path: "new/nested/proof.txt", content: "proof" };
   const writeIntent = await prepareFileEffect({ type: "toolCall", id: "write-proof", name: "write", arguments: written }, root);
   assert(writeIntent?.kind === "file");
@@ -393,9 +521,6 @@ try {
 
   // Exercise the installed native shell, not a mocked afterTool callback. Six
   // independent durable stores run concurrently, including nested Code Mode calls.
-  const shellName = process.platform === "win32" ? "powershell" : "bash";
-  const quoteShell = (value: string) => "'" + value.replaceAll("'", process.platform === "win32" ? "''" : "'\"'\"'") + "'";
-  const nodeCommand = (code: string) => `${process.platform === "win32" ? "& " : ""}${quoteShell(process.execPath)} -e ${quoteShell(code)}${process.platform === "win32" ? "; exit $LASTEXITCODE" : ""}`;
   await Promise.all(Array.from({ length: 6 }, async (_, index) => {
     const mode = index % 2 ? "codemode" : "native";
     const taskId = `native-shell-failure-${index}`;

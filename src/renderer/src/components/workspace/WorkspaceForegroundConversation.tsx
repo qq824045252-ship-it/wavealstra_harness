@@ -17,12 +17,20 @@ export function WorkspaceForegroundConversation({ request, conversationTitle, sp
   const [loading, setLoading] = useState(true);
   const [work, setWork] = useState<WorkProjectionDto>();
   const focus = useRef<HTMLDivElement>(null);
+  const workTarget = request.focusWork;
+  const comment = workTarget?.commentId ? work?.phase3?.collaborationMessages.find(item => item.messageId === workTarget.commentId) : undefined;
   useEffect(() => {
     let live = true;
     setMessages([]); setLoading(true); setError(''); setWork(undefined);
     const load = async () => {
       try {
         const api = window.api?.botWork; if (!api) throw new Error('主机离线，无法读取原始对话');
+        if (workTarget) {
+          const result = await api.getWork(workTarget.workId);
+          if (!live) return;
+          if (!result || result.archive?.deletedAt !== undefined) throw new Error('通知对应的事项已不可用');
+          setWork(result);
+        }
         let before: number | undefined;
         const all = new Map<string, BotMessageDto>();
         do {
@@ -41,19 +49,26 @@ export function WorkspaceForegroundConversation({ request, conversationTitle, sp
     };
     void load();
     return () => { live = false; };
-  }, [request.botId, request.teamId, request.conversationId, request.requestId, request.focusMessageId]);
+  }, [request.botId, request.teamId, request.conversationId, request.requestId, request.focusMessageId, workTarget]);
   useLayoutEffect(() => {
     const element = focus.current;
     if (!element || loading) return;
     element.scrollIntoView({ block: 'nearest' });
     element.focus({ preventScroll: true });
-  }, [loading, request.focusMessageId]);
+  }, [loading, request.focusMessageId, workTarget]);
   return <section className="workspace-foreground-view" aria-label="前台任务对话">
     <header className="workspace-foreground-heading"><button className="btn btn--ghost" type="button" onClick={work ? () => setWork(undefined) : onBack}>← {work ? '返回对话' : spaceName}</button><span className="workspace-origin-conversation" title={request.conversationId}>{conversationTitle ?? '原对话'}</span><h2 title={request.title}>{work?.title ?? request.title}</h2></header>
     <div className="workspace-foreground-messages">
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status">正在读取原始对话…</p>}
-      {work ? <section aria-label="历史事项"><h3>{work.title}</h3><WorkExecutionMetrics work={work} /><ChatMarkdown text={work.goalDescription ?? work.title} streaming={false} resolveTaskFiles={false} /><WorkFiles files={generatedWorkFiles(work)} /></section> : messages.map(message =>
+      {work ? <section aria-label="历史事项"><h3>{work.title}</h3>
+        {workTarget?.commentId && <div ref={focus} tabIndex={-1}>
+          {comment ? <ChatMarkdown text={comment.body} streaming={false} resolveTaskFiles={false} /> : <p>通知指定的留言已不可用。</p>}
+        </div>}
+        <div ref={workTarget?.bindingId && !workTarget.commentId ? focus : undefined} tabIndex={workTarget?.bindingId ? -1 : undefined}>
+          <WorkExecutionMetrics work={work} focusBindingId={workTarget?.bindingId} />
+        </div>
+        <ChatMarkdown text={work.goalDescription ?? work.title} streaming={false} resolveTaskFiles={false} /><WorkFiles files={generatedWorkFiles(work)} /></section> : messages.map(message =>
         <div key={message.messageId} ref={message.messageId === request.focusMessageId ? focus : undefined}
           tabIndex={message.messageId === request.focusMessageId ? -1 : undefined}>
         <BotMessage message={message} workLinkSource={messages.find(item => item.role === 'user' && item.requestId === message.requestId)} botName={spaceName} works={[]} onOpenWork={id => {

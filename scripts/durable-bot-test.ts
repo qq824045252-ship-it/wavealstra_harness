@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { modelKey, resolveBotModel } from "../src/main/agent/durable/BotModelCatalog";
 import { DurableMcp } from "../src/main/agent/durable/DurableMcp";
+import { needsFreshUserInput } from "../src/main/agent/durable/DurableInputFreshness";
 import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
 import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -356,6 +358,194 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
   } finally { await service.close(); db.close(); }
 }
 
+{
+  const cwd = join(root, "input-freshness-before-admission"); await mkdir(cwd);
+  const db = new AppDatabase(join(cwd, "app.db"));
+  const taskId = "publish-with-new-requirement";
+  db.upsertTask({ id: taskId, title: "Publish fixture", cwd, modelId: "fixture/fixture", updatedAt: 1 });
+  const oldProviderReached = Promise.withResolvers<void>();
+  const releaseOldProvider = Promise.withResolvers<void>();
+  const pendingInputReachedPreparation = Promise.withResolvers<void>();
+  const releaseInputPreparation = Promise.withResolvers<void>();
+  const oldResultSeen = Promise.withResolvers<string>();
+  const publishStarted = Promise.withResolvers<void>();
+  const finishStartedPublish = Promise.withResolvers<void>();
+  const published = Promise.withResolvers<void>();
+  const effects: string[] = [];
+  const publish = defineTool({
+    name: "mcp__fixture__publish", description: "Record the published revision",
+    parameters: Type.Object({ revision: Type.String() }), replay: "unsafe",
+    execute: async ({ revision }) => {
+      effects.push(revision);
+      if (revision === "revised") {
+        publishStarted.resolve();
+        await finishStartedPublish.promise;
+        await writeFile(join(cwd, "published.txt"), revision);
+        published.resolve();
+      }
+      return { output: text(revision) };
+    },
+  });
+  const service = new DurableBotService({
+    db, agentDir: cwd, mcpDir: join(cwd, "mcp"), resolveCwd: () => cwd, instructions: () => "",
+    toolMode: () => "native", defaultModel: () => "fixture/fixture", emit: () => {},
+    tools: async () => ({ tools: [publish], contextHooks: [] }),
+    prepareInput: async request => {
+      if (request.userMessageId === "revised") {
+        pendingInputReachedPreparation.resolve();
+        await releaseInputPreparation.promise;
+      }
+      return request.text;
+    },
+    models: { ...models(async context => {
+      const last = context.messages.at(-1);
+      const payload = JSON.stringify(last?.content ?? "");
+      if (last?.role === "toolResult") {
+        if (!effects.length) oldResultSeen.resolve(payload);
+        return text("turn finished");
+      }
+      if (last?.role === "user" && payload.includes("publish old")) {
+        oldProviderReached.resolve();
+        await releaseOldProvider.promise;
+        return call(publish.name, { revision: "old" });
+      }
+      if (last?.role === "user" && payload.includes("publish revised")) return call(publish.name, { revision: "revised" });
+      return text("later requirement received");
+    }), refresh: async () => ({}), getAvailable: async () => [model] },
+  });
+  const send = (id: string, value: string) => service.submit({ taskId, text: value, userMessageId: id, assistantMessageId: `assistant-${id}` });
+  const wait = <T>(operation: Promise<T>) => Promise.race([operation,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("fresh input fixture did not progress")), 10_000).unref())]);
+  try {
+    await send("old", "publish old");
+    await wait(oldProviderReached.promise);
+    const next = send("revised", "publish revised");
+    await wait(pendingInputReachedPreparation.promise);
+    releaseOldProvider.resolve();
+    assert.match(await wait(oldResultSeen.promise), /较新的用户输入等待处理/);
+    assert.deepEqual(effects, [], "input blocked in host preparation still prevents an outdated side effect");
+    releaseInputPreparation.resolve();
+    await next;
+    await wait(publishStarted.promise);
+    await send("later", "new requirement arrived after publish began");
+    finishStartedPublish.resolve();
+    await wait(published.promise);
+    assert.deepEqual(effects, ["revised"]);
+    assert.equal(await readFile(join(cwd, "published.txt"), "utf8"), "revised");
+  } finally {
+    releaseOldProvider.resolve();
+    releaseInputPreparation.resolve();
+    finishStartedPublish.resolve();
+    await service.close();
+    db.close();
+  }
+  console.log("PASS host preparation is covered by the freshness barrier and an already-started publish completes once");
+}
+
+{
+  assert.equal(needsFreshUserInput("bash", { command: "git push origin main" }), true);
+  assert.equal(needsFreshUserInput("bash", { command: "cat result.txt" }), false);
+  assert.equal(needsFreshUserInput("browser_exec", { action: "click" }), true);
+  assert.equal(needsFreshUserInput("browser_exec", { action: "inspect" }), false);
+  assert.equal(needsFreshUserInput("conversation_goal_propose_complete", {}), true);
+  assert.equal(needsFreshUserInput("mcp_call_tool", { server: "workspace", tool: "send_email", arguments: {} }), true);
+  const cwd = join(root, "freshness-host-admission"); await mkdir(cwd);
+  const db = new AppDatabase(join(cwd, "app.db"));
+  for (const id of ["admission-a", "admission-b"]) db.upsertTask({ id, title: id, cwd, modelId: "fixture/fixture", updatedAt: 1 });
+  const began = Promise.withResolvers<void>();
+  const releaseProposal = Promise.withResolvers<void>();
+  const preparing = Promise.withResolvers<void>();
+  const releasePreparation = Promise.withResolvers<void>();
+  const effects: string[] = [];
+  const service = new DurableBotService({ db, agentDir: cwd, mcpDir: join(cwd, "mcp"), resolveCwd: () => cwd,
+    defaultModel: () => "fixture/fixture", instructions: () => "", toolMode: () => "native", emit: () => {},
+    tools: async () => ({contextHooks: [], tools: [defineTool({
+      name: "gmail_send", description: "Record a fixture effect", replay: "unsafe",
+      parameters: Type.Object({ message: Type.String() }),
+      execute: async args => { effects.push(args.message); return { output: text("sent") }; }
+    })]}),
+    async prepareInput(request) {
+      if (request.text === "prevent send") { preparing.resolve(); await releasePreparation.promise; }
+      return request.text;
+    },
+    models: { ...models(async context => {
+      const last = context.messages.at(-1);
+      if (last?.role === "toolResult") return text("settled");
+      const payload = JSON.stringify(last);
+      if (payload.includes("original send")) {
+        began.resolve();
+        await releaseProposal.promise;
+        return call("gmail_send", { message: "original" });
+      }
+      if (payload.includes("independent send")) return call("gmail_send", { message: "independent" });
+      return text("held");
+    }), refresh: async () => ({}), getAvailable: async () => [model] },
+  });
+  const ask = (taskId: string, id: string, message: string) => service.prompt({ taskId, text: message, userMessageId: id, assistantMessageId: "answer-" + id }, false);
+  try {
+    const original = ask("admission-a", "first", "original send");
+    await began.promise;
+    const incoming = ask("admission-a", "second", "prevent send");
+    await preparing.promise;
+    releaseProposal.resolve();
+    assert.equal((await original).error, undefined);
+    assert.deepEqual(effects, [], "host arrival blocks dispatch before Pi admission");
+    assert.equal((await ask("admission-b", "other", "independent send")).error, undefined);
+    assert.deepEqual(effects, ["independent"], "one task's pending user input does not block independent dispatch");
+    releasePreparation.resolve();
+    assert.equal((await incoming).error, undefined);
+  } finally { releaseProposal.resolve(); releasePreparation.resolve(); await service.close(); db.close(); }
+  console.log("PASS host input arrival fences dispatch before native admission without blocking another task");
+}
+
+for (const mode of ["native", "codemode"] as const) {
+  const cwd = join(root, "input-freshness-" + mode); await mkdir(cwd);
+  const calls: string[] = [];
+  const { promise: proposed, resolve: modelProposing } = Promise.withResolvers<void>();
+  const { promise: release, resolve: releaseModel } = Promise.withResolvers<void>();
+  let effectObserved = false;
+  const publish = defineTool({
+    name: "gmail_send", description: "Record a fixture effect.",
+    parameters: Type.Object({ version: Type.String() }),
+    replay: "unsafe",
+    execute: async args => { calls.push(args.version); return { output: text("published") }; },
+  });
+  const proposal = (version: string) => mode === "native" ? call(publish.name, { version }) :
+    call("codemode", { code: `text(await tools.gmail_send({version:${JSON.stringify(version)}}));` });
+  const runtime = await DurableBotRuntime.open({ directory: join(cwd, "state"), cwd, model: ref,
+    toolMode: mode, instructions: () => "fixture", onSnapshot: () => {}, tools: [publish],
+    models: models(async context => {
+      const last = context.messages.at(-1);
+      if (context.messages.some((message: any) => message.role === "toolResult" && /较新的用户输入/.test(JSON.stringify(message)))) {
+        effectObserved = true;
+      }
+      if (last?.role === "toolResult") return text("settled");
+      const payload = JSON.stringify(last);
+      if (payload.includes("old command")) {
+        modelProposing();
+        await release;
+        return proposal("old");
+      }
+      if (payload.includes("do not publish")) return text("held");
+      if (payload.includes("publish revision two")) return proposal("new");
+      throw new Error("unexpected fixture input " + payload);
+    }) });
+  try {
+    const old = await runtime.submit("old command", "initial");
+    await proposed;
+    const stop = await runtime.submit("do not publish", "stop", mode === "native" ? "steer" : "followUp");
+    assert.equal((await stop.status(ctx)).status, "queued");
+    releaseModel();
+    assert.equal((await old.wait(ctx)).status, "done");
+    assert.equal((await stop.wait(ctx)).status, "done");
+    assert.equal(effectObserved, true);
+    assert.deepEqual(calls, []);
+    const next = await runtime.submit("publish revision two", "authorized");
+    assert.equal((await next.wait(ctx)).status, "done");
+    assert.deepEqual(calls, ["new"]);
+  } finally { releaseModel(); await runtime.close(); }
+}
+
 for (const mode of ["native", "codemode"] as const) {
   const cwd = join(root, mode); await mkdir(cwd);
   let calls = 0;
@@ -577,6 +767,46 @@ async function until(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 10000;
   while (!check()) { if (Date.now() > deadline) throw new Error("Durable test timed out"); await new Promise(r => setTimeout(r, 10)); }
 }
+// The original tool passes its initial guard, then waits for the actual MCP
+// connection to initialize. A new input arriving here must stop tools/call.
+for (const mode of ["native", "codemode"] as const) {
+  const cwd = join(root, "late-mcp-fresh-" + mode); await mkdir(cwd);
+  const audit = join(cwd, "audit.jsonl"), allowInitialize = join(cwd, "initialize");
+  const config = { errors: [], servers: [{ name: "fixture", source: "isolated-mcp-fixture", config: {
+    command: process.execPath, timeout: 20,
+    args: [join(process.cwd(), "scripts/durable-mcp-lazy-fixture.mjs"), audit, allowInitialize],
+  } }] };
+  const host = await DurableMcp.open(config, {} as any, {} as any, cwd);
+  const toolResults: string[] = [];
+  const runtime = await DurableBotRuntime.open({ directory: join(cwd, "state"), cwd, model: ref,
+    toolMode: mode, tools: host.tools, prepareCodeMode: (code, context) => host.codeModeTools(code, context),
+    instructions: () => "fixture", onSnapshot: () => {}, models: models(request => {
+      const last = request.messages.at(-1);
+      if (last?.role === "toolResult") toolResults.push(JSON.stringify(last.content));
+      if (last?.role !== "user") return text("turn settled");
+      const args = { server: "fixture", tool: "publish", arguments: { revision: JSON.stringify(last.content).includes("publish revised") ? "revised" : "original" } };
+      return mode === "native" ? call("mcp_call_tool", args)
+        : call("codemode", { code: `console.log(await tools.mcp_call_tool(${JSON.stringify(args)}));` });
+    }) });
+  try {
+    const original = await runtime.submit("publish old", "original");
+    await until(() => existsSync(audit));
+    const revised = await runtime.submit("publish revised", "revised");
+    assert.equal((await revised.status(ctx)).status, "queued");
+    await writeFile(allowInitialize, "");
+    assert.equal((await original.wait(ctx)).status, "done");
+    assert.equal((await revised.wait(ctx)).status, "done");
+    const events = (await readFile(audit, "utf8")).trim().split("\n").map(row => JSON.parse(row));
+    assert.deepEqual(events.filter(row => row.event === "publish"), [{ event: "publish", revision: "revised" }]);
+    assert.match(toolResults[0] ?? "", /较新的用户输入等待处理/);
+    assert.match(toolResults[1] ?? "", /published revised/);
+  } finally {
+    await writeFile(allowInitialize, "");
+    await runtime.close();
+    await host.close();
+  }
+}
+console.log("PASS real MCP stdio tools/call rechecks after initialization, in native and nested Code Mode");
 // An MCP which never answers initialize must not delay a greeting or a different healthy tool.
 {
   let blockedRequests = 0;

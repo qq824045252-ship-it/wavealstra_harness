@@ -16,7 +16,7 @@ import "./TaskDiagnosticsPanel.css";
 import { formatTokenCount } from "@shared/token-format";
 
 const sourceLabels = { main: "主代理", subagent: "子代理／会诊", auxiliary: "辅助任务" };
-const costLabels = { "provider-reported": "供应商报告", "pi-native": "Pi 原生计价", "sdk-default": "未取得费用（SDK 初始值）" };
+const costLabels = { "provider-reported": "供应商实报", "pi-native": "Pi 按目录费率估算", "sdk-default": "未取得费用（SDK 初始值）" };
 const statusLabels = { running: "执行中", completed: "完成", failed: "失败", aborted: "已停止", interrupted: "观测中断" };
 const verdictLabels: Record<Verdict, string> = { ok: "正常", warn: "需注意", error: "异常", unknown: "无法判断", waiting: "在等人" };
 const verdictIcons: Record<Verdict, string> = { ok: "✓", warn: "!", error: "✕", unknown: "?", waiting: "…" };

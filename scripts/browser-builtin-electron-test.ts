@@ -7,6 +7,7 @@ import { app, BrowserWindow, shell } from "electron";
 import { BrowserHost } from "../src/main/browser/BrowserHost";
 import { ArtifactPreviewHost } from "../src/main/artifact/ArtifactPreviewHost";
 import { BrowserAutomationService, BrowserAutomationError } from "../src/main/capabilities/BrowserAutomationService";
+import { DurableInputDeferredError, withToolInputFreshness } from "../src/main/agent/durable/DurableToolInputScope";
 
 const profiles = join(process.cwd(), "out/tests/browser-electron-profiles");
 mkdirSync(profiles, { recursive: true });
@@ -19,7 +20,16 @@ const report: { checks: unknown[]; error?: string; electron: string | undefined 
 const external: string[] = [];
 const originalExternal = shell.openExternal;
 shell.openExternal = async (url: string) => { external.push(url); };
+const publications: string[] = [];
 const server = createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/publish") {
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => { publications.push(body); res.end("fixture accepted"); });
+    return;
+  }
   res.setHeader("content-type", "text/html; charset=utf-8");
   res.end(req.url === "/next" ? "<title>Destination</title><h1>内置浏览器目标 7284</h1>" : `<title>Fixture</title><table><tr><td>Alpha</td><td>17</td><td>3</td></tr></table><a id="next" href="/next" target="_blank">Next</a><button id="popup" onclick="window.open('/next','_blank')">Popup</button><input id="name"><input id="password" type="password" value="SECRET-FIXTURE"><input id="hidden" type="hidden" value="HIDDEN-FIXTURE"><label>Notes<textarea>PRIVATE-TEXTAREA</textarea></label><div contenteditable="true" aria-label="editable notes">PRIVATE-EDITABLE</div><button id="save" onclick="document.body.dataset.saved=document.querySelector('#name').value">Save</button>`);
 });
@@ -61,6 +71,16 @@ void (async () => {
   }
   host.selectTab(sourceTabId);
   await service.execute({ action: "navigate", url });
+  const publish = (body: string) => service.execute({
+    action: "fetch", url: "/publish", request: { method: "POST", contentType: "text/plain", body },
+  });
+  await assert.rejects(withToolInputFreshness(async () => { throw new DurableInputDeferredError("revised input pending"); }, () => publish("original")),
+    (error: unknown) => error instanceof BrowserAutomationError && error.message.includes("revised input pending")
+      && (error.details as { outcome?: { dispatch?: string } })?.outcome?.dispatch === "not_started");
+  assert.deepEqual(publications, []);
+  await withToolInputFreshness(async () => {}, () => publish("revised"));
+  assert.deepEqual(publications, ["revised"]);
+  report.checks.push({ name: "browser-post-freshness-before-real-dispatch", publications });
   const observed = await service.execute({ action: "read" });
   assert.match(observed.text ?? "", /Alpha\t17\t3/, "rendered table cells retain their numeric boundaries");
   assert(observed.elements?.some(element => element.id === "name" && element.type === "text"));

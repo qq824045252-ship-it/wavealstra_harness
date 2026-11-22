@@ -10,6 +10,7 @@ import { checked, failure, live, owner, runSettings, state, success, WorkflowFil
 import { durableSourceUserMessageId } from "../durable/DurableInputProvenance";
 import { measureWorkspace } from "./PstackWorkspace";
 import { boardDoc, empty, type Board, type Unit } from "./PstackOrchestrationBoard";
+import { recordGoalNativeEvidence as recordPstackGoalEvidence } from "../durable/DurableGoalNativeEvidence";
 
 const exec = promisify(execFile);
 const text = Type.String({ minLength: 1, maxLength: 3000 });
@@ -40,6 +41,7 @@ export async function recordBlockedUnit(tx: Tx, api: Api, run: WorkflowRun, reas
   unit.providerFailures = (unit.providerFailures ?? 0) + 1;
   board.inbox.push({ id: unit.id, dispatch: unit.receipt, status: unit.status, note: reason });
   board.operations.push(dispatch);
+  await recordPstackGoalEvidence(tx, api, { kind: "unit", unitId: unit.id, state: "failed", boardRun: run.run, reason }, dispatch);
   return true;
 }
 
@@ -117,14 +119,14 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
           return { ...success(receipt), isError: receipt.status === "failed" };
         }
         if (run.phase !== "running") throw new Error("Resume the workflow before changing the board.");
-        const change = (mutate: (draft: Board) => unknown, final = true) => api.commit(async tx => {
+        const change = (mutate: (draft: Board, tx: Tx) => unknown | Promise<unknown>, final = true) => api.commit(async tx => {
           checked(options, ctx);
           const active = await tx.doc(WorkflowState, api.conversationId);
           if (active.run?.run !== run.run || active.run.phase !== "running") throw new Error("Workflow changed during execution.");
           const doc = await tx.doc(boardDoc, api.conversationId);
           if (doc.board?.run !== run.run) doc.board = empty(run.run);
           if (doc.board.operations.includes(api.taskId)) return args.action === "drain" ? copy(doc.board.drained[String(api.taskId)]) : { replayed: true };
-          const result = copy(mutate(doc.board));
+          const result = copy(await mutate(doc.board, tx));
           if (final) doc.board.operations.push(api.taskId);
           return result;
         }, ctx);
@@ -133,12 +135,14 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
           const original = unitFor(board, args.id);
           const config = runSettings(run).playbooks[run.playbook].parameters;
           const budget = Number(config.retryLimit ?? 2), unknownBudget = Number(config.unknownFailureRetries ?? budget);
-          await change(draft => {
+          await change(async (draft, tx) => {
             const unit = unitFor(draft, args.id);
             if (unit.dispatch === api.taskId) return unit;
             if (!["pending", "failed"].includes(unit.status) || unit.attempts - (unit.providerFailures ?? 0) > budget || unit.unknownFailures > unknownBudget) throw new Error("Unit is active, done, or out of retries.");
             if (unit.dependencies.some(id => unitFor(draft, id).status !== "verified")) throw new Error("Unit prerequisites are unverified.");
-            unit.status = "running"; unit.attempts++; unit.dispatch = api.taskId; return unit;
+            unit.status = "running"; unit.attempts++; unit.dispatch = api.taskId;
+            await recordPstackGoalEvidence(tx, api, { kind: "unit", unitId: unit.id, state: "running", boardRun: run.run });
+            return unit;
           }, false);
           const result = await api.executeTool("pstack_delegate", { role: args.role, tasks: [original.brief] }, ctx, { key: "unit-" + original.id, progress: true });
           if (result.isError) {
@@ -146,13 +150,16 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
             const receipt = settled?.run === run.run && settled.units.find(unit => unit.id === original.id && unit.dispatch === api.taskId && unit.receipt === result.taskId);
             if (receipt) return { ...success(receipt), isError: true };
           }
-          const receipt = await change(draft => {
+          const receipt = await change(async (draft, tx) => {
             const unit = unitFor(draft, args.id);
             if (unit.dispatch !== api.taskId) throw new Error("Another dispatch owns the unit.");
             unit.status = result.isError ? "failed" : "returned"; unit.receipt = result.taskId;
             unit.lastError = result.isError ? JSON.stringify(result.structuredOutput ?? result.diagnostics).slice(0, 1600) : "";
             if (result.isError && !/timeout|timedout|unavailable|quota|network|rate.limit|write conflict/i.test(unit.lastError)) unit.unknownFailures++;
-            draft.inbox.push({ id: unit.id, dispatch: unit.receipt, status: unit.status, note: unit.lastError }); return unit;
+            draft.inbox.push({ id: unit.id, dispatch: unit.receipt, status: unit.status, note: unit.lastError });
+            await recordPstackGoalEvidence(tx, api, { kind: "unit", unitId: unit.id, state: unit.status, boardRun: run.run,
+              ...(unit.lastError ? { reason: unit.lastError } : {}) });
+            return unit;
           });
           return { ...success(receipt), isError: result.isError };
         }
@@ -161,25 +168,33 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
           if (!evidence?.passed || !base || evidence.fingerprint !== (await measureWorkspace(base, runSettings(run).thermos.fileLines, ctx.abortSignal)).fingerprint)
             throw new Error("Run a successful project check on the current workspace first.");
           const sha = args.sha ?? "";
-          if (args.pr && !sha) throw new Error("A PR verification also needs its exact checkout SHA.");
+          let branch = "";
+          if ((args.pr || args.branch) && !sha) throw new Error("A branch or PR verification needs the exact checkout SHA.");
           if (sha) {
             const localGit = (...args: string[]) => exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-C", options.cwd, ...args], { windowsHide: true, signal: ctx.abortSignal, timeout: 15_000 });
             if ((await localGit("rev-parse", "HEAD")).stdout.trim() !== sha || (await localGit("status", "--porcelain")).stdout.trim())
               throw new Error("A commit receipt requires a clean checkout at the exact verified SHA.");
+            branch = (await localGit("branch", "--show-current")).stdout.trim();
             if (args.pr) {
               const repo = await gitHubCheckout(options.cwd, ctx.abortSignal);
-              const head = await exec("gh", ["pr", "view", String(args.pr), "-R", repo, "--json", "headRefOid", "--jq", ".headRefOid"], {
+              const head = await exec("gh", ["pr", "view", String(args.pr), "-R", repo, "--json", "headRefOid,headRefName"], {
                 cwd: dirname(process.execPath), windowsHide: true, signal: ctx.abortSignal, timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" },
               });
-              if (head.stdout.trim() !== sha) throw new Error("PR head differs from the verified commit.");
+              const remote = JSON.parse(head.stdout) as { headRefOid?: string; headRefName?: string };
+              if (remote.headRefOid !== sha) throw new Error("PR head differs from the verified commit.");
+              branch = remote.headRefName ?? "";
             }
+            if (args.branch && branch !== args.branch) throw new Error("Verified branch differs from the requested branch.");
           }
-          return success(await change(draft => {
+          return success(await change(async (draft, tx) => {
             const unit = unitFor(draft, args.id);
             if (unit.status !== "returned" || unit.receipt >= evidence.toolTaskId) throw new Error("Verify this unit after its worker returns.");
-            unit.status = "verified"; unit.branch = args.branch ?? ""; unit.pr = args.pr ?? 0; unit.sha = sha;
+            unit.status = "verified"; unit.branch = branch; unit.pr = args.pr ?? 0; unit.sha = sha;
             const row = { id: unit.id, pr: unit.pr, sha, fingerprint: evidence.fingerprint, toolTaskId: evidence.toolTaskId, command: evidence.command };
-            draft.checks.push(row); return row;
+            draft.checks.push(row);
+            await recordPstackGoalEvidence(tx, api, { kind: "unit", unitId: unit.id, state: "verified", boardRun: run.run,
+              command: row.command, fingerprint: row.fingerprint, ...(sha ? { sha } : {}), ...(branch ? { branch } : {}), ...(unit.pr ? { pr: unit.pr } : {}) });
+            return row;
           }));
         }
         if (args.action === "drain") return success(await change(draft => {

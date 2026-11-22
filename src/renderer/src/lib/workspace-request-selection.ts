@@ -1,7 +1,9 @@
 import type { BotWorkspaceRequestDto } from "@shared/bot-workspace-navigation";
+import type { NotificationActivationTarget } from "@shared/notification";
 
 export type WorkspaceRequestSelection = BotWorkspaceRequestDto & {
   focusMessageId?: string;
+  focusWork?: Extract<NotificationActivationTarget, { kind: "work" }>;
 };
 let selected: WorkspaceRequestSelection | null = null;
 let revision = 0;

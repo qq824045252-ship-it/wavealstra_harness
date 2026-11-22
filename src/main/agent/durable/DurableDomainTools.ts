@@ -9,6 +9,7 @@ import { bindNativeSummaryRuntime } from "../../capabilities/web-access/summary-
 import { storeResult, type StoredSearchData } from "../../capabilities/web-access/storage";
 import { durableExecutionContext, withDurableExecution } from "./DurableExecutionContext";
 import { durableSourceInput } from "./DurableInputProvenance";
+import { checkCurrentToolInput } from "./DurableToolInputScope";
 import { withModelInvocationSettings } from "../ModelInvocationAdmission";
 import { createAgentSettingsManager } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
@@ -54,6 +55,8 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           const invoke = () => invocation.run({ native, context, conversationId, writes: [] }, async () => {
             const extensionContext = capabilities ? await capabilityContext(native, context, capabilities, conversationId) : undefined;
             try {
+              const current = checkCurrentToolInput();
+              if (current) await current;
               const result = await tool.execute(native.callId, args, context.abortSignal,
                 update => {
                   for (const block of update.content ?? []) if (block.type === "text") native.output(block.text);

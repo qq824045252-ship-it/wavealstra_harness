@@ -127,7 +127,7 @@ export class CacheRequestTracer {
     let firstResponseAt: number | null = null;
     let reported = unknownTokenUsage();
     let usageSource: string | null = null;
-    let providerCost: number | undefined;
+    const providerCosts = new Map<number, number>();
     const request = randomUUID();
     const session = sessionId || boundary?.sessionId;
     // No global chain for unbound calls: unrelated requests must never share a baseline.
@@ -198,7 +198,8 @@ export class CacheRequestTracer {
           const observed = reportedTokenUsage(data);
           if (observed) { reported = { ...reported, ...observed.values }; usageSource = observed.source; }
           const event = object(data);
-          providerCost = reportedCostTotal(event?.response ?? event?.message ?? data) ?? providerCost;
+          const providerCost = reportedCostTotal(event?.response ?? event?.message ?? data);
+          if (providerCost !== undefined) providerCosts.set(attempts, providerCost);
           // Chat Completions reports usage in its final chunk, not a Responses terminal.
           // Keep raw counters (including invalid values) instead of reconstructing them
           // from SDK-normalized input/cache counts, which may have been clamped.
@@ -255,10 +256,12 @@ export class CacheRequestTracer {
       result: (message: { responseId?: string; responseModel?: string; stopReason: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total?: number } } }) => {
         try {
           const u = message.usage;
+          const providerCost = providerCosts.size ? [...providerCosts.values()].reduce((sum, value) => sum + value, 0) : undefined;
           const cost = nativeCostEvidence(u, reported, providerCost, pricingConfigured);
+          const covered = attempts <= 1 || providerCosts.size === attempts;
           emit({ ...base, event: 'result', attempts, startedAt, firstResponseAt, modelMs: Math.max(0, performance.now() - startedClock),
             reportedUsage: reported, usageSource,
-            nativeCostTotal: cost.total, nativeCostSource: cost.source, nativeCostComplete: cost.complete,
+            nativeCostTotal: cost.total, nativeCostSource: cost.source, nativeCostComplete: cost.complete && covered,
             responseHash: message.responseId ? plainHash(message.responseId) : null,
             responseModelHash: message.responseModel ? this.digest(message.responseModel) : null,
             outcome: ['stop', 'length', 'toolUse', 'error', 'aborted'].includes(message.stopReason) ? message.stopReason : 'other',

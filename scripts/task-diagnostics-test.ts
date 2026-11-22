@@ -38,7 +38,7 @@ try {
   assert.equal(value.requests.length, 1, "completed result observation is idempotent");
   assert.equal(value.requests[0]?.attempts.length, 2);
   assert.deepEqual(value.requests[0]?.usage, { input: 10, output: 3, cacheRead: 20, cacheWrite: 0 });
-  assert.equal(value.requests[0]?.costComplete, true);
+  assert.equal(value.requests[0]?.costComplete, false, "a retry without a provider receipt leaves total cost coverage incomplete");
   assert.equal(value.requests[0]?.knownCostUsd, 1, "native tier/cache pricing is not replaced with base rates");
   const unknown = tracer.start(model, "fixture-session", undefined, event => diagnostics.observeTrace(event, model));
   unknown.identify({ taskId: "task", conversationId: "8", generationTaskId: 12, sourceKind: "subagent" });

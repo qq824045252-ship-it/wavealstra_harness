@@ -286,6 +286,10 @@ export class WorkRepository {
 
   constructor(private readonly db: Database.Database) {
     this.metrics = new WorkExecutionMetricsStore(db);
+    db.exec(`CREATE TABLE IF NOT EXISTS conversation_goal_sources (
+      work_id TEXT PRIMARY KEY REFERENCES works(work_id) ON DELETE CASCADE,
+      source_json TEXT NOT NULL CHECK(json_valid(source_json))
+    )`);
     // Older current-version files retain their inert quota history. Their required
     // JSON column has no default; supply an empty tombstone only for new rows.
     // Do not bump the schema version or rewrite existing history to remove a module.
@@ -395,6 +399,40 @@ export class WorkRepository {
       ? this.db.prepare("SELECT * FROM works WHERE owner_bot_id=? ORDER BY updated_at DESC").all(botId)
       : this.db.prepare("SELECT * FROM works WHERE owner_bot_id=? AND lifecycle != 'closed' ORDER BY updated_at DESC").all(botId)) as WorkRow[];
     return rows.map((row) => this.hydrate(row));
+  }
+
+  saveGoalSource(workId: string, source: import("../../../shared/conversation-goal").ConversationGoalSourceDto): void {
+    this.db.prepare("INSERT INTO conversation_goal_sources VALUES(?,?)").run(workId, JSON.stringify(source));
+  }
+
+  getGoalSource(workId: string): import("../../../shared/conversation-goal").ConversationGoalSourceDto | undefined {
+    const row = this.db.prepare("SELECT source_json FROM conversation_goal_sources WHERE work_id=?").get(workId) as { source_json: string } | undefined;
+    return row ? JSON.parse(row.source_json) : undefined;
+  }
+
+  findWorkByGoalSource(userId: string, source: import("../../../shared/conversation-goal").ConversationGoalSourceDto): WorkDto | undefined {
+    const row = this.db.prepare(`SELECT w.* FROM works w
+      INNER JOIN conversation_goal_sources s ON s.work_id = w.work_id
+      WHERE w.user_id = ? AND json_extract(s.source_json, '$.taskId') = ?
+        AND json_extract(s.source_json, '$.conversationId') = ?
+        AND coalesce(json_extract(s.source_json, '$.entryId'), json_extract(s.source_json, '$.messageId')) = ?`)
+      .get(userId, source.taskId, source.conversationId, source.entryId ?? source.messageId) as WorkRow | undefined;
+    return row ? this.hydrate(row) : undefined;
+  }
+
+  listWorksByTaskForUser(taskId: string, userId: string): WorkDto[] {
+    const rows = this.db.prepare(`SELECT w.* FROM works w
+      INNER JOIN work_conversations c ON c.work_id = w.work_id
+      WHERE c.conversation_id=? AND w.user_id=?
+      ORDER BY w.created_at DESC, w.work_id`).all(taskId, userId) as WorkRow[];
+    return rows.map(row => this.hydrate(row));
+  }
+
+  getWorkByTaskForUser(workId: string, taskId: string, userId: string): WorkDto | undefined {
+    const row = this.db.prepare(`SELECT w.* FROM works w
+      INNER JOIN work_conversations c ON c.work_id=w.work_id
+      WHERE w.work_id=? AND c.conversation_id=? AND w.user_id=?`).get(workId, taskId, userId) as WorkRow | undefined;
+    return row ? this.hydrate(row) : undefined;
   }
 
   listLiveWorksByTask(taskId: string): WorkDto[] {

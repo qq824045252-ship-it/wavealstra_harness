@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { inspectDurableArtifact, createDurableArtifactRegistrationTool, DURABLE_ARTIFACT_ENTRY_KIND } from '../src/main/agent/durable/DurableArtifactRegistration';
 import { captureSavedWebBundle, SavedArtifactPreviewService, savedResourceReferences } from '../src/main/artifact/SavedArtifactPreview';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
+import { GenerationTask } from '@earendil-works/pi-durable';
+import type { GoalNativeEvidence } from '../src/shared/conversation-goal-activity';
 const root = await mkdtemp(join(tmpdir(), 'saved-preview-'));
 try {
   const cwd = join(root, 'workspace'), store = join(root, 'store');
@@ -80,12 +82,19 @@ try {
   const latePath = join(cwd, 'late.html');
   await writeFile(latePath, '<html><head><link rel="stylesheet" href="late.css"></head><body>late</body></html>');
   const entries: any[] = []; let callId = 'html-first'; let commits = 0; let abortAfterRead = false;
+  const goalEvidence: Array<{ toolTaskId: number; evidence: GoalNativeEvidence }> = [];
   const controller = new AbortController();
   const api: any = { conversationId: 1, taskId: 2, get callId() { return callId; },
     agent: async () => ({ cwd }), snapshot: async () => ({ run: { inputs: [71] } }),
     commit: async (fn: any) => {
       commits++;
       const result = await fn({ conversation: async () => ({}), scanEntries: async () => ({ items: [...entries].reverse() }),
+        task: async (id: number) => id === 2 ? { owner: 1 } : id === 1
+          ? { kind: GenerationTask.definition.name, conversationId: 1 } : undefined,
+        doc: async (_family: unknown, key: string) => {
+          assert.equal(key, JSON.stringify(['1', 1]), 'registration belongs to the native parent generation');
+          return { events: goalEvidence };
+        },
         appendEntry: async (_kind: unknown, _owner: number, value: any) => {
           const entry = { id: entries.length + 1, kind: DURABLE_ARTIFACT_ENTRY_KIND, ...value }; entries.push(entry); return entry;
         } });
@@ -96,12 +105,20 @@ try {
   await tool.execute({ path: latePath }, api, ctx);
   const early = entries[0].data;
   assert(early.previewManifestPath);
+  assert.deepEqual(goalEvidence, [{ toolTaskId: 2, evidence: { kind: 'delivery', path: early.path, digest: early.digest,
+    saved: { snapshotPath: early.snapshotPath, manifestPath: early.previewManifestPath, registeredAt: early.registeredAt } } }]);
   await rm(latePath); // Later resources must refresh the saved entry, not require the deleted source.
   await writeFile(join(cwd, 'late.css'), 'body{color:purple}');
   callId = 'css-later'; await tool.execute({ path: 'late.css' }, api, ctx);
   const refreshed = entries.filter(e => e.data.path === early.path).at(-1).data;
   assert.notEqual(refreshed.previewManifestPath, early.previewManifestPath);
   assert.equal(refreshed.digest, early.digest);
+  assert.equal(goalEvidence.length, 3, 'refresh records the CSS and a distinct saved HTML bundle');
+  const css = entries[1].data;
+  assert.deepEqual(goalEvidence[1]?.evidence, { kind: 'delivery', path: css.path, digest: css.digest,
+    saved: { snapshotPath: css.snapshotPath, registeredAt: css.registeredAt } });
+  assert.deepEqual(goalEvidence[2]?.evidence, { kind: 'delivery', path: refreshed.path, digest: refreshed.digest,
+    saved: { snapshotPath: refreshed.snapshotPath, manifestPath: refreshed.previewManifestPath, registeredAt: refreshed.registeredAt } });
   const refreshedManifest = JSON.parse(await readFile(refreshed.previewManifestPath, 'utf8'));
   assert(refreshedManifest.resources[refreshedManifest.entry], 'refresh retains the deleted HTML entry snapshot');
   const earlyPreview = await service.prepare(1, { snapshotPath: early.snapshotPath, name: 'late.html', manifestPath: early.previewManifestPath });
@@ -111,10 +128,12 @@ try {
   const count = entries.length;
   await tool.execute({ path: 'late.css' }, api, ctx);
   assert.equal(entries.length, count, 'replayed resource registration creates no duplicate bundle receipt');
+  assert.equal(goalEvidence.length, 3, 'replay creates no duplicate Goal receipt');
   await writeFile(latePath, '<html>cancel test</html>');
   await assert.rejects(captureSavedWebBundle(cwd, latePath, join(store, 'artifacts', 'f'.repeat(64) + '.html'), store, inspectDurableArtifact), /入口/);
   callId = 'cancelled-html'; commits = 0; abortAfterRead = true;
   await assert.rejects(tool.execute({ path: latePath }, api, { ...ctx, abortSignal: controller.signal } as any));
   assert.equal(entries.length, count, 'cancellation after bundle preparation cannot append a receipt');
+  assert.equal(goalEvidence.length, 3, 'cancellation cannot append a Goal receipt');
   console.log('PASS saved artifacts: immutable multi-file versions, legacy warnings, integrity, owner lifecycle, resource boundaries, MIME/CSP');
 } finally { await rm(root, { recursive: true, force: true }); }

@@ -18,11 +18,18 @@ const eventSchema = z.object({
 });
 export const unknownTokenUsage = (): ReportedTokenUsage => ({ input: null, output: null, cacheRead: null, cacheWrite: null });
 
-const providerCostSchema = z.object({ usage: z.object({ cost: z.union([z.number().finite().nonnegative(), z.object({ total: z.number().finite().nonnegative() })]) }) });
+const usdAmount = z.number().finite().nonnegative();
+const providerCostSchema = z.object({ usage: z.object({
+  cost: z.union([usdAmount, z.object({ total: usdAmount, currency: z.string().optional() })]),
+  currency: z.string().optional(),
+}) });
 export function reportedCostTotal(value: unknown): number | undefined {
   const parsed = providerCostSchema.safeParse(value);
   if (!parsed.success) return;
-  const cost = parsed.data.usage.cost;
+  const { cost, currency } = parsed.data.usage;
+  const nestedCurrency = typeof cost === "number" ? undefined : cost.currency;
+  if ([currency, nestedCurrency].some(tag => tag != null && tag.toUpperCase() !== "USD")) return undefined;
+  // Provider cost extensions used by the supported transports use USD when no tag is supplied.
   return typeof cost === "number" ? cost : cost.total;
 }
 

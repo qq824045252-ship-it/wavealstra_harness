@@ -1,11 +1,10 @@
-import { workspaceRequestRevision } from "./workspace-request-selection";
+import { workspaceRequestRevision, type WorkspaceRequestSelection } from "./workspace-request-selection";
 import type { NotificationActivationTarget } from "@shared/notification";
 import type { BotWorkApi } from "@shared/bot-work-ipc";
-import type { BotWorkspaceRequestDto } from "@shared/bot-workspace-navigation";
 
 export async function openHistoricalNotification(
   target: Extract<NotificationActivationTarget, { kind: "botConversation" }>, api: BotWorkApi | undefined,
-  open: (request: BotWorkspaceRequestDto) => void, options: { signal?: AbortSignal; isCurrent: () => boolean },
+  open: (request: WorkspaceRequestSelection) => void, options: { signal?: AbortSignal; isCurrent: () => boolean },
 ): Promise<void> {
   options.signal?.throwIfAborted();
   if (!api) throw new Error("主机离线，无法打开历史通知");
@@ -31,5 +30,5 @@ export async function openHistoricalNotification(
   if (!request) throw new Error("此历史会话尚无工作空间入口，记录未删除");
   options.signal?.throwIfAborted();
   if (workspaceRequestRevision() !== selectionRevision || !options.isCurrent()) throw new Error("通知导航已被新的选择取代");
-  open(request);
+  open(target.messageId ? { ...request, focusMessageId: target.messageId } : request);
 }

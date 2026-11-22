@@ -125,6 +125,16 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await click('[aria-label="清空通知"]');
   await click('.notifications-feedback button', '取消');
   assert.equal(await evaluate('window.api.notification.list().then(items=>items.length)'), 2, 'cancel clear retains notifications');
+  await click('[aria-label="阅读通知：导航验证通知"]');
+  await visible('.notification-reading');
+  await until(() => evaluate('!document.querySelector("button.notifications-open")'), 'unread row leaves the filtered list after reading');
+  assert.equal(await evaluate('document.querySelector(".notification-reading").dataset.notificationId'), notificationId);
+  await click('.notifications-categories button', '系统');
+  assert.equal(await evaluate('document.querySelector(".notification-reading h2").textContent'), '导航验证通知', 'filter changes preserve the selected notification');
+  await click('.notification-reading button', '关闭阅读');
+  assert.equal(await evaluate('document.querySelector(".notification-reading") !== null'), false);
+  await click('.notifications-toolbar .notifications-control');
+  await click('.notifications-categories button', '自动化');
   await click('button.notifications-open');
   await until(() => evaluate('!document.querySelector(".notifications-page")'), 'notification leaves the page after activation');
   await until(() => evaluate('window.api.notification.unreadCount().then(n=>n===0)'), 'delivered notification read');

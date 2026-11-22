@@ -27,7 +27,11 @@ async function openActivationTarget(target: NotificationActivationTarget, signal
     action();
   };
   switch (target.kind) {
-    case "task": open(() => state.setActiveTask(target.taskId)); break;
+    case "task": open(() => {
+      state.setActiveTask(target.taskId, target.messageId ? {
+        messageId: target.messageId, toolCallId: target.toolCallId, interactionId: target.interactionId,
+      } : undefined);
+    }); break;
     case "project": open(() => state.openProjectDetails(target.projectId)); break;
     case "automation": open(() => state.setPage("automation")); break;
     case "runtime": state.setSettingsOpen(true, "extensions"); break;
@@ -43,7 +47,7 @@ async function openActivationTarget(target: NotificationActivationTarget, signal
       const navigation = await window.api?.botWork.workspaceNavigation();
       const request = navigation?.foregroundRequests.find(item => item.botId === work.ownerBotId && work.originalDelegation?.messages.some(message => message.messageId === item.messageId));
       if (!request) throw new Error("此历史事项尚无工作空间入口，记录未删除");
-      open(() => openWorkspaceRequest(request));
+      open(() => openWorkspaceRequest({ ...request, focusWork: target }));
       break;
     }
   }

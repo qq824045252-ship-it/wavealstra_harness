@@ -46,6 +46,7 @@ try {
     agent: async () => ({ cwd }), output: () => {},
     snapshot: async (_doc: any, conversation: number) => { assert.equal(conversation, 10); return { run: { inputs: inputIds } }; },
     commit: async (fn: any) => serialized(() => fn({
+      task: async () => undefined,
       conversation: async (id: number) => ({ owner: id === 12 ? { conversationId: 10 } : undefined }),
       scanEntries: async () => ({ items: [...entries].reverse() }),
       appendEntry: async (_kind: any, conversationId: number, value: any) => {
@@ -73,6 +74,7 @@ try {
   await assert.rejects(createDurableArtifactRegistrationTool(blockedStore).execute({ path }, api, ctx),
     "store I/O failure must remain an exception, not a known missing-source result");
   const failingCommitApi = { ...api, commit: async (fn: any) => fn({
+    task: async () => undefined,
     conversation: async () => ({ owner: undefined }), scanEntries: async () => ({ items: [] }),
     appendEntry: async () => { throw Object.assign(new Error("commit lost"), { code: "ENOENT" }); },
   }), snapshot: async () => ({ run: { inputs: [71] } }) };

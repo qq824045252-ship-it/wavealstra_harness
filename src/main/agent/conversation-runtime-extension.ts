@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { checkCurrentToolInput } from "./durable/DurableToolInputScope";
 import type { ConversationGoalService } from "./ConversationGoalService";
 import type { ConversationInteractionService } from "./ConversationInteractionService";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
@@ -269,6 +270,8 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           }, signal, id);
           if (signal?.aborted) throw new Error("当前执行已中止");
           if (answer !== true) return result("用户暂未确认完成 Work，事项保持原状态。", { confirmed: false });
+          const current = checkCurrentToolInput();
+          if (current) await current;
           const updated = bridge.goal.update(
             { goalId: goal.id, status: "achieved", progressSummary: params.summary },
             {

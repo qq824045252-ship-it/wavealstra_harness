@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { applyPatchToMessage } from "../src/renderer/src/store/appStore";
 import { ConversationInteractionCard } from "../src/renderer/src/components/chat/ConversationRuntimeCards";
 import MessageBlockView from "../src/renderer/src/components/chat/MessageBlockView";
 import { deriveTaskStatus, matchesTaskFilter } from "../src/renderer/src/utils/taskFilters";
 import type { ChatMessage, Task } from "../src/renderer/src/types";
+import type { ConversationGoalDto, GoalSavedArtifactDto } from "../src/shared/conversation-goal";
+import type { GoalActivityDto } from "../src/shared/conversation-goal-activity";
 
 const base: ChatMessage = { id: "assistant-a", role: "assistant", blocks: [], createdAt: 1, streaming: true };
 const interaction = {
@@ -39,4 +41,112 @@ const malformedHtml = renderToStaticMarkup(createElement(MessageBlockView, { blo
 assert.match(malformedHtml, /合法历史文本/);
 assert.doesNotMatch(malformedHtml, /<button|<input|<progress/);
 
-console.log("conversation runtime ui tests: ok");
+async function goalArtifactPreviewKeepsExactVersion(): Promise<void> {
+  const { parseHTML } = await import("linkedom/worker");
+  const { window, document } = parseHTML("<html><body><div id='root'></div></body></html>");
+  Object.assign(globalThis, { window, document, IS_REACT_ACT_ENVIRONMENT: true });
+  const { createRoot } = await import("react-dom/client");
+  const { default: ConversationGoalChip } = await import("../src/renderer/src/components/chat/ConversationGoalChip");
+  const goal: ConversationGoalDto = { id: "goal", taskId: "task", title: "核对交付物", status: "active",
+    criteria: [], version: 1, createdBy: "user", createdAt: 1, updatedAt: 2,
+    continuation: { state: "exhausted", deferReason: "attempts", attempts: 2, maxAttempts: 2, tokensUsed: 0 } };
+  const historical: ConversationGoalDto = { ...goal, id: "historical", title: "旧目标", status: "achieved",
+    closedAt: 1, progressSummary: "历史材料已送审" };
+  const cost = { knownCostUsd: null, observedRequests: 0, requestsWithCost: 0,
+    providerReportedRequests: 0, estimatedRequests: 0, missingGenerationObservations: 0 };
+  const activity: GoalActivityDto = {
+    runs: [{ taskId: "task", conversationId: "child-conversation", generationTaskId: 2, intentRevision: 1,
+      child: { id: "child", displayName: "资料检查", role: "review", model: "fixture" },
+      returned: { status: "completed", toolCallId: "child-return" }, status: "completed", requestCount: 0, retryCount: 0 }],
+    skills: [], knownTokens: { input: null, output: null, cacheRead: null, cacheWrite: null },
+    knownCostUsd: null, observedRequests: 0, requestsWithUsage: 0,
+    tokenFieldCoverage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    requestsWithCompleteUsage: 0, requestsWithCost: 0, costBySource: { main: cost, child: cost, auxiliary: cost },
+    unattributedAuxiliaryRequests: 0, missingGenerationObservations: 0, retryCount: 0,
+  };
+  const artifacts: GoalSavedArtifactDto[] = [
+    { id: "new", path: "/workspace/receipt.txt", digest: "new-digest", version: 2, registeredAt: 2,
+      request: { snapshotPath: "/saved/new/receipt.txt", name: "receipt.txt" } },
+    { id: "old", path: "/workspace/receipt.txt", digest: "old-digest", version: 1, registeredAt: 2,
+      request: { snapshotPath: "/saved/old/receipt.txt", name: "receipt.txt" } },
+  ];
+  const opened: string[] = [];
+  const verified: string[] = [];
+  Object.assign(window, { api: { conversationRuntime: {
+    snapshot: async () => ({ taskId: "task", activeGoal: goal, goals: [goal, historical], interactions: [] }),
+    goalEvidence: async (_taskId: string, goalId: string) => ({
+      savedArtifacts: goalId === goal.id ? artifacts.map(artifact => ({ ...artifact })) : [],
+      executions: [], artifacts: [], deliverables: [], verification: [],
+      activity: goalId === goal.id ? activity : undefined,
+    }),
+    readGoalArtifactText: async (taskId: string, goalId: string, artifactId: string) => {
+      assert.deepEqual([taskId, goalId], ["task", "goal"]);
+      opened.push(artifactId);
+      return artifactId === "old" ? "旧版本内容" : "新版本内容";
+    },
+    verifyGoalArtifact: async (taskId: string, goalId: string, artifactId: string) => {
+      assert.deepEqual([taskId, goalId], ["task", "goal"]);
+      verified.push(artifactId);
+      const artifact = artifacts.find(item => item.id === artifactId);
+      assert.ok(artifact);
+      artifact.verification = { kind: "user", verifiedAt: 3 };
+      return { ...artifact };
+    },
+  } } });
+  const root = createRoot(document.getElementById("root")!);
+  const click = async (selector: string, label?: string) => {
+    const target = [...document.querySelectorAll(selector)].find(node => label === undefined || node.textContent === label);
+    assert.ok(target, `找不到 ${label ?? selector}`);
+    await act(async () => target.dispatchEvent(new window.Event("click", { bubbles: true })));
+  };
+  const rows = () => [...document.querySelectorAll(".goal-artifact li")].map(item => item.textContent ?? "");
+  const overviewRows = () => [...document.querySelectorAll(".conversation-goal-list li")].map(item => item.textContent ?? "");
+  try {
+    await act(async () => root.render(createElement(ConversationGoalChip, { taskId: "task", goal })));
+    await click(".conversation-goal-chip");
+    assert.equal(document.querySelectorAll(".goal-artifact-section").length, 1);
+    assert.match(rows()[0], /版本 2 · 最新.*待核验/);
+    assert.match(rows()[1], /版本 1.*待核验/);
+    assert.match(overviewRows()[0], /已登记 2 个文件版本.*已核验 0 个.*1 个子代理已返回.*续跑已停止（自动续跑次数用尽）/);
+    assert.match(overviewRows()[1], /历史材料已送审/);
+    assert.doesNotMatch(overviewRows()[1], /receipt\.txt|子代理已返回|自动续跑次数用尽/);
+    assert.match(document.querySelector(".conversation-goal-dialog > p:nth-of-type(2)")?.textContent ?? "", /自动续跑次数用尽/);
+    await click('button[aria-label="打开 receipt.txt 版本 1"]');
+    assert.equal(document.querySelector(".goal-artifact-preview pre")?.textContent, "旧版本内容");
+    await click(".goal-artifact-preview button", "我已核验此版本");
+    assert.match(overviewRows()[0], /已核验 1 个；最新 receipt\.txt（待核验）/);
+    await click(".goal-artifact-preview button", "返回 Goal");
+    assert.equal(document.querySelector(".goal-artifact-preview"), null);
+    assert.equal(document.querySelector(".conversation-goal-dialog h2")?.textContent, "核对交付物");
+    await click(".goal-evidence button", "刷新证据");
+    assert.equal(document.querySelectorAll(".goal-artifact-section").length, 1, "证据刷新不能重复插入成果面板");
+    await click('.conversation-goal-dialog button[aria-label="关闭"]');
+    await click(".conversation-goal-chip");
+    assert.match(rows()[0], /版本 2 · 最新.*待核验/);
+    assert.match(rows()[1], /版本 1.*我已核验/);
+    await click('button[aria-label="打开 receipt.txt 版本 2"]');
+    assert.equal(document.querySelector(".goal-artifact-preview pre")?.textContent, "新版本内容");
+    assert.deepEqual(opened, ["old", "new"]);
+    assert.deepEqual(verified, ["old"]);
+    await click(".goal-artifact-preview button", "返回 Goal");
+    artifacts.reverse();
+    artifacts[0]!.registeredAt = 4;
+    await click(".goal-evidence button", "刷新证据");
+    assert.match(rows()[0], /版本 1 · 最新.*我已核验/);
+    assert.match(rows()[1], /版本 2.*待核验/);
+    await click(".conversation-goal-list li:nth-child(2) button");
+    assert.equal(document.querySelector(".conversation-goal-dialog h2")?.textContent, "旧目标");
+    assert.doesNotMatch(document.querySelector(".goal-evidence")?.textContent ?? "", /receipt\.txt/);
+    assert.equal(document.querySelector(".conversation-goal-dialog > p[role=status]"), null, "完成后不把历史停因显示为当前等待");
+    assert.match(document.querySelector(".goal-evidence")?.textContent ?? "", /自动续跑次数用尽/, "续跑区仍可查历史停因");
+  } finally {
+    await act(async () => root.unmount());
+  }
+}
+
+void goalArtifactPreviewKeepsExactVersion().then(() => {
+  console.log("conversation runtime ui tests: ok");
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

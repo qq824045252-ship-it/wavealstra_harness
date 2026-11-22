@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { checkCurrentToolInput } from "./DurableToolInputScope";
 import { createHash } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { awaitWithContext } from "@earendil-works/chord/context";
@@ -238,6 +239,8 @@ export class DurableMcp implements ExternalEffectRecovery {
     if (!tool) throw new Error("MCP tool is unavailable or hidden: " + server + "/" + name);
     const validated = validateToolArguments({ name: tool.name, description: tool.description ?? "", parameters: Type.Unsafe(tool.inputSchema) },
       { type: "toolCall", id: "mcp", name: tool.name, arguments: args as JsonObject });
+    const current = checkCurrentToolInput();
+    if (current) await current;
     const result = await this.servers.get(server)!.client!.callTool(tool.name, validated, { signal: context.abortSignal });
     return { output: toLlmContent(result), isError: result.isError === true };
   }

@@ -1,4 +1,4 @@
-import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineTool, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { createPstackWorkflowHooks, textMessage } from "./PstackWorkflowHooks";
 import { authoredFiles } from "./PstackAuthoredSkills";
 import { Type } from "typebox";
@@ -18,6 +18,7 @@ import { createPstackWatchTool } from "./watch";
 import { inspectOwnerAudit, inspectPrBody, inspectPublishedPr, isAutopilot } from "./PstackDelivery";
 import { recordedOwnerAudits } from "./PstackOwnerMonitor";
 import { createPstackOrchestrationTools, orchestrationProgress } from "./PstackOrchestration";
+import { recordGoalNativeEvidence as recordPstackGoalEvidence } from "../durable/DurableGoalNativeEvidence";
 
 const actions = ["status", "start", "advance", "review", "complete", "block", "resume", "skill", "invoke", "verify", "decision", "decision-audit", "audit", "pr-body", "export-eval"] as const;
 const parameters = Type.Object({
@@ -118,9 +119,9 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           return success(view(result));
         }
         if (!run) throw new Error("No workflow. Call start with an enabled playbook.");
-        const save = (change: (next: WorkflowRun) => void) => update(options, run, api, ctx, next => {
+        const save = (change: (next: WorkflowRun, tx: Tx) => void | Promise<void>) => update(options, run, api, ctx, (next, tx) => {
           for (const input of active.inputs) if (!next.inputs.includes(input)) next.inputs.push(input);
-          change(next);
+          return change(next, tx);
         });
         if (action === "export-eval") {
           const report=await exportEval(options,run,args.artifactDirectory ?? run.contests?.eval?.directory ?? ".",api,ctx);
@@ -215,12 +216,16 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           const checkpoint = !readOnlyCodingTag(run.tagId) && settings.skills.architect?.enabled && settings.skills.architect.parameters.checkpoint === true
             && (method === "architect" ? stepId === "synthesize" : stage.skillIds.includes("architect") && stage.id === "design"
               && !run.invoked?.some(entry => entry.stage === stage.id && entry.skill === "architect"));
-          return success(view(await save(next => {
+          return success(view(await save(async (next, tx) => {
             if (contest) next.contests = { ...next.contests, [contestStep(run.playbook, stage.id)!.key]: contest };
             if (exported) next.evalExport=exported;
             next.notes.push(note.trim()); next.stage++;
             if (prBody) next.prBody = prBody;
-            if (published) next.publishedPr = published;
+            if (published) {
+              next.publishedPr = published;
+              await recordPstackGoalEvidence(tx, api, { kind: "delivery", url: published.url, branch: published.headRef,
+                sha: published.head, digest: published.body });
+            }
             if (checkpoint) { next.phase = "blocked"; next.block = "架构确认点。请确认以下方案后再实施。\n" + note.trim(); }
           })));
         }
@@ -250,7 +255,8 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           const unchanged = delta.fingerprint === after.fingerprint;
           const silentMeasurement = measurement && !output.trim();
           const passed = !result.isError && exitCode === 0 && unchanged && !emptySuite && !silentMeasurement;
-          await save(next => {
+          await save(async (next, tx) => {
+            await recordPstackGoalEvidence(tx, api, { kind: "check", command, passed, exitCode, fingerprint: after.fingerprint });
             next.verification = { command, passed, toolTaskId: result.taskId, fingerprint: after.fingerprint };
             if (method === "tdd" && stepId === "red" && unchanged && !emptySuite && exitCode !== null && exitCode > 0 && exitCode < 126)
               next.red = { command, toolTaskId: result.taskId, fingerprint: after.fingerprint, exitCode };
@@ -332,7 +338,11 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           : reasons.length ? "Thermos 审查通过（" + reasons.join("，") + "）。"
           : !settings.skills["thermo-nuclear-code-quality-review"]?.enabled ? "Thermos 未触发（任务设置已关闭质量审查）。"
           : "Thermos 未触发（变更 " + reviewedDelta.changedLines + " 行，未满足本任务启用的审查条件）。";
-        return success(view(await save(next => { next.phase = "complete"; next.thermosOutcome = thermosOutcome; if (planReceipt) next.plan = planReceipt;
+        return success(view(await save(async (next, tx) => { next.phase = "complete"; next.thermosOutcome = thermosOutcome;
+          if (planReceipt) {
+            next.plan = planReceipt;
+            await recordPstackGoalEvidence(tx, api, { kind: "delivery", path: planReceipt.path, digest: planReceipt.digest });
+          }
           if (stage && snapshotDone) { next.notes.push("PR snapshot: " + next.watch!.repository + " #" + next.watch!.prs.join(", #") + " at " + next.watch!.observedAt); next.stage = playbookFor(next).stages.length; }
         })));
       } catch (error) { ctx.abortSignal?.throwIfAborted(); return failure(error); }

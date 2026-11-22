@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
+import type { ConversationGoalDto } from "@shared/conversation-goal";
 import MessageItem from "./MessageItem";
 import ChatAnswerRuleDialog from "@/components/answer-routing/ChatAnswerRuleDialog";
 import { botMessagePresentation } from "@/lib/botMessagePresentation";
@@ -297,12 +298,13 @@ function HistoryPopup({
   );
 }
 
-function MessageList({ taskId, messages, artifacts, visibleArtifacts, toolFocusMessageId, delegations = [] }: {
+function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, delegations = [] }: {
   delegations?: import("@shared/dots").DotsDelegation[];
   taskId: string;
   messages: readonly ChatMessage[];
   artifacts: Artifact[];
   visibleArtifacts: Artifact[];
+  onGoalCreated: (goal: ConversationGoalDto) => void;
   toolFocusMessageId?: string;
 }): React.JSX.Element {
   const [preview, setPreview] = useState<{ rowId: string; file: SavedArtifactRequest }>();
@@ -349,7 +351,7 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts, toolFocusM
               deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} selected={Boolean(showPreview)}
                 onPreview={file => setPreview({ rowId: delivery.deliveryKey, file })} /> : undefined}
               artifacts={artifacts} visibleArtifacts={visibleArtifacts}
-              focusTool={toolFocusMessageId === msg.id} />}
+              onGoalCreated={onGoalCreated} focusTool={toolFocusMessageId === msg.id} />}
             {rows.map(row => <DotsResult key={row.id} row={row} selected={preview?.rowId === row.id}
               onPreview={file => setPreview({ rowId: row.id, file })} />)}
           </div>,
@@ -366,6 +368,8 @@ const readingPositions = new Map<string, { top: number; following: boolean }>();
 
 export default function ChatView(): React.JSX.Element {
   const task = useActiveTask();
+  const [selectedMessageGoal, setSelectedMessageGoal] = useState<ConversationGoalDto>();
+  useEffect(() => setSelectedMessageGoal(undefined), [task?.id]);
   const draftProjectId = useAppStore((s) => s.draft?.projectId);
   const draftSpaceId = useAppStore((s) => s.draft?.spaceId);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
@@ -727,6 +731,7 @@ export default function ChatView(): React.JSX.Element {
             {boundProjectId && <ChatProjectCrumb projectId={boundProjectId} />}
             {draftSpaceId ? <WorkspaceCrumb spaceId={draftSpaceId} /> : null}
             <div className="chat-header-sub" />
+            {task && <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal} />}
             {task && sidePanelButton}
           </div>
         )}
@@ -748,7 +753,7 @@ export default function ChatView(): React.JSX.Element {
           {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
           <WorkspaceCrumb spaceId={task.spaceId ?? null} />
           <div className="chat-header-title">{task.title || "任务"}</div>
-          {task.welcomeMode !== "general" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
+          <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal} />
           <ConversationBranchChip />
           {/* 子代理查看（数据源与侧栏概览同一个 hook）：取代原来的场景 chip */}
           <SubagentRunsChip taskId={task.id} />
@@ -820,7 +825,8 @@ export default function ChatView(): React.JSX.Element {
           )}
         </div>
         <div className="chat-header-sub" />
-        {task.welcomeMode !== "general" && <ConversationGoalChip taskId={task.id} goal={task.activeGoal} />}
+        <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal}
+          viewGoal={selectedMessageGoal?.taskId === task.id ? selectedMessageGoal : undefined} />
         <ConversationBranchChip />
         {/* 子代理查看（数据源与侧栏概览同一个 hook）：取代原来的场景 chip */}
         <SubagentRunsChip taskId={task.id} />
@@ -902,6 +908,7 @@ export default function ChatView(): React.JSX.Element {
               fiber，把整条消息列表渲染两遍（看起来像「消息自己重复刷新」）。 */}
           {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
           <MessageList
+            onGoalCreated={setSelectedMessageGoal}
             delegations={isDots ? dotsDelegations.rows : undefined}
             toolFocusMessageId={notificationTarget?.toolCallId ? turnMessage?.id : undefined}
             taskId={task.id}

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ConversationGoalChip from "../src/renderer/src/components/chat/ConversationGoalChip";
 
 const source = (path: string): string => readFileSync(resolve(process.cwd(), path), "utf8");
 const contains = (path: string, value: string, message: string): void => assert.ok(source(path).includes(value), message);
@@ -69,16 +72,14 @@ contains(globalCssPath, ".sidebar .space-header.space-active", "real workspace r
 for (const marker of ["WorkspaceCrumb", "RuntimeStatusChips", "<ChatInput", "chat-expert-chip-label"]) {
   contains(chatViewPath, marker, `chat header/composer capability missing: ${marker}`);
 }
-contains(
-  "src/renderer/src/components/chat/ConversationGoalChip.tsx",
-  '{goal ? goal.title : "Goal"}',
-  "Goal chip empty label must be Goal",
-);
-excludes(
-  "src/renderer/src/components/chat/ConversationGoalChip.tsx",
-  "设定 Goal",
-  "Goal chip must not keep the 设定 Goal prefix",
-);
+const emptyGoalChip = renderToStaticMarkup(createElement(ConversationGoalChip, { taskId: "task" }));
+assert.match(emptyGoalChip, /class="conversation-goal-chip-label">Goal<\/span>/, "Goal chip empty label must be Goal");
+const activeGoalChip = renderToStaticMarkup(createElement(ConversationGoalChip, {
+  taskId: "task",
+  goal: { id: "goal", taskId: "task", title: "交付凭证", status: "active", criteria: [], version: 1,
+    createdBy: "user", createdAt: 1, updatedAt: 1 },
+}));
+assert.match(activeGoalChip, /class="conversation-goal-chip-label">交付凭证<\/span>/, "Goal chip label must show the active title");
 contains(
   globalCssPath,
   ".chat-column.task-ambient .conversation-goal-chip",

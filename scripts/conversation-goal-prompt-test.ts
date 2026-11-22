@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,9 +24,23 @@ const { renderConversationGoalSection } = await import("../src/main/agent/Conver
 const db = new AppDatabase(join(root, "app.db"));
 db.upsertTask({ id: "goal-task", title: "Goal", updatedAt: 1, welcomeMode: "coding" });
 db.upsertTask({ id: "plain-task", title: "Plain", updatedAt: 1, welcomeMode: "coding" });
+db.upsertTask({ id: "general-task", title: "General", updatedAt: 1, welcomeMode: "general" });
 
-const fixture = await createAgentDurableFixture(root, db);
+const marker = join(root, "goal-source.txt");
+writeFileSync(marker, "方案依据\n");
+const fixture = await createAgentDurableFixture(root, db, input => {
+  const last = input.messages.at(-1);
+  if (last?.role === "user" && JSON.stringify(last.content).includes("生成可转成 Goal 的方案")) {
+    return [{ type: "text", text: "先读取方案依据" }, { type: "toolCall", id: "source-tool", name: "read", arguments: { path: marker } }];
+  }
+  if (last?.role === "toolResult") return [{ type: "text", text: "交付方案\n先核验，再提交" }];
+  return [{ type: "text", text: "已收到。" }];
+});
 const { agent, requests } = fixture;
+let messageGoalId: string | undefined;
+let expectedSource: import("../src/shared/conversation-goal").ConversationGoalSourceDto | undefined;
+let assistantGoalId: string | undefined;
+let expectedAssistantSource: typeof expectedSource;
 
 let turn = 0;
 const prompt = async (taskId: string): Promise<string> => {
@@ -114,8 +128,92 @@ try {
   assert(longGoal.length < 4_100, "Goal 段必须有长度上界");
   assert(longGoal.endsWith("完整验收条件用 conversation_goal_get 读取）"), "截断时提示完整来源");
 
+  // A message-origin goal is resolved from the actual committed conversation.
+  await fixture.prompt({ taskId: "general-task", text: "整理本季度的交付清单\n核对每个验收项",
+    userMessageId: "general-source-user", assistantMessageId: "general-source-assistant" });
+  const generalHistory = await agent.loadTaskHistory("general-task");
+  const source = generalHistory.messages.find(message => message.role === "user");
+  assert(source?.entryId && generalHistory.durable?.historyId);
+  const sourceMessage = { messageId: source.id, entryId: source.entryId, historyId: generalHistory.durable.historyId };
+  const createFromSource = { taskId: "general-task", title: "", sourceMessage };
+  const foreign = await agent.createConversationGoal({ ...createFromSource, taskId: "plain-task" });
+  assert.equal(foreign.ok, false, "不能按另一个对话的历史和消息引用建立 Goal");
+  const wrongEntry = await agent.createConversationGoal({ ...createFromSource,
+    sourceMessage: { ...sourceMessage, entryId: String(Number(source.entryId) + 1) } });
+  assert.equal(wrongEntry.ok, false, "消息和原生条目必须对应");
+  const [one, retry] = await Promise.all([
+    agent.createConversationGoal({ ...createFromSource, createdBy: "agent_explicit_request" }),
+    agent.createConversationGoal(createFromSource),
+  ]);
+  assert(one.ok && retry.ok);
+  messageGoalId = one.goal.id;
+  assert.equal(retry.goal.id, messageGoalId, "同一原始消息并发点击返回同一 Goal");
+  assert.equal(one.goal.createdBy, "user");
+  assert.equal(one.goal.title, "整理本季度的交付清单");
+  expectedSource = {
+    taskId: "general-task", conversationId: generalHistory.durable.conversationId, messageId: source.id,
+    entryId: source.entryId, inputRequestId: source.inputRequestId, role: "user", text: source.text,
+  };
+  assert.deepEqual(one.goal.source, expectedSource);
+  assert.equal(agent.getConversationRuntimeSnapshot("plain-task").goals?.length, 0);
+  assert(agent.cancelConversationGoal(messageGoalId).ok);
+  const closedRetry = await agent.createConversationGoal(createFromSource);
+  assert(closedRetry.ok);
+  assert.equal(closedRetry.goal.id, messageGoalId, "关闭后重试仍可打开历史 Goal");
+  assert.equal(closedRetry.goal.status, "cancelled");
+  assert.equal(agent.getConversationRuntimeSnapshot("general-task").activeGoal, undefined);
+
+  await fixture.prompt({ taskId: "general-task", text: "生成可转成 Goal 的方案",
+    userMessageId: "plan-user", assistantMessageId: "plan-reply" });
+  const planHistory = await agent.loadTaskHistory("general-task");
+  assert(planHistory.durable?.historyId);
+  const toolReply = planHistory.messages.find(candidate => candidate.tools?.some(tool => tool.id === "source-tool"));
+  const finalReply = planHistory.messages.findLast(candidate => candidate.role === "assistant");
+  assert(toolReply?.entryId && toolReply.text && finalReply?.entryId && finalReply.finalAssistantReply);
+  assert.notEqual(finalReply.id, toolReply.id, "工具阶段和最终答复是不同的原生条目");
+  const reference = (message: { id: string; entryId?: string }) => ({
+    messageId: message.id, entryId: message.entryId, historyId: planHistory.durable!.historyId,
+  });
+  const createFromReply = { taskId: "general-task", title: "", sourceMessage: reference(finalReply) };
+  const rejectTool = await agent.createConversationGoal({ ...createFromReply, sourceMessage: reference(toolReply) });
+  assert(!rejectTool.ok && rejectTool.code === "invalid_request", "含文本的工具阶段仍不是最终答复");
+  const rejectShell = await agent.createConversationGoal({ ...createFromReply, sourceMessage: { ...reference(finalReply), messageId: "plan-reply" } });
+  assert.equal(rejectShell.ok, false, "流式占位 ID 不能替代原生条目身份");
+  assert.equal((await agent.createConversationGoal({ ...createFromReply, taskId: "plain-task" })).ok, false);
+  const assistantGoal = await agent.createConversationGoal(createFromReply);
+  const assistantRetry = await agent.createConversationGoal(createFromReply);
+  assert(assistantGoal.ok && assistantRetry.ok);
+  assistantGoalId = assistantGoal.goal.id;
+  assert.equal(assistantRetry.goal.id, assistantGoalId);
+  assert.equal(assistantGoal.goal.createdBy, "user");
+  assert.equal(assistantGoal.goal.title, "交付方案");
+  expectedAssistantSource = {
+    taskId: "general-task", conversationId: planHistory.durable.conversationId, messageId: finalReply.id,
+    entryId: finalReply.entryId, role: "assistant", text: "交付方案\n先核验，再提交",
+  };
+  assert.deepEqual(assistantGoal.goal.source, expectedAssistantSource);
+
   console.log("PASS conversation Goal reaches the model with unmet criteria, attestation, completion, pause, cancel and absent states");
 } finally {
   await fixture.close();
   db.close?.();
+}
+
+const reopenedDb = new AppDatabase(join(root, "app.db"));
+try {
+  const reopened = await createAgentDurableFixture(root, reopenedDb);
+  try {
+    const history = reopened.agent.getConversationRuntimeSnapshot("general-task");
+    assert.equal(history.goals?.length, 2);
+    const closed = history.goals?.find(goal => goal.id === messageGoalId);
+    assert.equal(closed?.status, "cancelled");
+    assert.deepEqual(closed?.source, expectedSource);
+    assert.equal(history.activeGoal?.id, assistantGoalId);
+    assert.deepEqual(history.activeGoal?.source, expectedAssistantSource);
+    console.log("PASS user and assistant Goal sources, native entry, cross-conversation scope and history survive reopen");
+  } finally {
+    await reopened.close();
+  }
+} finally {
+  reopenedDb.close();
 }

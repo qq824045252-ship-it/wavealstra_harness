@@ -54,9 +54,11 @@ assert.deepEqual(nativeCostEvidence({ ...usedUsage, cost: { total: 0.0025 } }, u
 
 // 无效 total 一律未知
 for (const cost of [undefined, null, { total: -1 }, { total: Number.NaN }, { total: Infinity }]) {
-  assert.deepEqual(nativeCostEvidence({ cost } as NativeCostUsage, reportedTokens, 0, true), unknown,
+  assert.deepEqual(nativeCostEvidence({ cost } as NativeCostUsage, reportedTokens, undefined, true), unknown,
     `无效 total ${JSON.stringify(cost)} 必须是未知`);
 }
+assert.deepEqual(nativeCostEvidence(undefined, unknownTokenUsage(), 0, false),
+  { total: 0, source: 'provider-reported', complete: true }, 'an explicit provider zero survives absent SDK pricing');
 
 // pricingConfigured 未传（旧调用方）保持旧判定：用量存在 → pi-native
 assert.deepEqual(nativeCostEvidence(usedUsage, reportedTokens), { total: 0, source: 'pi-native', complete: true },
@@ -100,6 +102,25 @@ r = traceResult(unpriced, { input: 1200, output: 300, cacheRead: 64, cacheWrite:
 assert.equal(r.nativeCostTotal, 0, '供应商报告的 0 是真实账单');
 assert.equal(r.nativeCostSource, 'provider-reported');
 assert.equal(r.nativeCostComplete, true);
+
+const differentEstimate = { input: 1200, output: 300, cacheRead: 64, cacheWrite: 0, cost: { total: 0.00314 } };
+for (const billed of [0.025, 0]) {
+  r = traceResult(priced, differentEstimate, { usage: { prompt_tokens: 1200, completion_tokens: 300, cost: billed } });
+  assert.equal(r.nativeCostTotal, billed, "the raw Chat Completions amount overrides a distinct SDK estimate");
+  assert.equal(r.nativeCostSource, "provider-reported");
+}
+assert.equal(traceResult(priced, differentEstimate, { usage: { cost: { total: 45, currency: "EUR" } } }).nativeCostSource, "pi-native",
+  "a foreign-currency amount cannot be added to the USD cost total");
+const events: TraceRecord[] = [];
+const retry = new CacheRequestTracer(record => events.push(record as unknown as TraceRecord)).start(priced, "retry-cost", { operation: "stream" });
+retry.sent("https://fixture.invalid");
+retry.providerEvent({ usage: { cost: 0.025 } });
+retry.providerEvent({ usage: { cost: 0.025 } });
+retry.sent("https://fixture.invalid");
+retry.result({ stopReason: "stop", usage: differentEstimate });
+const retryCost = events.find(record => record.event === "result");
+assert.equal(retryCost?.nativeCostTotal, 0.025, "repeated summaries for one attempt are counted once");
+assert.equal(retryCost?.nativeCostComplete, false, "the unreported retry leaves spend coverage incomplete");
 
 // 正费用始终是 pi-native
 r = traceResult(unpriced, { input: 1200, output: 300, cacheRead: 64, cacheWrite: 0, cost: { total: 0.0042 } });

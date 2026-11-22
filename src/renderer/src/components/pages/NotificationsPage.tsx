@@ -31,6 +31,7 @@ const CATEGORIES = [
 
 const timeFormat = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 type Cursor = NonNullable<NotificationListRequest["before"]>;
+const rowKey = (item: NotificationDto) => item.group?.key ?? item.id;
 
 export default function NotificationsPage({ onBack }: { onBack: () => void }): React.JSX.Element {
   const navigate = useDesktopNavigate();
@@ -44,6 +45,7 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
   const [reload, setReload] = useState(0);
   const [confirmClear, setConfirmClear] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<NotificationDto>();
   const list = useRef<HTMLDivElement>(null);
   const api = window.api?.notification;
   const before = cursors.at(-1);
@@ -59,7 +61,7 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
       const current = ++revision;
       if (knownUnread !== undefined) setUnread(knownUnread);
       void Promise.all([
-        api.list({ types: category.types, unreadOnly, query, before, limit: PAGE_SIZE + 1 }),
+        api.list({ grouped: true, types: category.types, unreadOnly, query, before, limit: PAGE_SIZE + 1 }),
         knownUnread === undefined ? api.unreadCount() : knownUnread,
       ]).then(([rows, count]) => {
         if (disposed || revision !== current) return;
@@ -79,7 +81,7 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
     setItems(null);
     setError(null);
     setConfirmClear(false);
-    list.current?.scrollTo(0, 0);
+    if (!selected) list.current?.scrollTo(0, 0);
   };
   const mutate = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -89,6 +91,9 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
     finally { setBusy(false); }
   };
   const rows = items?.slice(0, PAGE_SIZE) ?? [];
+  const reading = selected?.group?.preview ?? selected;
+  const selectedActivationId = selected?.group?.activationId ?? selected?.id;
+  const readingTarget = selected && (selected.group?.target ?? notificationTarget(selected));
   const hasNext = (items?.length ?? 0) > PAGE_SIZE;
   const reset = () => {
     setCategory(CATEGORIES[0]);
@@ -131,6 +136,7 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
       <button type="button" className="notifications-control notifications-danger" disabled={busy}
         onClick={() => {
           setConfirmClear(false);
+          setSelected(undefined);
           if (api) void mutate(api.dismissAll);
         }}>确认清空</button>
     </div>}
@@ -138,6 +144,21 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
       <span>{error}</span><button type="button" className="notifications-control"
         onClick={() => { setError(null); setReload(value => value + 1); }}>重试加载</button>
     </div>}
+    {reading && <section className="notification-reading" aria-labelledby="notification-reading-title"
+      data-notification-id={selectedActivationId}>
+      <div className="notification-reading-header">
+        <h2 id="notification-reading-title">{reading.title}</h2>
+        <button type="button" className="notifications-control" onClick={() => setSelected(undefined)}>关闭阅读</button>
+      </div>
+      {reading.body && <p className="notifications-body">{reading.body}</p>}
+      <div className="notifications-meta">
+        <time dateTime={new Date(reading.createdAt).toISOString()}>{timeFormat.format(reading.createdAt)}</time>
+        {readingTarget && <button type="button" className="notifications-control"
+          onClick={() => {
+            if (api && selectedActivationId) void api.activate(selectedActivationId).catch(cause => setError(String(cause)));
+          }}>打开关联位置 <IconChevronRight size={14} /></button>}
+      </div>
+    </section>}
     <div className="notifications-list" ref={list} aria-label="通知列表" aria-busy={items === null && !error}>
       {items === null ? !error && <p className="notifications-empty" role="status">正在加载通知…</p> : rows.length === 0 ?
         <div className="notifications-empty"><IconBell size={26} />
@@ -146,28 +167,43 @@ export default function NotificationsPage({ onBack }: { onBack: () => void }): R
         </div> : <ul>{rows.map(item => {
           const meta = TYPES[item.type] ?? { label: "通知", icon: IconBell };
           const Icon = meta.icon;
+          const unreadCount = item.group?.unreadCount ?? Number(item.readAt == null);
+          const activationId = item.group?.activationId ?? item.id;
+          const target = item.group?.target ?? notificationTarget(item);
+          const isSelected = Boolean(selected && rowKey(selected) === rowKey(item));
+          const readNotice = () => {
+            setSelected(item);
+            if (api && unreadCount) void api.markRead(activationId).catch(cause => setError(String(cause)));
+          };
           const contents = <>
-            <span className="notifications-indicator" aria-label={item.readAt == null ? "未读" : undefined} />
+            <span className="notifications-indicator" aria-label={unreadCount ? "未读" : undefined} />
             <span className="notifications-type-icon" aria-hidden="true"><Icon size={17} /></span>
             <span className="notifications-copy">
               <strong>{item.title}</strong>
               {item.body && <span className="notifications-body">{item.body}</span>}
               <span className="notifications-meta">
                 <span className="notifications-type">{meta.label}</span>
+                {item.group && item.group.count > 1 && <span>{item.group.count} 条 · {unreadCount} 条未读</span>}
                 <time dateTime={new Date(item.createdAt).toISOString()} title={new Date(item.createdAt).toLocaleString("zh-CN")}>{timeFormat.format(item.createdAt)}</time>
               </span>
             </span>
           </>;
-          const target = notificationTarget(item);
-          return <li key={item.id} className="notifications-row" data-level={item.level} data-unread={item.readAt == null}>
-            {target ? <button type="button" className="notifications-open"
-              onClick={() => { if (api) void api.activate(item.id).catch(cause => setError(String(cause))); }}>{contents}<IconChevronRight size={15} /></button> :
-              <div className="notifications-open">{contents}</div>}
+          return <li key={rowKey(item)} className="notifications-row" data-level={item.level} data-unread={unreadCount > 0}>
+            <button type="button" className="notifications-open"
+              aria-current={isSelected ? "true" : undefined}
+              onClick={() => {
+                if (!target) return readNotice();
+                if (api) void api.activate(activationId).catch(cause => setError(String(cause)));
+              }}>{contents}<IconChevronRight size={15} /></button>
             <div className="notifications-row-actions">
-              {item.readAt == null && <button type="button" className="icon-btn" aria-label={`标为已读：${item.title}`} title="标为已读" disabled={busy}
-                onClick={() => { if (api) void mutate(() => api.markRead(item.id)); }}><IconCheck size={15} /></button>}
+              {target && <button type="button" className="notifications-control" aria-label={`阅读通知：${item.title}`}
+                onClick={readNotice}>阅读</button>}
+              {unreadCount > 0 && <button type="button" className="icon-btn" aria-label={`将最早未读通知标为已读：${item.title}`} title="将最早未读通知标为已读" disabled={busy}
+                onClick={() => { if (api) void mutate(() => api.markRead(activationId)); }}><IconCheck size={15} /></button>}
               <button type="button" className="icon-btn" aria-label={`删除通知：${item.title}`} title="删除通知" disabled={busy}
-                onClick={() => { if (api) void mutate(() => api.dismiss(item.id)); }}><IconTrash size={15} /></button>
+                onClick={() => {
+                  if (api) void mutate(() => api.dismiss(activationId));
+                }}><IconTrash size={15} /></button>
             </div>
           </li>;
         })}</ul>}

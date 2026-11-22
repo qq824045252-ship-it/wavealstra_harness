@@ -36,7 +36,7 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
       const content: AssistantMessage["content"] = context.messages.at(-1)?.role === "toolResult"
         ? [{ type: "text", text: "complete" }]
         : value?.includes("pending-business") ? [{ type: "toolCall", id: `call-${requests}`, name: "codemode",
-          arguments: { code: "await tools.fixture_effect({}); text('business complete');" } }]
+          arguments: { code: "await tools.mcp__fixture__publish({}); text('business complete');" } }]
         : value?.includes("seed") ? [{ type: "toolCall", id: `call-${requests}`, name: "codemode",
           arguments: { code: "store('mark','kept'); text('seeded');" } }]
         : [{ type: "text", text: "complete" }];
@@ -50,7 +50,7 @@ models.registerProvider("fixture", { api: "openai-completions", apiKey: "fixture
     return stream;
   },
 });
-const tool = defineTool({ name: "fixture_effect", description: "actual isolated effect", parameters: Type.Object({}), replay: "unsafe",
+const tool = defineTool({ name: "mcp__fixture__publish", description: "record a publication in the isolated fixture", parameters: Type.Object({}), replay: "unsafe",
   execute: async () => { effects++; appendFileSync(join(cwd, "effects.txt"), "effect\n"); return { output: [{ type: "text", text: "written" }] }; } });
 const options = { directory, cwd, models, model: { provider: "fixture", modelId: "fixture" }, toolMode: "codemode" as const,
   tools: [tool], instructions: () => "fixture", onSnapshot: () => {} };
@@ -119,15 +119,41 @@ try {
   assert(accepted.receipt);
   const result = await service.submissionStatus(accepted.receipt, true);
   assert.equal(result.error, undefined);
-  assert.equal(effects, 1, "only a genuine strict runtime may resume the pending business once");
-  assert.equal(readFileSync(join(cwd, "effects.txt"), "utf8"), "effect\n");
+  assert.equal(effects, 0, "a newer foreground input must defer the recovered publication");
+  assert.equal(existsSync(join(cwd, "effects.txt")), false);
+  assert(liveWriter!.snapshot.messages.some(message => message.tools?.some(tool =>
+    tool.tool === "mcp__fixture__publish" && tool.status === "error" && tool.output?.includes("较新的用户输入等待处理"))),
+    "the old call must be deferred by the freshness barrier");
+
+  // Startup recovery without any newer user input must still resume authorized work once.
   await liveWriter!.conversation.waitForIdle(ctx);
+  const operationId = "unopposed-regeneration";
+  const resumedBranch = await liveWriter!.forkForRegeneration(undefined, { operationId, content: "pending-business" });
+  await service.release("task");
+  await service.resumePersisted();
+  await liveWriter!.conversation.waitForIdle(ctx);
+  const readRecovered = async () => {
+    const writer = liveWriter!;
+    assert.equal(String(writer.conversation.id), resumedBranch, "the same persisted task branch must reopen");
+    return await writer.conversation.commit(tx => tx.submissionByRequest(writer.conversation.id, operationId), ctx);
+  };
+  const recovered = await readRecovered();
+  assert.equal(recovered?.status, "done", "recovery settled the exact persisted operation");
+  assert.equal(effects, 1, "ordinary startup recovery resumes an unopposed publication once");
+  assert.equal(readFileSync(join(cwd, "effects.txt"), "utf8"), "effect\n");
   const liveFiles = files(), liveRequests = requests, liveFactories = factoryCalls;
   const liveHistory = await service.history("task");
   assert.equal(liveHistory.historyError, undefined);
   assert.deepEqual(files(), liveFiles, "history beside a live writer changes no bytes, mtimes, inventory or lease");
   assert.equal(requests, liveRequests);
   assert.equal(factoryCalls, liveFactories);
+  assert.equal(effects, 1);
+  await service.release("task");
+  await service.resumePersisted();
+  await liveWriter!.conversation.waitForIdle(ctx);
+  assert.deepEqual(await readRecovered(), recovered, "another writer reopen keeps the exact same receipt");
+  assert.equal(requests, liveRequests);
+  assert.equal(readFileSync(join(cwd, "effects.txt"), "utf8"), "effect\n");
   assert.equal(effects, 1);
   await service.release("task");
   factoryBroken = true;
@@ -150,7 +176,7 @@ try {
   assert.equal((await readingBeforeDelete).historyError, undefined);
   await deleting;
   assert.equal(existsSync(directory), false, "permanent purge waits until the passive reader closes");
-  console.log("PASS passive native history preserves pending work and Code Mode configuration; strict concurrent reopening runs one actual effect");
+  console.log("PASS passive history preserves pending work and Code Mode configuration; new input defers the old publication, unopposed startup recovery executes once");
 } finally {
   DurableBotRuntime.open = nativeOpen;
   await service?.close();

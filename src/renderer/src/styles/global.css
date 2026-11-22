@@ -193,8 +193,18 @@
 .conversation-goal-dialog header > button { width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: inherit; font-size: 22px; cursor: pointer; }
 .conversation-goal-dialog label { display: grid; gap: 5px; margin-top: 11px; color: var(--text-secondary, #666); font-size: 12px; }
 .conversation-goal-dialog input, .conversation-goal-dialog textarea { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid var(--border-color, rgba(128,128,128,.3)); border-radius: 8px; background: var(--surface-input, transparent); color: var(--text-primary, inherit); font: inherit; resize: vertical; }
-.conversation-goal-criteria { display: grid; gap: 5px; margin-top: 12px; padding: 10px; border-radius: 9px; background: var(--surface-hover, rgba(128,128,128,.06)); font-size: 12px; }
-.conversation-goal-criteria > div { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; }
+.conversation-goal-list { display: grid; gap: 6px; margin-bottom: 14px; }
+.conversation-goal-list ul { display: grid; gap: 3px; list-style: none; margin: 0; padding: 0; max-height: 12rem; overflow: auto; }
+.conversation-goal-list button { color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; background: transparent; text-align: left; }
+.conversation-goal-list li button { display: grid; gap: 2px; width: 100%; overflow-wrap: anywhere; }
+.conversation-goal-list li button[aria-current], .conversation-goal-list button:hover { background: var(--bg-hover); }
+.conversation-goal-list li button span { font-size: 12px; }
+.conversation-goal-list li small { margin-inline-start: 5px; color: var(--fg-secondary); }
+.conversation-goal-list > button { justify-self: start; font-size: 12px; }
+.conversation-goal-source { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.conversation-goal-criteria { display: grid; gap: 5px; margin: 12px 0; padding: 10px; list-style: none; border-radius: 9px; background: var(--surface-hover, rgba(128,128,128,.06)); font-size: 12px; }
+.conversation-goal-criteria strong { margin-right: 6px; }
+.conversation-goal-controls { margin-bottom: 14px; }
 .conversation-goal-dialog footer { display: flex; align-items: center; gap: 8px; margin-top: 17px; }
 .conversation-goal-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .conversation-goal-save { display: flex; gap: 8px; margin-left: auto; }
@@ -2524,11 +2534,10 @@ html[data-theme="dark"] .msg-detail-frame {
 }
 
 .msg-action-more-menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 1000;
   min-width: 140px;
+  overflow: auto;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -22902,7 +22911,7 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 0 8px;
   background: var(--bg-secondary, rgba(0, 0, 0, 0.02));
   border-bottom: 1px solid var(--border-subtle, var(--border));
   min-height: 32px;

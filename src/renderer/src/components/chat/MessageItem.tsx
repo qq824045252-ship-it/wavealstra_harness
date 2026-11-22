@@ -1,5 +1,6 @@
 import { DOTS_TASK_ID } from "@shared/dots";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { readReplyCitations } from "@shared/chat-reply-content";
 import { providedReplySources, replyToolSources } from "@shared/chat-reply-sources";
 import type { Attachment, ChatMessage } from "@/types";
@@ -11,6 +12,7 @@ import { stripInjectedUserPromptTail, userPromptDisplayText } from "@shared/user
 import { selectionLabelsFromPrompt } from "@shared/selection-display";
 import { requestUserInputDisplayText } from "@shared/request-user-input-fallback";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
+import { layoutRect, layoutViewportSize, placeFixedMenu, type FixedMenuPlacement } from "@/lib/placeFixedMenu";
 import { taskHasActiveExecution } from "@/utils/taskFilters";
 import { ArtifactChipRow, FileBadge } from "@/components/common/FileBadge";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
@@ -43,6 +45,7 @@ import {
 
 interface Props {
   message: ChatMessage;
+  onGoalCreated?: (goal: import("@shared/conversation-goal").ConversationGoalDto) => void;
   focusTool?: boolean;
   sourceQuestion?: ChatMessage;
   deliveryFiles?: React.ReactNode;
@@ -261,10 +264,35 @@ function MessageActionBar({
   const fillComposer = useAppStore((s) => s.fillComposer);
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [moreOpen, setMoreOpen] = useState(false);
-  const moreAnchorRef = useRef<HTMLDivElement>(null);
+  const [menuPosition, setMenuPosition] = useState<FixedMenuPlacement>();
+  const moreAnchorRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const copyTimerRef = useRef<number | null>(null);
 
-  useDismissOnClickOutside(moreOpen, () => setMoreOpen(false), moreAnchorRef);
+  useDismissOnClickOutside(moreOpen, () => setMoreOpen(false), moreAnchorRef, [menuRef]);
+
+  useLayoutEffect(() => {
+    const anchor = moreAnchorRef.current;
+    const menu = menuRef.current;
+    if (!moreOpen || !anchor || !menu) return;
+    const position = (): void => {
+      setMenuPosition(placeFixedMenu({
+        anchor: layoutRect(anchor), menuWidth: menu.offsetWidth,
+        menuHeight: menu.scrollHeight + menu.offsetHeight - menu.clientHeight,
+        viewport: layoutViewportSize(), maxHeight: 360,
+      }));
+    };
+    const closeOnScroll = (event: Event): void => {
+      if (!(event.target instanceof Node) || !menu.contains(event.target)) setMoreOpen(false);
+    };
+    position();
+    window.addEventListener("resize", position);
+    document.addEventListener("scroll", closeOnScroll, true);
+    return () => {
+      window.removeEventListener("resize", position);
+      document.removeEventListener("scroll", closeOnScroll, true);
+    };
+  }, [moreOpen, moreItems?.length]);
 
   useEffect(
     () => () => {
@@ -332,8 +360,9 @@ function MessageActionBar({
         <IconPencil size={15} />
       </button>
       {importable === false && (!moreItems || moreItems.length === 0) ? null : (
-        <div className="msg-action-more" ref={moreAnchorRef}>
+        <div className="msg-action-more">
           <button
+            ref={moreAnchorRef}
             type="button"
             className={`msg-action-btn${moreOpen ? " is-open" : ""}`}
             onClick={() => setMoreOpen((v) => !v)}
@@ -344,8 +373,10 @@ function MessageActionBar({
           >
             <IconMore size={15} />
           </button>
-          {moreOpen && (
-            <div className="msg-action-more-menu" role="menu">
+          {moreOpen && createPortal(
+            <div className="msg-action-more-menu" role="menu" ref={menuRef}
+              style={menuPosition ? { top: menuPosition.top, left: menuPosition.left, maxHeight: menuPosition.maxHeight }
+                : { top: 0, left: 0, visibility: "hidden" }}>
               {(moreItems ?? []).map((item) => (
                 <button
                   key={item.label}
@@ -363,7 +394,7 @@ function MessageActionBar({
               {(!moreItems || moreItems.length === 0) && (
                 <div className="msg-action-more-empty">暂无更多操作</div>
               )}
-            </div>
+            </div>, document.body,
           )}
         </div>
       )}
@@ -413,7 +444,7 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, focusTool }: Props): React.JSX.Element {
+function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, onGoalCreated, focusTool }: Props): React.JSX.Element {
   const replyBody = useRef<HTMLDivElement>(null);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
@@ -457,6 +488,32 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
   );
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [goalCreating, setGoalCreating] = useState(false);
+  const [goalError, setGoalError] = useState<string | null>(null);
+  const canCreateGoal = Boolean(taskId && onGoalCreated && message.entryId && !message.goalContinuation
+    && !message.streaming && !message.submitting && !message.submissionFailed
+    && (message.role === "user" || (!sourceQuestion?.goalContinuation && !message.externalAgent
+      && (!currentTask?.durable || message.finalAssistantReply)
+      && (message.generationStats?.outcome ?? "completed") === "completed"
+      && nonEmptyFinalTextBlocks(message.finalBlocks).some(block => block.type === "text" && block.text.trim()))));
+  const createGoal = async (): Promise<void> => {
+    if (!canCreateGoal || !taskId || goalCreating) return;
+    setGoalCreating(true);
+    setGoalError(null);
+    try {
+      const result = await window.api?.conversationRuntime?.createGoal({
+        taskId,
+        title: "",
+        sourceMessage: { messageId: message.id, entryId: message.entryId, historyId: currentTask?.durable?.historyId },
+      });
+      if (!result?.ok) throw new Error(result?.message ?? "Goal 服务不可用");
+      onGoalCreated?.({ ...result.goal });
+    } catch (error) {
+      setGoalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGoalCreating(false);
+    }
+  };
   /** 任务执行中（流式/挂起交互/状态 in_progress）→ 删除与分支都会先停止当前运行 */
   const taskExecuting = useAppStore((s) => {
     const active = s.tasks.find((item) => item.id === s.activeTaskId) ?? null;
@@ -647,6 +704,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
           ) : null}
           {message.submitting && <div className="bot-submission-status" role="status">发送中…</div>}
           {message.submissionFailed && <div className="bot-submission-status" role="status">未发送</div>}
+          {goalError && <div className="conversation-interaction-error" role="alert">{goalError}</div>}
         </div>
         {/* 用户每条消息外侧右下角：复制 / 导入 / 更多（助手消息不显示） */}
         {!message.submitting && !message.submissionFailed && <MessageActionBar
@@ -656,6 +714,10 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
             btw
               ? []
               : [
+                  ...(canCreateGoal ? [{
+                    label: goalCreating ? "正在建立 Goal…" : "从此消息建立 Goal",
+                    onClick: () => void createGoal(),
+                  }] : []),
                   ...(canBranch
                     ? [
                         {
@@ -841,6 +903,10 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
             >
               {copyState === "copied" ? <IconCheck size={14} /> : <IconCopy size={14} />}
             </button>
+            {canCreateGoal && <button type="button" className="icon-btn" aria-label="从此回复建立 Goal"
+              title="从此回复建立 Goal" disabled={goalCreating} onClick={() => void createGoal()}>
+              <IconTarget size={14} />
+            </button>}
             {btw ? null : (
               <>
 
@@ -886,6 +952,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
             )}
             <span className="msg-time">{clockTime(message.createdAt)}</span>
           </div>}
+          {goalError && <div className="conversation-interaction-error" role="alert">{goalError}</div>}
         </div>
       </div></ChatImageScope>
     </div>

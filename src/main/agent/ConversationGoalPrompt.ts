@@ -40,7 +40,7 @@ function criterionLine(criterion: GoalCriterionDto): string {
   return `- [${CRITERION_LABEL[criterion.status]}] ${criterion.text.trim()}`;
 }
 
-export function renderConversationGoalSection(goal: ConversationGoalDto | null | undefined): string | null {
+export function renderConversationGoalSection(goal: ConversationGoalDto | null | undefined, originalMessage?: string): string | null {
   // Closed goals constrain nothing; an achieved/cancelled chip is history, not a mandate.
   if (!goal || goal.status === "achieved" || goal.status === "cancelled") return null;
   const title = goal.title.trim();
@@ -60,6 +60,7 @@ export function renderConversationGoalSection(goal: ConversationGoalDto | null |
     "",
     rules,
     ...(autoStop ? ["", autoStop] : []),
+    ...(originalMessage ? ["", "建立 Goal 时选中的原始用户消息（后来明确更新的要求优先）：", originalMessage] : []),
   ];
   const body = lines.join("\n");
   return body.length > GOAL_SECTION_MAX_CHARS

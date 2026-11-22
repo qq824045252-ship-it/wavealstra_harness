@@ -1222,6 +1222,23 @@ function registerIpc(): void {
   });
   ipcMain.handle(ConversationRuntimeIpc.snapshot, (_e, taskId: string) =>
     agentService.getConversationRuntimeSnapshot(taskId));
+  ipcMain.handle(ConversationRuntimeIpc.goalEvidence, (_e, taskId: string, goalId: string) =>
+    agentService.getConversationGoalEvidence(taskId, goalId));
+  ipcMain.handle(ConversationRuntimeIpc.readGoalArtifactText, (event, taskId: string, goalId: string, artifactId: string) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return undefined;
+    return agentService.readGoalArtifactText(taskId, goalId, artifactId, request => savedArtifactActions.readText(request));
+  });
+  ipcMain.handle(ConversationRuntimeIpc.verifyGoalArtifact, (event, taskId: string, goalId: string, artifactId: string) => {
+    if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return undefined;
+    return agentService.verifyGoalArtifact(taskId, goalId, artifactId, async request => {
+      await savedArtifactActions.verifiedSnapshot(request);
+      if (request.manifestPath) {
+        const owner = event.sender.id;
+        const preview = await savedArtifactPreviewService.prepare(owner, request);
+        savedArtifactPreviewService.release(owner, preview.token);
+      }
+    });
+  });
   ipcMain.handle(ConversationRuntimeIpc.respondInteraction, (_e, req: ConversationInteractionRespondRequest) =>
     agentService.respondConversationInteraction(req.interactionId, req.answer));
   ipcMain.handle(ConversationRuntimeIpc.cancelInteraction, (_e, req: { interactionId: string }) =>
@@ -1230,10 +1247,10 @@ function registerIpc(): void {
     agentService.createConversationGoal(req));
   ipcMain.handle(ConversationRuntimeIpc.updateGoal, (_e, req: ConversationGoalUpdateRequest) =>
     agentService.updateConversationGoal(req));
-  ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string) =>
-    agentService.cancelConversationGoal(goalId));
-  ipcMain.handle(ConversationRuntimeIpc.resumeGoalContinuation, (_e, goalId: string) =>
-    agentService.resumeGoalContinuation(goalId));
+  ipcMain.handle(ConversationRuntimeIpc.cancelGoal, (_e, goalId: string, taskId?: string) =>
+    agentService.cancelConversationGoal(goalId, taskId));
+  ipcMain.handle(ConversationRuntimeIpc.resumeGoalContinuation, (_e, goalId: string, taskId?: string) =>
+    agentService.resumeGoalContinuation(goalId, taskId));
 
   // Read-only access for the existing workspace history; no standalone Bot commands.
   ipcMain.handle(BotWorkIpc.history, (_e, request: unknown) => agentService.botMessageHistory(request));
@@ -3107,9 +3124,11 @@ app.whenReady().then(async () => {
   );
   agentService.setTaskLifecycleListener((event) => {
     publishTaskLifecycleNotification({ event, task: db.getTask(event.taskId),
+      goalId: agentService.goalForNotificationMessage(event.taskId, event.assistantMessageId),
       workRepo: agentService.getWorkService().repo, notifications: notificationService });
   });
-  agentService.onPatch(createTaskInteractionNotificationListener(id => db.getTask(id), notificationService));
+  agentService.onPatch(createTaskInteractionNotificationListener(id => db.getTask(id), notificationService,
+    (id, messageId) => agentService.goalForNotificationMessage(id, messageId)));
   // 用量统计：启动后延迟调度异步分片回填历史 session jsonl + 扫描 subagent 归档
   // （水位+size/mtime 短路；分片让出事件循环，不阻塞启动；失败仅告警）
   try {

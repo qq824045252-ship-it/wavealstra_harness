@@ -50,6 +50,16 @@ export interface ConversationGoalContinuationDto {
   stallLimit?: number;
 }
 
+export interface ConversationGoalSourceDto {
+  taskId: string;
+  conversationId: string;
+  messageId: string;
+  entryId?: string;
+  inputRequestId?: string;
+  role: "user" | "assistant";
+  text: string;
+}
+
 export interface ConversationGoalDto {
   id: string;
   taskId: string;
@@ -63,12 +73,43 @@ export interface ConversationGoalDto {
   createdAt: number;
   updatedAt: number;
   achievedAt?: number;
+  closedAt?: number;
+  sourceMessageId?: string;
+  source?: ConversationGoalSourceDto;
+  waitingReason?: string;
+  closureConclusion?: import("./bot-work").WorkClosureConclusion;
   /** Host-side auto-continuation ledger. Absent only for hosts that predate it. */
   continuation?: ConversationGoalContinuationDto;
 }
 
+export interface ConversationGoalEvidenceDto {
+  ownerBotId: string;
+  userId: string;
+  intentRevision: number;
+  inputSnapshotId?: string;
+  executions: Array<Pick<import("./bot-work").WorkExecutionBindingDto, "bindingId" | "botId" | "taskId" | "conversationId" | "status" | "metrics">>;
+  deliverables: Array<Pick<import("./bot-work").WorkDeliverableDto, "deliverableId" | "executionId" | "summary" | "status" | "artifactRefs">>;
+  verification: Array<{ criterionId: string; evidence: import("./bot-work").WorkEvidenceDto[] }>;
+  artifacts: Array<{ bindingId: string; path: string; sha256?: string }>;
+  activity?: import("./conversation-goal-activity").GoalActivityDto;
+  savedArtifacts?: GoalSavedArtifactDto[];
+  schedules?: Array<Pick<import("./bot-work").WorkSubscriptionDto, "subscriptionId" | "source" | "nextWakeAt" | "lastCheckedAt" | "stoppedAt" | "stoppedReason">>;
+}
+
+export interface GoalSavedArtifactDto {
+  id: string;
+  path: string;
+  digest: string;
+  /** Per-path ordinal of the first registration of these immutable contents. */
+  version: number;
+  registeredAt: number;
+  request: import("./saved-artifact").SavedArtifactRequest;
+  verification?: { kind: "user"; verifiedAt: number };
+}
+
 export interface ConversationGoalCreateRequest {
   taskId: string;
+  sourceMessage?: { messageId: string; entryId?: string; historyId?: string };
   title: string;
   description?: string;
   criteria?: Array<{ id?: string; text: string }>;
@@ -77,6 +118,7 @@ export interface ConversationGoalCreateRequest {
 
 export interface ConversationGoalUpdateRequest {
   goalId: string;
+  taskId?: string;
   title?: string;
   description?: string;
   progressSummary?: string;

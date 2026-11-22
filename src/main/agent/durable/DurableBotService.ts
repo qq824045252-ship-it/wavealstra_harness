@@ -31,7 +31,7 @@ import { McpConfigService } from "../../mcp/McpConfigService";
 import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
-import { DurableBotRuntime } from "./DurableBotRuntime";
+import { DurableBotRuntime, type DurableBotOptions } from "./DurableBotRuntime";
 import type { AnswerRoutingService } from "../AnswerRoutingService";
 import type { DurableCompactionOutcome, ProductCompactionSettings } from "./context/types";
 import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
@@ -114,8 +114,12 @@ export interface DurableBotServiceOptions {
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
   onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   onResponse?: (taskId: string, message: AssistantMessage, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
-  onRequest?: (taskId: string, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
+  onGoalToolResult?: (taskId: string, identity: import("../../../shared/conversation-goal-activity").GoalActivityIdentity, tool: {
+    name: string; callId: string; details: unknown;
+  }) => void;
+  onRequest?: (taskId: string, info: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void;
   onTool?: (event: ToolDiagnosticEvent) => void;
+  onGoalToolEvidence?: (taskId: string, ...args: Parameters<NonNullable<DurableBotOptions["onGoalToolEvidence"]>>) => void;
   observedUsage?: (taskId: string, conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
   waitingForInput?: (taskId: string) => boolean;
   /** Startup resumption width; interactive access bypasses the queue and is never throttled here. */
@@ -135,7 +139,7 @@ export interface DurableBotServiceOptions {
   projectArtifacts?: (taskId: string, snapshot: DurableBotSnapshot, before: Map<string, string>, cwd: string, messageWorkspaces?: ReadonlyMap<string, string>) => Promise<void>;
   thinking?: (task: TaskDto, request: AgentPromptRequest) => ModelThinkingLevel | undefined;
   prepareInput?: (request: AgentPromptRequest) => Promise<string> | string;
-  auditInput?: (request: AgentPromptRequest) => import("./DurableSkillProjection").DurableInputAudit | undefined;
+  auditInput?: (request: AgentPromptRequest, origin?: DurableInputOrigin) => import("./DurableSkillProjection").DurableInputAudit | undefined;
   prepareImages?: (request: AgentPromptRequest) => Promise<{ images: Array<{ type: "image"; mimeType: string; data: string }>; text?: string }>;
   prepareTask?: (request: AgentPromptRequest, mark?: AdmissionMark) => Promise<AgentPromptRequest>;
   beforeSubmit?: (request: AgentPromptRequest) => void;
@@ -159,6 +163,7 @@ export class DurableBotService {
   private readonly invalidations = new Map<string, Promise<void>>();
   private readonly admissions = new Map<string, Set<Promise<unknown>>>();
   private readonly admissionTails = new Map<string, Promise<unknown>>();
+  private readonly admittingUserInputs = new Map<string, Set<{ requestId: string }>>();
   private readonly projections = new Map<string, Promise<void>>();
   private readonly passiveReads = new Map<string, Promise<void>>();
   private resumeAdmission?: ResumeAdmission;
@@ -192,6 +197,7 @@ export class DurableBotService {
     return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId) || this.admissions.get(taskId)?.size);
   }
   cwd(taskId: string): string | undefined { return this.workspaceMove(taskId)?.to_cwd ?? this.binding(taskId)?.cwd; }
+  liveConversationId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.conversationId; }
   /** Called only within a Gateway trash restore transaction. Native cwd stays authoritative until migration commits. */
   prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
     const { db } = this.options;
@@ -238,6 +244,13 @@ export class DurableBotService {
   async subagentSteerReceipts(taskId: string, childId: string) {
     const binding = this.binding(taskId);
     return binding ? await readDurableSteerReceipts(binding.directory, childId) : [];
+  }
+
+  async goalNativeEvidence(taskId: string, runs: readonly import("../../../shared/conversation-goal-activity").GoalActivityIdentity[]) {
+    const binding = this.binding(taskId);
+    if (!binding || !runs.length) return [];
+    const { readGoalNativeEvidence } = await import("./DurableGoalNativeEvidence");
+    return await readGoalNativeEvidence(binding.directory, runs);
   }
 
   private binding(taskId: string): BotBinding | undefined {
@@ -500,6 +513,7 @@ export class DurableBotService {
           this.options.beforeModelRequest?.(taskId);
           this.options.beforeToolExecution?.(taskId, toolCwd, name, args);
         },
+        admittingUserInputs: () => Array.from(this.admittingUserInputs.get(taskId) ?? [], item => item.requestId),
         // 产品阈值以同步 getter 注入运行时：运行中改设置不需要重开会话，也不会留在旧副本上。
         // 只有宿主显式提供设置源/状态回调时才启用内嵌上下文管理；直接构造服务的测试
         // （无 productCompaction）沿用 Pi 原生压缩，避免改变既有语义。
@@ -525,6 +539,7 @@ export class DurableBotService {
         onEntries: (entries, info) => this.options.onEntries?.(taskId, entries, info),
         onResponse: (message, info) => { this.workMetrics.response(taskId, message, info); this.options.onResponse?.(taskId, message, info); },
         onRequest: info => this.options.onRequest?.(taskId, info),
+        onGoalToolResult: (identity, tool) => this.options.onGoalToolResult?.(taskId, identity, tool),
         beforeProviderRequest: () => {
           this.options.beforeModelRequest?.(taskId);
           recordCollaborationExecutionStarted(this.options.db.connection, taskId);
@@ -532,6 +547,7 @@ export class DurableBotService {
         providerAuthorityGuarded: () => this.options.providerAuthorityGuarded?.(taskId) ?? false,
         onProviderUsage: input => { this.workMetrics.usage(taskId, input); this.options.onProviderUsage?.(taskId, input); },
         onTool: this.options.onTool,
+        onGoalToolEvidence: this.options.onGoalToolEvidence ? (...args) => this.options.onGoalToolEvidence?.(taskId, ...args) : undefined,
         observedUsage: conversationId => this.options.observedUsage?.(taskId, conversationId) ?? { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null },
         waitingForInput: () => this.options.waitingForInput?.(taskId) ?? false,
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
@@ -751,7 +767,7 @@ export class DurableBotService {
         if (mime && !this.options.prepareImages) content.push({ type: "image", mimeType: mime, data: readFileSync(attachment.path).toString("base64") });
         content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
       }
-      const audit = this.options.auditInput?.(request);
+      const audit = this.options.auditInput?.(request, origin);
       this.options.beforeSubmit?.(request);
       mark?.("payload");
       const guarded = request.dotsFileWatch || request.dotsSteerInputVersion || origin?.goalContinuation
@@ -887,9 +903,20 @@ export class DurableBotService {
   }
 
   async submit(request: AgentPromptRequest, origin?: DurableInputOrigin): Promise<AgentPromptResult> {
-    const { submission } = await this.admitTracked(request, origin);
-    const state = await submission.status(context);
-    return submissionResult(request.taskId, state);
+    const inputs = origin?.goalContinuation ? undefined : this.admittingUserInputs.get(request.taskId) ?? new Set<{ requestId: string }>();
+    const input = { requestId: request.userMessageId };
+    if (inputs) {
+      inputs.add(input);
+      this.admittingUserInputs.set(request.taskId, inputs);
+    }
+    try {
+      const { submission } = await this.admitTracked(request, origin);
+      const state = await submission.status(context);
+      return submissionResult(request.taskId, state);
+    } finally {
+      inputs?.delete(input);
+      if (inputs?.size === 0) this.admittingUserInputs.delete(request.taskId);
+    }
   }
 
 

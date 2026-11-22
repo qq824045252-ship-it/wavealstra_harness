@@ -698,12 +698,15 @@ const api = {
 
   conversationRuntime: {
     snapshot: (taskId) => ipcRenderer.invoke(ConversationRuntimeIpc.snapshot, taskId),
+    goalEvidence: (taskId, goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.goalEvidence, taskId, goalId),
+    readGoalArtifactText: (taskId, goalId, artifactId) => ipcRenderer.invoke(ConversationRuntimeIpc.readGoalArtifactText, taskId, goalId, artifactId),
+    verifyGoalArtifact: (taskId, goalId, artifactId) => ipcRenderer.invoke(ConversationRuntimeIpc.verifyGoalArtifact, taskId, goalId, artifactId),
     respondInteraction: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.respondInteraction, request),
     cancelInteraction: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.cancelInteraction, request),
     createGoal: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.createGoal, request),
     updateGoal: (request) => ipcRenderer.invoke(ConversationRuntimeIpc.updateGoal, request),
-    cancelGoal: (goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.cancelGoal, goalId),
-    resumeGoalContinuation: (goalId) => ipcRenderer.invoke(ConversationRuntimeIpc.resumeGoalContinuation, goalId),
+    cancelGoal: (goalId, taskId) => ipcRenderer.invoke(ConversationRuntimeIpc.cancelGoal, goalId, taskId),
+    resumeGoalContinuation: (goalId, taskId) => ipcRenderer.invoke(ConversationRuntimeIpc.resumeGoalContinuation, goalId, taskId),
   } satisfies ConversationRuntimeApi,
 
   // Read-only workspace history. The standalone Bot feature no longer exposes commands.

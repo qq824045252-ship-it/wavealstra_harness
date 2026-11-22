@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NotificationService } from "../src/main/notification/NotificationService";
 import { NotificationRepository } from "../src/main/notification/NotificationRepository";
+import { createTaskInteractionNotificationListener, publishTaskLifecycleNotification } from "../src/main/notification/TaskLifecycleNotifications";
 import { parseNotificationTarget, type NotificationDto } from "../src/shared/notification";
 import { openHistoricalNotification } from "../src/renderer/src/lib/historicalNotification";
 import type { BotWorkspaceRequestDto } from "../src/shared/bot-workspace-navigation";
@@ -64,6 +65,56 @@ assert.deepEqual(notifications.list(query).map(item => item.id), [sorted[0].id],
 assert.deepEqual(notifications.list({...query, before: sorted[0]}).map(item => item.id), [sorted[1].id], "cursor keeps records with the same timestamp");
 notifications.markRead(sorted[0].id);
 assert.deepEqual(notifications.list({...query, unreadOnly: true}).map(item => item.id), [sorted[1].id], "unread combines with type and search");
+const failed = notifications.publish({ type: "task.failed", level: "error", title: "早期失败", sourceType: "task",
+  target: { kind: "task", taskId: "child-run", workId: "work", messageId: "failed-reply" }, createdAt: today + 1000 })!;
+const commented = notifications.publish({ type: "task.action_required", level: "warning", title: "较新的留言", sourceType: "task",
+  target: { kind: "task", taskId: "child-run", workId: "work", messageId: "exact-reply", interactionId: "exact-interaction" },
+  createdAt: today + 3000 })!;
+const ordinary = notifications.publish({ type: "task.completed", level: "success", title: "普通对话", sourceType: "task",
+  target: { kind: "task", taskId: "independent", messageId: "own-reply" }, createdAt: today + 4000 })!;
+const anotherTask = notifications.publish({ type: "task.failed", level: "error", title: "另一子任务", sourceType: "task",
+  target: { kind: "task", taskId: "another-task", workId: "work", messageId: "another-reply" }, createdAt: today + 2000 })!;
+const anotherGoal = notifications.publish({ type: "task.failed", level: "error", title: "同任务的另一 Goal", sourceType: "task",
+  target: { kind: "task", taskId: "child-run", workId: "another-goal" }, createdAt: today + 2000 })!;
+const sameSecond = notifications.publish({ type: "task.action_required", level: "warning", title: "同秒早期提醒", sourceType: "task",
+  target: { kind: "task", taskId: "child-run", workId: "work", messageId: "permission-reply", toolCallId: "permission-tool" },
+  createdAt: failed.createdAt })!;
+const oldest = [failed, sameSecond].sort((left, right) => left.id < right.id ? -1 : 1);
+const grouped = notifications.list({ grouped: true, limit: 2 });
+assert.deepEqual(grouped.map(item => item.id), [ordinary.id, commented.id]);
+assert.deepEqual(grouped[1].group, {
+  key: JSON.stringify(["task", "child-run", "work"]), count: 3, unreadCount: 3,
+  activationId: oldest[0].id, target: oldest[0].target,
+  preview: { title: oldest[0].title, body: oldest[0].body, createdAt: oldest[0].createdAt },
+});
+const secondPage = notifications.list({ grouped: true, before: grouped[1], limit: 2 });
+assert.deepEqual(secondPage.map(item => item.id), [anotherTask.id, anotherGoal.id].sort().reverse());
+assert.ok(!notifications.list({ grouped: true, before: secondPage[1] }).some(item => oldest.some(record => record.id === item.id)));
+notifications.markRead(oldest[0].id);
+const firstPageAgain = notifications.list({ grouped: true, limit: 2 });
+assert.deepEqual(firstPageAgain.map(item => item.id), grouped.map(item => item.id), "返回前一页保持同秒排序");
+assert.equal(firstPageAgain[1].group?.activationId, oldest[1].id);
+assert.deepEqual(firstPageAgain[1].group?.target, oldest[1].target);
+notifications.markRead(oldest[1].id);
+assert.deepEqual(notifications.list({ grouped: true })[1].group?.target, commented.target);
+
+const task = { id: "child-run", title: "测试任务", updatedAt: today };
+db.prepare("INSERT INTO tasks VALUES (?)").run(task.id);
+publishTaskLifecycleNotification({ event: { kind: "action_required", taskId: task.id, assistantMessageId: "real-reply",
+  toolCallId: "real-tool", summary: "需要批准" }, task, goalId: "original-goal",
+  workRepo: { bindingForTask: () => undefined }, notifications });
+const listener = createTaskInteractionNotificationListener(() => task, notifications,
+  (taskId, assistantMessageId) => taskId === task.id && assistantMessageId === "second-reply" ? "original-goal" : undefined);
+listener({ type: "conversation_interaction_snapshot", taskId: task.id, executionId: "execution",
+  messageId: "second-reply", interaction: { id: "real-question",
+  taskId: task.id, assistantMessageId: "second-reply", executionId: "execution", kind: "confirm", title: "需要确认",
+  status: "pending", options: [], createdAt: today, version: 1 } });
+const lifecycle = notifications.list({ query: "测试任务" });
+assert.deepEqual(lifecycle.map(item => notifications.resolveActivation(item.id)).sort((a, b) =>
+  JSON.stringify(a).localeCompare(JSON.stringify(b))), [
+  { kind: "task", taskId: task.id, messageId: "real-reply", workId: "original-goal", toolCallId: "real-tool" },
+  { kind: "task", taskId: task.id, messageId: "second-reply", workId: "original-goal", interactionId: "real-question" },
+]);
 db.close(); rmSync(directory,{recursive:true,force:true});
 
 // Production store actions route retired Bot notifications into exact read-only
@@ -98,6 +149,7 @@ state={...state,...actions,openWorkspaceDetail:(spaceId:string)=>{state={...stat
 await actions.openNotificationConversation({kind:'botConversation',botId:'b',conversationId:'old',messageId:'old-assistant'});
 assert.equal(state.page,'workspace');assert.equal(state.activeWorkspaceId,'space-b');
 assert.equal(selectedWorkspaceRequest('space-b')?.requestId,'old-request','message identity, not newest neighbour, selects history');
+assert.equal(selectedWorkspaceRequest('space-b')?.focusMessageId, 'old-assistant', 'the selected conversation retains the exact message anchor');
 assert.equal(events.at(-1).detail.requestId,'old-request');assert.equal(requests.length,2,'historical message lookup paginates');
 assert.equal(state.draft,ordinaryDraft);assert.equal(state.activeTaskId,'ordinary-task');
 

@@ -6,14 +6,19 @@ import type { NotificationService } from "./NotificationService";
 /** Work completion is announced by its owner; ordinary Tasks keep their existing path. */
 export function publishTaskLifecycleNotification(input: {
   event: AgentTaskLifecycleEvent; task?: TaskDto;
+  goalId?: string;
   workRepo: Pick<WorkRepository, "bindingForTask">;
   notifications: Pick<NotificationService, "publish">;
 }): void {
   const { event, task, workRepo, notifications } = input;
   if (event.taskId.startsWith("cron-")) return;
-  if (event.kind === "completed" && workRepo.bindingForTask(event.taskId)) return;
+  const binding = workRepo.bindingForTask(event.taskId);
+  if (event.kind === "completed" && binding) return;
   const taskTitle = task?.title?.trim() || "任务";
+  const workId = binding?.workId ?? input.goalId;
   const common = { sourceType: "task" as const, sourceId: event.taskId, taskId: event.taskId,
+    target: { kind: "task" as const, taskId: event.taskId, messageId: event.assistantMessageId, ...(workId ? { workId } : {}),
+      ...(event.kind === "action_required" ? { toolCallId: event.toolCallId } : {}) },
     workspaceId: task?.spaceId ?? undefined, projectId: task?.projectId ?? undefined };
   if (event.kind === "completed") {
     notifications.publish({ ...common, type: "task.completed", level: "success",
@@ -33,6 +38,7 @@ export function publishTaskLifecycleNotification(input: {
 export function createTaskInteractionNotificationListener(
   getTask: (id: string) => TaskDto | undefined,
   notifications: Pick<NotificationService, "publish" | "markReadByDedupeKey">,
+  getGoalId?: (taskId: string, messageId: string) => string | undefined,
 ): (patch: AgentUiPatch) => void {
   return patch => {
     if (patch.type !== "conversation_interaction_snapshot") return;
@@ -44,6 +50,7 @@ export function createTaskInteractionNotificationListener(
     }
     const task = getTask(interaction.taskId);
     if (!task) return;
+    const workId = getGoalId?.(task.id, interaction.assistantMessageId);
     notifications.publish({
       type: "task.action_required",
       level: "warning",
@@ -52,6 +59,8 @@ export function createTaskInteractionNotificationListener(
       sourceType: "task",
       sourceId: interaction.taskId,
       taskId: interaction.taskId,
+      target: { kind: "task", taskId: interaction.taskId, messageId: interaction.assistantMessageId, interactionId: interaction.id,
+        ...(workId ? { workId } : {}) },
       workspaceId: task.spaceId ?? undefined,
       projectId: task.projectId ?? undefined,
       dedupeKey,

@@ -4,17 +4,19 @@ import { GenerationSpeedDisplay } from '../chat/GenerationSpeed';
 import { formatTokenCount } from '@shared/token-format';
 import './WorkExecutionMetrics.css';
 
-export function WorkExecutionMetrics({work}:{work:WorkProjectionDto}) {
-  if(!work.executions.length)return null;
+export function WorkExecutionMetrics({work, focusBindingId}:{work:WorkProjectionDto; focusBindingId?: string}) {
+  if(!work.executions.length && !focusBindingId)return null;
   return <section className="bot-detail-section work-execution-metrics" aria-label="执行统计">
     <h3>执行统计</h3>
     <p className="work-execution-metrics-note">每次执行独立统计，含其原生子调用；速度和上下文仅对应本次执行主模型。未取得的数据显示 —。</p>
+    {focusBindingId && !work.executions.some(execution => execution.bindingId === focusBindingId) && <p>通知指定的执行已不可用。</p>}
     {work.executions.map((execution,index)=>{
+      if (focusBindingId && execution.bindingId !== focusBindingId) return null;
       const name=execution.botId;
       const metrics=execution.metrics;
       const usage=metrics?{totalInput:metrics.totalInputTokens??undefined,input:metrics.inputTokens??undefined,output:metrics.outputTokens??undefined,cacheRead:metrics.cacheReadTokens??undefined,cacheWrite:metrics.cacheWriteTokens??undefined}:undefined;
       const active=['pending','submitted','running'].includes(execution.status);
-      return <details key={execution.bindingId} className="work-execution-metrics-row">
+      return <details key={execution.bindingId} open={focusBindingId ? true : undefined} className="work-execution-metrics-row">
         <summary>{name} · 第 {index+1} 次执行 <span>{active?'进行中':execution.status==='completed'?'执行结束':execution.status==='failed'?'执行失败':'已停止'}</span></summary>
         <ExecutionUsageMetrics scope="本次执行" usage={usage} elapsed={metrics?.durationMs==null?undefined:`${(metrics.durationMs/1000).toFixed(1)}s`} elapsedTitle="本次原生执行从受理到最后生成结束的耗时，包含工具等待，不用于计算生成速度" finishedAt={execution.settledAt}/>
         <div className="work-execution-metrics-extra">

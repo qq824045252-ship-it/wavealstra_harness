@@ -219,6 +219,18 @@ export class MemorySkillEffectivenessService {
     return mapRow(row, this.db.getTask(row.task_id)?.title);
   }
 
+  listInvokedForTurn(taskId: string, assistantMessageId: string): MemorySkillEffectivenessDto[] {
+    return (this.conn.prepare(`SELECT * FROM memory_skill_effectiveness
+      WHERE task_id=? AND assistant_message_id=? AND invoked_at IS NOT NULL ORDER BY invoked_at,id`)
+      .all(taskId, assistantMessageId) as EffectivenessRow[]).map(row => mapRow(row));
+  }
+
+  latestInvocationAfter(skillId: string, candidateId: string, after: number): number | undefined {
+    const row = this.conn.prepare(`SELECT MAX(invoked_at) AS latest FROM memory_skill_effectiveness
+      WHERE skill_id=? AND candidate_id=? AND invoked_at>?`).get(skillId, candidateId, after) as { latest: number | null };
+    return row.latest ?? undefined;
+  }
+
   listRecent(limit = 200, invokedOnly = true): MemorySkillEffectivenessDto[] {
     const capped = Math.max(1, Math.min(1000, limit));
     const rows = (invokedOnly

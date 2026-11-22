@@ -45,7 +45,8 @@ try {
   const [notice] = notifications.list({ unreadOnly: true });
   assert.equal(notice?.type, "task.action_required");
   assert.equal(notice.body, "A · 选择方案");
-  assert.deepEqual(notifications.resolveActivation(notice.id), { kind: "task", taskId: "task-a" });
+  assert.deepEqual(notifications.resolveActivation(notice.id),
+    { kind: "task", taskId: "task-a", messageId: "assistant-a", interactionId: pending.id });
   const invalid = interactions.respond(pending.id, "missing");
   assert.equal(invalid.ok, false);
   const accepted = interactions.respond(pending.id, "a");

@@ -90,6 +90,15 @@ export class WorkArtifactValidation {
       WHERE dependency.work_id=? AND binding.intent_revision=? AND binding.input_snapshot_id=?
       ORDER BY binding.admitted_at,dependency.rowid`).all(workId,work.intentRevision,work.inputSnapshotId).map(row=>rowSchema.parse(row));
   }
+  goalArtifacts(workId: string, executionIds: ReadonlySet<string>) {
+    return this.currentDependencies(workId)
+      .filter(row => row.invalidated_at === null && executionIds.has(row.binding_id))
+      .map(row => {
+        const item = fingerprintSchema.parse(JSON.parse(row.fingerprint_json));
+        return { bindingId: row.binding_id, path: item.path,
+          sha256: /^[a-f0-9]{64}$/.test(item.digest) ? item.digest : undefined };
+      });
+  }
   validate(inspection: ArtifactInspection, now = Date.now(), bindingIds?: readonly string[]): boolean {
     if (!this.db.inTransaction) throw new Error("产物版本复核必须与验收控制同事务提交");
     const work = this.works.getWork(inspection.workId);

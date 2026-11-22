@@ -13,6 +13,8 @@ import { workShellRead } from "../work/WorkShellRead";
 import { durableMcpToolName } from "./DurableMcp";
 import { isDurableContextToolName } from "./context/DurableContextTools";
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
+import { checkDurableInputFreshness, needsFreshUserInput } from "./DurableInputFreshness";
+import { DurableInputDeferredError, withToolInputFreshness } from "./DurableToolInputScope";
 import { isNativeReviewWrite, nativeReviewPath, withCodeReviewWrite, type DurableCodeReview } from "./DurableCodeReview";
 
 type Access = { kind: "file"; mode: "read" | "write"; path: string; entity: string | null } | { kind: "unknown"; mode: "read" | "write" };
@@ -117,8 +119,10 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
 
 /** Wrap execution, not beforeTool: Pi's safe recovery re-enters execute without running beforeTool. */
 export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd: string,
-  beforeExecute?: (name: string, args: unknown, cwd: string) => void, codeReview?: DurableCodeReview): ToolRegistration {
-  if (containers.has(tool.name) || isDurableContextToolName(tool.name)) return tool;
+  beforeExecute?: (name: string, args: unknown, cwd: string) => void, admitting?: () => readonly string[],
+  codeReview?: DurableCodeReview): ToolRegistration {
+  if (containers.has(tool.name) || isDurableContextToolName(tool.name))
+    return { ...tool, execute: (args, api, context) => withToolInputFreshness(undefined, async () => tool.execute(args, api, context)) };
   return { ...tool, execute: async (args, api, context) => {
     let release: (() => void) | undefined;
     let started = false;
@@ -126,15 +130,18 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
       const cwd = (await api.agent(context)).cwd ?? fallbackCwd;
       const reviewPath = codeReview && isNativeReviewWrite(tool.name) ? await nativeReviewPath(api, context, args) : undefined;
       release = await acquire(() => inspectAccess(tool.name, reviewPath ? { path: reviewPath } : args, cwd), context.abortSignal);
+      const check = needsFreshUserInput(tool.name, args) ? () => checkDurableInputFreshness(api, context, admitting) : undefined;
+      if (check) await check();
       context.abortSignal?.throwIfAborted();
       beforeExecute?.(tool.name, args, cwd);
       started = true;
-      return await (codeReview
-        ? withCodeReviewWrite(codeReview, tool.name, args, api, context, observed => tool.execute(args, observed, context))
-        : tool.execute(args, api, context));
+      const invoke = async () => codeReview
+        ? withCodeReviewWrite(codeReview, tool.name, args, api, context, async observed => tool.execute(args, observed, context))
+        : tool.execute(args, api, context);
+      return await withToolInputFreshness(check, invoke);
     }
     catch (error) {
-      if (!started) {
+      if (!started || error instanceof DurableInputDeferredError) {
         const envelope = tool.name === "mcp_call_tool" ? mcpEnvelope.safeParse(args) : undefined;
         const toolName = envelope?.success ? durableMcpToolName(envelope.data.server, envelope.data.tool) : tool.name;
         await api.memo(TOOL_NOT_STARTED_MEMO, { toolName, callId: api.callId, taskId: api.taskId,

@@ -1,11 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AgentUiPatch } from "../../shared/agent-ipc";
 import {
   CONVERSATION_GOAL_MAX_CRITERIA,
   type ConversationGoalContinuationDto,
   type ConversationGoalCreateRequest,
   type ConversationGoalDto,
+  type ConversationGoalEvidenceDto,
   type ConversationGoalStatus,
+  type ConversationGoalSourceDto,
   type ConversationGoalUpdateRequest,
   type GoalCriterionDto,
   type GoalCriterionStatus,
@@ -26,6 +28,7 @@ import { DESKTOP_USER_GRANTS, WorkService } from "./work/WorkService";
 export interface GoalCallContext {
   actor?: WorkActor;
   versionGuard?: ExpectedVersionGuard;
+  source?: ConversationGoalSourceDto;
 }
 
 export interface ConversationGoalServiceOptions {
@@ -114,23 +117,34 @@ export class ConversationGoalService {
     if (!request.taskId?.trim() || !request.title?.trim()) {
       return { ok: false, code: "invalid_request", message: "Task 与目标标题不能为空" };
     }
-    if (this.work.listWorksByConversation(request.taskId).length) {
-      return { ok: false, code: "conflict", message: "当前对话已有进行中的事项，请先更新或结束它" };
-    }
     const actor = context.actor ?? this.userActor();
-    const result = this.work.createWork(actor, {
-      operationId: `goal-create-${randomUUID()}`,
-      title: request.title,
-      goalDescription: request.description,
-      criteria: (request.criteria ?? []).slice(0, CONVERSATION_GOAL_MAX_CRITERIA)
-        .map((criterion) => ({ text: criterion.text })),
-      conversationId: request.taskId,
-      sourceMessageId: this.options.resolveSourceMessageId?.(request.taskId),
-      legacyTaskId: request.taskId,
-      ownerBotId: this.options.resolveBotId?.(request.taskId) ?? this.options.botId ?? DEFAULT_BOT_ID,
-      inputSnapshotId: `conversation:${request.taskId}`,
+    const source = context.source;
+    const inputSnapshotId = source ? `message:sha256:${createHash("sha256").update(JSON.stringify(source)).digest("hex")}`
+      : `conversation:${request.taskId}`;
+    const result = this.work.transaction(() => {
+      if (source && actor.kind === "user") {
+        const prior = this.work.repo.findWorkByGoalSource(actor.userId, source);
+        if (prior) return { ok: true as const, work: prior, replayed: true };
+      }
+      if (this.work.listWorksByConversation(request.taskId).length) {
+        return { ok: false as const, code: "conflict" as const, message: "当前对话已有进行中的事项，请先更新或结束它" };
+      }
+      const created = this.work.createWork(actor, {
+        operationId: `goal-create-${randomUUID()}`,
+        title: request.title,
+        goalDescription: request.description,
+        criteria: (request.criteria ?? []).slice(0, CONVERSATION_GOAL_MAX_CRITERIA)
+          .map((criterion) => ({ text: criterion.text })),
+        conversationId: request.taskId,
+        sourceMessageId: source?.messageId ?? this.options.resolveSourceMessageId?.(request.taskId),
+        legacyTaskId: request.taskId,
+        ownerBotId: this.options.resolveBotId?.(request.taskId) ?? this.options.botId ?? DEFAULT_BOT_ID,
+        inputSnapshotId,
+      });
+      if (created.ok && !created.replayed && source) this.work.repo.saveGoalSource(created.work.workId, source);
+      return created;
     });
-    if (!result.ok) return { ok: false, code: mapErrorCode(result.code), message: result.message };
+    if (!result.ok) return { ok: false, code: result.code === "conflict" ? "conflict" : mapErrorCode(result.code), message: result.message };
     const goal = this.toGoal(result.work, request.taskId);
     if (!result.replayed) {
       this.publish(goal);
@@ -315,8 +329,20 @@ export class ConversationGoalService {
     return work ? this.toGoal(work, taskId) : undefined;
   }
 
+  scopedWork(taskId: string, goalId: string): WorkDto | undefined {
+    const work = this.work.getWork(goalId);
+    return work?.userId === (this.options.userId ?? LOCAL_USER_ID)
+      && this.work.repo.listConversationIds(goalId).includes(taskId) ? work : undefined;
+  }
+
   listByTask(taskId: string): ConversationGoalDto[] {
-    return this.work.listWorksByConversation(taskId).map(work => this.toGoal(work, taskId));
+    return this.work.repo.listWorksByTaskForUser(taskId, this.options.userId ?? LOCAL_USER_ID)
+      .map(work => this.toGoal(work, taskId));
+  }
+
+  readEvidence(taskId: string, goalId: string): ConversationGoalEvidenceDto | undefined {
+    const work = this.work.repo.getWorkByTaskForUser(goalId, taskId, this.options.userId ?? LOCAL_USER_ID);
+    return work ? this.goalEvidence(work) : undefined;
   }
 
   /**
@@ -345,18 +371,24 @@ export class ConversationGoalService {
 
   toGoal(work: WorkDto, taskId: string): ConversationGoalDto {
     const continuation = this.options.resolveContinuation?.(work.workId);
+    const blocker = work.lifecycle === "active" ? this.work.repo.listOpenBlockers(work.workId)[0] : undefined;
     return {
       id: work.workId,
       taskId,
       title: work.title,
       description: work.goalDescription,
-      status: goalStatus(work),
+      status: blocker ? "blocked" : goalStatus(work),
       criteria: work.criteria.map(toGoalCriterion),
       progressSummary: work.progressSummary ?? this.fallbackSummary(work),
       version: work.stateVersion,
       createdBy: work.createdBy === "user" ? "user" : "agent_explicit_request",
       createdAt: work.createdAt,
       updatedAt: work.updatedAt,
+      closedAt: work.closedAt,
+      sourceMessageId: work.sourceMessageId,
+      source: this.work.repo.getGoalSource(work.workId),
+      waitingReason: blocker?.reason ?? (work.lifecycle === "closing" ? "正在结算在途操作" : undefined),
+      closureConclusion: work.closureConclusion,
       achievedAt: work.lifecycle === "closed" && work.closureConclusion === "succeeded" ? work.closedAt : undefined,
       ...(continuation ? { continuation } : {}),
     };
@@ -366,6 +398,39 @@ export class ConversationGoalService {
     if (!result.ok) return { ok: false, code: mapErrorCode(result.code), message: result.message };
     const goal = this.toGoal(result.work, conversationId);
     return { ok: true, goal };
+  }
+
+  private goalEvidence(work: WorkDto): ConversationGoalEvidenceDto {
+    const current = (item: { intentRevision: number; inputSnapshotId: string }): boolean =>
+      item.intentRevision === work.intentRevision && item.inputSnapshotId === work.inputSnapshotId;
+    const sameOwner = (item: { ownerEpoch: number }): boolean => item.ownerEpoch === work.ownerEpoch;
+    const executions = this.work.repo.listBindings(work.workId)
+      .filter(item => current(item) && sameOwner(item) && item.invalidatedAt === undefined)
+      .map(({ bindingId, botId, taskId, conversationId, status, metrics }) =>
+        ({ bindingId, botId, taskId, conversationId, status, metrics }));
+    const executionIds = new Set(executions.map(item => item.bindingId));
+    const evidence = this.work.repo.listEvidence(work.workId).filter(item => current(item)
+      && (item.executionId === undefined || executionIds.has(item.executionId)));
+    return {
+      ownerBotId: work.ownerBotId, userId: work.userId, intentRevision: work.intentRevision,
+      inputSnapshotId: work.inputSnapshotId === "snapshot:unbound" ? undefined : work.inputSnapshotId,
+      executions,
+      deliverables: this.work.repo.listDeliverables(work.workId)
+        .filter(item => current(item) && sameOwner(item) && executionIds.has(item.executionId))
+        .map(({ deliverableId, executionId, summary, status, artifactRefs }) =>
+          ({ deliverableId, executionId, summary, status, artifactRefs })),
+      verification: work.criteria.filter(item => item.status === "satisfied"
+        && item.verifiedIntentRevision === item.requiredIntentRevision)
+        .map(criterion => ({
+          criterionId: criterion.id,
+          evidence: evidence.filter(item => item.provenance !== "execution"
+            && item.criterionIds.includes(criterion.id) && criterion.evidenceRefs.includes(item.evidenceId)),
+        })).filter(item => item.evidence.length > 0),
+      artifacts: this.work.artifacts.goalArtifacts(work.workId, executionIds),
+      schedules: this.work.repo.listSubscriptions(work.workId, { includeStopped: true })
+        .map(({ subscriptionId, source, nextWakeAt, lastCheckedAt, stoppedAt, stoppedReason }) =>
+          ({ subscriptionId, source, nextWakeAt, lastCheckedAt, stoppedAt, stoppedReason })),
+    };
   }
 
   private publish(goal: ConversationGoalDto): void {

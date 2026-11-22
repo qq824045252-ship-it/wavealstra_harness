@@ -6,6 +6,7 @@ import { isAbsolute, relative, resolve, sep, join, extname } from "node:path";
 import { defineEntry, defineTool, LiveDoc, type EntryRecord, type ToolRegistration, type Cursor } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { z } from "zod";
+import { recordGoalNativeEvidence } from "./DurableGoalNativeEvidence";
 
 export const DURABLE_ARTIFACT_ENTRY_KIND = "mybuddy.artifact-registered";
 const ArtifactRegistered = defineEntry<DurableArtifactRegistration>(DURABLE_ARTIFACT_ENTRY_KIND);
@@ -193,6 +194,10 @@ async function register(path: string, api: Api, context: Context, directory: str
     const previous = await findExisting(tx);
     if (previous) return previous;
     context.abortSignal?.throwIfAborted();
+    await recordGoalNativeEvidence(tx, api, [data, ...refreshes].map(artifact => ({
+      kind: "delivery", path: artifact.path, digest: artifact.digest,
+      saved: { snapshotPath: artifact.snapshotPath, manifestPath: artifact.previewManifestPath, registeredAt: artifact.registeredAt },
+    })));
     await tx.appendEntry(ArtifactRegistered, owner, { data });
     for (const refreshed of refreshes) await tx.appendEntry(ArtifactRegistered, owner, { data: refreshed });
     return data;

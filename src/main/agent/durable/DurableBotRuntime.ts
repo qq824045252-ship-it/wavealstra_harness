@@ -1,3 +1,5 @@
+import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
+import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import { appendDurableDotsReply } from "./DurableDotsReply";
 import { readDotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
@@ -104,15 +106,21 @@ export interface DurableBotOptions {
   evidenceProjection?: DurableEvidenceOptions;
   answerRouting?: TurnAnswerRouting;
   onResponse?: (message: AssistantMessage, identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
-  onRequest?: (identity: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
+  onGoalToolResult?: (identity: import("../../../shared/conversation-goal-activity").GoalActivityIdentity, tool: {
+    name: string; callId: string; details: unknown;
+  }) => void;
+  onRequest?: (identity: import("../../../shared/conversation-goal-activity").GoalActivityAdmission & { sourceKind: "main" | "subagent" }) => void;
   beforeProviderRequest?: () => void;
   beforeToolExecution?: (name: string, args: unknown, cwd: string) => void;
+  admittingUserInputs?: () => readonly string[];
   /** Authority revocation must be rechecked before every provider attempt. */
   providerAuthorityGuarded?: () => boolean;
   onProviderUsage?: (input: { taskId?: string; conversationId: string; generationTaskId: number;
     reported: boolean; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; usageEvidence?: ProviderUsageEvidence; usagePresence?: ProviderUsagePresence }) => void;
   executionIdentity?: { taskId?: string; sourceKind: DiagnosticSource; executionScope: string };
   onTool?: (event: ToolDiagnosticEvent) => void;
+  onGoalToolEvidence?: (owner: import("../../../shared/conversation-goal-activity").GoalActivityIdentity,
+    toolTaskId: number, receipt: NonNullable<ReturnType<typeof durableGoalToolEvidence>>) => void;
   observedUsage?: (conversationId: string) => import("../../../shared/task-diagnostics").ConversationUsageReceipt;
   initialHistory?: { messages: readonly Message[]; context: readonly Message[] } | (() => Promise<{ messages: readonly Message[]; context: readonly Message[] } | undefined>);
   initialBranch?: DurableBranchSeed;
@@ -1728,7 +1736,25 @@ function botExtension(
       if (options.foregroundHooks?.afterTool && !await childConversation(api, context))
         await options.foregroundHooks.afterTool(call, observed, api, context, commit);
       if (call.name === "read" && !observed.isError) await recordSkillRead?.(call, api, context);
+      if (options.onGoalToolEvidence) {
+        try {
+          const receipt = call.name === "read" && !observed.isError && typeof call.arguments.path === "string"
+            && /(?:^|[\\/])SKILL\.md$/i.test(call.arguments.path)
+            ? { readPath: resolve((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value?.workspace.cwd ?? options.cwd,
+              call.arguments.path) }
+            : durableGoalToolEvidence(call.name, observed);
+          if (receipt) {
+            const owner = await nativeGoalParentGeneration(storage, task?.owner, context);
+            if (owner) options.onGoalToolEvidence(owner, api.taskId, receipt);
+          }
+        } catch (error) { console.warn("[Durable] Goal tool observation failed", error); }
+      }
       try {
+        if (options.onGoalToolResult && !observed.isError && (call.name === "subagent" || call.name === "pstack_delegate")) {
+          const parent = await nativeGoalParentGeneration(storage, task?.owner, context);
+          if (parent) options.onGoalToolResult(parent, { name: call.name, callId: call.id,
+            details: observed.details ?? observed.structuredOutput });
+        }
         options.onTool?.({ phase: "finish", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
           generationTaskId: toolGeneration(api.taskId, String(api.conversationId)),
@@ -1742,7 +1768,7 @@ function botExtension(
   const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args, cwd) => {
     if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
     options.beforeToolExecution?.(name, args, cwd);
-  }, options.codeReview));
+  }, options.admittingUserInputs, options.codeReview));
   return defineExtension({ name: "mybuddy.bot", tasks: [], tools: managed ? tools.map(tool => managed.wrap(tool)) : tools,
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
@@ -1774,7 +1800,12 @@ function botExtension(
         const requestWithHook = (projected: readonly Message[]) => hookNote
           ? [...projected, { role: "user" as const, content: hookNote, timestamp: 0 }] : projected;
         rememberGeneration(String(api.conversationId), api.taskId);
-        try { options.onRequest?.({ conversationId: String(api.conversationId), generationTaskId: api.taskId, sourceKind: child ? "subagent" : "main" }); }
+        try {
+          if (options.onRequest) {
+            const admission = await durableGoalAdmission(storage, api, context, child);
+            options.onRequest({ ...admission, sourceKind: child ? "subagent" : "main" });
+          }
+        }
         catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
         if (child) {
           // 子代理/会诊是独立 conversation：用各自的协调器投影，绝不套用主会话的 refs。

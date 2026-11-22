@@ -51,6 +51,7 @@ import { createDurableToolPolicy } from "./durable/DurableToolPolicy";
 import { WorkCollaborationContext } from "./work/WorkCollaborationContext";
 import { createDurableConsultSession, createDurableConsultToolHooks, runDurableMultiModelConsult } from "./durable/DurableConsultSession";
 import { currentDurableExecutionContext, currentDurableInvocation } from "./durable/DurableExecutionContext";
+import { durableGoalToolGeneration } from "./durable/DurableGoalLineage";
 import { TaskFileAccessPolicy } from "../security/TaskFileAccessPolicy";
 
 
@@ -201,6 +202,9 @@ import { observeCacheRequestTraces } from "./CacheRequestTrace";
 import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { ConversationInteractionRepository } from "./ConversationInteractionRepository";
 import { ConversationInteractionService } from "./ConversationInteractionService";
+import { ConversationGoalActivity } from "./ConversationGoalActivity";
+import { ConversationGoalSavedArtifacts } from "./ConversationGoalSavedArtifacts";
+import type { SavedArtifactRequest } from "../../shared/saved-artifact";
 import { ConversationGoalService } from "./ConversationGoalService";
 import { renderConversationGoalSection } from "./ConversationGoalPrompt";
 import { GoalContinuationService } from "./work/GoalContinuationService";
@@ -537,6 +541,8 @@ export class AgentService {
   private readonly runtimeSnapshots: RuntimeContextSnapshotRepository;
   private readonly codeReview: CodeReviewService;
   private readonly taskDiagnostics: TaskDiagnosticsRepository;
+  private readonly conversationGoalActivity: ConversationGoalActivity;
+  private readonly conversationGoalSavedArtifacts: ConversationGoalSavedArtifacts;
   private readonly stopDiagnosticObservation: () => void;
   private readonly conversationInteractions: ConversationInteractionService;
   private readonly conversationGoals: ConversationGoalService;
@@ -863,6 +869,8 @@ export class AgentService {
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection);
     this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event));
     this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection);
+    this.conversationGoalActivity = new ConversationGoalActivity(db.connection);
+    this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.connection);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
     this.conversationInteractions = new ConversationInteractionService(
       new ConversationInteractionRepository(db.connection),
@@ -1206,7 +1214,69 @@ export class AgentService {
       taskId,
       interactions: this.conversationInteractions.listByTask(taskId),
       activeGoal: this.conversationGoals.getLive(taskId),
+      goals: this.conversationGoals.listByTask(taskId),
     };
+  }
+
+  goalForNotificationMessage(taskId: string, messageId: string): string | undefined {
+    const conversationId = this.durableBots?.liveConversationId(taskId);
+    return conversationId ? this.conversationGoalActivity.ownerForMessage(taskId, conversationId, messageId)?.goalId : undefined;
+  }
+
+  async getConversationGoalEvidence(taskId: string, goalId: string) {
+    if (!this.db.getTask(taskId)) return undefined;
+    const evidence = this.conversationGoals.readEvidence(taskId, goalId);
+    if (!evidence) return undefined;
+    const activity = this.conversationGoalActivity.read(goalId, (id, generations) => this.taskDiagnostics.requestsForGenerations(id, generations),
+      (id, assistantMessageId) => this.skillEffectiveness.listInvokedForTurn(id, assistantMessageId).map(item => {
+        const installed = this.skillsService.getLearnedSkillRevisionSource(item.skillId);
+        const sameRevision = installed && installed.candidateId === item.candidateId;
+        return {
+          skillId: item.skillId, candidateId: item.candidateId, sourceMemoryIds: item.sourceMemoryIds,
+          installedVersion: sameRevision ? installed.version : undefined,
+          installedFingerprint: sameRevision ? installed.contentHash : undefined,
+          description: sameRevision ? installed.description : undefined,
+          scopeType: sameRevision ? installed.scopeType : undefined,
+          scopeId: sameRevision ? installed.scopeId : undefined,
+          invokedAt: item.invokedAt, invocationKind: item.invocationKind,
+          laterInvokedAt: item.candidateId && item.invokedAt
+            ? this.skillEffectiveness.latestInvocationAfter(item.skillId, item.candidateId, item.invokedAt) : undefined,
+        };
+      }), id => this.taskDiagnostics.auxiliaryRequestsForTask(id));
+    const byTask = new Map<string, Map<string, typeof activity.runs[number]>>();
+    const key = (conversationId: string, generationTaskId: number) => JSON.stringify([conversationId, generationTaskId]);
+    for (const run of activity.runs) {
+      const runs = byTask.get(run.taskId) ?? new Map();
+      runs.set(key(run.conversationId, run.generationTaskId), run);
+      byTask.set(run.taskId, runs);
+    }
+    const native = (await Promise.all([...byTask].map(async ([id, runs]) => {
+      const records = await this.durableBots?.goalNativeEvidence(id, [...runs.values()]) ?? [];
+      return records.flatMap(row => {
+        const run = runs.get(key(row.conversationId, row.generationTaskId));
+        return run ? [{ ...row.evidence, toolTaskId: row.toolTaskId, taskId: id, conversationId: row.conversationId,
+          generationTaskId: row.generationTaskId, intentRevision: run.intentRevision }] : [];
+      });
+    }))).flat();
+    activity.nativeEvidence = native;
+    return { ...evidence, activity, savedArtifacts: this.conversationGoalSavedArtifacts.read(goalId, native) };
+  }
+
+  async readGoalArtifactText(taskId: string, goalId: string, artifactId: string,
+    readText: (request: SavedArtifactRequest) => Promise<string>): Promise<string | undefined> {
+    const evidence = await this.getConversationGoalEvidence(taskId, goalId);
+    const artifact = evidence?.savedArtifacts.find(candidate => candidate.id === artifactId);
+    return artifact ? readText(artifact.request) : undefined;
+  }
+
+  async verifyGoalArtifact(taskId: string, goalId: string, artifactId: string,
+    verifySnapshot: (request: SavedArtifactRequest) => Promise<unknown>) {
+    const evidence = await this.getConversationGoalEvidence(taskId, goalId);
+    const artifact = evidence?.savedArtifacts.find(candidate => candidate.id === artifactId);
+    if (!artifact) return undefined;
+    await verifySnapshot(artifact.request);
+    if (!this.db.getTask(taskId) || !this.workService.repo.getWorkByTaskForUser(goalId, taskId, LOCAL_USER_ID)) return undefined;
+    return this.conversationGoalSavedArtifacts.confirm(goalId, artifact);
   }
 
   /** Remote/UI reconnect snapshot. Approval resolvers intentionally stay private in SessionRegistry. */
@@ -1226,12 +1296,80 @@ export class AgentService {
     return result;
   }
 
-  createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult {
-    return this.conversationGoals.create({ ...request, createdBy: "user" });
+  createConversationGoal(request: ConversationGoalCreateRequest & { sourceMessage?: undefined }): ConversationGoalMutationResult;
+  createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult | Promise<ConversationGoalMutationResult>;
+  createConversationGoal(request: ConversationGoalCreateRequest): ConversationGoalMutationResult | Promise<ConversationGoalMutationResult> {
+    if (!this.db.getTask(request.taskId) || this.workService.repo.bindingForTask(request.taskId)) {
+      return { ok: false, code: "not_found", message: "找不到可以建立 Goal 的对话" };
+    }
+    const reference = request.sourceMessage;
+    if (!reference) return this.conversationGoals.create({ ...request, createdBy: "user" });
+    return this.createConversationGoalFromMessage(request, reference);
+  }
+
+  private async createConversationGoalFromMessage(
+    request: ConversationGoalCreateRequest,
+    reference: NonNullable<ConversationGoalCreateRequest["sourceMessage"]>,
+  ): Promise<ConversationGoalMutationResult> {
+    if (typeof reference.messageId !== "string" || !reference.messageId) {
+      return { ok: false, code: "invalid_request", message: "缺少原始消息身份" };
+    }
+
+    const entryId = Number(reference.entryId);
+    const around = Number.isSafeInteger(entryId) && entryId > 0 ? { aroundEntryId: entryId } : undefined;
+    const history = await this.loadTaskHistory(request.taskId, around);
+    if (history.durable?.historyId !== reference.historyId) {
+      return { ok: false, code: "conflict", message: "对话历史已变化，请重新选择来源消息" };
+    }
+    const index = history.messages.findIndex(candidate => candidate.id === reference.messageId && candidate.entryId === reference.entryId);
+    const message = history.messages[index];
+    if (!message || !this.db.getTask(request.taskId) || this.workService.repo.bindingForTask(request.taskId)) {
+      return { ok: false, code: "not_found", message: "此对话中找不到已保存的原始消息" };
+    }
+    if (!message.entryId || message.streaming || message.goalContinuation
+      || message.role === "assistant" && (!message.text.trim() || history.durable && !message.finalAssistantReply)) {
+      return { ok: false, code: "invalid_request", message: "仅可使用已保存的用户消息或带正文的已完成回复" };
+    }
+    if (message.role === "assistant" && history.durable) {
+      let previousInput = history.messages.slice(0, index).reverse().find(candidate => candidate.role === "user");
+      let before = history.page?.before;
+      while (!previousInput && before !== undefined) {
+        const older = await this.loadTaskHistory(request.taskId, before);
+        if (older.durable?.historyId !== history.durable.historyId) {
+          return { ok: false, code: "conflict", message: "对话历史已变化，请重新选择来源消息" };
+        }
+        previousInput = older.messages.slice().reverse().find(candidate => candidate.role === "user");
+        before = older.page?.before;
+      }
+      if (previousInput?.goalContinuation) {
+        return { ok: false, code: "invalid_request", message: "自动续跑回复不能建立新的 Goal" };
+      }
+    }
+    const liveConversationId = this.durableBots?.liveConversationId(request.taskId);
+    if (!this.db.getTask(request.taskId) || this.workService.repo.bindingForTask(request.taskId)
+      || liveConversationId !== undefined && liveConversationId !== history.durable?.conversationId) {
+      return { ok: false, code: "conflict", message: "对话历史已变化，请重新选择来源消息" };
+    }
+    const sourceTitle = message.text.trim().split(/\r?\n/)[0]?.trim().slice(0, 240);
+    const title = typeof request.title === "string" ? request.title.trim() : "";
+    return this.conversationGoals.create({ ...request, title: title || sourceTitle || "消息目标",
+      createdBy: "user" }, { source: {
+      taskId: request.taskId, conversationId: history.durable?.conversationId ?? request.taskId,
+      messageId: message.id, entryId: message.entryId, inputRequestId: message.inputRequestId, role: message.role, text: message.text,
+    } });
+  }
+
+  private goalMutationAllowed(goalId: string, taskId?: string): boolean {
+    if (taskId !== undefined) return Boolean(this.db.getTask(taskId) && !this.workService.repo.bindingForTask(taskId)
+      && this.conversationGoals.scopedWork(taskId, goalId));
+    return this.workService.getWork(goalId)?.userId === LOCAL_USER_ID;
   }
 
   updateConversationGoal(request: ConversationGoalUpdateRequest): ConversationGoalMutationResult {
-    const { tokenBudget, ...goalRequest } = request;
+    if (!this.goalMutationAllowed(request.goalId, request.taskId)) {
+      return { ok: false, code: "not_found", message: "找不到该 Goal" };
+    }
+    const { tokenBudget, taskId: _taskId, ...goalRequest } = request;
     if (tokenBudget !== undefined && tokenBudget !== null && (!Number.isFinite(tokenBudget) || tokenBudget < 1)) {
       return { ok: false, code: "invalid_request", message: "token 预算必须是正整数，或留空表示不限" };
     }
@@ -1258,13 +1396,15 @@ export class AgentService {
   }
 
   /** Explicit "continue" on a deferred/exhausted Goal: fresh attempts and budget window. */
-  resumeGoalContinuation(goalId: string): ConversationGoalMutationResult {
+  resumeGoalContinuation(goalId: string, taskId?: string): ConversationGoalMutationResult {
+    if (!this.goalMutationAllowed(goalId, taskId)) return { ok: false, code: "not_found", message: "找不到该 Goal" };
     const result = this.goalContinuations.resume(goalId);
     if (result.ok) return result;
     return { ok: false, code: result.message.startsWith("找不到") ? "not_found" : "conflict", message: result.message };
   }
 
-  cancelConversationGoal(goalId: string): ConversationGoalMutationResult {
+  cancelConversationGoal(goalId: string, taskId?: string): ConversationGoalMutationResult {
+    if (!this.goalMutationAllowed(goalId, taskId)) return { ok: false, code: "not_found", message: "找不到该 Goal" };
     return this.conversationGoals.cancel(goalId);
   }
 
@@ -1536,7 +1676,12 @@ export class AgentService {
       onSettled: (taskId, snapshot) => {
         // A continuation is decided from the settle, including aborted/failed ones:
         // the host must record why it will not point at the Goal again.
-        this.goalContinuations.onSettled(taskId, snapshot);
+        const last = snapshot.messages.at(-1);
+        const lastInput = snapshot.messages.filter(message => message.role === "user").at(-1);
+        const owner = last?.role === "assistant"
+          ? this.conversationGoalActivity.ownerForMessage(taskId, snapshot.conversationId, last.id)
+          : undefined;
+        this.goalContinuations.onSettled(taskId, snapshot, owner?.goalId ?? lastInput?.goalContinuation?.workId ?? null);
         computerUseRunCoordinator.endTask(taskId, snapshot.outcome === "completed" ? "completed" : "failed");
         if (!snapshot.outcome || snapshot.outcome === "aborted") return;
         const message = snapshot.messages.filter(message => message.role === "assistant").at(-1);
@@ -1549,8 +1694,33 @@ export class AgentService {
         this.taskDiagnostics.observeTool(event);
         if (event.phase === "finish" && event.taskId) this.goalContinuations.account(event.taskId);
       },
+      onGoalToolEvidence: (taskId, owner, toolTaskId, receipt) => {
+        const identity = { taskId, ...owner };
+        if (receipt.readPath) {
+          const pathKey = resolvedPathKey(receipt.readPath);
+          if (this.conversationGoalActivity.authoredSkillAtPath(pathKey)) {
+            this.conversationGoalActivity.recordAuthoredSkillRead(pathKey,
+              createHash("sha256").update(readFileSync(receipt.readPath)).digest("hex"), Date.now());
+          }
+          return;
+        }
+        if (!receipt.skill || !this.conversationGoalActivity.generation(identity)) return;
+        const { id, filePath } = receipt.skill;
+        const skill = this.skillsService.listInstalled().find(item => item.id === id && item.filePath === filePath && item.installed);
+        if (!skill) return;
+        const installed = this.skillsService.getLearnedSkillRevisionSource(id);
+        this.conversationGoalActivity.recordSkill(identity, String(toolTaskId), {
+          skillId: id, description: skill.description, candidateId: installed?.candidateId, sourceMemoryIds: installed?.sourceMemoryIds ?? [],
+          installedVersion: installed?.version ?? this.skillAuthoringService.readSkillVersion(dirname(filePath)),
+          installedFingerprint: createHash("sha256").update(readFileSync(filePath)).digest("hex"),
+          scopeType: installed?.scopeType ?? "global", scopeId: installed?.scopeId,
+          creationToolCallId: String(toolTaskId), createdAt: Date.now(),
+        }, resolvedPathKey(filePath));
+      },
       observedUsage: (taskId, conversationId) => this.taskDiagnostics.usageForConversation(taskId, conversationId),
+      onGoalToolResult: (taskId, identity, tool) => this.conversationGoalActivity.recordTool({ taskId, ...identity }, tool),
       onRequest: (taskId, info) => {
+        this.conversationGoalActivity.admit(taskId, info);
         if (info.sourceKind !== "main") return;
         this.durableSkills.started(taskId, info.conversationId);
         const task = this.db.getTask(taskId);
@@ -1569,7 +1739,8 @@ export class AgentService {
           if (!entry.byTaskId) continue;
           for (const message of entry.model ?? []) {
             if (message.role !== "assistant") continue;
-            this.recordDurableUsage(taskId, message, { conversationId: String(entry.conversationId), generationTaskId: entry.byTaskId, sourceKind: info.sourceKind });
+            this.recordDurableUsage(taskId, message, { conversationId: String(entry.conversationId), generationTaskId: entry.byTaskId,
+              sourceKind: info.sourceKind, assistantMessageId: `durable-${entry.id}` });
             this.db.connection.prepare("UPDATE task_runtime_context_snapshots SET assistant_message_id = ? WHERE task_id = ? AND execution_id = ?")
               .run(`durable-${entry.id}`, taskId, `durable:${taskId}:${entry.conversationId}:${entry.byTaskId}`);
           }
@@ -1599,7 +1770,7 @@ export class AgentService {
         // A separate background consumer of committed evidence. It never steers or blocks Bot execution.
         void this.queuePendingMemoryExtraction([taskId]).catch(error => console.warn("[Durable] Memory extraction failed", error));
       },
-      auditInput: request => this.durableInputAudit(request),
+      auditInput: (request, origin) => this.durableInputAudit(request, origin?.goalContinuation),
       prepareInput: request => {
         let text = request.text;
         if (request.taskId === DOTS_TASK_ID) {
@@ -1722,7 +1893,7 @@ export class AgentService {
       // Live Goal state, re-read per model request: a foreground conversation has no
       // execution binding, so this section is the only place the open requirement and
       // its stop rules reach the model. Never cache it with the static capsule.
-      renderConversationGoalSection(this.liveConversationGoal(task.id)) ?? "",
+      this.conversationGoalPrompt(task.id),
       browserAgentPolicy,
       this.durableToolAllowed(task, CAD_USE_TOOLS.inspect) ? cadUseInstructions(this.durableToolAllowed(task, CAD_USE_TOOLS.edit)) : "",
       this.durableToolAllowed(task, DRAWIO_USE_TOOLS.read) ? drawioUseInstructions(this.durableToolAllowed(task, DRAWIO_USE_TOOLS.edit)) : "",
@@ -1738,6 +1909,12 @@ export class AgentService {
   /** The Goal section must never fail a turn: ambiguity is a UI conflict, not a prompt fact.
    * A delegated execution (binding) keeps its own worker contract and tool surface, so the
    * interactive Goal rules are only injected into conversations the user actually drives. */
+  private conversationGoalPrompt(taskId: string): string {
+    const goal = this.liveConversationGoal(taskId);
+    const original = goal && this.workService.repo.getGoalSource(goal.id);
+    return renderConversationGoalSection(goal, original?.text) ?? "";
+  }
+
   private liveConversationGoal(taskId: string): ConversationGoalDto | null {
     if (this.workService.repo.bindingForTask(taskId)) return null;
     try {
@@ -1747,7 +1924,8 @@ export class AgentService {
     }
   }
 
-  private durableInputAudit(request: AgentPromptRequest): DurableInputAudit {
+  private durableInputAudit(request: AgentPromptRequest,
+    continuation?: import("../../shared/conversation-goal").GoalContinuationOrigin): DurableInputAudit {
     const task = this.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     if (task.id === DOTS_TASK_ID) return {
@@ -1775,13 +1953,20 @@ export class AgentService {
       skills.push({ id: advertised.id, name: advertised.name, path: filePath,
         learned: this.skillsService.getLearnedSkillMetadataForFile(filePath) });
     }
-    return durableInputAuditSchema.parse(JSON.parse(JSON.stringify({ userMessageId: request.userMessageId,
+    const goal = this.liveConversationGoal(request.taskId);
+    const work = goal?.status === "active" ? this.workService.getWork(goal.id) : undefined;
+    const goalOwner = continuation
+      ? { goalId: continuation.workId, intentRevision: continuation.intentRevision }
+      : work && work.lifecycle === "active" ? { goalId: work.workId, intentRevision: work.intentRevision } : undefined;
+    return durableInputAuditSchema.parse(JSON.parse(JSON.stringify({ goalOwner, userMessageId: request.userMessageId,
       assistantMessageId: request.assistantMessageId, cwd: task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), skills,
       recommendation: this.loadoutService.resolve(task.id, request.text, assembly, connectors, identity?.sourceExpertId) })));
   }
 
   private recordDurableUsage(taskId: string, message: import("@earendil-works/pi-ai").AssistantMessage,
-    info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }): void {
+    info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent"; assistantMessageId?: string }): void {
+    const outcome = message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : "completed";
+    const owner = this.conversationGoalActivity.settle({ taskId, ...info }, outcome, info.assistantMessageId);
     this.runtimeSnapshots.finish(`durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
       message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : "completed", message.errorMessage);
     this.usageStats.recordLive({ taskId, sessionFile: `durable:${taskId}:${info.conversationId}`,
@@ -1795,9 +1980,9 @@ export class AgentService {
     // Goal continuation budget is measured from real provider usage, independent
     // of the observation-only diagnostics table. The event key makes a replay of
     // the same committed message (live + projection) count once.
-    this.goalContinuations.noteResponse(taskId, `durable:${taskId}:${info.conversationId}:${info.generationTaskId}:${message.timestamp}`, {
+    if (owner) this.goalContinuations.noteResponse(taskId, `durable:${taskId}:${info.conversationId}:${info.generationTaskId}:${message.timestamp}`, {
       input: message.usage.input, output: message.usage.output, cacheRead: message.usage.cacheRead,
-    });
+    }, owner.goalId);
   }
 
   /** 模型目录里的单价是否真实配置；用于区分「未配置 → 0」与「真实 0 费用」。 */
@@ -2850,7 +3035,12 @@ export class AgentService {
     const stop = (reason: string) => controller.abort(new Error(reason));
     if (requestId) this.authoringRequests.set(requestId, stop);
     try {
-      return await this.runAuxiliaryText({ id: `authoring:${key}`, kind: "authoring",
+      const id = `authoring:${key}`;
+      if (invocation) {
+        const parent = await durableGoalToolGeneration(invocation.native, invocation.context);
+        if (parent) this.conversationGoalActivity.recordAuxiliaryScope(`authoring:${id}`, { ...parent, taskId: invocation.execution.taskId });
+      }
+      return await this.runAuxiliaryText({ id, kind: "authoring",
         parentTaskId: invocation?.execution.taskId, cwd: invocation?.cwd ?? process.cwd(), instructions: systemPrompt,
         prompt: userPrompt, modelId, thinking: "low", signal: controller.signal, observationSignal: invocation?.context.abortSignal });
     } finally {
