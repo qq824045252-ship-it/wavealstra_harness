@@ -3,10 +3,11 @@ import { dotsCapabilityOptions, dotsOperationEnabled, dotsOperations, resolveDot
 import type { AppSettingsDto, ModelInfoDto, SpaceDto } from "@shared/agent-ipc";
 import { dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
+import AnswerRoutingTab from "./AnswerRoutingTab";
 import { SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import "./DotsSettingsTab.css";
 
-const sections = ["对话与记忆", "跟进与空间", "工具与操作"] as const;
+const sections = ["对话调度", "对话与记忆", "跟进与空间", "工具与操作"] as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
 const memoryWrites = new Set<DotsOperation>(["memory_create", "memory_update", "memory_promote", "memory_forget"]);
 
@@ -19,7 +20,8 @@ function Switch({ label, subject, on, change }: {
 }
 
 export default function DotsSettingsTab() {
-  const [section, setSection] = useState<typeof sections[number]>("对话与记忆");
+  const [section, setSection] = useState<typeof sections[number]>(sections[0]);
+  const showRules = section === "对话调度";
   const [settings, setSettings] = useState<AppSettingsDto>();
   const [models, setModels] = useState<ModelInfoDto[]>([]);
   const [spaces, setSpaces] = useState<SpaceDto[]>([]);
@@ -28,6 +30,7 @@ export default function DotsSettingsTab() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (showRules) return;
     const api = window.api;
     if (!api?.agent) { setError("设置服务尚未就绪"); return; }
     let active = true;
@@ -37,7 +40,7 @@ export default function DotsSettingsTab() {
     void api.agent.listModels().then(rows => { if (active) setModels(rows); }).catch(e => { if (active) setError(String(e)); });
     void api.db.listSpaces().then(rows => { if (active) setSpaces(rows); }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
-  }, []);
+  }, [showRules]);
 
   async function save(label: string, patch: Partial<DotsSettings>) {
     setSaving(true);
@@ -67,11 +70,12 @@ export default function DotsSettingsTab() {
   const openSettings = useAppStore(s => s.setSettingsOpen);
   const mode = settings?.memoryEnabled ? prefs.memoryMode : "off";
   return <div className="dots-config">
+    <nav aria-label="Dots 设置分类">{sections.map(name =>
+      <button type="button" key={name} aria-pressed={section === name} onClick={() => { setSection(name); setSaved(""); }}>{name}</button>)}</nav>
+    {showRules ? <AnswerRoutingTab /> : <>
     {error && <p role="alert">{error}</p>}
     {!settings ? (!error && <p role="status">正在读取 Dots 设置…</p>) : !settings.dotsSettingsRuntime ?
       <p role="alert">当前运行的 MyBuddy 主进程还不支持这些设置。请完全退出并重开 MyBuddy。</p> : <>
-      <nav aria-label="Dots 设置分类">{sections.map(name =>
-        <button type="button" key={name} aria-pressed={section === name} onClick={() => { setSection(name); setSaved(""); }}>{name}</button>)}</nav>
       <fieldset disabled={saving}>
       {section === "对话与记忆" && <>
         <SettingsSection title="对话模型">
@@ -127,6 +131,7 @@ export default function DotsSettingsTab() {
       </SettingsSection>}
       </fieldset>
       <div className="dots-setting-feedback" role="status">{saving ? "正在保存…" : saved}</div>
+    </>}
     </>}
   </div>;
 }

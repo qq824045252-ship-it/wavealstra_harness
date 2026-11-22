@@ -59,6 +59,9 @@ run(async env => {
   await api("answerRouting.save", {title: "工具清单", include: ["检查已关闭能力的工具列表"], exclude: [], instruction: routingInstruction,
     evidenceFile: "", projectId: null, sourceMemoryId: null, enabled: true});
   await openDotsSettings();
+  assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "对话调度");
+  await until(() => evaluate("!!document.querySelector('.dots-config .answer-routing-rule[aria-label=工具清单]')"), "saved rule visible in the first Dots settings tab");
+  await tab("对话与记忆");
   await select("Dots 使用的模型", "fixture/dots-alternate");
   await select("Dots 如何使用长期记忆", "readOnly");
   assert.doesNotMatch(await evaluate("document.querySelector('.dots-config').innerText"), /回答方式|给 Dots 的回答指令/);
@@ -102,6 +105,8 @@ run(async env => {
   await dots();
   await until(async () => (await body())?.includes("已交给"), "Dots history restored");
   await openDotsSettings();
+  await tab("对话与记忆");
+  await until(() => evaluate("!!document.querySelector('select[aria-label=\"Dots 使用的模型\"]')"), "saved conversation settings loaded");
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Dots 使用的模型\"]').value"), "fixture/dots-alternate");
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Dots 如何使用长期记忆\"]').value"), "readOnly");
   await tab("跟进与空间");

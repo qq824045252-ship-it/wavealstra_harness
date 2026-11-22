@@ -35,7 +35,7 @@ export default function ChatAnswerRuleDialog({ taskId }: { taskId: string }) {
   if (!result) return null;
   return <div role="status" className="answer-rule-confirmation">{result.message}
     {result.review && <>
-      <button type="button" className="btn" onClick={() => { setResult(undefined); useAppStore.getState().setSettingsOpen(true, "answerRouting"); }}>查看规则</button>
+      <button type="button" className="btn" onClick={() => { setResult(undefined); useAppStore.getState().setSettingsOpen(true, "dots"); }}>查看规则</button>
       <button type="button" className="btn" onClick={() => setResult(undefined)}>关闭</button>
     </>}
   </div>;

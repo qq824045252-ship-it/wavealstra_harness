@@ -120,8 +120,14 @@ run(async env => {
   const source = await evaluate("document.querySelector('.answer-rule-original').textContent");
   assert.equal(await evaluate("document.querySelector('[aria-label=遇到什么问题]').value"), question);
   assert.ok(source.includes("交付测试回答"), source);
-  report.actualControlChecks.push("Existing history survives a missing status column, settings and chat load, and the icon-only teaching action opens the correct answer.");
-  await click("取消");
+  await until(() => evaluate("[...document.querySelectorAll('.answer-rule-save button')].some(button => button.textContent === '更新规则并返回对话')"), "existing rule loaded in teaching dialog");
+  await api("answerRouting.save", {title: "交付报告特例", include: [question], exclude: [], instruction: "先核对交付编号。",
+    evidenceFile: "", projectId: null, sourceMemoryId: null, enabled: true});
+  await click("更新规则并返回对话");
+  await click("查看规则", ".answer-rule-confirmation");
+  await until(() => evaluate("!!document.querySelector('.dots-config .answer-routing-rule[aria-label=交付报告特例]')"), "chat review opens the rule list in Dots settings");
+  assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "对话调度");
+  report.actualControlChecks.push("Existing history survives a missing status column, and the chat teaching flow opens the rule list in the first Dots settings tab.");
   await require("./answer-routing-weather-check.cjs")(env);
 }, {name: "answer-routing", settings: {memoryEnabled: true}, watchRenderer: false,
   fixtureModel: request => JSON.stringify(request.messages).includes("QH-672") ? "晴，站点 QH-672。" : "交付测试回答"});

@@ -85,8 +85,8 @@ exports.routingControls = ({ evaluate, until, rpc, out, report }) => {
       }
       await writeFile(path.join(out, name + ".png"), Buffer.from(frame.data, "base64"));
     },
-    openSettings(tab = "answerRouting") {
-      return evaluate(`import('/src/store/appStore.ts').then(m => m.useAppStore.getState().setSettingsOpen(true, ${quote(tab)}))`);
+    openSettings() {
+      return evaluate("import('/src/store/appStore.ts').then(m => m.useAppStore.getState().setSettingsOpen(true, 'dots'))");
     },
   };
 };

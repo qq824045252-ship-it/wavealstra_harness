@@ -2,7 +2,7 @@
 .dots-config > nav { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border); margin: 4px 0 14px; }
 .dots-config > nav > button { padding: 9px 12px; border-bottom: 2px solid transparent; color: var(--fg-muted); }
 .dots-config > nav > button[aria-pressed=true] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
-.dots-config fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.dots-config > fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .dots-config .settings-section { margin: 0 0 18px; }
 .dots-config .settings-section-card { padding: 12px 16px; }
 .dots-config .settings-field { margin: 0; }

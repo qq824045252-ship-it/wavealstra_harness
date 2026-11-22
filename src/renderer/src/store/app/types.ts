@@ -39,7 +39,6 @@ export type SettingsTab =
   | "personalize"
   | "memory"
   | "materialRetrieval"
-  | "answerRouting"
   | "dots"
   | "nativeHooks"
   | "nativeImprovement"
