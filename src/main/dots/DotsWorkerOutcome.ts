@@ -4,9 +4,13 @@ export type DotsWorkerOutcome =
 
 /** An accepted native answer ends a model turn. The worker declares whether it ends the assignment. */
 export function readDotsWorkerOutcome(text: string): DotsWorkerOutcome | undefined {
+  return parseWorkerOutcome(outcomeJson(text));
+}
+
+function outcomeJson(text: string): string {
   const trimmed = text.trim();
   const fenced = trimmed.startsWith("```") ? /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed) : undefined;
-  return parseWorkerOutcome(fenced?.[1] ?? trimmed);
+  return fenced?.[1] ?? trimmed;
 }
 
 function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | undefined {
@@ -25,15 +29,26 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
   }
 }
 
+const outcomePrefix = /^\s*\{\s*"dotsState"\s*:/;
+
 /** Presentation only. A manual follow-up can echo the wire envelope from a prior delegation. */
 export function recoverDotsNarrativeReply(text: string, streaming = false): string | undefined {
+  if (!text.includes('"dotsState"')) return;
+  const standalone = parseWorkerOutcome(outcomeJson(text), true);
+  if (standalone) return standalone.result;
+
+  if (streaming) {
+    const rest = text.trimStart().replace(/^```(?:json)?[ \t]*\r?\n/i, "");
+    if (outcomePrefix.test(rest)) return "";
+  }
+
   const opening = /\r?\n```json[ \t]*\r?\n/i.exec(text);
   if (!opening) return;
   const prose = text.slice(0, opening.index).trimEnd();
   if (!prose.trim() || /^ {0,3}(?:`{3,}|~{3,})/m.test(prose)) return;
   const rest = text.slice(opening.index + opening[0].length);
   const closing = /\r?\n```[ \t]*\s*$/.exec(rest);
-  if (!closing) return streaming && /^\s*\{\s*"dotsState"\s*:/.test(rest) ? prose : undefined;
+  if (!closing) return streaming && outcomePrefix.test(rest) ? prose : undefined;
   const outcome = parseWorkerOutcome(rest.slice(0, closing.index).trim(), true);
   if (!outcome) return;
   return [prose, outcome.result].filter(Boolean).join("\n\n");
