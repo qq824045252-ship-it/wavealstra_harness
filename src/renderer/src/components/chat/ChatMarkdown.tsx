@@ -15,8 +15,7 @@ import { DOTS_TASK_ID } from "@shared/dots";
  * - code_block：highlight.js（common 语言集）高亮 + 复制按钮 + 语言标签；
  *   ```md/```markdown 围栏 → Markdown 预览卡（含递归深度防护）；流式（loading）时
  *   不高亮（避免每 delta 全量 hljs）；
- * - mermaid / d2 / infographic：无对应运行时依赖 → 安全降级为源码 pre（不引入
- *   mermaid/d2 大依赖，不阻塞核心目标）。
+ * - Mermaid 小型图示用静态图片显示。其他图示围栏保留源码。
  *
  * 安全边界：htmlPolicy="safe"（白名单标签渲染，其余转义；不执行 raw HTML / script）。
  */
@@ -258,13 +257,14 @@ const alertLabels = { NOTE: "说明", TIP: "提示", IMPORTANT: "重要", WARNIN
 
 function ChatQuoteNode(props: Parameters<typeof BlockquoteNode>[0]) {
   const [paragraph, ...remaining] = props.node.children ?? [];
-  const paragraphChildren = paragraph?.type === "paragraph" && Array.isArray(paragraph.children) ? paragraph.children : [];
-  const first = paragraphChildren[0];
-  const alert = first?.type === "text" ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]*\n|$)/.exec(first.content) : null;
-  if (!alert || first?.type !== "text" || paragraph?.type !== "paragraph") return <BlockquoteNode {...props} />;
+  const nodes = paragraph?.type === "paragraph" && Array.isArray(paragraph.children) ? paragraph.children : [];
+  const [first, ...rest] = nodes;
+  const text = first?.type === "text" && typeof first.content === "string" ? first.content : "";
+  const alert = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\](?:[ \t]*\n|$)/.exec(text);
+  if (!alert) return <BlockquoteNode {...props} />;
   const kind = alert[1] as keyof typeof alertLabels;
-  const content = first.content.slice(alert[0].length);
-  const children = [...(content ? [{ ...first, content, raw: content }] : []), ...paragraphChildren.slice(1)];
+  const content = text.slice(alert[0].length);
+  const children = [...(content ? [{ ...first, content, raw: content }] : []), ...rest];
   const body = [...(children.length ? [{ ...paragraph, children }] : []), ...remaining];
   if (!body.length) return <BlockquoteNode {...props} />;
   return <ChatCalloutFrame title={alertLabels[kind]} variant={kind === "NOTE" || kind === "TIP" ? "info" : "warning"}>

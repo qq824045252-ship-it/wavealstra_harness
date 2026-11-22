@@ -7,7 +7,7 @@
  *    「streaming 纯文本 div ↔ settled react-markdown」renderer 切换；
  *    ChatMarkdown 是 text/thinking 的唯一渲染路径。
  * 3) 依赖与安全边界：markstream-react 已声明；htmlPolicy 默认安全（escape/safe）；
- *    不引入 raw HTML 执行（无 rehype-raw 路径）；mermaid/d2 未引入大依赖。
+ *    不引入 raw HTML 执行（无 rehype-raw 路径）；图示和不支持的格式保留源码。
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,15 +25,20 @@ import {
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 import type { ChatMessage } from "../src/renderer/src/types";
 import { artifactKindForFile } from "../src/main/workspace/WorkspaceService";
-import {
+import ChatMarkdown, {
   CHAT_MARKSTREAM_CUSTOM_ID,
   convertDollarMath,
   normalizeTexMathDelimiters,
 } from "@/components/chat/ChatMarkdown";
+import { parseReplyBlock, readReplyCitations } from "../src/shared/chat-reply-content";
+import { collectReplyCitations, providedReplySources, replyToolSources, resolveReplyCitation } from "../src/shared/chat-reply-sources";
 import { normalizeStandaloneSvgBlocks } from "@/components/common/SvgFencePreview";
 import { splitCanvasDocuments } from "@/lib/canvasDocuments";
 import { pathFromMarkdownHref } from "@/lib/localFilePath";
 import { isRenderableCanvasCode } from "@/components/chat/DetailCard";
+import { readableChatReply } from "@/lib/chatReplyMarkdown";
+import { isChatMermaid } from "@/lib/mermaidImage";
+import { executionFailureReason } from "@/components/chat/ExecutionTimeline";
 
 // 本测试的 esbuild 命令沿用 classic JSX；生产构建使用自动 JSX runtime。
 // 给服务端真实渲染夹具补齐 classic runtime，不影响应用代码。
@@ -479,14 +484,98 @@ console.log("== 3) 聊天图片路径、来源归属和真实节点渲染 ==");
   assert(markup.includes('referrerPolicy="no-referrer"') || markup.includes('referrerpolicy="no-referrer"'), "远程图片不携带 Referer");
 }
 
-console.log("== 4) 依赖声明 ==");
+console.log("== 4) 数据与引用降级 ==");
+{
+  const fence = "```";
+  const body = `结论仍可读。\n\n${fence}mybuddy-table\n{"title":"比较","columns":[],"rows":[]}\n${fence}\n\n| A | B |\n| --- | --- |\n| 甲 | 乙 |`;
+  const html = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: body, streaming: false, replySources: [] }));
+  assert(html.includes("结论仍可读。") && html.includes("<table") && !html.includes("&quot;columns&quot;"), "无效结构块隐藏，正文和旧 Markdown 表格照常显示");
+  const partial = `结论先出现。\n\n${fence}mybuddy-chart\n{"title":"半段"`;
+  const streaming = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: partial, streaming: true, replySources: [] }));
+  assert(streaming.includes("结论先出现。") && !streaming.includes("半段"), "流式正文照常显示，半段结构数据不渲染");
+  const raw = '{"title":"计数","columns":[{"label":"组","type":"text"},{"label":"销量","type":"number","unit":"件"}],"rows":[["甲",200],["乙",17],["丙",null]]}';
+  const parsed = parseReplyBlock("mybuddy-table", raw);
+  assert(parsed?.kind === "table" && parsed.data.rows[1][1] === 17 && parsed.data.rows[2][1] === null
+    && parseReplyBlock("mybuddy-table", raw.replace(",17]", ',"17"]')) === undefined, "数字保持数值，空值保留，拒绝数字字符串");
+  const line = `周三最高。\n\n${fence}mybuddy-chart\n{"title":"趋势","type":"line","unit":"件","points":[{"label":"周一","value":8},{"label":"周二","value":null},{"label":"周三","value":17}]}\n${fence}`;
+  const plot = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: line, streaming: false, replySources: [] }));
+  assert(plot.includes("(件)") && plot.includes("周二 · 缺失") && /d="M[\d.,]+ {2}M[\d.,]+"/.test(plot), "折线在缺失点断开，数据点仍可读");
+
+  const url = "https://example.org/source";
+  const excerpt = "A short and attributable excerpt.";
+  const reference = `结论旁[来源](<${url}> "mybuddy-cite: ${excerpt}")。`;
+  const snippet = replyToolSources({ tool: "web_search", status: "success", webSearch: {
+    version: 1, id: "search", status: "complete", queries: [], runs: [], sources: [{ url, title: "搜索标题", snippet: excerpt }],
+  } });
+  const page = replyToolSources({ tool: "fetch_content", status: "success", output: `Read this. ${excerpt}`,
+    detail: JSON.stringify({ materialKind: "web-content", successful: 1, urls: [url], title: "原文标题" }) });
+  const browserPage = { materialKind: "metadata", source: "browser", mode: "readable", truncated: false,
+    hasImage: false, shownBytes: 36, totalBytes: 36, successful: 1, urls: [url], title: "浏览器标题" };
+  const fromBrowser = (mode: string) => replyToolSources({ tool: "fetch_content", status: "success", output: excerpt,
+    detail: JSON.stringify({ ...browserPage, mode }) });
+  assert(resolveReplyCitation(url, excerpt, fromBrowser("readable"))?.title === "浏览器标题"
+    && !resolveReplyCitation(url, excerpt, fromBrowser("answer")), "浏览器复用原文可引用，生成摘要不可冒充原文");
+  const browserRead = { action: "read", scope: "main-document", contentState: "ready", url, title: "页面标题", documentId: "doc-1", text: excerpt };
+  const browsed = replyToolSources({ tool: "browser_exec", status: "success",
+    detail: JSON.stringify({ action: "navigate", observation: { status: "completed", result: browserRead } }) });
+  assert(resolveReplyCitation(url, excerpt, browsed)?.title === "页面标题"
+    && !resolveReplyCitation(url, excerpt, replyToolSources({ tool: "browser_exec", status: "success",
+      detail: JSON.stringify({ ...browserRead, url: "https://example.org/other" }) })), "浏览器读到的正文绑定实际页面地址");
+  assert(resolveReplyCitation(url, excerpt, snippet)?.kind === "snippet"
+    && resolveReplyCitation(url, excerpt, [...snippet, ...page])?.kind === "page", "同一摘录只在已有原文时标为已读原文");
+  assert(collectReplyCitations(reference, page)[0]?.title === "原文标题"
+    && !resolveReplyCitation(url + "2", excerpt, page) && !resolveReplyCitation(url, "A different excerpt.", page)
+    && readReplyCitations([{ url: "javascript:alert(1)", kind: "page", excerpt, title: "非法" }]).length === 0, "拒绝错配的来源、摘录和非法地址");
+  const cited = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: reference, streaming: false,
+    replySources: providedReplySources(`[用户给的标题](${url})\n> ${excerpt}`) }));
+  const skipped = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: reference, streaming: false, replySources: [] }));
+  assert(cited.includes("用户给的标题") && cited.includes("用户提供的摘录") && cited.includes(`href="${url}"`)
+    && skipped.includes("结论旁") && !skipped.includes(url), "引用只能从同一条有归属的材料显示，未知来源保留结论正文");
+  const unmarked = reference.replace("mybuddy-cite: ", "");
+  const snippetMarkup = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: unmarked, streaming: false, replySources: snippet }));
+  const pageMarkup = renderToStaticMarkup(React.createElement(ChatMarkdown, { text: unmarked, streaming: false, replySources: page }));
+  assert(snippetMarkup.includes("仅搜索摘要") && pageMarkup.includes("已读原文")
+    && collectReplyCitations(unmarked, page)[0]?.excerpt === excerpt, "未加标记的来源链接也须匹配同一条摘录并保留来源类型");
+}
+
+console.log("== 5) 阅读与复制 ==");
+{
+  const url = "https://example.org/reading";
+  const quote = "This passage belongs to the document.";
+  const sources = providedReplySources(`[真实出处](${url})\n> ${quote}`);
+  const text = [
+    `结论。[来源](<${url}> "mybuddy-cite: ${quote}")`,
+    '```mybuddy-table\n{"title":"用量","columns":[{"label":"部件","type":"text"},{"label":"重量","type":"number","unit":"kg"}],"rows":[["甲|乙",10],["丙",null]]}\n```',
+    '```mybuddy-chart\n{"title":"趋势","type":"line","unit":"kg","points":[{"label":"周一","value":8},{"label":"周二","value":null},{"label":"周三","value":17}]}\n```',
+    '```mybuddy-chart\n{"invalidProbe":true}\n```',
+    '````md\n```mybuddy-table\n{{EXAMPLE}}\n```\n````',
+  ].join("\n\n");
+  const copy = readableChatReply(text, sources);
+  assert(copy.includes(`结论。[真实出处](<${url}>)`) && copy.includes("| 部件 | 重量 (kg) |")
+    && copy.includes("| 甲\\|乙 | 10 |") && copy.includes("| 周二 | — |") && !copy.includes("invalidProbe")
+    && copy.includes('````md\n```mybuddy-table\n{{EXAMPLE}}\n```\n````'), "复制适合粘贴的 Markdown，保留单位、缺失值、出处和普通代码示例");
+  const warnings = renderToStaticMarkup(React.createElement(ChatMarkdown, { streaming: false, text:
+    "> [!WARNING]\n> 请核对输入。\n\n> 普通引文。\n\n1. 第一项\n2. 下一项" }));
+  assert(warnings.includes('msg-callout warning') && warnings.includes("请核对输入。") && warnings.includes("普通引文。")
+    && !warnings.includes("[!WARNING]") && warnings.includes("<ol"), "仅明示提示使用提示样式，普通引文和步骤仍按 Markdown 显示");
+  assert(isChatMermaid("stateDiagram-v2\nA --> B") && isChatMermaid("sequenceDiagram\nA->>B: 请求")
+    && !isChatMermaid("flowchart LR\nA-->B\nclick A href \"https://example.org\"")
+    && !isChatMermaid("%%{init: {}}%%\nflowchart LR\nA-->B"), "流程图接受小型状态图和时序图，带交互或配置的源码保持文本");
+  const failed: ChatMessage = { id: "failed", role: "assistant", createdAt: 1,
+    blocks: [{ type: "tool", toolCall: { id: "read", tool: "read", status: "error", summary: "读报告", output: "读取报告失败\n详细日志" } }],
+    generationStats: { outcome: "error" } as ChatMessage["generationStats"] };
+  assert(executionFailureReason(failed) === "读取报告失败" && !executionFailureReason({ ...failed, generationStats: { outcome: "completed" } as ChatMessage["generationStats"] }),
+    "执行失败呈现已知原因，已恢复的工具失败不误标任务");
+}
+
+console.log("== 6) 依赖声明 ==");
 {
   const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
   const declaredMarkstream =
     pkg.dependencies?.["markstream-react"] ?? pkg.devDependencies?.["markstream-react"];
   assert(typeof declaredMarkstream === "string", "markstream-react 已声明依赖");
   // 大 peer 未误装（体积/风险控制）
-  for (const dep of ["mermaid", "stream-monaco", "@antv/infographic", "@terrastruct/d2"]) {
+  for (const dep of ["stream-monaco", "@antv/infographic", "@terrastruct/d2"]) {
     assert(pkg.dependencies[dep] === undefined, `未引入 ${dep} 大依赖`);
   }
 }

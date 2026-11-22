@@ -204,9 +204,10 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
             res.writeHead(400, {"Content-Type":"application/json"}).end(JSON.stringify({error:{type:"invalid_request_error", message:reply.message}}));
             return;
           }
-          const tool = typeof reply === 'string' ? undefined : reply.tool;
+          const textChunks = Array.isArray(reply) ? reply : undefined;
+          const tool = typeof reply === 'string' || textChunks ? undefined : reply.tool;
           const message = tool ? { role: 'assistant', tool_calls: [{ id: 'call-' + requests.length, type: 'function',
-            function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] } : { role: 'assistant', content: reply };
+            function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] } : { role: 'assistant', content: textChunks?.join('') ?? reply };
           const finishReason = tool ? 'tool_calls' : 'stop';
           const base = {id: 'fixture-' + requests.length, model: model.id, created: Math.floor(Date.now()/1000)};
           // Pass the raw provider envelope through the real transport and SDK. Null omits usage.
@@ -219,7 +220,12 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureUs
               ...base, object: 'chat.completion.chunk', choices, ...(tokens ? {usage: tokens} : {}),
             }) + '\n\n');
             const delta = tool ? { ...message, tool_calls: [{ index: 0, ...message.tool_calls[0] }] } : message;
-            send([{index: 0, delta, finish_reason: null}]);
+            if (textChunks) {
+              for (const [index, content] of textChunks.entries()) {
+                send([{index: 0, delta: { ...(index === 0 ? { role: 'assistant' } : {}), content }, finish_reason: null}]);
+                await wait(400);
+              }
+            } else send([{index: 0, delta, finish_reason: null}]);
             send([{index: 0, delta: {}, finish_reason: finishReason}], usage);
             res.end('data: [DONE]\n\n');
           } else {
