@@ -1927,30 +1927,24 @@ html[data-theme="dark"] .extension-top-bar {
   color: var(--fg);
 }
 
+/* 流式「Thinking」呼吸态只用颜色动画：不再使用 background-clip:text + 透明文字填充。
+   透明填充依赖元素自身背景渐变，一旦背景被覆盖（hover 底色、选区高亮、
+   background 简写重置 background-clip）文字就整体「变白」消失。 */
 .assistant-reasoning-header.loading {
   position: relative;
-  background: linear-gradient(
-    110deg,
-    color-mix(in srgb, var(--fg) 26%, transparent) 0%,
-    color-mix(in srgb, var(--fg) 26%, transparent) 35%,
-    color-mix(in srgb, var(--fg) 55%, transparent) 50%,
-    color-mix(in srgb, var(--fg) 26%, transparent) 65%,
-    color-mix(in srgb, var(--fg) 26%, transparent) 100%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  animation: reasoning-shimmer 2.2s linear infinite;
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--fg-muted);
+  animation: reasoning-shimmer 2.2s ease-in-out infinite;
 }
 
 @keyframes reasoning-shimmer {
-  0% {
-    background-position: 200% 0;
-  }
+  0%,
   100% {
-    background-position: -200% 0;
+    color: var(--fg-muted);
+  }
+  50% {
+    color: var(--fg-secondary);
   }
 }
 
