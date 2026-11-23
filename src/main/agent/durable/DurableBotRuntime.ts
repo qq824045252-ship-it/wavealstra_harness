@@ -15,7 +15,8 @@ import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration 
 import { withDurableToolCoordination } from "./DurableToolCoordination";
 import { prioritizeInputAfterDeferredGoal } from "./DurableInputFreshness";
 import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
-import { withNativeNotStarted } from "./DurableToolLifecycle";
+import { withNativeToolOrigin } from "./DurableToolLifecycle";
+import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -50,7 +51,7 @@ import { withMissingFileRecovery } from "./DurableMissingFile";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
 import { createPlatformShellTools } from "../../platform/shell-tools";
-import { DurableHistoryProjection, assistantRow, nestedToolRow, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata, type DurableResponseSpeed } from "./DurableHistoryProjection";
+import { DurableHistoryProjection, assistantRow, durableToolStatus, nestedToolRow, toolMessageReceipt, durableContentText as contentText, type NestedCallDetail, type DurableInputMetadata, type DurableResponseSpeed } from "./DurableHistoryProjection";
 import { estimateTextTokens } from "../../../shared/token-format";
 import { identifyModelInvocation, requestTraceBoundary, setRequestTraceBoundary, withModelInvocationSettings } from "../ModelInvocationAdmission";
 import type { CacheTraceBoundary, CacheTraceOperation } from "../CacheRequestTracer";
@@ -213,9 +214,10 @@ export class DurableBotRuntime {
   private historyBefore?: EntryId;
   private readonly metadataByEntry = new Map<number, BotInputMetadata>();
   private readonly pendingAuditInputs = new Map<string, DurableInputAudit>();
-  private readonly nestedHistory = new Map<number, { entries: EntryRecord[]; newest?: EntryId }>();
+  private readonly nestedHistory = new Map<number, { entries: EntryRecord[]; newest?: EntryId;
+    toolsByAssistant: Map<string, Map<string, string>>; latestToolByCall: Map<string, string> }>();
   /** 找过 owner 行的孤立工具结果：同一个 callId 只扫一次，避免每帧重新扫历史。 */
-  private readonly orphanScans = new Set<string>();
+  private readonly orphanScans = new Set<number>();
   private pendingTurnEntries: EntryRecord[] = [];
   private consumerCursor?: number;
   private contextTokens: number | null = null;
@@ -818,10 +820,16 @@ export class DurableBotRuntime {
    * `merge` 的 assistant 分支 apply 回去。扫描有界，且同一 callId 只扫一次（失败不重试）。
    */
   private async mendOrphanToolCalls(): Promise<boolean> {
-    const orphans = this.history.orphanToolCalls().filter(orphan => !this.orphanScans.has(orphan.callId));
+    const orphans = this.history.orphanToolCalls().filter(orphan => !this.orphanScans.has(orphan.entryId));
     if (orphans.length === 0) return false;
-    const wanted = new Set(orphans.map(orphan => orphan.callId));
+    const wanted = new Set(orphans.filter(orphan => !orphan.ownerId).map(orphan => orphan.callId));
     const found: EntryRecord[] = [];
+    const owners = new Set(orphans.flatMap(orphan => orphan.ownerId ? [Number(orphan.ownerId.slice(8))] : []));
+    for (const owner of owners) {
+      if (!Number.isSafeInteger(owner)) continue;
+      const record = await this.storage.entry(this.conversation.id, owner as EntryId, ctx);
+      if (record) found.push(record.entry);
+    }
     let before: EntryId | undefined = Math.min(...orphans.map(orphan => orphan.entryId)) as EntryId;
     let scanned = 0;
     while (wanted.size > 0 && before !== undefined && before > 1 && scanned < ORPHAN_CALL_SCAN_ENTRIES) {
@@ -837,7 +845,7 @@ export class DurableBotRuntime {
       }
       before = items.at(-1)?.id as EntryId | undefined;
     }
-    for (const orphan of orphans) this.orphanScans.add(orphan.callId);
+    for (const orphan of orphans) this.orphanScans.add(orphan.entryId);
     if (found.length === 0) return false;
     await this.loadInputMetadata(found, this.metadataByEntry);
     await this.mergeHistory(this.history, found, this.metadataByEntry);
@@ -895,15 +903,32 @@ export class DurableBotRuntime {
 
   /** Results outside a window update its tool rows without adding intervening messages. */
   private async completeHistoryTools(history: DurableHistoryProjection, afterEntryId: number, metadata: Map<number, BotInputMetadata>) {
-    const unresolved = new Set(history.messages.flatMap(row => (row.tools ?? []).filter(tool => tool.status === "running").map(tool => tool.id)));
+    const unresolved = new Map<string, Set<string>>();
+    for (const row of history.messages) for (const tool of row.tools ?? []) {
+      if (tool.status !== "running") continue;
+      const owners = unresolved.get(tool.id) ?? new Set<string>();
+      owners.add(row.id);
+      unresolved.set(tool.id, owners);
+    }
     let cursor: Cursor | undefined;
     while (unresolved.size) {
       const later = await this.conversation.entries({ minEntryId: (afterEntryId + 1) as EntryId, order: "ascending" }, 100, cursor, ctx);
       for (const entry of later.items) {
-        const results = entry.model?.filter(message => message.role === "toolResult" && unresolved.has(message.toolCallId));
+        const matches = new Map<string, string>();
+        const results = entry.model?.filter(message => {
+          if (message.role !== "toolResult") return false;
+          const owner = toolMessageReceipt(message, entry)?.assistantMessageId ?? history.ownerId(message.toolCallId);
+          if (!owner || !unresolved.get(message.toolCallId)?.has(owner)) return false;
+          matches.set(message.toolCallId, owner);
+          return true;
+        });
         if (results?.length) {
           history.merge(await this.historyEntries(history, [{ ...entry, model: results }]), metadata, {});
-          for (const message of results) if (message.role === "toolResult") unresolved.delete(message.toolCallId);
+          for (const [callId, owner] of matches) {
+            const owners = unresolved.get(callId)!;
+            owners.delete(owner);
+            if (!owners.size) unresolved.delete(callId);
+          }
         }
       }
       if (!later.next) break;
@@ -1472,7 +1497,8 @@ export class DurableBotRuntime {
       const ownerIndex = this.history.index(this.history.ownerId(slot.parentCallId) ?? "");
       const owner = ownerIndex === undefined ? undefined : messages[ownerIndex];
       if (!owner) continue;
-      const status = slot.status === "done" ? (slot.summary?.isError ? "error" as const : "success" as const) : "running" as const;
+      // Pi's live summary intentionally carries only its projection of the exact nested result.
+      const status = slot.status === "done" ? durableToolStatus(slot.summary ?? {}) : "running" as const;
       const text = summarizeToolInput(slot.name, slot.arguments);
       const row: NonNullable<ChatMessageDto["tools"]>[number] = { id: slot.callId, parentToolCallId: slot.parentCallId, tool: slot.name,
         summary: text.summary, ...(text.detail === undefined ? {} : { detail: text.detail }), status, output: slot.output ?? slot.summary?.error ?? "",
@@ -1493,7 +1519,7 @@ export class DurableBotRuntime {
         watch = await child.watch(ctx); this.children.set(childId, watch);
         watch.start(async () => { await this.refresh(); });
       }
-      cached ??= { entries: [] };
+      cached ??= { entries: [], toolsByAssistant: new Map(), latestToolByCall: new Map() };
       const added = watch.value.entries.filter(entry => entry.id > (cached.newest ?? 0));
       if (added.length) {
         cached.entries.push(...added); cached.newest = added.at(-1)?.id;
@@ -1503,16 +1529,27 @@ export class DurableBotRuntime {
         const childTools = new Map(owner.tools.map(tool => [tool.id, tool]));
         for (const entry of added) for (const message of entry.model ?? []) {
           if (message.role === "assistant") for (const call of message.content) {
-            if (call.type !== "toolCall" || childTools.has(call.id)) continue;
+            if (call.type !== "toolCall") continue;
+            const assistantId = `durable-${entry.id}`;
+            const byCall = cached.toolsByAssistant.get(assistantId) ?? new Map<string, string>();
+            if (byCall.has(call.id)) continue;
+            const id = childTools.has(call.id) ? `${assistantId}:${call.id}` : call.id;
+            byCall.set(call.id, id);
+            cached.toolsByAssistant.set(assistantId, byCall);
+            cached.latestToolByCall.set(call.id, id);
             const text = summarizeToolInput(call.name, call.arguments);
-            const tool = { id: call.id, parentToolCallId: parentId, tool: call.name, summary: text.summary,
+            const tool = { id, parentToolCallId: parentId, tool: call.name, summary: text.summary,
               ...(text.detail === undefined ? {} : { detail: text.detail }), status: "running" as const };
-            childTools.set(call.id, tool); owner.tools.push(tool);
+            childTools.set(id, tool); owner.tools.push(tool);
           }
           if (message.role === "toolResult") {
-            const tool = childTools.get(message.toolCallId);
+            const receipt = toolMessageReceipt(message, entry);
+            const id = receipt ? cached.toolsByAssistant.get(receipt.assistantMessageId)?.get(message.toolCallId)
+              : cached.latestToolByCall.get(message.toolCallId);
+            const tool = id === undefined ? undefined : childTools.get(id);
             if (tool) {
-              tool.status = message.isError ? "error" : "success"; tool.output = contentText(message.content);
+              tool.status = durableToolStatus(message, { conversationId: entry.conversationId,
+                toolTaskId: entry.byTaskId, callId: message.toolCallId, toolName: message.toolName }); tool.output = contentText(message.content);
               tool.capabilityResult = capabilityResultFromDetails(message.toolName, message.details);
               tool.webSearch = searchReportFromDetails(message.details); tool.consult = consultReportFromDetails(message.details);
             }
@@ -1764,6 +1801,20 @@ function botExtension(
   };
   const toolGeneration = (toolTaskId: number, conversationId: string): number | undefined =>
     generationByToolTask.get(toolTaskId) ?? currentGenerationByConversation.get(conversationId);
+  const toolOrigin = async (api: HookApi, task: Awaited<ReturnType<Harness["getTask"]>>,
+    context: Parameters<ToolRegistration["execute"]>[2]) => {
+    const checkpoint = task?.state.status !== "terminal" ? task?.state.checkpoint : undefined;
+    let input = task?.input;
+    let ownerTaskId: number = api.taskId;
+    while (input && typeof input === "object" && !Array.isArray(input) && input.kind === "nested" &&
+      typeof input.parent === "number" && input.parent < ownerTaskId) {
+      ownerTaskId = input.parent;
+      input = (await readNativeTask?.(ownerTaskId as TaskId, context))?.input;
+    }
+    return { taskId: api.taskId, conversationId: String(api.conversationId),
+      assistantEntryId: input && typeof input === "object" && !Array.isArray(input) && typeof input.assistant === "number" ? input.assistant : undefined,
+      notStarted: Boolean(checkpoint && typeof checkpoint === "object" && "phase" in checkpoint && checkpoint.phase === "call") };
+  };
   const dotsToolOwners = new Map<number, string>();
   const dotsOwner = async (api: HookApi, context: Parameters<ToolRegistration["execute"]>[2]) => {
     if (!options.isDotsWorkerInput || options.taskId === DOTS_TASK_ID || await childConversation(api, context)) return;
@@ -1800,7 +1851,9 @@ function botExtension(
         const gate = await options.foregroundHooks.beforeTool(call, api, context);
         if (gate && "block" in gate) return gate;
       }
-      const decision = await options.toolHooks?.beforeTool?.(call, api, context);
+      const decision = options.toolHooks?.beforeTool
+        ? await withNativeToolOrigin(await toolOrigin(api, await readNativeTask?.(api.taskId, context), context),
+          () => options.toolHooks?.beforeTool?.(call, api, context)) : undefined;
       const generationTaskId = toolGeneration(api.taskId, String(api.conversationId));
       rememberToolGeneration(api.taskId, generationTaskId);
       if (!(decision && "block" in decision)) try {
@@ -1814,17 +1867,18 @@ function botExtension(
     },
     afterTool: async (call, result, api, context) => {
       const task = await readNativeTask?.(api.taskId, context);
-      const checkpoint = task?.state.status !== "terminal" ? task?.state.checkpoint : undefined;
-      const proof = checkpoint && typeof checkpoint === "object" && "phase" in checkpoint && checkpoint.phase === "call"
-        ? { taskId: api.taskId, conversationId: String(api.conversationId) } : undefined;
-      const changed = await withNativeNotStarted(proof, () => options.toolHooks?.afterTool?.(call, result, api, context));
+      const changed = options.toolHooks?.afterTool
+        ? await withNativeToolOrigin(await toolOrigin(api, task, context), () => options.toolHooks?.afterTool?.(call, result, api, context))
+        : undefined;
       const observed = changed ?? result;
+      const isError = !nativeExecutionSucceeded(observed, { conversationId: api.conversationId,
+        toolTaskId: api.taskId, callId: call.id, toolName: call.name });
       if (options.foregroundHooks?.afterTool && !await childConversation(api, context))
         await options.foregroundHooks.afterTool(call, observed, api, context, commit);
-      if (call.name === "read" && !observed.isError) await recordSkillRead?.(call, api, context);
+      if (call.name === "read" && !isError) await recordSkillRead?.(call, api, context);
       if (options.onGoalToolEvidence) {
         try {
-          const receipt = call.name === "read" && !observed.isError && typeof call.arguments.path === "string"
+          const receipt = call.name === "read" && !isError && typeof call.arguments.path === "string"
             && /(?:^|[\\/])SKILL\.md$/i.test(call.arguments.path)
             ? { readPath: resolve((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value?.workspace.cwd ?? options.cwd,
               call.arguments.path) }
@@ -1836,7 +1890,7 @@ function botExtension(
         } catch (error) { console.warn("[Durable] Goal tool observation failed", error); }
       }
       try {
-        if (options.onGoalToolResult && !observed.isError && (call.name === "subagent" || call.name === "pstack_delegate")) {
+        if (options.onGoalToolResult && !isError && (call.name === "subagent" || call.name === "pstack_delegate")) {
           const parent = await nativeGoalParentGeneration(storage, task?.owner, context);
           if (parent) options.onGoalToolResult(parent, { name: call.name, callId: call.id,
             details: observed.details ?? observed.structuredOutput });
@@ -1844,7 +1898,7 @@ function botExtension(
         options.onTool?.({ phase: "finish", taskId: options.executionIdentity ? options.executionIdentity.taskId : options.taskId,
           executionScope: options.executionIdentity?.executionScope, conversationId: String(api.conversationId), toolTaskId: api.taskId,
           generationTaskId: toolGeneration(api.taskId, String(api.conversationId)), dotsOperationId: dotsToolOwners.get(api.taskId),
-          callId: call.id, name: call.name, at: Date.now(), isError: observed.isError,
+          callId: call.id, name: call.name, at: Date.now(), isError,
           diagnostics: durableToolDiagnosticMessages(observed),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }

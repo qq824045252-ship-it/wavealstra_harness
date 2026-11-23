@@ -3,6 +3,7 @@ import { UiAutomationError } from "../capabilities/UiAutomationService";
 import { isUiInputAction } from "../../shared/native-tools";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
+import type { DesktopOperationOutcome } from "./DesktopOperationOutcome";
 
 export interface UiAutomationRecoveryBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
@@ -45,19 +46,26 @@ export function uiRecoveryGuidance(error: UiAutomationError, input: UiExecInput)
   }
 }
 
+export function uiOperationOutcome(input: UiExecInput, error: UiAutomationError): DesktopOperationOutcome {
+  const sideEffects = error.outcome?.dispatch === "dispatched" && isUiInputAction(input.action)
+    ? error.outcome.effect === "confirmed" ? "known" : "unknown"
+    : "none";
+  return { status: sideEffects === "unknown" ? "inconclusive" : "failed", sideEffects, causeCode: uiCause(error.code) };
+}
+
 export function recordUiAutomationFailureRecovery(bridge: UiAutomationRecoveryBridge | undefined, input: UiExecInput, error: unknown): boolean {
   if (!bridge || !(error instanceof UiAutomationError)) return false;
   const dispatched = error.outcome?.dispatch === "dispatched";
   if (!dispatched && !ENVIRONMENT_CODES.some(code => code === error.code)) return false;
   const ctx = bridge.resolveContext();
   if (!ctx) return false;
-  const hasInput = dispatched && isUiInputAction(input.action);
+  const outcome = uiOperationOutcome(input, error);
   bridge.failures.recordIfAbsent({
     ...ctx,
-    causeCode: uiCause(error.code),
-    phase: error.details?.stage === "verify" ? "verify" : hasInput ? "execute" : "observe",
+    causeCode: outcome.causeCode,
+    phase: error.details?.stage === "verify" ? "verify" : outcome.sideEffects !== "none" ? "execute" : "observe",
     recovery: "recoverable",
-    sideEffects: hasInput ? error.outcome?.effect === "confirmed" ? "known" : "unknown" : "none",
+    sideEffects: outcome.sideEffects,
     target: uiAutomationRecoveryTarget(input),
     message: `界面操作 ${input.action} 失败（${error.code}）：${error.message}`,
     nextAction: uiRecoveryGuidance(error, input),

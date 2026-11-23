@@ -49,8 +49,8 @@ import { quoteBashArg, quotePowerShellLiteral, toBashPath } from "../agent/Shell
 import { executeCodeLanguages } from "../platform/shell-tools";
 import type { VerifiedProcessBridge } from "../agent/VerifiedCodeExecution";
 import { codeExecutionEvidenceIdentity, executeVerifiedCode, recordCodeRuntimePreparationFailure, resolveCodeRuntimePreparationFailure } from "../agent/VerifiedCodeExecution";
-import { recordComputerUseFailureRecovery, settleComputerUseResultRecovery, type ComputerUseRecoveryBridge } from "../agent/ComputerUseFailureRecovery";
-import { recordUiAutomationFailureRecovery, settleUiAutomationRecovery, uiRecoveryGuidance, type UiAutomationRecoveryBridge } from "../agent/UiAutomationFailureRecovery";
+import { computerOperationErrorOutcome, recordComputerUseFailureRecovery, settleComputerUseResultRecovery, type ComputerUseRecoveryBridge } from "../agent/ComputerUseFailureRecovery";
+import { recordUiAutomationFailureRecovery, settleUiAutomationRecovery, uiOperationOutcome, uiRecoveryGuidance, type UiAutomationRecoveryBridge } from "../agent/UiAutomationFailureRecovery";
 import { recordBrowserAutomationFailureRecovery, settleBrowserAutomationRecovery, type BrowserAutomationRecoveryBridge } from "../agent/BrowserAutomationFailureRecovery";
 import { recordSkillAuthoringFailureRecovery, settleSkillAuthoringRecovery, type SkillAuthoringRecoveryBridge } from "../agent/SkillAuthoringFailureRecovery";
 import type { PythonRuntimeService } from "../runtime/PythonRuntimeService";
@@ -787,7 +787,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             }
             return { ...jsonResult(`浏览器动作完成：${p.action}`, result), isError: result.businessResult?.status === "failed" || result.downloadArtifact?.status === "failed" || result.collectionArtifact?.status === "failed" || result.download?.state === "interrupted" || result.download?.state === "cancelled" };
           } catch (error) {
-            if (input) recordBrowserAutomationFailureRecovery(bridge.browserRecovery, input, error);
+            if (input) recordBrowserAutomationFailureRecovery(bridge.browserRecovery, input, error, tc);
             return errorResult("browser_exec", error);
           }
         },
@@ -832,7 +832,7 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             if (input && error instanceof UiAutomationError) {
               return { ...jsonResult(`界面操作失败：${error.message}`, {
                 code: error.code, error: error.message, target: input.target ?? "app", action: input.action,
-                ...error.details, outcome: error.outcome,
+                ...error.details, outcome: error.outcome, desktopOutcome: uiOperationOutcome(input, error),
                 candidates: error.candidates?.slice(0, 8).map(({ selector, tag, role, name, visible, disabled }) => ({ selector, tag, role, name, visible, disabled })),
                 nextAction: uiRecoveryGuidance(error, input),
               }), isError: true };
@@ -950,7 +950,11 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             const result = await computerAutomationService.execute(input, operationSignal);
             actionResult = result;
             operationSignal?.throwIfAborted();
-            settleComputerUseResultRecovery(bridge.computerRecovery, input, result);
+            const desktopOutcome = settleComputerUseResultRecovery(bridge.computerRecovery, input, result);
+            const outcomeDetails = desktopOutcome ? { ...result, desktopOutcome } : result;
+            const outcomeSummary = desktopOutcome?.status === "failed"
+              ? "未达到预期界面状态。请核对当前状态，避免重复发送已执行的输入。"
+              : "桌面操作结果尚未确认。请核对当前状态，避免重放已执行或结果未知的步骤。";
             if (result.screenshot) {
               const context = toolContext(bridge, tc, operationSignal);
               const mimeType = result.screenshotMimeType ?? "image/png";
@@ -960,17 +964,17 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
                 items: [{ bytes: result.screenshot, mimeType, fileName }],
               }, context, "桌面截图");
               operationSignal?.throwIfAborted();
-              const details = { ...result, screenshot: undefined, path: saved.paths[0], artifactId: saved.artifacts[0]?.id };
+              const details = { ...outcomeDetails, screenshot: undefined, path: saved.paths[0], artifactId: saved.artifacts[0]?.id };
               const imageResult = await visionAwareImageResult({
-                summary: computerUseCopy.screenshotSummary, details, model: ctx?.model, vision, context,
+                summary: desktopOutcome ? outcomeSummary : computerUseCopy.screenshotSummary, details, model: ctx?.model, vision, context,
                 images: [{ path: saved.paths[0], bytes: result.screenshot, mimeType }],
                 prompt: computerUseCopy.visionPrompt,
               });
               operationSignal?.throwIfAborted();
-              return imageResult;
+              return desktopOutcome ? { ...imageResult, isError: true } : imageResult;
             }
+            if (desktopOutcome) return { ...jsonResult(outcomeSummary, outcomeDetails), isError: true };
             if (action === "find_control" && result.matched === false) return jsonResult("控件查找完成：当前窗口未观察到匹配项", result);
-            if (result.semanticOutcome?.status === "failed") return jsonResult("未达到预期界面状态。请根据检查结果重新观察目标，再决定下一步，避免重复发送已执行的输入。", result);
             return jsonResult(batchActions?.length
               ? `批量桌面动作结果：${result.batch?.steps.filter((step) => step.ok).length ?? 0}/${batchActions.length} 步完成`
               : `桌面动作结果：${String(action)}`, result);
@@ -980,7 +984,9 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
               computerUseRunCoordinator.fail(input, operationSignal);
               recordComputerUseFailureRecovery(bridge.computerRecovery, input, failure);
             }
-            return errorResult("computer_exec", failure);
+            const result = errorResult("computer_exec", failure);
+            const desktopOutcome = input && computerOperationErrorOutcome(input, failure);
+            return desktopOutcome ? { ...result, details: { ...result.details, desktopOutcome } } : result;
           } finally { finishToolScope?.(); }
         },
       });

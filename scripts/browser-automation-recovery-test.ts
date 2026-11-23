@@ -161,8 +161,23 @@ try {
   }
   const preflightTimeout = new BrowserAutomationError("WAIT_TIMEOUT", "target check pending", { outcome: { dispatch: "not_started", effect: "none" } });
   assert.equal(recordBrowserAutomationFailureRecovery(bridge, { action: "fill", selector: "#pending" }, preflightTimeout),false);
-  settleBrowserAutomationRecovery(bridge, { action: "read" }, { action: "read", url: "https://example.test/form", text: "fresh actual page evidence" });
-  assert(!failures.list("task").some(item => !item.resolvedAt && item.target === "browser:uncertain:url=https%3A%2F%2Fexample.test%2Fform"));
+  const fetchInput = { action: "fetch" as const, request: { method: "POST" as const }, tabId: "tab-a" };
+  const unclear = new BrowserAutomationError("WAIT_TIMEOUT", "response missing after dispatch", {
+    outcome: { dispatch: "dispatched", effect: "unknown" }, currentUrl: "https://example.test/form",
+  });
+  for (const callId of ["fetch-a", "fetch-a", "fetch-b"]) {
+    assert(recordBrowserAutomationFailureRecovery(bridge, fetchInput, unclear, callId));
+  }
+  const beforeRead = failures.list("task").filter(item => !item.resolvedAt && item.sideEffects === "unknown");
+  assert.equal(beforeRead.filter(item => item.message.includes("response missing after dispatch")).length, 2,
+    "each dispatched call has its own recovery row and repeated reporting of the exact call is idempotent");
+  for (const action of ["read", "screenshot"] as const) {
+    for (const tabId of ["tab-a", "tab-b"]) {
+      settleBrowserAutomationRecovery(bridge, { action, tabId }, { action, tabId, url: "https://example.test/form" });
+    }
+  }
+  assert.deepEqual(failures.list("task").filter(item => !item.resolvedAt && item.sideEffects === "unknown"), beforeRead,
+    "a generic observation leaves dispatched unknown effects unresolved, including historical rows");
 
   const beforeInvocationErrors = failures.list("task").length;
   // Screenshot producer/identity behavior is exercised by the real BrowserHost
@@ -180,7 +195,7 @@ try {
   const builtin = await readFile("src/main/capabilities/builtin-capability-extension.ts", "utf8");
   const assembler = await readFile("src/main/agent/SessionExtensionAssembler.ts", "utf8");
   assert(builtin.includes("settleBrowserAutomationRecovery(bridge.browserRecovery, input, result)"));
-  assert(builtin.includes("recordBrowserAutomationFailureRecovery(bridge.browserRecovery, input, error)"));
+  assert(builtin.includes("recordBrowserAutomationFailureRecovery(bridge.browserRecovery, input, error, tc)"));
   assert(assembler.includes("browserRecovery: { resolveContext: input.resolveConversationContext, failures: this.deps.executionFailures }"));
 
   console.log("browser automation recovery: PASS (typed errors, safe press targeting, navigation reconciliation, selector preflight, uncertain-side-effect re-observation, invocation filtering, main-session wiring)");

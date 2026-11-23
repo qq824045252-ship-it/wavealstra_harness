@@ -5,6 +5,7 @@ import { persistDurableImages } from "./DurableImages";
 import { capabilityResultFromDetails } from "../../../shared/capability-result";
 import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
+import { nativeExecutionSucceeded, readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 
 /** Pi owns the deterministic VM journal, nested-call keys, store and restart policy. */
 export function createDurableCodeMode(
@@ -28,15 +29,20 @@ export function createDurableCodeMode(
         const [tool, args] = input;
         const start = ++order;
         const result = await target.executeTool(...input);
+        const [, , , callOptions] = input;
+        const callId = callOptions?.key && `${target.callId}/${callOptions.key}`;
+        const identity = { conversationId: target.conversationId, toolTaskId: result.taskId, toolName: tool, callId };
         if ((tool === "read" || tool === "write" || tool === "edit") && args && typeof args === "object" && "path" in args && typeof args.path === "string")
-          fileOperations.push({ tool, path: args.path, start, finish: ++order, isError: Boolean(result.isError) });
-        const [name, , , callOptions] = input;
-        const capabilityResult = capabilityResultFromDetails(name, result.details);
+          fileOperations.push({ tool, path: args.path, start, finish: ++order, isError: !nativeExecutionSucceeded(result, identity) });
+        const capabilityResult = capabilityResultFromDetails(tool, result.details);
         const webSearch = searchReportFromDetails(result.details);
         const consult = consultReportFromDetails(result.details);
-        if (callOptions?.key && (capabilityResult || webSearch || consult)) {
+        const receipt = readNativeExecutionReceipt(result.details);
+        const executionReceipt = receipt?.toolTaskId === result.taskId && receipt.conversationId === target.conversationId &&
+          receipt.toolName === tool && receipt.callId === callId ? receipt : undefined;
+        if (callOptions?.key && (capabilityResult || webSearch || consult || executionReceipt)) {
           presentations.set(callOptions.key, JSON.parse(JSON.stringify({ ...(capabilityResult ? { capabilityResult } : {}),
-            ...(webSearch ? { webSearch } : {}), ...(consult ? { consult } : {}) })) as JsonObject);
+            ...(webSearch ? { webSearch } : {}), ...(consult ? { consult } : {}), ...(executionReceipt ? { executionReceipt } : {}) })) as JsonObject);
         }
         return result;
       };

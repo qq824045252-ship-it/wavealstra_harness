@@ -3,6 +3,7 @@ import { isComputerUseSideEffect } from "../capabilities/ComputerUsePolicy";
 import { WindowsAutomationError, type AutomationErrorCode, type WindowInfo } from "../platform/computer-use/protocol";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionFailureRepository } from "./ExecutionFailureRepository";
+import type { DesktopOperationOutcome } from "./DesktopOperationOutcome";
 
 export interface ComputerUseRecoveryBridge {
   resolveContext: () => ConversationExecutionContext | undefined;
@@ -185,12 +186,13 @@ export function recordComputerUseFailureRecovery(bridge: ComputerUseRecoveryBrid
   if (!ctx) return false;
   const target = computerUseRecoveryTarget(input, error.details);
   const evidence = deliveryEvidence(error.details);
-  const sideEffects = evidence.sideEffects ?? (PRE_ACTION_CODES.has(error.code) || !sideEffectingInput(input) ? "none" : "unknown");
+  const outcome = computerOperationError(input, error, evidence);
+  const { sideEffects } = outcome;
   // A read-only ambiguous selector is actionable by the model using its candidates.
   if (input.action === "find_control" && !input.actions?.length && error.code === "CONTROL_AMBIGUOUS" && sideEffects === "none" && !evidence.partial) return false;
   recordRecovery(bridge, {
     ...ctx,
-    causeCode: causeCodeFor(error.code),
+    causeCode: outcome.causeCode,
     phase: (PRE_ACTION_CODES.has(error.code) || !sideEffectingInput(input)) && sideEffects === "none" ? "observe" : "execute",
     recovery: "recoverable",
     sideEffects,
@@ -201,6 +203,16 @@ export function recordComputerUseFailureRecovery(bridge: ComputerUseRecoveryBrid
   return true;
 }
 
+function computerOperationError(input: ComputerExecInput, error: WindowsAutomationError, evidence: DeliveryEvidence): DesktopOperationOutcome {
+  const sideEffects = evidence.sideEffects ?? (PRE_ACTION_CODES.has(error.code) || !sideEffectingInput(input) ? "none" : "unknown");
+  return { status: sideEffects === "unknown" || evidence.partial ? "inconclusive" : "failed", sideEffects, causeCode: causeCodeFor(error.code) };
+}
+
+export function computerOperationErrorOutcome(input: ComputerExecInput, error: unknown): DesktopOperationOutcome | undefined {
+  if (error instanceof WindowsAutomationError) return computerOperationError(input, error, deliveryEvidence(error.details));
+  return undefined;
+}
+
 function verificationState(output: ComputerExecOutput): { post?: string; visual?: string; semantic?: string } {
   const run = output.computerUseRun && typeof output.computerUseRun === "object" ? output.computerUseRun as Record<string, unknown> : undefined;
   const verification = run?.verification && typeof run.verification === "object" ? run.verification as Record<string, unknown> : undefined;
@@ -209,6 +221,25 @@ function verificationState(output: ComputerExecOutput): { post?: string; visual?
     visual: output.captureError || output.captureStatus === "failed" ? "failed" : typeof verification?.visualVerification === "string" ? verification.visualVerification : output.screenshot ? "captured" : undefined,
     semantic: output.semanticOutcome?.status,
   };
+}
+
+function computerOperationResult(input: ComputerExecInput, output: ComputerExecOutput) {
+  const evidence = deliveryEvidence(output);
+  const state = verificationState(output);
+  const sideEffects = evidence.sideEffects ?? (sideEffectingInput(input) ? "known" : "none");
+  const observationFailed = state.post === "unavailable" || state.visual === "failed";
+  const causeCode = evidence.partial ? "computer-batch-incomplete"
+    : evidence.sideEffects === "unknown" ? "computer-delivery-uncertain"
+    : observationFailed ? "computer-post-verification-unavailable"
+    : state.semantic === "not_evaluable" ? "computer-semantic-verification-unavailable"
+    : state.semantic === "failed" ? "computer-semantic-verification-failed"
+    : undefined;
+  const outcome: DesktopOperationOutcome | undefined = causeCode ? {
+    status: causeCode === "computer-semantic-verification-failed" ? "failed" : "inconclusive",
+    sideEffects,
+    causeCode,
+  } : undefined;
+  return { evidence, state, sideEffects, observationFailed, outcome };
 }
 
 /** A completed input with a conclusive UI readback can be replanned in the tool loop.
@@ -231,17 +262,15 @@ export function isComputerUseObservationFeedback(output: ComputerExecOutput): bo
   return outcome.checks.some(missingSelector) && outcome.checks.every(check => check.status === "passed" || missingSelector(check));
 }
 
-export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridge | undefined, input: ComputerExecInput, output: ComputerExecOutput): void {
-  if (!bridge) return;
+export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridge | undefined, input: ComputerExecInput, output: ComputerExecOutput): DesktopOperationOutcome | undefined {
+  const { evidence, state, sideEffects, observationFailed, outcome } = computerOperationResult(input, output);
+  if (!bridge) return outcome;
   const ctx = bridge.resolveContext();
-  if (!ctx) return;
+  if (!ctx) return outcome;
   const target = computerUseRecoveryTarget(input, output);
   const action = actionName(input);
   const sideEffecting = sideEffectingInput(input);
-  const evidence = deliveryEvidence(output);
-  const state = verificationState(output);
   const incomplete = evidence.partial || evidence.sideEffects === "unknown" || output.verified === false;
-  const observationFailed = state.post === "unavailable" || state.visual === "failed";
   // A later successful call proves pre-action binding/selector failures are repaired. It does NOT, by itself,
   // reconcile a prior delivered prefix, even if its error code normally describes a precondition.
   if (!incomplete && !observationFailed) {
@@ -250,8 +279,6 @@ export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridg
   }
 
   const verifyCodes = ["computer-post-verification-unavailable", "computer-semantic-verification-failed", "computer-semantic-verification-unavailable"];
-  // Windows legacy successful outputs omit executed; keep their established inference.
-  const sideEffects = evidence.sideEffects ?? (sideEffecting ? "known" as const : "none" as const);
   if (evidence.partial || evidence.sideEffects === "unknown") {
     recordRecovery(bridge, { ...ctx, causeCode: evidence.partial ? "computer-batch-incomplete" : "computer-delivery-uncertain", phase: "execute", recovery: "recoverable",
       sideEffects, target, message: `Computer Use ${action} ${evidence.partial ? "stopped before all steps completed" : "returned without confirmed delivery"}.${deliverySummary(evidence)}`,
@@ -265,7 +292,7 @@ export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridg
     bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: ["computer-post-verification-unavailable"] });
   }
 
-  if (isComputerUseObservationFeedback(output)) return;
+  if (isComputerUseObservationFeedback(output)) return outcome;
   const checkEvidence = output.semanticOutcome?.checks.filter(check => check.status !== "passed")
     .map(check => `${check.kind}（${check.evidence}）`).join("，");
   if (state.semantic === "failed") {
@@ -285,4 +312,5 @@ export function settleComputerUseResultRecovery(bridge: ComputerUseRecoveryBridg
     // Explicit postcondition success is the first point where a prior side-effecting transport uncertainty may be cleared.
     bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: OPERATIONAL_CAUSE_CODES });
   }
+  return outcome;
 }

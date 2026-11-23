@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ConversationExecutionContext } from "./ConversationExecutionContext";
 import type { ExecutionVerificationResult } from "../../shared/execution-verification";
+import type { NativeExecutionReceipt } from "../../shared/native-execution-receipt";
 
 export const EXECUTION_ATTEMPT_SCHEMA = `
   CREATE TABLE IF NOT EXISTS execution_attempts (
@@ -34,6 +35,7 @@ export interface ExecutionAttempt extends ConversationExecutionContext {
   verifierId: string;
   verifierVersion: number;
   verification?: ExecutionVerificationResult;
+  nativeReceipt?: NativeExecutionReceipt;
   protocolVersion?: 1;
   status: "running" | "passed" | "failed" | "inconclusive";
   phase: "executing" | "verifying" | "finished";
@@ -86,6 +88,17 @@ export class ExecutionAttemptRepository {
     if (record.id !== durableAttemptId(record, record.toolCallId)) throw new Error("Invalid durable execution identity");
     const prior = this.findDurable(record, record.toolCallId);
     if (!prior) throw new Error("Durable execution attempt is missing");
+    const receipt = record.nativeReceipt;
+    if (receipt && (!this.matchesVerification(record) || receipt.attemptId !== prior.id || receipt.taskId !== prior.taskId ||
+      receipt.executionId !== prior.executionId || receipt.executionId !== `durable:${receipt.taskId}:${receipt.conversationId}:${receipt.toolTaskId}` ||
+      receipt.assistantMessageId !== prior.assistantMessageId || receipt.callId !== prior.toolCallId ||
+      receipt.status !== record.status || receipt.verifierId !== record.verifierId || receipt.verifierVersion !== record.verifierVersion ||
+      receipt.checkedAt !== record.verification?.checkedAt || receipt.checkedAt < prior.startedAt ||
+      receipt.checkedAt !== record.finishedAt || receipt.exitCode !== record.observedExitCode || receipt.causeCode !== record.causeCode ||
+      (receipt.transport === "returned" ? "succeeded" : "failed") !== record.transportStatus))
+      throw new Error("Durable execution attempt disagrees with its native receipt");
+    if (prior.nativeReceipt && JSON.stringify(prior.nativeReceipt) !== JSON.stringify(receipt))
+      throw new Error("Durable execution receipt cannot be replaced");
     if (prior.status === "running") { this.update(record); return; }
     if (prior.status !== "inconclusive" || prior.causeCode !== "application-restarted") return;
     if (record.status === "passed" && !this.hasMatchingVerification(record)) throw new Error("Durable result has no matching verifier evidence");
@@ -103,16 +116,19 @@ export class ExecutionAttemptRepository {
     if (changed !== 1) throw new Error("Stale execution attempt update");
   }
 
-  private hasMatchingVerification(record: ExecutionAttempt): boolean {
+  private matchesVerification(record: ExecutionAttempt): boolean {
     const result = record.verification;
-    return result?.status === "passed" && result.attemptId === record.id && result.taskId === record.taskId
+    return result?.status === record.status && result.attemptId === record.id && result.taskId === record.taskId
       && result.executionId === record.executionId && result.assistantMessageId === record.assistantMessageId
       && result.verifierId === record.verifierId && result.verifierVersion === record.verifierVersion
-      && result.checkedAt >= record.startedAt
-      && (result.verifierId === "process-exit-code"
-        ? result.target === record.target && result.expected.exitCode === record.expectedExitCode
-          && result.observed?.exitCode === record.observedExitCode && record.observedExitCode === record.expectedExitCode
-        : result.target === record.target);
+      && result.checkedAt >= record.startedAt && result.target === record.target;
+  }
+
+  private hasMatchingVerification(record: ExecutionAttempt): boolean {
+    const result = record.verification;
+    return this.matchesVerification(record) && result?.status === "passed"
+      && (result.verifierId !== "process-exit-code" || result.expected.exitCode === record.expectedExitCode
+        && result.observed?.exitCode === record.observedExitCode && record.observedExitCode === record.expectedExitCode);
   }
 
   list(ctx: ConversationExecutionContext): ExecutionAttempt[] {

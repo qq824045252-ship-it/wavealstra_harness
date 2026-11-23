@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, access } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { mock } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AssistantMessage, TextContent, TranscriptContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
@@ -12,6 +13,7 @@ import { CONFIG_DIR_NAME, ModelRuntime, createEditTool, createWriteTool } from "
 import { defineTool, type ToolRegistration, type JsonObject } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import type { PermissionMode } from "../src/shared/agent-ipc";
+import { nativeExecutionOperationId, readNativeExecutionReceipt, type NativeExecutionReceipt } from "../src/shared/native-execution-receipt";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
@@ -25,6 +27,10 @@ import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRe
 import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { BrowserAutomationService } from "../src/main/capabilities/BrowserAutomationService";
+import { createBuiltinCapabilityExtension } from "../src/main/capabilities/builtin-capability-extension";
+import { computerAutomationService, WindowsAutomationError, type ComputerExecOutput } from "../src/main/capabilities/ComputerAutomationService";
+import { uiAutomationService, UiAutomationError } from "../src/main/capabilities/UiAutomationService";
+import { readDesktopOperationOutcome } from "../src/main/agent/DesktopOperationOutcome";
 import { withDurableExecution, durableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { currentDurableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
@@ -40,7 +46,8 @@ const attempts = new ExecutionAttemptRepository(db.connection);
 const failures = new ExecutionFailureRepository(db.connection);
 const policyBots = new BotRegistry(db.connection);
 policyBots.ensureDefaultBot(LOCAL_USER_ID);
-const goals = new ConversationGoalService(new WorkService(db.connection, { bots: policyBots }), () => {}, { userId: LOCAL_USER_ID });
+const policyWorks = new WorkService(db.connection, { bots: policyBots });
+const goals = new ConversationGoalService(policyWorks, () => {}, { userId: LOCAL_USER_ID });
 let interactions = new ConversationInteractionService(new ConversationInteractionRepository(db.connection), () => {});
 const call = (name: string, args: JsonObject, id = `fixture-${name}`): AssistantMessage["content"] => [{ type: "toolCall", id, name, arguments: args }];
 const text = (value: string): TextContent[] => [{ type: "text", text: value }];
@@ -82,13 +89,14 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
   });
   const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>; legacyApproval?: boolean;
     beforeTool?: (name: string) => Promise<void>;
+    afterTool?: (name: string, signal?: AbortSignal) => Promise<void>;
     admit?: (input: { operationId: string; actionKind: string }) => string | undefined;
-    settle?: (operationId: string, outcome: "consumed" | "released" | "unknown") => void } = { permission: "auto", allowed: true, deniedTools: new Set<string>() };
+    settle?: (operationId: string, outcome: "consumed" | "released" | "unknown", receipt: NativeExecutionReceipt) => void } = { permission: "auto", allowed: true, deniedTools: new Set<string>() };
   const open = async () => {
     const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => state.permission,
       interactions, attempts, failures, getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd, isolatedSourceRoots }),
       effectRecovery,
-      admitWorkAction: input => state.admit?.(input), settleWorkAction: (operationId, outcome) => state.settle?.(operationId, outcome),
+      admitWorkAction: input => state.admit?.(input), settleWorkAction: receipt => state.settle?.(nativeExecutionOperationId(receipt), receipt.settlement, receipt),
       toolAllowed: name => !state.deniedTools.has(name) && (state.allowed || !["write", "mcp__filesystem__write_file"].includes(name)),
     });
     const domain = await durableDomainTools([createConversationRuntimeExtension({ interaction: interactions, goal: goals,
@@ -106,6 +114,10 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
         const decision = await policy.hooks.beforeTool?.(call, api, context);
         await state.beforeTool?.(call.name);
         return decision;
+      }, afterTool: async (call, result, api, context) => {
+        const projected = await policy.hooks.afterTool?.(call, result, api, context);
+        await state.afterTool?.(call.name, context.abortSignal);
+        return projected;
       } }, instructions: () => "fixture", onSnapshot: () => {},
     });
   };
@@ -118,7 +130,228 @@ function attemptCount(taskId: string): number {
   return row.n;
 }
 
+async function checkDesktopOutcomes() {
+  const scenarios = [
+    { name: "ui-unknown", tool: "ui_exec", status: "inconclusive", sideEffects: "unknown", causeCode: "ui-execution-failed" },
+    { name: "computer-delivery", tool: "computer_exec", status: "inconclusive", sideEffects: "unknown", causeCode: "computer-request-timeout" },
+    { name: "computer-mismatch", tool: "computer_exec", status: "failed", sideEffects: "known", causeCode: "computer-semantic-verification-failed" },
+    { name: "computer-no-readback", tool: "computer_exec", status: "inconclusive", sideEffects: "known", causeCode: "computer-semantic-verification-unavailable" },
+    { name: "computer-partial", tool: "computer_exec", status: "inconclusive", sideEffects: "known", causeCode: "computer-batch-incomplete" },
+    { name: "computer-confirmed", tool: "computer_exec", status: "passed" },
+  ] as const;
+  const config = {
+    browser: { enabled: true }, execution: { terminalEnabled: false, codeExecutionEnabled: false },
+    web: { enabled: false }, vision: { enabled: false }, imageGeneration: { enabled: false },
+    videoGeneration: { enabled: false }, speechToText: { enabled: false }, textToSpeech: { enabled: false },
+    diagnostics: { enabled: false }, subagent: { enabled: false }, multiModelConsult: { enabled: false },
+  };
+  const availability = Object.getOwnPropertyDescriptor(computerAutomationService, "available");
+  Object.defineProperty(computerAutomationService, "available", { value: true, configurable: true });
+  mock.method(uiAutomationService, "anyAvailable", () => true);
+  try {
+    for (const mode of ["native", "codemode", "subagent"] as const) for (const sample of scenarios) {
+      if (mode === "subagent" && sample.name !== "computer-delivery") continue;
+      const taskId = `desktop-${mode}-${sample.name}`;
+      const click = { action: "click_client", x: 1, y: 1 };
+      const args: JsonObject = sample.tool === "ui_exec" ? { action: "click", selector: "#fixture" }
+        : sample.name === "computer-partial" ? { actions: [click, { ...click, x: 2 }] }
+        : { ...click, expected_outcomes: [{ kind: "control_present", control_name: "Done" }] };
+      const ui = mock.method(uiAutomationService, "execute", async () => {
+        throw new UiAutomationError("EXECUTION_FAILED", "Fixture lost input acknowledgment",
+          { outcome: { dispatch: "dispatched", effect: "unknown" } });
+      });
+      const computer = mock.method(computerAutomationService, "execute", async (): Promise<ComputerExecOutput> => {
+        if (sample.name === "computer-delivery") throw new WindowsAutomationError("REQUEST_TIMEOUT", "Fixture lost input acknowledgment", { executed: "unknown" });
+        if (sample.name === "computer-partial") return { action: "batch", executed: true, batch: { completed: false, settleMs: 120, steps: [
+          { index: 0, action: "click_client", ok: true }, { index: 1, action: "click_client", ok: false, detail: "Fixture stopped before the second step" },
+        ] } };
+        const status = sample.name === "computer-mismatch" ? "failed" : sample.name === "computer-no-readback" ? "not_evaluable" : "passed";
+        return { action: "click_client", executed: true, semanticOutcome: { status, checks: [
+          { kind: "control_present", status, evidence: "Fixture control observation" },
+        ] } };
+      });
+      const recovery = { resolveContext: () => ({ taskId, executionId: `durable:${taskId}:fixture`, assistantMessageId: "fixture" }), failures };
+      const domain = await durableDomainTools([createBuiltinCapabilityExtension({
+        taskId, taskRoot: root, runtime: { config: () => config } as never,
+        browser: { available: false } as never, artifactService: () => undefined as never,
+        markArtifactEmitted: () => {}, getProducerMessageId: () => "fixture", getIsolationLevel: () => "guarded",
+        uiRecovery: recovery, computerRecovery: recovery,
+      })]);
+      let toolResult: Extract<TranscriptContext["messages"][number], { role: "toolResult" }> | undefined;
+      const scenario = await fixture(taskId, request => {
+        const last = request.messages.at(-1);
+        if (mode === "subagent" && request.messages.some(message => message.role === "system" && message.toolsAdded?.some(tool => tool.name === "subagent"))) {
+          return last?.role === "toolResult" ? text("The child reported an uncertain operation") : call("subagent", {
+            agent: "desktop-worker", task: "Check the fixture operation", model: "fixture/model",
+            agentScope: "project", confirmProjectAgents: false, isolation: "shared",
+          });
+        }
+        if (last?.role === "toolResult") { toolResult = last; return text("finished"); }
+        if (mode !== "codemode") return call(sample.tool, args);
+        return call("codemode", { code: `console.log(await tools.${sample.tool}(${JSON.stringify(args)}));` });
+      }, mode === "codemode" ? mode : "native", domain.tools, [], undefined, mode === "subagent");
+      if (mode === "subagent") {
+        const agents = join(scenario.cwd, CONFIG_DIR_NAME, "agents");
+        await mkdir(agents, { recursive: true });
+        await writeFile(join(agents, "desktop-worker.md"), "---\nname: desktop-worker\ndescription: Desktop outcome fixture\ntools: computer_exec\n---\nCheck and report the fixture operation.\n");
+      }
+      const settlements: string[] = [];
+      const actor = { kind: "user", userId: LOCAL_USER_ID, entry: "desktop", grants: DESKTOP_USER_GRANTS } as const;
+      const created = policyWorks.createWork(actor, { operationId: taskId + "-work", title: taskId, ownerBotId: DEFAULT_BOT_ID,
+        workspacePath: scenario.cwd, inputSnapshotId: "receipt-input" });
+      assert(created.ok);
+      const work = created.work;
+      const dispatched = policyWorks.dispatchExecution(actor, { operationId: taskId + "-dispatch", workId: work.workId, taskId,
+        botId: DEFAULT_BOT_ID, durableStoreKey: taskId, conversationId: taskId, workspaceBinding: scenario.cwd,
+        versionGuard: { expectedStateVersion: work.stateVersion, expectedIntentRevision: work.intentRevision, expectedOwnerEpoch: work.ownerEpoch } });
+      assert(dispatched.ok);
+      scenario.state.admit = input => policyWorks.admitTaskAction(taskId, input);
+      scenario.state.settle = (_id, status, receipt) => { settlements.push(status); policyWorks.settleTaskNativeAction(taskId, receipt); };
+      const runtime = await scenario.open();
+      try {
+        const expected = sample.status === "passed" ? undefined
+          : { status: sample.status, sideEffects: sample.sideEffects, causeCode: sample.causeCode };
+        assert.equal((await (await runtime.submit("check fixture operation", "test")).wait(ctx)).status, "done");
+        assert.equal(ui.mock.callCount() + computer.mock.callCount(), 1, taskId);
+        assert.equal(Boolean(toolResult?.isError), Boolean(expected), taskId);
+        const rows = db.connection.prepare("SELECT record_json FROM execution_attempts WHERE task_id = ? AND json_extract(record_json, '$.toolName') = ?")
+          .all(taskId, sample.tool) as Array<{ record_json: string }>;
+        assert.equal(rows.length, 1, taskId);
+        const attempt = JSON.parse(rows[0].record_json);
+        assert.equal(attempt.toolName, sample.tool, taskId);
+        assert.equal(attempt.status, sample.status, taskId);
+        assert.equal(attempt.transportStatus, "succeeded", taskId);
+        assert.deepEqual(attempt.verification.observed.desktopOutcome, expected, taskId);
+        const receipt = readNativeExecutionReceipt({ executionReceipt: attempt.nativeReceipt });
+        assert(receipt, taskId);
+        assert.equal(receipt.attemptId, attempt.id, taskId);
+        assert.equal(receipt.status, attempt.verification.status, taskId);
+        assert.equal(receipt.checkedAt, attempt.verification.checkedAt, taskId);
+        assert.equal(receipt.verifierVersion, attempt.verification.verifierVersion, taskId);
+        const operationId = nativeExecutionOperationId(receipt);
+        const admission = policyWorks.repo.listAdmissions(work.workId).find(item => item.operationId === operationId);
+        assert.equal(admission?.state, receipt.settlement, taskId);
+        assert.deepEqual(settlements, mode === "subagent" ? ["unknown", "consumed"] : [expected?.sideEffects === "unknown" ? "unknown" : "consumed"], taskId);
+        assert.deepEqual(failures.list(taskId).map(({ causeCode, sideEffects }) => ({ causeCode, sideEffects })),
+          expected ? [{ causeCode: expected.causeCode, sideEffects: expected.sideEffects }] : [], taskId);
+        if (mode !== "subagent") {
+          const history = await runtime.loadHistoryBlock(Number.MAX_SAFE_INTEGER);
+          const projected = history.messages.flatMap(message => message.tools ?? []).find(tool => tool.tool === sample.tool);
+          assert.equal(projected?.status, expected ? "error" : "success", taskId);
+        }
+        if (mode !== "codemode") assert.deepEqual(readDesktopOperationOutcome(toolResult?.details), expected, taskId);
+        if (mode === "native") assert.deepEqual(readNativeExecutionReceipt(toolResult?.details), receipt, taskId);
+        if (mode === "codemode") {
+          const nested = (toolResult?.details as { calls?: { name: string }[] }).calls?.find(item => item.name === sample.tool);
+          assert.deepEqual(readNativeExecutionReceipt(nested), receipt, taskId);
+        }
+      } finally {
+        await runtime.close();
+        ui.mock.restore();
+        computer.mock.restore();
+      }
+    }
+  } finally {
+    mock.restoreAll();
+    if (availability) Object.defineProperty(computerAutomationService, "available", availability);
+    else Reflect.deleteProperty(computerAutomationService, "available");
+  }
+  console.log("PASS native, Code Mode, and child ToolTasks preserve desktop outcomes in tool results, attempts, recovery and Work");
+}
+
+async function checkPinnedReceiptRecovery() {
+  const taskId = "native-receipt-interrupted-publication";
+  let executions = 0;
+  const settlements: Array<{ operationId: string; status: string }> = [];
+  let modelReceipt: ReturnType<typeof readNativeExecutionReceipt>;
+  const scenario = await fixture(taskId, request => {
+    const last = request.messages.at(-1);
+    if (last?.role !== "toolResult") return call("terminal_exec", { action: "execute" });
+    modelReceipt = readNativeExecutionReceipt(last.details);
+    return text("done");
+  }, "native", [defineTool({
+    name: "terminal_exec", description: "Fixture publication", replay: "unsafe", parameters: Type.Object({ action: Type.String() }),
+    execute: async () => ({ output: text(`published once: ${++executions}`), details: { fixture: true } }),
+  })]);
+  scenario.state.settle = (operationId, status) => {
+    settlements.push({ operationId, status });
+  };
+  let waitingToPublish = false;
+  scenario.state.afterTool = async (name, signal) => {
+    if (name !== "terminal_exec" || waitingToPublish) return;
+    waitingToPublish = true;
+    await new Promise<never>((_resolve, reject) => {
+      assert(signal);
+      const abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  };
+  let runtime = await scenario.open();
+  try {
+    const submitted = await runtime.submit("publish", taskId);
+    await waitUntil(() => waitingToPublish);
+    await runtime.close();
+    recoverInterruptedExecutions(attempts, failures);
+    runtime = await scenario.open();
+    const resumed = await runtime.harness.submission(submitted.id, ctx);
+    assert(resumed);
+    assert.equal((await resumed.wait(ctx)).status, "done");
+    assert.equal(executions, 1);
+    assert.equal(settlements.length, 2);
+    assert.deepEqual(settlements[0], settlements[1]);
+    assert.equal(settlements[0].status, "consumed");
+    const row = db.connection.prepare("SELECT record_json FROM execution_attempts WHERE task_id=?").get(taskId) as { record_json: string };
+    const receipt = JSON.parse(row.record_json).nativeReceipt;
+    assert.equal(receipt.status, "passed");
+    assert.equal(receipt.transport, "returned");
+    assert.deepEqual(modelReceipt, receipt);
+    await runtime.close();
+    recoverInterruptedExecutions(attempts, failures);
+    runtime = await scenario.open();
+    const history = await runtime.loadHistoryBlock(Number.MAX_SAFE_INTEGER);
+    const assistant = history.messages.find(message => message.id === receipt.assistantMessageId);
+    const projected = assistant?.tools?.find(tool => tool.id === receipt.callId);
+    assert.equal(projected?.status, "success");
+    assert.deepEqual(readNativeExecutionReceipt(JSON.parse(projected?.detail ?? "{}")), receipt);
+    assert.equal(executions, 1);
+  } finally { await runtime.close(); }
+  console.log("PASS native execution keeps the exact receipt across interrupted result publication and reopened history");
+}
+
+async function checkReusedProviderCallId() {
+  const taskId = "native-receipt-reused-call-id";
+  let calls = 0;
+  const scenario = await fixture(taskId, request => {
+    return request.messages.at(-1)?.role === "toolResult" ? text("done") : call("terminal_exec", { action: "execute" }, "provider-reused-id");
+  }, "native", [defineTool({
+    name: "terminal_exec", description: "Fixture provider response", replay: "unsafe", parameters: Type.Object({ action: Type.String() }),
+    execute: async () => ++calls === 1 ? { isError: true, output: text("first failed") } : { output: text("second passed") },
+  })]);
+  let runtime = await scenario.open();
+  try {
+    assert.equal((await (await runtime.submit("first", "first")).wait(ctx)).status, "done");
+    assert.equal((await (await runtime.submit("second", "second")).wait(ctx)).status, "done");
+    await runtime.close();
+    runtime = await scenario.open();
+    const history = await runtime.loadHistoryBlock(Number.MAX_SAFE_INTEGER);
+    const rows = history.messages.flatMap(message => (message.tools ?? []).map(tool => ({ message, tool })));
+    assert.deepEqual(rows.map(({ tool }) => [tool.id, tool.status, tool.output]),
+      [["provider-reused-id", "error", "first failed"], ["provider-reused-id", "success", "second passed"]]);
+    const receipts = rows.map(({ message, tool }) => {
+      const receipt = readNativeExecutionReceipt(JSON.parse(tool.detail ?? "{}"));
+      assert.equal(receipt?.assistantMessageId, message.id);
+      return receipt;
+    });
+    assert.notEqual(receipts[0]?.attemptId, receipts[1]?.attemptId);
+  } finally { await runtime.close(); }
+  console.log("PASS reopened history keeps two native tool receipts separate when a provider reuses the same call ID");
+}
+
 try {
+  await checkDesktopOutcomes();
+  await checkPinnedReceiptRecovery();
+  await checkReusedProviderCallId();
   if (process.platform === "win32") {
     // Git Bash mounts the OS temp directory as /tmp. Use the checkout's drive alias.
     const workspace = await mkdtemp(join(process.cwd(), "out", "tests", "bash-path-verification-"));

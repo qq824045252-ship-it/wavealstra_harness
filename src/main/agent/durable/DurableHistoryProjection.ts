@@ -12,12 +12,22 @@ import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
 import { latestActivityTime } from "../../../../shared/src/activity-time";
 import { formatStoredPstackReply } from "../pstack/PstackBlockReport";
+import { nativeExecutionSucceeded, readNativeExecutionReceipt, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 
 export type DurableInputMetadata = { gatewayOrigin?: Omit<import("../../gateway/GatewayAgentTurn").GatewayBotTurnRequest["gatewayOrigin"], "workTarget">; dotsMemoryRefs?: import("../../../shared/agent-ipc").AgentPromptRequest["dotsMemoryRefs"]; text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; goalContinuation?: import("../../../shared/conversation-goal").GoalContinuationOrigin; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
 export type DurableResponseSpeed = { readonly tps?: number | null; readonly ttftMs?: number | null };
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
 type ToolResult = Extract<Message, { role: "toolResult" }>;
+export function toolMessageReceipt(message: ToolResult, entry: EntryRecord): NativeExecutionReceipt | undefined {
+  const receipt = readNativeExecutionReceipt(message.details);
+  return receipt?.conversationId === entry.conversationId && receipt.toolTaskId === entry.byTaskId &&
+    receipt.callId === message.toolCallId && receipt.toolName === message.toolName ? receipt : undefined;
+}
+export function durableToolStatus(...args: Parameters<typeof nativeExecutionSucceeded>): "error" | "success" {
+  return nativeExecutionSucceeded(...args) ? "success" : "error";
+}
+const ownedResultKey = (owner: string, callId: string) => JSON.stringify([owner, callId]);
 export type InterruptedNested = { ownerId: string; message: ToolResult; toolTaskId: TaskId };
 export const DURABLE_HISTORY_ENTRY_LIMIT = 200;
 
@@ -37,6 +47,7 @@ export class DurableHistoryProjection {
   private readonly results = new Map<string, ToolResult>();
   /** 结果条目自己的 entry id：调用行可能在窗口外，扫描要一个起点。 */
   private readonly resultEntries = new Map<string, number>();
+  private readonly resultOwners = new Map<string, NativeExecutionReceipt>();
   private ordered: ChatMessageDto[] = [];
   private dirty = false;
   private latestStatusEntry = 0;
@@ -78,12 +89,13 @@ export class DurableHistoryProjection {
    * 静默丢弃，这次调用的输出与 details（比如八个子代理的结果）从此在界面上不存在。
    * 调用方拿这个列表去把 owner 行补回来，结果就能落到位。
    */
-  orphanToolCalls(): Array<{ callId: string; entryId: number }> {
-    const out: Array<{ callId: string; entryId: number }> = [];
-    for (const callId of this.results.keys()) {
-      const entryId = this.resultEntries.get(callId);
-      if (entryId === undefined || this.owners.has(callId)) continue;
-      out.push({ callId, entryId });
+  orphanToolCalls(): Array<{ callId: string; entryId: number; ownerId?: string }> {
+    const out: Array<{ callId: string; entryId: number; ownerId?: string }> = [];
+    for (const [key, message] of this.results) {
+      const entryId = this.resultEntries.get(key);
+      const owner = this.resultOwners.get(key);
+      if (entryId === undefined || (owner ? this.rows.has(owner.assistantMessageId) : this.owners.has(key))) continue;
+      out.push({ callId: message.toolCallId, entryId, ownerId: owner?.assistantMessageId });
     }
     return out;
   }
@@ -110,7 +122,7 @@ export class DurableHistoryProjection {
     // 只对「结果本身还在窗口里」的调用生效——否则历史上每次工具调用都会把窗口无限撑大。
     for (const [call, resultEntryId] of this.resultEntries) {
       if (!keep.has(resultEntryId)) continue;
-      const owner = this.owners.get(call);
+      const owner = this.resultOwners.get(call)?.assistantMessageId ?? this.owners.get(call);
       if (owner) keep.add(Number(owner.slice(8)));
     }
     let before: number | undefined;
@@ -121,8 +133,10 @@ export class DurableHistoryProjection {
     for (const [call, owner] of this.owners) if (!this.rows.has(owner)) {
       this.owners.delete(call); this.children.delete(call);
     }
-    for (const call of this.results.keys()) if (!this.owners.has(call)) {
-      this.results.delete(call); this.resultEntries.delete(call);
+    for (const call of this.results.keys()) {
+      const owner = this.resultOwners.get(call);
+      if (owner ? this.rows.has(owner.assistantMessageId) && keep.has(this.resultEntries.get(call)!) : this.owners.has(call)) continue;
+      this.results.delete(call); this.resultEntries.delete(call); this.resultOwners.delete(call);
     }
     for (const [key, id] of this.presentationRows) if (!this.rows.has(id)) this.presentationRows.delete(key);
     this.oldestEntry = this.entries.size ? Math.min(...this.entries.keys()) : undefined;
@@ -165,8 +179,11 @@ export class DurableHistoryProjection {
           if (row.presentationKey) this.presentationRows.set(row.presentationKey, id);
           for (const tool of row.tools ?? []) {
             this.owners.set(tool.id, id);
-            const result = this.results.get(tool.id);
-            if (result) this.applyResult(result);
+            const exactKey = ownedResultKey(id, tool.id);
+            const resultKey = this.results.has(exactKey) ? exactKey : tool.id;
+            const result = this.results.get(resultKey);
+            const resultEntry = this.resultEntries.get(resultKey);
+            if (result && resultEntry !== undefined) this.applyResult(result, this.resultOwners.get(resultKey), this.entries.get(resultEntry));
           }
           if (entry.id >= this.latestStatusEntry) {
             this.latestStatusEntry = entry.id;
@@ -174,11 +191,14 @@ export class DurableHistoryProjection {
             this.outcome = message.stopReason === "stop" ? "completed" : message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" || message.stopReason === "length" ? "failed" : undefined;
           }
         } else if (message.role === "toolResult") {
-          this.results.set(message.toolCallId, message);
-          this.resultEntries.set(message.toolCallId, entry.id);
-          this.applyResult(message);
-          const ownerId = this.owners.get(message.toolCallId);
-          if (ownerId && message.toolName === "codemode" && message.isError && !resultDetails(message)?.calls?.length && entry.byTaskId !== undefined) {
+          const receipt = toolMessageReceipt(message, entry);
+          const ownerId = receipt?.assistantMessageId ?? this.owners.get(message.toolCallId);
+          const key = receipt ? ownedResultKey(receipt.assistantMessageId, message.toolCallId) : message.toolCallId;
+          this.results.set(key, message);
+          this.resultEntries.set(key, entry.id);
+          if (receipt) this.resultOwners.set(key, receipt);
+          this.applyResult(message, receipt, entry);
+          if (ownerId && this.rows.has(ownerId) && message.toolName === "codemode" && !nativeExecutionSucceeded(message) && !resultDetails(message)?.calls?.length && entry.byTaskId !== undefined) {
             this.interrupted.push({ ownerId, message, toolTaskId: entry.byTaskId });
           }
         }
@@ -194,14 +214,15 @@ export class DurableHistoryProjection {
     return next;
   }
 
-  private applyResult(message: ToolResult): void {
-    const ownerId = this.owners.get(message.toolCallId);
+  private applyResult(message: ToolResult, receipt?: NativeExecutionReceipt, entry?: EntryRecord): void {
+    const ownerId = receipt?.assistantMessageId ?? this.owners.get(message.toolCallId);
     const owner = ownerId && this.rows.get(ownerId);
     if (!owner) return;
     const details = resultDetails(message);
     const calls = (details?.calls ?? []).map((call, index) => nestedToolRow(message.toolCallId, call, index));
-    const tools = (owner.tools ?? []).map(tool => tool.id === message.toolCallId
-      ? { ...tool, status: message.isError ? "error" as const : "success" as const, output: durableContentText(message.content), detail: toolResultDetail(tool, message),
+    const tools = (owner.tools ?? []).map(tool => tool.id === message.toolCallId && tool.tool === message.toolName
+      ? { ...tool, status: durableToolStatus(message, { callId: message.toolCallId, toolName: message.toolName,
+          conversationId: entry?.conversationId, toolTaskId: entry?.byTaskId }), output: durableContentText(message.content), detail: toolResultDetail(tool, message),
           capabilityResult: capabilityResultFromDetails(message.toolName, message.details),
           webSearch: searchReportFromDetails(message.details), consult: consultReportFromDetails(message.details) } : tool);
     for (const call of calls) if (!tools.some(tool => tool.id === call.id)) tools.push(call);
@@ -250,7 +271,10 @@ export function assistantRow(id: string, taskId: TaskId | undefined, message: As
   streaming = false, metrics?: DurableResponseSpeed, dotsWorker = false, recoveredReply?: string): ChatMessageDto {
   const rawText = durableContentText(message.content);
   const outcome = dotsWorker ? readDotsWorkerOutcome(rawText) : undefined;
-  const text = recoveredReply ?? outcome?.result ?? (dotsWorker && streaming && /^\s*(?:\{|\x60)/u.test(rawText) ? "" : rawText);
+  const workerText = outcome?.dotsState === "complete" && outcome.delivery
+    ? [...new Set([outcome.delivery.text, outcome.result].filter(Boolean))].join("\n\n")
+    : outcome?.result;
+  const text = recoveredReply ?? workerText ?? (dotsWorker && streaming && /^\s*(?:\{|\x60)/u.test(rawText) ? "" : rawText);
   return { id, ...(!streaming ? { entryId: id.slice(8), projectionVersion: 1, finalAssistantReply: message.stopReason === "stop" } : {}), role: "assistant", presentationKey: taskId ? `durable-generation-${taskId}${message.stopReason === "aborted" ? `-${id.slice(8)}` : ""}` : id,
     durationMs: completedAt !== undefined ? Math.max(0, completedAt - startedAt) : undefined,
     generationStats: { phase: streaming ? "generating" : "complete", startedAt, updatedAt: completedAt ?? message.timestamp,
@@ -279,6 +303,7 @@ function validDuration(value: number | null | undefined): number | null {
 }
 
 export type NestedCallDetail = { readonly id?: string | number; readonly name: string; readonly args?: unknown; readonly status?: string; readonly output?: string; readonly durationMs?: number; readonly error?: string;
+  readonly executionReceipt?: NativeExecutionReceipt;
   readonly capabilityResult?: ToolRow["capabilityResult"]; readonly webSearch?: ToolRow["webSearch"]; readonly consult?: ToolRow["consult"] };
 export function nestedToolRow(parentCallId: string, call: NestedCallDetail, index: number): ToolRow {
   // 嵌套调用的 args 可能是字符串（已成形文本）或对象；字符串保持原样，对象走统一摘要。
@@ -287,7 +312,9 @@ export function nestedToolRow(parentCallId: string, call: NestedCallDetail, inde
     summary: typeof call.args === "string" ? call.args : text.summary,
     capabilityResult: call.capabilityResult, webSearch: call.webSearch, consult: call.consult,
     ...(typeof call.args === "string" || text.detail === undefined ? {} : { detail: text.detail }),
-    status: call.status === "error" || call.status === "cancelled" ? "error" : call.status === "running" || call.status === "pending" ? "running" : "success", output: call.output ?? call.error ?? "" };
+    status: call.status === "running" || call.status === "pending" ? "running"
+      : durableToolStatus({ details: call, isError: call.status === "error" || call.status === "cancelled" }, { toolName: call.name }),
+    output: call.output ?? call.error ?? "" };
 }
 function resultDetails(message: ToolResult): { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined {
   return message.details as { conversationId?: number; imagePaths?: string[]; calls?: readonly NestedCallDetail[] } | undefined;

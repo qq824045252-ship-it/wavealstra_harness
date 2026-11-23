@@ -16,7 +16,8 @@ export const receiptContractSchema = z.object({
   operationIdField: field, statusField: field,
   completedValues: z.array(z.string().min(1)).min(1), failedValues: z.array(z.string().min(1)).default([]),
 });
-const fileIntentSchema = z.object({ kind: z.literal("file"), path: z.string(), canonicalPath: z.string(), sha256: z.string(), bytes: z.number().int().nonnegative() });
+const fileIntentSchema = z.object({ kind: z.literal("file"), path: z.string(), canonicalPath: z.string(), sha256: z.string(),
+  bytes: z.number().int().nonnegative(), offset: z.number().int().nonnegative().optional() });
 const receiptIntentSchema = z.object({ kind: z.literal("receipt"), server: z.string(), serverIdentity: z.string(), tool: z.string(), operationId: z.string(), contract: receiptContractSchema });
 export const effectIntentSchema = z.discriminatedUnion("kind", [fileIntentSchema, receiptIntentSchema]);
 export type EffectIntent = z.infer<typeof effectIntentSchema>;
@@ -36,6 +37,23 @@ export interface ExternalEffectRecovery {
 
 const hash = (content: string | Uint8Array) => createHash("sha256").update(content).digest("hex");
 export const effectOperationId = (executionId: string, callId: string) => `mybuddy-${hash(JSON.stringify([executionId, callId]))}`;
+
+function appendRange(content: string, expectedBytes: number) {
+  const bytes = Buffer.byteLength(content);
+  const offset = expectedBytes - bytes;
+  if (!bytes || !Number.isSafeInteger(expectedBytes) || offset < 0) throw new Error("Invalid decision trail append range");
+  return { bytes, offset, sha256: hash(content) };
+}
+
+export function readEffectIntent(saved: unknown, call: ToolHookCall): EffectIntent {
+  const intent = effectIntentSchema.parse(saved);
+  if (call.name !== "pstack_decision_append" || intent.kind !== "file" || intent.offset !== undefined) return intent;
+  const { content, expectedBytes, expectedSha256 } = call.arguments;
+  if (typeof content !== "string" || !content.length || Buffer.byteLength(content) > intent.bytes
+    || expectedBytes !== intent.bytes || expectedSha256 !== intent.sha256) return intent;
+  // Older in-flight appends saved the prefix digest. The same durable call supplies its exact appended bytes.
+  return { ...intent, ...appendRange(content, intent.bytes) };
+}
 
 async function canonicalTarget(path: string): Promise<string> {
   try { return await realpath(path); }
@@ -70,11 +88,13 @@ async function editedContent(args: Record<string, unknown>, path: string): Promi
 
 export async function prepareFileEffect(call: ToolHookCall, cwd: string): Promise<Extract<EffectIntent, { kind: "file" }> | undefined> {
   if (call.name === "pstack_decision_append") {
-    const { path: target, expectedSha256, expectedBytes } = call.arguments;
-    if (typeof target !== "string" || typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256)
-      || typeof expectedBytes !== "number" || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0) throw new Error("Invalid decision trail file intent");
+    const { path: target, content, expectedSha256, expectedBytes } = call.arguments;
+    if (typeof target !== "string" || typeof content !== "string"
+      || typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256)
+      || typeof expectedBytes !== "number") throw new Error("Invalid decision trail file intent");
+    const range = appendRange(content, expectedBytes);
     const path = resolve(cwd, target);
-    return { kind: "file", path, canonicalPath: await canonicalTarget(path), sha256: expectedSha256, bytes: expectedBytes };
+    return { kind: "file", path, canonicalPath: await canonicalTarget(path), ...range };
   }
   if (!isNativeFileMutation(call.name) || typeof call.arguments.path !== "string") return undefined;
   const target = call.arguments.path;
@@ -88,32 +108,38 @@ export async function prepareFileEffect(call: ToolHookCall, cwd: string): Promis
 }
 
 export async function verifyFileEffect(intent: Extract<EffectIntent, { kind: "file" }>, signal?: AbortSignal): Promise<EffectEvidence> {
+  const start = intent.offset ?? 0;
+  const end = start + intent.bytes;
+  const sizeMatches = (size: number) => intent.offset === undefined ? size === end : size >= end;
   const evidence: EffectEvidence = { status: "inconclusive", verifierId: "durable-file-content", canonicalTarget: intent.canonicalPath,
-    expected: { sha256: intent.sha256, bytes: intent.bytes }, observed: {}, checkedAt: Date.now() };
+    expected: { sha256: intent.sha256, bytes: intent.bytes, ...(intent.offset === undefined ? {} : { offset: start }) },
+    observed: {}, checkedAt: Date.now() };
   try {
+    if (!Number.isSafeInteger(end)) return { ...evidence, observed: { reason: "invalid-byte-range" } };
     const canonicalPath = await canonicalTarget(intent.path);
     if (canonicalPath !== intent.canonicalPath) return { ...evidence, observed: { canonicalPath, reason: "target-changed" } };
     // A changed file or device must not turn recovery into an unbounded read.
     const before = await stat(intent.path);
-    if (!before.isFile() || before.size !== intent.bytes) return { ...evidence, observed: { reason: "not-a-regular-file-or-size-mismatch", bytes: before.size } };
+    if (!before.isFile() || !sizeMatches(before.size)) return { ...evidence, observed: { reason: "not-a-regular-file-or-size-mismatch", bytes: before.size } };
     const verificationSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]);
     verificationSignal.throwIfAborted();
     const file = await open(intent.path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const opened = await file.stat();
-      if (!opened.isFile() || opened.size !== intent.bytes || opened.dev !== before.dev || opened.ino !== before.ino) {
+      if (!opened.isFile() || !sizeMatches(opened.size) || opened.dev !== before.dev || opened.ino !== before.ino) {
         return { ...evidence, observed: { reason: "target-changed-before-read" } };
       }
       const digest = createHash("sha256");
       let bytes = 0;
-      for await (const chunk of file.createReadStream({ autoClose: false, start: 0, end: intent.bytes, signal: verificationSignal })) {
-        bytes += chunk.length;
-        if (bytes > intent.bytes) return { ...evidence, observed: { reason: "target-grew-during-read", bytes } };
-        digest.update(chunk);
+      if (end > start) {
+        for await (const chunk of file.createReadStream({ autoClose: false, start, end: end - 1, signal: verificationSignal })) {
+          bytes += chunk.length;
+          digest.update(chunk);
+        }
       }
       const sha256 = digest.digest("hex");
       const after = await stat(intent.path);
-      const unchanged = after.dev === opened.dev && after.ino === opened.ino && after.size === intent.bytes && after.mtimeMs === opened.mtimeMs
+      const unchanged = after.dev === opened.dev && after.ino === opened.ino && after.size === opened.size && after.mtimeMs === opened.mtimeMs
         && await canonicalTarget(intent.path) === intent.canonicalPath;
       return { ...evidence, checkedAt: Date.now(), status: unchanged && sha256 === intent.sha256 && bytes === intent.bytes ? "passed" : "inconclusive", observed: { sha256, bytes, unchanged } };
     } finally { await file.close(); }

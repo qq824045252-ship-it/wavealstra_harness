@@ -23,6 +23,7 @@ import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { currentDurableExecutionContext } from "../src/main/agent/durable/DurableExecutionContext";
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPolicy";
+import { nativeExecutionOperationId } from "../src/shared/native-execution-receipt";
 import { createDurableSubagentTools } from "../src/main/agent/durable/DurableSubagents";
 import { computeChildTools, tightenPolicy, READONLY_TOOLS, RECURSION_TOOLS } from "../src/main/capabilities/subagent/policy";
 import type { ExternalEffectRecovery } from "../src/main/agent/durable/DurableEffectRecovery";
@@ -74,7 +75,7 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
     const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => state.permission,
       interactions, attempts, failures, getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd, isolatedSourceRoots }),
       effectRecovery,
-      admitWorkAction: input => state.admit?.(input), settleWorkAction: (operationId, outcome) => state.settle?.(operationId, outcome),
+      admitWorkAction: input => state.admit?.(input), settleWorkAction: receipt => state.settle?.(nativeExecutionOperationId(receipt), receipt.settlement),
       toolAllowed: name => !state.deniedTools.has(name) && (state.allowed || !["write", "mcp__filesystem__write_file"].includes(name)),
     });
     const domain = await durableDomainTools([createConversationRuntimeExtension({ interaction: interactions, goal: goals,

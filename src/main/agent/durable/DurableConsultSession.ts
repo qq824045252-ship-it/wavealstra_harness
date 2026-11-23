@@ -39,7 +39,10 @@ export function createDurableConsultToolHooks(options: Pick<ConsultSessionOption
     const path = options.policy.assertAllowed("read", realpathSync(options.policy.assertAllowed("read", requested)));
     return { arguments: { ...call.arguments, path } };
   }, afterTool: async (_call, result, api, context) => {
-    if (await api.memo("mybuddy.consult-budget-exceeded", context)) return { ...result, details: { consultBudgetExceeded: true }, control: { terminate: true } };
+    if (await api.memo("mybuddy.consult-budget-exceeded", context)) {
+      const details = result.details && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
+      return { ...result, details: { ...details, consultBudgetExceeded: true }, control: { terminate: true } };
+    }
   } };
 }
 

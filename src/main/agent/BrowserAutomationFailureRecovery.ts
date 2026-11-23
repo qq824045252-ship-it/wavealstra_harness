@@ -111,6 +111,7 @@ export function recordBrowserAutomationFailureRecovery(
   bridge: BrowserAutomationRecoveryBridge | undefined,
   input: BrowserExecInput,
   error: unknown,
+  toolCallId?: string,
 ): boolean {
   const cancelled = error instanceof Error && error.name === "AbortError";
   if (!bridge || !(error instanceof BrowserAutomationError) && !cancelled) return false;
@@ -122,19 +123,26 @@ export function recordBrowserAutomationFailureRecovery(
   const outcome = evidenceRecord(evidenceRecord(error.details)?.outcome);
   const preAction = outcome ? outcome.dispatch === "not_started" : PRE_ACTION_CODES.has(error.code);
   if (preAction && isBrowserObservationCode(error.code)) return false;
-  const unknownEffect = !preAction && sideEffecting && input.action !== "navigate";
+  const dispatchedMutation = !preAction && sideEffecting && input.action !== "navigate";
+  const sideEffects = preAction || !sideEffecting ? "none" : outcome?.effect === "confirmed" || error.code === "FOCUS_FAILED" ? "known" : "unknown";
   const target = error.code === "HOST_UNAVAILABLE"
     ? `browser:${input.action}:surface`
-    : unknownEffect ? uncertainPageTarget(error.details) : browserAutomationRecoveryTarget(input, error.details);
+    : dispatchedMutation ? uncertainPageTarget(error.details) : browserAutomationRecoveryTarget(input, error.details);
+  const needsReceipt = dispatchedMutation && sideEffects === "unknown";
+  const operationTarget = needsReceipt && toolCallId !== undefined
+    ? `${target}|operation=${encoded(JSON.stringify([ctx.executionId, ctx.assistantMessageId, toolCallId]))}`
+    : target;
   bridge.failures.recordIfAbsent({
     ...ctx,
     causeCode: causeCode(error),
     phase: preAction ? "observe" : "execute",
     recovery: "recoverable",
-    sideEffects: preAction || !sideEffecting ? "none" : outcome?.effect === "confirmed" || error.code === "FOCUS_FAILED" ? "known" : "unknown",
-    target,
+    sideEffects,
+    target: operationTarget,
     message: `Browser automation ${input.action} failed (${error.code}): ${error.message}`,
-    nextAction: guidance(error, input),
+    nextAction: needsReceipt
+      ? "Check the operation's receipt or actual result in the external system before deciding whether to retry."
+      : guidance(error, input),
   });
   return true;
 }
@@ -155,8 +163,8 @@ export function settleBrowserAutomationRecovery(
     provenTargets.add(browserAutomationRecoveryTarget({ ...input, selector: element.selector }, evidence));
     if (element.id) provenTargets.add(browserAutomationRecoveryTarget({ ...input, selector: `#${element.id}` }, evidence));
   }
-  for (const target of provenTargets) bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: PRE_ACTION_CAUSE_CODES });
-  if (surface !== exact) bridge.failures.resolveMatching(ctx.taskId, { target: surface, causeCodes: ["browser-host-unavailable"] });
+  for (const target of provenTargets) bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: PRE_ACTION_CAUSE_CODES, sideEffects: "none" });
+  if (surface !== exact) bridge.failures.resolveMatching(ctx.taskId, { target: surface, causeCodes: ["browser-host-unavailable"], sideEffects: "none" });
 
   if (input.action === "navigate") {
     bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: ["browser-navigation-failed"] });
@@ -164,8 +172,10 @@ export function settleBrowserAutomationRecovery(
     bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: ["browser-focus-failed"] });
   } else if (input.action === "read" || input.action === "screenshot") {
     const uncertainCodes = [...RECOVERABLE_CODES].map(code => `browser-${code.toLowerCase().replaceAll("_", "-")}`);
-    bridge.failures.resolveMatching(ctx.taskId, { target: exact, causeCodes: uncertainCodes });
-    bridge.failures.resolveMatching(ctx.taskId, { target: uncertainPageTarget(output), causeCodes: uncertainCodes });
-    bridge.failures.resolveMatching(ctx.taskId, { target: "browser:uncertain:surface", causeCodes: uncertainCodes });
+    // A generic observation can show recovery of the browser surface. It cannot
+    // establish whether a previous dispatched business operation took effect.
+    for (const target of new Set([exact, uncertainPageTarget(output), "browser:uncertain:surface"])) {
+      bridge.failures.resolveMatching(ctx.taskId, { target, causeCodes: uncertainCodes, sideEffects: "none" });
+    }
   }
 }
