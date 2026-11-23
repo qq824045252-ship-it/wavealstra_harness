@@ -55,6 +55,9 @@ ardot-*-probe.png
 _exports/
 [0-9]*/
 
+# 工具运行产物（浏览器/桌面截图、媒体素材，落在任务目录 generated/<kind>/，可重新生成）
+/generated/
+
 
 extensions/mcp/*/repo
 
