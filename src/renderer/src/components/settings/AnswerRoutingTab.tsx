@@ -11,6 +11,7 @@ import { openAnswerRuleTurn } from "@/lib/openAnswerRuleTurn";
 import { libraryCollectionSubtree } from "@/lib/scopedLibrary";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import AnswerRoutingGraph from "@/components/answer-routing/AnswerRoutingGraph";
+import AnswerRoutingVersions from "@/components/answer-routing/AnswerRoutingVersions";
 import AnswerRoutingFlowEditor from "./AnswerRoutingFlowEditor";
 import "./AnswerRoutingTab.css";
 
@@ -344,7 +345,8 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
     {!finishTeaching && fallback && <section aria-label="调度策略" hidden={page !== "策略"}>
       <div className="answer-routing-page">
         <div><h3 className="settings-section-title">默认调度策略</h3>
-          <p className="settings-section-desc">设置默认处理偏好，以及每轮共用的前台读取上限和后台回报。</p></div>
+          <p className="settings-section-desc">设置默认处理偏好，以及每轮共用的前台读取上限和后台回报。</p>
+          <p className="answer-routing-meta">当前第 {fallback.revision} 版。对话气泡里的「第 N 版」就是这个编号。</p></div>
         <form key={JSON.stringify({ ...fallbackPolicy, flow: undefined })} onSubmit={event => {
           event.preventDefault();
           const values = new FormData(event.currentTarget);
@@ -355,6 +357,11 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
             setNotice("默认策略已保存");
           });
         }}><DefaultPolicyFields policy={fallbackPolicy} busy={busy} /></form>
+        {page === "策略" && <AnswerRoutingVersions ruleId={fallback.id} currentRevision={fallback.revision} busy={busy} onRestored={saved => {
+          setFallback(saved);
+          setPreview(undefined);
+          setNotice(`已恢复旧设置，当前为第 ${saved.revision} 版`);
+        }} />}
       </div>
     </section>}
     {!finishTeaching && fallback && <section aria-label="调度流程" hidden={page !== "流程"}>
@@ -575,6 +582,12 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
               <button className="btn" data-routing-input={use.inputId} onClick={() => openAnswerRuleTurn(use)}>查看这轮回答</button>
             </div>)}
           </section>
+          <AnswerRoutingVersions ruleId={selected.id} currentRevision={selected.revision} busy={busy}
+            memoryBound={!!selected.sourceMemoryId} onRestored={async () => {
+              await refresh();
+              setPreview(undefined);
+              setNotice("已恢复旧设置。恢复会生成新版本，旧版仍保留。");
+            }} />
         </> : loaded && <section className="answer-routing-panel" aria-label="规则示例">
           <h3>从示例开始</h3>
           <div className="answer-routing-actions">

@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import type { AnswerRuleUse } from "@shared/answer-routing";
+import { defaultAnswerRuleId } from "@shared/answer-routing";
 import type { GenerationStats } from "@shared/generation-stats";
 import AnswerRoutingGraph, { routingRunStatus } from "./AnswerRoutingGraph";
 
@@ -65,6 +66,8 @@ export default function AnswerRoutingReceipt({ taskId, inputId, replyId, questio
 
   const use = record?.replyId === replyId && record.use.taskId === taskId && record.use.inputId === inputId
     ? record.use : undefined;
+  // 默认调度策略只在设置里查看，不占对话版面。
+  if (use?.ruleId === defaultAnswerRuleId) return null;
   if (!use && loadFailed) return <button type="button" className="routing-receipt__toggle"
     onClick={() => { setLoadFailed(false); setAttempt(n => n + 1); }}>调度记录加载失败 · 重试</button>;
   if (!use) return null;

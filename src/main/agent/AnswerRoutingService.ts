@@ -13,7 +13,8 @@ import type { LibraryItemDto } from "../../shared/library-ipc";
 import type { MemoryRecordDto } from "../../shared/memory-kernel";
 import { assertPathInsideTask, TaskPathBoundaryError } from "../task/TaskExecutionWorkspace";
 import { answerRoutingInput, answerRuleInScope, defaultAnswerRuleId, defaultDotsSchedulingPolicy, eligibleAnswerEvidenceItem, matchAnswerRule, maxAnswerEvidenceBytes, newAnswerRule, type AnswerRoutingHistoryQuery, type AnswerRule,
-  type AnswerRuleDraft, type AnswerRuleEvidence, type AnswerRuleMatch, type AnswerRuleUse } from "../../shared/answer-routing";
+  type AnswerRuleDraft, type AnswerRuleEvidence, type AnswerRuleMatch, type AnswerRuleUse, type AnswerRuleDiff, type AnswerRuleDiffEntry,
+  maxAnswerRuleVersions, type AnswerRuleVersion, type AnswerRuleVersionSource } from "../../shared/answer-routing";
 import { evaluateAnswerFlow, routingFlowLimits } from "../../shared/answer-routing-flow";
 
 const phrases = z.array(z.string().trim().min(1).max(100)).max(24).transform(values => [...new Set(values)]);
@@ -73,6 +74,59 @@ const historyQuerySchema = z.union([
   z.object({ taskId: identifier, inputIds: z.array(identifier).max(200) }).strict(),
 ]);
 type Row = { id: string; revision: number; config: string; source_hash: string | null };
+type StoredRow = Row & { enabled: number; project_id: string | null; source_id: string | null };
+const routeModeLabels: Record<string, string> = { auto: "自动", direct: "优先直答", delegate: "优先委派" };
+const readLimitText = (limits: { characters: number; sources: number; calls: number }) =>
+  `${limits.characters} 字/${limits.sources} 来源/${limits.calls} 次`;
+const intervalText = (ms: number | null) => ms ? `${Math.round(ms / 1000)} 秒` : "关闭";
+
+/** 一版设置的可读摘要，用于版本列表。 */
+function ruleSummary(config: AnswerRuleDraft, isDefault: boolean): string {
+  if (isDefault && config.policy) {
+    const policy = config.policy;
+    return [routeModeLabels[policy.routeMode], policy.flow?.enabled ? `流程 ${policy.flow.branches.length} 个分支` : "无流程",
+      `读取上限 ${readLimitText(policy.foregroundReadLimits)}`, `状态回报间隔 ${intervalText(policy.trackingPolicy.heartbeatMs)}`].join(" · ");
+  }
+  const evidence = config.evidenceLibraryItemId ? "预读资料库条目" : config.evidenceFile ? `预读 ${config.evidenceFile}` : "不预读";
+  return [`${config.include.length} 个触发短语`, evidence, config.enabled ? "已启用" : "已停用"].join(" · ");
+}
+
+/** 相对上一版的改动；没有可识别的改动时明确说明，不装作有变化。 */
+function ruleChanges(previous: AnswerRuleDraft | undefined, next: AnswerRuleDraft, isDefault: boolean): string[] {
+  if (!previous) return ["开始记录这一版"];
+  if (isDefault) {
+    if (!previous.policy || !next.policy) return ["策略内容已更新"];
+    const before = previous.policy, after = next.policy, changes: string[] = [];
+    if (before.routeMode !== after.routeMode)
+      changes.push(`处理方式 ${routeModeLabels[before.routeMode]} → ${routeModeLabels[after.routeMode]}`);
+    const beforeFlow = before.flow?.enabled ? `${before.flow.branches.length} 个分支` : "未启用";
+    const afterFlow = after.flow?.enabled ? `${after.flow.branches.length} 个分支` : "未启用";
+    if (beforeFlow !== afterFlow) changes.push(`流程 ${beforeFlow} → ${afterFlow}`);
+    if (JSON.stringify(before.foregroundReadLimits) !== JSON.stringify(after.foregroundReadLimits))
+      changes.push(`读取上限 ${readLimitText(before.foregroundReadLimits)} → ${readLimitText(after.foregroundReadLimits)}`);
+    if (before.trackingPolicy.milestones !== after.trackingPolicy.milestones)
+      changes.push(`阶段成果回报 ${before.trackingPolicy.milestones ? "开启" : "关闭"} → ${after.trackingPolicy.milestones ? "开启" : "关闭"}`);
+    if (before.trackingPolicy.heartbeatMs !== after.trackingPolicy.heartbeatMs)
+      changes.push(`状态回报间隔 ${intervalText(before.trackingPolicy.heartbeatMs)} → ${intervalText(after.trackingPolicy.heartbeatMs)}`);
+    if (before.trackingPolicy.silenceMs !== after.trackingPolicy.silenceMs)
+      changes.push(`无活动阈值 ${Math.round(before.trackingPolicy.silenceMs / 1000)} 秒 → ${Math.round(after.trackingPolicy.silenceMs / 1000)} 秒`);
+    return changes.length ? changes : ["设置未变化"];
+  }
+  const changes: string[] = [];
+  if (previous.enabled !== next.enabled) changes.push(next.enabled ? "已启用" : "已停用");
+  if (previous.title !== next.title) changes.push(`名称 ${previous.title || "空"} → ${next.title || "空"}`);
+  if (previous.include.join("\n") !== next.include.join("\n"))
+    changes.push(`触发短语 ${previous.include.length} 条 → ${next.include.length} 条`);
+  if (previous.exclude.join("\n") !== next.exclude.join("\n"))
+    changes.push(`例外 ${previous.exclude.length} 条 → ${next.exclude.length} 条`);
+  if (previous.instruction !== next.instruction) changes.push("回答做法已修改");
+  const beforeEvidence = previous.evidenceLibraryItemId || previous.evidenceFile || "无";
+  const afterEvidence = next.evidenceLibraryItemId || next.evidenceFile || "无";
+  if (beforeEvidence !== afterEvidence) changes.push(`预读资料 ${beforeEvidence} → ${afterEvidence}`);
+  if ((previous.evidenceFailure ?? "") !== (next.evidenceFailure ?? "")) changes.push("读不到资料时的处理已修改");
+  if ((previous.projectId ?? "") !== (next.projectId ?? "")) changes.push("适用范围已修改");
+  return changes.length ? changes : ["设置未变化"];
+}
 const decode = (row: Row): AnswerRule => {
   const { policy, ...draft } = JSON.parse(row.config) as AnswerRuleDraft;
   return { ...draft, id: row.id, revision: row.revision, ...(row.id === defaultAnswerRuleId && { policy }) };
@@ -182,7 +236,12 @@ export class AnswerRoutingService {
         detail TEXT NOT NULL, phrase TEXT NOT NULL, evidence TEXT, scope TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'applied', snapshot TEXT,
         PRIMARY KEY(task_id, input_id));
       CREATE INDEX IF NOT EXISTS answer_rule_turns_recent ON answer_rule_turns(at DESC);
-      CREATE INDEX IF NOT EXISTS answer_rule_turns_source_history ON answer_rule_turns(task_id,rule_id,at DESC);`);
+      CREATE INDEX IF NOT EXISTS answer_rule_turns_source_history ON answer_rule_turns(task_id,rule_id,at DESC);
+      CREATE TABLE IF NOT EXISTS answer_rule_versions (
+        rule_id TEXT NOT NULL REFERENCES answer_rules(id) ON DELETE CASCADE, revision INTEGER NOT NULL,
+        at INTEGER NOT NULL, source TEXT NOT NULL, title TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', config TEXT NOT NULL,
+        PRIMARY KEY(rule_id, revision));
+      CREATE INDEX IF NOT EXISTS answer_rule_versions_recent ON answer_rule_versions(rule_id, revision DESC);`);
     db.connection.transaction(() => {
       const copies = db.connection.prepare("SELECT * FROM answer_rules WHERE source_id IS NOT NULL AND source_hash IS NOT NULL").all() as Row[];
       const clean = db.connection.prepare("UPDATE answer_rules SET config=?,source_hash=NULL WHERE id=?");
@@ -198,6 +257,18 @@ export class AnswerRoutingService {
         policy: defaultDotsSchedulingPolicy() };
       db.connection.prepare(`INSERT OR IGNORE INTO answer_rules(id,revision,enabled,config) VALUES(?,1,1,?)`)
         .run(defaultAnswerRuleId, JSON.stringify(fallback));
+      const versionColumns = db.connection.pragma("table_info(answer_rule_versions)") as Array<{ name: string }>;
+      if (!versionColumns.some(column => column.name === "note"))
+        db.connection.exec("ALTER TABLE answer_rule_versions ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+      // 首次升级时只记录当前这一版的起点；更早的历史不可重建，不伪造。
+      const unversioned = db.connection.prepare(`SELECT id,revision,config FROM answer_rules r
+        WHERE NOT EXISTS (SELECT 1 FROM answer_rule_versions v WHERE v.rule_id=r.id)`).all() as Array<Pick<Row, "id" | "revision" | "config">>;
+      const seedVersion = db.connection.prepare(`INSERT OR IGNORE INTO answer_rule_versions(rule_id,revision,at,source,title,config)
+        VALUES(?,?,?,'baseline',?,?)`);
+      for (const row of unversioned) {
+        const config = JSON.parse(row.config) as AnswerRuleDraft;
+        seedVersion.run(row.id, row.revision, Date.now(), config.title ?? "", row.config);
+      }
       if (columns.some(column => column.name === "status")) return;
       db.connection.exec(`
         ALTER TABLE answer_rule_turns ADD COLUMN status TEXT NOT NULL DEFAULT 'applied';
@@ -263,7 +334,7 @@ export class AnswerRoutingService {
     }).immediate();
   }
 
-  save(input: AnswerRuleDraft, expected?: { id: string; revision: number }): AnswerRule {
+  save(input: AnswerRuleDraft, expected?: { id: string; revision: number }, source: "save" | "restore" = "save"): AnswerRule {
     const draft = expected?.id === defaultAnswerRuleId
       ? { ...newAnswerRule(), title: "默认调度策略", instruction: "按本轮请求和已知任务状态选择直答或委派。",
         policy: policySchema.parse(input.policy) }
@@ -281,18 +352,145 @@ export class AnswerRoutingService {
         stored = { ...draft, instruction: extra, sourceHash: undefined, sourcePrefixLength: undefined };
       }
       const id = version?.id ?? randomUUID();
-      const args = [draft.projectId, draft.sourceMemoryId, null, Number(draft.enabled), JSON.stringify(stored), id];
+      const config = JSON.stringify(stored);
+      const existing = version ? this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=?").get(id) as StoredRow | undefined : undefined;
+      if (version && (!existing || existing.revision !== version.revision)) throw conflict();
+      // 内容完全相同的保存不产生新版本：版本列表里的每一版都对应一次真实改动。
+      if (existing && existing.config === config && existing.project_id === draft.projectId
+        && existing.source_id === draft.sourceMemoryId && Number(existing.enabled) === Number(draft.enabled))
+        return this.currentRule(existing);
+      const args = [draft.projectId, draft.sourceMemoryId, null, Number(draft.enabled), config, id];
+      let revision: number;
       if (version) {
         const result = this.db.connection.prepare(`UPDATE answer_rules SET project_id=?,source_id=?,source_hash=?,enabled=?,config=?,
           revision=revision+1 WHERE id=? AND revision=?`).run(...args, version.revision);
         if (!result.changes) throw conflict();
+        revision = version.revision + 1;
         if (!draft.enabled) this.db.connection.prepare(
           "UPDATE answer_rule_turns SET status='revoked' WHERE rule_id=? AND status='applied'").run(id);
       } else {
         this.db.connection.prepare("INSERT INTO answer_rules(project_id,source_id,source_hash,enabled,config,id,revision) VALUES(?,?,?,?,?,?,1)").run(...args);
+        revision = 1;
       }
-      return { ...draft, id, revision: (version?.revision ?? 0) + 1 };
+      this.recordVersion(id, revision, source, config);
+      return { ...draft, id, revision };
     })();
+  }
+
+  private recordVersion(id: string, revision: number, source: "save" | "restore", config: string): void {
+    const title = (JSON.parse(config) as AnswerRuleDraft).title ?? "";
+    this.db.connection.prepare(`INSERT OR REPLACE INTO answer_rule_versions(rule_id,revision,at,source,title,config)
+      VALUES(?,?,?,?,?,?)`).run(id, revision, Date.now(), source, title, config);
+    this.db.connection.prepare(`DELETE FROM answer_rule_versions WHERE rule_id=? AND revision NOT IN (
+      SELECT revision FROM answer_rule_versions WHERE rule_id=? ORDER BY revision DESC LIMIT ?)`)
+      .run(id, id, maxAnswerRuleVersions);
+  }
+
+  /** 从新到旧的保存历史。第一条对应当前版本。 */
+  versions(id: string): AnswerRuleVersion[] {
+    const ruleId = identifier.parse(id);
+    const rows = this.db.connection.prepare(`SELECT v.revision,v.at,v.source,v.title,v.note,v.config,
+        (SELECT COUNT(*) FROM answer_rule_turns t WHERE t.rule_id=v.rule_id AND t.revision=v.revision AND t.status='applied') AS uses
+      FROM answer_rule_versions v WHERE v.rule_id=? ORDER BY v.revision DESC LIMIT 200`).all(ruleId) as
+      Array<{ revision: number; at: number; source: AnswerRuleVersionSource; title: string; note: string; config: string; uses: number }>;
+    const isDefault = ruleId === defaultAnswerRuleId;
+    const versions: AnswerRuleVersion[] = [];
+    let previous: AnswerRuleDraft | undefined;
+    for (const row of [...rows].reverse()) {
+      const config = JSON.parse(row.config) as AnswerRuleDraft;
+      versions.push({ ruleId, revision: row.revision, at: row.at, source: row.source, title: row.title,
+        note: row.note ?? "", uses: row.uses,
+        changes: ruleChanges(previous, config, isDefault), summary: ruleSummary(config, isDefault) });
+      previous = config;
+    }
+    return versions.reverse();
+  }
+
+  /** 把旧版写成一个新版本。当前版与历史都不改写，所以恢复本身也可再恢复。 */
+  restore(id: string, revision: number): AnswerRule {
+    const target = versionSchema.parse({ id, revision });
+    const current = this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=?").get(target.id) as StoredRow | undefined;
+    if (!current) throw new Error("规则已删除，请刷新后重试");
+    if (target.revision === current.revision) throw new Error("这已经是当前版本");
+    const version = this.readVersionConfig(target.id, target.revision);
+    const config = version.config;
+    // 跟随记忆的规则内容由记忆派生，单独回退会与来源脱节。
+    if (config.sourceMemoryId) throw new Error("这条规则跟随记忆来源，请在记忆中修改");
+    if (target.id === defaultAnswerRuleId && !config.policy) throw new Error("这一版没有可恢复的调度策略");
+    return this.save(config, { id: target.id, revision: current.revision }, "restore");
+  }
+
+  /** 给某一版写备注，备注只属于那一版，不随恢复复制。 */
+  annotate(id: string, revision: number, note: string): void {
+    const target = versionSchema.parse({ id, revision });
+    const text = z.string().trim().max(120, "备注最多 120 字").parse(note);
+    const result = this.db.connection.prepare("UPDATE answer_rule_versions SET note=? WHERE rule_id=? AND revision=?")
+      .run(text, target.id, target.revision);
+    if (!result.changes) throw new Error("找不到这个版本");
+  }
+
+  /** 两版设置的逐项对比，只返回有差异的项。 */
+  compare(id: string, from: number, to: number): AnswerRuleDiff {
+    const ruleId = identifier.parse(id);
+    const fromRevision = versionSchema.shape.revision.parse(from);
+    const toRevision = versionSchema.shape.revision.parse(to);
+    const isDefault = ruleId === defaultAnswerRuleId;
+    const before = this.ruleFields(this.readVersionConfig(ruleId, fromRevision).config, isDefault);
+    const after = this.ruleFields(this.readVersionConfig(ruleId, toRevision).config, isDefault);
+    const entries: AnswerRuleDiffEntry[] = [];
+    before.forEach((field, index) => {
+      const other = after[index];
+      if (other && other.value !== field.value) entries.push({ label: field.label, before: field.value, after: other.value });
+    });
+    return { ruleId, from: fromRevision, to: toRevision, entries };
+  }
+
+  private readVersionConfig(id: string, revision: number): { config: AnswerRuleDraft } {
+    const row = this.db.connection.prepare("SELECT config FROM answer_rule_versions WHERE rule_id=? AND revision=?")
+      .get(id, revision) as { config: string } | undefined;
+    if (!row) throw new Error(`找不到第 ${revision} 版`);
+    return { config: JSON.parse(row.config) as AnswerRuleDraft };
+  }
+
+  private ruleFields(config: AnswerRuleDraft, isDefault: boolean): Array<{ label: string; value: string }> {
+    if (isDefault && config.policy) {
+      const policy = config.policy;
+      return [
+        { label: "处理方式", value: routeModeLabels[policy.routeMode] },
+        { label: "流程", value: policy.flow?.enabled
+          ? `${policy.flow.branches.length} 个分支：${policy.flow.branches.map(branch => branch.title).join("、")}` : "未启用" },
+        { label: "前台读取上限", value: readLimitText(policy.foregroundReadLimits) },
+        { label: "阶段成果回报", value: policy.trackingPolicy.milestones ? "开启" : "关闭" },
+        { label: "状态回报间隔", value: intervalText(policy.trackingPolicy.heartbeatMs) },
+        { label: "无活动阈值", value: `${Math.round(policy.trackingPolicy.silenceMs / 1000)} 秒` },
+      ];
+    }
+    return [
+      { label: "名称", value: config.title || "空" },
+      { label: "状态", value: config.enabled ? "已启用" : "已停用" },
+      { label: "触发短语", value: config.include.join("、") || "无" },
+      { label: "例外", value: config.exclude.join("、") || "无" },
+      { label: "回答做法", value: config.instruction || "空" },
+      { label: "预读资料", value: this.evidenceLabel(config) },
+      { label: "读不到资料时", value: config.evidenceFailure === "mark-unverified" ? "直接标注待核实"
+        : config.evidenceFailure === "verify" ? "用其他获准来源核实" : "未指定" },
+      { label: "适用范围", value: this.projectLabel(config.projectId) },
+    ];
+  }
+
+  private evidenceLabel(config: AnswerRuleDraft): string {
+    if (!config.evidenceLibraryItemId) return config.evidenceFile || "无";
+    try {
+      return this.library?.()?.getItem(config.evidenceLibraryItemId)?.title ?? `资料库条目 ${config.evidenceLibraryItemId}`;
+    } catch {
+      return `资料库条目 ${config.evidenceLibraryItemId}`;
+    }
+  }
+
+  private projectLabel(projectId: string | null): string {
+    if (!projectId) return "Dots（全局）";
+    const row = this.db.connection.prepare("SELECT name FROM projects WHERE id=?").get(projectId) as { name: string } | undefined;
+    return row?.name ? `项目 ${row.name}` : `项目 ${projectId}`;
   }
 
   remove(id: string, revision: number): void {

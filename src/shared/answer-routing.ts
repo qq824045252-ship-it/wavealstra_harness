@@ -15,6 +15,10 @@ export const AnswerRoutingIpc = {
   remove: "answer-routing:remove",
   preview: "answer-routing:preview",
   history: "answer-routing:history",
+  versions: "answer-routing:versions",
+  restore: "answer-routing:restore",
+  annotate: "answer-routing:annotate",
+  compare: "answer-routing:compare",
   suggest: "answer-routing:suggest",
 } as const;
 
@@ -27,6 +31,8 @@ export interface DotsSchedulingPolicy {
 }
 
 export const defaultAnswerRuleId = "dots-default-policy";
+/** 每个规则最多保留的版本数；超出时删最旧的，避免历史无限增长。 */
+export const maxAnswerRuleVersions = 50;
 
 export const defaultDotsSchedulingPolicy = (): DotsSchedulingPolicy => ({
   version: 1,
@@ -87,12 +93,47 @@ export interface AnswerRuleUse {
   policy?: DotsSchedulingPolicy;
 }
 export type AnswerRoutingHistoryQuery = { taskId: string } & ({ inputId: string } | { inputIds: string[] });
+export type AnswerRuleVersionSource = "baseline" | "save" | "restore";
+/** 一版保存下来的设置。当前生效的行在 answer_rules，历史在 answer_rule_versions。 */
+export interface AnswerRuleVersion {
+  ruleId: string;
+  revision: number;
+  at: number;
+  source: AnswerRuleVersionSource;
+  title: string;
+  /** 用户给这一版起的备注；空字符串表示没写。 */
+  note: string;
+  /** 有多少轮对话按这一版跑过。 */
+  uses: number;
+  /** 相对上一版的改动，按可读文案给出；没有可识别的改动时为一句话说明。 */
+  changes: string[];
+  /** 这一版的关键设置摘要。 */
+  summary: string;
+}
+export interface AnswerRuleDiffEntry {
+  label: string;
+  before: string;
+  after: string;
+}
+/** 两版设置的逐项对比，只列出有差异的项目。 */
+export interface AnswerRuleDiff {
+  ruleId: string;
+  from: number;
+  to: number;
+  entries: AnswerRuleDiffEntry[];
+}
 export interface AnswerRoutingApi {
   list(): Promise<AnswerRule[]>;
   save(draft: AnswerRuleDraft, version?: { id: string; revision: number }): Promise<AnswerRule>;
   remove(id: string, revision: number): Promise<void>;
   preview(query: string, projectId: string | null): Promise<AnswerRuleMatch | null>;
   history(turn?: AnswerRoutingHistoryQuery): Promise<AnswerRuleUse[]>;
+  versions(id: string): Promise<AnswerRuleVersion[]>;
+  /** 把旧版内容写成一个新版本；当前版不动，历史不改写。 */
+  restore(id: string, revision: number): Promise<AnswerRule>;
+  /** 给某一版写备注；传空字符串清除。 */
+  annotate(id: string, revision: number, note: string): Promise<void>;
+  compare(id: string, from: number, to: number): Promise<AnswerRuleDiff>;
   suggest(teaching: string, question?: string, answer?: string): Promise<Pick<AnswerRuleDraft, "title" | "include" | "exclude" | "instruction">>;
 }
 export const newAnswerRule = (): AnswerRuleDraft => ({
