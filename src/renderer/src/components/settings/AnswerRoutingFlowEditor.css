@@ -1,0 +1,64 @@
+.answer-flow {
+  border: 0;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 0 0;
+}
+
+.answer-flow .answer-flow__toggle,
+.answer-flow__row,
+.answer-flow__result,
+.answer-flow__phrase {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.answer-flow__row > input,
+.answer-flow__phrase > input { flex: 1; min-width: 8em; }
+.answer-flow__row > .btn,
+.answer-flow__phrase > .btn { flex: none; }
+.answer-flow__handle { cursor: grab; touch-action: none; user-select: none; }
+.answer-flow__handle:active { cursor: grabbing; }
+
+.answer-flow__sequence {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 0 12px;
+  padding: 0 0 0 14px;
+  border-inline-start: 2px solid var(--border);
+  list-style: none;
+}
+
+.answer-flow__branch,
+.answer-flow__check {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  background: var(--bg-panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.answer-flow__branch::before,
+.answer-flow__check::before {
+  content: "";
+  position: absolute;
+  inline-size: 14px;
+  inset-inline-start: -15px;
+  inset-block-start: 24px;
+  border-block-start: 2px solid var(--border);
+}
+
+.answer-flow [data-flow-drop="true"] { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.answer-flow__parallel { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 6px; }
+.answer-flow__result { align-items: end; }
+.answer-flow__result > label { min-width: 0; }
+.answer-flow__endpoint { width: fit-content; padding: 4px 10px; border: 1px solid var(--border); border-radius: 20px; }
+.answer-flow__announcement { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.answer-flow :is(.btn, input, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

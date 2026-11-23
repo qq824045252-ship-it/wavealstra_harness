@@ -2,14 +2,16 @@ import { DOTS_TASK_ID } from "@shared/dots";
 import { useEffect, useRef, useState } from "react";
 import {
   answerRuleExamples, defaultAnswerRuleId, defaultDotsSchedulingPolicy, eligibleAnswerEvidenceItem, matchAnswerRule, newAnswerRule,
-  type AnswerRule, type AnswerRuleDraft, type AnswerRuleMatch, type AnswerRuleUse,
+  type AnswerRule, type AnswerRuleDraft, type AnswerRuleMatch, type AnswerRuleUse, type DotsSchedulingPolicy,
 } from "@shared/answer-routing";
+import type { AnswerRoutingFlow, DotsRouteMode } from "@shared/answer-routing-flow";
 import type { LibraryItemDto } from "@shared/library-ipc";
 import { useAppStore } from "@/store/appStore";
 import { openAnswerRuleTurn } from "@/lib/openAnswerRuleTurn";
 import { libraryCollectionSubtree } from "@/lib/scopedLibrary";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import AnswerRoutingGraph from "@/components/answer-routing/AnswerRoutingGraph";
+import AnswerRoutingFlowEditor from "./AnswerRoutingFlowEditor";
 import "./AnswerRoutingTab.css";
 
 type Seed = NonNullable<ReturnType<typeof useAppStore.getState>["answerRuleSeed"]>;
@@ -67,6 +69,10 @@ function taskRelativePath(root: string, filePath: string): string | undefined {
 }
 
 function selectionReason(match: AnswerRuleMatch): string {
+  if (match.flow) {
+    const selected = match.flow.steps.find(step => step.outcome === "selected");
+    return selected ? `采用分支「${selected.title}」` : "流程没有可采用的分支，按原规则匹配。";
+  }
   if (match.rule.id === defaultAnswerRuleId) return "未命中项目或全局规则，采用默认策略";
   const runnerUp = match.candidates?.find(candidate => candidate.ruleId !== match.rule.id);
   if (!runnerUp) return "只有这条规则符合条件";
@@ -88,9 +94,58 @@ function lastUseLabel(use?: AnswerRuleUse): string {
   }
 }
 
+const routeModeLabel: Record<DotsRouteMode, string> = { direct: "优先直答", delegate: "优先委派", auto: "自动处理" };
+
+/** The original policy form keeps the saved flow; only the flow editor writes policy.flow. */
+function policyFromForm(fallback: AnswerRule, values: FormData): DotsSchedulingPolicy {
+  const heartbeat = Number(values.get("heartbeat"));
+  const previous = fallback.policy ?? defaultDotsSchedulingPolicy();
+  return {
+    version: 1,
+    routeMode: values.get("routeMode") as DotsRouteMode,
+    ...(previous.flow ? { flow: previous.flow } : {}),
+    foregroundReadLimits: {
+      characters: Number(values.get("characters")),
+      sources: Number(values.get("sources")),
+      calls: Number(values.get("calls")),
+    },
+    trackingPolicy: { milestones: values.has("milestones"), heartbeatMs: heartbeat ? heartbeat * 1000 : null,
+      silenceMs: heartbeat ? Number(values.get("silence")) * 1000 : previous.trackingPolicy.silenceMs },
+  };
+}
+
+function DefaultPolicyFields({ policy, busy }: { policy: DotsSchedulingPolicy; busy: boolean }) {
+  const { foregroundReadLimits: reads, trackingPolicy: tracking } = policy;
+  const [heartbeat, setHeartbeat] = useState(tracking.heartbeatMs ? String(tracking.heartbeatMs / 1000) : "");
+  return <fieldset className="answer-routing-panel" disabled={busy}>
+    <label>未指定时的处理方式<select name="routeMode" defaultValue={policy.routeMode}>
+      <option value="auto">自动</option><option value="direct">优先直答</option><option value="delegate">优先委派</option>
+    </select></label>
+    <p className="settings-section-desc">流程分支可指定本轮处理方式。其余轮次沿用这里的偏好，交给模型结合本轮要求决定。</p>
+    <details className="answer-routing-policy-advanced">
+      <summary>进阶 · 读取上限与后台回报</summary>
+      <div className="answer-routing-panel">
+        <p className="settings-section-desc">以下设置也适用于命中流程分支的轮次。读取上限只计 Dots 前台取得的资料。</p>
+        <label>前台正文字符数<input name="characters" type="number" required min={1} max={1000000} defaultValue={reads.characters} /></label>
+        <label>前台资料来源数<input name="sources" type="number" required min={1} max={100} defaultValue={reads.sources} /></label>
+        <label>前台读取次数<input name="calls" type="number" required min={1} max={100} defaultValue={reads.calls} /></label>
+        <label><input name="milestones" type="checkbox" defaultChecked={tracking.milestones} />回报阶段成果</label>
+        <label>状态回报间隔（秒，留空关闭）<input name="heartbeat" type="number" min={5} max={86400} value={heartbeat}
+          onChange={event => setHeartbeat(event.target.value)} /></label>
+        <label hidden={!heartbeat}>无活动提示阈值（秒）<input name="silence" type="number" required disabled={!heartbeat} min={5} max={86400}
+          defaultValue={tracking.silenceMs / 1000} /><small>超过阈值后，下一次状态回报会提示近期无工具活动。</small></label>
+      </div>
+    </details>
+    <button className="btn" type="submit">保存默认策略</button>
+  </fieldset>;
+}
+
+const schedulingPages = ["策略", "流程", "规则"] as const;
+
 export type TeachingResult = { message: string; review?: boolean };
 
 export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: (result?: TeachingResult) => void }): React.JSX.Element {
+  const [page, setPage] = useState<typeof schedulingPages[number]>("规则");
   const [seed, setSeed] = useState(() => useAppStore.getState().answerRuleSeed);
   const projects = useAppStore(s => s.projects);
   const [rules, setRules] = useState<AnswerRule[]>([]);
@@ -207,7 +262,8 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
     setBusy(true);
     setNotice("");
     setFailure("");
-    try { await action(); } catch (error) { setFailure(errorText(error)); }
+    try { await action(); return true; }
+    catch (error) { setFailure(errorText(error)); return false; }
     finally { setBusy(false); }
   };
 
@@ -264,19 +320,55 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
   const selectedUses = selected ? uses.filter(use => use.ruleId === selected.id) : [];
   const Options = finishTeaching ? "details" : "div";
   const knownDocument = (id: string) => documentNames[id] ?? (documentsStatus || "资料不可用");
+  const saveFlow = (flow: AnswerRoutingFlow) => run(async () => {
+    if (!api || !fallback) throw new Error("默认调度策略尚未加载");
+    const saved = await api.save({ ...fallback, policy: { ...fallbackPolicy, flow } }, fallback);
+    setFallback(saved);
+    setPreview(undefined);
+    setNotice("对话调度流程已保存");
+  });
 
   if (!api) return <p role="status">回答调度服务尚未就绪。</p>;
 
   return <div className="answer-routing">
-    {!form && <div className="answer-routing-heading">
-      <div>
-        <h3 className="settings-section-title">回答规则</h3>
-        <p className="settings-section-desc">指定常问问题的处理方式。项目规则优先，同一范围内优先采用更长的匹配短语。</p>
-      </div>
-      <button className="btn primary" disabled={busy} onClick={() => open(initialDraft())}>新增规则</button>
+    {!finishTeaching && <nav className="answer-routing-tabs" aria-label="调度分类">
+      {schedulingPages.map(name => <button type="button" key={name} aria-pressed={page === name}
+        onClick={() => { setPage(name); setNotice(""); }}>{name}</button>)}
+    </nav>}
+    {(!form || page !== "规则") && failure && <div className="answer-routing-actions">
+      <p className="answer-routing-error" role="alert">{failure}</p>
+      <button className="btn" type="button" disabled={busy} onClick={() => void run(refresh)}>刷新已保存设置</button>
     </div>}
-    {!form && failure && <p className="answer-routing-error" role="alert">{failure}</p>}
-    {!form && notice && <p role="status">{notice}</p>}
+    {(!form || page !== "规则") && notice && <p role="status">{notice}</p>}
+    {!finishTeaching && !loaded && !failure && <p role="status">正在加载调度设置…</p>}
+    {!finishTeaching && fallback && <section aria-label="调度策略" hidden={page !== "策略"}>
+      <div className="answer-routing-page">
+        <div><h3 className="settings-section-title">默认调度策略</h3>
+          <p className="settings-section-desc">设置默认处理偏好，以及每轮共用的前台读取上限和后台回报。</p></div>
+        <form key={JSON.stringify({ ...fallbackPolicy, flow: undefined })} onSubmit={event => {
+          event.preventDefault();
+          const values = new FormData(event.currentTarget);
+          void run(async () => {
+            const saved = await api.save({ ...fallback, policy: policyFromForm(fallback, values) }, fallback);
+            setFallback(saved);
+            setPreview(undefined);
+            setNotice("默认策略已保存");
+          });
+        }}><DefaultPolicyFields policy={fallbackPolicy} busy={busy} /></form>
+      </div>
+    </section>}
+    {!finishTeaching && fallback && <section aria-label="调度流程" hidden={page !== "流程"}>
+      <div className="answer-routing-page">
+        <h3 className="settings-section-title">调度流程</h3>
+        <AnswerRoutingFlowEditor saved={fallbackPolicy.flow} rules={rules} busy={busy} onSave={saveFlow} />
+      </div>
+    </section>}
+    <section aria-label="回答规则" hidden={!finishTeaching && page !== "规则"}>
+      {!form && <div className="answer-routing-heading">
+        <div><h3 className="settings-section-title">回答规则</h3>
+          <p className="settings-section-desc">设置回答做法和预读资料。按原规则匹配时，项目规则优先，同范围内采用更长的短语。</p></div>
+        <button className="btn primary" disabled={busy} onClick={() => open(initialDraft())}>新增规则</button>
+      </div>}
     <div className={form ? "answer-routing-editor-layout" : "answer-routing-layout"}>
       {!form && <nav className="answer-routing-list" aria-label="规则列表">
         {!loaded && !failure && <p role="status">正在加载规则…</p>}
@@ -301,43 +393,6 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
         })}
       </nav>}
       <div className="answer-routing-detail">
-        {!form && !finishTeaching && fallback && <details className="answer-routing-panel">
-          <summary>默认调度策略 · 第 {fallback.revision} 版</summary>
-          <form key={fallback.revision} onSubmit={event => {
-            event.preventDefault();
-            const values = new FormData(event.currentTarget);
-            void run(async () => {
-              const heartbeat = Number(values.get("heartbeat"));
-              await api.save({ ...fallback, policy: {
-                version: 1,
-                routeMode: values.get("routeMode") as typeof fallbackPolicy.routeMode,
-                foregroundReadLimits: {
-                  characters: Number(values.get("characters")),
-                  sources: Number(values.get("sources")),
-                  calls: Number(values.get("calls")),
-                },
-                trackingPolicy: { milestones: values.has("milestones"), heartbeatMs: heartbeat ? heartbeat * 1000 : null,
-                  silenceMs: Number(values.get("silence")) * 1000 },
-              } }, fallback);
-              setPreview(undefined);
-              await refresh();
-              setNotice("默认策略已保存");
-            });
-          }}>
-            <fieldset className="answer-routing-panel" disabled={busy}>
-              <label>处理方式<select name="routeMode" defaultValue={fallbackPolicy.routeMode}>
-                <option value="auto">自动</option><option value="direct">优先直答</option><option value="delegate">优先委派</option>
-              </select></label>
-              <label>前台正文字符数<input name="characters" type="number" required min={1} max={1000000} defaultValue={fallbackPolicy.foregroundReadLimits.characters} /></label>
-              <label>前台资料来源数<input name="sources" type="number" required min={1} max={100} defaultValue={fallbackPolicy.foregroundReadLimits.sources} /></label>
-              <label>前台读取次数<input name="calls" type="number" required min={1} max={100} defaultValue={fallbackPolicy.foregroundReadLimits.calls} /></label>
-              <label><input name="milestones" type="checkbox" defaultChecked={fallbackPolicy.trackingPolicy.milestones} />回报阶段成果</label>
-              <label>状态回报间隔（秒，留空关闭）<input name="heartbeat" type="number" min={5} max={86400} defaultValue={fallbackPolicy.trackingPolicy.heartbeatMs ? fallbackPolicy.trackingPolicy.heartbeatMs / 1000 : ""} /></label>
-              <label>无活动提示阈值（秒）<input name="silence" type="number" required min={5} max={86400} defaultValue={fallbackPolicy.trackingPolicy.silenceMs / 1000} /></label>
-              <button className="btn" type="submit">保存默认策略</button>
-            </fieldset>
-          </form>
-        </details>}
         {form ? <fieldset className="answer-rule-form" aria-busy={busy} disabled={busy || loadingTurn}>
           <legend>{editing && finishTeaching ? `调整「${editing.title}」` : editing ? "编辑回答规则" : seed?.turn ? "教它下次怎么答" : "创建回答规则"}</legend>
           <label>遇到什么问题<input aria-label="遇到什么问题" value={positiveExample} onChange={e => setPositiveExample(e.target.value)}
@@ -533,9 +588,12 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
               }}>{example.title}示例</button>)}
           </div>
         </section>}
-        {!form && !!fallback && <section className="answer-routing-panel" aria-label="测试匹配">
+      </div>
+    </div>
+    </section>
+        {!finishTeaching && page !== "策略" && (page === "流程" || !form) && !!fallback && <section className="answer-routing-panel" aria-label="测试匹配">
           <h3>测试匹配</h3>
-          <p className="settings-section-desc">检查已保存的规则会采用哪条。这一步只检查匹配。</p>
+          <p className="settings-section-desc">查看已保存设置的判断结果。测试只匹配流程和规则。</p>
           <div className="answer-routing-actions">
             <input aria-label="测试匹配的问题" placeholder="输入问题" value={query} disabled={busy}
               onChange={e => { setQuery(e.target.value); setPreview(undefined); }} />
@@ -547,7 +605,18 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
           </div>
           {preview && <div className="answer-rule-result" role="status">{preview.match ? <>
             <strong>{preview.match.rule.title} · 第 {preview.match.rule.revision} 版{preview.match.phrase && ` · 匹配“${preview.match.phrase}”`}</strong>
+            {preview.match.flow && <p>流程处理方式：{routeModeLabel[preview.match.flow.routeMode]}</p>}
             <p>{selectionReason(preview.match)}</p>
+            {!!preview.match.flow?.steps.length && <ol className="answer-flow-trace">
+              {preview.match.flow.steps.map(step => <li key={step.branchId} data-outcome={step.outcome}>
+                <strong>{step.title || "未命名分支"}</strong> · {step.outcome === "selected" ? "采用这个分支"
+                  : step.outcome === "rule-unavailable" ? "规则当前不可用，继续判断后面的分支" : "未全部命中，继续下一分支"}
+                {step.checks.length > 0 && <ul>{step.checks.map((check, checkIndex) => <li key={check.checkId}>
+                  判断 {checkIndex + 1} {check.passed ? "通过" : "未通过"}：
+                  {check.phrases.map((item, index) => <span key={index}>“{item.phrase}”{item.matched ? "命中" : "未命中"}；</span>)}
+                </li>)}</ul>}
+              </li>)}
+            </ol>}
             {!!preview.match.candidates && preview.match.candidates.length > 1 && <ul className="answer-routing-candidates">
               {preview.match.candidates.map(candidate => <li key={candidate.ruleId}>
                 {candidate.title} · {projectName(candidate.projectId)} · “{candidate.phrase}”
@@ -559,9 +628,7 @@ export default function AnswerRoutingTab({ finishTeaching }: { finishTeaching?: 
             {preview.match.rule.evidenceLibraryItemId && <small>预读 {knownDocument(preview.match.rule.evidenceLibraryItemId)}</small>}
           </> : "没有匹配规则，将按通常方式回答。"}</div>}
         </section>}
-      </div>
-    </div>
-    <ConfirmDialog open={!!deleting} title="删除回答规则" body={`删除“${deleting?.title ?? ""}”？已有回答里的使用记录会保留。`}
+    <ConfirmDialog open={page === "规则" && !!deleting} title="删除回答规则" body={`删除“${deleting?.title ?? ""}”？已有回答里的使用记录会保留。`}
       danger confirmLabel="删除" onCancel={() => setDeleting(undefined)} onConfirm={() => {
         const target = deleting;
         setDeleting(undefined);

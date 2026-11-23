@@ -4,6 +4,8 @@ import { cpus, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { DOTS_TASK_ID } from "../src/shared/dots";
+import { defaultAnswerRuleId, newAnswerRule } from "../src/shared/answer-routing";
+import type { AnswerRoutingFlow } from "../src/shared/answer-routing-flow";
 import { DotsDelegations } from "../src/main/dots/DotsDelegations";
 import type { CronJobDto } from "../src/shared/agent-ipc";
 
@@ -53,9 +55,32 @@ const actions = new DotsActions(db, agent, { link: (...args) => deliveries.link(
   list: () => deliveries.list(), failed: (...args) => deliveries.failed(...args) });
 agent.setDotsActions(actions);
 deliveries.connect(async () => ({ kind: "quiet" }), (reply, current) => agent.appendDotsReply(reply, current));
-const fallback = agent.answerRouting.list().find(rule => rule.id === "dots-default-policy")!;
-agent.answerRouting.save({ ...fallback, policy: { ...fallback.policy!,
-  trackingPolicy: { milestones: true, heartbeatMs: 6_000, silenceMs: 5_000 } } }, fallback);
+const fallback = agent.answerRouting.list().find(rule => rule.id === defaultAnswerRuleId)!;
+const quoteRule = agent.answerRouting.save({ ...newAnswerRule(), title: "报价确认", include: ["正式报价"],
+  exclude: ["翻译"], instruction: "报价规则测试标记 4C82。" });
+const flow: AnswerRoutingFlow = { enabled: true, branches: [
+  { id: "delivery", title: "客户报价", checks: [
+    { id: "customer", operator: "all", phrases: ["客户 A"] },
+    { id: "topic", operator: "any", phrases: ["发票", "报价单"] },
+  ], ruleId: quoteRule.id, routeMode: "delegate" },
+  { id: "other", title: "普通报价", checks: [{ id: "quote", operator: "all", phrases: ["报价单"] }],
+    ruleId: null, routeMode: "direct" },
+] };
+const policy = { ...fallback.policy!, trackingPolicy: { milestones: true, heartbeatMs: 6_000, silenceMs: 5_000 } };
+const promptText = "在客户 A 空间做一份报价单";
+const reversed = agent.answerRouting.save({ ...fallback, policy: { ...policy, flow: { ...flow, branches: [...flow.branches].reverse() } } }, fallback);
+assert.equal(agent.answerRouting.preview(promptText, null)?.flow?.routeMode, "direct");
+assert.throws(() => agent.answerRouting.save({ ...fallback, policy: { ...policy, flow } }, fallback), /已变化/);
+assert.throws(() => agent.answerRouting.save({ ...fallback, policy: { ...policy, flow: { ...flow, branches: [flow.branches[0], flow.branches[0]] } } }, reversed), /分支重复/);
+const configured = agent.answerRouting.save({ ...fallback, policy: { ...policy, flow } }, reversed);
+const preview = agent.answerRouting.preview(promptText, null);
+assert.equal(preview?.rule.id, quoteRule.id);
+assert.equal(preview.flow?.routeMode, "delegate");
+assert.deepEqual(preview.flow?.steps[0]?.checks[1]?.phrases, [{ phrase: "发票", matched: false }, { phrase: "报价单", matched: true }]);
+assert.equal(agent.answerRouting.preview("做一份报价单", null)?.flow?.steps[0]?.checks.length, 1);
+assert.equal(agent.answerRouting.preview("翻译：在客户 A 空间做一份报价单", null)?.flow?.steps[0]?.outcome, "rule-unavailable");
+assert.equal(agent.answerRouting.preview("正式报价", null)?.rule.id, quoteRule.id);
+assert.equal(agent.answerRouting.preview("/new", null), null);
 const off = agent.onPatch(patch => {
   if (patch.type === "durable_delta" && !patch.delta.state.busy) deliveries.refresh(patch.taskId);
 });
@@ -67,7 +92,23 @@ try {
   assert.throws(() => db.archiveTask(DOTS_TASK_ID, true), /Dots/);
   assert.throws(() => db.deleteTask(DOTS_TASK_ID), /Dots/);
   assert.equal(db.getTask(DOTS_TASK_ID)?.spaceId ?? null, null);
-  await fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: "quote-request", assistantMessageId: "dots-reply", text: "在客户 A 空间做一份报价单" });
+  await fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: "quote-request", assistantMessageId: "dots-reply", text: promptText });
+  const [routed] = agent.answerRouting.history({ taskId: DOTS_TASK_ID, inputId: "quote-request" });
+  assert.equal(routed?.ruleId, quoteRule.id);
+  assert.equal(routed.policy?.routeMode, "delegate");
+  assert.equal(routed.detail, "流程采用「客户报价」");
+  const dotsRequest = fixture.requests.find(request => request.tools.includes("dots_action"));
+  assert.match(JSON.stringify(dotsRequest?.input.messages), /优先交给普通任务.*报价规则测试标记 4C82/s);
+  agent.answerRouting.save({ ...fallback, policy: { ...policy, flow: { ...flow, enabled: false } } }, configured);
+  assert.equal(agent.answerRouting.preview(promptText, null)?.rule.id, defaultAnswerRuleId);
+  agent.answerRouting.clearPreparedTurns(DOTS_TASK_ID);
+  const cwd = db.getTask(DOTS_TASK_ID)?.cwd;
+  assert.ok(cwd);
+  const retried = await agent.answerRouting.prepare({ taskId: DOTS_TASK_ID, query: promptText, inputId: "quote-request", cwd,
+    canRead: () => true });
+  assert.equal(retried?.rule.policy?.routeMode, "delegate");
+  assert.equal(retried.rule.id, quoteRule.id);
+  console.log("PASS 预览与实际 Dots 调度复用判断，串行短路、并行汇合、拖动顺序、关闭回退和快照重试有效");
   const observationDeadline = Date.now() + 10_000;
   while (!deliveries.list()[0]?.activity?.lastReportAt && Date.now() < observationDeadline)
     await new Promise(done => setTimeout(done, 25));

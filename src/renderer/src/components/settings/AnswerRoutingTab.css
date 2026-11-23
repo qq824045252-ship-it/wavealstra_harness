@@ -5,6 +5,12 @@
   container-type: inline-size;
 }
 
+.answer-routing-tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--border); }
+.answer-routing-tabs > button { padding: 6px 12px; border-bottom: 2px solid transparent; color: var(--fg-muted); }
+.answer-routing-tabs > button[aria-pressed=true] { border-bottom-color: var(--accent); color: var(--fg); font-weight: 600; }
+.answer-routing-page { display: grid; gap: 12px; }
+.answer-routing > section[aria-label="回答规则"] .answer-routing-heading { margin-bottom: 12px; }
+
 .answer-routing-heading,
 .answer-routing-actions,
 .answer-routing-row {
@@ -147,3 +153,9 @@
   .answer-rule-scope { grid-template-columns: minmax(0, 1fr); }
   .answer-rule-form { padding-inline: 12px; }
 }
+
+.answer-routing-policy-advanced > .answer-routing-panel { margin-top: 8px; }
+.answer-routing-policy-advanced label[hidden] { display: none; }
+.answer-flow-trace { margin: 4px 0 0; padding-inline-start: 18px; }
+.answer-flow-trace > li { margin-block: 4px; }
+.answer-flow-trace ul { margin: 2px 0 0; padding-inline-start: 16px; }

@@ -10,13 +10,114 @@ run(async env => {
   await openSettings();
   await until(() => evaluate("document.querySelector('.answer-routing-list')?.textContent.includes('还没有规则')"), "empty rules list");
   assert.equal(await evaluate("!!document.querySelector('.answer-rule-form')"), false);
-  const defaultSummary = "[...document.querySelectorAll('.answer-routing-panel > summary')].find(el=>el.textContent.startsWith('默认调度策略'))";
-  await press(defaultSummary, "展开默认调度策略");
+  const routingPage = name => click(name, ".answer-routing-tabs");
+  const openAdvanced = () => press("document.querySelector('.answer-routing-policy-advanced > summary')", "展开进阶设置");
+  if (process.argv.includes("--flow")) {
+    const flow = ".answer-flow";
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.answer-routing-tabs button')].map(b=>b.textContent)"), ["策略", "流程", "规则"]);
+    await routingPage("流程");
+    assert.equal(await evaluate("document.querySelector('.answer-routing-list').checkVisibility()"), false);
+    await click("新增分支", flow);
+    await fill('[aria-label="分支 1 名称"]', "客户报价");
+    await fill('[aria-label="分支 1 判断 1 短语 1"]', "客户 A");
+    await click("为分支 1 添加判断节点", flow);
+    await fill('[aria-label="分支 1 判断 2 短语 1"]', "发票");
+    await click("为分支 1 判断 2 添加并行短语", flow);
+    await fill('[aria-label="分支 1 判断 2 短语 2"]', "报价单");
+    await fill('[aria-label="分支 1 的处理方式"]', "delegate");
+    await routingPage("规则");
+    await click("新增规则");
+    await click("取消");
+    await routingPage("流程");
+    assert.equal(await evaluate("document.querySelector('[aria-label=\"分支 1 名称\"]').value"), "客户报价");
+    await click("新增分支", flow);
+    await fill('[aria-label="分支 2 名称"]', "普通报价");
+    await fill('[aria-label="分支 2 判断 1 短语 1"]', "报价单");
+    await fill('[aria-label="分支 2 的处理方式"]', "direct");
+    await press("document.querySelector('.answer-flow input[type=checkbox]')", "启用流程");
+    await click("保存流程", flow);
+    await until(() => evaluate("window.api.answerRouting.list().then(r=>r.some(row=>row.policy?.flow?.enabled))"), "flow saved");
+    const askFlow = async () => {
+      await fill('[aria-label="测试匹配的问题"]', "客户 A 要一份报价单");
+      await click("测试匹配");
+      await until(() => evaluate("!!document.querySelector('.answer-flow-trace')"), "flow trace");
+      return await evaluate("document.querySelector('.answer-rule-result').textContent");
+    };
+    const before = await askFlow();
+    assert.match(before, /优先委派.*采用分支「客户报价」.*发票”未命中.*报价单”命中/s);
+
+    await rpc("Page.bringToFront");
+    await rpc("Emulation.setFocusEmulationEnabled", { enabled: true });
+    const points = await evaluate(`(() => {
+      const source = document.querySelector('.answer-flow [aria-label="拖动分支 2"]');
+      source.scrollIntoView({block:'center', behavior:'instant'});
+      const from = source.getBoundingClientRect();
+      const dest = document.querySelector('.answer-flow__branch').getBoundingClientRect();
+      const start = {x:from.x + from.width / 2, y:from.y + from.height / 2};
+      const end = {x:start.x, y:dest.bottom - 28};
+      if (source.matches(':disabled') || !source.contains(document.elementFromPoint(start.x,start.y)) || !document.querySelector('.answer-flow__branch').contains(document.elementFromPoint(end.x,end.y))) throw Error('Drag handles or drop target clipped');
+      window.answerFlowPointer = [];
+      for (const type of ['pointerdown','pointerup','gotpointercapture','lostpointercapture']) {
+        document.addEventListener(type, event => window.answerFlowPointer.push([type,event.isTrusted,event.isPrimary,event.target.getAttribute('aria-label'),event.clientX,event.clientY,document.elementFromPoint(event.clientX,event.clientY)?.closest('.answer-flow__branch')?.querySelector('input')?.value]), { capture:true, once:true });
+      }
+      return {start,end};
+    })()`);
+    await rpc("Input.dispatchMouseEvent", {type: "mouseMoved", ...points.start});
+    await rpc("Input.dispatchMouseEvent", {type: "mousePressed", button: "left", buttons: 1, clickCount: 1, ...points.start});
+    for (const fraction of [0.2, 0.5, 0.8, 1]) {
+      await rpc("Input.dispatchMouseEvent", {type: "mouseMoved", button: "left", buttons: 1,
+        x: points.start.x + fraction * (points.end.x - points.start.x), y: points.start.y + fraction * (points.end.y - points.start.y)});
+    }
+    await rpc("Input.dispatchMouseEvent", {type: "mouseReleased", button: "left", buttons: 0, clickCount: 1, ...points.end});
+    const moved = await evaluate(`new Promise(resolve => requestAnimationFrame(() => resolve({first: document.querySelector('[aria-label="分支 1 名称"]').value, events: window.answerFlowPointer})))`);
+    assert.equal(moved.first, "普通报价", JSON.stringify({ points, ...moved }));
+    assert.ok(moved.events.some(([type, trusted, , label]) => type === "pointerup" && trusted && label === "拖动分支 2"));
+    await click("下移分支 1", flow);
+    assert.equal(await evaluate("document.querySelector('[aria-label=\"分支 1 名称\"]').value"), "客户报价");
+    await click("上移分支 2", flow);
+    await click("保存流程", flow);
+    await until(() => evaluate("window.api.answerRouting.list().then(r=>r.some(row=>row.policy?.flow?.branches[0]?.title==='普通报价'))"), "reordered flow saved");
+    assert.match(await askFlow(), /优先直答.*采用分支「普通报价」/s);
+    await routingPage("策略");
+    assert.equal(await evaluate("document.querySelector('.answer-flow').checkVisibility()"), false);
+    await openAdvanced();
+    const visibleSilence = () => evaluate("document.querySelector('[name=silence]').checkVisibility()");
+    assert.equal(await visibleSilence(), false);
+    await fill('[name="heartbeat"]', "10");
+    assert.equal(await visibleSilence(), true);
+    await fill('[name="heartbeat"]', "");
+    assert.equal(await visibleSilence(), false);
+    await fill('input[name="calls"]', "3");
+    await click("保存默认策略");
+    await until(() => evaluate("window.api.answerRouting.list().then(r=>r.some(row=>row.policy?.foregroundReadLimits.calls===3 && row.policy.flow.branches[0].title==='普通报价'))"), "flow preserved by default policy editing");
+    await env.restart();
+    await openSettings();
+    await routingPage("流程");
+    assert.match(await askFlow(), /优先直答.*采用分支「普通报价」/s);
+    await fill('[aria-label="分支 1 名称"]', "本地草稿");
+    await evaluate(`(async () => {
+      const fallback = (await window.api.answerRouting.list()).find(rule=>rule.id==='dots-default-policy');
+      fallback.policy.flow.branches[0].title = '另一处保存';
+      await window.api.answerRouting.save(fallback, fallback);
+    })()`);
+    await click("保存流程", flow);
+    await until(() => evaluate("document.querySelector('.answer-routing-error')?.textContent.includes('已变化')"), "stale save rejected");
+    await click("刷新已保存设置");
+    await until(() => evaluate("document.querySelector('.answer-flow [role=alert]')?.textContent.includes('有新版本')"), "flow change shown");
+    assert.equal(await evaluate("document.querySelector('[aria-label=\"分支 1 名称\"]').value"), "本地草稿");
+    await click("放弃修改", flow);
+    assert.equal(await evaluate("document.querySelector('[aria-label=\"分支 1 名称\"]').value"), "另一处保存");
+    assert.equal(env.requests.length, 0, "preview triggers no model request");
+    report.actualControlChecks.push("Three scheduling pages are separate. Serial and parallel flow edits survive rule editing, drag and buttons reorder, default settings and restart preserve the flow, and a stale draft cannot overwrite a newer flow.");
+    return;
+  }
+  await routingPage("策略");
   await fill('select[name="routeMode"]', "direct");
+  await openAdvanced();
   await fill('input[name="calls"]', "3");
   await click("保存默认策略");
   await until(() => evaluate("window.api.answerRouting.list().then(rows=>rows.some(r=>r.id==='dots-default-policy' && r.revision===2 && r.policy.routeMode==='direct' && r.policy.foregroundReadLimits.calls===3))"), "default strategy revision persisted");
-  await press(defaultSummary, "收起默认调度策略");
+  await routingPage("规则");
   await click("周报核对发布记录示例");
   assert.equal(await evaluate("document.querySelector('[aria-label=\"任务目录相对路径\"]').value"), "");
   assert.equal(await evaluate("[...document.querySelectorAll('.answer-rule-form button')].find(b=>b.textContent==='保存规则').disabled"), true);
@@ -134,7 +235,7 @@ run(async env => {
   await click("更新规则并返回对话");
   await click("查看规则", ".answer-rule-confirmation");
   await until(() => evaluate("!!document.querySelector('.dots-config .answer-routing-rule[aria-label=交付报告特例]')"), "chat review opens the rule list in Dots settings");
-  assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "对话调度");
+  assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "调度");
   report.actualControlChecks.push("Existing history survives a missing status column, and the chat teaching flow opens the rule list in the first Dots settings tab.");
   await require("./answer-routing-weather-check.cjs")(env);
 }, {name: "answer-routing", settings: {memoryEnabled: true}, watchRenderer: false,

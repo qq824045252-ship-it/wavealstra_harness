@@ -1,5 +1,5 @@
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
-import { defaultDotsSchedulingPolicy, type AnswerRule, type DotsSchedulingPolicy } from "../../shared/answer-routing";
+import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, type AnswerRuleDraft, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import type Database from "better-sqlite3";
 import type { AgentUiPatch, AgentPromptRequest } from "../../shared/agent-ipc";
 import type { DotsAssistantReply, DotsDelegation, DotsReplyOrigin } from "../../shared/dots";
@@ -80,7 +80,10 @@ export class DotsDelegations {
       const turn = this.db.prepare("SELECT status,snapshot FROM answer_rule_turns WHERE task_id=? AND input_id=?")
         .get(DOTS_TASK_ID, row.source_message_id) as { status: string; snapshot: string | null } | undefined;
       if (turn?.status === "revoked") return;
-      if (turn?.snapshot) return (JSON.parse(turn.snapshot) as AnswerRule).policy?.trackingPolicy;
+      const applied = turn?.snapshot ? (JSON.parse(turn.snapshot) as AnswerRuleDraft).policy?.trackingPolicy : undefined;
+      if (applied) return applied;
+      const config = this.db.prepare("SELECT config FROM answer_rules WHERE id=?").pluck().get(defaultAnswerRuleId) as string | undefined;
+      if (config) return (JSON.parse(config) as AnswerRuleDraft).policy?.trackingPolicy ?? defaultDotsSchedulingPolicy().trackingPolicy;
     }
     return defaultDotsSchedulingPolicy().trackingPolicy;
   }

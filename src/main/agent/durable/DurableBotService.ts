@@ -503,7 +503,7 @@ export class DurableBotService {
         } },
         answerRouting: routing && {
           enabled: () => this.options.dotsAnswerRoutingEnabled?.() !== false && routing.hasRulesForTask(taskId),
-          prepare: (inputId, query) => routing.prepare({ taskId, inputId, query, cwd,
+          prepare: (inputId, query, appended) => routing.prepare({ taskId, inputId, query, cwd, appended,
             canRead: () => this.options.canReadAnswerEvidence?.(taskId, "read") ?? toolGate.allowed("read"),
             canReadLibrary: () => this.options.canReadAnswerEvidence?.(taskId, "library_read") ?? toolGate.allowed("library_read") }),
         },

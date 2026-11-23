@@ -173,6 +173,11 @@ export async function verifyForegroundScheduling(root: string) {
     const rule = agent.answerRouting.save({ title: "食谱临摹规则", include: ["食谱临摹"], exclude: [],
       instruction: "按本轮指定范围处理。", evidenceFile: "recipe-context.txt", enabled: true,
       projectId: null, sourceMemoryId: null });
+    const routing = agent.answerRouting.list().find(rule => rule.id === defaultAnswerRuleId)!;
+    agent.answerRouting.save({ ...routing, policy: { ...routing.policy!, flow: { enabled: true, branches: [
+      { id: "recipe-correction", title: "检查食材", checks: [{ id: "ingredients", operator: "all", phrases: ["只核对食材"] }],
+        ruleId: rule.id, routeMode: "direct" },
+    ] } } }, routing);
     const original = await agent.prompt({ taskId: DOTS_TASK_ID, userMessageId: "recipe-summary",
       assistantMessageId: "recipe-answer", text: "食谱临摹。只在当前对话阅读这份食谱。不要委派。" });
     assert(original.receipt);
@@ -187,6 +192,11 @@ export async function verifyForegroundScheduling(root: string) {
     assert.equal((await agent.waitForSubmission(original.receipt)).receipt?.status, "done");
     assert.equal((await agent.waitForSubmission(correction.receipt)).receipt?.status, "done");
     assert.deepEqual(recipeInputs, [["recipe-summary"], ["recipe-summary", "recipe-revision"]]);
+    const [adjustment] = agent.answerRouting.history({ taskId: DOTS_TASK_ID, inputId: "recipe-revision" });
+    assert.match(adjustment?.detail ?? "", /暂未自动预读.*流程采用「检查食材」/);
+    assert.equal(adjustment.evidence?.status, "skipped");
+    assert.equal(adjustment.policy?.routeMode, "direct");
+    assert.match(JSON.stringify(fixture.requests.at(-1)?.input.messages), /只核对食材.*优先依据已有事实/s);
     const recipe = reads.state("recipe-summary");
     assert.equal(recipe.calls, 3);
     assert.equal(recipe.reads[0].characters, "synthetic recipe notes".length);

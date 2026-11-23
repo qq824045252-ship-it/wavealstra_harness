@@ -67,7 +67,7 @@ run(async env => {
   await api("answerRouting.save", {title: "工具清单", include: ["检查已关闭能力的工具列表"], exclude: [], instruction: routingInstruction,
     evidenceFile: "", projectId: null, sourceMemoryId: null, enabled: true});
   await openDotsSettings();
-  assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "对话调度");
+  assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "调度");
   await until(() => evaluate("!!document.querySelector('.dots-config .answer-routing-rule[aria-label=工具清单]')"), "saved rule visible in the first Dots settings tab");
   await tab("对话与记忆");
   await select("Dots 使用的模型", "fixture/dots-alternate");

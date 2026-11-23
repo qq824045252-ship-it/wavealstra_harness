@@ -5,7 +5,7 @@ export const dotsCapabilityOptions = [
   { id: "spaceManagement", label: "管理工作空间", description: "绑定目录、创建子空间和重命名空间。" },
   { id: "workspaceReading", label: "读取文件和资料", description: "浏览工作空间目录，搜索资料并读取内容。" },
   { id: "scheduling", label: "定时计划和文件订阅", description: "让 Dots 新建、修改或恢复定时计划与文件订阅。关闭后仍可查看、暂停或取消已有计划。" },
-  { id: "answerRouting", label: "对话调度", description: "允许 Dots 使用、测试和修改对话规则。" },
+  { id: "answerRouting", label: "调度", description: "允许 Dots 按保存的流程和规则为本轮对话选择处理方式，并使用对话中的规则工具。" },
   { id: "memoryTools", label: "记忆工具", description: "允许 Dots 主动查询、保存、更正和遗忘统一记忆。" },
 ] as const;
 

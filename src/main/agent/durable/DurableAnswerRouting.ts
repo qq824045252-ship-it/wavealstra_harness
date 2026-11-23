@@ -5,16 +5,17 @@ import type { AnswerRoutingService } from "../AnswerRoutingService";
 
 export interface TurnAnswerRouting {
   enabled(): boolean;
-  prepare(inputId: string, query: string): ReturnType<AnswerRoutingService["prepare"]>;
+  prepare(inputId: string, query: string, appended: boolean): ReturnType<AnswerRoutingService["prepare"]>;
 }
 
 /** Bind only the current native input. Context hooks may already have added synthetic user messages. */
 export async function projectAnswerRule(routing: TurnAnswerRouting, storage: Storage, api: HookApi,
   context: Context, messages: readonly Message[], findInstruction?: (instruction: string, sourceId: string | null) => { id: string; revision: number } | undefined) {
   if (!routing.enabled()) return;
-  const run = (await api.snapshot(LiveDoc, api.conversationId, context))?.run;
-  if (run?.inputs.length !== 1) return;
-  const receipt = await storage.submission(run.inputs[0], context);
+  const inputs = (await api.snapshot(LiveDoc, api.conversationId, context))?.run?.inputs;
+  const input = inputs?.at(-1);
+  if (input === undefined || !inputs) return;
+  const receipt = await storage.submission(input, context);
   if (receipt?.type !== "input" || !receipt.entry || !receipt.requestId || receipt.conversationId !== api.conversationId) return;
   const entry = await api.entry(receipt.entry, context);
   const data = entry?.data;
@@ -32,7 +33,7 @@ export async function projectAnswerRule(routing: TurnAnswerRouting, storage: Sto
   if (candidates.length !== 1) return;
   const anchor = candidates[0];
   if (anchor.role !== "user") return;
-  const applied = await routing.prepare(receipt.requestId, meta.displayText);
+  const applied = await routing.prepare(receipt.requestId, meta.displayText, inputs.length > 1);
   if (!applied) return;
   const content = typeof anchor.content === "string" ? [{ type: "text" as const, text: anchor.content }] : anchor.content;
   const projected = [...messages];
