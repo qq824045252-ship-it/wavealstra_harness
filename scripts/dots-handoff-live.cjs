@@ -11,7 +11,7 @@ const lastWeekScenario = !goalScenario && process.env.MYBUDDY_DOTS_LIVE_WEEK ===
 
 run(async env => {
   const { evaluate, until, rpc, report } = env;
-  const { press, click, openTopBarMenu } = routingControls(env);
+  const { press, click } = routingControls(env);
   const folder = path.join(env.home, "周转库");
   fs.mkdirSync(folder);
   const counts = goalScenario ? [148,57,31] : [randomInt(100,900),randomInt(20,100),randomInt(1,20)];
@@ -42,7 +42,6 @@ run(async env => {
   }
   await rpc("Page.reload");
   await until(()=>evaluate("Boolean(document.querySelector('.sidebar-scroll'))"), "sidebar mounted");
-  await openTopBarMenu("desktop-module-list");
   await click("MyBuddy Dots",".sidebar-scroll");
   await press("document.querySelector('textarea.input-textarea')","Dots input");
   const request=goal ? `把这次核对委派给原任务 desk-transfer-goal，关联已有 Goal ${goal.id}。读取调拨.csv，计算三个货架总量，按真实读到的数据自动结项，将数字回我。` :
@@ -58,7 +57,6 @@ run(async env => {
     const ack = reader.prepare(`SELECT 1 FROM entries, json_each(record,'$.model') m WHERE json_extract(m.value,'$.role')='assistant'
       AND json_extract(m.value,'$.stopReason')='stop' AND json_extract(record,'$.kind')<>'mybuddy.dots-assistant-reply' LIMIT 1`);
     await until(()=>Boolean(ack.get()),"foreground acknowledgement");
-    await openTopBarMenu("desktop-module-list");
     await press("[...document.querySelectorAll('.task-item-title')].find(el=>el.textContent==='另一项工作')","switch to unrelated task");
     const delivered = reader.prepare("SELECT 1 FROM entries WHERE json_extract(record,'$.kind')='mybuddy.dots-assistant-reply' LIMIT 1");
     await until(()=>Boolean(delivered.get()),"background assistant reply");

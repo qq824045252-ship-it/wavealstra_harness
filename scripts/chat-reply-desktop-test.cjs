@@ -35,7 +35,7 @@ const fixtureModel = request => {
 
 run(async env => {
   const { evaluate, until, rpc, home, report, restart } = env;
-  const { press, click, screenshot, openTopBarMenu } = routingControls(env);
+  const { press, click, screenshot } = routingControls(env);
   const select = css => `document.querySelector(${JSON.stringify(css)})`;
   const api = (method, ...args) => evaluate(`window.api.${method}(${args.map(value => JSON.stringify(value)).join(",")})`);
   const store = expression => evaluate(`import('/src/store/appStore.ts').then(m => { const s = m.useAppStore.getState(); return ${expression}; })`);
@@ -44,10 +44,9 @@ run(async env => {
   const ordinaryTitle = "结构化输出普通任务";
   const openTask = async () => {
     const title = await store(`s.tasks.find(t => t.id === ${JSON.stringify(task)})?.title`) ?? ordinaryTitle;
-    await openTopBarMenu("desktop-module-list");
     await press(`[...document.querySelectorAll('.task-item-title')].find(el => el.textContent === ${JSON.stringify(title)})`, "打开普通任务");
   };
-  const openDots = async () => { await openTopBarMenu("desktop-module-list"); await click("MyBuddy Dots", ".sidebar-scroll"); };
+  const openDots = () => click("MyBuddy Dots", ".sidebar-scroll");
   const history = async id => (await api("agent.loadTaskHistory", id)).messages;
   const send = async text => {
     await press(select("textarea.input-textarea"), "聊天输入");

@@ -1,7 +1,7 @@
 import { DOTS_TASK_ID } from "@shared/dots";
 import { isGatewayConversation } from "../../../shared/gateway-task";
 import "./sidebar/SidebarNavigation.css";
-import { DesktopSectionRow, DesktopSectionSidebar, useDesktopListOpen, useDesktopSectionScroll, useDesktopSectionState, useDesktopShell } from "./desktop/DesktopSection";
+import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionScroll, useDesktopSectionState, useDesktopShell } from "./desktop/DesktopSection";
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
 import type { BotWorkspaceRequestDto, BotWorkspaceConversationDto } from "@shared/bot-workspace-navigation";
@@ -109,7 +109,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
   const spaces = useAppStore((s) => s.spaces);
   const page = useAppStore((s) => s.page);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
-  const listOpen = useDesktopListOpen() ?? !sidebarCollapsed;
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const draft = useAppStore((s) => s.draft);
@@ -315,11 +314,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
   useDismissOnClickOutside(spaceMenuId !== null, () => setSpaceMenuId(null), spaceMenuAnchorRef);
   useDismissOnClickOutside(spaceAddMenuId !== null, () => setSpaceAddMenuId(null), spaceAddMenuAnchorRef);
   useEffect(() => {
-    if (listOpen) return;
-    setFilterOpen(false);
-    setSpaceMenuId(null);
-    setSpaceAddMenuId(null);
-  }, [listOpen]);
+    if (sidebarCollapsed) setFilterOpen(false);
+  }, [sidebarCollapsed]);
 
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
   const rememberScroll = useDesktopSectionScroll(sidebarScrollRef, "tasks:tree");
@@ -601,7 +597,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
 
     if (row.kind === "space") {
       const { space, depth, collapsed, hasChildren } = row;
-      const openSpace = (): void => { openWorkspaceDetail(space.id); onClose?.(); };
       const isActiveSpace = page === "workspace" && activeWorkspaceId === space.id;
       const stateClass = isActiveSpace ? "space-active" : "";
       if (renamingSpaceId === space.id) {
@@ -651,8 +646,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
           className={`space-header ${spaceMenuId === space.id || spaceAddMenuId === space.id ? "menu-open" : ""} ${space.pathMissing ? "path-missing" : ""} ${stateClass} ${dragClass} ${dropClass}`}
           data-depth={Math.min(depth, 4)}
           style={{ paddingLeft: spaceIndent(depth) }}
-          onClick={openSpace}
-          onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && openSpace()}
+          onClick={() => openWorkspaceDetail(space.id)}
+          onKeyDown={(e) => e.key === "Enter" && openWorkspaceDetail(space.id)}
           onContextMenu={(e) => {
             e.preventDefault(); e.stopPropagation();
             setSpaceMenuUp(window.innerHeight - e.clientY < 200);
@@ -765,8 +760,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       >
         <TaskItem
           task={task}
-          listOpen={listOpen}
-          onOpen={onClose}
           nested={depth > 0}
           indent={taskIndent(depth)}
           onDragStartNotify={handleTaskNotifyDragStart}
@@ -790,7 +783,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
 
   const body = (
     <div className="sidebar desktop-task-tree">
-      {!desktop && <div className="sidebar-primary-action">
+      <div className="sidebar-primary-action">
         <button
           type="button"
           className="sidebar-cta-btn"
@@ -800,7 +793,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
           <span className="sidebar-cta-icon"><IconPlus size={14} strokeWidth={2} /></span>
           <span className="sidebar-cta-text">新建任务</span>
         </button>
-      </div>}
+      </div>
       {filterOpen && <TaskFilterControls query={searchQuery} onQueryChange={(value) => {
         setSearchQuery(value);
         sidebarScrollRef.current?.scrollTo({ top: 0 });
@@ -829,8 +822,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                     <div key={row.key} className="sidebar-pinned-row">
                       <TaskItem
                         task={row.task}
-                        listOpen={listOpen}
-                        onOpen={onClose}
                         indent={taskIndent(0)}
                         onDragStartNotify={handleTaskNotifyDragStart}
                       />
@@ -840,7 +831,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
               </div>
             )}
             <DesktopSectionRow icon={<IconBot size={17} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
-              onClick={() => { setDotsError(""); void openDots().then(() => onClose?.()).catch(error => setDotsError(String(error))); }}>
+              onClick={() => { setDotsError(""); void openDots().catch(error => setDotsError(String(error))); }}>
               MyBuddy Dots
             </DesktopSectionRow>
             {dotsError && <div className="sidebar-empty" role="alert">{dotsError}</div>}
@@ -896,5 +887,5 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
     </div>
   );
   if (!desktop) return <aside className="sidebar"><div className="sidebar-header">{actions}</div>{body}</aside>;
-  return <DesktopSectionSidebar title="任务列表" actions={actions} ownScroll keepOpenOnSelect>{body}</DesktopSectionSidebar>;
+  return <DesktopSectionSidebar title="MyBuddy" actions={actions} ownScroll>{body}</DesktopSectionSidebar>;
 }

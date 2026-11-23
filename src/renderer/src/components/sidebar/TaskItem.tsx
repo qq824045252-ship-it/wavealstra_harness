@@ -29,8 +29,6 @@ import {
 
 interface Props {
   task: Task;
-  listOpen: boolean;
-  onOpen?: () => void;
   /** 空间内任务：标题与空间文件夹名称左对齐 */
   nested?: boolean;
   /** 树内缩进（px），由 Sidebar 按 depth 计算，使任务图标与下一级空间文件夹图标对齐 */
@@ -42,9 +40,10 @@ interface Props {
 const MENU_MIN_WIDTH = 200;
 const MENU_MAX_HEIGHT = 420;
 
-export default function TaskItem({ task, listOpen, onOpen, nested = false, indent, onDragStartNotify }: Props): React.JSX.Element {
+export default function TaskItem({ task, nested = false, indent, onDragStartNotify }: Props): React.JSX.Element {
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const page = useAppStore((s) => s.page);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const pinnedTaskIds = useAppStore((s) => s.pinnedTaskIds);
   const deleteTask = useAppStore((s) => s.deleteTask);
   const renameTask = useAppStore((s) => s.renameTask);
@@ -63,7 +62,7 @@ export default function TaskItem({ task, listOpen, onOpen, nested = false, inden
     "";
 
   const [menuRequested, setMenuOpen] = useState(false);
-  const menuOpen = menuRequested && listOpen;
+  const menuOpen = menuRequested && !sidebarCollapsed;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.title);
   const [aiTitleBusy, setAiTitleBusy] = useState(false);
@@ -88,14 +87,8 @@ export default function TaskItem({ task, listOpen, onOpen, nested = false, inden
   useBlockNativeSurfaces(menuOpen);
   useDismissOnClickOutside(menuOpen, closeMenu, menuAnchorRef, [menuPortalRef]);
   useLayoutEffect(() => {
-    if (!listOpen && menuRequested) closeMenu();
-  }, [listOpen, menuRequested, closeMenu]);
-
-  const openTask = (): void => {
-    if (editing) return;
-    openVisitedTask(task.id);
-    onOpen?.();
-  };
+    if (sidebarCollapsed && menuRequested) closeMenu();
+  }, [sidebarCollapsed, menuRequested, closeMenu]);
 
   const active = page === "chat" && task.id === activeTaskId;
   const actionLabel = taskActionLabel(task);
@@ -322,8 +315,8 @@ export default function TaskItem({ task, listOpen, onOpen, nested = false, inden
       className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} status-${status}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
       style={indent != null ? { paddingLeft: indent } : undefined}
       title={editing ? undefined : `${task.title || "未命名任务"} · ${relativeTime(task.updatedAt)}`}
-      onClick={openTask}
-      onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && openTask()}
+      onClick={() => !editing && openVisitedTask(task.id)}
+      onKeyDown={(e) => e.key === "Enter" && !editing && openVisitedTask(task.id)}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();

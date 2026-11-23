@@ -79,10 +79,7 @@ export default function WorkspacePicker({
   const selected = spaces.find((s) => s.id === selectedId);
 
   const triggerLabel = (() => {
-    if (displayMode === "selection") {
-      if (compact) return selected?.name ?? "工作空间";
-      return selected ? getWorkspaceDisplayPath(spaces as any, selected.id) : "选择工作空间";
-    }
+    if (displayMode === "selection") return selected ? getWorkspaceDisplayPath(spaces as any, selected.id) : "选择工作空间";
     if (compact) return selected?.name ?? (selectedId == null ? "独立任务" : "工作空间");
     if (displayMode === "task-workspace") return selected ? getWorkspaceDisplayPath(spaces as any, selected.id) : "独立任务";
     if (displayMode === "draft-workspace") return selected ? getWorkspaceDisplayPath(spaces as any, selected.id) : "独立任务";
@@ -122,8 +119,8 @@ export default function WorkspacePicker({
 
   return (
     <div className="input-popup-anchor workspace-picker-anchor" ref={anchorRef}>
-      <button type="button" className="pill-select as-btn workspace-trigger" onClick={onToggle} aria-expanded={open} title={displayMode === "selection" ? "选择目标工作空间" : displayMode === "default-workspace" ? "默认工作空间" : displayMode === "task-workspace" ? "此任务的工作空间" : "新任务工作空间"}>
-        <span className="workspace-trigger-label">{triggerLabel}</span>
+      <button type="button" className="pill-select as-btn workspace-trigger" onClick={onToggle} title={displayMode === "selection" ? "选择目标工作空间" : displayMode === "default-workspace" ? "默认工作空间" : displayMode === "task-workspace" ? "此任务的工作空间" : "新任务工作空间"}>
+        {triggerLabel}
         <IconChevronDown size={12} className={open ? "chevron-up" : ""} />
       </button>
       {open && (

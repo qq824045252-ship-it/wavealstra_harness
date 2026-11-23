@@ -20214,8 +20214,10 @@ html[data-theme="dark"] .extension-artifact-item.active {
 
 /* Task chat header: workspace is location metadata, but use available width before truncating it. */
 .task-chat-header {
-  gap: 4px;
-  flex-wrap: wrap;
+  gap: 2px;
+  /* Keep a single row: the desktop header has a fixed height, so a wrapped
+     action row would sit outside the header and become unclickable. */
+  flex-wrap: nowrap;
   height: auto;
   min-height: 56px;
   padding-block: 8px;
@@ -20230,6 +20232,9 @@ html[data-theme="dark"] .extension-artifact-item.active {
 .task-chat-header > .workspace-crumb .workspace-crumb-link {
   width: auto;
   max-width: 100%;
+  /* The crumb may be squeezed by a long title; let the link clip with the wrapper
+     instead of drawing its text under the title. */
+  min-width: 0;
   padding: 3px 3px;
 }
 .task-chat-header .workspace-crumb-path {
@@ -20239,16 +20244,36 @@ html[data-theme="dark"] .extension-artifact-item.active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* More specific than the generic .chat-header rule below, so task title keeps the remaining width. */
+/* More specific than the generic .chat-header rule below, so task title keeps the remaining width.
+   Actions keep their intrinsic width; only the title and the location crumb may give up space. */
 .chat-header.task-chat-header > .chat-header-title {
   flex: 1 1 auto;
   max-width: none;
-  min-width: 120px;
+  min-width: 0;
   font-size: 14px;
   font-weight: 650;
 }
+/* text-overflow needs the block that owns the ellipsis, not only the flex item. */
+.chat-header.task-chat-header > .chat-header-title > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-chat-header > .chat-header-sub,
+.task-chat-header > .conversation-goal-chip,
+.task-chat-header > .conv-branch-lineage,
+.task-chat-header > .chat-expert-chip,
+.task-chat-header > .runtime-status-chips,
+.task-chat-header > .subagent-chip-anchor,
+.task-chat-header > .history-anchor,
+.task-chat-header > .chat-reading-button,
+.task-chat-header > .icon-btn {
+  flex: 0 0 auto;
+}
 .task-chat-header > .chat-header-sub {
-  flex: 0 0 6px;
+  flex: 0 0 2px;
   margin-left: 0;
 }
 

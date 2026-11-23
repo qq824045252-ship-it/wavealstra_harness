@@ -58,12 +58,6 @@ exports.routingControls = ({ evaluate, until, rpc, out, report }) => {
   };
   return {
     press, askInChat,
-    async openTopBarMenu(id) {
-      const trigger = `[aria-controls="${id}"][aria-expanded="false"]`;
-      if (await evaluate(`Boolean(document.querySelector(${quote(trigger)}))`)) {
-        await press(`document.querySelector(${quote(trigger)})`, `open ${id}`);
-      }
-    },
     expand(label) {
       return press(`[...document.querySelectorAll('.answer-rule-form details:not([open]) > summary')].find(s=>s.textContent.startsWith(${quote(label)}))`, label);
     },

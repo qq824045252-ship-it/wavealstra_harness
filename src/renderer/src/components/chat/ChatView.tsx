@@ -7,7 +7,6 @@ import TaskRecoveryNotice from "./TaskRecoveryNotice";
 import SessionHistoryRecoveryNotice from "./SessionHistoryRecoveryNotice";
 import TaskModelRecoveryNotice from "./TaskModelRecoveryNotice";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
@@ -19,7 +18,7 @@ import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
 import ChatProjectCrumb from "./ChatProjectCrumb";
-import ChatTaskResults from "./ChatTaskResults";
+import WorkspaceCrumb from "./WorkspaceCrumb";
 import SubagentRunsChip from "./SubagentRunsChip";
 import SubagentChatView from "./SubagentChatView";
 import RuntimeStatusChips from "./RuntimeStatusChips";
@@ -29,6 +28,7 @@ import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   IconChevronDown,
   IconClock,
+  IconBot,
   IconAlert,
   IconPanel,
   IconX,
@@ -55,6 +55,7 @@ import {
   type FollowState,
 } from "@/lib/scrollFollow";
 import { useFullTaskHistory } from "./useFullTaskHistory";
+import { useDesktopShell } from "@/components/desktop/DesktopSection";
 import { chatPinPosition, latestHumanMessageId } from "@/lib/chatPinPosition";
 
 /** 新一轮用户消息置顶时距滚动容器顶的留白 */
@@ -240,6 +241,19 @@ function HomeHero(): React.JSX.Element {
   );
 }
 
+/** 侧边栏折叠后，头部左侧只保留「展开侧边栏」 */
+function CollapsedSidebarActions(): React.JSX.Element | null {
+  const desktop = useDesktopShell();
+  const collapsed = useAppStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  if (desktop || !collapsed) return null;
+  return (
+    <button className="icon-btn" title="展开侧边栏" onClick={toggleSidebar}>
+      <IconPanel size={15} />
+    </button>
+  );
+}
+
 function HistoryPopup({
   messages,
   onClose,
@@ -351,19 +365,19 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCrea
 
 const readingPositions = new Map<string, { top: number; following: boolean }>();
 
-export default function ChatView({ actionsTarget, actionsOpen = true, onCloseActions }: {
-  actionsTarget?: HTMLElement | null;
-  actionsOpen?: boolean;
-  onCloseActions?: () => void;
-} = {}): React.JSX.Element {
+export default function ChatView(): React.JSX.Element {
   const task = useActiveTask();
   const [selectedMessageGoal, setSelectedMessageGoal] = useState<ConversationGoalDto>();
   useEffect(() => setSelectedMessageGoal(undefined), [task?.id]);
   const draftProjectId = useAppStore((s) => s.draft?.projectId);
+  const draftSpaceId = useAppStore((s) => s.draft?.spaceId);
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   // 3E：产物直读 projection 派生视图（task.artifacts 已退役）
   const artifacts = useActiveTaskArtifacts();
   // 与产物面板同一套可见列表：消息芯片 / 「查看所有产物」计数都走过滤版
   const visibleArtifacts = useVisibleTaskArtifacts();
+  const renameTask = useAppStore((s) => s.renameTask);
+  const bindTaskSpace = useAppStore((s) => s.bindTaskSpace);
   const spaces = useAppStore((s) => s.spaces);
   const experts = useAppStore((s) => s.experts);
   const connectors = useAppStore((s) => s.connectors);
@@ -373,6 +387,13 @@ export default function ChatView({ actionsTarget, actionsOpen = true, onCloseAct
   const branchError = useAppStore((s) => s.branchError);
   const clearBranchError = useAppStore((s) => s.clearBranchError);
 
+  /** 关栏后再开：打开概览 */
+  const openSidePanel = (): void => {
+    showOverview();
+  };
+
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const expertSnapshot = task?.expertBinding?.desired ?? (task?.expertBinding?.pending ? task.expertBinding.active : null);
   const taskExpert = expertSnapshot ? { name: expertSnapshot.name, emoji: experts.find((e) => e.id === expertSnapshot.sourceExpertId)?.emoji } : task?.expertId ? experts.find((e) => e.id === task.expertId) ?? { name: task.expertId, emoji: undefined } : undefined;
   const capabilityNotices = task?.capabilityNotices ?? [];
@@ -389,7 +410,6 @@ export default function ChatView({ actionsTarget, actionsOpen = true, onCloseAct
   };
   const [historyOpen, setHistoryOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  useEffect(() => { if (!actionsOpen) setHistoryOpen(false); }, [actionsOpen]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const tailSpaceRef = useRef<HTMLDivElement>(null);
   const historyAnchorRef = useRef<HTMLDivElement>(null);
@@ -678,49 +698,42 @@ export default function ChatView({ actionsTarget, actionsOpen = true, onCloseAct
     };
   }, [readingKey, hasMessages, fullHistory.loading, commitFollow, bottomDistance]);
 
+  // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
+  // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
   const boundProjectId = task?.projectId ?? draftProjectId;
   const subagentView = useAppStore((s) => s.subagentView);
+  const sidePanelButton = <button className={`icon-btn ${panelOpen ? "toggled" : ""}`} title={panelOpen ? "关闭侧栏" : "打开概览"}
+    onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanel size={15} /></button>;
+
+  // 子代理对话页：共用同一个聊天外壳（同一批消息组件/输入外壳），只是数据源换成子会话。
+  // 放在所有 hook 之后，避免条件返回改变 hook 顺序。
   if (task && subagentView && subagentView.taskId === task.id) {
     return <SubagentChatView taskId={task.id} subagentId={subagentView.subagentId} />;
   }
 
+  // Admission and errors remain visible before the first native message arrives.
   const isDots = task?.id === DOTS_TASK_ID;
-  const actionItems = <>
-    {boundProjectId && <ChatProjectCrumb projectId={boundProjectId} />}
-    {task && !isDots && <>
-      <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal}
-        viewGoal={selectedMessageGoal?.taskId === task.id ? selectedMessageGoal : undefined} />
-      <ConversationBranchChip />
-      <SubagentRunsChip taskId={task.id} />
-      {taskExpert && <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
-        <span className="chat-expert-chip-symbol" aria-hidden="true">{taskExpert.emoji || "🧙"}</span>
-        <span className="chat-expert-chip-label">{taskExpert.name}</span>
-      </span>}
-      <RuntimeStatusChips modePresetId={task.modePresetId} />
-      {hasMessages && <>
-        <div className="history-anchor" ref={historyAnchorRef}>
-          <button type="button" className="desktop-section-row" aria-expanded={historyOpen} onClick={() => setHistoryOpen(!historyOpen)}>
-            <IconClock size={15} /> 历史提问
-          </button>
-          {historyOpen && <HistoryPopup messages={displayMessages} onClose={() => setHistoryOpen(false)}
-            onJumpToMessage={messageId => { onCloseActions?.(); jumpToHistoryQuestion(messageId); }} />}
-        </div>
-        <ChatTaskResults task={task} visibleArtifacts={visibleArtifacts} onOpen={onCloseActions} />
-        <TaskDiagnosticsButton open={diagnosticsOpen} labeled onClick={() => { onCloseActions?.(); setDiagnosticsOpen(true); }} />
-      </>}
-      <button type="button" className="desktop-section-row" onClick={() => {
-        onCloseActions?.();
-        if (panelOpen) closePanel(); else showOverview();
-      }}><IconPanel size={15} /> {panelOpen ? "关闭侧栏" : "打开概览"}</button>
-    </>}
-  </>;
-  const taskActions = actionsTarget ? createPortal(actionItems, actionsTarget) : null;
-
-  // A saved task with history still loading stays in conversation view.
+  const dotsHeader = (
+    <div className="chat-header task-chat-header">
+      <CollapsedSidebarActions />
+      <IconBot size={22} />
+      <div className="chat-header-title">MyBuddy Dots</div>
+    </div>
+  );
   if (!task || (!isDots && task.welcomeMode !== "general" && !hasMessages && !task.sessionFile && !task.durable && !task.botInputError)) {
+    const showHeroHeader = Boolean(task || sidebarCollapsed || boundProjectId || draftSpaceId);
     return (
       <>
-        {taskActions}
+        {showHeroHeader && (
+          <div className="chat-header hero-header">
+            <CollapsedSidebarActions />
+            {boundProjectId && <ChatProjectCrumb projectId={boundProjectId} />}
+            {draftSpaceId ? <WorkspaceCrumb spaceId={draftSpaceId} /> : null}
+            <div className="chat-header-sub" />
+            {task && <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal} />}
+            {task && sidePanelButton}
+          </div>
+        )}
         <HomeHero />
       </>
     );
@@ -734,7 +747,27 @@ export default function ChatView({ actionsTarget, actionsOpen = true, onCloseAct
   if (!hasMessages) {
     return (
       <div className="chat-column task-ambient" data-mode={taskMode}>
-        {taskActions}
+        {isDots ? dotsHeader : <div className="chat-header task-chat-header">
+          <CollapsedSidebarActions />
+          {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
+          <WorkspaceCrumb spaceId={task.spaceId ?? null} />
+          <div className="chat-header-title" title={task.title || undefined}>{task.title || "任务"}</div>
+          <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal} />
+          <ConversationBranchChip />
+          {/* 子代理查看（数据源与侧栏概览同一个 hook）：取代原来的场景 chip */}
+          <SubagentRunsChip taskId={task.id} />
+          {taskExpert && (
+            <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
+              <span className="chat-expert-chip-symbol" aria-hidden="true">
+                {taskExpert.emoji || "🧙"}
+              </span>
+              <span className="chat-expert-chip-label">{taskExpert.name}</span>
+            </span>
+          )}
+          <RuntimeStatusChips modePresetId={task.modePresetId} />
+          <div className="input-spacer" />
+          {sidePanelButton}
+        </div>}
         <div className="chat-scroll">
           {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
           {!isDots && !task.historyError && !fullHistory.error &&
@@ -758,9 +791,72 @@ export default function ChatView({ actionsTarget, actionsOpen = true, onCloseAct
     );
   }
 
+  const commitTitle = (): void => {
+    if (titleDraft.trim()) renameTask(task.id, titleDraft.trim());
+    setEditingTitle(false);
+  };
+
   return (
     <div className="chat-column task-ambient" data-mode={taskMode}>
-      {taskActions}
+      {isDots ? dotsHeader : <div className="chat-header task-chat-header">
+        <CollapsedSidebarActions />
+        {task.projectId && <ChatProjectCrumb projectId={task.projectId} trailingSlash />}
+        <WorkspaceCrumb spaceId={task.spaceId ?? null} />
+        <div className="chat-header-title">
+          {editingTitle ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => e.key === "Enter" && commitTitle()}
+            />
+          ) : (
+            <span
+              onDoubleClick={() => {
+                setTitleDraft(task.title);
+                setEditingTitle(true);
+              }}
+              title={task.title ? `${task.title}\n双击重命名` : "双击重命名"}
+            >
+              {task.title}
+            </span>
+          )}
+        </div>
+        <div className="chat-header-sub" />
+        <ConversationGoalChip key={task.id} taskId={task.id} goal={task.activeGoal}
+          viewGoal={selectedMessageGoal?.taskId === task.id ? selectedMessageGoal : undefined} />
+        <ConversationBranchChip />
+        {/* 子代理查看（数据源与侧栏概览同一个 hook）：取代原来的场景 chip */}
+        <SubagentRunsChip taskId={task.id} />
+        {taskExpert && (
+          <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
+            <span className="chat-expert-chip-symbol" aria-hidden="true">
+              {taskExpert.emoji || "🧙"}
+            </span>
+            <span className="chat-expert-chip-label">{taskExpert.name}</span>
+          </span>
+        )}
+          <RuntimeStatusChips modePresetId={task.modePresetId} />
+        <div className="history-anchor" ref={historyAnchorRef}>
+          <button
+            className={`icon-btn ${historyOpen ? "toggled" : ""}`}
+            title="历史提问"
+            onClick={() => setHistoryOpen(!historyOpen)}
+          >
+            <IconClock size={15} />
+          </button>
+          {historyOpen && (
+            <HistoryPopup
+              messages={displayMessages}
+              onClose={() => setHistoryOpen(false)}
+              onJumpToMessage={jumpToHistoryQuestion}
+            />
+          )}
+        </div>
+        <TaskDiagnosticsButton open={diagnosticsOpen} onClick={() => setDiagnosticsOpen(true)} />
+        {sidePanelButton}
+      </div>}
       {diagnosticsOpen && (
         <TaskDiagnosticsDialog taskId={task.id} onClose={() => setDiagnosticsOpen(false)} />
       )}

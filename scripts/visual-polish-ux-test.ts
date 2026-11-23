@@ -13,9 +13,9 @@ const globalCssPath = "src/renderer/src/styles/global.css";
 const libraryCssPath = "src/renderer/src/styles/library.css";
 const sidebarPath = "src/renderer/src/components/Sidebar.tsx";
 const chatViewPath = "src/renderer/src/components/chat/ChatView.tsx";
-const topBarPath = "src/renderer/src/components/desktop/DesktopTopBar.tsx";
 const globalCss = source(globalCssPath);
 const sidebar = source(sidebarPath);
+const chatView = source(chatViewPath);
 
 const walkCss = (directory: string): string[] =>
   readdirSync(resolve(process.cwd(), directory), { withFileTypes: true }).flatMap((entry) => {
@@ -69,10 +69,9 @@ contains(globalCssPath, "mask-image: linear-gradient", "collapsed user bubbles m
 contains(globalCssPath, ".sidebar .task-item", "real task rows must use the shared compact radius and state language");
 contains(globalCssPath, ".sidebar .space-header.space-active", "real workspace rows must use the shared active surface");
 
-for (const marker of ["ChatProjectCrumb", "RuntimeStatusChips", "<ChatInput", "chat-expert-chip-label"]) {
-  contains(chatViewPath, marker, `task actions/composer capability missing: ${marker}`);
+for (const marker of ["WorkspaceCrumb", "RuntimeStatusChips", "<ChatInput", "chat-expert-chip-label"]) {
+  contains(chatViewPath, marker, `chat header/composer capability missing: ${marker}`);
 }
-contains(topBarPath, "<WorkspacePicker", "desktop navigation must expose workspace selection");
 const emptyGoalChip = renderToStaticMarkup(createElement(ConversationGoalChip, { taskId: "task" }));
 assert.match(emptyGoalChip, /class="conversation-goal-chip-label">Goal<\/span>/, "Goal chip empty label must be Goal");
 const activeGoalChip = renderToStaticMarkup(createElement(ConversationGoalChip, {
@@ -87,6 +86,11 @@ contains(
   "Goal/Todo chips must inherit the scene-mode tint used by 代码开发",
 );
 contains(globalCssPath, "var(--hero-mode) 14%", "Goal/Todo and mode chips must share the scene-mode fill");
+assert.ok(
+  chatView.indexOf("<ChatProjectCrumb") < chatView.indexOf("<WorkspaceCrumb") &&
+    chatView.indexOf("<WorkspaceCrumb") < chatView.indexOf('className="chat-header-title"'),
+  "chat location order must be Project / Workspace / Task title",
+);
 contains("src/renderer/src/components/chat/ExecutionTimeline.tsx", "<span>Thinking</span>", "thinking must use the calm product label");
 contains("src/renderer/src/components/chat/ToolCallCard.tsx", "tool-row--${toolCall.status}", "tool rows must expose visual state classes");
 contains("src/renderer/src/components/chat/ToolCallCard.tsx", "aria-expanded={open}", "tool disclosure must expose its expanded state");

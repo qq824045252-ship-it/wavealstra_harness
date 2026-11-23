@@ -222,12 +222,12 @@ const report={temp,tests:[],status:'running'};
   await mouseClick('.context-usage-popup-close');
   await until(()=>evaluate('!document.querySelector(".context-usage-popup")'),'context popup close');
   report.tests.push('Bot composer replaces mode controls with the office/code context ring and popup; native token use, cache rate and manual compaction control are shown');
-  await click('.desktop-topbar [aria-label="新建任务"]','新建');await until(()=>evaluate('Boolean(document.querySelector(".hero"))'),'new task after greeting');
+  await click('.sidebar-cta-btn','新建任务');await until(()=>evaluate('Boolean(document.querySelector(".hero"))'),'new task after greeting');
   await click('.hero-categories button','通用模式');
   await evaluate('window.__botEvents=[];true');
-  await evaluate('window.__entryTiming={};document.addEventListener("keydown",e=>{if(e.key==="Enter"&&!window.__entryTiming.sent)window.__entryTiming.sent=performance.now()},true);new MutationObserver(()=>{if(window.__entryTiming.sent&&!window.__entryTiming.chat&&document.querySelector(".chat-column"))window.__entryTiming.chat=performance.now()}).observe(document.body,{childList:true,subtree:true});true');
+  await evaluate('window.__entryTiming={};document.addEventListener("keydown",e=>{if(e.key==="Enter"&&!window.__entryTiming.sent)window.__entryTiming.sent=performance.now()},true);new MutationObserver(()=>{if(window.__entryTiming.sent&&!window.__entryTiming.chat&&document.querySelector(".task-chat-header"))window.__entryTiming.chat=performance.now()}).observe(document.body,{childList:true,subtree:true});true');
   await send('BOT_NATIVE: run deterministic verification');
-  assert(await evaluate('!!document.querySelector(".chat-column")&&!document.querySelector(".hero")'),'Bot must enter chat immediately, before runtime startup');
+  assert(await evaluate('!!document.querySelector(".task-chat-header")&&!document.querySelector(".hero")'),'Bot must enter chat immediately, before runtime startup');
   assert(await evaluate('document.body.innerText.includes("BOT_NATIVE: run deterministic verification")'),'submission preview must preserve the sent input while awaiting Durable');
   report.entryTiming=await evaluate('({chatMs:window.__entryTiming.chat-window.__entryTiming.sent,hasSnapshot:window.__botEvents.some(e=>e.type==="durable_snapshot")})');
   assert(report.entryTiming.chatMs<500,JSON.stringify(report.entryTiming));
@@ -560,7 +560,7 @@ await evaluate(`(async()=>{window.__savedClipboard=(await Promise.all((await nav
   report.tests.push('complete snapshot after active restart; native queue continues despite stale MyBuddy failed status; no unsafe replay; old design task retired');
   await click('.task-item-title','MODE_BOUND_LEGACY');
   await until(()=>evaluate('document.body.innerText.includes("LEGACY_CODING_HISTORY")'),'legacy coding history loads');
-  assert.equal(await evaluate('document.querySelector(".chat-column")?.dataset.mode'),'coding');
+  assert.equal(await evaluate('document.querySelector(".task-chat-header .welcome-mode-icon-label")?.textContent'),'代码开发');
   for(const text of ['MODE_BOUND_CONTINUE_ONE','MODE_BOUND_CONTINUE_TWO']){
     if(text.endsWith('TWO')){
       await evaluate('document.querySelector(".model-trigger").click()');

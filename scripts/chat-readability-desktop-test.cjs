@@ -38,10 +38,9 @@ function fixtureModel(request) {
 
 run(async env => {
   const { evaluate, until, rpc, report } = env;
-  const { press, click, screenshot, openTopBarMenu } = routingControls(env);
+  const { press, click, screenshot } = routingControls(env);
   const css = selector => `document.querySelector(${JSON.stringify(selector)})`;
   const history = () => evaluate(`window.api.agent.loadTaskHistory(${JSON.stringify(id)}).then(result=>result.messages)`);
-  await openTopBarMenu("desktop-module-list");
   if (dots) await click("MyBuddy Dots", ".sidebar-scroll");
   else {
     await evaluate(`window.api.db.upsertTask({id:"chat-reading-test",title:"阅读验证",welcomeMode:"general",updatedAt:Date.now()})`);
@@ -108,16 +107,18 @@ run(async env => {
   report.actualControlChecks.push("段落跳转、完整代码与换行、双图图注和翻页、文档预览与源码、提示和列表、流程图及失败回退、可读复制");
 
   if (!dots) {
-    assert.equal(await evaluate("[...document.querySelectorAll('#desktop-task-actions button')].some(button=>button.textContent.trim()==='审查变更')"), false);
     const delivered = await send("产物和工具测试。", "本轮交付已完成");
     await until(() => evaluate(`${css(delivered)}?.textContent.includes('本轮交付.md')`), "实际写入的文件跟随本轮消息");
-    assert.equal(await evaluate("[...document.querySelectorAll('#desktop-task-actions button')].filter(button=>button.textContent.trim().startsWith('产物 (')).length"), 1);
-    assert.equal(await evaluate("[...document.querySelectorAll('#desktop-task-actions button')].some(button=>button.textContent.trim()==='审查变更')"), true);
+    assert.equal(await evaluate("[...document.querySelectorAll('.task-chat-header button')].some(button => button.textContent.trim() === '审查变更' || button.textContent.trim().startsWith('产物 ('))"), false);
+    await press(css('.task-chat-header button[title="打开概览"]'), "打开概览");
+    await until(() => evaluate("Boolean(document.querySelector('.extension-top-bar button[title^=\"任务产物\"]'))"), "右栏产物入口");
+    assert.equal(await evaluate("Boolean(document.querySelector('.extension-top-bar button[aria-label=\"代码审查\"]'))"), true);
+    await press(css('.task-chat-header button[title="关闭侧栏"]'), "关闭概览");
     assert.doesNotMatch(await evaluate("document.querySelector('.message-list').textContent"), /查看所有产物/);
     await press(css(`${delivered} .timeline-header`), "展开工具过程");
     await press(css(`${delivered} .tool-row--error .tool-row-header`), "展开失败工具");
     assert.match(await evaluate(`${css(`${delivered} .chat-tool-detail`)}.textContent`), /失败详情.*调用详情/s);
-    report.actualControlChecks.push("真实写入产生本轮文件，标题栏提供唯一总入口，失败工具展开后分开显示结果和调用详情");
+    report.actualControlChecks.push("真实写入产生本轮文件，任务头部不再放产物/审查变更，入口在右栏顶栏，失败工具展开后分开显示结果和调用详情");
   }
   await screenshot("readability");
 }, { name: dots ? "chat-readability-dots" : "chat-readability-main", fixtureModel,

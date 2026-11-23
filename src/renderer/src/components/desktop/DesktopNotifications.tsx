@@ -122,7 +122,7 @@ export default function DesktopNotifications({ onOpen }: { onOpen: () => void })
   }, [navigate]);
 
   return <>
-    <button type="button" className="desktop-topbar-button notification-bell" title="通知中心"
+    <button type="button" className="desktop-rail-icon notification-bell" title="通知中心"
       aria-current={active ? "page" : undefined}
       aria-label={unreadCount ? `通知中心，${unreadCount} 条未读` : "通知中心"} onClick={onOpen}>
       <IconBell size={17} />
