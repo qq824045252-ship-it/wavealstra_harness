@@ -735,7 +735,8 @@
     "repair:calendar": "esbuild scripts/prepare-calendar-repair.ts --bundle --platform=node --format=cjs --packages=external --outfile=out/tests/prepare-calendar-repair.cjs && node out/tests/prepare-calendar-repair.cjs",
     "repair:calendar:verify": "esbuild scripts/verify-calendar-repair.ts --bundle --platform=node --format=cjs --external:better-sqlite3 --external:electron --outfile=out/tests/verify-calendar-repair.cjs && node scripts/test-guard.mjs out/tests/verify-calendar-repair.cjs",
     "test:conversation-goal-prompt": "esbuild --log-override:impossible-typeof=silent scripts/conversation-goal-prompt-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/conversation-goal-prompt-test.mjs --alias:electron=./scripts/arch-electron-stub.ts && node scripts/test-guard.mjs out/tests/conversation-goal-prompt-test.mjs",
-    "test:conversation-goal-continuation": "esbuild --log-override:impossible-typeof=silent scripts/conversation-goal-continuation-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/conversation-goal-continuation-test.mjs --alias:electron=./scripts/arch-electron-stub.ts && node scripts/test-guard.mjs out/tests/conversation-goal-continuation-test.mjs"
+    "test:conversation-goal-continuation": "esbuild --log-override:impossible-typeof=silent scripts/conversation-goal-continuation-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/conversation-goal-continuation-test.mjs --alias:electron=./scripts/arch-electron-stub.ts && node scripts/test-guard.mjs out/tests/conversation-goal-continuation-test.mjs",
+    "test:mermaid-svg-xml": "esbuild scripts/mermaid-image-fixture.ts --bundle --platform=browser --format=iife --outfile=out/tests/mermaid-image.js && electron scripts/mermaid-svg-xml-test.cjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.10",

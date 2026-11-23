@@ -93,6 +93,7 @@ const GUI_TESTS = new Set([
   "test:workspace-files-sort-desktop", // real Electron workspace tree + production filesystem A/B
   "test:usage-dashboard-dev", // actual pnpm dev app, isolated synthetic usage ledger
   "test:browser-tabs-ui",
+  "test:mermaid-svg-xml", // isolated Electron renderer: real mermaid output decoded through the shipped renderer modules
   "test:browser-tabs-electron",
   "test:gadget-browser-recovery-electron",
   "test:gadget-save-workspace-desktop",
