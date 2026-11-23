@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,3 +88,90 @@ test("invalid concurrency cannot silently report an empty successful gate", () =
   for (const name of ["test:image-resize-assets", "test:oauth-build-assets", "test:pi-codemode-assets"]) assert(artifacts.stdout.includes(name));
   assert(!artifacts.stdout.includes("  test:pi104-features"));
 });
+
+test("the gate distinguishes guard timeouts from test failures and preserves unselected baseline entries", () => fixture(async (root) => {
+  const sourceDir = dirname(fileURLToPath(import.meta.url));
+  const scriptsDir = join(root, "scripts");
+  const modulesDir = join(root, "node_modules");
+  const binDir = join(modulesDir, ".bin");
+  await mkdir(scriptsDir);
+  await mkdir(binDir, { recursive: true });
+  await symlink(join(sourceDir, "..", "node_modules", "esbuild"), join(modulesDir, "esbuild"), "junction");
+  for (const name of ["test-all.mjs", "test-bundle-pool.mjs", "test-guard.mjs"]) {
+    await copyFile(join(sourceDir, name), join(scriptsDir, name));
+  }
+  // Dispatch the fixture's package scripts without relying on an installed pnpm.
+  const fixtureRunner = `const { spawnSync } = require("node:child_process");
+const script = require("./package.json").scripts[process.argv[2]];
+for (const stage of script.split(" && ")) {
+  const result = spawnSync(process.execPath, stage.split(" ").slice(1), { stdio: "inherit" });
+  if (result.status !== 0) {
+    process.exitCode = 1;
+    break;
+  }
+}
+`;
+  const isWindows = process.platform === "win32";
+  await writeFile(join(binDir, isWindows ? "pnpm.cmd" : "pnpm"), isWindows
+    ? '@node fixture-runner.cjs "%~2"\r\n'
+    : '#!/bin/sh\nexec node fixture-runner.cjs "$2"\n', { mode: 0o755 });
+  await writeFile(join(root, "fixture-runner.cjs"), fixtureRunner);
+  const cases = {
+    "fixture-hang": "setInterval(() => {}, 1000);",
+    "fixture-pass": "process.exit(0);",
+    "fixture-exit-124": 'console.error("[test-guard] KILL reason=timeout"); process.exit(124);',
+  };
+  const scripts = {};
+  for (const [name, source] of Object.entries(cases)) {
+    scripts[`test:${name}`] = `node scripts/test-guard.mjs src/${name}.cjs`;
+    await writeFile(join(root, "src", `${name}.cjs`), source);
+  }
+  scripts["test:fixture-before-guard"] = "node src/fixture-exit-124.cjs && node scripts/test-guard.mjs src/fixture-pass.cjs";
+  scripts["test:fixture-after-guard"] = "node scripts/test-guard.mjs src/fixture-pass.cjs && node src/fixture-exit-124.cjs && node scripts/test-guard.mjs src/fixture-pass.cjs";
+  scripts["test:fixture-unguarded"] = "node src/fixture-exit-124.cjs";
+  scripts["test:fixture-last-guard-failed"] = "node scripts/test-guard.mjs src/fixture-pass.cjs && node scripts/test-guard.mjs src/fixture-exit-124.cjs";
+  await writeFile(join(root, "package.json"), JSON.stringify({ scripts }));
+  const baselinePath = join(scriptsDir, "test-baseline.json");
+  const original = { $basis: "fixture metadata", knownFailing: Object.keys(scripts).sort() };
+  await writeFile(baselinePath, JSON.stringify(original));
+  const baseline = async () => JSON.parse(await readFile(baselinePath, "utf8"));
+  const gate = (...args) => spawnSync(process.execPath, ["scripts/test-all.mjs", "--no-batch-build", ...args], {
+    cwd: root, encoding: "utf8", timeout: 15_000,
+    env: { ...process.env, GUARD_TIMEOUT_S: "1", GUARD_HOME: "sandbox" },
+  });
+
+  const hang = gate("--filter=fixture-hang");
+  assert.equal(hang.status, 1, hang.stdout + hang.stderr);
+  assert.match(hang.stdout, /TIMEOUT test:fixture-hang/);
+  assert.match(hang.stdout, /超时 1/);
+  const updateHang = gate("--filter=fixture-hang", "--update-baseline");
+  assert.equal(updateHang.status, 1, updateHang.stdout + updateHang.stderr);
+  assert.deepEqual(await baseline(), original);
+
+  const assertionFailure = gate("--filter=fixture-exit-124");
+  assert.equal(assertionFailure.status, 0, assertionFailure.stdout + assertionFailure.stderr);
+  assert.match(assertionFailure.stdout, /FAIL\s+test:fixture-exit-124.+baseline 已知/);
+  assert.doesNotMatch(assertionFailure.stdout, /TIMEOUT test:/);
+
+  const pipelineFailures = [
+    ["fixture-before-guard", /missing-guard-outcome/],
+    ["fixture-after-guard", /guard-exit-mismatch/],
+  ].map(([name, expected]) => ({ expected, regression: gate(`--filter=${name}`) }));
+  assert.deepEqual(pipelineFailures.map(({ regression }) => regression.status), [1, 1],
+    pipelineFailures.map(({ regression }) => regression.stdout + regression.stderr).join("\n"));
+  for (const { expected, regression } of pipelineFailures) {
+    assert.match(regression.stdout, expected);
+  }
+  for (const name of ["fixture-unguarded", "fixture-last-guard-failed"]) {
+    const ordinaryFailure = gate(`--filter=${name}`);
+    assert.equal(ordinaryFailure.status, 0, ordinaryFailure.stdout + ordinaryFailure.stderr);
+    assert.match(ordinaryFailure.stdout, /\[baseline 已知\]/);
+  }
+
+  const updatePass = gate("--filter=fixture-pass", "--update-baseline");
+  assert.equal(updatePass.status, 0, updatePass.stdout + updatePass.stderr);
+  assert.match(updatePass.stdout, /PASS test:fixture-pass/);
+  const updated = await baseline();
+  assert.equal(updated.$basis, original.$basis);
+  assert.deepEqual(updated.knownFailing, original.knownFailing.filter((name) => name !== "test:fixture-pass"));
+}));

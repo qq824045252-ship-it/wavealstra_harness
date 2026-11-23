@@ -23,13 +23,14 @@
  *   node scripts/test-all.mjs --no-batch-build   # 使用原有逐脚本 pnpm/esbuild 入口
  *   node scripts/test-all.mjs --list             # 只列分类与选中的用例，不执行
  *   node scripts/test-all.mjs --audit            # 只做分类自检（GUI 清单 vs electron 命令）
- *   node scripts/test-all.mjs --update-baseline  # 记录当前失败集为基线
+ *   node scripts/test-all.mjs --update-baseline  # 更新本次选中的用例，保留其余基线条目
  *   node scripts/test-all.mjs --filter=memory    # 只跑名字含 memory 的
  *
- * 退出码：0 = 无新增失败；1 = 有新增失败；2 = 用法/环境错误。
+ * 退出码：0 = 门禁通过；1 = 新增回归或执行失败；2 = 用法错误。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareTestBundles } from "./test-bundle-pool.mjs";
@@ -589,6 +590,7 @@ console.log("");
 
 const failed = [];
 const passed = [];
+const infrastructureFailures = new Set();
 const timedOut = [];
 const started = Date.now();
 
@@ -604,6 +606,9 @@ let preparedBundles = new Map();
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const activeChildren = new Set();
+const guardOutcomes = mkdtempSync(join(tmpdir(), "mybuddy-test-outcomes-"));
+process.once("exit", () => rmSync(guardOutcomes, { recursive: true, force: true }));
+let nextOutcomeId = 0;
 
 /** 只保留输出尾部：失败诊断要的是最后几十行，不是整段 esbuild 输出。 */
 function tail(text, lines = 80) {
@@ -635,15 +640,18 @@ function runOne(name) {
     const t0 = Date.now();
     const prepared = preparedBundles.get(name);
     if (prepared?.error) {
-      resolve({ name, ok: false, killed: false, secs: "0.0", output: `[bundle error] ${prepared.error}` });
+      resolve({ name, ok: false, infrastructureFailure: "bundle-error", secs: "0.0", output: `[bundle error] ${prepared.error}` });
       return;
     }
     const command = prepared ? process.execPath : "pnpm";
-    const commandArgs = prepared ? ["scripts/test-guard.mjs", ...prepared.guardArgs] : ["-s", name];
+    const commandArgs = prepared ? ["scripts/test-guard.mjs", ...prepared.guardArgs] : ["run", name];
+    const script = pkg.scripts[name];
+    const expectsGuard = prepared || /(?:^|[\s"'])(?:\.[\\/])?scripts[\\/]test-guard\.mjs(?=$|[\s"'&|;])/.test(script);
+    const outcomePath = join(guardOutcomes, String(nextOutcomeId++));
     const child = spawn(command, commandArgs, {
       cwd: ROOT,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...childEnv, npm_lifecycle_event: name, npm_lifecycle_script: pkg.scripts[name] },
+      env: { ...childEnv, npm_lifecycle_event: name, npm_lifecycle_script: script, MYBUDDY_TEST_GUARD_OUTCOME: outcomePath },
       // POSIX 直接 spawn pnpm（不再套 sh -c，避免 Node DEP0190 与多一层僵尸进程）；
       // Windows 的 pnpm 是 .cmd，必须经 shell。超时为整组 kill / taskkill /T。
       shell: !prepared && process.platform === "win32",
@@ -663,12 +671,33 @@ function runOne(name) {
     child.stdout?.on("data", collect);
     child.stderr?.on("data", collect);
 
-    const finish = (code) => {
+    const finish = (code, launchFailure) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       activeChildren.delete(child);
-      resolve({ name, ok: !killed && code === 0, killed, secs: ((Date.now() - t0) / 1000).toFixed(1), output });
+      let infrastructureFailure = killed ? "timeout" : launchFailure;
+      if (!infrastructureFailure) {
+        try {
+          const { outcome, code: guardCode } = JSON.parse(readFileSync(outcomePath, "utf8")) ?? {};
+          if (["timeout", "memory-limit", "spawn-error", "interrupted"].includes(outcome)) {
+            infrastructureFailure = outcome;
+          } else if (outcome !== "test-exit" || !Number.isInteger(guardCode)) {
+            infrastructureFailure = "invalid-guard-outcome";
+          } else if ((code === 0) !== (guardCode === 0)) {
+            // The package runner may normalize nonzero codes. A success mismatch
+            // means some other stage determined the final result.
+            infrastructureFailure = "guard-exit-mismatch";
+            output += `\n[guard outcome mismatch] guard exit=${guardCode}, script exit=${code}`;
+          }
+        } catch (error) {
+          if (expectsGuard || error.code !== "ENOENT") {
+            infrastructureFailure = error instanceof SyntaxError ? "invalid-guard-outcome" : "missing-guard-outcome";
+            output += `\n[guard outcome unavailable] ${error.message}`;
+          }
+        }
+      }
+      resolve({ name, ok: !infrastructureFailure && code === 0, infrastructureFailure, secs: ((Date.now() - t0) / 1000).toFixed(1), output });
     };
 
     const timer = setTimeout(() => {
@@ -679,10 +708,10 @@ function runOne(name) {
       fallback.unref?.();
     }, PER_TEST_TIMEOUT * 1000);
 
-    child.on("close", (code) => finish(code));
+    child.on("close", (code, signal) => finish(code, signal ? "interrupted" : undefined));
     child.on("error", (error) => {
       output += `\n[spawn error] ${error.message}`;
-      finish(1);
+      finish(1, "spawn-error");
     });
   });
 }
@@ -701,15 +730,16 @@ async function runPool(items, worker, concurrency = JOBS) {
       const next = queue.shift();
       if (next === undefined) return;
       const r = await worker(next);
-      if (r.killed) timedOut.push(r.name);
+      if (r.infrastructureFailure === "timeout") timedOut.push(r.name);
       if (r.ok) {
         passed.push(r.name);
         console.log(`  PASS ${r.name}  (${r.secs}s)`);
       } else {
         failed.push(r.name);
-        const known = baseline.has(r.name);
+        if (r.infrastructureFailure) infrastructureFailures.add(r.name);
+        const known = !r.infrastructureFailure && baseline.has(r.name);
         console.log(
-          `  ${r.killed ? "TIMEOUT" : "FAIL "} ${r.name}  (${r.secs}s)${r.killed ? "" : known ? "  [baseline 已知]" : "  [新增回归]"}`,
+          `  ${r.infrastructureFailure === "timeout" ? "TIMEOUT" : "FAIL "} ${r.name}  (${r.secs}s)${r.infrastructureFailure ? `  [执行失败: ${r.infrastructureFailure}]` : known ? "  [baseline 已知]" : "  [新增回归]"}`,
         );
         // 之前 stdio:"ignore" 让 CI 只看到用例名、看不到任何失败原因。
         const detail = tail(r.output);
@@ -735,15 +765,16 @@ if (serialNames.length > 0) {
 }
 
 const elapsed = ((Date.now() - started) / 1000 / 60).toFixed(1);
-const newRegressions = failed.filter((n) => !baseline.has(n));
-const fixedSinceBaseline = [...baseline].filter((n) => !failed.includes(n) && names.includes(n));
+const newRegressions = failed.filter((n) => !infrastructureFailures.has(n) && !baseline.has(n));
+const knownFailureCount = failed.length - newRegressions.length - infrastructureFailures.size;
+const fixedSinceBaseline = passed.filter((n) => baseline.has(n));
 
 console.log("");
 console.log("=".repeat(64));
-console.log(`[test-all] ${elapsed} min · 通过 ${passed.length} · 失败 ${failed.length} · 已知失败 ${failed.length - newRegressions.length} · 新增回归 ${newRegressions.length}${timedOut.length ? ` · 超时 ${timedOut.length}` : ""}`);
+console.log(`[test-all] ${elapsed} min · 通过 ${passed.length} · 失败 ${failed.length} · 已知失败 ${knownFailureCount} · 新增回归 ${newRegressions.length}${infrastructureFailures.size ? ` · 执行失败 ${infrastructureFailures.size}` : ""}${timedOut.length ? ` · 超时 ${timedOut.length}` : ""}`);
 
 if (timedOut.length > 0) {
-  console.log(`[test-all] 超时用例（>${PER_TEST_TIMEOUT}s，按失败计入门禁）：`);
+  console.log("[test-all] 超时用例（按失败计入门禁）：");
   for (const n of timedOut) console.log(`    - ${n}`);
 }
 
@@ -758,6 +789,10 @@ if (newRegressions.length > 0) {
 }
 
 if (updateBaseline) {
+  if (infrastructureFailures.size > 0) {
+    console.error("[test-all] 用例执行不完整，基线未更新。");
+    process.exit(1);
+  }
   // 保留原有 $basis/$remaining 等 provenance，避免 --update-baseline 一次把决策背景抹掉。
   const previous = existsSync(BASELINE_PATH) ? JSON.parse(readFileSync(BASELINE_PATH, "utf8")) : {};
   const payload = {
@@ -765,14 +800,14 @@ if (updateBaseline) {
     $comment:
       "已知失败基线（棘轮）。新增失败会让 test:all 失败；修复后请移除对应条目。每条应附简短原因。",
     generatedAt: new Date().toISOString(),
-    knownFailing: failed.sort(),
+    knownFailing: [...new Set([...baseline].filter((name) => !names.includes(name)).concat(failed))].sort(),
   };
   writeFileSync(BASELINE_PATH, JSON.stringify(payload, null, 2) + "\n", "utf8");
-  console.log(`[test-all] 已更新 baseline: ${BASELINE_PATH} (${failed.length} 条)`);
+  console.log(`[test-all] 已更新 baseline: ${BASELINE_PATH} (${payload.knownFailing.length} 条)`);
   process.exit(0);
 }
 
-if (failed.length > 0) {
+if (knownFailureCount > 0) {
   console.log("[test-all] 已知失败仍然可见（见上），但需修复后才能移出 baseline。");
 }
-process.exit(newRegressions.length > 0 ? 1 : 0);
+process.exit(newRegressions.length > 0 || infrastructureFailures.size > 0 ? 1 : 0);

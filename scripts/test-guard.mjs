@@ -20,7 +20,7 @@
  * 终止：Windows 用 taskkill /PID /T /F（可靠杀整树）；POSIX 用进程组 SIGKILL。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -64,6 +64,8 @@ const startedAt = Date.now();
 const isolateHome = !hostHomeFlag && (process.env.GUARD_HOME ?? "sandbox") !== "host";
 let sandboxHome = null;
 const childEnv = { ...process.env };
+const outcomePath = childEnv.MYBUDDY_TEST_GUARD_OUTCOME;
+delete childEnv.MYBUDDY_TEST_GUARD_OUTCOME;
 if (isolateHome) {
   sandboxHome = mkdtempSync(join(tmpdir(), "mybuddy-test-home-"));
   childEnv.HOME = sandboxHome;
@@ -92,6 +94,8 @@ try {
   });
 } catch (err) {
   console.error(`[test-guard] 子进程启动失败: ${err instanceof Error ? err.message : String(err)}`);
+  cleanupSandboxHome();
+  writeOutcome("spawn-error", 2);
   process.exit(2);
 }
 
@@ -167,7 +171,16 @@ function cleanupSandboxHome() {
   try { rmSync(sandboxHome, { recursive: true, force: true }); } catch { /* 忽略清理失败 */ }
 }
 
-function finish(code, reason) {
+function writeOutcome(outcome, code) {
+  if (!outcomePath) return;
+  try {
+    writeFileSync(outcomePath, JSON.stringify({ outcome, code }));
+  } catch (error) {
+    console.error(`[test-guard] 无法记录测试结果: ${error.message}`);
+  }
+}
+
+function finish(code, reason, outcome = "test-exit") {
   if (settled) return;
   settled = true;
   cleanupSandboxHome();
@@ -179,17 +192,18 @@ function finish(code, reason) {
   console.error(
     `[test-guard] exit pid=${child.pid} code=${code} elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
   );
+  writeOutcome(outcome, code);
   process.exitCode = code;
 }
 
 child.on("error", (err) => {
-  finish(2, `[test-guard] 子进程启动失败: ${err.message}`);
+  finish(2, `[test-guard] 子进程启动失败: ${err.message}`, "spawn-error");
 });
 
 child.on("exit", (code, signal) => {
   if (settled) return;
   const c = code ?? (signal ? 1 : 0);
-  finish(c, null);
+  finish(c, null, signal ? "interrupted" : "test-exit");
 });
 
 // 总超时：到点杀整树（防挂死测试无界占用）
@@ -198,7 +212,7 @@ timer = setTimeout(() => {
     `[test-guard] KILL pid=${child.pid} reason=timeout=${TIMEOUT_S}s elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
   );
   killTree(child.pid);
-  finish(124, null);
+  finish(124, null, "timeout");
 }, TIMEOUT_S * 1000);
 timer.unref?.();
 
@@ -217,7 +231,7 @@ poller = setInterval(async () => {
       `[test-guard] KILL pid=${child.pid} reason=memory ${totalMb.toFixed(0)}MB (ws=${(mem.ws / 1048576).toFixed(0)}MB private_commit=${(mem.commit / 1048576).toFixed(0)}MB) > cap=${MEM_MB}MB elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`,
     );
     killTree(child.pid);
-    finish(137, null);
+    finish(137, null, "memory-limit");
   }
 }, POLL_MS);
 poller.unref?.();
