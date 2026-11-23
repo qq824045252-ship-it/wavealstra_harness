@@ -1,10 +1,11 @@
 import { realpathSync } from "node:fs";
 import { copyJson, type JsonRepresentation } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
-import { getSupportedThinkingLevels, type Message } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { configure, defineDoc, LiveDoc, type Cursor, type ToolHooks } from "@earendil-works/pi-durable";
+import { configure, defineDoc, LiveDoc, type Cursor, type EntryRecord, type ToolHooks } from "@earendil-works/pi-durable";
 import { consultParticipantKey } from "../../../shared/multi-model-consult";
+import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
 import { normalizeThinking } from "../../capabilities/subagent/config";
 import { runMultiModelConsult, type ConsultSessionOptions, type ConsultWorkerSession, type RunConsultOptions } from "../../capabilities/MultiModelConsult";
 import { assertModelAdmission } from "../ModelInvocationAdmission";
@@ -116,12 +117,12 @@ export async function createDurableConsultSession(options: ConsultSessionOptions
       emit({ type: "tool_execution_start", toolCallId: slot.callId, toolName: slot.name, args: {} });
     }
   });
-  const entries = async (): Promise<Message[]> => {
-    const result: Message[] = [];
+  const entries = async (): Promise<EntryRecord[]> => {
+    const result: EntryRecord[] = [];
     let cursor: Cursor | undefined;
     do {
       const page = await api.commit(tx => tx.scanEntries({ conversationId: id, order: "ascending" }, 500, cursor), context);
-      for (const entry of page.items) result.push(...entry.model ?? []);
+      result.push(...page.items);
       cursor = page.next;
     } while (cursor);
     return result;
@@ -139,7 +140,7 @@ export async function createDurableConsultSession(options: ConsultSessionOptions
         try { await submission.wait(withAbortSignal(AbortSignal.any([options.signal, deadline.signal]), context)); }
         finally { clearTimeout(timer); }
       }
-      for (const message of await entries()) {
+      for (const entry of await entries()) for (const message of entry.model ?? []) {
         if (message.role === "assistant") {
           tokens = { input: tokens.input + message.usage.input, output: tokens.output + message.usage.output,
             cacheRead: tokens.cacheRead + message.usage.cacheRead, cacheWrite: tokens.cacheWrite + message.usage.cacheWrite,
@@ -150,7 +151,9 @@ export async function createDurableConsultSession(options: ConsultSessionOptions
           emit({ type: "message_end", message });
         } else if (message.role === "toolResult") {
           emit({ type: "tool_execution_end", toolCallId: message.toolCallId, toolName: message.toolName,
-            result: { content: message.content }, isError: message.isError });
+            result: { content: message.content, details: message.details }, isError: !nativeExecutionSucceeded(message, {
+              conversationId: entry.conversationId, toolTaskId: entry.byTaskId, callId: message.toolCallId, toolName: message.toolName,
+            }) });
           if (message.details && typeof message.details === "object" && "consultBudgetExceeded" in message.details && message.details.consultBudgetExceeded) options.onToolLimit();
         }
       }

@@ -8,7 +8,8 @@ import { STEER_ENTRY_KIND } from "../durable/DurableSteerReceipts";
 import { deliveryCorrection, parseDeliveryContract, type DeliveryContract } from "./DeliveryContract";
 import { readImprovementChild } from "./ImprovementChildHistory";
 import { missingFile, readMapping } from "./ReadRecoveryHints";
-import { asksHandoff, asksProgress, claimsDelivery, fingerprint, messageText, nestedReadbackTools, reportsBlocker, requestFeatures, requirementTopics, sameRead, scopeCorrection, type ReadResult } from "./ImprovementDecisions";
+import { asksHandoff, asksProgress, claimsDelivery, confirmsReadback, fingerprint, matchesReadbackTarget, messageText, nestedReadbackTools, reportsBlocker, requestFeatures, requirementTopics, sameRead, scopeCorrection, type ReadResult } from "./ImprovementDecisions";
+import { matchingNativeExecutionReceipt, nativeExecutionSucceeded, nativeFileVersion } from "../../../shared/native-execution-receipt";
 
 const analysisVersion = 2;
 interface ToolObservation extends ReadResult { tool: string; entry: number; elapsed: number }
@@ -19,8 +20,9 @@ export interface HistoryState {
   requirements?: string[]; baseline?: number;
   lastAction?: number;
   answer?: { id: number; handoff: boolean; generation: number; claimed?: boolean; blocked?: boolean }; count: number;
-  cwd?: string; call?: { id: string; args: string; path?: string; tool: string; target: boolean; entry: number; at: number };
+  cwd?: string; call?: { id: string; args: string; path?: string; tool: string; entry: number; at: number };
   read?: ReadResult & { entry: number; missing?: string }; readback: "none" | "written" | "verified"; write?: number;
+  writtenFile?: { path?: string; version?: string };
   delivery?: { contract: DeliveryContract; input: number; wrote: boolean };
   progress?: { entry: number; at: number };
   success?: boolean;
@@ -104,7 +106,7 @@ function consume(state: HistoryState, entry: EntryRecord, identity: HistoryIdent
         cwd: typeof object(metadata.audit).cwd === "string" ? String(object(metadata.audit).cwd) : undefined,
         project: typeof recommendation.projectId === "string" ? recommendation.projectId : undefined,
         workspace: typeof recommendation.workspaceId === "string" ? recommendation.workspaceId : undefined,
-        hasPriorAnswer, answer: undefined, read: undefined, call: undefined, write: undefined, lastAction:undefined,
+        hasPriorAnswer, answer: undefined, read: undefined, call: undefined, write: undefined, writtenFile: undefined, lastAction:undefined,
         delivery, progress });
       continue;
     }
@@ -115,8 +117,7 @@ function consume(state: HistoryState, entry: EntryRecord, identity: HistoryIdent
       if (calls.length) {
         const call = calls[0];
         state.call = calls.length === 1 ? { id: call.id, args: fingerprint(call.arguments), tool: call.name,
-          path: typeof call.arguments.path === "string" ? call.arguments.path.slice(0,512) : undefined,
-          target: typeof call.arguments.path === "string" && call.arguments.path === state.features.target, entry: entry.id, at: m.timestamp } : undefined;
+          path: typeof call.arguments.path === "string" ? call.arguments.path.slice(0,512) : undefined, entry: entry.id, at: m.timestamp } : undefined;
         if (!state.call) state.tools = [];
         if (!state.call || call.name !== "read") { state.read = undefined; state.count = 0; }
         continue;
@@ -134,25 +135,28 @@ function consume(state: HistoryState, entry: EntryRecord, identity: HistoryIdent
       const call = state.call;
       state.call = undefined;
       if (!call || call.id !== m.toolCallId || call.tool !== m.toolName) { state.read = undefined; state.count = 0; state.tools = []; continue; }
-      if (!m.isError) {
-        state.success = true;
-        if (state.delivery && call.path === state.delivery.contract.document && (call.tool === "write" || call.tool === "edit")) {
+      const scope = { conversationId: entry.conversationId, toolTaskId: entry.byTaskId, callId: m.toolCallId, toolName: m.toolName };
+      const native = matchingNativeExecutionReceipt(m, scope);
+      const succeeded = nativeExecutionSucceeded(m, scope);
+      const path = native?.fileReadAttempt?.target ?? native?.fileChange?.target ?? call.path;
+      if (succeeded) state.success = true;
+      const fileOperations = call.tool === "codemode" ? nestedReadbackTools(m.details)
+        : [{ tool: call.tool, path, requestedPath: call.path, version: nativeFileVersion(native), isError: !succeeded }];
+      for (const operation of fileOperations) {
+        if (operation.isError) continue;
+        const wrote = operation.tool === "write" || operation.tool === "edit";
+        if (wrote && state.delivery && matchesReadbackTarget(state.delivery.contract.document, operation, state.cwd)) {
           state.delivery.wrote = true;
         }
-      }
-      if (call.tool === "codemode") for (const inner of nestedReadbackTools(m.details)) {
-        if (state.delivery && inner.path === state.delivery.contract.document && (inner.tool === "write" || inner.tool === "edit")) {
-          state.delivery.wrote = true;
+        if (!matchesReadbackTarget(state.features.target, operation, state.cwd)) continue;
+        if (wrote) {
+          state.readback = "written"; state.write = entry.id;
+          state.writtenFile = { path: operation.path, version: operation.version };
         }
-        if (!state.features.target || inner.path !== state.features.target) continue;
-        if (inner.tool === "read") { if (state.readback === "written") state.readback = "verified"; }
-        else { state.readback = "written"; state.write = entry.id; }
+        if (operation.tool === "read" && state.readback !== "none")
+          state.readback = confirmsReadback(state.writtenFile ?? { path: state.features.target }, operation, state.cwd) ? "verified" : "written";
       }
-      if (call.target && !m.isError) {
-        if (call.tool === "write" || call.tool === "edit") { state.readback = "written"; state.write = entry.id; }
-        if (call.tool === "read" && state.readback === "written") state.readback = "verified";
-      }
-      const receipt = { tool: call.tool, args: call.args, result: fingerprint(m.content), error: m.isError === true,
+      const receipt = { tool: call.tool, args: call.args, result: fingerprint(m.content), error: !succeeded,
         entry: entry.id, elapsed: Math.max(0, m.timestamp - call.at) };
       state.tools = [...(state.tools ?? []), receipt].slice(-4);
       const candidate = !state.features.explicitRetry && toolPattern(state.tools);
@@ -162,8 +166,8 @@ function consume(state: HistoryState, entry: EntryRecord, identity: HistoryIdent
         state.tools = [];
       }
       if (call.tool !== "read") continue;
-      const current = { args: call.args, result: fingerprint(m.content), error: m.isError === true, entry: entry.id,
-        missing: m.isError && missingFile(messageText(m.content)) ? call.path : undefined };
+      const current = { args: call.args, result: fingerprint(m.content), error: !succeeded, entry: entry.id,
+        missing: !succeeded && (native?.fileReadAttempt ? native.fileReadAttempt.openFailure === "not_found" : missingFile(messageText(m.content))) ? call.path : undefined };
       state.count = sameRead(state.read, current) ? state.count + 1 : 1;
       if (state.read && state.count === 2 && current.error && !state.features.explicitRetry)
         emit("retry", state.read.entry, m.timestamp, { repeatedReadFailure: true, explicitRetry: false });

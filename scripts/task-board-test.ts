@@ -179,7 +179,7 @@ try {
   assert.equal(crowdedRunning.rows.length, 4, "the focus preview page stays bounded at four cards");
   assert.ok(crowdedRunning.next, "a column with more than four running tasks can continue into 查看全部");
 
-  // 「我的焦点」纯函数：折叠数与去重必须能被界面直接读出来。
+  // 「我的焦点」纯函数：每栏 4 张、折叠数、跨栏共存都必须能被界面直接读出来。
   const row = (id: string): TaskBoardRow => ({
     id,
     title: id,
@@ -198,22 +198,38 @@ try {
   });
   const focus = (pages: Partial<Record<number, BoardPage>>) =>
     focusRows(Array.from({ length: 8 }, (_, i) => pages[i]));
-  const fourRunning = focus({ 2: focusPage(["a", "b", "c", "d"]) });
-  assert.deepEqual(fourRunning[2].rows.map((r) => r.id), ["a", "b", "c", "d"], "four running tasks all fit the focus column");
-  assert.equal(fourRunning[2].folded, 0);
+  const everyColumn = focusRows(
+    [0, 1, 2, 3, 4, 5, 6, 7].map(() => focusPage(["a", "b", "c", "d"])),
+  );
+  assert.deepEqual(
+    everyColumn.map((section) => section.rows.length),
+    [4, 4, 4, 4, 4, 4, 4, 4],
+    "every focus column renders four cards",
+  );
+  assert.deepEqual(
+    everyColumn.map((section) => section.more),
+    [false, false, false, false, false, false, false, false],
+    "nothing is reported as folded when the page already holds everything",
+  );
   const shared = focus({ 1: focusPage(["a"]), 2: focusPage(["a", "b", "c", "d"]) });
-  assert.deepEqual(shared[2].rows.map((r) => r.id), ["b", "c", "d"], "one task never renders twice in focus");
-  assert.equal(shared[2].duplicated, 1);
-  assert.equal(shared[2].folded, 0, "an item visible in an earlier column is not reported as folded");
+  assert.deepEqual(shared[1].rows.map((r) => r.id), ["a"]);
+  assert.deepEqual(
+    shared[2].rows.map((r) => r.id),
+    ["a", "b", "c", "d"],
+    "a running task still shows in 正在执行 even when 待审查的改动 already lists it",
+  );
+  assert.equal(shared[2].more, false, "each column only reports its own folded items");
   const crowded = focus({
     2: focusPage(["a", "b", "c", "d"], { total: 6, next: { rank: 0, at: now, id: "d" } }),
   });
+  assert.equal(crowded[2].rows.length, 4);
   assert.equal(crowded[2].folded, 2, "a known total yields the exact folded count");
   assert.equal(crowded[2].exact, true);
+  assert.equal(crowded[2].more, true);
   const unknownTotal = focus({ 3: focusPage(["x", "y", "z", "w"], { next: { rank: 0, at: now, id: "w" } }) });
-  assert.equal(unknownTotal[3].rows.length, 2, "最近在做 still previews two cards");
-  assert.ok(unknownTotal[3].folded > 0);
+  assert.equal(unknownTotal[3].rows.length, 4, "最近在做 also renders four cards");
   assert.equal(unknownTotal[3].exact, false, "an unknown total only claims 还有更多");
+  assert.equal(unknownTotal[3].more, true, "an unknown total still reports that more work is folded");
   console.log(
     "PASS lane paging with 1,000 results, wait routing, running and review focus, historical dates, activity, scheduled runs, focus folding and restart",
   );

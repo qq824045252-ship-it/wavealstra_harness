@@ -344,7 +344,7 @@ export default function TaskBoardPage(): React.JSX.Element {
             {focusSections.map(({ view: group }, i) => {
               const p = pages?.[i];
               if (!p?.rows.length) return null;
-              const { rows: items, folded, exact, duplicated } = preview[i];
+              const { rows: items, folded, exact, more } = preview[i];
               if (!items.length) return null;
               return (
                 <section className="task-board-lane" key={group} data-section={group}>
@@ -355,20 +355,15 @@ export default function TaskBoardPage(): React.JSX.Element {
                     <h2>{labels[group]}</h2>
                     {p.total != null && <span className="task-board-count">{p.total}</span>}
                     <button className="task-board-drill" onClick={() => go(group)}>
-                      {items.length < p.rows.length || p.next || folded > 0 ? "查看全部" : "打开列表"}
+                      {more ? "查看全部" : "打开列表"}
                     </button>
                   </header>
                   <div className="task-board-lane-body">{items.map((r) => card(r, group))}</div>
-                  {(folded > 0 || duplicated > 0) && (
+                  {more && (
                     <footer className="task-board-lane-more">
-                      {folded > 0 && (
-                        <button type="button" className="task-board-folded" onClick={() => go(group)}>
-                          {exact ? `还有 ${folded} 个被折叠` : "还有更多被折叠"} · 查看全部
-                        </button>
-                      )}
-                      {duplicated > 0 && (
-                        <span className="task-board-elsewhere">另有 {duplicated} 个已在上方分栏显示</span>
-                      )}
+                      <button type="button" className="task-board-folded" onClick={() => go(group)}>
+                        {exact && folded > 0 ? `还有 ${folded} 个被折叠` : "还有更多被折叠"} · 查看全部
+                      </button>
                     </footer>
                   )}
                 </section>

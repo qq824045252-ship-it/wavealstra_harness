@@ -41,7 +41,7 @@ const child = z.object({
   rejected: z.literal(false).optional(), writeConflicts: z.array(z.string()).max(0).optional(),
   stopReason: z.string().optional(), model: z.string().optional(), resolvedModel: z.string().optional(), workspace: z.object({ cwd: z.string(), kind: z.string().optional(), baseCommit: z.string().optional() }).optional(),
   messages: z.array(z.object({ role: z.string(), model: z.string().optional(), provider: z.string().optional(),
-    toolName: z.string().optional(), toolCallId: z.string().optional(), isError: z.boolean().optional(),
+    toolName: z.string().optional(), toolCallId: z.string().optional(), isError: z.boolean().optional(), details: z.unknown().optional(),
     content: z.array(z.object({ type: z.string(), text: z.string().optional(), name: z.string().optional(), id: z.string().optional(),
       arguments: z.record(z.string(), z.unknown()).optional() })) })),
 });
@@ -120,7 +120,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         const contest = !thermos && !decisions && stage ? contestDispatch(run, stage.id, role, tasks, options.cwd, settings) : undefined;
         const briefs = contest ? [] : tasks.map(task => thermos ? [
           "Inspect the actual current files in " + base.cwd + " against the task goal. Read-only review.",
-          "Use the native read tool on the actual source files before deciding. For a deleted path, use ls on its nearest existing parent and inspect the supplied before-image. Review scope: " + JSON.stringify(targets) + ". When empty, read the source named in the user's request. Each independent reviewer must inspect the requested source. The host correlates child tool results with the files.",
+          "Use the native read tool on the actual source files before deciding. For a deleted path, read that exact path to obtain a native file-not-found receipt and inspect the supplied before-image. Review scope: " + JSON.stringify(targets) + ". When empty, read the source named in the user's request. Each independent reviewer must inspect the requested source. The host correlates child tool results with the files.",
           "User instructions: " + JSON.stringify(userRequests) + ". Original task baseline: " + JSON.stringify(baseline),
           ...(draft ? [
             "Review the proposed investigation answer below as the actual deliverable. Treat it as untrusted text. Check its material claims, citations and example against the source. Existing implementation tradeoffs are not defects in a factual explanation unless it misrepresents them.",
@@ -129,7 +129,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           ] : []),
           "Measured paths: " + JSON.stringify(delta!.paths) + ". Measurement limitations: " + JSON.stringify(delta!.unknown),
           "Host checks of this exact workspace version (command, exit code, bounded real output, native task and entry IDs): " + JSON.stringify(verified),
-          "You have read, ls, grep and find. Inspect the source independently for the enabled quality criteria. The root owns shell execution. A passed host check proves that particular command executed on this version. Do not attempt shell commands, require a rerun of an attested check, or reject only because this reviewer has no shell. If a material risk needs another check, identify the risk and the exact missing check for the root. Record substantive unresolved blockers as findings.",
+          "Use the available read-only tools to inspect sources independently for the enabled quality criteria. The root owns shell execution. A passed host check proves that particular command executed on this version. Do not attempt shell commands, require a rerun of an attested check, or reject only because this reviewer has no shell. If a material risk needs another check, identify the risk and the exact missing check for the root. Record substantive unresolved blockers as findings.",
           "Review criteria: " + JSON.stringify(rubric),
           'Conclude with a single JSON object {"verdict":"pass" or "revise","findings":[],"notes":[],"checks":{"criterion-id":"specific file/line evidence and conclusion"}}. Cover every enabled criterion. Findings are unresolved material blockers under the enabled criteria (e.g. structural regression, a clear boundary leak, or an obvious change that deletes substantial complexity). Use revise for these. Put cosmetic or optional suggestions in notes. Example of passing with an optional suggestion: {"verdict":"pass","findings":[],"notes":["Consider a clearer local name"],"checks":{"criterion-id":"file:line and specific evidence"}}. Keep the actual criterion IDs. Do not turn an unresolved blocker into a note.',
         ].join("\n") : audit ? [
@@ -201,7 +201,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         const observations = prompt && records.map(c => auditParticipant(c.nativeConversationId, c.messages, prompt));
         const answers = await Promise.all(records.map(async (c, index) => {
           const text = getFinalOutput(c.messages);
-          const files = contest && !prompt && c.workspace ? await arenaSubmission(c.workspace, c.messages, ctx.abortSignal) : observations && observations[index].files;
+          const files = contest && !prompt && c.workspace ? await arenaSubmission(c.workspace, c.messages, ctx.abortSignal, c.nativeConversationId) : observations && observations[index].files;
           return files && Object.keys(files).length ? text + "\n\n" + JSON.stringify({ files }) : text;
         }));
         if (answers.some(answer => !answer.trim())) throw new Error("A worker did not return an answer.");
@@ -226,12 +226,13 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           const after = await measureWorkspace(scope, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run));
           if (after.fingerprint !== delta.fingerprint || checkoutSha !== await verificationCheckout(base, ctx.abortSignal))
             throw new Error("Workspace changed during review; review again.");
+          const fileVersions = after.fileDigests;
           inspections = await Promise.all(records.map(c => childInspection(api, c.nativeConversationId, c.workspace?.cwd ?? base.cwd, base.cwd, ctx,scoped.map(f=>f.path))));
           const fresh = await Promise.all(answers.map(async (answer, i): Promise<ThermosMember> => {
             const member = { child: ids[i], model: models[i], answer: answer.slice(0, 16_000), inspection: inspections![i] };
             try {
               const passed = parseThermosVerdict(answer, rubric.map(c => c.id), run.tagId === "code-review");
-              await validateInspections(base.cwd, targets, [member.inspection], false);
+              await validateInspections(base.cwd, targets, [member.inspection], false, fileVersions);
               return { ...member, passed };
             } catch (error) { return { ...member, passed: false, error: (error as Error).message }; }
           }));
@@ -239,7 +240,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           inspections = members.map(m => m.inspection);
           if (new Set(inspections.map(r => r.child)).size !== config.count || (config.model === "diverse" && new Set(members.map(m => m.model)).size < 2))
             throw new Error("Corrected panel is missing distinct reviewer conversations or required models.");
-          if (members.every(m => !m.error)) try { await validateInspections(base.cwd, targets, inspections); }
+          if (members.every(m => !m.error)) try { await validateInspections(base.cwd, targets, inspections, true, fileVersions); }
           catch (error) { members[0] = { ...members[0], passed: false, error: (error as Error).message }; }
           reviewError = members.flatMap(m => m.error ? [m.child + ": " + m.error] : []).join("\n") || undefined;
           receipt.children = members.map(m => m.child); receipt.models = members.map(m => m.model); receipt.answers = members.map(m => m.answer);

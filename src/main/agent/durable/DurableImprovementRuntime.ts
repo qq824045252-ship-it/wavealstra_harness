@@ -7,11 +7,22 @@ import { executeDeliveryTool } from "../hooks/DeliveryTool";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import { DurableSubagentIdentity } from "./DurableSubagentIdentity";
 import { DurableConsultIdentity } from "./DurableConsultSession";
-import { improvementInput, type DurableHookBinding } from "./DurableNativeHooks";
+import { durableContentText } from "./DurableHistoryProjection";
+import type { DurableHookBinding } from "./DurableNativeHooks";
 
 const memoKey = "mybuddy.weekly-improvement-plan";
 const injectedKey = "mybuddy.weekly-improvement-injected";
 type Api = HookApi;
+
+export function improvementInput(entry?: EntryRecord): string {
+  const data = entry?.data;
+  const input = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    return !input.botRequestId && !input.goalContinuation && typeof input.text === "string" ? input.text : "";
+  }
+  const user = entry?.model?.find(message => message.role === "user");
+  return durableContentText(user?.content);
+}
 
 export async function improvementOwnsConversation(storage: Pick<Storage, "conversation">, id: number, actor: number, ctx: Context): Promise<boolean> {
   const seen = new Set<number>();

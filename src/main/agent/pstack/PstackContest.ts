@@ -5,13 +5,14 @@ import { createHash } from "node:crypto";
 import { workspaceDocumentPath } from "../../../shared/pstack/paths";
 import type { DelegateReceipt, WorkflowRun } from "./PstackState";
 import { readPlanFile } from "./PstackWorkspace";
+import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
 
 export const authorRole = "pstack-project-author";
 export const readerRole = "pstack-project-reader";
 export type Contest = { criteria: string[]; prompt?: string; materials?: Record<string, string>[]; directory?: string; scale?: {min:number;max:number} };
 type Material = string | { path: string; name: string };
 export type ContestAudit = { conversation: number; promptSha256: string; filesRead: string[]; filesWritten: string[] };
-type ParticipantMessage = { role: string; toolName?: string; toolCallId?: string; isError?: boolean;
+type ParticipantMessage = { role: string; toolName?: string; toolCallId?: string; isError?: boolean; details?: unknown;
   content: { type: string; text?: string; name?: string; id?: string; arguments?: Record<string,unknown> }[] };
 
 export function auditParticipant(conversation: number, messages: ParticipantMessage[], expected: string) {
@@ -24,7 +25,8 @@ export function auditParticipant(conversation: number, messages: ParticipantMess
       const content = part.arguments.content;
       calls.set(part.id, { name: part.arguments.name, ...(typeof content === "string" && {written: content}) });
     }
-    if (message.role !== "toolResult" || message.isError || message.toolName !== "project_document" || !message.toolCallId) continue;
+    if (message.role !== "toolResult" || message.toolName !== "project_document" || !message.toolCallId ||
+      !nativeExecutionSucceeded(message, { conversationId: conversation, toolName: message.toolName, callId: message.toolCallId })) continue;
     const call = calls.get(message.toolCallId);
     if (!call) continue;
     if (call.written !== undefined) writes.set(call.name, call.written);

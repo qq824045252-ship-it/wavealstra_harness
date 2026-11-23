@@ -131,6 +131,16 @@ function makeHarness(): Harness {
 }
 
 async function main(): Promise<void> {
+  {
+    const h = makeHarness();
+    h.setDescriptor("a1", D());
+    h.setRead(async () => ({ content: "new bytes", artifactVersion: 2 }));
+    const stale = await h.hydration.ensure("a1");
+    h.bumpVersion("a1", 2);
+    const current = await h.hydration.ensure("a1");
+    check("IPC bytes cannot be cached under an older descriptor version", stale === null && current?.content === "new bytes" &&
+      current.artifactVersion === 2 && h.readCalls.length === 2 && h.getCache("a1")?.artifactVersion === 2);
+  }
   // H1: cache miss → readContent + cache + ready
   {
     const h = makeHarness();

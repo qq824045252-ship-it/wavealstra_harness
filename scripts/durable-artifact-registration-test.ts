@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration, inspectDurableArtifact,
+import { createDurableArtifactRegistrationTool, registerNativeMutation, inspectDurableArtifact,
   durableRegisteredArtifact, DURABLE_ARTIFACT_ENTRY_KIND } from "../src/main/agent/durable/DurableArtifactRegistration";
 
 const root = await mkdtemp(join(tmpdir(), "artifact-registration-"));
@@ -109,12 +109,13 @@ try {
   assert.equal(entries.length, 2, "recovery finds original call even after run identity changes");
   inputIds = [71];
   callId = "write-1"; taskId++;
-  const write: any = { name: "write", execute: async () => ({ output: [], isError: false }) };
-  await withDurableArtifactRegistration(write, directory).execute({ path }, api, ctx);
-  assert.equal(entries.length, 3, "successful write gets trusted registration");
-  callId = "write-failed"; taskId++;
-  await withDurableArtifactRegistration({ ...write, execute: async () => ({ output: [], isError: true }) }, directory).execute({ path }, api, ctx);
-  assert.equal(entries.length, 3, "failed write does not register");
+  const observed = await registerNativeMutation(path, api, ctx, directory);
+  assert.equal(entries.length, 3, "the committed file version gets trusted registration");
+  assert.equal(entries[2].data.digest, observed?.observed.sha256);
+  callId = "write-superseded"; taskId++;
+  await writeFile(path, "later version");
+  await registerNativeMutation(path, api, ctx, directory, observed);
+  assert.equal(entries.length, 3, "a newer file version cannot be published as the verified write");
   callId = "parallel-register"; taskId++;
   await Promise.all([tool.execute({ path }, api, ctx), tool.execute({ path }, api, ctx)]);
   assert.equal(entries.length, 4, "same native call racing produces one receipt");

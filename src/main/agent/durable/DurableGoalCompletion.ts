@@ -2,7 +2,7 @@ import { basename, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Cursor, EntryRecord } from "@earendil-works/pi-durable";
 import { dotsInputVersion } from "../../dots/DotsNativeIntent";
-import { nativeExecutionSucceeded, readNativeExecutionReceipt, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
+import { hasNativeExecutionReceipt, matchingNativeExecutionReceipt, nativeExecutionSucceeded, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { resolvedPathKey } from "../../platform/paths";
 import { collectRuntimeMaterialEvidence } from "../RuntimeMaterialEvidence";
 import type { GoalCompletionObservation } from "../work/WorkClosureMutations";
@@ -24,7 +24,7 @@ export interface GoalObservationQuote {
 const controlTools = new Set(["request_user_input", "dots_action"]);
 const acknowledgment = /^(?:我(?:已经|已)?|本轮|任务|目标|事项|工作)?(?:已(?:经)?|都|全部)?\s*(?:做好了|做完了|已完成|完成了?|通过了?|满足了?|已结项|已交付|已核对|核对完成|确认|收到|没问题|done|completed|successfully completed)[。.!！\s]*$/iu;
 
-type ReadObservation = { target: string; hash: string };
+type ReadObservation = { path: string; target: string; hash: string; entry: number };
 type Candidate = { observation: GoalCompletionObservation; read?: ReadObservation };
 
 /** Resolve quotes from retained native result entries and reject copied inputs. */
@@ -46,6 +46,7 @@ export async function readGoalObservations(origin: string, operation: string, qu
     const userInputs: Array<{ type: string; text?: string }> = [];
     const readCalls = new Map<string, unknown>();
     const latestReadHashes = new Map<string, string>();
+    const invalidatedReads = new Map<string, number>();
     const inputIds = new Set<number>([current.id, assignment.id]);
     const inputEntries = new Set<number>([current.entry, assignment.entry]);
     for (const requestId of lineage) {
@@ -86,11 +87,17 @@ export async function readGoalObservations(origin: string, operation: string, qu
           let executionReceipt: NativeExecutionReceipt | undefined;
           let checkIdentity: GoalCompletionObservation["checkIdentity"];
           if (message.role === "toolResult") {
-            if (controlTools.has(message.toolName) || message.toolName.startsWith("conversation_goal_") ||
-              !nativeExecutionSucceeded(message, { taskId: active.execution.taskId, conversationId,
-                toolTaskId: entry.byTaskId, callId: message.toolCallId, toolName: message.toolName })) continue;
-            executionReceipt = readNativeExecutionReceipt(message.details);
-            if (executionReceipt && entry.byTaskId === undefined) continue;
+            const identity = { taskId: active.execution.taskId, conversationId, toolTaskId: entry.byTaskId,
+              callId: message.toolCallId, toolName: message.toolName };
+            executionReceipt = entry.byTaskId === undefined ? undefined : matchingNativeExecutionReceipt(message, identity);
+            const succeeded = nativeExecutionSucceeded(message, identity);
+            const attemptedRead = executionReceipt?.fileReadAttempt;
+            const changedPath = executionReceipt?.fileChange?.target;
+            if (attemptedRead?.openFailure) invalidatedReads.set(resolvedPathKey(attemptedRead.target), entry.id);
+            if (changedPath && (succeeded || executionReceipt?.settlement === "unknown"))
+              invalidatedReads.set(resolvedPathKey(changedPath), entry.id);
+            if (controlTools.has(message.toolName) || message.toolName.startsWith("conversation_goal_") || !succeeded ||
+              (!executionReceipt && hasNativeExecutionReceipt(message.details))) continue;
             if (message.toolName === "pstack_workflow") {
               const { details } = message;
               if (details && typeof details === "object" && "checkIdentity" in details && Object.hasOwn(details, "checkIdentity")) {
@@ -117,7 +124,7 @@ export async function readGoalObservations(origin: string, operation: string, qu
               // successful reads of the same path and requested line window.
               const path = resolvedPathKey(executionReceipt?.fileRead?.target ?? resolve(active.cwd, receipt.target.replace(/^@/, "")));
               const target = JSON.stringify([path, receipt.offset ?? 1, receipt.limit ?? null]);
-              read = { target, hash: receipt.outputHash };
+              read = { path, target, hash: receipt.outputHash, entry: entry.id };
               latestReadHashes.set(target, read.hash);
             }
           }
@@ -143,8 +150,9 @@ export async function readGoalObservations(origin: string, operation: string, qu
       const { quote } = requested[index];
       const suppliedByUser = userInputs.some(block => block.type === "text" && block.text?.includes(quote));
       const receipts = candidates.filter(item => item.observation.kind === "tool_receipt").reverse();
-      const receipt = receipts.find(({ read }) => !read || latestReadHashes.get(read.target) === read.hash);
-      if (!receipt && receipts.length) throw new Error("同一文件已有更新的读取结果，请引用最新观测重新核对");
+      const receipt = receipts.find(({ read }) => !read ||
+        latestReadHashes.get(read.target) === read.hash && (invalidatedReads.get(read.path) ?? 0) < read.entry);
+      if (!receipt && receipts.length) throw new Error("同一文件已有更新的读取结果或版本变化，请引用最新观测重新核对");
       const recorded = receipt ?? (suppliedByUser ? undefined : candidates.at(-1));
       if (!recorded) throw new Error("有验收依据未在本次交办的原生结果中找到。请从真实结果中逐字引用一段原文");
       return recorded.observation;

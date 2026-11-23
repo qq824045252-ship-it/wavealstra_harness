@@ -12,7 +12,7 @@ import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
 import { latestActivityTime } from "../../../../shared/src/activity-time";
 import { formatStoredPstackReply } from "../pstack/PstackBlockReport";
-import { nativeExecutionSucceeded, readNativeExecutionReceipt, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
+import { matchingNativeExecutionReceipt, nativeExecutionSucceeded, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 
 export type DurableInputMetadata = { gatewayOrigin?: Omit<import("../../gateway/GatewayAgentTurn").GatewayBotTurnRequest["gatewayOrigin"], "workTarget">; dotsMemoryRefs?: import("../../../shared/agent-ipc").AgentPromptRequest["dotsMemoryRefs"]; text: string; displayText: string; attachments: Array<{ name: string; path: string }>; botRequestId?: string; inputRequestId?: string; goalContinuation?: import("../../../shared/conversation-goal").GoalContinuationOrigin; audit?: import("./DurableSkillProjection").DurableInputAudit };
 /** 完成态实测速度（由 `DurableBotRuntime.recordResponse()` 用 host 侧生成计时算出）。 */
@@ -20,9 +20,9 @@ export type DurableResponseSpeed = { readonly tps?: number | null; readonly ttft
 type ToolRow = NonNullable<ChatMessageDto["tools"]>[number];
 type ToolResult = Extract<Message, { role: "toolResult" }>;
 export function toolMessageReceipt(message: ToolResult, entry: EntryRecord): NativeExecutionReceipt | undefined {
-  const receipt = readNativeExecutionReceipt(message.details);
-  return receipt?.conversationId === entry.conversationId && receipt.toolTaskId === entry.byTaskId &&
-    receipt.callId === message.toolCallId && receipt.toolName === message.toolName ? receipt : undefined;
+  if (entry.byTaskId === undefined || entry.conversationId === undefined) return undefined;
+  return matchingNativeExecutionReceipt(message, { conversationId: entry.conversationId, toolTaskId: entry.byTaskId,
+    callId: message.toolCallId, toolName: message.toolName });
 }
 export function durableToolStatus(...args: Parameters<typeof nativeExecutionSucceeded>): "error" | "success" {
   return nativeExecutionSucceeded(...args) ? "success" : "error";
@@ -95,7 +95,7 @@ export class DurableHistoryProjection {
       const entryId = this.resultEntries.get(key);
       const owner = this.resultOwners.get(key);
       if (entryId === undefined || (owner ? this.rows.has(owner.assistantMessageId) : this.owners.has(key))) continue;
-      out.push({ callId: message.toolCallId, entryId, ownerId: owner?.assistantMessageId });
+      out.push({ callId: message.toolCallId, entryId, ...(owner && { ownerId: owner.assistantMessageId }) });
     }
     return out;
   }

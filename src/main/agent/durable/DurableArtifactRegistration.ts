@@ -1,47 +1,18 @@
 import { captureSavedWebBundle, savedBundleDependsOn } from "../../artifact/SavedArtifactPreview";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, realpathSync } from "node:fs";
+import { constants } from "node:fs";
 import { lstat, open, realpath, mkdir, link, unlink } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep, join, extname } from "node:path";
-import { defineEntry, defineTool, LiveDoc, type EntryRecord, type ToolRegistration, type Cursor } from "@earendil-works/pi-durable";
+import { resolve, join } from "node:path";
+import { defineEntry, defineTool, LiveDoc, type ToolRegistration, type Cursor } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { z } from "zod";
 import { recordGoalNativeEvidence } from "./DurableGoalNativeEvidence";
+import type { EffectEvidence } from "./DurableEffectRecovery";
+import { resolvedPathKey } from "../../platform/paths";
+import { DURABLE_ARTIFACT_ENTRY_KIND, durableArtifactRegistrationSchema, inside, snapshotName, type DurableArtifactRegistration } from "./DurableArtifactReceipt";
+export { DURABLE_ARTIFACT_ENTRY_KIND, durableArtifactRegistrationSchema, durableRegisteredArtifact, type DurableArtifactRegistration } from "./DurableArtifactReceipt";
 
-export const DURABLE_ARTIFACT_ENTRY_KIND = "mybuddy.artifact-registered";
 const ArtifactRegistered = defineEntry<DurableArtifactRegistration>(DURABLE_ARTIFACT_ENTRY_KIND);
-export const durableArtifactRegistrationSchema = z.object({
-  previewManifestPath: z.string().optional(), snapshotPath: z.string().min(1), path: z.string().min(1), cwd: z.string().min(1), digest: z.string().regex(/^[a-f0-9]{64}$/),
-  sizeBytes: z.number().int().nonnegative(), registeredAt: z.number().int().nonnegative(),
-  toolCallId: z.string().min(1), toolTaskId: z.number().int().nonnegative(),
-  toolConversationId: z.number().int().nonnegative(), inputIds: z.array(z.number().int().nonnegative()).min(1),
-  explicitlyRegistered: z.literal(true).optional(),
-});
-export type DurableArtifactRegistration = z.infer<typeof durableArtifactRegistrationSchema>;
-function inside(cwd: string, path: string): boolean {
-  const rel = relative(cwd, path);
-  return Boolean(rel) && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-}
-function snapshotName(path: string, digest: string): string {
-  const extension = extname(path).toLowerCase();
-  return digest + (/^\.[a-z0-9]{1,16}$/.test(extension) ? extension : ".bin");
-}
-/** Only host entries are evidence; model text and tool-result details cannot register files. */
-export function durableRegisteredArtifact(entry: EntryRecord, inputId: number, workspaceBinding?: string, directory?: string): DurableArtifactRegistration | undefined {
-  if (!directory || entry.kind !== DURABLE_ARTIFACT_ENTRY_KIND) return undefined;
-  const parsed = durableArtifactRegistrationSchema.safeParse(entry.data);
-  if (!parsed.success) return undefined;
-  const data = parsed.data;
-  let bound = workspaceBinding && resolve(workspaceBinding);
-  if (bound) { try { bound = realpathSync(bound); } catch { /* Keep historical evidence if the workspace was removed. */ } }
-  if (!data.inputIds.includes(inputId) || !isAbsolute(data.path) || !isAbsolute(data.cwd)
-    || !inside(data.cwd, data.path) || (bound && bound !== data.cwd)) return undefined;
-  let store = resolve(directory);
-  try { store = realpathSync(store); } catch { /* Historical paths can outlive their stores. */ }
-  if (data.snapshotPath !== join(store, "artifacts", snapshotName(data.path, data.digest))) return undefined;
-  try { if (realpathSync(data.snapshotPath) !== data.snapshotPath) return undefined; } catch { /* Opening reports a missing snapshot separately. */ }
-  return data;
-}
 /** Only the initial missing-path check can produce this known, pre-write failure. */
 class ArtifactPathMissingError extends Error {}
 
@@ -121,7 +92,7 @@ type Api = Parameters<ToolRegistration["execute"]>[1];
 type Context = Parameters<ToolRegistration["execute"]>[2];
 /** Replay-safe host receipt, scoped to the owning run and exact native call. */
 async function register(path: string, api: Api, context: Context, directory: string,
-  options?: { explicitlyRegistered?: true; previousDigest?: string | null }): Promise<DurableArtifactRegistration> {
+  options?: { explicitlyRegistered?: true; previousDigest?: string | null; verified?: EffectEvidence }): Promise<DurableArtifactRegistration> {
   const agent = await api.agent(context);
   if (!agent.cwd) throw new Error("Artifact registration requires a host-bound workspace");
   const owner = await api.commit(async tx => {
@@ -157,6 +128,10 @@ async function register(path: string, api: Api, context: Context, directory: str
   const inputIds = [...live?.run?.inputs ?? []];
   if (!inputIds.length) throw new Error("Artifact registration requires an active input identity");
   const file = await inspectDurableArtifact(agent.cwd, path, directory);
+  const verified = options?.verified;
+  if (verified && (resolvedPathKey(file.path) !== resolvedPathKey(verified.canonicalTarget) ||
+    file.digest !== verified.observed.sha256 || file.sizeBytes !== verified.observed.bytes))
+    throw new Error("Artifact bytes changed after the native write was verified");
   context.abortSignal?.throwIfAborted();
   if (!file.snapshotPath) throw new Error("Artifact snapshot was not persisted");
   const previewManifestPath = /\.html?$/i.test(file.path) ? await captureSavedWebBundle(agent.cwd, file.path, file.snapshotPath, directory, inspectDurableArtifact) : undefined;
@@ -223,7 +198,18 @@ export function createDurableArtifactRegistrationTool(directory: string): ToolRe
   });
 }
 
-/** Preserve native write/edit outcomes; only successful calls can supply implicit evidence. */
+/** Verify the immutable version before publishing an implicit file registration. */
+export async function registerNativeMutation(path: string, api: Api, context: Context, directory: string, verified?: EffectEvidence): Promise<EffectEvidence | undefined> {
+  try {
+    const artifact = await register(path, api, context, directory, { verified });
+    return { status: "passed", verifierId: "durable-file-content", canonicalTarget: artifact.path,
+      expected: { nativeWriteReturned: true }, observed: { sha256: artifact.digest, bytes: artifact.sizeBytes }, checkedAt: artifact.registeredAt };
+  } catch (error) {
+    api.output(`Generated file registration unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Only a successful, direct literal shell operation can supply implicit evidence. */
 export function withDurableArtifactRegistration(tool: ToolRegistration, directory: string): ToolRegistration {
   if (tool.name === "powershell") {
     return { ...tool, execute: async (args, api, context) => {
@@ -247,18 +233,7 @@ export function withDurableArtifactRegistration(tool: ToolRegistration, director
       return result;
     } };
   }
-  if (tool.name !== "write" && tool.name !== "edit") return tool;
-  return { ...tool, execute: async (args, api, context) => {
-    const result = await tool.execute(args, api, context);
-    const parsed = z.object({ path: z.string() }).safeParse(args);
-    if (!result.isError && parsed.success) {
-      // Discovery is supplementary. A missing/deleted/outside file must not turn a
-      // successful native edit into a failed write that might be replayed.
-      try { await register(parsed.data.path, api, context, directory); }
-      catch (error) { api.output(`Generated file registration unavailable: ${error instanceof Error ? error.message : String(error)}`); }
-    }
-    return result;
-  } };
+  return tool;
 }
 
 /** Only a whole, direct content cmdlet with static arguments proves a target.

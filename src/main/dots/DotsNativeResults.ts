@@ -3,6 +3,7 @@ import { ROOT_CONVERSATION_ID, type ConversationId, type Cursor } from "@earendi
 import type Database from "better-sqlite3";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { hasNativeExecutionReceipt } from "../../shared/native-execution-receipt";
 import { ActiveDurableConversation } from "../agent/durable/DurableConversationBranch";
 import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 import { durableText } from "../agent/durable/DurableTurnProjection";
@@ -40,10 +41,14 @@ export async function nativeResultHits(task: {id: string; title: string; link: s
         const text = durableText(message.content);
         const files = new Map<string, NativeResultHit["artifacts"][number]>();
         const messageIds = new Set([`durable-${input.answer}`]);
+        const receiptedCalls = new Set<string>();
         let entries: Cursor | undefined;
         do {
           const chunk = await storage.scanEntries({conversationId, minEntryId:input.entry, maxEntryId:input.answer, order:"descending"}, 80, entries, context);
           for (const entry of chunk.items) {
+            for (const item of entry.model ?? []) {
+              if (item.role === "toolResult" && hasNativeExecutionReceipt(item.details)) receiptedCalls.add(item.toolCallId);
+            }
             if (answer.byTaskId !== undefined && entry.byTaskId === answer.byTaskId && entry.model?.some(item => item.role === "assistant"))
               messageIds.add(`durable-${entry.id}`);
             const file = durableRegisteredArtifact(entry, input.id, undefined, directory);
@@ -54,14 +59,15 @@ export async function nativeResultHits(task: {id: string; title: string; link: s
           }
           entries = chunk.next;
         } while (entries);
-        // Artifact-domain files (e.g. write/edit) are attributed by actual native assistant message and tool.
-        const indexed = db.prepare(`SELECT DISTINCT a.id,a.title,a.entry_file FROM artifact_message_refs r
+        // Historical results without native receipts may have only an artifact index link.
+        // For receipted calls the registered snapshot carries the verified file version.
+        const indexed = db.prepare(`SELECT DISTINCT a.id,a.entry_file,r.tool_call_id FROM artifact_message_refs r
           JOIN artifacts a ON a.id=r.artifact_id AND a.task_id=r.task_id
           WHERE r.task_id=? AND r.message_id IN (SELECT value FROM json_each(?)) AND r.tool_call_id IS NOT NULL
             AND a.source_type='workspace-file' AND a.entry_file IS NOT NULL`)
-          .all(task.id,JSON.stringify([...messageIds])) as {id:string;title:string|null;entry_file:string}[];
+          .all(task.id,JSON.stringify([...messageIds])) as {id:string;entry_file:string;tool_call_id:string}[];
         for (const row of indexed) {
-          if (files.has(row.entry_file)) continue;
+          if (receiptedCalls.has(row.tool_call_id) || files.has(row.entry_file)) continue;
           const name = basename(row.entry_file);
           files.set(row.entry_file, {id:row.id, name, path:row.entry_file, link:fileLink(name,row.entry_file)});
         }

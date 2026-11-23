@@ -64,14 +64,25 @@ export function dotsDeliveryText(outcome: DotsWorkerOutcome): string {
   return outcome.result;
 }
 
-/** Some workers put a request for missing input in a complete envelope. Require both an
- * explicit absence of a deliverable and a request to supply the missing input. */
-export function dotsMissingInputConclusion(text: string): boolean {
-  const conclusion = text.trimStart().replace(/^(?:#{1,6}\s+|\*\*)/u, "");
-  const firstParagraph = conclusion.split(/\r?\n\s*\r?\n/u, 1)[0] ?? "";
-  const noResult = /^(?:结论[：:]\s*)?(?:未|没有|尚未|无法|不能|没能)(?:能)?(?:交付|完成|给出|核算|计算|读取|读到|找到)/u;
-  const needInput = /请(?:你|您)?\s*(?:把|提供|上传|补发|补充|发给|放入|放进|告诉|给出|确认|选择|贴出)/u;
-  return noResult.test(firstParagraph) && /(?:文件|资料|数据源|源表|原表|这份表|明细|台账)/u.test(firstParagraph) && needInput.test(conclusion);
+/** A complete envelope can still describe an outstanding requirement and ask the
+ * user to unblock it. Check both parts of the native answer before accepting it. */
+export function dotsMissingInputQuestion(delivery: string, executionRecord: string): string | undefined {
+  const sentences = (text: string) => text.replace(/^ {0,3}(?:```|~~~)[^\r\n]*\r?\n[\s\S]*?^ {0,3}(?:```|~~~)[ \t]*$/gmu, "")
+    .replace(/^\s*>[^\r\n]*/gmu, "").match(/[^。！？!?\r\n]+[。！？!?]*/gu) ?? [];
+  const publicSentences = sentences(delivery);
+  const internalSentences = sentences(executionRecord);
+  const outstanding = /(?:尚未|还未|还没(?:有)?|未能|无法|不能|没有|没能|未)(?:能)?(?:交付|完成|给出|核算|核对|计算|读取|读到|找到|验证|汇总)|(?:not yet|unable to|could not|still need to)\s+(?:complete|verify|check|read|find|calculate|deliver)/iu;
+  const input = /文件|资料|数据|源表|原表|表格|明细|台账|附件|\b(?:file|spreadsheet|data|records?|attachment)s?\b/iu;
+  const request = /请(?:你|您)?\s*(?:把|提供|上传|补发|补充|发给|放入|放进|告诉|给出|确认|选择|贴出)|\bplease\s+(?:provide|upload|attach|send|share|confirm|choose)\b/iu;
+  const optional = /如需|如有需要|下次|另行|可选|if (?:you (?:need|wish|want)|needed)|optionally/iu;
+  const asksForInput = (sentence: string) => request.test(sentence) && !optional.test(sentence);
+  const evidence = [...publicSentences, ...internalSentences];
+  const missing = evidence.filter(sentence => outstanding.test(sentence) && !optional.test(sentence));
+  if (!missing.length) return;
+  const publicRequest = publicSentences.find(asksForInput);
+  const missingInput = missing.some(sentence => input.test(sentence));
+  if (publicRequest && (missingInput || input.test(publicRequest))) return delivery;
+  return internalSentences.find(sentence => asksForInput(sentence) && (missingInput || input.test(sentence)))?.trim();
 }
 
 /** A worker can finish with a bare report or value. Only accept it when the user's

@@ -1,5 +1,5 @@
 import type { SavedArtifactRequest } from "@shared/saved-artifact";
-import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, useDotsDelegations } from "./DotsResult";
+import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, TaskDotsDelivery, useDotsDelegations } from "./DotsResult";
 import { DotsAllTasks } from "./DotsActivity";
 import ChatMarkdown from "./ChatMarkdown";
 import { DOTS_TASK_ID, isDotsAutomaticInput } from "@shared/dots";
@@ -1003,6 +1003,7 @@ export default function ChatView(): React.JSX.Element {
             artifacts={artifacts}
             visibleArtifacts={visibleArtifacts}
           />
+          {!isDots && <TaskDotsDelivery taskId={task.id} />}
           <div ref={tailSpaceRef} className="chat-pin-tail-space" aria-hidden="true" />
         </div>
         {/* 用户接管滚动（上拉阅读历史）时出现；点击 = 显式「回到底部」动作。

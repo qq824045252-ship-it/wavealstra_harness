@@ -193,7 +193,6 @@
   color: var(--accent); background: transparent; font: inherit; font-size: 12px; font-weight: 550; cursor: pointer;
 }
 .task-board-folded:hover { background: var(--bg-hover); }
-.task-board-elsewhere { padding: 0 2px; color: var(--fg-secondary); font-size: 11px; }
 .task-board-actions { display: flex; gap: 5px; padding: 5px; }
 .task-board-actions button { border-radius: 4px; background: var(--surface-sidebar); padding: 4px 8px; }
 

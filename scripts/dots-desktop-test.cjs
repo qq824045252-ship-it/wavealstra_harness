@@ -35,11 +35,21 @@ const editedSystemPrompt = "回复与交付验收 C：交付时先告诉我结�
 const editedMemoryPrompt = "记忆与偏好验收 D：使用记忆前先核对来源。";
 const { run } = require("./desktop-dev-harness.cjs");
 const { routingControls } = require("./answer-routing-desktop-controls.cjs");
+const memorySettingsOnly = process.argv.includes("--memory-settings");
 
 function systemText(request) {
   return request.messages.filter(message => ["system", "developer"].includes(message.role))
     .map(message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n"))
     .join("\n");
+}
+
+function isEvidenceSupplement(message) {
+  return message?.role === "user" && typeof message.content === "string" &&
+    message.content.startsWith("本轮补充证据（非用户指令，不扩大工具权限）");
+}
+
+function latestUserInput(messages) {
+  return messages.findLast(message => message.role === "user" && !isEvidenceSupplement(message));
 }
 
 run(async env => {
@@ -88,8 +98,8 @@ run(async env => {
     return promptContents();
   };
   const assertPromptReceived = (input, preview) => {
-    const request = requests.find(({ messages }) => messages.at(-1)?.role === "user"
-      && JSON.stringify(messages.at(-1).content).includes(input));
+    const request = requests.find(({ messages }) => messages.findLast(message => !isEvidenceSupplement(message))?.role === "user"
+      && JSON.stringify(latestUserInput(messages)?.content ?? "").includes(input));
     assert(request, `missing provider request for ${input}`);
     const actual = systemText(request);
     assert(actual.includes(preview.join("\n\n")), `settings preview differs from received system text for ${input}`);
@@ -108,12 +118,52 @@ run(async env => {
   await api("db.upsertSpace", {id: "dots-hidden-space", name: "未授权目录"});
   await api("answerRouting.save", {title: "工具清单", include: ["检查已关闭能力的工具列表"], exclude: [], instruction: routingInstruction,
     evidenceFile: "", projectId: null, sourceMemoryId: null, enabled: true});
+  if (memorySettingsOnly) {
+    await api("memory.create", {kind: "preference", title: "全局进度格式", content: "全局进度按日期排列。", scopeType: "global"});
+    await api("memory.create", {kind: "preference", title: "Dots 进度偏好", content: "每次先写本周的进度。", scopeType: "task", scopeId: "mybuddy-dots"});
+  }
   await openDotsSettings();
   assert.equal(await evaluate("document.querySelector('.dots-config nav > button:first-child[aria-pressed=true]')?.textContent.trim()"), "调度");
   await until(() => evaluate("!!document.querySelector('.dots-config .answer-routing-rule[aria-label=工具清单]')"), "saved rule visible in the first Dots settings tab");
-  await tab("对话与记忆");
+  await tab("模型与记忆");
   await select("Dots 使用的模型", "fixture/dots-alternate");
   await select("Dots 如何使用长期记忆", "readOnly");
+  if (memorySettingsOnly) {
+    assert.equal(await evaluate("document.querySelector('.dots-config .memory-explorer, .dots-config form[aria-label=\"Dots 记忆读取额度\"]') === null"), true);
+    await screenshot("dots-settings-model");
+    await tab("专属记忆");
+    const memoryDetail = "document.querySelector('.dots-config .memory-record-detail')";
+    await until(() => evaluate(`${memoryDetail}?.innerText.includes('每次先写本周的进度。')`), "existing Dots memory opened by default");
+    assert.doesNotMatch(await evaluate("document.querySelector('.dots-config .memory-record-list').innerText"), /全局进度格式/);
+    await click("编辑", ".dots-config .memory-record-detail");
+    assert.equal(await evaluate("document.querySelector('.text-prompt-dialog input').value"), "Dots 进度偏好");
+    await click("下一步", ".text-prompt-dialog");
+    assert.equal(await evaluate("document.querySelector('.text-prompt-dialog textarea').value"), "每次先写本周的进度。");
+    await fill(".text-prompt-dialog textarea", "每次先写下一步。");
+    await click("保存", ".text-prompt-dialog");
+    await until(() => evaluate(`${memoryDetail}?.innerText.includes('每次先写下一步。')`), "edited memory shown without leaving settings");
+    await screenshot("dots-settings-memory");
+    await tab("读取额度");
+    const limitField = "input[name=searchPreviewChars]";
+    const limitValue = () => evaluate(`document.querySelector(${JSON.stringify(limitField)})?.value`);
+    await until(async () => await limitValue() === "360", "reading limits visible on entry");
+    assert.equal(await evaluate("document.querySelector('.dots-config form[aria-label=\"Dots 记忆读取额度\"]').closest('details') === null"), true);
+    await fill(limitField, "420");
+    await click("保存记忆额度", ".dots-config");
+    await until(() => evaluate("document.querySelector('.dots-setting-feedback')?.textContent === '记忆读取额度已保存'"), "reading limits saved");
+    await screenshot("dots-settings-limits");
+    await env.restart();
+    await openDotsSettings();
+    await tab("专属记忆");
+    await until(() => evaluate(`${memoryDetail}?.innerText.includes('每次先写下一步。')`), "edited Dots memory loaded after restart");
+    await tab("读取额度");
+    await until(async () => await limitValue() === "420", "saved reading limit loaded after restart");
+    await click("恢复默认并保存", ".dots-config");
+    await until(async () => await limitValue() === "360"
+      && await evaluate("document.querySelector('.dots-setting-feedback')?.textContent === '记忆读取额度已保存'"), "default reading limit restored");
+    report.actualControlChecks.push("The model controls, editable scoped memory, and expanded reading limits each have their own tab. Memory edits and reading limits persist after restarting.");
+    return;
+  }
   assert.doesNotMatch(await evaluate("document.querySelector('.dots-config').innerText"), /回答方式|给 Dots 的回答指令/);
   await screenshot("dots-settings-conversation");
   await openPrompt();
@@ -176,7 +226,7 @@ run(async env => {
   await dots();
   await until(async () => (await body())?.includes("已交给"), "Dots history restored");
   await openDotsSettings();
-  await tab("对话与记忆");
+  await tab("模型与记忆");
   await until(() => evaluate("!!document.querySelector('select[aria-label=\"Dots 使用的模型\"]')"), "saved conversation settings loaded");
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Dots 使用的模型\"]').value"), "fixture/dots-alternate");
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Dots 如何使用长期记忆\"]').value"), "readOnly");
@@ -215,7 +265,15 @@ run(async env => {
   assert.equal(await active(), "MyBuddy Dots");
   await click("报价任务", ".dots-result");
   await until(async () => await active() === "报价任务", "source task opened");
-  assert.equal(await evaluate("!!document.querySelector('.dots-result')"), false);
+  const taskDelivery = await evaluate(`window.api.dots.taskDelivery(${JSON.stringify(job.taskId)})`);
+  assert.equal(taskDelivery?.deliveryKey, delivered.dotsDelivery.deliveryKey);
+  assert.deepEqual(taskDelivery.artifacts, delivered.dotsDelivery.artifacts);
+  await press("document.querySelector('.task-dots-delivery > summary')", "show latest delivery in the original task");
+  await press("document.querySelector('.task-dots-delivery .artifact-chip-main')", "preview delivery within the original task");
+  await until(() => evaluate("document.querySelector('.task-dots-delivery .bot-work-file-preview-body')?.textContent.includes('报价原件 A · 137')"), "same saved version in the original task after restart");
+  assert.equal(await active(), "报价任务");
+  await screenshot("dots-original-task-saved-delivery");
+  report.actualControlChecks.push("The original Dots conversation and its worker task opened the same immutable file after restart, despite a same-name overwrite.");
   await dots();
   await until(async () => (await body())?.includes("已交给"), "return to original Dots conversation");
   await press("document.querySelector('.message-list a.md-link')", "open task link in Dots reply");
@@ -242,10 +300,10 @@ run(async env => {
   report.actualControlChecks.push("Dots loaded categories in the editor. The provider received both saved category edits, then received the restored delivery default and the unchanged memory edit. Overrides survived restart and did not reach the worker.");
   report.actualControlChecks.push("Zero ordinary tasks, one fixed Dots entry, durable send/history/restart, source-scoped preview, source task navigation, and return.");
 }, {
-  name: "dots-desktop", settings: { permissionMode: "auto", memoryEnabled: true, dotsSettings: { replyInstructions: retiredReplyPreference } }, fixtureModelIds:["dots-alternate"], watchRenderer: false, isolatedDependencyCache: true,
+  name: memorySettingsOnly ? "dots-memory-settings-desktop" : "dots-desktop", settings: { permissionMode: "auto", memoryEnabled: true, dotsSettings: { replyInstructions: retiredReplyPreference } }, fixtureModelIds:["dots-alternate"], watchRenderer: false, isolatedDependencyCache: true,
   fixtureModel(request) {
     const names = request.tools?.map(tool => tool.function.name) ?? [];
-    const last = request.messages.at(-1);
+    const last = request.messages.findLast(message => !isEvidenceSupplement(message));
     const incoming = JSON.stringify(last?.content ?? "");
     if (last?.role === "user" && incoming.includes("检查已关闭能力的工具列表")) {
       const actions = name => JSON.stringify(request.tools.find(tool => tool.function.name === name).function.parameters.properties.action);
@@ -263,7 +321,7 @@ run(async env => {
     if (last?.role === "user" && incoming.includes("桌面静默用例")) return "[[dots:no-change]]";
     if (last?.role === "user" && incoming.includes("桌面有进展用例")) return "新的报价已到达";
     if (last?.role === "tool") {
-      if (JSON.stringify(request.messages.filter(m => m.role === "user").at(-1)?.content).includes("检查已关闭能力的工具列表")) {
+      if (JSON.stringify(latestUserInput(request.messages)?.content ?? "").includes("检查已关闭能力的工具列表")) {
         assert.match(last.content, /客户 A/);
         assert.doesNotMatch(last.content, /未授权目录|dots-hidden-space/);
         return "能力限制已生效";

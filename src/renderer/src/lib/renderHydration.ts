@@ -90,6 +90,11 @@ export function createRenderHydration(deps: RenderHydrationDeps): RenderHydratio
         );
         return { ok: false, stale: true };
       }
+      if (response?.artifactVersion !== undefined && response.artifactVersion !== requestedVersion) {
+        deps.setLoadState(artifactId, "unloaded");
+        log(`[ArtifactRender] content version does not match projection id=${artifactId} response=${response.artifactVersion} requested=${requestedVersion}`);
+        return { ok: false, stale: false };
+      }
       // 飞行期间并发 ensure 已填入同版本 → 直接用
       const cached = readyCache(artifactId, descriptor.version);
       if (cached) {

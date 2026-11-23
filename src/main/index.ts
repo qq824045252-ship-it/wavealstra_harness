@@ -769,6 +769,13 @@ function registerIpc(): void {
   ipcMain.handle(DotsIpc.open, () => db.openDots());
   ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
   ipcMain.handle(DotsIpc.activity, () => activity.list());
+  ipcMain.handle(DotsIpc.taskDelivery, async (_event, taskId: string) => {
+    const visible = () => taskId !== DOTS_TASK_ID && actions.allowsResult(taskId) && !db.isTaskEffectiveArchived(taskId)
+      && db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed";
+    if (!visible()) return;
+    const delivery = await dots.latestTaskDelivery(taskId);
+    return visible() ? delivery : undefined;
+  });
   ipcMain.handle(DotsIpc.getPromptSegments, () => agentService.getDotsPromptSegments());
   agentService.onPatch(patch => dots.onPatch(patch));
   agentService.onPatch(patch => taskBoard.patch(patch));

@@ -107,7 +107,7 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
   await turn(); assert.equal(canonicalStarted, false, "new paths through a directory alias share their canonical target");
   releaseAlias.release(); await Promise.all([firstAlias, canonicalRead]);
 
-  for (const name of ["bash", "powershell", "mcp__opaque__run_script", "library_save_artifact"]) {
+  for (const name of ["mcp__opaque__run_script", "library_save_artifact"]) {
     const entered = deferred(), release = deferred();
     const command = run(name, { command: "arbitrary program", readOnly: true, path: other }, async () => {
       entered.release(); await release.promise; await writeFile(target, name);
@@ -117,7 +117,7 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
     const after = run("read", { path: target }, async () => { started = true; assert.equal(await readFile(target, "utf8"), name); });
     await run("web_search", { query: "independent network query" }, async () => {});
     await run("conversation_goal_get", { taskId: "held-operation" }, async () => {});
-    const actions = ["task", "steer", "pause", "stop"];
+    const actions = ["board", "task", "steer", "pause", "stop"];
     const completed: string[] = [];
     const controls = actions.map(action => run("dots_action", { action, targetTaskId: "held-operation" }, async () => {
       completed.push(action);
@@ -138,17 +138,17 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
     shellEntered.release(); await releaseShell.promise; await writeFile(target, "shell finished");
   });
   await shellEntered.promise;
-  let queuedWriteStarted = false;
-  const queuedWrite = run("write", { path: other }, async () => { queuedWriteStarted = true; await writeFile(other, "worker wrote"); });
+  let writeStarted = false;
+  const fileWrite = run("write", { path: other }, async () => { writeStarted = true; await writeFile(other, "worker wrote"); });
   const controls = ["conversation_goal_get", "conversation_goal_create", "conversation_goal_update", "conversation_goal_propose_complete"];
   const completedControls: string[] = [];
   const requests = controls.map(name => run(name, {}, async () => { completedControls.push(name); }));
   try {
     await turn();
     assert.deepEqual(completedControls, controls, "Goal queries and updates stay responsive during a running shell");
-    assert.equal(queuedWriteStarted, false, "Goal control cannot release a queued task's actual file write");
+    assert.equal(writeStarted, true, "a running Bash does not globally block native file operations");
   } finally {
-    releaseShell.release(); await Promise.all([shell, queuedWrite, ...requests]);
+    releaseShell.release(); await Promise.all([shell, fileWrite, ...requests]);
   }
   assert.equal(await readFile(other, "utf8"), "worker wrote");
 
@@ -184,5 +184,5 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
     assert.fail("a revoked MCP leaf must not execute");
   }, undefined, () => { throw new Error("MCP review expired"); }), /MCP review expired/);
   assert.deepEqual(notStarted.at(-1), { toolName: "mcp__opaque__run_script", callId: "controlled-call", taskId: 12, conversationId: conversation.id, phase: "validation" });
-  console.log("PASS actual tool boundaries: disjoint progress, read/read overlap, read/write waits, cross-dispatch identities, hardlinks/junctions, opaque shell/MCP writes, cancellation and error release");
+  console.log("PASS actual tool boundaries: independent shell and file operations, scoped conflicts, hardlinks/junctions, opaque connector writes, cancellation and error release");
 }

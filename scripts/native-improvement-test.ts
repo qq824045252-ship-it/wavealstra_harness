@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { AssistantMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { createAgentDurableFixture } from "./agent-durable-fixture";
@@ -116,13 +117,22 @@ try {
   const task = db.getTask(taskId)!;
   db.upsertTask({...task,modePresetId:"codemode"});
   step = 0;
+  const nestedPath = join(binding, "report.md");
+  const readNested = () => tool("codemode", { code: `await tools.read({path:${JSON.stringify(pathToFileURL(nestedPath).href)}});` });
   reply = input => {
     if (++step === 1) return tool("codemode",{ code: 'await tools.write({path:"report.md",content:"嵌套交付"});' });
-    if (JSON.stringify(input.messages.at(-1)).includes("请按用户要求回读")) return tool("codemode",{ code: 'await tools.read({path:"report.md"});' });
+    if (step === 2) {
+      writeFileSync(nestedPath, "并行修改后的版本");
+      return readNested();
+    }
+    if (JSON.stringify(input.messages.at(-1)).includes("请按用户要求回读")) {
+      writeFileSync(nestedPath, "嵌套交付");
+      return readNested();
+    }
     return text("已完成");
   };
   await prompt(request);
-  assert.equal(step,4);
+  assert.equal(step,5, "the first read used the same file URL but observed a different version");
   assert.equal(readFileSync(join(binding,"report.md"),"utf8"),"嵌套交付");
   db.upsertTask({...db.getTask(taskId)!,modePresetId:task.modePresetId ?? null});
   mkdirSync(join(binding,"docs"),{recursive:true});

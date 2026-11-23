@@ -16,7 +16,7 @@ import { withDurableToolCoordination } from "./DurableToolCoordination";
 import { prioritizeInputAfterDeferredGoal } from "./DurableInputFreshness";
 import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
 import { withNativeToolOrigin } from "./DurableToolLifecycle";
-import { nativeExecutionSucceeded, readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
+import { nativeExecutionSucceeded, nativeFileReadAttemptSchema, readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -47,7 +47,7 @@ import { durableStorageOwnerState } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { activityTimeOrUndefined, latestActivityTime } from "../../../../shared/src/activity-time";
 import { withDurableImageRead } from "./DurableImages";
-import { NATIVE_OPENED_READ_PATH, withDurableFileReadEvidence } from "./DurableFileReadEvidence";
+import { NATIVE_FILE_READ_ATTEMPT, withDurableFileReadEvidence } from "./DurableFileReadEvidence";
 import { withMissingFileRecovery } from "./DurableMissingFile";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
@@ -1665,8 +1665,8 @@ export class DurableBotRuntime {
 function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegistration[] {
   return [
     ...(CodingTools.tools ?? []).map(tool => {
-      if (tool.name === "write") return withDurableArtifactRegistration(createWriteTool(admittedFileMutationPath), directory);
-      if (tool.name === "edit") return withDurableArtifactRegistration(createEditTool(admittedFileMutationPath), directory);
+      if (tool.name === "write") return createWriteTool(admittedFileMutationPath);
+      if (tool.name === "edit") return createEditTool(admittedFileMutationPath);
       if (tool.name === "read") return withWindowsBashWorkspacePath(withMissingFileRecovery(withDurableFileReadEvidence(withDurableImageRead(tool))));
       return withDurableArtifactRegistration(tool, directory);
     }),
@@ -1876,10 +1876,10 @@ function botExtension(
         toolTaskId: api.taskId, callId: call.id, toolName: call.name });
       if (options.foregroundHooks?.afterTool && !await childConversation(api, context))
         await options.foregroundHooks.afterTool(call, observed, api, context, commit);
-      const rawReadPath = observed.details && typeof observed.details === "object" && !Array.isArray(observed.details)
-        ? observed.details[NATIVE_OPENED_READ_PATH] : undefined;
+      const rawRead = observed.details && typeof observed.details === "object" && !Array.isArray(observed.details)
+        ? nativeFileReadAttemptSchema.safeParse(observed.details[NATIVE_FILE_READ_ATTEMPT]).data : undefined;
       const readPath = !isError && call.name === "read" ? readNativeExecutionReceipt(observed.details)?.fileRead?.target
-        ?? (typeof rawReadPath === "string" ? rawReadPath : undefined) : undefined;
+        ?? (rawRead && !rawRead.openFailure ? rawRead.target : undefined) : undefined;
       if (readPath) await recordSkillRead?.({ ...call, arguments: { ...call.arguments, path: readPath } }, api, context);
       if (options.onGoalToolEvidence) {
         try {
@@ -1912,7 +1912,7 @@ function botExtension(
   const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args, cwd) => {
     if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
     options.beforeToolExecution?.(name, args, cwd);
-  }, options.admittingUserInputs, options.codeReview));
+  }, options.admittingUserInputs, options.codeReview, options.directory));
   return defineExtension({ name: "mybuddy.bot", tasks: [], tools: managed ? tools.map(tool => managed.wrap(tool)) : tools,
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);

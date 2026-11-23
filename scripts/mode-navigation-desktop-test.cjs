@@ -573,36 +573,43 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     await boardView('未读结果');
     assert.deepEqual(await laneSizes(), [1, 0, 0, 0], 'pinning a read task with unloaded history does not create an unread result');
 
-    // 正在执行最多渲染 4 张卡；第 5 个起必须显式提示被折叠，且提示能展开完整列表。
+    // 每一栏都渲染 4 张卡；第 5 个起必须显式提示被折叠，且提示能展开完整列表。
     await evaluate(`(async()=>{for(const [i,id] of ['fresh-run-a','fresh-run-b','fresh-run-c','fresh-run-d','fresh-run-e'].entries())
       await window.api.db.upsertTask({id,title:'新执行 '+id,status:'in_progress',spaceId:'board-delivery',updatedAt:Date.now()+i});})()`);
+    const reviewDb = new (require('better-sqlite3'))(path.join(home,'.mybuddy','app.db'));
+    try {
+      const insertReview = reviewDb.prepare(`INSERT OR REPLACE INTO task_code_review(
+        task_id,target_key,root_entity,path,relative_path,id,status,before_present,before_stamp,after_present,after_stamp,additions,deletions,stats_available,restoring)
+        VALUES(?,?,?,?,?,?,'pending',0,'missing',1,'after',1,0,1,0)`);
+      for (const id of ['fresh-run-a','fresh-run-b','fresh-run-c','fresh-run-d','fresh-run-e','board-done'])
+        insertReview.run(id, 'board-review-'+id, 'board-review', 'C:/board/'+id+'.txt', id+'.txt', 'board-review-'+id);
+    } finally {reviewDb.close();}
     const runningPreview = await evaluate(`window.api.db.taskBoardPage({view:'running',preview:true,scope:'board-delivery'}).then(page=>({total:page.total,rows:page.rows.length}))`);
     assert.equal(runningPreview.rows, 4, 'the running preview stays bounded at four cards');
     assert.ok(runningPreview.total > 4, 'the running preview reports the real total');
+    const reviewPreview = await evaluate(`window.api.db.taskBoardPage({view:'review',preview:true,scope:'board-delivery'}).then(page=>({total:page.total,rows:page.rows.length}))`);
+    assert.equal(reviewPreview.rows, 4, 'the review preview stays bounded at four cards');
+    assert.equal(reviewPreview.total, 6, 'six tasks carry pending changes');
     await reloadDesktop();
     await click('.desktop-rail-module', '任务看板');
     await click('#desktop-module-list button[title="产品交付"]');
     await click('.task-board-views button', '我的焦点');
-    await visible('.task-board-focus [data-section="running"] .task-board-card');
-    assert.equal(
-      await evaluate('document.querySelectorAll(\'.task-board-focus [data-section="running"] .task-board-card\').length'),
-      4,
-      'four running tasks render in focus instead of the old two',
-    );
-    assert.equal(
-      await evaluate('document.querySelector(\'[data-section="running"] .task-board-count\')?.textContent'),
-      String(runningPreview.total),
-      'the running column header shows the real total',
-    );
-    assert.match(
-      await evaluate('document.querySelector(\'[data-section="running"] .task-board-folded\')?.textContent ?? ""'),
-      /还有 \d+ 个被折叠/,
-      'the running column says how many cards are folded',
-    );
-    await metrics(1360, 1000);
-    await evaluate('document.querySelector(\'[data-section="running"]\').scrollIntoView({block:"start"})');
-    await screenshot('task-board-running-folded');
-    await click('[data-section="running"] .task-board-folded');
+    const column = (name) => `[data-section="${name}"]`;
+    const columnCards = (name) => evaluate(`document.querySelectorAll('.task-board-focus ${column(name)} .task-board-card').length`);
+    const columnCount = (name) => evaluate(`document.querySelector('${column(name)} .task-board-count')?.textContent`);
+    const columnHint = (name) => evaluate(`document.querySelector('${column(name)} .task-board-folded')?.textContent ?? ""`);
+    await visible(`.task-board-focus ${column('review')} .task-board-card`);
+    assert.equal(await columnCards('review'), 4, '待审查的改动 renders four cards');
+    assert.equal(await columnCount('review'), String(reviewPreview.total), 'the review column header shows the real total');
+    assert.match(await columnHint('review'), /还有 \d+ 个被折叠/, 'the review column says how many cards are folded');
+    await visible(`.task-board-focus ${column('running')} .task-board-card`);
+    assert.equal(await columnCards('running'), 4, '正在执行 renders four cards instead of the old two');
+    assert.equal(await columnCount('running'), String(runningPreview.total), 'the running column header shows the real total');
+    assert.match(await columnHint('running'), /还有 \d+ 个被折叠/, 'the running column says how many cards are folded');
+    await metrics(1360, 1200);
+    await evaluate('document.querySelector(".task-board-focus")?.scrollTo?.(0,0)');
+    await screenshot('task-board-focus-four-cards');
+    await click(`${column('running')} .task-board-folded`);
     await until(
       () => evaluate(`document.querySelectorAll('.task-board-list .task-board-card').length===${runningPreview.total}`),
       'the folded hint opens the complete running list',

@@ -1,7 +1,7 @@
 import type { EntryRecord, NestedToolExecutionResult } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import type { GoalCheckOutcome, PstackCheckIdentity } from "../../../shared/conversation-goal-activity";
-import { readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
+import { hasNativeExecutionReceipt, matchingNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import type { WorkflowRun } from "./PstackState";
 import type { WorkspaceDelta } from "./PstackWorkspace";
 
@@ -115,12 +115,8 @@ export function pstackCheckReceipt(input: {
   const shellValue = shellResult.safeParse(result.structuredOutput).data;
   const exitCode = shellValue?.exitCode ?? null;
   const output = shellValue?.output ?? "";
-  const details = result.details;
-  const native = readNativeExecutionReceipt(details);
-  const hasNative = object(details) && Object.hasOwn(details, "executionReceipt");
-  const matchingNative = native && native.taskId === taskId && native.conversationId === conversationId &&
-    native.toolTaskId === toolTaskId && native.toolName === shell;
-  const validNative = matchingNative && (native.exitCode ?? null) === exitCode &&
+  const native = matchingNativeExecutionReceipt(result, { taskId, conversationId, toolTaskId, toolName: shell });
+  const validNative = native && (native.exitCode ?? null) === exitCode &&
     (native.status === "passed") === (exitCode === 0 && !result.isError) && native.transport === "returned" &&
     native.settlement === "consumed" && native.status !== "inconclusive";
   const counts = [...output.matchAll(/^\s*(?:ℹ|#)?\s*tests\s+(\d+)\s*$|\b(?:ran|collected)\s+(\d+)\s+(?:tests?|items?)\b/gim)]
@@ -129,7 +125,7 @@ export function pstackCheckReceipt(input: {
   const checkoutChanged = before.checkoutSha !== after.checkoutSha;
   const unchanged = before.coverageComplete && after.coverageComplete && before.fingerprint === after.fingerprint && !checkoutChanged;
   const desktop = desktopOutcome(output, exitCode);
-  let outcome: VerificationOutcome = hasNative && !validNative
+  let outcome: VerificationOutcome = hasNativeExecutionReceipt(result.details) && !validNative
     ? { outcome: "tool_error", error: "The native shell receipt did not confirm this check's execution." }
     : verificationOutcome(
       { ...before, fileDigests: new Map(Object.entries(before.fileDigests)) },
@@ -146,7 +142,7 @@ export function pstackCheckReceipt(input: {
     ...(before.checkoutSha && { beforeCheckoutSha: before.checkoutSha }),
     ...(after.checkoutSha && { afterCheckoutSha: after.checkoutSha }),
     ...(unchanged && after.checkoutSha && { checkoutSha: after.checkoutSha }),
-    ...(matchingNative && { executionId: native.executionId, ...(native.attemptId && { attemptId: native.attemptId }) }),
+    ...(native && { executionId: native.executionId, ...(native.attemptId && { attemptId: native.attemptId }) }),
     ...(desktop?.desktopReport && { desktopReport: desktop.desktopReport }),
   };
   return { ...outcome, checkIdentity, command, exitCode, toolTaskId, unchanged, emptySuite, fingerprint: after.fingerprint,

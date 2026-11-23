@@ -80,6 +80,10 @@ export class DotsDelegations {
     this.scheduleObservation();
   }
 
+  latestTaskDelivery(taskId: string) {
+    return this.outbox.latestTaskDelivery(taskId);
+  }
+
   private tracking(row: Row): DotsSchedulingPolicy["trackingPolicy"] | undefined {
     if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='answer_rule_turns'").get()) {
       const turn = this.db.prepare("SELECT status,snapshot FROM answer_rule_turns WHERE task_id=? AND input_id=?")

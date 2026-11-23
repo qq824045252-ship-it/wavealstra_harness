@@ -681,6 +681,7 @@ export class ArtifactService {
    */
   async readContent(id: string, options?: { inline?: boolean }): Promise<{
     content: string;
+    artifactVersion: number;
     language?: string;
     kind?: string;
     path?: string;
@@ -695,9 +696,9 @@ export class ArtifactService {
       const content = this.storage.read(descriptor.source.storagePath);
       if (content === null) return null;
       if (options?.inline && descriptor.kind === "image" && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|x-icon);base64,/i.test(content)) {
-        return { content: artifactImageUrl(id, "full", { version: descriptor.version }), kind: "image" };
+        return { content: artifactImageUrl(id, "full", { version: descriptor.version }), kind: "image", artifactVersion: descriptor.version };
       }
-      return { content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind };
+      return { content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind, artifactVersion: descriptor.version };
     }
     const target = this.workspaceTarget(id);
     if (!target) return null;
@@ -710,10 +711,12 @@ export class ArtifactService {
       thumbnail: Boolean(options?.inline),
       inlineImage,
     });
+    if (this.get(id)?.version !== descriptor.version) return null;
     const kind = (descriptor.capabilities?.originalKind as string | undefined) ?? preview.kind;
     if (!inlineImage) {
       return {
         content: preview.content,
+        artifactVersion: descriptor.version,
         language: preview.language,
         kind,
         path: preview.path,
@@ -725,6 +728,7 @@ export class ArtifactService {
     const bytes = preview.bytes ?? 0;
     // 图片字节永不过 IPC：content 只是带版本的协议 URL，体积/尺寸只做元数据。
     return {
+      artifactVersion: descriptor.version,
       content: artifactImageUrl(id, "full", {
         mime: preview.mimeType,
         version: descriptor.version,

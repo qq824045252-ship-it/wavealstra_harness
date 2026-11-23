@@ -3,6 +3,7 @@ import { copyJson } from "@earendil-works/chord";
 import { defineDocFamily, GenerationTask, type ConversationId, type Cursor, type Storage, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import type { GoalActivityIdentity, GoalNativeEvidence } from "../../../shared/conversation-goal-activity";
 import { openDurablePassiveStorage } from "./DurableStorage";
+import { durableArtifactRegistrationSchema, durableRegisteredArtifact, DURABLE_ARTIFACT_ENTRY_KIND } from "./DurableArtifactReceipt";
 
 type Record = { toolTaskId: number; evidence: GoalNativeEvidence };
 type History = { events: Record[] };
@@ -54,7 +55,6 @@ export async function readGoalNativeEvidence(directory: string, runs: readonly G
     // version only from the original registration of that exact native tool.
     const legacy = output.filter(row => row.evidence.kind === "delivery" && row.evidence.path && row.evidence.digest && !row.evidence.saved);
     if (legacy.length) {
-      const { durableArtifactRegistrationSchema, durableRegisteredArtifact, DURABLE_ARTIFACT_ENTRY_KIND } = await import("./DurableArtifactRegistration");
       const roots = new Set<ConversationId>();
       const wanted = new Map<string, typeof legacy>();
       for (const row of legacy) {

@@ -4,7 +4,8 @@ import type { ConversationInteractionDto } from "../../../shared/conversation-in
 import { collectReplyCitations, providedReplySources, replyToolSources } from "../../../shared/chat-reply-sources";
 import type { ReplyCitation } from "../../../shared/chat-reply-content";
 import { searchReportFromDetails } from "../../../shared/web-search";
-import { dotsDeliveryText, dotsMissingInputConclusion, readDotsWorkerOutcome, type DotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
+import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
+import { dotsDeliveryText, dotsMissingInputQuestion, readDotsWorkerOutcome, type DotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import { durableContentText, nestedToolRow, type NestedCallDetail } from "./DurableHistoryProjection";
 
@@ -14,7 +15,8 @@ export function durableDotsReplySources(entry: EntryRecord, includeUser: boolean
     if (message.role === "user" && includeUser) {
       sources.push(...providedReplySources(durableContentText(message.content)));
     }
-    if (message.role !== "toolResult" || message.isError) continue;
+    if (message.role !== "toolResult" || !nativeExecutionSucceeded(message, { conversationId: entry.conversationId,
+      toolTaskId: entry.byTaskId, toolName: message.toolName, callId: message.toolCallId })) continue;
     sources.push(...replyToolSources({ tool: message.toolName, status: "success", output: durableContentText(message.content),
       detail: message.details === undefined ? undefined : JSON.stringify(message.details), webSearch: searchReportFromDetails(message.details) }));
     if (message.toolName === "codemode") {
@@ -92,16 +94,24 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
   const outcome = readDotsWorkerOutcome(text);
   const delivery = outcome ? dotsDeliveryText(outcome) : text;
   const citations = acceptedCitations ?? collectReplyCitations(delivery, sources);
-  if (!accepted && (outcome?.dotsState === "blocked" ||
-    outcome?.dotsState === "complete" && dotsMissingInputConclusion(delivery))) {
+  if (!accepted && outcome?.dotsState === "blocked") {
     return { status: "blocked" as const, text: delivery, ...deliveryAssets };
   }
-  if (outcome?.dotsState === "complete" && outcome.delivery) {
-    // A filename explicitly named by the user can also use the host's immutable write/edit receipt.
-    const named = requestedFilename ? assets.files.filter(file => basename(file.path) === requestedFilename) : [];
-    const publicFiles = named.length === 1 ? named : deliveryAssets.files;
-    return { status: "completed" as const, text: JSON.stringify({ dotsState: "complete", result: delivery }),
-      citations, ...deliveryAssets, files: publicFiles };
+  if (!accepted && outcome?.dotsState !== "progress") {
+    const question = dotsMissingInputQuestion(delivery, outcome?.result ?? "");
+    if (question) return { status: "blocked" as const, text: question, ...deliveryAssets };
+  }
+  if (outcome?.dotsState === "complete") {
+    if (requestedFilename) {
+      // A precisely named deliverable can use the host's immutable write/edit receipt.
+      const named = assets.files.filter(file => basename(file.path) === requestedFilename);
+      if (named.length !== 1) return { status: "failed" as const,
+        text: `原任务未能唯一确认交付文件「${requestedFilename}」。`, messageIds: [], files: [] };
+      return { status: "completed" as const, text: JSON.stringify({ dotsState: "complete", result: delivery }),
+        citations, ...deliveryAssets, files: named };
+    }
+    if (outcome.delivery) return { status: "completed" as const,
+      text: JSON.stringify({ dotsState: "complete", result: delivery }), citations, ...deliveryAssets };
   }
   return { status: "completed" as const, text, citations, ...(outcome?.dotsState === "progress" ? deliveryAssets : assets) };
 }

@@ -10,7 +10,8 @@ import { durableContentText } from "./DurableHistoryProjection";
 import { durableMcpToolName } from "./DurableMcp";
 import { DurableSubagentIdentity } from "./DurableSubagentIdentity";
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
-import { DurableImprovementRuntime } from "./DurableImprovementRuntime";
+import { DurableImprovementRuntime, improvementInput } from "./DurableImprovementRuntime";
+import { matchingNativeExecutionReceipt, nativeExecutionSucceeded, nativeFileVersion } from "../../../shared/native-execution-receipt";
 
 export interface DurableHookBinding { store: NativeHookStore; scope: () => HookScope; cwd?: string; directory?: string; readHints?: import("../hooks/ReadRecoveryHints").ReadRecoveryHints;
   improvement?: import("../hooks/NativeImprovementService").NativeImprovementService; skillAllowed?: (name: string) => boolean; toolAllowed?: (name: string) => boolean }
@@ -28,19 +29,25 @@ function toolIdentity(name: string, args: unknown) {
 
 function finishToolEvidence(entries: EntryRecord[]) {
   const paths = new Map<string, string>();
-  const results: { tool: string; callId: string; path?: string; isError: boolean; text: string; textTruncated: boolean }[] = [];
+  const results: Array<ReadbackTool & { entryId: number; callId: string; text: string; textTruncated: boolean }> = [];
   for (const entry of entries) for (const message of entry.model ?? []) {
     if (message.role === "assistant") for (const item of message.content) {
       if (item.type === "toolCall" && typeof item.arguments.path === "string") paths.set(item.id, item.arguments.path);
     }
     if (message.role !== "toolResult") continue;
+    const identity = { conversationId: entry.conversationId, toolTaskId: entry.byTaskId, toolName: message.toolName, callId: message.toolCallId };
+    const receipt = matchingNativeExecutionReceipt(message, identity);
+    const requestedPath = paths.get(message.toolCallId);
+    paths.delete(message.toolCallId);
     // Pi appends one rendered diagnostics block after the actual tool content.
     const data = entry.data;
     const diagnostics = data && typeof data === "object" && !Array.isArray(data) ? data.diagnostics : undefined;
     const output = Array.isArray(diagnostics) && diagnostics.length ? message.content.slice(0, -1) : message.content;
     const text = durableContentText(output);
-    results.push({ tool: message.toolName, callId: message.toolCallId, path: paths.get(message.toolCallId),
-      isError: message.isError === true, text: text.slice(0, 4000), textTruncated: text.length > 4000 || (Array.isArray(diagnostics)
+    results.push({ entryId: entry.id, tool: message.toolName, callId: message.toolCallId, requestedPath,
+      path: receipt?.fileReadAttempt?.target ?? receipt?.fileChange?.target ?? requestedPath,
+      version: nativeFileVersion(receipt),
+      isError: !nativeExecutionSucceeded(message, identity), text: text.slice(0, 4000), textTruncated: text.length > 4000 || (Array.isArray(diagnostics)
         && diagnostics.some(d => d && typeof d === "object" && !Array.isArray(d) && d.code === "truncated")) });
   }
   return results;
@@ -203,18 +210,23 @@ export class DurableNativeHooks {
       const user = entry?.model?.find(m => m.role === "user");
       const target = requestFeatures(improvementInput(entry)).target;
       const observed: ReadbackTool[] = [];
+      let cwd = this.binding.cwd;
       if (target) {
-        const byCall = new Map(tools.map(t => [t.callId,t]));
+        cwd = (await api.snapshot(DurableSubagentIdentity, api.conversationId, ctx))?.value?.workspace.cwd ?? cwd;
+        const byCall = new Map(tools.map(t => [`${t.entryId}:${t.callId}`, t]));
         for (const record of page?.items.slice().reverse() ?? []) {
           if (record.conversationId !== api.conversationId || (entryId !== undefined && record.id < entryId)) continue;
           for (const m of record.model ?? []) if (m.role === "toolResult") {
             if (m.toolName === "codemode") observed.push(...nestedReadbackTools(m.details));
-            else if (byCall.has(m.toolCallId)) observed.push(byCall.get(m.toolCallId)!);
+            else {
+              const item = byCall.get(`${record.id}:${m.toolCallId}`);
+              if (item) observed.push(item);
+            }
           }
         }
       }
       const hookNote = selected && await this.evaluate(selected, "beforeFinish", api, ctx, { answer: durableContentText(answer.content).slice(0, 16000),
-        inputEntry: entryId, readback: readbackState(target, observed),
+        inputEntry: entryId, readback: readbackState(target, observed, cwd),
         reportedBlocker: reportsBlocker(durableContentText(answer.content)),
         userText: durableContentText(user?.content).slice(0, 16000), recentTools: tools, historyTruncated: Boolean(page?.next) }, "", "", runKey);
       const note = [improvement, hookNote].filter(Boolean).join("\n");
@@ -237,14 +249,4 @@ export class DurableNativeHooks {
   }
   continuation(answer: AssistantMessage): string | undefined { return this.continuations.get(answer); }
   async beforeProviderRequest(api: HookApi, ctx: Context): Promise<void> { await this.improvement?.beforeProviderRequest(api, ctx); }
-}
-
-export function improvementInput(entry?: EntryRecord): string {
-  const data = entry?.data;
-  const input = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    return !input.botRequestId && !input.goalContinuation && typeof input.text === "string" ? input.text : "";
-  }
-  const user = entry?.model?.find(m => m.role === "user");
-  return durableContentText(user?.content);
 }

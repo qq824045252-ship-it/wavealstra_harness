@@ -557,11 +557,12 @@ function readdirSafe(dir: string): string[] {
   const ingest = stripComments(
     readFileSync(join(ROOT, "src", "renderer", "src", "lib", "artifactIngest.ts"), "utf-8"),
   );
-  const versionGuard = /cached\.artifactVersion\s*===\s*descriptor\.version/.test(rh);
+  const versionGuard = /cached\.artifactVersion\s*===\s*version/.test(rh) &&
+    /readyCache\(artifactId,\s*descriptor\.version\)/.test(rh);
   check(
     "R22 render cache 绑定 artifactVersion（命中检查 = version 匹配）",
     versionGuard,
-    versionGuard ? "ensure 内 cached.artifactVersion === descriptor.version" : "cache 未绑版本",
+    versionGuard ? "readyCache 核对当前 descriptor.version" : "cache 未绑版本",
   );
   const payloadField = /artifactVersion:\s*number/.test(ingest);
   check(

@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { collectReplyCitations } from "../../shared/chat-reply-sources";
-import { DOTS_TASK_ID, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
+import { DOTS_TASK_ID, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin, type DotsTaskDelivery } from "../../shared/dots";
 import { readCommittedDotsDeliveries, type CommittedDotsDelivery, type DotsAppendOutcome } from "../agent/durable/DurableDotsReply";
 import type { DotsFollowupDecision } from "./DotsFollowup";
 import { activitySummary } from "./DotsActivity";
@@ -107,6 +107,23 @@ export class DotsReplyOutbox {
     const { reply } = receipt;
     return reply.taskId === event.task_id && reply.operationId === event.operation_id && reply.sourceMessageId === destination.sourceMessageId
       && (!destination.origin || (reply.origin?.conversationId === destination.origin.conversationId && reply.origin.entryId === destination.origin.entryId));
+  }
+
+  async latestTaskDelivery(taskId: string): Promise<DotsTaskDelivery | undefined> {
+    const event = this.db.prepare(`SELECT e.*,d.source_message_id,json_extract(e.snapshot,'$.deliveryKey') AS delivery_key
+      FROM dots_delegations d JOIN dots_reply_events e ON e.operation_id=d.operation_id AND e.task_id=d.task_id
+      WHERE d.task_id=? AND e.settled=1 AND json_valid(e.snapshot)
+        AND json_extract(e.snapshot,'$.delivered')='conclusion' AND delivery_key IS NOT NULL
+      ORDER BY json_extract(e.snapshot,'$.deliveredAt') DESC,d.seq DESC,e.rowid DESC LIMIT 1`)
+      .get(taskId) as (Event & { source_message_id: string; delivery_key: string }) | undefined;
+    if (!event) return;
+    const [receipt] = await this.committedDeliveries([event.delivery_key]);
+    if (!this.db.open || receipt?.reply.kind !== "conclusion") return;
+    const { reply } = receipt;
+    // Formal Goal delivery can select an earlier commissioning input in its accepted lineage.
+    const source = reply.completion ? reply.sourceMessageId : event.source_message_id;
+    if (!this.matchesReceipt(event, receipt, dotsOriginalDestination(this.db, source))) return;
+    return { deliveryKey: reply.deliveryKey, artifacts: reply.artifacts.filter(file => file.saved) };
   }
 
   /** Rebuild incomplete projections by reading the original conversation's committed messages. */

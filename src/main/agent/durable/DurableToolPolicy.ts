@@ -17,10 +17,10 @@ import type { ConversationInteractionService } from "../ConversationInteractionS
 import type { ExecutionFailureRepository } from "../ExecutionFailureRepository";
 import type { ExecutionAttemptRepository } from "../ExecutionAttemptRepository";
 import type { SessionToolApprovalRequest } from "../SessionApprovalBridge";
-import { nativeExecutionOperationId, nativeExecutionReceiptSchema, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
+import { nativeExecutionOperationId, nativeExecutionReceiptSchema, nativeFileReadAttemptSchema, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { collectRuntimeMaterialEvidence } from "../RuntimeMaterialEvidence";
 import { FILE_MUTATION_TARGET_MEMO, type FileMutationTarget } from "../../platform/bash-workspace-path";
-import { NATIVE_OPENED_READ_PATH } from "./DurableFileReadEvidence";
+import { NATIVE_FILE_READ_ATTEMPT } from "./DurableFileReadEvidence";
 import { durableExecutionContext } from "./DurableExecutionContext";
 import { DurableSubagentIdentity } from "./DurableSubagents";
 import { durableMcpToolName } from "./DurableMcp";
@@ -256,8 +256,10 @@ async function observeToolReceipt(call: ToolHookCall, originalCall: ToolHookCall
       (notStarted ? result.diagnostics?.find(item => item.severity === "error" && item.code)?.code : threw ? "tool_error" : undefined);
   const checkedAt = evidence?.checkedAt ?? Date.now();
   const rawDetails = result.details !== null && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
-  const openedPath = rawDetails[NATIVE_OPENED_READ_PATH];
-  const [material] = status === "passed" && originalCall.name === "read" && typeof openedPath === "string"
+  const fileReadAttempt = originalCall.name === "read" && !notStarted
+    ? nativeFileReadAttemptSchema.safeParse(rawDetails[NATIVE_FILE_READ_ATTEMPT]).data : undefined;
+  const openedPath = fileReadAttempt && !fileReadAttempt.openFailure ? fileReadAttempt.target : undefined;
+  const [material] = status === "passed" && openedPath !== undefined
     ? collectRuntimeMaterialEvidence({ toolName: "read", toolCallId: call.id, isError: false,
       args: { ...call.arguments, path: openedPath }, result: { content: result.output, details: rawDetails } }, checkedAt) : [];
   const fileRead = material && typeof openedPath === "string" ? { target: openedPath, outputHash: material.outputHash,
@@ -272,7 +274,8 @@ async function observeToolReceipt(call: ToolHookCall, originalCall: ToolHookCall
     transport: notStarted ? "not_started" : completedResponse ? "returned" : "interrupted", settlement,
     verifierId: evidence?.verifierId ?? "durable-tool-result", verifierVersion: 1, checkedAt,
     ...(exitCode === undefined ? {} : { exitCode }), ...(causeCode === undefined ? {} : { causeCode }),
-    ...(fileRead && { fileRead }), ...(changedPath && { fileChange: { target: changedPath, ...(checkedRange && { checkedRange }) } }),
+    ...(fileReadAttempt && { fileReadAttempt }), ...(fileRead && { fileRead }),
+    ...(changedPath && { fileChange: { target: changedPath, ...(checkedRange && { checkedRange }) } }),
   };
   const verification = { canonicalTarget: evidence?.canonicalTarget ?? attempt?.target ?? `durable-tool:${api.conversationId}:${api.taskId}`,
     expected: evidence?.expected ?? { successfulToolResponse: true }, observed: evidence?.observed ?? { isError: result.isError === true,
@@ -292,7 +295,7 @@ function projectToolReceipt(result: ToolExecutionResult, { receipt, effectStatus
       ? effectStatus === "passed" ? "已通过回读确认原操作完成，未重复执行。" : "已恢复原工具的执行回执，未重复执行。"
       : undefined;
   const projectedDetails: JsonObject = { ...details, executionReceipt: receipt };
-  delete projectedDetails[NATIVE_OPENED_READ_PATH];
+  delete projectedDetails[NATIVE_FILE_READ_ATTEMPT];
   if (effectStatus && note) projectedDetails.recovery = { verifierId: receipt.verifierId, checkedAt: receipt.checkedAt, status: effectStatus };
   return { ...result, isError: receipt.status !== "passed", details: projectedDetails,
     ...(note ? { output: [...(result.output ?? []), { type: "text", text: note }] } : {}) };

@@ -1,9 +1,10 @@
-import type { MemoryTurnDto } from "../src/shared/memory-kernel";
+import type { MemoryTurnDto, MemoryUpdateRequest } from "../src/shared/memory-kernel";
 import { DOTS_TASK_ID } from "../src/shared/dots";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import "../src/renderer/src/styles/global.css";
 import MemoryKernelExplorer from "../src/renderer/src/components/settings/MemoryKernelExplorer";
+import DotsSettingsTab from "../src/renderer/src/components/settings/DotsSettingsTab";
 import MemoryTab from "../src/renderer/src/components/settings/MemoryTab";
 import MemoryL0Explorer from "../src/renderer/src/components/settings/MemoryL0Explorer";
 import { useAppStore } from "../src/renderer/src/store/appStore";
@@ -257,17 +258,67 @@ export async function checkAutomaticRecallSettings(): Promise<void> {
 export async function checkDotsMemorySource(): Promise<void> {
   fixtures();
   const saved = useAppStore.getState();
-  const record = { ...atom, sourceTaskId: DOTS_TASK_ID, scopes: [{ scopeType: "task", scopeId: DOTS_TASK_ID, binding: "primary" }] };
-  api.memory.list = async () => [record];
+  let record = { ...atom, title: "Dots 的交付偏好", content: "先写交付日期。", sourceTaskId: DOTS_TASK_ID,
+    scopes: [{ scopeType: "task", scopeId: DOTS_TASK_ID, binding: "primary" }] };
+  api.agent.getAppSettings = async () => ({ memoryEnabled: true, dotsSettingsRuntime: true, dotsSettings: { memoryMode: "readOnly" } });
+  api.agent.listModels = async () => [];
+  api.db.listSpaces = async () => [];
+  api.memory.list = async () => [record, { ...atom, id: "global-memory", title: "全局交付规则", scopes: [{ scopeType: "global" }] }];
   api.memory.get = async () => record;
+  api.memory.update = async ({ id, title, content }: MemoryUpdateRequest) => {
+    if (id !== record.id) throw new Error("记忆不存在");
+    record = { ...record, title: title ?? record.title, content: content ?? record.content, updatedAt: record.updatedAt + 1 };
+    return record;
+  };
   api.dots = { open: async () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1, welcomeMode: "general" }) };
   api.agent.loadTaskHistory = async () => ({ messages: [] });
   useAppStore.setState({ tasks: [], activeTaskId: null, settingsOpen: true });
   try {
-    mount(<MemoryKernelExplorer fixedScope={{ scopeType: "task", scopeId: DOTS_TASK_ID }} />);
-    await until(() => host.textContent?.includes(record.title), "Dots record loaded");
-    check(host.querySelector(".settings-section-title")?.textContent === "Dots的记忆", "personal scope label");
-    await click(new RegExp(record.title));
+    mount(<DotsSettingsTab />);
+    host.style.maxWidth = "500px";
+    await click("模型与记忆");
+    await until(() => host.querySelector('[aria-label="Dots 使用的模型"]'), "model and memory mode settings open");
+    check(host.querySelector<HTMLSelectElement>('[aria-label="Dots 如何使用长期记忆"]')?.value === "readOnly", "memory mode is shown on the model page");
+    check(!host.querySelector(".memory-explorer, .dots-memory-limits-fields"), "model page only contains its own settings");
+
+    await click("读取额度");
+    const limitForm = host.querySelector<HTMLFormElement>('form[aria-label="Dots 记忆读取额度"]')!;
+    const limitFields = limitForm.querySelector(".dots-memory-limits-fields")!;
+    check(limitForm.querySelector<HTMLInputElement>('[name="searchPreviewChars"]')?.value === "360", "reading limits are visible with defaults");
+    check(!limitForm.closest("details"), "reading limits are directly visible without a disclosure");
+    check(getComputedStyle(limitFields).gridTemplateColumns.split(" ").length === 1, "reading limits use one column at narrow width");
+    host.style.maxWidth = "860px";
+    check(getComputedStyle(limitFields).gridTemplateColumns.split(" ").length === 2, "reading limits use two columns at wide width");
+    host.style.maxWidth = "500px";
+
+    await click("专属记忆");
+    const detailText = () => host.querySelector(".memory-record-detail")?.textContent;
+    await until(() => detailText()?.includes("先写交付日期。"), "existing Dots content opens by default");
+    check(!host.querySelector(".memory-record-list")?.textContent?.includes("全局交付规则"), "global memory stays out of the Dots list");
+    const columns = getComputedStyle(host.querySelector(".memory-split")!).gridTemplateColumns;
+    check(columns.split(" ").length === 1, "the list and detail stack in narrow Dots settings");
+    const confirmEditor = (label: string) => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>(".text-prompt-dialog button")]
+        .find(b => b.textContent === label);
+      check(button && !button.disabled, "available editor action " + label);
+      flushSync(() => button!.click());
+    };
+    await click("编辑");
+    check(document.querySelector<HTMLInputElement>(".text-prompt-dialog input")?.value === "Dots 的交付偏好", "current title is prefilled");
+    confirmEditor("下一步");
+    await until(() => document.querySelector(".text-prompt-dialog textarea"), "memory content editor opens");
+    const textarea = document.querySelector<HTMLTextAreaElement>(".text-prompt-dialog textarea")!;
+    check(textarea.value === "先写交付日期。", "current content is prefilled");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    flushSync(() => {
+      setValue.call(textarea, "先写实际交付物。");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    confirmEditor("保存");
+    await until(() => detailText()?.includes("先写实际交付物。"), "updated content shown");
+    await click("调度");
+    await click("专属记忆");
+    await until(() => detailText()?.includes("先写实际交付物。"), "saved memory opens again");
     await click("打开 Dots 对话");
     await until(() => useAppStore.getState().activeTaskId === DOTS_TASK_ID && !useAppStore.getState().settingsOpen, "original conversation opened");
   } finally { useAppStore.setState(saved); }
@@ -276,7 +327,7 @@ export async function checkDotsMemorySource(): Promise<void> {
 export async function run(): Promise<string[]> {
   const results: string[] = [];
   await checkDotsMemorySource();
-  results.push("A Dots memory opens its original Dots conversation from settings");
+  results.push("Separate Dots model, memory and limits tabs, responsive limits, editable scoped memory and source navigation");
   await checkAutomaticRecallSettings();
   results.push("persisted automatic recall switch and responsive last-request receipt");
   await checkSemanticIndexFeedback();

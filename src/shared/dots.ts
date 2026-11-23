@@ -21,7 +21,7 @@ export function isDotsAutomaticInput(requestId: string): boolean {
   return /^cron-[0-9a-f-]{36}-input$/i.test(requestId) || requestId.startsWith("goal-continuation:");
 }
 export const DotsIpc = { open: "dots:open", list: "dots:list", activity: "dots:activity",
-  getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
+  taskDelivery: "dots:taskDelivery", getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
 
 export interface DotsDelegation {
   id: string;
@@ -66,6 +66,8 @@ export interface DotsAssistantReply {
   artifacts: DotsDelegation["artifacts"];
 }
 
+export type DotsTaskDelivery = Pick<DotsAssistantReply, "deliveryKey" | "artifacts">;
+
 type DotsActivityTask = {
   id: string;
   taskId: string;
@@ -86,6 +88,7 @@ export interface DotsApi {
   open(): Promise<TaskDto>;
   list(sourceIds?: string[]): Promise<DotsDelegation[]>;
   activity(): Promise<DotsActivityItem[]>;
+  taskDelivery(taskId: string): Promise<DotsTaskDelivery | undefined>;
   getPromptSegments(): Promise<AssemblySegmentDto[]>;
   onChanged(listener: () => void): () => void;
 }

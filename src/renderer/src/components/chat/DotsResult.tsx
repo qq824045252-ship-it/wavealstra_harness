@@ -1,10 +1,10 @@
 import "./DotsResult.css";
 import type { SavedArtifactRequest } from "@shared/saved-artifact";
 import { lazy, Suspense, useEffect, useState } from "react";
-import { DOTS_TASK_ID, type DotsDelegation } from "@shared/dots";
+import { DOTS_TASK_ID, type DotsDelegation, type DotsTaskDelivery } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import ChatMarkdown from "./ChatMarkdown";
-import { openDotsTask } from "@/lib/taskBoardVisits";
+import { openDotsActivityTarget, openDotsTask } from "@/lib/taskBoardVisits";
 import { toRendererArtifact } from "@/lib/artifactIngest";
 import { inferArtifactKind } from "@/lib/workspace";
 import { ArtifactChip } from "../common/FileBadge";
@@ -40,6 +40,47 @@ export function DotsSavedFilePreview({ file, onClose }: { file: SavedArtifactReq
     <WorkFilePreview target={file.snapshotPath} file={{ ref: file.snapshotPath, name: file.name, previewManifestPath: file.manifestPath }}
       onClose={onClose} />
   </Suspense></div>;
+}
+
+export function TaskDotsDelivery({ taskId }: { taskId: string }) {
+  const [loaded, setLoaded] = useState<{ taskId: string; delivery?: DotsTaskDelivery }>();
+  useEffect(() => {
+    const api = window.api?.dots;
+    if (!api?.taskDelivery) return;
+    let generation = 0;
+    const refresh = () => {
+      const current = ++generation;
+      void api.taskDelivery(taskId).then(delivery => {
+        if (current === generation) setLoaded({ taskId, delivery });
+      }).catch(error => {
+        if (current !== generation) return;
+        setLoaded({ taskId });
+        console.warn("[Dots] 读取最近交付失败", error);
+      });
+    };
+    const unsubscribe = api.onChanged(refresh);
+    refresh();
+    return () => { generation++; unsubscribe(); };
+  }, [taskId]);
+  const delivery = loaded?.taskId === taskId ? loaded.delivery : undefined;
+  if (!delivery) return null;
+  return <TaskDeliveryContent key={delivery.deliveryKey} taskId={taskId} delivery={delivery} />;
+}
+
+function TaskDeliveryContent({ taskId, delivery }: { taskId: string; delivery: DotsTaskDelivery }) {
+  const [preview, setPreview] = useState<SavedArtifactRequest>();
+  const [error, setError] = useState("");
+  return <details className="task-dots-delivery dots-progress-history">
+    <summary>最近一次交付</summary>
+    {delivery.artifacts.length > 0 && <DotsDeliveryFiles row={{ taskId, title: "", artifacts: delivery.artifacts }}
+      selected={false} onPreview={setPreview} />}
+    {preview && <DotsSavedFilePreview key={preview.snapshotPath} file={preview} onClose={() => setPreview(undefined)} />}
+    <button type="button" className="md-link" onClick={() => {
+      setError("");
+      void openDotsActivityTarget(DOTS_TASK_ID, { messageId: delivery.deliveryKey }).catch(reason => setError(String(reason)));
+    }}>查看 Dots 交付消息</button>
+    {error && <div role="alert">{error}</div>}
+  </details>;
 }
 
 function TaskLink({ row, onError }: { row: {taskId: string; title: string}; onError: (error: string) => void }) {

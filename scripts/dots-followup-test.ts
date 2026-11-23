@@ -146,8 +146,8 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
         if (last.isError && secondCheck) return [{ type: "text", text: "已核查绑定目录。\n\n```json\n" + JSON.stringify({
           dotsState: "blocked", result: executionNotes, delivery: { text: "请把复核明细.csv 上传到原空间。" },
         }) + "\n```" }];
-        return last.isError ? deliveryReply("没有交付合计：台账没读到。请把入库明细.csv 上传到原空间。", "找不到源表。")
-          : deliveryReply("42", "已从补齐的明细读取 42。");
+        return last.isError ? deliveryReply("请把入库明细.csv 上传到原空间。", "已核对 A 表。B 表尚未核对，缺入库明细.csv。")
+          : deliveryReply("42", "已从补齐的明细读取 42。下次如需增加统计范围，请上传新的数据文件。");
       }
       return [{ type: "toolCall", id: "read-inbound", name: "read", arguments: { path: filename } }];
     }
@@ -181,6 +181,11 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
       if (lastTool.toolName === "conversation_goal_propose_complete" && lastTool.isError) {
         if (lastTool.toolCallId === "goal-stale-read") {
           assert(JSON.stringify(lastTool.content).includes("更新的读取结果"));
+          return [{ type: "toolCall", id: "goal-replace-source", name: "write", arguments: { path: "第二批.txt", content: "周一批次累计 19 件" } }];
+        }
+        if (lastTool.toolCallId === "goal-stale-after-write") {
+          assert(JSON.stringify(lastTool.content).includes("版本变化"));
+          writeFileSync(join(folder, "第二批.txt"), "周一批次累计 18 件");
           return [{ type: "toolCall", id: "goal-repeat-read", name: "read", arguments: { path: "第二批.txt" } }];
         }
         if (lastTool.toolCallId === "goal-self-claim") {
@@ -228,13 +233,16 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
         return [{ type: "toolCall", id: "goal-register-file", name: "register_artifact", arguments: { path: goalFile } }];
       }
       if (lastTool.toolCallId === "goal-register-file") assert(!lastTool.isError);
+      if (lastTool.toolCallId === "goal-replace-source") assert(!lastTool.isError);
       return [{
         type: "toolCall", id: lastTool.toolCallId === "goal-latest-read" ? "goal-stale-read" :
-          lastTool.toolCallId === "goal-register-file" ? "goal-close" : "goal-no-evidence",
+          lastTool.toolCallId === "goal-register-file" ? "goal-close" :
+            lastTool.toolCallId === "goal-replace-source" ? "goal-stale-after-write" : "goal-no-evidence",
         name: "conversation_goal_propose_complete", arguments: {
           ...details.versionGuard, summary: "内部核对：第二批原始文件支持结论。", deliveryText: conclusion,
-          observations: lastTool.toolCallId === "goal-register-file" ? [currentObservation] :
-            lastTool.toolCallId === "goal-latest-read" ? [currentObservation, oldObservation] : [oldObservation],
+          observations: lastTool.toolCallId === "goal-register-file" ? [{ ...currentObservation, toolCallId: "goal-repeat-read" }] :
+            lastTool.toolCallId === "goal-latest-read" ? [currentObservation, oldObservation] :
+              lastTool.toolCallId === "goal-replace-source" ? [currentObservation] : [oldObservation],
         },
       }];
     }
@@ -556,7 +564,7 @@ try {
     const tool = evidenceEntry?.model?.find(message => message.role === "toolResult");
     assert(tool?.role === "toolResult");
     assert.deepEqual(observation.executionReceipt, readNativeExecutionReceipt(tool.details));
-    assert.equal(observation.executionReceipt?.callId, "goal-latest-read");
+    assert.equal(observation.executionReceipt?.callId, "goal-repeat-read");
     assert.equal(observation.executionReceipt?.fileRead?.target, join(folder, "第二批.txt"));
     const text = tool.content.find(block => block.type === "text");
     assert(text?.type === "text");
@@ -859,7 +867,10 @@ try {
   const waiting = await messageContains("请把入库明细.csv 上传", missingSource);
   const [missing] = journal.list([missingSource]);
   assert.equal(missing.status, "blocked");
-  assert.equal(waiting.find(m => m.dotsDelivery?.sourceMessageId === missingSource)?.dotsDelivery?.kind, "question");
+  const interim = waiting.find(m => m.dotsDelivery?.sourceMessageId === missingSource);
+  assert.equal(interim?.dotsDelivery?.kind, "question");
+  assert.equal(interim?.text, "请把入库明细.csv 上传到原空间。");
+  assert.equal(waiting.filter(m => m.dotsDelivery?.sourceMessageId === missingSource && m.dotsDelivery.kind === "conclusion").length, 0);
   const waitingTask = await actions.execute(DOTS_TASK_ID, undefined, { action: "task", targetTaskId: missing.taskId });
   assert(waitingTask && "progress" in waitingTask);
   assert.equal(waitingTask.status, "waiting_input");
@@ -871,6 +882,7 @@ try {
   const recoveredDelivery = recovered.find(m => m.dotsDelivery?.sourceMessageId === missingSource && m.dotsDelivery.kind === "conclusion");
   assert.equal(recoveredDelivery?.text, "42");
   assert.equal(recoveredDelivery?.dotsDelivery?.taskId, missing.taskId);
+  assert.equal(recovered.filter(m => m.dotsDelivery?.sourceMessageId === missingSource && m.dotsDelivery.kind === "conclusion").length, 1);
   console.log("PASS 缺资料的假完成停在等待，用户补齐后原任务继续交付到原对话");
   const blockedReceiptSource = `source-${turn + 1}`;
   await send("只有读到复核明细.csv 才给合计。", { action: "delegate", spaceId: space.id, text: "按复核明细.csv 核对数量" });
@@ -882,6 +894,15 @@ try {
   console.log("PASS 识别说明后带独立交付正文的等待回执，执行记录留在原任务");
   await reviewGoal("completed");
   console.log("PASS Goal 原对话只收到已验收正文对应的引用，回传重试后引用仍一致");
+  phase = "files";
+  const absentFile = "完成后只给「最终核算.txt」。";
+  const absentSource = `source-${turn + 1}`;
+  await send(absentFile, { action: "delegate", spaceId: space.id, text: absentFile, deliveryInstruction: absentFile });
+  const absent = (await messageContains("未能唯一确认交付文件「最终核算.txt」", absentSource))
+    .filter(m => m.dotsDelivery?.sourceMessageId === absentSource);
+  assert.deepEqual(absent.map(m => m.dotsDelivery?.kind), ["question"]);
+  assert.deepEqual(absent[0].dotsDelivery?.artifacts, []);
+  console.log("PASS 用户点名的成果没有保存版本时，原对话不会收到其他文件冒充交付");
 } catch (error) {
   console.error("Dots followup verification failed", error);
   for (const j of journal.list())

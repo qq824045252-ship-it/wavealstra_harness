@@ -9,13 +9,14 @@ import { CAD_USE_TOOLS } from "../../../shared/cadcraft";
 import { DRAWIO_USE_TOOLS } from "../../../shared/drawio-use";
 import { fileResourceAddress, resourcePathContains } from "../../platform/resource-identity";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
-import { workShellRead } from "../work/WorkShellRead";
 import { durableMcpToolName } from "./DurableMcp";
 import { isDurableContextToolName } from "./context/DurableContextTools";
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
 import { checkDurableInputFreshness, needsFreshUserInput } from "./DurableInputFreshness";
 import { DurableInputDeferredError, withToolInputFreshness } from "./DurableToolInputScope";
 import { withCodeReviewWrite, type DurableCodeReview } from "./DurableCodeReview";
+import { isNativeShell } from "./DurableShellTerminal";
+import { registerNativeMutation } from "./DurableArtifactRegistration";
 import { isNativeFileMutation, NATIVE_FILE_EVIDENCE_MEMO, NATIVE_FILE_INTENT_MEMO, prepareFileEffect, verifyFileEffect } from "./DurableEffectRecovery";
 
 type Access = { kind: "file"; mode: "read" | "write"; path: string; entity: string | null } | { kind: "unknown"; mode: "read" | "write" };
@@ -41,7 +42,7 @@ const hostControls = new Set(["conversation_goal_get", "conversation_goal_create
   OFFICE_USE_TOOLS.documentRead, OFFICE_USE_TOOLS.documentRender, OFFICE_USE_TOOLS.reviewStatus,
   OFFICE_USE_TOOLS.selectionRead, OFFICE_USE_TOOLS.selectionPropose, OFFICE_USE_TOOLS.editPropose, OFFICE_USE_TOOLS.nativeTools]);
 
-const dotsTaskControls = new Set(["task", "steer", "pause", "stop"]);
+const dotsTaskControls = new Set(["board", "task", "steer", "pause", "stop"]);
 
 function conflicts(left: Access[], right: Access[]): boolean {
   return left.some(a => right.some(b => (a.mode === "write" || b.mode === "write") && (a.kind === "unknown" || b.kind === "unknown"
@@ -97,7 +98,7 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
     return inspectAccess(durableMcpToolName(envelope.server, envelope.tool), envelope.arguments, cwd);
   }
   if (containers.has(name) || isDurableContextToolName(name) || hostControls.has(name)) return [];
-  // These actions inspect or control the target runtime, whose tools retain their own resource leases.
+  // The board queries SQLite. Target runtimes take their own resource leases.
   if (name === "dots_action" && typeof args.action === "string" && dotsTaskControls.has(args.action)) return [];
   const file = (path: string, mode: "read" | "write"): Access => {
     const address = fileResourceAddress(resolve(cwd, path));
@@ -111,8 +112,6 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
   }
   if (fileReads.has(name)) return [file(path ?? ".", "read")];
   if (name === "write" || name === "edit" || name === "pstack_decision_append" || name === "pstack_eval_save" || name === OFFICE_USE_TOOLS.documentCreate) return path ? [file(path, "write")] : [{ kind: "unknown", mode: "write" }];
-  const read = workShellRead(name, args);
-  if (read) return [file(read.path, "read")];
   const mcp = classifyMcpToolCall(name, args);
   if (mcp?.decision.paths.length) return mcp.decision.paths.map(path => file(path, mcp.sideEffect ? "write" : "read"));
   if (mcp?.sideEffect || isSideEffectTool(name, args) || isDangerousTool(name, args)) return [{ kind: "unknown", mode: "write" }];
@@ -126,7 +125,7 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
 /** Wrap execution, not beforeTool: Pi's safe recovery re-enters execute without running beforeTool. */
 export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd: string,
   beforeExecute?: (name: string, args: unknown, cwd: string) => void, admitting?: () => readonly string[],
-  codeReview?: DurableCodeReview): ToolRegistration {
+  codeReview?: DurableCodeReview, artifactDirectory?: string): ToolRegistration {
   if (containers.has(tool.name) || isDurableContextToolName(tool.name))
     return { ...tool, execute: (args, api, context) => withToolInputFreshness(undefined, async () => tool.execute(args, api, context)) };
   return { ...tool, execute: async (args, api, context) => {
@@ -134,14 +133,14 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
     let started = false;
     try {
       const cwd = (await api.agent(context)).cwd ?? fallbackCwd;
-      release = await acquire(() => inspectAccess(tool.name, args, cwd), context.abortSignal);
+      if (!isNativeShell(tool.name)) release = await acquire(() => inspectAccess(tool.name, args, cwd), context.abortSignal);
       const check = needsFreshUserInput(tool.name, args) ? () => checkDurableInputFreshness(api, context, admitting) : undefined;
       if (check) await check();
       context.abortSignal?.throwIfAborted();
       beforeExecute?.(tool.name, args, cwd);
       // Snapshot and read back the same mutation while its path lease still excludes other writers.
-      const intent = isNativeFileMutation(tool.name) ? await prepareFileEffect({ type: "toolCall", id: api.callId,
-        name: tool.name, arguments: fileArgsSchema.parse(args) }, cwd) : undefined;
+      const fileArgs = isNativeFileMutation(tool.name) ? fileArgsSchema.parse(args) : undefined;
+      const intent = fileArgs ? await prepareFileEffect({ type: "toolCall", id: api.callId, name: tool.name, arguments: fileArgs }, cwd) : undefined;
       if (intent) {
         await api.memo(NATIVE_FILE_INTENT_MEMO, intent, context);
         context.abortSignal?.throwIfAborted();
@@ -150,10 +149,17 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
       const invoke = async () => codeReview
         ? withCodeReviewWrite(codeReview, tool.name, args, api, context, async observed => tool.execute(args, observed, context))
         : tool.execute(args, api, context);
-      try { return await withToolInputFreshness(check, invoke); }
+      let evidence: Awaited<ReturnType<typeof verifyFileEffect>> | undefined;
+      let result: Awaited<ReturnType<typeof invoke>>;
+      try { result = await withToolInputFreshness(check, invoke); }
       finally {
-        if (intent) await api.memo(NATIVE_FILE_EVIDENCE_MEMO, await verifyFileEffect(intent, context.abortSignal), withoutAbortSignal(context));
+        if (intent) evidence = await api.memo(NATIVE_FILE_EVIDENCE_MEMO, await verifyFileEffect(intent, context.abortSignal), withoutAbortSignal(context));
       }
+      if (!result.isError && artifactDirectory && typeof fileArgs?.path === "string" && (!evidence || evidence.status === "passed")) {
+        const captured = await registerNativeMutation(fileArgs.path, api, context, artifactDirectory, evidence);
+        if (!evidence && captured) await api.memo(NATIVE_FILE_EVIDENCE_MEMO, captured, withoutAbortSignal(context));
+      }
+      return result;
     }
     catch (error) {
       if (!started || error instanceof DurableInputDeferredError) {

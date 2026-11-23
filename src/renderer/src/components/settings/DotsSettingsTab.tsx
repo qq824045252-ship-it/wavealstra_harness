@@ -2,14 +2,17 @@ import { useEffect, useState } from "react";
 import { defaultDotsMemoryLimits, dotsMemoryLimitFields, type DotsMemoryLimit, type DotsMemoryLimits } from "@shared/dots-limits";
 import { dotsCapabilityOptions, dotsOperationEnabled, dotsOperations, resolveDotsPreferences, type DotsOperation, type DotsSettings } from "@shared/dots-settings";
 import type { AppSettingsDto, ModelInfoDto, SpaceDto } from "@shared/agent-ipc";
-import { dotsLocalSpacePath } from "@shared/dots";
+import { DOTS_TASK_ID, dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import AnswerRoutingTab from "./AnswerRoutingTab";
 import DotsPromptSection from "./DotsPromptSection";
+import MemoryKernelExplorer from "./MemoryKernelExplorer";
 import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import "./DotsSettingsTab.css";
+import "./Memory.css";
 
-const sections = ["调度", "提示词", "对话与记忆", "跟进与空间", "工具与操作"] as const;
+const sections = ["调度", "提示词", "模型与记忆", "专属记忆", "读取额度", "跟进与空间", "工具与操作"] as const;
+const dotsMemoryScope = { scopeType: "task", scopeId: DOTS_TASK_ID } as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
 const memoryWrites = new Set<DotsOperation>(["memory_create", "memory_update", "memory_promote", "memory_forget"]);
 const memoryLimitKeys = Object.keys(dotsMemoryLimitFields) as DotsMemoryLimit[];
@@ -112,7 +115,7 @@ export default function DotsSettingsTab() {
     {!settings ? (!error && <p role="status">正在读取 Dots 设置…</p>) : !settings.dotsSettingsRuntime ?
       <p role="alert">当前运行的 MyBuddy 主进程还不支持这些设置。请完全退出并重开 MyBuddy。</p> : <>
       <fieldset disabled={saving}>
-      {section === "对话与记忆" && <>
+      {section === "模型与记忆" && <>
         <SettingsSection title="对话模型">
           <SettingsSelect label="Dots 使用的模型" value={prefs.modelId ?? ""} onChange={e => void save("对话模型", { modelId: e.target.value || null })}>
             <option value="">跟随主模型{mainModel ? " · " + mainModel : "（尚未设置）"}</option>
@@ -122,16 +125,24 @@ export default function DotsSettingsTab() {
           <p className="settings-row-desc">在这里选择模型只影响 Dots。新建普通任务使用应用主模型。</p>
         </SettingsSection>
         <SettingsSection title="长期记忆">
-          <SettingsSelect label="Dots 如何使用长期记忆" value={prefs.memoryMode} onChange={e => void save("长期记忆", {memoryMode: e.target.value as DotsSettings["memoryMode"]})}>
+          <SettingsSelect label="Dots 如何使用长期记忆" hint="控制 Dots 在对话中的记忆读写。"
+            value={prefs.memoryMode} onChange={e => void save("长期记忆", {memoryMode: e.target.value as DotsSettings["memoryMode"]})}>
             <option value="readWrite">读取并记住新信息</option><option value="readOnly">只读取已有记忆</option><option value="off">关闭长期记忆</option>
           </SettingsSelect>
           {!settings.memoryEnabled && <p className="settings-row-desc">应用记忆已关闭。开启后会使用这里保存的选择。 <button className="btn" type="button" onClick={() => openSettings(true, "memory")}>打开应用记忆设置</button></p>}
         </SettingsSection>
-        <SettingsSection title="记忆读取额度" collapsible>
+      </>}
+      {section === "专属记忆" && (
+        <div className="memory-tab">
+          <MemoryKernelExplorer fixedScope={dotsMemoryScope} />
+        </div>
+      )}
+      {section === "读取额度" && (
+        <SettingsSection title="记忆读取额度">
           <MemoryLimitsForm key={JSON.stringify(prefs.memoryLimits)} limits={prefs.memoryLimits}
             onSave={memoryLimits => void save("记忆读取额度", { memoryLimits })} />
         </SettingsSection>
-      </>}
+      )}
       {section === "跟进与空间" && <>
         <SettingsSection title="主动跟进">
           <SettingsSelect label="到时间或有实质进展时" value={prefs.followupMode} onChange={e => void save("主动跟进", {followupMode: e.target.value as DotsSettings["followupMode"]})}>

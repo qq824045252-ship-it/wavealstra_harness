@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import type { HookDraft } from "../../../shared/native-hooks";
 import type { ImprovementKind } from "../../../shared/native-improvement";
+import { pathKey } from "../../platform/paths";
 
 export const cards: Record<ImprovementKind, [string, string, string, string]> = {
   childDelivery: ["子代理交接失败、受阻或超时", "派发已有终态回执，需要核查交接要求、执行过程和返回结果。", "根据原始证据决定调整委派、角色能力或工具。", "用相同交接要求重放，并验证父会话收到所需结果。"],
@@ -94,7 +96,19 @@ export function repeatedReadFailure(messages: readonly Message[]): boolean {
   }
   return sameRead(reads[0], reads[1]);
 }
-export interface ReadbackTool { tool: string; path?: string; isError: boolean }
+export interface ReadbackTool { tool: string; path?: string; requestedPath?: string; version?: string; isError: boolean }
+
+export function sameReadbackPath(left?: string, right?: string, cwd?: string): boolean {
+  return !!left && !!right && (left === right || (!!cwd && pathKey(resolve(cwd, left)) === pathKey(resolve(cwd, right))));
+}
+
+export function matchesReadbackTarget(target: string, tool: ReadbackTool, cwd?: string): boolean {
+  return !!target && !!tool.path && (target === tool.requestedPath || sameReadbackPath(target, tool.path, cwd));
+}
+
+export function confirmsReadback(write: Pick<ReadbackTool, "path" | "version">, read: ReadbackTool, cwd?: string): boolean {
+  return sameReadbackPath(write.path, read.path, cwd) && (!write.version || !read.version || write.version === read.version);
+}
 // Native Code Mode records start and completion order. An overlapping read cannot certify the new bytes.
 export function nestedReadbackTools(details: unknown): ReadbackTool[] {
   if (!details || typeof details !== "object" || !("fileOperations" in details) || !Array.isArray(details.fileOperations)) return [];
@@ -104,16 +118,18 @@ export function nestedReadbackTools(details: unknown): ReadbackTool[] {
     if (!f || typeof f.path !== "string" || !Number.isInteger(f.start) || !Number.isInteger(f.finish) || f.isError !== false) continue;
     if (f.tool === "write" || f.tool === "edit") writes.set(f.path,f.finish);
     else if (f.tool !== "read" || f.start < (writes.get(f.path) ?? 0)) continue;
-    evidence.push({ tool: f.tool, path: f.path, isError: false });
+    evidence.push({ tool: f.tool, path: f.path, requestedPath: typeof f.requestedPath === "string" ? f.requestedPath : undefined,
+      version: typeof f.version === "string" ? f.version : undefined, isError: false });
   }
   return evidence;
 }
-export function readbackState(target: string, tools: readonly ReadbackTool[]): "none" | "written" | "verified" {
+export function readbackState(target: string, tools: readonly ReadbackTool[], cwd?: string): "none" | "written" | "verified" {
   let state: "none" | "written" | "verified" = "none";
+  let write: ReadbackTool | undefined;
   for (const t of tools) {
-    if (!target || t.path !== target || t.isError) continue;
-    if (t.tool === "write" || t.tool === "edit") state = "written";
-    else if (t.tool === "read" && state === "written") state = "verified";
+    if (t.isError || !matchesReadbackTarget(target, t, cwd)) continue;
+    if (t.tool === "write" || t.tool === "edit") { state = "written"; write = t; }
+    else if (t.tool === "read" && write) state = confirmsReadback(write, t, cwd) ? "verified" : "written";
   }
   return state;
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { writeFileSync as writeFileSyncForFixture } from "node:fs";
+import { existsSync, writeFileSync as writeFileSyncForFixture } from "node:fs";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +11,10 @@ import type { AssistantMessage, TextContent, TranscriptContext } from "@earendil
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { CONFIG_DIR_NAME, ModelRuntime, createEditTool, createWriteTool } from "@earendil-works/pi-coding-agent";
 import { defineTool, type ToolRegistration, type JsonObject } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
 import type { PermissionMode } from "../src/shared/agent-ipc";
-import { nativeExecutionOperationId, readNativeExecutionReceipt, type NativeExecutionReceipt } from "../src/shared/native-execution-receipt";
+import { nativeExecutionOperationId, nativeFileVersion, readNativeExecutionReceipt, type NativeExecutionReceipt } from "../src/shared/native-execution-receipt";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
 import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
@@ -39,6 +40,12 @@ import { createDurableToolPolicy, type DurableToolPolicyOptions } from "../src/m
 import { createDurableSubagentTools } from "../src/main/agent/durable/DurableSubagents";
 import { recoverInterruptedExecutions } from "../src/main/agent/ExecutionRestartRecovery";
 import { prepareFileEffect, verifyFileEffect, type ExternalEffectRecovery } from "../src/main/agent/durable/DurableEffectRecovery";
+import { arenaSubmission } from "../src/main/agent/pstack/PstackArenaSubmission";
+import { observedReviewFiles, validateInspections } from "../src/main/agent/pstack/PstackReviewEvidence";
+import { DURABLE_ARTIFACT_ENTRY_KIND } from "../src/main/agent/durable/DurableArtifactReceipt";
+import type { DurableCodeReview } from "../src/main/agent/durable/DurableCodeReview";
+import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
+import { nativeResultHits } from "../src/main/dots/DotsNativeResults";
 
 const root = await mkdtemp(join(tmpdir(), "mybuddy-durable-policy-"));
 const db = new AppDatabase(join(root, "app.db"));
@@ -88,6 +95,7 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
     },
   });
   const state: { permission: PermissionMode; allowed: boolean; deniedTools: Set<string>; legacyApproval?: boolean;
+    codeReview?: DurableCodeReview;
     beforeTool?: (name: string) => Promise<void>;
     afterTool?: (name: string, signal?: AbortSignal) => Promise<void>;
     admit?: (input: { operationId: string; actionKind: string }) => string | undefined;
@@ -104,7 +112,8 @@ async function fixture(taskId: string, respond: (request: TranscriptContext) => 
       requestInteraction: (context, request, signal, toolCallId) => interactions.requestDurable(context, request, { key: toolCallId, signal }),
     })], { taskId, cwd, models });
     return DurableBotRuntime.open({ taskId, cwd, directory: join(cwd, "state"), models,
-      model: { provider: "fixture", modelId: "model" }, toolMode: mode, tools: [...domain.tools, ...extraTools, ...(withSubagents ? createDurableSubagentTools({ taskId, cwd, models, permissionMode: () => state.permission }) : [])],
+      model: { provider: "fixture", modelId: "model" }, toolMode: mode, codeReview: state.codeReview,
+      tools: [...domain.tools, ...extraTools, ...(withSubagents ? createDurableSubagentTools({ taskId, cwd, models, permissionMode: () => state.permission }) : [])],
       contextHooks: domain.contextHooks, toolHooks: { ...policy.hooks, beforeTool: async (call, api, context) => {
         if (state.legacyApproval && call.name === "write") {
           const execution = await durableExecutionContext(taskId, api, context);
@@ -637,6 +646,68 @@ try {
   assert.equal(failures.list(parallelEdits.taskId).length, 0);
   console.log("PASS same-round edits verify their own file versions inside the shared mutation lease");
 
+  const versionedReview = await fixture("versioned-pstack-review", request => {
+    const last = request.messages.at(-1);
+    const path = (name: string) => pathToFileURL(join(root, "versioned-pstack-review", name)).href;
+    if (last?.role !== "toolResult") return call("write", { path: path("review file.txt"), content: "verified version" }, "arena-write-url");
+    if (last.toolCallId === "arena-write-url") return call("read", { path: path("review file.txt") }, "review-read-url");
+    if (last.toolCallId === "review-read-url") return call("read", { path: path("removed file.txt") }, "review-missing-url");
+    return text("Inspected the requested files.");
+  });
+  const reviewRuntime = await versionedReview.open();
+  try {
+    const settled = await (await reviewRuntime.submit("Write and review these files", "versioned-pstack")).wait(ctx);
+    assert.equal(settled.status, "done");
+    const { items } = await reviewRuntime.harness.commit(tx => tx.scanEntries({ conversationId: reviewRuntime.conversation.id,
+      order: "ascending" }, 100), ctx);
+    const inspections = observedReviewFiles(items, versionedReview.cwd, versionedReview.cwd);
+    assert.deepEqual(inspections.map(item => [item.tool, item.path, item.executionReceipt?.callId]), [
+      ["read", "review file.txt", "review-read-url"], ["read_missing", "removed file.txt", "review-missing-url"],
+    ]);
+    await validateInspections(versionedReview.cwd, ["review file.txt", "removed file.txt"], [{ child: 1, observations: inspections }]);
+    assert.match(nativeFileVersion(inspections[0].executionReceipt) ?? "", /^[a-f0-9]{64}$/);
+    const replacedVersion = new Map([["review file.txt", "0".repeat(64)]]);
+    await assert.rejects(validateInspections(versionedReview.cwd, ["review file.txt"], [{ child: 1, observations: inspections }], true, replacedVersion), /native read/);
+    await writeFile(join(versionedReview.cwd, "removed file.txt"), "recreated after review");
+    await assert.rejects(validateInspections(versionedReview.cwd, ["removed file.txt"], [{ child: 1, observations: inspections }]), /native read/);
+    const messages = items.flatMap(entry => (entry.model ?? []).flatMap(message =>
+      message.role === "assistant" || message.role === "toolResult" ? [message] : []));
+    const workspace = { cwd: versionedReview.cwd, kind: "shared" };
+    assert.deepEqual(Object.entries(await arenaSubmission(workspace, messages, undefined, reviewRuntime.conversation.id)),
+      [["review file.txt", "verified version"]]);
+    await writeFile(join(versionedReview.cwd, "review file.txt"), "edited by another operation");
+    await assert.rejects(arenaSubmission(workspace, messages, undefined, reviewRuntime.conversation.id), /changed after its write was verified/);
+    console.log("PASS Pstack reviews the actual opened path and native absence; Arena only accepts the verified write version");
+  } finally { await reviewRuntime.close(); }
+
+  const unverifiedWrite = await fixture("unverified-artifact-write", request => request.messages.at(-1)?.role === "toolResult"
+    ? text("The file still needs verification.") : call("write", { path: "handoff.txt", content: "intended result" }, "unverified-write"));
+  unverifiedWrite.state.codeReview = { taskId: unverifiedWrite.taskId, workspace: unverifiedWrite.cwd,
+    review: { capture: (_id, _cwd, path) => async () => { await writeFile(path, "concurrent replacement"); } } };
+  const unverifiedRuntime = await unverifiedWrite.open();
+  try {
+    const settled = await (await unverifiedRuntime.submit("Write the result", "unverified-artifact")).wait(ctx);
+    assert(settled.type === "input" && settled.status === "done");
+    const { items } = await unverifiedRuntime.harness.commit(tx => tx.scanEntries({ conversationId: unverifiedRuntime.conversation.id,
+      order: "ascending" }, 100), ctx);
+    const result = items.flatMap(item => item.model ?? []).find(message => message.role === "toolResult" && message.toolCallId === "unverified-write");
+    assert(result?.role === "toolResult");
+    assert.equal(readNativeExecutionReceipt(result.details)?.status, "inconclusive");
+    assert.equal(await readFile(join(unverifiedWrite.cwd, "handoff.txt"), "utf8"), "concurrent replacement");
+    assert.equal(items.some(item => item.kind === DURABLE_ARTIFACT_ENTRY_KIND), false, "an inconclusive write cannot become a deliverable");
+    const artifactIndex = new ArtifactRepository(db.connection);
+    db.connection.prepare(`INSERT INTO artifacts (id,task_id,kind,source_type,entry_file,root_dir,created_at,updated_at)
+      VALUES ('mutable-index-file',?,'code','workspace-file',?,?,1,1)`).run(unverifiedWrite.taskId,
+      join(unverifiedWrite.cwd, "handoff.txt"), unverifiedWrite.cwd);
+    artifactIndex.addMessageRef({ taskId: unverifiedWrite.taskId, messageId: `durable-${settled.answer}`,
+      artifactId: "mutable-index-file", relation: "created", toolCallId: "unverified-write" });
+    const results = await nativeResultHits({ id: unverifiedWrite.taskId, title: "Search Fixture", link: "#task" },
+      join(unverifiedWrite.cwd, "state"), "search fixture", new Set(), 10, db.connection);
+    assert.equal(results.length, 1);
+    assert.deepEqual(results[0].artifacts, [], "Dots search cannot reintroduce the unverified write from the live file index");
+    console.log("PASS an inconclusive native write does not publish an automatic deliverable");
+  } finally { await unverifiedRuntime.close(); }
+
   // 旧 profile：退役专用表与旧 blocker 仍在时，真实读写与重启都不再被挡住，也不重放历史动作。
   const ungated = await fixture("legacy-quarantine", request => {
     const last = request.messages.at(-1);
@@ -1039,6 +1110,48 @@ try {
     assert.equal(await readFile(join(timedOut.cwd, "timeout-partial.txt"), "utf8"), "once", "timed-out unsafe command cannot replay after reopen");
   } finally { await timedRuntime.close(); }
   console.log("PASS real shell timeout preserves unknown partial effects, permits independent tools and does not replay");
+
+  const bashQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  const bashNode = (code: string) => `${bashQuote(process.execPath)} -e ${bashQuote(code)}`;
+  const holderReceipts: NativeExecutionReceipt[] = [];
+  const holder = await fixture("parallel-shell-holder", request => request.messages.at(-1)?.role === "toolResult"
+    ? text("holder finished")
+    : call("bash", { command: bashNode("const fs=require('node:fs'); fs.writeFileSync('shell-started','yes'); const wait=setInterval(()=>{ if(fs.existsSync('release')) clearInterval(wait); },20); setTimeout(()=>process.exit(22),15000).unref()") }));
+  holder.state.settle = (_id, _outcome, receipt) => holderReceipts.push(receipt);
+  const commands = [{ name: "bash", command: "printf 'executed' > bash-output.txt" }];
+  if (process.platform === "win32") commands.push({ name: "powershell", command: "Set-Content -LiteralPath 'powershell-output.txt' -Value 'executed' -NoNewline" });
+  const parallelReceipts: NativeExecutionReceipt[] = [];
+  const parallelShell = await fixture("parallel-shell-peer", request => request.messages.at(-1)?.role === "toolResult"
+    ? text("shell finished")
+    : commands.flatMap(({ name, command }) => call(name, { command, timeout: 5 })));
+  parallelShell.state.settle = (_id, _outcome, receipt) => parallelReceipts.push(receipt);
+  const holderRuntime = await holder.open();
+  const parallelRuntime = await parallelShell.open();
+  const nativeExec = mock.method(NodeExecutionEnv.prototype, "exec");
+  try {
+    const holding = await holderRuntime.submit("Run a command until it is released", "holder-input");
+    await waitUntil(() => existsSync(join(holder.cwd, "shell-started")));
+    const parallel = await parallelRuntime.submit("Run independent shell commands", "parallel-input");
+    assert.equal((await parallel.wait(ctx)).status, "done");
+    assert.deepEqual(parallelReceipts.map(receipt => [receipt.toolName, receipt.status]).sort(),
+      commands.map(({ name }) => [name, "passed"]));
+    assert.equal(holderReceipts.length, 0, "independent commands finish while the original command is still running");
+    const invoked = nativeExec.mock.calls.map(({ arguments: [command, options] }) => ({ command: String(command), timeout: options?.timeout }));
+    assert.deepEqual(invoked.filter(item => item.command.includes("shell-started")).map(item => item.timeout), [undefined]);
+    for (const { name } of commands) {
+      assert.equal(await readFile(join(parallelShell.cwd, `${name}-output.txt`), "utf8"), "executed");
+      const timeouts = invoked.filter(item => item.command.includes(`${name}-output.txt`)).map(item => item.timeout);
+      assert(timeouts.length > 0 && timeouts.every(timeout => timeout === 5), `${name} must pass the requested timeout to Pi unchanged`);
+    }
+    await writeFile(join(holder.cwd, "release"), "yes");
+    assert.equal((await holding.wait(ctx)).status, "done");
+    assert.equal(holderReceipts[0]?.status, "passed");
+  } finally {
+    nativeExec.mock.restore();
+    await writeFile(join(holder.cwd, "release"), "yes");
+    await Promise.all([holderRuntime.close(), parallelRuntime.close()]);
+  }
+  console.log("PASS independent real shells finish before a running Bash exits, with Pi's original timeout arguments");
 
   let effects = 0;
   const effectFile = join(root, "unconfirmed-effect.txt");

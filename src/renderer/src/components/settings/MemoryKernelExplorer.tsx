@@ -20,6 +20,7 @@ import type {
   MemoryStatus,
   MemoryUpdateRequest,
 } from "@shared/memory-kernel";
+import { MEMORY_CONTENT_MAX_CHARS, MEMORY_TITLE_MAX_CHARS } from "@shared/memory-kernel";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import MemoryL0Explorer from "./MemoryL0Explorer";
 import MemoryOrganizationPanel from "./MemoryOrganizationPanel";
@@ -62,7 +63,8 @@ function projectionRecordKey(kind: MemoryProjectionDeleteRequest["kind"], type: 
 export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedScope }: { focusMemoryId?: string | null; fixedBotId?: string; fixedScope?: { scopeType: MemoryScopeType; scopeId?: string } }): React.JSX.Element {
   const fixedType = fixedScope?.scopeType ?? (fixedBotId ? "bot" : undefined);
   const fixedId = fixedScope?.scopeId ?? fixedBotId;
-  const scopeName = fixedType === "task" && fixedId === DOTS_TASK_ID ? "Dots" : fixedScopeNames[fixedType ?? "global"];
+  const isDotsScope = fixedType === "task" && fixedId === DOTS_TASK_ID;
+  const scopeName = isDotsScope ? "Dots" : fixedScopeNames[fixedType ?? "global"];
   const spaces = useAppStore((s) => s.spaces);
   const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
@@ -96,7 +98,8 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | MemoryIndexResult | { issue: MemoryIndexIssue }>("");
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(isDotsScope);
+  const [loadError, setLoadError] = useState("");
   const [showProjectionHistory, setShowProjectionHistory] = useState(false);
   const [focusedScenarioId, setFocusedScenarioId] = useState<string | null>(null);
   const scenarioFocusRef = useRef<HTMLDivElement | null>(null);
@@ -135,6 +138,22 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
     setHistory([]);
   }, []);
 
+  const select = useCallback((id: string): void => {
+    sourceFocusIdRef.current = null;
+    if (selectedIdRef.current === id) return;
+    selectedIdRef.current = id;
+    setSelectedId(id);
+    setHistory([]);
+  }, []);
+
+  const replaceRecords = useCallback((items: MemoryRecordDto[]): void => {
+    setRecords(items);
+    const current = selectedIdRef.current;
+    if (current && items.some(item => item.id === current)) return;
+    if (isDotsScope && items.length) select(items[0].id);
+    else if (current) clearSelection();
+  }, [clearSelection, isDotsScope, select]);
+
   // Server-side filtering: the query runs over the whole store, not a 500-row window.
   const fetchRecords = useCallback(async (): Promise<MemoryRecordDto[]> => {
     const api = window.api?.memory;
@@ -160,10 +179,15 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
 
   const load = useCallback(async (): Promise<void> => {
     const api = window.api?.memory;
-    if (!api) return;
+    if (!api) {
+      setLoadError("记忆服务未连接。");
+      setLoading(false);
+      return;
+    }
     const request = ++loadRequestRef.current;
     const recordRequest = ++recordRequestRef.current;
     setLoading(true);
+    setLoadError("");
     setRefreshVersion((v) => v + 1);
     try {
       const [items, nextStats, reviewItems, scenarioItems, profileItems, dismissedItems, proposalItems] = await Promise.all([
@@ -176,11 +200,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
         fixedType ? Promise.resolve([]) : api.projectionProposals(),
       ]);
       if (request !== loadRequestRef.current) return;
-      if (recordRequest === recordRequestRef.current) {
-        setRecords(items);
-        const sel = selectedIdRef.current;
-        if (sel && !items.some((item) => item.id === sel)) clearSelection();
-      }
+      if (recordRequest === recordRequestRef.current) replaceRecords(items);
       setStats(nextStats);
       setReview(reviewItems);
       setScenarios(scenarioItems);
@@ -188,31 +208,33 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
       setDismissed(dismissedItems);
       setProposals(proposalItems);
     } catch (error) {
-      if (request === loadRequestRef.current) setStatus(error instanceof Error ? error.message : String(error));
+      if (request === loadRequestRef.current) setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
       if (request === loadRequestRef.current) setLoading(false);
     }
-  }, [clearSelection, fixedType, fixedId]);
+  }, [fixedType, fixedId, replaceRecords]);
 
   useEffect(() => {
-    void load();
+    if (!fixedType) void load();
     return () => { loadRequestRef.current++; recordRequestRef.current++; };
-  }, [load]);
+  }, [fixedType, load]);
 
   // Filter changes refresh only the record list, not the whole 9-query panel.
   useEffect(() => {
+    if (fixedType) {
+      void load();
+      return;
+    }
     let cancelled = false;
     const request = ++recordRequestRef.current;
     fetchRecords()
       .then((items) => {
         if (cancelled || request !== recordRequestRef.current) return;
-        setRecords(items);
-        const sel = selectedIdRef.current;
-        if (sel && !items.some((item) => item.id === sel)) clearSelection();
+        replaceRecords(items);
       })
       .catch((error) => { if (!cancelled && request === recordRequestRef.current) setStatus(error instanceof Error ? error.message : String(error)); });
     return () => { cancelled = true; };
-  }, [fetchRecords, clearSelection]);
+  }, [fetchRecords, fixedType, load, replaceRecords]);
 
   // Extraction/agent writes broadcast memoryChanged; keep the open explorer in sync (debounced).
   useEffect(() => {
@@ -233,8 +255,11 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
   }, [query]);
 
   const selected = records.find((item) => item.id === selectedId) ?? null;
-  const filtering = Boolean(debouncedQuery) || scope !== "all" || kind !== "all" || lifecycle !== "all";
+  const recordFiltered = Boolean(debouncedQuery) || scope !== "all" || kind !== "all";
+  const filtering = recordFiltered || lifecycle !== "all";
   const listIsPartial = filtering || (stats?.total ?? 0) > records.length;
+  const emptyRecords = recordFiltered ? "暂无匹配记忆"
+    : lifecycle === "active" ? "暂无有效记忆" : lifecycle === "all" ? "暂无记忆" : "暂无此状态的记忆";
   const projectionKind = layer === "l2" ? "scenario" : layer === "l3" ? "profile" : null;
   const visiblePendingProposals = proposals.filter((item) => item.status === "pending" && (!projectionKind || item.kind === projectionKind));
   const visibleRejectedProposals = proposals.filter((item) => item.status === "rejected" && (!projectionKind || item.kind === projectionKind));
@@ -295,13 +320,6 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
   }, [selected, promoteType, spaces, projects]);
 
   const alreadyGlobal = Boolean(selected?.scopes.some((s) => s.scopeType === "global"));
-
-  const select = (id: string): void => {
-    sourceFocusIdRef.current = null;
-    selectedIdRef.current = id;
-    setSelectedId(id);
-    setHistory([]);
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -453,7 +471,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
       initialValue: selected.title,
       multiline: false,
       allowEmpty: false,
-      maxLength: 240,
+      maxLength: MEMORY_TITLE_MAX_CHARS,
       confirmLabel: "下一步",
     });
     if (title === null) return;
@@ -463,7 +481,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
       initialValue: selected.content,
       multiline: true,
       allowEmpty: true,
-      maxLength: 6000,
+      maxLength: MEMORY_CONTENT_MAX_CHARS,
       confirmLabel: "保存",
     });
     if (content === null) return;
@@ -478,7 +496,6 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
       });
       setStatus("记忆已更新。");
       await load();
-      await select(selected.id);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -678,9 +695,12 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
         <div><strong>{stats?.candidates?.["needs_review"] ?? review.length}</strong><span>待复核</span></div>
       </div>}
       {fixedType ? <div className="settings-section-head"><div>
-          <div className="settings-section-title">{fixedType ? `${scopeName}的记忆` : "记忆内容与来源"}</div>
+          <div className="settings-section-title">{isDotsScope ? "Dots 专属记忆" : `${scopeName}的记忆`}</div>
           <div className="settings-section-desc">
-            {fixedType ? fixedType === "bot" ? "同一 Bot 的新旧对话共享这些记忆；其他 Bot 不会自动读取。" : fixedType === "global" ? "只有明确共享的条目会供 Bot 和团队读取；旧全局记忆默认不共享。" : "仅管理当前归属的记忆，不会读取或修改其他 Bot 的私人记忆。" : "默认查看有效记忆。原始对话、证据和历史版本保留，可随时追溯。"}
+            {isDotsScope ? "在这里管理归属为 Dots 的长期记忆。全局记忆可在应用的记忆设置中管理。"
+              : fixedType === "bot" ? "同一 Bot 的新旧对话共享这些记忆；其他 Bot 不会自动读取。"
+                : fixedType === "global" ? "只有明确共享的条目会供 Bot 和团队读取；旧全局记忆默认不共享。"
+                  : "仅管理当前归属的记忆。"}
           </div>
         </div></div> :
         <MemoryOrganizationPanel activeCount={stats?.active ?? 0} onChanged={load} onOpen={(id) => void openL1Memory(id)}
@@ -722,13 +742,13 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
               <button
                 type="button"
                 className="btn danger"
-                disabled={busy || records.length === 0}
+                disabled={busy || loading || records.length === 0}
                 onClick={() => setPendingDelete({
                   ids: records.map((item) => item.id),
                   label: listIsPartial ? "当前筛选结果 " + records.length + " 条记忆" : "全部 " + records.length + " 条记忆",
                 })}
               >
-                {fixedType ? `清除${scopeName}的记忆` : listIsPartial ? "删除筛选结果" : "删除全部记忆条目"}
+                {isDotsScope ? "删除当前列表" : fixedType ? `清除${scopeName}的记忆` : listIsPartial ? "删除筛选结果" : "删除全部记忆条目"}
               </button>
             </>
           ) : null}
@@ -741,6 +761,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
           <button type="button" className="btn" disabled={busy || loading} onClick={() => void load()}>{loading ? "刷新中…" : "刷新"}</button>
         </div>
 
+        {loadError && <div className="memory-status" role="alert">读取记忆失败。{loadError}</div>}
         {typeof status === "string" ? status && <div className="memory-status" role="status">{status}</div>
           : !fixedType && layer === "l1" && <MemoryIndexFeedback result={status} />}
 
@@ -803,10 +824,12 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
           </div>
         </div>
 
-        <div className="memory-split" style={{ display: layer === "l1" ? undefined : "none", minHeight: 220 }}>
+        <div className="memory-split" style={{ display: layer === "l1" ? undefined : "none", minHeight: records.length ? 220 : undefined }}>
           <div className="memory-record-list">
             {records.length === 0 ? (
-              <div className="memory-empty" style={{ padding: 14 }}>{filtering ? "暂无匹配记忆" : "暂无记忆"}</div>
+              <div className="memory-empty" style={{ padding: 14 }}>
+                {loading ? "正在读取记忆…" : loadError ? "可点击刷新重试。" : emptyRecords}
+              </div>
             ) : records.map((item) => (
               <button
                 key={item.id}
@@ -831,7 +854,7 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
 
           <div className="memory-record-detail">
             {!selected ? (
-              <div className="memory-empty">选择一条记忆查看来源、证据与修改历史。</div>
+              records.length > 0 ? <div className="memory-empty">选择一条记忆查看来源、证据与修改历史。</div> : null
             ) : (
               <>
                 <div className="memory-record-detail-header">
@@ -848,7 +871,9 @@ export default function MemoryKernelExplorer({ focusMemoryId, fixedBotId, fixedS
                   </button>
                   </div>
                 </div>
-                {selectedShared && <p className="settings-row-desc">此条是历史共享记忆。在此仅能移除当前归属的关联，不修改其他作用域；如需更正共享内容，请到全局记忆设置。</p>}
+                {selectedShared && <p className="settings-row-desc">{isDotsScope
+                  ? "这条记忆还有其他归属。请在应用的记忆设置中修改正文。"
+                  : "此条是历史共享记忆。在此仅能移除当前归属的关联，不修改其他作用域；如需更正共享内容，请到全局记忆设置。"}</p>}
                 {selected.scopes.some(s => s.scopeType === "global") && <PublicMemorySharing memory={selected} disabled={busy || selectedShared} onChanged={load} />}
                 {selected.content ? <div style={{ whiteSpace: "pre-wrap", marginBottom: 9 }}>{selected.content}</div> : null}
                 <div className="settings-row-desc" style={{ lineHeight: 1.65 }}>

@@ -171,6 +171,8 @@ export interface ArtifactDomainReadContentRequest {
 /** artifact-domain:readContent 响应 */
 export interface ArtifactDomainReadContentResponse {
   content: string;
+  /** Version of the descriptor used to produce this response. */
+  artifactVersion?: number;
   language?: string;
   /** 原始 kind（docx/xlsx/pptx/image/pdf 等细分） */
   kind?: string;

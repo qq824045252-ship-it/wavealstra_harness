@@ -862,6 +862,7 @@ const api = {
     open: () => ipcRenderer.invoke(DotsIpc.open),
     list: sourceIds => ipcRenderer.invoke(DotsIpc.list, sourceIds),
     activity: () => ipcRenderer.invoke(DotsIpc.activity),
+    taskDelivery: taskId => ipcRenderer.invoke(DotsIpc.taskDelivery, taskId),
     getPromptSegments: () => ipcRenderer.invoke(DotsIpc.getPromptSegments),
     onChanged: listener => {
       const notify = () => listener();

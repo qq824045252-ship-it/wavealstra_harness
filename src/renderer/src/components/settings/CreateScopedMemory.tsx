@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { MemoryScopeType } from "@shared/memory-kernel";
+import { MEMORY_CONTENT_MAX_CHARS, type MemoryScopeType } from "@shared/memory-kernel";
 import { useTextPrompt } from "@/components/common/useTextPrompt";
 
 export default function CreateScopedMemory({ scopeType, scopeId, onChanged }: {
@@ -11,7 +11,7 @@ export default function CreateScopedMemory({ scopeType, scopeId, onChanged }: {
   async function create(): Promise<void> {
     const content = await requestText({ title: scopeType === "global" ? "新增公共记忆" : "新增记忆",
       description: scopeType === "global" ? "保存后将明确共享，供 Bot 和团队读取。" : "只保存到当前归属。",
-      label: "要记住的内容", multiline: true, allowEmpty: false, maxLength: 12000, confirmLabel: "保存" });
+      label: "要记住的内容", multiline: true, allowEmpty: false, maxLength: MEMORY_CONTENT_MAX_CHARS, confirmLabel: "保存" });
     if (content === null) return;
     const api = window.api?.memory;
     if (!api) { setError("记忆服务未连接"); return; }
