@@ -9,10 +9,29 @@ import type { RemoteHistoryMessage, RemoteTaskHistory } from "../shared/src/remo
 import {
   buildRemoteTimeline,
   reconcileLiveMessagesWithHistory,
+  visibleDotsMessages,
 } from "../app/remote/src/store/remoteTimeline";
 
 const T0 = 1_760_000_000_000;
 const REPLY = "后端已修好，前端也查了。";
+
+{
+  const history: RemoteHistoryMessage[] = [
+    { id: "input", role: "user", text: "帮我做报告", createdAt: 1 },
+    { id: "reply", role: "assistant", text: "我来跟进。", createdAt: 2 },
+    { id: "file-only", role: "assistant", text: "", createdAt: 3, dotsDelivery: {
+      kind: "conclusion", taskId: "report-task", title: "月报", files: [{ id: "report", name: "月报.pdf" }],
+    } },
+    { id: "next", role: "assistant", text: "报告里还有一个待确认项。", createdAt: 4 },
+    { id: "quiet-input", role: "user", text: "内部巡检", createdAt: 5, dotsAutomaticInput: true },
+    { id: "quiet-reply", role: "assistant", text: "[[dots:no-change]]", createdAt: 6 },
+    { id: "update-input", role: "user", text: "内部巡检", createdAt: 7, dotsAutomaticInput: true },
+    { id: "update-reply", role: "assistant", text: "数据已更新。", createdAt: 8 },
+  ];
+  const visible = visibleDotsMessages(buildRemoteTimeline(history, {}));
+  assert.deepEqual(visible.map(message => message.id), ["input", "reply", "file-only", "next", "update-reply"]);
+  assert.equal(visible[2]?.dotsDelivery?.files[0]?.name, "月报.pdf");
+}
 
 function turn(userText: string, at: number, attachments?: { name: string }[]): RemoteHistoryMessage[] {
   return [

@@ -22,6 +22,7 @@ import type { RemoteDeviceSummary } from "../../../shared/src/remote-contract";
 import { mapRemoteAcpRun, mapRemoteHistory, mapRemoteHistoryMessage, mapRemoteModel, mapRemoteNotification, mapRemoteProject, mapRemoteSpace, mapRemoteTask } from "./RemoteDtoMapper";
 import { RemoteValidationError } from "./RemoteTaskCommandService";
 import { WELCOME_MODES } from "../../shared/mode-profile";
+import { DOTS_TASK_ID } from "../../shared/dots";
 
 /** 模型目录缓存窗口：bootstrap 在每次 SSE/refresh 都会被调用，避免反复 await provider 目录 */
 const MODEL_CACHE_TTL_MS = 30_000;
@@ -172,12 +173,17 @@ export class RemoteAccessService {
 
   async bootstrap(device: RemoteDeviceSummary): Promise<RemoteBootstrap> {
     const settings = this.settings.read();
+    const dots = this.db.getTask(DOTS_TASK_ID) ?? this.db.openDots();
     return {
       apiVersion: REMOTE_API_VERSION,
       server: this.serverInfo(),
       spaces: this.db.listSpaces().map(mapRemoteSpace),
       projects: this.projects.list(true).map(mapRemoteProject),
       tasks: this.listTasks(),
+      dots: mapRemoteTask(dots, {
+        busy: this.agent.isTaskBusy(dots.id),
+        pendingActionCount: this.agent.listPendingActions(dots.id).length,
+      }),
       unreadNotificationCount: this.notifications.unreadCount(),
       device,
       models: await this.listModels(),

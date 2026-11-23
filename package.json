@@ -41,7 +41,7 @@
     "test:history-prepend-electron": "esbuild scripts/history-prepend-scroll-electron-test.ts --bundle --platform=node --format=cjs --external:electron --outfile=out/tests/history-prepend-scroll-electron.cjs && electron out/tests/history-prepend-scroll-electron.cjs",
     "test:remote-history-window": "esbuild scripts/remote-history-window-test.ts --bundle --platform=node --format=cjs --alias:@mybuddy/shared=./shared/src --outfile=out/tests/remote-history-window-test.cjs && node out/tests/remote-history-window-test.cjs",
     "test:remote-timeline": "esbuild scripts/remote-timeline-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-timeline-test.mjs && node scripts/test-guard.mjs out/tests/remote-timeline-test.mjs",
-    "test:remote-multi-server": "esbuild scripts/remote-multi-server-test.ts --bundle --platform=node --format=esm --packages=external --alias:@capacitor/core=./scripts/capacitor-stub.ts --outfile=out/tests/remote-multi-server-test.mjs && node scripts/test-guard.mjs out/tests/remote-multi-server-test.mjs",
+    "test:remote-multi-server": "esbuild scripts/remote-multi-server-test.ts --bundle --platform=node --format=esm --packages=external --alias:@capacitor/core=./scripts/capacitor-stub.ts --alias:@mybuddy/shared=./shared/src/index.ts --outfile=out/tests/remote-multi-server-test.mjs && node scripts/test-guard.mjs out/tests/remote-multi-server-test.mjs",
     "remote:typecheck": "pnpm --filter @mybuddy/remote typecheck",
     "test:remote-workspace-create": "node scripts/test-guard.mjs scripts/remote-workspace-create-test.cjs",
     "remote:android:sync": "pnpm --filter @mybuddy/remote cap:sync",

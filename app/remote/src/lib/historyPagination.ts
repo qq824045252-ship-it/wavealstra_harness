@@ -101,9 +101,10 @@ export function useHistoryPagination(options: HistoryPaginationOptions) {
     try {
       const history = await client.history(taskId, target)
       // 请求飞行期间已经离开这个任务 / 点过「回到底部」：块属于旧的现场，丢弃
-      if (discardTokenRef.current !== token || useRemoteStore.getState().activeTaskId !== taskId) return
+      const current = useRemoteStore.getState()
+      if (discardTokenRef.current !== token || current.client !== client || current.activeTaskId !== taskId) return
       const page = history.page
-      const liveHistoryId = useRemoteStore.getState().histories[taskId]?.durable?.historyId ?? historyId
+      const liveHistoryId = current.histories[taskId]?.durable?.historyId ?? historyId
       // 游标只认 page.before：没有 page = 服务端没按块返回（旧实现返回整段历史），拼进来就是重复
       if (!page) {
         console.warn('[remote] 更早历史响应缺少 page 元数据，已丢弃', taskId)

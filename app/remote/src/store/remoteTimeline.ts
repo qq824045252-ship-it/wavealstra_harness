@@ -1,5 +1,5 @@
 import type { RemoteHistoryMessage, RemoteTaskHistory } from '@mybuddy/shared'
-import { stripInjectedUserPromptTail } from '@mybuddy/shared'
+import { DOTS_NO_CHANGE, stripInjectedUserPromptTail } from '@mybuddy/shared'
 
 /** Client projection only. Server event time, not phone receipt time, orders the turn. */
 export interface LiveRemoteMessage extends RemoteHistoryMessage {
@@ -126,7 +126,7 @@ export function coalesceAssistantTurnMessages(messages: LiveRemoteMessage[]): Li
   const result: LiveRemoteMessage[] = []
   for (const message of messages) {
     const previous = result.at(-1)
-    if (message.role !== 'assistant' || previous?.role !== 'assistant') {
+    if (message.role !== 'assistant' || previous?.role !== 'assistant' || message.dotsDelivery || previous.dotsDelivery) {
       result.push({ ...message, tools: message.tools?.map(x => ({ ...x })), artifacts: message.artifacts?.map(x => ({ ...x })) })
       continue
     }
@@ -145,6 +145,17 @@ export function coalesceAssistantTurnMessages(messages: LiveRemoteMessage[]): Li
     previous.activity = message.activity
   }
   return result
+}
+
+export function visibleDotsMessages(messages: LiveRemoteMessage[]): LiveRemoteMessage[] {
+  let automatic = false
+  return messages.filter(message => {
+    if (message.role === 'user') {
+      automatic = message.dotsAutomaticInput === true
+      return !automatic
+    }
+    return !!message.dotsDelivery || !automatic || message.text.trim() !== DOTS_NO_CHANGE
+  })
 }
 
 export function buildRemoteTimeline(history: RemoteHistoryMessage[], live: Record<string, LiveRemoteMessage>): LiveRemoteMessage[] {

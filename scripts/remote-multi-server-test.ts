@@ -3,6 +3,8 @@
  * 覆盖的正是「切到另一台就切不回来」的根因 —— saveConfig 与旧 saveToken 共用键位互相覆盖。
  */
 import { strict as assert } from "node:assert";
+import { DOTS_TASK_ID, type RemoteBootstrap, type RemoteTaskSummary } from "@mybuddy/shared";
+import { useRemoteStore } from "../app/remote/src/store/remoteStore";
 import { __prefs } from "./capacitor-stub";
 import {
   getActiveServer,
@@ -66,5 +68,55 @@ const migrated = await loadServerConfig();
 assert.equal(migrated.servers.length, 1, "旧版单条凭据应迁移成一台");
 assert.equal(migrated.servers[0]?.baseUrl, "https://legacy.example.com");
 assert.equal(migrated.servers[0]?.deviceToken, "token-legacy");
+
+const hostA = (await upsertServer(A)).active;
+const hostB = (await upsertServer(B)).active;
+const dots = {
+  id: DOTS_TASK_ID, title: "Dots", updatedAt: 1, archived: false, busy: false, pendingActionCount: 0,
+  spaceId: null, projectId: null, modePresetId: "native",
+  isFavorited: false, startAt: null, dueAt: null, doneAckedAt: null,
+} satisfies RemoteTaskSummary;
+const originalFetch = globalThis.fetch;
+const delayedHistory = Promise.withResolvers<Response>();
+let delayHostA = false;
+globalThis.fetch = async (input, init): Promise<Response> => {
+  const url = new URL(String(input));
+  const host = url.origin === A.baseUrl ? "A" : "B";
+  if (url.pathname === "/v1/events") return new Promise<Response>((_, reject) =>
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
+  if (url.pathname === "/v1/bootstrap") return Response.json({
+    apiVersion: 1, server: { apiVersion: 1, service: "mybuddy-remote", name: "MyBuddy", now: Date.now() },
+    device: { id: host, name: host, capabilities: [], createdAt: 1, lastSeenAt: 1 },
+    spaces: [], projects: [], tasks: [], dots, unreadNotificationCount: 0,
+    models: [], defaultModelId: null, defaultPermissionMode: "default",
+  } satisfies RemoteBootstrap);
+  if (url.pathname === "/v1/notifications") return Response.json([]);
+  if (url.pathname.endsWith("/ackDone")) return Response.json({ ok: true });
+  if (url.pathname.endsWith("/runtime")) return Response.json({ taskId: DOTS_TASK_ID, busy: false, interactions: [], pendingActions: [] });
+  assert.ok(url.pathname.endsWith("/history"), url.pathname);
+  if (host === "A" && delayHostA) return delayedHistory.promise;
+  return Response.json({ taskId: DOTS_TASK_ID, messages: [{ id: "user", role: "user", text: `History from ${host}`, createdAt: 1 }] });
+};
+try {
+  const store = useRemoteStore.getState();
+  await store.switchServer(hostA.id);
+  await store.openTask(DOTS_TASK_ID);
+  assert.equal(useRemoteStore.getState().histories[DOTS_TASK_ID]?.messages[0]?.text, "History from A");
+
+  delayHostA = true;
+  const oldRead = store.syncTask(DOTS_TASK_ID);
+  await store.switchServer(hostB.id);
+  assert.equal(useRemoteStore.getState().histories[DOTS_TASK_ID], undefined);
+  await store.openTask(DOTS_TASK_ID);
+  assert.equal(useRemoteStore.getState().histories[DOTS_TASK_ID]?.messages[0]?.text, "History from B");
+
+  delayedHistory.resolve(Response.json({ taskId: DOTS_TASK_ID,
+    messages: [{ id: "late", role: "user", text: "Late history from A", createdAt: 2 }] }));
+  await oldRead;
+  assert.equal(useRemoteStore.getState().histories[DOTS_TASK_ID]?.messages[0]?.text, "History from B");
+} finally {
+  await useRemoteStore.getState().disconnect();
+  globalThis.fetch = originalFetch;
+}
 
 console.log("remote multi-server switching tests passed");

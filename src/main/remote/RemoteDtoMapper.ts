@@ -13,6 +13,7 @@ import type { ChatMessageDto, ModelInfoDto, SpaceDto, TaskDto, TaskHistoryDto } 
 import type { ExternalAgentRunDto } from "../../shared/external-agent";
 import type { NotificationDto } from "../../shared/notification";
 import type { ProjectDto } from "../../shared/project-domain";
+import { isDotsAutomaticInput } from "../../shared/dots";
 
 export interface TaskRuntimeFacts {
   busy: boolean;
@@ -98,6 +99,7 @@ export function mapRemoteAcpRun(run: ExternalAgentRunDto): RemoteAcpRunInfo {
 }
 
 export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryMessage {
+  const delivery = message.dotsDelivery;
   return {
     id: message.id,
     streaming: message.streaming,
@@ -117,6 +119,13 @@ export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryM
     })),
     artifacts: message.artifacts?.map(mapArtifact),
     attachments: message.attachments?.map((attachment) => ({ name: attachment.name })),
+    ...(message.role === "user" && isDotsAutomaticInput(message.inputRequestId ?? "") ? { dotsAutomaticInput: true } : {}),
+    ...(delivery ? { dotsDelivery: {
+      taskId: delivery.taskId,
+      title: delivery.title,
+      kind: delivery.kind,
+      files: delivery.artifacts.map(({ id, name }) => ({ id, name })),
+    } } : {}),
   };
 }
 

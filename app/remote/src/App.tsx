@@ -1,18 +1,18 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowDown, ArrowUp, Bell, Briefcase, Camera, Check,
+  ArrowDown, ArrowUp, Bell, Bot, Briefcase, Camera, Check,
   ChevronDown, ChevronRight, Cloud, Copy, FileUp, Folder, Globe, Image,
   LoaderCircle, Settings, Menu, Plus, Redo2, RotateCcw, Sparkles, Square, Terminal,
   ThumbsDown, ThumbsUp, Trash2, X, Shield,
 } from 'lucide-react'
 import { App as CapacitorApp } from '@capacitor/app'
-import { activityTimeOrUndefined } from '@mybuddy/shared'
+import { activityTimeOrUndefined, DOTS_TASK_ID } from '@mybuddy/shared'
 import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
 
 /** 稳定空数组：避免每次渲染给 RemoteMarkdown 一个新 identity 导致 memo 失效 */
 const EMPTY_MESSAGE_IMAGES: RemoteImageArtifact[] = []
 import { useRemoteStore, localDoneAckAt } from './store/remoteStore'
-import { buildRemoteTimeline } from './store/remoteTimeline'
+import { buildRemoteTimeline, visibleDotsMessages } from './store/remoteTimeline'
 import { RemoteMarkdown } from './components/RemoteMarkdown'
 import { ClaudeToolCard } from './components/ClaudeToolCard'
 import { RemoteImageSummary, resolveImageOwnerId } from './components/RemoteImages'
@@ -25,6 +25,7 @@ import { ConnectPage } from './components/ConnectPage'
 import { NewTaskSetupChips, NewTaskSetupSheet } from './components/NewTaskSetup'
 import { AnimatedDisclosure, useScreenMotion } from './components/RemoteMotion'
 import { RemoteConversationInteractionCard } from './components/RemoteConversationInteractionCard'
+import { DotsDelivery, DotsEntry } from './components/RemoteDots'
 import './styles/app.css'
 
 import { acpOptionLabel, acpStatusLabel } from './lib/acpLabels'
@@ -88,7 +89,7 @@ export function App() {
   // （与桌面端 TaskItem 的自动确认同语义；在后台完成则保留绿点，等用户回来点开）
   useEffect(() => {
     if (!activeTaskId || !bootstrap) return
-    const task = bootstrap.tasks.find(candidate => candidate.id === activeTaskId)
+    const task = bootstrap.dots?.id === activeTaskId ? bootstrap.dots : bootstrap.tasks.find(candidate => candidate.id === activeTaskId)
     if (!task || document.visibilityState !== 'visible') return
     if (taskStatusDot(task, localDoneAckAt(task.id)) !== 'done-unread') return
     void useRemoteStore.getState().markTaskDoneSeen(activeTaskId)
@@ -142,7 +143,7 @@ export function App() {
   }, [])
 
   return <div ref={screenRef} className="remote-screen" data-screen={screen}>
-    {!client || !bootstrap ? <ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /> : activeTaskId ? <ChatPage /> : <HomePage />}
+    {!client || !bootstrap ? <ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /> : activeTaskId ? <ChatPage key={activeTaskId === DOTS_TASK_ID ? 'dots' : 'task'} /> : <HomePage />}
     {client && bootstrap && showConnectionSettings && <div className="connection-settings-overlay"><ConnectPage brand={<MyBuddyIcon className="onboard-brand-icon" size={48} />} incomingLink={incomingLink} onConsumed={id => setIncomingLink(current => current?.id === id ? null : current)} /></div>}
     {client && bootstrap && !activeTaskId && <NewTaskSetupSheet />}
   </div>
@@ -222,6 +223,8 @@ function HomePage() {
             <h1 className="home-greeting-title">{greeting}</h1>
             <p className="home-greeting-sub">你想让 MyBuddy 帮你做什么？</p>
           </section>
+
+          <DotsEntry placement="home" onOpen={id => void openTask(id)} />
 
           {recents.length > 0 && (
             <section className="home-recents-section">
@@ -339,6 +342,8 @@ function guardPrependAnchor(el: HTMLDivElement, prevFirstId: string | undefined,
 
 function ChatPage() {
   const activeTaskId = useRemoteStore((state) => state.activeTaskId)!
+  const isDots = activeTaskId === DOTS_TASK_ID
+  const historyLoadError = useRemoteStore(state => isDots ? state.error : null)
   const histories = useRemoteStore((state) => state.histories)
   const runtimes = useRemoteStore((state) => state.runtimes)
   const live = useRemoteStore((state) => state.live)
@@ -378,8 +383,9 @@ function ChatPage() {
   // 删除：统一走 DeleteTaskDialog（抽屉/顶部共用，含「停止并删除」重试）
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
-  const task = bootstrap?.tasks.find((item) => item.id === activeTaskId)
-  const durable = histories[activeTaskId]?.durable
+  const task = isDots ? bootstrap?.dots : bootstrap?.tasks.find((item) => item.id === activeTaskId)
+  const history = histories[activeTaskId]
+  const durable = history?.durable
   const runtime = runtimes[activeTaskId]
   // 第一页更早历史的游标：契约字段 page.before 优先；实时窗口快照目前仍用 durable.historyBefore
   // 表示「窗口里最早那条」，只能当入口兜底（服务端把 page 也挂到实时窗口后这行自然失效）。
@@ -401,9 +407,10 @@ function ChatPage() {
     return [...visible.flatMap((block) => block.messages), ...windowMessages]
   }, [olderBlocks, histories[activeTaskId]?.messages, durableHistoryId])
   const activeLive = live[activeTaskId]
-  const messages = useMemo(() => buildRemoteTimeline(
-    activeHistoryMessages, activeLive ?? {},
-  ), [activeHistoryMessages, activeLive])
+  const messages = useMemo(() => {
+    const timeline = buildRemoteTimeline(activeHistoryMessages, activeLive ?? {})
+    return isDots ? visibleDotsMessages(timeline) : timeline
+  }, [activeHistoryMessages, activeLive, isDots])
   const interactionsByMessage = useMemo(() => {
     const map = new Map<string, RemoteConversationInteraction[]>()
     for (const interaction of runtime?.interactions ?? []) {
@@ -465,6 +472,7 @@ function ChatPage() {
   }
 
   const turnView = useRef({ taskId: '', userCount: 0 })
+  const lastDotsMessageId = useRef<string | undefined>(undefined)
   /** 已经为哪个任务做过「进任务对齐」；同一任务内不再重复对齐 */
   const pinnedTask = useRef<string | null>(null)
   const handleComposerFocus = () => setIsInputFocused(true)
@@ -498,6 +506,18 @@ function ChatPage() {
      * 这里改为按任务记录的 pinnedTask：同一任务内不再重复对齐。
      */
     const ownsTaskEntry = pinnedTask.current !== activeTaskId
+    if (isDots) {
+      const newest = messages.at(-1)
+      const incomingDelivery = newest?.dotsDelivery && newest.id !== lastDotsMessageId.current
+      lastDotsMessageId.current = newest?.id
+      if (!prepend && !ownSend && newest && (ownsTaskEntry || (incomingDelivery && isNearBottomRef.current))) {
+        pinnedTask.current = activeTaskId
+        turnView.current = { taskId: activeTaskId, userCount: users.length }
+        el.scrollTop = el.scrollHeight
+        setShowScrollBottom(false)
+        return
+      }
+    }
     const firstDataForTask = ownsTaskEntry && users.length > 0
     if (firstDataForTask) pinnedTask.current = activeTaskId
     // 前插会让 user 气泡变多，但那不是新提问：prepend 时一律不许 pin（否则一上拉就被拽回底部）
@@ -524,7 +544,7 @@ function ChatPage() {
       isNearBottomRef.current = true
       setShowScrollBottom(false)
     }
-  }, [activeTaskId, messages])
+  }, [activeTaskId, isDots, messages])
 
   useEffect(() => {
     const el = timelineRef.current
@@ -562,14 +582,17 @@ function ChatPage() {
     if ((!value && attachments.length === 0) || sending) return
     const pending = attachments
     const draftText = text
+    const client = useRemoteStore.getState().client
     clearAttachments()
     setText('')
     armUserAnchor()
     try {
       // 选了外部 ACP Agent → 这一轮交给电脑端的真实 ACP 进程（Gemini/Codex/Claude 等）
-      if (selectedAcpAgentId) await sendAcp(value, pending)
+      if (!isDots && selectedAcpAgentId) await sendAcp(value, pending)
       else await send(value, pending)
     } catch (error) {
+      const current = useRemoteStore.getState()
+      if (current.client !== client || current.activeTaskId !== activeTaskId) return
       setText(draftText)
       for (const att of pending) addAttachment(att)
       pendingAnchorUserCountRef.current = null
@@ -616,8 +639,9 @@ function ChatPage() {
           >
             <Menu size={20} />
           </button>
-          <div className="header-task-info"><span className="header-title-chat">{task?.title ?? '对话'}</span>
-            {task && <span className="task-mode-label">{taskModeLabel(task, bootstrap?.taskModes)}</span>}
+          <div className="header-task-info">
+            <span className="header-title-chat">{isDots ? 'MyBuddy Dots' : task?.title ?? '对话'}</span>
+            {!isDots && task && <span className="task-mode-label">{taskModeLabel(task, bootstrap?.taskModes)}</span>}
           </div>
         </div>
 
@@ -633,7 +657,7 @@ function ChatPage() {
               <Square size={16} />
             </button>
           )}
-          <button
+          {!isDots && <button
             type="button"
             className="header-icon-btn"
             aria-label="删除任务"
@@ -641,15 +665,15 @@ function ChatPage() {
             onClick={() => setDeleteTarget(activeTaskId)}
           >
             <Trash2 size={18} />
-          </button>
-          <button
+          </button>}
+          {!isDots && <button
             type="button"
             className="header-icon-btn"
             aria-label="新对话"
             onClick={goHome}
           >
             <Plus size={20} />
-          </button>
+          </button>}
         </div>
       </header>
 
@@ -662,9 +686,23 @@ function ChatPage() {
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
         >
+          {isDots && (history?.historyError || (!history && historyLoadError)) && <div className="dots-history-status" role="alert">
+            <p>{history?.historyError || historyLoadError}</p>
+            <button type="button" className="dots-delivery-link" onClick={() => void openTask(activeTaskId)}>重新加载</button>
+          </div>}
+          {isDots && !history && !historyLoadError && messages.length === 0 &&
+            <div className="dots-history-status" role="status">正在同步 Dots 对话…</div>}
+          {isDots && history && !history.historyError && messages.length === 0 && !isBusy &&
+            <section className="dots-empty">
+              <span className="dots-entry-icon"><Bot size={25} aria-hidden /></span>
+              <h1>今天想让 Dots 帮你做什么？</h1>
+              <p>问个问题，交办新任务，或看看已有任务的进展。</p>
+            </section>}
           {/* 更早历史是无缝前插：贴顶继续上拉即加载，不再有分页按钮条，也没有隐藏触发点。
               手机 WebView 没有 wheel 事件，所以同一判定同时挂在 touchmove 上。 */}
           {messages.map((message) => {
+            if (isDots && message.dotsDelivery) return <DotsDelivery
+              key={message.id} message={{ ...message, dotsDelivery: message.dotsDelivery }} onOpenTask={id => void openTask(id)} />
             if (message.role === 'user') {
               return (
                 <div key={message.id} data-message-id={message.id} className="message-bubble-user">
@@ -716,9 +754,9 @@ function ChatPage() {
                     <button type="button" className="assistant-action-btn" aria-label="复制" onClick={() => copyMessage(message.text)}>
                       <Copy size={15} />
                     </button>
-                    <button type="button" className="assistant-action-btn" aria-label="重试" onClick={() => retryFrom(message.id)}>
+                    {!isDots && <button type="button" className="assistant-action-btn" aria-label="重试" onClick={() => retryFrom(message.id)}>
                       <Redo2 size={15} />
-                    </button>
+                    </button>}
                     <button
                       type="button"
                       className={`assistant-action-btn ${feedback[message.id] === 'up' ? 'on' : ''}`}
@@ -735,7 +773,7 @@ function ChatPage() {
                     >
                       <ThumbsDown size={15} />
                     </button>
-                    {message.id === lastAssistantId && (
+                    {!isDots && message.id === lastAssistantId && (
                       <button type="button" className="assistant-action-btn" aria-label="重新生成" onClick={() => retryFrom(message.id)}>
                         <RotateCcw size={15} />
                       </button>
@@ -818,7 +856,7 @@ function ChatPage() {
             </div>
           ))}
 
-          {!isBusy && <div className="chat-disclaimer">MyBuddy is AI and can make mistakes.</div>}
+          {!isDots && !isBusy && <div className="chat-disclaimer">MyBuddy is AI and can make mistakes.</div>}
           <div className="chat-bottom-spacer" />
         </div>
 
@@ -843,6 +881,7 @@ function ChatPage() {
           onFocus={handleComposerFocus}
           onBlur={handleComposerBlur}
           placeholder={(() => {
+            if (isDots) return '给 MyBuddy Dots 发消息…'
             const agent = bootstrap?.acpAgents?.find(item => item.id === selectedAcpAgentId)
             return agent ? `交给 ${agent.name}（ACP）执行…` : '给 MyBuddy 发送回复…'
           })()}
@@ -983,6 +1022,7 @@ function FloatingComposer({
   const setPermissionSheetOpen = useRemoteStore(s => s.setPermissionSheetOpen)
   const permissionMode = useRemoteStore(s => s.toolAccessMode)
   const activeTaskId = useRemoteStore(s => s.activeTaskId)
+  const isDots = activeTaskId === DOTS_TASK_ID
   const selectedWelcomeMode = useRemoteStore(s => s.selectedWelcomeMode)
   const selectedModePresetId = useRemoteStore(s => s.selectedModePresetId)
   const modes = bootstrap?.taskModes ?? []
@@ -1083,7 +1123,7 @@ function FloatingComposer({
               <Plus size={18} strokeWidth={2.2} />
             </button>
 
-            <button
+            {!isDots && <button
               type="button"
               className="composer-model-pill"
               aria-label={`选择模型：${modelLabel}`}
@@ -1094,11 +1134,11 @@ function FloatingComposer({
               }}
             >
               <Sparkles size={17} />
-            </button>
-            {!isGeneral && <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
+            </button>}
+            {!isDots && !isGeneral && <button type="button" className={`composer-permission-pill ${permissionMode === 'auto' || (permissionMode === 'follow' && effectivePermission === 'auto') ? 'full-access' : ''}`} aria-label="权限控制" title={`${permissionMode === 'follow' ? '跟随：' : ''}${permissionLabel}`} onClick={e => { e.stopPropagation(); setPermissionSheetOpen(true) }}>
               <Shield size={17} />
             </button>}
-            {acpAvailable && (
+            {!isDots && acpAvailable && (
               <button
                 type="button"
                 className={`composer-permission-pill composer-acp-pill ${selectedAcpAgentId ? 'acp-active' : ''}`}
@@ -1953,6 +1993,8 @@ function ClaudeDrawer({
           </AnimatedDisclosure>
         </div>
 
+        <DotsEntry placement="drawer" onOpen={onSelectTask} />
+
         <div className="drawer-task-groups">
           {groups.roots.length > 0 && <div className="drawer-group-title">空间任务</div>}
           {groups.roots.map((node) => renderSpace(node, 0))}
@@ -2004,8 +2046,10 @@ function ClaudeDrawer({
             notifications={notifications}
             onClose={() => setShowNotifications(false)}
             onSelect={async (notice) => {
+              const client = useRemoteStore.getState().client
               setShowNotifications(false)
               await readNotification(notice.id)
+              if (useRemoteStore.getState().client !== client) return
               if (notice.taskId) {
                 onClose()
                 onSelectTask(notice.taskId)

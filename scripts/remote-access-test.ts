@@ -16,6 +16,7 @@ import { RemoteAccessService } from "../src/main/remote/RemoteAccessService";
 import { cleanupRemoteUploads, RemoteConflictError, RemoteTaskCommandService, RemoteValidationError } from "../src/main/remote/RemoteTaskCommandService";
 import { RemoteClient } from "../app/remote/src/api/RemoteClient";
 import { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory, useRemoteStore } from "../app/remote/src/store/remoteStore";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 
 const modeProfiles = {
   working: { labelZh: '日常办公', policy: { presets: [{ id: 'general-office', label: '通用办公', promptAddon: 'private prompt' }] } },
@@ -23,8 +24,12 @@ const modeProfiles = {
   general: { labelZh: '通用模式', policy: { presets: [{ id: 'native', label: '原生模式' }, { id: 'codemode', label: 'Code Mode' }] } },
 };
 
-const catalogService = new RemoteAccessService({ listSpaces: () => [], listNonTrashedTasks: () => [] } as any,
-  { listModels: async () => [], getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id] } as any,
+const catalogService = new RemoteAccessService({
+  listSpaces: () => [], listNonTrashedTasks: () => [],
+  getTask: () => undefined, openDots: () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 }),
+} as any,
+  { listModels: async () => [], isTaskBusy: () => false, listPendingActions: () => [],
+    getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id] } as any,
   { unreadCount: () => 0 } as any, { list: () => [] } as any, { read: () => ({ permissionMode: 'default' }) } as any);
 const catalogBootstrap = await catalogService.bootstrap({ id: 'test', name: 'Test', createdAt: 1, lastSeenAt: 1, capabilities: [] });
 assert.equal(catalogBootstrap.taskModes?.find(mode => mode.id === 'coding')?.tags[0].label, '自定义开发');
@@ -380,6 +385,13 @@ try {
     const prompts: Array<Record<string, unknown>> = [];
     const db = {
       getTask: (id: string) => savedTasks.get(id),
+      openDots: () => {
+        const dots = { id: DOTS_TASK_ID, title: "Dots", updatedAt: 1, welcomeMode: "general", modePresetId: "native" };
+        savedTasks.set(DOTS_TASK_ID, dots);
+        return dots;
+      },
+      listSpaces: () => [],
+      listNonTrashedTasks: () => Array.from(savedTasks.values()).filter(task => task.id !== DOTS_TASK_ID),
       upsertTask: (task: Record<string, unknown>) => { upsertCalls.push(task); savedTasks.set(String(task.id), task); },
       isTaskEffectiveArchived: () => false,
       getSpace: () => undefined,
@@ -402,6 +414,13 @@ try {
       listModels: () => Promise.resolve(models),
       isTaskBusy: () => false,
       listPendingActions: () => [],
+      loadTaskHistory: async (taskId: string) => ({ messages: taskId === DOTS_TASK_ID ? [{
+        id: "delivery", role: "assistant", text: "", createdAt: 2,
+        dotsDelivery: { taskId: "t-ro", kind: "conclusion", title: "报告", artifacts: [
+          { id: "file-1", name: "报告.pdf", saved: { snapshotPath: "C:/private/snapshot.pdf" } },
+        ] },
+      }] : [] }),
+      getConversationRuntimeSnapshot: () => ({ interactions: [] }),
     };
     const settings = { read: () => ({ defaultModelId: null, permissionMode: "default" }), getTaskConnectorIds: () => [] };
     const commands = new RemoteTaskCommandService(db as never, agent as never, settings as never, { get: () => undefined } as never, uploadsRoot);
@@ -490,10 +509,29 @@ try {
     assert.ok(failedCreate instanceof RemoteValidationError);
     assert.deepEqual([...savedTasks.keys()].filter((id) => !savedBefore.has(id)), [], "失败的新任务必须回滚任务行");
     assert.deepEqual(readdirSync(uploadsRoot).filter((entry) => entry !== "t-ro"), [], "失败的新任务不得残留附件目录");
-    const promptServer = new RemoteAccessServer({ port: 0, staticRoot: webRoot, devices, pairing, service: service as never, commands, events });
+    const commandHost = new RemoteAccessService(
+      db as never, agent as never, { unreadCount: () => 0 } as never, { list: () => [] } as never, settings as never,
+    );
+    const promptServer = new RemoteAccessServer({ port: 0, staticRoot: webRoot, devices, pairing, service: commandHost, commands, events });
     const promptAddress = await promptServer.start();
     try {
       const phone = new RemoteClient(`http://127.0.0.1:${promptAddress.port}`, token);
+      const dots = (await phone.bootstrap()).dots;
+      assert.equal(dots?.id, DOTS_TASK_ID);
+      assert.deepEqual((await phone.bootstrap()).dots, dots, "paired bootstrap reuses the same Dots conversation");
+      assert.equal((await phone.bootstrap()).tasks.some(task => task.id === DOTS_TASK_ID), false);
+      assert.deepEqual((await phone.history(DOTS_TASK_ID)).messages[0]?.dotsDelivery, {
+        taskId: "t-ro", kind: "conclusion", title: "报告", files: [{ id: "file-1", name: "报告.pdf" }],
+      });
+      assert.equal((await phone.runtime(DOTS_TASK_ID)).busy, false);
+      await assert.rejects(phone.prompt(DOTS_TASK_ID, { text: "override", permissionMode: "auto" }), /电脑端配置/);
+      await assert.rejects(phone.acpPrompt(DOTS_TASK_ID, { agentId: "codex", text: "override" }), /不支持切换/);
+      await assert.rejects(phone.deleteTask(DOTS_TASK_ID), /不能删除/);
+      await phone.prompt(DOTS_TASK_ID, { text: "帮我跟进报告" });
+      assert.equal(prompts.at(-1)?.taskId, DOTS_TASK_ID);
+      assert.equal(prompts.at(-1)?.text, "帮我跟进报告");
+      assert.equal(prompts.at(-1)?.modePresetId, "native");
+      assert.equal(prompts.at(-1)?.permissionMode, undefined);
       const count = prompts.length;
       await assert.rejects(phone.prompt("t-ro", { text: "correct rejected model", modelId: "vendor/unauthed" }), /不可用/);
       assert.equal(prompts.length, count, "HTTP rejection precedes Durable submission");

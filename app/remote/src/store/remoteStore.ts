@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { applyDurableDelta, replayDurableDeltas } from '@mybuddy/shared'
+import { applyDurableDelta, DOTS_TASK_ID, replayDurableDeltas } from '@mybuddy/shared'
 import { reconcileLiveMessagesWithHistory, type LiveRemoteMessage } from './remoteTimeline'
 import { reduceRemotePatch } from './remotePatch'
 export { coalesceAssistantTurnMessages, reconcileLiveMessagesWithHistory } from './remoteTimeline'
@@ -217,12 +217,17 @@ let doneAckOverrides: Record<string, number> = readDoneAckOverrides()
 
 /** 任务的本机确认水位（0 = 本机没确认过）；UI 用 max(服务端水位, 本机水位) 判定绿点 */
 export function localDoneAckAt(taskId: string): number {
-  return doneAckOverrides[taskId] ?? 0
+  return doneAckOverrides[doneAckKey(taskId)] ?? 0
+}
+
+function doneAckKey(taskId: string): string {
+  return taskId === DOTS_TASK_ID ? JSON.stringify([activeServerKey, taskId]) : taskId
 }
 
 function recordLocalDoneAck(taskId: string, at: number): void {
-  if ((doneAckOverrides[taskId] ?? 0) >= at) return
-  doneAckOverrides = { ...doneAckOverrides, [taskId]: at }
+  const key = doneAckKey(taskId)
+  if ((doneAckOverrides[key] ?? 0) >= at) return
+  doneAckOverrides = { ...doneAckOverrides, [key]: at }
   try {
     const entries = Object.entries(doneAckOverrides).sort((a, b) => b[1] - a[1]).slice(0, 500)
     doneAckOverrides = Object.fromEntries(entries)
@@ -286,6 +291,23 @@ const historyFetchedEventRevision = new Map<string, number>()
  */
 const HISTORY_CACHE_LIMIT = 5
 const historyLru: string[] = []
+
+function resetServerTaskState(): Partial<State> {
+  taskSyncRevisions.clear()
+  taskEventRevisions.clear()
+  durableResyncs.clear()
+  historyFetchedAt.clear()
+  historyFetchedEventRevision.clear()
+  historyLru.length = 0
+  return {
+    histories: {}, runtimes: {}, live: {}, attachments: [], sending: false, creating: false,
+    ...resetAcpSelection(),
+  }
+}
+
+function canRestoreTask(bootstrap: RemoteBootstrap, taskId: string | null): boolean {
+  return bootstrap.dots?.id === taskId || bootstrap.tasks.some(task => task.id === taskId && !task.archived)
+}
 /** 缓存被认为是新鲜的窗口：窗口内切回不重新拉取，仅后台静默刷新 */
 const HISTORY_FRESH_MS = 30_000
 /** 超过该时长后，切回时顺带后台补拉一次（不阻塞渲染） */
@@ -509,10 +531,13 @@ export const useRemoteStore = create<State>((set, get) => ({
         if (connected) scheduleRemoteSync()
       })
       const nextServerKey = serverCacheKey(normalizedBase, bootstrap.device?.id)
+      const sameServer = activeServerKey === nextServerKey
+      if (!sameServer && previousClient) saveLastActiveTaskId(null)
       activeServerKey = nextServerKey
       set({
-        client, bootstrap, notifications, connection: 'connected', histories: get().histories, runtimes: get().runtimes, live: get().live,
-        activeTaskId: bootstrap.tasks.some(task => task.id === get().activeTaskId && !task.archived) ? get().activeTaskId : null,
+        client, bootstrap, notifications, connection: 'connected',
+        ...(sameServer ? { sending: false, creating: false } : resetServerTaskState()),
+        activeTaskId: sameServer && canRestoreTask(bootstrap, get().activeTaskId) ? get().activeTaskId : null,
         // P0：默认 'follow'（不传 permissionMode，服务端跟随任务/设置），不再从默认权限推断覆盖值
         // 连接新会话（配对 / 切换服务器 / 重新连接）时清空上个会话遗留的 transient 覆盖
         ...resetTransientOverrides(),
@@ -522,8 +547,7 @@ export const useRemoteStore = create<State>((set, get) => ({
       stream.start()
       const lastTaskId = navigation === navigationRevision ? loadLastActiveTaskId() : null
       if (lastTaskId) {
-        const restorable = bootstrap.tasks.some((task) => task.id === lastTaskId && !task.archived)
-        if (restorable) {
+        if (canRestoreTask(bootstrap, lastTaskId)) {
           try {
             await get().openTask(lastTaskId)
           } catch {
@@ -592,11 +616,13 @@ export const useRemoteStore = create<State>((set, get) => ({
     await get().connect(input.baseUrl, response.deviceToken)
   },
   async disconnect() {
-    ++connectionRevision; ++navigationRevision
+    const revision = ++connectionRevision
+    ++navigationRevision
     clearTimeout(refreshTimer); refreshTimer = undefined
     stream?.stop(); stream = null
     await clearCredential()
     const newConfig = await loadServerConfig()
+    if (revision !== connectionRevision) return
     const nextActive = getActiveServer(newConfig)
     activeServerKey = null
     void clearAllCached().catch(() => undefined)
@@ -608,28 +634,30 @@ export const useRemoteStore = create<State>((set, get) => ({
       serverConfig: newConfig,
       activeServer: nextActive,
       activeTaskId: null,
-      sending: false,
-      creating: false,
+      notifications: [],
+      ...resetServerTaskState(),
       ...resetTransientOverrides()
     })
   },
   async switchServer(serverId: string) {
     if (get().serverConfig.activeServerId === serverId && get().client && get().connection === 'connected') return
-    ++connectionRevision
+    const revision = ++connectionRevision
     ++navigationRevision
     clearTimeout(refreshTimer); refreshTimer = undefined
     stream?.stop(); stream = null
     const newConfig = await setActiveServerId(serverId)
+    if (revision !== connectionRevision) return
     const target = getActiveServer(newConfig)
     if (!target) return
+    activeServerKey = null
     set({
       serverConfig: newConfig,
       activeServer: target,
       client: null,
       bootstrap: null,
       activeTaskId: null,
-      sending: false,
-      creating: false,
+      notifications: [],
+      ...resetServerTaskState(),
       error: null,
       ...resetTransientOverrides()
     })
@@ -672,13 +700,18 @@ export const useRemoteStore = create<State>((set, get) => ({
   async openTask(taskId) {
     // 不再要求必须有 client：离线时仍可从本地数据库读出已缓存的对话。
     if (!get().client && !activeServerKey) return
-    ++navigationRevision
+    if (taskId === DOTS_TASK_ID && !get().bootstrap?.dots) return
+    const navigation = ++navigationRevision
+    const { client } = get()
+    const serverKey = activeServerKey
+    const stillOpening = () => navigation === navigationRevision && get().client === client && activeServerKey === serverKey
     saveLastActiveTaskId(taskId)
     const previousTaskId = get().activeTaskId
     // 恢复该任务上次选过的 ACP Agent（杀进程/重装后不能静默退回内置 MyBuddy）
-    const rememberedAcpAgent = rememberedAcpAgentForTask(taskId)
+    const rememberedAcpAgent = taskId === DOTS_TASK_ID ? null : rememberedAcpAgentForTask(taskId)
     set(state => ({
       activeTaskId: taskId,
+      ...(taskId === DOTS_TASK_ID ? { error: null } : {}),
       ...(state.activeTaskId !== taskId ? { ...resetTransientOverrides(), ...resetAcpSelection() } : {}),
       // 放在 spread 之后：即使触发 resetAcpSelection，也要恢复该任务记住的 Agent
       selectedAcpAgentId: rememberedAcpAgent,
@@ -688,10 +721,10 @@ export const useRemoteStore = create<State>((set, get) => ({
 
     // 本地数据库命中：内存里没有（冷启动 / 已被修剪），但本机存过这份历史——
     // 先渲染出来，再后台向电脑端校正。离线时这就是唯一的数据来源。
-    if (get().histories[taskId] === undefined && activeServerKey) {
-      const local = await loadCachedHistory(activeServerKey, taskId)
+    if (get().histories[taskId] === undefined && serverKey) {
+      const local = await loadCachedHistory(serverKey, taskId)
       // 期间用户可能已切走：本次打开作废
-      if (get().activeTaskId !== taskId) return
+      if (!stillOpening()) return
       if (local?.history && get().histories[taskId] === undefined) {
         touchHistoryLru(taskId)
         historyFetchedAt.set(taskId, local.at)
@@ -715,7 +748,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     const fetchedAt = historyFetchedAt.get(taskId) ?? 0
     const fetchedRevision = historyFetchedEventRevision.get(taskId) ?? -1
     const revisionUnchanged = fetchedRevision === (taskEventRevisions.get(taskId) ?? 0)
-    const fresh = cached !== undefined && revisionUnchanged && Date.now() - fetchedAt < HISTORY_FRESH_MS
+    const fresh = cached !== undefined && !cached.historyError && revisionUnchanged && Date.now() - fetchedAt < HISTORY_FRESH_MS
     if (fresh) {
       touchHistoryLru(taskId)
       const state = get()
@@ -726,7 +759,14 @@ export const useRemoteStore = create<State>((set, get) => ({
       if (Date.now() - fetchedAt > HISTORY_REVALIDATE_MS) void syncTaskHistory(taskId).catch(() => undefined)
       return
     }
-    await syncTaskHistory(taskId)
+    try {
+      await syncTaskHistory(taskId)
+    } catch (error) {
+      if (taskId !== DOTS_TASK_ID) throw error
+      if (stillOpening()) set({ error: error instanceof Error ? error.message : String(error) })
+      return
+    }
+    if (!stillOpening()) return
     const state = get()
     const patch = pruneHistories(state.histories, state.runtimes, state.live, previousTaskId, taskId)
     if (patch) set(patch)
@@ -741,6 +781,9 @@ export const useRemoteStore = create<State>((set, get) => ({
         tasks: Array.isArray(state.bootstrap.tasks)
           ? state.bootstrap.tasks.map(task => task.id === taskId ? { ...task, doneAckedAt: Math.max(task.doneAckedAt ?? 0, at) } : task)
           : state.bootstrap.tasks,
+        ...(state.bootstrap.dots?.id === taskId ? { dots: {
+          ...state.bootstrap.dots, doneAckedAt: Math.max(state.bootstrap.dots.doneAckedAt ?? 0, at),
+        } } : {}),
       },
     } : {})
     const client = get().client
@@ -797,16 +840,18 @@ export const useRemoteStore = create<State>((set, get) => ({
     const { client, activeTaskId, sending, selectedModelId, toolAccessMode } = get()
     if (!client || !activeTaskId || sending) return
     const attachments = pendingAttachments.map(toAttachmentInput).filter(Boolean) as RemoteAttachmentInput[]
+    const dots = activeTaskId === DOTS_TASK_ID
     const submittedAt = Date.now() + serverOffsetMs
     set({ sending: true })
     try {
       const result = await client.prompt(activeTaskId, {
         text,
-        modelId: selectedModelId ?? undefined,
+        modelId: dots ? undefined : selectedModelId ?? undefined,
         // P0：仅用户显式切换过（ask/auto）才下发 permissionMode；follow 保持任务原权限
-        permissionMode: toolAccessMode === 'follow' ? undefined : toolAccessMode === 'ask' ? 'default' : toolAccessMode,
+        permissionMode: dots || toolAccessMode === 'follow' ? undefined : toolAccessMode === 'ask' ? 'default' : toolAccessMode,
         attachments: attachments.length ? attachments : undefined,
       })
+      if (get().client !== client) return
       // SSE 正常时 user_message 已先到；这里作为断流时的 fallback 按 id 幂等补齐。
       // P1 修复：SSE 的 user_message 只带 text 不带 attachments——SSE 先到时这里必须 merge
       // 补上附件，否则「拍照直接发送」在 AI 回答的几秒内显示空白用户气泡。
@@ -845,9 +890,9 @@ export const useRemoteStore = create<State>((set, get) => ({
         console.warn('runtime refresh after prompt failed', error)
         return null
       })
-      if (runtime) set((state) => ({ runtimes: { ...state.runtimes, [activeTaskId]: runtime } }))
+      if (runtime && get().client === client) set((state) => ({ runtimes: { ...state.runtimes, [activeTaskId]: runtime } }))
     } finally {
-      set({ sending: false })
+      if (get().client === client) set({ sending: false })
     }
   },
   /**
@@ -1072,6 +1117,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     const { client, activeTaskId } = get()
     if (!client || !activeTaskId) return
     const result = await client.respondInteraction(activeTaskId, interactionId, answer)
+    if (get().client !== client) return
     if (!result.ok) throw new Error(result.message)
     taskEventRevisions.set(activeTaskId, (taskEventRevisions.get(activeTaskId) ?? 0) + 1)
     set(state => projectInteraction(state, activeTaskId, result.interaction))
@@ -1080,6 +1126,7 @@ export const useRemoteStore = create<State>((set, get) => ({
     const { client, activeTaskId } = get()
     if (!client || !activeTaskId) return
     const result = await client.cancelInteraction(activeTaskId, interactionId)
+    if (get().client !== client) return
     if (!result.ok) throw new Error(result.message)
     taskEventRevisions.set(activeTaskId, (taskEventRevisions.get(activeTaskId) ?? 0) + 1)
     set(state => projectInteraction(state, activeTaskId, result.interaction))

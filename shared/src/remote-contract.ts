@@ -175,6 +175,13 @@ export interface RemoteImageArtifact extends RemoteArtifactMetadata {
   createdByToolCallId?: string
 }
 
+export interface RemoteDotsDelivery {
+  taskId: string
+  title: string
+  kind: 'conclusion' | 'question' | 'progress'
+  files: Array<{ id: string; name: string }>
+}
+
 export interface RemoteHistoryMessage {
   streaming?: boolean
   id: string
@@ -189,6 +196,8 @@ export interface RemoteHistoryMessage {
   attachments?: Array<{ name: string }>
   /** 本轮由 ACP 外部 Agent 执行时的运行投影（内置 Pi 轮次为 undefined） */
   acp?: RemoteAcpRunInfo
+  dotsAutomaticInput?: true
+  dotsDelivery?: RemoteDotsDelivery
 }
 
 export interface RemoteTaskHistory {
@@ -365,6 +374,8 @@ export interface RemoteBootstrap {
   spaces: RemoteSpaceSummary[]
   projects: RemoteProjectSummary[]
   tasks: RemoteTaskSummary[]
+  /** Absent on desktop hosts that predate remote Dots. */
+  dots?: RemoteTaskSummary
   unreadNotificationCount: number
   device: RemoteDeviceSummary
   /** 服务端可用聊天模型目录（白名单投影）；手机端模型选择器数据源 */

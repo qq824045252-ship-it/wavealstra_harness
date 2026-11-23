@@ -14,12 +14,7 @@ export function dotsLocalSpacePath(space: SpaceDto, parent: (id: string) => Spac
   }
 }
 
-/** One foreground per local profile. It never belongs to a project or task list. */
-export const DOTS_TASK_ID = "mybuddy-dots";
-export const DOTS_NO_CHANGE = "[[dots:no-change]]";
-export function isDotsAutomaticInput(requestId: string): boolean {
-  return /^cron-[0-9a-f-]{36}-input$/i.test(requestId) || requestId.startsWith("goal-continuation:");
-}
+export { DOTS_TASK_ID, DOTS_NO_CHANGE, isDotsAutomaticInput } from "../../shared/src/dots-conversation";
 export const DotsIpc = { open: "dots:open", list: "dots:list", activity: "dots:activity",
   taskDelivery: "dots:taskDelivery", getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
 

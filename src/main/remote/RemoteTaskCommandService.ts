@@ -1,4 +1,5 @@
 import { resolveWelcomeMode } from "../../shared/mode-profile";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -160,9 +161,13 @@ export class RemoteTaskCommandService {
       const text = request.text.trim();
       // P1 修复：纯附件消息合法（schema 已保证 text/attachments 至少其一）
       if (!text && !request.attachments?.length) throw new RemoteValidationError("消息不能为空");
-      const requestedModelId = await this.resolveModelId(request.modelId);
-      const modelId = requestedModelId ?? task.modelId;
-      const permissionMode = request.permissionMode ?? task.permissionMode;
+      const dots = taskId === DOTS_TASK_ID;
+      if (dots && (("acpAgentId" in request && request.acpAgentId !== undefined) || request.modelId !== undefined || request.permissionMode !== undefined)) {
+        throw new RemoteValidationError("MyBuddy Dots 使用电脑端配置的模型和权限");
+      }
+      const requestedModelId = dots ? undefined : await this.resolveModelId(request.modelId);
+      const modelId = dots ? undefined : requestedModelId ?? task.modelId;
+      const permissionMode = dots ? undefined : request.permissionMode ?? task.permissionMode;
       // 先写附件再改任务：附件落盘失败（超限/写错误）时抛错返回，任务的模型/权限保持原值，不产生半提交
       const attachments = await this.persistAttachments(taskId, request.attachments, operation);
       if ((requestedModelId && requestedModelId !== task.modelId) || (request.permissionMode && request.permissionMode !== task.permissionMode)) {
@@ -266,6 +271,7 @@ export class RemoteTaskCommandService {
    * 3) 返回手机端投影（run 信息），UI 通过 SSE agent.patch 收到流式输出。
    */
   acpPromptExisting(taskId: string, agentId: string, request: RemoteAcpPromptRequest): RemoteAcpPromptResponse {
+    if (taskId === DOTS_TASK_ID) throw new RemoteConflictError("MyBuddy Dots 不支持切换到 ACP Agent");
     this.requireTask(taskId);
     if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已归档或回收，不能继续执行");
     const runtime = this.requireAcpRuntime();
@@ -450,6 +456,7 @@ export class RemoteTaskCommandService {
    * 再清理 work graph。正在执行的任务拒绝删除，避免删除后仍有补丁回写。
    */
   async deleteTask(taskId: string): Promise<void> {
+    if (taskId === DOTS_TASK_ID) throw new RemoteConflictError("MyBuddy Dots 对话不能删除");
     this.requireTask(taskId);
     if (this.db.isTaskEffectiveArchived(taskId)) throw new RemoteConflictError("任务已在回收区或已归档");
     // ACP 子进程同样算「任务正在执行」：删除前必须没有活着的 run，
