@@ -548,7 +548,7 @@ async function planDispatch(params: Invocation, api: ToolExecutionApi, context: 
   // D-5: auto isolation is about concurrent writers. Only items that actually resolved count, so an
   // invalid item can neither force nor prevent isolation for its valid peers. A dispatch that can run
   // only one child at a time resolves to the supplied directory and says why.
-  const isolationAllowed = await repositoryAllowsGitIsolation(options.cwd, options.allowGitBranchOrWorktree);
+  const isolationAllowed = await repositoryAllowsGitIsolation(options.cwd, { authorizeGitIsolation: options.allowGitBranchOrWorktree });
   const plannedWorkers = Math.max(1, Math.min(limits.maxConcurrency, candidates.length));
   for (const { base, role, sourceCwd, tools, selection, explicitIsolation } of candidates) {
     const itemBase: PlanBase = { ...base, sourceCwd };
@@ -772,7 +772,9 @@ async function runChild(item: PlannedChild, dispatch: Dispatch, api: ToolExecuti
   try {
     // D-5: the isolation decision was made once, in planDispatch. Execute exactly that decision, so
     // the preflight and the child can never disagree about whether a worktree is in play.
-    if (item.workspace.kind === "worktree") await assertGitIsolationAllowed(item.sourceCwd, options.allowGitBranchOrWorktree);
+    if (item.workspace.kind === "worktree") {
+      await assertGitIsolationAllowed(item.sourceCwd, { authorizeGitIsolation: options.allowGitBranchOrWorktree });
+    }
     if (privateBrief) {
       const root = await realpath(getAgentDir());
       const slug = createHash("sha256").update(JSON.stringify([options.taskId, item.id, item.sourceCwd])).digest("hex").slice(0, 32);

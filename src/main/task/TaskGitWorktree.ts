@@ -41,14 +41,19 @@ export async function prepareTaskGitWorktree(db: AppDatabase, { taskId, spaceId 
   if (db.isSpaceEffectiveArchived(spaceId)) throw new Error("请选择未归档的 Git 工作空间");
   const cwd = db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true });
   if (!cwd) throw new Error("请选择绑定 Git 仓库的工作空间");
+  const policy = {
+    // This request is sent only when the user enables Git worktree for the new conversation.
+    explicitWorktreeRequest: true,
+    authorizeGitIsolation: () => !db.getTask(taskId) && !db.isSpaceEffectiveArchived(spaceId)
+      && db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true }) === cwd,
+  };
   preparing.add(taskId);
   try {
-    if (!await repositoryAllowsGitIsolation(cwd)) throw new Error("仓库规则禁止创建 Git 工作树");
+    if (!await repositoryAllowsGitIsolation(cwd, policy)) throw new Error("仓库规则禁止创建 Git 工作树");
     await prepareSubagentWorkspace({
       cwd, isolation: "worktree", parallel: false, writable: true, branchNamespace: "task",
       baseDir: worktreeBase(), operationId: taskId,
-      authorizeGitIsolation: () => !db.getTask(taskId) && !db.isSpaceEffectiveArchived(spaceId)
-        && db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true }) === cwd,
+      ...policy,
     });
   } catch (error) {
     if (error instanceof Error && /requires a clean repository|Repository became dirty/.test(error.message)) {

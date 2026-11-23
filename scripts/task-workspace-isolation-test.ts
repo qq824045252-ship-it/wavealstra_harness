@@ -12,6 +12,7 @@
  * 运行：pnpm run test:task-project-isolation
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -44,6 +45,9 @@ import {
 } from "../src/main/task/TaskExecutionWorkspace";
 import { getTaskExecutionWorkspacesDir } from "../src/main/paths";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { prepareSubagentWorkspace } from "../src/main/capabilities/subagent/worktree";
+import { prepareTaskGitWorktree, resolveTaskWorktreeCwd } from "../src/main/task/TaskGitWorktree";
+import { createTaskWorktreeId } from "../src/shared/task-worktree";
 import { ArtifactStorage } from "../src/main/artifact/ArtifactStorage";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { ArtifactRegistry } from "../src/main/artifact/ArtifactRegistry";
@@ -917,6 +921,43 @@ async function stageWorkspaceArtifactDiff(): Promise<void> {
 
 async function main(): Promise<void> {
   stage2Integration();
+  await checkAsync("新对话显式开启 Git 工作树时可以使用仓库规则中的例外", async () => {
+    const repository = join(stageDbRoot, "composer-worktree");
+    mkdirSync(repository);
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    git(repository, "init", "--initial-branch=main");
+    const optInRule = "Use `main` as the only active local branch. Do not create additional branches or worktrees unless the user explicitly requests them.\n";
+    const agents = join(repository, "AGENTS.md");
+    writeFileSync(agents, optInRule);
+    writeFileSync(join(repository, "example.txt"), "source\n");
+    git(repository, "add", ".");
+    git(repository, "-c", "user.name=Worktree test", "-c", "user.email=worktree@example.invalid",
+      "-c", "commit.gpgsign=false", "commit", "-m", "fixture");
+    const { id: spaceId } = stageDb.createSpace({ name: "Composer worktree", path: repository });
+
+    await assert.rejects(prepareSubagentWorkspace({
+      cwd: repository, baseDir: join(stageDbRoot, "subagent-worktrees"), parallel: true, writable: true,
+    }), /禁止创建分支\/worktree/);
+
+    const taskId = createTaskWorktreeId();
+    await prepareTaskGitWorktree(stageDb, { taskId, spaceId });
+    const worktree = resolveTaskWorktreeCwd(taskId);
+    assert.match(git(worktree, "branch", "--show-current"), /^task\//);
+    assert.equal(git(worktree, "rev-parse", "HEAD"), git(repository, "rev-parse", "HEAD"));
+    writeFileSync(join(worktree, "example.txt"), "isolated\n");
+    assert.equal(readFileSync(join(repository, "example.txt"), "utf8").trim(), "source");
+    assert.equal(git(repository, "status", "--porcelain"), "");
+
+    writeFileSync(join(repository, "example.txt"), "uncommitted\n");
+    await assert.rejects(prepareTaskGitWorktree(stageDb, { taskId: createTaskWorktreeId(), spaceId }),
+      /Git 仓库有未提交的更改/);
+
+    writeFileSync(agents, `${optInRule}Do not create additional branches or worktrees.\n`);
+    await assert.rejects(prepareTaskGitWorktree(stageDb, { taskId: createTaskWorktreeId(), spaceId }),
+      /仓库规则禁止创建 Git 工作树/);
+  });
   await stage4Artifact();
   await stage4Workspace();
   await stageWorkspaceArtifactDiff();
@@ -924,17 +965,15 @@ async function main(): Promise<void> {
   const failed = results.filter((r) => !r.ok);
   console.log("\n" + "-".repeat(72));
   console.log(`task-workspace-isolation: ${results.length - failed.length}/${results.length} PASS`);
+  (stageDb as unknown as { db: { close(): void } }).db.close();
+  (svcDb as unknown as { db: { close(): void } }).db.close();
+  (artDb as unknown as { db: { close(): void } }).db.close();
+  rmSync(tempRoot, { recursive: true, force: true });
+  rmSync(stageDbRoot, { recursive: true, force: true });
   if (failed.length > 0) {
     for (const f of failed) console.error(`FAILED: ${f.name} — ${f.detail}`);
-    rmSync(tempRoot, { recursive: true, force: true });
-    rmSync(stageDbRoot, { recursive: true, force: true });
     process.exitCode = 1;
   } else {
-    (stageDb as unknown as { db: { close(): void } }).db.close();
-    (svcDb as unknown as { db: { close(): void } }).db.close();
-    (artDb as unknown as { db: { close(): void } }).db.close();
-    rmSync(tempRoot, { recursive: true, force: true });
-    rmSync(stageDbRoot, { recursive: true, force: true });
     console.log("tempRoot 已清理:", tempRoot);
     console.log("stageDbRoot 已清理:", stageDbRoot);
   }

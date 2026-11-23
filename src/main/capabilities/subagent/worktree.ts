@@ -6,7 +6,13 @@ import * as path from "node:path";
 
 export type SubagentIsolation = "auto" | "shared" | "worktree";
 
-export interface PrepareSubagentWorkspaceOptions {
+interface GitIsolationPolicyOptions {
+  explicitWorktreeRequest?: boolean;
+  /** Rechecked at the actual side-effect boundary, including recovered receipts. */
+  authorizeGitIsolation?: () => boolean;
+}
+
+export interface PrepareSubagentWorkspaceOptions extends GitIsolationPolicyOptions {
   cwd: string;
   isolation?: SubagentIsolation;
   parallel: boolean;
@@ -16,8 +22,6 @@ export interface PrepareSubagentWorkspaceOptions {
   /** Stable durable call identity; retries inspect the same provisioning receipt. */
   operationId?: string;
   branchNamespace?: "subagent" | "task";
-  /** Rechecked at the actual side-effect boundary, including recovered receipts. */
-  authorizeGitIsolation?: () => boolean;
 }
 
 export type PreparedSubagentWorkspace =
@@ -38,6 +42,10 @@ export function durableWorktreeAllocation(baseDir: string, operationId: string):
   return path.join(baseDir, `durable-${createHash("sha256").update(operationId).digest("hex")}`);
 }
 
+const mainOnlyRule = /use\s+[`'"]?main[`'"]?\s+as\s+the\s+only\s+active\s+local\s+branch/i;
+const worktreeProhibition = /do\s+not\s+create\s+additional\s+branches\s+or\s+worktrees|禁止.{0,12}(?:新分支|worktree|工作树)/i;
+const explicitRequestException = /\bdo\s+not\s+create\s+additional\s+branches\s+or\s+worktrees\s+unless\s+the\s+user\s+explicitly\s+requests\s+them(?=\.(?:\s|$)|\s*$)/gi;
+
 /**
  * Only the policy half. Whether this directory can host a worktree is a different question, and the
  * preflight answers it per item: an auto+parallel+write-capable plan on a non-Git directory is
@@ -45,13 +53,17 @@ export function durableWorktreeAllocation(baseDir: string, operationId: string):
  * pins (`preflight must fail before any child conversation exists`). Answering both halves here would
  * turn that refusal into a silent shared batch.
  */
-export async function repositoryAllowsGitIsolation(cwd: string, authorize?: () => boolean): Promise<boolean> {
-  if (authorize?.() === false) return false;
+export async function repositoryAllowsGitIsolation(cwd: string, options: GitIsolationPolicyOptions = {}): Promise<boolean> {
+  if (options.authorizeGitIsolation?.() === false) return false;
   let directory = path.resolve(cwd);
   for (;;) {
     try {
       const instructions = await readFile(path.join(directory, "AGENTS.md"), "utf8");
-      if (/use\s+[`'"]?main[`'"]?\s+as\s+the\s+only\s+active\s+local\s+branch|do not create additional branches or worktrees|禁止.{0,12}(?:新分支|worktree|工作树)/i.test(instructions)) return false;
+      const remainingRules = options.explicitWorktreeRequest ? instructions.replace(explicitRequestException, "") : instructions;
+      const hasExplicitRequestException = remainingRules !== instructions;
+      if (worktreeProhibition.test(remainingRules) || (mainOnlyRule.test(instructions) && !hasExplicitRequestException)) {
+        return false;
+      }
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
@@ -61,8 +73,8 @@ export async function repositoryAllowsGitIsolation(cwd: string, authorize?: () =
   }
 }
 
-export async function assertGitIsolationAllowed(cwd: string, authorize?: () => boolean): Promise<void> {
-  if (!await repositoryAllowsGitIsolation(cwd, authorize)) throw new Error("当前 Work 或仓库禁止创建分支/worktree；请明确采用有效并发 1 的 shared 计划");
+export async function assertGitIsolationAllowed(cwd: string, options?: GitIsolationPolicyOptions): Promise<void> {
+  if (!await repositoryAllowsGitIsolation(cwd, options)) throw new Error("当前 Work 或仓库禁止创建分支/worktree；请明确采用有效并发 1 的 shared 计划");
 }
 type WorkspaceReceipt = WorktreeWorkspace & { sourceCwd: string } & (
   | { state: "intent" | "ready" }
@@ -125,7 +137,7 @@ export async function prepareSubagentWorkspace(options: PrepareSubagentWorkspace
   const isolated = options.isolation === "worktree"
     || ((options.isolation ?? "auto") === "auto" && options.parallel && options.writable);
   if (!isolated) return { kind: "shared", cwd };
-  await assertGitIsolationAllowed(cwd, options.authorizeGitIsolation);
+  await assertGitIsolationAllowed(cwd, options);
 
   let repository: string;
   try {
@@ -198,7 +210,7 @@ export async function prepareSubagentWorkspace(options: PrepareSubagentWorkspace
     if (await git(repository, ["status", "--porcelain=v1", "--untracked-files=all"], signal)) {
       throw new Error(`Repository became dirty before worktree creation: ${repository}`);
     }
-    await assertGitIsolationAllowed(cwd, options.authorizeGitIsolation);
+    await assertGitIsolationAllowed(cwd, options);
     await git(repository, ["worktree", "add", "-b", workspace.branch, "--", root, baseCommit], signal);
     workspace.root = await realpath(root);
     workspace.cwd = await realpath(workspace.cwd);
