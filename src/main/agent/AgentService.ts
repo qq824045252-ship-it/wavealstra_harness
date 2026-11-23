@@ -1763,6 +1763,7 @@ export class AgentService {
       tools: (task, cwd, recovery) => this.durableTaskTools(task, cwd, recovery),
       evidenceProjection: task => ({
         memory: this.memoryService,
+        dotsMemoryLimits: () => resolveDotsPreferences(this.settingsStore.read().dotsSettings).memoryLimits,
         automaticSemanticRecall: () => this.settingsStore.read().automaticSemanticRecall,
         onAutomaticRecall: receipt => {
           this.latestAutomaticRecall = { ...receipt, at: Date.now(), taskId: task.id };
@@ -2028,6 +2029,7 @@ export class AgentService {
           canChangeSchedules: action => dotsOperationEnabled(this.settingsStore.read().dotsSettings, "schedule." + action),
         })] : []),
         ...(this.dotsMemoryMode() !== "off" ? [createMemoryExtension({ taskId: task.id, service: this.memoryService,
+          dotsMemoryLimits: () => resolveDotsPreferences(this.settingsStore.read().dotsSettings).memoryLimits,
           canRead: name => {
             const settings = this.settingsStore.read();
             return this.dotsMemoryMode(settings) !== "off" && dotsOperationEnabled(settings.dotsSettings, name);

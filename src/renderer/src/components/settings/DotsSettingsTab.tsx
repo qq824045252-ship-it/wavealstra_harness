@@ -1,15 +1,48 @@
 import { useEffect, useState } from "react";
+import { defaultDotsMemoryLimits, dotsMemoryLimitFields, type DotsMemoryLimit, type DotsMemoryLimits } from "@shared/dots-limits";
 import { dotsCapabilityOptions, dotsOperationEnabled, dotsOperations, resolveDotsPreferences, type DotsOperation, type DotsSettings } from "@shared/dots-settings";
 import type { AppSettingsDto, ModelInfoDto, SpaceDto } from "@shared/agent-ipc";
 import { dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import AnswerRoutingTab from "./AnswerRoutingTab";
-import { SettingsSection, SettingsSelect } from "./SettingsPrimitives";
+import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import "./DotsSettingsTab.css";
 
 const sections = ["对话调度", "对话与记忆", "跟进与空间", "工具与操作"] as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
 const memoryWrites = new Set<DotsOperation>(["memory_create", "memory_update", "memory_promote", "memory_forget"]);
+const memoryLimitKeys = Object.keys(dotsMemoryLimitFields) as DotsMemoryLimit[];
+const memoryLimitGroups = [
+  { id: "automatic", label: "自动带入对话", description: "从新一轮开始生效。实际带入量取决于可用记忆和模型的上下文空间。" },
+  { id: "lookup", label: "主动查找记忆", description: "这里设置搜索和历史预览。打开单条记忆时可读取完整正文。" },
+] as const;
+
+function MemoryLimitsForm({ limits, onSave }: { limits: DotsMemoryLimits; onSave(limits: DotsMemoryLimits): void }) {
+  return <form aria-label="Dots 记忆读取额度" onSubmit={event => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const next = { ...limits };
+    for (const key of memoryLimitKeys) next[key] = Number(values.get(key));
+    onSave(next);
+  }} onReset={() => onSave(defaultDotsMemoryLimits)}>
+    {memoryLimitGroups.map(group => <fieldset className="dots-memory-limits-group" key={group.id}>
+      <legend>{group.label}</legend>
+      <p className="settings-section-desc">{group.description}</p>
+      <div className="dots-memory-limits-fields">
+        {memoryLimitKeys.filter(key => dotsMemoryLimitFields[key].group === group.id).map(key => {
+          const field = dotsMemoryLimitFields[key];
+          return <SettingsInput key={key} name={key} label={field.label} type="number" required step={1}
+            min={field.min} max={field.max} defaultValue={limits[key]}
+            hint={field.min === 0 ? "填 0 可关闭此项" : undefined} />;
+        })}
+      </div>
+    </fieldset>)}
+    <div className="dots-memory-limits-actions">
+      <button className="btn primary" type="submit">保存记忆额度</button>
+      <button className="btn" type="reset">恢复默认并保存</button>
+    </div>
+  </form>;
+}
 
 function Switch({ label, subject, on, change }: {
   label: string; subject?: string; on: boolean; change(): void;
@@ -91,6 +124,10 @@ export default function DotsSettingsTab() {
             <option value="readWrite">读取并记住新信息</option><option value="readOnly">只读取已有记忆</option><option value="off">关闭长期记忆</option>
           </SettingsSelect>
           {!settings.memoryEnabled && <p className="settings-row-desc">应用记忆已关闭。开启后会使用这里保存的选择。 <button className="btn" type="button" onClick={() => openSettings(true, "memory")}>打开应用记忆设置</button></p>}
+        </SettingsSection>
+        <SettingsSection title="记忆读取额度" collapsible>
+          <MemoryLimitsForm key={JSON.stringify(prefs.memoryLimits)} limits={prefs.memoryLimits}
+            onSave={memoryLimits => void save("记忆读取额度", { memoryLimits })} />
         </SettingsSection>
       </>}
       {section === "跟进与空间" && <>

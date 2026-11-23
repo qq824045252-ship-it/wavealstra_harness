@@ -6,6 +6,7 @@ import "./dots-revision-source-test";
 import { createMemoryExtension } from "../src/main/memory/memory-extension";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DOTS_TASK_ID } from "../src/shared/dots";
+import { resolveDotsMemoryLimits } from "../src/shared/dots-limits";
 import { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
 import assert from "node:assert/strict";
@@ -20,7 +21,7 @@ import { MemoryInstructionDocument } from "../src/main/memory/MemoryIntent";
 import type { MemoryTurnDto } from "../src/shared/memory-kernel";
 
 // Exercise the current task capture/extraction pipeline, without a retired Bot foreground adapter.
-const root = mkdtempSync(join(tmpdir(), "memory-correctness-"));
+const root = mkdtempSync(join(realpathSync.native(tmpdir()), "memory-correctness-"));
 const filename = join(root, "app.db");
 let db = new AppDatabase(filename);
 let memory = new MemoryService(db, { semantic: false });
@@ -153,8 +154,9 @@ try {
   let source = { messageId:"herb-first", createdAt:Date.now(), text:"我习惯把罗勒盆栽放在东边窗台。" };
   const registerTool = (tool: NonNullable<ReturnType<typeof tools.get>>) => tools.set(tool.name,tool);
   const memoryPolicy: { read: boolean; write: boolean } = { read: true, write: true };
+  const dotsMemoryLimits = () => resolveDotsMemoryLimits({ searchPreviewChars: 6, historyPreviewChars: 8, searchMaxResults: 1 });
   await createMemoryExtension({taskId:DOTS_TASK_ID, service:scoped, sourceInput:()=>source,
-    canRead: () => memoryPolicy.read, canWrite: () => memoryPolicy.write })({registerTool} as unknown as ExtensionAPI);
+    dotsMemoryLimits, canRead: () => memoryPolicy.read, canWrite: () => memoryPolicy.write })({registerTool} as unknown as ExtensionAPI);
   const call = (name:string,params:object) => tools.get(name)!.execute("source-test",params);
   const made = await call("memory_create",{kind:"preference",title:"罗勒盆栽摆放",content:source.text});
   const id = (made.details as {memory:{id:string}}).memory.id;
@@ -170,6 +172,9 @@ try {
   assert(!JSON.stringify(get).includes(priorSource.messageId) && !JSON.stringify(get).includes(priorSource.text));
   const search = await call("memory_search",{query:"罗勒盆栽"});
   assert(search.content[0]!.text.includes(source.messageId));
+  assert.deepEqual(JSON.parse(search.content[0]!.text).matches.map((match: { excerpt: string }) => match.excerpt), ["我习惯把罗勒"]);
+  assert.match((await call("memory_history", { id })).content[0]!.text, /— 我习惯把罗勒盆栽 \(/u);
+  assert(get.content[0]!.text.includes("完整内容：我习惯把罗勒盆栽放在西边阳台，以后照这个位置。"));
   memoryPolicy.write = false;
   assert(!(await call("memory_get", { id })).isError);
   assert((await call("memory_update", { id, content: source.text })).isError);

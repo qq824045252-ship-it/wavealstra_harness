@@ -1,3 +1,5 @@
+import { resolveDotsMemoryLimits, type DotsMemoryLimits } from "./dots-limits";
+
 export const dotsCapabilityOptions = [
   { id: "taskControl", label: "委派和接续任务", description: "新建或接续普通任务、转发答复和恢复执行。关闭后仍可暂停或停止任务。" },
   { id: "spaceManagement", label: "管理工作空间", description: "绑定目录、创建子空间和重命名空间。" },
@@ -29,6 +31,7 @@ export type DotsOperation = keyof typeof dotsOperations;
 export interface DotsSettings extends Record<DotsCapability, boolean> {
   modelId: string | null;
   memoryMode: "readWrite" | "readOnly" | "off";
+  memoryLimits: DotsMemoryLimits;
   followupMode: "continue" | "notify" | "paused";
   spaceIds: string[] | null;
   operations: Partial<Record<DotsOperation, boolean>>;
@@ -58,6 +61,7 @@ export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): 
   return { ...groups, operations,
     modelId: input.modelId === null ? null : typeof input.modelId === "string" ? input.modelId.trim() || null : fallback?.modelId ?? null,
     memoryMode: ["readWrite", "readOnly", "off"].includes(memoryMode) ? memoryMode : "readWrite",
+    memoryLimits: resolveDotsMemoryLimits(input.memoryLimits, fallback?.memoryLimits),
     followupMode: ["continue", "notify", "paused"].includes(followupMode) ? followupMode : "continue",
     spaceIds: spaces === undefined || spaces === null ? null : Array.isArray(spaces) ? [...new Set(spaces.filter(id => typeof id === "string" && id.trim()))] : [],
   };

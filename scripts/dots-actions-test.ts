@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathFromMarkdownHref } from "../src/renderer/src/lib/localFilePath";
 import { join } from "node:path";
 import { getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import { setTimeout as delay } from "node:timers/promises";
 import type { DotsActionInput } from "../src/main/dots/DotsActions";
+import { resolveDotsMemoryLimits } from "../src/shared/dots-limits";
 import { observeDotsWireEvidence } from "./dots-memory-wire-evidence";
 
-const root = mkdtempSync(join(tmpdir(), "dots-actions-"));
+const root = mkdtempSync(join(realpathSync.native(tmpdir()), "dots-actions-"));
 process.env.MYBUDDY_DISABLE_GOAL_CONTINUATION = "1";
 process.env.USERPROFILE = root;
 process.env.HOME = root;
@@ -594,6 +595,14 @@ try {
   await success({action:"spaces"});
   assert.deepEqual([...new Set(fixture.requests.slice(beforeFollow).filter(req=>req.tools.includes("dots_action")).map(req=>req.modelId))],["fixture/model"]);
   assert.equal(agent.getAppSettings().dotsSettings?.modelId,null);
+  const readingSample = agent.createKernelMemory({ kind: "fact", title: "锆蓝货柜习惯",
+    content: "同批锆蓝纸箱需要贴上日期标签。", scopeType: "task", scopeId: DOTS_TASK_ID, sourceType: "manual" });
+  await agent.updateAppSettings({ dotsSettings: { memoryLimits: resolveDotsMemoryLimits({ searchPreviewChars: 4 }) } });
+  await agent.updateAppSettings({ dotsSettings: { modelId: null } });
+  assert.equal(agent.getAppSettings().dotsSettings?.memoryLimits?.searchPreviewChars, 4);
+  const limited = await turn({ query: "锆蓝货柜习惯" }, "memory_search");
+  assert(!limited.error, limited.text);
+  assert.equal(JSON.parse(limited.text).matches.find((match: { id: string }) => match.id === readingSample.id)?.excerpt, "同批锆蓝");
   console.log("PASS Dots 专属模型与主模型、已有任务模型隔离，失效明确报错，取消选择恢复跟随主模型");
   console.log("PASS disabled main model reported with zero worker requests, paraphrase replay and separate dated assignments");
   console.log("PASS proactive pause, scoped batch and unrelated active task isolation, preserved subscriptions, global stop of Dots timers only, explicit existing Goal");

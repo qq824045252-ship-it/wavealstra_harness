@@ -25,6 +25,7 @@ import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { DEFAULT_BOT_ID, LOCAL_USER_ID, type WorkControlResult } from "../src/shared/bot-work";
 import { DurableConsultIdentity } from "../src/main/agent/durable/DurableConsultSession";
+import { resolveDotsMemoryLimits } from "../src/shared/dots-limits";
 
 process.env.MYBUDDY_CACHE_TRACE = "0";
 const directory = await mkdtemp(join(tmpdir(), "mybuddy-durable-projection-"));
@@ -400,19 +401,24 @@ console.log("PASS branch evidence provenance, child access checks and fail-close
   const source = { messageId: "nursery-user", text: preference, createdAt: Date.now() };
   const atom = memory.createFromTask({ kind: "preference", title: "苗圃巡检表", content: preference,
     scopeType: "task", scopeId: taskId, sourceTaskId: taskId, sourceType: "user" }, source);
+  let limits = resolveDotsMemoryLimits({ profileChars: 7 });
+  const profileExcerpts = (messages: Message[]) => messages.flatMap(message => typeof message.content === "string"
+    ? Array.from(message.content.matchAll(/\[L3 derived:[^\n]+\] Dots 个人画像 — ([\s\S]*?) \(sources:/gu), match => match[1]) : []);
   const settings = () => ({ ...options, directory: join(directory, "dots-grounded-views"), tools: [],
-    evidenceProjection: { memory, enabled: () => true, scope: () => ({ taskId }), supplementalEvidence: () => [] } });
+    evidenceProjection: { memory, enabled: () => true, dotsMemoryLimits: () => limits,
+      scope: () => ({ taskId }), supplementalEvidence: () => [] } });
   let chat = await DurableBotRuntime.open(settings());
   try {
     await (await chat.submit("今天需要检查些什么？", "profile-first")).wait(context);
-    assert(JSON.stringify(requests.at(-1)).includes("Dots 个人画像"));
+    assert.deepEqual(profileExcerpts(requests.at(-1)!), ["长期偏好\n• "]);
   } finally { await chat.close(); db.close(); }
   db = new AppDatabase(dbPath);
   memory = new MemoryService(db, { semantic: false });
+  limits = resolveDotsMemoryLimits({ profileChars: 12, quoteBytes: 0 });
   chat = await DurableBotRuntime.open(settings());
   try {
     await (await chat.submit("接着说。", "profile-restored")).wait(context);
-    assert(JSON.stringify(requests.at(-1)).includes("Dots 个人画像"));
+    assert.deepEqual(profileExcerpts(requests.at(-1)!), ["长期偏好\n• ", "长期偏好\n• 苗圃巡检表"]);
     const before = (await chat.conversation.entries({ order: "ascending" }, 100, undefined, context)).items;
     assert(!before.some(entry => entry.kind === "mybuddy.dots-evidence-boundary" || entry.kind === "mybuddy.context-reset"));
     memory.forget(atom.id);

@@ -1,10 +1,11 @@
 import { restoreDotsPreferenceQuote } from "./DotsMemoryEvidence";
 import { createHash } from "node:crypto";
 import { DOTS_TASK_ID } from "../../shared/dots";
+import { defaultDotsMemoryLimits, type DotsMemoryLimits } from "../../shared/dots-limits";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { MemoryService } from "../memory/MemoryService";
-import type { AutomaticRecallMode, MemorySearchHit, MemorySearchRequest } from "../../shared/memory-kernel";
+import { MEMORY_CONTENT_MAX_CHARS, type AutomaticRecallMode, type MemorySearchHit, type MemorySearchRequest } from "../../shared/memory-kernel";
 import { memoryProjectionQuery, projectMemoryContext, renderDerivedMemoryEvidence, renderMemoryEvidence, DOTS_EVIDENCE_RENDERER, MEMORY_EVIDENCE_RENDERER, MEMORY_EVIDENCE_CONTENT_LENGTH, type MemoryEvidenceBlock, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
 import { startAnswerRoutingTiming } from "./AnswerRoutingTimings";
 import { EvidenceBudget, clipEvidence, type SupplementalEvidence, type EvidenceAccess } from "./EvidenceBudget";
@@ -24,6 +25,7 @@ interface EvidenceRef {
   sources: Array<{ id: string; revision: number }>;
   scenarioIds: string[];
   profileIds: string[];
+  derivedContentChars?: number;
   reference?: MemoryEvidenceBlock["reference"];
   supplemental?: { id: string; kind: SupplementalEvidence["kind"]; access?: EvidenceAccess };
 }
@@ -90,6 +92,7 @@ export class EphemeralContextProjection {
     enabled: () => boolean;
     delegatedSources?: (userId: string) => Array<{ id: string; revision: number }>;
     automaticSemanticRecall?: () => boolean;
+    dotsMemoryLimits?: () => DotsMemoryLimits;
     scope: () => ProjectionScope;
     execution?: () => { executionId?: string; userTurnId?: string; query?: string };
     supplementalEvidence: () => SupplementalEvidence[];
@@ -185,7 +188,9 @@ export class EphemeralContextProjection {
       }
       for (const ref of record.additions) {
         if (!ref || typeof ref.id !== "string" || typeof ref.revision !== "string" || !/^[a-f0-9]{64}$/.test(ref.hash) || !/^[a-f0-9]{64}$/.test(ref.contentHash)
-          || !Array.isArray(ref.sources) || !Array.isArray(ref.scenarioIds) || !Array.isArray(ref.profileIds)) {
+          || !Array.isArray(ref.sources) || !Array.isArray(ref.scenarioIds) || !Array.isArray(ref.profileIds)
+          || (ref.derivedContentChars !== undefined && (ref.reference || ref.supplemental
+            || !Number.isInteger(ref.derivedContentChars) || ref.derivedContentChars < 1 || ref.derivedContentChars > MEMORY_CONTENT_MAX_CHARS))) {
           throw new Error("历史证据引用已损坏，请新建任务上下文");
         }
       }
@@ -250,11 +255,15 @@ export class EphemeralContextProjection {
     const model = session.model;
     if (!model) throw new Error("上下文投影缺少最终模型");
     const scope = this.options.scope();
-    const budget = new EvidenceBudget(model, session.getContextUsage()?.tokens ?? 0, scope.taskId===DOTS_TASK_ID);
+    const isDots = scope.taskId === DOTS_TASK_ID;
+    const dotsLimits = isDots ? this.options.dotsMemoryLimits?.() ?? defaultDotsMemoryLimits : undefined;
+    const budget = new EvidenceBudget(model, session.getContextUsage()?.tokens ?? 0, isDots);
     // Reserve a bounded short manifest; never trim previously sent bodies to make room.
     budget.takeInitial("manifest-reserve", " ".repeat(1536), 1536);
-    const input: MemorySearchRequest & { budgetChars: number } = {
-      ...scope, query, includeInherited: true, statuses: ["active"], budgetChars: budget.memoryCap - 512,
+    const input: MemorySearchRequest & { budgetChars: number; dotsLimits?: DotsMemoryLimits } = {
+      ...scope, query, includeInherited: true, statuses: ["active"],
+      budgetChars: dotsLimits ? Math.min(dotsLimits.contextBytes, budget.memoryCap - 512) : budget.memoryCap - 512,
+      ...(dotsLimits && { limit: dotsLimits.entries, dotsLimits }),
     };
     const memory = this.options.memory;
     const epoch = this.turnEpoch;
@@ -290,7 +299,8 @@ export class EphemeralContextProjection {
       const text = budget.takeInitial(block.id, block.text, budget.memoryCap);
       if (text !== block.text) continue;
       selected.push({ text, fullInstruction: block.fullInstruction, ref: { id: block.id, revision: block.revision, hash: digest(text), contentHash: digest(block.text), sources: block.sources,
-        scenarioIds: block.scenarioIds, profileIds: block.profileIds, reference: block.reference } });
+        scenarioIds: block.scenarioIds, profileIds: block.profileIds, reference: block.reference,
+        ...(block.derivedContentChars !== undefined && { derivedContentChars: block.derivedContentChars }) } });
     }
     if (currentPreferences?.sources.length) {
       const expected = currentPreferences.sources.length;
@@ -339,7 +349,7 @@ export class EphemeralContextProjection {
       if (!id || ref.id !== `${kind}:${id}`) return;
       const view = this.options.memory?.cognition.projections.getActiveDotsView(id, kind);
       if (!view) return;
-      const text = renderDerivedMemoryEvidence(kind, view, ref.sources);
+      const text = renderDerivedMemoryEvidence(kind, view, ref.sources, ref.derivedContentChars);
       if (digest(text) !== ref.hash) return;
       this.bodies.set(this.blockKey(ref), { ref, text });
       return text;

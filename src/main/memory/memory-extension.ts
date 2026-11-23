@@ -2,6 +2,7 @@ import { dotsRecordApplicability } from "./DotsRevisionSource";
 import { isSensitive } from "./MemoryCandidateExtraction";
 import { MemoryInstructionDocument } from "./MemoryIntent";
 import { DOTS_TASK_ID } from "../../shared/dots";
+import { defaultDotsMemoryLimits, dotsMemoryLimitFields, type DotsMemoryLimits } from "../../shared/dots-limits";
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { PermissionMode } from "../../shared/agent-ipc";
@@ -29,6 +30,7 @@ export interface MemoryExtensionBridge {
   readOnly?: boolean;
   canRead?: (tool: "memory_search" | "memory_get" | "memory_history") => boolean;
   canWrite?: () => boolean;
+  dotsMemoryLimits?: () => DotsMemoryLimits;
   sourceInput?: () => { text: string; createdAt: number; messageId: string } | undefined;
   resolveProjectId?: () => string | null;
   resolveWorkspaceId?: () => string | null;
@@ -65,6 +67,7 @@ function dotsToolSource(service: MemoryService, id: string, revision: number, in
 }
 
 export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionFactory {
+  const dotsLimits = () => bridge.taskId === DOTS_TASK_ID ? bridge.dotsMemoryLimits?.() ?? defaultDotsMemoryLimits : undefined;
   const readable = (tool: "memory_search" | "memory_get" | "memory_history"): void => {
     if (bridge.canRead?.(tool) === false) throw new Error("当前会话不能读取长期记忆");
   };
@@ -95,28 +98,29 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         query: Type.Optional(Type.String({ maxLength: 240 })),
         kind: Type.Optional(kindSchema),
         status: Type.Optional(statusSchema),
-        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: bridge.taskId === DOTS_TASK_ID ? dotsMemoryLimitFields.searchMaxResults.max : 30 })),
       }, { additionalProperties: false }),
       execute: async (_id: string, params: { query?: string; kind?: MemoryKind; status?: MemoryStatus; limit?: number }) => {
         try {
           readable("memory_search");
+          const limits = dotsLimits();
           const hits = await bridge.service.searchHybrid({
             ...context(),
             query: params.query,
             kinds: params.kind ? [params.kind] : undefined,
             statuses: params.status ? [params.status] : ["active"],
             includeInherited: true,
-            limit: params.limit ?? 10,
+            limit: limits ? Math.min(params.limit ?? limits.searchDefaultResults, limits.searchMaxResults) : params.limit ?? 10,
           });
           readable("memory_search");
-          if (bridge.taskId === DOTS_TASK_ID) {
+          if (limits) {
             const matches = hits.flatMap(({ memory }) => {
               const current = bridge.service.getForRecall(memory.id, context());
               const revision = bridge.service.history(memory.id)[0]?.revision;
               if (!current || !revision || current.status !== memory.status || current.contentHash !== memory.contentHash) return [];
               return [{ id: current.id, revision, title: current.title, status: current.status,
                 source: dotsToolSource(bridge.service, current.id, revision, false),
-                excerpt: current.content.slice(0, 360), hasMore: current.content.length > 360 }];
+                excerpt: current.content.slice(0, limits.searchPreviewChars), hasMore: current.content.length > limits.searchPreviewChars }];
             });
             return textResult(JSON.stringify({ matches }), { count: matches.length, hits: matches.map(({ id, revision }) => ({ id, revision })) });
           }
@@ -298,7 +302,8 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
           readable("memory_history");
           requireVisible(params.id);
           const history = bridge.service.history(params.id);
-          return textResult(history.length ? history.map((r) => `r${r.revision} ${new Date(r.createdAt).toISOString()} [${r.status}] ${r.title} — ${r.content.slice(0, 300)} (${r.changedBy}${r.changeReason ? `, ${r.changeReason}` : ""})`).join("\n") : "暂无 revision。", { history });
+          const previewChars = dotsLimits()?.historyPreviewChars ?? 300;
+          return textResult(history.length ? history.map((r) => `r${r.revision} ${new Date(r.createdAt).toISOString()} [${r.status}] ${r.title} — ${r.content.slice(0, previewChars)} (${r.changedBy}${r.changeReason ? `, ${r.changeReason}` : ""})`).join("\n") : "暂无 revision。", { history });
         } catch (error) { return errorResult(error); }
       },
     });

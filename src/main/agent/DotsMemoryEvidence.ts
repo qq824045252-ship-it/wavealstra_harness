@@ -1,4 +1,5 @@
 import type { MemoryRecordDto } from "../../shared/memory-kernel";
+import { defaultDotsMemoryLimits } from "../../shared/dots-limits";
 import { createHash } from "node:crypto";
 import { isSensitive } from "../memory/MemoryCandidateExtraction";
 import type { MemoryService } from "../memory/MemoryService";
@@ -66,18 +67,20 @@ const stanceLabels = {
   source_note: "来源说明",
 } as const;
 
-export function dotsPreferenceQuote(memory: MemoryService, record: Pick<MemoryRecordDto, "id">, revision: number) {
+export function dotsPreferenceQuote(memory: MemoryService, record: Pick<MemoryRecordDto, "id">, revision: number,
+  maxBytes = defaultDotsMemoryLimits.quoteBytes) {
   const source = memory.getDotsRevisionSource(record.id, revision);
   if (!source || !source.quote.trim() || isSensitive(source.quote)) return;
   // Keep the original sentence together: a partial quote can omit a negation.
   // Overlong evidence remains accessible through the scoped read tool.
-  if (Buffer.byteLength(source.quote) > 1400) return;
+  if (Buffer.byteLength(source.quote) > maxBytes) return;
   const text = `用户原话摘录（${stanceLabels[source.stance]}；${new Date(source.capturedAt).toISOString()}；消息 ${source.messageId}）：${source.quote}`;
   return { text, ref: { messageId: source.messageId, turnId: source.turnId, revision, hash: quoteHash(text) } };
 }
 
 export function restoreDotsPreferenceQuote(memory: MemoryService, id: string, ref: DotsUserQuote, revision: number): string | undefined {
   if (ref.revision !== revision) return;
-  const quote = dotsPreferenceQuote(memory, { id }, revision);
+  // A new selection budget must not invalidate a previously supplied quote.
+  const quote = dotsPreferenceQuote(memory, { id }, revision, Infinity);
   if (quote && quote.ref.turnId === ref.turnId && quote.ref.messageId === ref.messageId && quote.ref.hash === ref.hash) return quote.text;
 }

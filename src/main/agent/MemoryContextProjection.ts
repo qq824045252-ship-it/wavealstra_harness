@@ -2,6 +2,7 @@ import { dotsRecordApplicability } from "../memory/DotsRevisionSource";
 import { dotsEvidenceRange, dotsPreferenceQuote, dotsQueryTerms, type DotsUserQuote, type EvidenceRange } from "./DotsMemoryEvidence";
 import { isGatewayConversation } from "../../shared/gateway-task";
 import { DOTS_TASK_ID } from "../../shared/dots";
+import { defaultDotsMemoryLimits, dotsMemoryLimitFields, LEGACY_DERIVED_MEMORY_CHARS, type DotsMemoryLimits } from "../../shared/dots-limits";
 import {
   MEMORY_CONTEXT_DEFAULT_BUDGET, MEMORY_CONTEXT_HARD_BUDGET,
   type MemorySearchHit, type MemorySearchRequest, type MemoryKind, type ResolvedMemoryContext, type MemoryRevisionDto, type MemoryScopeType,
@@ -44,6 +45,7 @@ export interface MemoryEvidenceBlock {
   sources: Array<{ id: string; revision: number }>;
   scenarioIds: string[];
   profileIds: string[];
+  derivedContentChars?: number;
   reference?: { renderer: typeof MEMORY_EVIDENCE_RENDERER | typeof DOTS_EVIDENCE_RENDERER; range?: EvidenceRange; userQuote?: DotsUserQuote; id: string; revision: number; scopeType: MemoryScopeType };
 }
 
@@ -63,8 +65,9 @@ export function renderMemoryEvidence(atom: Pick<MemoryRevisionDto, "memoryId" | 
 export function renderDerivedMemoryEvidence(kind: "scenario" | "profile",
   view: { id: string; scopeType: MemoryScopeType; title: string; body: string },
   sources: MemoryEvidenceBlock["sources"],
+  limit: number = LEGACY_DERIVED_MEMORY_CHARS[kind],
 ): string {
-  const [layer, limit] = kind === "profile" ? ["L3", 1000] as const : ["L2", 700] as const;
+  const layer = kind === "profile" ? "L3" : "L2";
   const revisions = sources.map(({ id, revision }) => `${id}@${revision}`).join(",");
   return `- [${layer} derived:${view.id}][${view.scopeType}] ${view.title} — ${view.body.slice(0, limit)} (sources: ${revisions})`;
 }
@@ -83,18 +86,20 @@ export function memoryProjectionQuery(input: MemorySearchRequest): MemorySearchR
 /** Stateless selection/serialization. Memory repositories own facts and grounding. */
 export function projectMemoryContext(
   memory: MemoryService,
-  input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean },
+  input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean; dotsLimits?: DotsMemoryLimits },
   recalled?: MemorySearchHit[],
   delegatedSources: Array<{ id: string; revision: number }> = [],
 ): ProjectedMemoryContext {
-  const budget = Math.max(0, Math.min(MEMORY_CONTEXT_HARD_BUDGET, input.budgetChars ?? MEMORY_CONTEXT_DEFAULT_BUDGET));
+  const isDots = input.taskId === DOTS_TASK_ID;
+  const dotsLimits = isDots ? input.dotsLimits ?? defaultDotsMemoryLimits : undefined;
+  const budget = Math.max(0, Math.min(MEMORY_CONTEXT_HARD_BUDGET, dotsLimits?.contextBytes ?? Infinity,
+    input.budgetChars ?? MEMORY_CONTEXT_DEFAULT_BUDGET));
   const result: ProjectedMemoryContext = {
     items: [], text: "", query: input.query?.trim() ?? "", budgetChars: budget,
     includedChars: 0, trimmed: false, scenarioIds: [], profileIds: [],
     blocks: [], sourceRevisions: [], groundingScenarioIds: [],
   };
   if (!budget) return result;
-  const isDots = input.taskId === DOTS_TASK_ID;
   const header = isDots
     ? "历史记忆证据：L1 是事实来源，L2/L3 是仍有依据的派生视图；本轮明确指令优先。明确提及项目或工作空间时，先应用该范围的例外，再采用其他默认偏好。"
     : "历史记忆证据：L1 是事实来源，L2/L3 是经审批且仍有依据的派生视图；本轮明确指令优先。";
@@ -169,17 +174,25 @@ export function projectMemoryContext(
   };
   const sourceVersions = (ids: string[]) => ids.map(id => ({ id, revision: latestRevision(id) }));
   const revisions = (sources: MemoryEvidenceBlock["sources"]) => sources.map(({ id, revision }) => `${id}@${revision}`).join(",");
+  const derivedLimit = (kind: "scenario" | "profile", body: string) => {
+    const configured = dotsLimits?.[kind === "scenario" ? "scenarioChars" : "profileChars"];
+    if (configured === undefined) return undefined;
+    const selected = Math.min(configured, body.length);
+    return selected === Math.min(LEGACY_DERIVED_MEMORY_CHARS[kind], body.length) ? undefined : selected;
+  };
   // Only use a derived view if all of its grounding remains visible. Deduplication
   // follows source IDs, never similarity or untraceable paraphrase heuristics.
   for (const profile of sources.profiles) {
+    if (dotsLimits?.profileChars === 0) break;
     if (!allowedScopes.has(`${profile.scopeType}:${profile.scopeId ?? ""}`)) continue;
     if (!profile.sourceScenarioIds.every((id) => byScenario.has(id))) continue;
     const atomIds = [...new Set(profile.sourceScenarioIds.flatMap((id) => byScenario.get(id)!.sourceMemoryIds))];
     if (!atomIds.length || atomIds.every((id) => coveredAtoms.has(id))) continue;
     const grounding = sourceVersions(atomIds);
-    const line = renderDerivedMemoryEvidence("profile", { ...profile, body: profile.content }, grounding);
+    const derivedContentChars = derivedLimit("profile", profile.content);
+    const line = renderDerivedMemoryEvidence("profile", { ...profile, body: profile.content }, grounding, derivedContentChars);
     const block = { id: `profile:${profile.id}`, revision: revisions(grounding), text: line,
-      sources: grounding, scenarioIds: [...profile.sourceScenarioIds], profileIds: [profile.id] };
+      sources: grounding, scenarioIds: [...profile.sourceScenarioIds], profileIds: [profile.id], derivedContentChars };
     if (isDots) {
       optionalDotsViews.push(block);
       continue;
@@ -218,13 +231,15 @@ export function projectMemoryContext(
   const hits = [...exceptionHits, ...(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT) ?? []), ...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
   const relevantIds = queriedIds;
   for (const scenario of scenarios) {
+    if (dotsLimits?.scenarioChars === 0) break;
     if (coveredScenarios.has(scenario.id)) continue;
     if (input.query?.trim() && !scenario.sourceMemoryIds.some((id) => relevantIds.has(id))) continue;
     if (scenario.sourceMemoryIds.every((id) => coveredAtoms.has(id))) continue;
     const grounding = sourceVersions(scenario.sourceMemoryIds);
-    const line = renderDerivedMemoryEvidence("scenario", { ...scenario, body: scenario.summary }, grounding);
+    const derivedContentChars = derivedLimit("scenario", scenario.summary);
+    const line = renderDerivedMemoryEvidence("scenario", { ...scenario, body: scenario.summary }, grounding, derivedContentChars);
     const block = { id: `scenario:${scenario.id}`, revision: revisions(grounding), text: line,
-      sources: grounding, scenarioIds: [scenario.id], profileIds: [] };
+      sources: grounding, scenarioIds: [scenario.id], profileIds: [], derivedContentChars };
     if (isDots) {
       optionalDotsViews.push(block);
       continue;
@@ -259,21 +274,21 @@ export function projectMemoryContext(
   decorated.forEach(add);
   const terms = isDots ? dotsQueryTerms(input.query ?? "") : [];
   for (const { hit, scope } of ordered) {
-    if (result.items.length >= (input.limit ?? 16)) { result.trimmed = true; break; }
+    if (result.items.length >= (input.limit ?? dotsLimits?.entries ?? 16)) { result.trimmed = true; break; }
     const atom = hit.memory;
     const revision = latestRevision(atom.id);
     const snapshot = { ...atom, memoryId: atom.id, revision };
     // A few complete source passages retain list entries, dates and corrections.
     // Further candidates share the remaining capacity with query-centred excerpts.
     let range: EvidenceRange | undefined;
-    if(isDots){
+    if (dotsLimits) {
       const overhead=Buffer.byteLength(renderMemoryEvidence({...snapshot,content:""},scope.scopeType))+16;
       const remaining=budget-bytes-overhead;
-      const cap=Math.min(remaining, result.items.length<4 ? 1800 : 800);
-      if(cap<96){result.trimmed=true;continue;}
+      const cap = Math.min(remaining, result.items.length < dotsLimits.extendedEntries ? dotsLimits.extendedBytes : dotsLimits.excerptBytes);
+      if (cap < dotsMemoryLimitFields.excerptBytes.min) { result.trimmed = true; continue; }
       range=dotsEvidenceRange(atom.content,terms,cap);
     }
-    const quote=isDots ? dotsPreferenceQuote(memory,atom,revision) : undefined;
+    const quote = dotsLimits ? dotsPreferenceQuote(memory, atom, revision, dotsLimits.quoteBytes) : undefined;
     const plain=renderMemoryEvidence(snapshot,scope.scopeType,range);
     const quoted=quote ? renderMemoryEvidence(snapshot,scope.scopeType,range,quote.text) : undefined;
     const useQuote=quoted!==undefined && bytes+Buffer.byteLength(quoted+"\n")<=budget;
