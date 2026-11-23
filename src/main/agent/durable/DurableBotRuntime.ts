@@ -141,6 +141,7 @@ export interface DurableBotOptions {
   isDelegatedMemoryInput?: (requestId: string) => boolean;
   isDotsWorkerInput?: (requestId: string) => boolean;
   hasDotsDelegation?: () => boolean;
+  deliveredDotsInput?: () => string | undefined;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
   onDotsProgress?: (operationId: string, identity: string, at: number) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
@@ -1835,7 +1836,21 @@ function botExtension(
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
       const consult = await input.read.snapshot(DurableConsultIdentity, input.conversationId, context);
-      return child?.value || consult?.key ? undefined : options.instructions();
+      if (child?.value || consult?.key) return undefined;
+      const instructions = options.instructions();
+      const delivered = options.deliveredDotsInput?.();
+      if (!delivered) return instructions;
+      const live = await input.read.snapshot(LiveDoc, input.conversationId, context);
+      const currentId = live?.run?.inputs.at(-1);
+      if (currentId === undefined) return instructions;
+      const prior = await storage.submissionByRequest(input.conversationId, delivered, context);
+      if (prior?.type !== "input" || prior.status !== "done") return instructions;
+      const current = await storage.submission(currentId, context);
+      const followup = current?.type === "input" && current.entry !== undefined && current.entry > prior.answer
+        && current.requestId && !isDotsAutomaticInput(current.requestId) && !options.isDotsWorkerInput?.(current.requestId);
+      return followup
+        ? `${instructions}\n\n上一笔 Dots 交办已经交付。沿用仍适用的限制和既有成果，按本轮用户的新要求处理。只有用户要求复验，或本轮变更影响了已有结果时，才重跑对应验收。`
+        : instructions;
     }, { tag: false })],
     hooks: [hook(ToolTask, toolHooks), hook(CompactionTask, { beforeCompact: async (compaction, api, context) => {
       // Compaction is its own task, never a GenerationTask: its summarization request must not share a

@@ -149,7 +149,7 @@ const GUI_TESTS = new Set([
   "test:consult-selection",
   "test:consult-entry:desktop",
   "test:mode-navigation:desktop",
-  "test:task-header-layout",
+  "test:desktop-task-title",
   "test:task-board:desktop",
   "test:code-review:desktop",
   // Electron 运行时 / e2e
@@ -196,6 +196,7 @@ const NETWORK_TESTS = new Set([
   "test:dots-rule-memory-live", // live Dots preferences, corrections and forgetting across restart
   "test:bot-task-reply-harness", // loopback-only HTTP/WebSocket fixture and driver checks; no external account or desktop
   "test:durable-context-dev:live", // real pnpm dev/Electron + configured online provider; isolated synthetic profile
+  "test:desktop-verification:live", // real model and Electron ordinary task, synthetic verification workspace
   "test:answer-routing-live", // isolated dev app, same synthetic release record across three real model turns
   "test:gadget-browser-recovery-live",
   "test:web-page-answer-runtime:live", // Real gateway model; output-pressure injection runs last.
@@ -385,6 +386,8 @@ const HEADLESS_TESTS = new Set([
   "test:durable-projection",
   "test:durable-sync",
   "test:durable-tool-policy",
+  "test:verification-workflow-comparison",
+  "test:desktop-dev-harness-result",
   "test:team-subagent-policy",
   "test:work-isolation-retirement",
   "test:work-budget-retirement",

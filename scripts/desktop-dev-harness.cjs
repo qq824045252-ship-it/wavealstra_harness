@@ -79,6 +79,32 @@ function createSseAudit(emit) {
   };
 }
 
+async function finishDesktopCheck(report, reportPath, cleanup) {
+  const publish = () => {
+    const temporary = reportPath + '.tmp';
+    fs.writeFileSync(temporary, JSON.stringify(report, null, 2));
+    fs.renameSync(temporary, reportPath);
+  };
+  report.verificationStatus = report.status;
+  report.status = 'running';
+  report.cleanupStatus = 'running';
+  try {
+    publish();
+  } finally {
+    try {
+      await cleanup();
+      report.cleanupStatus = 'passed';
+      report.status = report.verificationStatus;
+    } catch (error) {
+      report.cleanupStatus = 'failed';
+      report.cleanupError = String(error);
+      report.status = 'failed';
+    }
+    publish();
+  }
+}
+exports.finishDesktopCheck = finishDesktopCheck;
+
 exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureModelIds = [], fixtureUsage, fixtureModelRates, settings = {}, seedHome, gateLiveResponse, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
@@ -158,7 +184,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
           ].join('\n');
           const readProcess = () => {
             const output = cp.execFileSync('powershell.exe', ['-NoProfile', '-Command', lookup],
-              {encoding:'utf8',windowsHide:true});
+              {encoding:'utf8',windowsHide:true,timeout:5000});
             const result = JSON.parse(output.trim());
             if (typeof result?.exists !== 'boolean') throw Error('Could not verify isolated main process');
             return result;
@@ -179,10 +205,16 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
         if (stillRunning) process.kill(identity.pid, 'SIGTERM');
       } catch (error) {if (error.code !== 'ESRCH' && error.code !== 'ENOENT') throw error;}
     }
-    if (child?.exitCode === null) {
-      if (process.platform === 'win32') cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {windowsHide: true, stdio: 'ignore'});
+    if (child?.exitCode === null && child.signalCode === null && child.pid) {
+      if (process.platform === 'win32') {
+        const killed = cp.spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {windowsHide: true, stdio: 'ignore', timeout: 5000});
+        if (killed.error) throw killed.error;
+      }
       else child.kill('SIGTERM');
-      await Promise.race([once(child, 'exit'), wait(3000)]);
+      if (child.exitCode === null && child.signalCode === null)
+        await once(child, 'exit', { signal: AbortSignal.timeout(3000) }).catch(error => {
+          throw new Error('Isolated dev launcher did not exit during cleanup', { cause: error });
+        });
     }
   };
   try {
@@ -381,7 +413,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
       const connection = new WebSocket(target.webSocketDebuggerUrl);
       socket = connection;
       connection.addEventListener('close', () => disconnect(connection), {once: true});
-      await once(connection, 'open');
+      await once(connection, 'open', { signal: AbortSignal.timeout(rpcTimeoutMs) });
       connection.addEventListener('message', event => {
         if (socket !== connection) return;
         const value = JSON.parse(event.data);
@@ -407,16 +439,21 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
     report.status = 'failed'; report.error = String(error.stack || error); process.exitCode = 1;
     if (socket?.readyState === WebSocket.OPEN) try {report.visibleText = await evaluate('document.body.innerText');const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'failed-page.png'),Buffer.from(shot.data,'base64'));} catch {}
   } finally {
-    await stop().catch(error => {report.cleanupError = String(error); report.status = 'failed'; process.exitCode = 1;});
-    relay?.closeAllConnections(); relay?.close(); report.ownedMainPids = [...owned];
-    if (benchmarkJournal.length) fs.writeFileSync(path.join(out, 'provider-requests.jsonl'),
-      benchmarkJournal.map(record => JSON.stringify(record) + '\n').join(''));
-    fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests));
-    if (fixtureUsage) fs.writeFileSync(path.join(out, 'fixture-usage.json'), JSON.stringify(rawUsageAudit, null, 2));
-    fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
+    await finishDesktopCheck(report, path.join(out, 'report.json'), async () => {
+      try { await stop(); }
+      finally {
+        relay?.close(); relay?.closeAllConnections(); report.ownedMainPids = [...owned];
+        if (benchmarkJournal.length) fs.writeFileSync(path.join(out, 'provider-requests.jsonl'),
+          benchmarkJournal.map(record => JSON.stringify(record) + '\n').join(''));
+        fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests));
+        if (fixtureUsage) fs.writeFileSync(path.join(out, 'fixture-usage.json'), JSON.stringify(rawUsageAudit, null, 2));
+      }
+    });
+    if (report.status === 'failed') process.exitCode = 1;
     console.log(name + ': ' + report.status + '; ' + path.join(out, 'report.json'));
     if (report.error) console.error(report.error);
   }
+  return { report, reportPath: path.join(out, 'report.json') };
 };
 
 if (require.main === module) {

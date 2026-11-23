@@ -556,6 +556,7 @@ export class DurableBotService {
         evidenceProjection: this.options.evidenceProjection?.(task),
         isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId),
         hasDotsDelegation: () => this.hasDotsDelegation(taskId),
+        deliveredDotsInput: () => this.deliveredDotsInput(taskId),
         isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
           && Boolean(db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
           && Boolean(db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId))),
@@ -948,6 +949,16 @@ export class DurableBotService {
     return requestId === undefined
       ? Boolean(db.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? LIMIT 1").get(taskId))
       : Boolean(db.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId));
+  }
+
+  private deliveredDotsInput(taskId: string): string | undefined {
+    const db = this.options.db.connection;
+    if (!this.hasDotsDelegation(taskId) || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_reply_events'").get()) return;
+    return db.prepare(`SELECT latest.operation_id FROM (
+      SELECT operation_id,status FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1
+    ) latest WHERE latest.status='completed' AND EXISTS (
+      SELECT 1 FROM dots_reply_events WHERE operation_id=latest.operation_id AND settled=1 AND snapshot=?
+    )`).pluck().get(taskId, JSON.stringify({ delivered: "conclusion" })) as string | undefined;
   }
 
   async dotsSubmission(taskId: string, operationId: string) {

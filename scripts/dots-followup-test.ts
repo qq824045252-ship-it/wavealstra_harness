@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID } from "../src/shared/dots";
@@ -58,6 +58,15 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
   if (tools.some((t) => t.name === "read")) {
     workerTurns++;
     const latestUser = JSON.stringify(input.messages.findLast(m => m.role === "user")?.content) ?? "";
+    if (latestUser.includes("已交付后只解释原因") || latestUser.includes("明确要求复验已交付的文件")) {
+      const recheck = latestUser.includes("明确要求复验已交付的文件");
+      const knowsDelivered = getCurrentSystemPrompt(input.messages).includes("上一笔 Dots 交办已经交付");
+      if (input.messages.at(-1)?.role === "toolResult")
+        return [{ type: "text", text: "复验已读取第二批原始记录。" }];
+      if (recheck || !knowsDelivered)
+        return [{ type: "toolCall", id: "closed-assignment-recheck", name: "read", arguments: { path: "第二批.txt" } }];
+      return [{ type: "text", text: "沿用已交付结果，只回答本轮的问题。" }];
+    }
     if (latestUser.includes("汇报排版进展")) return [{ type: "text", text: leakedReply }];
     if (latestUser.includes("把结论再发一遍")) return [{ type: "text", text: fencedManualEnvelope }];
     if (latestUser.includes("把结论直接发来")) return [{ type: "text", text: manualEnvelope }];
@@ -556,6 +565,19 @@ try {
   const nativeOutcome = await agent.dotsSubmission(runningJob.taskId, runningJob.id);
   assert.equal(nativeOutcome?.text, JSON.stringify({ dotsState: "complete", result: "两份记录均已核对，各为 18 件。" }));
   console.log("PASS 原生工具调用期间只回传声明的实质进展，在同一轮结束后单独交付结论");
+  await journal.drain();
+  for (const [id, text, expected] of [
+    ["local-closed-assignment-question", "已交付后只解释原因", "沿用已交付结果，只回答本轮的问题。"],
+    ["remote-user-closed-assignment-question", "已交付后只解释原因", "沿用已交付结果，只回答本轮的问题。"],
+    ["local-closed-assignment-recheck", "明确要求复验已交付的文件", "复验已读取第二批原始记录。"],
+  ]) {
+    const submission = await agent.prompt({ taskId: runningJob.taskId, spaceId: space.id,
+      userMessageId: id, assistantMessageId: `${id}-answer`, text }, { durableAdmissionOnly: true });
+    assert(submission.receipt);
+    await agent.waitForSubmission(submission.receipt);
+    assert.equal((await agent.loadTaskHistory(runningJob.taskId, undefined, "current")).messages.at(-1)?.text, expected);
+  }
+  console.log("PASS 已交付的交办在普通续聊中只作为历史，明确要求复验仍实际执行");
   phase = "done";
   const literal = await agent.prompt({ taskId: runningJob.taskId, spaceId: space.id,
     userMessageId: "ordinary-json-example", assistantMessageId: "ordinary-json-answer",
