@@ -1198,7 +1198,7 @@ export class DurableBotService {
   }
 
   async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
-    if (!this.binding(DOTS_TASK_ID)) return "discarded" as const;
+    if (!this.binding(DOTS_TASK_ID)) return { status: "discarded" } as const;
     return this.withRecovery(DOTS_TASK_ID, open => open.runtime.appendDotsReply(reply, isCurrent));
   }
 

@@ -6,6 +6,7 @@ import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ConversationGoalDto, GoalContinuationOrigin } from "../../shared/conversation-goal";
 import { DOTS_NO_CHANGE, type DotsDelegation } from "../../shared/dots";
+import { dotsDelegationScopeMatches } from "./DotsDelegations";
 import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusion";
 import { dotsDeliveryText, matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 
@@ -187,8 +188,7 @@ export class DotsFollowup {
       this.db
         .prepare(
           `SELECT 1 FROM dots_delegations d JOIN tasks t ON t.id=d.task_id LEFT JOIN spaces s ON s.id=t.space_id
-      WHERE d.operation_id=? AND d.task_id=? AND d.status!='superseded' AND t.space_id IS d.space_id AND s.path IS d.space_path
-      AND (t.cwd IS d.cwd OR (d.cwd IS NULL AND t.cwd IS d.space_path))
+      WHERE d.operation_id=? AND d.task_id=? AND d.status!='superseded' AND ${dotsDelegationScopeMatches}
       AND NOT EXISTS(SELECT 1 FROM dots_delegations newer WHERE newer.task_id=d.task_id AND newer.seq>d.seq AND newer.operation_id IS NOT ?)`,
         )
         .get(id, taskId, child ?? null),

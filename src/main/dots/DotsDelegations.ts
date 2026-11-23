@@ -6,6 +6,10 @@ import type { DotsAssistantReply, DotsDelegation, DotsReplyOrigin } from "../../
 import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import { DotsReplyOutbox, type AppendDotsReply, type DotsFollowup } from "./DotsReplyOutbox";
+import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
+
+export const dotsDelegationScopeMatches = `t.space_id IS d.space_id AND s.path IS d.space_path
+  AND (t.cwd IS d.cwd OR (d.cwd IS NULL AND t.cwd IS d.space_path))`;
 
 type Result = Pick<DotsDelegation, "text" | "artifacts" | "interactionId"> & {
   status: "running" | "blocked" | "completed" | "failed";
@@ -201,16 +205,64 @@ export class DotsDelegations {
   /** Replay only the admission gap inherited from the prior host, using the original native id. */
   async recover(submit: RecoverSubmit, available: RecoverAvailable,
     accepted: RecoverAccepted = async (taskId, operationId) => Boolean(await this.inspect(taskId, operationId)),
-    allowed: RecoverPolicy = () => true): Promise<void> {
+    allowed: RecoverPolicy = () => true,
+    initialWorkspaceMatches?: (taskId: string, cwd: string) => boolean): Promise<void> {
     if (this.disposed) return;
+    await this.outbox.recoverDelivered(() => !this.disposed)
+      .catch(error => console.warn("[Dots] 恢复已交付任务的列表状态失败", error));
+    if (this.disposed) return;
+    const workspaceRecovery = initialWorkspaceMatches && this.recoverInitialWorkspaces(initialWorkspaceMatches);
     const groups = new Map<string, Row[]>();
     for (const row of this.recoverable.splice(0)) {
       const group = groups.get(row.task_id) ?? [];
       group.push(row);
       groups.set(row.task_id, group);
     }
-    await Promise.all([...groups.values()].map(rows => this.recoverTarget(rows, submit, available, accepted, allowed)));
+    await Promise.all([workspaceRecovery, ...[...groups.values()].map(rows => this.recoverTarget(rows, submit, available, accepted, allowed))]);
     this.refresh();
+  }
+
+  private async recoverInitialWorkspaces(matches: (taskId: string, cwd: string) => boolean) {
+    // These links predate directory resolution. Only adopt the original task's private directory.
+    const scope = `FROM dots_delegations d JOIN tasks t ON t.id=d.task_id
+      LEFT JOIN spaces s ON s.id=t.space_id JOIN durable_bot_bindings b ON b.task_id=t.id AND b.cwd=t.cwd
+      WHERE d.cwd IS NULL AND d.space_path IS NULL AND s.path IS NULL AND t.space_id IS d.space_id AND t.archived=0
+        AND NOT EXISTS(SELECT 1 FROM dots_delegations newer WHERE newer.task_id=d.task_id AND newer.seq>d.seq)
+        AND (d.status IN ('pending','running','blocked') OR (d.status='completed' AND d.goal_id IS NULL
+          AND EXISTS(SELECT 1 FROM dots_reply_origins o WHERE o.source=d.source_message_id)
+          AND EXISTS(SELECT 1 FROM dots_reply_events e WHERE e.operation_id=d.operation_id AND e.status='completed'
+            AND e.settled=1 AND e.snapshot='')
+          AND EXISTS(SELECT 1 FROM dots_followup_plans p WHERE p.operation_id=d.operation_id
+            AND json_array_length(p.plan,'$.steps') <= json_extract(p.plan,'$.step')+1)))`;
+    const rows = this.db.prepare(`SELECT d.*,t.cwd AS workspace ${scope}`).all() as (Row & { workspace: string })[];
+    const pin = this.db.prepare(`UPDATE dots_delegations SET cwd=? WHERE seq=(
+      SELECT d.seq ${scope} AND d.seq=? AND d.status=? AND t.cwd=?) RETURNING *`);
+    await Promise.all(rows.map(async row => {
+      try {
+        if (this.disposed || !matches(row.task_id, row.workspace)) return;
+        let result: Result | undefined;
+        if (row.status === "completed") {
+          if (readDotsWorkerOutcome(row.text)?.dotsState !== "complete") return;
+          result = await this.inspect(row.task_id, row.operation_id);
+          if (this.disposed || result?.status !== "completed" || !matches(row.task_id, row.workspace)) return;
+          const outcome = readDotsWorkerOutcome(result.text);
+          if (outcome?.dotsState !== "complete" || (!outcome.result.trim() && !result.artifacts.length)) return;
+        }
+        const repaired = this.db.transaction(() => {
+          const updated = pin.get(row.workspace, row.seq, row.status, row.workspace) as Row | undefined;
+          if (!updated) return false;
+          if (result) {
+            this.outbox.observe({ ...toDelegation(updated), text: result.text, artifacts: result.artifacts }, result.citations, undefined, true);
+          } else if (updated.status === "blocked") {
+            this.outbox.observe(toDelegation(updated), undefined, undefined, true);
+          }
+          return true;
+        })();
+        if (repaired) { this.notify(); this.refresh(row.task_id); }
+      } catch (error) {
+        console.warn("[Dots] 恢复委派目录失败", row.operation_id, error);
+      }
+    }));
   }
 
   private recoverTarget(rows: Row[], submit: RecoverSubmit, available: RecoverAvailable, accepted: RecoverAccepted, allowed: RecoverPolicy, retryDelay = 100): Promise<void> {
@@ -236,8 +288,7 @@ export class DotsDelegations {
         }
         if (!pending.get(row.seq)) continue;
         const current = this.db.prepare(`SELECT d.request_json FROM dots_delegations d JOIN tasks t ON t.id=d.task_id LEFT JOIN spaces s ON s.id=t.space_id
-          WHERE d.seq=? AND d.status='pending' AND t.space_id IS d.space_id AND s.path IS d.space_path
-            AND (t.cwd IS d.cwd OR (d.cwd IS NULL AND t.cwd IS d.space_path))
+          WHERE d.seq=? AND d.status='pending' AND ${dotsDelegationScopeMatches}
             AND NOT EXISTS (SELECT 1 FROM dots_target_controls c WHERE c.task_id=t.id AND c.state IN ('paused','stopped') AND c.operation_id<>d.operation_id)`).get(row.seq) as {request_json: string} | undefined;
         if (!current || !available(taskId)) { this.failed(taskId,operationId,"原任务已移动、暂停或不可用"); continue; }
         const request = JSON.parse(current.request_json) as AgentPromptRequest;

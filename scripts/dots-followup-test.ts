@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DotsActivity } from "../src/main/dots/DotsActivity";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -331,15 +332,15 @@ journal.connect(
   async (reply, current) => {
     if (reply.kind === "conclusion" && reply.sourceMessageId === pendingConclusionSource) {
       pendingConclusionSource = undefined;
-      return Promise.resolve("pending");
+      return { status: "pending" };
     }
     const result = await agent.appendDotsReply(reply, current);
     if (reply.completion && reply.sourceMessageId === "source-6") {
-      if (result === "appended" && !lostGoalAck) {
+      if (result.status === "appended" && !lostGoalAck) {
         lostGoalAck = reply.deliveryKey;
         throw new Error("fixture: original conversation committed before outbox acknowledgement");
       }
-      if (result === "existing" && reply.deliveryKey === lostGoalAck) recoveredGoalAck = true;
+      if (result.status === "existing" && reply.deliveryKey === lostGoalAck) recoveredGoalAck = true;
     }
     return result;
   },
@@ -603,6 +604,19 @@ try {
   assert(recoveredGoalAck, "同一交付重放读取原生回执");
   const afterReplay = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
   assert.equal(afterReplay.messages.filter(message => message.dotsDelivery?.deliveryKey === lostGoalAck).length, 1);
+  const goalActivity = () => new DotsActivity(db.connection, () => true).list().find(item => item.taskId === goalTask);
+  const assertGoalActivity = () => {
+    const item = goalActivity();
+    assert.equal(item?.state, "delivered");
+    assert.equal(item.deliveryKey, linkedConclusion?.dotsDelivery?.deliveryKey);
+    assert.equal(item.updatedAt, linkedConclusion?.createdAt);
+    assert.equal(item.fileCount, 1);
+  };
+  assertGoalActivity();
+  db.connection.prepare(`UPDATE dots_reply_events SET snapshot=json_remove(snapshot,'$.deliveryKey')
+    WHERE operation_id=? AND json_valid(snapshot) AND json_extract(snapshot,'$.delivered')='conclusion'`).run(done.id);
+  await journal.recover(request => agent.prompt(request, { durableAdmissionOnly: true }), () => true);
+  assertGoalActivity();
   const rollback = new Error("roll back revision fixture");
   assert.throws(db.connection.transaction(() => {
     db.connection.prepare("UPDATE works SET state_version=state_version+1 WHERE work_id=?").run(accepted.workId);

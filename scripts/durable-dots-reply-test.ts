@@ -50,13 +50,13 @@ export async function verifyDurableDotsReplies(root: string) {
       sourceMessageId, origin: { conversationId: Number(active.durable?.conversationId), entryId: Number(source.entryId) },
       title: "档案", kind: "conclusion", text: "第一次编目已交付。", artifacts: [{ id: "ledger-copy", name: "目录.tsv", version: 2,
         saved: { snapshotPath: join(root, "目录.tsv"), name: "目录.tsv" } }] };
-    assert.equal(await agent.appendDotsReply(reply), "pending");
+    assert.equal((await agent.appendDotsReply(reply)).status, "pending");
     release();
     assert.equal((await agent.waitForSubmission(accepted.receipt!)).receipt?.status, "done");
     const requestsBeforeDelivery = fixture.requests.length;
     let results: string[] = [];
     for (let i=0; i<100; i++) {
-      results = await Promise.all([agent.appendDotsReply(reply), agent.appendDotsReply(reply)]);
+      results = (await Promise.all([agent.appendDotsReply(reply), agent.appendDotsReply(reply)])).map(result => result.status);
       if (!results.includes("pending")) break;
       await delay(10);
     }
@@ -71,29 +71,30 @@ export async function verifyDurableDotsReplies(root: string) {
     assert(!(await agent.loadTaskHistory(reply.taskId)).messages.some(m => m.dotsDelivery));
     const cancelled = { ...reply, deliveryKey: "withdrawn-during-commit" };
     let checks = 0;
-    assert.equal(await agent.appendDotsReply(cancelled, () => ++checks < 3), "discarded");
+    assert.equal((await agent.appendDotsReply(cancelled, () => ++checks < 3)).status, "discarded");
     assert(!(await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(m => m.dotsDelivery?.deliveryKey === cancelled.deliveryKey));
     await agent.releaseDurableTask(DOTS_TASK_ID);
     const restored = await agent.loadTaskHistory(DOTS_TASK_ID, { aroundEntryId: Number(delivered.entryId) });
     assert.deepEqual(restored.messages.find(m => m.id === delivered.id)?.dotsDelivery, reply);
-    assert.equal(await agent.appendDotsReply(reply, () => false), "existing");
+    const replay = await agent.appendDotsReply({ ...reply, text: "重放时重新组装的文字", artifacts: [] }, () => false);
+    assert.deepEqual(replay, { status: "existing", reply, deliveredAt: delivered.createdAt });
     await fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: "ask-after-delivery", assistantMessageId: "next-answer", text: "继续。" });
     assert(fixture.requests.at(-1)?.input.messages.some(m => m.role === "assistant" && m.content.some(p => p.type === "text" && p.text === reply.text)));
-    assert.equal(await agent.appendDotsReply(cancelled), "appended", "the withdrawn transaction left no ghost receipt");
+    assert.equal((await agent.appendDotsReply(cancelled)).status, "appended", "the withdrawn transaction left no ghost receipt");
     const filesOnly = { ...reply, deliveryKey: "files-only", text: "" };
     await assert.rejects(agent.appendDotsReply({ ...filesOnly, artifacts: [] }), /Dots 交付需要正文或结果文件/);
-    assert.equal(await agent.appendDotsReply(filesOnly), "appended");
+    assert.equal((await agent.appendDotsReply(filesOnly)).status, "appended");
     await agent.releaseDurableTask(DOTS_TASK_ID);
     const fileMessage = (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.find(m => m.dotsDelivery?.deliveryKey === filesOnly.deliveryKey);
     assert.ok(fileMessage);
     assert.equal(fileMessage.text, "");
     assert.deepEqual(fileMessage.dotsDelivery?.artifacts, filesOnly.artifacts);
     const wrongAnchor = { ...reply, origin: { ...reply.origin!, entryId: Number(delivered.entryId) }, deliveryKey: "wrong-user-entry" };
-    assert.equal(await agent.appendDotsReply(wrongAnchor), "discarded");
+    assert.equal((await agent.appendDotsReply(wrongAnchor)).status, "discarded");
     await agent.deleteUserMessage({ taskId: DOTS_TASK_ID, userMessageIndex: 0, entryId: source.entryId });
-    assert.equal(await agent.appendDotsReply({ ...reply, deliveryKey: "late-after-branch" }), "discarded");
-    assert.equal(await agent.appendDotsReply({ ...reply, origin: undefined, deliveryKey: "old-after-branch" }), "discarded");
-    assert.equal(await agent.appendDotsReply(reply, () => false), "existing");
+    assert.equal((await agent.appendDotsReply({ ...reply, deliveryKey: "late-after-branch" })).status, "discarded");
+    assert.equal((await agent.appendDotsReply({ ...reply, origin: undefined, deliveryKey: "old-after-branch" })).status, "discarded");
+    assert.equal((await agent.appendDotsReply(reply, () => false)).status, "existing");
     assert.equal((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.length, 0);
     const workerCwd = agent.resolveTaskExecutionWorkspaceCwd(reply.taskId);
     await writeFile(join(workerCwd, "partial.tsv"), "A1\t卷一");

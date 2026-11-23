@@ -52,6 +52,9 @@ export async function createAgentDurableFixture(root: string, db: AppDatabase,
   await models.refresh({ allowNetwork: false });
   const settings = SettingsManager.create(root, join(root, ".mybuddy"));
   settings.setDefaultModelAndProvider("fixture", "model"); settings.setEnabledModels(modelIds.map(id => `fixture/${id}`));
+  await settings.flush();
+  const settingsError = settings.drainErrors()[0];
+  if (settingsError) throw settingsError.error;
   const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "task-workspaces")), { models });
   await agent.init();
   await agent.updateAppSettings({ defaultModelId: "fixture/model" });

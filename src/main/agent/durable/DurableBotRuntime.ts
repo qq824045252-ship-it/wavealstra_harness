@@ -730,7 +730,7 @@ export class DurableBotRuntime {
   async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
     if (this.options.readOnly || this.options.taskId !== DOTS_TASK_ID) throw new Error("Dots 交付只能写入原生 Dots 会话");
     const outcome = await appendDurableDotsReply(this.conversation, reply, isCurrent);
-    if (outcome === "appended" || outcome === "existing") await this.refresh();
+    if ("reply" in outcome) await this.refresh();
     return outcome;
   }
 

@@ -33,6 +33,7 @@ const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
     "能当场完成就直接给结果。收到普通任务的受理回执后，用一句自然的话告诉用户正在处理什么，附原任务链接，由 Dots 在原对话跟进和交付。尚未收到回执时如实说明当前状态。",
     "用户回答普通任务的问题或说已补齐之前缺的资料时，先使用 task 查当前委派的 deliveries，再用 answer 给原操作。若工具返回尚未回答的问题，用它给出的 operationId、interactionId 和原任务 ID 回答。只补资料且没有 interactionId 时，仍用 answer 接续原操作，由原任务读文件和交付；本轮回执只在确认受理后简短告知原任务已接上。不要把答复改写成 steer 或新的 delegate。",
     "交办时只查定位原任务和空间所需的信息。用户一条消息中有多个独立事项要分别派工时，从第一次委派起每项带上互不重叠的 assignmentQuote 原文。一次交办的改写或重试仍属原事项。",
+    "用户要求重跑已有事项时，先核对原任务的最新执行和交付，再用 resume 加原 targetTaskId、最新委派的 operationId 和本次要重跑的内容。接续失败时保留原任务 ID，告诉用户具体原因。一条消息也交办另一事项时，为接续和新建分别引用互不重叠的 assignmentQuote 原话。",
   ],
   delivery: [
     "时间范围以用户发消息时的本地日历为准。查到对应期间的已有成果时，沿用用户指定的期间，不推到下一期。",
@@ -87,7 +88,7 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
     parameters: Type.Object({
       handoffOperationId: Type.Optional(Type.String({description:"仅当用户明确授权在原任务续办时，和 targetTaskId 一起提供该任务最新交办操作 ID。仅借用任务查资料时不要填。"})),
       allowHandoff: Type.Optional(Type.Boolean({description:"读取上限时可否用同一事项自动交给已指定空间内的普通任务。用户已交代完成事项且该空间获准时可用 true；禁止委派、只要求当前对话处理或授权不明确时用 false。按最新修订判断。"})),
-      assignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500})),
+      assignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"同一条消息交办多个独立事项时，引用这一个事项在用户本轮消息里的原文"})),
       previousAssignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"首项未引用原文时，用此字段补上首项原文，并用 assignmentQuote 引用本次独立事项"})),
       action: Type.Union(dotsAvailableActions(settings()).map(action => Type.Literal(action))), targetTaskId: Type.Optional(Type.String()),
       steps:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:400}),{minItems:2,maxItems:8})),

@@ -10,6 +10,7 @@ import { DOTS_NO_CHANGE, DOTS_TASK_ID } from "../src/shared/dots";
 import { DotsReplyOutbox } from "../src/main/dots/DotsReplyOutbox";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy } from "../src/shared/answer-routing";
 import { DotsDelegations } from "../src/main/dots/DotsDelegations";
+import { DotsActivity } from "../src/main/dots/DotsActivity";
 import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
 import { resolveDotsPreferences } from "../src/shared/dots-settings";
 
@@ -31,15 +32,23 @@ let workerCalls = 0;
 const workerInputs: unknown[] = [];
 let replayAdmissions = 0;
 const answer = "盘点结果是 37 件，其中 2 件需要补货。";
+const legacySource = "legacy-inventory-delivered";
+const rerunSource = "legacy-inventory-rerun";
+const rerunAnswer = "复核完成，库存为 37 件。";
 const externalSource = "external-effect-recovery";
 const effectToolCall = "post-unconfirmed-effect";
 const unconfirmed = "外部操作未收到回执，是否生效需要核查。";
+type WorkspaceCase = "bound" | "private" | "inherited" | "rebound";
 
-async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect", effectPort?: number) {
+async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect" | "missingInitialDirectory" | "pendingInitialDirectory" | "rerunLegacy" | "stopAfterCommit", effectPort?: number,
+  workspace: WorkspaceCase = "bound") {
   const db = new AppDatabase(join(root, "app.db"));
   const artifacts = createArtifactDomain(db.connection);
   db.openDots();
-  const space = db.getSpace("sp-stock") ?? db.createSpace({id:"sp-stock",name:"库存",path:root});
+  const stock = db.getSpace("sp-stock") ?? db.createSpace({id:"sp-stock",name:"库存",path:root});
+  const space = workspace === "bound" ? stock : db.getSpace("sp-stock-" + workspace) ?? db.createSpace({
+    id:"sp-stock-" + workspace, name:"库存 " + workspace, parentId:workspace === "inherited" ? stock.id : undefined,
+  });
   let enteredTimer = false;
   let reportedProgress = false;
   let releaseTimer!: () => void;
@@ -90,6 +99,14 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
       return [{type:"toolCall",id:"set-reminder",name:"automation_exec",arguments:{action:"create",name:"到点盘点",prompt:"请委派盘点库存。",
         schedule_type:"at",schedule_expr:new Date(Date.now()+2500).toISOString(),max_runs:1}}];
     if (tools.some(t => t.name === "dots_action")) {
+      if (fault === "rerunLegacy") {
+        const [original] = journal.list([legacySource]);
+        assert(original);
+        return [{ type: "toolCall", id: "rerun-inventory", name: "dots_action", arguments: {
+          action: "delegate", targetTaskId: original.taskId, spaceId: space.id,
+          assignmentQuote: "重跑原盘点任务", previousAssignmentQuote: "盘点库存", text: "重跑原盘点任务",
+        } }];
+      }
       if (fault === "cancelInFlight" && latest?.role === "user" && JSON.stringify(latest.content).includes("待取消的定时运行")) {
         enteredTimer = true;
         await timerGate;
@@ -100,6 +117,10 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
     if (tools.some(t => t.name === "write")) {
       workerCalls++;
       workerInputs.push(input.messages.slice(-2).map(message => ({role:message.role, content:message.content})));
+      if (fault === "rerunLegacy") {
+        await timerGate;
+        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: rerunAnswer }) }];
+      }
       if (fault === "policyProgress" && !reportedProgress) {
         reportedProgress = true;
         return [{type:"text",text:JSON.stringify({dotsState:"progress",result:"盘点已做完，数字待交付。",remainingQuote:"直接回复数字。"})}];
@@ -117,7 +138,14 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
   agent.setArtifactDomain(artifacts.service, artifacts.coordinator);
   const journal = new DotsDelegations(db.connection, (id, op) => agent.dotsSubmission(id, op), () => {});
   const actions = new DotsActions(db, agent, {
-    link:(...args) => journal.link(...args), rememberOrigin:(...args) => journal.rememberOrigin(...args),
+    link:(...args) => {
+      journal.link(...args);
+      if (fault === "pendingInitialDirectory") {
+        db.connection.prepare("UPDATE dots_delegations SET cwd=NULL WHERE operation_id=?").run(args[1]);
+        db.connection.prepare("UPDATE tasks SET cwd=NULL WHERE id=?").run(args[0]);
+      }
+    },
+    rememberOrigin:(...args) => journal.rememberOrigin(...args),
     observeTool:event => journal.observeTool(event),
     list:() => journal.list(), changed:() => journal.refresh(), failed:(...args) => journal.failed(...args),
     preferences:() => resolveDotsPreferences(agent.getAppSettings().dotsSettings),
@@ -137,21 +165,33 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
     // End the actual writer process with both SQLite stores still open.
     process.exit(73);
   }
-  journal.connect((job, request) => actions.followup(job, request), async (reply, valid) => {
+  journal.connect((job, request) => {
+    if (fault === "missingInitialDirectory" && job.status === "completed" && job.sourceMessageId === "old-" + workspace + "-inventory") {
+      db.connection.prepare("UPDATE dots_delegations SET cwd=NULL WHERE operation_id=?").run(job.id);
+      if (workspace === "rebound") db.connection.prepare("UPDATE spaces SET path=? WHERE id=?").run(root, space.id);
+    }
+    return actions.followup(job, request);
+  }, async (reply, valid) => {
     if (fault === "before") {
-      if ((await agent.findSubmission(DOTS_TASK_ID, reply.sourceMessageId))?.receipt?.status !== "done") return "pending";
+      if ((await agent.findSubmission(DOTS_TASK_ID, reply.sourceMessageId))?.receipt?.status !== "done") return { status: "pending" };
       await interrupt(reply.sourceMessageId);
     }
-    if (fault === "waitForStop") { faultReached = true; stoppedTarget=reply.taskId; return "pending"; }
+    if (fault === "waitForStop") { faultReached = true; stoppedTarget=reply.taskId; return { status: "pending" }; }
     const result = await agent.appendDotsReply(reply, valid);
-    if (fault === "after" && result === "appended") await interrupt(reply.sourceMessageId);
+    if (fault === "after" && result.status === "appended") await interrupt(reply.sourceMessageId);
     return result;
   }, taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
+  if (fault === "stopAfterCommit") {
+    const [committed] = journal.list(["inventory-after"]);
+    assert(committed);
+    await actions.execute(DOTS_TASK_ID, "stop-after-committed-delivery", { action: "stop", targetTaskId: committed.taskId });
+  }
   const off = agent.onPatch(patch => {
     if (patch.type === "durable_delta" && !patch.delta.state.busy) journal.refresh(patch.taskId);
   });
   await agent.resumePersistedTasks();
-  await journal.recover(async req => { replayAdmissions++; return agent.prompt(req); }, () => true);
+  await journal.recover(async req => { replayAdmissions++; return agent.prompt(req); }, () => true,
+    undefined, undefined, (id, cwd) => agent.matchesDotsInitialPrivateWorkspace(id, cwd));
   return {fixture, db, agent, journal, cron, actions, timerNotices, fileNotices, progressNotices, reached:() => faultReached, enteredTimer:()=>enteredTimer, releaseTimer, async close() {
     releaseTimer();
     cron.stop(); terminal.dispose(); off(); journal.close(); await journal.drain(); await actions.closeFileWatches(); await fixture.close(); db.close();
@@ -177,7 +217,7 @@ for (const fault of ["before","after"] as const) {
   const cut = JSON.parse(readFileSync(join(root,fault+"-cut.json"),"utf8"));
   assert.equal(cut.workerCalls,1,JSON.stringify(cut.workerInputs));
   assert.notEqual(cut.pid,process.pid);
-  const host = await open();
+  const host = await open(fault === "after" ? "stopAfterCommit" : undefined);
   try {
     const job = host.journal.list([source])[0]!;
     for(let i=0;i<4;i++) { host.journal.refresh(job.taskId); host.journal.refresh(DOTS_TASK_ID); await host.journal.drain(); }
@@ -189,6 +229,10 @@ for (const fault of ["before","after"] as const) {
     assert.equal(results[0]!.role,"assistant"); assert.equal(results[0]!.text,answer);
     assert.equal(results[0]!.dotsDelivery!.origin?.entryId, Number(sourceEntry.entryId));
     assert.equal(results[0]!.dotsDelivery!.artifacts.length,0);
+    const activity = new DotsActivity(host.db.connection, () => true).list().find(item => item.taskId === job.taskId);
+    assert.equal(activity?.state, "delivered");
+    assert.equal(activity.deliveryKey, results[0]!.dotsDelivery!.deliveryKey);
+    assert.equal(activity.updatedAt, results[0]!.createdAt);
     assert.equal(messages.filter(m => m.role==="user" && m.inputRequestId===source).length,1);
     assert(!(await host.agent.loadTaskHistory(job.taskId)).messages.some(m=>m.dotsDelivery));
     assert.equal(workerCalls, previousCalls); assert.equal(replayAdmissions,0);
@@ -289,6 +333,14 @@ try {
   assert.equal(workerCalls,before+1);
   assert.equal(replies[0]!.text,answer);
   assert.equal(replies[0]!.dotsDelivery?.origin?.entryId,Number(records.find(m=>m.inputRequestId===source)?.entryId));
+  const receipt = replies[0]!.dotsDelivery!;
+  await timedHost.journal.drain();
+  timedHost.db.connection.prepare("UPDATE dots_reply_events SET snapshot='' WHERE event_key=?").run(receipt.deliveryKey);
+  await timedHost.journal.recover(request => timedHost.agent.prompt(request, { durableAdmissionOnly: true }), () => true);
+  const activity = new DotsActivity(timedHost.db.connection, () => true).list().find(item => item.taskId === receipt.taskId);
+  assert.equal(activity?.state, "delivered");
+  assert.equal(activity.deliveryKey, receipt.deliveryKey);
+  assert.equal(activity.updatedAt, replies[0]!.createdAt);
   evidence.push({cause:"timer",source,reply:replies[0]!.id,text:replies[0]!.text,workerCalls:workerCalls-before});
   console.log("PASS real timer delegated a worker and delivered its answer to the original scheduling message");
 } finally { await timedHost.close(); }
@@ -559,11 +611,11 @@ try {
   db.upsertTask({ id: target, title: "仅用于心跳边界", updatedAt: Date.now() });
   let sends = 0;
   let permitAppend = false;
-  outbox.connect(async () => { throw Error("heartbeat must bypass model/followup"); }, async (_reply, valid) => {
-    if (!valid()) return "discarded";
-    if (!permitAppend) return "pending";
+  outbox.connect(async () => { throw Error("heartbeat must bypass model/followup"); }, async (reply, valid) => {
+    if (!valid()) return { status: "discarded" };
+    if (!permitAppend) return { status: "pending" };
     sends++;
-    return "appended";
+    return { status: "appended", reply, deliveredAt: Date.now() };
   });
   const pendingSample = async (id: string, window: number) => {
     journal.link(target, id, source);
@@ -593,6 +645,150 @@ try {
   assert.equal(outbox.hasPending(target), false);
   console.log("PASS queued heartbeats expire on pause, supersession, terminal status and newer native activity");
 } finally { await activityHost.close(); }
+
+async function inventoryDelivery(host: Awaited<ReturnType<typeof open>>, source: string) {
+  return (await host.agent.loadTaskHistory(DOTS_TASK_ID)).messages
+    .filter(message => message.dotsDelivery?.sourceMessageId === source && message.dotsDelivery.kind === "conclusion")
+    .map(message => message.text);
+}
+
+async function delegateInventory(host: Awaited<ReturnType<typeof open>>, source: string) {
+  await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: source, assistantMessageId: source + "-ack",
+    text: "盘点库存，直接回复数字。" });
+  const [job] = host.journal.list([source]);
+  assert(job);
+  const submission = await host.agent.findSubmission(job.taskId, job.id);
+  assert(submission?.receipt);
+  assert.equal((await host.agent.waitForSubmission(submission.receipt)).receipt?.status, "done");
+  host.journal.refresh(job.taskId);
+  await host.journal.drain();
+  return job;
+}
+
+{
+  const originalHost = await open();
+  let original: Awaited<ReturnType<typeof delegateInventory>>;
+  let originalDate: number;
+  try {
+    original = await delegateInventory(originalHost, legacySource);
+    const history = (await originalHost.agent.loadTaskHistory(DOTS_TASK_ID)).messages;
+    const delivery = history.find(message => message.dotsDelivery?.sourceMessageId === legacySource);
+    assert(delivery?.dotsDelivery);
+    originalDate = delivery.createdAt;
+    originalHost.db.connection.prepare("UPDATE dots_reply_events SET snapshot='' WHERE event_key=?").run(delivery.dotsDelivery.deliveryKey);
+    const activity = new DotsActivity(originalHost.db.connection, () => true);
+    assert.equal(activity.list().find(item => item.taskId === original.taskId)?.state, "undelivered");
+  } finally { await originalHost.close(); }
+
+  const before = workerCalls;
+  const host = await open("rerunLegacy");
+  try {
+    const activity = new DotsActivity(host.db.connection, () => true);
+    const restored = activity.list().find(item => item.taskId === original.taskId);
+    assert.equal(restored?.state, "delivered");
+    assert.equal(restored.updatedAt, originalDate);
+    assert.deepEqual(await inventoryDelivery(host, legacySource), [answer]);
+    assert.equal(workerCalls, before);
+
+    await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: rerunSource, assistantMessageId: rerunSource + "-ack", text: "重跑一遍吧" });
+    const [rerun] = host.journal.list([rerunSource]);
+    assert.equal(rerun?.taskId, original.taskId);
+    assert.notEqual(rerun.id, original.id);
+    assert.equal(activity.list().find(item => item.taskId === original.taskId)?.state, "running");
+    const replay = await host.actions.execute(DOTS_TASK_ID, rerunSource,
+      { action: "resume", targetTaskId: original.taskId, operationId: original.id, text: "换个说法重新核对盘点" }, "重跑一遍吧");
+    assert("receipt" in replay && replay.receipt?.operationId === rerun.id);
+    await assert.rejects(host.actions.execute(DOTS_TASK_ID, rerunSource,
+      { action: "delegate", spaceId: "sp-stock", assignmentQuote: "重跑一遍吧", text: "另外建一个盘点" }, "重跑一遍吧"), /本轮已经选定原任务/);
+    const otherTaskId = "another-inventory-task";
+    host.db.upsertTask({ id: otherTaskId, title: "另一批库存", spaceId: "sp-stock", updatedAt: Date.now() });
+    await assert.rejects(host.actions.execute(DOTS_TASK_ID, rerunSource,
+      { action: "resume", targetTaskId: otherTaskId, text: "改到另一批盘点" }, "重跑一遍吧"), /本轮已经选定原任务/);
+    const receipt = (await host.agent.findSubmission(rerun.taskId, rerun.id))?.receipt;
+    assert(receipt);
+    host.releaseTimer();
+    await host.agent.waitForSubmission(receipt);
+    host.journal.refresh(rerun.taskId);
+    await host.journal.drain();
+    assert.deepEqual(await inventoryDelivery(host, rerunSource), [rerunAnswer]);
+    assert.deepEqual(await inventoryDelivery(host, legacySource), [answer]);
+    const updated = activity.list().find(item => item.taskId === original.taskId);
+    assert.equal(updated?.state, "delivered");
+    assert.equal(updated.id, rerun.id);
+    assert.equal(workerCalls, before + 1);
+
+    const staleSource = "stale-inventory-retry";
+    await assert.rejects(host.actions.execute(DOTS_TASK_ID, staleSource,
+      { action: "resume", targetTaskId: original.taskId, operationId: original.id, text: "重跑旧版" }, "重跑旧版"), /原任务的交办已变化/);
+    await assert.rejects(host.actions.execute(DOTS_TASK_ID, staleSource,
+      { action: "delegate", spaceId: "sp-stock", text: "重跑旧版" }, "重跑旧版"), /本轮已经选定原任务/);
+    const freshSource = "fresh-inventory-rerun";
+    await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: freshSource, assistantMessageId: freshSource + "-ack", text: "再复核一次" });
+    const [fresh] = host.journal.list([freshSource]);
+    assert.equal(fresh?.taskId, original.taskId);
+    assert.notEqual(fresh.id, rerun.id);
+    const freshReceipt = (await host.agent.findSubmission(fresh.taskId, fresh.id))?.receipt;
+    assert(freshReceipt);
+    await host.agent.waitForSubmission(freshReceipt);
+    host.journal.refresh(fresh.taskId);
+    await host.journal.drain();
+    assert.deepEqual(await inventoryDelivery(host, freshSource), [rerunAnswer]);
+    assert.equal(workerCalls, before + 2);
+
+    const movedSpace = host.db.createSpace({ id: "sp-moved-inventory", name: "另一处库存", path: root });
+    host.db.upsertTask({ ...host.db.getTask(original.taskId)!, spaceId: movedSpace.id });
+    await assert.rejects(host.actions.execute(DOTS_TASK_ID, "moved-inventory-retry",
+      { action: "resume", targetTaskId: original.taskId, operationId: fresh.id, text: "再次核对" }, "再次核对"), /原交办的工作空间已变化/);
+    assert.equal(workerCalls, before + 2);
+    console.log("PASS Dots restores a committed legacy delivery and registers and delivers a rerun on the same task");
+  } finally { await host.close(); }
+}
+
+for (const workspace of ["private", "inherited"] as const) {
+  const host = await open(undefined, undefined, workspace);
+  try {
+    const source = "new-inventory-" + workspace;
+    const job = await delegateInventory(host, source);
+    assert.deepEqual(await inventoryDelivery(host, source), ["盘点结果是 37 件，其中 2 件需要补货。"]);
+    const activity = new DotsActivity(host.db.connection, () => true);
+    assert.equal(activity.list().find(item => item.taskId === job.taskId)?.state, "delivered");
+  } finally { await host.close(); }
+}
+
+const pendingHost = await open("pendingInitialDirectory", undefined, "private");
+try {
+  const source = "interrupted-before-private-workspace";
+  await delegateInventory(pendingHost, source);
+  assert.deepEqual(await inventoryDelivery(pendingHost, source), ["盘点结果是 37 件，其中 2 件需要补货。"]);
+} finally { await pendingHost.close(); }
+
+const missingSource = "old-private-inventory";
+const reboundSource = "old-rebound-inventory";
+for (const [workspace, source] of [["rebound", reboundSource], ["private", missingSource]] as const) {
+  const host = await open("missingInitialDirectory", undefined, workspace);
+  try {
+    const job = await delegateInventory(host, source);
+    assert.deepEqual(await inventoryDelivery(host, source), []);
+    const activity = new DotsActivity(host.db.connection, () => true);
+    assert.equal(activity.list().find(item => item.taskId === job.taskId)?.state, "undelivered");
+  } finally { await host.close(); }
+}
+
+const beforeWorkspaceRecovery = { workerCalls, replayAdmissions };
+for (let round=0; round<2; round++) {
+  const host = await open();
+  try {
+    await host.journal.drain();
+    assert.deepEqual(await inventoryDelivery(host, missingSource), ["盘点结果是 37 件，其中 2 件需要补货。"]);
+    assert.deepEqual(await inventoryDelivery(host, reboundSource), []);
+    assert.deepEqual({ workerCalls, replayAdmissions }, beforeWorkspaceRecovery);
+    const activity = new DotsActivity(host.db.connection, () => true);
+    const [recovered] = host.journal.list([missingSource]);
+    assert.equal(activity.list().find(item => item.taskId === recovered.taskId)?.state, "delivered");
+  } finally { await host.close(); }
+}
+console.log("PASS private and inherited workspaces deliver to Dots. A previously omitted private result returns once without re-execution, while a rebound space stays outside recovery.");
+
 mkdirSync("out/tests",{recursive:true});
 writeFileSync("out/tests/dots-reply-recovery.json", JSON.stringify(evidence,null,2)+"\n");
 console.log("PASS both crash boundaries and repeated events: original conversation received one new assistant reply, ordinary task ran once");

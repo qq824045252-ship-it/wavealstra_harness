@@ -1152,6 +1152,22 @@ export class AgentService {
     return resolveTaskWorkspaceCwd(this.db, this.taskWorkspace, taskId);
   }
 
+  matchesDotsInitialPrivateWorkspace(taskId: string, cwd: string): boolean {
+    const task = this.db.getTask(taskId);
+    if (task?.cwd !== cwd || this.durableBots?.cwd(taskId) !== cwd || task.externalAgentPin ||
+      !this.isDotsOrdinaryTask(taskId) || this.db.isTaskEffectiveArchived(taskId) ||
+      this.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") return false;
+    try {
+      if (this.db.resolveWorkspaceExecutionPath(task.spaceId, { requireExisting: true })) return false;
+      this.taskWorkspace.assertTaskExecutionWorkspaceDir(taskId, cwd);
+      this.taskWorkspace.readManifest(taskId);
+      const expected = join(realpathSync(this.taskWorkspace.getTaskExecutionWorkspacesRoot()), this.taskWorkspace.getTaskDirectoryName(taskId));
+      return resolvedPathKey(realpathSync(cwd)) === resolvedPathKey(expected);
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * External Agent（ACP）复用主 Agent 的 Artifact Domain 收口：
    * Runtime 只负责执行；文件变化仍由 MyBuddy 在 canonical task root 上认账。

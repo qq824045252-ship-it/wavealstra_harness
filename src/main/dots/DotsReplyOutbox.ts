@@ -4,6 +4,7 @@ import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { collectReplyCitations } from "../../shared/chat-reply-sources";
 import { DOTS_TASK_ID, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
+import { readCommittedDotsDeliveries, type CommittedDotsDelivery, type DotsAppendOutcome } from "../agent/durable/DurableDotsReply";
 import type { DotsFollowupDecision } from "./DotsFollowup";
 import { activitySummary } from "./DotsActivity";
 import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusion";
@@ -11,10 +12,23 @@ import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusio
 export type DotsFollowup = (job: DotsDelegation, request?: AgentPromptRequest) =>
   Promise<DotsFollowupDecision>;
 export type AppendDotsReply = (reply: DotsAssistantReply, isCurrent: () => boolean) =>
-  Promise<"appended" | "existing" | "pending" | "discarded">;
+  Promise<DotsAppendOutcome>;
 
 type Event = { event_key: string; operation_id: string; status: string; interaction_id: string | null;
-  task_id: string; snapshot: string; reply: string | null };
+  task_id: string; snapshot: string; reply: string | null; settled: number };
+
+function goalDeliveryKey(taskId: string, completion: { id: string; stateVersion: number }) {
+  return createHash("sha256").update(JSON.stringify([taskId, completion.id, completion.stateVersion])).digest("hex");
+}
+
+function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery): string {
+  return JSON.stringify({
+    delivered: reply.kind,
+    deliveryKey: reply.deliveryKey,
+    ...(reply.completion && { completion: reply.completion }),
+    ...(reply.kind !== "progress" && { summary: activitySummary(reply.text), deliveredAt, fileCount: reply.artifacts.length }),
+  });
+}
 
 /** The application and conversation have separate SQLite transactions. A stable delivery key
  * lets the conversation acknowledge an already committed message after an interrupted handoff. */
@@ -48,18 +62,21 @@ export class DotsReplyOutbox {
     if (request) this.db.prepare("INSERT OR IGNORE INTO dots_followup_requests VALUES(?,?)").run(operationId, JSON.stringify(request));
   }
 
-  observe(job: DotsDelegation, citations?: ReplyCitation[], acceptedGoalReceiptId?: string) {
+  observe(job: DotsDelegation, citations?: ReplyCitation[], acceptedGoalReceiptId?: string, restoreSilentlySettled = false) {
     if (job.status === "pending" || job.status === "superseded" || (job.status === "running" && !job.text.trim())) return;
     const identity = [job.id, job.status, job.interactionId ?? "", job.status === "running" ? job.text : ""];
     const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
-    this.db.prepare(`INSERT OR IGNORE INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot) VALUES(?,?,?,?,?,?)`)
-      .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations, acceptedGoalReceiptId }));
+    this.db.prepare(`INSERT INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(event_key) DO UPDATE SET settled=0,snapshot=excluded.snapshot
+      WHERE ? AND dots_reply_events.settled=1 AND dots_reply_events.reply IS NULL AND dots_reply_events.snapshot=''`)
+      .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations, acceptedGoalReceiptId }),
+        Number(restoreSilentlySettled));
   }
 
   activityAvailability(job: DotsDelegation): "active" | "hold" | "obsolete" {
     if (!this.handler || !this.handler.allowed(job.taskId) || !this.handler.allowedReply("progress")) return "hold";
     return this.disposition({ event_key: "", operation_id: job.id, task_id: job.taskId, status: "activity",
-      interaction_id: null, snapshot: "", reply: null });
+      interaction_id: null, snapshot: "", reply: null, settled: 0 });
   }
 
   observeActivity(job: DotsDelegation, window: number, text: string): boolean {
@@ -78,6 +95,48 @@ export class DotsReplyOutbox {
 
   hasPending(target: string): boolean {
     return Boolean(this.handler && this.db.prepare("SELECT 1 FROM dots_reply_events WHERE task_id=? AND settled=0 LIMIT 1").get(target));
+  }
+
+  private committedDeliveries(keys: string[]) {
+    const directory = this.db.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?")
+      .pluck().get(DOTS_TASK_ID) as string | undefined;
+    return directory ? readCommittedDotsDeliveries(directory, keys) : Promise.resolve([]);
+  }
+
+  private matchesReceipt(event: Event, receipt: CommittedDotsDelivery, destination: Pick<DotsAssistantReply, "sourceMessageId" | "origin">) {
+    const { reply } = receipt;
+    return reply.taskId === event.task_id && reply.operationId === event.operation_id && reply.sourceMessageId === destination.sourceMessageId
+      && (!destination.origin || (reply.origin?.conversationId === destination.origin.conversationId && reply.origin.entryId === destination.origin.entryId));
+  }
+
+  /** Rebuild incomplete projections by reading the original conversation's committed messages. */
+  async recoverDelivered(alive: () => boolean): Promise<void> {
+    const events = this.db.prepare(`SELECT e.*,d.source_message_id,d.goal_id FROM dots_reply_events e
+      JOIN dots_delegations d ON d.operation_id=e.operation_id AND d.task_id=e.task_id
+      WHERE (e.settled=0 AND e.reply IS NOT NULL) OR (e.settled=1 AND e.status IN ('completed','failed','blocked')
+        AND CASE WHEN json_valid(e.snapshot) THEN json_extract(e.snapshot,'$.deliveryKey') IS NULL ELSE e.snapshot='' END)`)
+      .all() as (Event & {source_message_id: string; goal_id: string | null})[];
+    if (!events.length) return;
+    const candidates = events.map(event => {
+      const prepared = event.reply ? JSON.parse(event.reply) as DotsAssistantReply : undefined;
+      const old = event.settled && event.snapshot ? JSON.parse(event.snapshot) as { delivered?: DotsAssistantReply["kind"]; completion?: DotsAssistantReply["completion"] } : undefined;
+      const accepted = event.goal_id && !prepared && old?.delivered !== "question"
+        ? dotsGoalConclusion(this.db, event.task_id, event.operation_id)?.completion : undefined;
+      const goal = old?.completion ?? accepted;
+      const keys = prepared ? [prepared.deliveryKey] : goal ? [goalDeliveryKey(event.task_id, goal), event.event_key] : [event.event_key];
+      return { event, keys, kind: prepared?.kind ?? old?.delivered, destination: prepared ?? accepted?.destination ?? dotsOriginalDestination(this.db, event.source_message_id) };
+    });
+    const committed = await this.committedDeliveries([...new Set(candidates.flatMap(candidate => candidate.keys))]);
+    if (!alive()) return;
+    const byKey = new Map(committed.map(receipt => [receipt.reply.deliveryKey, receipt]));
+    for (const {event, keys, kind, destination} of candidates) {
+      for (const key of keys) {
+        const receipt = byKey.get(key);
+        if (!receipt || kind && kind !== receipt.reply.kind || !this.matchesReceipt(event, receipt, destination)) continue;
+        this.settle(event, receipt);
+        break;
+      }
+    }
   }
 
   private disposition(event: Event): "active" | "hold" | "obsolete" {
@@ -134,34 +193,37 @@ export class DotsReplyOutbox {
     return retry;
   }
 
-  private settle(event: Event, delivered?: DotsAssistantReply) {
-    this.db.transaction(() => {
+  private settle(event: Event, receipt?: CommittedDotsDelivery) {
+    const changed = this.db.transaction(() => {
       // The conversation owns the full reply. Keep the receipt and a short Activity summary.
-      const snapshot = delivered ? {
-        delivered: delivered.kind,
-        ...(delivered.completion && { completion: delivered.completion }),
-        ...(delivered.kind !== "progress" && { summary: activitySummary(delivered.text), deliveredAt: Date.now(), fileCount: delivered.artifacts.length }),
-      } : undefined;
-      this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=?")
-        .run(snapshot ? JSON.stringify(snapshot) : "", event.event_key);
-      if (event.status === "activity" && delivered)
-        this.db.prepare("UPDATE dots_tool_observations SET last_report_at=? WHERE operation_id=?").run(Date.now(), event.operation_id);
+      const update = this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=? AND settled=? AND snapshot=?")
+        .run(receipt ? deliverySnapshot(receipt) : "", event.event_key, event.settled, event.snapshot);
+      if (!update.changes) return false;
+      if (event.status === "activity" && receipt)
+        this.db.prepare("UPDATE dots_tool_observations SET last_report_at=? WHERE operation_id=?").run(receipt.deliveredAt, event.operation_id);
       if (event.status === "completed" || event.status === "failed")
         this.db.prepare("DELETE FROM dots_followup_requests WHERE operation_id=?").run(event.operation_id);
+      return true;
     })();
-    if (event.status !== "running" && event.status !== "activity") this.changed?.();
+    if (changed && event.status !== "running" && event.status !== "activity") this.changed?.();
   }
 
   private async deliver(event: Event, alive: () => boolean, handler: NonNullable<DotsReplyOutbox["handler"]>) {
     const disposition = this.disposition(event);
-    if (disposition === "obsolete") this.settle(event);
-    if (disposition !== "active" || !handler.allowed(event.task_id)) return false;
+    const preparedReply = event.reply ? JSON.parse(event.reply) as DotsAssistantReply : undefined;
+    if (disposition !== "active" || !handler.allowed(event.task_id) || preparedReply && !handler.allowedReply(preparedReply.kind)) {
+      const receipt = preparedReply && (await this.committedDeliveries([preparedReply.deliveryKey]))[0];
+      if (!alive()) return false;
+      if (receipt && preparedReply && receipt.reply.kind === preparedReply.kind && this.matchesReceipt(event, receipt, preparedReply)) this.settle(event, receipt);
+      else if (this.disposition(event) === "obsolete" || preparedReply && !handler.allowedReply(preparedReply.kind)) this.settle(event);
+      return false;
+    }
     const current = () => alive() && handler.allowed(event.task_id) && this.disposition(event) === "active";
     const { citations, acceptedGoalReceiptId, ...job } = JSON.parse(event.snapshot) as DotsDelegation & {
       citations?: ReplyCitation[]; acceptedGoalReceiptId?: string;
     };
     let reply: DotsAssistantReply;
-    if (event.reply) reply = JSON.parse(event.reply) as DotsAssistantReply;
+    if (preparedReply) reply = preparedReply;
     else {
       const request = this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined;
       const step = event.status === "activity" ? { kind: "progress" as const, text: job.text, artifacts: [] }
@@ -179,7 +241,7 @@ export class DotsReplyOutbox {
       }
       const destination = accepted?.destination ?? dotsOriginalDestination(this.db, job.sourceMessageId);
       const replyCitations = accepted ? accepted.citations : citations;
-      const deliveryKey = accepted ? createHash("sha256").update(JSON.stringify([accepted.taskId, accepted.id, accepted.stateVersion])).digest("hex")
+      const deliveryKey = accepted ? goalDeliveryKey(accepted.taskId, accepted)
         : event.event_key;
       reply = { deliveryKey, operationId: job.id, taskId: job.taskId, ...destination,
         ...(accepted && { completion: { id: accepted.id, workId: accepted.workId, intentRevision: accepted.intentRevision,
@@ -204,8 +266,8 @@ export class DotsReplyOutbox {
     };
     const result = await handler.append(reply, () => current() && acceptedCurrent() && handler.allowedReply(reply.kind));
     if (!alive()) return false;
-    if (result === "pending") return true;
-    if (result !== "discarded") this.settle(event, reply);
+    if (result.status === "pending") return true;
+    if ("reply" in result) this.settle(event, result);
     else if (handler.allowed(event.task_id) && this.disposition(event) !== "hold") this.settle(event);
     return false;
   }

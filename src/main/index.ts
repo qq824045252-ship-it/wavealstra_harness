@@ -3700,7 +3700,8 @@ app.whenReady().then(async () => {
     return !!task && !task.externalAgentPin && agentService.isDotsOrdinaryTask(id) && !db.isTaskEffectiveArchived(id)
       && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed";
   }, async (id, operation) => Boolean((await agentService.findSubmission(id, operation))?.receipt),
-    (request, source) => dotsActions?.mayRecover(request, source) ?? true)
+    (request, source) => dotsActions?.mayRecover(request, source) ?? true,
+    (id, cwd) => agentService.matchesDotsInitialPrivateWorkspace(id, cwd))
     .catch(error => console.warn("[Dots] 恢复委派失败", error));
   dotsActions?.startFileWatches();
   startupMark("restoreDelivered");

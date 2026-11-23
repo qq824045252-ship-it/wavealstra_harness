@@ -7,7 +7,7 @@ type ActivityRow = {
   status: DotsDelegation["status"]; text: string; file_count: number; updated_at: number;
   interaction_id: string | null; question_message_id: string | null; question_title: string | null;
   question_description: string | null; last_activity_at: number | null;
-  event_key: string | null; delivered: "question" | "conclusion" | null;
+  delivery_key: string | null; delivered: "question" | "conclusion" | null;
   summary: string | null; delivered_at: number | null; delivered_file_count: number | null;
   following: number; control: "paused" | "stopped" | null;
   goal_lifecycle: string | null; goal_conclusion: string | null;
@@ -23,7 +23,8 @@ export class DotsActivity {
     const rows = this.db.prepare(`SELECT d.operation_id,d.task_id,t.title,s.name AS space,d.status,d.text,d.updated_at,
       json_array_length(d.files) AS file_count,d.interaction_id,i.assistant_message_id AS question_message_id,
       i.title AS question_title,i.description AS question_description,a.at AS last_activity_at,
-      e.event_key,json_extract(e.snapshot,'$.delivered') AS delivered,json_extract(e.snapshot,'$.summary') AS summary,
+      COALESCE(json_extract(e.snapshot,'$.deliveryKey'),e.event_key) AS delivery_key,
+      json_extract(e.snapshot,'$.delivered') AS delivered,json_extract(e.snapshot,'$.summary') AS summary,
       json_extract(e.snapshot,'$.deliveredAt') AS delivered_at,json_extract(e.snapshot,'$.fileCount') AS delivered_file_count,
       EXISTS(SELECT 1 FROM dots_reply_events p WHERE p.operation_id=d.operation_id AND p.status=d.status AND p.settled=0) AS following,
       c.state AS control,w.lifecycle AS goal_lifecycle,w.closure_conclusion AS goal_conclusion
@@ -48,8 +49,8 @@ export class DotsActivity {
       const summary = row.summary ?? activitySummary(readDotsWorkerOutcome(row.text)?.result ?? row.text);
       const task = { id: row.operation_id, taskId: row.task_id, title: row.title, space: row.space ?? "独立任务",
         summary, updatedAt: row.delivered_at ?? row.updated_at };
-      if (row.delivered === "conclusion" && row.event_key) {
-        return [{ ...task, state: "delivered", deliveryKey: row.event_key, fileCount: row.delivered_file_count ?? row.file_count }];
+      if (row.delivered === "conclusion" && row.delivery_key) {
+        return [{ ...task, state: "delivered", deliveryKey: row.delivery_key, fileCount: row.delivered_file_count ?? row.file_count }];
       }
       if (row.control === "stopped" || row.goal_conclusion === "cancelled") return [{ ...task, state: "stopped" }];
       if (row.control === "paused" || row.goal_lifecycle === "paused") return [{ ...task, state: "paused" }];
@@ -59,8 +60,8 @@ export class DotsActivity {
         return [{ ...task, state: "waiting", summary: activitySummary(question),
           target: { taskId: row.task_id, messageId: row.question_message_id, interactionId: row.interaction_id } }];
       }
-      if (!row.interaction_id && row.delivered === "question" && row.event_key) {
-        return [{ ...task, state: "waiting", target: { taskId: DOTS_TASK_ID, messageId: row.event_key } }];
+      if (!row.interaction_id && row.delivered === "question" && row.delivery_key) {
+        return [{ ...task, state: "waiting", target: { taskId: DOTS_TASK_ID, messageId: row.delivery_key } }];
       }
       if (row.status === "failed" || row.status === "superseded") return [{ ...task, state: row.status }];
       if (row.status === "blocked" && !row.interaction_id) return [{ ...task, state: "blocked" }];
