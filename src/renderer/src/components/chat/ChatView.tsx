@@ -866,7 +866,10 @@ export default function ChatView(): React.JSX.Element {
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
         <TaskModelRecoveryNotice recovery={task.modelRecovery} />
         {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />}
-        <ChatInput variant="chat" />
+        {/* 空会话没有消息可撑高：Dots 用首页同款窄栏摆放输入框，其余任务保持原位置 */}
+        {isDots
+          ? <div className="dots-hero"><ChatInput variant="chat" /></div>
+          : <ChatInput variant="chat" />}
       </div>
     );
   }

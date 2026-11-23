@@ -29,7 +29,9 @@ async function main(): Promise<void> {
     authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"),
     allowModelNetwork: true, refreshOnCreate: false,
   });
-  registerMyBuddyProviders(runtime);
+  registerMyBuddyProviders(runtime, {
+    magpieConfig: () => JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8")).providers?.magpie,
+  });
   // hydrate Pi's credential/catalog snapshot before selecting providers; the
   // constructor intentionally skipped this work via refreshOnCreate: false.
   await runtime.refresh({ allowNetwork: false });

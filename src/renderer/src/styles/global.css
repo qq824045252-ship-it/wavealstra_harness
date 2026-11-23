@@ -22198,6 +22198,24 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
   color: var(--hero-mode);
 }
 
+/* Dots 空会话（还没有任何消息）：消息区没有内容撑高，输入框会紧贴头部。
+   这里按「新建任务」首页的摆放方式修正：居中 640 窄栏、与首页相同的高度位置。 */
+.chat-column.task-ambient .dots-hero {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 155px 24px 36px;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.chat-column.task-ambient .dots-hero > .input-area {
+  padding: 0;
+  max-width: 640px;
+}
+
 .chat-column.task-ambient .message-list {
   padding-top: 12px;
   padding-bottom: 28px;
