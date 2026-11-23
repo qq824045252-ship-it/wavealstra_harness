@@ -8,8 +8,8 @@ function record(value: unknown): Record<string, unknown> | undefined {
     ? value as Record<string, unknown> : undefined;
 }
 
-/** Only explicit error fields are eligible, never arbitrary tool output or details dumps. */
-function diagnosticText(value: unknown): string | undefined {
+/** Redact credentials from a diagnostic message or a bounded failure excerpt. */
+export function diagnosticText(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   return value.trim()
     .replace(/\bhttps?:\/\/[^\s'"<>]+/gi, raw => {

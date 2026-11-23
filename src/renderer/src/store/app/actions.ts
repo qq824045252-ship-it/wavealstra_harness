@@ -253,7 +253,7 @@ export interface AppActions {
   ) => void | Promise<void>;
   deleteUserMessage: (messageId: string) => Promise<void>;
   regenerateMessage: (messageId: string) => void;
-  abortActiveTask: () => Promise<void>;
+  abortActiveTask: () => Promise<import("../../../../shared/agent-ipc").AgentAbortResult>;
   resolveToolApproval: (
     messageId: string,
     toolCallId: string,

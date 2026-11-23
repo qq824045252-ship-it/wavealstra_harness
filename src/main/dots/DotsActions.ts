@@ -21,6 +21,7 @@ import type { GoalContinuationOrigin } from "../../shared/conversation-goal";
 import type { ConversationInteractionDto } from "../../shared/conversation-interaction";
 import type { BoardQuery } from "../../shared/task-board";
 import type { AgentService } from "../agent/AgentService";
+import { diagnosticText } from "../agent/durable/DurableToolDiagnostics";
 import type { AgentPromptRequest, SpaceDto, TaskDto } from "../../shared/agent-ipc";
 import { dotsOperationEnabled } from "../../shared/dots-settings";
 import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
@@ -28,6 +29,7 @@ import { gatewayChannelForSpace, isGatewayConversation } from "../../shared/gate
 import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../workspace/WorkspaceService";
 
 type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "assertDelegationAdmissible" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
+type DiagnosticAgent = Pick<AgentService, "getTaskDiagnostics" | "getTaskFailuresForDiagnosis">;
 export interface DotsActionHooks {
   observeProgress?(taskId: string, operationId: string, identity: string, at: number): void;
   observeTool?(event: ToolDiagnosticEvent): void;
@@ -129,7 +131,7 @@ export class DotsActions {
   private readonly watches: DotsFileWatches;
   private controlRecovery?: Promise<void>;
 
-  constructor(private readonly db: AppDatabase, private readonly agent: Agent, private readonly hooks: DotsActionHooks,
+  constructor(private readonly db: AppDatabase, private readonly agent: Agent & DiagnosticAgent, private readonly hooks: DotsActionHooks,
     private readonly board = new TaskBoardRepository(db.connection)) {
     this.foreground = new DotsForegroundReads(db.connection);
     db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_control_batches(id TEXT PRIMARY KEY, selection TEXT NOT NULL);
@@ -414,6 +416,15 @@ export class DotsActions {
       .pluck().get(taskId) as string | undefined) ?? null;
   }
 
+  requiresResumeInstruction(input: DotsActionInput): boolean {
+    if (input.action === "resume") return true;
+    if (input.action !== "delegate" || !input.targetTaskId) return false;
+    const task = this.task(input.targetTaskId, input.spaceId);
+    const status = this.db.connection.prepare("SELECT status FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
+      .pluck().get(task.id);
+    return task.status === "stopped" || status === "failed" || Boolean(this.control(task.id));
+  }
+
   private continuationTarget(source: string, taskId: string, originalText?: string, quote?: string) {
     if (!this.db.connection.prepare("SELECT 1 FROM dots_continuation_targets WHERE source=? AND task_id=?").get(source, taskId))
       this.assertSeparateContinuation(source, originalText, quote, taskId);
@@ -480,10 +491,11 @@ export class DotsActions {
   }
 
   private summary(task: TaskDto) {
+    const running = this.agent.isTaskBusy(task.id);
     const status = this.db.connection.prepare("SELECT status FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
-      .pluck().get(task.id) === "blocked" ? "waiting_input" : task.status;
+      .pluck().get(task.id) === "blocked" ? "waiting_input" : running ? "in_progress" : task.status;
     return { id: task.id, title: task.title, link: taskLink(task), spaceId: task.spaceId, status, dotsState: this.control(task.id)?.state,
-      running: this.agent.isTaskBusy(task.id), updatedAt: task.updatedAt };
+      running, updatedAt: task.updatedAt };
   }
 
   private recordAnswer(task: TaskDto, sourceId: string, operationId: string, question: ConversationInteractionDto,
@@ -767,16 +779,30 @@ ${input.text}`),
       case "task": {
         const task = this.task(input.targetTaskId, input.spaceId);
         const progress = this.board.page({ view: "all" }, Date.now(), { taskId: task.id }).rows[0];
-        const history = await this.agent.loadTaskHistory(task.id, undefined, "current");
-        this.task(task.id, input.spaceId);
+        const history = await this.agent.loadTaskHistory(task.id);
+        const current = this.task(task.id, input.spaceId);
         const goals = this.agent.getConversationGoals().listByTask(task.id).map(({ id, title, description, status, criteria }) => ({
           id, title, description, status, criteria,
         }));
-        const summary = this.summary(task);
+        const summary = this.summary(current);
+        const observation = this.agent.getTaskDiagnostics(task.id, 30);
+        const failedOutput = new Map(history.messages.flatMap(message => (message.tools ?? [])
+          .filter(tool => tool.status === "error" && tool.output).map(tool => [tool.id, tool.output!] as const)));
+        const tools = observation.tools.filter(tool => tool.status !== "completed")
+          .sort((a, b) => b.startedAt - a.startedAt).slice(0, 5)
+          .map(({ callId, name, status, startedAt, finishedAt, diagnostics }) => ({
+            name, status, startedAt, finishedAt, diagnostics: diagnostics.slice(0, 4).map(message => message.slice(0, 600)),
+            errorOutput: diagnosticText(failedOutput.get(callId)?.slice(-800)),
+          }));
+        const failures = this.agent.getTaskFailuresForDiagnosis(task.id)
+          .map(({ id, causeCode, phase, sideEffects, message, createdAt, resolvedAt, dismissedAt }) => ({
+            id, causeCode, phase, sideEffects, message: diagnosticText(message), createdAt, resolvedAt, dismissedAt,
+          }));
         return { ...summary, progress: summary.status === "waiting_input" && progress
           ? { ...progress, status: summary.status, unread: false, wait: progress.wait ?? { kind: "input" } } : progress,
           goals, deliveries: this.deliveries(task), messages: history.messages.slice(-5).map(m => ({ role: m.role, text: m.text.slice(-2400), artifacts: m.artifacts })),
-          artifacts: history.artifacts, historyError: history.historyError };
+           artifacts: history.artifacts, historyError: history.historyError,
+           executionDiagnostics: { tools, failures, unavailable: observation.unavailable, truncated: observation.truncated } };
       }
       case "spaces": return this.db.listSpaces().filter(s => this.allowsSpace(s.id) && !s.effectiveArchived && this.isLocalSpace(s)).map(spaceLink);
       case "files":

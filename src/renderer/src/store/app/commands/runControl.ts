@@ -1,4 +1,5 @@
 import { readTaskHistory } from "../runtime/taskHistoryRead";
+import type { AgentAbortResult } from "../../../../../shared/agent-ipc";
 import type { ToolStatus } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -7,12 +8,13 @@ import type { AppContext } from "../context";
 export async function abortTask(
   storeContext: AppContext,
   taskId: string,
-): Promise<void> {
+): Promise<AgentAbortResult> {
   const { get, set } = storeContext;
   const owner = get().tasks.find((task) => task.id === taskId);
   const externalRun = owner?.messages.some(message => message.externalAgent && message.streaming);
   if (!externalRun && (owner?.durable || owner?.botPendingSubmissions?.some(input => input.submitting) || owner?.welcomeMode === "general")) {
-    await storeContext.getApi()?.agent?.abort?.(taskId);
+    const result = await storeContext.getApi()?.agent?.abort?.(taskId);
+    if (result === "stop_requested") return result;
     await readTaskHistory(storeContext, taskId);
     return;
   }
@@ -69,7 +71,7 @@ export function createRunControlActions(
   return {
     abortActiveTask: async () => {
       const taskId = get().activeTaskId;
-      if (taskId) await abortTask(storeContext, taskId);
+      if (taskId) return abortTask(storeContext, taskId);
     },
 
     resolveToolApproval: (messageId, toolCallId, approved, externalWrite) => {

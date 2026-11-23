@@ -42,6 +42,8 @@ db.upsertTask({ id: "idle", title: "idle", cwd, updatedAt: 1, modelId: "fixture/
 const opened: Array<{ taskId: string; aborts: number; closed: boolean; hang: boolean }> = [];
 const hung: Array<() => void> = [];
 let hangAbort = false;
+const admitted = Promise.withResolvers<void>();
+const unblockAdmission = Promise.withResolvers<void>();
 
 const realOpen = DurableBotRuntime.open.bind(DurableBotRuntime);
 DurableBotRuntime.open = (async (options: DurableBotOptions) => {
@@ -60,6 +62,9 @@ DurableBotRuntime.open = (async (options: DurableBotOptions) => {
     refresh: async () => runtime.snapshot,
     conversation: {
       id: "fixture-conversation",
+      commit: async (read: (tx: unknown) => Promise<unknown>) => read({
+        submissionByRequest: async () => undefined, scanConversations: async () => ({ items: [] }),
+      }),
       /**
        * A stop that a child never answers: the promise stays pending, which is exactly the state
        * the production background abort reaches when a subagent stops responding.
@@ -82,8 +87,15 @@ DurableBotRuntime.open = (async (options: DurableBotOptions) => {
 }) as typeof DurableBotRuntime.open;
 
 const service = new DurableBotService({
-  db, models: { getModel: () => ({ provider: "fixture", id: "fixture" }) } as never,
+  db, models: { getModel: () => ({ provider: "fixture", id: "fixture" }), refresh: async () => {} } as never,
   agentDir, mcpDir: join(agentDir, "mcp"),
+  prepareTask: async (request: import("../src/shared/agent-ipc").AgentPromptRequest) => {
+    if (request.userMessageId === "pending-input") {
+      admitted.resolve();
+      await unblockAdmission.promise;
+    }
+    return request;
+  },
   resolveCwd: () => cwd, instructions: () => "fixture", toolMode: () => "native",
   defaultModel: () => "fixture/fixture", emit: () => {},
   tools: async () => ({ tools: [], contextHooks: [] }),
@@ -103,6 +115,17 @@ try {
   assert.equal(opened.filter(entry => entry.taskId === "idle" && entry.aborts > 0).length, 1,
     "a stop must reach the task's native runtime");
 
+  const oldUpdatedAt = db.getTask("idle")?.updatedAt;
+  const pending = service.submit({taskId:"idle", text:"旧的输入", userMessageId:"pending-input", assistantMessageId:"pending-output"});
+  assert.equal(await within("prepare task", admitted.promise, 2_000), undefined);
+  assert.equal(await within("stop before prepare returns", service.abort("idle"), 2_000), "idle");
+  assert.deepEqual(await within("cancelled input", pending, 2_000), { queued: false, cancelled: true });
+  assert.equal(service.busy("idle"), false);
+  unblockAdmission.resolve();
+  assert.equal(await service.findSubmission("idle", "pending-input"), undefined);
+  assert.equal(db.getTask("idle")?.updatedAt, oldUpdatedAt, "late input preparation cannot change persisted task settings");
+  console.log("PASS 停止不等输入准备结束，迟到的输入不会提交");
+
   // ---- a stop that cannot settle gives the caller back instead of holding it ----------------
   hangAbort = true;
   opened.length = 0;
@@ -110,7 +133,7 @@ try {
   opened.length = 0;
   const started = Date.now();
   const stop = await within("abort", service.abort("busy"), 20_000);
-  assert.notEqual(stop, "timeout", "a stop whose children never settle must not own the caller forever");
+  assert.equal(stop, "stop_requested", "a stop whose children never settle must return a pending outcome");
   const elapsed = Date.now() - started;
   assert.ok(elapsed >= 9_000, `the bounded stop must wait for its budget before giving up (waited ${elapsed}ms)`);
 
@@ -151,6 +174,7 @@ try {
   assert.ok(repeated instanceof Error, "a delete against a live branch must reject with a reason");
   assert.match(repeated.message, /运行|停止|找不到/, "the reason must reach the user");
 } finally {
+  unblockAdmission.resolve();
   for (const release of hung) release();
   db.close?.();
 }

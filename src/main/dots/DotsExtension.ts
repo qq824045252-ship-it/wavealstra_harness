@@ -33,7 +33,7 @@ const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
     "能当场完成就直接给结果。收到普通任务的受理回执后，用一句自然的话告诉用户正在处理什么，附原任务链接，由 Dots 在原对话跟进和交付。尚未收到回执时如实说明当前状态。",
     "用户回答普通任务的问题或说已补齐之前缺的资料时，先使用 task 查当前委派的 deliveries，再用 answer 给原操作。若工具返回尚未回答的问题，用它给出的 operationId、interactionId 和原任务 ID 回答。只补资料且没有 interactionId 时，仍用 answer 接续原操作，由原任务读文件和交付；本轮回执只在确认受理后简短告知原任务已接上。不要把答复改写成 steer 或新的 delegate。",
     "交办时只查定位原任务和空间所需的信息。用户一条消息中有多个独立事项要分别派工时，从第一次委派起每项带上互不重叠的 assignmentQuote 原文。一次交办的改写或重试仍属原事项。",
-    "用户要求重跑已有事项时，先核对原任务的最新执行和交付，再用 resume 加原 targetTaskId、最新委派的 operationId 和本次要重跑的内容。接续失败时保留原任务 ID，告诉用户具体原因。一条消息也交办另一事项时，为接续和新建分别引用互不重叠的 assignmentQuote 原话。",
+    "查进度、解释失败或追查停止原因时，用 task 的 executionDiagnostics 回答。只有用户本轮明确要求继续、恢复或重跑，才用 resume 加原 targetTaskId、最新委派的 operationId 和新要求。接续失败时保留原任务 ID、说明原因。一条消息也交办另一事项时，为接续和新建分别引用互不重叠的 assignmentQuote 原话。",
   ],
   delivery: [
     "时间范围以用户发消息时的本地日历为准。查到对应期间的已有成果时，沿用用户指定的期间，不推到下一期。",
@@ -128,8 +128,21 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
         const op = configuredActions.find(key => key === input.action);
         throw new Error(op ? `Dots 设置已关闭「${dotsOperations[op][1]}」` : "Dots 操作不可用");
       }
+      if (actions.requiresResumeInstruction(input) && !hasResumeInstruction(invocation.sourceDisplayText, input.assignmentQuote)) {
+        throw new Error("本轮用户原话没有要求恢复或重跑原任务。查询进度或失败原因时请使用 task 读取原任务的执行诊断。");
+      }
       const details = await actions.execute(invocation.execution.taskId, invocation.sourceUserMessageId, input, invocation.sourceDisplayText, invocation.sourceOrigin, invocation.sourceCreatedAt);
       return toolResult(details);
     },
   });
+}
+
+function hasResumeInstruction(original: string | undefined, quote: string | undefined): boolean {
+  if (!original) return false;
+  const clauses = original.normalize("NFKC").split(/(?<=[。.!?;\n])/u).map(clause => clause.trim()).filter(Boolean);
+  const instruction = quote ? clauses.find(clause => clause.replace(/[。.!;]+$/u, "") === quote.normalize("NFKC").trim().replace(/[。.!;]+$/u, "")) : clauses[0];
+  if (!instruction || /[?]|(?:可否|能否|要不要|是不是|是否|之前先)|(?:吗|么|不了|还是停|失败了)[.!。]*$/u.test(instruction)
+    || /继续\s*(?:查看|查|追查|排查|诊断|调查|分析|看)|continue\s+(?:checking|looking|investigating)/iu.test(instruction)) return false;
+  return /^(?:(?:好|行|可以|确认|请|麻烦|帮我)[,，\s]*)*(?:(?:把|让)(?:这|那|原|该)[^,，。!?]{0,24}任务\s*)?(?:继续|恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])/u.test(instruction)
+    || /^(?:please\s+|go ahead and\s+)?(?:resume|retry|rerun|restart|continue)\b/i.test(instruction);
 }

@@ -799,6 +799,8 @@ export interface AgentSubmissionReceipt {
   status: "queued" | "placed" | "done" | "unanswered";
 }
 
+export type AgentAbortResult = "idle" | "stop_requested" | void;
+
 export interface AgentPromptResult {
   receipt?: AgentSubmissionReceipt;
   cancelled?: boolean;

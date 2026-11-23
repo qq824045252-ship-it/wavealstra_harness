@@ -1326,9 +1326,7 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.compact, (_e, taskId: string) => agentService.compactTask(taskId));
   ipcMain.handle(AgentIpc.abortCompaction, (_e, taskId: string) => agentService.abortCompaction(taskId));
   ipcMain.handle(AgentIpc.getCompactionStatus, (_e, taskId: string) => agentService.getCompactionStatus(taskId));
-  ipcMain.handle(AgentIpc.abort, async (_e, taskId: string) => {
-    await agentService.abort(taskId);
-  });
+  ipcMain.handle(AgentIpc.abort, (_e, taskId: string) => agentService.abort(taskId));
   ipcMain.handle(AgentIpc.approveTool, (_e, req: AgentApproveToolRequest) => {
     const result = agentService.approveTool(req);
     if (result) taskBoard.follow(req.taskId, req.approved ? "批准了操作" : "拒绝了操作");

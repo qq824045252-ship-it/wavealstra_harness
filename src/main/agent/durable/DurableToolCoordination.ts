@@ -97,13 +97,15 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
     const envelope = mcpEnvelope.parse(args);
     return inspectAccess(durableMcpToolName(envelope.server, envelope.tool), envelope.arguments, cwd);
   }
-  if (containers.has(name) || isDurableContextToolName(name) || hostControls.has(name)) return [];
+  const verifiesSavedOfficeFile = name === OFFICE_USE_TOOLS.documentRead && args.action === "verify";
+  if (containers.has(name) || isDurableContextToolName(name) || (hostControls.has(name) && !verifiesSavedOfficeFile)) return [];
   // The board queries SQLite. Target runtimes take their own resource leases.
   if (name === "dots_action" && typeof args.action === "string" && dotsTaskControls.has(args.action)) return [];
   const file = (path: string, mode: "read" | "write"): Access => {
     const address = fileResourceAddress(resolve(cwd, path));
     return { kind: "file", mode, path: address.path, entity: address.entity };
   };
+  if (verifiesSavedOfficeFile) return [args.path, args.previewPath].flatMap(path => typeof path === "string" ? [file(path, "read")] : []);
   const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : undefined;
   if (path && [CAD_USE_TOOLS.inspect, DRAWIO_USE_TOOLS.read, DRAWIO_USE_TOOLS.link].some(tool => name === tool)) return [file(path, "read")];
   if (path && [CAD_USE_TOOLS.create, CAD_USE_TOOLS.edit, CAD_USE_TOOLS.export,

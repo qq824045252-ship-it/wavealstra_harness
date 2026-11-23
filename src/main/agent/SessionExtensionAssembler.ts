@@ -192,6 +192,7 @@ export class SessionExtensionAssembler {
       })] : []),
       ...(durable || officeUseEnabled() ? [createOfficeSelectionExtension({
         taskId: input.taskId,
+        taskRoot: () => (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
         getPermissionMode,
         isEnabled: officeUseEnabled,
         create: (request, toolCallId, assertWritable) => {

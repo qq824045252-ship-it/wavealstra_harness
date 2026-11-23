@@ -384,6 +384,25 @@ export default function ChatInput({
     const activeTask = s.tasks.find((candidate) => candidate.id === s.activeTaskId) ?? null;
     return taskHasActiveExecution(activeTask);
   });
+  const [stopNotice, setStopNotice] = useState<{ taskId: string; text: string } | null>(null);
+  useEffect(() => {
+    if (!executing) setStopNotice(null);
+  }, [activeTaskId, executing]);
+  const requestStop = async () => {
+    if (!activeTaskId) return;
+    const pendingNotice = { taskId: activeTaskId, text: "正在请求停止…" };
+    setStopNotice(pendingNotice);
+    try {
+      const result = await abortActiveTask();
+      setStopNotice(notice => notice === pendingNotice
+        ? result === "stop_requested" ? { taskId: activeTaskId, text: "已请求停止，正在等待任务确认。" } : null
+        : notice);
+    } catch (error) {
+      setStopNotice(notice => notice === pendingNotice
+        ? { taskId: activeTaskId, text: error instanceof Error ? error.message : String(error) }
+        : notice);
+    }
+  };
   // 父任务切换（或回首页）→ 销毁 BTW（不漂移、不恢复）
   useEffect(() => {
     useBtwStore.getState().destroyIfParentChanged(activeTaskId);
@@ -1193,6 +1212,7 @@ export default function ChatInput({
           : <button type="button" className="btn btn--small" data-testid="consult-retry" onClick={() => void selectConsult()}>重试</button>}
       </div>}
       {preparingWorktree && <div className="consult-composer-notice" role="status">正在创建 Git 工作树…</div>}
+      {stopNotice && stopNotice.taskId === activeTaskId && <div className="consult-composer-notice" role="status">{stopNotice.text}</div>}
       {worktreeTaskId && worktreeError && <div className="mcp-auth-error" role="alert">{worktreeError}</div>}
       <div className="input-box">
         {(hasAttachChips || showStreamingMode) && (
@@ -1760,7 +1780,7 @@ export default function ChatInput({
               <button
                 type="button"
                 className="send-btn stop-btn"
-                onClick={() => void abortActiveTask()}
+                onClick={() => void requestStop()}
                 title="停止生成"
                 aria-label="停止生成"
               >

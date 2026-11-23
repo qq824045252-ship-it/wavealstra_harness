@@ -65,11 +65,10 @@ import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, t
 
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
 type AdmissionMark = (stage: string) => void;
-/**
- * How long a delete waits for its own stop. Background abort has no signal to cancel it, so a child
- * that stops responding would otherwise pin the delete admission forever with no error surfaced.
- */
-const STOP_BEFORE_DELETE_TIMEOUT_MS = 10_000;
+const STOP_SETTLEMENT_TIMEOUT_MS = 10_000;
+class InputAdmissionStopped extends Error {
+  constructor() { super("当前输入已停止"); }
+}
 class DurableToolAssemblyError extends Error {
   constructor(cause: unknown) { super(cause instanceof Error ? cause.message : String(cause), { cause }); }
 }
@@ -163,7 +162,7 @@ export class DurableBotService {
   private readonly credentials: McpOAuthCredentialStore;
   private closing = false;
   private readonly invalidations = new Map<string, Promise<void>>();
-  private readonly admissions = new Map<string, Set<Promise<unknown>>>();
+  private readonly admissions = new Map<string, Map<Promise<unknown>, AbortController | undefined>>();
   private readonly admissionTails = new Map<string, Promise<unknown>>();
   private readonly admittingUserInputs = new Map<string, Set<{ requestId: string }>>();
   private readonly projections = new Map<string, Promise<void>>();
@@ -196,7 +195,9 @@ export class DurableBotService {
   }
   busy(taskId: string): boolean {
     const snapshot = this.opened.get(taskId)?.runtime.snapshot;
-    return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId) || this.admissions.get(taskId)?.size);
+    const admissions = this.admissions.get(taskId);
+    return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId)
+      || admissions && Array.from(admissions.values()).some(controller => !controller?.signal.aborted));
   }
   cwd(taskId: string): string | undefined { return this.workspaceMove(taskId)?.to_cwd ?? this.binding(taskId)?.cwd; }
   liveConversationId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.conversationId; }
@@ -685,10 +686,12 @@ export class DurableBotService {
     }
   }
 
-  private async prepareRequest(request: AgentPromptRequest, mark?: AdmissionMark): Promise<AgentPromptRequest> {
+  private async prepareRequest(request: AgentPromptRequest, mark?: AdmissionMark, signal?: AbortSignal): Promise<AgentPromptRequest> {
     request = await this.options.prepareTask?.(request, mark) ?? request;
+    signal?.throwIfAborted();
     mark?.("task");
     await this.options.models.refresh({ allowNetwork: false });
+    signal?.throwIfAborted();
     mark?.("catalog");
     this.options.expertBindings?.ensureLegacy(request.taskId);
     const task = this.options.db.getTask(request.taskId);
@@ -728,7 +731,7 @@ export class DurableBotService {
       return resolvedModel.target;
   }
 
-  private async admit(request: AgentPromptRequest, origin?: DurableInputOrigin, mark?: AdmissionMark) {
+  private async admit(request: AgentPromptRequest, signal: AbortSignal, origin?: DurableInputOrigin, mark?: AdmissionMark) {
     // Committed retries retain their original configuration and input preparation.
     if (this.binding(request.taskId)) {
       const existing = await this.withRecovery(request.taskId, async open => {
@@ -747,12 +750,15 @@ export class DurableBotService {
         const submission = record && await open.runtime.harness.submission(record.id, context);
         return submission ? { submission, open } : undefined;
       });
+      signal.throwIfAborted();
       if (existing) return existing;
     }
     mark?.("deduplicate");
-    request = await this.prepareRequest(request, mark);
+    request = await this.prepareRequest(request, mark, signal);
+    signal.throwIfAborted();
     mark?.("taskPersisted");
     return this.withRecovery(request.taskId, async open => {
+      signal.throwIfAborted();
       mark?.("opened");
       if (origin?.gatewayOrigin && request.attachments?.length) {
         request = { ...request, attachments: await importGatewayAttachments(this.binding(request.taskId)!.cwd,
@@ -773,6 +779,7 @@ export class DurableBotService {
         content.push({ type: "text", text: `\nAttached file: ${attachment.name}\n${attachment.path}` });
       }
       const audit = this.options.auditInput?.(request, origin);
+      signal.throwIfAborted();
       this.options.beforeSubmit?.(request);
       mark?.("payload");
       const guarded = request.dotsFileWatch || request.dotsSteerInputVersion || origin?.goalContinuation
@@ -781,36 +788,49 @@ export class DurableBotService {
         { dotsMemoryRefs: request.dotsMemoryRefs, text: request.text, displayText: request.displayText ?? request.text, attachments: request.attachments ?? [],
           ...(audit ? { audit } : {}), ...(origin?.gatewayOrigin ? { gatewayOrigin: origin.gatewayOrigin } : {}),
           ...(origin?.goalContinuation ? { goalContinuation: origin.goalContinuation } : {}) }, mark, request.requireActiveRun,
-        guarded
-          ? { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: () => this.options.beforeSubmit?.(request) } : undefined);
+        { inputVersion: request.dotsFileWatch?.inputVersion ?? request.dotsSteerInputVersion, validate: () => {
+          signal.throwIfAborted();
+          if (guarded) this.options.beforeSubmit?.(request);
+        } });
       return { submission, open };
     });
   }
 
   private async admitTracked(request: AgentPromptRequest, origin?: DurableInputOrigin) {
-    if (process.env.MYBUDDY_ADMISSION_TRACE !== "1") return this.trackAdmission(request.taskId, () => this.admit(request, origin));
+    const controller = new AbortController();
+    const { signal } = controller;
+    const admit = async (mark?: AdmissionMark) => {
+      const pending = this.trackAdmission(request.taskId,
+        () => this.admit(request, signal, origin, mark), mark, controller);
+      const stopped = Promise.withResolvers<never>();
+      const onStop = () => stopped.reject(signal.reason);
+      signal.addEventListener("abort", onStop, { once: true });
+      try { return await Promise.race([pending, stopped.promise]); }
+      finally { signal.removeEventListener("abort", onStop); }
+    };
+    if (process.env.MYBUDDY_ADMISSION_TRACE !== "1") return admit();
     // Time only; never record the input, files, credentials or provider payload.
     const timestamps: Record<string, number> = {};
     const start = performance.now();
     const mark: AdmissionMark = stage => { timestamps[stage] = Math.round((performance.now() - start) * 10) / 10; };
-    try { return await this.trackAdmission(request.taskId, () => this.admit(request, origin, mark), mark); }
+    try { return await admit(mark); }
     finally { mark("finished"); console.info("[SendAdmission]", JSON.stringify({ inputId: request.userMessageId, ...timestamps })); }
   }
 
-  private trackAdmission<T>(taskId: string, operation: () => Promise<T>, mark?: AdmissionMark, register?: (self: Promise<T>) => void): Promise<T> {
+  private trackAdmission<T>(taskId: string, operation: () => Promise<T>, mark?: AdmissionMark, controller?: AbortController): Promise<T> {
     const prior = this.admissionTails.get(taskId) ?? Promise.resolve();
     const pending = prior.catch(() => {}).then(async () => {
+      controller?.signal.throwIfAborted();
       mark?.("queue");
       if (this.options.db.getTask(taskId)) await this.open(taskId, true);
       mark?.("preopen");
+      controller?.signal.throwIfAborted();
       return operation();
     });
-    // Hand the caller its own admission before the body can run, so a stop issued from inside it can
-    // exclude itself instead of waiting on the promise that is waiting on it.
-    register?.(pending);
     this.admissionTails.set(taskId, pending);
-    const admissions = this.admissions.get(taskId) ?? new Set();
-    admissions.add(pending); this.admissions.set(taskId, admissions);
+    const admissions = this.admissions.get(taskId) ?? new Map();
+    admissions.set(pending, controller);
+    this.admissions.set(taskId, admissions);
     return pending.finally(() => {
       admissions.delete(pending);
       if (!admissions.size) this.admissions.delete(taskId);
@@ -819,15 +839,11 @@ export class DurableBotService {
   }
 
   async deleteUserMessage(request: AgentDeleteUserMessageRequest): Promise<number> {
-    // The admission is registered inside `trackAdmission` before the operation body can run, so the
-    // body cannot learn its own promise by reading a local assigned afterwards: `self` would still be
-    // undefined and the stop would wait for the very admission that is calling it.
-    const own: { promise?: Promise<unknown> } = {};
-    const operation = this.trackAdmission(request.taskId, async () => {
+    return this.trackAdmission(request.taskId, async () => {
       // Stop inside this admission so the delete owns its own quiescence. The renderer's stop is a
       // separate, racing IPC call: with 9 subagent children live it only reaches the root branch and
       // leaves the children running, which is what made the retry loop hang without any error.
-      await this.stopWithinAdmission(request.taskId, own.promise);
+      await this.stopWithinAdmission(request.taskId);
       const open = await this.open(request.taskId);
       const selected = await findDurableUserEntry(open.runtime.conversation, request, context);
       const timestamp = selected.entry.model?.find(message => message.role === "user")?.timestamp ?? 0;
@@ -835,8 +851,7 @@ export class DurableBotService {
       await this.release(request.taskId);
       await this.open(request.taskId);
       return timestamp;
-    }, undefined, self => { own.promise = self; });
-    return operation;
+    });
   }
 
   /**
@@ -844,9 +859,7 @@ export class DurableBotService {
    * root conversation and, with `background`, every conversation reachable through a live task —
    * including the one each subagent child owns, so the subtree settles before the fork proceeds.
    */
-  private async stopWithinAdmission(taskId: string, exclude?: Promise<unknown>): Promise<void> {
-    await Promise.allSettled([...(this.admissions.get(taskId) ?? [])].filter(admission => admission !== exclude));
-    await stopDurableSubagentsForTask(taskId);
+  private async stopWithinAdmission(taskId: string): Promise<void> {
     // `trackAdmission` already ran `open(taskId, true)` before this body, so the runtime is bound.
     // Reuse it: going through withRecovery/open here would spend a second open on the same task and,
     // if the stop never settles, leave that open occupying `rebinding` for every later caller.
@@ -857,7 +870,8 @@ export class DurableBotService {
       // context carries no abort signal to cut that wait. A child that never settles would hold the
       // delete open forever — the "deleting…" state that neither finished nor reported an error — so
       // the wait is bounded and the fork below decides on the state it actually reached.
-      const stopped = await this.withinStopBudget("delete stop", () => open.runtime.abort());
+      const stopped = await this.withinStopBudget("delete stop",
+        () => Promise.all([open.runtime.abort(), stopDurableSubagentsForTask(taskId)]));
       if (!stopped) console.warn(`[Durable] Stop before delete is still settling for ${taskId}`);
     } catch (error) { console.warn(`[Durable] Stop before delete failed for ${taskId}`, error); }
     finally { this.options.onRelease?.(taskId); }
@@ -867,7 +881,7 @@ export class DurableBotService {
   private async withinStopBudget(label: string, stop: () => Promise<unknown>): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<boolean>(resolve => {
-      timer = setTimeout(() => { console.warn(`[Durable] ${label} did not settle within ${STOP_BEFORE_DELETE_TIMEOUT_MS}ms`); resolve(false); }, STOP_BEFORE_DELETE_TIMEOUT_MS);
+      timer = setTimeout(() => { console.warn(`[Durable] ${label} did not settle within ${STOP_SETTLEMENT_TIMEOUT_MS}ms`); resolve(false); }, STOP_SETTLEMENT_TIMEOUT_MS);
     });
     try {
       return await Promise.race([stop().then(() => true), deadline]);
@@ -918,6 +932,9 @@ export class DurableBotService {
       const { submission } = await this.admitTracked(request, origin);
       const state = await submission.status(context);
       return submissionResult(request.taskId, state);
+    } catch (error) {
+      if (error instanceof InputAdmissionStopped) return { queued: false, cancelled: true };
+      throw error;
     } finally {
       inputs?.delete(input);
       if (inputs?.size === 0) this.admittingUserInputs.delete(request.taskId);
@@ -1203,33 +1220,36 @@ export class DurableBotService {
   }
 
   async stopObservedRun(taskId: string, inputVersion?: string): Promise<"idle" | "stop_requested" | "intent_changed"> {
+    if (inputVersion === undefined) this.cancelInputAdmissions(taskId);
     if (!this.binding(taskId)) return "idle";
-    return this.trackAdmission(taskId, async () => {
-      const open = await this.openBound(taskId);
-      if (inputVersion && await open.runtime.dotsInputVersion() !== inputVersion) return "intent_changed";
-      const settled = await this.withinStopBudget(`Dots stop ${taskId}`, () => Promise.all([
-        open.runtime.stopObservedRun(), stopDurableSubagentsForTask(taskId),
-      ]));
-      return settled && !open.runtime.snapshot.busy && !open.runtime.snapshot.queued ? "idle" : "stop_requested";
+    let result: "idle" | "stop_requested" | "intent_changed" = "stop_requested";
+    const settled = await this.withinStopBudget(`Dots stop ${taskId}`, async () => {
+      const open = this.opened.get(taskId) ?? await this.openBound(taskId);
+      const observed = await open.runtime.stopObservedRun(inputVersion, () => stopDurableSubagentsForTask(taskId));
+      result = observed === "intent_changed" ? observed
+        : open.runtime.snapshot.busy || open.runtime.snapshot.queued ? "stop_requested" : "idle";
     });
+    return settled ? result : "stop_requested";
   }
 
-  async abort(taskId: string, exclude?: Promise<unknown>): Promise<void> {
-    // Stop orders after any already-started input admission, then native abort owns cancellation.
-    // `exclude` is the caller's own admission: a delete attempts its stop from inside its own
-    // admission, so waiting for the whole set would wait for itself forever.
-    await Promise.allSettled([...(this.admissions.get(taskId) ?? [])].filter(admission => admission !== exclude));
-    // Native abort stops the root branch; the children are separate conversations and keep running
-    // unless they are cancelled here, which is why "stop" used to leave them occupying the task.
-    await stopDurableSubagentsForTask(taskId);
+  private cancelInputAdmissions(taskId: string): void {
+    for (const controller of this.admissions.get(taskId)?.values() ?? []) {
+      if (controller) controller.abort(new InputAdmissionStopped());
+    }
+  }
+
+  async abort(taskId: string): Promise<"idle" | "stop_requested"> {
+    this.cancelInputAdmissions(taskId);
     try {
-      if (!this.binding(taskId)) return;
-      const open = await this.openBound(taskId);
-      // A stop that outran its budget has still been requested: the native abort keeps settling in
-      // the background, and waiting on it here would hold the caller's admission indefinitely.
-      if (!await this.withinStopBudget(`stop ${taskId}`, () => open.runtime.abort())) {
-        console.warn(`[Durable] Stop for ${taskId} is still settling`);
-      }
+      const settled = await this.withinStopBudget(`stop ${taskId}`, () => Promise.all([
+        (async () => {
+          if (!this.binding(taskId)) return;
+          const open = this.opened.get(taskId) ?? await this.openBound(taskId);
+          await open.runtime.abort();
+        })(),
+        stopDurableSubagentsForTask(taskId),
+      ]));
+      return settled ? "idle" : "stop_requested";
     } finally { this.options.onRelease?.(taskId); }
   }
   async compact(taskId: string): Promise<DurableCompactionOutcome> {

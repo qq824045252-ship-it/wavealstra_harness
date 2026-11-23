@@ -276,7 +276,7 @@ export interface PreloadApi {
     waitForSubmission: (receipt: AgentSubmissionReceipt) => Promise<AgentPromptResult>;
     regenerate: (req: AgentRegenerateRequest) => Promise<AgentRegenerateResult>;
     deleteUserMessage: (req: AgentDeleteUserMessageRequest) => Promise<void>;
-    abort: (taskId: string) => Promise<void>;
+    abort: (taskId: string) => Promise<import("../shared/agent-ipc").AgentAbortResult>;
     /** 终止多模型会诊中的单个参与者（返回 false 表示该会诊已结束或该模型已终结）。 */
     stopConsultWorker: (req: import("../shared/agent-ipc").AgentStopConsultWorkerRequest) => Promise<boolean>;
     compact: (taskId: string) => Promise<import("../shared/compaction").TaskCompactionResultDto>;

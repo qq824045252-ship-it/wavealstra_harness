@@ -2,12 +2,57 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { currentPlatformId } from "../src/main/platform";
 import { mapVerifiedBashWorkspacePath, withWindowsBashWorkspacePath } from "../src/main/platform/bash-workspace-path";
 import { createDurableArtifactRegistrationTool } from "../src/main/agent/durable/DurableArtifactRegistration";
+import { DurableExecutionEnv } from "../src/main/agent/durable/DurableExecutionEnv";
+
+const env = new DurableExecutionEnv({ cwd: process.cwd() });
+const originalTimeout = globalThis.setTimeout;
+try {
+  // Use the real shell and native cancellation, with a short silence window for this fixture.
+  globalThis.setTimeout = ((callback, ms, ...args) =>
+    originalTimeout(callback, ms === 120_000 ? 900 : ms, ...args)) as typeof setTimeout;
+  let progress = "";
+  const speaking = await env.exec("for i in 1 2 3 4; do echo progress-$i >&2; sleep 0.35; done",
+    { onOutput: chunk => { progress += chunk; } }, ctx);
+  assert(speaking.ok);
+  assert.equal(speaking.value.exitCode, 0);
+  assert.deepEqual(progress.trim().split(/\r?\n/u), ["progress-1", "progress-2", "progress-3", "progress-4"]);
+
+  let pidText = "";
+  const silent = await env.exec("node -e 'console.log(process.pid); setTimeout(() => {}, 15000)'",
+    { onOutput: chunk => { pidText += chunk; } }, ctx);
+  assert(!silent.ok);
+  assert.equal(silent.error.message, "Bash produced no stdout or stderr for 120 seconds");
+  const pid = Number(pidText.trim());
+  assert(Number.isSafeInteger(pid) && pid > 0);
+  const childLives = () => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
+  };
+  const cleanupDeadline = Date.now() + 4_000;
+  while (childLives() && Date.now() < cleanupDeadline) await delay(40);
+  assert.equal(childLives(), false, "the real process tree is terminated after the failure");
+
+  let totalOutput = "";
+  const total = await env.exec("while true; do echo progress; sleep 0.15; done",
+    { timeout: 0.6, onOutput: chunk => { totalOutput += chunk; } }, ctx);
+  assert(!total.ok);
+  assert.equal(total.error.code, "timeout");
+  assert.match(totalOutput, /progress/u);
+  const direct = await env.exec([process.execPath, "-e", "setTimeout(() => {}, 1300)"], undefined, ctx);
+  assert(direct.ok);
+  assert.equal(direct.value.exitCode, 0);
+  console.log("PASS Bash stderr refreshes the deadline, silence fails and kills the process tree, total timeout and argv execution stay independent");
+} finally {
+  globalThis.setTimeout = originalTimeout;
+  await env.cleanup(ctx);
+}
 
 assert.equal(mapVerifiedBashWorkspacePath('/tmp/work/a.txt','C:\\Temp\\work','/tmp/work','C:/Temp/work'),'C:\\Temp\\work\\a.txt');
 for (const p of ['/tmp/work-other/a','/tmp/work/../outside','/etc/passwd','/tmp/work/C:/outside']) assert.throws(()=>mapVerifiedBashWorkspacePath(p,'C:\\Temp\\work','/tmp/work','C:/Temp/work'));

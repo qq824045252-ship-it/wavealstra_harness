@@ -13,8 +13,11 @@ const requiresTerminal = /SKILLS_PROMPT_REQUIRES_TTY|(?:stdin|input|standard inp
 /** Add recovery advice, never rerun a command or replace its original outcome. */
 export function withShellTerminalGuidance(tool: ToolRegistration): ToolRegistration {
   if (!isNativeShell(tool.name)) return tool;
-  const shellDescription = `${tool.description}\n${SHELL_TERMINAL_GUIDANCE}\n${VERIFICATION_OUTCOME_GUIDANCE}`;
-  const description = tool.name === "bash" ? `${shellDescription}\n${BASH_VERIFICATION_GUIDANCE}` : shellDescription;
+  const officeGuidance = "Use office_document_read with action verify to check saved XLSX fills and a matching PNG when Office Use is available. Use Office Use for Office application operations.";
+  const shellDescription = `${tool.description}\n${SHELL_TERMINAL_GUIDANCE}\n${VERIFICATION_OUTCOME_GUIDANCE}\n${officeGuidance}`;
+  const description = tool.name === "bash"
+    ? `${shellDescription}\nBash stops after 120 seconds with no stdout or stderr. Stream real progress from long-running commands.\n${BASH_VERIFICATION_GUIDANCE}`
+    : shellDescription;
   return { ...tool, description,
     execute: async (args, api, context) => {
       const result = await tool.execute(args, api, context);

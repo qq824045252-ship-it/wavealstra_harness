@@ -447,7 +447,7 @@ const api = {
       ipcRenderer.invoke(AgentIpc.regenerate, req),
     deleteUserMessage: (req: AgentDeleteUserMessageRequest): Promise<void> =>
       ipcRenderer.invoke(AgentIpc.deleteUserMessage, req),
-    abort: (taskId: string): Promise<void> => ipcRenderer.invoke(AgentIpc.abort, taskId),
+    abort: (taskId: string): Promise<import("../shared/agent-ipc").AgentAbortResult> => ipcRenderer.invoke(AgentIpc.abort, taskId),
     stopConsultWorker: (req: import("../shared/agent-ipc").AgentStopConsultWorkerRequest): Promise<boolean> =>
       ipcRenderer.invoke(AgentIpc.stopConsultWorker, req),
     compact: (taskId: string): Promise<import("../shared/compaction").TaskCompactionResultDto> => ipcRenderer.invoke(AgentIpc.compact, taskId),

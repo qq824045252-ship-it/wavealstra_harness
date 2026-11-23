@@ -44,8 +44,10 @@ export class ExecutionFailureRepository {
     return existing ?? this.record(input);
   }
 
-  list(taskId: string): ExecutionFailureDto[] {
-    const rows = this.db.prepare("SELECT record_json, resolved_at, dismissed_at FROM execution_failures WHERE task_id = ? AND dismissed_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 100").all(taskId) as Array<{ record_json: string; resolved_at: number | null; dismissed_at: number | null }>;
+  list(taskId: string, { includeDismissed = false, limit = 100 } = {}): ExecutionFailureDto[] {
+    const rows = this.db.prepare(`SELECT record_json, resolved_at, dismissed_at FROM execution_failures
+      WHERE task_id = ? AND (? OR dismissed_at IS NULL) ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all(taskId, Number(includeDismissed), limit) as Array<{ record_json: string; resolved_at: number | null; dismissed_at: number | null }>;
     return rows.flatMap((row) => {
       try {
         const record = JSON.parse(row.record_json) as ExecutionFailureDto;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathFromMarkdownHref } from "../src/renderer/src/lib/localFilePath";
 import { join } from "node:path";
@@ -42,6 +42,7 @@ let askQuestion: false | "short_text" | "confirm" = false;
 let steeringProof = false;
 let ordinaryReadResult = "";
 let observedDelegatedEvidence = false;
+let shellProbe: { id: string; command: string; timeout?: number } | undefined;
 const fixture = await createAgentDurableFixture(root, db, async (input, signal) => {
   const tools = getCurrentTools(input.messages);
   if (!tools.length) return [{ type: "text", text: JSON.stringify({ candidates: [] }) }];
@@ -58,6 +59,11 @@ const fixture = await createAgentDurableFixture(root, db, async (input, signal) 
     const call = planned.shift();
     if (call) return [{ type: "toolCall", ...call }];
   } else if (tools.some(tool => tool.name === "read")) {
+    if (shellProbe) {
+      const { id, ...args } = shellProbe;
+      shellProbe = undefined;
+      return [{ type: "toolCall", id, name: "bash", arguments: args }];
+    }
     if (JSON.stringify(input.messages).includes("reference-evidence-7462")) observedDelegatedEvidence = true;
     if (holdTarget) {
       waiting = true;
@@ -138,7 +144,7 @@ async function turn(input: DotsActionInput | Record<string, unknown>, name = "do
   return results[0]!;
 }
 async function success(input: DotsActionInput, repeat = 1) {
-  const value = await turn(input, undefined, repeat);
+  const value = await turn(input, undefined, repeat, input.action === "resume" ? "请继续原任务" : undefined);
   assert(!value.error, value.text);
   return JSON.parse(value.text);
 }
@@ -608,6 +614,53 @@ try {
   const limited = await turn({ query: "锆蓝货柜习惯" }, "memory_search");
   assert(!limited.error, limited.text);
   assert.equal(JSON.parse(limited.text).matches.find((match: { id: string }) => match.id === readingSample.id)?.excerpt, "同批锆蓝");
+
+  shellProbe = { id: "interrupt-shell", command: "echo running > stop-probe.txt; while true; do sleep 1; done", timeout: 20 };
+  const interrupted = await success({ action: "delegate", spaceId: space.id, text: "运行一条可取消的诊断命令" });
+  await until(() => existsSync(join(folder, "stop-probe.txt")), "native Bash started before cancelling");
+  assert.equal(await agent.abort(interrupted.id), "idle");
+  const interruptedResult = await agent.waitForSubmission(interrupted.receipt);
+  assert.equal(interruptedResult.cancelled, true);
+  const recorded = agent.getTaskFailuresForDiagnosis(interrupted.id).find(failure => failure.causeCode === "durable-tool-interrupted");
+  assert(recorded, "the platform records the interrupted native tool");
+  const { ExecutionFailureRepository } = await import("../src/main/agent/ExecutionFailureRepository");
+  assert(new ExecutionFailureRepository(db.connection).dismiss(interrupted.id, recorded.id));
+  const diagnostic = await success({ action: "task", targetTaskId: interrupted.id });
+  assert.equal(diagnostic.running, false);
+  assert.equal(diagnostic.executionDiagnostics.tools[0].name, "bash");
+  assert.match(diagnostic.executionDiagnostics.tools[0].diagnostics.join(" "), /Tool bash was aborted/);
+  assert.equal(diagnostic.executionDiagnostics.failures[0].id, recorded.id);
+  assert.equal(diagnostic.executionDiagnostics.failures[0].sideEffects, "unknown");
+  assert.equal(typeof diagnostic.executionDiagnostics.failures[0].dismissedAt, "number");
+  for (const action of ["resume", "delegate"] as const) {
+    const deniedResume = await turn({ action, targetTaskId: interrupted.id, text: "重跑原任务查日志" }, "dots_action", 1, "实际任务已经完成，但是不知道为什么死锁了。");
+    assert(deniedResume.error, deniedResume.text);
+    assert.match(deniedResume.text, /请使用 task 读取原任务的执行诊断/);
+  }
+  const inspectAgain = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, "请继续查看为什么停不下来。");
+  assert(inspectAgain.error, inspectAgain.text);
+  assert.deepEqual((await success({ action: "task", targetTaskId: interrupted.id })).deliveries.map((row: { operationId: string }) => row.operationId),
+    [interrupted.receipt.operationId]);
+  const authorized = await success({ action: "resume", targetTaskId: interrupted.id });
+  assert.equal(authorized.id, interrupted.id);
+  assert.notEqual(authorized.receipt.operationId, interrupted.receipt.operationId);
+  assert.equal((await agent.waitForSubmission(authorized.receipt)).receipt?.status, "done");
+  console.log("PASS 查任务读到已隐藏的真实 Bash 中断记录，诊断不会恢复原任务，明确继续才产生第二条回执");
+
+  const scheduleTimeout = globalThis.setTimeout;
+  try {
+    // Shorten the silence window while using the actual Bash process and its native cleanup.
+    globalThis.setTimeout = ((callback, ms, ...args) =>
+      scheduleTimeout(callback, ms === 120_000 ? 350 : ms, ...args)) as typeof setTimeout;
+    shellProbe = { id: "unattended-shell", command: "while true; do sleep 1; done" };
+    const timed = await success({ action: "delegate", spaceId: space.id, text: "等待隔离的命令超时" });
+    assert.equal((await agent.waitForSubmission(timed.receipt)).receipt?.status, "done");
+    assert.match(outputs.get("unattended-shell")?.text ?? "", /Bash produced no stdout or stderr for 120 seconds/);
+    assert.equal(agent.getTaskFailuresForDiagnosis(timed.id)[0]?.sideEffects, "unknown");
+  } finally {
+    globalThis.setTimeout = scheduleTimeout;
+  }
+  console.log("PASS Dots 后台 Bash 无输出时失败，外部操作结果仍标记为待核对");
   console.log("PASS Dots 专属模型与主模型、已有任务模型隔离，失效明确报错，取消选择恢复跟随主模型");
   console.log("PASS disabled main model reported with zero worker requests, paraphrase replay and separate dated assignments");
   console.log("PASS proactive pause, scoped batch and unrelated active task isolation, preserved subscriptions, global stop of Dots timers only, explicit existing Goal");

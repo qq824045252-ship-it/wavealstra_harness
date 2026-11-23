@@ -24,6 +24,8 @@ import { NATIVE_FILE_READ_ATTEMPT } from "./DurableFileReadEvidence";
 import { durableExecutionContext } from "./DurableExecutionContext";
 import { DurableSubagentIdentity } from "./DurableSubagents";
 import { durableMcpToolName } from "./DurableMcp";
+import { isNativeShell } from "./DurableShellTerminal";
+import { BASH_INACTIVITY_MESSAGE } from "../../platform/bash-inactivity";
 import { effectIntentSchema, effectOperationId, isNativeFileMutation, NATIVE_FILE_EVIDENCE_MEMO, NATIVE_FILE_INTENT_MEMO,
   prepareFileEffect, readEffectIntent, verifyFileEffect, type EffectEvidence, type EffectIntent, type ExternalEffectRecovery } from "./DurableEffectRecovery";
 
@@ -160,7 +162,10 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const container = call.name === "codemode";
         try { call = policyCall(call); }
         catch { /* Pi retains the invalid envelope result under its original tool identity. */ }
-        const interrupted = result.diagnostics?.find(item => ["interrupted", "aborted", "abandoned", "restart_limit"].includes(item.code ?? ""));
+        const interrupted = result.diagnostics?.find(item =>
+          ["interrupted", "aborted", "abandoned", "restart_limit"].includes(item.code ?? "")
+          || isNativeShell(originalCall.name) && item.code === "tool_error"
+            && (item.message === BASH_INACTIVITY_MESSAGE || /^Command timed out after [\d.e+-]+ seconds$/iu.test(item.message)));
         const execution = await identity(api, context, call);
         const attempt = options.attempts.findDurable(execution, call.id);
         const boundary = { ...execution, conversationId: api.conversationId, toolTaskId: api.taskId,
@@ -291,6 +296,8 @@ function projectToolReceipt(result: ToolExecutionResult, { receipt, effectStatus
     ? result.details : result.details === undefined ? {} : { toolDetails: result.details };
   const note = effectStatus === "failed" ? "业务回执确认本次操作失败。"
     : effectStatus === "inconclusive" ? "核验未确认原操作完成；没有自动重发。"
+    : interrupted && receipt.settlement === "unknown"
+      ? "工具已中断，外部操作结果尚未确认。先回读已有文件或业务回执，并核对由命令启动的外部进程，再决定是否重试。"
     : receipt.status === "passed" && (interrupted || result.isError)
       ? effectStatus === "passed" ? "已通过回读确认原操作完成，未重复执行。" : "已恢复原工具的执行回执，未重复执行。"
       : undefined;

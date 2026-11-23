@@ -38,6 +38,7 @@ import { computerAutomationService, type ComputerBatchAction, type ComputerExecI
 import { formatComputerUseFailureEvidence, withComputerUseDeliveryEvidence } from "./ComputerUsePolicy";
 import { computerUseToolCopy } from "../platform/computer-use/support";
 import { currentPlatformId } from "../platform";
+import { runBashWithInactivityTimeout } from "../platform/bash-inactivity";
 import { computerUseRunCoordinator } from "./ComputerUseRunCoordinator";
 import { getAgentBashShellPath } from "../agent-shell-settings";
 import { getMyBuddyDir } from "../paths";
@@ -1191,16 +1192,21 @@ export function createBuiltinCapabilityExtension(bridge: BuiltinCapabilityExtens
             // schema 已按平台门控；这里是防御性兜底（例如调用方绕过 schema 直接传参）。
             if (!tool) return errorResult("execute_code", "当前平台不支持 PowerShell（仅 Windows）");
             const evidenceIdentity = codeExecutionEvidenceIdentity({ language: p.language, code });
+            const shellInput = { command: spec.command(spec.file), timeout: p.timeout };
             return await executeVerifiedCode({
               bridge: bridge.shellVerification,
               toolCallId: id,
               evidenceIdentity,
               signal,
               execute: async () => ({
-                result: withPythonDetails(
-                  await tool.execute(id, { command: spec.command(spec.file), timeout: p.timeout }, signal, onUpdate),
-                  pythonContext,
-                ),
+                result: withPythonDetails(spec.runner === "bash"
+                  ? await runBashWithInactivityTimeout(signal, (bashSignal, onOutput) =>
+                    tool.execute(id, shellInput, bashSignal, update => {
+                      if (bashSignal.aborted) return;
+                      onOutput();
+                      onUpdate?.(update);
+                    }))
+                  : await tool.execute(id, shellInput, signal, onUpdate), pythonContext),
                 exitCode: 0,
               }),
             });

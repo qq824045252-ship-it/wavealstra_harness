@@ -9,7 +9,10 @@ export function officeUseSkillDirectory(): string {
 }
 
 export function officeUseInstructions(writable: boolean): string {
-  const inspect = `处理 DOCX、XLSX 或 PPTX 时，先读 Office Use 技能和对应格式的参考，再用 ${office.documentRead} 查看结构和定位目标。用 ${office.documentRender} 检查页面、幻灯片或当前 Excel 工作表的可见区域。`;
+  const inspect = [
+    `核验已保存的 XLSX 单元格填色时，先用 ${office.documentRead} 的 verify 操作读取工作簿。需要核对 PNG 预览时一并提供文件，区域包含空白边缘。`,
+    `在 Office 编辑器中处理 DOCX、XLSX 或 PPTX 时，先读 Office Use 技能和对应格式的参考。用 ${office.documentRead} 查看结构和定位目标，用 ${office.documentRender} 检查页面、幻灯片或当前工作表的可见区域。`,
+  ].join(" ");
   if (!writable) return inspect;
   return [
     inspect,

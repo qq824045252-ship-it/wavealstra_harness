@@ -3917,6 +3917,10 @@ export class AgentService {
     return this.taskDiagnostics.list(taskId, limit, offset);
   }
 
+  getTaskFailuresForDiagnosis(taskId: string) {
+    return this.executionFailures.list(taskId, { includeDismissed: true, limit: 5 });
+  }
+
   clearRuntimeContextSnapshots(taskId?: string): number {
     if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
     return this.runtimeSnapshots.clear(taskId);
@@ -5421,7 +5425,7 @@ export class AgentService {
    * 模型挂起时 pi abort 可能清不掉 isStreaming → 强制 dispose 注册表项，
    * 避免「当前正在生成回复」永久挡 regenerate/发消息。
    */
-  async abort(taskId: string): Promise<void> {
+  async abort(taskId: string): Promise<import("../../shared/agent-ipc").AgentAbortResult> {
     this.localWorkflow?.terminal.closeTask(taskId);
     if (this.durableBots?.owns(taskId)) return this.durableBots.abort(taskId);
     if (this.manualCompactions.has(taskId)) { this.abortCompaction(taskId); return; }

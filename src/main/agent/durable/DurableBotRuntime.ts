@@ -32,7 +32,7 @@ import { CodingTools, createEditTool, createWriteTool } from "@earendil-works/pi
 import { capabilityResultFromDetails } from "../../../shared/capability-result";
 import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { DurableExecutionEnv } from "./DurableExecutionEnv";
 import type { CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import type { ChatMessageDto, TaskHistoryTarget, TaskUserQuestionsDto, TaskUserQuestionsQuery } from "../../../shared/agent-ipc";
 import { durableHistoryIdentity } from "./DurableHistoryIdentity";
@@ -1156,14 +1156,16 @@ export class DurableBotRuntime {
 
   /** Stop only the native work visible at capture. Later submissions and generations
    * belonging to a different run remain independently runnable. */
-  async stopObservedRun(): Promise<void> {
+  async stopObservedRun(inputVersion?: string, stopChildren?: () => Promise<void>): Promise<"intent_changed" | void> {
     const conversation = this.conversation;
     const observed = await conversation.commit(async tx => {
+      if (inputVersion !== undefined && await dotsInputVersion(tx, conversation.id) !== inputVersion) return;
       const live = await tx.doc(LiveDoc, conversation.id);
       const inbox = await tx.doc(InboxDoc, conversation.id);
       return { run: live.run && { taskId: live.run.taskId, first: live.run.first, inputs: [...live.run.inputs] },
         queued: inbox.items.filter(item => item.mode !== "write").map(item => item.id) };
     }, ctx);
+    if (!observed) return "intent_changed";
     const stopQueued = observed.queued.map(async id => (await this.harness.submission(id, ctx))?.abort(ctx));
     const stopActive = async () => {
       let run = observed.run;
@@ -1175,7 +1177,7 @@ export class DurableBotRuntime {
         run = { taskId: next.taskId, first: next.first, inputs: next.inputs };
       }
     };
-    await Promise.all([...stopQueued, stopActive()]);
+    await Promise.all([...stopQueued, stopActive(), stopChildren?.()]);
     await this.refresh();
   }
 
@@ -1675,10 +1677,10 @@ function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegi
   ].map(withShellTerminalGuidance);
 }
 
-async function durableExecutionEnv(target: EnvTarget, context: Context, rootCwd: string): Promise<NodeExecutionEnv> {
+async function durableExecutionEnv(target: EnvTarget, context: Context, rootCwd: string): Promise<DurableExecutionEnv> {
   const cwd = await resolveDurableExecutionCwd(target, context, rootCwd);
   if (!statSync(cwd).isDirectory()) throw new Error("任务工作目录失效，请修复项目目录后继续");
-  return new NodeExecutionEnv({ cwd, shellPath: getAgentBashShellPath(cwd, getMyBuddyDir()) });
+  return new DurableExecutionEnv({ cwd, shellPath: getAgentBashShellPath(cwd, getMyBuddyDir()) });
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */

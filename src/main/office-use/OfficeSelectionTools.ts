@@ -4,6 +4,7 @@ import { Type, type Static } from "typebox";
 import type { PermissionMode } from "../../shared/agent-ipc";
 import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { officeCreateParameters, type OfficeCreateRequest } from "./OfficeDocumentCreation";
+import { verifyExcelPixelArt } from "./OfficeExcelPixelArt";
 
 const index = Type.Integer({ minimum: 0, maximum: 1_048_575 });
 const shapeId = Type.Integer({ minimum: 0, maximum: 4_294_967_295 });
@@ -33,6 +34,15 @@ const documentQuery = Type.Object({
     Type.Object({ ...excelAddress, values: Type.Optional(Type.Union([Type.Literal("raw"), Type.Literal("formatted"), Type.Literal("formulas")])) }, { additionalProperties: false }),
     Type.Object({ kind: Type.Literal("ppt"), slideIndex: index, shapeId: Type.Optional(shapeId), notes: Type.Optional(Type.Boolean()) }, { additionalProperties: false }),
   ])),
+}, { additionalProperties: false });
+const verifyColor = Type.String({ pattern: "^#?[a-fA-F0-9]{6}$" });
+const savedVerification = Type.Object({
+  action: Type.Literal("verify"),
+  path: Type.String({ minLength: 1, maxLength: 1000 }),
+  target: Type.Object(excelAddress, { additionalProperties: false }),
+  previewPath: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+  palette: Type.Optional(Type.Array(verifyColor, { minItems: 1, maxItems: 256 })),
+  background: Type.Optional(verifyColor),
 }, { additionalProperties: false });
 const renderTarget = Type.Union([
   Type.Object({ kind: Type.Literal("word"), pageIndex: index }, { additionalProperties: false }),
@@ -135,6 +145,7 @@ async function toolResult(run: () => Promise<object>) {
 
 export function createOfficeSelectionExtension(input: {
   taskId: string;
+  taskRoot?: () => string;
   getPermissionMode: () => PermissionMode;
   isEnabled: () => boolean;
   create?: (request: OfficeCreateRequest, toolCallId: string, assertWritable: () => void) => Promise<object>;
@@ -163,21 +174,34 @@ export function createOfficeSelectionExtension(input: {
     pi.registerTool({
       name: OFFICE_USE_TOOLS.documentRead,
       label: "Office Use · 阅读文档",
-      description: "读取当前任务打开的 Office 文档，包括尚未保存的编辑。inspect 查看结构，find 按 query 查找，read 读取 target：Word blockIndex（含表格）；Excel sheet 与 A1 address（至多 1024 格，values 可选 raw、formatted 或 formulas）；PowerPoint slideIndex 加可选 shapeId，或 notes:true。evaluate 在当前 Excel 工作表试算 evaluation 的 sheet、cell、formula，不写入单元格。编号从 0 开始，nextOffset 用于翻页。保留选区。",
-      parameters: documentQuery,
-      execute: async (_id, params: Static<typeof documentQuery>, signal) => toolResult(async () => {
-        signal?.throwIfAborted();
-        assertEnabled();
-        const binding = activeBinding(input.taskId);
-        const result = await binding.ports.read(params);
-        signal?.throwIfAborted();
-        assertEnabled();
-        if (activeBinding(input.taskId) !== binding) throw new Error("Office 文档已切换，请重新读取。");
-        if (!result || typeof result !== "object" || JSON.stringify(result).length > 32_000) {
-          throw new Error("Office 结果过大，请缩小范围或减少每页条数。");
-        }
-        return result;
-      }),
+      description: "读取当前任务打开的 Office 文档，包括尚未保存的编辑。inspect 查看结构，find 按 query 查找，read 读取 target：Word blockIndex（含表格）；Excel sheet 与 A1 address（至多 1024 格，values 可选 raw、formatted 或 formulas）；PowerPoint slideIndex 加可选 shapeId，或 notes:true。evaluate 在当前工作表试算公式。verify 在不打开编辑器的情况下，回读任务目录里 path 指定的 XLSX，核对 target 指定区域的填色与网格线。可传 palette 检查允许的颜色，可传 previewPath 逐格比对 PNG。编号从 0 开始，nextOffset 用于翻页。",
+      parameters: Type.Union([documentQuery, savedVerification]),
+      execute: async (_id, params: Static<typeof documentQuery> | Static<typeof savedVerification>, signal) => {
+        const response = await toolResult(async () => {
+          signal?.throwIfAborted();
+          assertEnabled();
+          if (params.action === "verify") {
+            const taskRoot = input.taskRoot?.();
+            if (!taskRoot) throw new Error("当前任务目录不可用。");
+            const { action: _action, target, ...files } = params;
+            const result = await verifyExcelPixelArt(taskRoot, { ...files, sheet: target.sheet, range: target.address }, signal);
+            assertEnabled();
+            return result;
+          }
+          const binding = activeBinding(input.taskId);
+          const result = await binding.ports.read(params);
+          signal?.throwIfAborted();
+          assertEnabled();
+          if (activeBinding(input.taskId) !== binding) throw new Error("Office 文档已切换，请重新读取。");
+          if (!result || typeof result !== "object" || JSON.stringify(result).length > 32_000) {
+            throw new Error("Office 结果过大，请缩小范围或减少每页条数。");
+          }
+          return result;
+        });
+        return params.action === "verify" && "status" in response.details && response.details.status === "mismatch"
+          ? { ...response, isError: true }
+          : response;
+      },
     });
 
     pi.registerTool({
