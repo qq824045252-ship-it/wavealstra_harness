@@ -5,6 +5,8 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import type { SavedArtifactRequest } from '../../shared/saved-artifact';
 
 const within = (root: string, path: string) => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('..' + sep); };
+const NODE_READ_FILE_LIMIT = 0x7fffffff;
+interface Capture { limit: number; error: string }
 export interface SavedArtifactActionsPorts {
   storageRoot: string;
   exportRoot: string;
@@ -29,8 +31,10 @@ export class SavedArtifactActions {
     const name = (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem) ? '_' : '') + stem + extension;
     return { name, path };
   }
-  /** Bounded memory; a failed verification only leaves an unpublished temporary copy. */
-  private async verify(path: string, destination?: string, textChunks?: Buffer[]): Promise<void> {
+  /** Stream exports. For readers, return the same bytes that were hashed. */
+  private verify(path: string, destination?: string): Promise<void>;
+  private verify(path: string, destination: undefined, capture: Capture): Promise<Buffer>;
+  private async verify(path: string, destination?: string, capture?: Capture): Promise<Buffer | void> {
     const before = await lstat(path);
     if (!before.isFile() || before.isSymbolicLink()) throw new Error('保存版本不是普通文件');
     const input = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -38,16 +42,17 @@ export class SavedArtifactActions {
     try {
       const first = await input.stat();
       if (!first.isFile() || first.ino !== before.ino || first.dev !== before.dev) throw new Error('保存版本发生变化');
-      if (textChunks && first.size > 1_048_576) throw new Error('文件超过文本预览大小上限');
+      if (capture && first.size > capture.limit) throw new Error(capture.error);
       if (destination) output = await open(destination, 'wx', 0o600);
-      const buffer = Buffer.allocUnsafe(64 * 1024), hash = createHash('sha256');
+      const captured = capture ? Buffer.allocUnsafe(first.size) : undefined;
+      const buffer = captured ?? Buffer.allocUnsafe(64 * 1024), hash = createHash('sha256');
       let length = 0;
       while (length < first.size) {
-        const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, first.size - length), null);
+        const offset = captured ? length : 0;
+        const { bytesRead } = await input.read(buffer, offset, Math.min(64 * 1024, first.size - length), null);
         if (!bytesRead) break;
-        const chunk = buffer.subarray(0, bytesRead); hash.update(chunk);
+        const chunk = buffer.subarray(offset, offset + bytesRead); hash.update(chunk);
         if (output) await output.writeFile(chunk);
-        if (textChunks) textChunks.push(Buffer.from(chunk));
         length += bytesRead;
       }
       const after = await input.stat(), current = await lstat(path);
@@ -55,6 +60,7 @@ export class SavedArtifactActions {
         || current.ino !== first.ino || current.dev !== first.dev || current.size !== after.size || current.mtimeMs !== after.mtimeMs
         || await realpath(path) !== path || hash.digest('hex') !== basename(path).split('.')[0]) throw new Error('保存版本完整性校验失败');
       await output?.sync();
+      return captured;
     } finally { await input.close(); await output?.close(); }
   }
   async openSystem(request: SavedArtifactRequest): Promise<void> {
@@ -73,12 +79,14 @@ export class SavedArtifactActions {
     return saved;
   }
   async readText(request: SavedArtifactRequest): Promise<string> {
-    const saved = await this.identity(request);
-    const chunks: Buffer[] = [];
-    await this.verify(saved.path, undefined, chunks);
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+    const bytes = await this.readVerifiedBytes(request, 1_048_576, '文件超过文本预览大小上限');
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     if (text.includes('\0')) throw new Error('此保存版本不能作为文本预览');
     return text;
+  }
+  async readVerifiedBytes(request: SavedArtifactRequest, limit = NODE_READ_FILE_LIMIT, error = '保存版本超过文件大小上限'): Promise<Buffer> {
+    const saved = await this.identity(request);
+    return this.verify(saved.path, undefined, { limit, error });
   }
   async saveAs(request: SavedArtifactRequest): Promise<{ canceled: boolean; path?: string }> {
     const initial = await this.identity(request); await this.verify(initial.path);

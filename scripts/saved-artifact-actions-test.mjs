@@ -16,6 +16,12 @@ try {
   let destination, opened, calls = 0, dialog = async () => destination;
   const service = new SavedArtifactActions({ storageRoot, exportRoot: join(root, 'exports'), chooseDestination: () => dialog(), openPath: async path => { calls++; opened = path; return ''; } });
   const request = { snapshotPath, name: '../../report.exe' };
+  const multiChunk = Buffer.concat([Buffer.alloc(64 * 1024, 0x41), Buffer.from('second chunk')]);
+  const multiChunkPath = join(store, createHash('sha256').update(multiChunk).digest('hex') + '.txt');
+  await writeFile(multiChunkPath, multiChunk);
+  const multiChunkRequest = { snapshotPath: await realpath(multiChunkPath), name: 'chunked.txt' };
+  assert.deepEqual(await service.readVerifiedBytes(multiChunkRequest, multiChunk.length), multiChunk);
+  await assert.rejects(service.readVerifiedBytes(multiChunkRequest, multiChunk.length - 1), /文件大小上限/);
   await service.openSystem(request);
   assert.equal(calls, 1); assert(opened.endsWith('report.txt')); assert.notEqual(opened, snapshotPath);
   assert.deepEqual(await readFile(opened), bytes);

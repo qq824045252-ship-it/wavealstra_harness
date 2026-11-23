@@ -4,6 +4,7 @@ import type { OfficeOpen } from "../../shared/office-use";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import type { SavedArtifactActions } from "../artifact/SavedArtifactActions";
 import type { LibraryService } from "../library/LibraryService";
+import { DRAWIO_FILE_LIMIT } from "../drawio-use/DrawioXml";
 import { assertEditorFile, atomicBytes, editorKindFor, inside, plainFile, type OfficeFileTarget } from "./OfficeFile";
 
 interface OfficeSourcePorts {
@@ -140,7 +141,10 @@ export async function resolveOfficeTarget(request: OfficeOpen, ports: OfficeSour
       if (!equalPath(current.path, path)) throw new Error("交付文件已发生变化");
       await plainFile(path);
     };
-    const target: OfficeFileTarget = { path, name, kind, identity: JSON.stringify(["work", path]), check };
+    const target: OfficeFileTarget = { path, name, kind, identity: JSON.stringify(["work", path]), check,
+      readVerified: () => kind === "drawio"
+        ? ports.saved.readVerifiedBytes(source.file, DRAWIO_FILE_LIMIT, "Draw.io 源文件超过 32 MiB")
+        : ports.saved.readVerifiedBytes(source.file) };
     target.copy = async (bytes, unchanged) => {
       const destination = await saveOfficeAs(bytes, target, ports, unchanged ?? check);
       return destination ? "已保存副本 " + destination : null;

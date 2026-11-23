@@ -3,6 +3,7 @@ import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SavedArtifactActions } from "../src/main/artifact/SavedArtifactActions";
+import { resolveCadCraftFile } from "../src/main/artifact/CadCraftFile";
 import type { ArtifactService } from "../src/main/artifact/ArtifactService";
 import type { LibraryService } from "../src/main/library/LibraryService";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
@@ -119,6 +120,19 @@ async function run(): Promise<void> {
       source: { type: "work", file: { snapshotPath, name: "work.xlsx" } } };
     const workFile = new OfficeFile(await resolveOfficeTarget(workRequest, ports), drafts);
     assert.deepEqual(await workFile.open(), original);
+    const workOpenTarget = await resolveOfficeTarget(workRequest, ports);
+    const verifySnapshot = ports.saved.verifiedSnapshot.bind(ports.saved);
+    ports.saved.verifiedSnapshot = async file => {
+      const snapshot = await verifySnapshot(file);
+      await writeFile(snapshot.path, edited);
+      return snapshot;
+    };
+    try {
+      assert.deepEqual(await new OfficeFile(workOpenTarget, drafts).open(), original);
+    } finally {
+      ports.saved.verifiedSnapshot = verifySnapshot;
+      await writeFile(snapshotPath, original);
+    }
     destination = join(workspace, "work-copy.xlsx");
     assert.match((await workFile.write(edited, false)).message, /已保存副本/);
     assert.deepEqual(await readFile(snapshotPath), original);
@@ -128,6 +142,17 @@ async function run(): Promise<void> {
     await assert.rejects(workFile.write(edited, false), /完整性/);
     await assert.rejects(lstat(destination), { code: "ENOENT" });
     actionOnChoose = undefined;
+
+    const dxf = (version: string) => "0\nSECTION\n2\nHEADER\n999\n" + version + "\n0\nENDSEC\n0\nEOF\n";
+    const drawing = dxf("ORIGINAL");
+    const drawingPath = join(snapshotDirectory, digest(drawing) + ".dxf");
+    await writeFile(drawingPath, drawing);
+    const savedDrawing = { type: "work", file: { snapshotPath: drawingPath, name: "plan.dxf" } } as const;
+    const cadPorts = { ...ports, locateCli: async () => { throw new Error("DXF must open without conversion"); } };
+    const cad = await resolveCadCraftFile(savedDrawing, cadPorts);
+    assert.equal((await cad.open()).toString(), drawing);
+    await writeFile(drawingPath, dxf("REPLACED"));
+    await assert.rejects(cad.open(), /完整性校验失败/);
 
     const libraryRequest: OfficeOpen = { name: "library.xlsx", source: { type: "library", id: "item", owner } };
     await writeFile(libraryApi.absolutePath(), original);

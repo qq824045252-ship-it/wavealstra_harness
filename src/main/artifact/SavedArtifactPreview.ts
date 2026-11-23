@@ -9,10 +9,12 @@ import type { SavedArtifactPreview, SavedArtifactRequest } from '../../shared/sa
 const MAX_FILE = 8 * 1024 * 1024;
 const MAX_FILES = 128;
 const MAX_BUNDLE = 32 * 1024 * 1024;
+const BUNDLE_SOURCE = /\.(?:html?|css|m?js)$/i;
 const hash = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
 interface Resource { snapshot: string; digest: string; bytes: number }
 interface Manifest { version: 1; entry: string; resources: Record<string, Resource>; warnings: string[] }
-type Inspect = (cwd: string, path: string, directory?: string) => Promise<{ snapshotPath?: string; digest: string; sizeBytes: number }>;
+interface SnapshotReceipt { snapshotPath?: string; digest: string; sizeBytes: number }
+type Inspect = (cwd: string, path: string, directory?: string) => Promise<SnapshotReceipt>;
 const inside = (root: string, path: string) => path === root || path.startsWith(root + sep);
 
 /** Only actual document resource attributes/imports; never crawl the directory. */
@@ -44,8 +46,25 @@ export function savedResourceReferences(content: string, extension: string): str
   return [...new Set(refs.filter(Boolean))];
 }
 
+function referencedBundlePath(owner: string, ref: string): { name: string } | { warning: string; external?: true } | undefined {
+  if (/^(?:data:|blob:|#)/i.test(ref)) return;
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(ref)) return { warning: `外部资源未保存：${ref.slice(0, 160)}`, external: true };
+  const raw = decodeURIComponent(ref.split(/[?#]/)[0]);
+  if (!raw) return;
+  if (raw.includes('\0') || raw.includes('\\') || raw.startsWith('/')) return { warning: `不支持的资源路径：${raw.slice(0, 160)}` };
+  const name = posix.normalize(posix.join(posix.dirname(owner), raw));
+  return name === '..' || name.startsWith('../') ? { warning: `资源路径越界：${raw.slice(0, 160)}` } : { name };
+}
+
+function bundleReferences(name: string, bytes: Uint8Array) {
+  if (!BUNDLE_SOURCE.test(name)) return [];
+  const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  return savedResourceReferences(content, extname(name).toLowerCase()).flatMap(ref => referencedBundlePath(name, ref) ?? []);
+}
+
 /** Captured at registration time, never at view time. Each manifest hashes its complete resource map. */
-export async function captureSavedWebBundle(cwd: string, sourcePath: string, snapshotPath: string, directory: string, inspect: Inspect): Promise<string> {
+export async function captureSavedWebBundle(cwd: string, sourcePath: string, snapshotPath: string, directory: string,
+  inspect: Inspect, registeredResource?: SnapshotReceipt & { path: string }): Promise<string> {
   const root = await realpath(cwd);
   // Registration resolves the host directory before creating the snapshot.
   // Compare against the same canonical parent, while requiring artifacts itself to be a real directory.
@@ -64,27 +83,23 @@ export async function captureSavedWebBundle(cwd: string, sourcePath: string, sna
     if (visited.size > MAX_FILES) { warnings.push('资源超过 128 个，仅保存已明确捕获的资源'); break; }
     try {
       const source = resolve(root, item.name);
-      // The entry is already immutable: its mutable source may have been moved or deleted.
+      const saved = registeredResource && relative(source, registeredResource.path) === '' ? registeredResource : undefined;
+      const pinnedSnapshot = item.snapshotPath || saved?.snapshotPath;
+      // An already saved source may have been moved or deleted.
       // Dependencies still require real-path confinement before capture.
-      if (!inside(root, source) || (!item.snapshotPath && !inside(root, await realpath(source)))) throw new Error('资源位于工作区之外');
-      if (item.snapshotPath && (await realpath(item.snapshotPath) !== resolve(item.snapshotPath) || dirname(resolve(item.snapshotPath)) !== store)) throw new Error('保存版本路径无效');
-      const receipt = item.snapshotPath ? { snapshotPath: item.snapshotPath, digest: basename(item.snapshotPath).split('.')[0], sizeBytes: (await stat(item.snapshotPath)).size } : await inspect(root, source, directory);
+      if (!inside(root, source) || (!pinnedSnapshot && !inside(root, await realpath(source)))) throw new Error('资源位于工作区之外');
+      if (pinnedSnapshot && (await realpath(pinnedSnapshot) !== resolve(pinnedSnapshot) || dirname(resolve(pinnedSnapshot)) !== store)) throw new Error('保存版本路径无效');
+      const receipt = saved ?? (pinnedSnapshot
+        ? { snapshotPath: pinnedSnapshot, digest: basename(pinnedSnapshot).split('.')[0], sizeBytes: (await stat(pinnedSnapshot)).size }
+        : await inspect(root, source, directory));
       if (!receipt.snapshotPath) throw new Error('资源没有保存版本');
       total += receipt.sizeBytes;
       if (receipt.sizeBytes > MAX_FILE || total > MAX_BUNDLE) throw new Error('资源大小超出预览限制（单文件 8 MiB / 总计 32 MiB）');
       resources[item.name] = { snapshot: basename(receipt.snapshotPath), digest: receipt.digest, bytes: receipt.sizeBytes };
-      const extension = extname(item.name).toLowerCase();
-      if (!/^\.(?:html?|css|m?js)$/.test(extension)) continue;
-      const content = new TextDecoder('utf-8', { fatal: true }).decode(await readFile(receipt.snapshotPath));
-      for (const ref of savedResourceReferences(content, extension)) {
-        if (/^(?:data:|blob:|#)/i.test(ref)) continue;
-        if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(ref)) { warnings.push(`外部资源未保存：${ref.slice(0, 160)}`); continue; }
-        const raw = decodeURIComponent(ref.split(/[?#]/)[0]);
-        if (!raw) continue;
-        if (raw.includes('\0') || raw.includes('\\') || raw.startsWith('/')) { warnings.push(`不支持的资源路径：${raw.slice(0, 160)}`); continue; }
-        const name = posix.normalize(posix.join(posix.dirname(item.name), raw));
-        if (name === '..' || name.startsWith('../')) { warnings.push(`资源路径越界：${raw.slice(0, 160)}`); continue; }
-        queue.push({ name, snapshotPath: '' });
+      if (!BUNDLE_SOURCE.test(item.name)) continue;
+      for (const dependency of bundleReferences(item.name, await readFile(receipt.snapshotPath))) {
+        if ('warning' in dependency) warnings.push(dependency.warning);
+        else queue.push({ name: dependency.name, snapshotPath: '' });
       }
     } catch (error) { warnings.push(`${item.name}：${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -109,7 +124,8 @@ export async function savedBundleDependsOn(manifestPath: string | undefined, cwd
 function bridge(token: string): string {
   return `<script>(()=>{const token=${JSON.stringify(token)};const send=(type,data)=>parent.postMessage({type,token,...data},'*');const link=url=>{try{const u=new URL(url,location.href);if(/^https?:$/.test(u.protocol)){send('mybuddy:saved-artifact-link',{url:u.href});return true}}catch{}return false};document.addEventListener('click',e=>{const a=e.target.closest?.('a[href]');if(a&&link(a.href)){e.preventDefault();e.stopImmediatePropagation()}},true);window.open=(url)=>{link(url);return null};window.addEventListener('error',e=>{if(e.target!==window)send('mybuddy:saved-artifact-error',{message:'页面资源加载失败；保存版本可能缺少依赖'})},true);})();</script>`;
 }
-interface Session { owner: number; store: string; manifest: Manifest; source: string }
+interface SavedBundle { store: string; manifest: Manifest; source: string }
+interface Session extends SavedBundle { owner: number }
 export class SavedArtifactPreviewService {
   private readonly sessions = new Map<string, Session>();
   private readonly owners = new Map<number, WebContents>();
@@ -131,7 +147,7 @@ export class SavedArtifactPreviewService {
       else void event.frame?.executeJavaScript(`parent.postMessage({type:'mybuddy:saved-artifact-error',token:${JSON.stringify(saved[1])},message:'该导航不属于当前保存版本'},'*')`).catch(() => {});
     });
   }
-  async prepare(owner: number, request: SavedArtifactRequest): Promise<SavedArtifactPreview> {
+  private async loadBundle(request: SavedArtifactRequest): Promise<SavedBundle> {
     if (!request || typeof request.snapshotPath !== 'string' || typeof request.name !== 'string') throw new Error('保存版本参数无效');
     const snapshot = resolve(request.snapshotPath);
     if (await realpath(snapshot) !== snapshot || !/^[a-f0-9]{64}\.(?:html?|bin)$/i.test(basename(snapshot)) || basename(dirname(snapshot)) !== 'artifacts') throw new Error('不是已登记的 HTML 保存版本');
@@ -149,9 +165,27 @@ export class SavedArtifactPreviewService {
     } else if (/\b(?:src|href|srcset)\s*=|\b(?:import|fetch)\s*\(|url\(/i.test(source)) {
       manifest.warnings.push('旧保存版本未包含依赖资源，页面可能不完整；不会读取当前工作目录补齐。');
     }
+    return { store: dirname(snapshot), manifest, source };
+  }
+  async verifyBundle(request: SavedArtifactRequest): Promise<void> {
+    const { store, manifest } = await this.loadBundle(request);
+    for (const [name, resource] of Object.entries(manifest.resources)) {
+      const bytes = await this.verifiedRead(store, resource);
+      for (const dependency of bundleReferences(name, bytes)) {
+        if ('warning' in dependency) {
+          if (!dependency.external) throw new Error(dependency.warning);
+        } else if (!Object.hasOwn(manifest.resources, dependency.name)) {
+          throw new Error(`保存版本未包含资源：${dependency.name}`);
+        }
+      }
+    }
+  }
+  async prepare(owner: number, request: SavedArtifactRequest): Promise<SavedArtifactPreview> {
+    const bundle = await this.loadBundle(request);
+    const { manifest, source } = bundle;
     if (this.sessions.size >= 64) throw new Error('打开的预览过多，请先关闭未使用的预览');
     const token = randomBytes(24).toString('hex');
-    this.sessions.set(token, { owner, store: dirname(snapshot), manifest, source });
+    this.sessions.set(token, { owner, ...bundle });
     return { token, url: `mybuddy-artifact://saved-${token}/${manifest.entry.split('/').map(encodeURIComponent).join('/')}`, source, warnings: manifest.warnings };
   }
   release(owner: number, token: string): void {

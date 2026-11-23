@@ -21,6 +21,7 @@ export interface OfficeFileTarget {
   path: string; name: string; kind: EditorFileKind; base64?: boolean; readOnly?: boolean; taskId?: string;
   identity: string;
   check(): Promise<void>;
+  readVerified?(): Promise<Buffer>;
   copy?(bytes: Buffer, checkUnchanged?: () => Promise<void>): Promise<string | null>;
   published?(): void;
 }
@@ -82,6 +83,10 @@ export class OfficeFile {
   conflict = false;
   constructor(readonly target: OfficeFileTarget, private drafts: string) {}
   private async current(): Promise<Buffer> {
+    if (this.target.readVerified) {
+      await plainFile(this.target.path);
+      return this.target.readVerified();
+    }
     await this.target.check();
     await plainFile(this.target.path);
     if (this.target.kind === "drawio" && (await lstat(this.target.path)).size >

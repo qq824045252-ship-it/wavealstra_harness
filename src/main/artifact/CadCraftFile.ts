@@ -8,10 +8,10 @@ import { convertCadCraftDrawing } from "../platform/cadcraft";
 import type { ArtifactService } from "./ArtifactService";
 import type { SavedArtifactActions } from "./SavedArtifactActions";
 
-interface Drawing { path: string; name: string; identity: string; readOnly: false }
+interface Drawing { path: string; name: string; identity: string; readOnly: false; readVerified?: () => Promise<Buffer> }
 interface Ports {
   artifacts: Pick<ArtifactService, "get" | "entryPathOf">;
-  saved: Pick<SavedArtifactActions, "verifiedSnapshot">;
+  saved: Pick<SavedArtifactActions, "verifiedSnapshot" | "readVerifiedBytes">;
   storageRoot: string;
   locateCli: () => Promise<string>;
   choose(defaultPath: string, extension: string): Promise<string | undefined>;
@@ -25,7 +25,8 @@ const fileLimit = 128 * 1024 * 1024;
 export async function resolveCadCraftFile(source: CadCraftSource, ports: Ports): Promise<CadCraftFile> {
   if (source?.type === "work") {
     const drawing = await ports.saved.verifiedSnapshot(source.file);
-    return new CadCraftFile({ ...drawing, identity: JSON.stringify(["work", drawing.path]), readOnly: false }, ports);
+    return new CadCraftFile({ ...drawing, identity: JSON.stringify(["work", drawing.path]), readOnly: false,
+      readVerified: () => ports.saved.readVerifiedBytes(source.file, fileLimit, "图纸为空或超过 128 MiB") }, ports);
   }
   if (source?.type !== "artifact" || typeof source.taskId !== "string" || typeof source.id !== "string") {
     throw new Error("CAD 图纸来源无效");
@@ -60,9 +61,12 @@ export class CadCraftFile {
 
   async open(): Promise<Buffer> {
     await plainFile(this.target.path);
-    const info = await lstat(this.target.path);
-    if (info.size < 6 || info.size > fileLimit) throw new Error("图纸为空或超过 128 MiB");
-    const bytes = await readFile(this.target.path);
+    if (!this.target.readVerified) {
+      const info = await lstat(this.target.path);
+      if (info.size < 6 || info.size > fileLimit) throw new Error("图纸为空或超过 128 MiB");
+    }
+    const bytes = await (this.target.readVerified?.() ?? readFile(this.target.path));
+    if (bytes.length < 6 || bytes.length > fileLimit) throw new Error("图纸为空或超过 128 MiB");
     const directory = join(this.ports.storageRoot, "cadcraft-drafts");
     this.draftPath = join(directory, digest(`${this.target.identity}:${digest(bytes)}`) + ".dxf");
     let cli: string | undefined;

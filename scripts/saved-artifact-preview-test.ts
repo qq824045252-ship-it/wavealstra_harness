@@ -36,6 +36,7 @@ try {
   service.attachOwner({ id: 1, once: () => {}, on: (name: string, handler: any) => handlers.set(name, handler), isDestroyed: () => false,
     session: { clearStorageData: async () => {} } } as any, url => routed.push(url));
   const preview = await service.prepare(1, { snapshotPath: receipt.snapshotPath!, name: 'index.html', manifestPath });
+  await service.verifyBundle({ snapshotPath: receipt.snapshotPath!, name: 'index.html', manifestPath });
   assert.equal(preview.source, html);
   let prevented = false;
   const event = (url: string) => ({ frame: { url: preview.url, executeJavaScript: async () => {} }, url, preventDefault: () => { prevented = true; } });
@@ -66,11 +67,17 @@ try {
   const legacy = await service.prepare(1, { snapshotPath: receipt.snapshotPath!, name: 'index.html' });
   assert(legacy.warnings.some(w => w.includes('未包含依赖')));
   assert.equal((await service.handle(new Request(new URL('../assets/style.css', legacy.url)))).status, 404);
+  await assert.rejects(service.verifyBundle({ snapshotPath: receipt.snapshotPath!, name: 'index.html' }), /资源路径越界|包含资源/);
   const cssReceipt = manifest.resources['assets/style.css'];
   await writeFile(join(store, 'artifacts', cssReceipt.snapshot), 'corruption');
   assert.equal((await service.handle(new Request(new URL('../assets/style.css', next.url)))).status, 200, 'other version unaffected');
   const corrupted = await service.prepare(1, { snapshotPath: receipt.snapshotPath!, name: 'index.html', manifestPath });
   assert.equal((await service.handle(new Request(new URL('../assets/style.css', corrupted.url)))).status, 410);
+  const verifyOriginal = () => service.verifyBundle({ snapshotPath: receipt.snapshotPath!, name: 'index.html', manifestPath });
+  await assert.rejects(verifyOriginal, /完整性校验失败/);
+  await rm(join(store, 'artifacts', cssReceipt.snapshot));
+  await assert.rejects(verifyOriginal, { code: 'ENOENT' });
+  await service.verifyBundle({ snapshotPath: receipt.snapshotPath!, name: 'index.html', manifestPath: nextManifest });
   await assert.rejects(service.prepare(1, { snapshotPath: join(cwd, 'index.html'), name: 'index.html' }));
   const forged = join(store, 'artifacts', '0'.repeat(64) + '.web.json');
   await writeFile(forged, JSON.stringify(manifest));
@@ -82,6 +89,7 @@ try {
   const latePath = join(cwd, 'late.html');
   await writeFile(latePath, '<html><head><link rel="stylesheet" href="late.css"></head><body>late</body></html>');
   const entries: any[] = []; let callId = 'html-first'; let commits = 0; let abortAfterRead = false;
+  let afterResourceCapture: (() => Promise<void>) | undefined;
   const goalEvidence: Array<{ toolTaskId: number; evidence: GoalNativeEvidence }> = [];
   const controller = new AbortController();
   const api: any = { conversationId: 1, taskId: 2, get callId() { return callId; },
@@ -99,6 +107,7 @@ try {
           const entry = { id: entries.length + 1, kind: DURABLE_ARTIFACT_ENTRY_KIND, ...value }; entries.push(entry); return entry;
         } });
       if (abortAfterRead && commits === 3) controller.abort();
+      if (commits === 3) await afterResourceCapture?.();
       return result;
     } };
   const tool = createDurableArtifactRegistrationTool(store);
@@ -109,7 +118,10 @@ try {
     saved: { snapshotPath: early.snapshotPath, manifestPath: early.previewManifestPath, registeredAt: early.registeredAt } } }]);
   await rm(latePath); // Later resources must refresh the saved entry, not require the deleted source.
   await writeFile(join(cwd, 'late.css'), 'body{color:purple}');
+  afterResourceCapture = () => writeFile(join(cwd, 'late.css'), 'body{color:green}');
+  commits = 0;
   callId = 'css-later'; await tool.execute({ path: 'late.css' }, api, ctx);
+  afterResourceCapture = undefined;
   const refreshed = entries.filter(e => e.data.path === early.path).at(-1).data;
   assert.notEqual(refreshed.previewManifestPath, early.previewManifestPath);
   assert.equal(refreshed.digest, early.digest);
@@ -121,10 +133,14 @@ try {
     saved: { snapshotPath: refreshed.snapshotPath, manifestPath: refreshed.previewManifestPath, registeredAt: refreshed.registeredAt } });
   const refreshedManifest = JSON.parse(await readFile(refreshed.previewManifestPath, 'utf8'));
   assert(refreshedManifest.resources[refreshedManifest.entry], 'refresh retains the deleted HTML entry snapshot');
+  assert.equal(refreshedManifest.resources['late.css'].digest, css.digest);
+  assert.equal(refreshedManifest.resources['late.css'].snapshot, basename(css.snapshotPath));
   const earlyPreview = await service.prepare(1, { snapshotPath: early.snapshotPath, name: 'late.html', manifestPath: early.previewManifestPath });
   const laterPreview = await service.prepare(1, { snapshotPath: refreshed.snapshotPath, name: 'late.html', manifestPath: refreshed.previewManifestPath });
   assert.equal((await service.handle(new Request(new URL('late.css', earlyPreview.url)))).status, 404);
+  await assert.rejects(service.verifyBundle({ snapshotPath: early.snapshotPath, name: 'late.html', manifestPath: early.previewManifestPath }), /未包含资源：late.css/);
   assert.equal(await (await service.handle(new Request(new URL('late.css', laterPreview.url)))).text(), 'body{color:purple}');
+  await service.verifyBundle({ snapshotPath: refreshed.snapshotPath, name: 'late.html', manifestPath: refreshed.previewManifestPath });
   const count = entries.length;
   await tool.execute({ path: 'late.css' }, api, ctx);
   assert.equal(entries.length, count, 'replayed resource registration creates no duplicate bundle receipt');
