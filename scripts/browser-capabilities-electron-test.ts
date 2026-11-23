@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import Database from "better-sqlite3";
+import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ArtifactService } from "../src/main/artifact/ArtifactService";
 import { ArtifactStorage } from "../src/main/artifact/ArtifactStorage";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
@@ -21,6 +21,11 @@ import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capab
 import { durableDomainTools } from "../src/main/agent/durable/DurableDomainTools";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
+import { ExecutionAttemptRepository, type ExecutionAttempt } from "../src/main/agent/ExecutionAttemptRepository";
+import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
+import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
+import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPolicy";
+import { nativeExecutionOperationId } from "../src/shared/native-execution-receipt";
 
 const output = join(process.cwd(), "out/diagnostics/browser-p0p1");
 mkdirSync(output, { recursive: true });
@@ -29,12 +34,23 @@ app.setPath("userData", join(root, "profile")); app.setPath("home", root);
 app.on("window-all-closed", () => {});
 const writes: Array<{ source: string; value: string; trusted: boolean }> = [];
 let artifactFailure = false, exportRequests = 0;
+let acceptedWithoutReceipt = 0;
 const uploadedBodies: string[] = [];
 const servers: ReturnType<typeof createServer>[] = [];
 let win: BrowserWindow | undefined, host: BrowserHost | undefined, runtime: DurableBotRuntime | undefined;
 const guard = setTimeout(() => { console.error("browser capability tool bridge timed out"); app.exit(1); }, 90000);
 async function serve(hostname: string, body: (path: string) => string) {
   const server = createServer((req, res) => {
+    if (req.url === "/unknown-write") {
+      req.resume();
+      req.on("end", () => { acceptedWithoutReceipt++; setTimeout(() => res.end("accepted"), 2500).unref(); });
+      return;
+    }
+    if (req.url === "/unknown-write-page") {
+      res.setHeader("Content-Type", "text/html");
+      res.end("<h1>This page does not show the operation outcome</h1>");
+      return;
+    }
     if (req.url === "/export") { exportRequests++; if (exportRequests === 2) artifactFailure = true; res.setHeader("Content-Type", "text/csv"); res.setHeader("Content-Disposition", 'attachment; filename="report.csv"'); res.end("name,value\n可信导出,42\n"); return; }
     if (req.url === "/upload") { const chunks: Buffer[]=[];req.on('data',chunk=>chunks.push(chunk));req.on('end',()=>{uploadedBodies.push(Buffer.concat(chunks).toString());res.end('uploaded')});return; }
     if (req.url === "/save") {
@@ -66,7 +82,8 @@ void (async () => {
   config.execution.codeExecutionEnabled = false; config.execution.terminalEnabled = false;
   const store = new BuiltinCapabilityStore(join(root, "capabilities.json")); store.write(config);
   writeFileSync(join(root, "upload.txt"), "真实文件中文🙂");
-  const artifactDb = new Database(join(root, "artifacts.db"));
+  const appDb = new AppDatabase(join(root, "artifacts.db"));
+  const artifactDb = appDb.connection;
   class FixtureArtifactService extends ArtifactService {
     override async register(registration: Parameters<ArtifactService["register"]>[0]) {
       if (artifactFailure) { artifactFailure = false; throw new Error("injected artifact registration failure"); }
@@ -75,7 +92,7 @@ void (async () => {
   }
   const artifacts = new FixtureArtifactService(new ArtifactStorage(join(root, "artifact-content")), new ArtifactRepository(artifactDb), new ArtifactRegistry());
   const capabilities = new BuiltinCapabilityRuntime({ store, credentials: { has: () => false, get: () => null, set: () => { throw Error("isolated test has no credentials"); }, clear: () => {} } });
-  artifactDb.exec("CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY); INSERT INTO tasks(id) VALUES ('browser-capabilities')");
+  appDb.upsertTask({ id: "browser-capabilities", title: "browser-capabilities", updatedAt: Date.now() });
   const failures = new ExecutionFailureRepository(artifactDb);
   const bridge = await durableDomainTools([createBuiltinCapabilityExtension({ taskId: "browser-capabilities", taskRoot: root, nativeExecution: true,
     browserRecovery: { resolveContext: () => ({ taskId: "browser-capabilities", executionId: "fixture", assistantMessageId: "fixture" }), failures },
@@ -130,7 +147,16 @@ void (async () => {
     const switched=await step({action:'select_tab',tabId,after:{mode:'text'}});if(switched.activeTabId!==tabId||switched.observation.status!=='completed')throw Error('tab switch/observe failed');
     const current=await step({action:'read',mode:'text'});if(current.tabId!==tabId)throw Error('implicit read returned the old tab');
     await step({action:'close',tabId:opened2.tabId});
-    const read=await step({action:'read',tabId,selector:'#scope-a',mode:'text'});text({frames:fs.frames.length,text:read.text});
+    const read=await step({action:'read',tabId,selector:'#scope-a',mode:'text'});
+    const unknownUrl=${JSON.stringify(origin + "/unknown-write-page")};
+    const a=await step({action:'open',url:unknownUrl});
+    const b=await step({action:'open',url:unknownUrl});
+    if(a.tabId===b.tabId)throw Error('expected separate tabs at the same URL');
+    const lost=await tools.browser_exec({action:'fetch',tabId:a.tabId,url:${JSON.stringify(origin + "/unknown-write")},request:{method:'POST',body:'fixture'},timeout_ms:1000});
+    if(lost.code!=='WAIT_TIMEOUT'||lost.outcome.dispatch!=='dispatched'||lost.outcome.effect!=='unknown')throw Error(JSON.stringify(lost));
+    const unrelated=await step({action:'read',tabId:b.tabId,mode:'text'});
+    if(!unrelated.text.includes('does not show the operation outcome'))throw Error(JSON.stringify(unrelated));
+    text({frames:fs.frames.length,text:read.text});
   `;
   models.registerProvider("fixture", { api: "openai-completions", apiKey: "isolated", baseUrl: "http://127.0.0.1:1",
     models: [{ id: "model", name: "capability tool bridge", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 2000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
@@ -141,16 +167,33 @@ void (async () => {
       const stream = createAssistantMessageEventStream(), reason = previous?.role === "toolResult" ? "stop" : "toolUse";
       queueMicrotask(() => { stream.push({ type: "done", reason, message: { role: "assistant", content, stopReason: reason, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } }); stream.end(); }); return stream;
     } });
-  const open = () => DurableBotRuntime.open({ taskId: "browser-capabilities", cwd: root, directory: join(root, "state"), models, model: { provider: "fixture", modelId: "model" }, toolMode: "codemode", tools: bridge.tools, instructions: () => "isolated browser capability fixture", onSnapshot: () => {} });
+  const settlements = new Map<string, string>();
+  const policy = createDurableToolPolicy({ taskId: "browser-capabilities", taskRoot: root, getPermissionMode: () => "auto", failures,
+    attempts: new ExecutionAttemptRepository(artifactDb),
+    interactions: new ConversationInteractionService(new ConversationInteractionRepository(artifactDb), () => {}),
+    settleWorkAction: receipt => settlements.set(nativeExecutionOperationId(receipt), receipt.settlement),
+  });
+  const open = () => DurableBotRuntime.open({ taskId: "browser-capabilities", cwd: root, directory: join(root, "state"), models, model: { provider: "fixture", modelId: "model" }, toolMode: "codemode", toolHooks: policy.hooks, tools: bridge.tools, instructions: () => "isolated browser capability fixture", onSnapshot: () => {} });
   runtime = await open(); assert.equal((await (await runtime.submit("run", "stable-input")).wait(BACKGROUND_CONTEXT)).status, "done");
-  assert.equal(failures.list("browser-capabilities").filter(item => !item.resolvedAt).length,0,"real Code Mode locator correction and SPA submit leave no stale recovery cards");
+  assert.equal(acceptedWithoutReceipt, 1);
+  const attemptRow = artifactDb.prepare("SELECT record_json FROM execution_attempts WHERE task_id=? ORDER BY rowid DESC LIMIT 1")
+    .get("browser-capabilities") as { record_json: string };
+  const attempt = JSON.parse(attemptRow.record_json) as ExecutionAttempt;
+  assert.equal(attempt.toolName, "browser_exec");
+  assert.equal(attempt.transportStatus, "succeeded");
+  assert.equal(attempt.status, "inconclusive");
+  assert.equal(attempt.causeCode, "browser-effect-unknown");
+  assert.deepEqual(attempt.verification?.observed?.outcome, { dispatch: "dispatched", effect: "unknown" });
+  assert.equal([...settlements].find(([id]) => id.endsWith(`:${attempt.toolCallId}`))?.[1], "unknown");
+  assert.deepEqual(failures.list("browser-capabilities").filter(item => !item.resolvedAt).map(item => [item.causeCode, item.sideEffects]),
+    [["browser-wait-timeout", "unknown"]], "the unrelated read leaves the dispatched POST unknown while locator correction and SPA submit leave no stale recovery cards");
   assert.deepEqual(writes, [{ source: "frame", value: "跨域中文🙂", trusted: true }, { source: "shadow-a", value: "Shadow 中文🙂", trusted: true }]);
   assert.deepEqual(uploadedBodies, ["真实文件中文🙂"]);
   const exported = artifacts.listByTask("browser-capabilities"); assert.equal(exported.length, 2);
   const collectionArtifact = exported.find(a => a.title === "浏览器集合完整数据"); assert(collectionArtifact?.source.type === "workspace-file"); const allRows = JSON.parse(readFileSync(collectionArtifact.source.entryFile, "utf8")); assert.equal(allRows.rows.length, 4); assert.equal(allRows.rows[3].cells[0], ("完整中文🙂行3").repeat(70));
   const file = exported.find(a => a.title?.endsWith("report.csv"))?.source; assert(file?.type === "workspace-file"); assert.equal(readFileSync(file.entryFile, "utf8"), "name,value\n可信导出,42\n");
   await runtime.close(); runtime = await open(); await (await runtime.submit("run", "stable-input")).wait(BACKGROUND_CONTEXT);
-  assert.equal(writes.length, 2); assert.equal(generations, 2); assert.equal(exportRequests, 2); assert.equal(win.isVisible(), false);
+  assert.equal(writes.length, 2); assert.equal(generations, 2); assert.equal(exportRequests, 2); assert.equal(acceptedWithoutReceipt, 1); assert.equal(win.isVisible(), false);
   writeFileSync(join(output, "tool-bridge.json"), JSON.stringify({ passed: true, root, writes, generations, electron: process.versions.electron, requirements: ["nested-cross-origin-input", "open-shadow-input", "slotted-button-name", "exact-scoped-semantic-locators", "native-AX-ref", "prompt", "date-and-sequential-input", "trusted-double-click", "frame-native-HTML5-source-data", "frame-upload-content", "frame-paginated-collection", "download-artifact-bytes", "artifact-failure-retains-action", "full-collection-artifact", "failed-business-assertion", "diagnostics", "task-tabs", "native-tool-schema", "durable-no-replay"] }, null, 2));
   console.log("PASS real browser_exec schema + Durable Code Mode + nested cross-origin and scoped Shadow DOM trusted save, no replay");
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {

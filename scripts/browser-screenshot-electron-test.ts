@@ -13,7 +13,7 @@ import { pageInspectionService } from "../src/main/artifact/PageInspectionServic
 
 const profile = mkdtempSync(join(tmpdir(), "mybuddy-browser-screenshot-"));
 app.setPath("userData", join(profile, "profile"));
-const evidence = join(process.cwd(), "artifacts/computer-use-browser-repair/production-capture");
+const evidence = process.env.BROWSER_BENCH_OUT ?? join(process.cwd(), "artifacts/computer-use-browser-repair/production-capture");
 mkdirSync(evidence, { recursive: true });
 const results: unknown[] = [];
 const html = `<!doctype html><meta charset="utf-8"><title>Screenshot fixture</title>
