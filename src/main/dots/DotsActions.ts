@@ -27,13 +27,14 @@ import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsDelega
 import { gatewayChannelForSpace, isGatewayConversation } from "../../shared/gateway-task";
 import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../workspace/WorkspaceService";
 
-type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
+type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "assertDelegationAdmissible" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
 export interface DotsActionHooks {
   observeProgress?(taskId: string, operationId: string, identity: string, at: number): void;
   observeTool?(event: ToolDiagnosticEvent): void;
   preferences?: () => { followupMode: "continue" | "notify" | "paused"; spaceIds: readonly string[] | null };
   fileNotice?: (event: { id: string; revision: string; taskId: string; file: string }) => void;
   progressNotice?: (event: { operationId: string; taskId: string; text: string }) => void;
+  failedTask?: (event: { taskId: string; title: string; reason: string }) => void;
   rememberOrigin?(sourceId:string, origin:DotsReplyOrigin):void;
   link(targetTaskId: string, operationId: string, sourceMessageId: string, supersedes: boolean, request: AgentPromptRequest): void;
   list?(): DotsDelegation[];
@@ -1046,6 +1047,9 @@ ${input.text}`),
       if (!this.db.getTask(id)) {
         if (this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=?").get(id))
           throw new Error("原任务已删除");
+        // 可预期的失败（默认模型在该工作空间不可用等）必须在建任务之前抛出：
+        // 先建记录再校验会让异常路径把一条 pending 空壳永久留在看板「排队中」。
+        await this.agent.assertDelegationAdmissible(space.id);
         this.db.upsertTask({ id, spaceId: space.id, title, updatedAt: Date.now() });
         newTask = true;
       }
@@ -1107,49 +1111,78 @@ ${input.text}`),
       ...(input.action === "steer" ? { requireActiveRun: true, dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) }
         : continuePlan || unblocked ? { dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) } : {}),
     };
-    const alreadyLinked = this.db.connection.transaction(() => {
-      if (foreground?.priorOperationId) {
-        const latestOperation = this.db.connection.prepare("SELECT operation_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
-          .pluck().get(task.id);
-        if (latestOperation !== foreground.priorOperationId && latestOperation !== operationId)
-          throw new DotsForegroundUnavailable("原任务的交办已变化，未续办旧事项。");
-      }
-      foreground?.validateEvidence?.();
-      if ((creating || foreground?.revisions || continuationIdentity) && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) {
-        if (foreground?.revisions) this.foreground.linked(sourceId);
-        return true;
-      }
-      if (continuationIdentity && this.latestOperation(task.id) !== continuationBase)
-        throw new DotsIntentChanged("接续期间原任务已有更新，请读取当前进度");
-      if (continuePlan && continuationBase) this.assertContinuationScope(this.task(task.id, task.spaceId ?? undefined), continuationBase);
-      if (!previous && input.action === "resume") {
-        if (this.followups.latestPlan(task.id)?.request.userMessageId !== resumed?.request.userMessageId)
+    let result: Awaited<ReturnType<Agent["prompt"]>> | undefined;
+    try {
+      // 任务记录（upsertTask）已在前面落库：此后的任何失败都必须给委派和任务一个终态。
+      const alreadyLinked = this.db.connection.transaction(() => {
+        if (foreground?.priorOperationId) {
+          const latestOperation = this.db.connection.prepare("SELECT operation_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
+            .pluck().get(task.id);
+          if (latestOperation !== foreground.priorOperationId && latestOperation !== operationId)
+            throw new DotsForegroundUnavailable("原任务的交办已变化，未续办旧事项。");
+        }
+        foreground?.validateEvidence?.();
+        if ((creating || foreground?.revisions || continuationIdentity) && this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=?").get(operationId)) {
+          if (foreground?.revisions) this.foreground.linked(sourceId);
+          return true;
+        }
+        if (continuationIdentity && this.latestOperation(task.id) !== continuationBase)
           throw new DotsIntentChanged("接续期间原任务已有更新，请读取当前进度");
-        if (unblocked && resumed?.request.userMessageId !== unblocked.id)
-          throw new DotsIntentChanged("待补资料的原交办已变化，请读取当前问题");
-        if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("暂停后的恢复需要用户明确交代");
-        this.db.connection.prepare("UPDATE dots_target_controls SET operation_id=? WHERE task_id=?").run(operationId, task.id);
-      }
-      if (!previous) {
-        this.assertScheduleSource(sourceId);
-        this.assertAdmission(request);
-      }
-      if (resumed) this.followups.rememberResume(request, deliverySource, resumed,
-        [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked));
-      else this.followups.remember(request, sourceId, [message, calendar].filter(Boolean).join("\n"), steps, currentDeliveryInstruction);
-      if (creating && assignment) this.followups.anchorAssignment(operationId, assignment);
-      this.link(request, deliverySource, input.action === "steer" || continuePlan || Boolean(foreground?.priorOperationId));
-      if (foreground?.revisions) this.foreground.linked(sourceId);
-      return false;
-    })();
-    const persisted = alreadyLinked && (foreground?.revisions || continuationIdentity) ? this.db.connection.prepare(
-      "SELECT request_json FROM dots_delegations WHERE operation_id=? AND status='pending'"
-    ).pluck().get(operationId) as string | undefined : undefined;
-    const result = previous ?? await (alreadyLinked
-      ? (async () => await this.agent.findSubmission(task.id, operationId) ??
-          (persisted ? this.agent.prompt(JSON.parse(persisted) as AgentPromptRequest, { durableAdmissionOnly: true }) : undefined))()
-      : this.agent.prompt(request, { durableAdmissionOnly: true }));
+        if (continuePlan && continuationBase) this.assertContinuationScope(this.task(task.id, task.spaceId ?? undefined), continuationBase);
+        if (!previous && input.action === "resume") {
+          if (this.followups.latestPlan(task.id)?.request.userMessageId !== resumed?.request.userMessageId)
+            throw new DotsIntentChanged("接续期间原任务已有更新，请读取当前进度");
+          if (unblocked && resumed?.request.userMessageId !== unblocked.id)
+            throw new DotsIntentChanged("待补资料的原交办已变化，请读取当前问题");
+          if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("暂停后的恢复需要用户明确交代");
+          this.db.connection.prepare("UPDATE dots_target_controls SET operation_id=? WHERE task_id=?").run(operationId, task.id);
+        }
+        if (!previous) {
+          this.assertScheduleSource(sourceId);
+          this.assertAdmission(request);
+        }
+        if (resumed) this.followups.rememberResume(request, deliverySource, resumed,
+          [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked));
+        else this.followups.remember(request, sourceId, [message, calendar].filter(Boolean).join("\n"), steps, currentDeliveryInstruction);
+        if (creating && assignment) this.followups.anchorAssignment(operationId, assignment);
+        this.link(request, deliverySource, input.action === "steer" || continuePlan || Boolean(foreground?.priorOperationId));
+        if (foreground?.revisions) this.foreground.linked(sourceId);
+        return false;
+      })();
+      const persisted = alreadyLinked && (foreground?.revisions || continuationIdentity) ? this.db.connection.prepare(
+        "SELECT request_json FROM dots_delegations WHERE operation_id=? AND status='pending'"
+      ).pluck().get(operationId) as string | undefined : undefined;
+      result = previous ?? await (alreadyLinked
+        ? (async () => await this.agent.findSubmission(task.id, operationId) ??
+            (persisted ? this.agent.prompt(JSON.parse(persisted) as AgentPromptRequest, { durableAdmissionOnly: true }) : undefined))()
+        : this.agent.prompt(request, { durableAdmissionOnly: true }));
+    } catch (error) {
+      this.abandonDelegation(task.id, operationId, error, newTask);
+      throw error;
+    }
     return this.delegationAdmission(task, operationId, result, goal?.id);
+  }
+
+  /**
+   * 建任务之后才发生的失败（模型解析、运行时缺失、执行目录不可用等）：
+   * 给这条委派写下失败原因，并把「本次刚建、从未开始执行」的空壳任务移出排队。
+   * 已有内容的原任务只记本次失败，不改它自己的状态。
+   */
+  private abandonDelegation(taskId: string, operationId: string, error: unknown, createdTask: boolean): void {
+    const reason = (error instanceof Error ? error.message : String(error ?? "")).trim() || "委派未受理";
+    this.hooks.failed?.(taskId, operationId, reason);
+    if (createdTask) this.failUndelegatedTask(taskId, reason);
+    this.hooks.changed?.();
+  }
+
+  /** 从未开始执行的任务直接进终态：看板离开 pending，失败原因随卡片与通知可见；重跑时仍可复用同一任务。 */
+  private failUndelegatedTask(taskId: string, reason: string): void {
+    const task = this.db.getTask(taskId);
+    if (!task) return;
+    const updated = this.db.connection.prepare("UPDATE tasks SET status='failed',updated_at=? WHERE id=? AND (status IS NULL OR status IN ('planning','pending'))")
+      .run(Date.now(), taskId);
+    if (!updated.changes) return;
+    this.hooks.failedTask?.({ taskId, title: task.title, reason });
   }
 
   private separateAssignments(source: string, first: string, second: string) {

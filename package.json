@@ -487,6 +487,7 @@
     "test:dots-profile": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/dots-profile-test.mjs",
     "test:dots-desktop": "node scripts/dots-desktop-test.cjs",
     "test:dots-actions": "node scripts/run-dots-test.mjs actions",
+    "test:dots-dispatch-failure": "node scripts/run-dots-test.mjs dispatch-failure",
     "test:dots-delivery": "node scripts/run-dots-test.mjs delivery",
     "test:dots-reply-recovery": "node scripts/run-dots-test.mjs reply-recovery",
     "test:dots-followup": "node scripts/run-dots-test.mjs followup",

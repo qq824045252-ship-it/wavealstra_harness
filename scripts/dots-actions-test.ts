@@ -580,11 +580,16 @@ try {
   // Keep Dots available while the user's configured main model is outside the enabled scope.
   await agent.updateAppSettings({defaultModelId:"fixture/unavailable",enabledModels:["fixture/model","fixture/dots-front","fixture/pinned-worker"]});
   const before = fixture.requests.length;
+  const tasksBefore = db.listNonTrashedTasks().map(task => task.id).sort();
   const denied = await turn({action:"delegate",spaceId:child.id,name:"入库核算",text:"请核算数量"},undefined,1,"请核算这批入库数量");
   assert(denied.error && denied.text.includes("fixture/unavailable"),denied.text);
   assert(!fixture.requests.slice(before).some(req=>req.tools.includes("read")),"a disabled main model must not send any worker request");
-  await actions.execute(DOTS_TASK_ID,"dots-user-"+serial,{action:"delegate",spaceId:child.id,name:"再次核算",text:"再试一遍"});
-  assert.equal(journal.list(["dots-user-"+serial]).length,1);
+  // 可预期的前置失败在建任务之前挡住：不建空壳任务、不落委派；重试同样由同一原因拒绝，而不是留下 pending。
+  assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(),tasksBefore);
+  assert.equal(journal.list(["dots-user-"+serial]).length,0);
+  await assert.rejects(actions.execute(DOTS_TASK_ID,"dots-user-"+serial,{action:"delegate",spaceId:child.id,name:"再次核算",text:"再试一遍"}),
+    /fixture\/unavailable/);
+  assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(),tasksBefore);
   await agent.updateAppSettings({defaultModelId:"fixture/model",dotsSettings:{modelId:"fixture/unavailable"}});
   const beforeInvalid = fixture.requests.length;
   await assert.rejects(agent.prompt({taskId:DOTS_TASK_ID,userMessageId:"invalid-dots-model",

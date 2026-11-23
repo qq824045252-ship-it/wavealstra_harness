@@ -2224,6 +2224,29 @@ export class AgentService {
     return !(selection.excludeTools ?? []).some(tool => tool.toLowerCase() === name.toLowerCase());
   }
 
+  /**
+   * 默认模型可用性的唯一判定口径：未设置默认模型、或该模型在给定工作目录的 enabledModels 里不可用，
+   * 都属于「可预期的失败」。该类失败必须能在建任务之前被挡住，否则委派会留下 pending 空壳任务。
+   * 返回实际要用的模型 ID，供 prepareDurableTask 继续使用。
+   */
+  private async assertDefaultModelEnabled(cwd: string): Promise<string> {
+    const modelId = this.readSettingsDefaultModelId();
+    if (!modelId) throw new Error("未设置主对话默认模型，请在「设置 → 模型」中选择后继续原任务。");
+    const workspaceSettings = createAgentSettingsManager(cwd, getMyBuddyDir());
+    if (!await this.resolveEnabledModel(modelId, workspaceSettings))
+      throw new Error(`主对话默认模型 ${modelId} 在这个工作空间不可用，请在「设置 → 模型」中启用或更改后继续原任务。`);
+    return modelId;
+  }
+
+  /**
+   * Dots 交办的前置校验：在 `upsertTask` 建任务之前先确认默认模型可用。
+   * 判定的是任务将要使用的执行目录（空间路径），与 prepareDurableTask 完全同口径；
+   * 这里只做校验，不创建任务工作区，也不写执行失败记录（原任务尚未存在）。
+   */
+  async assertDelegationAdmissible(spaceId: string): Promise<void> {
+    await this.assertDefaultModelEnabled(this.db.resolveWorkspaceExecutionPath(spaceId) ?? process.cwd());
+  }
+
   private async prepareDurableTask(request: AgentPromptRequest, mark?: (stage: string) => void): Promise<AgentPromptRequest> {
     this.durableAssemblies.delete(request.taskId);
     assertSingleExpertId(request.expertId);
@@ -2236,13 +2259,7 @@ export class AgentService {
     if (!task) throw new Error("任务不存在");
     const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);
     let modelId = task.id === DOTS_TASK_ID ? this.configuredDotsModelId() : request.modelId;
-    if (task.id !== DOTS_TASK_ID && !modelId && !task.modelId) {
-      modelId = this.readSettingsDefaultModelId();
-      if (!modelId) throw new Error("未设置主对话默认模型，请在「设置 → 模型」中选择后继续原任务。");
-      const workspaceSettings = createAgentSettingsManager(cwd, getMyBuddyDir());
-      if (!await this.resolveEnabledModel(modelId, workspaceSettings))
-        throw new Error(`主对话默认模型 ${modelId} 在这个工作空间不可用，请在「设置 → 模型」中启用或更改后继续原任务。`);
-    }
+    if (task.id !== DOTS_TASK_ID && !modelId && !task.modelId) modelId = await this.assertDefaultModelEnabled(cwd);
     const profile = this.modeProfiles.getProfile(welcomeMode);
     const requestedPreset = request.modePresetId !== undefined ? request.modePresetId : task.modePresetId;
     const preset = resolveModePreset(profile.policy, requestedPreset);

@@ -759,6 +759,13 @@ function registerIpc(): void {
       sourceType:"task", sourceId:event.taskId, taskId:DOTS_TASK_ID,
       dedupeKey:`dots-checkpoint:${event.operationId}`,
     }),
+    // 委派在建任务之后才失败：卡片和通知都要能直接看到原因，而不是只少了一条任务。
+    failedTask: event => notificationService.publish({
+      type:"task.failed", level:"error", title:"任务派发失败",
+      body:`${event.title} · ${event.reason}`,
+      sourceType:"task", sourceId:event.taskId, taskId:event.taskId,
+      dedupeKey:`task:${event.taskId}:dispatch-failed`,
+    }),
   }, taskBoard);
   const actions = dotsActions;
   const activity = new DotsActivity(db.connection, id => actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
