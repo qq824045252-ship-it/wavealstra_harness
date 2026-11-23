@@ -271,7 +271,7 @@ export function assistantRow(id: string, taskId: TaskId | undefined, message: As
   streaming = false, metrics?: DurableResponseSpeed, dotsWorker = false, recoveredReply?: string): ChatMessageDto {
   const rawText = durableContentText(message.content);
   const outcome = dotsWorker ? readDotsWorkerOutcome(rawText) : undefined;
-  const workerText = outcome?.dotsState === "complete" && outcome.delivery
+  const workerText = outcome && outcome.dotsState !== "progress" && outcome.delivery
     ? [...new Set([outcome.delivery.text, outcome.result].filter(Boolean))].join("\n\n")
     : outcome?.result;
   const text = recoveredReply ?? workerText ?? (dotsWorker && streaming && /^\s*(?:\{|\x60)/u.test(rawText) ? "" : rawText);

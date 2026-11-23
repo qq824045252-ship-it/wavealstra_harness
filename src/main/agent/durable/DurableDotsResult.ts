@@ -1,4 +1,5 @@
 import type { Cursor, EntryRecord, SubmissionRecord, Tx } from "@earendil-works/pi-durable";
+import { basename } from "node:path";
 import type { ConversationInteractionDto } from "../../../shared/conversation-interaction";
 import { collectReplyCitations, providedReplySources, replyToolSources } from "../../../shared/chat-reply-sources";
 import type { ReplyCitation } from "../../../shared/chat-reply-content";
@@ -29,7 +30,8 @@ export function durableDotsReplySources(entry: EntryRecord, includeUser: boolean
 /** Registered files name the producing input. Intermediate statements and tool
  * attachments belong only to its native interval, ending before the next user. */
 export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRecord, {type: "input"}>,
-  directory: string, question?: ConversationInteractionDto, accepted?: { text: string; citations?: ReplyCitation[] }) {
+  directory: string, question?: ConversationInteractionDto, accepted?: { text: string; citations?: ReplyCitation[] },
+  requestedFilename?: string) {
   const files = new Map<string, { path: string; snapshotPath: string; manifestPath?: string }>();
   const registeredForDelivery = new Set<string>();
   const messageIds = new Set<string>();
@@ -95,9 +97,11 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
     return { status: "blocked" as const, text: delivery, ...deliveryAssets };
   }
   if (outcome?.dotsState === "complete" && outcome.delivery) {
-    // The Dots journal only needs the public conclusion and explicitly registered files.
+    // A filename explicitly named by the user can also use the host's immutable write/edit receipt.
+    const named = requestedFilename ? assets.files.filter(file => basename(file.path) === requestedFilename) : [];
+    const publicFiles = named.length === 1 ? named : deliveryAssets.files;
     return { status: "completed" as const, text: JSON.stringify({ dotsState: "complete", result: delivery }),
-      citations, ...deliveryAssets };
+      citations, ...deliveryAssets, files: publicFiles };
   }
   return { status: "completed" as const, text, citations, ...(outcome?.dotsState === "progress" ? deliveryAssets : assets) };
 }

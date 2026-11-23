@@ -7,7 +7,7 @@ import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ConversationGoalDto, GoalContinuationOrigin } from "../../shared/conversation-goal";
 import { DOTS_NO_CHANGE, type DotsDelegation } from "../../shared/dots";
 import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusion";
-import { matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
+import { dotsDeliveryText, matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 
 export type DotsFollowupDecision = {
   kind: "quiet" | "ask" | "deliver" | "progress" | "continued" | "deferred";
@@ -436,7 +436,7 @@ export class DotsFollowup {
     if (row.status === "completed" && !outcome && !remaining && matchesDotsDeliveryFormat(text, plan?.deliveryInstruction)) {
       return { kind: "deliver", text, artifacts: [] };
     }
-    if (outcome?.dotsState === "blocked") return { kind: "ask", text: summary };
+    if (outcome?.dotsState === "blocked") return { kind: "ask", text: dotsDeliveryText(outcome) };
     if (!repair && outcome?.dotsState === "complete" && !remaining) return { kind: "deliver", text: summary };
     if (!plan) return unresolved();
     if (progress && (!progress.remainingQuote || ![plan.goal, plan.assignmentQuote, ...plan.steps]

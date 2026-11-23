@@ -139,11 +139,16 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
     }
     if (phase === "missing") {
       const last = input.messages.at(-1);
+      const secondCheck = latestUser.includes("复核明细.csv");
+      const filename = secondCheck ? "复核明细.csv" : "入库明细.csv";
       if (last?.role === "toolResult" && last.toolName === "read") {
+        if (last.isError && secondCheck) return [{ type: "text", text: "已核查绑定目录。\n\n```json\n" + JSON.stringify({
+          dotsState: "blocked", result: executionNotes, delivery: { text: "请把复核明细.csv 上传到原空间。" },
+        }) + "\n```" }];
         return last.isError ? deliveryReply("没有交付合计：台账没读到。请把入库明细.csv 上传到原空间。", "找不到源表。")
           : deliveryReply("42", "已从补齐的明细读取 42。");
       }
-      return [{ type: "toolCall", id: "read-inbound", name: "read", arguments: { path: "入库明细.csv" } }];
+      return [{ type: "toolCall", id: "read-inbound", name: "read", arguments: { path: filename } }];
     }
     if (phase === "goal") {
       const lastUser = input.messages.findLast((m) => m.role === "user");
@@ -264,8 +269,7 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
     if (phase === "files") {
       const last = input.messages.at(-1);
       if (last?.role === "toolResult") {
-        if (last.toolCallId === "write-only-file") return [{ type: "toolCall", id: "register-only-file", name: "register_artifact", arguments: { path: "第二批.txt" } }];
-        if (last.toolCallId === "register-only-file") return [{ type: "toolCall", id: "write-file-notes", name: "write", arguments: { path: "工作底稿.txt", content: executionNotes } }];
+        if (last.toolCallId === "write-only-file") return [{ type: "toolCall", id: "write-file-notes", name: "write", arguments: { path: "工作底稿.txt", content: executionNotes } }];
         if (last.toolCallId === "write-file-notes") return [{ type: "toolCall", id: "register-file-notes", name: "register_artifact", arguments: { path: "工作底稿.txt" } }];
         if (last.toolCallId === "register-file-notes") return deliveryReply("第二批核对完毕，合计 18 件。", executionNotes);
       }
@@ -854,6 +858,14 @@ try {
   assert.equal(recoveredDelivery?.text, "42");
   assert.equal(recoveredDelivery?.dotsDelivery?.taskId, missing.taskId);
   console.log("PASS 缺资料的假完成停在等待，用户补齐后原任务继续交付到原对话");
+  const blockedReceiptSource = `source-${turn + 1}`;
+  await send("只有读到复核明细.csv 才给合计。", { action: "delegate", spaceId: space.id, text: "按复核明细.csv 核对数量" });
+  const blockedReceipt = (await messageContains("请把复核明细.csv 上传到原空间。", blockedReceiptSource))
+    .find(m => m.dotsDelivery?.sourceMessageId === blockedReceiptSource);
+  assert.equal(blockedReceipt?.text, "请把复核明细.csv 上传到原空间。");
+  assert.equal(blockedReceipt?.dotsDelivery?.kind, "question");
+  assert.equal(journal.list([blockedReceiptSource]).at(-1)?.status, "blocked");
+  console.log("PASS 识别说明后带独立交付正文的等待回执，执行记录留在原任务");
   await reviewGoal("completed");
   console.log("PASS Goal 原对话只收到已验收正文对应的引用，回传重试后引用仍一致");
 } catch (error) {

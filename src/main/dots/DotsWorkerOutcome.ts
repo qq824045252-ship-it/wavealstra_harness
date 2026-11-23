@@ -1,6 +1,6 @@
 export type DotsWorkerOutcome =
   | { dotsState: "complete"; result: string; delivery?: { text: string } }
-  | { dotsState: "blocked"; result: string }
+  | { dotsState: "blocked"; result: string; delivery?: { text: string } }
   | { dotsState: "progress"; result: string; remainingQuote: string };
 
 /** An accepted native answer ends a model turn. The worker declares whether it ends the assignment. */
@@ -39,16 +39,15 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
   try {
     const value = JSON.parse(json);
     if (typeof value?.result !== "string") return;
-    if (value.dotsState === "blocked" && value.result.trim() && (!exact || Object.keys(value).length === 2)) {
-      return { dotsState: value.dotsState, result: value.result };
-    }
-    if (value.dotsState === "complete") {
+    if (value.dotsState === "complete" || value.dotsState === "blocked") {
       if ("delivery" in value) {
         if (typeof value.delivery?.text !== "string") return;
         if (exact && (Object.keys(value).length !== 3 || Object.keys(value.delivery).length !== 1)) return;
+        if (value.dotsState === "blocked" && !value.result.trim() && !value.delivery.text.trim()) return;
         return { dotsState: value.dotsState, result: value.result, delivery: { text: value.delivery.text } };
       }
       if (exact && Object.keys(value).length !== 2) return;
+      if (value.dotsState === "blocked" && !value.result.trim()) return;
       return { dotsState: value.dotsState, result: value.result };
     }
     if (value.dotsState === "progress" && typeof value.remainingQuote === "string" && (!exact || Object.keys(value).length === 3)) {
@@ -60,7 +59,9 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
 }
 
 export function dotsDeliveryText(outcome: DotsWorkerOutcome): string {
-  return (outcome.dotsState === "complete" ? outcome.delivery?.text : undefined) ?? outcome.result;
+  if (outcome.dotsState === "complete") return outcome.delivery?.text ?? outcome.result;
+  if (outcome.dotsState === "blocked") return outcome.delivery?.text.trim() || outcome.result;
+  return outcome.result;
 }
 
 /** Some workers put a request for missing input in a complete envelope. Require both an
