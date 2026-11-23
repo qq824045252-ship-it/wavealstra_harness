@@ -16,7 +16,7 @@ import { withDurableToolCoordination } from "./DurableToolCoordination";
 import { prioritizeInputAfterDeferredGoal } from "./DurableInputFreshness";
 import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
 import { withNativeToolOrigin } from "./DurableToolLifecycle";
-import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
+import { nativeExecutionSucceeded, readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -47,6 +47,7 @@ import { durableStorageOwnerState } from "./DurableStorageLease";
 import { durableCompletedTurns } from "./DurableTurnProjection";
 import { activityTimeOrUndefined, latestActivityTime } from "../../../../shared/src/activity-time";
 import { withDurableImageRead } from "./DurableImages";
+import { NATIVE_OPENED_READ_PATH, withDurableFileReadEvidence } from "./DurableFileReadEvidence";
 import { withMissingFileRecovery } from "./DurableMissingFile";
 import { createAgentSettingsManager, getAgentBashShellPath } from "../../agent-shell-settings";
 import { getMyBuddyDir } from "../../paths";
@@ -1666,7 +1667,7 @@ function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegi
     ...(CodingTools.tools ?? []).map(tool => {
       if (tool.name === "write") return withDurableArtifactRegistration(createWriteTool(admittedFileMutationPath), directory);
       if (tool.name === "edit") return withDurableArtifactRegistration(createEditTool(admittedFileMutationPath), directory);
-      if (tool.name === "read") return withWindowsBashWorkspacePath(withMissingFileRecovery(withDurableImageRead(tool)));
+      if (tool.name === "read") return withWindowsBashWorkspacePath(withMissingFileRecovery(withDurableFileReadEvidence(withDurableImageRead(tool))));
       return withDurableArtifactRegistration(tool, directory);
     }),
     ...createPlatformShellTools().map(tool => withDurableArtifactRegistration(tool, directory)),
@@ -1875,13 +1876,15 @@ function botExtension(
         toolTaskId: api.taskId, callId: call.id, toolName: call.name });
       if (options.foregroundHooks?.afterTool && !await childConversation(api, context))
         await options.foregroundHooks.afterTool(call, observed, api, context, commit);
-      if (call.name === "read" && !isError) await recordSkillRead?.(call, api, context);
+      const rawReadPath = observed.details && typeof observed.details === "object" && !Array.isArray(observed.details)
+        ? observed.details[NATIVE_OPENED_READ_PATH] : undefined;
+      const readPath = !isError && call.name === "read" ? readNativeExecutionReceipt(observed.details)?.fileRead?.target
+        ?? (typeof rawReadPath === "string" ? rawReadPath : undefined) : undefined;
+      if (readPath) await recordSkillRead?.({ ...call, arguments: { ...call.arguments, path: readPath } }, api, context);
       if (options.onGoalToolEvidence) {
         try {
-          const receipt = call.name === "read" && !isError && typeof call.arguments.path === "string"
-            && /(?:^|[\\/])SKILL\.md$/i.test(call.arguments.path)
-            ? { readPath: resolve((await api.snapshot(DurableSubagentIdentity, api.conversationId, context))?.value?.workspace.cwd ?? options.cwd,
-              call.arguments.path) }
+          const receipt = readPath && /(?:^|[\\/])SKILL\.md$/i.test(readPath)
+            ? { readPath }
             : durableGoalToolEvidence(call.name, observed);
           if (receipt) {
             const owner = await nativeGoalParentGeneration(storage, task?.owner, context);

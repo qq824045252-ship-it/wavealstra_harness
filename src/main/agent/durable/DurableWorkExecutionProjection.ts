@@ -1,4 +1,5 @@
 import { collectRuntimeMaterialEvidence } from "../RuntimeMaterialEvidence";
+import { nativeExecutionSucceeded, readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import type { GeneratedArtifact } from "../../../shared/bot-work-phase3";
 import { z } from "zod";
@@ -121,12 +122,15 @@ async function scanExecutionEvidence(tx: DurableWorkReadTx,
         }
       }
       if (message.role === "toolResult") {
+        const receipt = readNativeExecutionReceipt(message.details);
+        const succeeded = nativeExecutionSucceeded(message, { toolName: message.toolName, callId: message.toolCallId,
+          toolTaskId: entry.byTaskId, conversationId: entry.conversationId });
         if (message.toolName === "subagent" && entry.byTaskId !== undefined) toolOwners.set(message.toolCallId, entry.byTaskId);
         const readCall = readCalls.get(message.toolCallId);
         if (readCall) {
           const materials = readCall.name === message.toolName ? collectRuntimeMaterialEvidence({
             toolCallId: message.toolCallId, toolName: message.toolName, args: readCall.args,
-            result: message, isError: message.isError }, message.timestamp) : [];
+            result: message, isError: !succeeded }, message.timestamp) : [];
           for (const item of materials) {
             const { toolCallId, toolName, at, kind, target, outputHash, partial } = item;
             const text = durableContentText(message.content);
@@ -145,10 +149,12 @@ async function scanExecutionEvidence(tx: DurableWorkReadTx,
         }
         readCalls.delete(message.toolCallId);
         const call = fileCalls.get(message.toolCallId);
-        if (call && message.toolName === call.name && !message.isError) {
-          if (call.name === "read") readPaths.add(call.path); else artifacts.add(call.path);
-        }
-        if (!message.isError) {
+        if (succeeded) {
+          if (receipt?.fileRead) readPaths.add(receipt.fileRead.target);
+          if (receipt?.fileChange && (message.toolName === "write" || message.toolName === "edit")) artifacts.add(receipt.fileChange.target);
+          if (!receipt && call && message.toolName === call.name) {
+            if (call.name === "read") readPaths.add(call.path); else artifacts.add(call.path);
+          }
           const details = z.object({ artifactRefs: z.array(z.string()).optional(), imagePaths: z.array(z.string()).optional() }).safeParse(message.details);
           if (details.success) {
             for (const path of details.data.artifactRefs ?? []) artifacts.add(workspaceBinding ? resolve(workspaceBinding, path) : path);

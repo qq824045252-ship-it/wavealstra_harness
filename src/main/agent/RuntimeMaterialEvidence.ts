@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RuntimeMaterialUseDto } from "../../shared/agent-ipc";
+import { nativeExecutionSucceeded, readNativeExecutionReceipt } from "../../shared/native-execution-receipt";
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
 const string = (value: unknown, max = 2048): string => typeof value === "string" ? value.slice(0, max) : "";
@@ -12,7 +13,13 @@ export function collectRuntimeMaterialEvidence(event: {
   if (event.isError || !["read", "project_knowledge_read", "project_knowledge_search", "fetch_content"].includes(event.toolName)) return [];
   const result = object(event.result);
   const details = object(result.details);
-  if (result.isError === true || details.error) return [];
+  if (!nativeExecutionSucceeded({ details, isError: result.isError === true }, { toolName: event.toolName, callId: event.toolCallId }) || details.error) return [];
+  const execution = readNativeExecutionReceipt(details);
+  if (event.toolName === "read" && execution) {
+    const read = execution.fileRead;
+    return read ? [{ ...read, toolCallId: event.toolCallId, toolName: event.toolName, at: execution.checkedAt,
+      title: read.target, kind: "file-content" }] : [];
+  }
   if (!Array.isArray(result.content) || !result.content.length) return [];
   const digest = createHash("sha256");
   let returnedChars = 0;

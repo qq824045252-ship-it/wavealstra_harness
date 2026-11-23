@@ -171,7 +171,7 @@ export async function readGoalObservations(origin: string, operation: string, qu
     const baseline = (await native.snapshot(WorkflowFiles, conversationId, context))?.base;
     const stale = "引用的 Pstack 校验不适用于当前工作区版本，请重新校验并引用最新结果";
     if (!run || run.task !== active.execution.taskId || !baseline || checkIdentities.some(check => check.workflowRun !== run.run))
-      throw new Error(stale + " [owner:" + JSON.stringify([run?.task, active.execution.taskId, run?.run, checkIdentities.map(check => check.workflowRun), !!baseline]) + "]");
+      throw new Error(stale);
     const history = await native.commit(async tx => {
       const entries: EntryRecord[] = [];
       let cursor: Cursor | undefined;
@@ -188,12 +188,12 @@ export async function readGoalObservations(origin: string, operation: string, qu
     const verified = measured.coverageComplete ? currentVerificationEvidence(run, measured.fingerprint, history, checkoutSha, Infinity) : [];
     if (checkIdentities.some(identity => !verified.some(check => check.passed &&
       isDeepStrictEqual(pstackCheckIdentitySchema.safeParse(check.checkIdentity).data, identity))))
-      throw new Error(stale + " [version:" + JSON.stringify([measured.fingerprint, checkoutSha, verified, checkIdentities]) + "]");
+      throw new Error(stale);
     await native.commit(async tx => {
       const liveRun = (await tx.doc(WorkflowState, conversationId)).run;
       const [, latest] = JSON.parse(await dotsInputVersion(tx, conversationId)) as [number, number];
       if (liveRun?.run !== run.run || liveRun.revision !== run.revision || latest !== proof.native.submissionId)
-        throw new Error(stale + " [live:" + JSON.stringify([liveRun?.run, run.run, liveRun?.revision, run.revision, latest, proof.native.submissionId]) + "]");
+        throw new Error(stale);
     }, context);
   }
   return proof;
