@@ -152,6 +152,10 @@ export async function reviewCommit(base: WorkspaceBaseline, ref: string, signal?
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) throw new Error("Cannot resolve review baseline commit.");
   return commit;
 }
+
+export async function verificationCheckout(base: WorkspaceBaseline, signal?: AbortSignal): Promise<string | undefined> {
+  return base.head ? reviewCommit(base, "HEAD", signal) : undefined;
+}
 export function reviewScope(base: WorkspaceBaseline, commit?: string): WorkspaceBaseline {
   return commit === undefined ? base : { ...base, head: commit, files: {}, unknown: [] };
 }

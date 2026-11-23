@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { cases, seedCase } from "./pstack-live-cases";
 import { admitLiveCase, limitLiveRequests } from "./pstack-live-admission.mjs";
 import { restrictLivePaths } from "./pstack-live-scope";
+import { readLiveCompletion } from "./pstack-live-lineage.mjs";
 
 const [route, arm, destination, ...extra] = process.argv.slice(2);
 const previousRun = extra[0] && !extra[0].startsWith("--") ? extra.shift() : undefined;
@@ -34,7 +35,7 @@ if (modelId !== defaultModel && !saved.enabledModels?.includes(modelId) && !json
   throw Error("The selected live model must belong to MyBuddy's actual configured candidate list.");
 if (existsSync(output)) throw Error("Evidence directory already exists: " + output);
 if (previous && (previous.route !== route || previous.arm !== arm || dirname(previous.root) !== tmpdir() ||
-  !basename(previous.root).startsWith("mb-workflow-") || !(existsSync(join(previousRun!, "evidence.json")) || existsSync(join(previousRun!, "interrupted.json")))))
+  !basename(previous.root).startsWith("mb-workflow-") || !(readLiveCompletion(previousRun!, previous).result || existsSync(join(previousRun!, "interrupted.json")))))
   throw Error("Only a settled, matching acceptance case in its isolated profile can resume.");
 mkdirSync(output, { recursive: false });
 writeFileSync(join(output,"queue.json"),JSON.stringify({route,arm,modelId,pid:process.pid,queued:new Date().toISOString()}));
@@ -167,7 +168,7 @@ const text = (replacement ? "The operator has replaced unavailable models in thi
   (previous ? "Continue the same interrupted task using its existing receipts and files. Read the current stage and finish; retain verified work.\n" : "") +
   request + "\n" + instructions + "\nDisposable task directory: " + cwd + ". Isolated MyBuddy profile: " + config +
   ". Use these paths only. For a local skill use the registered authoring tools in this profile. Only create the requested artifacts. Put explanations in the reply. Local commits are authorized. No remote writes, uploads, external comments or publication. Only read the named PR where relevant. If external publication is the remaining prerequisite, record the block. Work with real tools and report concise evidence.";
-const initial = { route, arm, cwd, root, sourceHash, roleDefinitions, modelId, configuredDefault:defaultModel, request, controls, previousRun, matchedRun: referencePath,
+const initial = { attemptId: randomUUID(), route, arm, cwd, root, sourceHash, roleDefinitions, modelId, configuredDefault:defaultModel, request, controls, previousRun, matchedRun: referencePath,
   ...(route === "trace-forensics" && {captureSha256:createHash("sha256").update(readFileSync(join(cwd,"capture.cpuprofile"))).digest("hex")}),
   referenceMode: arm === "original" ? "installed-preset-file-read" : "compiled-tools",
   sharedTmpGuard: true, replacementRoles: replacement,
@@ -241,7 +242,9 @@ if (store) {
   } finally { await store.close(context); }
 }
 if (workflow) delete workflow.config;
-jsonFile(join(output, "evidence.json"), { ...initial, end: new Date().toISOString(), expired, operatorRequired, error, workflow, records });
+const completionFile = join(output, "evidence.json");
+jsonFile(completionFile + ".tmp", { ...initial, end: new Date().toISOString(), expired, operatorRequired, error, workflow, records });
+renameSync(completionFile + ".tmp", completionFile);
 console.log(route, arm, workflow?.phase, "messages", records.length, error);
 const rootConversation = records.reduce((min,r) => Math.min(min,r.conversation),Infinity);
 const lastRootReply = records.filter(r => r.conversation === rootConversation && r.role === "assistant").sort((a,b) => a.entry-b.entry).at(-1);

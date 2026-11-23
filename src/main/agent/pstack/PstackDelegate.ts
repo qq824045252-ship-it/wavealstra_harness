@@ -7,14 +7,14 @@ import { auditParticipant, contestDispatch } from "./PstackContest";
 import { arenaSubmission, arenaSurvivors } from "./PstackArenaSubmission";
 import { resolvePstackRole } from "../../../shared/pstack";
 import { checked, criteria, failure, live, owner, playbookFor, REVIEW, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success, transcript, update, WorkflowFiles, type WorkflowOptions } from "./PstackState";
-import { measureWorkspace, reviewBaseline, reviewScope } from "./PstackWorkspace";
+import { measureWorkspace, reviewBaseline, reviewScope, verificationCheckout } from "./PstackWorkspace";
 import { auditPstackDecisions } from "./PstackDecisionTrail";
 import { auditTranscript, decisionAuthorsMemo, decisionDigest, independentAttention } from "./PstackAttention";
 import { childInspection, reviewTargets, validateInspections, type ReviewInspection } from "./PstackReviewEvidence";
 import { isAutopilot, ownerReports } from "./PstackDelivery";
 import { monitorOwnerDispatch } from "./PstackOwnerMonitor";
 import { parseThermosVerdict, type ThermosMember } from "./PstackThermosVerdict";
-import { currentVerificationEvidence } from "./PstackVerificationEvidence";
+import { currentVerificationEvidence, verificationEvidenceKey } from "./PstackVerificationEvidence";
 import { authoredFiles } from "./PstackAuthoredSkills";
 import { providerFailures, type ProviderDependency } from "./PstackProviderFailure";
 import { recordBlockedUnit } from "./PstackOrchestration";
@@ -103,11 +103,13 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           : undefined;
         const targets = delta ? await reviewTargets(base.cwd, delta.paths, userRequests, history) : [];
         const taskVersion = delta && (scope === base ? delta : await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,scoped));
-        const verified = taskVersion ? currentVerificationEvidence(run, taskVersion.fingerprint, history) : [];
-        const verificationKey = verified.map(check => check.toolTaskId).join(",");
+        const checkoutSha = taskVersion ? await verificationCheckout(base, ctx.abortSignal) : undefined;
+        const verified = taskVersion?.coverageComplete ? currentVerificationEvidence(run, taskVersion.fingerprint, history, checkoutSha) : [];
+        const verificationKey = verificationEvidenceKey(verified);
         const previous = delta && run.review?.fingerprint === delta.fingerprint && run.review.members?.length === config.count && run.review.inspections?.length === config.count &&
           run.review.inputs?.join(",") === inputIds.join(",") && run.review.reasons?.join(",") === reasons.join(",") &&
-          run.review.verificationKey === verificationKey && run.review.answerDraft === draft ? run.review : undefined;
+          run.review.verificationKey === verificationKey && run.review.checkoutSha === (checkoutSha ?? null) &&
+          run.review.answerDraft === draft ? run.review : undefined;
         const retained = previous?.members?.map((m, i) => ({ ...m, child: previous.receipt.children[i], model: previous.receipt.models[i],
           answer: previous.receipt.answers[i], inspection: previous.inspections![i] }));
         const slots = retained?.flatMap((m, i) => m.error ? [i] : []);
@@ -222,7 +224,8 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         }
         if (delta) {
           const after = await measureWorkspace(scope, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run));
-          if (after.fingerprint !== delta.fingerprint) throw new Error("Workspace changed during review; review again.");
+          if (after.fingerprint !== delta.fingerprint || checkoutSha !== await verificationCheckout(base, ctx.abortSignal))
+            throw new Error("Workspace changed during review; review again.");
           inspections = await Promise.all(records.map(c => childInspection(api, c.nativeConversationId, c.workspace?.cwd ?? base.cwd, base.cwd, ctx,scoped.map(f=>f.path))));
           const fresh = await Promise.all(answers.map(async (answer, i): Promise<ThermosMember> => {
             const member = { child: ids[i], model: models[i], answer: answer.slice(0, 16_000), inspection: inspections![i] };
@@ -244,7 +247,8 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         }
         await update(options, run, api, ctx, next => {
           if (delta) next.review = { fingerprint: delta.fingerprint, passed, receipt, reasons, members: members?.map(({ passed, error }) => ({ passed, ...(error && { error }) })),
-            inputs: inputIds, verificationKey, ...(draft && {answerDraft:draft}), repairs: previous ? (previous.repairs ?? 0) + 1 : 0,
+            inputs: inputIds, verificationKey, checkoutSha: checkoutSha ?? null,
+            ...(draft && {answerDraft:draft}), repairs: previous ? (previous.repairs ?? 0) + 1 : 0,
             ...(inspections && { inspections }), ...(reviewError && { error: reviewError }) };
           else if (attention) next.attention = attention;
           else next.delegates.push(receipt);

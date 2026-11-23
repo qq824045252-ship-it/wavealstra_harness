@@ -5,7 +5,7 @@ import { fileNameFromPath } from "@/lib/localFilePath";
 import ChatMarkdown from "./BotChatMarkdown";
 import WorkFilePreview from "./WorkFilePreview";
 import SavedFileActions from "./SavedFileActions";
-import { BotWorkVerification } from "./BotWorkVerification";
+import { BotWorkVerification, isWorkVerificationHistorical } from "./BotWorkVerification";
 import { IconFileCode, IconFileText, IconFileSpreadsheet, IconFileGeneric } from "@/components/common/icons";
 
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
@@ -173,12 +173,13 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
   const sourceConclusions = report.structured?.conclusions ?? [];
   const detailFiles = report.primaryArtifactRefs === undefined ? files.filter(reportFile) : files.filter(file => report.primaryArtifactRefs?.includes(file.ref));
   const hasDetails = Boolean(report.teamFacts?.length || sourceConclusions.length || report.structured?.observations.length || report.sourceNotices?.length || additionalRecord);
-  const status = !report.current ? (report.milestone ? "历史阶段成果" : "历史成果") : report.milestone ? "阶段成果" : report.completion
+  const current = report.current && !(report.verification && isWorkVerificationHistorical(report.verification, executionId, work));
+  const status = !current ? (report.milestone ? "历史阶段成果" : "历史成果") : report.milestone ? "阶段成果" : report.completion
     ? report.completion.nextStep === "ask" ? "需要你补充" : report.completion.nextStep === "continue" ? "继续处理中"
       : { completed: "已完成", partial: "部分完成", unknown: "尚未核实" }[report.completion.outcome]
     : { proposed: "结果已返回", accepted: "负责人已核验", rejected: "未通过核验", superseded: "已被新成果替代" }[report.reviewStatus];
   return <section className="bot-result-report" aria-label={`成果：${report.title}`}>
-    {presentation !== "detail" && <header><h3>{report.title}</h3><span className="bot-status-badge" data-outcome={report.completion?.outcome}>{status}</span></header>}
+    {presentation !== "detail" && <header><h3>{report.title}</h3><span className="bot-status-badge" data-outcome={current ? report.completion?.outcome : undefined}>{status}</span></header>}
     <div className={`bot-result-body ${long && !expanded ? "is-collapsed" : ""}`}>
       {unprojectedJson ? <p>原始报告已保留，尚未整理成可读结论。请展开执行详情查看，不代表目标已完成。</p>
         : <>{presentation === "conversation" && !report.completion && report.structured && <h4>本次请求的结论</h4>}{renderMarkdown(bodyText)}</>}
@@ -186,7 +187,7 @@ export function WorkReport({ report, originalText, executionId, work, renderMark
     {long && <button className="bot-result-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起长报告" : "展开完整报告"}</button>}
     {notices.length > 0 && <section className="bot-result-limitations" aria-label="需要注意"><h4>需要注意</h4><ul className="bot-result-notices">{notices.map((notice, i) => <li key={i}>{notice}</li>)}</ul></section>}
     <WorkFiles files={presentation === "detail" ? (report.primaryArtifactRefs === undefined && !detailFiles.length ? files : detailFiles) : files} primaryRefs={report.primaryArtifactRefs} compact={presentation === "conversation"} compactTitle={report.milestone ? "当前可用文件" : "本次交付"} />
-    {report.verification && <BotWorkVerification verification={report.verification} executionId={executionId} current={report.current} work={work} />}
+    {report.verification && <BotWorkVerification verification={report.verification} executionId={executionId} current={current} work={work} />}
     {presentation !== "detail" && hasDetails && <details className="bot-result-details"><summary>执行详情与来源</summary>
       {!!report.sourceNotices?.length && <section aria-label="执行报告中的限制"><h4>执行报告中的限制</h4><ul>{report.sourceNotices.map((notice,index) => <li key={index}>{notice}</li>)}</ul></section>}
       {report.teamFacts?.length ? <section aria-label="汇总时的执行事实"><h4>汇总时的执行事实</h4><ul>{report.teamFacts.map((fact, index) => <li key={index}>

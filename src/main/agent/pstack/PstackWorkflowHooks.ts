@@ -1,7 +1,8 @@
 import type { GenerationHooks, HookApi, ToolHooks } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { live, runSettings, state, transcript, WorkflowFiles, type WorkflowOptions } from "./PstackState";
-import { measureWorkspace, reviewScope } from "./PstackWorkspace";
+import { measureWorkspace, reviewScope, verificationCheckout } from "./PstackWorkspace";
+import { reviewMatchesVerification } from "./PstackVerificationEvidence";
 import { MERGE_REVIEW_BLOCK } from "./PstackReviewIntent";
 import { authoredFiles, captureAuthoredSkill } from "./PstackAuthoredSkills";
 import { codingTagRoute } from "../../../shared/pstack/coding-tags";
@@ -30,7 +31,12 @@ export function createPstackWorkflowHooks(options: WorkflowOptions) {
           if (!base || !run.review?.passed) return { block: MERGE_REVIEW_BLOCK };
           try {
             const owned=await authoredFiles(api,ctx,run);
-            if ((await measureWorkspace(reviewScope(base, run.reviewCommit), settings.thermos.fileLines, ctx.abortSignal,owned)).fingerprint !== run.review.fingerprint)
+            const scope = reviewScope(base, run.reviewCommit);
+            const reviewDelta = await measureWorkspace(scope, settings.thermos.fileLines, ctx.abortSignal, owned);
+            const workspace = scope === base ? reviewDelta : await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal, owned);
+            const history = await transcript(api, ctx, run.first);
+            if (reviewDelta.fingerprint !== run.review.fingerprint ||
+              !reviewMatchesVerification(run, workspace, history, await verificationCheckout(base, ctx.abortSignal)))
               return { block: MERGE_REVIEW_BLOCK };
           } catch(error) { ctx.abortSignal?.throwIfAborted(); return {block:MERGE_REVIEW_BLOCK+" "+(error as Error).message}; }
           if (run.phase === "complete") return;

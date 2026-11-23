@@ -44,13 +44,17 @@ export function captureAuthoredSkill(options: WorkflowOptions): (...args: [...Pa
   };
 }
 
-export async function authoredFiles(api: Api | HookApi, ctx: Context, run: WorkflowRun, history?: readonly EntryRecord[], retain = false): Promise<ScopedFile[]> {
+type OwnedFilesReader = Pick<Api, "snapshot" | "conversationId">;
+
+export function authoredFiles(api: Api | HookApi, ctx: Context, run: WorkflowRun, history?: readonly EntryRecord[], retain?: boolean): Promise<ScopedFile[]>;
+export function authoredFiles(api: OwnedFilesReader, ctx: Context, run: WorkflowRun, history: readonly EntryRecord[], retain?: boolean): Promise<ScopedFile[]>;
+export async function authoredFiles(api: OwnedFilesReader | Api | HookApi, ctx: Context, run: WorkflowRun, history?: readonly EntryRecord[], retain = false): Promise<ScopedFile[]> {
   const doc = await api.snapshot(Files, api.conversationId, ctx);
   const owned = new Map((doc?.run === run.run ? doc.files : []).map(f => [f.id, f]));
   // Completed create receipts can also be recovered after an interruption
   // between package installation and publication of the observer document.
   const through = doc?.run === run.run ? doc.through : undefined;
-  const source = history ?? await transcript(api, ctx, through ?? run.first);
+  const source = history ?? await transcript(api as Api | HookApi, ctx, through ?? run.first);
   for (const e of source) {
     if (e.kind !== "pi.tool-result" || e.byTaskId === undefined || e.byTaskId <= run.run || (through && e.id <= through)) continue;
     for (const m of e.model ?? []) {

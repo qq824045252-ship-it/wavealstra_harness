@@ -12,7 +12,8 @@ import type { ThermosMember } from "./PstackThermosVerdict";
 import type { ProviderDependency } from "./PstackProviderFailure";
 import type { Contest, ContestAudit } from "./PstackContest";
 import type { EvalExport } from "./PstackEvalExport";
-import type { VerificationOutcome } from "./PstackVerificationEvidence";
+import type { PstackCheckReceipt, VerificationOutcome } from "./PstackVerificationEvidence";
+import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
 
 export type Api = Parameters<ToolRegistration["execute"]>[1];
 export type WorkflowOptions = { taskId: string; cwd: string; tag?: CodingTag | null; active: () => boolean; settings: () => PstackSettings; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
@@ -23,14 +24,15 @@ export type WorkflowRun = {
   tagId?: string;
   phase: "running" | "blocked" | "complete"; stage: number; block: string; notes: string[]; operations: number[];
   verification: { command: string; fingerprint: string; toolTaskId: number; passed: boolean; exitCode?: number | null;
-    outcome?: VerificationOutcome["outcome"]; error?: string; changedPaths?: string[] } | null;
+    outcome?: VerificationOutcome["outcome"]; error?: string; changedPaths?: string[]; checkIdentity?: PstackCheckReceipt["checkIdentity"] } | null;
+  checkReceipts?: PstackCheckReceipt[];
   red?: { command: string; fingerprint: string; toolTaskId: number; exitCode: number };
   reviewCommit?: string;
   reviewDependency?: ProviderDependency;
   dispatchDependency?: ProviderDependency;
   thermosOutcome?: string;
   review: { fingerprint: string; passed: boolean; receipt: DelegateReceipt; inspections?: ReviewInspection[]; reasons?: string[]; error?: string;
-    members?: Pick<ThermosMember, "passed" | "error">[]; repairs?: number; inputs?: number[]; verificationKey?: string; answerDraft?: string } | null;
+    members?: Pick<ThermosMember, "passed" | "error">[]; repairs?: number; inputs?: number[]; verificationKey?: string; checkoutSha?: string | null; answerDraft?: string } | null;
   delegates: DelegateReceipt[];
   contests?: Record<string, Contest>;
   evalExport?: EvalExport;
@@ -127,8 +129,10 @@ export async function transcript(api: Api | HookApi, ctx: Context, first: EntryI
 
 export function observation(entries: EntryRecord[]) {
   return entries.flatMap(entry => entry.kind === "pi.tool-result" && entry.byTaskId !== undefined
-    ? (entry.model ?? []).flatMap(message => message.role === "toolResult" && !message.isError
+    ? (entry.model ?? []).flatMap(message => message.role === "toolResult"
       && /^(?:read|grep|find|ls|workspace_search|project_materials_search|browser_exec|computer_use)$/.test(message.toolName)
+      && nativeExecutionSucceeded(message, { conversationId: entry.conversationId, toolTaskId: entry.byTaskId,
+        toolName: message.toolName, callId: message.toolCallId })
       ? [{ entry: entry.id, tool: message.toolName }] : []) : []).at(-1);
 }
 export function reviewReasons(settings: PstackSettings, delta: WorkspaceDelta, entries: EntryRecord[], run?: Pick<WorkflowRun, "playbook">) {

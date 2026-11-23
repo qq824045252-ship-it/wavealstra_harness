@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readLiveCompletion } from "./pstack-live-lineage.mjs";
 
 // Read native SQLite without opening an agent or changing its lease. This
 // also recovers observations if a test process exits before exporting JSON.
@@ -10,13 +11,16 @@ const batch = resolve(process.argv[2]);
 const all = process.argv.includes("--save");
 function inspect(path) {
   const meta = JSON.parse(readFileSync(join(path, "run.json"), "utf8"));
+  const { result: end, evidenceError } = readLiveCompletion(path, meta);
+  if (evidenceError) return { route: meta.route, arm: meta.arm, directory: path, status: "evidence-mismatch", messages: 0, error: evidenceError };
+  const interruption = join(path, "interrupted.json");
+  if (!end && existsSync(interruption)) return JSON.parse(readFileSync(interruption, "utf8"));
   const dbFile = join(meta.root, ".mybuddy/durable", createHash("sha256").update("work-item").digest("hex"), "durable.sqlite");
   if (!existsSync(dbFile)) return { route: meta.route, arm: meta.arm, status: "initializing" };
   const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
     db.exec("BEGIN");
     const doc = db.prepare("SELECT r.content FROM document_revisions r JOIN documents d ON d.id=r.document_id WHERE d.kind=? AND r.kind='base' ORDER BY r.seq DESC LIMIT 1").get(JSON.stringify("mybuddy.pstack-run"));
-    const end = existsSync(join(path, "evidence.json")) && JSON.parse(readFileSync(join(path, "evidence.json"), "utf8"));
     const workflow = end ? end.workflow : doc && JSON.parse(doc.content).run;
     const entries = end ? end.records.slice().sort((a,b) => a.entry-b.entry).map(r => ({
       ...r, errorMessage:r.error, stopReason:r.stop, isError:r.failed, toolName:r.tool,
@@ -55,7 +59,7 @@ function inspect(path) {
 const results = [];
 function visit(dir) {
   if (existsSync(join(dir, "run.json"))) {
-    results.push(existsSync(join(dir,"interrupted.json")) ? JSON.parse(readFileSync(join(dir,"interrupted.json"),"utf8")) : inspect(dir));
+    results.push(inspect(dir));
     return;
   }
   for (const item of readdirSync(dir, { withFileTypes: true })) if (item.isDirectory()) visit(join(dir, item.name));

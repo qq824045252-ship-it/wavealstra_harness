@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { defineTool } from "@earendil-works/pi-durable";
+import { defineTool, GenerationTask, type TaskId } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
+import { readGoalNativeEvidence } from "../src/main/agent/durable/DurableGoalNativeEvidence";
+import { readGoalObservations } from "../src/main/agent/durable/DurableGoalCompletion";
+import { withDurableExecution } from "../src/main/agent/durable/DurableExecutionContext";
 import { normalizePstackSettings } from "../src/shared/pstack";
 import { createPstackWorkflow, isPstackCheck } from "../src/main/agent/pstack/PstackWorkflow";
 import { isPstackObservation } from "../src/main/agent/pstack/PstackObservationCommand";
@@ -36,7 +40,7 @@ import { currentVerificationEvidence, verificationOutcome } from "../src/main/ag
 const exec = promisify(execFile), root = await mkdtemp(join(tmpdir(), "mybuddy-pstack-"));
 const model: Model<"openai-completions"> = { id: "fixture", name: "Fixture", provider: "fixture", api: "openai-completions", baseUrl: "http://fixture.invalid",
   reasoning: false, input: ["text"], contextWindow: 128_000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-type Call = { name: string; arguments: Record<string, string | string[] | boolean | Record<string, string>> };
+type Call = { name: string; id?: string; arguments: Record<string, string | string[] | boolean | Record<string, string>> };
 const work = (action: string, fields: Record<string, string | boolean> = {}): Call => ({ name: "pstack_workflow", arguments: { action, ...fields } });
 const queue: Call[] = [];
 let serial = 0, replies = 0, enabled = true;
@@ -62,6 +66,37 @@ try {
   await writeFile(join(repo, "tracked.ts"), "a\nb\n");
   await writeFile(join(repo, "clean.ts"), "one\ntwo\n");
   await git("add", "."); await git("-c", "user.name=fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", "fixture");
+  const liveBatch = join(root, "live-batch"), nativeDir = join(liveBatch, "native"), originalDir = join(liveBatch, "original");
+  await mkdir(nativeDir, { recursive: true }); await mkdir(originalDir);
+  const writeJson = (file: string, value: unknown) => writeFile(file, JSON.stringify(value));
+  const liveMeta = { route: "bug-fix", cwd: repo, root, sourceHash: "source", request: "current request", modelId: "fixture/current", start: "2026-01-01T00:00:00Z" };
+  const nativeMeta = { ...liveMeta, arm: "native", attemptId: "native-new" };
+  const record = { conversation: 1, entry: 1, role: "assistant", stop: "stop", calls: [] };
+  const terminal = { end: "2026-01-01T00:00:05Z", records: [record] };
+  const originalMeta = { ...liveMeta, arm: "original" };
+  const nativeEvidence = { ...nativeMeta, ...terminal, workflow: { phase: "complete" } };
+  await writeJson(join(liveBatch, "original-catalog.json"), [{ playbook: liveMeta.route, sha256: liveMeta.sourceHash }]);
+  await writeJson(join(nativeDir, "run.json"), nativeMeta);
+  await writeJson(join(originalDir, "run.json"), originalMeta);
+  await writeJson(join(originalDir, "evidence.json"), { ...originalMeta, ...terminal });
+  const liveReport = () => exec(process.execPath, ["scripts/pstack-live-pairs.mjs", liveBatch]);
+  for (const stale of [{ request: "old request", modelId: "fixture/old" }, { attemptId: "native-old" }, { end: "2025-12-31T23:59:59Z" }]) {
+    await writeJson(join(nativeDir, "evidence.json"), { ...nativeEvidence, ...stale });
+    assert.match((await liveReport()).stdout, /no settled same-input pair/);
+    const pairs = JSON.parse(await readFile(join(liveBatch, "paired-inputs.json"), "utf8"));
+    assert.equal(pairs[0].attempts.find((attempt: { arm: string }) => attempt.arm === "native").status, "evidence-mismatch");
+    const observed = await exec(process.execPath, ["scripts/pstack-live-observe.mjs", liveBatch]);
+    assert.match(observed.stdout, /native bug-fix evidence-mismatch/);
+  }
+  await writeFile(join(nativeDir, "evidence.json"), "{\"incomplete\":");
+  assert.match((await liveReport()).stdout, /no settled same-input pair/);
+  await writeJson(join(liveBatch, "observations.json"), [{ status: "complete", directory: nativeDir }]);
+  await exec(process.execPath, ["scripts/pstack-live-artifacts.mjs", liveBatch]);
+  const staleArtifacts = JSON.parse(await readFile(join(liveBatch, "artifact-checks.json"), "utf8"));
+  assert.equal(staleArtifacts[0].status, "evidence-mismatch");
+  await writeJson(join(nativeDir, "evidence.json"), nativeEvidence);
+  assert.match((await liveReport()).stdout, /native ↔ original/);
+  console.log("PASS Pstack live reports reject evidence for another request, model or attempt and accept a matching pair");
   const divergence = await baselineWorkspace(repo);
   const tree = (await git("rev-parse","HEAD^{tree}")).stdout.trim();
   const fixtureCommit = async (name: string) => (await git("-c","user.name=fixture","-c","user.email=fixture@invalid",
@@ -170,13 +205,30 @@ try {
 
   const settings = normalizePstackSettings({});
   const host = createPstackWorkflow({ taskId: "pstack-fixture", cwd, settings: () => settings, active: () => enabled });
+  const acceptedChecks: Array<Awaited<ReturnType<typeof readGoalObservations>>["observations"][number]["checkIdentity"]> = [];
+  const rejectedChecks: string[] = [];
+  const observe = defineTool({ name: "fixture_observe_goal_check", description: "Resolve this Goal's quoted check", replay: "safe",
+    parameters: Type.Object({ operation: Type.String(), quote: Type.String(), toolCallId: Type.String() }),
+    async execute({ operation, quote, toolCallId }, native, context) {
+      const proof = await withDurableExecution({
+        native, context, cwd, runId: operation, presentationConversationId: native.conversationId,
+        execution: { taskId: "pstack-fixture", assistantMessageId: "fixture-accept", executionId: "fixture-accept" },
+      }, () => readGoalObservations("git-check", operation, [{ quote, toolCallId }], [], "Verified checkout.")).catch((error: Error) => {
+        rejectedChecks.push(error.message);
+        throw error;
+      });
+      acceptedChecks.push(proof.observations[0].checkIdentity);
+      return { output: [{ type: "text", text: "Recorded the current check." }] };
+    },
+  });
   const open = () => DurableBotRuntime.open({ directory: join(root, "store"), cwd, models, model: { provider: model.provider, modelId: model.id },
-    toolMode: "native", instructions: () => "Fixture", tools: host.tools, foregroundHooks: host, onSnapshot: () => {} });
+    toolMode: "native", instructions: () => "Fixture", tools: [...host.tools, observe], foregroundHooks: host, onSnapshot: () => {} });
   let runtime = await open();
   const status = () => runtime.harness.snapshot(WorkflowState, runtime.conversation.id, ctx);
   async function turn(input: string, id: string, calls: Call[]) {
     queue.push(...calls);
-    const result = await (await runtime.submit(input, id)).wait(ctx);
+    const metadata = id.startsWith("git-") ? { text: input, displayText: input, attachments: [] } : undefined;
+    const result = await (await runtime.submit(input, id, "followUp", metadata)).wait(ctx);
     await runtime.conversation.waitForIdle(ctx);
     assert.equal(queue.length, 0, JSON.stringify(result));
     return result;
@@ -210,6 +262,7 @@ try {
       { name: "write", arguments: { path: "check.cjs", content: testFile + "// changed since test\n" } }, work("complete"),
       work("verify", { shell: "bash", command: "node --test check.cjs" }), work("complete")]);
     assert.equal(finished.status, "done", JSON.stringify(finished));
+    await runtime.close(); runtime = await open();
     const completed = (await status())!.run!;
     assert.equal(completed.phase, "complete"); assert.equal(completed.verification?.passed, true);
     assert.match(completed.thermosOutcome ?? "", /Thermos 未触发/);
@@ -218,6 +271,36 @@ try {
     const confirmed = currentVerificationEvidence(completed, completed.verification!.fingerprint, history.items);
     assert.deepEqual(confirmed.map(r => [r.command, r.toolTaskId, r.exitCode]), [["node --test check.cjs", completed.verification!.toolTaskId, 0]]);
     assert(confirmed[0].output.includes("works"));
+    const identity = confirmed[0].checkIdentity!;
+    assert.deepEqual(identity, completed.verification?.checkIdentity);
+    assert.equal(identity.beforeFingerprint, identity.afterFingerprint);
+    assert.notEqual(identity.operationTaskId, identity.toolTaskId);
+    const generations = await runtime.harness.commit(async tx => {
+      const owners = new Map<number, { conversationId: string; generationTaskId: number }>();
+      for (const { checkIdentity: check } of completed.checkReceipts!) {
+        const child = await tx.task(check.toolTaskId as TaskId);
+        assert.equal(child?.owner, check.operationTaskId);
+        let task = await tx.task(check.operationTaskId as TaskId);
+        while (task && task.kind !== GenerationTask.definition.name)
+          task = task.owner === undefined ? undefined : await tx.task(task.owner);
+        assert(task, "Pstack operation descends from the generation receiving its evidence");
+        owners.set(task.id, { conversationId: String(task.conversationId), generationTaskId: Number(task.id) });
+      }
+      return [...owners.values()];
+    }, ctx);
+    const nativeChecks = (await readGoalNativeEvidence(join(root, "store"), generations)).flatMap(row =>
+      row.evidence.kind === "check" ? [{ operation: row.toolTaskId, check: row.evidence }] : []);
+    assert.deepEqual(nativeChecks.map(({ check }) => check.checkIdentity), completed.checkReceipts!.map(receipt => receipt.checkIdentity));
+    assert.deepEqual(nativeChecks.at(-1), { operation: identity.operationTaskId, check: {
+      kind: "check", command: "node --test check.cjs", passed: true, exitCode: 0,
+      fingerprint: identity.afterFingerprint, outcome: "passed", checkIdentity: identity,
+    } });
+    const persistedResult = history.items.find(entry => entry.byTaskId === identity.operationTaskId)?.model
+      ?.find(message => message.role === "toolResult" && message.toolName === "pstack_workflow");
+    assert(persistedResult?.role === "toolResult" && persistedResult.content[0]?.type === "text");
+    assert.deepEqual(JSON.parse(persistedResult.content[0].text), completed.checkReceipts!.at(-1));
+    assert.deepEqual(currentVerificationEvidence(completed, identity.afterFingerprint, []),
+      confirmed.map(({ entry: _entry, ...check }) => check), "review uses the committed receipt even without tool-result text");
     assert.deepEqual(currentVerificationEvidence(completed, "changed-since-check", history.items), []);
     assert(errors.some(e => /No successful workspace observation/.test(e)), JSON.stringify(errors));
     assert.equal(errors.filter(e => /Current workspace needs/.test(e)).length, 2, JSON.stringify(errors));
@@ -249,7 +332,24 @@ try {
     assert(actual.items.some(e => e.model?.some(m => m.role === "toolResult" && m.isError && m.content.some(p => p.type === "text" && p.text.includes("cannot append a workspace decision log")))));
     const advance = (stage: string) => work("advance", { stage, note: "Observed outcome: " + stage });
     const verification = work("verify", { shell: "bash", command: "node --test behavior.cjs" });
-    const tddRun = await turn("通过行为测试修复当前错误。", "tdd", [work("start", { skill: "tdd" }), advance("repro"), advance("red"),
+    const desktopFixtureRoot = join(root, "desktop-check");
+    await mkdir(desktopFixtureRoot);
+    await writeFile(join(desktopFixtureRoot, "fixture-layout.txt"), "fixed\n");
+    const desktopFixture = resolve("scripts/desktop-verification-case-fixture.cjs");
+    const desktopCheck = `process.chdir(${JSON.stringify(desktopFixtureRoot)}); process.argv[2]='cleanup'; require(${JSON.stringify(desktopFixture)});`;
+    const setup = await turn("通过行为测试修复当前错误。", "tdd-setup", [work("start", { skill: "tdd" }), advance("repro"),
+      { name: "write", arguments: { path: "desktop-check.cjs", content: desktopCheck } },
+      work("verify", { shell: "bash", command: "node desktop-check.cjs" }), work("block", { note: "Inspect launcher cleanup failure" })]);
+    assert.equal(setup.status, "done");
+    const setupRun = (await status())!.run!;
+    assert.equal(setupRun.verification?.exitCode, 1);
+    assert.equal(setupRun.red, undefined, "an assertion pass followed by a cleanup failure is not a TDD red receipt");
+    assert.equal(setupRun.verification?.outcome, "infrastructure_failed");
+    const desktopReport = setupRun.verification?.checkIdentity?.desktopReport;
+    assert(desktopReport, "the nested desktop result retains the finalized report identity");
+    assert.deepEqual(desktopReport.caseIds, ["cleanup"]);
+    assert.equal(desktopReport.reportSha256, createHash("sha256").update(await readFile(desktopReport.reportPath)).digest("hex"));
+    const tddRun = await turn("继续测试。", "tdd", [work("resume"), advance("red"),
       { name: "write", arguments: { path: "value.cjs", content: "module.exports=0;\n" } },
       { name: "write", arguments: { path: "behavior.cjs", content: "require('node:test')('expected value',()=>require('node:assert/strict').equal(require('./value.cjs'),1));\n" } },
       verification, advance("red"), advance("implement"), advance("green"),
@@ -301,6 +401,43 @@ try {
     ]);
     assert.equal((await status())!.run!.verification?.passed, true, "the old revision passed its test");
     assert.equal((await status())!.run!.phase, "blocked", "restoring the baseline invalidates the previous success");
+    const checkout = (...args: string[]) => exec("git", ["-C", cwd, "-c", "user.name=fixture", "-c", "user.email=fixture@invalid", ...args], { windowsHide: true });
+    await checkout("init", "-q", "-b", "main");
+    await checkout("add", "check.cjs");
+    await checkout("commit", "-qm", "initial test revision");
+    const gitCheck = (id: string): Call => ({ ...work("verify", { shell: "bash", command: "node --test check.cjs" }), id });
+    const quoteCheckout = (operation: string, sha: string, toolCallId: string): Call =>
+      ({ name: observe.name, arguments: { operation, quote: `"checkoutSha": "${sha}"`, toolCallId } });
+    const originalSha = (await checkout("rev-parse", "HEAD")).stdout.trim();
+    await turn("Verify the exact checkout revision.", "git-check", [
+      work("start", { skill, replace: true, note: "Verify the initial checkout." }), advance("apply"), gitCheck("verify-old"),
+      quoteCheckout("git-check", originalSha, "verify-old"),
+      work("block", { note: "Wait for checkout change." }),
+    ]);
+    const checkAtOldHead = (await status())!.run!.verification!;
+    assert.equal(checkAtOldHead.checkIdentity?.checkoutSha, originalSha);
+    assert.deepEqual(acceptedChecks, [checkAtOldHead.checkIdentity], JSON.stringify(rejectedChecks));
+    await checkout("commit", "--allow-empty", "-qm", "same file bytes, new checkout revision");
+    await turn("Continue on the current checkout.", "git-stale", [
+      work("resume"), quoteCheckout("git-stale", originalSha, "verify-old"), work("complete"),
+      work("block", { note: "Run a fresh check on the new commit." }),
+    ]);
+    assert.equal((await status())!.run!.phase, "blocked", "a passing check at a different same-tree commit cannot authorize completion");
+    assert.equal(acceptedChecks.length, 1, "a prior passing tool result cannot satisfy current Goal acceptance");
+    assert.deepEqual(rejectedChecks, ["引用的 Pstack 校验不适用于当前工作区版本，请重新校验并引用最新结果"]);
+    const freshSha = (await checkout("rev-parse", "HEAD")).stdout.trim();
+    await turn("Verify the new checkout.", "git-fresh", [
+      work("resume"), gitCheck("verify-new"), quoteCheckout("git-fresh", freshSha, "verify-new"), work("complete"),
+    ]);
+    const newHead = (await status())!.run!;
+    assert.equal(newHead.phase, "complete");
+    assert.equal(newHead.verification?.fingerprint, checkAtOldHead.fingerprint);
+    assert.equal(newHead.verification?.checkIdentity?.checkoutSha, (await checkout("rev-parse", "HEAD")).stdout.trim());
+    assert.notEqual(newHead.verification?.checkIdentity?.checkoutSha, checkAtOldHead.checkIdentity?.checkoutSha);
+    assert.deepEqual(acceptedChecks, [checkAtOldHead.checkIdentity, newHead.verification?.checkIdentity]);
+    assert.deepEqual(currentVerificationEvidence(newHead, newHead.verification!.fingerprint, [], newHead.verification!.checkIdentity!.checkoutSha)
+      .map(check => check.checkIdentity?.toolTaskId), [newHead.verification?.toolTaskId]);
+    console.log("PASS same-tree checkout change invalidates the previous receipt through native workflow completion and review");
     enabled = false;
     assert.equal((await turn("Question", "run-5", [])).status, "done");
     console.log("PASS actual read receipt, independent next workflow, bounded native onYield and disabled task");

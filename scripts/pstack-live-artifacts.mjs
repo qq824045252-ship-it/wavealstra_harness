@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
-import { originalCaseStart } from "./pstack-live-lineage.mjs";
+import { originalCaseStart, readLiveCompletion } from "./pstack-live-lineage.mjs";
 
 // Independent artifact checks use the submitted workspace, after the chat has
 // settled. Keep external services out of these checks.
@@ -31,8 +31,11 @@ for (const obs of observations) {
     results.push({route, arm:meta.arm, directory:obs.directory, status:obs.status, supersededWorkspace:successor[0]});
     continue;
   }
-  const readEvidence = join(obs.directory, "evidence.json");
-  const run = existsSync(readEvidence) ? JSON.parse(readFileSync(readEvidence, "utf8")) : undefined;
+  const { result: run, evidenceError } = readLiveCompletion(obs.directory, meta);
+  if (evidenceError) {
+    results.push({ route, arm: meta.arm, directory: obs.directory, status: "evidence-mismatch", evidenceError });
+    continue;
+  }
   const firstConversation = run?.records.reduce((id, r) => Math.min(id, r.conversation), Infinity);
   const foreground = run?.records.filter(r => r.conversation === firstConversation).sort((a, b) => a.entry - b.entry) ?? [];
   const reply = foreground.filter(r => r.role === "assistant" && r.stop === "stop").at(-1)?.text ?? "";

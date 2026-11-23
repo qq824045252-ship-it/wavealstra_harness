@@ -2,11 +2,14 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readLiveCompletion } from "./pstack-live-lineage.mjs";
 
 // Inspect the real participant inputs omitted from the general live-run report.
 // Only the disposable workflow path named by the caller is opened.
 const directory = process.argv[2], evidence = JSON.parse(readFileSync(join(directory, "run.json"), "utf8"));
 if (evidence.route !== "eval") throw Error("Select a live eval case.");
+const { result: status, evidenceError } = readLiveCompletion(directory, evidence);
+if (evidenceError) throw Error(evidenceError);
 const sha = value => createHash("sha256").update(value).digest("hex");
 const db = new DatabaseSync(join(evidence.root,".mybuddy","durable",sha("work-item"),"durable.sqlite"),{readOnly:true});
 try {
@@ -17,7 +20,6 @@ try {
     messages.push(...JSON.parse(row.record).model ?? []); chats.set(row.conversation_id,messages);
   }
   const text = m => typeof m.content === "string" ? m.content : m.content.filter(p=>p.type==="text").map(p=>p.text).join("\n");
-  const status = existsSync(join(directory,"evidence.json")) ? JSON.parse(readFileSync(join(directory,"evidence.json"),"utf8")) : null;
   const latest = !status && db.prepare("SELECT r.content FROM document_revisions r JOIN documents d ON d.id=r.document_id WHERE d.kind=? AND r.kind='base' ORDER BY r.seq DESC LIMIT 1").get(JSON.stringify("mybuddy.pstack-run"));
   const workflow = status?.workflow ?? (latest && JSON.parse(latest.content).run);
   const saved = workflow?.contests?.eval;

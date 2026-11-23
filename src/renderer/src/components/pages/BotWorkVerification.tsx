@@ -1,11 +1,20 @@
 import type { WorkProjectionDto } from "@shared/bot-work";
 import type { WorkVerificationDto } from "@shared/bot-work-verification";
+import { workVerificationMatches } from "@shared/bot-work-verification";
 import "./BotWorkVerification.css";
 
 const labels: Record<WorkVerificationDto["checks"][number]["state"], string> = {
   verified: "已登记核对", unverified: "尚未核实", failed: "记录未通过", waived: "记录已豁免",
   read: "已读取保存版本", empty: "文本为空", changed: "版本不一致", unavailable: "未能核对内容",
 };
+
+export function isWorkVerificationHistorical(verification: WorkVerificationDto, executionId?: string, work?: WorkProjectionDto): boolean {
+  if (!executionId || verification.executionId !== executionId || verification.historicalExecution) return true;
+  if (!work) return false;
+  const binding = work.executions.find(item => item.bindingId === executionId);
+  return !workVerificationMatches(verification, { ...work, executionId })
+    || work.inputSnapshotBound === false || binding?.invalidatedAt !== undefined || binding?.status === "invalidated";
+}
 
 /** Read the saved projection only. Expanding this record never invokes a tool,
  * refreshes evidence, changes task state, or asks the user to approve anything. */
@@ -14,12 +23,7 @@ export function BotWorkVerification({ verification, executionId, current, work }
 }): React.JSX.Element {
   if (!executionId || verification.executionId !== executionId)
     return <p className="bot-work-verification-unavailable">核对记录与本条执行结果未能对应，未展示为本次依据。</p>;
-  const binding = work?.executions.find(item => item.bindingId === executionId);
-  const historical = !current || verification.historicalExecution || Boolean(work && (
-    verification.workId !== work.workId || verification.intentRevision !== work.intentRevision
-    || verification.inputSnapshotId !== work.inputSnapshotId || verification.ownerEpoch !== work.ownerEpoch
-    || work.inputSnapshotBound === false
-    || binding?.invalidatedAt !== undefined || binding?.status === "invalidated"));
+  const historical = !current || isWorkVerificationHistorical(verification, executionId, work);
   return <details className="bot-work-verification" aria-label="核对记录" data-historical={historical}>
     <summary>{historical ? "历史核对记录" : "核对记录"} · {verification.checks.length} 项</summary>
     <p>{historical ? "以下是历史核对时保存的记录，不代表当前要求已完成，也没有重新检查当前环境。"

@@ -5,7 +5,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { admitLiveCase, limitLiveRequests } from "./pstack-live-admission.mjs";
-import { originalCaseStart } from "./pstack-live-lineage.mjs";
+import { originalCaseStart, readLiveCompletion } from "./pstack-live-lineage.mjs";
 
 function evaluateManualResult(final: string) {
   const fenced = [...final.matchAll(/\x60{3}(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n\x60{3}/gi)];
@@ -24,7 +24,9 @@ export async function verifyAuthoredSkill(caseDirectory: string, variant?: strin
   const destination = resolve(caseDirectory), realProfile = join(homedir(), ".mybuddy"), shared = tmpdir();
   const load = (p: string) => JSON.parse(readFileSync(p, "utf8"));
   const hash = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
-  const meta = load(join(destination, "run.json")), evidence = load(join(destination, "evidence.json"));
+  const meta = load(join(destination, "run.json"));
+  const { result: evidence, evidenceError } = readLiveCompletion(destination, meta);
+  assert(evidence, evidenceError ?? "The authoring run has no terminal evidence.");
   const started = originalCaseStart(meta);
   assert(meta.route === "authoring-a-skill" && ["native","original"].includes(meta.arm) && meta.root === realpathSync(meta.root));
   assert.equal(dirname(meta.root), realpathSync(shared));

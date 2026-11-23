@@ -11,6 +11,7 @@ import { PstackTrailReceipts } from "../src/main/agent/pstack/PstackDecisionTrai
 import { appendTrailBytes, digest, trailTarget } from "../src/main/agent/pstack/PstackDecisionFile";
 import { normalizePstackSettings, pstackDecisionLogPath } from "../src/shared/pstack";
 import { chooseDecisionReviewers } from "../src/main/agent/pstack/PstackContestModels";
+import { prepareFileEffect, readEffectIntent, verifyFileEffect } from "../src/main/agent/durable/DurableEffectRecovery";
 
 const model: Model<"openai-completions"> = { api: "openai-completions", provider: "fixture", id: "local", name: "Local",
   baseUrl: "http://fixture.invalid", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096,
@@ -126,6 +127,30 @@ try {
   await appendTrailBytes(cwd, intent, () => {});
   await appendTrailBytes(cwd, intent, () => {});
   assert.equal(await readFile(join(cwd, "replay.tsv"), "utf8"), text, "replaying after fsync must not append again");
+  const earlier = expectedHeader + "\n";
+  const added = text.slice(earlier.length);
+  const later = "2026-01-01T01:00:00Z\tverify\tother decision\twhy\tspec.txt:1\tok\n";
+  const appended = { ...intent, path: "shared.tsv", beforeHash: digest(earlier), beforeBytes: Buffer.byteLength(earlier), append: added, existed: true };
+  await writeFile(join(cwd, appended.path), earlier);
+  const appendCall = { type: "toolCall", name: "pstack_decision_append", id: "append-verify", arguments: {
+    path: appended.path, content: appended.append, expectedSha256: appended.expectedSha256, expectedBytes: appended.expectedBytes,
+  } } as const;
+  const effect = await prepareFileEffect(appendCall, cwd);
+  assert(effect?.kind === "file");
+  await appendTrailBytes(cwd, appended, () => {});
+  assert.equal((await verifyFileEffect(effect)).status, "passed");
+  await appendFile(join(cwd, appended.path), later);
+  await appendTrailBytes(cwd, appended, () => {});
+  assert.equal(await readFile(join(cwd, appended.path), "utf8"), text + later);
+  assert.equal((await verifyFileEffect(effect)).status, "passed", "a later row must not invalidate the original append");
+  const resumed = readEffectIntent({ kind: "file", path: effect.path, canonicalPath: effect.canonicalPath,
+    bytes: appended.expectedBytes, sha256: appended.expectedSha256 }, appendCall);
+  assert(resumed.kind === "file");
+  assert.equal((await verifyFileEffect(resumed)).status, "passed", "recover the append range from a pending call saved before the upgrade");
+  await writeFile(join(cwd, appended.path), text.replace("checked", "changed") + later);
+  assert.equal((await verifyFileEffect(effect)).status, "inconclusive", "the bytes at the append offset must match");
+  await writeFile(join(cwd, appended.path), earlier + added.slice(0, -1));
+  assert.equal((await verifyFileEffect(effect)).status, "inconclusive", "a short append must not be accepted");
   await writeFile(join(cwd, "partial.tsv"), text.slice(0, 21));
   await appendTrailBytes(cwd, { ...intent, path: "partial.tsv" }, () => {});
   assert.equal(await readFile(join(cwd, "partial.tsv"), "utf8"), text, "resume only the missing bytes after a short append");

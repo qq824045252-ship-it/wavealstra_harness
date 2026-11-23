@@ -11,8 +11,8 @@ import { contestStep, prepareContestAdvance } from "./PstackContest";
 import { checkEvalExport, createEvalSave, exportEval, requestedEvalFiles } from "./PstackEvalExport";
 import { checked, criteria, detached, failure, live, observation, owner, playbookFor, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success,
   transcript, update, view, WorkflowFiles, WorkflowState, type WorkflowOptions, type WorkflowRun } from "./PstackState";
-import { baselineWorkspace, branchReviewBase, measureWorkspace, readPlanFile, reviewBaseline, reviewCommit, reviewScope } from "./PstackWorkspace";
-import { verificationOutcome } from "./PstackVerificationEvidence";
+import { baselineWorkspace, branchReviewBase, measureWorkspace, readPlanFile, reviewBaseline, reviewCommit, reviewScope, verificationCheckout } from "./PstackWorkspace";
+import { checkWorkspaceStamp, latestCheck, passedCurrentCheck, pstackCheckReceipt, reviewMatchesVerification, type PstackCheckReceipt } from "./PstackVerificationEvidence";
 import { appendPstackDecision, auditPstackDecisions, createPstackDecisionAppend, decisionParameters, hasPstackDecisions } from "./PstackDecisionTrail";
 import { decisionDigest } from "./PstackAttention";
 import { createPstackWatchTool } from "./watch";
@@ -55,7 +55,9 @@ export function isPstackCheck(command: string, custom: unknown = "") {
   return /^(?:(?:pnpm|yarn|npm|bun)\s+(?:(?:run|-s|--silent)\s+)*(?:test|check|typecheck|lint|verify|build)(?:\b|:)|(?:node|bun)\s+--test\b|(?:python3?|py)\s+-m\s+(?:unittest|pytest|mypy)\b|(?:pytest|vitest|jest|tsc|eslint|ruff)\b|go\s+(?:test|vet)\b|cargo\s+(?:test|check|clippy)\b|dotnet\s+test\b|(?:mvn|mvnw|gradle|gradlew)\s+(?:test|check|verify)\b|ctest\b|git\s+diff\s+--check\b)/i.test(command)
     && !/(?:^|\s)(?:--help|-h|--version|-v(?:ersion)?|--list(?:Tests)?|--collect-only|--no-run|--passWithNoTests|--if-present|--dry-run)(?:\s|$)/i.test(command);
 }
-const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const checkReply = (receipt: PstackCheckReceipt) => ({
+  ...success(receipt), details: { checkIdentity: receipt.checkIdentity }, isError: receipt.outcome !== "passed",
+});
 
 export function createPstackWorkflow(options: WorkflowOptions) {
   const workflow: ToolRegistration = defineTool({
@@ -85,7 +87,10 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         });
         const active = await live(api, ctx);
         if (!active?.first || !active.inputs.length) throw new Error("Workflow requires a current user input.");
-        if (run?.operations.includes(api.taskId)) return success(view(run));
+        if (run?.operations.includes(api.taskId)) {
+          const check = action === "verify" && run.checkReceipts?.find(receipt => receipt.checkIdentity.operationTaskId === api.taskId);
+          return check ? checkReply(check) : success(view(run));
+        }
         if (action === "start") {
           const requested = args.skill ? "skill:" + args.skill : args.playbook ??
             (run && run.phase !== "complete" && !args.replace ? run.playbook : defaultRoute);
@@ -212,13 +217,13 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           if (method === "tdd" && stepId === "red" && !run.red)
             throw new Error("Record a failing behavioral check with verify, then state why its failure is expected.");
           if (method === "tdd" && stepId === "green") {
-            const green = run.verification;
+            const green = latestCheck(run);
             if (!run.red || !green?.passed || run.red.command !== green.command || run.red.fingerprint === green.fingerprint)
               throw new Error("Rerun the original failed command against the changed workspace and obtain exit code zero.");
             const baseline = (await api.snapshot(WorkflowFiles, api.conversationId, ctx))?.base;
             if (!baseline) throw new Error("Missing workspace baseline.");
             const current = await measureWorkspace(baseline, settings.thermos.fileLines, ctx.abortSignal, await authoredFiles(api,ctx,run));
-            if (!current.coverageComplete || current.fingerprint !== green.fingerprint)
+            if (!passedCurrentCheck(green, current, await verificationCheckout(baseline, ctx.abortSignal)))
               throw new Error("The successful check covers a different workspace version. Inspect the current workspace and verify a stable snapshot.");
           }
           const checkpoint = !readOnlyCodingTag(run.tagId) && settings.skills.architect?.enabled && settings.skills.architect.parameters.checkpoint === true
@@ -248,41 +253,48 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         }
         if (action === "verify") {
           const command = args.command?.trim() ?? "";
-          const measurement = await isPstackObservation(run.playbook, command, options.cwd);
-          if (!args.shell || (!measurement && !isPstackCheck(command, settings.skills["poteto-mode"]?.parameters.verificationCommands)))
+          const shell = args.shell;
+          const memoKey = "pstack-verification-input";
+          const prior = await api.memo<{ command: string; shell: string; measurement: boolean; workspace: ReturnType<typeof checkWorkspaceStamp> }>(memoKey, ctx);
+          const measurement = prior?.measurement ?? await isPstackObservation(run.playbook, command, options.cwd);
+          if (!shell || (!prior && !measurement && !isPstackCheck(command, settings.skills["poteto-mode"]?.parameters.verificationCommands)))
             throw new Error("Run one check from the current task directory, e.g. node --test check.cjs. Omit cd and shell chains. Additional project commands can be saved in poteto-mode settings.");
           checked(options, ctx);
-          const result = await api.executeTool(args.shell, { command }, ctx, { key: "pstack-verification", progress: true });
-          const receipt = result.structuredOutput;
-          const exitCode = object(receipt) && typeof receipt.exitCode === "number" && Number.isSafeInteger(receipt.exitCode) ? receipt.exitCode : null;
-          const output = object(receipt) && typeof receipt.output === "string" ? receipt.output : "";
-          const counts = [...output.matchAll(/^\s*(?:ℹ|#)?\s*tests\s+(\d+)\s*$|\b(?:ran|collected)\s+(\d+)\s+(?:tests?|items?)\b/gim)]
-            .map(match => Number(match[1] ?? match[2]));
-          const emptySuite = counts.length ? counts.every(total => total === 0) : /\bno tests (?:were |have been )?(?:found|collected|run)\b/i.test(output);
+          // A restarted parent can recover the original shell result, so keep its original workspace observation.
+          const intent = prior ?? await api.memo(memoKey, {
+            command, shell, measurement, workspace: checkWorkspaceStamp(delta, await verificationCheckout(base, ctx.abortSignal)),
+          }, ctx);
+          if (intent.command !== command || intent.shell !== shell) throw new Error("The verification command differs from the durable tool call.");
+          const result = await api.executeTool(shell, { command }, ctx, { key: "pstack-verification", progress: true });
           const after = await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run));
-          const unchanged = delta.coverageComplete && after.coverageComplete && delta.fingerprint === after.fingerprint;
-          const silentMeasurement = measurement && !output.trim();
-          const classification = verificationOutcome(delta, after, exitCode, result.isError, emptySuite, silentMeasurement);
-          const passed = classification.outcome === "passed";
-          await save(async (next, tx) => {
-            await recordPstackGoalEvidence(tx, api, { kind: "check", command, passed, exitCode, fingerprint: after.fingerprint });
-            next.verification = { command, passed, exitCode, toolTaskId: result.taskId, fingerprint: after.fingerprint, ...classification };
-            if (method === "tdd" && stepId === "red" && unchanged && !emptySuite && exitCode !== null && exitCode > 0 && exitCode < 126)
-              next.red = { command, toolTaskId: result.taskId, fingerprint: after.fingerprint, exitCode };
+          const receipt = pstackCheckReceipt({
+            taskId: options.taskId, conversationId: Number(api.conversationId), workflowRun: run.run, operationTaskId: Number(api.taskId),
+            shell, command, measurement: intent.measurement, before: intent.workspace,
+            after: checkWorkspaceStamp(after, await verificationCheckout(base, ctx.abortSignal)), result,
           });
-          const evidence = { passed, command, exitCode, unchanged, fingerprint: after.fingerprint, toolTaskId: result.taskId,
-            ...classification, output: receipt ?? result.diagnostics };
-          return { ...success(evidence), isError: !passed };
+          const { passed, exitCode, fingerprint, checkIdentity, outcome, unchanged, toolTaskId, ...extra } = receipt;
+          await save(async (next, tx) => {
+            await recordPstackGoalEvidence(tx, api, { kind: "check", command, passed, exitCode, fingerprint, outcome, checkIdentity });
+            next.checkReceipts ??= [];
+            next.checkReceipts.push(receipt);
+            next.verification = { command, passed, exitCode, toolTaskId, fingerprint, checkIdentity, outcome,
+              ...("error" in extra && { error: extra.error }), ...("changedPaths" in extra && { changedPaths: extra.changedPaths }) };
+            if (method === "tdd" && stepId === "red" && unchanged && !receipt.emptySuite && exitCode !== null && exitCode > 0 && exitCode < 126 &&
+              (outcome === "assertion_failed" || outcome === "command_failed"))
+              next.red = { command, toolTaskId, fingerprint, exitCode };
+          });
+          return checkReply(receipt);
         }
         const history = await transcript(api, ctx, run.first);
         const scope = reviewScope(base, run.reviewCommit);
         const reviewedDelta = scope === base ? delta : await measureWorkspace(scope, settings.thermos.fileLines, ctx.abortSignal,scoped);
         const reasons = reviewReasons(settings, reviewedDelta, history, run);
-        const reviewed = !!run.review?.passed && run.review.fingerprint === reviewedDelta.fingerprint
+        const checkoutSha = await verificationCheckout(base, ctx.abortSignal);
+        const currentReview = run.review?.fingerprint === reviewedDelta.fingerprint && reviewMatchesVerification(run, delta, history, checkoutSha);
+        const reviewed = currentReview && !!run.review?.passed
           && (run.playbook !== "investigation" || !!run.review.answerDraft);
         // A read-only review can deliver a substantiated negative verdict. Missing or invalid member receipts still block delivery.
-        const reportedFindings = run.tagId === "code-review" && run.review?.passed === false &&
-          run.review.fingerprint === reviewedDelta.fingerprint && !run.review.error &&
+        const reportedFindings = currentReview && run.tagId === "code-review" && run.review?.passed === false && !run.review.error &&
           !!run.review.members?.length && run.review.members.every(member => !member.error);
         if (action === "review") return success({ reasons, reviewBase: run.reviewCommit ?? "task start", reviewerRole: settings.thermos.reviewerRole,
           ...(tagId === "code-review" && await reviewBaseline(scope, reviewedDelta.paths, ctx.abortSignal, scoped)),
@@ -335,8 +347,8 @@ export function createPstackWorkflow(options: WorkflowOptions) {
             if (!check.valid) throw new Error("Installed skill validation failed for " + f.path + ": " + check.errors.join(", "));
           }
         }
-        const verification = run.verification;
-        const verifiedCurrentWorkspace = verification?.passed && verification.fingerprint === delta.fingerprint;
+        const verification = latestCheck(run);
+        const verifiedCurrentWorkspace = passedCurrentCheck(verification, delta, checkoutSha);
         if (run.tagId === "add-tests" || delta.paths.some(path => path !== planReceipt?.path && path !== auditedTrail && !authored.some(f=>f.path===path)) || delta.unknown.length) {
           if (verification?.outcome === "workspace_changed" && verification.fingerprint === delta.fingerprint && verification.error)
             throw new Error(verification.error);
@@ -346,7 +358,8 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           if (verification?.passed) throw new Error("The successful check covered a different workspace version. Verify a stable current snapshot before completing.");
           throw new Error("No successful workspace observation, verification or worker receipt in this workflow.");
         }
-        if ((await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run))).fingerprint !== delta.fingerprint)
+        if ((await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run))).fingerprint !== delta.fingerprint ||
+          checkoutSha !== await verificationCheckout(base, ctx.abortSignal))
           throw new Error("Workspace changed while evaluating the completion gate; inspect the latest version.");
         const thermosOutcome = reportedFindings ? "Thermos 独立审查已完成，代码存在待修复问题。"
           : reasons.length ? "Thermos 审查通过（" + reasons.join("，") + "）。"

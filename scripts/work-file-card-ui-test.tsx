@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import {parseHTML} from 'linkedom';
 import {act} from 'react';
 import WorkFilePreview from '../src/renderer/src/components/pages/WorkFilePreview';
-import {WorkFiles} from '../src/renderer/src/components/pages/BotWorkResult';
+import {WorkFiles, WorkReport} from '../src/renderer/src/components/pages/BotWorkResult';
+import type { WorkProjectionDto } from '../src/shared/bot-work';
 const {window}=parseHTML('<html><body><div id="root"></div></body></html>');
 Object.assign(globalThis,{window,document:window.document,HTMLElement:window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true});
 const prepared:string[]=[];const released:string[]=[];
@@ -28,4 +29,20 @@ await act(async()=>sharedButtons()[0].click());assert.equal(document.querySelect
 await act(async()=>sharedButtons()[1].click());assert.equal(document.querySelectorAll('.bot-work-file-preview').length,1);assert(!cards()[0].querySelector('.bot-work-file-preview'));assert(cards()[1].querySelector('.bot-work-file-preview'));
 await act(async()=>root.render(<WorkFiles files={shared.slice(0,1)}/>));assert.equal(document.querySelector('.bot-work-file-preview'),null);
 await act(async()=>root.render(<WorkFilePreview file={files[0]} target={files[0].openPath} onClose={()=>{}}/>));assert([...document.querySelectorAll('button')].some(b=>b.textContent==='展开查看'));assert([...document.querySelectorAll('button')].some(b=>b.textContent==='关闭预览'));
-await act(async()=>root.unmount());console.log('PASS file-card preview placement, duplicate basenames, switch/close/removal; no HTML executed');
+const report: Parameters<typeof WorkReport>[0]['report'] = {
+  title: 'Reviewed Work', summary: 'Original result retained', artifactRefs: [], notices: [], current: true,
+  reviewStatus: 'accepted', completion: { nextStep: 'deliver', outcome: 'completed' },
+  verification: { version: 1, workId: 'work', executionId: 'binding', intentRevision: 1,
+    inputSnapshotId: 'snapshot', ownerEpoch: 1, historicalExecution: false, checks: [], omittedCount: 0 },
+};
+const work = { workId: 'work', intentRevision: 1, inputSnapshotId: 'snapshot', ownerEpoch: 1, executions: [] } as unknown as WorkProjectionDto;
+const renderReport = (work: WorkProjectionDto) => act(async () => root.render(<WorkReport
+  report={report} originalText={report.summary} executionId="binding" work={work} renderMarkdown={text => <p>{text}</p>} />));
+const badge = () => document.querySelector('.bot-result-report .bot-status-badge')?.textContent;
+await renderReport(work);
+assert.equal(badge(), '已完成');
+await renderReport({ ...work, intentRevision: 2 });
+assert.match(document.querySelector('.bot-work-verification summary')?.textContent ?? '', /^历史核对记录/);
+assert.equal(badge(), '历史成果');
+assert.match(document.querySelector('.bot-result-body')?.textContent ?? '', /Original result retained/);
+await act(async()=>root.unmount());console.log('PASS file-card previews and historical result presentation');

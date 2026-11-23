@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ConversationGoalContinuationDto, ConversationGoalDto, ConversationGoalEvidenceDto } from "@shared/conversation-goal";
+import type { GoalCheckOutcome } from "@shared/conversation-goal-activity";
 import { GOAL_CHECK_REASON, goalProgressFacts } from "./goalOverview";
 import GoalArtifacts from "./GoalArtifacts";
 import GoalExecutionPanel from "./GoalExecutionPanel";
@@ -9,6 +10,12 @@ const UNKNOWN = "未知";
 const CHECK_TRIGGER = { settled: "执行结算", resumed: "恢复 Goal", continued: "手动继续" };
 const DELIVERABLE_STATUS: Record<string, string> = {
   proposed: "已返回，待验收", accepted: "已接收", rejected: "已拒绝", superseded: "已被替代",
+};
+const CHECK_OUTCOME: Record<GoalCheckOutcome, string> = {
+  passed: "检查通过", assertion_failed: "断言失败", blocked_same_failure: "复用已有失败报告",
+  infrastructure_failed: "验证环境或清理失败", inputs_changed: "验证输入已变化",
+  tool_error: "核验回执不可用", command_failed: "检查命令失败", workspace_changed: "工作区已变化",
+  workspace_unverified: "工作区核验不完整", empty_suite: "未运行任何测试", silent_measurement: "未收到观测结果",
 };
 
 function formatTokens(tokens?: number | null): string {
@@ -202,7 +209,7 @@ function NativeEvidence({ records }: { records: NonNullable<GoalActivity["native
     <summary>工作流验证与交付</summary>
     <ul>{records.map((record, index) => <li key={JSON.stringify([record.taskId, record.conversationId, record.toolTaskId, index])}>
       <strong>{record.kind === "unit" ? `${record.unitId} · ${state[record.state]}`
-        : record.kind === "check" ? record.passed ? "检查通过" : "检查未通过" : "交付物"}</strong>
+        : record.kind === "check" ? (record.outcome && CHECK_OUTCOME[record.outcome]) || (record.passed ? "检查通过" : "检查未通过") : "交付物"}</strong>
       <dl>
         <dt>执行与目标版本</dt><dd>{record.conversationId} / {record.generationTaskId} · {record.intentRevision}</dd>
         {"boardRun" in record && record.boardRun != null && <><dt>工作流运行</dt><dd>{record.boardRun}</dd></>}

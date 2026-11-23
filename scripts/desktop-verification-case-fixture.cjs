@@ -23,10 +23,10 @@ async function main() {
         if (!report.assertionFailure) throw error;
         report.status = 'failed';
       }
-      await finishDesktopCheck(report, reportPath, () => {
+      const reportSha256 = await finishDesktopCheck(report, reportPath, () => {
         if (caseId === 'cleanup') throw new Error('Isolated launcher did not exit');
       }, inputsStillCurrent);
-      return { report, reportPath };
+      return { report, reportPath, reportSha256 };
     },
   });
   const count = fs.readFileSync(launches, 'utf8').trim().split('\n').length;

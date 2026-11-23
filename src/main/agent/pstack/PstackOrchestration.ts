@@ -8,7 +8,9 @@ import { auditPstackWorktrees, gitHubCheckout } from "./PstackWorktreeAudit";
 import { dirname } from "node:path";
 import { checked, failure, live, owner, runSettings, state, success, WorkflowFiles, WorkflowState, type Api, type WorkflowOptions, type WorkflowRun } from "./PstackState";
 import { durableSourceUserMessageId } from "../durable/DurableInputProvenance";
-import { measureWorkspace } from "./PstackWorkspace";
+import { measureWorkspace, verificationCheckout } from "./PstackWorkspace";
+import { latestCheck, passedCurrentCheck } from "./PstackVerificationEvidence";
+import { authoredFiles } from "./PstackAuthoredSkills";
 import { boardDoc, empty, type Board, type Unit } from "./PstackOrchestrationBoard";
 import { recordGoalNativeEvidence as recordPstackGoalEvidence } from "../durable/DurableGoalNativeEvidence";
 
@@ -114,6 +116,8 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
         if (args.action === "status") return success(board);
         if (args.action === "inbox") return success(board.inbox);
         if (args.action === "check") return success(board.checks.filter(row => row.id === args.id && (!args.sha || args.sha === row.sha) && (!args.pr || row.pr === args.pr)));
+        if (args.action === "verify" && board.operations.includes(api.taskId))
+          return success(board.checks.find(row => row.acceptanceTaskId === api.taskId) ?? { replayed: true });
         if (args.action === "dispatch" && board.operations.includes(api.taskId)) {
           const receipt = unitFor(board, args.id);
           return { ...success(receipt), isError: receipt.status === "failed" };
@@ -123,6 +127,8 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
           checked(options, ctx);
           const active = await tx.doc(WorkflowState, api.conversationId);
           if (active.run?.run !== run.run || active.run.phase !== "running") throw new Error("Workflow changed during execution.");
+          if (args.action === "verify" && latestCheck(active.run)?.toolTaskId !== latestCheck(run)?.toolTaskId)
+            throw new Error("Verification changed while accepting the unit. Check the latest result before accepting.");
           const doc = await tx.doc(boardDoc, api.conversationId);
           if (doc.board?.run !== run.run) doc.board = empty(run.run);
           if (doc.board.operations.includes(api.taskId)) return args.action === "drain" ? copy(doc.board.drained[String(api.taskId)]) : { replayed: true };
@@ -164,13 +170,18 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
           return { ...success(receipt), isError: result.isError };
         }
         if (args.action === "verify") {
-          const evidence = run.verification, base = (await api.snapshot(WorkflowFiles, api.conversationId, ctx))?.base;
-          if (!evidence?.passed || !base || evidence.fingerprint !== (await measureWorkspace(base, runSettings(run).thermos.fileLines, ctx.abortSignal)).fingerprint)
+          const evidence = latestCheck(run), base = (await api.snapshot(WorkflowFiles, api.conversationId, ctx))?.base;
+          if (!evidence || !base)
+            throw new Error("Run a successful project check on the current workspace first.");
+          const measure = async () => measureWorkspace(base, runSettings(run).thermos.fileLines, ctx.abortSignal, await authoredFiles(api, ctx, run));
+          const current = await measure();
+          if (!passedCurrentCheck(evidence, current, await verificationCheckout(base, ctx.abortSignal)))
             throw new Error("Run a successful project check on the current workspace first.");
           const sha = args.sha ?? "";
           let branch = "";
           if ((args.pr || args.branch) && !sha) throw new Error("A branch or PR verification needs the exact checkout SHA.");
           if (sha) {
+            if (evidence.checkIdentity?.checkoutSha !== sha) throw new Error("Run the check at the exact checkout SHA before accepting the revision.");
             const localGit = (...args: string[]) => exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-C", options.cwd, ...args], { windowsHide: true, signal: ctx.abortSignal, timeout: 15_000 });
             if ((await localGit("rev-parse", "HEAD")).stdout.trim() !== sha || (await localGit("status", "--porcelain")).stdout.trim())
               throw new Error("A commit receipt requires a clean checkout at the exact verified SHA.");
@@ -186,14 +197,19 @@ export function createPstackOrchestrationTools(options: WorkflowOptions): ToolRe
             }
             if (args.branch && branch !== args.branch) throw new Error("Verified branch differs from the requested branch.");
           }
+          if (!passedCurrentCheck(evidence, await measure(), await verificationCheckout(base, ctx.abortSignal)))
+            throw new Error("The workspace changed during unit acceptance. Run the check on the current revision.");
           return success(await change(async (draft, tx) => {
             const unit = unitFor(draft, args.id);
             if (unit.status !== "returned" || unit.receipt >= evidence.toolTaskId) throw new Error("Verify this unit after its worker returns.");
             unit.status = "verified"; unit.branch = branch; unit.pr = args.pr ?? 0; unit.sha = sha;
-            const row = { id: unit.id, pr: unit.pr, sha, fingerprint: evidence.fingerprint, toolTaskId: evidence.toolTaskId, command: evidence.command };
+            const checkIdentity = evidence.checkIdentity;
+            const row = { id: unit.id, pr: unit.pr, sha, fingerprint: evidence.fingerprint, toolTaskId: evidence.toolTaskId,
+              command: evidence.command, acceptanceTaskId: Number(api.taskId), ...(checkIdentity && { checkIdentity }) };
             draft.checks.push(row);
             await recordPstackGoalEvidence(tx, api, { kind: "unit", unitId: unit.id, state: "verified", boardRun: run.run,
-              command: row.command, fingerprint: row.fingerprint, ...(sha ? { sha } : {}), ...(branch ? { branch } : {}), ...(unit.pr ? { pr: unit.pr } : {}) });
+              command: row.command, fingerprint: row.fingerprint, ...(sha ? { sha } : {}), ...(branch ? { branch } : {}), ...(unit.pr ? { pr: unit.pr } : {}),
+              ...(checkIdentity && { checkIdentity }) });
             return row;
           }));
         }

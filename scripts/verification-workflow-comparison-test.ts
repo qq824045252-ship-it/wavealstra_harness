@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -10,6 +11,8 @@ import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durab
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { getAgentBashShellPath } from "../src/main/agent-shell-settings";
+import { readNativeExecutionReceipt, type NativeExecutionReceipt } from "../src/shared/native-execution-receipt";
+import type { PstackCheckIdentity } from "../src/shared/conversation-goal-activity";
 
 const root = await mkdtemp(join(tmpdir(), "verification-comparison-"));
 process.env.HOME = root;
@@ -61,7 +64,7 @@ const scenarios: Scenario[] = [
 ];
 
 function createCheck(scenario: Scenario) {
-  const observed: Array<{ error: boolean; text: string }> = [];
+  const observed: Array<{ error: boolean; text: string; receipt?: NativeExecutionReceipt }> = [];
   let calls = 0;
   function respond(input: TranscriptContext): AssistantMessage["content"] {
     const bash = getCurrentTools(input.messages).find(tool => tool.name === "bash");
@@ -69,7 +72,7 @@ function createCheck(scenario: Scenario) {
     const last = input.messages.findLast(message => message.role === "toolResult");
     if (last?.role === "toolResult") {
       const text = last.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
-      observed.push({ error: last.isError, text });
+      observed.push({ error: last.isError, text, receipt: readNativeExecutionReceipt(last.details) });
       if (scenario.stopOnBlockedGuidance && bash.description.includes("blocked_same_failure") && text.includes('"outcome":"blocked_same_failure"'))
         return [{ type: "text", text: "This verification is blocked. Use the existing failure report." }];
     }
@@ -154,9 +157,62 @@ async function runMyBuddy(cwd: string, respond: Respond): Promise<string> {
   return settled.receipt!.status;
 }
 
+async function verifyHostedCheckReceipt() {
+  const taskId = "pstack-hosted-desktop-check";
+  const cwd = join(root, taskId), reports = join(root, "hosted-desktop-report");
+  await mkdir(cwd); await mkdir(reports);
+  await writeFile(join(reports, "fixture-layout.txt"), "fixed\n");
+  await writeFile(join(cwd, "desktop-check.cjs"), `process.chdir(${JSON.stringify(reports)}); process.argv[2] = 'title'; require(${JSON.stringify(resolve("scripts/desktop-verification-case-fixture.cjs"))});\n`);
+  const agent = fixture.agent;
+  await agent.updateAppSettings({ conversationGoalContinuationEnabled: false });
+  agent.saveModePolicy("coding", { ...agent.getModeProfile("coding").policy, pstackThermosEnabled: true });
+  const space = db.upsertSpace({ id: taskId, name: "Hosted desktop check", path: cwd });
+  db.upsertTask({ id: taskId, title: "Compare one checked version", spaceId: space.id, cwd, welcomeMode: "coding", updatedAt: Date.now() });
+  const goal = agent.getConversationGoals().create({ taskId, title: "Verify the title case", criteria: [{ text: "Check title width" }] });
+  assert(goal.ok);
+
+  const actions: Record<string, string>[] = [{ action: "start", skill: "principle-prove-it-works" },
+    { action: "verify", shell: "bash", command: "node desktop-check.cjs" },
+    { action: "block", note: "Await next input after collecting the check evidence." }];
+  let action = 0;
+  let resultText: string | undefined;
+  currentCheck = input => {
+    const previous = input.messages.findLast(message => message.role === "toolResult");
+    if (previous?.role === "toolResult" && previous.toolCallId === "hosted-check-2") {
+      const body = previous.content.find(part => part.type === "text");
+      if (body?.type === "text") resultText = body.text;
+    }
+    const next = actions[action++];
+    return next ? [{ type: "toolCall", name: "pstack_workflow", id: `hosted-check-${action}`, arguments: next }]
+      : [{ type: "text", text: "Stored the desktop check." }];
+  };
+  await fixture.prompt({ taskId, text: "Verify the desktop title using the check script.", welcomeMode: "coding",
+    userMessageId: "hosted-check", assistantMessageId: "hosted-check-reply" });
+  assert(resultText, "the normal MyBuddy tool path must return the check receipt");
+  const result = JSON.parse(resultText) as { outcome: string; checkIdentity: PstackCheckIdentity };
+  assert.equal(result.outcome, "passed", resultText);
+  const { checkIdentity } = result;
+  const report = checkIdentity.desktopReport;
+  assert(report && checkIdentity.attemptId, "the canonical check must bind the host attempt and finalized desktop report");
+  assert.deepEqual(report.caseIds, ["title"]);
+  assert.equal(report.reportSha256, createHash("sha256").update(await readFile(report.reportPath)).digest("hex"));
+  const row = db.connection.prepare("SELECT record_json FROM execution_attempts WHERE id=?").get(checkIdentity.attemptId) as { record_json: string } | undefined;
+  assert(row);
+  const tool = JSON.parse(row.record_json).nativeReceipt as NativeExecutionReceipt;
+  assert.equal(tool.executionId, checkIdentity.executionId);
+  assert.equal(tool.toolTaskId, checkIdentity.toolTaskId);
+  assert.equal(tool.status, "passed");
+  const panel = await agent.getConversationGoalEvidence(taskId, goal.goal.id);
+  const check = panel?.activity?.nativeEvidence?.find(item => item.kind === "check");
+  assert(check?.kind === "check");
+  assert.equal(check.outcome, result.outcome);
+  assert.deepEqual(check.checkIdentity, checkIdentity);
+}
+
 try {
   const matrix: ComparisonResult[] = [];
   const desktopResults: Record<string, unknown[]> = {};
+  let failedShellReceipt: NativeExecutionReceipt | undefined;
   for (const [engine, run] of [["pi", runPi], ["pi-durable", runDurable], ["mybuddy", runMyBuddy]] as const) {
     for (const scenario of scenarios) {
       const cwd = join(root, `${engine}-${scenario.name}`);
@@ -168,6 +224,7 @@ try {
       if (engine === "mybuddy" && scenario.consultToolDescription) expectedErrors = [true];
       if (engine === "mybuddy" && scenario.stopOnBlockedGuidance) expectedErrors = [true, true];
       assert.deepEqual(check.observed.map(result => result.error), expectedErrors, `${engine}/${scenario.name} ${JSON.stringify(check.observed)}`);
+      if (engine === "mybuddy" && scenario.name === "direct-failure") failedShellReceipt = check.observed[0]?.receipt;
       if (scenario.name.includes("failure")) assert(check.observed.every(result => result.text.includes("FAIL header/1440: title truncated")));
       if (scenario === desktopAcceptance || scenario === reportGuidance) {
         const results = check.observed.map(({ text }) => {
@@ -191,7 +248,14 @@ try {
           expected.slice(0, expectedErrors.length), `${engine}/${scenario.name}`);
         for (const result of results.slice(1, 3)) {
           assert.equal(result.reportPath, results[0].reportPath);
+          assert.equal(result.reportSha256, results[0].reportSha256);
+          assert.equal(result.inputFingerprint, results[0].inputFingerprint);
           assert.deepEqual(result.assertionFailure, { caseId: "title", assertion: "title-width", expected: "fixed", observed: "broken" });
+        }
+        for (const result of results) {
+          assert.equal(result.reportSha256, createHash("sha256").update(await readFile(result.reportPath)).digest("hex"));
+          assert.match(result.inputFingerprint, /^[a-f0-9]{64}$/);
+          assert.deepEqual(result.caseIds, [result.caseId]);
         }
         desktopResults[`${engine}/${scenario.name}`] = results;
       }
@@ -205,8 +269,23 @@ try {
   assert.deepEqual(capped.observed.map(result => result.text.trim()), ["PASS condition 1"], "the second successful tool batch hits the cap before the model sees it");
   matrix.push({ engine: "pi-durable", scenario: "useful-multiple-steps-with-maxTurns-2", status: "turn_limit", calls: capped.calls,
     observedResults: capped.observed.length, toolErrors: 0 });
+  assert(failedShellReceipt?.attemptId, "a real failed shell command carries the host receipt and its attempt identity");
+  assert.equal(failedShellReceipt.status, "failed");
+  assert.equal(failedShellReceipt.exitCode, 23);
+  assert.equal(failedShellReceipt.transport, "returned");
+  const exactAttempt = db.connection.prepare("SELECT status,record_json FROM execution_attempts WHERE id=?")
+    .get(failedShellReceipt.attemptId) as { status: string; record_json: string } | undefined;
+  assert(exactAttempt);
+  assert.equal(exactAttempt.status, failedShellReceipt.status);
+  assert.deepEqual(JSON.parse(exactAttempt.record_json).nativeReceipt, failedShellReceipt);
+  const history = await fixture.agent.loadTaskHistory(failedShellReceipt.taskId, undefined, "stored");
+  const historicalTool = history.messages.flatMap(message => message.tools ?? []).find(tool => tool.id === failedShellReceipt!.callId);
+  assert.equal(historicalTool?.status, "error");
+  assert.deepEqual(readNativeExecutionReceipt(JSON.parse(historicalTool!.detail!)), failedShellReceipt);
+  await verifyHostedCheckReceipt();
   console.table(matrix);
   console.log("PASS the same real shell tests distinguish masked assertions, preserved failures, useful progress, timeout, and a native cap truncating useful work");
+  console.log("PASS MyBuddy publishes the same real shell attempt and desktop report version in the Pstack check and Goal evidence");
   await writeFile("out/tests/verification-workflow-comparison.json", JSON.stringify(matrix, null, 2) + "\n");
   await writeFile("out/tests/desktop-verification-comparison.json", JSON.stringify(desktopResults, null, 2) + "\n");
 } finally {

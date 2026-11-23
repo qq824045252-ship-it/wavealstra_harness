@@ -3,6 +3,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const cp = require('node:child_process'), net = require('node:net'), http = require('node:http');
 const {once} = require('node:events');
 const {performance} = require('node:perf_hooks');
+const {createHash} = require('node:crypto');
 const {desktopVerificationOutcome} = require('./desktop-verification.cjs');
 const root = path.resolve(__dirname, '..');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -82,10 +83,13 @@ function createSseAudit(emit) {
 
 async function finishDesktopCheck(report, reportPath, cleanup, inputsStillCurrent) {
   const publish = () => {
+    const bytes = JSON.stringify(report, null, 2);
     const temporary = reportPath + '.tmp';
-    fs.writeFileSync(temporary, JSON.stringify(report, null, 2));
+    fs.writeFileSync(temporary, bytes);
     fs.renameSync(temporary, reportPath);
+    return createHash('sha256').update(bytes).digest('hex');
   };
+  let reportSha256;
   report.verificationStatus = report.status;
   report.status = 'running';
   report.cleanupStatus = 'running';
@@ -110,8 +114,9 @@ async function finishDesktopCheck(report, reportPath, cleanup, inputsStillCurren
     }
     report.outcome = desktopVerificationOutcome(report);
     if (report.outcome !== 'passed') report.status = 'failed';
-    publish();
+    reportSha256 = publish();
   }
+  return reportSha256;
 }
 exports.finishDesktopCheck = finishDesktopCheck;
 
@@ -127,7 +132,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
   const providerTimings = [], benchmarkJournal = [];
   let providerScope;
   if (benchmark) report.providerTimings = providerTimings;
-  let child, socket, relay, log, sequence = 0;
+  let child, socket, relay, log, reportSha256, sequence = 0;
   const until = async (fn, label) => {
     const deadline = Date.now() + 180000;
     while (!await fn()) {
@@ -449,7 +454,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
     report.status = 'failed'; report.error = String(error.stack || error); process.exitCode = 1;
     if (socket?.readyState === WebSocket.OPEN) try {report.visibleText = await evaluate('document.body.innerText');const shot=await rpc('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(out,'failed-page.png'),Buffer.from(shot.data,'base64'));} catch {}
   } finally {
-    await finishDesktopCheck(report, path.join(out, 'report.json'), async () => {
+    reportSha256 = await finishDesktopCheck(report, path.join(out, 'report.json'), async () => {
       try { await stop(); }
       finally {
         relay?.close(); relay?.closeAllConnections(); report.ownedMainPids = [...owned];
@@ -463,7 +468,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
     console.log(name + ': ' + report.status + '; ' + path.join(out, 'report.json'));
     if (report.error) console.error(report.error);
   }
-  return { report, reportPath: path.join(out, 'report.json') };
+  return { report, reportPath: path.join(out, 'report.json'), reportSha256 };
 };
 
 if (require.main === module) {

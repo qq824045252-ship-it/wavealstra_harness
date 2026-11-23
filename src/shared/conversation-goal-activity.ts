@@ -44,11 +44,31 @@ export interface GoalActivitySkill {
   laterInvokedAt?: number;
 }
 
+export type GoalCheckOutcome = "passed" | "assertion_failed" | "blocked_same_failure" | "infrastructure_failed" | "inputs_changed"
+  | "tool_error" | "command_failed" | "workspace_changed" | "workspace_unverified" | "empty_suite" | "silent_measurement";
+
+export type PstackCheckIdentity = {
+  version: 1;
+  workflowRun: number;
+  operationTaskId: number;
+  toolTaskId: number;
+  shell: string;
+  beforeFingerprint: string;
+  afterFingerprint: string;
+  beforeCheckoutSha?: string;
+  afterCheckoutSha?: string;
+  checkoutSha?: string;
+  executionId?: string;
+  attemptId?: string;
+  desktopReport?: { reportPath: string; reportSha256: string; inputFingerprint: string; caseIds: string[] };
+};
+
 export type GoalNativeEvidence =
-  | { kind: "check"; command: string; passed: boolean; exitCode: number | null; fingerprint: string }
+  | { kind: "check"; command: string; passed: boolean; exitCode: number | null; fingerprint: string; outcome?: GoalCheckOutcome;
+      checkIdentity?: PstackCheckIdentity }
   | { kind: "unit"; unitId: string; state: "running" | "returned" | "verified" | "failed";
       boardRun?: number; branch?: string; reason?: string;
-      command?: string; fingerprint?: string; sha?: string; pr?: number }
+      command?: string; fingerprint?: string; sha?: string; pr?: number; checkIdentity?: PstackCheckIdentity }
   | { kind: "delivery"; path?: string; url?: string; digest?: string; sha?: string; branch?: string;
       saved?: { snapshotPath: string; manifestPath?: string; registeredAt: number } };
 

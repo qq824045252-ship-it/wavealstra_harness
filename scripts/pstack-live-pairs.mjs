@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { readLiveCompletion } from "./pstack-live-lineage.mjs";
 
 // Compare the evidence from the two installed entry points. A matched input
 // and a terminal reply are necessary observations; neither is a quality verdict.
@@ -34,14 +35,14 @@ function visit(dir) {
   const run = read(join(dir, "run.json"));
   if (!inventory.some(r => r.playbook === run.route)) return;
   const path = relative(batch, dir).replaceAll("\\", "/");
-  const result = existsSync(join(dir, "evidence.json")) ? read(join(dir, "evidence.json")) : undefined;
+  const { result, evidenceError } = readLiveCompletion(dir, run);
   const stop = existsSync(join(dir, "interrupted.json")) ? read(join(dir, "interrupted.json")) : undefined;
   const records = result?.records ?? [];
   const rootId = records.reduce((id, r) => Math.min(id, r.conversation), Infinity);
   const root = records.filter(r => r.conversation === rootId).sort((a,b) => a.entry - b.entry);
   const reply = root.filter(r => r.role === "assistant").at(-1);
   const workflow = result?.workflow;
-  const status = !result ? stop ? "interrupted" : "running" : result.operatorRequired ? "operator" :
+  const status = evidenceError ? "evidence-mismatch" : !result ? stop ? "interrupted" : "running" : result.operatorRequired ? "operator" :
     result.expired ? "timeout" : result.error || reply?.stop === "error" ? "error" :
     workflow?.phase ?? (reply?.stop === "stop" ? "returned" : "unfinished");
   const readCalls = root.flatMap(r => r.calls).filter(c => c.name === "read" &&
@@ -56,6 +57,7 @@ function visit(dir) {
     stop:reply?.stop, localProof:workflow?.verification?.command, thermos:workflow?.thermosOutcome,
     reviewed:workflow?.review?.passed, reviewModels:workflow?.review?.receipt?.models,
     blocked:workflow?.block ?? result?.operatorRequired ?? stop?.block, providerError:reply?.error ?? result?.error ?? stop?.error,
+    evidenceError,
     publishedPr:workflow?.publishedPr
   });
 }
