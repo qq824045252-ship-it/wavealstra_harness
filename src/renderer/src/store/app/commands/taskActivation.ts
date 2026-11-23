@@ -15,9 +15,19 @@ export function createTaskActivationActions(
 ): Pick<AppActions, "setActiveTask" | "openDots"> {
   const { get, set } = storeContext;
   return {
-    openDots: async (focus, signal) => {
+    openDots: async ({ focus, signal, showLatest } = {}) => {
+      if (signal?.aborted) return;
       const before = get();
-      if (!before.tasks.some(task => task.id === DOTS_TASK_ID)) {
+      const hasDots = before.tasks.some(task => task.id === DOTS_TASK_ID);
+      if (hasDots && showLatest && !focus && before.page === "chat" && before.activeTaskId === DOTS_TASK_ID) {
+        set({
+          answerRuleTurnTarget: undefined,
+          notificationMessageTarget: undefined,
+          chatLatestTarget: DOTS_TASK_ID,
+        });
+        return;
+      }
+      if (!hasDots) {
         const api = storeContext.getApi();
         if (!api?.dots) throw new Error("Dots 会话服务不可用");
         const row = await api.dots.open();
@@ -35,7 +45,10 @@ export function createTaskActivationActions(
       if (signal?.aborted) return;
       get().setActiveTask(DOTS_TASK_ID, focus);
       void get().refreshModelConfiguration();
-      set(state => ({ chatFocusTick: state.chatFocusTick + 1 }));
+      set(state => ({
+        chatFocusTick: state.chatFocusTick + 1,
+        chatLatestTarget: showLatest && !focus ? DOTS_TASK_ID : undefined,
+      }));
     },
     setActiveTask: (id, focus) => {
       const s = get();
@@ -55,6 +68,7 @@ export function createTaskActivationActions(
         activeTaskId: id,
         answerRuleTurnTarget: undefined,
         notificationMessageTarget: focus && { ...focus, taskId: id },
+        chatLatestTarget: undefined,
         // 切到具体任务 = 丢弃草稿（首条消息未发出即不存在）
         draft: null,
         // 工作空间选择跟随当前任务：独立任务清空 homeSpaceId，避免发消息时被上次空间偷绑

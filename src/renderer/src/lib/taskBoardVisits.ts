@@ -25,9 +25,9 @@ export async function openDotsActivityTarget(taskId: string, focus?: Notificatio
   const before = useAppStore.getState();
   if (taskId === DOTS_TASK_ID) {
     if (focus && before.page === "chat" && before.activeTaskId === DOTS_TASK_ID) {
-      useAppStore.setState({ notificationMessageTarget: { ...focus, taskId } });
+      useAppStore.setState({ notificationMessageTarget: { ...focus, taskId }, chatLatestTarget: undefined });
     } else {
-      await before.openDots(focus, signal);
+      await before.openDots({ focus, signal });
     }
     return;
   }

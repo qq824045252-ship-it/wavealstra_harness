@@ -318,7 +318,8 @@ function DotsProgressHistory({ entries, preview, onPreview }: {
   </details>;
 }
 
-function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, delegations = [] }: {
+function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, delegations = [] }: {
+  listRef: React.Ref<HTMLDivElement>;
   delegations?: import("@shared/dots").DotsDelegation[];
   taskId: string;
   messages: readonly ChatMessage[];
@@ -363,7 +364,7 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCrea
   }
   let precedingUser: ChatMessage | undefined;
   return (
-    <div className="message-list">
+    <div className="message-list" ref={listRef}>
       {messages.flatMap((msg) => {
         const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
         if (delivery?.kind === "progress") {
@@ -445,6 +446,7 @@ export default function ChatView(): React.JSX.Element {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
   const tailSpaceRef = useRef<HTMLDivElement>(null);
   const historyAnchorRef = useRef<HTMLDivElement>(null);
   const openedHistoryRef = useRef<string | undefined>(undefined);
@@ -474,6 +476,7 @@ export default function ChatView(): React.JSX.Element {
   const turnTarget = useAppStore(s => s.answerRuleTurnTarget);
   const pendingNotificationTarget = useAppStore(s => s.notificationMessageTarget);
   const notificationTarget = pendingNotificationTarget?.taskId === activeChatId ? pendingNotificationTarget : undefined;
+  const showLatest = useAppStore(s => task?.id !== undefined && s.chatLatestTarget === task.id);
   const [unresolvedNotificationAnchor, setUnresolvedNotificationAnchor] = useState<typeof notificationTarget>();
   const turnMessage = useMemo(() => {
     if (notificationTarget) {
@@ -534,12 +537,20 @@ export default function ChatView(): React.JSX.Element {
     lastScrollTopRef.current = target;
   }, []);
 
+  const latestObserverRef = useRef<ResizeObserver | null>(null);
+  const stopFollowingLatest = useCallback((): void => {
+    latestObserverRef.current?.disconnect();
+    latestObserverRef.current = null;
+  }, []);
+  useLayoutEffect(() => stopFollowingLatest, [readingKey, stopFollowingLatest]);
+
   const jumpToNode = useCallback((node: HTMLElement | null): void => {
     const el = scrollRef.current;
     if (!el || !node || !el.contains(node)) return;
+    stopFollowingLatest();
     commitFollow(onHistoryJump(followStateRef.current));
     applyProgrammaticScrollTop(el.scrollTop + node.getBoundingClientRect().top - el.getBoundingClientRect().top - TURN_TOP_OFFSET);
-  }, [applyProgrammaticScrollTop, commitFollow]);
+  }, [applyProgrammaticScrollTop, commitFollow, stopFollowingLatest]);
   const jumpToHistoryQuestion = useCallback((messageId: string): void => {
     jumpToNode(document.getElementById(`msg-${messageId}`));
   }, [jumpToNode]);
@@ -549,6 +560,7 @@ export default function ChatView(): React.JSX.Element {
     const spacer = tailSpaceRef.current;
     const node = latestUserMessageId ? document.getElementById(`msg-${latestUserMessageId}`) : null;
     if (!el || !spacer || !node || !el.contains(node)) return;
+    stopFollowingLatest();
     const viewportTop = el.getBoundingClientRect().top + el.clientTop;
     const position = chatPinPosition({
       scrollTop: el.scrollTop,
@@ -563,7 +575,27 @@ export default function ChatView(): React.JSX.Element {
     spacer.style.height = `${position.tailSpace}px`;
     commitFollow(onResetForTask(followStateRef.current));
     applyProgrammaticScrollTop(position.top);
-  }, [applyProgrammaticScrollTop, commitFollow, latestUserMessageId]);
+  }, [applyProgrammaticScrollTop, commitFollow, latestUserMessageId, stopFollowingLatest]);
+
+  const scrollToLatest = useCallback((): void => {
+    const el = scrollRef.current;
+    const list = messageListRef.current;
+    const spacer = tailSpaceRef.current;
+    if (!el || !list || !spacer || !readingKey) return;
+    stopFollowingLatest();
+    spacer.style.height = "0px";
+    commitFollow(onResetForTask(followStateRef.current));
+    const scrollToEnd = () => {
+      applyProgrammaticScrollTop(el.scrollHeight);
+      readingPositions.set(readingKey, { top: el.scrollTop, following: true });
+    };
+    scrollToEnd();
+    // Delivery rows and attachments can change the height after the first layout.
+    const observer = new ResizeObserver(scrollToEnd);
+    latestObserverRef.current = observer;
+    observer.observe(list);
+    observer.observe(el);
+  }, [applyProgrammaticScrollTop, commitFollow, readingKey, stopFollowingLatest]);
 
   useLayoutEffect(() => {
     if (pendingLocalSendRef.current?.taskId !== task?.id) pendingLocalSendRef.current = null;
@@ -576,6 +608,13 @@ export default function ChatView(): React.JSX.Element {
     if (localQuestionArrived) pendingLocalSendRef.current = null;
     const firstOpen = openedHistoryRef.current !== readingKey;
     openedHistoryRef.current = readingKey;
+    if (showLatest) {
+      useAppStore.setState({ chatLatestTarget: undefined });
+      if (!localQuestionArrived && !notificationTarget && turnTarget?.taskId !== task?.id) {
+        scrollToLatest();
+        return;
+      }
+    }
     if (firstOpen && !localQuestionArrived) {
       const saved = readingPositions.get(readingKey);
       if (saved && !saved.following) {
@@ -585,7 +624,8 @@ export default function ChatView(): React.JSX.Element {
       }
     }
     if (firstOpen || localQuestionArrived) pinUserMessageToTop();
-  }, [task?.id, readingKey, hasMessages, fullHistory.loading, latestUserMessageId, pinUserMessageToTop, commitFollow, applyProgrammaticScrollTop]);
+  }, [task?.id, readingKey, hasMessages, fullHistory.loading, latestUserMessageId, showLatest, notificationTarget, turnTarget?.taskId,
+    pinUserMessageToTop, scrollToLatest, commitFollow, applyProgrammaticScrollTop]);
 
   useLayoutEffect(() => {
     if (!turnMessage || fullHistory.loading) return;
@@ -653,6 +693,7 @@ export default function ChatView(): React.JSX.Element {
       ) {
         // 无手势方向的非程序滚动：按位移推断（滚动条拖动、触摸、未捕获的键盘滚动）。
         // wheelUpPending 时跳过推断——由 onFollowScroll(scrollDelta) 统一确认候选。
+        stopFollowingLatest();
         commitFollow(delta < 0 ? onUserScrollUp(s) : onUserScrollDown(s));
       }
       const next = onFollowScroll(followStateRef.current, bottomDistance(), delta);
@@ -668,6 +709,7 @@ export default function ChatView(): React.JSX.Element {
     };
     const markWheelIntent = (event: WheelEvent): void => {
       // 用户手势打断未决的程序滚动目标
+      if (event.deltaY !== 0) stopFollowingLatest();
       programmaticTargetRef.current = null;
       if (event.deltaY < 0) {
         // P2-1：wheel 上滚只登记候选（触底回弹/惯性零位移不锁存）；
@@ -681,6 +723,7 @@ export default function ChatView(): React.JSX.Element {
     const markPointerIntent = (event: PointerEvent): void => {
       // 滚动条拖动与触摸滚动：目标为容器本身，或任何触摸指针（触摸滚动任意子元素）
       if (event.target !== element && event.pointerType !== "touch") return;
+      stopFollowingLatest();
       programmaticTargetRef.current = null;
       commitFollow(onPointerDown(followStateRef.current, bottomDistance()));
     };
@@ -705,6 +748,7 @@ export default function ChatView(): React.JSX.Element {
         (target instanceof HTMLElement && target.getAttribute?.("role") === "button");
       const intent = keyboardIntent(event.key, event.shiftKey, editable, activatesOnSpace);
       if (intent === null) return;
+      stopFollowingLatest();
       programmaticTargetRef.current = null;
       commitFollow(
         intent === "up"
@@ -731,7 +775,7 @@ export default function ChatView(): React.JSX.Element {
       document.removeEventListener("pointercancel", cancelPointerIntent);
       document.removeEventListener("keydown", markKeyboardIntent);
     };
-  }, [readingKey, hasMessages, fullHistory.loading, commitFollow, bottomDistance]);
+  }, [readingKey, hasMessages, fullHistory.loading, commitFollow, bottomDistance, stopFollowingLatest]);
 
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
@@ -950,6 +994,7 @@ export default function ChatView(): React.JSX.Element {
               fiber，把整条消息列表渲染两遍（看起来像「消息自己重复刷新」）。 */}
           {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
           <MessageList
+            listRef={messageListRef}
             onGoalCreated={setSelectedMessageGoal}
             delegations={isDots ? dotsDelegations.rows : undefined}
             toolFocusMessageId={notificationTarget?.toolCallId ? turnMessage?.id : undefined}
@@ -969,7 +1014,7 @@ export default function ChatView(): React.JSX.Element {
             className="jump-to-bottom"
             title="回到底部"
             onMouseDown={(e) => e.preventDefault()}
-            onClick={pinUserMessageToTop}
+            onClick={isDots ? scrollToLatest : pinUserMessageToTop}
           >
             <IconChevronDown size={14} />
             回到底部

@@ -164,7 +164,7 @@ export interface AppActions {
   newTask: (spaceId?: string, projectId?: string) => void;
   summonExpert: (expertId: string, spaceId?: string) => void;
   setDraftProject: (projectId: string | null) => void;
-  openDots: (focus?: NotificationMessageFocus, signal?: AbortSignal) => Promise<void>;
+  openDots: (options?: { focus?: NotificationMessageFocus; signal?: AbortSignal; showLatest?: boolean }) => Promise<void>;
   setActiveTask: (id: string, focus?: NotificationMessageFocus) => void;
   setWelcomeMode: (mode: WelcomeMode) => void;
   setModePreset: (presetId: string) => void;

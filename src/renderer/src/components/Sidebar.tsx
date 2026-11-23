@@ -844,7 +844,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       <div className="sidebar-dots-entry">
         <DesktopSectionRow className="sidebar-dots-row" icon={<IconBot size={22} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
           meta={<DotsStatusIndicator />}
-          onClick={() => { setDotsError(""); void openDots().catch(error => setDotsError(String(error))); }}>
+          onClick={() => { setDotsError(""); void openDots({ showLatest: true }).catch(error => setDotsError(String(error))); }}>
           MyBuddy Dots
         </DesktopSectionRow>
       </div>

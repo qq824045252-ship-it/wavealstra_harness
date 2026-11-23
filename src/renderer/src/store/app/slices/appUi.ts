@@ -23,6 +23,7 @@ export interface AppUiState {
   settingsTab: SettingsTab;
   answerRuleTurnTarget?: { taskId: string; inputId: string };
   notificationMessageTarget?: NotificationMessageFocus & { taskId: string };
+  chatLatestTarget?: string;
   answerRuleSeed?: { question?: string; answer?: string; projectId?: string;
     title?: string; instruction?: string; evidencePaths?: string[]; turn?: { taskId: string; inputId: string } };
   activeWorkspaceId: string | null;
@@ -71,7 +72,7 @@ export function createAppUiActions(
   const { get, set } = storeContext;
   return {
     openWorkspaceDetail: (spaceId) =>
-      set({ activeWorkspaceId: spaceId, page: "workspace", notificationMessageTarget: undefined }),
+      set({ activeWorkspaceId: spaceId, page: "workspace", notificationMessageTarget: undefined, chatLatestTarget: undefined }),
 
     closeWorkspaceDetail: () => set({ activeWorkspaceId: null }),
 

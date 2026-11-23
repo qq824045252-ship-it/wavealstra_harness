@@ -13,6 +13,9 @@ const cases = [
 ];
 const deliveryText = "报价已经核对，含税总额为 137 元。";
 const questionText = "这次合同按含税口径审阅吗？";
+const inventoryEnd = "库存核对记录到此结束。";
+const inventoryDelivery = ["已核对库存，共 47 件。", ...Array.from({ length: 40 }, (_, i) =>
+  `核对记录 ${i + 1}。已比对台账记录与本次盘点明细。`), inventoryEnd].join("\n\n");
 let releaseInventory;
 const inventory = new Promise(resolve => { releaseInventory = resolve; });
 
@@ -33,6 +36,15 @@ run(async env => {
     await press("document.querySelector('button[title=\"发送 (Enter)\"]')", text);
   };
   const waitFor = (title, state) => until(async () => (await api("dots.activity")).some(item => item.title === title && item.state === state), `${title} ${state}`);
+  const latestIsVisible = () => evaluate(`(() => {
+    const scroll = document.querySelector('.message-scroll');
+    const end = [...document.querySelectorAll('.message-list p')].find(node => node.textContent === ${JSON.stringify(inventoryEnd)});
+    if (!scroll || !end) return false;
+    const viewport = scroll.getBoundingClientRect();
+    const last = end.getBoundingClientRect();
+    return last.top >= viewport.top && last.bottom <= viewport.bottom
+      && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 2;
+  })()`);
 
   const pendingIndicators = [
     { label: "Dots 正在接收请求", mark: ".task-status-mark > i", count: 3, messages: [], botPendingSubmissions: [{ submitting: true }] },
@@ -123,6 +135,24 @@ run(async env => {
   releaseInventory();
   await waitFor(cases[2].task, "delivered");
   await until(() => evaluate(`!document.querySelector(${JSON.stringify(waitingIndicator)})`), "the waiting animation clears after the last delivery");
+  await openDots();
+  await until(latestIsVisible, "sidebar Dots click shows the end of the latest long reply from another task");
+  const point = await evaluate(`(() => {
+    const rect = document.querySelector('.message-scroll').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  const scrollToOlderMessages = async () => {
+    await rpc("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX: 0, deltaY: -6000 });
+    await until(() => evaluate("document.querySelector('.message-scroll')?.scrollTop === 0 && !!document.querySelector('.jump-to-bottom')"),
+      "reading older Dots messages shows the return button");
+    assert.equal(await latestIsVisible(), false);
+  };
+  await scrollToOlderMessages();
+  await press("document.querySelector('.jump-to-bottom')", "回到底部 in Dots");
+  await until(latestIsVisible, "the chat button reveals the last paragraph of the newest reply");
+  await scrollToOlderMessages();
+  await openDots();
+  await until(latestIsVisible, "reclicking Dots returns to the newest reply");
 
   const previousDelivery = (await api("dots.activity")).find(item => item.title === cases[0].task);
   const extra = Array.from({ length: 18 }, (_, index) => ({ id: `dots-list-fixture-${index}`, title: `历史委派 ${index + 1}` }));
@@ -147,6 +177,7 @@ run(async env => {
     }
   });
   await openDots();
+  await until(latestIsVisible, "opening Dots after restart waits for history and shows the latest reply");
   await toggleTasks();
   await until(async () => await listCount() === 8, "default eight tasks");
   assert.equal(await evaluate("document.querySelector('.dots-all-tasks:popover-open header span')?.textContent"), "21 项");
@@ -170,6 +201,7 @@ run(async env => {
   await toggleTasks();
   await until(async () => await listCount() === 8, "reopening defaults to eight tasks");
   report.actualControlChecks.push("Every distinct Dots task is available in one popup. Live navigation, delivered and paused/stopped/failed statuses, restored previously hidden delivery, and progressive 8/20/all counts passed.");
+  report.actualControlChecks.push("Both MyBuddy Dots and the chat return button revealed the last paragraph after user scrolling. The sidebar also did so from another task and after restarting. Activity links kept their exact message targets.");
 }, {
   name: "dots-activity-desktop", watchRenderer: false, isolatedDependencyCache: true, settings: { permissionMode: "auto" },
   async fixtureModel(request) {
@@ -190,7 +222,7 @@ run(async env => {
     if (user.includes(cases[2].input)) {
       if (last.role !== "tool") return { tool: { name: "read", arguments: { path: "台账.txt" } } };
       await Promise.race([inventory, delay(45_000, undefined, { ref: false })]);
-      return JSON.stringify({ dotsState: "complete", result: "已核对库存，共 47 件。" });
+      return JSON.stringify({ dotsState: "complete", result: inventoryDelivery });
     }
     return "[]";
   },

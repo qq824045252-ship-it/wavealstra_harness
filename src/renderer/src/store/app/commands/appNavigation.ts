@@ -11,6 +11,7 @@ export function createAppNavigationActions(
         page,
         draft: page === "chat" ? s.draft : null,
         notificationMessageTarget: page === "chat" ? s.notificationMessageTarget : undefined,
+        chatLatestTarget: page === "chat" ? s.chatLatestTarget : undefined,
         hubMcpFocusName: page === "mcp" ? s.hubMcpFocusName : null,
         ...(page === "library" ? { libraryNav: null } : {}),
         ...(page !== "workspace" ? { activeWorkspaceId: null } : {}),
@@ -23,8 +24,9 @@ export function createAppNavigationActions(
         draft: null,
         activeWorkspaceId: null,
         notificationMessageTarget: undefined,
+        chatLatestTarget: undefined,
       }),
 
-    requestLibraryNav: (dest) => set({ page: "library", libraryNav: dest, notificationMessageTarget: undefined }),
+    requestLibraryNav: (dest) => set({ page: "library", libraryNav: dest, notificationMessageTarget: undefined, chatLatestTarget: undefined }),
   };
 }
