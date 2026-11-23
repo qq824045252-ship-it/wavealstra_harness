@@ -832,6 +832,10 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 	const curateKey = initConfig.shortcuts?.curate || DEFAULT_SHORTCUTS.curate;
 	const activityKey = initConfig.shortcuts?.activity || DEFAULT_SHORTCUTS.activity;
 
+	function webToolFailure(text: string, error: string, context: Record<string, unknown> = {}): AgentToolResult<Record<string, unknown>> {
+		return { content: [{ type: "text", text }], details: { ...context, error }, isError: true };
+	}
+
 	function storeAndPublishSearch(results: QueryResultData[]): string {
 		const id = generateId();
 		const data: StoredSearchData = {
@@ -1539,10 +1543,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 			const recencyFilter = normalizeRecencyFilter(params.recencyFilter);
 
 			if (queryList.length === 0) {
-				return {
-					content: [{ type: "text", text: "Error: No query provided. Use 'query' or 'queries' parameter." }],
-					details: { error: "No query provided" },
-				};
+				return webToolFailure("Error: No query provided. Use 'query' or 'queries' parameter.", "No query provided");
 			}
 
 			if (shouldCurate && !ctx) {
@@ -2108,7 +2109,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 		async execute(_callId, params, signal, _onUpdate, ctx) {
 			const claim = typeof params.claim === "string" ? params.claim.trim() : "";
 			if (!claim) {
-				return { content: [{ type: "text", text: "Error: 'claim' is required." }], details: { error: "Missing claim" } };
+				return webToolFailure("Error: 'claim' is required.", "Missing claim");
 			}
 
 			const requestedQueries = Array.isArray(params.queries)
@@ -2552,38 +2553,32 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 
 		async execute(_toolCallId, params): Promise<AgentToolResult<Record<string, unknown>>> {
 			if (params.findText !== undefined && (params.offset !== undefined || params.limit !== undefined)) {
-				return { content: [{ type: "text", text: "findText cannot be combined with offset or limit" }], details: { error: "Incompatible find options" } };
+				return webToolFailure("findText cannot be combined with offset or limit", "Incompatible find options");
 			}
 			if (params.findMode !== undefined && params.findText === undefined) {
-				return { content: [{ type: "text", text: "findMode requires findText" }], details: { error: "findMode requires findText" } };
+				return webToolFailure("findMode requires findText", "findMode requires findText");
 			}
 			const data = getResult(params.responseId);
 			if (!data) {
-				return {
-					content: [{ type: "text", text: `Error: No stored results for "${params.responseId}"` }],
-					details: { error: "Not found", responseId: params.responseId },
-				};
+				return webToolFailure(`Error: No stored results for "${params.responseId}"`, "Not found", { responseId: params.responseId });
 			}
 
 			if (data.type === "research") {
 				const artifact = getResearchArtifact(params.responseId);
 				if (!artifact) {
-					return {
-						content: [{ type: "text", text: `Error: artifact ${params.responseId} not found` }],
-						details: { error: "Artifact not found", responseId: params.responseId },
-					};
+					return webToolFailure(`Error: artifact ${params.responseId} not found`, "Artifact not found", { responseId: params.responseId });
 				}
 				const serialized = JSON.stringify(artifact, null, 2);
 				const offset = params.offset ?? 0;
 				const limit = params.limit ?? MAX_CONTENT_SLICE_LENGTH;
 				if (!Number.isInteger(offset) || offset < 0) {
-					return { content: [{ type: "text", text: "offset must be a non-negative integer" }], details: { error: "Invalid offset", offset } };
+					return webToolFailure("offset must be a non-negative integer", "Invalid offset", { offset });
 				}
 				if (!Number.isInteger(limit) || limit <= 0 || limit > MAX_CONTENT_SLICE_LENGTH) {
-					return { content: [{ type: "text", text: `limit must be an integer from 1 to ${MAX_CONTENT_SLICE_LENGTH}` }], details: { error: "Invalid limit", limit, maxLimit: MAX_CONTENT_SLICE_LENGTH } };
+					return webToolFailure(`limit must be an integer from 1 to ${MAX_CONTENT_SLICE_LENGTH}`, "Invalid limit", { limit, maxLimit: MAX_CONTENT_SLICE_LENGTH });
 				}
 				if (offset > serialized.length) {
-					return { content: [{ type: "text", text: `offset ${offset} is out of range (0-${serialized.length})` }], details: { error: "Offset out of range", offset, contentLength: serialized.length } };
+					return webToolFailure(`offset ${offset} is out of range (0-${serialized.length})`, "Offset out of range", { offset, contentLength: serialized.length });
 				}
 				const endOffset = Math.min(offset + limit, serialized.length);
 				const artifactSlice = serialized.slice(offset, endOffset);
@@ -2601,32 +2596,20 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 					queryData = data.queries.find((q) => q.query === params.query);
 					if (!queryData) {
 						const available = data.queries.map((q) => `"${q.query}"`).join(", ");
-						return {
-							content: [{ type: "text", text: `Query "${params.query}" not found. Available: ${available}` }],
-							details: { error: "Query not found" },
-						};
+						return webToolFailure(`Query "${params.query}" not found. Available: ${available}`, "Query not found");
 					}
 				} else if (params.queryIndex !== undefined) {
 					queryData = data.queries[params.queryIndex];
 					if (!queryData) {
-						return {
-							content: [{ type: "text", text: `Index ${params.queryIndex} out of range (0-${data.queries.length - 1})` }],
-							details: { error: "Index out of range" },
-						};
+						return webToolFailure(`Index ${params.queryIndex} out of range (0-${data.queries.length - 1})`, "Index out of range");
 					}
 				} else {
 					const available = data.queries.map((q, i) => `${i}: "${q.query}"`).join(", ");
-					return {
-						content: [{ type: "text", text: `Specify query or queryIndex. Available: ${available}` }],
-						details: { error: "No query specified" },
-					};
+					return webToolFailure(`Specify query or queryIndex. Available: ${available}`, "No query specified");
 				}
 
 				if (queryData.error) {
-					return {
-						content: [{ type: "text", text: `Error for "${queryData.query}": ${queryData.error}` }],
-						details: { error: queryData.error, query: queryData.query },
-					};
+					return webToolFailure(`Error for "${queryData.query}": ${queryData.error}`, queryData.error, { query: queryData.query });
 				}
 
 				const fullResults = formatFullResults(queryData);
@@ -2640,7 +2623,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 						};
 					} catch (err) {
 						const error = err instanceof Error ? err.message : String(err);
-						return { content: [{ type: "text", text: error }], details: { error, query: queryData.query } };
+						return webToolFailure(error, error, { query: queryData.query });
 					}
 				}
 
@@ -2659,33 +2642,21 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 					urlData = data.urls[selectedUrlIndex];
 					if (!urlData) {
 						const available = data.urls.map((u) => u.url).join("\n  ");
-						return {
-							content: [{ type: "text", text: `URL not found. Available:\n  ${available}` }],
-							details: { error: "URL not found" },
-						};
+						return webToolFailure(`URL not found. Available:\n  ${available}`, "URL not found");
 					}
 				} else if (params.urlIndex !== undefined) {
 					selectedUrlIndex = params.urlIndex;
 					urlData = data.urls[selectedUrlIndex];
 					if (!urlData) {
-						return {
-							content: [{ type: "text", text: `Index ${params.urlIndex} out of range (0-${data.urls.length - 1})` }],
-							details: { error: "Index out of range" },
-						};
+						return webToolFailure(`Index ${params.urlIndex} out of range (0-${data.urls.length - 1})`, "Index out of range");
 					}
 				} else {
 					const available = data.urls.map((u, i) => `${i}: ${u.url}`).join("\n  ");
-					return {
-						content: [{ type: "text", text: `Specify url or urlIndex. Available:\n  ${available}` }],
-						details: { error: "No URL specified" },
-					};
+					return webToolFailure(`Specify url or urlIndex. Available:\n  ${available}`, "No URL specified");
 				}
 
 				if (urlData.error) {
-					return {
-						content: [{ type: "text", text: `Error for ${urlData.url}: ${urlData.error}` }],
-						details: { error: urlData.error, url: urlData.url },
-					};
+					return webToolFailure(`Error for ${urlData.url}: ${urlData.error}`, urlData.error, { url: urlData.url });
 				}
 
 				if (params.findText !== undefined) {
@@ -2698,29 +2669,20 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 						};
 					} catch (err) {
 						const error = err instanceof Error ? err.message : String(err);
-						return { content: [{ type: "text", text: error }], details: { error, url: urlData.url } };
+						return webToolFailure(error, error, { url: urlData.url });
 					}
 				}
 
 				const offset = params.offset ?? 0;
 				const limit = params.limit ?? DEFAULT_CONTENT_SLICE_LENGTH;
 				if (!Number.isInteger(offset) || offset < 0) {
-					return {
-						content: [{ type: "text", text: "offset must be a non-negative integer" }],
-						details: { error: "Invalid offset", offset },
-					};
+					return webToolFailure("offset must be a non-negative integer", "Invalid offset", { offset });
 				}
 				if (!Number.isInteger(limit) || limit <= 0 || limit > MAX_CONTENT_SLICE_LENGTH) {
-					return {
-						content: [{ type: "text", text: `limit must be an integer from 1 to ${MAX_CONTENT_SLICE_LENGTH}` }],
-						details: { error: "Invalid limit", limit, maxLimit: MAX_CONTENT_SLICE_LENGTH },
-					};
+					return webToolFailure(`limit must be an integer from 1 to ${MAX_CONTENT_SLICE_LENGTH}`, "Invalid limit", { limit, maxLimit: MAX_CONTENT_SLICE_LENGTH });
 				}
 				if (offset > urlData.content.length) {
-					return {
-						content: [{ type: "text", text: `offset ${offset} is out of range (0-${urlData.content.length})` }],
-						details: { error: "Offset out of range", offset, contentLength: urlData.content.length },
-					};
+					return webToolFailure(`offset ${offset} is out of range (0-${urlData.content.length})`, "Offset out of range", { offset, contentLength: urlData.content.length });
 				}
 
 				const endOffset = Math.min(offset + limit, urlData.content.length);
@@ -2749,10 +2711,7 @@ export function createWebAccessCapabilityExtension(pi: ExtensionAPI, browserOpti
 				};
 			}
 
-			return {
-				content: [{ type: "text", text: "Invalid stored data format" }],
-				details: { error: "Invalid data" },
-			};
+			return webToolFailure("Invalid stored data format", "Invalid data");
 		},
 
 		renderCall(args, theme) {

@@ -76,6 +76,15 @@ try {
   createWebAccessCapabilityExtension(new Proxy({ registerTool: tool => registered.set(tool.name, tool) },
     { get: (target, key) => target[key] ?? (() => {}) }));
   const fetchTool = registered.get('fetch_content');
+  for (const [toolName, params, error] of [
+    ['web_search', { query: '  ' }, 'No query provided'],
+    ['source_check', { claim: '  ' }, 'Missing claim'],
+  ]) {
+    const rejected = await registered.get(toolName).execute('invalid-text', params,
+      new AbortController().signal, undefined, { cwd: temp, hasUI: false });
+    assert.equal(rejected.details.error, error);
+    assert.equal(rejected.isError, true, toolName);
+  }
   for (const params of [{}, { url: 'http://127.0.0.1/private', mode: 'raw' },
     { urls: ['http://127.0.0.1/a', 'http://127.0.0.1/b'], mode: 'raw' },
     { url: 'https://example.com', mode: 'answer' }]) {
@@ -105,10 +114,25 @@ try {
   assert.match(answerFailure.content[0].text, /十六至二十二/);
   assert.match(answerFailure.content[0].text, /NOT a verified answer/);
   assert.match(answerFailure.content[0].text, /get_search_content/);
-  const stored = await registered.get('get_search_content').execute('stored-source',
-    { responseId: answerFailure.details.responseId, urlIndex: 0 },
+  const storedTool = registered.get('get_search_content');
+  const readStored = params => storedTool.execute('stored-source', params,
     new AbortController().signal, undefined, { cwd: temp, hasUI: false });
+  const responseId = answerFailure.details.responseId;
+  const stored = await readStored({ responseId, urlIndex: 0 });
   assert.match(stored.content[0].text, /十六至二十二/);
+  assert.notEqual(stored.isError, true);
+  const emptyMatch = await readStored({ responseId, urlIndex: 0, findText: 'missing text in a valid document' });
+  assert.notEqual(emptyMatch.isError, true, 'a completed search with zero matches is successful');
+  for (const [params, error] of [
+    [{ responseId: 'missing-cached-response' }, 'Not found'],
+    [{ responseId, urlIndex: 1 }, 'Index out of range'],
+    [{ responseId, urlIndex: 0, offset: -1 }, 'Invalid offset'],
+    [{ responseId, urlIndex: 0, findText: 'weather', limit: 1 }, 'Incompatible find options'],
+  ]) {
+    const rejected = await readStored(params);
+    assert.equal(rejected.details.error, error);
+    assert.equal(rejected.isError, true, JSON.stringify(params));
+  }
   if (process.argv.includes('--live-weather')) {
     globalThis.fetch = savedFetch;
     const live = await extractContent('https://www.weather.com.cn/weather1d/101210101.shtml', undefined, { timeoutMs: 15000 });
