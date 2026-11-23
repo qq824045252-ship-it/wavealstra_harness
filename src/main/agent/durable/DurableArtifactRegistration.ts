@@ -15,6 +15,7 @@ export const durableArtifactRegistrationSchema = z.object({
   sizeBytes: z.number().int().nonnegative(), registeredAt: z.number().int().nonnegative(),
   toolCallId: z.string().min(1), toolTaskId: z.number().int().nonnegative(),
   toolConversationId: z.number().int().nonnegative(), inputIds: z.array(z.number().int().nonnegative()).min(1),
+  explicitlyRegistered: z.literal(true).optional(),
 });
 export type DurableArtifactRegistration = z.infer<typeof durableArtifactRegistrationSchema>;
 function inside(cwd: string, path: string): boolean {
@@ -120,7 +121,7 @@ type Api = Parameters<ToolRegistration["execute"]>[1];
 type Context = Parameters<ToolRegistration["execute"]>[2];
 /** Replay-safe host receipt, scoped to the owning run and exact native call. */
 async function register(path: string, api: Api, context: Context, directory: string,
-  previousDigest?: string | null): Promise<DurableArtifactRegistration> {
+  options?: { explicitlyRegistered?: true; previousDigest?: string | null }): Promise<DurableArtifactRegistration> {
   const agent = await api.agent(context);
   if (!agent.cwd) throw new Error("Artifact registration requires a host-bound workspace");
   const owner = await api.commit(async tx => {
@@ -160,8 +161,9 @@ async function register(path: string, api: Api, context: Context, directory: str
   if (!file.snapshotPath) throw new Error("Artifact snapshot was not persisted");
   const previewManifestPath = /\.html?$/i.test(file.path) ? await captureSavedWebBundle(agent.cwd, file.path, file.snapshotPath, directory, inspectDurableArtifact) : undefined;
   const data = { ...file, ...(previewManifestPath ? { previewManifestPath } : {}), snapshotPath: file.snapshotPath, registeredAt: Date.now(), toolCallId: api.callId, toolTaskId: api.taskId,
-    toolConversationId: api.conversationId, inputIds };
-  if (previousDigest === data.digest) return data;
+    toolConversationId: api.conversationId, inputIds,
+    ...(options?.explicitlyRegistered ? { explicitlyRegistered: options.explicitlyRegistered } : {}) };
+  if (options?.previousDigest === data.digest) return data;
   // HTML is often written before its styles/scripts. Capture a new immutable
   // bundle at the later resource registration, never by reading live files at preview time.
   const priorHtml = await api.commit(async tx => {
@@ -185,7 +187,7 @@ async function register(path: string, api: Api, context: Context, directory: str
   for (const old of priorHtml) {
     context.abortSignal?.throwIfAborted();
     if (!await savedBundleDependsOn(old.previewManifestPath, old.cwd, file.path)) continue;
-    const manifest = await captureSavedWebBundle(old.cwd, old.path, old.snapshotPath, directory, inspectDurableArtifact);
+    const manifest = await captureSavedWebBundle(old.cwd, old.path, old.snapshotPath, directory, inspectDurableArtifact, data);
     if (manifest !== old.previewManifestPath) refreshes.push({ ...old, previewManifestPath: manifest, registeredAt: Date.now(),
       toolCallId: `${api.callId}#web-bundle:${old.digest}`, toolTaskId: api.taskId, toolConversationId: api.conversationId, inputIds });
   }
@@ -211,7 +213,7 @@ export function createDurableArtifactRegistrationTool(directory: string): ToolRe
     parameters: Type.Object({ path: Type.String({ minLength: 1, description: "Generated file path, relative to the bound workspace or absolute within it." }) }),
     execute: async ({ path }, api, context) => {
       try {
-        const data = await register(path, api, context, directory);
+        const data = await register(path, api, context, directory, { explicitlyRegistered: true });
         return { output: [{ type: "text", text: `Registered generated file: ${data.path} (${data.sizeBytes} bytes, SHA-256 ${data.digest})` }] };
       } catch (error) {
         if (!(error instanceof ArtifactPathMissingError)) throw error;
@@ -239,7 +241,7 @@ export function withDurableArtifactRegistration(tool: ToolRegistration, director
       const result = await tool.execute(args, api, context);
       const receipt = z.object({ exitCode: z.literal(0), output: z.string(), truncated: z.literal(false) }).safeParse(result.structuredOutput);
       if (target && before !== undefined && !result.isError && receipt.success && !receipt.data.output.trim()) {
-        try { await register(target, api, context, directory, before); }
+        try { await register(target, api, context, directory, { previousDigest: before }); }
         catch (error) { api.output(`Generated file registration unavailable: ${error instanceof Error ? error.message : String(error)}`); }
       }
       return result;

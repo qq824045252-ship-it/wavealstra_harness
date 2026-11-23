@@ -56,7 +56,8 @@ export interface ConversationGoalServiceOptions {
  * WorkService (idempotency receipts, version guards, evidence-based acceptance). This
  * class never owns a second live record.
  */
-type DotsCompletionPolicy = { stale: true } | { stale: false; evidenceOrigin: string; userAcceptance: boolean };
+type DotsCompletionPolicy = { stale: true } | { stale: false; evidenceOrigin: string; userAcceptance: boolean;
+  lineage: readonly string[]; sourceMessageId: string; destination: import("../dots/DotsGoalConclusion").DotsGoalAcceptance["destination"] };
 
 export class ConversationGoalService {
   private dotsCompletion?: (taskId: string, operationId: string, workId: string, revision: number) => DotsCompletionPolicy | undefined;
@@ -81,18 +82,22 @@ export class ConversationGoalService {
   }
 
   completeFromDots(taskId: string, operationId: string, workId: string, guard: ExpectedVersionGuard, summary: string,
-    observations: readonly GoalCompletionObservation[], userConfirmed: boolean): ConversationGoalMutationResult {
+    proof: Pick<import("../dots/DotsGoalConclusion").DotsGoalAcceptance, "native" | "artifacts" | "registrations" | "citations"> & {
+      text: string; observations: readonly GoalCompletionObservation[];
+    }, userConfirmed: boolean): ConversationGoalMutationResult {
+    const { observations, ...delivery } = proof;
     const work = this.work.getWork(workId);
     const policy = work && this.dotsCompletionPolicy(taskId, operationId, work);
     if (!work || !policy || policy.stale || (policy.userAcceptance && !userConfirmed) || this.work.repo.bindingForTask(taskId)
-      || work.mode === "watch" || !observations.length)
+      || work.mode === "watch" || !observations.length || (!delivery.text.trim() && !delivery.artifacts.length))
       return { ok: false, code: "conflict", message: "原交办已变化，或缺少当前成果依据或约定的用户验收" };
     if (observations.some(item => item.criterionId && !work.criteria.some(criterion => criterion.id === item.criterionId)))
       return { ok: false, code: "invalid_request", message: "验收依据应引用当前 Goal 的条件编号" };
     const result = this.finish(this.work.closeWork(this.modelActor(taskId), {
       operationId: `dots-goal-close:${operationId}`, workId, conclusion: "succeeded",
       closureSummary: summary, versionGuard: guard,
-    }, observations), workId, this.primaryConversation(work));
+    }, observations, { ...delivery, taskId, operationId, sourceMessageId: policy.sourceMessageId, destination: policy.destination }),
+    workId, this.primaryConversation(work));
     if (result.ok) this.publish(result.goal);
     return result;
   }
@@ -396,7 +401,8 @@ export class ConversationGoalService {
       description: work.goalDescription,
       status: blocker ? "blocked" : goalStatus(work),
       criteria: work.criteria.map(toGoalCriterion),
-      progressSummary: work.progressSummary ?? this.fallbackSummary(work),
+      progressSummary: (work.lifecycle === "closed" ? work.closureSummary : undefined)
+        ?? work.progressSummary ?? (work.lifecycle === "closing" ? "正在结算在途操作" : undefined),
       version: work.stateVersion,
       createdBy: work.createdBy === "user" ? "user" : "agent_explicit_request",
       createdAt: work.createdAt,
@@ -452,12 +458,6 @@ export class ConversationGoalService {
 
   private publish(goal: ConversationGoalDto): void {
     this.emit({ type: "conversation_goal_snapshot", taskId: goal.taskId, goal });
-  }
-
-  private fallbackSummary(work: WorkDto): string | undefined {
-    if (work.lifecycle === "closing") return "正在结算在途操作";
-    if (work.lifecycle === "closed") return work.closureSummary;
-    return undefined;
   }
 
   private primaryConversation(work: WorkDto): string {

@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID } from "../src/shared/dots";
 import { resolveDotsPreferences } from "../src/shared/dots-settings";
+import { readNativeExecutionReceipt } from "../src/shared/native-execution-receipt";
 const root = mkdtempSync(join(tmpdir(), "dots-followup-"));
 process.env.USERPROFILE = root;
 process.env.HOME = root;
@@ -19,23 +22,38 @@ const { createArtifactDomain } = await import("../src/main/artifact/ArtifactDoma
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const { sourceWorkOutcome } = await import("../src/main/agent/hooks/ImprovementSourceContext");
 const { openDurablePassiveStorage } = await import("../src/main/agent/durable/DurableStorage");
+const { dotsGoalConclusion } = await import("../src/main/dots/DotsGoalConclusion");
 const db = new AppDatabase(join(root, "app.db"));
 const domain = createArtifactDomain(db.connection);
 db.openDots();
 const folder = join(root, "customer");
 mkdirSync(folder);
+const goalFile = "验收后的工作成果.txt";
+const acceptedFileBody = "固定的交付版本";
+const newFileBody = "验收后改写的版本";
 writeFileSync(join(folder, "到货记录.txt"), "批次累计 18 件");
 writeFileSync(join(folder, "第二批.txt"), "周一批次累计 18 件");
 const space = db.upsertSpace({ id: "customer", name: "客户资料", path: folder });
 let nextCall: Record<string, unknown> | undefined;
-let phase: "first" | "question" | "done" | "event" | "empty" | "partial" | "files" | "running" | "goal" | "goal-complete" | "goal-user" | "refused" = "first";
+let phase: "first" | "question" | "finish-delivery" | "report-first" | "report-last" | "missing" | "done" | "event" | "empty" | "partial" | "files" | "running" | "goal" | "goal-complete" | "goal-user" | "refused" = "first";
 let runningGate: (() => void) | undefined;
 let workerTurns = 0;
 const goal = "核对到货数，确认批次后汇总，不要发送邮件";
 const baseline = "已核对到货数为 18 件。";
 const question = "这一批到货应归入哪个批次？";
 const writtenResult = "采购说明正文：使用无塑纸封套，标签注明内部资料。";
+const approvedUrl = "https://example.invalid/approved";
+const approvedExcerpt = "The approved packaging uses paper sleeves.";
+const approvedDelivery = writtenResult + ` [来源](${approvedUrl} "${approvedExcerpt}")`;
+const draftUrl = "https://example.invalid/draft";
+const draftExcerpt = "This reference belongs to the draft.";
+const draftDelivery = `另拟塑料封套。 [来源](${draftUrl} "${draftExcerpt}")`;
+const sourceExcerpts = `[Approved packaging](${approvedUrl})\n> ${approvedExcerpt}\n\n[Draft packaging](${draftUrl})\n> ${draftExcerpt}`;
+let reviewFinalStatus: "completed" | "failed" = "failed";
 const conclusion = "东区批次已核对，合计到货 18 件。";
+const executionNotes = "复核底稿：逐行比对到货记录及采购登记，把确认的批次写入内部记录。";
+const reportFormat = "用 Markdown 给我完整报告，包含依据和复核过程。";
+const fullReport = "## 汇总\n\n到货 18 件。\n\n## 依据\n\n原始到货登记 18 件。\n\n## 复核过程\n\n汇总数与登记一致。\n";
 const partial = "验收清单列出仓储、装配两项。财务栏仍空着。";
 const runningMilestone = "周一批次原始记录显示 18 件。";
 const manualIntro = "已按你的要求更新。";
@@ -44,6 +62,8 @@ const manualEnvelope = JSON.stringify({ dotsState: "complete", result: manualRes
 const fencedManualEnvelope = "```json\n" + manualEnvelope + "\n```";
 const leakedReply = `${manualIntro}\n\n${fencedManualEnvelope}`;
 const completedWorkerReply = (result: string) => [{ type: "text" as const, text: JSON.stringify({ dotsState: "complete", result }) }];
+const deliveryReply = (text: string, notes: string) => [{ type: "text" as const,
+  text: JSON.stringify({ dotsState: "complete", result: notes, delivery: { text } }) }];
 const fixture = await createAgentDurableFixture(root, db, async (input) => {
   const tools = getCurrentTools(input.messages);
   if (!tools.length) return [{ type: "text", text: JSON.stringify({ candidates: [] }) }];
@@ -100,9 +120,30 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
           type: "toolCall",
           id: "ask-batch",
           name: "request_user_input",
-          arguments: { title: question, kind: "short_text" },
+          arguments: { title: question, kind: "single_select", options: [{ id: "east", label: "东区（仓一）" }, { id: "west", label: "西区（仓二）" }] },
         },
       ];
+    }
+    if (phase === "finish-delivery") {
+      const last = input.messages.at(-1);
+      if (last?.role === "toolResult" && last.toolName === "write") return deliveryReply(conclusion, executionNotes);
+      return [{ type: "toolCall", id: "write-notes", name: "write",
+        arguments: { path: "复核底稿.txt", content: executionNotes } }];
+    }
+    if (phase === "report-first") {
+      phase = "report-last";
+      return [{ type: "text", text: "已从到货记录核对 18 件。\n\n" + JSON.stringify({ dotsState: "progress", result: "到货数量已核对。", remainingQuote: "再汇总采购情况" }) }];
+    }
+    if (phase === "report-last") {
+      return deliveryReply(latestUser.includes(reportFormat) ? fullReport : conclusion, executionNotes);
+    }
+    if (phase === "missing") {
+      const last = input.messages.at(-1);
+      if (last?.role === "toolResult" && last.toolName === "read") {
+        return last.isError ? deliveryReply("没有交付合计：台账没读到。请把入库明细.csv 上传到原空间。", "找不到源表。")
+          : deliveryReply("42", "已从补齐的明细读取 42。");
+      }
+      return [{ type: "toolCall", id: "read-inbound", name: "read", arguments: { path: "入库明细.csv" } }];
     }
     if (phase === "goal") {
       const lastUser = input.messages.findLast((m) => m.role === "user");
@@ -126,16 +167,24 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
       }
       if (lastTool.toolName === "conversation_goal_propose_complete" && !lastTool.isError) {
         assert.equal((lastTool.details as any).goal.status, "achieved");
+        assert.equal(lastTool.toolCallId, "goal-close", "a superseded receipt cannot close the Goal");
+        writeFileSync(join(folder, goalFile), newFileBody);
         phase = "done";
-        return [{ type: "text", text: conclusion }];
+        return [{ type: "text", text: "内部记录已经保存。" }];
       }
       if (lastTool.toolName === "conversation_goal_propose_complete" && lastTool.isError) {
+        if (lastTool.toolCallId === "goal-stale-read") {
+          assert(JSON.stringify(lastTool.content).includes("更新的读取结果"));
+          return [{ type: "toolCall", id: "goal-repeat-read", name: "read", arguments: { path: "第二批.txt" } }];
+        }
         if (lastTool.toolCallId === "goal-self-claim") {
           assert(JSON.stringify(lastTool.content).includes("可交付内容"));
         } else {
           assert(JSON.stringify(lastTool.content).includes("未在本次交办"));
-          if (lastTool.toolCallId !== "goal-echo")
+          if (lastTool.toolCallId !== "goal-echo") {
+            writeFileSync(join(folder, "第二批.txt"), "周一批次累计 17 件");
             return [{ type: "toolCall", id: "goal-read", name: "read", arguments: { path: "第二批.txt" } }];
+          }
         }
       }
       assert(lookup?.role === "toolResult");
@@ -154,11 +203,32 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
           ...details.versionGuard, summary: "在已有目标上继续核对", deliveryText: "在已有目标上继续核对", observations: [{criterionId, quote:"在已有目标上继续核对"}],
         } },
       ];
+      if (lastTool.toolCallId === "goal-read") {
+        assert(JSON.stringify(lastTool.content).includes("周一批次累计 17 件"));
+        writeFileSync(join(folder, "第二批.txt"), "周一批次累计 18 件");
+        return [{ type: "toolCall", id: "goal-latest-read", name: "read", arguments: { path: pathToFileURL(join(folder, "第二批.txt")).href } }];
+      }
+      const currentObservation = { criterionId, toolCallId: "goal-latest-read", quote: "周一批次累计 18 件" };
+      const oldObservation = { criterionId, toolCallId: "goal-read", quote: "周一批次累计 17 件" };
+      if (lastTool.toolCallId === "goal-latest-read" || lastTool.toolCallId === "goal-repeat-read")
+        assert(JSON.stringify(lastTool.content).includes("周一批次累计 18 件"));
+      if (lastTool.toolCallId === "goal-repeat-read") return [{ type: "toolCall", id: "goal-write-file",
+        name: "write", arguments: { path: goalFile, content: acceptedFileBody } }];
+      if (lastTool.toolCallId === "goal-write-file") {
+        assert(!lastTool.isError);
+        assert.deepEqual(readNativeExecutionReceipt(lastTool.details)?.fileChange?.checkedRange, {
+          sha256: createHash("sha256").update(acceptedFileBody).digest("hex"), bytes: Buffer.byteLength(acceptedFileBody),
+        });
+        return [{ type: "toolCall", id: "goal-register-file", name: "register_artifact", arguments: { path: goalFile } }];
+      }
+      if (lastTool.toolCallId === "goal-register-file") assert(!lastTool.isError);
       return [{
-        type: "toolCall", id: lastTool.toolName === "read" ? "goal-close" : "goal-no-evidence",
+        type: "toolCall", id: lastTool.toolCallId === "goal-latest-read" ? "goal-stale-read" :
+          lastTool.toolCallId === "goal-register-file" ? "goal-close" : "goal-no-evidence",
         name: "conversation_goal_propose_complete", arguments: {
           ...details.versionGuard, summary: "内部核对：第二批原始文件支持结论。", deliveryText: conclusion,
-          observations: [{ criterionId, toolCallId: "goal-read", quote: "周一批次累计 18 件" }],
+          observations: lastTool.toolCallId === "goal-register-file" ? [currentObservation] :
+            lastTool.toolCallId === "goal-latest-read" ? [currentObservation, oldObservation] : [oldObservation],
         },
       }];
     }
@@ -177,21 +247,30 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
         const details = lastTool.details as any;
         assert.equal(details.completion, "user_confirmation");
         return [{ type: "toolCall", id: "text-goal-complete", name: "conversation_goal_propose_complete", arguments: {
-          ...details.versionGuard, summary: "实际撰写并逐项核对采购说明。", deliveryText: writtenResult,
+          ...details.versionGuard, summary: "实际撰写并逐项核对采购说明。", deliveryText: approvedDelivery,
           observations: [{ criterionId: details.goal.criteria[0].id, quote: writtenResult }],
         } }];
       }
       assert.equal(lastTool.toolName, "conversation_goal_propose_complete");
       assert(!lastTool.isError, JSON.stringify(lastTool.content));
       assert.equal((lastTool.details as any).confirmed, true);
-      return [{ type: "text", text: "已完成审核，内部留档。\n\n" + writtenResult }];
+      phase = "refused";
+      if (reviewFinalStatus === "completed") return deliveryReply(draftDelivery, "内部起草记录。");
+      return { content: [], errorMessage: "400: post-close composition failed" };
     }
     if (phase === "event") return completedWorkerReply("已读取交付触发信号，批次已登记。");
     if (phase === "empty") return [{ type: "text", text: "" }];
     if (phase === "partial") return [{ type: "text", text: partial }];
     if (phase === "files") {
-      if (input.messages.at(-1)?.role === "toolResult") return completedWorkerReply("");
-      return [{ type: "toolCall", id: "register-only-file", name: "register_artifact", arguments: { path: "第二批.txt" } }];
+      const last = input.messages.at(-1);
+      if (last?.role === "toolResult") {
+        if (last.toolCallId === "write-only-file") return [{ type: "toolCall", id: "register-only-file", name: "register_artifact", arguments: { path: "第二批.txt" } }];
+        if (last.toolCallId === "register-only-file") return [{ type: "toolCall", id: "write-file-notes", name: "write", arguments: { path: "工作底稿.txt", content: executionNotes } }];
+        if (last.toolCallId === "write-file-notes") return [{ type: "toolCall", id: "register-file-notes", name: "register_artifact", arguments: { path: "工作底稿.txt" } }];
+        if (last.toolCallId === "register-file-notes") return deliveryReply("第二批核对完毕，合计 18 件。", executionNotes);
+      }
+      return [{ type: "toolCall", id: "write-only-file", name: "write",
+        arguments: { path: "第二批.txt", content: "周一批次累计 18 件" } }];
     }
     if (phase === "running") {
       const last = input.messages.at(-1);
@@ -234,6 +313,9 @@ let actions = makeActions();
 agent.setDotsActions(actions);
 let heldSource: string | undefined;
 let resumeRelay: (() => void) | undefined;
+let pendingConclusionSource: string | undefined;
+let lostGoalAck: string | undefined;
+let recoveredGoalAck = false;
 journal.connect(
   async (job, req) => {
     if (job.sourceMessageId === heldSource && job.status === "completed")
@@ -242,7 +324,21 @@ journal.connect(
       });
     return actions.followup(job, req);
   },
-  (reply, current) => agent.appendDotsReply(reply, current),
+  async (reply, current) => {
+    if (reply.kind === "conclusion" && reply.sourceMessageId === pendingConclusionSource) {
+      pendingConclusionSource = undefined;
+      return Promise.resolve("pending");
+    }
+    const result = await agent.appendDotsReply(reply, current);
+    if (reply.completion && reply.sourceMessageId === "source-6") {
+      if (result === "appended" && !lostGoalAck) {
+        lostGoalAck = reply.deliveryKey;
+        throw new Error("fixture: original conversation committed before outbox acknowledgement");
+      }
+      if (result === "existing" && reply.deliveryKey === lostGoalAck) recoveredGoalAck = true;
+    }
+    return result;
+  },
 );
 agent.onPatch(patch => journal.onPatch(patch));
 actions.startFileWatches();
@@ -307,21 +403,29 @@ try {
     "PASS 一次交办后普通任务自行续办，并主动回原对话提问",
     JSON.stringify({ source: "source-1", receipts: rows.map((r) => r.id), question }),
   );
-  await send("东区", {
-    action: "answer",
+  phase = "finish-delivery";
+  await send("刚才「到货批次筛选」那项选东区。继续处理。", {
+    action: "steer",
     targetTaskId: rows[1].taskId,
-    operationId: rows[1].id,
-    interactionId: rows[1].interactionId,
+    text: "选东区",
   });
   await messageContains(conclusion);
   for (let i = 0; i < 3; i++) journal.refresh(rows[0].taskId);
   await journal.drain();
   assert.equal(journal.list(["source-1"]).length, 2);
+  assert.deepEqual(journal.list(["source-2"]), [], "选择回答了原生问题，没有排队第二笔输入");
   const final = await messageContains(conclusion);
-  const delivered = final.find((m) => m.dotsDelivery?.kind === "conclusion")?.dotsDelivery?.artifacts;
-  assert.deepEqual(delivered, files, "最终结论与阶段问题都指向同一版本，不重复附加");
+  const delivered = final.find((m) => m.dotsDelivery?.kind === "conclusion");
+  assert.equal(delivered?.text, conclusion);
+  assert.equal(delivered?.dotsDelivery?.sourceMessageId, "source-1");
+  assert.deepEqual(delivered?.dotsDelivery?.artifacts, files, "只交付登记过的成品，不附原任务的底稿");
   assert.equal(final.filter((m) => m.role === "assistant" && m.text.includes(conclusion)).length, 1);
-  console.log("PASS 原对话收到一次文字结论", conclusion);
+  assert(!final.some(m => m.role === "assistant" && m.text.includes(executionNotes)));
+  assert.equal(readFileSync(join(folder, "复核底稿.txt"), "utf8"), executionNotes);
+  await agent.releaseDurableTask(rows[0].taskId);
+  assert.equal((await agent.loadTaskHistory(rows[0].taskId)).messages.findLast(m => m.finalAssistantReply)?.text,
+    `${conclusion}\n\n${executionNotes}`);
+  console.log("PASS 原对话收到一次结论及成品，原任务重开后仍能查看底稿和执行记录");
   phase = "event";
   await send("清单到达后登记", {
     action: "watch_file",
@@ -416,6 +520,15 @@ try {
   assert.equal(done.status, "completed");
   const goalWork = agent.getConversationGoals().workService.getWork(g.goal.id)!;
   assert.equal(goalWork.closureConclusion, "succeeded");
+  assert.equal(goalWork.closureSummary, "内部核对：第二批原始文件支持结论。");
+  const accepted = dotsGoalConclusion(db.connection, goalTask, goalRow.id)?.completion;
+  assert(accepted);
+  assert.equal(accepted.text, conclusion);
+  assert.equal(accepted.intentRevision, goalWork.intentRevision);
+  assert.equal(accepted.stateVersion, goalWork.stateVersion);
+  assert.equal(accepted.native.callId, "goal-close");
+  assert.equal(accepted.registrations.length, 1);
+  assert.equal(accepted.registrations[0].digest, createHash("sha256").update(acceptedFileBody).digest("hex"));
   const verifiedEvidence = agent.getConversationGoals().workService.repo.listEvidence(g.goal.id);
   assert(verifiedEvidence.some(e => e.provenance === "system" && e.kind === "tool_receipt" && e.detail === "周一批次累计 18 件"));
   assert(!verifiedEvidence.some(e => e.kind === "user_attestation"));
@@ -429,18 +542,39 @@ try {
     const previousInput = await storage.submissionByRequest(conversationId, goalRows[0].id, BACKGROUND_CONTEXT);
     assert(currentInput?.type === "input" && currentInput.entry && currentInput.answer);
     assert(previousInput?.type === "input" && previousInput.entry && previousInput.answer);
+    assert.equal(accepted.native.conversationId, conversationId);
+    assert.equal(accepted.native.submissionId, currentInput.id);
+    assert.equal(accepted.native.entryId, currentInput.entry);
+    const observation = accepted.observations[0];
+    const nativeEntry = Number(observation.sourceRef.split(":").at(-1));
+    const evidenceEntry = (await storage.entry(nativeEntry as typeof currentInput.entry, BACKGROUND_CONTEXT))?.entry;
+    const tool = evidenceEntry?.model?.find(message => message.role === "toolResult");
+    assert(tool?.role === "toolResult");
+    assert.deepEqual(observation.executionReceipt, readNativeExecutionReceipt(tool.details));
+    assert.equal(observation.executionReceipt?.callId, "goal-latest-read");
+    assert.equal(observation.executionReceipt?.fileRead?.target, join(folder, "第二批.txt"));
+    const text = tool.content.find(block => block.type === "text");
+    assert(text?.type === "text");
+    assert.equal(observation.readVersion?.outputHash, createHash("sha256").update("text\0").update(text.text).update("\0").digest("hex"));
+    assert.equal(observation.readVersion?.outputHash, observation.executionReceipt?.fileRead?.outputHash);
     const source = { actor: "main" as const, taskId: goalTask, conversationId: String(conversationId),
       entry: currentInput.answer, trigger: currentInput.answer, input: currentInput.entry, at: done.updatedAt };
     const outcome = sourceWorkOutcome(db.connection, source, goalRow.id);
     assert(outcome && "closure" in outcome && outcome.closure?.closure_conclusion === "succeeded");
     assert(outcome.evidence?.some(item => (item as {evidence_id:string}).evidence_id === verifiedEvidence[0].evidenceId));
+    assert.deepEqual("completion" in outcome ? outcome.completion : undefined, accepted);
+    const wrongInput = sourceWorkOutcome(db.connection, { ...source, input: previousInput.entry }, goalRow.id);
+    assert(wrongInput && "closure" in wrongInput && !wrongInput.closure);
     const old = sourceWorkOutcome(db.connection, {
       ...source, entry: previousInput.answer, trigger: previousInput.answer, input: previousInput.entry,
     }, goalRows[0].id);
     assert(old && "closure" in old && !old.closure && old.evidence?.length === 0);
     assert.equal(sourceWorkOutcome(db.connection, { ...source, taskId: rejectTask }, goalRow.id), null);
   } finally { await storage.close(BACKGROUND_CONTEXT); }
-  assert.deepEqual(await actions.followup(done), { kind: "deliver", text: conclusion });
+  const decision = await actions.followup(done);
+  assert.equal(decision.kind, "deliver");
+  assert.equal(decision.text, conclusion);
+  assert.deepEqual(decision.completion, accepted);
   const goalReplyDeadline = Date.now() + 20000;
   let linkedConclusion;
   while (Date.now() < goalReplyDeadline) {
@@ -454,7 +588,31 @@ try {
   }
   assert.equal(linkedConclusion?.dotsDelivery?.sourceMessageId, "source-6", "最终 Goal 结论实际回到最初交办的那一轮");
   assert.equal(linkedConclusion?.text, conclusion);
-  assert.deepEqual(linkedConclusion?.dotsDelivery?.artifacts, [], "另一项 Goal 的纯文字结论不得混入第一项的文件");
+  assert.deepEqual(linkedConclusion?.dotsDelivery?.citations ?? [], []);
+  assert.deepEqual(linkedConclusion?.dotsDelivery?.completion, { id: accepted.id, workId: accepted.workId,
+    intentRevision: accepted.intentRevision, stateVersion: accepted.stateVersion });
+  assert.deepEqual(linkedConclusion?.dotsDelivery?.artifacts, accepted.artifacts);
+  assert.deepEqual(accepted.artifacts.map(file => file.name), [goalFile]);
+  assert.equal(readFileSync(accepted.artifacts[0].saved!.snapshotPath, "utf8"), acceptedFileBody);
+  assert.equal(readFileSync(join(folder, goalFile), "utf8"), newFileBody);
+  for (let attempt = 0; !recoveredGoalAck && attempt < 100; attempt++) await delay(50);
+  assert(recoveredGoalAck, "同一交付重放读取原生回执");
+  const afterReplay = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
+  assert.equal(afterReplay.messages.filter(message => message.dotsDelivery?.deliveryKey === lostGoalAck).length, 1);
+  const rollback = new Error("roll back revision fixture");
+  assert.throws(db.connection.transaction(() => {
+    db.connection.prepare("UPDATE works SET state_version=state_version+1 WHERE work_id=?").run(accepted.workId);
+    assert.deepEqual(dotsGoalConclusion(db.connection, goalTask, goalRow.id)?.completion, accepted);
+    db.connection.prepare("UPDATE works SET intent_revision=intent_revision+1 WHERE work_id=?").run(accepted.workId);
+    assert.equal(dotsGoalConclusion(db.connection, goalTask, goalRow.id), undefined);
+    throw rollback;
+  }), error => error === rollback);
+  await journal.drain();
+  const completedSearch = await actions.execute(DOTS_TASK_ID, undefined, {
+    action: "deliveries", targetTaskId: goalTask, query: "东区批次已核对",
+  });
+  assert(completedSearch && "results" in completedSearch && completedSearch.results?.some(hit =>
+    "operationId" in hit && hit.operationId === goalRow.id && hit.status === "completed" && hit.text === conclusion));
   console.log("PASS Goal 中断后关联补回，最终回复依据已达成的 Goal");
   phase = "first";
   heldSource = "source-8";
@@ -484,38 +642,56 @@ try {
   assert(!failedReply?.text.includes("尝试补救"));
   assert.equal(journal.list(["source-10"]).length, 1);
   console.log("PASS 不可恢复 HTTP 400 直接返回可读原因和单项问题，不重复请求");
-  const reviewTask = "ordinary-explicit-goal";
-  db.upsertTask({ id: reviewTask, title: "采购说明", spaceId: space.id, updatedAt: Date.now() });
-  const review = agent.createConversationGoal({taskId: reviewTask, title:"采购说明",
-    criteria:[{text:"交付采购说明纯文字正文，包含包装及标签要求"}]});
-  assert(review.ok);
-  phase = "goal-user";
-  const acceptance = "结项由我亲自验收";
-  await send("请在原任务为 Goal 写完采购说明，只回说明正文这一段，" + acceptance + "。只告诉 Dots：私事识别短语-761", {
-    action: "delegate", targetTaskId: reviewTask, goalId: review.goal.id,
-    text: "为 Goal 写完采购说明", deliveryInstruction: "只回说明正文这一段", goalUserAcceptanceQuote: acceptance,
-  });
-  await messageContains("确认完成 Work「采购说明」");
-  const confirmation = journal.list(["source-11"]).find(row => row.interactionId);
-  assert(confirmation?.interactionId);
-  const reviews = agent.getConversationRuntimeSnapshot(reviewTask).interactions.filter(i => i.kind === "confirm");
-  assert.equal(reviews.length, 1);
-  assert.equal(reviews[0].status, "pending");
-  const works = agent.getConversationGoals().workService;
-  assert.equal(works.getWork(review.goal.id)?.lifecycle, "active");
-  await send("确认", { action: "answer", targetTaskId: reviewTask, operationId: confirmation.id, interactionId: confirmation.interactionId });
-  const reviewedDeadline = Date.now() + 20000;
-  while (Date.now() < reviewedDeadline) {
-    const transcript = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
-    if (transcript.messages.some(m=>m.dotsDelivery?.sourceMessageId === "source-11" && m.dotsDelivery.kind === "conclusion"
-      && m.text === writtenResult)) break;
-    await delay(80);
+  async function reviewGoal(finalStatus: "completed" | "failed") {
+    const reviewTask = "ordinary-explicit-goal-" + finalStatus;
+    const source = `source-${turn + 1}`;
+    db.upsertTask({ id: reviewTask, title: "采购说明", spaceId: space.id, updatedAt: Date.now() });
+    const review = agent.createConversationGoal({taskId: reviewTask, title:"采购说明",
+      criteria:[{text:"交付采购说明纯文字正文，包含包装及标签要求"}]});
+    assert(review.ok);
+    phase = "goal-user";
+    reviewFinalStatus = finalStatus;
+    const acceptance = "结项由我亲自验收";
+    await send("请在原任务为 Goal 写完采购说明，只回说明正文这一段，" + acceptance +
+      "。只告诉 Dots：私事识别短语-761\n\n" + sourceExcerpts, {
+      action: "delegate", targetTaskId: reviewTask, goalId: review.goal.id,
+      text: "为 Goal 写完采购说明\n\n" + sourceExcerpts, deliveryInstruction: "只回说明正文这一段", goalUserAcceptanceQuote: acceptance,
+    });
+    await messageContains("确认完成 Work「采购说明」", source);
+    const confirmation = journal.list([source]).find(row => row.interactionId);
+    assert(confirmation?.interactionId);
+    const reviews = agent.getConversationRuntimeSnapshot(reviewTask).interactions.filter(i => i.kind === "confirm");
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].status, "pending");
+    const works = agent.getConversationGoals().workService;
+    assert.equal(works.getWork(review.goal.id)?.lifecycle, "active");
+    if (finalStatus === "completed") pendingConclusionSource = source;
+    await send("确认", { action: "answer", targetTaskId: reviewTask, operationId: confirmation.id, interactionId: confirmation.interactionId });
+    const reviewedDeadline = Date.now() + 20000;
+    let returned;
+    while (!returned && Date.now() < reviewedDeadline) {
+      const transcript = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
+      returned = transcript.messages.find(m => m.dotsDelivery?.sourceMessageId === source && m.dotsDelivery.kind === "conclusion");
+      if (!returned) await delay(80);
+    }
+    assert.equal(returned?.text, approvedDelivery);
+    assert.deepEqual(returned?.dotsDelivery?.citations, [
+      { url: approvedUrl, excerpt: approvedExcerpt, title: "Approved packaging", kind: "provided" },
+    ]);
+    assert.equal(pendingConclusionSource, undefined);
+    assert.equal(works.getWork(review.goal.id)?.closureConclusion, "succeeded");
+    assert(works.repo.listEvidence(review.goal.id).some(e => e.kind === "inspection" && e.detail === writtenResult));
+    await journal.drain();
+    assert.equal(journal.list([source]).find(row => row.id === confirmation.id)?.status, finalStatus);
+    const reviewDeliveries = await actions.execute(DOTS_TASK_ID, undefined, { action: "deliveries", targetTaskId: reviewTask });
+    assert(reviewDeliveries && "results" in reviewDeliveries && reviewDeliveries.results?.some(hit =>
+      "operationId" in hit && hit.operationId === confirmation.id && hit.status === "completed" && hit.text === approvedDelivery));
+    if (finalStatus === "completed") {
+      const workerHistory = await agent.loadTaskHistory(reviewTask, undefined, "current");
+      assert(workerHistory.messages.some(message => message.role === "assistant" && message.text.startsWith(draftDelivery)));
+    }
   }
-  const reviewedHistory = await agent.loadTaskHistory(DOTS_TASK_ID, undefined, "current");
-  assert(reviewedHistory.messages.some(m=>m.dotsDelivery?.sourceMessageId === "source-11" && m.dotsDelivery.kind === "conclusion"
-    && m.text === writtenResult));
-  assert.equal(works.getWork(review.goal.id)?.closureConclusion, "succeeded");
-  assert(works.repo.listEvidence(review.goal.id).some(e => e.kind === "inspection" && e.detail === writtenResult));
+  await reviewGoal("failed");
   console.log("PASS 明确约定由用户验收只问一次，纯文字成果即可结项并回原对话");
   phase = "partial";
   await send("请完成所有验收栏", { action: "delegate", spaceId: space.id, name: "验收审核", text: "请完成所有验收栏" });
@@ -527,7 +703,8 @@ try {
   assert.equal(journal.list(["source-13"]).length, 2);
   console.log("PASS 未声明结果的自然语言停顿未当成结论，安全补报一次后回到原交办提问");
   phase = "files";
-  await send("只给第二批文件", { action: "delegate", spaceId: space.id, name: "第二批文件", text: "只给第二批文件" });
+  const onlyFile = "完成后只给「第二批.txt」。";
+  await send(onlyFile, { action: "delegate", spaceId: space.id, name: "第二批文件", text: onlyFile, deliveryInstruction: onlyFile });
   const fileDeadline = Date.now() + 20000;
   let fileReply;
   while (Date.now() < fileDeadline) {
@@ -539,6 +716,8 @@ try {
   assert.equal(fileReply?.dotsDelivery?.kind, "conclusion");
   assert.equal(fileReply?.text, "");
   assert.deepEqual(fileReply?.dotsDelivery?.artifacts.map(file => file.name), ["第二批.txt"]);
+  assert.equal(readFileSync(fileReply!.dotsDelivery!.artifacts[0].saved!.snapshotPath, "utf8"), "周一批次累计 18 件");
+  assert.equal(readFileSync(join(folder, "工作底稿.txt"), "utf8"), executionNotes);
   console.log("PASS 仅交付文件的原对话消息只有对应版本附件");
   phase = "running";
   const runningRequest = "核对周一批次的原始记录，再核对另一批的原始记录";
@@ -646,6 +825,37 @@ try {
     } finally { agent.setTaskLifecycleListener(null); }
   }
   console.log("PASS Dots stop and pause block a Goal check queued by a completed native turn");
+  phase = "report-first";
+  const reportSource = `source-${turn + 1}`;
+  await send(`先核对数量，再汇总采购情况。${reportFormat}`, { action: "delegate", spaceId: space.id, name: "采购报告",
+    text: "先核对数量，再汇总采购情况。", steps: ["先核对数量", "再汇总采购情况"], deliveryInstruction: reportFormat });
+  const reportMessages = await messageContains("## 复核过程", reportSource);
+  const reportDelivery = reportMessages.find(m => m.dotsDelivery?.sourceMessageId === reportSource && m.dotsDelivery.kind === "conclusion");
+  assert.equal(reportDelivery?.text, fullReport);
+  assert.equal(journal.list([reportSource]).length, 2, "完整报告来自同一任务内自动续办后的交付");
+  console.log("PASS 自动续办保留明确交付要求，原对话逐字收到完整 Markdown 报告");
+  phase = "missing";
+  const missingSource = `source-${turn + 1}`;
+  await send("只有读到入库明细.csv 才给一个合计整数。", { action: "delegate", spaceId: space.id,
+    name: "入库明细", text: "读取入库明细.csv 并给出合计整数" });
+  const waiting = await messageContains("请把入库明细.csv 上传", missingSource);
+  const [missing] = journal.list([missingSource]);
+  assert.equal(missing.status, "blocked");
+  assert.equal(waiting.find(m => m.dotsDelivery?.sourceMessageId === missingSource)?.dotsDelivery?.kind, "question");
+  const waitingTask = await actions.execute(DOTS_TASK_ID, undefined, { action: "task", targetTaskId: missing.taskId });
+  assert(waitingTask && "progress" in waitingTask);
+  assert.equal(waitingTask.status, "waiting_input");
+  assert.equal(waitingTask.progress?.wait?.kind, "input");
+  writeFileSync(join(folder, "入库明细.csv"), "数量\n42\n");
+  await send("「客户资料」的 入库明细.csv 已补到原空间。接着核对，只回复合计数字。",
+    { action: "read_file", spaceId: space.id, path: "入库明细.csv", allowHandoff: true });
+  const recovered = await messageContains("42", missingSource);
+  const recoveredDelivery = recovered.find(m => m.dotsDelivery?.sourceMessageId === missingSource && m.dotsDelivery.kind === "conclusion");
+  assert.equal(recoveredDelivery?.text, "42");
+  assert.equal(recoveredDelivery?.dotsDelivery?.taskId, missing.taskId);
+  console.log("PASS 缺资料的假完成停在等待，用户补齐后原任务继续交付到原对话");
+  await reviewGoal("completed");
+  console.log("PASS Goal 原对话只收到已验收正文对应的引用，回传重试后引用仍一致");
 } catch (error) {
   console.error("Dots followup verification failed", error);
   for (const j of journal.list())

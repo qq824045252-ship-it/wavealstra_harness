@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { botMessagePresentation } from "../src/renderer/src/lib/botMessagePresentation";
+import { botMessagePresentation, hasUnreadDotsReply } from "../src/renderer/src/lib/botMessagePresentation";
+import { DOTS_NO_CHANGE } from "../src/shared/dots";
 import type { ChatMessage } from "../src/renderer/src/types";
 import { messageImageArtifacts } from "../src/renderer/src/lib/chatImages";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
@@ -51,9 +52,6 @@ assert.equal(consumed.length,projected.length+2);
 const interaction = { id: "question", taskId: "task", executionId: "tool-execution", assistantMessageId: "step-1", kind: "confirm" as const, title: "Continue?", options: [], status: "resolved" as const, answer: true, version: 2, createdAt: 2 };
 const answered = botMessagePresentation([records[0], { ...records[1], interactions: [interaction] }, records[3]]);
 assert.deepEqual(answered[1].interactions, [interaction], "A completed turn retains questions asked by earlier tool steps");
-console.log("PASS: Bot reply grouping, ordered process, tool deduplication, artifacts, turn boundaries and stable row identity");
-
-
 const delivery = { ...reply("proactive"), dotsDelivery: {
   deliveryKey: "first-result", operationId: "first-job", taskId: "worker", sourceMessageId: "ask",
   title: "清单", kind: "conclusion" as const, text: "清单已齐。", artifacts: [],
@@ -62,3 +60,14 @@ const separate = botMessagePresentation([user("ask"), reply("ack"), delivery, re
 assert.deepEqual(separate.map(row => row.id), ["ask", "ack", "proactive", "later"]);
 assert.equal(separate[2], delivery);
 assert.notEqual(separate[1].presentationKey, separate[3].presentationKey);
+
+const quietCheck = [
+  { ...user("quiet-check"), createdAt: 4, inputRequestId: "cron-12345678-1234-1234-1234-123456789abc-input" },
+  reply("checking", { createdAt: 5, blocks: [{ type: "tool", toolCall: tool }] }),
+  reply("unchanged", { createdAt: 6, finalBlocks: [{ type: "text", text: DOTS_NO_CHANGE }] }),
+];
+assert.equal(hasUnreadDotsReply(quietCheck, 0), false, "a quiet check with tool activity has no new visible message");
+assert.equal(hasUnreadDotsReply([delivery, ...quietCheck], 0), true, "a later quiet check keeps the unread delivery visible");
+assert.equal(hasUnreadDotsReply([delivery, ...quietCheck], delivery.createdAt), false, "a viewed delivery stays viewed after a quiet check");
+
+console.log("PASS: Bot reply grouping, stable row identity, and unread Dots replies through quiet checks");

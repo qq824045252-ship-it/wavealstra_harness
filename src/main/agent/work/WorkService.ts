@@ -29,6 +29,7 @@ import { reportWorkBlockerMutation, replyUserInputMutation, replyLegacyUserInput
 import { legacyUserInputSource } from "./WorkLegacyUserInput";
 import type { ReplyUserInputParams, ReplyLegacyUserInputParams } from "../../../shared/bot-work-review";
 import { settleWorkAdmission } from "./WorkExecutionSettlement";
+import { nativeExecutionOperationId, type NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
 import { WorkResultCards } from "./WorkResultCards";
 import { WorkPhase5Facts } from "./WorkPhase5Facts";
 import { checkControlGuard, isWorkerProgressAmend } from "./WorkControlGuards";
@@ -483,11 +484,12 @@ export class WorkService {
     return this.closureMutations().applyCancellation(work, params, now);
   }
 
-  closeWork(actor: WorkActor, params: CloseWorkParams, observations?: readonly GoalCompletionObservation[]): WorkControlResult {
+  closeWork(actor: WorkActor, params: CloseWorkParams, observations?: readonly GoalCompletionObservation[],
+    dotsAcceptance?: import("../../dots/DotsGoalConclusion").DotsGoalAcceptance): WorkControlResult {
     const artifactInspection = params.conclusion === "succeeded" ? this.artifacts.capture(params.workId) : undefined;
     return this.runWorkControl(actor, "closeWork", params, {
       guard: "full", ownerOnly: true, allowLifecycles: ["active", "paused", "closing"],
-    }, (work, resolved, now) => this.closureMutations().close(work, resolved, params, now, artifactInspection, observations));
+    }, (work, resolved, now) => this.closureMutations().close(work, resolved, params, now, artifactInspection, observations, dotsAcceptance));
   }
 
   /** Host-reviewed factual correction only. It never reopens or dispatches business work. */
@@ -633,6 +635,12 @@ export class WorkService {
       ...input, admissionId: input.operationId, workId: binding.workId, bindingId: binding.bindingId,
     });
     return admitted.ok ? undefined : admitted.message;
+  }
+
+  settleTaskNativeAction(taskId: string, receipt: NativeExecutionReceipt): void {
+    if (receipt.taskId !== taskId || receipt.executionId !== `durable:${taskId}:${receipt.conversationId}:${receipt.toolTaskId}`)
+      throw new Error("Native ToolTask receipt does not belong to this Work task");
+    this.settleTaskAction(taskId, nativeExecutionOperationId(receipt), receipt.settlement);
   }
 
   settleTaskAction(taskId: string, operationId: string, outcome: "consumed" | "released" | "unknown"): void {

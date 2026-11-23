@@ -174,6 +174,17 @@ function assistantCopyText(message: ChatMessage): string {
     .trim();
 }
 
+function literalDotsJson(message: ChatMessage): string | undefined {
+  const text = message.dotsDelivery?.kind === "conclusion" ? message.dotsDelivery.text : undefined;
+  if (!text || !/^\s*(?:\{|\[|")/u.test(text)) return;
+  try {
+    JSON.parse(text);
+    return text;
+  } catch {
+    return undefined;
+  }
+}
+
 type CopyState = "idle" | "copied" | "failed" | "empty";
 
 const COPY_FEEDBACK_MS = 1800;
@@ -446,6 +457,7 @@ function TaskReferenceNotice({
 
 function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, onGoalCreated, focusTool }: Props): React.JSX.Element {
   const replyBody = useRef<HTMLDivElement>(null);
+  const exactDotsJson = literalDotsJson(message);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === (taskId || s.activeTaskId)));
@@ -531,7 +543,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
 
   const copyFinalText = useCallback(async (): Promise<void> => {
     if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
-    const text = readableChatReply(assistantCopyText(message), replySources);
+    const text = exactDotsJson ?? readableChatReply(assistantCopyText(message), replySources);
     if (!text) {
       setCopyState("empty");
       copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), COPY_FEEDBACK_MS);
@@ -545,7 +557,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
       setCopyState("failed");
     }
     copyTimerRef.current = window.setTimeout(() => setCopyState("idle"), COPY_FEEDBACK_MS);
-  }, [message, replySources]);
+  }, [message, replySources, exactDotsJson]);
 
   if (message.role === "user" && message.goalContinuation) {
     const label = message.blocks.map((block) => (block.type === "text" ? block.text : "")).join("\n").trim()
@@ -834,7 +846,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
         <div className="assistant-card" ref={replyBody}>
           {/* 助手回复不折叠，完整展示；仅用户消息长文折叠。
               正文区 = finalBlocks 的 prose 段（tool_start 冻结段，空段渲染过滤）。 */}
-          {nonEmptyFinalTextBlocks(message.finalBlocks).map((block, i) => {
+          {exactDotsJson !== undefined ? <pre className="dots-literal-json">{exactDotsJson}</pre> : nonEmptyFinalTextBlocks(message.finalBlocks).map((block, i) => {
             const canHideRecoveredDirective = Boolean(message.streaming) || (message.interactions?.length ?? 0) > 0;
             const visibleBlock = block.type === "text" && canHideRecoveredDirective
               ? { ...block, text: requestUserInputDisplayText(block.text, Boolean(message.streaming)) }

@@ -114,7 +114,11 @@ try {
   const completed = goals.update({ goalId: created.goal.id, status: "achieved", progressSummary: "完成" });
   assert.equal(completed.ok, true);
   assert.equal(completed.ok ? completed.goal.status : undefined, "achieved");
-  assert.equal(work.getWork(created.goal.id)?.closureConclusion, "succeeded");
+  const closedWork = work.getWork(created.goal.id)!;
+  assert.equal(closedWork.closureConclusion, "succeeded");
+  assert.equal(closedWork.progressSummary, "主链完成");
+  assert.equal(work.cards.list(closedWork).find(card => card.kind === "closure_succeeded")?.summary, "完成");
+  assert.equal(goals.listByTask("task-a").find(goal => goal.id === created.goal.id)?.progressSummary, "完成");
 
   // Ordinary Goal completion must hash outside the transaction and retain a
   // committed artifact invalidation when the close request is rejected.

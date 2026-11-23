@@ -2,8 +2,11 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
-import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
+import { collectReplyCitations } from "../../shared/chat-reply-sources";
+import { DOTS_TASK_ID, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
 import type { DotsFollowupDecision } from "./DotsFollowup";
+import { activitySummary } from "./DotsActivity";
+import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusion";
 
 export type DotsFollowup = (job: DotsDelegation, request?: AgentPromptRequest) =>
   Promise<DotsFollowupDecision>;
@@ -18,7 +21,7 @@ type Event = { event_key: string; operation_id: string; status: string; interact
 export class DotsReplyOutbox {
   private handler?: { followup: DotsFollowup; append: AppendDotsReply; allowed: (taskId: string) => boolean;
     allowedReply: (kind: DotsAssistantReply["kind"]) => boolean };
-  constructor(private db: Database.Database) {
+  constructor(private db: Database.Database, private changed?: () => void) {
     db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_requests(operation_id TEXT PRIMARY KEY, request TEXT NOT NULL);
@@ -45,12 +48,12 @@ export class DotsReplyOutbox {
     if (request) this.db.prepare("INSERT OR IGNORE INTO dots_followup_requests VALUES(?,?)").run(operationId, JSON.stringify(request));
   }
 
-  observe(job: DotsDelegation, citations?: ReplyCitation[]) {
+  observe(job: DotsDelegation, citations?: ReplyCitation[], acceptedGoalReceiptId?: string) {
     if (job.status === "pending" || job.status === "superseded" || (job.status === "running" && !job.text.trim())) return;
     const identity = [job.id, job.status, job.interactionId ?? "", job.status === "running" ? job.text : ""];
     const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
     this.db.prepare(`INSERT OR IGNORE INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot) VALUES(?,?,?,?,?,?)`)
-      .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations }));
+      .run(key, job.id, job.taskId, job.status, job.interactionId ?? null, JSON.stringify({ ...job, citations, acceptedGoalReceiptId }));
   }
 
   activityAvailability(job: DotsDelegation): "active" | "hold" | "obsolete" {
@@ -75,18 +78,6 @@ export class DotsReplyOutbox {
 
   hasPending(target: string): boolean {
     return Boolean(this.handler && this.db.prepare("SELECT 1 FROM dots_reply_events WHERE task_id=? AND settled=0 LIMIT 1").get(target));
-  }
-
-  private destination(sourceMessageId: string): {sourceMessageId: string; origin?: DotsReplyOrigin} {
-    if (sourceMessageId.startsWith("cron-") && isDotsAutomaticInput(sourceMessageId)) {
-      const runId = sourceMessageId.slice("cron-".length, -"-input".length);
-      const timer = this.db.prepare(`SELECT o.source,o.conversation,o.entry FROM cron_runs r
-        JOIN dots_schedule_origins o ON o.job_id=r.job_id WHERE r.id=?`).get(runId) as
-        {source:string;conversation:number;entry:number} | undefined;
-      if (timer) return {sourceMessageId:timer.source, origin:{conversationId:timer.conversation,entryId:timer.entry}};
-    }
-    const origin = this.db.prepare("SELECT conversation AS conversationId,entry AS entryId FROM dots_reply_origins WHERE source=?").get(sourceMessageId) as DotsReplyOrigin | undefined;
-    return {sourceMessageId, origin};
   }
 
   private disposition(event: Event): "active" | "hold" | "obsolete" {
@@ -143,16 +134,22 @@ export class DotsReplyOutbox {
     return retry;
   }
 
-  private settle(event: Event, delivered?: DotsAssistantReply["kind"]) {
+  private settle(event: Event, delivered?: DotsAssistantReply) {
     this.db.transaction(() => {
-      // Keep only the disposition for board lookups. The conversation owns the delivered body and attachments.
+      // The conversation owns the full reply. Keep the receipt and a short Activity summary.
+      const snapshot = delivered ? {
+        delivered: delivered.kind,
+        ...(delivered.completion && { completion: delivered.completion }),
+        ...(delivered.kind !== "progress" && { summary: activitySummary(delivered.text), deliveredAt: Date.now(), fileCount: delivered.artifacts.length }),
+      } : undefined;
       this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=?")
-        .run(delivered ? JSON.stringify({ delivered }) : "", event.event_key);
+        .run(snapshot ? JSON.stringify(snapshot) : "", event.event_key);
       if (event.status === "activity" && delivered)
         this.db.prepare("UPDATE dots_tool_observations SET last_report_at=? WHERE operation_id=?").run(Date.now(), event.operation_id);
       if (event.status === "completed" || event.status === "failed")
         this.db.prepare("DELETE FROM dots_followup_requests WHERE operation_id=?").run(event.operation_id);
     })();
+    if (event.status !== "running" && event.status !== "activity") this.changed?.();
   }
 
   private async deliver(event: Event, alive: () => boolean, handler: NonNullable<DotsReplyOutbox["handler"]>) {
@@ -160,10 +157,12 @@ export class DotsReplyOutbox {
     if (disposition === "obsolete") this.settle(event);
     if (disposition !== "active" || !handler.allowed(event.task_id)) return false;
     const current = () => alive() && handler.allowed(event.task_id) && this.disposition(event) === "active";
+    const { citations, acceptedGoalReceiptId, ...job } = JSON.parse(event.snapshot) as DotsDelegation & {
+      citations?: ReplyCitation[]; acceptedGoalReceiptId?: string;
+    };
     let reply: DotsAssistantReply;
     if (event.reply) reply = JSON.parse(event.reply) as DotsAssistantReply;
     else {
-      const { citations, ...job } = JSON.parse(event.snapshot) as DotsDelegation & { citations?: ReplyCitation[] };
       const request = this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined;
       const step = event.status === "activity" ? { kind: "progress" as const, text: job.text, artifacts: [] }
         : await handler.followup(job, request ? JSON.parse(request) : undefined);
@@ -173,16 +172,40 @@ export class DotsReplyOutbox {
       const afterFollowup = this.disposition(event);
       if (afterFollowup === "obsolete") this.settle(event);
       if (afterFollowup !== "active") return false;
-      reply = { deliveryKey: event.event_key, operationId: job.id, taskId: job.taskId, ...this.destination(job.sourceMessageId),
+      const accepted = step.completion;
+      if (accepted && accepted.id !== acceptedGoalReceiptId) {
+        this.settle(event);
+        return false;
+      }
+      const destination = accepted?.destination ?? dotsOriginalDestination(this.db, job.sourceMessageId);
+      const replyCitations = accepted ? accepted.citations : citations;
+      const deliveryKey = accepted ? createHash("sha256").update(JSON.stringify([accepted.taskId, accepted.id, accepted.stateVersion])).digest("hex")
+        : event.event_key;
+      reply = { deliveryKey, operationId: job.id, taskId: job.taskId, ...destination,
+        ...(accepted && { completion: { id: accepted.id, workId: accepted.workId, intentRevision: accepted.intentRevision,
+          stateVersion: accepted.stateVersion } }),
         title: job.title, kind: step.kind === "deliver" ? "conclusion" : step.kind === "progress" ? "progress" : "question", text: step.text ?? job.text,
-        artifacts: step.artifacts ?? job.artifacts, ...(step.kind === "deliver" && citations?.length ? { citations } : {}) };
-      this.db.prepare("UPDATE dots_reply_events SET reply=? WHERE event_key=?").run(JSON.stringify(reply), event.event_key);
+        artifacts: step.artifacts ?? job.artifacts,
+        ...(step.kind === "deliver" && (step.text ?? job.text).trim() && replyCitations?.length ? { citations: replyCitations } : {}) };
     }
+    if (job.goalId && !reply.completion && reply.kind === "conclusion" && reply.citations?.length) {
+      // Also check replies prepared before the current body and citation selection were linked.
+      const matched = collectReplyCitations(reply.text, reply.citations.map(citation => ({ ...citation, text: citation.excerpt })));
+      reply.citations = matched.length ? matched : undefined;
+    }
+    const prepared = JSON.stringify(reply);
+    if (prepared !== event.reply)
+      this.db.prepare("UPDATE dots_reply_events SET reply=? WHERE event_key=?").run(prepared, event.event_key);
     if (!handler.allowedReply(reply.kind)) { this.settle(event); return false; }
-    const result = await handler.append(reply, () => current() && handler.allowedReply(reply.kind));
+    const acceptedCurrent = () => {
+      if (!reply.completion) return true;
+      const current = dotsGoalConclusion(this.db, job.taskId, job.id)?.completion;
+      return current?.id === reply.completion.id && current.stateVersion === reply.completion.stateVersion;
+    };
+    const result = await handler.append(reply, () => current() && acceptedCurrent() && handler.allowedReply(reply.kind));
     if (!alive()) return false;
     if (result === "pending") return true;
-    if (result !== "discarded") this.settle(event, reply.kind);
+    if (result !== "discarded") this.settle(event, reply);
     else if (handler.allowed(event.task_id) && this.disposition(event) !== "hold") this.settle(event);
     return false;
   }

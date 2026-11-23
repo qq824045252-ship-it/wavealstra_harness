@@ -1,3 +1,7 @@
+if (process.argv.includes("--activity")) {
+  require("./dots-activity-desktop-test.cjs");
+  return;
+}
 if (process.argv.includes("--activity-live")) {
   require("./dots-activity-live.cjs");
   return;
@@ -25,18 +29,28 @@ const marker = "报价原件 A · 137";
 const spaceId = "dots-test-quotes";
 const retiredReplyPreference = "旧设置里的回答指令样本";
 const routingInstruction = "按工具组列出本次可用操作。";
+const firstPrompt = "提示词验收 A：答复先写核对结果。";
+const updatedPrompt = "提示词验收 B：有报价数字时写明来源。";
+const editedSystemPrompt = "回复与交付验收 C：交付时先告诉我结果，再附文件。";
+const editedMemoryPrompt = "记忆与偏好验收 D：使用记忆前先核对来源。";
 const { run } = require("./desktop-dev-harness.cjs");
 const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
+function systemText(request) {
+  return request.messages.filter(message => ["system", "developer"].includes(message.role))
+    .map(message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n"))
+    .join("\n");
+}
+
 run(async env => {
-  const { evaluate, until, rpc, report } = env;
+  const { evaluate, until, rpc, report, requests } = env;
   const { click, press, fill, screenshot } = routingControls(env);
-  const dots = () => click("MyBuddy Dots", ".sidebar-scroll");
+  const dots = () => click("MyBuddy Dots", ".sidebar-dots-entry");
   const active = () => evaluate("document.querySelector('.chat-header-title')?.textContent");
   const body = () => evaluate("document.querySelector('.message-list')?.textContent");
   await dots();
   await until(async () => await active() === "MyBuddy Dots", "empty Dots chat");
-  assert.equal(await evaluate("document.querySelector('.desktop-section-row[aria-current=true]').nextElementSibling.textContent.trim()"), "独立任务");
+  assert.equal(await evaluate("document.querySelector('.sidebar-dots-entry').nextElementSibling?.querySelector('.section-title')?.textContent.trim()"), "独立任务");
   assert.equal(await evaluate("window.api.db.listTasks().then(rows => rows.length)"), 0);
   const openDotsSettings = async () => {
     assert.equal(await evaluate("!!document.querySelector('.chat-header button[aria-label=\"Dots 设置\"]')"), false);
@@ -53,6 +67,34 @@ run(async env => {
   };
   const closeSettings = () => press('document.querySelector("button[aria-label=关闭设置]")', "close settings");
   const tab = label => click(label, ".dots-config nav");
+  const promptContents = () => evaluate("[...document.querySelectorAll('.dots-prompt-preview pre')].map(node => node.textContent)");
+  const openPrompt = async () => {
+    await tab("提示词");
+    await until(() => evaluate("document.querySelector('#dots-system-prompt')?.disabled === false"), "system prompt loaded in editor");
+  };
+  const systemEditor = () => evaluate("document.querySelector('#dots-system-prompt').value");
+  const promptCategory = label => click(label, ".dots-prompt-categories");
+  const savePrompt = async ({ system, append, expectedSegments }) => {
+    if (system !== undefined) await fill("#dots-system-prompt", system);
+    const appendOpen = "document.querySelector('#dots-append-prompt').closest('details')";
+    if (!await evaluate(`${appendOpen}.open`)) await press(`${appendOpen}.querySelector('summary')`, "show additional instructions");
+    await fill("#dots-append-prompt", append);
+    await click("保存提示词", ".dots-config");
+    await until(async () => {
+      const preview = await promptContents();
+      return preview.length === expectedSegments && (system === undefined || preview.includes(system))
+        && (!append || preview.at(-1)?.endsWith(append));
+    }, "saved prompt in preview");
+    return promptContents();
+  };
+  const assertPromptReceived = (input, preview) => {
+    const request = requests.find(({ messages }) => messages.at(-1)?.role === "user"
+      && JSON.stringify(messages.at(-1).content).includes(input));
+    assert(request, `missing provider request for ${input}`);
+    const actual = systemText(request);
+    assert(actual.includes(preview.join("\n\n")), `settings preview differs from received system text for ${input}`);
+    return actual;
+  };
   const select = async (label, value) => {
     await fill('select[aria-label="' + label + '"]', value);
     await until(() => evaluate("document.querySelector('.dots-setting-feedback')?.textContent.includes('已保存') && !document.querySelector('.dots-config fieldset').disabled"), label + " saved");
@@ -74,6 +116,16 @@ run(async env => {
   await select("Dots 如何使用长期记忆", "readOnly");
   assert.doesNotMatch(await evaluate("document.querySelector('.dots-config').innerText"), /回答方式|给 Dots 的回答指令/);
   await screenshot("dots-settings-conversation");
+  await openPrompt();
+  const defaultPreview = await promptContents();
+  assert.equal(await systemEditor(), defaultPreview[0], "editor preloads the active category");
+  assert.match(defaultPreview[0], /MyBuddy Dots/);
+  await promptCategory("回复与交付");
+  const defaultDelivery = await systemEditor();
+  assert.match(defaultDelivery, /用原对话交付/);
+  await screenshot("dots-prompt-categories");
+  const firstPreview = await savePrompt({ append: firstPrompt, expectedSegments: defaultPreview.length + 1 });
+  assert(firstPreview.some(text => text.includes("长期记忆为只读")));
   await tab("跟进与空间");
   await select("到时间或有实质进展时", "notify");
   await select("空间范围", "selected");
@@ -92,7 +144,14 @@ run(async env => {
   await rpc("Input.insertText", { text: "检查已关闭能力的工具列表" });
   await press('document.querySelector(\'button[title="发送 (Enter)"]\')', "send Dots policy check");
   await until(async () => (await body())?.includes("能力限制已生效"), "provider received restricted Dots tools");
+  const firstSystem = assertPromptReceived("检查已关闭能力的工具列表", firstPreview);
+  assert.equal(firstSystem.split(firstPrompt).length, 2, "custom prompt appears once in the request");
   await openDotsSettings();
+  await openPrompt();
+  await promptCategory("记忆与偏好");
+  await fill("#dots-system-prompt", `${await systemEditor()}\n${editedMemoryPrompt}`);
+  await promptCategory("回复与交付");
+  const updatedPreview = await savePrompt({ system: editedSystemPrompt, append: updatedPrompt, expectedSegments: defaultPreview.length + 1 });
   await tab("工具与操作");
   await setCapability("委派和接续任务", true);
   await closeSettings();
@@ -103,6 +162,10 @@ run(async env => {
   await rpc("Input.insertText", { text: "在客户 A 空间做一份报价单" });
   await press('document.querySelector(\'button[title="发送 (Enter)"]\')', "send Dots question");
   await until(async () => (await body())?.includes("已交给"), "Dots replied to its caller");
+  const updatedSystem = assertPromptReceived("在客户 A 空间做一份报价单", updatedPreview);
+  assert.equal(updatedSystem.includes(firstPrompt), false, "existing Dots chat must not retain a previous prompt");
+  assert.equal(updatedSystem.includes(defaultDelivery), false, "editing replaces just the selected category on the wire");
+  assert(updatedSystem.includes(defaultPreview[0]) && updatedSystem.includes(editedMemoryPrompt), "other categories remain in the request");
   await until(() => evaluate("window.api.dots.list().then(rows => rows.some(row => row.status === 'completed' && row.artifacts.length === 1))"), "native task delivered its file");
   const [job] = await evaluate("window.api.dots.list()");
   assert.equal(job.title, "报价任务");
@@ -117,6 +180,13 @@ run(async env => {
   await until(() => evaluate("!!document.querySelector('select[aria-label=\"Dots 使用的模型\"]')"), "saved conversation settings loaded");
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Dots 使用的模型\"]').value"), "fixture/dots-alternate");
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"Dots 如何使用长期记忆\"]').value"), "readOnly");
+  await openPrompt();
+  await promptCategory("回复与交付");
+  assert.equal(await systemEditor(), editedSystemPrompt, "edited system prompt survived restart");
+  await click("恢复本类默认", ".dots-config");
+  await until(async () => await systemEditor() === defaultDelivery, "default category restored in editor");
+  assert((await promptContents()).at(-1)?.endsWith(updatedPrompt), "restoring the system prompt preserves additional instructions");
+  const clearedPreview = await savePrompt({ append: "", expectedSegments: defaultPreview.length });
   await tab("跟进与空间");
   assert.equal(await evaluate(checkbox("客户 A") + "?.checked"), true);
   assert.equal(await evaluate("document.querySelector('select[aria-label=\"到时间或有实质进展时\"]').value"), "notify");
@@ -160,11 +230,16 @@ run(async env => {
     await until(async () => (await api("cron.runs", 10)).some(run => run.jobId === id && run.status === "success"), id);
   }
   await until(async () => (await body())?.includes("新的报价已到达"), "meaningful result in Dots");
+  const clearedSystem = assertPromptReceived("桌面有进展用例", clearedPreview);
+  assert(clearedSystem.includes(defaultDelivery) && !clearedSystem.includes(editedSystemPrompt), "restoring default replaces only that category on the wire");
+  assert(clearedSystem.includes(editedMemoryPrompt), "restoring one category preserves the other edit");
+  assert(!clearedSystem.includes(firstPrompt) && !clearedSystem.includes(updatedPrompt), "cleared additional instructions are absent on the wire");
   await until(async () => (await evaluate("window.api.notification.list()")).some(n => n.sourceId === "dots-update" && n.body === "新的报价已到达"), "actual progress notification");
   assert(!(await evaluate("window.api.notification.list()")).some(n => n.sourceId === "dots-quiet"));
   assert.doesNotMatch(await body(), /桌面静默用例|桌面有进展用例|\[\[dots:no-change\]\]/);
   report.actualControlChecks.push("Two native timers finished. Only the meaningful update appeared in Dots and in local notifications.");
   report.actualControlChecks.push("Opened Dots settings from app settings, changed model, memory, follow-up, space scope and individual tools. The Dots request used the matching dialogue rule and omitted the retired reply preference. The worker used the main model. Preferences survived restart.");
+  report.actualControlChecks.push("Dots loaded categories in the editor. The provider received both saved category edits, then received the restored delivery default and the unchanged memory edit. Overrides survived restart and did not reach the worker.");
   report.actualControlChecks.push("Zero ordinary tasks, one fixed Dots entry, durable send/history/restart, source-scoped preview, source task navigation, and return.");
 }, {
   name: "dots-desktop", settings: { permissionMode: "auto", memoryEnabled: true, dotsSettings: { replyInstructions: retiredReplyPreference } }, fixtureModelIds:["dots-alternate"], watchRenderer: false, isolatedDependencyCache: true,
@@ -202,6 +277,8 @@ run(async env => {
     if (names.includes("write")) {
       assert.equal(request.model, "ui-fixture");
       assert(!JSON.stringify(request.messages).includes(routingInstruction), "worker should only receive its assigned request");
+      const system = systemText(request);
+      assert([firstPrompt, updatedPrompt, editedSystemPrompt, editedMemoryPrompt].every(text => !system.includes(text)), "Dots prompt edits must not be inherited by the worker");
       return { tool: { name: "write", arguments: {path: "报价.md", content: marker} } };
     }
     return "[]";

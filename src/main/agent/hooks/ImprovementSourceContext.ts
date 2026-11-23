@@ -4,6 +4,7 @@ import { GenerationTask, type ConversationId, type EntryId, type Storage, type T
 import type { ObservationSource } from "../../../shared/native-improvement";
 import { openDurablePassiveStorage } from "../durable/DurableStorage";
 import { readGoalNativeEvidence } from "../durable/DurableGoalNativeEvidence";
+import { dotsGoalConclusion } from "../../dots/DotsGoalConclusion";
 
 type Row = Record<string, unknown>;
 const object = (v: unknown): Row => v && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
@@ -69,9 +70,17 @@ export function sourceWorkOutcome(db: Database.Database, source: ObservationSour
     WHERE d.task_id=? AND d.operation_id=? AND d.goal_id=json_extract(p.plan,'$.request.dotsGoalId')`)
     .get(source.taskId,operation) as { goal_id: string; status: string; revision: number | null } | undefined;
   if (!delegation) return null;
-  const closure = db.prepare(`SELECT closure_conclusion,closed_at,input_snapshot_id FROM works
-    WHERE work_id=? AND intent_revision=? AND lifecycle='closed' AND close_operation_id=?`)
-    .get(delegation.goal_id,delegation.revision,`dots-goal-close:${operation}`) as Row | undefined;
+  const accepted = dotsGoalConclusion(db, source.taskId, operation);
+  if (accepted?.completion) {
+    const completion = accepted.completion;
+    const sameSource = String(completion.native.conversationId) === source.conversationId && completion.native.entryId === source.input;
+    if (!sameSource) return { delegation, closure: null, evidence: [] };
+    const evidence = db.prepare(`SELECT evidence_id,kind,provenance,source_ref,criterion_ids_json FROM work_evidence
+      WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? AND evidence_id IN (SELECT value FROM json_each(?)) ORDER BY recorded_at`)
+      .all(completion.workId, completion.intentRevision, completion.inputSnapshotId, JSON.stringify(completion.evidenceRefs));
+    return { delegation, closure: accepted.closure, evidence, completion };
+  }
+  const closure = accepted?.closure;
   const evidence = closure ? db.prepare(`SELECT evidence_id,kind,provenance,source_ref,criterion_ids_json FROM work_evidence
     WHERE work_id=? AND intent_revision=? AND input_snapshot_id=? ORDER BY recorded_at LIMIT 64`)
     .all(delegation.goal_id,delegation.revision,closure.input_snapshot_id) : [];

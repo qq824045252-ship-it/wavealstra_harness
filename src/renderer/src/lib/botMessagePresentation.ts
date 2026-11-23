@@ -1,6 +1,25 @@
 import type { ChatMessage, MessageBlock } from "@/types";
 import type { DurableBotSnapshot } from "@shared/durable-bot";
-import { isDotsAutomaticInput } from "@shared/dots";
+import { DOTS_NO_CHANGE, isDotsAutomaticInput } from "@shared/dots";
+
+export function isQuietDotsReply(message: ChatMessage, automatic: boolean): boolean {
+  if (!automatic || message.role !== "assistant") return false;
+  const reply = message.finalBlocks?.length ? message.finalBlocks : message.blocks;
+  return reply.flatMap(block => block.type === "text" ? [block.text] : []).join("").trim() === DOTS_NO_CHANGE;
+}
+
+export function hasUnreadDotsReply(messages: readonly ChatMessage[], seenAt: number): boolean {
+  let automatic = false;
+  for (const message of botMessagePresentation(messages)) {
+    if (message.role === "user") {
+      automatic = isDotsAutomaticInput(message.inputRequestId ?? "");
+    } else if (message.createdAt > seenAt && message.dotsDelivery?.kind !== "progress"
+      && (message.dotsDelivery || !isQuietDotsReply(message, automatic))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Render one Bot reply per user turn while retaining the native Durable records in the store. */
 export function botMessagePresentation(

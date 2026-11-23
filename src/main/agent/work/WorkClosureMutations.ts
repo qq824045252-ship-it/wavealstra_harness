@@ -6,12 +6,18 @@ import type { WorkNotificationDelivery } from "./WorkNotificationDelivery";
 import type { WorkPartialResults } from "./WorkPartialResults";
 import type { WorkPhase5Facts } from "./WorkPhase5Facts";
 import type { Mutation, ResolvedActor } from "./WorkControlTypes";
+import type { DotsGoalAcceptance } from "../../dots/DotsGoalConclusion";
+import type { NativeExecutionReceipt } from "../../../shared/native-execution-receipt";
+import type { PstackCheckIdentity } from "../../../shared/conversation-goal-activity";
 
 export interface GoalCompletionObservation {
   criterionId?: string;
   sourceRef: string;
   detail: string;
   kind: "tool_receipt" | "inspection" | "user_attestation";
+  executionReceipt?: NativeExecutionReceipt;
+  checkIdentity?: PstackCheckIdentity;
+  readVersion?: { target: string; outputHash: string };
 }
 
 interface ClosureMutationDeps {
@@ -60,7 +66,8 @@ export class WorkClosureMutations {
     return { ok: true, outboxEventId: settled.ok ? settled.outboxEventId : undefined };
   }
 
-  close(work: WorkDto, _resolved: ResolvedActor, params: CloseWorkParams, now: number, artifactInspection?: ArtifactInspection, observations?: readonly GoalCompletionObservation[]): Mutation {
+  close(work: WorkDto, _resolved: ResolvedActor, params: CloseWorkParams, now: number, artifactInspection?: ArtifactInspection,
+    observations?: readonly GoalCompletionObservation[], dotsAcceptance?: DotsGoalAcceptance): Mutation {
     if (artifactInspection && !this.deps.artifacts.validate(artifactInspection, now)) {
       this.deps.emitCurrentProjection(work.workId);
       return { ok: false, code: "version_conflict", message: "产物版本发生变化，已保留历史成果并重新打开相关验收项" };
@@ -109,6 +116,7 @@ export class WorkClosureMutations {
           message: "仍有在途执行或未核对的外部效果，不能按完成关闭",
         };
       }
+      const evidenceRefs = new Set(work.criteria.flatMap(criterion => isCriterionResolved(criterion) ? criterion.evidenceRefs : []));
       if (observations?.length) {
         const evidence = observations.map(observation => {
           const evidenceId = newId("evidence");
@@ -116,6 +124,7 @@ export class WorkClosureMutations {
             kind: observation.kind, provenance: observation.kind === "user_attestation" ? "user" : "system",
             sourceRef: observation.sourceRef, inputSnapshotId: work.inputSnapshotId,
             intentRevision: work.intentRevision, detail: observation.detail, recordedAt: now });
+          evidenceRefs.add(evidenceId);
           return { evidenceId, criterionId: observation.criterionId };
         });
         work = { ...work, criteria: work.criteria.map(criterion => {
@@ -124,7 +133,14 @@ export class WorkClosureMutations {
             : { ...criterion, status: "satisfied", verifiedIntentRevision: criterion.requiredIntentRevision, evidenceRefs };
         }) };
       }
-      return this.closeWithConclusion(work, "succeeded", params, now);
+      const closed = this.closeWithConclusion(work, "succeeded", params, now);
+      if (!closed.ok || !dotsAcceptance) return closed;
+      return { ...closed, receiptMetadata: { dotsGoalCompletion: {
+        ...dotsAcceptance, id: params.operationId, workId: work.workId,
+        intentRevision: work.intentRevision, stateVersion: work.stateVersion + 1,
+        ownerEpoch: work.ownerEpoch, inputSnapshotId: work.inputSnapshotId, evidenceRefs: [...evidenceRefs],
+        observations: observations ?? [],
+      } } };
     }
     // ended_unsuccessfully: settle first, then close.
     this.clearStoppedExecutionBlockers(work.workId, now);

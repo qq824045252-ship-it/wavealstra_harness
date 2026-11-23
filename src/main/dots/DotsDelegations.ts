@@ -10,6 +10,7 @@ import { DotsReplyOutbox, type AppendDotsReply, type DotsFollowup } from "./Dots
 type Result = Pick<DotsDelegation, "text" | "artifacts" | "interactionId"> & {
   status: "running" | "blocked" | "completed" | "failed";
   citations?: ReplyCitation[];
+  acceptedGoalReceiptId?: string;
 };
 type RecoverSubmit = (request: AgentPromptRequest) => Promise<{ error?: {message: string}; cancelled?: boolean }>;
 type RecoverAvailable = (taskId: string) => boolean;
@@ -63,7 +64,7 @@ export class DotsDelegations {
       CREATE INDEX IF NOT EXISTS dots_delegations_pending ON dots_delegations(task_id,seq) WHERE status IN ('pending','running','blocked');
       CREATE INDEX IF NOT EXISTS dots_delegations_source ON dots_delegations(source_message_id);`);
     this.recoverable = db.prepare("SELECT * FROM dots_delegations WHERE status='pending' AND request_json IS NOT NULL ORDER BY seq").all() as Row[];
-    this.outbox = new DotsReplyOutbox(db);
+    this.outbox = new DotsReplyOutbox(db, notify);
   }
 
   connect(followup: DotsFollowup, append: AppendDotsReply, allowed?: (taskId: string) => boolean,
@@ -364,7 +365,7 @@ export class DotsDelegations {
           .get(result.status, result.text, result.interactionId ?? null, files, now, row.seq, result.status, result.interactionId ?? null, result.text, files) as Row | undefined;
         if (!update) return false;
         if (result.status !== "running" || this.tracking(update)?.milestones)
-          this.outbox.observe(toDelegation(update), result.citations);
+          this.outbox.observe(toDelegation(update), result.citations, result.acceptedGoalReceiptId);
         if (result.status !== "running")
           this.db.prepare("UPDATE dots_tool_observations SET next_at=NULL WHERE operation_id=?").run(row.operation_id);
         if (row.supersedes) this.db.prepare(`UPDATE dots_delegations SET status='superseded',interaction_id=NULL,request_json=NULL,updated_at=?

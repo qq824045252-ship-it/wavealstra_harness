@@ -1,4 +1,5 @@
 import type { SpaceDto, TaskDto } from "./agent-ipc";
+import type { AssemblySegmentDto } from "./mode-profile";
 
 export function dotsLocalSpacePath(space: SpaceDto, parent: (id: string) => SpaceDto | undefined): string[] | undefined {
   const names: string[] = [];
@@ -19,7 +20,8 @@ export const DOTS_NO_CHANGE = "[[dots:no-change]]";
 export function isDotsAutomaticInput(requestId: string): boolean {
   return /^cron-[0-9a-f-]{36}-input$/i.test(requestId) || requestId.startsWith("goal-continuation:");
 }
-export const DotsIpc = { open: "dots:open", list: "dots:list", changed: "dots:changed" } as const;
+export const DotsIpc = { open: "dots:open", list: "dots:list", activity: "dots:activity",
+  getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
 
 export interface DotsDelegation {
   id: string;
@@ -56,6 +58,7 @@ export interface DotsAssistantReply {
   taskId: string;
   sourceMessageId: string;
   origin?: DotsReplyOrigin;
+  completion?: { id: string; workId: string; intentRevision: number; stateVersion: number };
   title: string;
   kind: "conclusion" | "question" | "progress";
   text: string;
@@ -63,8 +66,26 @@ export interface DotsAssistantReply {
   artifacts: DotsDelegation["artifacts"];
 }
 
+type DotsActivityTask = {
+  id: string;
+  taskId: string;
+  title: string;
+  space: string;
+  summary: string;
+  updatedAt: number;
+};
+
+export type DotsActivityItem = DotsActivityTask & (
+  | { state: "waiting"; target: { taskId: string; messageId: string; interactionId?: string } }
+  | { state: "delivered"; deliveryKey: string; fileCount: number }
+  | { state: "running"; phase: "queued" | "working" | "following"; lastActivityAt?: number }
+  | { state: "paused" | "stopped" | "failed" | "blocked" | "undelivered" | "superseded" }
+);
+
 export interface DotsApi {
   open(): Promise<TaskDto>;
   list(sourceIds?: string[]): Promise<DotsDelegation[]>;
+  activity(): Promise<DotsActivityItem[]>;
+  getPromptSegments(): Promise<AssemblySegmentDto[]>;
   onChanged(listener: () => void): () => void;
 }

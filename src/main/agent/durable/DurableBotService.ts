@@ -1,4 +1,5 @@
 import { DotsIntentChanged } from "../../dots/DotsNativeIntent";
+import { dotsGoalConclusion } from "../../dots/DotsGoalConclusion";
 import { ConversationIdle } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
 import { sameWorkspacePath } from "../../task/QQTaskWorkspace";
@@ -957,11 +958,12 @@ export class DurableBotService {
     return db.prepare(`SELECT latest.operation_id FROM (
       SELECT operation_id,status FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1
     ) latest WHERE latest.status='completed' AND EXISTS (
-      SELECT 1 FROM dots_reply_events WHERE operation_id=latest.operation_id AND settled=1 AND snapshot=?
-    )`).pluck().get(taskId, JSON.stringify({ delivered: "conclusion" })) as string | undefined;
+      SELECT 1 FROM dots_reply_events WHERE operation_id=latest.operation_id AND settled=1 AND json_valid(snapshot)
+        AND json_extract(snapshot,'$.delivered')='conclusion'
+    )`).pluck().get(taskId) as string | undefined;
   }
 
-  async dotsSubmission(taskId: string, operationId: string) {
+  async dotsSubmission(taskId: string, operationId: string, requestedFilename?: string) {
     const binding = this.binding(taskId);
     if (!binding) return undefined;
     return this.withRecovery(taskId, async open => {
@@ -981,11 +983,20 @@ export class DurableBotService {
         }
         if (live?.run?.inputs.at(-1) !== input.id) return { status: "running" as const, text: "", messageIds: [], files: [] };
       }
-      // The waiting-input delta already woke this inspector. Refreshing the same
-      // blocked runtime would emit that delta again and starve its consumer.
-      if (input.status === "done") await open.runtime.refresh();
+      const acceptance = (input.status === "done" || input.status === "unanswered") && this.hasDotsDelegation(taskId, operationId)
+        ? dotsGoalConclusion(this.options.db.connection, taskId, operationId)
+        : undefined;
+      const proof = acceptance?.completion?.native;
+      const accepted = proof && (proof.conversationId !== input.conversationId || proof.submissionId !== input.id ||
+        proof.entryId !== input.entry) ? undefined : acceptance;
+      const result = await open.runtime.conversation.commit(
+        tx => readDurableDotsResult(tx, input, binding.directory, question, accepted &&
+          { text: accepted.text, citations: accepted.completion?.citations }, requestedFilename), context);
+      // Logical waits can outlive a completed native turn. Refreshing them here
+      // wakes the same Dots inspector again even though no new result exists.
+      if (input.status === "done" && result.status !== "blocked") await open.runtime.refresh();
       await this.projections.get(taskId);
-      return open.runtime.conversation.commit(tx => readDurableDotsResult(tx, input, binding.directory, question), context);
+      return { ...result, completion: accepted?.completion };
     });
   }
 

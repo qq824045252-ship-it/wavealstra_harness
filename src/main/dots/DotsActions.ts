@@ -1,10 +1,12 @@
 import { DotsForegroundReads, DotsForegroundUnavailable, type ForegroundInput } from "./DotsForegroundReads";
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
-import { DotsFollowup, followupInstructions } from "./DotsFollowup";
+import { DotsFollowup, dotsDeliveryInstruction, followupInstructions } from "./DotsFollowup";
 import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
+import { dotsGoalConclusion } from "./DotsGoalConclusion";
 import { dotsCalendarContext } from "./DotsCalendar";
 import { nativeResultHits, type NativeResultHit } from "./DotsNativeResults";
 import { resolvedPathKey } from "../platform/paths";
+import { limitTaskTitle } from "../../shared/task-title";
 import { DotsFileWatches } from "./DotsFileWatches";
 import { readDotsLibrary } from "./DotsLibrary";
 import { DotsIntentChanged } from "./DotsNativeIntent";
@@ -70,12 +72,32 @@ function required(value: string | undefined, field: string) {
   if (!value?.trim()) throw new Error("缺少" + field);
   return value.trim();
 }
+function dotsRequestDigest(sourceId: string, value: string) {
+  return createHash("sha256").update(JSON.stringify([sourceId, value])).digest("hex");
+}
+
 function taskLink(task: Pick<TaskDto, "id" | "title">) {
   return "[" + task.title.replace(/[\\[\]]/g, "\\$&") + "](mybuddy://task/" + encodeURIComponent(task.id) + ")";
 }
 
 function spaceLink(space: SpaceDto) {
   return { ...space, link: "[" + space.name.replace(/[\\\[\]]/g, "\\$&") + "](mybuddy://space/" + encodeURIComponent(space.id) + ")" };
+}
+
+function singleChoice(question: ConversationInteractionDto, userText: string): string | undefined {
+  const normalized = (value: string) => value.normalize("NFKC").replace(/\s+/gu, "");
+  const reply = normalized(userText);
+  const choices = [...reply.matchAll(/(?=(?:选择|采用|选|用)([^。！？；，,!?.;]+))/gu)];
+  const options = question.options.filter(option => !option.disabled);
+  const labels = (option: ConversationInteractionDto["options"][number]) => {
+    const label = normalized(option.label);
+    return [normalized(option.id), label, label.replace(/\([^()]+\)$/u, "")];
+  };
+  const exact = options.filter(option => labels(option).includes(reply));
+  if (exact.length === 1) return exact[0].id;
+  if (/(?:如果|若是|假如|是否|要不要)|(?:不是|不要|不能|别|避免|不)(?:选择|采用|选|用|继续)/u.test(reply)) return;
+  const mentioned = options.filter(option => choices.some(([, value]) => labels(option).includes(value)));
+  return mentioned.length === 1 ? mentioned[0].id : undefined;
 }
 
 
@@ -94,7 +116,7 @@ function userAnswer(question: ConversationInteractionDto, userText: string) {
     if (!matching.length && question.allowCustom) return value;
     throw new Error("请用户给出题目中的明确选项");
   };
-  return question.kind === "multi_select" ? answer.split(/[,，、\n]/).map(value => select(value.trim())) : select(answer);
+  return question.kind === "multi_select" ? answer.split(/[,，、\n]/).map(value => select(value.trim())) : singleChoice(question, answer) ?? select(answer);
 }
 
 export class DotsActions {
@@ -303,6 +325,8 @@ export class DotsActions {
     if (request.dotsForegroundInputs && !dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "delegate"))
       throw new DotsIntentChanged("自动移交授权已撤销");
     this.task(request.taskId, request.spaceId);
+    if (this.agent.getConversationRuntimeSnapshot(request.taskId).interactions.some(row => row.status === "pending"))
+      throw new DotsIntentChanged("原任务正在等待答复，请通过原问题继续");
     this.watches.validate(request);
     this.followups.validate(request);
     for (const ref of request.dotsMemoryRefs ?? []) {
@@ -368,14 +392,17 @@ export class DotsActions {
 
   private delegationResult(row: DotsDelegation) {
     const outcome = readDotsWorkerOutcome(row.text);
-    if (row.status !== "completed") return { status: row.status, text: outcome?.result ?? row.text };
-    const kind = this.db.connection.prepare(`SELECT json_extract(snapshot,'$.delivered') FROM dots_reply_events
-      WHERE operation_id=? AND status='completed' AND settled=1 AND json_valid(snapshot)`).pluck().get(row.id);
+    const terminal = row.status === "completed" || row.status === "failed";
+    const kind = terminal ? this.db.connection.prepare(`SELECT json_extract(snapshot,'$.delivered') FROM dots_reply_events
+      WHERE operation_id=? AND task_id=? AND status=? AND settled=1 AND json_valid(snapshot)
+      ORDER BY rowid DESC LIMIT 1`).pluck().get(row.id, row.taskId, row.status) : undefined;
     if (kind === "conclusion") {
-      const closure = row.goalId && this.db.connection.prepare("SELECT closure_summary FROM works WHERE work_id=? AND close_operation_id=?")
-        .pluck().get(row.goalId, "dots-goal-close:" + row.id) as string | undefined;
-      return { status: "completed" as const, text: closure ?? outcome?.result ?? row.text };
+      const accepted = row.goalId ? dotsGoalConclusion(this.db.connection, row.taskId, row.id) : undefined;
+      if (accepted || !row.goalId && row.status === "completed")
+        return { status: "completed" as const, text: accepted?.text ?? outcome?.result ?? row.text,
+          artifacts: accepted?.completion?.artifacts };
     }
+    if (row.status !== "completed") return { status: row.status, text: outcome?.result ?? row.text };
     if (kind === "question") return { status: "blocked" as const, text: outcome?.result ?? row.text };
     return { status: outcome?.dotsState === "progress" ? "progress" as const : "awaiting_outcome" as const, text: outcome?.result ?? row.text };
   }
@@ -385,17 +412,41 @@ export class DotsActions {
       .map(item => {
         const result = this.delegationResult(item);
         return { operationId: item.id, goalId: item.goalId, status: result.status, interactionId: item.interactionId,
-          text: result.text.slice(0, 900), artifacts: item.artifacts.slice(0, 10), updatedAt: item.updatedAt, activity: item.activity };
+          text: result.text.slice(0, 900), artifacts: (result.artifacts ?? item.artifacts).slice(0, 10),
+          updatedAt: item.updatedAt, activity: item.activity };
       });
   }
 
   private summary(task: TaskDto) {
-    return { id: task.id, title: task.title, link: taskLink(task), spaceId: task.spaceId, status: task.status, dotsState: this.control(task.id)?.state,
+    const status = this.db.connection.prepare("SELECT status FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
+      .pluck().get(task.id) === "blocked" ? "waiting_input" : task.status;
+    return { id: task.id, title: task.title, link: taskLink(task), spaceId: task.spaceId, status, dotsState: this.control(task.id)?.state,
       running: this.agent.isTaskBusy(task.id), updatedAt: task.updatedAt };
+  }
+
+  private recordAnswer(task: TaskDto, sourceId: string, operationId: string, question: ConversationInteractionDto,
+    answer: ReturnType<typeof userAnswer>) {
+    const key = dotsRequestDigest(sourceId, JSON.stringify(["answer", task.id, operationId, question.id]));
+    const inputKey = dotsRequestDigest(sourceId, JSON.stringify(["dots-answer-input", task.id, sourceId]));
+    this.db.connection.transaction(() => {
+      if (this.control(task.id)) throw new Error("原任务已暂停或问题已经结束");
+      if (!this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND outcome='answered'").get(key)) {
+        const reply = this.agent.respondConversationInteraction(question.id, answer);
+        if (!reply.ok) throw new Error(reply.message);
+        this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'answered')").run(key, task.id);
+      }
+      this.db.connection.prepare("INSERT OR IGNORE INTO dots_control_receipts VALUES(?,?,'answered')").run(inputKey, task.id);
+    })();
+    this.hooks.changed?.();
+    return { ...this.summary(task), operationId, interactionId: question.id, answered: true };
   }
 
   goalAccepted(request: AgentPromptRequest, origin: GoalContinuationOrigin) {
     return this.followups.goalAccepted(request, origin);
+  }
+
+  requestedFilename(taskId: string, operationId: string) {
+    return this.followups.requestedFilename(taskId, operationId);
   }
 
   async followup(row: DotsDelegation, original?: AgentPromptRequest) {
@@ -420,6 +471,24 @@ export class DotsActions {
       release();
       if (this.foregroundReaders.get(inputId) === pending) this.foregroundReaders.delete(inputId);
     }
+  }
+
+  private waitingForSuppliedFile(input: DotsActionInput, latest: ForegroundInput, conversation: number) {
+    const { spaceId, path } = input;
+    if (input.action !== "read_file" || input.allowHandoff !== true || !spaceId || !path ||
+        isDotsAutomaticInput(latest.id) || !latest.text.includes(path) ||
+        !latest.text.includes(this.space(spaceId).name) ||
+        !/(?:已(?:经)?|刚(?:刚)?|重新)\s*(?:补[齐上到好传交]|上传|放[进到入好])|(?:补[齐上好]|上传|放好)了/u.test(latest.text) ||
+        !/(?:接着|继续|接续|续办)/u.test(latest.text) ||
+        /(?:不要|别|不必|无需)(?:再)?(?:委派|继续|接着|续办)|(?:只|仅)(?:在|用)(?:这个|当前|本)对话/u.test(latest.text)) return;
+    const matches = this.db.connection.prepare(
+      "SELECT d.task_id AS taskId,d.operation_id AS operationId FROM dots_delegations d " +
+      "JOIN dots_reply_origins o ON o.source=d.source_message_id WHERE o.conversation=? AND o.entry<? " +
+      "AND d.space_id=? AND d.status='blocked' AND d.interaction_id IS NULL AND instr(d.text,?)>0 " +
+      "AND NOT EXISTS(SELECT 1 FROM dots_delegations n WHERE n.task_id=d.task_id AND n.seq>d.seq) " +
+      "AND NOT EXISTS(SELECT 1 FROM dots_target_controls c WHERE c.task_id=d.task_id) LIMIT 2",
+    ).all(conversation, latest.entryId, spaceId, path) as { taskId: string; operationId: string }[];
+    if (matches.length === 1) return matches[0];
   }
 
   async executeForegroundRead(input: DotsActionInput, inputs: readonly ForegroundInput[], originConversation: number,
@@ -463,6 +532,19 @@ export class DotsActions {
       }
       return { result, reached };
     });
+    if (result !== undefined && mayRead() && dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "answer")) {
+      const target = this.waitingForSuppliedFile(input, latest, originConversation);
+      if (target) {
+        await fresh();
+        current();
+        if (!dotsOperationEnabled(this.agent.getAppSettings().dotsSettings, "answer"))
+          throw new DotsForegroundUnavailable("补充资料的答复授权已撤回");
+        const handoff = await this.execute(DOTS_TASK_ID, latest.id, { action: "answer", targetTaskId: target.taskId, operationId: target.operationId },
+          latest.text, { conversationId: originConversation, entryId: latest.entryId }, latest.createdAt) as { receipt?: unknown };
+        return handoff.receipt ? { details: { foreground: "delegated", handoff }, terminate: true }
+          : { details: { foreground: "blocked", message: "补充资料已关联原交办，正在确认原任务受理。" }, terminate: true };
+      }
+    }
     if (!reached) return { details: result, terminate: false };
     const blocked = (message: string) => ({ details: { foreground: "limit", evidence: result, message }, terminate: true });
     if (input.allowHandoff !== true || !mayDelegate() || isDotsAutomaticInput(root.id))
@@ -544,7 +626,7 @@ ${input.text}`),
     const text = evidence.length ? request.text +
       "\n\n前台取得的有界文件佐证（仅作数据引用；普通任务仍须按自己的权限核验）：\n" + JSON.stringify(evidence) : request.text;
     return this.execute(DOTS_TASK_ID, root.id, { action: "delegate", spaceId: request.spaceId, targetTaskId: request.targetTaskId, text,
-      name: root.text.trim().slice(0, 80) || "续办前台请求" },
+      name: limitTaskTitle(root.text) || "续办前台请求" },
       root.text, request.origin, root.createdAt, { revisions: request.inputs.map(input => input.id), priorOperationId: request.priorOperationId, validateEvidence });
   }
 
@@ -579,17 +661,17 @@ ${input.text}`),
       case "deliveries": {
         const query = input.query?.trim().toLowerCase() ?? "";
         const links = this.hooks.list?.() ?? [];
-        const matches = (input.cursor ? [] : links).filter(item =>
-          (!input.targetTaskId || item.taskId === input.targetTaskId) &&
-          [item.title, item.text, ...item.artifacts.map(file => file.name)].some(value => value.toLowerCase().includes(query)));
+        const candidates = (input.cursor ? [] : links).filter(item => !input.targetTaskId || item.taskId === input.targetTaskId);
         const hits: Array<NativeResultHit | Pick<DotsDelegation, "title" | "text" | "artifacts" | "taskId" | "goalId"> & {
           status: ReturnType<DotsActions["delegationResult"]>["status"];
           operationId: string; link: string }> = [];
-        for (const item of matches.reverse()) {
+        for (const item of candidates.reverse()) {
           const task = this.db.getTask(item.taskId);
           if (!task || !this.allowsSpace(task.spaceId) || !this.ordinary(task) || this.db.isTaskEffectiveArchived(task.id) ||
             this.db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed" || (input.spaceId && task.spaceId !== input.spaceId)) continue;
           const result = this.delegationResult(item);
+          if (query && ![item.title, result.text, ...item.artifacts.map(file => file.name)]
+            .some(value => value.toLowerCase().includes(query))) continue;
           hits.push({ operationId: item.id, taskId: task.id, goalId: item.goalId, link: taskLink(task), status: result.status, title: item.title,
             text: result.text.slice(0, 1200), artifacts: item.artifacts.slice(0, 10) });
           if (hits.length === offset + 21) break;
@@ -628,7 +710,10 @@ ${input.text}`),
         const goals = this.agent.getConversationGoals().listByTask(task.id).map(({ id, title, description, status, criteria }) => ({
           id, title, description, status, criteria,
         }));
-        return { ...this.summary(task), progress, goals, deliveries: this.deliveries(task), messages: history.messages.slice(-5).map(m => ({ role: m.role, text: m.text.slice(-2400), artifacts: m.artifacts })),
+        const summary = this.summary(task);
+        return { ...summary, progress: summary.status === "waiting_input" && progress
+          ? { ...progress, status: summary.status, unread: false, wait: progress.wait ?? { kind: "input" } } : progress,
+          goals, deliveries: this.deliveries(task), messages: history.messages.slice(-5).map(m => ({ role: m.role, text: m.text.slice(-2400), artifacts: m.artifacts })),
           artifacts: history.artifacts, historyError: history.historyError };
       }
       case "spaces": return this.db.listSpaces().filter(s => this.allowsSpace(s.id) && !s.effectiveArchived && this.isLocalSpace(s)).map(spaceLink);
@@ -700,7 +785,7 @@ ${input.text}`),
       return this.watches.create({ taskId: task.id, spaceId: space.id, file: required(input.path, "订阅文件相对路径"),
         instruction: required(input.text, "文件变化后的任务要求"), source: sourceId });
     }
-    const digest = (value: string) => createHash("sha256").update(JSON.stringify([sourceId, value])).digest("hex");
+    const digest = (value: string) => dotsRequestDigest(sourceId, value);
     if (input.action === "create_space") {
       const parent = this.space(input.spaceId);
       const name = assertSafeEntryName(required(input.name, "新空间名称"));
@@ -768,28 +853,52 @@ ${input.text}`),
         return space.id;
       });
     }
-    if (input.action === "answer") {
-      if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("此问题需要用户直接回答");
-      const task = this.task(input.targetTaskId, input.spaceId);
-      const operationId = required(input.operationId, "委派操作 ID");
-      const interactionId = required(input.interactionId, "原问题 ID");
-      if (!(this.hooks.list?.() ?? []).some(item => item.id === operationId && item.taskId === task.id))
-        throw new Error("原问题不属于此 Dots 委派");
-      const answerKey = digest(JSON.stringify(["answer", task.id, operationId, interactionId]));
-      if (this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND outcome='answered'").get(answerKey))
-        return { ...this.summary(task), interactionId, answered: true };
-      const active = await this.agent.dotsSubmission(task.id, operationId);
-      if (!active || !("interactionId" in active) || active.interactionId !== interactionId)
-        throw new Error("原委派当前未等待此问题");
-      const question = this.agent.getConversationRuntimeSnapshot(task.id).interactions.find(row => row.id === interactionId && row.status === "pending");
-      if (!question || this.control(task.id)) throw new Error("原任务已暂停或问题已经结束");
-      this.db.connection.transaction(() => {
-        const reply = this.agent.respondConversationInteraction(question.id, userAnswer(question, required(originalText, "用户原话")));
-        if (!reply.ok) throw new Error(reply.message);
-        this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'answered')").run(answerKey,task.id);
-      })();
-      this.hooks.changed?.();
-      return { ...this.summary(task), interactionId, answered: true };
+    let unblocked: { id: string; source: string } | undefined;
+    if (input.action === "answer" || input.targetTaskId && ["steer", "delegate", "resume"].includes(input.action)) {
+      const target = this.task(input.targetTaskId, input.spaceId);
+      const latest = this.db.connection.prepare(`SELECT operation_id AS id, source_message_id AS source, status
+        FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1`).get(target.id) as
+        { id: string; source: string; status: DotsDelegation["status"] } | undefined;
+      const explicitAnswer = input.action === "answer";
+      const answerOp = explicitAnswer ? required(input.operationId, "委派操作 ID") : latest?.id;
+      const priorAnswer = digest(JSON.stringify(["dots-answer-input", target.id, sourceId]));
+      if (this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND outcome='answered'").get(priorAnswer))
+        return { ...this.summary(target), operationId: answerOp, interactionId: input.interactionId, answered: true };
+      const priorBlocked = explicitAnswer ? answerOp : this.followups.latestPlan(target.id)?.parent;
+      if (priorBlocked) {
+        const continuation = "dots-input-" + digest(JSON.stringify(["answer-blocked", priorBlocked, sourceId]));
+        if (this.db.connection.prepare("SELECT 1 FROM dots_delegations WHERE operation_id=? AND task_id=? AND status NOT IN ('failed','superseded')")
+          .get(continuation, target.id)) {
+          const admission = await this.agent.findSubmission(target.id, continuation);
+          return admission?.receipt ? { ...this.summary(target), receipt: admission.receipt, queued: admission.queued }
+            : { operationId: continuation, taskId: target.id, admission: "pending", message: "补充资料已关联原交办，正在确认原任务受理。" };
+        }
+      }
+      if (explicitAnswer && latest?.id !== answerOp) throw new Error("原问题不属于当前 Dots 委派");
+      const pending = () => this.agent.getConversationRuntimeSnapshot(target.id).interactions.filter(row => row.status === "pending");
+      if (latest && (explicitAnswer || latest.status === "blocked" || pending().length)) {
+        const active = await this.agent.dotsSubmission(target.id, latest.id);
+        const interactionId = active?.interactionId;
+        if (interactionId) {
+          if (isDotsAutomaticInput(sourceId)) throw new Error("此问题需要用户直接回答");
+          if (explicitAnswer && input.interactionId !== interactionId) throw new Error("原委派当前未等待此问题");
+          const question = pending().find(row => row.id === interactionId);
+          if (!question) throw new Error("原问题已经变化，请读取原任务的当前状态");
+          const answer = explicitAnswer ? userAnswer(question, required(originalText, "用户原话"))
+            : question.kind === "single_select" && originalText ? singleChoice(question, originalText) : undefined;
+          if (answer !== undefined) return this.recordAnswer(target, sourceId, latest.id, question, answer);
+          return { ...this.summary(target), operationId: latest.id, interactionId, answered: false, question,
+            message: "原任务在等这个问题。若用户正在回答，请使用 answer 和原问题 ID，不能改向或重开。" };
+        }
+        if (active?.status === "blocked" && !pending().length && !isDotsAutomaticInput(sourceId)
+          && (explicitAnswer || input.action === "resume" || input.action === "steer")) {
+          unblocked = latest;
+          input = { ...input, action: "resume", text: required(originalText, "用户补充的原话") };
+        } else if (active?.status === "blocked") {
+          return { ...this.summary(target), operationId: latest.id, answered: false,
+            message: "原任务正在等补充资料。用户已补齐时，请对这个操作调用 answer 接续原交办。" };
+        } else if (explicitAnswer || pending().length) throw new Error("原任务仍有未确认的等待状态，请读取当前问题");
+      } else if (explicitAnswer) throw new Error("原委派当前未等待问题");
     }
     const text = input.action === "resume" ? input.text?.trim() || "继续之前暂停的任务。" : input.text?.trim();
     const steps=input.steps?.map(value=>required(value,"续办步骤"))??[];
@@ -845,7 +954,7 @@ ${input.text}`),
         priorOperation = (exact[0] ?? prior[0])?.operation_id;
       }
       if (priorOperation) identity = priorOperation.slice("dots-input-".length);
-      const title = input.name?.trim() || required(text, "任务要求").slice(0, 80);
+      const title = limitTaskTitle(input.name?.trim() || required(text, "任务要求"));
       const id = "dots-job-" + identity;
       required(text, "任务要求");
       if (!this.db.getTask(id)) {
@@ -865,8 +974,12 @@ ${input.text}`),
     const goal = requestedGoalId ? goals.getLive(task.id, requestedGoalId) : undefined;
     if (input.goalId && !goal) throw new Error("该 Goal 不属于原任务");
     const message = required(text, "任务要求");
-    const resumed = input.action === "resume" ? this.followups.latestPlan(task.id) : undefined;
+    const priorPlan = input.action === "resume" || input.action === "steer" ? this.followups.latestPlan(task.id) : undefined;
+    const resumed = input.action === "resume" ? priorPlan : undefined;
+    const currentDeliveryInstruction = deliveryInstruction ?? priorPlan?.deliveryInstruction;
+    if (unblocked) identity = digest(JSON.stringify(["answer-blocked", unblocked.id, sourceId]));
     const operationId = "dots-input-" + identity;
+    const deliverySource = unblocked?.source ?? sourceId;
     if (input.action === "resume" && isDotsAutomaticInput(sourceId)) throw new Error("暂停后的恢复需要用户明确交代");
     if (input.action === "resume" && !input.text?.trim() && !input.goalId && !deliveryInstruction && !input.memoryRefs?.length) {
       const restored = await this.resumeFinishedTurn(task, operationId, resumed?.request.userMessageId);
@@ -889,13 +1002,12 @@ ${input.text}`),
     }
     const calendar = receivedAt !== undefined && dotsCalendarContext(assignment ?? originalText ?? "", receivedAt);
     if (calendar) instructions.push(calendar);
-    if (deliveryInstruction) instructions.push("用户对此任务的最终交付要求（以下原文优先于任务转述中的交付表述）：" + deliveryInstruction);
-    instructions.push("最终回执的 result 字符串会原样显示给用户。遵守用户本轮明确限定的交付范围和格式。如果用户说只给某一项，就只写那一项本身，省略标题、推导、中间结果、括号补充和执行过程。");
+    if (currentDeliveryInstruction) instructions.push(dotsDeliveryInstruction(currentDeliveryInstruction));
     if (steps.length) instructions.push("本次依次完成："+JSON.stringify(steps)+"。本轮只做第一步："+steps[0]);
     if (input.memoryRefs?.length) instructions.push("以下是本轮引用的记忆版本，仅使用宿主本轮提供的可见证据："+JSON.stringify(input.memoryRefs));
     const goalWork = goal ? goals.workService.getWork(goal.id) : undefined;
-    if (goal) instructions.push("本次工作关联原任务 Goal："+goal.title+"（"+goal.id+"）。达到条件后通过 conversation_goal_propose_complete 提交实际成果和逐项依据。deliveryText 原样回给用户，严格使用用户约定的格式。");
     instructions.push(followupInstructions);
+    if (goal) instructions.push("本次工作关联原任务 Goal："+goal.title+"（"+goal.id+"）。达到条件后通过 conversation_goal_propose_complete 提交最终交付正文和逐项依据。验收通过后，应用会将已验收的正文和登记文件回传至原对话。此后直接结束本轮，最后一条助手消息仅保留原任务的执行记录。");
     const request: AgentPromptRequest = {
       taskId: task.id, spaceId: task.spaceId ?? undefined,
       userMessageId: operationId, assistantMessageId: "dots-reply-" + identity,
@@ -904,7 +1016,8 @@ ${input.text}`),
       dotsGoalIntentRevision: goalWork?.intentRevision, dotsGoalUserAcceptance: acceptanceQuote ?? resumed?.request.dotsGoalUserAcceptance,
       text: instructions.join("\n\n"), displayText: message,
       streamingBehavior: input.action === "steer" ? "steer" : "followUp",
-      ...(input.action === "steer" ? { requireActiveRun: true, dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) } : {}),
+      ...(input.action === "steer" ? { requireActiveRun: true, dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) }
+        : unblocked ? { dotsSteerInputVersion: await this.agent.dotsInputVersion(task.id) } : {}),
     };
     const alreadyLinked = this.db.connection.transaction(() => {
       if (foreground?.priorOperationId) {
@@ -921,6 +1034,8 @@ ${input.text}`),
       if (!previous && input.action === "resume") {
         if (this.followups.latestPlan(task.id)?.request.userMessageId !== resumed?.request.userMessageId)
           throw new DotsIntentChanged("接续期间原任务已有更新，请读取当前进度");
+        if (unblocked && resumed?.request.userMessageId !== unblocked.id)
+          throw new DotsIntentChanged("待补资料的原交办已变化，请读取当前问题");
         if (sourceId.startsWith("cron-") || sourceId.startsWith("goal-continuation:")) throw new Error("暂停后的恢复需要用户明确交代");
         this.db.connection.prepare("UPDATE dots_target_controls SET operation_id=? WHERE task_id=?").run(operationId, task.id);
       }
@@ -928,10 +1043,11 @@ ${input.text}`),
         this.assertScheduleSource(sourceId);
         this.assertAdmission(request);
       }
-      if (resumed) this.followups.rememberResume(request, sourceId, resumed, [input.text?.trim(), calendar, deliveryInstruction].filter(Boolean).join("\n"));
-      else this.followups.remember(request,sourceId,[message, calendar, deliveryInstruction].filter(Boolean).join("\n"),steps);
+      if (resumed) this.followups.rememberResume(request, deliverySource, resumed,
+        [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked));
+      else this.followups.remember(request, sourceId, [message, calendar].filter(Boolean).join("\n"), steps, currentDeliveryInstruction);
       if (creating && assignment) this.followups.anchorAssignment(operationId, assignment);
-      this.hooks.link(task.id, operationId, sourceId, input.action === "steer" || input.action === "resume" || Boolean(foreground?.priorOperationId), request);
+      this.hooks.link(task.id, operationId, deliverySource, input.action === "steer" || input.action === "resume" || Boolean(foreground?.priorOperationId), request);
       if (foreground?.revisions) this.foreground.linked(sourceId);
       return false;
     })();

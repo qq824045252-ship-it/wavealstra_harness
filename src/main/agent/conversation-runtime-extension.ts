@@ -216,7 +216,7 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
         ...guardVersions,
         workId: Type.Optional(Type.String({ minLength: 1 })),
         summary: Type.String({ minLength: 1, maxLength: 1600 }),
-        deliveryText: Type.Optional(Type.String({ minLength: 1, maxLength: 2000, description: "原样交给用户的最终文字，遵守用户明确的格式要求。仅交文件时填写可见的文件交付说明。" })),
+        deliveryText: Type.Optional(Type.String({ description: "原样交给用户的最终文字。默认给结论，用户要求完整报告或指定格式时照办。只交登记过的文件时可留空。" })),
         evidence: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 12 })),
         observations: Type.Optional(Type.Array(Type.Object({
           criterionId: Type.Optional(Type.String({ maxLength: 100 })),
@@ -250,21 +250,22 @@ export function createConversationRuntimeExtension(bridge: ConversationRuntimeBr
           const policy = operation ? await bridge.goal.resolveDotsCompletion(context.taskId, operation, work) : undefined;
           if (policy?.stale) throw new Error("原交办已调整，请按最新要求重新核对");
           if (policy && operation) {
-            const delivery = params.deliveryText?.trim();
-            if (!delivery) throw new Error("请在 deliveryText 填写给原用户的最终文字，并遵守用户约定格式");
-            let observations = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? []);
+            const delivery = params.deliveryText ?? "";
+            let proof = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? [], policy.lineage, delivery);
+            if (!delivery.trim() && !proof.artifacts.length) throw new Error("请填写最终交付正文或登记本次交付文件");
             const confirmed = policy.userAcceptance && await requestInteraction(bridge, context, {
               kind: "confirm", title: `确认完成 Work「${goal.title}」？`,
-              description: [...new Set([delivery, params.summary, ...observations.map(item => item.detail)])].join("\n"),
+              description: [...new Set([delivery, params.summary, ...proof.observations.map(item => item.detail)])].filter(Boolean).join("\n"),
             }, signal, id) === true;
             if (signal?.aborted) throw new Error("当前执行已中止");
             if (policy.userAcceptance && !confirmed) return result("用户暂未确认完成 Work，事项保持原状态。", { confirmed: false });
-            if (confirmed) observations = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? []);
+            if (confirmed) proof = await readGoalObservations(policy.evidenceOrigin, operation, params.observations ?? [], policy.lineage, delivery);
             await checkCurrentToolInput();
             signal?.throwIfAborted();
-            const updated = bridge.goal.completeFromDots(context.taskId, operation, goal.id, guard, delivery, observations, confirmed);
+            const updated = bridge.goal.completeFromDots(context.taskId, operation, goal.id, guard, params.summary, { ...proof, text: delivery }, confirmed);
             if (!updated.ok) throw new Error(updated.message);
-            return result(`Work「${updated.goal.title}」已结束。请在本轮回复中交付成果。`, { confirmed, goal: updated.goal });
+            return result(`Work「${updated.goal.title}」已验收，应用会回传本次已登记的交付。请直接结束本轮，最后回复仅保留原任务的执行记录。`,
+              { confirmed, goal: updated.goal });
           }
           const missingCheck = work.criteria.find(criterion => isRequiredCriterion(criterion) &&
             !isCriterionResolved(criterion) && criterionNeedsEnvironment(criterion));

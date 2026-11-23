@@ -14,3 +14,17 @@
 .dots-result .md-link:hover { text-decoration: underline; }
 .dots-result-status { margin-inline-start: 6px; color: var(--fg-secondary); }
 .dots-result-text { margin-block: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dots-literal-json {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.dots-progress-history {
+  margin: 8px 0 12px;
+  color: var(--fg-secondary);
+  font-size: 12px;
+}
+.dots-progress-history > summary { width: fit-content; cursor: pointer; }
+.dots-progress-history-item { margin: 10px 0 0 5px; padding-left: 10px; border-left: 2px solid var(--border-default); }
+.dots-progress-history-item strong { color: var(--fg); }

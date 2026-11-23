@@ -18,6 +18,8 @@ const replySchema = z.object({
   }).optional(),
   origin: origin.optional(), artifacts: z.array(z.object({ id: z.string(), name: z.string(), version: z.number().optional(),
     saved: z.object({ snapshotPath: z.string(), name: z.string(), manifestPath: z.string().optional() }).optional() })),
+  completion: z.object({ id: z.string(), workId: z.string(), intentRevision: z.number().int(),
+    stateVersion: z.number().int() }).optional(),
 }).refine(reply => Boolean(reply.text.trim()) || reply.kind === "conclusion" && reply.artifacts.length > 0,
   "Dots 交付需要正文或结果文件");
 const receipts = defineDocFamily({ kind: "mybuddy.dots-delivery-receipts", family: true, version: 1, scope: "session",
@@ -58,7 +60,10 @@ export async function appendDurableDotsReply(conversation: Conversation, input: 
       const prior = await tx.entry(receipt.entryId as EntryRecord["id"]);
       const saved = prior && readDotsReply(prior);
       if (saved?.operationId !== reply.operationId || saved.taskId !== reply.taskId || saved.sourceMessageId !== reply.sourceMessageId
-        || saved.kind !== reply.kind || reply.origin && (prior?.conversationId !== reply.origin.conversationId
+        || saved.kind !== reply.kind || ((saved.completion || reply.completion) &&
+          (JSON.stringify(saved.completion) !== JSON.stringify(reply.completion) || saved.text !== reply.text ||
+            JSON.stringify(saved.artifacts) !== JSON.stringify(reply.artifacts)))
+        || reply.origin && (prior?.conversationId !== reply.origin.conversationId
           || saved.origin && saved.origin.entryId !== reply.origin.entryId)) {
         throw new Error("Dots 交付身份冲突");
       }

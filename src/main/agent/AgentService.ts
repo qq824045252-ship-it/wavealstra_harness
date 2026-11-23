@@ -4,7 +4,7 @@ import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
 import { registerLocalWorkflowTools } from "../capabilities/local-workflow-extension";
 import type { DotsActions } from "../dots/DotsActions";
-import { DOTS_ACTION, DOTS_MEMORY_READ_TOOLS, DOTS_MEMORY_TOOLS, dotsExtension, dotsInstructions } from "../dots/DotsExtension";
+import { DOTS_ACTION, DOTS_MEMORY_READ_TOOLS, DOTS_MEMORY_TOOLS, assembleDotsPrompt, dotsExtension } from "../dots/DotsExtension";
 import { dotsCalendarContext } from "../dots/DotsCalendar";
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
 import { isGatewayConversation } from "../gateway/GatewayConversation";
@@ -1890,12 +1890,14 @@ export class AgentService {
     return selected ? binding.mcpIds.filter(id => selected.some(item => item.toLowerCase() === id.toLowerCase())) : binding.mcpIds;
   }
 
+  getDotsPromptSegments() {
+    const settings = this.settingsStore.read();
+    return assembleDotsPrompt(this.dotsMemoryMode(settings), settings.dotsPromptOverride, settings.dotsPromptAppend, settings.dotsPromptSections);
+  }
+
   private botInstructions(task: TaskDto): string {
     if (task.id === DOTS_TASK_ID) {
-      const mode = this.dotsMemoryMode();
-      const memoryInstruction = mode === "off" ? "本轮 Dots 长期记忆已关闭。按当前对话和可用工具回答。"
-        : mode === "readOnly" ? "本轮 Dots 长期记忆为只读，可以查看已有记忆。" : undefined;
-      return [dotsInstructions, memoryInstruction, CHAT_REPLY_INSTRUCTIONS].filter(Boolean).join("\n\n");
+      return this.getDotsPromptSegments().map(segment => segment.content).join("\n\n");
     }
     const assembly = this.durableAssembly(task);
     const identity = this.expertBindings.active(task.id);
@@ -2061,7 +2063,7 @@ export class AgentService {
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
       admitWorkAction: input => this.workService.admitTaskAction(task.id, input),
-      settleWorkAction: (operationId, outcome) => this.workService.settleTaskAction(task.id, operationId, outcome),
+      settleWorkAction: receipt => this.workService.settleTaskNativeAction(task.id, receipt),
       toolAllowed: name => this.durableToolAllowed(this.db.getTask(task.id) ?? task, name) });
     const skillPaths = this.expertSkillPaths(task.id, this.expertBindings.active(task.id)?.sourceExpertId ?? task.expertId, this.expertConnectorIds(task.id));
     const domain = await durableDomainTools(this.sessionExtensions.durableExtensions({
@@ -5147,8 +5149,13 @@ export class AgentService {
   }
 
   async dotsSubmission(taskId: string, operationId: string) {
-    const result = await this.durableBots?.dotsSubmission(taskId, operationId);
+    const result = await this.durableBots?.dotsSubmission(taskId, operationId, this.dotsActions?.requestedFilename(taskId, operationId));
     if (!result) return undefined;
+    if ("completion" in result && result.completion) {
+      return { status: result.status, text: result.text, interactionId: undefined,
+        artifacts: result.completion.artifacts, citations: result.completion.citations,
+        acceptedGoalReceiptId: result.completion.id };
+    }
     const domain = this.artifactService;
     const artifacts: import("../../shared/dots").DotsDelegation["artifacts"] = [];
     if (result.status !== "running") {
@@ -5170,8 +5177,9 @@ export class AgentService {
           saved: saved.get(id), version: item.version });
       }
     }
-    return { status: result.status, text: result.text, interactionId: "interactionId" in result ? result.interactionId : undefined, artifacts,
-      citations: result.status === "completed" ? result.citations : undefined };
+    const interactionId = "interactionId" in result && typeof result.interactionId === "string" ? result.interactionId : undefined;
+    return { status: result.status, text: result.text, interactionId, artifacts,
+      citations: "citations" in result ? result.citations : undefined };
   }
   /**
    * 删除一条用户消息，并把当前会话叶子永久切到它之前。
