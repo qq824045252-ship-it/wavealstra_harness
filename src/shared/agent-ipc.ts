@@ -1,7 +1,7 @@
 import type { SubagentExecutionPolicy } from "./subagent-execution-policy";
 import type { WorkspaceIconAppearance } from "./workspace-icon";
 import type { CronExecutionSettings } from "./cron-execution";
-import type { DotsSettings } from "./dots-settings";
+import type { DotsPromptSections, DotsSettings } from "./dots-settings";
 import type { ModelMetadataDto, ModelPreferencesDto, ModelReasoningPreferenceDto } from "./model-metadata";
 
 /** Main ↔ Renderer agent / cron / gateway IPC 契约 */
@@ -1532,6 +1532,12 @@ export interface AppSettingsDto {
   proxyUrl: string;
   memoryEnabled: boolean;
   dotsSettings?: Partial<DotsSettings>;
+  /** Dots 专属系统提示词的替换文本。空字符串沿用内置提示词。 */
+  dotsPromptOverride?: string;
+  /** 按分类保存的 Dots 指令。更新时省略的分类保留，空字符串恢复该分类默认。 */
+  dotsPromptSections?: DotsPromptSections;
+  /** Dots 会话的追加提示词：只在 Dots 会话生效，空字符串 = 不追加。 */
+  dotsPromptAppend?: string;
   /** Read-only runtime support, independent of saved settings on disk. */
   dotsSettingsRuntime?: true;
   automaticSemanticRecall: boolean;

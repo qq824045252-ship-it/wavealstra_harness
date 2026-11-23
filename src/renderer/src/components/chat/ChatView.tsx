@@ -1,6 +1,8 @@
 import type { SavedArtifactRequest } from "@shared/saved-artifact";
 import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, useDotsDelegations } from "./DotsResult";
-import { DOTS_NO_CHANGE, DOTS_TASK_ID, isDotsAutomaticInput } from "@shared/dots";
+import { DotsAllTasks } from "./DotsActivity";
+import ChatMarkdown from "./ChatMarkdown";
+import { DOTS_TASK_ID, isDotsAutomaticInput } from "@shared/dots";
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
 import TaskRecoveryNotice from "./TaskRecoveryNotice";
@@ -13,7 +15,7 @@ import type { Artifact, ChatMessage, Space } from "@/types";
 import type { ConversationGoalDto } from "@shared/conversation-goal";
 import MessageItem from "./MessageItem";
 import ChatAnswerRuleDialog from "@/components/answer-routing/ChatAnswerRuleDialog";
-import { botMessagePresentation } from "@/lib/botMessagePresentation";
+import { botMessagePresentation, isQuietDotsReply } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
@@ -34,6 +36,7 @@ import {
   IconX,
 } from "@/components/common/icons";
 import type { McpServerDto, ModePresetDto, WelcomeMode } from "@shared/agent-ipc";
+import { TASK_TITLE_MAX_CHARS } from "@shared/task-title";
 import { WELCOME_MODES, WELCOME_MODE_LABELS } from "@shared/mode-profile";
 import { buildPresetBarChips, isTaskModeLocked } from "@/lib/modePresetBar";
 import { COPY, getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
@@ -297,6 +300,24 @@ function HistoryPopup({
   );
 }
 
+function DotsProgressHistory({ entries, preview, onPreview }: {
+  entries: readonly ChatMessage[];
+  preview?: { rowId: string; file: SavedArtifactRequest };
+  onPreview: (file?: { rowId: string; file: SavedArtifactRequest }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return <details className="dots-progress-history" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>阶段进展 · {entries.length} 条</summary>
+    {open && entries.map(({ dotsDelivery: delivery }) => delivery && <div key={delivery.deliveryKey} className="dots-progress-history-item">
+      <strong>{delivery.title}</strong>
+      {delivery.text && <ChatMarkdown text={delivery.text} streaming={false} resolveTaskFiles={false} />}
+      {delivery.artifacts.length > 0 && <DotsDeliveryFiles row={delivery} selected={preview?.rowId === delivery.deliveryKey}
+        onPreview={file => onPreview({ rowId: delivery.deliveryKey, file })} />}
+      {preview?.rowId === delivery.deliveryKey && <DotsSavedFilePreview file={preview.file} onClose={() => onPreview()} />}
+    </div>)}
+  </details>;
+}
+
 function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, delegations = [] }: {
   delegations?: import("@shared/dots").DotsDelegation[];
   taskId: string;
@@ -314,6 +335,7 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCrea
     let question: ChatMessage | undefined;
     const delivered = new Set<string>();
     for (const msg of messages) {
+      if (msg.dotsDelivery?.kind === "progress") continue;
       if (msg.dotsDelivery) delivered.add(msg.dotsDelivery.operationId);
       if (msg.role === "user") question = msg;
       else if (question && !msg.dotsDelivery) {
@@ -325,24 +347,36 @@ function MessageList({ taskId, messages, artifacts, visibleArtifacts, onGoalCrea
       for (const id of msg.sourceMessageIds ?? []) anchors.set(id, msg.id);
     }
     for (const entry of delegations) {
+      if (entry.status === "pending" || entry.status === "running" || entry.status === "superseded") continue;
       if (delivered.has(entry.id)) continue;
       const key = anchors.get(entry.sourceMessageId);
       if (key) grouped.set(key, [...grouped.get(key) ?? [], entry]);
     }
   }
+  const progressBySource = new Map<string, ChatMessage[]>();
+  if (taskId === DOTS_TASK_ID) for (const message of messages) {
+    const delivery = message.dotsDelivery;
+    if (delivery?.kind !== "progress") continue;
+    const entries = progressBySource.get(delivery.sourceMessageId) ?? [];
+    entries.push(message);
+    progressBySource.set(delivery.sourceMessageId, entries);
+  }
   let precedingUser: ChatMessage | undefined;
   return (
     <div className="message-list">
       {messages.flatMap((msg) => {
+        const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
+        if (delivery?.kind === "progress") {
+          const entries = progressBySource.get(delivery.sourceMessageId);
+          return entries?.at(-1) === msg ? <div key={`dots-progress:${delivery.sourceMessageId}`} id={`msg-${msg.id}`}>
+            <DotsProgressHistory entries={entries} preview={preview} onPreview={setPreview} />
+          </div> : null;
+        }
         if (msg.role === "user") precedingUser = msg;
         const automatic = taskId === DOTS_TASK_ID && isDotsAutomaticInput(precedingUser?.inputRequestId ?? "");
-        const reply = msg.finalBlocks?.length ? msg.finalBlocks : msg.blocks;
-        const quiet = automatic && msg.role === "assistant" &&
-          reply.flatMap(block => block.type === "text" ? [block.text] : []).join("").trim() === DOTS_NO_CHANGE;
-        const hideMessage = !msg.dotsDelivery && ((automatic && msg.role === "user") || quiet);
+        const hideMessage = !msg.dotsDelivery && ((automatic && msg.role === "user") || isQuietDotsReply(msg, automatic));
         if (hideMessage && !grouped.has(msg.id)) return null;
         const rows = grouped.get(msg.id) ?? [];
-        const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
         const showPreview = preview && (delivery?.deliveryKey === preview.rowId || rows.some(row => row.id === preview.rowId));
         return [
           <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
@@ -444,13 +478,14 @@ export default function ChatView(): React.JSX.Element {
   const turnMessage = useMemo(() => {
     if (notificationTarget) {
       const exact = displayMessages.find(message => message.id === notificationTarget.messageId
-        || message.sourceMessageIds?.includes(notificationTarget.messageId));
-      if (exact) return exact;
+        || message.sourceMessageIds?.includes(notificationTarget.messageId)
+        || message.dotsDelivery?.deliveryKey === notificationTarget.messageId);
+      if (exact && (!notificationTarget.interactionId || exact.interactions?.some(item => item.id === notificationTarget.interactionId))) return exact;
       const matches = displayMessages.filter(message => notificationTarget.interactionId
         ? message.interactions?.some(item => item.id === notificationTarget.interactionId)
         : notificationTarget.toolCallId && message.blocks.some(block =>
           block.type === "tool" && block.toolCall.id === notificationTarget.toolCallId));
-      return matches.length === 1 ? matches[0] : undefined;
+      return matches.length === 1 ? matches[0] : exact;
     }
     if (!turnTarget || turnTarget.taskId !== activeChatId) return;
     const index = displayMessages.findIndex(m => m.role === "user" && (m.inputRequestId ?? m.id) === turnTarget.inputId);
@@ -718,6 +753,7 @@ export default function ChatView(): React.JSX.Element {
       <CollapsedSidebarActions />
       <IconBot size={22} />
       <div className="chat-header-title">MyBuddy Dots</div>
+      <DotsAllTasks />
     </div>
   );
   if (!task || (!isDots && task.welcomeMode !== "general" && !hasMessages && !task.sessionFile && !task.durable && !task.botInputError)) {
@@ -792,7 +828,8 @@ export default function ChatView(): React.JSX.Element {
   }
 
   const commitTitle = (): void => {
-    if (titleDraft.trim()) renameTask(task.id, titleDraft.trim());
+    const next = titleDraft.trim().slice(0, TASK_TITLE_MAX_CHARS);
+    if (next) renameTask(task.id, next);
     setEditingTitle(false);
   };
 
@@ -804,13 +841,20 @@ export default function ChatView(): React.JSX.Element {
         <WorkspaceCrumb spaceId={task.spaceId ?? null} />
         <div className="chat-header-title">
           {editingTitle ? (
-            <input
-              autoFocus
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={commitTitle}
-              onKeyDown={(e) => e.key === "Enter" && commitTitle()}
-            />
+            <span className="task-title-edit">
+              <input
+                autoFocus
+                aria-label={`任务名，最多 ${TASK_TITLE_MAX_CHARS} 字`}
+                maxLength={TASK_TITLE_MAX_CHARS}
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={(e) => e.key === "Enter" && commitTitle()}
+              />
+              <span className={`task-title-count${titleDraft.length > TASK_TITLE_MAX_CHARS ? " is-over" : ""}`} aria-hidden="true">
+                {titleDraft.length}/{TASK_TITLE_MAX_CHARS}
+              </span>
+            </span>
           ) : (
             <span
               onDoubleClick={() => {

@@ -156,6 +156,13 @@
 .desktop-app .desktop-task-tree .sidebar-cta-btn:active { background: var(--bg-hover); }
 .desktop-app .desktop-task-tree .sidebar-tree-header { min-height: 26px; padding-top: 2px; padding-bottom: 2px; }
 .desktop-app .desktop-task-tree .sidebar-tree-header--spaced { margin-top: 4px; border-top: 0; }
+/* Dots 入口沿用「新建任务」的字体；Pi logo 图形只占画布 58.7%，图标盒放大到 22px 后视觉高度才等于 13px 字高。 */
+.desktop-task-tree .sidebar-dots-row .desktop-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.desktop-task-tree .sidebar-dots-row > svg { flex: none; width: 22px; height: 22px; }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row { min-height: 28px; color: var(--fg-secondary); }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row:hover { color: var(--fg); }
 .desktop-task-tree :is(.task-item, .space-header) { column-gap: 4px; }

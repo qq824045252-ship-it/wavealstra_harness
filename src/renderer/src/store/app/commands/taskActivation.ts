@@ -15,14 +15,14 @@ export function createTaskActivationActions(
 ): Pick<AppActions, "setActiveTask" | "openDots"> {
   const { get, set } = storeContext;
   return {
-    openDots: async () => {
+    openDots: async (focus, signal) => {
       const before = get();
       if (!before.tasks.some(task => task.id === DOTS_TASK_ID)) {
         const api = storeContext.getApi();
         if (!api?.dots) throw new Error("Dots 会话服务不可用");
         const row = await api.dots.open();
         const current = get();
-        if (current.page !== before.page || current.activeTaskId !== before.activeTaskId || current.draft !== before.draft) return;
+        if (signal?.aborted || current.page !== before.page || current.activeTaskId !== before.activeTaskId || current.draft !== before.draft) return;
         if (!current.tasks.some(task => task.id === DOTS_TASK_ID)) {
           const task = mapTaskRowToTask(row, {
             enabledModelIds: new Set(current.models.filter(model => model.enabled !== false).map(model => model.id)),
@@ -32,7 +32,8 @@ export function createTaskActivationActions(
           set({ tasks: [...current.tasks, task] });
         }
       }
-      get().setActiveTask(DOTS_TASK_ID);
+      if (signal?.aborted) return;
+      get().setActiveTask(DOTS_TASK_ID, focus);
       void get().refreshModelConfiguration();
       set(state => ({ chatFocusTick: state.chatFocusTick + 1 }));
     },

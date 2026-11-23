@@ -5,10 +5,11 @@ import type { AppSettingsDto, ModelInfoDto, SpaceDto } from "@shared/agent-ipc";
 import { dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import AnswerRoutingTab from "./AnswerRoutingTab";
+import DotsPromptSection from "./DotsPromptSection";
 import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import "./DotsSettingsTab.css";
 
-const sections = ["调度", "对话与记忆", "跟进与空间", "工具与操作"] as const;
+const sections = ["调度", "提示词", "对话与记忆", "跟进与空间", "工具与操作"] as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
 const memoryWrites = new Set<DotsOperation>(["memory_create", "memory_update", "memory_promote", "memory_forget"]);
 const memoryLimitKeys = Object.keys(dotsMemoryLimitFields) as DotsMemoryLimit[];
@@ -168,6 +169,7 @@ export default function DotsSettingsTab() {
         })}
       </SettingsSection>}
       </fieldset>
+      {section === "提示词" && <DotsPromptSection value={settings.dotsPromptAppend ?? ""} onSaved={setSettings} />}
       <div className="dots-setting-feedback" role="status">{saving ? "正在保存…" : saved}</div>
     </>}
     </>}

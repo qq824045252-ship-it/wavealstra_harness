@@ -224,6 +224,7 @@ import { TaskTerminalService } from "./terminal/TaskTerminalService";
 import { AppDatabase } from "./db/AppDatabase";
 import { TaskBoardRepository } from "./task/TaskBoardRepository";
 import { DotsIpc, DOTS_TASK_ID } from "../shared/dots";
+import { DotsActivity } from "./dots/DotsActivity";
 import { resolveDotsPreferences } from "../shared/dots-settings";
 import { DotsDelegations } from "./dots/DotsDelegations";
 import { DotsActions } from "./dots/DotsActions";
@@ -760,11 +761,15 @@ function registerIpc(): void {
     }),
   }, taskBoard);
   const actions = dotsActions;
+  const activity = new DotsActivity(db.connection, id => actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
+    && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed");
   dots.connect((job, request) => actions.followup(job, request), (reply, current) => agentService.appendDotsReply(reply, current),
     taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
   agentService.setDotsActions(dotsActions);
   ipcMain.handle(DotsIpc.open, () => db.openDots());
   ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
+  ipcMain.handle(DotsIpc.activity, () => activity.list());
+  ipcMain.handle(DotsIpc.getPromptSegments, () => agentService.getDotsPromptSegments());
   agentService.onPatch(patch => dots.onPatch(patch));
   agentService.onPatch(patch => taskBoard.patch(patch));
   ipcMain.handle(DbIpc.taskBoardPage, (_e, query) => taskBoard.page(query));
@@ -1234,11 +1239,7 @@ function registerIpc(): void {
     if (!isMainAppWindowRequest(event, botManagementWindow, process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href)) return undefined;
     return agentService.verifyGoalArtifact(taskId, goalId, artifactId, async request => {
       await savedArtifactActions.verifiedSnapshot(request);
-      if (request.manifestPath) {
-        const owner = event.sender.id;
-        const preview = await savedArtifactPreviewService.prepare(owner, request);
-        savedArtifactPreviewService.release(owner, preview.token);
-      }
+      if (request.manifestPath || /\.html?$/i.test(request.name)) await savedArtifactPreviewService.verifyBundle(request);
     });
   });
   ipcMain.handle(ConversationRuntimeIpc.respondInteraction, (_e, req: ConversationInteractionRespondRequest) =>
@@ -1493,6 +1494,7 @@ function registerIpc(): void {
       await remoteAccessController.configure({ enabled: remoteAccessEnabled, port: remoteAccessPort, baseUrl: remoteAccessBaseUrl });
     }
     const next = await agentService.updateAppSettings(ordinary);
+    if (ordinary.dotsSettings !== undefined) broadcastToWindows(DotsIpc.changed, null);
     // 关闭到托盘开关实时生效
     trayService?.setCloseToTray(next.closeToTray !== false);
     trayService?.refreshMenu();
@@ -2133,6 +2135,7 @@ function registerIpc(): void {
     const prevProjectId = db.getTask(id)?.projectId;
     await closeOfficeNativeTask(id);
     await taskLifecycle.trash(id);
+    broadcastToWindows(DotsIpc.changed, null);
     try { workGraphService.cleanupByNode("task", id); } catch {}
     if (prevProjectId) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId: prevProjectId });
@@ -2142,10 +2145,9 @@ function registerIpc(): void {
   ipcMain.handle(DbIpc.archiveTask, (_e, id: string, archived: boolean) => {
     if (!taskLifecycle) {
       db.archiveTask(id, archived);
-      return;
-    }
-    if (archived) taskLifecycle.archive(id);
+    } else if (archived) taskLifecycle.archive(id);
     else taskLifecycle.unarchive(id);
+    broadcastToWindows(DotsIpc.changed, null);
   });
   // 侧栏绿点确认：只写 done_acked_at（不碰 updated_at），无需经过生命周期回收流程。
   ipcMain.handle(DbIpc.ackTaskDone, (_e, id: string, ackedAt?: number) => {
@@ -2191,6 +2193,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(DbIpc.archiveSpace, (_e, id: string, archived: boolean) => {
     db.archiveSpace(id, archived);
+    broadcastToWindows(DotsIpc.changed, null);
   });
   ipcMain.handle(DbIpc.moveSpace, (_e, req: { spaceId: string; targetParentId: string | null; targetIndex?: number }) => {
     try {
@@ -2433,6 +2436,8 @@ function registerIpc(): void {
   ipcMain.handle(AnswerRoutingIpc.remove, (_e, id, revision) => agentService.answerRouting.remove(id, revision));
   ipcMain.handle(AnswerRoutingIpc.preview, (_e, query, projectId) => agentService.answerRouting.preview(query, projectId));
   ipcMain.handle(AnswerRoutingIpc.history, (_e, turn) => agentService.answerRouting.history(turn));
+  ipcMain.handle(AnswerRoutingIpc.versions, (_e, id) => agentService.answerRouting.versions(id));
+  ipcMain.handle(AnswerRoutingIpc.restore, (_e, id, revision) => agentService.answerRouting.restore(id, revision));
   ipcMain.handle(AnswerRoutingIpc.suggest, (_e, teaching, question, answer) => agentService.suggestAnswerRule(teaching, question, answer));
   ipcMain.handle(MemoryIpc.skillLearningStatus, () => agentService.kernelSkillLearningStatus());
   ipcMain.handle(MemoryIpc.deleteSkillHistory, (_e, request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest) => agentService.deleteKernelSkillHistory(request));

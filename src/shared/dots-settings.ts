@@ -1,5 +1,19 @@
 import { resolveDotsMemoryLimits, type DotsMemoryLimits } from "./dots-limits";
 
+/** Dots 提示词编辑器每个输入框的字符上限。 */
+export const maxDotsPromptChars = 8000;
+
+export const dotsPromptCategories = [
+  { id: "role", label: "身份与办事范围", description: "Dots 是谁，什么时候直接答或交办。" },
+  { id: "sources", label: "查资料与文件", description: "先查什么，什么时候继续找或移交。" },
+  { id: "memory", label: "记忆与偏好", description: "怎么查旧事、用偏好和保存长期记忆。" },
+  { id: "tasks", label: "交办与跟进", description: "怎么交办、接续原任务和定时跟进。" },
+  { id: "delivery", label: "回复与交付", description: "什么时候汇报、在哪里交付成果。" },
+] as const;
+
+export type DotsPromptCategoryId = typeof dotsPromptCategories[number]["id"];
+export type DotsPromptSections = Partial<Record<DotsPromptCategoryId, string>>;
+
 export const dotsCapabilityOptions = [
   { id: "taskControl", label: "委派和接续任务", description: "新建或接续普通任务、转发答复和恢复执行。关闭后仍可暂停或停止任务。" },
   { id: "spaceManagement", label: "管理工作空间", description: "绑定目录、创建子空间和重命名空间。" },

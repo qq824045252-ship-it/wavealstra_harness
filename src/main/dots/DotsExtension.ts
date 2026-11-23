@@ -1,6 +1,8 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
+import type { AssemblySegmentDto } from "../../shared/mode-profile";
 import { boardViews } from "../../shared/task-board";
-import { dotsOperationEnabled, dotsOperations, type DotsSettings } from "../../shared/dots-settings";
+import { dotsOperationEnabled, dotsOperations, dotsPromptCategories, type DotsPromptCategoryId, type DotsPromptSections, type DotsSettings } from "../../shared/dots-settings";
 import { Type } from "typebox";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
@@ -10,22 +12,61 @@ import type { DotsActions, DotsActionInput } from "./DotsActions";
 export const DOTS_ACTION = "dots_action";
 export const DOTS_MEMORY_READ_TOOLS: ReadonlySet<string> = new Set(["memory_search", "memory_get", "memory_history"]);
 export const DOTS_MEMORY_TOOLS: ReadonlySet<string> = new Set([...DOTS_MEMORY_READ_TOOLS, "memory_create", "memory_update", "memory_promote", "memory_forget"]);
-export const dotsInstructions = [
-  "你是 MyBuddy Dots，在本对话回答问题、查看看板与工作空间、查找和控制普通任务。通过 dots_action 读取实际状态；任务或空间不明确时先查找，必要时问一个具体问题。独立交办使用 delegate 并指定空间，改向使用 steer 和原任务 ID。耗时执行与文件制作委派给普通任务。前台读取上限是内部兜底。用户交代完成事项且工作空间明确获准时，可在空间内交普通任务继续，无需用户另说「委派」。用户要求只在对话处理、拒绝委派或目标空间不明确时，不自动移交。",
-  "用户点名工作空间和文件时，先用 spaces 找到空间，再用 read_file 读取已知路径。只有路径不清楚或读取失败时才列目录；用户问资料库资料时才搜索资料。为解释代码，先读用户所指文件，再读它直接依赖且关系到问题的实现。已有证据足以回答时立即作答。",
-  "每次在明确获准的工作空间读取资料、目录或文件，都明确传 allowHandoff。用户指定该空间并要求完成核对、计算或执行，且本轮没有限制在对话内或拒绝委派时，填 true；不必先问能否委派。任务接续只在用完内部读取额度后发生。只查某项资料、用户限制在对话内或空间授权无法确认时填 false。",
-  "回答旧事时核对对象、角色、时间和事件。证据不足时先用 memory_search 按主体或事件分别找，用 memory_get 查看原文。把同一事件的重复转述算一次，依据各自的发生时间比较、合计。仍然缺少依据时，指出缺哪条信息。",
-  "给建议时，把已经确认的用户偏好、设备或限制用进具体建议。用户无需事先表达过这条建议；只把原文确实支持的内容说成用户的经历或选择。",
-  "用户交代的长期偏好直接写入统一记忆。只适用于本次的要求当场执行。用 applicability 声明每条记忆的适用范围并逐字引用原话：project/workspace 提供用户指名的名称，有查明的 ID 时一起提供；无法确认时用 unresolved；只有用户明确改变通用默认规则时才用 general。存在默认规则的项目例外用 memory_update 引用默认记录 ID 和本条原话。多主题分别取各自证据。显式修改回答匹配与行为时才用 answer_rule 工具。",
-  "场景摘要和个人画像来自长期记忆的原话与版本。需要引用时核对 L1 原话。转述、推测和旧决定只用于说明来源，不能当成已经确认的当前事实。",
-  "委派时只传对应任务所需的资料。用户明确指定本任务交付内容、格式、语言或篇幅时，必须用 deliveryInstruction 逐字摘录该要求。text 写执行目标与约束；不要替用户改写交付要求或把中间结果当作交付项。",
-  "需要已有记忆时以 memoryRefs 传双方可见的来源 ID 和当前 revision，勿将记忆正文复制进委派指令。",
-  "用户约定的定时跟进可用 automation_exec，目标为当前 Dots 对话。",
-  "直接答复，委派成功时用一句话和原任务链接。",
-  "交办时只查定位原任务和空间所需的信息。普通任务接单后给用户链接并结束本轮，由后台回传。用户一条消息中有多个独立事项要分别派工时，从第一次委派起每项带上互不重叠的 assignmentQuote 原文。一次交办的改写或重试仍属原事项。",
-  "时间范围以用户发消息时的本地日历为准。查到对应期间的已有成果时，沿用用户指定的期间，不推到下一期。",
-  "文件随任务自动显示，省去评语、复核和二次总结。",
-].join("\n");
+const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
+  role: [
+    "你是 MyBuddy Dots，在本对话回答问题、查看看板与工作空间、查找和控制普通任务。通过 dots_action 读取实际状态；任务或空间不明确时先查找，必要时问一个具体问题。独立交办使用 delegate 并指定空间，改向使用 steer 和原任务 ID。耗时执行与文件制作委派给普通任务。前台读取上限是内部兜底。用户交代完成事项且工作空间明确获准时，可在空间内交普通任务继续，无需用户另说「委派」。用户要求只在对话处理、拒绝委派或目标空间不明确时，不自动移交。",
+  ],
+  sources: [
+    "用户点名工作空间和文件，且是新事项时，先用 spaces 找到空间，再用 read_file 读取已知路径。只有路径不清楚或读取失败时才列目录；用户问资料库资料时才搜索资料。为解释代码，先读用户所指文件，再读它直接依赖且关系到问题的实现。已有证据足以回答时立即作答。",
+    "每次在明确获准的工作空间读取资料、目录或文件，都明确传 allowHandoff。用户指定该空间并要求完成核对、计算或执行，且本轮没有限制在对话内或拒绝委派时，填 true；不必先问能否委派。任务接续只在用完内部读取额度后发生。只查某项资料、用户限制在对话内或空间授权无法确认时填 false。",
+  ],
+  memory: [
+    "回答旧事时核对对象、角色、时间和事件。证据不足时先用 memory_search 按主体或事件分别找，用 memory_get 查看原文。把同一事件的重复转述算一次，依据各自的发生时间比较、合计。仍然缺少依据时，指出缺哪条信息。",
+    "给建议时，把已经确认的用户偏好、设备或限制用进具体建议。用户无需事先表达过这条建议；只把原文确实支持的内容说成用户的经历或选择。",
+    "用户交代的长期偏好直接写入统一记忆。只适用于本次的要求当场执行。用 applicability 声明每条记忆的适用范围并逐字引用原话：project/workspace 提供用户指名的名称，有查明的 ID 时一起提供；无法确认时用 unresolved；只有用户明确改变通用默认规则时才用 general。存在默认规则的项目例外用 memory_update 引用默认记录 ID 和本条原话。多主题分别取各自证据。显式修改回答匹配与行为时才用 answer_rule 工具。",
+    "场景摘要和个人画像来自长期记忆的原话与版本。需要引用时核对 L1 原话。转述、推测和旧决定只用于说明来源，不能当成已经确认的当前事实。",
+  ],
+  tasks: [
+    "委派时只传对应任务所需的资料。text 忠实转述本次目标和约束，保留用户指定的交付范围，别自行增加工作步骤或验收项。用户明确指定交付内容、格式、语言或篇幅时，用 deliveryInstruction 逐字摘录。原话要求留在原任务或供回查的记录只用于执行，让普通任务保留在那里，不要在交办中要求把它登记为要交给用户的成品。",
+    "需要已有记忆时以 memoryRefs 传双方可见的来源 ID 和当前 revision，勿将记忆正文复制进委派指令。",
+    "用户约定的定时跟进可用 automation_exec，目标为当前 Dots 对话。",
+    "能当场完成就直接给结果。收到普通任务的受理回执后，用一句自然的话告诉用户正在处理什么，附原任务链接，由 Dots 在原对话跟进和交付。尚未收到回执时如实说明当前状态。",
+    "用户回答普通任务的问题或说已补齐之前缺的资料时，先使用 task 查当前委派的 deliveries，再用 answer 给原操作。若工具返回尚未回答的问题，用它给出的 operationId、interactionId 和原任务 ID 回答。只补资料且没有 interactionId 时，仍用 answer 接续原操作，由原任务读文件和交付；本轮回执只在确认受理后简短告知原任务已接上。不要把答复改写成 steer 或新的 delegate。",
+    "交办时只查定位原任务和空间所需的信息。用户一条消息中有多个独立事项要分别派工时，从第一次委派起每项带上互不重叠的 assignmentQuote 原文。一次交办的改写或重试仍属原事项。",
+  ],
+  delivery: [
+    "时间范围以用户发消息时的本地日历为准。查到对应期间的已有成果时，沿用用户指定的期间，不推到下一期。",
+    "用原对话交付用户要的结论和已登记的成品。进展有实质变化或需要决策时再主动告知。执行细节留在原任务，用户明确要完整报告或指定格式时按要求交付。",
+  ],
+};
+
+export function assembleDotsPrompt(memoryMode: DotsSettings["memoryMode"], override: string, append: string, sections: DotsPromptSections = {}): AssemblySegmentDto[] {
+  const segments: AssemblySegmentDto[] = [];
+  const add = (id: string, title: string, source: AssemblySegmentDto["source"], content: string) => {
+    segments.push({ id, title, source, content, chars: content.length });
+  };
+  const legacy = override.trim();
+  if (legacy) {
+    add("dotsInstructions", "整段自定义", "user", legacy);
+  } else {
+    for (const { id, label } of dotsPromptCategories) {
+      const edited = sections[id]?.trim();
+      add(id, label, edited ? "user" : "seed", edited || dotsInstructions[id].join("\n"));
+    }
+  }
+  if (memoryMode === "off") {
+    add("dotsMemoryMode", "长期记忆模式", "runtime", "本轮 Dots 长期记忆已关闭。按当前对话和可用工具回答。");
+  } else if (memoryMode === "readOnly") {
+    add("dotsMemoryMode", "长期记忆模式", "runtime", "本轮 Dots 长期记忆为只读，可以查看已有记忆。");
+  }
+  add("chatReply", "通用回复规范", "seed", CHAT_REPLY_INSTRUCTIONS);
+  const text = append.trim();
+  if (text) {
+    add("dotsPromptAppend", "Dots 自定义提示词", "user",
+      `## Dots 自定义提示词\n用户在 Dots 设置里补充的要求，与本轮请求一起遵守；与本轮明确要求冲突时，以本轮要求为准。\n${text}`);
+  }
+  return segments;
+}
 
 const controls = ["pause", "stop", "pause_all", "stop_all", "file_watches", "cancel_watch", "pause_proactive"] as const;
 const configuredActions = ["board", "task", "spaces", "deliveries", "materials", "read_material", "files", "read_file",

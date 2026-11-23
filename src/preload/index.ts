@@ -861,6 +861,8 @@ const api = {
   dots: {
     open: () => ipcRenderer.invoke(DotsIpc.open),
     list: sourceIds => ipcRenderer.invoke(DotsIpc.list, sourceIds),
+    activity: () => ipcRenderer.invoke(DotsIpc.activity),
+    getPromptSegments: () => ipcRenderer.invoke(DotsIpc.getPromptSegments),
     onChanged: listener => {
       const notify = () => listener();
       ipcRenderer.on(DotsIpc.changed, notify);
@@ -873,6 +875,10 @@ const api = {
     remove: (id, revision) => ipcRenderer.invoke(AnswerRoutingIpc.remove, id, revision),
     preview: (query, projectId) => ipcRenderer.invoke(AnswerRoutingIpc.preview, query, projectId),
     history: turn => ipcRenderer.invoke(AnswerRoutingIpc.history, turn),
+    versions: id => ipcRenderer.invoke(AnswerRoutingIpc.versions, id),
+    restore: (id, revision) => ipcRenderer.invoke(AnswerRoutingIpc.restore, id, revision),
+    annotate: (id, revision, note) => ipcRenderer.invoke(AnswerRoutingIpc.annotate, id, revision, note),
+    compare: (id, from, to) => ipcRenderer.invoke(AnswerRoutingIpc.compare, id, from, to),
     suggest: (teaching, question, answer) => ipcRenderer.invoke(AnswerRoutingIpc.suggest, teaching, question, answer),
   } satisfies AnswerRoutingApi,
   memory: {

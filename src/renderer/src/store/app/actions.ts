@@ -164,7 +164,7 @@ export interface AppActions {
   newTask: (spaceId?: string, projectId?: string) => void;
   summonExpert: (expertId: string, spaceId?: string) => void;
   setDraftProject: (projectId: string | null) => void;
-  openDots: () => Promise<void>;
+  openDots: (focus?: NotificationMessageFocus, signal?: AbortSignal) => Promise<void>;
   setActiveTask: (id: string, focus?: NotificationMessageFocus) => void;
   setWelcomeMode: (mode: WelcomeMode) => void;
   setModePreset: (presetId: string) => void;
@@ -229,7 +229,7 @@ export interface AppActions {
   renameTask: (id: string, title: string) => void;
   togglePinTask: (id: string) => Promise<void>;
   archiveTask: (id: string) => Promise<void>;
-  ackTaskDone: (id: string) => Promise<void>;
+  ackTaskDone: (id: string, options?: { knownUnread: true }) => Promise<void>;
   setTaskDueDate: (id: string, dueAt: number | null) => Promise<void>;
   restoreTask: (id: string) => Promise<void>;
   sendMessage: (

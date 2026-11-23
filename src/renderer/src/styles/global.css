@@ -611,6 +611,12 @@ select {
   gap: 6px;
 }
 
+/* Dots 入口与「新建任务」同层，固定在滚动区外，任务列表滚动时不跟着隐藏。 */
+.sidebar-dots-entry {
+  flex: none;
+  padding: 0 8px;
+}
+
 .sidebar-cta-btn {
   display: flex;
   align-items: center;

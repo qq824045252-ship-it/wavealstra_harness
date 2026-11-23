@@ -301,10 +301,10 @@ export function createTaskLifecycleActions(
       }));
     },
 
-    ackTaskDone: async (id) => {
+    ackTaskDone: async (id, options) => {
       const task = get().tasks.find((t) => t.id === id);
-      // 只处理「已结束且未确认」：进行中/空闲/已确认都不写库，避免每次切换任务产生无意义 IPC
-      if (!task || !isTaskDoneUnread(task)) return;
+      // 看板也能发现尚未载入对话的结果，例如新产物。
+      if (!options?.knownUnread && (!task || !isTaskDoneUnread(task))) return;
       const ackedAt = Date.now();
       // 乐观更新：本地先关绿点（渲染层同帧生效），持久化失败也不回滚——
       // 绿点是「看过」的弱提示，误清比常亮代价小；下次点击会重试写库。

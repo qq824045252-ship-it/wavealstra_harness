@@ -24,3 +24,42 @@
 .dots-config-check:has(:disabled) { opacity: .65; cursor: default; }
 .dots-tool-group details[open] > summary { margin-bottom: 5px; }
 .dots-config [role=alert] { color: var(--danger); }
+
+.dots-prompt-editor { display: grid; gap: 14px; }
+.dots-prompt-layout { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2.3fr); align-items: start; gap: 16px; }
+.dots-prompt-layout.is-legacy { grid-template-columns: minmax(0, 1fr); }
+.dots-prompt-categories { display: grid; gap: 4px; }
+.dots-prompt-categories button { display: grid; gap: 4px; text-align: left; padding: 9px 10px; border: 1px solid transparent; border-radius: 6px; }
+.dots-prompt-categories button > span { font-weight: 600; }
+.dots-prompt-categories button:hover, .dots-prompt-categories button[aria-pressed=true] { border-color: var(--border); background: var(--bg); }
+.dots-prompt-categories button[aria-pressed=true] > span { color: var(--accent); }
+.dots-prompt-field { display: grid; min-width: 0; gap: 7px; }
+.dots-prompt-field-heading, .dots-prompt-field-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.dots-prompt-field-heading label { font-weight: 600; }
+.dots-prompt-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 1.55;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+.dots-prompt-field #dots-system-prompt { min-height: 220px; }
+.dots-prompt-field textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.dots-prompt-editor small { color: var(--fg-muted); font-size: 12px; }
+.dots-prompt-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dots-prompt-disclosure { border-top: 1px solid var(--border); padding-top: 10px; }
+.dots-prompt-disclosure > summary { cursor: pointer; font-weight: 500; }
+.dots-prompt-disclosure[open] > summary { margin-bottom: 10px; }
+.dots-prompt-preview { display: grid; gap: 12px; max-height: 420px; overflow: auto; padding: 2px 10px 2px 0; }
+.dots-prompt-preview h4 { margin: 0 0 4px; font-size: 13px; }
+.dots-prompt-preview pre { margin: 0; font: inherit; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 790px) {
+  .dots-prompt-layout { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .dots-prompt-categories { grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); }
+}

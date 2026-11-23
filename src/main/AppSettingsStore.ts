@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { getMyBuddyDir } from "./paths";
 import { readDiskSpaceFallback } from "./platform/fs-security";
 import type { PermissionMode, DiskSpaceDto } from "../shared/agent-ipc";
-import { normalizeDotsSettings, type DotsSettings } from "../shared/dots-settings";
+import { dotsPromptCategories, normalizeDotsSettings, maxDotsPromptChars, type DotsPromptSections, type DotsSettings } from "../shared/dots-settings";
 import {
   normalizeExternalAgentConfigOptions,
   normalizeExternalAgentConfigSelections,
@@ -61,6 +61,10 @@ export interface AppSettings {
   proxyUrl: string;
   memoryEnabled: boolean;
   dotsSettings?: Partial<DotsSettings>;
+  dotsPromptOverride: string;
+  dotsPromptSections: DotsPromptSections;
+  /** Dots 会话的追加提示词；空字符串 = 不追加。 */
+  dotsPromptAppend: string;
   automaticSemanticRecall: boolean;
   /** External Agent Memory Gateway master switch (loopback only). */
   memoryGatewayEnabled: boolean;
@@ -202,6 +206,23 @@ export function normalizeGoalTokenBudget(raw: unknown): number | null {
   return Math.round(raw);
 }
 
+function normalizeDotsPromptText(raw: unknown): string {
+  return typeof raw === "string" ? raw.slice(0, maxDotsPromptChars) : "";
+}
+
+function normalizeDotsPromptSections(raw: unknown, current: DotsPromptSections = {}): DotsPromptSections {
+  const result = { ...current };
+  if (!raw || typeof raw !== "object") return result;
+  for (const { id } of dotsPromptCategories) {
+    const value = (raw as Record<string, unknown>)[id];
+    if (typeof value !== "string") continue;
+    const text = normalizeDotsPromptText(value).trim();
+    if (text) result[id] = text;
+    else delete result[id];
+  }
+  return result;
+}
+
 const DEFAULTS: AppSettings = {
   language: "zh-CN",
   permissionMode: "default",
@@ -221,6 +242,9 @@ const DEFAULTS: AppSettings = {
   closeToTray: true,
   residentHostEnabled: false,
   notificationPreferences: { ...DEFAULT_NOTIFICATION_PREFERENCES },
+  dotsPromptOverride: "",
+  dotsPromptSections: {},
+  dotsPromptAppend: "",
   fontSize: DEFAULT_FONT_SCALE,
   fontFamily: "",
   uiFontSize: DEFAULT_UI_FONT_SIZE,
@@ -284,6 +308,9 @@ export class AppSettingsStore {
       const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<AppSettings> & Record<string, unknown>;
       const merged = { ...DEFAULTS, ...migrateLegacyShellPreferences(raw).settings } as AppSettings;
       merged.dotsSettings = normalizeDotsSettings(raw.dotsSettings);
+      merged.dotsPromptOverride = normalizeDotsPromptText(raw.dotsPromptOverride).trim();
+      merged.dotsPromptSections = normalizeDotsPromptSections(raw.dotsPromptSections);
+      merged.dotsPromptAppend = normalizeDotsPromptText(raw.dotsPromptAppend);
       merged.residentHostEnabled = raw.residentHostEnabled === true;
       delete (merged as AppSettings & Record<string, unknown>).gatewayBotBindings;
       delete (merged as AppSettings & Record<string, unknown>).backupFiles;
@@ -368,6 +395,9 @@ export class AppSettingsStore {
     if ("dotsSettings" in partial) {
       next.dotsSettings = normalizeDotsSettings(partial.dotsSettings, normalizeDotsSettings(current.dotsSettings));
     }
+    if (partial.dotsPromptOverride !== undefined) next.dotsPromptOverride = normalizeDotsPromptText(partial.dotsPromptOverride).trim();
+    if (partial.dotsPromptSections !== undefined) next.dotsPromptSections = normalizeDotsPromptSections(partial.dotsPromptSections, current.dotsPromptSections);
+    if (partial.dotsPromptAppend !== undefined) next.dotsPromptAppend = normalizeDotsPromptText(partial.dotsPromptAppend);
     delete (next as AppSettings & Record<string, unknown>).backupFiles;
     // 已下线：场景模型推荐的残留字段，下一次写入即从 settings.json 清掉。
     delete (next as AppSettings & Record<string, unknown>).taskModelRecommendations;

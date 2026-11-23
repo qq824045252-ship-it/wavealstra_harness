@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useAppStore, useSidebarTasks } from "@/store/appStore";
+import { hasUnreadDotsReply } from "@/lib/botMessagePresentation";
 import {
   buildWorkspaceTree,
   findWorkspaceNode,
@@ -21,7 +22,10 @@ import {
 } from "../../../shared/workspace-tree";
 import type { WorkspaceTreeNode } from "../../../shared/workspace-tree";
 import type { SpaceDto, TaskDto } from "../../../shared/agent-ipc";
-import { FOREGROUND_TASK_STATUS, matchesTaskFilter, matchesTaskTimeFilter } from "@/utils/taskFilters";
+import {
+  deriveTaskStatus, FOREGROUND_TASK_STATUS, isTaskDoneUnread, matchesTaskFilter,
+  matchesTaskTimeFilter, taskActionLabel, taskHasActiveExecution,
+} from "@/utils/taskFilters";
 import TaskStatusIndicator from "@/components/sidebar/TaskStatusIndicator";
 import TaskFilterControls from "@/components/sidebar/TaskFilterControls";
 import TaskItem from "@/components/sidebar/TaskItem";
@@ -63,6 +67,25 @@ const isTreeDrag = (types: readonly string[]): boolean => isTaskDrag(types) || i
 function matchesForegroundSearch(request: BotWorkspaceRequestDto, term: string, status: TaskFilterStatus, time: TaskFilterTime): boolean {
   return request.title.toLowerCase().includes(term) &&
     (status === "all" || FOREGROUND_TASK_STATUS[request.status] === status) && matchesTaskTimeFilter(request.updatedAt, time);
+}
+
+const dotsStatusLabels = {
+  in_progress: "Dots 正在处理",
+  pending: "Dots 正在接收请求",
+  completed: "Dots 有新消息",
+  failed: "Dots 上次处理失败",
+  stopped: "Dots 上次处理已停止",
+};
+
+function DotsStatusIndicator(): React.JSX.Element | null {
+  const task = useAppStore((state) => state.tasks.find((item) => item.id === DOTS_TASK_ID));
+  if (!task) return null;
+  const label = taskActionLabel(task);
+  const status = deriveTaskStatus(task, label);
+  if (status === "planning" || (status === "pending" && !label && !taskHasActiveExecution(task))) return null;
+  const unread = isTaskDoneUnread(task, status) &&
+    (status !== "completed" || hasUnreadDotsReply(task.messages, task.doneAckedAt ?? 0));
+  return <TaskStatusIndicator status={status} label={label ?? dotsStatusLabels[status]} unread={unread} unreadLabel="未查看" />;
 }
 
 /**
@@ -802,6 +825,15 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
         filterButtonRef.current?.focus();
       }} />}
 
+      <div className="sidebar-dots-entry">
+        <DesktopSectionRow className="sidebar-dots-row" icon={<IconBot size={22} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
+          meta={<DotsStatusIndicator />}
+          onClick={() => { setDotsError(""); void openDots().catch(error => setDotsError(String(error))); }}>
+          MyBuddy Dots
+        </DesktopSectionRow>
+      </div>
+      {dotsError && <div className="sidebar-empty" role="alert">{dotsError}</div>}
+
       {(() => {
         const independentRows = visibleRows.filter((r): r is Extract<VisibleRow, { kind: "task" }> =>
           r.kind === "task" && r.task.spaceId == null && !isGatewayConversation(r.task.id) && !pinnedTaskIdSet.has(r.task.id));
@@ -830,11 +862,6 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
                 </div>
               </div>
             )}
-            <DesktopSectionRow icon={<IconBot size={17} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
-              onClick={() => { setDotsError(""); void openDots().catch(error => setDotsError(String(error))); }}>
-              MyBuddy Dots
-            </DesktopSectionRow>
-            {dotsError && <div className="sidebar-empty" role="alert">{dotsError}</div>}
             <>
                 <div className="sidebar-tree-header">
                   <span className="section-title">独立任务</span>
