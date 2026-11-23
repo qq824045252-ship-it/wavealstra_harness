@@ -4,14 +4,15 @@ export const SHELL_TERMINAL_GUIDANCE = "This tool runs non-interactively with pi
 
 const SKILLS_NONINTERACTIVE_GUIDANCE = "For SKILLS_PROMPT_REQUIRES_TTY, check the skills CLI's own --yes/-y and explicit --agent/--skill choices. Put target CLI options after the skills command, not only before it as npx options. Select project or global installation only from the user's intended scope; --global/-g is not a generic TTY fix. This advice does not change or rerun the failed command.";
 const BASH_VERIFICATION_GUIDANCE = 'Leave a test as the final command so Bash returns its status. For filtered output, enable `set -o pipefail`. To print the status of any test or test pipeline, save it immediately with `status=$?` and finish with `exit "$status"`. A trailing `echo` alone hides a failing test. Isolate a failing case before rerunning the suite. If a check returns blocked_same_failure, read its existing report and investigate or report the failure. Only recheck after a relevant change or an explicit user request. If a test writes a report before the launcher exits, read the assertion and cleanup results separately.';
+const VERIFICATION_OUTCOME_GUIDANCE = 'For a structured verification summary, use one overall outcome from each invocation receipt (for example, the outcome in VERIFICATION_RESULT), in execution order. Use individual stage statuses to explain the cause. For a reused check, its current receipt records the reuse and the saved report describes the original execution. Read back any result file and verify its values against the receipts.';
 
 const requiresTerminal = /SKILLS_PROMPT_REQUIRES_TTY|(?:stdin|input|standard input|device) (?:is |isn't |is not |not )+(?:a )?(?:tty|terminal)|(?:requires?|must have|needs?) (?:an? )?(?:interactive )?(?:tty|terminal)|not a tty/i;
 
 /** Add recovery advice, never rerun a command or replace its original outcome. */
 export function withShellTerminalGuidance(tool: ToolRegistration): ToolRegistration {
   if (tool.name !== "bash" && tool.name !== "powershell") return tool;
-  const description = tool.name === "bash" ? `${tool.description}\n${SHELL_TERMINAL_GUIDANCE}\n${BASH_VERIFICATION_GUIDANCE}`
-    : `${tool.description}\n${SHELL_TERMINAL_GUIDANCE}`;
+  const shellDescription = `${tool.description}\n${SHELL_TERMINAL_GUIDANCE}\n${VERIFICATION_OUTCOME_GUIDANCE}`;
+  const description = tool.name === "bash" ? `${shellDescription}\n${BASH_VERIFICATION_GUIDANCE}` : shellDescription;
   return { ...tool, description,
     execute: async (args, api, context) => {
       const result = await tool.execute(args, api, context);

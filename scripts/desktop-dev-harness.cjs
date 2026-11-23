@@ -3,6 +3,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const cp = require('node:child_process'), net = require('node:net'), http = require('node:http');
 const {once} = require('node:events');
 const {performance} = require('node:perf_hooks');
+const {desktopVerificationOutcome} = require('./desktop-verification.cjs');
 const root = path.resolve(__dirname, '..');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const freePort = () => new Promise((resolve, reject) => {
@@ -100,6 +101,7 @@ async function finishDesktopCheck(report, reportPath, cleanup) {
       report.cleanupError = String(error);
       report.status = 'failed';
     }
+    report.outcome = desktopVerificationOutcome(report);
     publish();
   }
 }

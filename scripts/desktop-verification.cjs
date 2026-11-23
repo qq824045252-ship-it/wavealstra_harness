@@ -17,6 +17,11 @@ function assertDesktopCase(report, caseId, assertion, condition, evidence) {
   throw new Error(`${caseId}: ${assertion}`);
 }
 
+function desktopVerificationOutcome({ verificationStatus, cleanupStatus, assertionFailure }) {
+  if (cleanupStatus === 'failed' || (verificationStatus === 'failed' && !assertionFailure)) return 'infrastructure_failed';
+  return assertionFailure ? 'assertion_failed' : 'passed';
+}
+
 /** Only replay a completed assertion with the same inputs and its original report. */
 async function verifyDesktopCases({ caseIds, fingerprint, receiptsDirectory, fresh = false, run }) {
   const input = fingerprint();
@@ -31,9 +36,8 @@ async function verifyDesktopCases({ caseIds, fingerprint, receiptsDirectory, fre
   }
 
   const { report, reportPath } = await run();
-  const assertionFailure = report.assertionFailure;
-  const infrastructureFailed = report.cleanupStatus === 'failed' || (report.verificationStatus === 'failed' && !assertionFailure);
-  const outcome = infrastructureFailed ? 'infrastructure_failed' : assertionFailure ? 'assertion_failed' : 'passed';
+  const { assertionFailure, outcome } = report;
+  if (!outcome) throw new Error('Verification report has no final outcome');
   const result = { outcome, reused: false, verificationStatus: report.verificationStatus,
     cleanupStatus: report.cleanupStatus, assertionFailure, reportPath };
   if (fingerprint() !== input) return result;
@@ -52,4 +56,4 @@ async function verifyDesktopCases({ caseIds, fingerprint, receiptsDirectory, fre
   return result;
 }
 
-module.exports = { assertDesktopCase, fingerprintFiles, verifyDesktopCases };
+module.exports = { assertDesktopCase, desktopVerificationOutcome, fingerprintFiles, verifyDesktopCases };

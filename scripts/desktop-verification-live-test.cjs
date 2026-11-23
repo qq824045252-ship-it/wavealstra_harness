@@ -8,7 +8,7 @@ const { parseArgs } = require('node:util');
 const { run } = require('./desktop-dev-harness.cjs');
 
 const { values } = parseArgs({ options: { case: { type: 'string' } } });
-if (values.case && !['audit', 'recovery'].includes(values.case)) throw new Error('Expected --case=audit or --case=recovery');
+if (values.case && !['audit', 'recovery', 'outcomes'].includes(values.case)) throw new Error('Expected --case=audit, --case=recovery, or --case=outcomes');
 const quote = value => "'" + value.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'";
 const node = quote(process.execPath);
 const modelText = message => message.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
@@ -68,9 +68,10 @@ run(async ({ evaluate, until, home, report, requests }) => {
     await api('db.upsertTask', { id, title: '桌面验收样例', spaceId, cwd, welcomeMode: 'working',
       executionBackend: 'pi', permissionMode: 'auto', modelId, updatedAt: Date.now() });
   }
-  async function prompt(taskId, operationId, text) {
+  async function prompt(taskId, operationId, text, effort) {
     const request = { taskId, spaceId: `space-${taskId}`, modelId, text, userMessageId: operationId,
-      assistantMessageId: `${operationId}-reply`, welcomeMode: 'working', permissionMode: 'auto' };
+      assistantMessageId: `${operationId}-reply`, welcomeMode: 'working', permissionMode: 'auto',
+      ...(effort && { reasoningPreferenceModelId: modelId, reasoningPreference: { enabled: true, effort } }) };
     const admitted = await api('agent.prompt', request);
     assert(admitted.receipt, JSON.stringify(admitted));
     assert.equal(admitted.receipt.operationId, operationId);
@@ -79,7 +80,7 @@ run(async ({ evaluate, until, home, report, requests }) => {
   const verificationCommand = `${node} desktop-verification-case-fixture.cjs`;
   const launchCount = folder => fs.readFileSync(path.join(folder, 'launches.txt'), 'utf8').trim().split('\n').length;
 
-  if (values.case !== 'recovery') {
+  if (!values.case || values.case === 'audit') {
     const auditId = 'verification-audit-live';
     const audit = prepare(auditId);
     await register(auditId, audit);
@@ -105,7 +106,7 @@ run(async ({ evaluate, until, home, report, requests }) => {
     report.checks.push('A new request for explanation completed with no verification launch.');
   }
 
-  if (values.case !== 'audit') {
+  if (!values.case || values.case === 'recovery') {
     const recoveryId = 'verification-recovery-live';
     const recovery = prepare(recoveryId);
     await register(recoveryId, recovery);
@@ -117,6 +118,43 @@ run(async ({ evaluate, until, home, report, requests }) => {
     assert.equal(fs.readFileSync(path.join(recovery, 'fixture-layout.txt'), 'utf8').trim(), 'fixed');
     assert.equal(launchCount(recovery), 3);
     report.checks.push('Relevant edited input reran the failed case successfully and another useful case still ran.');
+  }
+
+  if (!values.case || values.case === 'outcomes') {
+    async function verifyOutcomeArtifact(id, text, expected) {
+      const folder = prepare(id);
+      await register(id, folder);
+      const turn = await prompt(id, `${id}-turn`, text, 'low');
+      const deliverable = JSON.parse(fs.readFileSync(path.join(folder, 'result.json'), 'utf8'));
+      const observations = { ...turn, deliverable };
+      report.outcomeArtifacts.push({ id, ...observations });
+      assert.deepEqual(turn.verification.map(result => [result.outcome, result.launches]), expected, id);
+      assert.deepEqual(deliverable, {
+        outcomes: turn.verification.map(result => result.outcome), launches: launchCount(folder),
+      }, id);
+      for (const result of turn.verification) {
+        const stored = JSON.parse(fs.readFileSync(path.join(folder, `report-${result.launches}.json`), 'utf8'));
+        assert.equal(stored.outcome, result.reused ? 'assertion_failed' : result.outcome, id);
+        assert.equal(stored.verificationStatus, result.verificationStatus, id);
+        assert.equal(stored.cleanupStatus, result.cleanupStatus, id);
+      }
+      return turn;
+    }
+
+    report.outcomeArtifacts = [];
+    const originalPrompt = `Only work in the assigned current directory. Use the supplied local files and shell, no external services. Run the checks needed for the task and provide a short final answer that reflects the actual results.
+
+执行一次 cleanup 场景，定位结论来自验收断言还是进程清理。读报告并在最终回复交代这两个阶段各自的状态。这是一轮只读验收，除结果文件不改夹具。
+验收命令是 node desktop-verification-case-fixture.cjs cleanup。把实测结论写入 result.json，格式 {outcomes:[按时间排序的 outcome 字符串],launches:实际执行次数}。`;
+    const original = await verifyOutcomeArtifact('cleanup-outcome', originalPrompt, [['infrastructure_failed', 1]]);
+    assert.deepEqual(original.verification.map(result => [result.verificationStatus, result.cleanupStatus]), [['passed', 'failed']]);
+    assert.match(original.reply, /清理/);
+
+    await verifyOutcomeArtifact('ordered-outcomes', `在当前工作区依次运行 ${verificationCommand} title、同一个 title 命令、${verificationCommand} other。每一步结束后再运行下一步，失败也继续。不要修改验收输入。把实测结论写入 result.json，格式 {outcomes:[按时间排序的 outcome 字符串],launches:实际执行次数}。`,
+    [['assertion_failed', 1], ['blocked_same_failure', 1], ['passed', 2]]);
+    assert(requests.some(request => request.model === report.modelConfiguration.modelId && request.reasoning_effort === 'low'
+      && request.tools?.some(tool => tool.function.name === 'bash' && tool.function.description.includes('each invocation receipt'))));
+    report.checks.push('The real model wrote ordered receipt outcomes to disk and reported the cleanup failure separately from the assertion.');
   }
   assert(requests.some(request => request.model === report.modelConfiguration.modelId && request.tools?.some(tool => tool.function.name === 'bash')));
 }, { name: 'desktop-verification-live', liveModel: true, watchRenderer: false, isolatedDependencyCache: true,
