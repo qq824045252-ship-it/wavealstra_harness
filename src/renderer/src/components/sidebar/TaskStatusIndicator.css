@@ -16,6 +16,7 @@
 }
 
 .task-status-indicator--in_progress { color: var(--accent); }
+.task-status-indicator--completed { color: var(--success); }
 .task-status-indicator--pending { color: var(--warning); }
 .task-status-indicator--failed { color: var(--danger); }
 
@@ -28,6 +29,13 @@
   border-right-color: currentColor;
   border-radius: 50%;
   animation: task-status-rotate 920ms linear infinite;
+}
+
+.task-status-completed-dot {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .task-status-indicator--pending i {

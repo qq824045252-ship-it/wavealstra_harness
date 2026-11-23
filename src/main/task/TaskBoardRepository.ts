@@ -305,7 +305,8 @@ export class TaskBoardRepository {
     };
     const rows = this.db.prepare(sql).all(params) as SqlRow[];
     let total: number | undefined;
-    if (q.lane || (q.preview && (q.view === "attention" || q.view === "review"))) {
+    // 焦点预览也要给出总数：栏目标题旁的计数和「还有 N 个被折叠」都依赖它。
+    if (q.lane || (q.preview && (q.view === "attention" || q.view === "review" || q.view === "running"))) {
       if (!q.cursor && rows.length <= size) total = rows.length;
       else {
         const all = sources.map((source) => select(source, false)).join(" UNION ALL ");

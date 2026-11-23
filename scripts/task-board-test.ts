@@ -10,6 +10,8 @@ import { botWorkspaceSpaceId } from "../src/main/agent/work/BotWorkspaceNavigati
 import { LOCAL_USER_ID, DEFAULT_BOT_ID } from "../src/shared/bot-work";
 import { TaskBoardRepository } from "../src/main/task/TaskBoardRepository";
 import { CodeReviewService } from "../src/main/agent/CodeReviewService";
+import { focusRows } from "../src/renderer/src/lib/taskBoardFocus";
+import type { BoardPage, TaskBoardRow } from "../src/shared/task-board";
 
 const dir = mkdtempSync(join(tmpdir(), "mybuddy-board-"));
 const path = join(dir, "app.db");
@@ -124,6 +126,17 @@ try {
   assert.deepEqual(ids({ ...laneQuery, lane: "pending" }), ["old-approval"]);
 
   assert.deepEqual(ids({ view: "running", scope: null }), ["quote"], "a running task remains discoverable without a fresh action");
+  assert.equal(
+    board.page({ view: "running", scope: null, preview: true }, now).total,
+    0,
+    "a deferred running task stays out of the focus column until a new request arrives",
+  );
+  db.upsertTask({ id: "fresh-run", title: "新执行", status: "in_progress", updatedAt: now + 1 });
+  assert.equal(
+    board.page({ view: "running", scope: null, preview: true }, now).total,
+    1,
+    "the running focus column reports its real total so a truncated column can say 还有 N 个被折叠",
+  );
   const review = new CodeReviewService(db.connection);
   const reviewFile = join(dir, "old-report.txt");
   const finishCapture = review.capture("report", dir, reviewFile);
@@ -157,8 +170,52 @@ try {
   board = new TaskBoardRepository(db.connection);
   assert.deepEqual(ids({ view: "frequent" }), ["report"]);
   assert.deepEqual(ids({ view: "later" }).sort(), ["quote", "waiting"]);
+  db.connection.transaction(() => {
+    for (let i = 0; i < 5; i++)
+      db.upsertTask({ id: `run-${i}`, title: `在跑任务 ${i}`, status: "in_progress", updatedAt: now + i });
+  })();
+  const crowdedRunning = board.page({ view: "running", scope: null, preview: true }, now);
+  assert.equal(crowdedRunning.total, 6, "every running task counts toward the focus column total");
+  assert.equal(crowdedRunning.rows.length, 4, "the focus preview page stays bounded at four cards");
+  assert.ok(crowdedRunning.next, "a column with more than four running tasks can continue into 查看全部");
+
+  // 「我的焦点」纯函数：折叠数与去重必须能被界面直接读出来。
+  const row = (id: string): TaskBoardRow => ({
+    id,
+    title: id,
+    spaceId: null,
+    status: "in_progress",
+    updatedAt: now,
+    pinned: false,
+    unread: false,
+    at: now,
+    rank: 0,
+    planned: false,
+  });
+  const focusPage = (ids: string[], extra: Partial<BoardPage> = {}): BoardPage => ({
+    rows: ids.map(row),
+    ...extra,
+  });
+  const focus = (pages: Partial<Record<number, BoardPage>>) =>
+    focusRows(Array.from({ length: 8 }, (_, i) => pages[i]));
+  const fourRunning = focus({ 2: focusPage(["a", "b", "c", "d"]) });
+  assert.deepEqual(fourRunning[2].rows.map((r) => r.id), ["a", "b", "c", "d"], "four running tasks all fit the focus column");
+  assert.equal(fourRunning[2].folded, 0);
+  const shared = focus({ 1: focusPage(["a"]), 2: focusPage(["a", "b", "c", "d"]) });
+  assert.deepEqual(shared[2].rows.map((r) => r.id), ["b", "c", "d"], "one task never renders twice in focus");
+  assert.equal(shared[2].duplicated, 1);
+  assert.equal(shared[2].folded, 0, "an item visible in an earlier column is not reported as folded");
+  const crowded = focus({
+    2: focusPage(["a", "b", "c", "d"], { total: 6, next: { rank: 0, at: now, id: "d" } }),
+  });
+  assert.equal(crowded[2].folded, 2, "a known total yields the exact folded count");
+  assert.equal(crowded[2].exact, true);
+  const unknownTotal = focus({ 3: focusPage(["x", "y", "z", "w"], { next: { rank: 0, at: now, id: "w" } }) });
+  assert.equal(unknownTotal[3].rows.length, 2, "最近在做 still previews two cards");
+  assert.ok(unknownTotal[3].folded > 0);
+  assert.equal(unknownTotal[3].exact, false, "an unknown total only claims 还有更多");
   console.log(
-    "PASS lane paging with 1,000 results, wait routing, running and review focus, historical dates, activity, scheduled runs and restart",
+    "PASS lane paging with 1,000 results, wait routing, running and review focus, historical dates, activity, scheduled runs, focus folding and restart",
   );
 } finally {
   db.close();

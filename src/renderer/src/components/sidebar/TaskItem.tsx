@@ -1,6 +1,7 @@
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isGatewayConversation } from "../../../../shared/gateway-task";
+import { TASK_TITLE_MAX_CHARS } from "../../../../shared/task-title";
 import { createPortal } from "react-dom";
 import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
@@ -166,7 +167,8 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   }, [menuOpen, closeMenu]);
 
   const commitRename = (): void => {
-    if (draft.trim()) renameTask(task.id, draft.trim());
+    const next = draft.trim().slice(0, TASK_TITLE_MAX_CHARS);
+    if (next) renameTask(task.id, next);
     setEditing(false);
   };
 
@@ -180,7 +182,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       if (revision !== menuRevision.current) return;
       const title = suggestion?.title?.trim();
       if (!title) throw new Error("模型没有返回任务名");
-      setDraft(title);
+      setDraft(title.slice(0, TASK_TITLE_MAX_CHARS));
       closeMenu();
       setEditing(true);
     } catch (error) {
@@ -312,7 +314,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     <div
       role="button"
       tabIndex={0}
-      className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} status-${status}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
+      className={`task-item ${nested ? "nested" : ""} ${active ? "active" : ""} ${pinned ? "pinned" : ""} ${menuOpen ? "menu-open" : ""} status-${status}${editing ? " is-editing" : ""}${fileDropOver ? " file-drop-target" : ""}${dropNotice ? " has-drop-notice" : ""}`}
       style={indent != null ? { paddingLeft: indent } : undefined}
       title={editing ? undefined : `${task.title || "未命名任务"} · ${relativeTime(task.updatedAt)}`}
       onClick={() => !editing && openVisitedTask(task.id)}
@@ -347,21 +349,28 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       )}
 
       {editing ? (
-        <input
-          className="task-item-edit"
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commitRename();
-            if (e.key === "Escape") {
-              setDraft(task.title);
-              setEditing(false);
-            }
-          }}
-          onClick={(e) => e.stopPropagation()}
-        />
+        <span className="task-title-edit">
+          <input
+            className="task-item-edit"
+            autoFocus
+            aria-label={`任务名，最多 ${TASK_TITLE_MAX_CHARS} 字`}
+            maxLength={TASK_TITLE_MAX_CHARS}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") {
+                setDraft(task.title);
+                setEditing(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+          <span className={`task-title-count${draft.length > TASK_TITLE_MAX_CHARS ? " is-over" : ""}`} aria-hidden="true">
+            {draft.length}/{TASK_TITLE_MAX_CHARS}
+          </span>
+        </span>
       ) : (
         <span className="task-item-title">{task.title}</span>
       )}
@@ -379,8 +388,6 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
         )}
         <span className="task-item-time">{relativeTime(task.updatedAt, { compact: true })}</span>
       </div>
-
-      <TaskStatusIndicator status={status} label={actionLabel ?? undefined} unread={doneUnread} />
 
       <div className="task-item-actions">
         <div className="task-menu-anchor" ref={menuAnchorRef}>
@@ -428,6 +435,8 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
           <IconPin size={13} fill={pinned ? "currentColor" : "none"} strokeWidth={1.7} />
         </button>
       </div>
+
+      <TaskStatusIndicator status={status} label={actionLabel ?? undefined} unread={doneUnread} />
 
       {dropNotice && <span className="task-drop-notice">{dropNotice}</span>}
       {menuContent && createPortal(menuContent, document.body)}

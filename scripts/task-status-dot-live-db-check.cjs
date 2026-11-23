@@ -11,6 +11,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), path = re
 const os = require('node:os'), cp = require('node:child_process'), net = require('node:net');
 const root = path.resolve(__dirname, '..');
 const executable = process.env.MYBUDDY_DESKTOP_EXECUTABLE;
+const unreadSelector = JSON.stringify('.task-status-indicator--completed, .task-status-unread');
 const sourceDb = process.env.MYBUDDY_STATUS_DOT_LIVE_DB || path.join(os.homedir(), '.mybuddy', 'app.db');
 const out = path.resolve(process.env.MYBUDDY_STATUS_DOT_OUT || path.join(root, 'out/tests/task-status-dot-live'));
 fs.mkdirSync(out, { recursive: true });
@@ -71,7 +72,7 @@ async function launch() {
       const items = [...document.querySelectorAll('.task-item')];
       return {
         rows: items.length,
-        unread: items.filter(el => el.querySelector('.task-status-unread')).length,
+        unread: items.filter(el => el.querySelector(${unreadSelector})).length,
         running: items.filter(el => el.querySelector('[role="img"][aria-label="进行中"]')).length,
       };
     })()`);
@@ -90,18 +91,18 @@ async function launch() {
 
     if (dom.unread > 0) {
       const before = await evaluate(`(() => {
-        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-status-unread'));
+        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector(${unreadSelector}));
         return item.querySelector('.task-item-title').textContent.trim();
       })()`);
       await evaluate(`(() => {
-        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-status-unread'));
+        const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector(${unreadSelector}));
         item.click(); return true;
       })()`);
       await until(async () => await evaluate(`(() => {
         const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-item-title')?.textContent.trim() === ${JSON.stringify(before)});
-        return Boolean(item?.querySelector('.task-status-indicator')) && !item.querySelector('.task-status-unread');
+        return Boolean(item) && !item.querySelector(${unreadSelector});
       })()`), 'unread emphasis cleared after click', 20000);
-      report.tests.push(`点击「${before}」后未查看强调清除，状态保留`);
+      report.tests.push(`点击「${before}」后未确认标记清除`);
       const after = await evaluate(`window.api.db.listTasks().then(rows => rows.filter(r => typeof r.doneAckedAt === 'number').length)`);
       assert(after >= db.acked, '点击后确认行数不减少');
     } else {

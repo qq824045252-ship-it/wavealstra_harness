@@ -572,6 +572,41 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
     await until(() => evaluate("window.api.db.listTasks().then(rows=>rows.find(row=>row.id==='board-done')?.isFavorited)"), 'previously read task pinned with cold history');
     await boardView('未读结果');
     assert.deepEqual(await laneSizes(), [1, 0, 0, 0], 'pinning a read task with unloaded history does not create an unread result');
+
+    // 正在执行最多渲染 4 张卡；第 5 个起必须显式提示被折叠，且提示能展开完整列表。
+    await evaluate(`(async()=>{for(const [i,id] of ['fresh-run-a','fresh-run-b','fresh-run-c','fresh-run-d','fresh-run-e'].entries())
+      await window.api.db.upsertTask({id,title:'新执行 '+id,status:'in_progress',spaceId:'board-delivery',updatedAt:Date.now()+i});})()`);
+    const runningPreview = await evaluate(`window.api.db.taskBoardPage({view:'running',preview:true,scope:'board-delivery'}).then(page=>({total:page.total,rows:page.rows.length}))`);
+    assert.equal(runningPreview.rows, 4, 'the running preview stays bounded at four cards');
+    assert.ok(runningPreview.total > 4, 'the running preview reports the real total');
+    await reloadDesktop();
+    await click('.desktop-rail-module', '任务看板');
+    await click('#desktop-module-list button[title="产品交付"]');
+    await click('.task-board-views button', '我的焦点');
+    await visible('.task-board-focus [data-section="running"] .task-board-card');
+    assert.equal(
+      await evaluate('document.querySelectorAll(\'.task-board-focus [data-section="running"] .task-board-card\').length'),
+      4,
+      'four running tasks render in focus instead of the old two',
+    );
+    assert.equal(
+      await evaluate('document.querySelector(\'[data-section="running"] .task-board-count\')?.textContent'),
+      String(runningPreview.total),
+      'the running column header shows the real total',
+    );
+    assert.match(
+      await evaluate('document.querySelector(\'[data-section="running"] .task-board-folded\')?.textContent ?? ""'),
+      /还有 \d+ 个被折叠/,
+      'the running column says how many cards are folded',
+    );
+    await metrics(1360, 1000);
+    await evaluate('document.querySelector(\'[data-section="running"]\').scrollIntoView({block:"start"})');
+    await screenshot('task-board-running-folded');
+    await click('[data-section="running"] .task-board-folded');
+    await until(
+      () => evaluate(`document.querySelectorAll('.task-board-list .task-board-card').length===${runningPreview.total}`),
+      'the folded hint opens the complete running list',
+    );
   }
 }, { name: process.argv.includes('--task-board') ? 'task-board-desktop' : 'mode-navigation-desktop',
   watchRenderer: !process.argv.includes('--task-board'),

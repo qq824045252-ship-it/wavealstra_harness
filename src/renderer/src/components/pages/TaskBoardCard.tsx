@@ -66,10 +66,12 @@ export function TaskBoardCard({
       : row.updatedAt;
   const why = group === "recent" ? (row.reason ? "上次跟进 · " + row.reason : "你最近跟进过") : row.reason;
   const stage = cardStage(row);
+  const unconfirmedCompletion = row.status === "completed" && row.unread;
   const review = row.pendingReviewCount ? `审查改动（${row.pendingReviewCount}）` : undefined;
   return (
     <div className="task-board-item" data-review={review ? true : undefined}>
-      <button type="button" className="task-board-card" onClick={onOpen} title={row.title} aria-label={`${stage.action}：${row.title}`}>
+      <button type="button" className="task-board-card" onClick={onOpen} title={row.title}
+        aria-label={`${stage.action}：${row.title}${unconfirmedCompletion ? " · 未确认" : ""}`}>
         <span className="task-board-status" data-status={row.status} data-wait={row.wait?.kind}>{stage.label}</span>
         <strong>{row.title}</strong>
         {stage.detail && <span className="task-board-blocker">{stage.detail}</span>}
@@ -88,7 +90,7 @@ export function TaskBoardCard({
                 {date}
               </time>
             )}
-            {row.unread && <span>未读结果</span>}
+            {unconfirmedCompletion ? <span className="task-board-unread">未确认</span> : row.unread && <span>未读结果</span>}
             {row.planned && <span>今天要做</span>}
             {row.pinned && <IconPin size={12} />}
           </span>

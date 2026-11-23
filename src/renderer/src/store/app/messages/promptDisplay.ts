@@ -1,4 +1,5 @@
 import { stripInjectedUserPromptTail } from "../../../../../shared/user-prompt-display";
+import { limitTaskTitle, TASK_TITLE_MAX_CHARS } from "../../../../../shared/task-title";
 
 /**
  * 用户可见正文：去掉 /skill、【使用 MCP：…】、引用任务/文件块。
@@ -65,11 +66,10 @@ export function userVisiblePromptText(text: string): {
  * 首条消息生成侧栏任务名：去掉 /skill、MCP 提示前缀，优先用用户说明文字。
  * 例："/hello-buddy 你好" → "你好"；仅 "/hello-buddy" → "hello-buddy"
  */
-export function taskTitleFromFirstMessage(text: string, maxLen = 24): string {
+export function taskTitleFromFirstMessage(text: string, maxLen = TASK_TITLE_MAX_CHARS): string {
   const { display, skillNames } = userVisiblePromptText(text);
   const titleBase = (display || skillNames[skillNames.length - 1] || "新任务")
     .replace(/\s+/g, " ")
     .trim();
-  if (titleBase.length <= maxLen) return titleBase;
-  return `${titleBase.slice(0, maxLen).trimEnd()}…`;
+  return limitTaskTitle(titleBase, maxLen);
 }

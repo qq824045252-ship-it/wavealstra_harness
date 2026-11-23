@@ -1042,6 +1042,41 @@ html[data-theme="dark"] .task-context-menu {
   background: var(--bg);
 }
 
+/* 任务重命名：输入框内嵌字数计数，上限与自动生成的任务名一致 */
+.task-title-edit {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.task-title-edit > input {
+  width: 100%;
+  padding-right: 46px;
+}
+
+.task-title-count {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.task-title-count.is-over {
+  color: var(--danger);
+}
+
+/* 重命名时收起时间与操作按钮，把整行宽度让给输入框和字数 */
+.task-item.is-editing .task-item-actions,
+.task-item.is-editing .task-item-meta {
+  display: none;
+}
+
 .task-project-mark {
   display: inline-flex;
   align-items: center;
@@ -1418,6 +1453,15 @@ html[data-theme="dark"] .extension-top-bar {
   outline: none;
   width: min(320px, 100%);
   max-width: 100%;
+}
+
+.chat-header-title > .task-title-edit {
+  width: min(320px, 100%);
+  flex: 0 1 auto;
+}
+
+.chat-header-title .task-title-edit > input {
+  padding-right: 46px;
 }
 
 .message-scroll {

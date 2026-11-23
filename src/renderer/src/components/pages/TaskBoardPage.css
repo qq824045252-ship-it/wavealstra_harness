@@ -119,7 +119,7 @@
   line-height: 1.5;
 }
 .task-board-status { display: inline-flex; align-items: center; gap: 5px; min-height: 19px; padding-right: 45px; color: var(--lane-color); font-size: 11px; }
-.task-board-status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.task-board-status:not([data-status="completed"])::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .task-board-status[data-status="failed"] { color: light-dark(#ab4240, #f3aaa6); }
 .task-board-status[data-status="stopped"] { color: var(--fg-secondary); }
 .task-board-status[data-wait] { color: light-dark(#966113, #ecc37f); }
@@ -133,8 +133,7 @@
 .task-board-signals { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; color: var(--fg-secondary); font-size: 11px; }
 .task-board-signals time, .task-board-unread { display: inline-flex; gap: 4px; align-items: center; }
 .task-board-signals time[data-urgent="true"] { color: light-dark(#985412, #f1bd74); }
-.task-board-unread { color: var(--accent); }
-.task-board-unread::before { content: ""; width: 5px; height: 5px; background: currentColor; border-radius: 50%; }
+.task-board-unread::before { content: ""; width: 7px; height: 7px; background: var(--success); border-radius: 50%; }
 .task-board-meta { display: flex; align-items: center; gap: 4px; color: var(--fg-secondary); font-size: 11px; }
 .task-board-meta svg, .task-board-meta time { flex: none; }
 .task-board-meta time { margin-left: auto; font-variant-numeric: tabular-nums; }
@@ -187,6 +186,14 @@
 }
 .task-board-review:hover { background: var(--bg-hover); }
 .task-board-card .task-board-status { padding-right: 75px; }
+.task-board-lane-more { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 9px; }
+.task-board-folded {
+  width: 100%; padding: 7px 10px; text-align: left;
+  border: 1px dashed var(--border-default); border-radius: 8px;
+  color: var(--accent); background: transparent; font: inherit; font-size: 12px; font-weight: 550; cursor: pointer;
+}
+.task-board-folded:hover { background: var(--bg-hover); }
+.task-board-elsewhere { padding: 0 2px; color: var(--fg-secondary); font-size: 11px; }
 .task-board-actions { display: flex; gap: 5px; padding: 5px; }
 .task-board-actions button { border-radius: 4px; background: var(--surface-sidebar); padding: 4px 8px; }
 

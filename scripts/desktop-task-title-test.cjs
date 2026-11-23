@@ -1,7 +1,7 @@
 /** Run the current chat header on a visible Electron desktop with a disposable profile. */
 const path = require('node:path');
 const os = require('node:os');
-const { existsSync } = require('node:fs');
+const { readdirSync } = require('node:fs');
 const { parseArgs } = require('node:util');
 const { run } = require('./desktop-dev-harness.cjs');
 const { assertDesktopCase, fingerprintFiles, verifyDesktopCases } = require('./desktop-verification.cjs');
@@ -20,16 +20,16 @@ const cases = titles.flatMap(([id, title]) => [
 ]);
 const inputs = [
   'scripts/desktop-task-title-test.cjs', 'scripts/desktop-dev-harness.cjs', 'scripts/desktop-verification.cjs',
-  'electron.vite.config.ts', 'package.json', 'pnpm-lock.yaml',
-  'src/renderer/src/App.tsx', 'src/renderer/src/styles/global.css', 'src/renderer/src/lib/panelWidth.ts',
-  'src/renderer/src/components/desktop/desktop.css',
-  'src/renderer/src/components/Sidebar.tsx', 'src/renderer/src/components/chat/ChatView.tsx',
-  'src/renderer/src/components/chat/WorkspaceCrumb.tsx', 'src/renderer/src/components/chat/RuntimeStatusChips.tsx',
-  'src/renderer/src/components/chat/TaskDiagnosticsButton.tsx', 'src/renderer/src/components/chat/TaskDiagnosticsDialog.tsx',
+  'electron.vite.config.ts', 'package.json', 'pnpm-lock.yaml', 'tsconfig.json', 'tsconfig.node.json', 'tsconfig.web.json',
 ];
-const navigationInputs = ['DesktopTopBar.tsx', 'DesktopRail.tsx']
-  .map(file => `src/renderer/src/components/desktop/${file}`)
-  .filter(file => existsSync(path.join(root, file)));
+
+function fingerprintTitleInputs(projectRoot, environment) {
+  const appInputs = ['src', 'patches'].flatMap(directory =>
+    readdirSync(path.join(projectRoot, directory), { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile())
+      .map(entry => path.relative(projectRoot, path.join(entry.parentPath, entry.name))));
+  return fingerprintFiles(projectRoot, [...inputs, ...appInputs], environment);
+}
 
 function measureHeader(headerSelector, titleSelector) {
   const header = document.querySelector(headerSelector);
@@ -56,7 +56,15 @@ function measureHeader(headerSelector, titleSelector) {
     text: title.textContent, tooltip: title.title, controls };
 }
 
-async function verifyLayout(selected, { evaluate, rpc, until, report }) {
+async function verifyLayout(selected, { evaluate: evaluateInRenderer, rpc, until, report }) {
+  const evaluate = async expression => {
+    try {
+      return await evaluateInRenderer(expression);
+    } catch (error) {
+      if (error.message === 'CDP timeout: Runtime.evaluate') report.timedOutRendererExpression = expression;
+      throw error;
+    }
+  };
   const store = expression => evaluate(`import('/src/store/appStore.ts').then(m => ${expression})`);
   const topbar = await evaluate("Boolean(document.querySelector('.desktop-topbar-content'))");
   const headerSelector = topbar ? '.desktop-topbar-content' : '.task-chat-header';
@@ -98,15 +106,16 @@ async function verifyLayout(selected, { evaluate, rpc, until, report }) {
     if (open !== testCase.overview) await toggleOverview(open);
     await waitForPanel(testCase.overview);
     await evaluate('document.fonts.ready.then(() => true)');
-    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
 
+    // The geometry read forces layout even when Electron throttles animation frames.
     const geometry = await evaluate(`(${measureHeader.toString()})(${JSON.stringify(headerSelector)}, ${JSON.stringify(titleSelector)})`);
     check('chat-header-visible', geometry.headerWidth > 0, 'chat and the selected overview state can coexist', geometry.headerWidth);
     const fits = geometry.needed <= geometry.available + 1;
     check('title-content', geometry.text === testCase.title && geometry.tooltip.startsWith(testCase.title),
       'full title in DOM and tooltip', { text: geometry.text, tooltip: geometry.tooltip });
-    check('title-fits-remaining-width', geometry.actual > 0 && (fits ? !geometry.clipped : geometry.clipped && geometry.ellipsis),
-      fits ? 'complete title' : 'truncated title with ellipsis', geometry);
+    const fillsAvailableWidth = geometry.actual > 0 && Math.abs(geometry.actual - geometry.available) <= 1;
+    check('title-fits-remaining-width', fillsAvailableWidth && (fits ? !geometry.clipped : geometry.clipped && geometry.ellipsis),
+      fits ? 'complete title using the available width' : 'title using the available width, truncated with ellipsis', geometry);
     const controls = topbar ? ['任务列表', '新建任务', '更多任务操作'] : ['历史提问', '执行诊断', testCase.overview ? '关闭侧栏' : '打开概览'];
     for (const name of controls) {
       const control = geometry.controls.find(button => button.name === name);
@@ -138,15 +147,17 @@ async function main() {
   if (!selected.length) throw new Error(`Unknown desktop case ${values.case}. Use --list.`);
   const result = await verifyDesktopCases({
     caseIds: selected.map(testCase => testCase.id),
-    fingerprint: () => fingerprintFiles(root, [...inputs, ...navigationInputs], { platform: process.platform, arch: process.arch,
+    fingerprint: () => fingerprintTitleInputs(root, { platform: process.platform, arch: process.arch,
       release: os.release(), node: process.version, electron: require('electron/package.json').version,
       locale: Intl.DateTimeFormat().resolvedOptions().locale }),
     receiptsDirectory: path.join(root, 'out/diagnostics', suite, 'assertion-failures'), fresh: values.fresh,
     run: inputsStillCurrent => run(context => verifyLayout(selected, context), { name: suite, watchRenderer: false, inputsStillCurrent,
       isolatedDependencyCache: true, fixtureModel: () => '标题验收的测试回复。' }),
   });
-  console.log(JSON.stringify(result));
+  console.log(`VERIFICATION_RESULT ${JSON.stringify(result)}`);
   if (result.outcome !== 'passed') process.exitCode = 1;
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
+
+module.exports = { fingerprintTitleInputs, verifyLayout };

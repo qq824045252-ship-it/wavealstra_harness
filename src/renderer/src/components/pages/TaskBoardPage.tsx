@@ -18,6 +18,7 @@ import { IconAlert, IconClock, IconFolder, IconKanban, IconPlus, IconSearch } fr
 import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
 import { openWorkspaceRequest } from "@/hooks/useBotWorkspaceNavigation";
 import { addLocalDays, formatDayLabel, startOfLocalDay } from "@/lib/projectPlanSchedule";
+import { focusRows, focusSections } from "@/lib/taskBoardFocus";
 import { recordBoardVisit } from "@/lib/taskBoardVisits";
 import { useAppStore } from "@/store/appStore";
 import { TaskBoardCard } from "./TaskBoardCard";
@@ -30,16 +31,6 @@ import "./TaskBoardPage.css";
 type View = TaskBoardView | "focus";
 type PageChannel = TaskBoardLane | "list";
 type Cursor = NonNullable<BoardQuery["cursor"]>;
-const focusSections = [
-  { view: "attention", limit: 3 },
-  { view: "review", limit: 2 },
-  { view: "running", limit: 2 },
-  { view: "recent", limit: 2 },
-  { view: "week", limit: 1 },
-  { view: "results", limit: 1 },
-  { view: "frequent", limit: 1 },
-  { view: "automation", limit: 1 },
-] as const;
 const laneTitles: Record<TaskBoardLane, string> = {
   attention: "需跟进",
   pending: "待处理",
@@ -70,21 +61,6 @@ const empty: Partial<Record<View, string>> = {
   frequent: "近 14 天内，跨两个或更多日期主动查看或跟进的任务会出现在这里。",
   dates: "所选日期内没有匹配的任务。",
 };
-
-function focusRows(pages: Array<BoardPage | undefined>) {
-  const seen = new Set<string>();
-  return focusSections.map(({ limit }, i) => {
-    const items: TaskBoardRow[] = [];
-    for (const row of pages[i]?.rows ?? []) {
-      const key = row.jobId ? `job:${row.jobId}` : row.id;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      items.push(row);
-      if (items.length === limit) break;
-    }
-    return items;
-  });
-}
 
 export default function TaskBoardPage(): React.JSX.Element {
   const allSpaces = useAppStore((s) => s.spaces);
@@ -188,14 +164,14 @@ export default function TaskBoardPage(): React.JSX.Element {
       return;
     }
     if (countVisit) recordBoardVisit(row.id);
-    useAppStore
-      .getState()
-      .setActiveTask(
-        row.id,
-        row.messageId
-          ? { messageId: row.messageId, interactionId: row.interactionId, toolCallId: row.toolCallId }
-          : undefined,
-      );
+    const store = useAppStore.getState();
+    if (row.unread) void store.ackTaskDone(row.id, { knownUnread: true });
+    store.setActiveTask(
+      row.id,
+      row.messageId
+        ? { messageId: row.messageId, interactionId: row.interactionId, toolCallId: row.toolCallId }
+        : undefined,
+    );
   }
   function card(row: TaskBoardRow, group: TaskBoardView) {
     return (
@@ -368,7 +344,7 @@ export default function TaskBoardPage(): React.JSX.Element {
             {focusSections.map(({ view: group }, i) => {
               const p = pages?.[i];
               if (!p?.rows.length) return null;
-              const items = preview[i] ?? [];
+              const { rows: items, folded, exact, duplicated } = preview[i];
               if (!items.length) return null;
               return (
                 <section className="task-board-lane" key={group} data-section={group}>
@@ -379,10 +355,22 @@ export default function TaskBoardPage(): React.JSX.Element {
                     <h2>{labels[group]}</h2>
                     {p.total != null && <span className="task-board-count">{p.total}</span>}
                     <button className="task-board-drill" onClick={() => go(group)}>
-                      {items.length < p.rows.length || p.next ? "查看全部" : "打开列表"}
+                      {items.length < p.rows.length || p.next || folded > 0 ? "查看全部" : "打开列表"}
                     </button>
                   </header>
                   <div className="task-board-lane-body">{items.map((r) => card(r, group))}</div>
+                  {(folded > 0 || duplicated > 0) && (
+                    <footer className="task-board-lane-more">
+                      {folded > 0 && (
+                        <button type="button" className="task-board-folded" onClick={() => go(group)}>
+                          {exact ? `还有 ${folded} 个被折叠` : "还有更多被折叠"} · 查看全部
+                        </button>
+                      )}
+                      {duplicated > 0 && (
+                        <span className="task-board-elsewhere">另有 {duplicated} 个已在上方分栏显示</span>
+                      )}
+                    </footer>
+                  )}
                 </section>
               );
             })}

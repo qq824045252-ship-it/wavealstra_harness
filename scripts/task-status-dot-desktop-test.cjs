@@ -2,9 +2,9 @@
  * 真实 Electron 验收：侧栏状态与未查看强调。
  *
  * 隔离 profile + 种子库 → 启动真实应用 → 断言：
- *  1. 已完成任务留白，进行中任务显示状态。
- *  2. 点击已完成任务后写入 DB done_acked_at。
- *  3. 重启应用后确认水位仍有效。
+ *  1. 已完成未确认的结果显示静态绿点，进行中任务显示动画。
+ *  2. 从侧栏和看板打开任务后，两处同步清除未确认标记。
+ *  3. 重启后两处都保持已确认。
  *
  * 运行：
  *   MYBUDDY_DESKTOP_EXECUTABLE=<安装包 MyBuddy.exe> node scripts/test-guard.mjs scripts/task-status-dot-desktop-test.cjs
@@ -69,17 +69,59 @@ async function launch(label) {
   await until(() => evaluate('document.querySelectorAll(".task-item").length > 0'), label + ': sidebar tasks rendered');
 }
 
-/** 读取指定任务行提供给屏幕阅读器的状态。 */
+/** 读取指定任务行显示的状态和正在播放的动画。 */
 function dotProbe(title) {
   return `(() => {
     const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-item-title')?.textContent.trim() === ${JSON.stringify(title)});
     if (!item) return { found: false };
+    const indicator = item.querySelector('[role="img"].task-status-indicator');
+    const mark = indicator?.querySelector('.task-status-mark > *');
+    const style = mark ? getComputedStyle(mark) : null;
+    const bounds = mark?.getBoundingClientRect();
     return {
       found: true,
-      label: item.querySelector('.task-status-indicator')?.getAttribute('aria-label') ?? null,
+      label: indicator?.getAttribute('aria-label') ?? null,
+      visible: Boolean(bounds?.width && bounds?.height),
+      color: style?.backgroundColor ?? null,
+      round: style?.borderRadius === '50%',
+      animating: indicator?.getAnimations({ subtree: true }).some(animation => animation.playState === 'running') ?? false,
     };
   })()`;
 }
+
+const completedDot = {
+  found: true,
+  label: '已完成 · 未确认',
+  visible: true,
+  color: 'rgb(22, 163, 74)',
+  round: true,
+  animating: false,
+};
+
+const boardCardSelector = title => `.task-board-card[title="${title}"]`;
+
+async function openBoard() {
+  await evaluate('document.querySelector(\'.desktop-rail-module[aria-label="任务看板"]\').click()');
+  await until(() => evaluate('document.querySelector(".task-board-views") !== null'), 'task board mounted');
+  await evaluate(`[...document.querySelectorAll('.task-board-views button')].find(button => button.textContent.trim() === '全部').click()`);
+  await until(() => evaluate(`Boolean(document.querySelector(${JSON.stringify(boardCardSelector('DOT_DONE_UNREAD'))}))`), 'finished card visible');
+}
+
+function readBoardCard(title) {
+  return evaluate(`(() => {
+    const card = document.querySelector(${JSON.stringify(boardCardSelector(title))});
+    if (!card) return null;
+    const badge = card.querySelector('.task-board-unread');
+    return {
+      status: card.querySelector('.task-board-status').textContent,
+      confirmation: badge?.textContent ?? null,
+      dotColor: badge ? getComputedStyle(badge, '::before').backgroundColor : null,
+    };
+  })()`);
+}
+
+const boardUnconfirmed = { status: '已完成', confirmation: '未确认', dotColor: 'rgb(22, 163, 74)' };
+const boardConfirmed = { status: '已完成', confirmation: null, dotColor: null };
 
 (async () => {
   try {
@@ -88,15 +130,22 @@ function dotProbe(title) {
 
     await launch('boot-1');
     const doneBefore = await evaluate(dotProbe('DOT_DONE_UNREAD'));
-    assert(doneBefore.found, '种子任务出现在侧栏');
-    assert.equal(doneBefore.label, null, '已完成任务留白');
+    assert.deepEqual(doneBefore, completedDot, '未查看的已完成任务显示静态绿点');
     const runningBefore = await evaluate(dotProbe('DOT_RUNNING'));
     assert.equal(runningBefore.label, '进行中');
-    report.tests.push('已完成任务留白，进行中任务显示状态');
+    assert.equal(runningBefore.visible, true, '进行中图标可见');
+    assert.equal(runningBefore.animating, true, '进行中动画正在播放');
+    report.tests.push('已完成任务显示静态绿点，进行中任务显示动画');
     const shot1 = await rpc('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'before-click.png'), Buffer.from(shot1.data, 'base64'));
 
-    // 打开任务仍会记录查看确认。
+    await openBoard();
+    assert.deepEqual(await readBoardCard('DOT_DONE_UNREAD'), boardUnconfirmed);
+    assert.deepEqual(await readBoardCard('DOT_BOARD_UNREAD'), boardUnconfirmed);
+    await evaluate('document.querySelector(\'.desktop-rail-module[aria-label="MyBuddy"]\').click()');
+    await until(() => evaluate(`(${dotProbe('DOT_DONE_UNREAD')}).label === '已完成 · 未确认'`), 'sidebar task visible');
+
+    // 从侧栏打开任务，确认同一结果。
     await evaluate(`(() => {
       const item = [...document.querySelectorAll('.task-item')].find(el => el.querySelector('.task-item-title')?.textContent.trim() === 'DOT_DONE_UNREAD');
       item.click(); return true;
@@ -108,9 +157,20 @@ function dotProbe(title) {
       persisted = await evaluate(`window.api.db.listTasks().then(rows => rows.find(t => t.id === 'dot-done-unread'))`);
       return Boolean(persisted) && typeof persisted.doneAckedAt === 'number' && persisted.doneAckedAt > 0;
     }, 'DB done_acked_at written', 20000);
+    assert.equal((await evaluate(dotProbe('DOT_DONE_UNREAD'))).label, null, '侧栏点击后绿点消失');
     assert.equal(persisted.updatedAt < Date.now() - 30_000, true, '确认动作不推进 updatedAt（不重排侧栏）');
     report.ackedAt = persisted.doneAckedAt;
-    report.tests.push('点击写入 DB done_acked_at，且不触碰 updated_at');
+    await openBoard();
+    assert.deepEqual(await readBoardCard('DOT_DONE_UNREAD'), boardConfirmed, '侧栏确认同步到看板');
+
+    // 新产物的结果时间可晚于对话与任务更新时间，打开看板卡片也应确认。
+    assert.deepEqual(await readBoardCard('DOT_BOARD_UNREAD'), boardUnconfirmed);
+    await evaluate(`document.querySelector(${JSON.stringify(boardCardSelector('DOT_BOARD_UNREAD'))}).click()`);
+    await until(() => evaluate(`document.querySelector('.task-item.active .task-item-title')?.textContent === 'DOT_BOARD_UNREAD'`), 'board card opened the task');
+    assert.equal((await evaluate(dotProbe('DOT_BOARD_UNREAD'))).label, null, '看板确认后侧栏也没有标记');
+    await openBoard();
+    assert.deepEqual(await readBoardCard('DOT_BOARD_UNREAD'), boardConfirmed, '看板点击后绿点消失');
+    report.tests.push('从侧栏和看板打开结果后，两处同步清除未确认标记，且不触碰 updated_at');
 
     closeApp();
     await wait(1500);
@@ -118,16 +178,20 @@ function dotProbe(title) {
     // 重启后验证查看确认水位。
     await launch('boot-2');
     const doneAfter = await evaluate(dotProbe('DOT_DONE_UNREAD'));
-    assert.equal(doneAfter.found, true, '重启后任务仍在侧栏');
-    assert.equal(doneAfter.label, null, '重启后已完成任务仍留白');
+    assert.equal(doneAfter.found, true);
+    assert.equal(doneAfter.label, null, '重启后已确认任务仍没有绿点');
     const runningAfter = await evaluate(dotProbe('DOT_RUNNING'));
     assert.equal(runningAfter.label, '进行中');
+    assert.equal(runningAfter.animating, true, '重启后进行中动画仍在播放');
     const persistedAfter = await evaluate(`window.api.db.listTasks().then(rows => rows.find(t => t.id === 'dot-done-unread'))`);
     assert(
       typeof persistedAfter.doneAckedAt === 'number' && persistedAfter.doneAckedAt >= report.ackedAt,
       '重启后 DB 中确认水位仍在（未被退回未确认）',
     );
-    report.tests.push('重启后查看确认仍有效，进行中状态保留');
+    await openBoard();
+    assert.deepEqual(await readBoardCard('DOT_DONE_UNREAD'), boardConfirmed);
+    assert.deepEqual(await readBoardCard('DOT_BOARD_UNREAD'), boardConfirmed);
+    report.tests.push('重启后两处仍显示已确认，进行中动画保留');
     const shot2 = await rpc('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(out, 'after-restart.png'), Buffer.from(shot2.data, 'base64'));
 
