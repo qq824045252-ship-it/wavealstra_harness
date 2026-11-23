@@ -350,6 +350,21 @@ async function main(): Promise<void> {
     assert.equal(result.after?.hasKeyboardFocus, true);
     assert.deepEqual(fixture.mutations, ["focus"]);
   }));
+  // 真实会话里模型一轮常常超过 30 秒，旧的 30 秒引用寿命会让 inspect_controls → invoke_control 必然报过期。
+  await test("control references survive more than one model turn and still expire at their lifetime", () => withDriver(async (driver, fixture, window) => {
+    const tree = await driver.inspectWindow(window, { peerWindows: [window] });
+    const edit = tree.controls.find(control => control.name === "Message")!;
+    const realNow = Date.now;
+    try {
+      Date.now = () => realNow() + 90_000;
+      const result = await driver.focus(window, edit.runtimeId);
+      assert.equal(result.executed, true, "a reference younger than the lifetime must stay usable after a slow turn");
+      assert.deepEqual(fixture.mutations, ["focus"]);
+      Date.now = () => realNow() + 5 * 60_000 + 1;
+      await assert.rejects(driver.focus(window, edit.runtimeId), (error: unknown) => error instanceof ComputerUseError && error.code === "STALE_OBSERVATION");
+    } finally { Date.now = realNow; }
+    assert.deepEqual(fixture.mutations, ["focus"], "an expired reference must not dispatch a second action");
+  }));
   await test("Ancestor-only GetAccessibleAtPoint can use Component.Contains only with unique sibling geometry", () => withDriver(async (driver, fixture, window) => {
     fixture.nodes.get(FRAME)!.children = [GROUP];
     fixture.nodes.set(GROUP, { name: "Generic container", role: 49, parent: FRAME, children: [BUTTON], states: stateWords([8, 11, 24, 25, 30]), interfaces: [ACCESSIBLE, COMPONENT], bounds: { x: 0, y: 0, width: 800, height: 600 } });

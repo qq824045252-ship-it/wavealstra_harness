@@ -59,12 +59,18 @@ async function main() {
     await rejects("TARGET_CHANGED", () => f.backend.execute({ action: "click_client", observationId: observed.observationId, x: 40, y: 40 }));
     assert.equal(f.state.moves.length, 0); assert.equal(f.state.edges.length, 0);
   });
-  await check("observation TTL and uncertified client mapping fail closed", async f => {
-    const observed = await f.observe(); f.state.time += 30_001;
-    await rejects("STALE_OBSERVATION", () => f.backend.execute({ action: "click_client", observationId: observed.observationId, x: 40, y: 40 }));
+  await check("observation TTL covers an agent turn and uncertified client mapping fails closed", async f => {
+    // 30 秒短于一次模型往返：真实会话里 inspect_window → inspect_controls/click_client 必然过期。
+    const observed = await f.observe(); f.state.time += 90_001;
+    await f.backend.execute({ action: "click_client", observationId: observed.observationId, x: 40, y: 40 });
+    assert.ok(f.state.edges.length, "an observation must survive more than 30s of model latency");
+    assert.equal(f.state.edges.length, 2, "one click is one down/up pair");
+    // 超过寿命仍然 fail closed。
+    const aged = await f.observe(); f.state.time += 5 * 60_000 + 1;
+    await rejects("STALE_OBSERVATION", () => f.backend.execute({ action: "click_client", observationId: aged.observationId, x: 40, y: 40 }));
     f.window.clientGeometryVerified = false;
     await rejects("STALE_OBSERVATION", () => f.coordinates("mouse_click", { x: -1460, y: 120 }));
-    assert.equal(f.state.edges.length, 0);
+    assert.equal(f.state.edges.length, 2, "no extra edges after the closed failures");
   });
   await check("long press moves before DOWN and preserves requested hold duration", async f => {
     const order: string[] = []; f.state.moveHook = () => { order.push("move"); }; f.state.inputHook = args => { order.push(args.join(" ")); };

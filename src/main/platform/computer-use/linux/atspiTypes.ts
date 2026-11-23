@@ -1,7 +1,20 @@
 import type { ControlInfo, WindowInfo } from "../protocol";
 
 export const ATSPI_WORKER_PROTOCOL = 1 as const;
-export const ATSPI_REFERENCE_TTL_MS = 30_000;
+
+/**
+ * 控件引用 / 窗口观察在内存里的最长复用寿命。
+ *
+ * 这不是输入安全阀：每次动作前都会重新读取合成器快照（layoutId、窗口几何、生命期标记）、
+ * 控件 enabled/可靠边界、总线代次与焦点，任何变化都以 STALE_OBSERVATION 拒绝；对象重建还会
+ * 由事件置 invalidReason 立即失效。它只决定「观察结果能保留多久」。
+ *
+ * 真实 agent 的一轮 = 模型思考 + 工具往返 + 界面流式输出，几十秒是常态，30 秒短于一次往返，
+ * 于是 inspect_window → inspect_controls / invoke_control 这条官方流程在真实会话里必然报
+ * 「观察已过期」（GUI/单测在毫秒内连续调用，永远测不出来）。5 分钟覆盖一次完整往返，同时仍
+ * 限制了陈旧观察的生命期。
+ */
+export const ATSPI_REFERENCE_TTL_MS = 5 * 60_000;
 
 export interface AtSpiObjectReference {
   busName: string;

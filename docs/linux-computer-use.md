@@ -49,6 +49,8 @@ A control reference binds at least the accessibility-bus connection generation, 
 
 Tree traversal has depth, node and elapsed-time budgets, with bounded concurrency. Queries return `truncated` and diagnostics rather than implying the first page is complete. Unique-control decisions cannot be inferred from an incomplete search. Text reads are bounded too. Event subscriptions are scoped to the bus lifetime and removed when the connection closes.
 
+An observation and its control references stay usable for five minutes (`ATSPI_REFERENCE_TTL_MS`, shared by the driver and the backend). That lifetime is a drift budget, **not** the safety gate: every action re-reads the compositor snapshot and rejects a changed layout, geometry, window lifetime, control state/bounds or bus generation, and object rebuilds invalidate references by event. The earlier 30 s lifetime was shorter than one model turn, so the documented `inspect_window → inspect_controls → invoke_control` flow failed in real sessions (see the 2026-11-23 note) while millisecond-scale fixtures passed.
+
 ## Coordinate contract
 
 | Coordinate space | Contract |
@@ -157,6 +159,14 @@ Default reports go to `out/tests/linux-computer-use/<timestamp>-<dev|packaged>/`
 - `packaged-startup.log`, Electron/GTK fixture logs: execution evidence where that part actually ran.
 
 `test:computer-use-linux` and `test:computer-use-linux:packaged` are explicitly GUI tests. Windows-only GUI suites remain Windows-only. `test:atspi-transport` is a Linux headless **real D-Bus wire fixture**; it starts isolated daemons/services and is not evidence of an actual GTK/Wayland session. `test:input-guardian-process` is a Linux headless child-process lifecycle fixture, including parent death; its fake input sink is not evidence of kernel/desktop delivery. A missing graphical session or a forbidden D-Bus socket is a nonzero failure, not `SKIP` with a successful exit. No test baseline should be expanded to hide these failures.
+
+## Observation lifetime fix (2026-11-23)
+
+Symptom reported from the desktop UI: `Computer Use inspect_controls failed (STALE_OBSERVATION): 观察 ID 已过期或属于另一个任务；请重新观察`, phase `observe`, side effect "not started".
+
+Reproduced on the live app (old code, Hyprland 0.57.1, output scale 1.6): `inspect_window` returned an `observation_id`; 40 s later the same `inspect_controls` call was rejected with that exact message. Both TTLs were `30_000` ms — shorter than one agent turn (model latency + tool round trip + streamed UI), so the documented observe-then-act sequence could not survive a real turn while the GUI fixtures, which act within milliseconds, always passed.
+
+Fix: one exported constant `ATSPI_REFERENCE_TTL_MS = 5 * 60_000`, used by both the AT-SPI driver's control references and the backend's observations, with distinct diagnostics for "expired" and "belongs to another task". Input safety is unchanged: every action still revalidates layout, window geometry, lifetime token, control bounds/state, foreground window and bus generation, and object rebuilds invalidate references by event. Regression coverage: `test:linux-native-backend` (an observation 90 s old still clicks; past 5 min it fails closed with no extra input) and `test:atspi-driver` (a control reference older than 30 s still acts; expired one dispatches nothing).
 
 ## Final integration evidence
 

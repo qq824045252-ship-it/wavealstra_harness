@@ -12,7 +12,7 @@ import {
 } from "../protocol";
 import { detectComputerUseSupport } from "../support";
 import { AtSpiClient } from "./atspiClient";
-import type { AtSpiControlInfo, AtSpiDriverApi, AtSpiInspection } from "./atspiTypes";
+import { ATSPI_REFERENCE_TTL_MS, type AtSpiControlInfo, type AtSpiDriverApi, type AtSpiInspection } from "./atspiTypes";
 import { createHyprlandDesktop, createHyprlandWindowControl, hyprlandAddressFromHandle, windowGeometryIdentity, type HyprlandDesktop, type HyprlandSnapshot, type HyprlandWindowControl, type LinuxWindowInfo } from "./hyprlandWindows";
 import { containsPoint, monitorForPoint } from "./hyprlandMonitors";
 import { createGrimScreenshotProvider, type LinuxScreenshotProvider } from "./screenshotProvider";
@@ -24,7 +24,7 @@ type MouseButton = "left" | "right" | "middle";
 interface Observation { window: LinuxWindowInfo; at: number; owner: string }
 interface AppSession { info: AppSessionInfo; owner: string }
 interface ActionContext { snapshot: HyprlandSnapshot; target?: LinuxWindowInfo; control?: ControlInfo; submitted: boolean; owner: string; clipboardChanged?: boolean }
-const OBSERVATION_TTL = 30_000;
+const OBSERVATION_TTL = ATSPI_REFERENCE_TTL_MS;
 const SESSION_TTL = 10 * 60_000;
 const DIAGNOSTIC_TTL = 60_000;
 const ATSPI_EDITABLE_TEXT = "org.a11y.atspi.EditableText";
@@ -236,7 +236,13 @@ export class LinuxComputerUseBackend implements ComputerUseBackend {
     }
     if (input.observationId) {
       const observed = this.observations.get(input.observationId);
-      if (!observed || observed.owner !== owner) throw new ComputerUseError("STALE_OBSERVATION", "观察 ID 已过期或属于另一个任务；请重新观察");
+      if (!observed) {
+        // 同一句话说的是两种完全不同的处理：过期要重新观察，跨任务不能继承别的任务的观察。
+        throw new ComputerUseError("STALE_OBSERVATION", "观察 ID 不存在或已超过有效期；请重新观察同一窗口后继续", {
+          observationId: input.observationId, observationTtlMs: OBSERVATION_TTL,
+        });
+      }
+      if (observed.owner !== owner) throw new ComputerUseError("STALE_OBSERVATION", "该观察属于另一个任务；不能跨任务复用，请在本任务内重新观察", { observationId: input.observationId });
       if (handle && handle !== observed.window.handle) throw new ComputerUseError("TARGET_CHANGED", "目标窗口与观察不一致");
       handle = observed.window.handle; prior = observed.window;
       if (observed.window.layoutId !== snapshot.layoutId) throw new ComputerUseError("STALE_OBSERVATION", "输出布局或缩放已经改变；请重新观察");

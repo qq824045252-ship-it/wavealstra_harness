@@ -464,7 +464,14 @@ async function main(): Promise<void> {
   await assert.rejects(service.execute({ action: "mouse_click", x: 10, observeAfter: false }), /x\/y 必须同时提供/);
   await service.execute({ action: "click_client", windowTitle: current.title, x: 10, y: 10, observeAfter: false });
   assert.equal(sideEffectCalled, true);
-  assert.deepEqual(lastSideEffectTarget, { windowHandle: current.handle, expectedProcessId: current.processId }, "side effects must pin selectors to HWND + PID before input");
+  // HWND 会被系统复用，单靠 handle 不能证明还是同一个窗口；后端把观测到的 class 也作为
+  // 身份 pin 交给 automation host（host 的 Resolve-Target 会校验 className）。这里断言
+  // 调用方只给了 window_title 时，pin 依然包含 handle + PID + class。
+  assert.deepEqual(
+    lastSideEffectTarget,
+    { windowHandle: current.handle, expectedProcessId: current.processId, className: current.className },
+    "side effects must pin selectors to HWND + PID + class before input",
+  );
   await service.execute({ action: "screenshot_window", windowHandle: current.handle, ensureForeground: false });
   assert.equal(capturedClientOnly, true, "window screenshots must default to client-aligned pixels");
   await service.execute({ action: "screenshot_window", windowHandle: current.handle, ensureForeground: false, clientOnly: false });
