@@ -24,12 +24,39 @@ run(async env => {
   const toggleTasks = () => press("document.querySelector('.chat-header .dots-activity-entry')", "all tasks in Dots header");
   const row = (state, title) => `[...document.querySelectorAll('.dots-all-tasks:popover-open li[data-state="${state}"]')].find(li => li.querySelector('strong')?.textContent === ${JSON.stringify(title)})`;
   const listCount = () => evaluate("document.querySelectorAll('.dots-all-tasks:popover-open li').length");
+  const waitingIndicator = '.sidebar-dots-row [aria-label="Dots 正在等待委托结果"]';
+  const showsWaitingAnimation = () => evaluate(`document.querySelector(${JSON.stringify(waitingIndicator + " .lucide-clock")})
+    ?.getAnimations().some(animation => animation.playState === 'running') === true`);
   const send = async text => {
     await press("document.querySelector('textarea.input-textarea')", "Dots composer");
     await rpc("Input.insertText", { text });
     await press("document.querySelector('button[title=\"发送 (Enter)\"]')", text);
   };
   const waitFor = (title, state) => until(async () => (await api("dots.activity")).some(item => item.title === title && item.state === state), `${title} ${state}`);
+
+  const pendingIndicators = [
+    { label: "Dots 正在接收请求", mark: ".task-status-mark > i", count: 3, messages: [], botPendingSubmissions: [{ submitting: true }] },
+    { label: "等待你回答", mark: ".lucide-messages-square", count: 1, messages: [{ blocks: [], interactions: [{ status: "pending" }] }] },
+    { label: "等待你确认操作", mark: ".lucide-shield", count: 1, messages: [{ blocks: [{ type: "tool", toolCall: { status: "pending_approval" } }] }] },
+  ];
+  for (const { label, mark, count, messages, botPendingSubmissions } of pendingIndicators) {
+    await evaluate(`(async () => {
+      const { useAppStore } = await import('/src/store/appStore.ts');
+      useAppStore.setState(state => ({
+        tasks: [...state.tasks.filter(task => task.id !== 'mybuddy-dots'), {
+          id: 'mybuddy-dots', title: 'Dots', status: 'pending', updatedAt: Date.now(),
+          messages: ${JSON.stringify(messages)}, botPendingSubmissions: ${JSON.stringify(botPendingSubmissions)},
+        }],
+      }));
+    })()`);
+    await until(() => evaluate(`document.querySelector('.sidebar-dots-row [role="img"]')?.ariaLabel === ${JSON.stringify(label)}`), label);
+    assert.equal(await evaluate(`document.querySelectorAll(${JSON.stringify(".sidebar-dots-row " + mark)}).length`), count, label);
+  }
+  await evaluate(`(async () => {
+    const { useAppStore } = await import('/src/store/appStore.ts');
+    useAppStore.setState(state => ({ tasks: state.tasks.filter(task => task.id !== 'mybuddy-dots') }));
+  })()`);
+  report.seededPresentationFacts.push("Receiving a request, waiting for an answer and waiting for approval use three distinct sidebar symbols.");
 
   for (const space of new Set(cases.map(item => item.space))) {
     const path = join(env.home, space);
@@ -63,6 +90,7 @@ run(async env => {
   await waitFor(cases[1].task, "waiting");
   await send(cases[2].command);
   await waitFor(cases[2].task, "running");
+  await until(showsWaitingAnimation, "Dots animates while its delegated worker is still running");
   await toggleTasks();
   await until(async () => await listCount() === 3, "all three live tasks in the popup");
   assert.equal(await evaluate("document.querySelector('.chat-header .dots-activity-badge')?.textContent"), "1", "only the unanswered question counts");
@@ -89,10 +117,12 @@ run(async env => {
   await toggleTasks();
   await press(`${row("waiting", cases[1].task)}?.querySelector('button')`, "open native question from all tasks");
   await until(() => evaluate(`!![...document.querySelectorAll('[data-interaction-id]')].find(card => card.textContent.includes(${JSON.stringify(questionText)}) && card.checkVisibility())`), "exact native question in worker chat");
+  assert.equal(await showsWaitingAnimation(), true, "the waiting animation remains when viewing a worker chat");
   await press("[...document.querySelectorAll('[data-interaction-id] button')].find(button => button.textContent.trim() === '确认')", "answer native question");
   await waitFor(cases[1].task, "delivered");
   releaseInventory();
   await waitFor(cases[2].task, "delivered");
+  await until(() => evaluate(`!document.querySelector(${JSON.stringify(waitingIndicator)})`), "the waiting animation clears after the last delivery");
 
   const previousDelivery = (await api("dots.activity")).find(item => item.title === cases[0].task);
   const extra = Array.from({ length: 18 }, (_, index) => ({ id: `dots-list-fixture-${index}`, title: `历史委派 ${index + 1}` }));

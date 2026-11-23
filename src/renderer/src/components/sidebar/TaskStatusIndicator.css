@@ -46,6 +46,10 @@
   animation: task-status-hop 1360ms ease-in-out infinite;
 }
 
+.task-status-delegation-clock {
+  animation: task-status-clock-pulse 1800ms ease-in-out infinite;
+}
+
 .task-status-indicator--planning .task-status-mark {
   flex-direction: column;
   align-items: flex-start;
@@ -85,6 +89,9 @@
 @keyframes task-status-hop {
   0%, 39%, 100% { transform: translateY(1px); }
   20% { transform: translateY(-2px); }
+}
+@keyframes task-status-clock-pulse {
+  50% { opacity: .45; }
 }
 @keyframes task-status-write {
   0%, 100% { transform: scaleX(.45); opacity: .64; }

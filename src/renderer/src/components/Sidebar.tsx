@@ -10,6 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useAppStore, useSidebarTasks } from "@/store/appStore";
 import { hasUnreadDotsReply } from "@/lib/botMessagePresentation";
+import { useDotsActivity } from "@/lib/dotsActivityFeed";
 import {
   buildWorkspaceTree,
   findWorkspaceNode,
@@ -24,7 +25,7 @@ import type { WorkspaceTreeNode } from "../../../shared/workspace-tree";
 import type { SpaceDto, TaskDto } from "../../../shared/agent-ipc";
 import {
   deriveTaskStatus, FOREGROUND_TASK_STATUS, isTaskDoneUnread, matchesTaskFilter,
-  matchesTaskTimeFilter, taskActionLabel, taskHasActiveExecution,
+  matchesTaskTimeFilter, taskHasActiveExecution, taskPendingAction,
 } from "@/utils/taskFilters";
 import TaskStatusIndicator from "@/components/sidebar/TaskStatusIndicator";
 import TaskFilterControls from "@/components/sidebar/TaskFilterControls";
@@ -40,12 +41,15 @@ import {
   IconMessageDashed,
   IconChevronDown,
   IconChevronRight,
+  IconClock,
   IconFilter,
   IconFolder,
   IconLink,
+  IconMessages,
   IconPencil,
   IconPlus,
   IconMore,
+  IconShield,
   IconTrash,
 } from "@/components/common/icons";
 
@@ -77,15 +81,27 @@ const dotsStatusLabels = {
   stopped: "Dots 上次处理已停止",
 };
 
+const dotsActionMarks = {
+  reply: <IconMessages size={13} />,
+  approve: <IconShield size={13} />,
+};
+
 function DotsStatusIndicator(): React.JSX.Element | null {
   const task = useAppStore((state) => state.tasks.find((item) => item.id === DOTS_TASK_ID));
-  if (!task) return null;
-  const label = taskActionLabel(task);
-  const status = deriveTaskStatus(task, label);
-  if (status === "planning" || (status === "pending" && !label && !taskHasActiveExecution(task))) return null;
+  const { items } = useDotsActivity();
+  const action = task ? taskPendingAction(task) : null;
+  const label = action?.label ?? null;
+  const status = task && deriveTaskStatus(task, label);
+  const pendingRequest = status === "pending" && task && (label !== null || taskHasActiveExecution(task));
+  if (status !== "in_progress" && !pendingRequest && items.some(item => item.state === "running")) {
+    return <TaskStatusIndicator status="pending" label="Dots 正在等待委托结果"
+      mark={<IconClock size={13} className="task-status-delegation-clock" />} />;
+  }
+  if (!task || !status || status === "planning" || (status === "pending" && !pendingRequest)) return null;
   const unread = isTaskDoneUnread(task, status) &&
     (status !== "completed" || hasUnreadDotsReply(task.messages, task.doneAckedAt ?? 0));
-  return <TaskStatusIndicator status={status} label={label ?? dotsStatusLabels[status]} unread={unread} unreadLabel="未查看" />;
+  return <TaskStatusIndicator status={status} label={label ?? dotsStatusLabels[status]}
+    mark={action ? dotsActionMarks[action.kind] : undefined} unread={unread} unreadLabel="未查看" />;
 }
 
 /**

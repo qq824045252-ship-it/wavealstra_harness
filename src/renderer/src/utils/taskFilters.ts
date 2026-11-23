@@ -52,11 +52,20 @@ export const FOREGROUND_TASK_STATUS: Record<BotWorkspaceRequestDto["status"], Ta
   unknown: "unknown",
 };
 
-export function taskActionLabel(task: Task): string | null {
-  if (hasPendingConversationInteraction(task)) return "等待你回答";
-  if (hasPendingApproval(task)) return "等待你确认操作";
-  if (task.durable?.status === "waiting_input") return "等待你回答";
+const pendingActions = {
+  reply: { kind: "reply", label: "等待你回答" },
+  approve: { kind: "approve", label: "等待你确认操作" },
+} as const;
+
+export function taskPendingAction(task: Task) {
+  if (hasPendingConversationInteraction(task)) return pendingActions.reply;
+  if (hasPendingApproval(task)) return pendingActions.approve;
+  if (task.durable?.status === "waiting_input") return pendingActions.reply;
   return null;
+}
+
+export function taskActionLabel(task: Task): string | null {
+  return taskPendingAction(task)?.label ?? null;
 }
 
 export function deriveTaskStatus(task: Task, action = taskActionLabel(task)): TaskStatus {
