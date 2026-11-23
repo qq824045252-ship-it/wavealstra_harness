@@ -15,7 +15,7 @@ const generated = new Set([".git", ".hg", ".svn", "node_modules", "dist", "out",
 export type FileState = { digest: string; lines: number; hashes: string; branches: Record<string, number>; source?: string; binary?: boolean };
 export type ScopedFile = { path: string; before: FileState; current: FileState };
 export type WorkspaceBaseline = { cwd: string; root: string; head: string; files: Record<string, FileState>; unknown: string[] };
-export type WorkspaceDelta = { fingerprint: string; paths: string[]; changedLines: number; largestCrossing: number; addedBranches: number; unknown: string[]; coverageComplete: boolean };
+export type WorkspaceDelta = { fingerprint: string; paths: string[]; fileDigests: ReadonlyMap<string, string>; changedLines: number; largestCrossing: number; addedBranches: number; unknown: string[]; coverageComplete: boolean };
 export const missingFile: FileState = { digest: "", lines: 0, hashes: "", branches: {} };
 const empty = missingFile;
 
@@ -242,7 +242,7 @@ export async function measureWorkspace(base: WorkspaceBaseline, fileThreshold: n
   // Repeated predicates or additions spread across different files/functions
   // are review signals. Semantic equivalence remains a reviewer decision.
   const addedBranches = [...predicates.values()].reduce((max, count) => Math.max(max, count), sites.size);
-  return { fingerprint: hash(JSON.stringify([changes, unknown])), paths: changes.map(([name]) => name),
+  return { fingerprint: hash(JSON.stringify([changes, unknown])), paths: changes.map(([name]) => name), fileDigests: new Map(changes),
     changedLines: total, largestCrossing, addedBranches, unknown, coverageComplete: !base.unknown.length && !current.unknown.length };
 }
 

@@ -19,7 +19,8 @@ import type { SessionToolApprovalRequest } from "../SessionApprovalBridge";
 import { durableExecutionContext } from "./DurableExecutionContext";
 import { DurableSubagentIdentity } from "./DurableSubagents";
 import { durableMcpToolName } from "./DurableMcp";
-import { effectIntentSchema, effectOperationId, prepareFileEffect, verifyFileEffect, type EffectEvidence, type ExternalEffectRecovery } from "./DurableEffectRecovery";
+import { effectIntentSchema, effectOperationId, isNativeFileMutation, NATIVE_FILE_EVIDENCE_MEMO, NATIVE_FILE_INTENT_MEMO,
+  prepareFileEffect, verifyFileEffect, type EffectEvidence, type EffectIntent, type ExternalEffectRecovery } from "./DurableEffectRecovery";
 
 function isArguments(value: unknown): value is ToolHookCall["arguments"] {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -114,10 +115,11 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
           const execution = await durableExecutionContext(options.taskId, api, context);
           const priorIntent = await api.memo("mybuddy.effect-intent", context);
           const fileCall = originalCall.name === "pstack_decision_append" ? originalCall : call;
-          let intent = priorIntent === undefined ? await prepareFileEffect(fileCall, taskRoot) : effectIntentSchema.parse(priorIntent);
+          let intent: EffectIntent | undefined = priorIntent !== undefined ? effectIntentSchema.parse(priorIntent)
+            : isNativeFileMutation(originalCall.name) ? undefined : await prepareFileEffect(fileCall, taskRoot);
           const origin = originalCall.name === "mcp_call_tool" && typeof originalCall.arguments.server === "string" && typeof originalCall.arguments.tool === "string"
             ? { server: originalCall.arguments.server, tool: originalCall.arguments.tool } : undefined;
-          const prepared = !intent && options.effectRecovery
+          const prepared = !intent && !isNativeFileMutation(originalCall.name) && options.effectRecovery
             ? await options.effectRecovery.prepare(call.name, jsonArguments.parse(call.arguments), effectOperationId(execution.executionId, call.id), context, origin) : undefined;
           if (prepared) { intent = prepared.intent; call = { ...call, arguments: prepared.arguments }; }
           if (intent && priorIntent === undefined) await api.memo("mybuddy.effect-intent", intent, context);
@@ -141,6 +143,7 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         // The container owns no effect receipt; its leaves do.
         if (call.name === "codemode") return undefined;
         // Pi also reports validation failures here, before beforeTool or execution ran.
+        const originalCall = call;
         try { call = policyCall(call); }
         catch { return undefined; }
         const interrupted = result.diagnostics?.find(item => ["interrupted", "aborted", "abandoned", "restart_limit"].includes(item.code ?? ""));
@@ -148,10 +151,20 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const attempt = options.attempts.findDurable(execution, call.id);
         const mcp = mcpReadTools.has(call.name) ? null : classifyMcpToolCall(call.name, call.arguments, options.providerIds);
         const mayWrite = !workShellRead(call.name, call.arguments) && (mcp?.sideEffect ?? (isSideEffectTool(call.name, call.arguments) || isDangerousTool(call.name, call.arguments)));
-        const savedIntent = await api.memo("mybuddy.effect-intent", context);
-        const intent = savedIntent === undefined ? undefined : effectIntentSchema.parse(savedIntent);
+        const proof = await api.memo(TOOL_NOT_STARTED_MEMO, context);
+        const notStarted = isNativeNotStarted(api.taskId, String(api.conversationId)) || proof !== null && typeof proof === "object" && !Array.isArray(proof)
+          && proof.toolName === call.name && proof.callId === call.id && proof.taskId === api.taskId
+          && proof.conversationId === api.conversationId && proof.phase === "validation";
+        // A blocked call cannot be reconciled by a file or receipt lookup.
+        const nativeFile = isNativeFileMutation(originalCall.name);
         let evidence: EffectEvidence | undefined;
-        if (attempt && intent) {
+        if (attempt && !notStarted && nativeFile) {
+          evidence = await api.memo<EffectEvidence>(NATIVE_FILE_EVIDENCE_MEMO, context);
+        }
+        const savedIntent = attempt && !notStarted && !evidence
+          ? (nativeFile ? await api.memo(NATIVE_FILE_INTENT_MEMO, context) : undefined) ?? await api.memo("mybuddy.effect-intent", context) : undefined;
+        if (savedIntent !== undefined) {
+          const intent = effectIntentSchema.parse(savedIntent);
           if (intent.kind === "file") evidence = await verifyFileEffect(intent, context.abortSignal);
           else if (options.effectRecovery && options.toolAllowed?.(durableMcpToolName(intent.server, intent.contract.receiptTool)) !== false) evidence = await options.effectRecovery.verify(intent, context);
           else evidence = { status: "inconclusive", verifierId: "durable-business-receipt",
@@ -159,14 +172,8 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
             expected: { operationId: intent.operationId, completed: intent.contract.completedValues },
             observed: { reason: "receipt-verifier-unavailable-or-not-authorized" }, checkedAt: Date.now() };
         }
-        const proof = await api.memo(TOOL_NOT_STARTED_MEMO, context);
-        const notStarted = isNativeNotStarted(api.taskId, String(api.conversationId)) || proof !== null && typeof proof === "object" && !Array.isArray(proof)
-          && proof.toolName === call.name && proof.callId === call.id && proof.taskId === api.taskId
-          && proof.conversationId === api.conversationId && proof.phase === "validation";
-        // A matching preexisting file cannot turn a blocked/unstarted call into a
-        // successful write, or leave a spurious unverified-effect diagnosis.
-        if (notStarted) evidence = undefined;
         const reconciled = evidence?.status === "passed";
+        const confirmedFailure = evidence?.status === "failed";
         // A completed error is a normal tool result, not a lost execution. In
         // particular, native shell exit_code covers every command without parsing
         // shell text. A nonzero exit does NOT prove that no partial write occurred.
@@ -177,17 +184,18 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         const exitCode = result.structuredOutput && typeof result.structuredOutput === "object"
           && !Array.isArray(result.structuredOutput) && typeof result.structuredOutput.exitCode === "number"
           && Number.isSafeInteger(result.structuredOutput.exitCode) ? result.structuredOutput.exitCode : undefined;
-        const settlement = notStarted ? "released" : reconciled || (!evidence && completedResponse) ? "consumed" : mayWrite ? "unknown" : "released";
+        const settlement = notStarted ? "released" : reconciled || confirmedFailure || (!evidence && completedResponse) ? "consumed" : mayWrite ? "unknown" : "released";
         options.settleWorkAction?.(`tool:${api.conversationId}:${api.taskId}:${call.id}`, settlement);
         if (attempt) {
           const status = notStarted ? "failed" : evidence?.status ?? (!completedResponse ? "inconclusive" : result.isError ? "failed" : "passed");
+          const verifierId = evidence?.verifierId ?? "durable-tool-result";
           options.attempts.settleDurable({ ...attempt, status, phase: "finished", finishedAt: Date.now(),
             transportStatus: completedResponse ? "succeeded" : "failed", observedExitCode: exitCode,
-            causeCode: reconciled ? undefined : evidence ? "effect-unverified" : interrupted?.code ?? (threw ? "tool_error" : undefined),
+            causeCode: reconciled ? undefined : confirmedFailure ? "effect-receipt-failed" : evidence ? "effect-unverified" : interrupted?.code ?? (threw ? "tool_error" : undefined),
             recovery: status === "inconclusive" ? "requires-user-action" : undefined,
-            verifierId: evidence?.verifierId ?? attempt.verifierId,
+            verifierId,
             // Business/file verification is used only when an explicit pre-execution intent exists.
-            verification: { ...execution, attemptId: attempt.id, verifierId: evidence?.verifierId ?? attempt.verifierId, verifierVersion: 1,
+            verification: { ...execution, attemptId: attempt.id, verifierId, verifierVersion: 1,
               target: attempt.target, canonicalTarget: evidence?.canonicalTarget ?? attempt.target, status,
               expected: evidence?.expected ?? { successfulToolResponse: true }, observed: evidence?.observed ?? { isError: result.isError === true,
                 diagnosticCodes: (result.diagnostics ?? []).map(item => item.code ?? ""),
@@ -199,7 +207,10 @@ export function createDurableToolPolicy(options: DurableToolPolicyOptions): {
         }
         if (evidence?.status === "passed" && (interrupted || result.isError)) return { output: [{ type: "text", text: "已通过回读确认原操作完成，未重复执行。" }],
           details: { recovery: { verifierId: evidence.verifierId, checkedAt: evidence.checkedAt, status: "passed" } } };
-        if (evidence && attempt && !reconciled) {
+        if (evidence?.status === "failed") return { ...result, isError: true,
+          output: [...(result.output ?? []), { type: "text", text: "业务回执确认本次操作失败。" }],
+          details: { recovery: { verifierId: evidence.verifierId, checkedAt: evidence.checkedAt, status: "failed" } } };
+        if (evidence?.status === "inconclusive" && attempt) {
           options.failures.recordIfAbsent({ ...execution, causeCode: "effect-unverified", phase: "verify", recovery: "requires-user-action", sideEffects: "unknown",
             target: attempt.target, message: "工具结果尚未通过内容或业务回执核验", nextAction: "检查核验证据和实际外部状态，确认前不要重复提交原操作。" });
           return { ...result, isError: true, output: [...(result.output ?? []), { type: "text", text: "核验未确认原操作完成；没有自动重发。" }],

@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonObject, ToolHookCall } from "@earendil-works/pi-durable";
+
+export const NATIVE_FILE_INTENT_MEMO = "mybuddy.native-file-intent";
+export const NATIVE_FILE_EVIDENCE_MEMO = "mybuddy.native-file-evidence";
+export const isNativeFileMutation = (name: string) => name === "write" || name === "edit";
 
 const field = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 export const receiptContractSchema = z.object({
@@ -21,8 +25,8 @@ export type EffectEvidence = {
   status: "passed" | "failed" | "inconclusive";
   verifierId: "durable-file-content" | "durable-business-receipt";
   canonicalTarget: string;
-  expected: Record<string, unknown>;
-  observed: Record<string, unknown>;
+  expected: JsonObject;
+  observed: JsonObject;
   checkedAt: number;
 };
 export interface ExternalEffectRecovery {
@@ -64,7 +68,7 @@ async function editedContent(args: Record<string, unknown>, path: string): Promi
   return bom + (newline === "\r\n" ? expected.replace(/\n/g, "\r\n") : expected);
 }
 
-export async function prepareFileEffect(call: ToolHookCall, cwd: string): Promise<EffectIntent | undefined> {
+export async function prepareFileEffect(call: ToolHookCall, cwd: string): Promise<Extract<EffectIntent, { kind: "file" }> | undefined> {
   if (call.name === "pstack_decision_append") {
     const { path: target, expectedSha256, expectedBytes } = call.arguments;
     if (typeof target !== "string" || typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(expectedSha256)
@@ -72,8 +76,9 @@ export async function prepareFileEffect(call: ToolHookCall, cwd: string): Promis
     const path = resolve(cwd, target);
     return { kind: "file", path, canonicalPath: await canonicalTarget(path), sha256: expectedSha256, bytes: expectedBytes };
   }
-  if (!["write", "edit"].includes(call.name) || typeof call.arguments.path !== "string") return undefined;
-  const path = resolve(cwd, call.arguments.path);
+  if (!isNativeFileMutation(call.name) || typeof call.arguments.path !== "string") return undefined;
+  const target = call.arguments.path;
+  const path = isAbsolute(target) ? target : resolve(cwd, target);
   try {
     const content = call.name === "write" && typeof call.arguments.content === "string" ? call.arguments.content
       : call.name === "edit" ? await editedContent(call.arguments, path) : undefined;

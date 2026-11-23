@@ -1,5 +1,35 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import type { WorkflowRun } from "./PstackState";
+import type { WorkspaceDelta } from "./PstackWorkspace";
+
+type VerificationFailure = "tool_error" | "command_failed" | "workspace_changed" | "workspace_unverified" | "empty_suite" | "silent_measurement";
+export type VerificationOutcome = { outcome: "passed" } | {
+  outcome: VerificationFailure;
+  error: string;
+  changedPaths?: string[];
+};
+
+export function verificationOutcome(before: WorkspaceDelta, after: WorkspaceDelta, exitCode: number | null, toolError: boolean,
+  emptySuite: boolean, silentMeasurement: boolean): VerificationOutcome {
+  if (exitCode === null || (exitCode === 0 && toolError))
+    return { outcome: "tool_error", error: "The check did not return a successful tool receipt. Inspect the tool diagnostics." };
+  if (exitCode !== 0) return { outcome: "command_failed", error: `The check exited with code ${exitCode}. Inspect the command output.` };
+  if (!before.coverageComplete || !after.coverageComplete) {
+    const issues = [...new Set([...before.unknown, ...after.unknown])].slice(0, 3);
+    return { outcome: "workspace_unverified", error: "The check exited successfully. Workspace inspection was incomplete. " +
+      "Resolve the inspection problems before relying on this result. " + issues.join(". ") };
+  }
+  if (before.fingerprint !== after.fingerprint) {
+    const changedPaths = [...new Set([...before.paths, ...after.paths])]
+      .filter(path => before.fileDigests.get(path) !== after.fileDigests.get(path)).slice(0, 12);
+    return { outcome: "workspace_changed", changedPaths, error: "The check exited successfully. The workspace changed while it ran. " +
+      (changedPaths.length ? "Inspect the changed paths before checking a stable snapshot. " + changedPaths.join(", ") :
+        "Inspect concurrent workspace changes before checking a stable snapshot.") };
+  }
+  if (emptySuite) return { outcome: "empty_suite", error: "The test runner executed zero tests. Select the project's actual check." };
+  if (silentMeasurement) return { outcome: "silent_measurement", error: "The observed program returned no output." };
+  return { outcome: "passed" };
+}
 
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object"; }
 export type ReviewCheck = { toolTaskId: number; entry: number; command: string; exitCode: number; passed: boolean; output: string; truncated: boolean };

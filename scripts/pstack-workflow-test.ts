@@ -31,7 +31,7 @@ import { baselineWorkspace, branchReviewBase, measureWorkspace, missingFile, rea
 import { reviewIntent } from "../src/main/agent/pstack/PstackReviewIntent";
 import { parseThermosVerdict } from "../src/main/agent/pstack/PstackDelegate";
 import { observedReviewFiles, reviewTargets, validateInspections } from "../src/main/agent/pstack/PstackReviewEvidence";
-import { currentVerificationEvidence } from "../src/main/agent/pstack/PstackVerificationEvidence";
+import { currentVerificationEvidence, verificationOutcome } from "../src/main/agent/pstack/PstackVerificationEvidence";
 
 const exec = promisify(execFile), root = await mkdtemp(join(tmpdir(), "mybuddy-pstack-"));
 const model: Model<"openai-completions"> = { id: "fixture", name: "Fixture", provider: "fixture", api: "openai-completions", baseUrl: "http://fixture.invalid",
@@ -153,6 +153,21 @@ try {
   assert.equal(isPstackCheck("node -e \"console.log('test')\""), false);
   console.log("PASS task-relative Git diff, pre-existing tracked and untracked work, native review baseline, check command admission");
 
+  const incomplete = join(root, "incomplete-workspace");
+  await mkdir(incomplete);
+  const expectedFile = join(incomplete, "entry");
+  await writeFile(expectedFile, "tracked");
+  const incompleteBase = await baselineWorkspace(incomplete);
+  await rm(expectedFile);
+  await mkdir(expectedFile);
+  const uncertainBefore = await measureWorkspace(incompleteBase, 1000);
+  const uncertainAfter = await measureWorkspace(incompleteBase, 1000);
+  assert.equal(uncertainBefore.fingerprint, uncertainAfter.fingerprint);
+  assert.equal(uncertainBefore.coverageComplete, false);
+  const unverified = verificationOutcome(uncertainBefore, uncertainAfter, 0, false, false, false);
+  assert.equal(unverified.outcome, "workspace_unverified");
+  assert.match("error" in unverified ? unverified.error : "", /entry: non-regular file/);
+
   const settings = normalizePstackSettings({});
   const host = createPstackWorkflow({ taskId: "pstack-fixture", cwd, settings: () => settings, active: () => enabled });
   const open = () => DurableBotRuntime.open({ directory: join(root, "store"), cwd, models, model: { provider: model.provider, modelId: model.id },
@@ -184,9 +199,13 @@ try {
     assert.equal(await runtime.reply(thanks), "Fixture yielded.", "a new acknowledgement gets its own reply");
     assert.equal((await status())?.run?.phase, "blocked", "acknowledgement does not clear the gate");
     const testFile = "const test=require('node:test'); test('works',()=>{});\n";
+    const changingTest = "require('node:test')('passes while workspace changes',()=>require('node:fs').writeFileSync('overlap.txt','updated'));\n";
     const finished = await turn("继续", "run-2", [work("resume"),
       { name: "write", arguments: { path: "check.cjs", content: testFile } },
       work("complete"), work("verify", { shell: "bash", command: "echo passed" }), work("verify", { shell: "bash", command: "node --test" }),
+      { name: "write", arguments: { path: "overlap.txt", content: "original" } },
+      { name: "write", arguments: { path: "changing-check.cjs", content: changingTest } },
+      work("verify", { shell: "bash", command: "node --test changing-check.cjs" }), work("status"), work("complete"),
       work("verify", { shell: "bash", command: "node --test check.cjs" }),
       { name: "write", arguments: { path: "check.cjs", content: testFile + "// changed since test\n" } }, work("complete"),
       work("verify", { shell: "bash", command: "node --test check.cjs" }), work("complete")]);
@@ -204,6 +223,15 @@ try {
     assert.equal(errors.filter(e => /Current workspace needs/.test(e)).length, 2, JSON.stringify(errors));
     assert(errors.some(e => /single test\/check|run one check/i.test(e)), JSON.stringify(errors));
     assert(errors.some(e => e.includes("executed zero tests")), JSON.stringify(errors));
+    const stale = errors.find(e => e.includes('"outcome": "workspace_changed"'));
+    assert(stale, JSON.stringify(errors));
+    const staleReceipt = JSON.parse(stale);
+    assert.deepEqual({ passed: staleReceipt.passed, exitCode: staleReceipt.exitCode, unchanged: staleReceipt.unchanged, paths: staleReceipt.changedPaths },
+      { passed: false, exitCode: 0, unchanged: false, paths: ["overlap.txt"] });
+    const statusReply = history.items.flatMap(e => (e.model ?? []).flatMap(m => m.role === "toolResult" && !m.isError ? m.content.flatMap(c => c.type === "text" ? [c.text] : []) : []))
+      .find(e => e.includes('"verification"') && e.includes('"outcome": "workspace_changed"'));
+    assert(statusReply?.includes('"exitCode": 0'), JSON.stringify(statusReply));
+    assert(errors.some(e => e.includes("exited successfully") && e.includes("overlap.txt") && !e.startsWith("{")));
     console.log("PASS gate before first write, absent evidence, explicit block, durable reopen, real nested shell exit, stale verification, completion");
     const readTurn = await turn("Only inspect check.cjs. Do not change project files.", "run-3", [work("start", { skill }), { name: "read", arguments: { path: "check.cjs" } },
       { name: "pstack_workflow", arguments: { action: "decision", decision: { phase: "apply", decision: "Answer", why: "Read only", evidence: "check.cjs", result: "Inspected" } } },
@@ -226,12 +254,20 @@ try {
       { name: "write", arguments: { path: "behavior.cjs", content: "require('node:test')('expected value',()=>require('node:assert/strict').equal(require('./value.cjs'),1));\n" } },
       verification, advance("red"), advance("implement"), advance("green"),
       { name: "write", arguments: { path: "value.cjs", content: "module.exports=1;\n" } },
-      verification, advance("green"), advance("regression"), work("complete")]);
+      verification,
+      { name: "write", arguments: { path: "value.cjs", content: "module.exports=0;\n" } },
+      advance("green"),
+      { name: "write", arguments: { path: "value.cjs", content: "module.exports=1;\n" } },
+      advance("green"), advance("regression"), work("complete")]);
     assert.equal(tddRun.status, "done", JSON.stringify(tddRun));
     const tdd = (await status())!.run!;
     assert.equal(tdd.phase, "complete"); assert.equal(tdd.red?.exitCode, 1);
     assert.equal(tdd.red?.command, tdd.verification?.command);
     assert.notEqual(tdd.verification?.fingerprint, tdd.red?.fingerprint);
+    const tddHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id, minEntryId: tdd.first, order: "ascending" }, 120), ctx);
+    assert(tddHistory.items.some(e => (e.model ?? []).some(message => message.role === "toolResult" && message.isError &&
+      message.content.some(part => part.type === "text" && part.text.includes("successful check covers a different workspace version")))),
+      "the green step must reject success evidence for the previous file content");
     console.log("PASS actual failing TDD assertion, missing red/green gates, repaired product returns green on same command");
     const before = replies;
     const unfinished = await turn("空值也算进去", "run-4", []);
@@ -255,6 +291,16 @@ try {
     const mergeHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id, minEntryId: latest, order: "ascending" }, 140), ctx);
     const mergeMessages = mergeHistory.items.flatMap(e => (e.model ?? []).flatMap(m => m.role === "toolResult" ? m.content.flatMap(p => p.type === "text" ? [p.text] : []) : []));
     assert(mergeMessages.some(s => s.includes('"pre-merge review"')), JSON.stringify(mergeMessages).slice(-5000));
+    const originalCheck = await readFile(join(cwd, "check.cjs"), "utf8");
+    await turn("Test the temporary revision and restore the original check.", "restored-snapshot", [
+      work("start", { skill, replace: true, note: "Verify a temporary revision before restoring the baseline." }),
+      { name: "write", arguments: { path: "check.cjs", content: originalCheck + "// temporary revision\n" } },
+      work("verify", { shell: "bash", command: "node --test check.cjs" }),
+      { name: "write", arguments: { path: "check.cjs", content: originalCheck } },
+      advance("apply"), work("complete"), work("block", { note: "A check of the restored snapshot is still required." }),
+    ]);
+    assert.equal((await status())!.run!.verification?.passed, true, "the old revision passed its test");
+    assert.equal((await status())!.run!.phase, "blocked", "restoring the baseline invalidates the previous success");
     enabled = false;
     assert.equal((await turn("Question", "run-5", [])).status, "done");
     console.log("PASS actual read receipt, independent next workflow, bounded native onYield and disabled task");

@@ -9,7 +9,7 @@ async function main() {
   const launches = path.join(root, 'launches.txt');
   const result = await verifyDesktopCases({ caseIds: [caseId], fresh: process.argv.includes('--fresh'),
     fingerprint: () => fingerprintFiles(root, ['fixture-layout.txt']), receiptsDirectory: path.join(root, 'receipts'),
-    run: async () => {
+    run: async inputsStillCurrent => {
       fs.appendFileSync(launches, `${caseId}\n`);
       const value = fs.readFileSync('fixture-layout.txt', 'utf8').trim();
       const report = { status: 'passed' };
@@ -25,7 +25,7 @@ async function main() {
       }
       await finishDesktopCheck(report, reportPath, () => {
         if (caseId === 'cleanup') throw new Error('Isolated launcher did not exit');
-      });
+      }, inputsStillCurrent);
       return { report, reportPath };
     },
   });

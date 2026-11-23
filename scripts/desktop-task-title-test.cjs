@@ -142,7 +142,7 @@ async function main() {
       release: os.release(), node: process.version, electron: require('electron/package.json').version,
       locale: Intl.DateTimeFormat().resolvedOptions().locale }),
     receiptsDirectory: path.join(root, 'out/diagnostics', suite, 'assertion-failures'), fresh: values.fresh,
-    run: () => run(context => verifyLayout(selected, context), { name: suite, watchRenderer: false,
+    run: inputsStillCurrent => run(context => verifyLayout(selected, context), { name: suite, watchRenderer: false, inputsStillCurrent,
       isolatedDependencyCache: true, fixtureModel: () => '标题验收的测试回复。' }),
   });
   console.log(JSON.stringify(result));

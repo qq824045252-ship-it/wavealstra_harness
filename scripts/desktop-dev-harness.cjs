@@ -80,7 +80,7 @@ function createSseAudit(emit) {
   };
 }
 
-async function finishDesktopCheck(report, reportPath, cleanup) {
+async function finishDesktopCheck(report, reportPath, cleanup, inputsStillCurrent) {
   const publish = () => {
     const temporary = reportPath + '.tmp';
     fs.writeFileSync(temporary, JSON.stringify(report, null, 2));
@@ -99,15 +99,23 @@ async function finishDesktopCheck(report, reportPath, cleanup) {
     } catch (error) {
       report.cleanupStatus = 'failed';
       report.cleanupError = String(error);
-      report.status = 'failed';
+    }
+    if (inputsStillCurrent) {
+      try {
+        if (!inputsStillCurrent()) report.inputStatus = 'changed';
+      } catch (error) {
+        report.inputStatus = 'unavailable';
+        report.inputError = String(error);
+      }
     }
     report.outcome = desktopVerificationOutcome(report);
+    if (report.outcome !== 'passed') report.status = 'failed';
     publish();
   }
 }
 exports.finishDesktopCheck = finishDesktopCheck;
 
-exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureModelIds = [], fixtureUsage, fixtureModelRates, settings = {}, seedHome, gateLiveResponse, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false}) => {
+exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureModelIds = [], fixtureUsage, fixtureModelRates, settings = {}, seedHome, gateLiveResponse, rpcTimeoutMs = 20000, benchmark = false, watchRenderer = true, isolatedDependencyCache = false, inputsStillCurrent}) => {
   const out = path.join(root, 'out/diagnostics', name, new Date().toISOString().replace(/[:.]/g, '-'));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'mybuddy-dev-'));
   const agentDir = path.join(home, '.mybuddy'), userData = path.join(home, 'electron-profile');
@@ -450,7 +458,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
         fs.writeFileSync(path.join(out, 'provider-requests.json'), JSON.stringify(requests));
         if (fixtureUsage) fs.writeFileSync(path.join(out, 'fixture-usage.json'), JSON.stringify(rawUsageAudit, null, 2));
       }
-    });
+    }, inputsStillCurrent);
     if (report.status === 'failed') process.exitCode = 1;
     console.log(name + ': ' + report.status + '; ' + path.join(out, 'report.json'));
     if (report.error) console.error(report.error);

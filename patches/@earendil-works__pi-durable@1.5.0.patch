@@ -370,3 +370,123 @@ index 6d0b8dbd..b4875ecf 100644
          }
          return this.#closing;
      }
+diff --git a/dist/tools/write.js b/dist/tools/write.js
+index c4ee163..e3af4fe 100644
+--- a/dist/tools/write.js
++++ b/dist/tools/write.js
+@@ -8,7 +8,7 @@ const writeSchema = obj({
+     path: str({ description: "Path to the file to write (relative or absolute)" }),
+     content: str({ description: "Content to write to the file" }),
+ }, { open: true });
+-export function createWriteTool() {
++export function createWriteTool(resolvePath) {
+     return defineTool({
+         name: "write",
+         description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+@@ -16,7 +16,7 @@ export function createWriteTool() {
+         async execute(args, api, context) {
+             const { path, content } = args;
+             const env = requireEnv(api);
+-            const absolutePath = await resolveToolPath(env, path, context);
++            const absolutePath = resolvePath ? await resolvePath(path, api, context) : await resolveToolPath(env, path, context);
+             return withFileMutationQueue(env, absolutePath, async () => {
+                 if (context.abortSignal?.aborted)
+                     throw new Error("Operation aborted");
+diff --git a/dist/tools/edit.js b/dist/tools/edit.js
+index a5dd5a1..b73ff7c 100644
+--- a/dist/tools/edit.js
++++ b/dist/tools/edit.js
+@@ -62,7 +62,7 @@ function validateEditInput(input) {
+ function editAccessError(path, error) {
+     return new Error(`Could not edit file: ${path}. Error code: ${error.code}.`, { cause: error });
+ }
+-export function createEditTool() {
++export function createEditTool(resolvePath) {
+     return defineTool({
+         name: "edit",
+         description: "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+@@ -71,7 +71,7 @@ export function createEditTool() {
+         async execute(args, api, context) {
+             const { path, edits } = validateEditInput(args);
+             const env = requireEnv(api);
+-            const absolutePath = await resolveToolPath(env, path, context);
++            const absolutePath = resolvePath ? await resolvePath(path, api, context) : await resolveToolPath(env, path, context);
+             return withFileMutationQueue(env, absolutePath, async () => {
+                 if (context.abortSignal?.aborted)
+                     throw new Error("Operation aborted");
+diff --git a/dist/tools/write.d.ts b/dist/tools/write.d.ts
+index 4c3b130..92460df 100644
+--- a/dist/tools/write.d.ts
++++ b/dist/tools/write.d.ts
+@@ -1,10 +1,11 @@
+ import { type Static } from "@earendil-works/pi-schema";
+ import type { ToolRegistration } from "../harness/types.ts";
++import type { FileMutationPathResolver } from "./path-utils.ts";
+ declare const writeSchema: import("@earendil-works/pi-schema").Schema<{
+     path: string;
+     content: string;
+ }>;
+ export type WriteToolInput = Static<typeof writeSchema>;
+-export declare function createWriteTool(): ToolRegistration<typeof writeSchema>;
++export declare function createWriteTool(resolvePath?: FileMutationPathResolver): ToolRegistration<typeof writeSchema>;
+ export {};
+ //# sourceMappingURL=write.d.ts.map
+\ No newline at end of file
+diff --git a/dist/tools/edit.d.ts b/dist/tools/edit.d.ts
+index f6fa9ce..c61cd2c 100644
+--- a/dist/tools/edit.d.ts
++++ b/dist/tools/edit.d.ts
+@@ -1,5 +1,6 @@
+ import { type Static } from "@earendil-works/pi-schema";
+ import type { ToolRegistration } from "../harness/types.ts";
++import type { FileMutationPathResolver } from "./path-utils.ts";
+ declare const editSchema: import("@earendil-works/pi-schema").Schema<{
+     path: string;
+     edits: {
+@@ -13,6 +14,6 @@ export type EditToolDetails = {
+     patch: string;
+     firstChangedLine?: number;
+ };
+-export declare function createEditTool(): ToolRegistration<typeof editSchema, EditToolDetails>;
++export declare function createEditTool(resolvePath?: FileMutationPathResolver): ToolRegistration<typeof editSchema, EditToolDetails>;
+ export {};
+ //# sourceMappingURL=edit.d.ts.map
+\ No newline at end of file
+diff --git a/dist/tools/path-utils.d.ts b/dist/tools/path-utils.d.ts
+index f7a7eed..689fb66 100644
+--- a/dist/tools/path-utils.d.ts
++++ b/dist/tools/path-utils.d.ts
+@@ -1,5 +1,8 @@
+ import type { Context } from "@earendil-works/chord";
+ import { type ExecutionEnv } from "../env/index.ts";
++import type { ToolExecutionApi } from "../harness/types.ts";
++/** Host resolver for a mutation target already resolved and checked during admission. */
++export type FileMutationPathResolver = (path: string, api: Pick<ToolExecutionApi, "env" | "memo">, context: Context) => Promise<string>;
+ export declare function resolveToolPath(env: ExecutionEnv, path: string, context: Context): Promise<string>;
+ export declare function resolveReadToolPath(env: ExecutionEnv, path: string, context: Context): Promise<string>;
+ //# sourceMappingURL=path-utils.d.ts.map
+\ No newline at end of file
+diff --git a/dist/tools/index.js b/dist/tools/index.js
+index 77187bb..1af70d5 100644
+--- a/dist/tools/index.js
++++ b/dist/tools/index.js
+@@ -8,6 +8,7 @@ export { createEditTool } from "./edit.js";
+ export { DEFAULT_IMAGE_LIMITS, } from "./image-processor.js";
+ export { createReadTool } from "./read.js";
+ export { createWriteTool } from "./write.js";
++export { resolveToolPath } from "./path-utils.js";
+ /**
+  * The `coding-tools` extension: `read`, `write`, `edit`, and `bash`; nothing installs it automatically.
+  * `createPowerShellTool()` adds `powershell`. `images` prepares the images `read` returns (see `ReadToolOptions`).
+diff --git a/dist/tools/index.d.ts b/dist/tools/index.d.ts
+index dc06b0b..c4319b1 100644
+--- a/dist/tools/index.d.ts
++++ b/dist/tools/index.d.ts
+@@ -4,6 +4,7 @@ export { createEditTool, type EditToolDetails, type EditToolInput } from "./edit
+ export { DEFAULT_IMAGE_LIMITS, type ImageLimits, type ImageProcessor, type PreparedImage, } from "./image-processor.ts";
+ export { createReadTool, type ReadToolDetails, type ReadToolInput, type ReadToolOptions } from "./read.ts";
+ export { createWriteTool, type WriteToolInput } from "./write.ts";
++export { resolveToolPath, type FileMutationPathResolver } from "./path-utils.ts";
+ /**
+  * The `coding-tools` extension: `read`, `write`, `edit`, and `bash`; nothing installs it automatically.
+  * `createPowerShellTool()` adds `powershell`. `images` prepares the images `read` returns (see `ReadToolOptions`).

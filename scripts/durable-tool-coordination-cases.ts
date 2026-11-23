@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createRegistry, defineTool, Harness, MemoryStorage, type Conversation, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Type } from "typebox";
+import type { DurableCodeReview } from "../src/main/agent/durable/DurableCodeReview";
 import { withDurableToolCoordination } from "../src/main/agent/durable/DurableToolCoordination";
 
 const deferred = () => {
@@ -32,10 +34,11 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
   const api = { agent: conversation.agent.bind(conversation), commit: conversation.commit.bind(conversation),
     taskId: 12, conversationId: conversation.id, callId: "controlled-call",
     memo: async (_name: string, candidate: unknown) => { notStarted.push(candidate); return candidate; } } as unknown as ToolExecutionApi;
-  const run = (name: string, args: Record<string, unknown>, body: () => Promise<void>, signal?: AbortSignal, beforeExecute?: () => void) => {
+  const run = (name: string, args: Record<string, unknown>, body: () => Promise<void>, signal?: AbortSignal, beforeExecute?: () => void,
+    codeReview?: DurableCodeReview, env?: NodeExecutionEnv) => {
     const tool = withDurableToolCoordination(defineTool({ name, description: "Controlled tool with real filesystem effects", parameters: Type.Object({}, { additionalProperties: true }), replay: "safe",
-      execute: async () => { await body(); return { output: [{ type: "text", text: "done" }] }; } }), cwd, beforeExecute);
-    return tool.execute(args, api, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
+      execute: async () => { await body(); return { output: [{ type: "text", text: "done" }] }; } }), cwd, beforeExecute, undefined, codeReview);
+    return tool.execute(args, env ? { ...api, env } : api, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
   };
 
   const writerEntered = deferred(), releaseWriter = deferred();
@@ -51,6 +54,33 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
   assert.equal(await readFile(other, "utf8"), "independent", "an unrelated write advances while a conflicting read waits");
   assert.equal(readStarted, false);
   releaseWriter.release(); await Promise.all([writer, reader]);
+
+  // A file URL can resolve to a filename containing a literal nonbreaking space.
+  // A reviewed write receives the already-admitted absolute path.
+  const unicodeTarget = join(cwd, "monthly\u00a0ledger.txt"), differentFile = join(cwd, "monthly ledger.txt");
+  await writeFile(unicodeTarget, "old report");
+  const reviewEnv = new NodeExecutionEnv({ cwd });
+  const reviewEntered = deferred(), releaseReview = deferred();
+  const codeReview: DurableCodeReview = { taskId: "controlled", workspace: cwd, review: { capture: () => undefined } };
+  const reviewedWrite = run("write", { path: unicodeTarget }, async () => {
+    reviewEntered.release(); await releaseReview.promise; await writeFile(unicodeTarget, "new report");
+  }, undefined, undefined, codeReview, reviewEnv);
+  await reviewEntered.promise;
+  let unicodeRead: string | undefined, unicodeReadStarted = false;
+  const sameFileRead = run("read", { path: unicodeTarget }, async () => {
+    unicodeReadStarted = true;
+    unicodeRead = await readFile(unicodeTarget, "utf8");
+  });
+  try {
+    await turn();
+    assert.equal(unicodeReadStarted, false, "a reviewed write must hold the exact admitted file's lease");
+    await run("write", { path: differentFile }, async () => { await writeFile(differentFile, "separate file"); });
+  } finally {
+    releaseReview.release();
+    await Promise.all([reviewedWrite, sameFileRead]);
+    await reviewEnv.cleanup(BACKGROUND_CONTEXT);
+  }
+  assert.equal(unicodeRead, "new report");
 
   const readEntered = deferred(), releaseRead = deferred();
   const heldRead = run("read", { path: target }, async () => { readEntered.release(); await releaseRead.promise; });

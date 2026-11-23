@@ -79,7 +79,8 @@ export async function testInFlightOwners() {
         const active = (await api.snapshot(WorkflowState, api.conversationId, context))!.run!;
         const ownerId = saved.latest.owners[0].owner;
         const receipt = { stage: 0, stageId: "owners", role: "swarm-workers", toolTaskId: Number(result.taskId), children: [ownerId], models: ["fixture/owner"], answers: ["done"] };
-        const delta = { fingerprint: "fixture", paths: ["owner.txt"], changedLines: 1, largestCrossing: 0, addedBranches: 0, unknown: [], coverageComplete: true };
+        const delta = { fingerprint: "fixture", paths: ["owner.txt"], fileDigests: new Map([["owner.txt", "fixture-digest"]]),
+          changedLines: 1, largestCrossing: 0, addedBranches: 0, unknown: [], coverageComplete: true };
         await assert.rejects(inspectOwnerAudit(api, context, { ...active, delegates: [{ ...receipt, children: ["another-owner"] }] }, delta, 1, 0.002), /Missing original owner/);
         recoveredOwners = (await inspectOwnerAudit(api, context, { ...active, delegates: [receipt] }, delta, 1, 0.002)).overdueOwners;
         return { output: [{ type: "text", text: result.isError ? JSON.stringify(result.diagnostics) : "owner returned" }], isError: result.isError };

@@ -15,7 +15,8 @@ import { isDurableContextToolName } from "./context/DurableContextTools";
 import { TOOL_NOT_STARTED_MEMO } from "./DurableToolOutcome";
 import { checkDurableInputFreshness, needsFreshUserInput } from "./DurableInputFreshness";
 import { DurableInputDeferredError, withToolInputFreshness } from "./DurableToolInputScope";
-import { isNativeReviewWrite, nativeReviewPath, withCodeReviewWrite, type DurableCodeReview } from "./DurableCodeReview";
+import { withCodeReviewWrite, type DurableCodeReview } from "./DurableCodeReview";
+import { isNativeFileMutation, NATIVE_FILE_EVIDENCE_MEMO, NATIVE_FILE_INTENT_MEMO, prepareFileEffect, verifyFileEffect } from "./DurableEffectRecovery";
 
 type Access = { kind: "file"; mode: "read" | "write"; path: string; entity: string | null } | { kind: "unknown"; mode: "read" | "write" };
 type Request = { inspect: () => Access[]; accesses: Access[]; grant: (release: () => void) => void;
@@ -23,6 +24,7 @@ type Request = { inspect: () => Access[]; accesses: Access[]; grant: (release: (
 const active = new Set<Request>();
 const pending: Request[] = [];
 const argsSchema = z.record(z.string(), z.unknown());
+const fileArgsSchema = z.record(z.string(), z.json());
 const mcpEnvelope = z.object({ server: z.string(), tool: z.string(), arguments: argsSchema });
 // Nested calls acquire their own resource leases. Holding an outer unknown-write lease would deadlock them.
 const containers = new Set(["codemode", "subagent", "subagent_list", "subagent_steer", "multi_model_consult", "request_user_input", "pstack_workflow", "pstack_delegate", "pstack_orchestrate"]);
@@ -132,17 +134,26 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
     let started = false;
     try {
       const cwd = (await api.agent(context)).cwd ?? fallbackCwd;
-      const reviewPath = codeReview && isNativeReviewWrite(tool.name) ? await nativeReviewPath(api, context, args) : undefined;
-      release = await acquire(() => inspectAccess(tool.name, reviewPath ? { path: reviewPath } : args, cwd), context.abortSignal);
+      release = await acquire(() => inspectAccess(tool.name, args, cwd), context.abortSignal);
       const check = needsFreshUserInput(tool.name, args) ? () => checkDurableInputFreshness(api, context, admitting) : undefined;
       if (check) await check();
       context.abortSignal?.throwIfAborted();
       beforeExecute?.(tool.name, args, cwd);
+      // Snapshot and read back the same mutation while its path lease still excludes other writers.
+      const intent = isNativeFileMutation(tool.name) ? await prepareFileEffect({ type: "toolCall", id: api.callId,
+        name: tool.name, arguments: fileArgsSchema.parse(args) }, cwd) : undefined;
+      if (intent) {
+        await api.memo(NATIVE_FILE_INTENT_MEMO, intent, context);
+        context.abortSignal?.throwIfAborted();
+      }
       started = true;
       const invoke = async () => codeReview
         ? withCodeReviewWrite(codeReview, tool.name, args, api, context, async observed => tool.execute(args, observed, context))
         : tool.execute(args, api, context);
-      return await withToolInputFreshness(check, invoke);
+      try { return await withToolInputFreshness(check, invoke); }
+      finally {
+        if (intent) await api.memo(NATIVE_FILE_EVIDENCE_MEMO, await verifyFileEffect(intent, context.abortSignal), withoutAbortSignal(context));
+      }
     }
     catch (error) {
       if (!started || error instanceof DurableInputDeferredError) {

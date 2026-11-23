@@ -52,7 +52,7 @@ export function workDeliveryFiles(works: WorkService, results: WorkDeliverableDt
   const bindings = new Map(works.repo.listBindings(results[0].workId).map(binding => [binding.bindingId, binding]));
   const referenced = generated.filter(artifact => results.some(result => result.executionId === artifact.bindingId
     && result.artifactRefs.some(ref => ref === artifact.snapshotPath || ref === artifact.path)));
-  const files = new Map<string, { file: DeliveryFile; version: number[] }>();
+  const files = new Map<string, { file: DeliveryFile; bindingId: string; version: number[] }>();
   const later = (a: number[], b: number[]) => a[0] > b[0] || a[0] === b[0] && (a[1] > b[1] || a[1] === b[1] && a[2] > b[2]);
   for (const result of results) for (const ref of result.artifactRefs) {
     const candidates = generated.filter(item => item.bindingId === result.executionId).sort((a, b) => b.sourceEntryId - a.sourceEntryId);
@@ -63,7 +63,8 @@ export function workDeliveryFiles(works: WorkService, results: WorkDeliverableDt
       // A continuation can explicitly return a prior immutable snapshot without
       // registering it again, but only if a proven source result delivered it.
       ?? referenced.find(item => item.snapshotPath === ref);
-    const binding = bindings.get(artifact?.bindingId ?? result.executionId);
+    const bindingId = artifact?.bindingId ?? result.executionId;
+    const binding = bindings.get(bindingId);
     const key = artifact ? artifact.path : JSON.stringify([result.executionId, ref]);
     const file: DeliveryFile = artifact
       ? { ref: artifact.snapshotPath ?? artifact.path, name: artifact.path.split(/[\\/]/).pop() || artifact.path,
@@ -71,7 +72,10 @@ export function workDeliveryFiles(works: WorkService, results: WorkDeliverableDt
       : { ref, name: ref.split(/[\\/]/).pop() || ref };
     const version = [artifact?.registeredAt ?? result.createdAt, binding?.admittedAt ?? result.createdAt, artifact?.sourceEntryId ?? 0];
     const previous = files.get(key);
-    if (!previous || later(version, previous.version)) files.set(key, { file, version });
+    // Source entry IDs order an execution's receipts even if the system clock has moved.
+    const newer = previous?.bindingId === bindingId && previous.version[2] !== version[2]
+      ? version[2] > previous.version[2] : previous && later(version, previous.version);
+    if (!previous || newer) files.set(key, { file, bindingId, version });
   }
   const unique = new Map<string, DeliveryFile>();
   for (const {file} of files.values()) if (!unique.has(file.ref) || file.openPath) unique.set(file.ref, file);

@@ -7,7 +7,7 @@ import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts"
  * never reviewer instructions. Both file IO and total model text are bounded. */
 export interface CompletionArtifactEvidence {
   ref: string; name: string; trust: "untrusted_artifact_content";
-  registeredDigest?: string; registeredSizeBytes?: number;
+  registeredDigest?: string; registeredSizeBytes?: number; registeredPreviewManifestPath?: string;
   state: string; omittedEvidenceCount?: number; reason?: string; text?: string; truncated?: boolean; placeholderIndicators?: string[];
 }
 export function completionArtifactEvidence(works: WorkService, binding: Parameters<typeof workDeliveryResults>[1]): CompletionArtifactEvidence[] {
@@ -15,9 +15,11 @@ export function completionArtifactEvidence(works: WorkService, binding: Paramete
   let remaining = 48000;
   const files = workDeliveryFiles(works, workDeliveryResults(works, binding));
   return files.slice(0, 20).map((file, index) => {
-    const artifact = file.openPath ? registered.find(item => item.snapshotPath === file.ref) : undefined;
+    const artifact = file.openPath ? registered.find(item =>
+      item.snapshotPath === file.ref && item.previewManifestPath === file.previewManifestPath) : undefined;
     const base = { ref: file.ref, name: file.name, ...(index === 0 && files.length > 20 ? { omittedEvidenceCount: files.length - 20 } : {}), trust: "untrusted_artifact_content" as const,
-      registeredDigest: artifact?.digest, registeredSizeBytes: artifact?.sizeBytes };
+      registeredDigest: artifact?.digest, registeredSizeBytes: artifact?.sizeBytes,
+      registeredPreviewManifestPath: artifact?.previewManifestPath };
     if (!artifact?.snapshotPath) return { ...base, state: "unavailable", reason: "No immutable registered snapshot" };
     if (remaining <= 0) return { ...base, state: "unavailable", reason: "Review text budget exhausted" };
     let fd: number | undefined;

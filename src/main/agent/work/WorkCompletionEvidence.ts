@@ -32,7 +32,8 @@ export function completionEvidence(db: Database.Database, works: WorkService, bi
     results: byId(results.map(resultFacts), item => item.deliverableId),
     resultVerification: byId(allResults.map(resultFacts), item => item.deliverableId),
     previousResults: byId(allResults.filter(item => item.executionId !== binding.bindingId && item.status !== "superseded").map(resultFacts), item => item.deliverableId),
-    availableFiles: byId(workDeliveryFiles(works, results).filter(file => file.openPath).map(({ ref, name }) => ({ ref, name })), item => item.ref),
+    availableFiles: byId(workDeliveryFiles(works, results).filter(file => file.openPath)
+      .map(({ ref, name, previewManifestPath }) => ({ ref, name, ...(previewManifestPath ? { previewManifestPath } : {}) })), item => item.ref),
     artifactEvidence: byId(completionArtifactEvidence(works, binding), item => item.ref),
     milestoneDeliveryEvidence: completionMilestoneEvidence(db, binding),
     executionFacts: { status: binding.status, settlementNote: binding.settlementNote, outputReceived: facts.executionDelivered,

@@ -20,9 +20,11 @@ export class WorkGeneratedArtifacts {
     for (const value of artifacts) {
       const artifact = generatedArtifactSchema.parse(value);
       // Storage identity includes the web resource version; payload.digest remains the entry bytes SHA.
-      const inserted = this.db.prepare(`INSERT OR IGNORE INTO work_generated_artifacts(binding_id,path,digest,payload_json)
-        VALUES (?,?,?,?)`).run(binding.bindingId, artifact.path, artifact.previewManifestPath ? `${artifact.digest}:${artifact.previewManifestPath}` : artifact.digest, JSON.stringify(artifact));
-      changed ||= inserted.changes > 0;
+      const recorded = this.db.prepare(`INSERT INTO work_generated_artifacts(binding_id,path,digest,payload_json)
+        VALUES (?,?,?,?) ON CONFLICT(binding_id,path,digest) DO UPDATE SET payload_json=excluded.payload_json
+        WHERE json_extract(excluded.payload_json,'$.sourceEntryId') > json_extract(work_generated_artifacts.payload_json,'$.sourceEntryId')`)
+        .run(binding.bindingId, artifact.path, artifact.previewManifestPath ? `${artifact.digest}:${artifact.previewManifestPath}` : artifact.digest, JSON.stringify(artifact));
+      changed ||= recorded.changes > 0;
     }
     if (changed) {
       const work = this.works.getWork(binding.workId);

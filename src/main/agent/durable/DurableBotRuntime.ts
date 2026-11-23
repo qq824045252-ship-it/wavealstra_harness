@@ -5,7 +5,8 @@ import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent
 import { appendDurableDotsReply } from "./DurableDotsReply";
 import { readDotsWorkerOutcome, recoverDotsNarrativeReply } from "../../dots/DotsWorkerOutcome";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
-import { withWindowsBashWorkspacePath } from "../../platform/bash-workspace-path";
+import { admittedFileMutationPath, FILE_MUTATION_TARGET_MEMO, resolveFileMutationTarget, withWindowsBashWorkspacePath,
+  type FileMutationTarget } from "../../platform/bash-workspace-path";
 import { withShellTerminalGuidance } from "./DurableShellTerminal";
 import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
 import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
@@ -23,10 +24,10 @@ import { BACKGROUND_CONTEXT as ctx, type Context } from "@earendil-works/chord/c
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
   Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, CompactionTask, GenerationTask, ToolTask, defineDoc, InboxDoc,
-  type Conversation, type ConversationWatch, type ConversationView, type EntryRecord,
+  type Conversation, type ConversationWatch, type ConversationView, type EntryRecord, type EnvTarget, type JsonObject,
   type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission, type ToolHooks, type EntryId, type HookApi,
 } from "@earendil-works/pi-durable";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { CodingTools, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { capabilityResultFromDetails } from "../../../shared/capability-result";
 import { searchReportFromDetails } from "../../../shared/web-search";
 import { consultReportFromDetails } from "../../../shared/multi-model-consult";
@@ -382,11 +383,7 @@ export class DurableBotRuntime {
         readOnly: options.readOnly,
         models: options.models, registry,
         ...(harnessSettings ? { settings: harnessSettings } : {}),
-        env: async (target, context) => {
-          const cwd = await resolveDurableExecutionCwd(target, context, options.cwd);
-          if (!statSync(cwd).isDirectory()) throw new Error("任务工作目录失效，请修复项目目录后继续");
-          return new NodeExecutionEnv({ cwd, shellPath: getAgentBashShellPath(cwd, getMyBuddyDir()) });
-        },
+        env: (target, context) => durableExecutionEnv(target, context, options.cwd),
       }, ctx);
       resolveRequestHarness(harness);
       const root = await harness.root(ctx, { agent: { cwd: options.cwd, model: options.model },
@@ -1629,10 +1626,21 @@ export class DurableBotRuntime {
  */
 function codingTools(directory: string, readonlyShell?: () => boolean): ToolRegistration[] {
   return [
-    ...(CodingTools.tools ?? []).map(tool => tool.name === "read" ? withMissingFileRecovery(withDurableImageRead(tool)) : withDurableArtifactRegistration(tool, directory)),
+    ...(CodingTools.tools ?? []).map(tool => {
+      if (tool.name === "write") return withDurableArtifactRegistration(createWriteTool(admittedFileMutationPath), directory);
+      if (tool.name === "edit") return withDurableArtifactRegistration(createEditTool(admittedFileMutationPath), directory);
+      if (tool.name === "read") return withWindowsBashWorkspacePath(withMissingFileRecovery(withDurableImageRead(tool)));
+      return withDurableArtifactRegistration(tool, directory);
+    }),
     ...createPlatformShellTools().map(tool => withDurableArtifactRegistration(tool, directory)),
-    createDurableArtifactRegistrationTool(directory),
-  ].map(tool => withWindowsBashWorkspacePath(tool)).map(withShellTerminalGuidance);
+    withWindowsBashWorkspacePath(createDurableArtifactRegistrationTool(directory)),
+  ].map(withShellTerminalGuidance);
+}
+
+async function durableExecutionEnv(target: EnvTarget, context: Context, rootCwd: string): Promise<NodeExecutionEnv> {
+  const cwd = await resolveDurableExecutionCwd(target, context, rootCwd);
+  if (!statSync(cwd).isDirectory()) throw new Error("任务工作目录失效，请修复项目目录后继续");
+  return new NodeExecutionEnv({ cwd, shellPath: getAgentBashShellPath(cwd, getMyBuddyDir()) });
 }
 
 /** Every native generation, including retries and compaction, uses the owning task's settings. */
@@ -1772,6 +1780,22 @@ function botExtension(
   };
   const toolHooks: Partial<ToolHooks> = {
     beforeTool: async (call, api, context) => {
+      let mappedArguments: JsonObject | undefined;
+      if ((call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string") {
+        let target = await api.memo<FileMutationTarget>(FILE_MUTATION_TARGET_MEMO, context);
+        if (!target) {
+          const { conversationId } = api;
+          const agent = await api.snapshot(AgentDoc, conversationId, context);
+          const env = await durableExecutionEnv({ conversationId, cwd: agent?.cwd, read: api }, context, options.cwd);
+          try {
+            target = await api.memo(FILE_MUTATION_TARGET_MEMO, await resolveFileMutationTarget(call.arguments.path, env, context), context);
+          } finally {
+            await env.cleanup(context);
+          }
+        }
+        mappedArguments = { ...call.arguments, path: target.path };
+        call = { ...call, arguments: mappedArguments };
+      }
       if (options.foregroundHooks && !await childConversation(api, context)) {
         const gate = await options.foregroundHooks.beforeTool(call, api, context);
         if (gate && "block" in gate) return gate;
@@ -1786,7 +1810,7 @@ function botExtension(
           callId: call.id, name: call.name, at: Date.now(),
           sourceKind: options.executionIdentity?.sourceKind ?? (await childConversation(api, context) ? "subagent" : "main") });
       } catch { /* Observers never change tool execution. */ }
-      return decision;
+      return decision ?? (mappedArguments && { arguments: mappedArguments });
     },
     afterTool: async (call, result, api, context) => {
       const task = await readNativeTask?.(api.taskId, context);

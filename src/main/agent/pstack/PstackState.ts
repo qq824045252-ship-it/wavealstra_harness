@@ -12,6 +12,7 @@ import type { ThermosMember } from "./PstackThermosVerdict";
 import type { ProviderDependency } from "./PstackProviderFailure";
 import type { Contest, ContestAudit } from "./PstackContest";
 import type { EvalExport } from "./PstackEvalExport";
+import type { VerificationOutcome } from "./PstackVerificationEvidence";
 
 export type Api = Parameters<ToolRegistration["execute"]>[1];
 export type WorkflowOptions = { taskId: string; cwd: string; tag?: CodingTag | null; active: () => boolean; settings: () => PstackSettings; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
@@ -21,7 +22,8 @@ export type WorkflowRun = {
   task: string; run: number; first: EntryId; inputs: number[]; revision: number; playbook: string; config: string;
   tagId?: string;
   phase: "running" | "blocked" | "complete"; stage: number; block: string; notes: string[]; operations: number[];
-  verification: { command: string; fingerprint: string; toolTaskId: number; passed: boolean } | null;
+  verification: { command: string; fingerprint: string; toolTaskId: number; passed: boolean; exitCode?: number | null;
+    outcome?: VerificationOutcome["outcome"]; error?: string; changedPaths?: string[] } | null;
   red?: { command: string; fingerprint: string; toolTaskId: number; exitCode: number };
   reviewCommit?: string;
   reviewDependency?: ProviderDependency;

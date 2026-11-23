@@ -1,26 +1,17 @@
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import type { CodeReviewService } from "../CodeReviewService";
 import { powerShellLiteralContentTarget } from "./DurableArtifactRegistration";
 
 export interface DurableCodeReview {
-  review: CodeReviewService;
+  review: Pick<CodeReviewService, "capture">;
   taskId: string;
   workspace: string;
 }
 
 export function isNativeReviewWrite(name: string): boolean {
   return name === "write" || name === "edit";
-}
-
-export async function nativeReviewPath(api: ToolExecutionApi, context: Context, args: unknown): Promise<string | undefined> {
-  if (!(api.env instanceof NodeExecutionEnv) || !args || typeof args !== "object" ||
-    !("path" in args) || typeof args.path !== "string") return undefined;
-  // Match the pinned Pi tool path normalization before obtaining the resource lease.
-  const normalized = args.path.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
-  return getOrThrow(await api.env.absolutePath(normalized, context));
 }
 
 function shellMutation(name: string, args: unknown): { path: string; deleting: boolean } | undefined {

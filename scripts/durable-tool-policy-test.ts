@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { writeFileSync as writeFileSyncForFixture } from "node:fs";
-import { mkdtemp, mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { AssistantMessage, TextContent, TranscriptContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
@@ -56,8 +57,8 @@ async function waitUntil(check: () => boolean): Promise<void> {
 }
 
 async function fixture(taskId: string, respond: (request: TranscriptContext) => AssistantMessage["content"],
-  mode: "native" | "codemode" = "native", extraTools: ToolRegistration[] = [], isolatedSourceRoots: string[] = [], effectRecovery?: ExternalEffectRecovery, withSubagents = false) {
-  const cwd = join(root, taskId);
+  mode: "native" | "codemode" = "native", extraTools: ToolRegistration[] = [], isolatedSourceRoots: string[] = [], effectRecovery?: ExternalEffectRecovery, withSubagents = false,
+  cwd = join(root, taskId)) {
   await mkdir(cwd);
   db.upsertTask({ id: taskId, title: taskId, updatedAt: Date.now() });
   const models = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, modelsStorePath: join(cwd, "catalog.json"), refreshOnCreate: false });
@@ -118,6 +119,94 @@ function attemptCount(taskId: string): number {
 }
 
 try {
+  if (process.platform === "win32") {
+    // Git Bash mounts the OS temp directory as /tmp. Use the checkout's drive alias.
+    const workspace = await mkdtemp(join(process.cwd(), "out", "tests", "bash-path-verification-"));
+    let bashPath = "";
+    const toolResults: Array<{ tool: string; isError: boolean; text: string }> = [];
+    const scenario = await fixture("bash-path-file-verification", request => {
+      const last = request.messages.at(-1);
+      if (last?.role !== "toolResult") return call("bash", { command: "pwd" });
+      const output = last.content.map(block => block.type === "text" ? block.text : "").join("\n");
+      if (last.toolName === "bash") {
+        bashPath = `${output.trim()}/result.txt`;
+        return call("write", { path: bashPath, content: "first\n" });
+      }
+      toolResults.push({ tool: last.toolName, isError: last.isError === true, text: output });
+      return last.toolName === "write"
+        ? call("edit", { path: bashPath, edits: [{ oldText: "first", newText: "second" }] })
+        : text("finished");
+    }, "native", [], [], undefined, false, join(workspace, "task"));
+    const runtime = await scenario.open();
+    try {
+      assert.equal((await (await runtime.submit("write and edit the file", "bash-path")).wait(ctx)).status, "done");
+      assert.match(bashPath, /^\/[a-z]\//);
+      assert.deepEqual(toolResults.map(result => result.tool), ["write", "edit"], JSON.stringify(toolResults));
+      assert.equal(await readFile(join(scenario.cwd, "result.txt"), "utf8"), "second\n");
+      const evidence = db.connection.prepare(`
+        SELECT json_extract(record_json, '$.toolName') AS tool,
+               json_extract(record_json, '$.verification.verifierId') AS verifierId,
+               json_extract(record_json, '$.verification.canonicalTarget') AS target, status
+        FROM execution_attempts WHERE task_id = ? AND json_extract(record_json, '$.toolName') IN ('write', 'edit') ORDER BY rowid
+      `).all(scenario.taskId);
+      const target = await realpath(join(scenario.cwd, "result.txt"));
+      assert.deepEqual(evidence, [
+        { tool: "write", verifierId: "durable-file-content", status: "passed", target },
+        { tool: "edit", verifierId: "durable-file-content", status: "passed", target },
+      ]);
+      assert.deepEqual(toolResults.map(result => result.isError), [false, false], JSON.stringify(toolResults));
+      assert.equal(failures.list(scenario.taskId).length, 0);
+    } finally {
+      await runtime.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+    console.log(`PASS Windows Git Bash ${bashPath.slice(0, 3)} path writes and edits pass native file-content verification`);
+
+    const aliasCases = [
+      { name: "relative", path: () => "result.txt", file: "result.txt" },
+      { name: "mention", path: () => "@result.txt", file: "result.txt" },
+      { name: "space", path: () => "quarter\u00a0report.txt", file: "quarter report.txt" },
+      { name: "file-url", path: (cwd: string) => pathToFileURL(join(cwd, "result.txt")).href, file: "result.txt" },
+      { name: "home", path: () => "~/result.txt", file: "result.txt" },
+    ];
+    const home = process.env.USERPROFILE;
+    for (const sample of aliasCases) {
+      const requestedCwd = join(root, `file-path-${sample.name}\u00a0workspace`);
+      const raw = sample.path(requestedCwd);
+      const flags: boolean[] = [];
+      const scenario = await fixture(`file-path-${sample.name}`, request => {
+        const last = request.messages.at(-1);
+        if (last?.role !== "toolResult") return call("write", { path: raw, content: "first\n" });
+        flags.push(last.isError === true);
+        return last.toolName === "write" ? call("edit", { path: raw, edits: [{ oldText: "first", newText: "second" }] }) : text("done");
+      }, "native", [], [], undefined, false, requestedCwd);
+      process.env.USERPROFILE = scenario.cwd;
+      const runtime = await scenario.open();
+      try {
+        assert.equal((await (await runtime.submit("write and edit the file", sample.name)).wait(ctx)).status, "done");
+        const target = await realpath(join(scenario.cwd, sample.file));
+        assert.equal(await readFile(target, "utf8"), "second\n");
+        assert.deepEqual(flags, [false, false], sample.name);
+        const evidence = db.connection.prepare(`
+          SELECT json_extract(record_json, '$.toolName') AS tool,
+                 json_extract(record_json, '$.verification.verifierId') AS verifierId,
+                 json_extract(record_json, '$.verification.canonicalTarget') AS target, status
+          FROM execution_attempts WHERE task_id = ? ORDER BY rowid
+        `).all(scenario.taskId);
+        assert.deepEqual(evidence, [
+          { tool: "write", verifierId: "durable-file-content", status: "passed", target },
+          { tool: "edit", verifierId: "durable-file-content", status: "passed", target },
+        ], sample.name);
+        assert.equal(failures.list(scenario.taskId).length, 0, sample.name);
+      } finally {
+        if (home === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = home;
+        await runtime.close();
+      }
+    }
+    console.log("PASS native path forms write, edit and verify the same file, including Unicode in the workspace path");
+  }
+
   for (const [mode, publishTool] of [
     ["native", "gmail_send"],
     ["native", "mcp__fixture__publish"],
@@ -280,6 +369,41 @@ try {
   assert.equal((await verifyFileEffect({ ...writeIntent, path: root, canonicalPath: root })).status, "inconclusive", "directories cannot become an unbounded verification stream");
   console.log("PASS file recovery compares native output, rejects changed bytes and supports cancellation");
 
+  const editReceipts = new Map<string, boolean>();
+  const parallelEdits = await fixture("parallel-disjoint-edits", request => {
+    const receipts = request.messages.filter(message => message.role === "toolResult");
+    if (!receipts.length) return [
+      ...call("edit", { path: "lines.txt", edits: [{ oldText: "alpha", newText: "alpha changed" }] }, "edit-alpha"),
+      ...call("edit", { path: "lines.txt", edits: [{ oldText: "bravo", newText: "bravo changed" }] }, "edit-bravo"),
+    ];
+    for (const receipt of receipts) editReceipts.set(receipt.toolCallId, receipt.isError === true);
+    return text("done");
+  });
+  await writeFile(join(parallelEdits.cwd, "lines.txt"), "alpha\nbravo\n");
+  const bothAdmitted = Promise.withResolvers<void>();
+  let editAdmissions = 0;
+  parallelEdits.state.beforeTool = async name => {
+    if (name === "edit") {
+      if (++editAdmissions === 2) bothAdmitted.resolve();
+      await bothAdmitted.promise;
+    }
+  };
+  const editRuntime = await parallelEdits.open();
+  try { assert.equal((await (await editRuntime.submit("edit independent lines", "parallel-edits")).wait(ctx)).status, "done"); }
+  finally { await editRuntime.close(); }
+  assert.equal(await readFile(join(parallelEdits.cwd, "lines.txt"), "utf8"), "alpha changed\nbravo changed\n");
+  assert.deepEqual([...editReceipts].sort(), [["edit-alpha", false], ["edit-bravo", false]]);
+  const editProofs = db.connection.prepare(`SELECT status,
+    json_extract(record_json, '$.verification.verifierId') AS verifier,
+    json_extract(record_json, '$.verification.observed.bytes') AS bytes
+    FROM execution_attempts WHERE task_id=? ORDER BY bytes`).all(parallelEdits.taskId);
+  assert.deepEqual(editProofs, [
+    { status: "passed", verifier: "durable-file-content", bytes: Buffer.byteLength("alpha changed\nbravo\n") },
+    { status: "passed", verifier: "durable-file-content", bytes: Buffer.byteLength("alpha changed\nbravo changed\n") },
+  ]);
+  assert.equal(failures.list(parallelEdits.taskId).length, 0);
+  console.log("PASS same-round edits verify their own file versions inside the shared mutation lease");
+
   // 旧 profile：退役专用表与旧 blocker 仍在时，真实读写与重启都不再被挡住，也不重放历史动作。
   const ungated = await fixture("legacy-quarantine", request => {
     const last = request.messages.at(-1);
@@ -327,6 +451,49 @@ try {
     assert.equal(mutations, 1); assert.equal(receiptReads, 0);
     assert(failures.list(noReceipt.taskId).some(item => item.causeCode === "effect-unverified" && !item.resolvedAt), "an unavailable verifier must not turn a transport success into verified completion");
   } finally { await receiptRuntime.close(); }
+
+  for (const blocked of [true, false]) {
+    const taskId = blocked ? "receipt-admission-blocked" : "receipt-terminal-failure";
+    const settled: string[] = [];
+    let executed = 0, checked = 0;
+    let modelResult: { error: boolean; output: string } | undefined;
+    const scenario = await fixture(taskId, request => {
+      const last = request.messages.at(-1);
+      if (last?.role !== "toolResult") return call("mcp_call_tool", {
+        server: "filesystem", tool: "write_file", arguments: { path: "result.txt", content: "proof" },
+      });
+      modelResult = { error: last.isError === true, output: last.content.map(block => block.type === "text" ? block.text : "").join("\n") };
+      return text("done");
+    }, "native", [defineTool({
+      name: "mcp_call_tool", description: "Terminal receipt fixture", replay: "unsafe",
+      parameters: Type.Object({ server: Type.String(), tool: Type.String(), arguments: Type.Record(Type.String(), Type.Unknown()) }),
+      execute: async () => { executed++; return { output: text("request accepted") }; },
+    })], [], {
+      prepare: receiptRecovery.prepare,
+      verify: async intent => {
+        checked++;
+        return { status: "failed", verifierId: "durable-business-receipt", canonicalTarget: intent.operationId,
+          expected: { operationId: intent.operationId }, observed: { operationId: intent.operationId, status: "rejected" }, checkedAt: Date.now() };
+      },
+    });
+    if (blocked) scenario.state.admit = () => "work admission denied";
+    scenario.state.settle = (_id, outcome) => settled.push(outcome);
+    const native = await scenario.open();
+    try { assert.equal((await (await native.submit("write", taskId)).wait(ctx)).status, "done"); }
+    finally { await native.close(); }
+    assert.deepEqual([executed, checked], blocked ? [0, 0] : [1, 1]);
+    assert.deepEqual(settled, [blocked ? "released" : "consumed"]);
+    assert.equal(modelResult?.error, true);
+    assert.match(modelResult?.output ?? "", blocked ? /work admission denied/ : /业务回执确认本次操作失败/);
+    assert(!failures.list(taskId).some(item => item.causeCode === "effect-unverified"));
+    const attempt = db.connection.prepare("SELECT status, record_json FROM execution_attempts WHERE task_id=?").get(taskId) as
+      { status: string; record_json: string } | undefined;
+    assert.equal(attempt?.status, "failed");
+    const { verification } = JSON.parse(attempt!.record_json);
+    assert.equal(verification.verifierId, blocked ? "durable-tool-result" : "durable-business-receipt");
+    if (!blocked) assert.equal(verification.observed.status, "rejected");
+  }
+  console.log("PASS terminal business receipt failures stay confirmed; blocked operations never query receipts");
 
   const waiting = await fixture("waiting", request => {
     const last = request.messages.at(-1);
