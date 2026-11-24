@@ -31,6 +31,7 @@ export const dotsOperations = {
   find_tasks: ["taskControl", "查找任务"], task: ["taskControl", "查看任务详情"], deliveries: ["taskControl", "查找任务成果"],
   execution_configs: ["taskControl", "查看可用执行配置"],
   delegate: ["taskControl", "委派普通任务"], steer: ["taskControl", "修改运行中的要求"],
+  defer: ["taskControl", "记下待追加要求"],
   follow_up: ["taskControl", "追问原任务"],
   resume: ["taskControl", "恢复事项"], answer: ["taskControl", "转发对阻塞问题的回答"],
   spaces: ["spaceManagement", "列出空间"], bind: ["spaceManagement", "绑定文件夹"],

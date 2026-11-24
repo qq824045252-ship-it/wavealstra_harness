@@ -85,7 +85,10 @@ export function createDurableDotsWorker(
       const live = await api.snapshot(LiveDoc, api.conversationId, context);
       if (live?.tools?.length !== 1 || live.tools[0]?.taskId !== api.taskId)
         return toolError("请在主任务的单独一个工具调用中结束或暂停交办。");
-      const source = await durableSourceInput(api, context, api.conversationId, live.run?.inputs ?? []);
+      // Pi keeps the original and steered inputs in one run. Only its current
+      // input can own the terminal receipt, and it must match Dots' active operation.
+      const receiptId = live.run?.inputs.at(-1);
+      const source = await durableSourceInput(api, context, api.conversationId, live.run?.inputs ?? [], true);
       if (!source || !isActive(taskId, source.id))
         return toolError("当前执行没有可结束的 Dots 后台交办。");
       let terminal: DotsTerminalOutcome;
@@ -107,7 +110,9 @@ export function createDurableDotsWorker(
         context.abortSignal?.throwIfAborted();
         return toolError(error instanceof Error ? error.message : String(error));
       }
-      if (!isActive(taskId, source.id)) return toolError("原交办已发生变化，未结束本次执行。");
+      const current = await api.snapshot(LiveDoc, api.conversationId, context);
+      if (current?.run?.inputs.at(-1) !== receiptId || !isActive(taskId, source.id))
+        return toolError("原交办已发生变化，未结束本次执行。");
       return {
         output: [{ type: "text", text: terminal.action === "wait" ? "已交给 Dots 等待依赖。" : "已提交原交办结果。" }],
         details: { dotsTerminal: { operationId: source.id, outcome: terminal } },

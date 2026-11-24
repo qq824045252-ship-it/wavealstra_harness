@@ -31,6 +31,49 @@ const unrelatedRequest = /(?:麻烦|帮我|请你?|顺手|顺便|另一个|另�
 const attachmentOnlyText = /^## 用户附带文件\s*\n(?:\s*- [^\n]+(?:\n|$))+$/u;
 const imagePath = /\.(?:png|jpe?g|gif|webp|bmp)$/iu;
 const retryApproval = /^(?:允许|同意|可以|好(?:的)?|行|确认|是的|yes|ok(?:ay)?|go ahead)[。.!！]*$/iu;
+const laterTask = [
+  /(?:等|待)[^。！？；\n]{0,36}(?:任务|交办|事项|它)[^。！？；\n]{0,16}(?:返回|结束|完成|跑完)/u,
+  /(?:任务|交办|事项|它)[^。！？；\n]{0,18}(?:返回|结束|完成|跑完)(?:之?后|了再)/u,
+  /(?:下次|下一次|回头|一会儿)[^。！？；\n]{0,18}(?:委派|派工|派任务|交给)/u,
+  /(?:after|when|once)\s+(?:the\s+)?(?:current|previous|original)\s+(?:task|job)\s+(?:returns?|ends?|finishes?|completes?)|next time (?:I ask|you delegate)/iu,
+];
+const carryRequirement = /(?:追加|带[上下着]|补(?:上|进去|到)|加(?:上|到|在|进)|记(?:住|下|着)|留(?:到|着)|append|carry over|remember|include)/iu;
+const noCarry = /(?:不要|不用|不必|无需|别|取消)\s*(?:再)?\s*(?:追加|记(?:住|下)|带上|加上)|(?:do not|don't) (?:remember|append|include)/iu;
+const delegationDirective = new RegExp("^" + directionPrefix +
+  "(?:委派|派工|派(?:个|一个|新)?任务|派给|交给|转给|追问|把[^。！？\\n]{1,40}(?:委派|交给|转给)|(?:please\\s+)?(?:delegate|hand off|follow up)\\b)", "iu");
+const immediateSteer = /^(?:现在|马上|立刻|立即|直接|把|将)?\s*(?:(?:把|将)?[^，。！？?\n]{0,28}(?:当前|这个|正在|原|上个|它)[^，。！？?\n]{0,24})?(?:改向|改为|改成|切换到)|(?:现在|马上|立刻|立即|直接)[^，。！？?\n]{0,30}(?:追加|补进|加到|换成|改向|改成|改为)|\b(?:steer|redirect|change course)\b/iu;
+
+export function dotsDeferredInstruction(original: string | undefined): boolean {
+  const text = dotsInstructionText(original ?? "").normalize("NFKC")
+    .replace(/[「『“"][^」』”"\n]*[」』”"]/gu, "");
+  return clauses(text).some(clause => carryRequirement.test(clause) && !noCarry.test(clause)) && laterTask.some(pattern => {
+    const match = pattern.exec(text);
+    return match && !reportedContext.test(text.slice(0, match.index).split(/[\n。！？]/u).at(-1) ?? "");
+  });
+}
+
+export function dotsSteerAuthorized(original: string | undefined): boolean {
+  return Boolean(original && !dotsForwardingDenied(original) &&
+    groundedDirectives(original, clause => isSingleDirective(clause) && !reportedContext.test(clause) &&
+      !/(?:不要|不用|别|先别|禁止).{0,12}(?:改向|追加|改成|改为)|(?:do not|don't)\s+(?:steer|redirect)/iu.test(clause) &&
+      immediateSteer.test(clause.normalize("NFKC").replace(/^(?:请|帮我|麻烦)\s*/u, ""))).length === 1);
+}
+
+export function dotsDeferredDelegationAuthorized(original: string | undefined): boolean {
+  return Boolean(original && !dotsForwardingDenied(original) &&
+    groundedDirectives(original, clause => isSingleDirective(clause) && !reportedContext.test(clause) &&
+      delegationDirective.test(clause)).length);
+}
+
+export function dotsReferencesDeferred(original: string | undefined): boolean {
+  const text = dotsInstructionText(original ?? "");
+  return /(?:带上|追加|补上|加上|附上|include|carry over)[^。！？\n]{0,32}(?:待办|之前|刚才|先前|记下|留存|那[几两二一]条|pending|earlier)/iu.test(text);
+}
+
+export function dotsOriginalTaskFollowUp(original: string | undefined): boolean {
+  return /(?:在|向|跟|问|给)(?:刚才的|之前的|原来?的?|上个)?(?:原任务|任务|交办|事项)[^。！？\n]{0,14}(?:追问|跟进)|(?:追问|跟进)(?:刚才的|之前的|原来?的?|上个)?(?:原任务|任务|交办|事项)/u
+    .test(dotsInstructionText(original ?? ""));
+}
 
 export const dotsRetryQuestions = {
   interrupted: "是否允许在原任务中再试这一步？",
@@ -68,7 +111,7 @@ export function dotsInstructionText(text: string): string {
 
 export function dotsForwardingDenied(text: string): boolean {
   const normalized = dotsInstructionText(text).normalize("NFKC").trim();
-  return denyForwarding.test(normalized) || clauses(normalized).some(clause => {
+  return dotsDeferredInstruction(text) || denyForwarding.test(normalized) || clauses(normalized).some(clause => {
     if (stopDirective.test(clause.replace(/[,，;；]+$/u, ""))) return true;
     const statement = clause.replace(/[,，.。！？!?;；]+$/u, "").trim();
     const localScope = onlyHere.exec(statement);

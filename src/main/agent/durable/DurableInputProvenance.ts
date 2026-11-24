@@ -1,6 +1,7 @@
 import type { ConversationId, EntryId, SubmissionId, ToolExecutionApi, Cursor } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { readDotsReply } from "./DurableDotsReply";
+import { isDotsAutomaticInput } from "../../../shared/dots";
 
 /**
  * Resolve a host's original input from the exact native run receipt. No timestamp or
@@ -38,6 +39,33 @@ export async function durableSourceInput(
 
 export async function durableSourceUserMessageId(...args: Parameters<typeof durableSourceInput>): Promise<string | undefined> {
   return (await durableSourceInput(...args))?.id;
+}
+
+export async function durableEarlierUserText(native: Pick<ToolExecutionApi, "commit">, context: Context,
+  conversationId: ConversationId, before: number, matches: (text: string) => boolean) {
+  return native.commit(async tx => {
+    let cursor: Cursor | undefined;
+    let remaining = 12;
+    while (remaining > 0) {
+      const page = await tx.scanEntries({ conversationId, maxEntryId: (before - 1) as EntryId, order: "descending" }, 80, cursor);
+      for (const entry of page.items) {
+        if (entry.kind !== "mybuddy.user") continue;
+        const data = entry.data;
+        const input = data && typeof data === "object" && !Array.isArray(data) ? data.mybuddyInput : undefined;
+        if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.displayText !== "string") continue;
+        const audit = input.audit;
+        const id = audit && typeof audit === "object" && !Array.isArray(audit) ? audit.userMessageId : undefined;
+        if (typeof id !== "string" || isDotsAutomaticInput(id)) continue;
+        if (matches(input.displayText)) {
+          const receipt = await tx.submissionByRequest(conversationId, id);
+          if (receipt?.type === "input" && receipt.entry === entry.id) return input.displayText;
+        }
+        if (--remaining === 0) return;
+      }
+      cursor = page.next;
+      if (!cursor) return;
+    }
+  }, context);
 }
 
 export async function durableDotsRetryQuestion(native: Pick<ToolExecutionApi, "commit">, context: Context,

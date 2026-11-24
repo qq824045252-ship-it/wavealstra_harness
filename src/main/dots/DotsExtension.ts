@@ -5,10 +5,10 @@ import { WELCOME_MODES, type AssemblySegmentDto } from "../../shared/mode-profil
 import { dotsOperationEnabled, dotsOperations, dotsPromptCategories, type DotsPromptCategoryId, type DotsPromptSections, type DotsSettings } from "../../shared/dots-settings";
 import { Type } from "typebox";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
-import { durableDotsRetryQuestion } from "../agent/durable/DurableInputProvenance";
+import { durableDotsRetryQuestion, durableEarlierUserText } from "../agent/durable/DurableInputProvenance";
 import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
 import { DotsForegroundUnavailable } from "./DotsForegroundReads";
-import { dotsFollowUpInput, dotsForwardingDenied, dotsResumeInput, dotsRetryApprovalInput, hasDotsResumeInstruction } from "./DotsFollowUpInput";
+import { dotsDeferredInstruction, dotsFollowUpInput, dotsForwardingDenied, dotsInstructionText, dotsResumeInput, dotsRetryApprovalInput, hasDotsResumeInstruction } from "./DotsFollowUpInput";
 import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
@@ -37,11 +37,12 @@ const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
     "回答旧事时核对对象、角色、时间和事件。证据不足时先用 memory_search 按主体或事件分别找，用 memory_get 查看原文。把同一事件的重复转述算一次，依据各自的发生时间比较、合计。仍然缺少依据时，指出缺哪条信息。",
     "给建议时，把已经确认的用户偏好、设备或限制用进具体建议。用户无需事先表达过这条建议；只把原文确实支持的内容说成用户的经历或选择。",
     "用户交代的长期偏好直接写入统一记忆。只适用于本次的要求当场执行。用 applicability 声明每条记忆的适用范围并逐字引用原话。project/workspace 提供用户指名的名称，有查明的 ID 时一起提供。无法确认时用 unresolved。用户明确要求全局或声明通用默认时用 general。存在默认规则的项目例外用 memory_update 引用默认记录 ID 和本条原话。多主题分别取各自证据。显式修改回答匹配与行为时才用 answer_rule 工具。",
-    "用户要求新增全局记忆时，用 memory_create 写入 global，逐字提供规则和范围原话。确认保存时按回执复述实际范围、状态和正文，保留用户原话中的用字。待确认原话仅供查证。已有成功回执就使用该记忆 ID。只有用户明确要求遗忘才调用 memory_forget。",
+    "Dots 专属记忆的存储位置由宿主决定，项目或工作空间只填 applicability，省略 scopeType。用户明确要求新增全局记忆时才传 scopeType=global，逐字提供规则和范围原话。按回执确认实际范围、状态和正文。待确认原话仅供查证。已有成功回执就使用该记忆 ID。只有用户明确要求遗忘才调用 memory_forget。",
     "场景摘要和个人画像来自长期记忆的原话与版本。需要引用时核对 L1 原话。转述、推测和旧决定只用于说明来源，不能当成已经确认的当前事实。",
   ],
   tasks: [
     taskEvidenceInstructions,
+    "用户说等当前任务结束，下次明确委派时再追加，用 defer 指定原任务，text 逐字引用要留存的用户要求。收到 saved 才说已记下。当前任务照常跑，完成后也等用户明确发起下一次交办。task 返回 deferred 时，只有用户明确要求本次带上该待办，才在 delegate 或 follow_up 传 deferredId。steer 只用于用户本轮明确要求立即改变正在运行的任务。",
     "委派时只传对应任务所需的资料。text 忠实转述本次目标和约束，保留用户指定的交付范围，别自行增加工作步骤或验收项。用户明确指定交付内容、格式、语言或篇幅时，用 deliveryInstruction 逐字摘录。原话要求留在原任务或供回查的记录只用于执行，让普通任务保留在那里，不要在交办中要求把它登记为要交给用户的成品。",
     "原交办中有明确的先后依赖时，先派发被依赖任务。派发同一空间的后续任务时，把上游委派回执中的 operationId 原样写入任务要求，让后续任务先做可独立完成的工作，再用 dots_task_end 的 wait 动作等依赖交付。",
     "任务依赖特定工具、技能、连接器、专家、场景或 MCP 时，用 requiredCapabilities 声明必须具备的能力。定位原任务后可调用 task 并传 requiredCapabilities，查看已有配置是否获准。policy_approved 只表示现有配置满足授权策略，委派受理时还会检查实际工具和指定的 MCP。用户指明原任务时保留它，若配置不满足就说明具体原因。该字段不启用权限，也不切换执行配置。",
@@ -96,7 +97,7 @@ export function assembleDotsPrompt(memoryMode: DotsSettings["memoryMode"], overr
 
 const controls = ["pause", "stop", "pause_all", "stop_all", "file_watches", "cancel_watch", "pause_proactive"] as const;
 const configuredActions = ["find_tasks", "task", "execution_configs", "spaces", "deliveries", "materials", "read_material", "files", "read_file",
-  "bind", "create_space", "rename", "delegate", "steer", "resume", "follow_up", "answer", "watch_file", "resume_proactive"] as const satisfies readonly (keyof typeof dotsOperations)[];
+  "bind", "create_space", "rename", "defer", "delegate", "steer", "resume", "follow_up", "answer", "watch_file", "resume_proactive"] as const satisfies readonly (keyof typeof dotsOperations)[];
 
 function actionAllowed(action: DotsActionInput["action"], settings: Partial<DotsSettings> | undefined): boolean {
   return controls.some(key => key === action) || configuredActions.some(key => key === action) && dotsOperationEnabled(settings, action);
@@ -114,6 +115,7 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
       "materials 在指定 spaceId 或 targetTaskId 范围搜索资料，read_material 按 itemId 读取，可传 version 读已列出的旧版本。spaces 列举空间，files 每页列出指定空间或其相对子目录的 100 个条目，传 nextOffset 作为 offset 翻页。read_file 读相对路径文本。资料、目录和文件读取时，用 allowHandoff 标明达到内部读取上限后，同一事项是否可以在已获准的空间内继续，并传入该 spaceId。按本轮请求和最新修订判断，用户已授权完成事项时可自动移交。",
       "bind 绑定绝对目录，可用 spaceId 或 name 新建空间。create_space 在已绑定的父 spaceId 下创建名为 name 的子文件夹及空间，随后可在新空间委派任务。rename 保留原空间身份。用户明确交代按顺序做多件事时，可用 steps 固定各步。只给目标时直接传完整目标和限制。",
       "delegate 在指定空间新建普通任务或接续 targetTaskId。steer 将 text 发给正在执行的原任务，pause 或 stop 停止本轮。follow_up 按本轮原话追问已完成的原任务，传 targetTaskId 和最新 operationId，由宿主转发追问及同轮截图。resume 恢复或重跑原任务。answer 传原委派 operationId、目标任务和 interactionId，由宿主原样转发本轮用户输入。选择或确认题需要用户明确给出选项。",
+      "defer 记录用户要求在原交办完成且下次明确委派时追加的原话，传 targetTaskId 和 text。用 task 读取 deferred，后续用户明确授权时传 deferredId；defer 自身不派工。",
       "deliveries 按标题、文字或文件名找本地普通任务已有成果，包括用户自行建立的任务。结果给出原任务及登记文件链接。有 nextOffset 时保留 cursor 并传 offset，否则把 next 作为 cursor 从 offset 0 继续。",
       "任务消息或交付标有 textTruncated 时，用其 readTextCall 读取同一条完整正文。按返回的 readTextCall 逐页续读，并按偏移顺序拼接 text。",
       "watch_file 订阅原任务空间里的单个相对文件路径，传 text 指定变化后要办的事。文件新增、元数据变化或删除只触发一次。file_watches 查看，cancel_watch 传原任务与 watchId 取消。pause_all 或 stop_all 控制 Dots 已关联的活动事项，可指定 spaceId。未指定空间时也会暂停或取消 Dots 自有计划。pause_proactive 或 resume_proactive 暂停或恢复主动跟进，保留正在运行的普通任务。",
@@ -125,6 +127,7 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
       assignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"引用本轮明确要求追问或续办的原话，或在同一条消息交办多个独立事项时引用该事项原文"})),
       previousAssignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"首项未引用原文时，用此字段补上首项原文，并用 assignmentQuote 引用本次独立事项"})),
       action: Type.Union(dotsAvailableActions(settings()).map(action => Type.Literal(action))), targetTaskId: Type.Optional(Type.String()),
+      deferredId: Type.Optional(Type.String({ description: "本轮用户明确要求带上已保存待办时，传 task 返回的 deferred.id。" })),
       steps:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:400}),{minItems:2,maxItems:8})),
       memoryRefs: Type.Optional(Type.Array(Type.Object({ id: Type.String({ minLength: 1, maxLength: 160 }), revision: Type.Integer({ minimum: 1 }) }, { additionalProperties: false }), { maxItems: 8 })),
       requiredCapabilities: Type.Optional(Type.Array(Type.Object({
@@ -206,13 +209,25 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
         await checkCurrentToolInput();
         if (!actionAllowed(input.action, settings())) throw new Error("Dots 操作已关闭。");
       };
+      if (input.action === "defer") {
+        const source = invocation.foregroundInputs?.at(-1);
+        if (!source || !dotsDeferredInstruction(source.text)) throw new Error("本轮没有要求留到下次交办的待办。");
+        const conversationId = invocation.presentationConversationId ?? invocation.native.conversationId;
+        const quote = input.text?.trim();
+        const earlier = quote && !dotsInstructionText(source.text).includes(quote) &&
+          /(?:之前|刚才|上次|前面|先前|earlier|previous)/iu.test(source.text)
+          ? await durableEarlierUserText(invocation.native, invocation.context, invocation.native.conversationId,
+              source.entryId, text => dotsInstructionText(text).includes(quote)) : undefined;
+        return toolResult(await actions.execute(invocation.execution.taskId, source.id, input, source.text,
+          { conversationId, entryId: source.entryId }, source.createdAt, { checkCurrentInstruction, deferredSource: earlier }));
+      }
       if (input.action === "follow_up") {
         const { source, assignmentQuote, attachments, captions } = dotsFollowUpInput(invocation.foregroundInputs ?? []);
         await checkCurrentInstruction();
         const origin = { conversationId: invocation.presentationConversationId ?? invocation.native.conversationId, entryId: source.entryId };
         const work = { action: input.action, targetTaskId: input.targetTaskId, operationId: input.operationId,
           spaceId: input.spaceId, assignmentQuote, deliveryInstruction: input.deliveryInstruction, requiredCapabilities: input.requiredCapabilities,
-          completionItems: input.completionItems, executionConfiguration: input.executionConfiguration };
+          completionItems: input.completionItems, executionConfiguration: input.executionConfiguration, deferredId: input.deferredId };
         return toolResult(await actions.execute(invocation.execution.taskId, source.id, work, source.text, origin, source.createdAt,
           { followUp: { attachments, captions, checkCurrent: checkCurrentInstruction } }));
       }
@@ -258,8 +273,11 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
           invocation.sourceOrigin, invocation.sourceCreatedAt, { checkCurrentInstruction }));
       }
       const offerFollowUp = Boolean(followUpRequest && !input.requiredCapabilities?.length);
+      const dispatch = input.action === "steer" || input.action === "delegate" || Boolean(input.deferredId);
+      if (dispatch) await checkCurrentInstruction();
       const details = await actions.execute(invocation.execution.taskId, invocation.sourceUserMessageId, input, invocation.sourceDisplayText,
-        invocation.sourceOrigin, invocation.sourceCreatedAt, input.executionConfiguration ? { checkCurrentInstruction } : offerFollowUp ? { offerFollowUp } : undefined);
+        invocation.sourceOrigin, invocation.sourceCreatedAt,
+        input.executionConfiguration || dispatch ? { checkCurrentInstruction } : offerFollowUp ? { offerFollowUp } : undefined);
       return toolResult(details);
     },
   });

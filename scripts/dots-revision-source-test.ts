@@ -188,6 +188,18 @@ try {
   assert.deepEqual(memory.get(sourceNote.details.memory.id)?.scopes.map(scope => scope.scopeType), ["task"]);
   console.log("PASS Dots global writes, retries, background deduplication, scoped receipts and withdrawal guard");
 
+  const workspace = db.createSpace({ id: "price-workspace", name: "北栈" });
+  const workspaceRule = "只在北栈工作空间，报价优先核对原厂价格。";
+  source = { messageId: "workspace-write", createdAt: Date.now(), text: workspaceRule };
+  const workspaceArgs = { kind: "constraint", title: "报价", content: workspaceRule, sourceQuote: workspaceRule,
+    applicability: { kind: "workspace", id: workspace.id, name: "北栈", evidence: "只在北栈工作空间" } };
+  const workspaceMemory = await tool("memory_create", { ...workspaceArgs, scopeType: "workspace" });
+  assert.deepEqual(workspaceMemory.scopes.map(({ scopeType, scopeId }) => [scopeType, scopeId]), [["task", DOTS_TASK_ID]]);
+  assert.deepEqual(workspaceMemory.metadata.dotsApplicability, { kind: "workspace", id: workspace.id, name: "北栈" });
+  assert.equal((await tool("memory_create", workspaceArgs)).id, workspaceMemory.id);
+  assert(readDots(memory, "北栈工作空间报价").items.some(item => item.id === workspaceMemory.id));
+  assert(!readDots(memory, "别的工作空间报价").items.some(item => item.id === workspaceMemory.id));
+
   const globalDefault = memory.create({ kind: "preference", title: "交付清单语言", content: "交付清单默认用中文。", scopeType: "global" });
   const projectQuote = "只在远山项目，交付清单用英文。";
   source = { messageId: "scope-exception", createdAt: Date.now(), text: projectQuote };

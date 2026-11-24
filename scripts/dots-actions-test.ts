@@ -103,7 +103,9 @@ const fixture = await createAgentDurableFixture(root, db, async (input, signal) 
       if (last?.role === "toolResult" && last.toolName === "register_artifact") {
         assert.equal(last.isError, false, JSON.stringify(last.content));
         steeringProof = false;
-        return [{type:"text", text:"已根据改向交付 A456 修订方案"}];
+        const result = "已根据改向交付 A456 修订方案";
+        return [{type:"toolCall", id:"steer-complete", name:"dots_task_end",
+          arguments:{ action:"complete", result, deliveryText:result }}];
       }
       if (last?.role === "toolResult" && last.toolName === "write") {
         assert.equal(last.isError, false, JSON.stringify(last.content));
@@ -236,8 +238,16 @@ try {
   assert.equal(task.cwd, folder);
   assert.equal(task.spaceId, space.id);
   await until(() => waiting, "existing native model run must be active");
+  const future = "等上个任务结束，我再让你委派，记住这两条追加要求。";
+  const deniedSteer = await turn({ action: "steer", targetTaskId: task.id, text: "马上把要求追加进去" }, undefined, 1, future);
+  assert(deniedSteer.error, deniedSteer.text);
+  assert.equal(journal.list().length, 1);
+  const deniedQuestion = await turn({ action: "steer", targetTaskId: task.id, text: "改成方案" }, undefined, 1, "为什么现在改成方案？");
+  assert(deniedQuestion.error, deniedQuestion.text);
   steeringProof = true;
-  const steer = await success({ action: "steer", targetTaskId: task.id, text: "改为方案" });
+  const steered = await turn({ action: "steer", targetTaskId: task.id, text: "改为方案" }, undefined, 1, "请现在把原任务改为方案。");
+  assert(!steered.error, steered.text);
+  const steer = JSON.parse(steered.text);
   assert(["queued", "placed"].includes(steer.receipt.status));
   holdTarget = false;
   release?.();
@@ -686,6 +696,44 @@ try {
   assert(followWorkerPrompt, "worker receives the real follow-up request");
   assert.doesNotMatch(followWorkerPrompt, /untrusted-worker-instruction-31/);
   console.log("PASS Dots original-task follow-up preserves input attribution, replays once, and honors a later stop");
+
+  waiting = false;
+  holdTarget = true;
+  const deferredJob = await success({ action: "delegate", spaceId: space.id, text: "collect-finished-before-pause" });
+  await until(() => waiting, "original task stays active while saving a deferred requirement");
+  const oneTime = "交付里保留完整表头。";
+  const rememberInput = "等这项任务跑完，下次我让你委派时，再追加这条要求。" + oneTime;
+  const saved = await turn({ action: "defer", targetTaskId: deferredJob.id, text: oneTime }, undefined, 2, rememberInput);
+  assert(!saved.error, saved.text);
+  const pending = JSON.parse(saved.text);
+  assert.equal(pending.status, "saved");
+  assert.equal(pending.text, oneTime);
+  const taskInspection = await success({ action: "task", targetTaskId: deferredJob.id });
+  assert.deepEqual(taskInspection.deferred.map((row: { id: string }) => row.id), [pending.id]);
+  const request = { action: "delegate", spaceId: space.id, deferredId: pending.id, text: "检查交付报告" } as const;
+  const unauthorized = await turn(request, undefined, 1, "我们聊聊之前记下的要求。");
+  assert(unauthorized.error, unauthorized.text);
+  const premature = await turn(request, undefined, 1, "请现在委派一个新任务，带上之前记下的那条要求。");
+  assert.match(premature.text, /原交办尚未完成/);
+  assert.equal(journal.list().filter(row => row.taskId === deferredJob.id).length, 1);
+  holdTarget = false;
+  release?.();
+  await agent.waitForSubmission(deferredJob.receipt);
+  journal.refresh(deferredJob.id);
+  await until(() => journal.list().some(row => row.id === deferredJob.operationId && row.status === "completed"), "ordinary task finishes");
+  const beforeDeferred = fixture.requests.length;
+  const admitted = await turn({ action: "delegate", spaceId: space.id, text: request.text }, undefined, 2,
+    "请现在委派一个新任务，带上之前记下的那条要求。");
+  assert(!admitted.error, admitted.text);
+  const deferredReceipt = JSON.parse(admitted.text).receipt;
+  await agent.waitForSubmission(deferredReceipt);
+  const downstream = fixture.requests.slice(beforeDeferred).filter(call => call.tools.includes("read"));
+  const body = JSON.stringify(downstream[0]?.input.messages.at(-1));
+  assert.equal(body.split(oneTime).length, 2);
+  const repeated = await turn(request, undefined, 1, "请再委派一个新任务，带上之前记下的那条要求。");
+  assert.match(repeated.text, /已经用于一次交办/);
+  assert.equal((await success({ action: "task", targetTaskId: deferredJob.id })).deferred, undefined);
+  console.log("PASS Dots defers confirmed requirements and applies them once on explicit delegation");
 
   await agent.releaseDurableTask(second.receipt.taskId);
   db.deleteTask(second.receipt.taskId);

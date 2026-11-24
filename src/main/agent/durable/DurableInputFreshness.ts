@@ -47,7 +47,7 @@ export function needsFreshUserInput(name: string, args: unknown): boolean {
   if (mcp) return mcp.sideEffect;
   if (publicationTools.has(name)) return true;
   if (name === DOTS_DESKTOP_PREVIEW || name === "dots_action" && args && typeof args === "object" &&
-    "action" in args && args.action === "follow_up") return true;
+    ("deferredId" in args || "action" in args && ["delegate", "follow_up", "defer", "steer"].includes(String(args.action)))) return true;
   if (name === "conversation_goal_update" && args && typeof args === "object" && "status" in args)
     return args.status === "cancelled" || args.status === "achieved";
   if (name === "browser_exec" && args && typeof args === "object" && "action" in args && typeof args.action === "string") {

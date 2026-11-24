@@ -52,12 +52,12 @@ function normalizeName(name: string): string {
 
 // Derive applicability only from the user's complete quotation. Ownership stays with Dots.
 export function dotsScopeCondition(quote: string): DotsApplicability | undefined {
-  const before = /(?:仅|只)(?:在|限于|用于)\s*([^，,。！？；\n]{1,55}?)(项目|工作区|空间)/iu.exec(quote);
-  const after = /(?:仅|只)(?:在|限于|用于)\s*(项目|工作区|空间)\s*([^，,。！？；：:\n]{1,55})/iu.exec(quote);
+  const before = /(?:仅|只)(?:在|限于|用于)\s*([^，,。！？；\n]{1,55}?)(项目|工作区|工作空间|空间)/iu.exec(quote);
+  const after = /(?:仅|只)(?:在|限于|用于)\s*(项目|工作区|工作空间|空间)\s*([^，,。！？；：:\n]{1,55})/iu.exec(quote);
   const englishBefore = /\bonly (?:for|in|on) (?:the )?([^,.!?;:\n]{1,55}?)\s+(project|workspace)\b/iu.exec(quote);
   const englishAfter = /\bonly (?:for|in|on) (?:the )?(project|workspace)\s+([^,.!?;:\n]{1,55})/iu.exec(quote);
-  const leadBefore = /^(?:对(?:于)?|在)\s*([^，,。！？；：:\n]{1,55}?)(项目|工作区|空间)(?:中|里)?\s*[，,：:]/iu.exec(quote);
-  const leadAfter = /^(?:对(?:于)?|在)\s*(项目|工作区|空间)\s*([^，,。！？；：:\n]{1,55})\s*[，,：:]/iu.exec(quote);
+  const leadBefore = /^(?:对(?:于)?|在)\s*([^，,。！？；：:\n]{1,55}?)(项目|工作区|工作空间|空间)(?:中|里)?\s*[，,：:]/iu.exec(quote);
+  const leadAfter = /^(?:对(?:于)?|在)\s*(项目|工作区|工作空间|空间)\s*([^，,。！？；：:\n]{1,55})\s*[，,：:]/iu.exec(quote);
   const leadEnglish = /^(?:for|in|on) (?:the )?(project|workspace)\s+([^,.!?;:\n]{1,55})\s*[,:]/iu.exec(quote);
   const name = normalizeName(before?.[1] ?? after?.[2] ?? englishBefore?.[1] ?? englishAfter?.[2]
     ?? leadBefore?.[1] ?? leadAfter?.[2] ?? leadEnglish?.[2] ?? "");
@@ -81,7 +81,7 @@ export function matchesDotsApplicability(rule: DotsApplicability, query: string)
   if (rule.kind === "unresolved") return false;
   const normalized = query.normalize("NFKC").toLowerCase().replace(/["“”《》'「」]/gu, "").replace(/\s+/gu, " ");
   const name = rule.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const type = rule.kind === "project" ? "(?:项目|\\bproject\\b)" : "(?:工作区|空间|\\bworkspace\\b)";
+  const type = rule.kind === "project" ? "(?:项目|\\bproject\\b)" : "(?:工作区|工作空间|空间|\\bworkspace\\b)";
   const startsWithLatin = /^[\p{Script=Latin}\d]/u.test(rule.name);
   const endsWithLatin = /[\p{Script=Latin}\d]$/u.test(rule.name);
   const start = startsWithLatin ? "(?<![\\p{Script=Latin}\\p{N}])"

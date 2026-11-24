@@ -161,7 +161,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       name: "memory_create",
       label: "长期记忆 · 沉淀",
       description: "沉淀长期有价值的认知。默认 scope 由宿主绑定：后台委托使用持久 Work，团队使用 Team，个人 Bot 使用 Bot；普通任务选择 Project > Workspace > Task。Work 可记录跨轮需要的进展、决策与未决项，不保存冗长工具日志。Global 只应保存跨项目稳定身份、偏好、约束或通用 procedure。"
-        + (bridge.taskId === DOTS_TASK_ID ? " 用户明确要求全局时传 scopeType=global、applicability.kind=general。content 与 sourceQuote 用规则原文，applicability.evidence 引用范围原话。两段可以来自相邻句。同一原话重复创建会返回同一记忆。" : ""),
+        + (bridge.taskId === DOTS_TASK_ID ? " Dots 专属记忆由宿主写入 task:mybuddy-dots；项目或工作空间仅填 applicability，请省略 scopeType。用户明确要求全局时才传 scopeType=global、applicability.kind=general。content 与 sourceQuote 用规则原文，applicability.evidence 引用范围原话。两段可以来自相邻句。同一原话重复创建会返回同一记忆。" : ""),
       promptSnippet: "memory_create(kind,title,content?,importance?,confidence?,scopeType?) — 沉淀长期认知",
       parameters: Type.Object({
         kind: kindSchema,
@@ -183,6 +183,12 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
           if (params.scopeType === "global") {
             if (!["identity", "preference", "constraint", "procedure"].includes(params.kind)) throw new Error("Agent 不应把项目事实/决策直接提升为 Global；请使用当前项目/工作空间 scope");
             scope = { scopeType: "global" };
+          } else if (bridge.taskId === DOTS_TASK_ID && (params.scopeType === "workspace" || params.scopeType === "project")) {
+            // Older tool calls may repeat the applicability as a storage scope.
+            // Keep Dots' private binding and let the evidence validator verify the applicability.
+            if (!params.applicability || typeof params.applicability !== "object" ||
+                !("kind" in params.applicability) || params.applicability.kind !== params.scopeType)
+              throw new Error("Dots 专属记忆请省略 scopeType，用 applicability 提供项目或工作空间及其范围原话");
           } else if (params.scopeType === "project" && inferred.scopeType === "work") {
             const project = bridge.service.resolveScopeChain({ taskId: bridge.taskId }).find(item => item.scopeType === "project");
             if (!project || !bridge.service.canPromoteFromTask(bridge.taskId, "project", project.scopeId)) throw new Error("当前 Work 没有绑定项目");
