@@ -70,6 +70,7 @@ export interface DotsAssistantReply {
   taskId: string;
   sourceMessageId: string;
   origin?: DotsReplyOrigin;
+  retryApproval?: true;
   completion?: { id: string; workId: string; intentRevision: number; stateVersion: number };
   title: string;
   kind: "conclusion" | "question" | "progress";

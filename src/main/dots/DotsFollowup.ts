@@ -14,11 +14,13 @@ import { dotsCompletionGaps, dotsCompletionInstruction, dotsCompletionRequiremen
   type DotsCompletionDeclaration, type DotsCompletionRequirements } from "./DotsCompletion";
 import { dotsDeliveryText, matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
+import { dotsRetryQuestions } from "./DotsFollowUpInput";
 
 export type DotsFollowupDecision = {
   kind: "quiet" | "ask" | "deliver" | "progress" | "continued" | "deferred";
   text?: string;
   artifacts?: DotsDelegation["artifacts"];
+  retryApproval?: true;
   completion?: import("./DotsGoalConclusion").DotsGoalCompletion;
 };
 export const followupInstructions = [
@@ -559,9 +561,10 @@ export class DotsFollowup {
     const gaps = completion?.gaps ?? [];
     const incomplete = gaps.length > 0;
     const repair = !incomplete && (row.status === "failed" || !payload);
-    const stopped = (reason: string, question: string): DotsFollowupDecision => ({
+    const stopped = (reason: string, question: string, retryApproval?: true): DotsFollowupDecision => ({
       kind: "ask",
       text: [(!repair && !incomplete ? summary : plan?.lastProgress) || "", reason, question].filter(Boolean).join("\n\n"),
+      ...(retryApproval && { retryApproval }),
     });
     const unresolved = () => {
       const failed = row.status === "failed";
@@ -572,8 +575,8 @@ export class DotsFollowup {
         return stopped(reason, "要改用哪个已授权的数据源或工作空间？");
       if (failed && /^(?:HTTP\s*)?4\d\d\b/i.test(text) && !transientFailure(text))
         return stopped(reason, "要调整本次提交的哪项要求再继续？");
-      if (plan?.retry) return stopped(reason + "已尝试补救一次。", "要在原任务中重新尝试这一步吗？");
-      return stopped(reason + "无法确认重复执行是否会产生额外影响。", "是否允许在原任务中再试这一步？");
+      if (plan?.retry) return stopped(reason + "已尝试补救一次。", dotsRetryQuestions.previouslyRetried, true);
+      return stopped(reason + "无法确认重复执行是否会产生额外影响。", dotsRetryQuestions.interrupted, true);
     };
     if (row.goalId) {
       const g = this.hooks.goal(row.taskId, row.goalId);
@@ -634,10 +637,9 @@ export class DotsFollowup {
       if (row.status === "failed") {
         const reason = "原任务没有接收本次执行。" + humanFailure(text);
         if (/主对话默认模型/.test(text)) return stopped(reason, "调整好模型设置后，要继续这个原任务吗？");
-        const question = /permission|forbidden|unauthori|权限|凭据/i.test(text)
-          ? "要改用哪个已授权的数据源或工作空间？"
-          : "要在当前任务中重新提交这一步吗？";
-        return stopped(reason, question);
+        if (/permission|forbidden|unauthori|权限|凭据/i.test(text))
+          return stopped(reason, "要改用哪个已授权的数据源或工作空间？");
+        return stopped(reason, dotsRetryQuestions.notAdmitted, true);
       }
       return stopped("无法确认原任务是否接受过这一步。", "是否允许重新提交这一步？");
     }

@@ -152,10 +152,10 @@ async function success(input: DotsActionInput, repeat = 1) {
   assert(!value.error, value.text);
   return JSON.parse(value.text);
 }
-async function until(check: () => boolean, label: string) {
+async function until(check: () => boolean | Promise<boolean>, label: string) {
   const deadline = Date.now() + 10000;
-  while (!check() && Date.now() < deadline) await delay(20);
-  assert(check(), label);
+  while (!await check() && Date.now() < deadline) await delay(20);
+  assert(await check(), label);
 }
 try {
   const directive = { id: "follow-original", entryId: 100, text: "还是没看到效果啊，你追问下" };
@@ -870,6 +870,33 @@ try {
   assert.notEqual(authorized.receipt.operationId, interrupted.receipt.operationId);
   assert.equal((await agent.waitForSubmission(authorized.receipt)).receipt?.status, "done");
   console.log("PASS 查任务读到已隐藏的真实 Bash 中断记录，诊断不会恢复原任务，明确继续才产生第二条回执");
+
+  const unboundApproval = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, "允许");
+  assert(unboundApproval.error && /没有对应的原任务重试问题/.test(unboundApproval.text));
+  holdTarget = true;
+  const retryTarget = await success({ action: "delegate", spaceId: space.id, text: "只读核对隔离工作区的资料" });
+  await until(() => waiting, "the original task is generating an answer");
+  journal.connect((job, request) => actions.followup(job, request), (reply, current) => agent.appendDotsReply(reply, current),
+    taskId => taskId === retryTarget.id);
+  holdTarget = false;
+  assert.equal(await agent.abort(retryTarget.id), "idle");
+  assert.equal((await agent.waitForSubmission(retryTarget.receipt)).cancelled, true);
+  journal.refresh(retryTarget.id);
+  await until(async () => (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message =>
+    message.dotsDelivery?.operationId === retryTarget.receipt.operationId
+    && message.dotsDelivery?.kind === "question" && message.text.includes("是否允许在原任务中再试这一步")),
+    "native failure question belongs to the original assignment");
+  const beforeRetry = db.listNonTrashedTasks().map(task => task.id).sort();
+  const replyApproval = await turn({ action: "delegate", spaceId: space.id, text: "同一目标另开一项" }, "dots_action", 2, "允许");
+  assert(!replyApproval.error, replyApproval.text);
+  const retryReceipt = JSON.parse(replyApproval.text).receipt;
+  assert.equal(retryReceipt.taskId, retryTarget.id);
+  assert.notEqual(retryReceipt.operationId, retryTarget.receipt.operationId);
+  assert.equal((await agent.waitForSubmission(retryReceipt)).receipt?.status, "done");
+  assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(), beforeRetry);
+  assert.deepEqual(journal.list(["dots-user-" + serial]).map(item => [item.taskId, item.id]),
+    [[retryTarget.id, retryReceipt.operationId]]);
+  console.log("PASS 单独回复允许后，在原任务只重试一次，另建委派的调用也沿用原任务");
 
   const scheduleTimeout = globalThis.setTimeout;
   try {

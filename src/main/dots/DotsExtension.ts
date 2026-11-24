@@ -5,9 +5,10 @@ import { WELCOME_MODES, type AssemblySegmentDto } from "../../shared/mode-profil
 import { dotsOperationEnabled, dotsOperations, dotsPromptCategories, type DotsPromptCategoryId, type DotsPromptSections, type DotsSettings } from "../../shared/dots-settings";
 import { Type } from "typebox";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
+import { durableDotsRetryQuestion } from "../agent/durable/DurableInputProvenance";
 import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
 import { DotsForegroundUnavailable } from "./DotsForegroundReads";
-import { dotsFollowUpInput, dotsForwardingDenied, dotsResumeInput, hasDotsResumeInstruction } from "./DotsFollowUpInput";
+import { dotsFollowUpInput, dotsForwardingDenied, dotsResumeInput, dotsRetryApprovalInput, hasDotsResumeInstruction } from "./DotsFollowUpInput";
 import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
@@ -52,6 +53,7 @@ const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
     "用户回答普通任务的问题或说已补齐之前缺的资料时，先使用 task 查当前委派的 deliveries，再用 answer 给原操作。若工具返回尚未回答的问题，用它给出的 operationId、interactionId 和原任务 ID 回答。只补资料且没有 interactionId 时，仍用 answer 接续原操作，由原任务读文件和交付；本轮回执只在确认受理后简短告知原任务已接上。不要把答复改写成 steer 或新的 delegate。",
     "交办时只查定位原任务和空间所需的信息。用户一条消息中有多个独立事项要分别派工时，从第一次委派起每项带上互不重叠的 assignmentQuote 原文。一次交办的改写或重试仍属原事项。",
     "用户要求追问已结的原任务，先用 task 确认原任务和最新交办，再调用 follow_up，保留原 targetTaskId 和 operationId。宿主从本轮用户消息识别追问原话。如果本轮补了截图，宿主会把同轮截图直接附给原任务。按用户要求转达。follow_up 未受理时，说明原因、保留原任务 ID。只有用户明确要求恢复暂停或重跑失败的任务才用 resume。",
+    "用户简单回复允许、同意或可以，且刚收到系统对原任务的重试确认问题时，使用 resume。宿主会按该问题绑定原任务和原交办。重试未受理时报告工具的实际原因，保留原任务链接。",
     "像「你追问下」这样的明确请求需要把追问交给原任务。紧接着发来的截图和简短点评是补充材料，除非用户取消，仍按追问办理。task 返回 followUpCall 且原任务匹配时，用其参数实际调用，再向用户报告受理结果。",
   ],
   delivery: [
@@ -218,6 +220,26 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
         && (invocation.foregroundInputs?.some(source => dotsForwardingDenied(source.text))
           || dotsForwardingDenied(invocation.sourceDisplayText ?? ""))) {
         throw new Error("本轮要求留在当前对话。可用 task 查询原任务进度。");
+      }
+      if (input.action === "resume" || input.action === "delegate" || input.action === "steer") {
+        const approval = dotsRetryApprovalInput(invocation.foregroundInputs ?? []);
+        const conversationId = invocation.presentationConversationId ?? invocation.native.conversationId;
+        const question = approval && await durableDotsRetryQuestion(invocation.native, invocation.context, conversationId, approval.entryId);
+        if (approval && question && actions.isRetryApprovalQuestion(question)) {
+          if (input.targetTaskId && input.targetTaskId !== question.taskId || input.operationId && input.operationId !== question.operationId)
+            throw new Error("用户确认的是重试上一条问题对应的原任务。请使用该任务和原交办。");
+          const checkRetry = async () => {
+            await checkCurrentInstruction();
+            if (!actionAllowed("resume", settings())) throw new Error("Dots 设置已关闭恢复原任务");
+          };
+          await checkRetry();
+          return toolResult(await actions.execute(invocation.execution.taskId, approval.id, {
+            action: "resume", targetTaskId: question.taskId, operationId: question.operationId,
+            text: "用户已确认在原任务重试这一步。先核对上次的进度和操作结果，再继续未完成的部分。",
+          }, approval.text, { conversationId, entryId: approval.entryId }, approval.createdAt, { checkCurrentInstruction: checkRetry }));
+        }
+        if (approval && input.action === "resume")
+          throw new Error("当前确认没有对应的原任务重试问题。请使用 task 读取原任务的执行诊断，或明确指定要重试的原任务。");
       }
       if (actions.requiresResumeInstruction(input)) {
         const received = invocation.foregroundInputs ?? [];

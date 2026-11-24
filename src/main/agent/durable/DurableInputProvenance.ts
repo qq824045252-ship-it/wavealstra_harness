@@ -1,5 +1,6 @@
 import type { ConversationId, EntryId, SubmissionId, ToolExecutionApi, Cursor } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
+import { readDotsReply } from "./DurableDotsReply";
 
 /**
  * Resolve a host's original input from the exact native run receipt. No timestamp or
@@ -37,6 +38,24 @@ export async function durableSourceInput(
 
 export async function durableSourceUserMessageId(...args: Parameters<typeof durableSourceInput>): Promise<string | undefined> {
   return (await durableSourceInput(...args))?.id;
+}
+
+export async function durableDotsRetryQuestion(native: Pick<ToolExecutionApi, "commit">, context: Context,
+  conversationId: ConversationId, before: number) {
+  return native.commit(async tx => {
+    let cursor: Cursor | undefined;
+    do {
+      const page = await tx.scanEntries({ conversationId, maxEntryId: (before - 1) as EntryId, order: "descending" }, 80, cursor);
+      for (const entry of page.items) {
+        const reply = readDotsReply(entry);
+        if (reply?.kind === "progress") continue;
+        if (reply?.kind === "question") return reply;
+        if (reply || entry.kind === "mybuddy.user" || entry.kind === "pi.user" || entry.model?.some(message =>
+          message.role === "assistant" && message.stopReason !== "toolUse" && message.content.some(block => block.type === "text" && block.text.trim()))) return;
+      }
+      cursor = page.next;
+    } while (cursor);
+  }, context);
 }
 
 

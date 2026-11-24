@@ -317,6 +317,7 @@ export class DotsReplyOutbox {
         ...(accepted && { completion: { id: accepted.id, workId: accepted.workId, intentRevision: accepted.intentRevision,
           stateVersion: accepted.stateVersion } }),
         title: job.title, kind: step.kind === "deliver" ? "conclusion" : step.kind === "progress" ? "progress" : "question", text: step.text ?? job.text,
+        ...(step.retryApproval && { retryApproval: true }),
         ...(event.status === "sample" && { presentation: "report" }),
         artifacts: step.artifacts ?? job.artifacts,
         ...(step.kind === "deliver" && (step.text ?? job.text).trim() && replyCitations?.length ? { citations: replyCitations } : {}) };

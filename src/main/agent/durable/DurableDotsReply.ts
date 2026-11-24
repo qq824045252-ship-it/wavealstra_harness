@@ -16,6 +16,7 @@ const origin = z.object({ conversationId: z.number().int().positive(), entryId: 
 const replySchema = z.object({
   deliveryKey: z.string().min(1), operationId: z.string().min(1), sourceMessageId: z.string().min(1),
   taskId: z.string().min(1), title: z.string(), text: z.string(), kind: z.enum(["question","conclusion","progress"]),
+  retryApproval: z.literal(true).optional(),
   presentation: z.literal("report").optional(),
   citations: z.unknown().transform(value => {
     const citations: ReplyCitation[] = readReplyCitations(value);

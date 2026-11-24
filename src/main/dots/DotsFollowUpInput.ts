@@ -30,6 +30,21 @@ const screenshotDescription = /^(?:这(?:张图|个界面|个页面)|截图|图�
 const unrelatedRequest = /(?:麻烦|帮我|请你?|顺手|顺便|另一个|另外|接下来|务必|先去|删除|部署|提交|推送|重跑|派活|帮忙|改成|换成|发给)/u;
 const attachmentOnlyText = /^## 用户附带文件\s*\n(?:\s*- [^\n]+(?:\n|$))+$/u;
 const imagePath = /\.(?:png|jpe?g|gif|webp|bmp)$/iu;
+const retryApproval = /^(?:允许|同意|可以|好(?:的)?|行|确认|是的|yes|ok(?:ay)?|go ahead)[。.!！]*$/iu;
+
+export const dotsRetryQuestions = {
+  interrupted: "是否允许在原任务中再试这一步？",
+  previouslyRetried: "要在原任务中重新尝试这一步吗？",
+  notAdmitted: "要在当前任务中重新提交这一步吗？",
+} as const;
+
+export function dotsRetryApprovalInput(inputs: readonly ForegroundInput[]): ForegroundInput | undefined {
+  if (inputs.length !== 1) return;
+  const [input] = inputs;
+  if (!input || isDotsAutomaticInput(input.id)) return;
+  const text = input.text.normalize("NFKC").trim();
+  return retryApproval.test(text) ? input : undefined;
+}
 
 function clauses(text: string): string[] {
   return text.split(/(?<=[,，。.!！？?;；\n])/u).map(part => part.trim());

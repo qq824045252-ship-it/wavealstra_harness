@@ -1,5 +1,5 @@
 import { DotsForegroundReads, DotsForegroundUnavailable, type ForegroundInput } from "./DotsForegroundReads";
-import { dotsForwardingDenied, dotsInstructionText } from "./DotsFollowUpInput";
+import { dotsForwardingDenied, dotsInstructionText, dotsRetryQuestions } from "./DotsFollowUpInput";
 import { DotsCapabilityUnavailable, dotsCapabilityRequirements, dotsExecutionConfiguration, type DotsExecutionConfiguration, type DotsExecutionSelection } from "./DotsCapabilityRequirements";
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { DotsFollowup, dotsDeliveryInstruction, followupInstructions } from "./DotsFollowup";
@@ -29,7 +29,7 @@ import type { AgentService } from "../agent/AgentService";
 import { diagnosticText } from "../agent/durable/DurableToolDiagnostics";
 import type { AgentPromptRequest, SpaceDto, TaskDto } from "../../shared/agent-ipc";
 import { dotsOperationEnabled } from "../../shared/dots-settings";
-import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
+import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin } from "../../shared/dots";
 import { gatewayChannelForSpace, isGatewayConversation } from "../../shared/gateway-task";
 import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../workspace/WorkspaceService";
 
@@ -569,6 +569,17 @@ export class DotsActions {
   private latestOperation(taskId: string): string | null {
     return (this.db.connection.prepare("SELECT operation_id FROM dots_delegations WHERE task_id=? ORDER BY seq DESC LIMIT 1")
       .pluck().get(taskId) as string | undefined) ?? null;
+  }
+
+  isRetryApprovalQuestion(reply: DotsAssistantReply): boolean {
+    if (reply.kind !== "question") return false;
+    if (reply.retryApproval) return true;
+    // Previously delivered failure questions have only the text and the outbox receipt.
+    return /(?:^|\n\n)原任务(?:执行失败|没有接收本次执行)/u.test(reply.text)
+      && Object.values(dotsRetryQuestions).some(question => reply.text.endsWith("\n\n" + question))
+      && Boolean(this.db.connection.prepare(`SELECT 1 FROM dots_reply_events
+        WHERE event_key=? AND operation_id=? AND task_id=? AND status='failed' AND settled=1
+          AND json_extract(snapshot,'$.delivered')='question'`).get(reply.deliveryKey, reply.operationId, reply.taskId));
   }
 
   requiresResumeInstruction(input: DotsActionInput): boolean {
