@@ -1931,6 +1931,11 @@ export class AgentService {
     return assembleDotsPrompt(this.dotsMemoryMode(settings), settings.dotsPromptOverride, settings.dotsPromptAppend, settings.dotsPromptSections);
   }
 
+  async newDotsConversation(): Promise<void> {
+    if (!this.durableBots) throw new Error("Dots 会话服务不可用");
+    await this.durableBots.newDotsConversation();
+  }
+
   private botInstructions(task: TaskDto): string {
     if (task.id === DOTS_TASK_ID) {
       return this.getDotsPromptSegments().map(segment => segment.content).join("\n\n");

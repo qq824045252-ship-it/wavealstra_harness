@@ -9,7 +9,8 @@ export type DurableRegenerationState = { kind: "pending"; input: DurableRegenera
 /** The product's visible branch. Previous conversations remain immutable audit history. */
 export const ActiveDurableConversation = defineDoc({
   kind: "mybuddy.active-conversation", version: 1, scope: "session", checkpointWhen: () => false,
-  initial: (): { conversationId: ConversationId | null; regeneration?: DurableRegenerationState } => ({ conversationId: null }),
+  initial: (): { conversationId: ConversationId | null; regeneration?: DurableRegenerationState; previousDotsPages?: ConversationId[] } =>
+    ({ conversationId: null }),
 });
 
 export async function resolveActiveDurableConversation(harness: Harness, root: Conversation, context: Context): Promise<Conversation> {
@@ -21,7 +22,9 @@ export async function resolveActiveDurableConversation(harness: Harness, root: C
 }
 
 /** Creation and the visible pointer commit together; an unsuccessful fork never changes the user's branch. */
-export async function forkDurableConversation(harness: Harness, source: Conversation, at: EntryId | undefined, context: Context, regeneration?: DurableRegenerationInput): Promise<Conversation> {
+export async function forkDurableConversation(harness: Harness, source: Conversation, at: EntryId | undefined, context: Context,
+  options: { regeneration?: DurableRegenerationInput; archiveDotsPage?: boolean } = {}): Promise<Conversation> {
+  const { regeneration, archiveDotsPage } = options;
   const activate = async (tx: Tx, id: ConversationId) => {
     const active = await tx.doc(ActiveDurableConversation);
     if (active.conversationId !== null && active.conversationId !== source.id) throw new Error("会话分支已变化，请刷新后重试");
@@ -35,6 +38,7 @@ export async function forkDurableConversation(harness: Harness, source: Conversa
       for (const key of Object.keys(target)) Reflect.deleteProperty(target, key);
       Object.assign(target, current);
     }
+    if (archiveDotsPage) active.previousDotsPages = [...active.previousDotsPages ?? [], source.id];
     active.conversationId = id;
     active.regeneration = regeneration ? { kind: "pending", input: regeneration } : undefined;
   };

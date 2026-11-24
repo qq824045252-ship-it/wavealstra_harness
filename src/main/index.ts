@@ -775,6 +775,7 @@ function registerIpc(): void {
   agentService.setDotsActions(dotsActions);
   agentService.setDotsDesktopPreview(dotsDesktopPreview);
   ipcMain.handle(DotsIpc.open, () => db.openDots());
+  ipcMain.handle(DotsIpc.newConversation, () => agentService.newDotsConversation());
   ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
   ipcMain.handle(DotsIpc.activity, () => activity.list());
   ipcMain.handle(DotsIpc.taskDelivery, async (_event, taskId: string) => {

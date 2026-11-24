@@ -572,8 +572,9 @@ export default function ChatInput({
   const modelUnavailable = isDots && Boolean(activeModelId) && !activeModel;
   const modelLabel = activeModel?.name ?? (modelUnavailable ? "当前模型不可用" : "选择模型");
 
+  const newDotsCommand = isDots && !btwActive && text.trim() === "/new";
   const slashQuery =
-    btwActive || !text.startsWith("/") || text.includes(" ") ? null : text.slice(1);
+    btwActive || newDotsCommand || !text.startsWith("/") || text.includes(" ") ? null : text.slice(1);
   const slashMatches = useMemo(() => {
     if (slashQuery === null) return [];
     const matched = skills.filter(
@@ -789,8 +790,22 @@ export default function ChatInput({
     clearPendingExternalAgentContinuation();
   }, [pendingExternalAgentContinuation, activeTaskId, clearPendingExternalAgentContinuation]);
 
+  const resetSentComposer = (): void => {
+    setText("");
+    setAttachments([]);
+    setAttachedSkills([]);
+    setAttachedMcps([]);
+    setRefFiles([]);
+    setRefTasks([]);
+    setExternalAgent(null);
+    clearConsult();
+    enhance.reset();
+    if (variant === "home") setPendingExpertId(null);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+  };
+
   const send = async (): Promise<void> => {
-    if (interruptSendRef.current || worktreeFlight.current || (!btwActive && taskCompacting)) return;
+    if (interruptSendRef.current || worktreeFlight.current || (!newDotsCommand && !btwActive && taskCompacting)) return;
     // BTW 激活时：Enter/发送只消费独立草稿 btwText（经纯函数路由，绝不读取主 text）；
     // 主 composer 的 text/附件/引用原样保留，只清空 btwText
     if (btwActive) {
@@ -801,6 +816,35 @@ export default function ChatInput({
       return;
     }
     const trimmed = text.trim();
+    if (newDotsCommand) {
+      interruptSendRef.current = true;
+      clearTaskComposerDraft(draftScope);
+      composerSnapshotRef.current = emptyTaskComposerDraft();
+      resetSentComposer();
+      try {
+        const dots = window.api?.dots;
+        if (!dots) throw new Error("Dots 会话服务不可用");
+        await dots.newConversation();
+        useAppStore.setState(state => ({
+          tasks: state.tasks.map(task => task.id === DOTS_TASK_ID
+            ? { ...task, botInputError: undefined, botPendingSubmissions: undefined }
+            : task),
+        }));
+        const state = useAppStore.getState();
+        if (state.page === "chat" && state.activeTaskId === DOTS_TASK_ID) {
+          state.setActiveTask(DOTS_TASK_ID);
+          useAppStore.setState(current => ({ chatFocusTick: current.chatFocusTick + 1 }));
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        useAppStore.setState(state => ({
+          tasks: state.tasks.map(task => task.id === DOTS_TASK_ID ? { ...task, botInputError: message } : task),
+        }));
+      } finally {
+        interruptSendRef.current = false;
+      }
+      return;
+    }
     // 增强进行中禁止发送（Enter 外还有流式 continue 按钮等直调 send() 的入口）：
     // 防止原文与增强结果竞争
     if (enhance.status === "enhancing") return;
@@ -1000,20 +1044,7 @@ export default function ChatInput({
         worktreeTaskId,
       );
     }
-    setText("");
-    setAttachments([]);
-    setAttachedSkills([]);
-    setAttachedMcps([]);
-    setRefFiles([]);
-    setRefTasks([]);
-    setExternalAgent(null);
-    clearConsult();
-    // 已发送：显式 reset 增强状态（undo/notice/在途结果不残留到下一轮；
-    // activeTaskId 变化时 hook 内部 effect 也会兜底清理）
-    enhance.reset();
-    // 专家已写入任务，chip 由 task.expertId 在 chat 视图继续展示；首页发送后会离开 home
-    if (variant === "home") setPendingExpertId(null);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    resetSentComposer();
   };
 
   const mergeAttachmentList = (incoming: Attachment[]): void => {

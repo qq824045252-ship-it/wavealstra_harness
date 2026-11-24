@@ -96,7 +96,8 @@ export async function appendDurableDotsReply(conversation: Conversation, input: 
       return { status: "existing", reply: saved, deliveredAt: dotsReplyTimestamp(prior) };
     }
     const active = await tx.doc(ActiveDurableConversation);
-    if (!isCurrent() || active.conversationId !== null && active.conversationId !== conversation.id
+    const archivedDestination = reply.origin?.conversationId === conversation.id && active.previousDotsPages?.includes(conversation.id);
+    if (!isCurrent() || active.conversationId !== null && active.conversationId !== conversation.id && !archivedDestination
       || reply.origin && reply.origin.conversationId !== conversation.id) return discarded;
     const source = await tx.submissionByRequest(conversation.id, reply.sourceMessageId);
     if (source?.type !== "input" || source.conversationId !== conversation.id

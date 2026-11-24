@@ -885,6 +885,18 @@ export class DurableBotService {
     });
   }
 
+  async newDotsConversation(): Promise<void> {
+    return this.trackAdmission(DOTS_TASK_ID, async () => {
+      if (!this.binding(DOTS_TASK_ID)) return;
+      const open = await this.open(DOTS_TASK_ID);
+      const snapshot = open.runtime.snapshot;
+      if (!snapshot.messages.length && snapshot.historyBefore === undefined && !snapshot.busy && !snapshot.queued) return;
+      await open.runtime.newDotsConversation();
+      await this.release(DOTS_TASK_ID);
+      await this.open(DOTS_TASK_ID);
+    });
+  }
+
   /**
    * Cancellation for a caller that already holds this task's admission. Native abort covers the
    * root conversation and, with `background`, every conversation reachable through a live task —

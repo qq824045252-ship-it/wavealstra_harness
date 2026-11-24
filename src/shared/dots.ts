@@ -16,6 +16,7 @@ export function dotsLocalSpacePath(space: SpaceDto, parent: (id: string) => Spac
 
 export { DOTS_TASK_ID, DOTS_NO_CHANGE, isDotsAutomaticInput } from "../../shared/src/dots-conversation";
 export const DotsIpc = { open: "dots:open", list: "dots:list", activity: "dots:activity",
+  newConversation: "dots:newConversation",
   taskDelivery: "dots:taskDelivery", getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
 
 export interface DotsDependencyWait {
@@ -97,6 +98,7 @@ export type DotsActivityItem = DotsActivityTask & (
 
 export interface DotsApi {
   open(): Promise<TaskDto>;
+  newConversation(): Promise<void>;
   list(sourceIds?: string[]): Promise<DotsDelegation[]>;
   activity(): Promise<DotsActivityItem[]>;
   taskDelivery(taskId: string): Promise<DotsTaskDelivery | undefined>;

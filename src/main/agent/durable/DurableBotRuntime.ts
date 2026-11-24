@@ -762,8 +762,13 @@ export class DurableBotRuntime {
 
   async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
     if (this.options.readOnly || this.options.taskId !== DOTS_TASK_ID) throw new Error("Dots 交付只能写入原生 Dots 会话");
-    const outcome = await appendDurableDotsReply(this.conversation, reply, isCurrent);
-    if ("reply" in outcome) await this.refresh();
+    const origin = reply.origin?.conversationId;
+    const destination = origin !== undefined && origin !== this.conversation.id
+      ? await this.harness.conversation(origin as typeof this.conversation.id, ctx)
+      : this.conversation;
+    if (!destination) return { status: "discarded" } as const;
+    const outcome = await appendDurableDotsReply(destination, reply, isCurrent);
+    if ("reply" in outcome && destination.id === this.conversation.id) await this.refresh();
     return outcome;
   }
 
@@ -1064,6 +1069,10 @@ export class DurableBotRuntime {
     return String((await forkDurableConversation(this.harness, this.conversation, entryId as EntryId | undefined, ctx)).id);
   }
 
+  async newDotsConversation(): Promise<void> {
+    await forkDurableConversation(this.harness, this.conversation, undefined, ctx, { archiveDotsPage: true });
+  }
+
   async regeneration(): Promise<DurableRegenerationState | undefined> {
     return (await this.harness.snapshot(ActiveDurableConversation, ctx))?.regeneration;
   }
@@ -1094,7 +1103,7 @@ export class DurableBotRuntime {
   async forkForRegeneration(entryId: number | undefined, input: DurableRegenerationInput): Promise<string> {
     if (!input.operationId.trim()) throw new Error("重新生成缺少操作身份");
     if (entryId !== undefined && (!Number.isSafeInteger(entryId) || entryId < 1)) throw new Error("Invalid conversation entry");
-    return String((await forkDurableConversation(this.harness, this.conversation, entryId as EntryId | undefined, ctx, input)).id);
+    return String((await forkDurableConversation(this.harness, this.conversation, entryId as EntryId | undefined, ctx, { regeneration: input })).id);
   }
 
   /** Only submission admission is retried, under the original request ID; execution remains native. */

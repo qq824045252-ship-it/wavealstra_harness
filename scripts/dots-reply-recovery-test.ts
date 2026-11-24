@@ -1033,6 +1033,33 @@ for (const scenario of ["dependency", "dependencyDeadline"] as const) {
   } finally { await host.close(); }
 }
 
+const newPage = await open();
+try {
+  const original = await newPage.agent.loadTaskHistory(DOTS_TASK_ID);
+  const source = original.messages.find(message => message.inputRequestId === "dependencyDeadline");
+  assert.ok(original.durable && source?.entryId);
+  await newPage.agent.newDotsConversation();
+  const fresh = await newPage.agent.loadTaskHistory(DOTS_TASK_ID);
+  assert.ok(fresh.durable);
+  assert.notEqual(fresh.durable.conversationId, original.durable.conversationId);
+  assert.deepEqual(fresh.messages, []);
+
+  const delivery = await newPage.agent.appendDotsReply({
+    deliveryKey: "archived-page-followup",
+    operationId: "archived-page-followup",
+    taskId: "archived-page-worker",
+    sourceMessageId: "dependencyDeadline",
+    origin: { conversationId: Number(original.durable.conversationId), entryId: Number(source.entryId) },
+    title: "原页面交付",
+    text: "结果回到启动事项的页面",
+    kind: "conclusion",
+    artifacts: [],
+  });
+  assert.equal(delivery.status, "appended");
+  assert.deepEqual((await newPage.agent.loadTaskHistory(DOTS_TASK_ID)).messages, []);
+} finally { await newPage.close(); }
+console.log("PASS a new Dots conversation is empty and an existing assignment can still deliver to its original page");
+
 mkdirSync("out/tests",{recursive:true});
 writeFileSync("out/tests/dots-reply-recovery.json", JSON.stringify(evidence,null,2)+"\n");
 console.log("PASS both crash boundaries and repeated events: original conversation received one new assistant reply, ordinary task ran once");
