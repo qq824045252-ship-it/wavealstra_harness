@@ -48,15 +48,16 @@ import {
 } from "@shared/notification";
 import {
   applyFontSettings,
-  DEFAULT_CODE_FONT_SIZE,
-  DEFAULT_UI_FONT_SIZE,
   ensureAllUserFontsLoaded,
   ensureUserFontLoaded,
-  legacyFontScaleToUiFontSize,
-  normalizeCodeFontSize,
-  normalizeUiFontSize,
+  getAppliedFontSettings,
+  READING_FONT_FAMILY,
+  resolveFontSettings,
+  unloadUserFont,
   userFontCssFamily,
+  type AppliedFontSettings,
 } from "@/lib/fontSettings";
+import { REPLY_FONT_WEIGHTS, UI_FONT_WEIGHTS } from "@shared/typography";
 
 const TABS: Array<{ id: SettingsTab; glyph: UiIconName; label: string }> = [
   { id: "system", glyph: "settings", label: "系统设置" },
@@ -147,7 +148,27 @@ function Row({
   );
 }
 
-type FontTarget = "ui" | "code";
+type FontTarget = "uiFontFamily" | "codeFontFamily" | "replyFontFamily";
+
+const FONT_SIZES = Array.from({ length: 13 }, (_, index) => index + 12);
+const FONT_WEIGHT_LABELS = { 400: "常规", 500: "中等", 600: "半粗" };
+
+function FontSizeSelect({ label, value, max, allowInherit, onChange, disabled }: {
+  label: string;
+  value: number | null;
+  max: number;
+  allowInherit?: boolean;
+  onChange: (size: number | null) => void;
+  disabled: boolean;
+}): React.JSX.Element {
+  return (
+    <select className="settings-input typography-value-select" aria-label={label} value={value ?? ""} disabled={disabled}
+      onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))}>
+      {allowInherit && <option value="">跟随界面</option>}
+      {FONT_SIZES.filter((size) => size <= max).map((size) => <option key={size} value={size}>{size} px</option>)}
+    </select>
+  );
+}
 
 type FontPickerOption = {
   id: string;
@@ -161,12 +182,14 @@ function FontPicker({
   value,
   options,
   placeholder,
+  label,
   onSelect,
   disabled,
 }: {
   value: string;
   options: FontPickerOption[];
   placeholder: string;
+  label: string;
   onSelect: (option: FontPickerOption) => void;
   disabled?: boolean;
 }): React.JSX.Element {
@@ -183,7 +206,7 @@ function FontPicker({
     return () => window.removeEventListener("mousedown", close);
   }, [open]);
 
-  const selected = options.find((option) => option.family === value) ?? options[0];
+  const selected = options.find((option) => option.family === value);
   const filtered = useMemo(() => {
     const q = query.trim().toLocaleLowerCase();
     if (!q) return options;
@@ -195,6 +218,7 @@ function FontPicker({
       <button
         type="button"
         className="typography-font-picker-trigger"
+        aria-label={label}
         disabled={disabled}
         onClick={() => {
           setQuery("");
@@ -202,8 +226,8 @@ function FontPicker({
         }}
         aria-expanded={open}
       >
-        <span className="typography-font-picker-value" style={{ fontFamily: selected?.family || undefined }}>
-          {selected?.label || placeholder}
+        <span className="typography-font-picker-value" style={{ fontFamily: value || undefined }}>
+          {selected?.label ?? (value || placeholder)}
         </span>
         <span className="typography-font-picker-chevron" aria-hidden="true" />
       </button>
@@ -269,10 +293,8 @@ function formatBytes(bytes: number): string {
 function SystemTab(): React.JSX.Element {
   const theme = useAppStore(s => s.theme);
   const setTheme = useAppStore(s => s.setTheme);
-  const [uiFontSize, setUiFontSize] = useState(DEFAULT_UI_FONT_SIZE);
-  const [codeFontSize, setCodeFontSize] = useState(DEFAULT_CODE_FONT_SIZE);
-  const [uiFontFamily, setUiFontFamily] = useState("");
-  const [codeFontFamily, setCodeFontFamily] = useState("");
+  const [typography, setTypography] = useState(getAppliedFontSettings);
+  const { uiFontSize, codeFontSize, uiFontFamily, codeFontFamily, replyFontFamily, replyFontSize, uiFontWeight, replyFontWeight } = typography;
   const [codeTheme, setCodeTheme] = useState<CodeThemeId>(DEFAULT_CODE_THEME);
   const [userFonts, setUserFonts] = useState<UserFontDto[]>([]);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
@@ -286,7 +308,7 @@ function SystemTab(): React.JSX.Element {
   const [fontHint, setFontHint] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const [fontBusy, setFontBusy] = useState(false);
+  const [fontBusy, setFontBusy] = useState(true);
   const [confirmRemoveFont, setConfirmRemoveFont] = useState<UserFontDto | null>(null);
   const [diskSpace, setDiskSpace] = useState<import("@shared/agent-ipc").DiskSpaceDto | null>(null);
 
@@ -319,6 +341,7 @@ function SystemTab(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    let active = true;
     void refreshSystemFonts();
     void (async () => {
       try {
@@ -327,39 +350,28 @@ function SystemTab(): React.JSX.Element {
           window.api?.agent?.listUserFonts?.() ?? Promise.resolve([]),
           window.api?.agent?.getDiskSpace?.(),
         ]);
-        setUserFonts(fonts ?? []);
         await ensureAllUserFontsLoaded(fonts ?? []);
+        if (!active) return;
+        setUserFonts(fonts ?? []);
         if (disk) setDiskSpace(disk);
         if (!settings) return;
 
-        const nextUiFontSize = normalizeUiFontSize(
-          settings.uiFontSize ?? legacyFontScaleToUiFontSize(settings.fontSize),
-        );
-        const nextCodeFontSize = normalizeCodeFontSize(settings.codeFontSize ?? DEFAULT_CODE_FONT_SIZE);
-        const nextUiFontFamily = settings.uiFontFamily ?? settings.fontFamily ?? "";
-        const nextCodeFontFamily = settings.codeFontFamily ?? "";
         const nextCodeTheme = normalizeCodeTheme(settings.codeTheme);
 
         setLanguage(settings.language || "zh-CN");
         setProxyUrl(settings.proxyUrl || "");
         setCloseToTray(settings.closeToTray !== false);
         setResidentHostEnabled(settings.residentHostEnabled === true);
-        setUiFontSize(nextUiFontSize);
-        setCodeFontSize(nextCodeFontSize);
-        setUiFontFamily(nextUiFontFamily);
-        setCodeFontFamily(nextCodeFontFamily);
+        setTypography(applyFontSettings(resolveFontSettings(settings)));
         setCodeTheme(nextCodeTheme);
         document.documentElement.dataset.codeTheme = nextCodeTheme;
-        applyFontSettings({
-          uiFontSize: nextUiFontSize,
-          codeFontSize: nextCodeFontSize,
-          uiFontFamily: nextUiFontFamily,
-          codeFontFamily: nextCodeFontFamily,
-        });
       } catch (err) {
-        setErrorMsg(err instanceof Error ? err.message : String(err));
+        if (active) setErrorMsg(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (active) setFontBusy(false);
       }
     })();
+    return () => { active = false; };
   }, [refreshSystemFonts]);
 
   const fontOptions = useMemo((): FontPickerOption[] => {
@@ -394,24 +406,30 @@ function SystemTab(): React.JSX.Element {
     ];
   }, [fontOptions]);
 
+  const replyFontOptions = useMemo((): FontPickerOption[] => [
+    { id: "inherit", label: "跟随界面", family: "", source: "default" },
+    { id: "reading", label: "衬线阅读（Claude 风格）", family: READING_FONT_FAMILY, source: "default" },
+    ...fontOptions.slice(1),
+  ], [fontOptions]);
+
   const codeThemePreviewVariants = useMemo<Array<"light" | "dark">>(() => {
     const option = CODE_THEME_OPTIONS.find((item) => item.id === codeTheme);
     return option?.mode === "dark" ? ["dark"] : ["light", "dark"];
   }, [codeTheme]);
 
-  const persistTypography = async (partial: {
-    uiFontSize?: number;
-    codeFontSize?: number;
-    uiFontFamily?: string;
-    codeFontFamily?: string;
-  }): Promise<void> => {
+  const persistTypography = async (partial: Partial<AppliedFontSettings>): Promise<void> => {
+    const previous = getAppliedFontSettings();
     setFontBusy(true);
     setFontHint("保存中…");
     setErrorMsg("");
     try {
-      await window.api?.agent?.updateAppSettings?.(partial);
+      const update = window.api?.agent?.updateAppSettings;
+      if (!update) throw new Error("字体设置保存接口未就绪");
+      setTypography(applyFontSettings(partial));
+      await update(partial);
       setFontHint("已自动保存");
     } catch (err) {
+      setTypography(applyFontSettings(previous));
       setFontHint("");
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -428,29 +446,7 @@ function SystemTab(): React.JSX.Element {
         return;
       }
     }
-    if (target === "ui") {
-      setUiFontFamily(option.family);
-      applyFontSettings({ uiFontFamily: option.family });
-      await persistTypography({ uiFontFamily: option.family });
-    } else {
-      setCodeFontFamily(option.family);
-      applyFontSettings({ codeFontFamily: option.family });
-      await persistTypography({ codeFontFamily: option.family });
-    }
-  };
-
-  const handleUiFontSizeChange = async (value: number): Promise<void> => {
-    const size = normalizeUiFontSize(value);
-    setUiFontSize(size);
-    applyFontSettings({ uiFontSize: size });
-    await persistTypography({ uiFontSize: size });
-  };
-
-  const handleCodeFontSizeChange = async (value: number): Promise<void> => {
-    const size = normalizeCodeFontSize(value);
-    setCodeFontSize(size);
-    applyFontSettings({ codeFontSize: size });
-    await persistTypography({ codeFontSize: size });
+    await persistTypography({ [target]: option.family });
   };
 
   const importUserFont = async (): Promise<void> => {
@@ -465,8 +461,10 @@ function SystemTab(): React.JSX.Element {
         setFontHint("");
         return;
       }
-      await refreshUserFonts();
+      await unloadUserFont(imported.id);
       await ensureUserFontLoaded(imported);
+      await refreshUserFonts();
+      applyFontSettings({});
       setFontHint(`「${imported.family}」已永久保存到字体库`);
     } catch (err) {
       setFontHint("");
@@ -481,24 +479,20 @@ function SystemTab(): React.JSX.Element {
     setErrorMsg("");
     try {
       const family = userFontCssFamily(font.family);
-      const resetUi = uiFontFamily === family;
-      const resetCode = codeFontFamily === family;
-      const list = (await window.api?.agent?.removeUserFont?.(font.id)) ?? [];
+      const agent = window.api?.agent;
+      if (!agent?.removeUserFont || !agent.updateAppSettings) throw new Error("字体设置接口未就绪");
+      const reset: Partial<AppliedFontSettings> = {};
+      const current = getAppliedFontSettings();
+      for (const target of ["uiFontFamily", "codeFontFamily", "replyFontFamily"] as const) {
+        if (current[target] === family) reset[target] = "";
+      }
+      if (Object.keys(reset).length) {
+        await agent.updateAppSettings(reset);
+        setTypography(applyFontSettings(reset));
+      }
+      const list = await agent.removeUserFont(font.id);
+      await unloadUserFont(font.id);
       setUserFonts(list);
-      if (resetUi) {
-        setUiFontFamily("");
-        applyFontSettings({ uiFontFamily: "" });
-      }
-      if (resetCode) {
-        setCodeFontFamily("");
-        applyFontSettings({ codeFontFamily: "" });
-      }
-      if (resetUi || resetCode) {
-        await window.api?.agent?.updateAppSettings?.({
-          ...(resetUi ? { uiFontFamily: "" } : {}),
-          ...(resetCode ? { codeFontFamily: "" } : {}),
-        });
-      }
       setFontHint(`已删除「${font.family}」`);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -596,44 +590,71 @@ function SystemTab(): React.JSX.Element {
         <div className="typography-flat-layout">
           <div className="typography-flat-row">
             <div className="typography-flat-copy">
-              <div className="settings-row-label">UI 字体</div>
-              <div className="settings-row-desc">用于应用界面和 Markdown 正文</div>
+              <div className="settings-row-label">界面字体</div>
+              <div className="settings-row-desc">用于菜单、侧栏和输入框</div>
             </div>
-            <FontPicker value={uiFontFamily} options={fontOptions} placeholder="系统默认" onSelect={(option) => void selectFontOption("ui", option)} disabled={fontBusy} />
+            <FontPicker label="界面字体" value={uiFontFamily} options={fontOptions} placeholder="系统默认" onSelect={(option) => void selectFontOption("uiFontFamily", option)} disabled={fontBusy} />
+          </div>
+
+          <div className="typography-flat-row">
+            <div className="typography-flat-copy">
+              <div className="settings-row-label">界面字号与粗细</div>
+            </div>
+            <div className="typography-controls">
+              <FontSizeSelect label="界面字号" value={uiFontSize} max={20} disabled={fontBusy}
+                onChange={(size) => size !== null && void persistTypography({ uiFontSize: size })} />
+              <select className="settings-input typography-value-select" aria-label="界面粗细" value={uiFontWeight} disabled={fontBusy}
+                onChange={(event) => void persistTypography({ uiFontWeight: event.target.value === "500" ? 500 : 400 })}>
+                {UI_FONT_WEIGHTS.map((weight) => <option key={weight} value={weight}>{FONT_WEIGHT_LABELS[weight]}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="typography-flat-row">
+            <div className="typography-flat-copy">
+              <div className="settings-row-label">回复字体</div>
+              <div className="settings-row-desc">用于助手回复正文</div>
+            </div>
+            <FontPicker label="回复字体" value={replyFontFamily} options={replyFontOptions} placeholder="跟随界面" onSelect={(option) => void selectFontOption("replyFontFamily", option)} disabled={fontBusy} />
+          </div>
+
+          <div className="typography-flat-row">
+            <div className="typography-flat-copy">
+              <div className="settings-row-label">回复字号与粗细</div>
+            </div>
+            <div className="typography-controls">
+              <FontSizeSelect label="回复字号" value={replyFontSize} max={24} allowInherit disabled={fontBusy}
+                onChange={(size) => void persistTypography({ replyFontSize: size })} />
+              <select className="settings-input typography-value-select" aria-label="回复粗细" value={replyFontWeight} disabled={fontBusy}
+                onChange={(event) => {
+                  const weight = REPLY_FONT_WEIGHTS.find((item) => String(item) === event.target.value);
+                  if (weight !== undefined) void persistTypography({ replyFontWeight: weight });
+                }}>
+                {REPLY_FONT_WEIGHTS.map((weight) => <option key={weight} value={weight}>{FONT_WEIGHT_LABELS[weight]}</option>)}
+              </select>
+            </div>
           </div>
 
           <div className="typography-flat-row">
             <div className="typography-flat-copy">
               <div className="settings-row-label">代码字体</div>
-              <div className="settings-row-desc">用于终端、代码块和差异内容</div>
+              <div className="settings-row-desc">用于代码块、编辑器和终端</div>
             </div>
-            <FontPicker value={codeFontFamily} options={codeFontOptions} placeholder="系统等宽" onSelect={(option) => void selectFontOption("code", option)} disabled={fontBusy} />
+            <FontPicker label="代码字体" value={codeFontFamily} options={codeFontOptions} placeholder="系统等宽" onSelect={(option) => void selectFontOption("codeFontFamily", option)} disabled={fontBusy} />
           </div>
 
-          <div className="typography-flat-row typography-size-row">
-            <div className="typography-flat-copy">
-              <div className="settings-row-label">UI 字号</div>
-              <div className="settings-row-desc">调整界面与正文文字大小</div>
-            </div>
-            <div className="typography-ui-size-options" role="group" aria-label="UI 字号">
-              {[[12, "特小"], [13, "较小"], [14, "小"], [15, "默认"], [16, "大"], [18, "较大"], [20, "特大"]].map(([size, label]) => (
-                <button key={size} type="button" className={`typography-ui-size-option${uiFontSize === size ? " active" : ""}`} onClick={() => void handleUiFontSizeChange(Number(size))} disabled={fontBusy} title={`${size}px`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="typography-flat-row typography-size-row">
+          <div className="typography-flat-row">
             <div className="typography-flat-copy">
               <div className="settings-row-label">代码字号</div>
-              <div className="settings-row-desc">调整代码块、编辑器和终端文字大小</div>
+              <div className="settings-row-desc">终端跟随此字号，最低 14 px</div>
             </div>
-            <div className="typography-code-size-control">
-              <span className="typography-code-size-value">{codeFontSize}px</span>
-              <input type="range" min={12} max={20} step={1} value={codeFontSize} onChange={(e) => void handleCodeFontSizeChange(Number(e.target.value))} aria-label="代码字号" disabled={fontBusy} />
-              <div className="typography-code-size-marks"><span>12px</span><span>16px</span><span>20px</span></div>
-            </div>
+            <FontSizeSelect label="代码字号" value={codeFontSize} max={20} disabled={fontBusy}
+              onChange={(size) => size !== null && void persistTypography({ codeFontSize: size })} />
+          </div>
+
+          <div className="typography-preview" aria-label="字体预览">
+            <div className="typography-preview-title">MyBuddy Dots</div>
+            <div className="md md-chat"><p>项目文档已更新。打开 <code>README.md</code> 查看详细说明。</p></div>
           </div>
 
           <div className="typography-code-theme">
@@ -738,7 +759,7 @@ function SystemTab(): React.JSX.Element {
       <ConfirmDialog
         open={confirmRemoveFont !== null}
         title={`删除已导入字体「${confirmRemoveFont?.family ?? ""}」？`}
-        body="字体文件将从字体库移除；若界面或代码字体正在使用它，将恢复为系统默认。"
+        body="字体将从字体库移除。正在使用它的字体选项会恢复为默认。"
         confirmLabel="删除"
         danger
         onCancel={() => !fontBusy && setConfirmRemoveFont(null)}

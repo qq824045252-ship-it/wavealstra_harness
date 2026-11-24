@@ -49,10 +49,6 @@ import {
 
 const TERMINAL_CONTEXT_TAIL_BYTES = 8 * 1024;
 
-function detectNerdFont(): string | null {
-  return pickFirstAvailableFont(TERMINAL_FONT_CANDIDATES, (spec) => document.fonts.check(spec));
-}
-
 function applyTerminalFont(term: Terminal, nerdFont: string | null): void {
   const opts = resolveTerminalFontOptions(nerdFont, getAppliedFontSettings());
   term.options.fontFamily = opts.fontFamily;
@@ -170,7 +166,8 @@ function TerminalSessionPane({ tabId, tabTitle, active }: TerminalSessionPanePro
     const epoch = ++mountEpochRef.current;
     ownerIdsRef.current = ownerIds;
 
-    const initialFonts = resolveTerminalFontOptions(detectNerdFont(), getAppliedFontSettings());
+    let nerdFont: string | null = null;
+    const initialFonts = resolveTerminalFontOptions(nerdFont, getAppliedFontSettings());
     const term = new Terminal({
       convertEol: false,
       cursorBlink: true,
@@ -195,7 +192,7 @@ function TerminalSessionPane({ tabId, tabTitle, active }: TerminalSessionPanePro
     }
     void document.fonts.ready.then(() => {
       if (epoch !== mountEpochRef.current) return;
-      applyTerminalFont(term, detectNerdFont());
+      applyTerminalFont(term, nerdFont);
       try {
         fit.fit();
       } catch {
@@ -284,10 +281,15 @@ function TerminalSessionPane({ tabId, tabTitle, active }: TerminalSessionPanePro
     observer.observe(container);
     window.addEventListener("resize", scheduleResize);
     const onFontSettings = (): void => {
-      applyTerminalFont(term, detectNerdFont());
+      applyTerminalFont(term, nerdFont);
       scheduleResize();
     };
     window.addEventListener(FONT_SETTINGS_EVENT, onFontSettings);
+    void window.api.agent?.listSystemFonts?.().then((installed) => {
+      if (termRef.current !== term) return;
+      nerdFont = pickFirstAvailableFont(TERMINAL_FONT_CANDIDATES, installed);
+      if (nerdFont) onFontSettings();
+    }).catch(() => {});
     const lateSync = setTimeout(reportSize, 220);
 
     const initialDims = fit.proposeDimensions();

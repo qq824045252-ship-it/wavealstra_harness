@@ -35,7 +35,7 @@
   padding-inline: 12px;
   overflow: hidden;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--font-ui-small);
   font-weight: 650;
   white-space: nowrap;
   -webkit-app-region: drag;
@@ -111,8 +111,8 @@
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  font-size: 14px;
-  font-weight: 650;
+  font-size: var(--font-ui-title);
+  font-weight: var(--font-ui-strong);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -140,7 +140,7 @@
   text-align: left;
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--font-ui-small);
 }
 .desktop-section-row:hover { background: var(--bg-hover); }
 .desktop-section-row[aria-current] { color: var(--accent); background: var(--desktop-selected); }
@@ -179,10 +179,10 @@
 .desktop-app .desktop-task-tree .sidebar-tree-header--spaced { margin-top: 4px; border-top: 0; }
 /* Dots 入口沿用「新建任务」的字体；Pi logo 图形只占画布 58.7%，图标盒放大到 22px 后视觉高度才等于 13px 字高。 */
 .desktop-task-tree .sidebar-dots-row .desktop-section-label {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: var(--font-ui-label);
+  font-weight: var(--font-ui-medium);
 }
+.desktop-task-tree .sidebar-dots-row[aria-current] .desktop-section-label { font-weight: var(--font-ui-strong); }
 .desktop-task-tree .sidebar-dots-row > svg { flex: none; width: 22px; height: 22px; }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row { min-height: 28px; color: var(--fg-secondary); }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row:hover { color: var(--fg); }

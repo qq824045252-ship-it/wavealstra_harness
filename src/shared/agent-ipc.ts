@@ -1580,6 +1580,11 @@ export interface AppSettingsDto {
   uiFontFamily?: string;
   /** 代码字体族 CSS 值；空字符串 = 系统等宽字体。 */
   codeFontFamily?: string;
+  /** 助手正文独立排版。空字体与 null 字号跟随界面。 */
+  replyFontFamily?: string;
+  replyFontSize?: number | null;
+  replyFontWeight?: import("./typography").ReplyFontWeight;
+  uiFontWeight?: import("./typography").UiFontWeight;
   /** 代码块语法高亮主题。 */
   codeTheme?: import("./code-theme").CodeThemeId;
   /**

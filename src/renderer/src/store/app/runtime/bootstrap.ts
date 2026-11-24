@@ -6,11 +6,8 @@ import type { ModelInfoDto } from "../../../../../shared/agent-ipc";
 import { normalizeCodeTheme } from "../../../../../shared/code-theme";
 import {
   applyFontSettings,
-  DEFAULT_CODE_FONT_SIZE,
   ensureAllUserFontsLoaded,
-  legacyFontScaleToUiFontSize,
-  normalizeCodeFontSize,
-  normalizeUiFontSize,
+  resolveFontSettings,
 } from "../../../lib/fontSettings";
 import type {
   ModelConfig,
@@ -199,26 +196,14 @@ markStartup("bootstrapApplied");
 afterInteractiveFrame(() => markStartup("taskListInteractive"));
 
   if (appSettings) {
-    // UI and code typography retain their independent migration and application rules.
-    const typography = {
-      uiFontSize: normalizeUiFontSize(
-        appSettings.uiFontSize ??
-          legacyFontScaleToUiFontSize(appSettings.fontSize),
-      ),
-      codeFontSize: normalizeCodeFontSize(
-        appSettings.codeFontSize ?? DEFAULT_CODE_FONT_SIZE,
-      ),
-      uiFontFamily: appSettings.uiFontFamily ?? appSettings.fontFamily ?? "",
-      codeFontFamily: appSettings.codeFontFamily ?? "",
-    };
-    applyFontSettings(typography);
+    applyFontSettings(resolveFontSettings(appSettings));
     document.documentElement.dataset.codeTheme = normalizeCodeTheme(
       appSettings.codeTheme,
     );
     try {
       const fonts = (await api.agent?.listUserFonts?.()) ?? [];
       await ensureAllUserFontsLoaded(fonts);
-      if (isActive()) applyFontSettings(typography);
+      if (isActive() && fonts.length) applyFontSettings({});
     } catch (error) {
       if (isActive())
         console.warn("[initRuntime] load user fonts failed", error);

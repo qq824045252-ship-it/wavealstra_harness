@@ -482,6 +482,7 @@
     "test:durable-context-cold-store": "esbuild scripts/durable-context-cold-store-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-context-cold-store-test.mjs && node scripts/test-guard.mjs out/tests/durable-context-cold-store-test.mjs",
     "test:durable-context-performance": "esbuild scripts/durable-context-performance-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/durable-context-performance-test.mjs && node scripts/test-guard.mjs out/tests/durable-context-performance-test.mjs",
     "test:compaction-settings-dev": "node scripts/compaction-settings-dev-test.cjs",
+    "test:typography-desktop": "node scripts/typography-desktop-test.cjs",
     "test:dots-host": "node scripts/dots-host-test.cjs",
     "dots:profile": "node scripts/dots-profile.mjs",
     "test:dots-profile": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/dots-profile-test.mjs",

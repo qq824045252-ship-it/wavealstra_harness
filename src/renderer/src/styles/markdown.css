@@ -46,10 +46,15 @@
 
 /* —— 聊天区 —— */
 .md-chat {
-  font-size: var(--font-ui-size);
-  line-height: 1.78;
-  letter-spacing: -0.011em;
+  font-family: var(--font-reply);
+  font-size: var(--font-reply-size);
+  font-weight: var(--font-reply-weight);
+  line-height: 1.7;
   color: color-mix(in srgb, var(--fg) 78%, var(--fg-secondary));
+}
+
+.md-chat strong {
+  font-weight: max(600, calc(var(--font-reply-weight) + 100));
 }
 
 .md-chat h1,
@@ -131,7 +136,8 @@
 .md-chat code,
 .md-chat .inline-code {
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: var(--font-code-size);
+  font-weight: 400;
   color: var(--fg);
   background: color-mix(in srgb, var(--hero-mode, var(--fg)) 8%, var(--bg-code));
   border-radius: 6px;
@@ -254,7 +260,7 @@
 
 .md-doc code {
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: var(--font-code-size);
   color: var(--fg);
   background: #f3f3f1;
   border-radius: 5px;

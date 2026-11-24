@@ -86,6 +86,7 @@ const GUI_TESTS = new Set([
   "test:office-use-desktop", // actual task tools and native Office editor views
   "test:drawio-use-desktop", // bundled Draw.io editor and native diagram operations
   "test:compaction-settings-dev", // actual app, native window bounds, settings IPC, light/dark layouts
+  "test:typography-desktop", // actual typography settings, glyph rendering and restart
   "test:dots-host", // two Electron mains sharing a local MyBuddy data directory
   "test:dots-desktop", // isolated Electron Dots conversation and source artifact preview
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching

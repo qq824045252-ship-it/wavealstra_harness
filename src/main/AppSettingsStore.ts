@@ -25,6 +25,17 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { migrateLegacyShellPreferences, normalizeTerminalShellPath } from "./agent-shell-settings";
 import { DEFAULT_CODE_THEME, normalizeCodeTheme, type CodeThemeId } from "../shared/code-theme";
 import {
+  DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_UI_FONT_SIZE,
+  normalizeCodeFontSize,
+  normalizeReplyFontSize,
+  normalizeReplyFontWeight,
+  normalizeUiFontSize,
+  normalizeUiFontWeight,
+  type ReplyFontWeight,
+  type UiFontWeight,
+} from "../shared/typography";
+import {
   DEFAULT_ISOLATION_LEVEL,
   normalizeIsolationLevel,
   type IsolationLevel,
@@ -105,6 +116,10 @@ export interface AppSettings {
   uiFontFamily: string;
   /** 代码字体族；空字符串 = 系统等宽字体。 */
   codeFontFamily: string;
+  replyFontFamily: string;
+  replyFontSize: number | null;
+  replyFontWeight: ReplyFontWeight;
+  uiFontWeight: UiFontWeight;
   /** 代码块语法高亮主题。 */
   codeTheme: CodeThemeId;
   /**
@@ -165,19 +180,6 @@ const LEGACY_FONT_SIZE_PCT = [85, 92, 100, 110, 125] as const;
 
 /** 默认界面缩放（百分比） */
 export const DEFAULT_FONT_SCALE = 105;
-export const DEFAULT_UI_FONT_SIZE = 15;
-export const DEFAULT_CODE_FONT_SIZE = 13;
-
-function normalizeUiFontSize(raw: unknown): number {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_UI_FONT_SIZE;
-  return Math.min(20, Math.max(12, Math.round(raw)));
-}
-
-function normalizeCodeFontSize(raw: unknown): number {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CODE_FONT_SIZE;
-  return Math.min(20, Math.max(12, Math.round(raw)));
-}
-
 function legacyScaleToUiFontSize(raw: unknown): number {
   const pct = normalizeFontScale(raw);
   return normalizeUiFontSize(Math.round((14 * pct) / 100));
@@ -251,6 +253,10 @@ const DEFAULTS: AppSettings = {
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   uiFontFamily: "",
   codeFontFamily: "",
+  replyFontFamily: "",
+  replyFontSize: null,
+  replyFontWeight: 400,
+  uiFontWeight: 400,
   codeTheme: DEFAULT_CODE_THEME,
   shellIsolationLevel: DEFAULT_ISOLATION_LEVEL,
   terminalShellPath: "",
@@ -331,6 +337,10 @@ export class AppSettingsStore {
           ? raw.fontFamily
           : "";
       merged.codeFontFamily = typeof raw.codeFontFamily === "string" ? raw.codeFontFamily : "";
+      merged.replyFontFamily = typeof raw.replyFontFamily === "string" ? raw.replyFontFamily : "";
+      merged.replyFontSize = normalizeReplyFontSize(raw.replyFontSize);
+      merged.replyFontWeight = normalizeReplyFontWeight(raw.replyFontWeight);
+      merged.uiFontWeight = normalizeUiFontWeight(raw.uiFontWeight);
       merged.codeTheme = normalizeCodeTheme(raw.codeTheme);
       merged.memoryGatewayEnabled = merged.memoryGatewayEnabled === true;
       merged.memoryGatewayWriteEnabled = merged.memoryGatewayWriteEnabled === true;
@@ -429,6 +439,12 @@ export class AppSettingsStore {
     if (partial.codeFontFamily !== undefined) {
       next.codeFontFamily = typeof partial.codeFontFamily === "string" ? partial.codeFontFamily : "";
     }
+    if (partial.replyFontFamily !== undefined) {
+      next.replyFontFamily = typeof partial.replyFontFamily === "string" ? partial.replyFontFamily : "";
+    }
+    if (partial.replyFontSize !== undefined) next.replyFontSize = normalizeReplyFontSize(partial.replyFontSize);
+    if (partial.replyFontWeight !== undefined) next.replyFontWeight = normalizeReplyFontWeight(partial.replyFontWeight);
+    if (partial.uiFontWeight !== undefined) next.uiFontWeight = normalizeUiFontWeight(partial.uiFontWeight);
     if (partial.codeTheme !== undefined) {
       next.codeTheme = normalizeCodeTheme(partial.codeTheme);
     }

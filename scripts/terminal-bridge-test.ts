@@ -239,20 +239,14 @@ test("输出水位: 超限丢弃后续数据，排空后自动恢复", () => {
 });
 
 test("字体探测: 返回候选列表中第一个可用字体", () => {
-  const available = new Set(["MesloLGM Nerd Font Mono"]);
-  const picked = pickFirstAvailableFont(TERMINAL_FONT_CANDIDATES, (spec) =>
-    available.has(spec.slice(spec.indexOf('"') + 1, spec.lastIndexOf('"'))),
-  );
+  const picked = pickFirstAvailableFont(TERMINAL_FONT_CANDIDATES, ["meslolgm nerd font mono"]);
   assert.equal(picked, "MesloLGM Nerd Font Mono");
 });
 
-test("字体探测: 全部不可用 → null；check 抛错跳过", () => {
-  assert.equal(pickFirstAvailableFont(TERMINAL_FONT_CANDIDATES, () => false), null);
+test("字体探测: 使用实际安装的字体，候选顺序优先", () => {
+  assert.equal(pickFirstAvailableFont(TERMINAL_FONT_CANDIDATES, ["Consolas"]), null);
   assert.equal(
-    pickFirstAvailableFont(["Bad Font", "Good Font"], (spec) => {
-      if (spec.includes("Bad")) throw new Error("boom");
-      return true;
-    }),
+    pickFirstAvailableFont(["Missing Font", "Good Font", "Later Font"], ["Later Font", "Good Font"]),
     "Good Font",
   );
 });
@@ -286,9 +280,9 @@ test("字体堆栈: Nerd Font 放首位；CJK 轮廓字体在 monospace 之前",
   assert.equal(noNerd.includes("CaskaydiaCove"), false);
 });
 
-test("字体堆栈: 用户代码字体插在 Nerd Font 之后，不得抢测量第一位", () => {
+test("字体堆栈: 用户代码字体优先；Nerd Font 补缺失的图标", () => {
   const stack = buildTerminalFontFamily("CaskaydiaCove Nerd Font Mono", '"Cascadia Code"');
-  assert.ok(stack.startsWith('"CaskaydiaCove Nerd Font Mono", "Cascadia Code", '));
+  assert.ok(stack.startsWith('"Cascadia Code", "CaskaydiaCove Nerd Font Mono", '));
 });
 
 test("终端字号: 低于下限抬到 14；更大代码字号原样跟随", () => {
@@ -306,7 +300,7 @@ test("终端渲染选项: 行高/重叠缩放与字号下限一并生效", () =>
   assert.equal(opts.fontSize, TERMINAL_MIN_FONT_SIZE);
   assert.equal(opts.lineHeight, TERMINAL_LINE_HEIGHT);
   assert.equal(opts.rescaleOverlappingGlyphs, true);
-  assert.ok(opts.fontFamily.startsWith('"CaskaydiaCove Nerd Font Mono", "Cascadia Code", '));
+  assert.ok(opts.fontFamily.startsWith('"Cascadia Code", "CaskaydiaCove Nerd Font Mono", '));
 });
 
 function hexLuminance(hex: string): number {

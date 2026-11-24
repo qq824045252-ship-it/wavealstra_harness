@@ -16,6 +16,8 @@
 .dots-result-text { margin-block: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dots-literal-json {
   margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-code-size);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;

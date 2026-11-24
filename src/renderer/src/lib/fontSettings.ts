@@ -1,9 +1,19 @@
-import type { UserFontDto } from "@shared/agent-ipc";
+import type { AppSettingsDto, UserFontDto } from "@shared/agent-ipc";
+import {
+  DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_UI_FONT_SIZE,
+  normalizeCodeFontSize,
+  normalizeReplyFontSize,
+  normalizeReplyFontWeight,
+  normalizeUiFontSize,
+  normalizeUiFontWeight,
+  type ReplyFontWeight,
+  type UiFontWeight,
+} from "@shared/typography";
 
-export const DEFAULT_UI_FONT_SIZE = 15;
-export const DEFAULT_CODE_FONT_SIZE = 13;
 export const DEFAULT_UI_FONT_FAMILY = '"Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif';
 export const DEFAULT_CODE_FONT_FAMILY = '"Cascadia Code", Consolas, "JetBrains Mono", monospace';
+export const READING_FONT_FAMILY = '"Source Serif 4 Reading", "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, Georgia, serif';
 export const FONT_SETTINGS_EVENT = "mybuddy-font-settings-changed";
 
 const LEGACY_PCT = [85, 92, 100, 110, 125] as const;
@@ -13,20 +23,14 @@ export interface AppliedFontSettings {
   codeFontSize: number;
   uiFontFamily: string;
   codeFontFamily: string;
-}
-
-export function normalizeUiFontSize(raw: unknown): number {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_UI_FONT_SIZE;
-  return Math.min(20, Math.max(12, Math.round(raw)));
-}
-
-export function normalizeCodeFontSize(raw: unknown): number {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_CODE_FONT_SIZE;
-  return Math.min(20, Math.max(12, Math.round(raw)));
+  replyFontFamily: string;
+  replyFontSize: number | null;
+  replyFontWeight: ReplyFontWeight;
+  uiFontWeight: UiFontWeight;
 }
 
 /** 旧版 CSS zoom 百分比 / 0–4 档迁移为真实 UI 字号。 */
-export function legacyFontScaleToUiFontSize(raw: unknown): number {
+function legacyFontScaleToUiFontSize(raw: unknown): number {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_UI_FONT_SIZE;
   const pct = Number.isInteger(raw) && raw >= 0 && raw <= 4
     ? (LEGACY_PCT[raw] ?? 105)
@@ -34,34 +38,54 @@ export function legacyFontScaleToUiFontSize(raw: unknown): number {
   return normalizeUiFontSize(Math.round((14 * pct) / 100));
 }
 
-let applied: AppliedFontSettings = {
+export const DEFAULT_APPLIED_FONT_SETTINGS: Readonly<AppliedFontSettings> = {
   uiFontSize: DEFAULT_UI_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   uiFontFamily: "",
   codeFontFamily: "",
+  replyFontFamily: "",
+  replyFontSize: null,
+  replyFontWeight: 400,
+  uiFontWeight: 400,
 };
+
+let applied: AppliedFontSettings = { ...DEFAULT_APPLIED_FONT_SETTINGS };
+
+export function resolveFontSettings(settings: Partial<AppliedFontSettings> & Pick<AppSettingsDto, "fontSize" | "fontFamily">): AppliedFontSettings {
+  return {
+    uiFontSize: normalizeUiFontSize(settings.uiFontSize ?? legacyFontScaleToUiFontSize(settings.fontSize)),
+    codeFontSize: normalizeCodeFontSize(settings.codeFontSize),
+    uiFontFamily: settings.uiFontFamily ?? settings.fontFamily ?? "",
+    codeFontFamily: settings.codeFontFamily ?? "",
+    replyFontFamily: settings.replyFontFamily ?? "",
+    replyFontSize: normalizeReplyFontSize(settings.replyFontSize),
+    replyFontWeight: normalizeReplyFontWeight(settings.replyFontWeight),
+    uiFontWeight: normalizeUiFontWeight(settings.uiFontWeight),
+  };
+}
 
 export function getAppliedFontSettings(): AppliedFontSettings {
   return { ...applied };
 }
 
 /**
- * 应用真实字体设置：只修改字体族/字号变量，不再使用 CSS zoom。
- * UI 与代码字体分开；空 family 表示使用各自默认字体栈。
+ * 通过字体变量应用排版设置，保持窗口布局和控件尺寸。
  */
 export function applyFontSettings(input: Partial<AppliedFontSettings>): AppliedFontSettings {
-  applied = {
-    uiFontSize: normalizeUiFontSize(input.uiFontSize ?? applied.uiFontSize),
-    codeFontSize: normalizeCodeFontSize(input.codeFontSize ?? applied.codeFontSize),
-    uiFontFamily: typeof input.uiFontFamily === "string" ? input.uiFontFamily : applied.uiFontFamily,
-    codeFontFamily: typeof input.codeFontFamily === "string" ? input.codeFontFamily : applied.codeFontFamily,
-  };
+  applied = resolveFontSettings({ ...applied, ...input });
 
   const root = document.documentElement;
-  root.style.setProperty("--font-ui", applied.uiFontFamily.trim() || DEFAULT_UI_FONT_FAMILY);
-  root.style.setProperty("--font-mono", applied.codeFontFamily.trim() || DEFAULT_CODE_FONT_FAMILY);
+  const uiFamily = applied.uiFontFamily.trim();
+  const codeFamily = applied.codeFontFamily.trim();
+  const replyFamily = applied.replyFontFamily.trim();
+  root.style.setProperty("--font-ui", uiFamily ? `${uiFamily}, ${DEFAULT_UI_FONT_FAMILY}` : DEFAULT_UI_FONT_FAMILY);
+  root.style.setProperty("--font-mono", codeFamily ? `${codeFamily}, ${DEFAULT_CODE_FONT_FAMILY}` : DEFAULT_CODE_FONT_FAMILY);
   root.style.setProperty("--font-ui-size", `${applied.uiFontSize}px`);
   root.style.setProperty("--font-code-size", `${applied.codeFontSize}px`);
+  root.style.setProperty("--font-ui-weight", String(applied.uiFontWeight));
+  root.style.setProperty("--font-reply", replyFamily ? `${replyFamily}, var(--font-ui)` : "var(--font-ui)");
+  root.style.setProperty("--font-reply-size", applied.replyFontSize === null ? "var(--font-ui-size)" : `${applied.replyFontSize}px`);
+  root.style.setProperty("--font-reply-weight", String(applied.replyFontWeight));
 
   // 清理旧版本遗留的内联 zoom / font-family，避免字号再次被整体缩放。
   document.body.style.removeProperty("zoom");
@@ -74,7 +98,7 @@ export function applyFontSettings(input: Partial<AppliedFontSettings>): AppliedF
   return getAppliedFontSettings();
 }
 
-const loadedFamilies = new Set<string>();
+const loadedFonts = new Map<string, Promise<FontFace>>();
 
 function toArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
   if (data instanceof ArrayBuffer) return data;
@@ -83,21 +107,36 @@ function toArrayBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
   return copy.buffer;
 }
 
-/** 用 FontFace 载入用户导入字体（幂等） */
-export async function ensureUserFontLoaded(font: UserFontDto): Promise<void> {
-  if (loadedFamilies.has(font.family) || document.fonts.check(`16px "${font.family}"`)) {
-    loadedFamilies.add(font.family);
-    return;
-  }
+async function readUserFontFace(font: UserFontDto): Promise<FontFace> {
   const raw = await window.api?.agent?.readUserFont?.(font.id);
   if (!raw) throw new Error(`无法读取字体：${font.fileName}`);
   const face = new FontFace(font.family, toArrayBuffer(raw), {
     style: "normal",
     weight: "400",
   });
-  await face.load();
-  document.fonts.add(face);
-  loadedFamilies.add(font.family);
+  return face.load();
+}
+
+export async function ensureUserFontLoaded(font: UserFontDto): Promise<void> {
+  let pending = loadedFonts.get(font.id);
+  if (!pending) {
+    pending = readUserFontFace(font);
+    loadedFonts.set(font.id, pending);
+  }
+  try {
+    const face = await pending;
+    if (loadedFonts.get(font.id) === pending) document.fonts.add(face);
+  } catch (err) {
+    if (loadedFonts.get(font.id) === pending) loadedFonts.delete(font.id);
+    throw err;
+  }
+}
+
+export async function unloadUserFont(id: string): Promise<void> {
+  const pending = loadedFonts.get(id);
+  loadedFonts.delete(id);
+  const face = await pending?.catch(() => undefined);
+  if (face) document.fonts.delete(face);
 }
 
 export async function ensureAllUserFontsLoaded(fonts: UserFontDto[]): Promise<void> {
