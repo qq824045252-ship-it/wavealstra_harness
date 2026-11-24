@@ -227,7 +227,7 @@ export class BrowserAutomationService {
   constructor(private readonly host: () => BrowserHost | null) {}
 
   get available(): boolean {
-    return Boolean(this.host()?.attached);
+    return Boolean(this.host()?.available);
   }
 
   async beginHandoff(input: BrowserExecInput, signal: AbortSignal | undefined, context: { taskId: string; requestKey: string; ask: BrowserHandoffRequest["ask"] }): Promise<BrowserExecOutput> {
@@ -237,7 +237,7 @@ export class BrowserAutomationService {
     const ownerId = invocation ? `${invocation.execution.taskId}:${invocation.native.conversationId}` : context.taskId;
     const inspectTab = async (): Promise<BrowserHandoffIdentity> => {
       signal?.throwIfAborted();
-      const tab = browser?.listTabs().find(t => t.id === input.tabId && t.taskId === context.taskId);
+      const tab = browser?.listTaskTabs(context.taskId).find(t => t.id === input.tabId);
       const wc = tab && browser?.getTabHost(tab.id)?.inspectionWebContents;
       if (!wc || wc.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "人工交接标签已关闭或不属于当前任务");
       const readScope = new AutomationScope(signal, 3000);
@@ -245,8 +245,8 @@ export class BrowserAutomationService {
       finally { readScope.close(); }
     };
     const identity = await inspectTab();
-    if (!browser?.presentTabForUser(identity.tabId)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "无法呈现人工交接标签");
-    const handoff = await this.handoffs.begin({ identity, requestKey: context.requestKey, reason: input.reason, signal, ask: context.ask, inspectTab });
+    const release = browser!.beginHandoff(identity.tabId);
+    const handoff = await this.handoffs.begin({ identity, requestKey: context.requestKey, reason: input.reason, signal, ask: context.ask, inspectTab }).finally(release);
     this.observations.delete(`${ownerId}:${identity.tabId}`);
     this.axSnapshots.delete(`${ownerId}:${identity.tabId}`);
     return { action: input.action, tabId: identity.tabId, handoff, outcome: { dispatch: "not_started", effect: "none" } };
@@ -338,8 +338,10 @@ export class BrowserAutomationService {
     if (input.action === "login") {
       const host = this.host();
       const taskId = context?.taskId ?? currentDurableInvocation()?.execution.taskId;
-      if (!host?.attached || !taskId) throw new BrowserAutomationError("HOST_UNAVAILABLE", "登录需要当前任务的内置浏览器");
-      const tab = host.listTabs().find(tab => tab.id === input.tabId && tab.taskId === taskId);
+      if (!host?.available || !taskId) throw new BrowserAutomationError("HOST_UNAVAILABLE", "登录需要当前任务的内置浏览器");
+      const ready = await host.enterTaskAction(taskId, signal);
+      ready();
+      const tab = host.listTaskTabs(taskId).find(tab => tab.id === input.tabId);
       if (!tab) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "login 需要本任务已打开的 tabId");
       const key = tab.openerTabId ?? tab.id;
       if (this.loginTabs.has(key)) throw new BrowserAutomationError("INVALID_INPUT", "当前页面已有登录操作，请等待其结果");
@@ -360,6 +362,8 @@ export class BrowserAutomationService {
         return result;
       } finally { this.loginTabs.delete(key); }
     }
+    const actionTaskId = context?.taskId ?? currentDurableInvocation()?.execution.taskId;
+    const release = actionTaskId ? await this.host()?.enterTaskAction(actionTaskId, signal) : undefined;
     const scope = new AutomationScope(signal, input.timeoutMs);
     try {
       const result = await this.executeManaged(input, scope, context);
@@ -393,19 +397,19 @@ export class BrowserAutomationService {
         throw new BrowserAutomationError(code, error.message, { ...evidence, ...(error.details && typeof error.details === "object" ? error.details : {}), outcome });
       }
       throw new BrowserAutomationError("EXECUTION_FAILED", String(error), evidence);
-    } finally { scope.close(); }
+    } finally { scope.close(); release?.(); }
   }
 
   private async executeManaged(input: BrowserExecInput, scope: AutomationScope, context?: { taskId: string; taskRoot?: string; resolveGadgetId?: (url: string) => Promise<string | undefined> }): Promise<BrowserExecOutput> {
     const signal = scope.signal;
     scope.check();
     const browser = this.host();
-    if (!browser || !browser.attached) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
+    if (!browser || !browser.available) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未初始化");
     const invocation = currentDurableInvocation();
     const taskId = context?.taskId ?? invocation?.execution.taskId;
     if (input.gadgetId && (!taskId || !this.resolveGadgetPreview)) throw new BrowserAutomationError("INVALID_INPUT", "Gadget 导航需要当前任务及 Gadget 服务");
     const owner = invocation ? `${invocation.execution.taskId}:${invocation.native.conversationId}` : taskId ?? "direct-host-entry";
-    const tabs = taskId ? browser.listTabs().filter(tab => tab.taskId === taskId) : [];
+    const tabs = taskId ? browser.listTaskTabs(taskId) : [];
     let tab = input.tabId ? tabs.find(tab => tab.id === input.tabId) : taskId ? browser.getTaskTab(taskId) : undefined;
     if (input.tabId && !tab) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "标签页已关闭或不属于当前任务，请重新导航", { tabId: input.tabId });
     if (input.action === "select_tab" && !input.tabId) {
@@ -413,13 +417,13 @@ export class BrowserAutomationService {
       if (candidates.length !== 1) throw new BrowserAutomationError(candidates.length ? "ELEMENT_AMBIGUOUS" : "SELECTOR_NOT_FOUND", "标签定位不唯一或未找到，请从 tabs 返回的候选中使用 tabId", { tabs: candidates.length ? candidates : tabs });
       tab = candidates[0];
     }
-    if ((input.action === "status" || input.action === "tabs") && taskId) return { action: input.action, tabId: tab?.id, activeTabId: tabs.some(value => value.id === browser.activeTabId) ? browser.activeTabId ?? undefined : undefined, url: tab?.url || undefined, title: tab?.title, tabs, detail: tab?.url ? "ready" : "idle", ...(input.action === "status" && tab?.url ? { renewal: browser.loginRenewalStatus(tab.url) } : {}) };
+    if ((input.action === "status" || input.action === "tabs") && taskId) return { action: input.action, tabId: tab?.id, activeTabId: browser.getTaskTab(taskId)?.id, url: tab?.url || undefined, title: tab?.title, tabs, detail: tab?.url ? "ready" : "idle", ...(input.action === "status" && tab?.url ? { renewal: browser.loginRenewalStatus(tab.url) } : {}) };
     if (input.action === "tabs") throw new BrowserAutomationError("INVALID_INPUT", "tabs 需要当前任务");
     if (tab?.loginChallenge && input.action !== "open" && input.action !== "navigate") throw new BrowserAutomationError("PAGE_UNAVAILABLE", "用户正在此页完成登录，任务将在验证完成后继续");
     if (input.action === "open") {
       if (!taskId) throw new BrowserAutomationError("INVALID_INPUT", "open 需要当前任务");
       scope.dispatch();
-      tab = browser.ensureTab({ key: `browser-open:${randomUUID()}`, taskId, activate: false });
+      tab = browser.ensureTaskTab(taskId, { key: `browser-open:${randomUUID()}` });
       input = { ...input, action: "navigate", tabId: tab.id };
       scope.pageUrl = `created-tab:${tab.id}`;
     }
@@ -448,7 +452,7 @@ export class BrowserAutomationService {
         target = preview?.url ?? requested;
         if (taskId && !input.tabId) {
           const key = browserTabKey(target, preview?.gadgetId);
-          const owned = browser.listTabs().filter(value => value.taskId === taskId);
+          const owned = browser.listTaskTabs(taskId);
           const site = !preview && /^https?:/.test(target) ? new URL(target).origin : undefined;
           const atTarget = site ? owned.filter(value => !value.gadgetId && value.url === target) : [];
           const loggedIn = site ? owned.filter(value => {
@@ -461,12 +465,12 @@ export class BrowserAutomationService {
           if (existing && (!versions.has(existing.id) || browser.getTabHost(existing.id)?.captureVersion !== versions.get(existing.id))) {
             throw new BrowserAutomationError("SURFACE_CHANGED", "目标标签在恢复预览期间变化，请重新读取后再导航");
           }
-          tab = existing ?? browser.ensureTab({ key, taskId, gadgetId: preview?.gadgetId, activate: false });
+          tab = existing ?? browser.ensureTaskTab(taskId, { key, gadgetId: preview?.gadgetId });
         }
         if (tab && browser.listTabs().some(t => t.id === tab!.id && t.loginChallenge)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "此标签等待用户验证，请保留当前页面");
         if (tab) page = browser.getTabHost(tab.id);
         if (taskId && tab) browser.setTaskTab(taskId, tab.id);
-        if (!page?.inspectionWebContents) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未挂载");
+        if (!page?.inspectionWebContents) throw new BrowserAutomationError("HOST_UNAVAILABLE", "MyBuddy 浏览器尚未初始化");
         const previousRevision = tab && this.sourceRevisions.get(tab.id);
         let revision = preview ? `gadget:${preview.revision}` : undefined;
         if (!preview && target.startsWith("file:")) {
@@ -529,13 +533,13 @@ export class BrowserAutomationService {
     if (!page) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "当前任务没有可用标签页，请 navigate 打开页面；不会自动接管其它任务的页面");
     const managedWc = page.inspectionWebContents;
     if (!managedWc || managedWc.isDestroyed()) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "保留的标签页已关闭");
-    if (taskId && tab && input.tabId && input.action !== "close") browser.setTaskTab(taskId, tab.id);
+    if (taskId && tab && input.tabId && input.action !== "close" && input.action !== "select_tab") browser.setTaskTab(taskId, tab.id);
     if (input.action === "select_tab") {
       if (!taskId || !tab) throw new BrowserAutomationError("INVALID_INPUT", "标签切换需要当前任务的目标标签");
       scope.dispatch();
-      if (!browser.selectTab(tab.id, false)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "切换目标标签已关闭");
+      if (!browser.setTaskTab(taskId, tab.id)) throw new BrowserAutomationError("PAGE_UNAVAILABLE", "切换目标标签已关闭");
       scope.confirmed = true;
-      return this.afterObservation(input, { action: input.action, tabId: tab.id, activeTabId: tab.id, url: managedWc.getURL(), title: managedWc.getTitle(), tabs: browser.listTabs().filter(value => value.taskId === taskId) }, scope, page, `${owner}:${tab.id}`);
+      return this.afterObservation(input, { action: input.action, tabId: tab.id, activeTabId: tab.id, url: managedWc.getURL(), title: managedWc.getTitle(), tabs: browser.listTaskTabs(taskId) }, scope, page, `${owner}:${tab.id}`);
     }
     if (input.action === "close") {
       if (!taskId || !tab) throw new BrowserAutomationError("INVALID_INPUT", "标签管理需要本任务的 tabId");
@@ -555,7 +559,7 @@ export class BrowserAutomationService {
           }
         } finally { wc?.off("will-prevent-unload", onPrevent); }
         scope.confirmed = true;
-        return { action: input.action, tabId: tab.id, tabs: browser.listTabs().filter(t => t.taskId === taskId) };
+        return { action: input.action, tabId: tab.id, tabs: browser.listTaskTabs(taskId) };
       } finally { releaseDialogs?.(); }
     }
     if (["back", "forward", "reload"].includes(input.action)) {
@@ -639,8 +643,7 @@ export class BrowserAutomationService {
     if (runtime) base = { ...base, diagnostics: runtime.events.snapshot(traceStart), dialog: runtime.events.currentDialog() };
     // A popup opened by this exact document is a new retained page. Follow it
     // only for this task's next observation; never redirect another task or UI.
-    const popup = ["click", "press"].includes(input.action) && taskId && tab && browser.listTabs().find(value => !before.has(value.id)
-      && value.taskId === taskId && value.openerTabId === tab!.id);
+    const popup = ["click", "press"].includes(input.action) && taskId && tab && browser.listTaskTabs(taskId).find(value => !before.has(value.id) && value.openerTabId === tab!.id);
     const afterPage = popup ? browser.getTabHost(popup.id) : page;
     const result = afterPage ? await this.afterObservation(popup ? { ...input, frameId: undefined } : input, base, scope, afterPage, `${owner}:${popup ? popup.id : tab?.id ?? page.inspectionWebContents?.id}`) : base;
     const opened = popup ? browser.listTabs().find(value => value.id === popup.id) : undefined;

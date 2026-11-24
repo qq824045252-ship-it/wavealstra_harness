@@ -171,15 +171,24 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
   useEffect(() => {
     const api = window.api?.browser;
     if (!api?.onOpenRequest) return;
-    return api.onOpenRequest((url, retained) => {
-      if (retained?.taskId) {
-        const taskId = retained.taskId;
-        useAppStore.setState(state => ({ browserTabByTask: { ...state.browserTabByTask, [taskId]: { id: retained.tabId, key: retained.key, url } }, browserUrlByTask: { ...state.browserUrlByTask, [taskId]: url } }));
-        if (useAppStore.getState().activeTaskId === taskId) useAppStore.getState().showBrowser();
-        return;
+    const openHandoff = (taskId: string): void => {
+      const store = useAppStore.getState();
+      if (!store.activeTaskId) store.setActiveTask(taskId);
+      if (useAppStore.getState().activeTaskId === taskId) {
+        useAppStore.setState({ browserSpace: "task" });
+        useAppStore.getState().showBrowser();
       }
-      useAppStore.getState().setBrowserUrl(url);
+    };
+    let disposed = false;
+    void api.getTabs?.().then(({ tabs }) => {
+      const tab = tabs.find(item => item.control === "login" || item.control === "handoff");
+      if (!disposed && tab?.taskId) openHandoff(tab.taskId);
+    }).catch(console.error);
+    const off = api.onOpenRequest((url, retained) => {
+      if (retained?.taskId) openHandoff(retained.taskId);
+      else useAppStore.getState().setBrowserUrl(url);
     });
+    return () => { disposed = true; off(); };
   }, []);
 
   const showArtifactPanel =

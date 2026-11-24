@@ -26,7 +26,10 @@ function fixture() {
   const host = {
     getTaskTab: () => ({ id: "a", taskId: "task", url: pages[0].url }),
     setTaskTab: (_taskId: string, id: string) => pages.some(page => page.id === id),
-    attached: true, listTabs: () => pages.map(page => ({ id: page.id, taskId: "task", url: page.url })),
+    available: true,
+    enterTaskAction: async () => () => {},
+    listTaskTabs: () => pages.map(page => ({ id: page.id, taskId: "task", space: "task", url: page.url })),
+    listTabs: () => pages.map(page => ({ id: page.id, taskId: "task", space: "task", url: page.url })),
     getTabHost: (id: string) => pages.find(page => page.id === id) ?? null,
   } as unknown as BrowserHost;
   return { service: new BrowserAutomationService(() => host), pages, navigations };

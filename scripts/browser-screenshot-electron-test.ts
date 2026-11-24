@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, nativeImage } from "electron";
+import { app, BaseWindow, BrowserWindow, nativeImage } from "electron";
 import { BrowserHost } from "../src/main/browser/BrowserHost";
 import { BrowserAutomationService, BrowserAutomationError } from "../src/main/capabilities/BrowserAutomationService";
 import { UiAutomationService } from "../src/main/capabilities/UiAutomationService";
@@ -72,7 +72,7 @@ async function fixture(url: string) {
   return { win, host, view, service, wc, ui,
     close: () => {
       host.dispose(); if (!wc.isDestroyed()) wc.close(); if (!win.isDestroyed()) win.destroy();
-      assert.equal(BrowserWindow.getAllWindows().length, 0, "fixture disposal releases any parked presenter");
+      assert.equal(BaseWindow.getAllWindows().length, 0, "fixture disposal releases any parked presenter");
     },
   };
 }
@@ -102,7 +102,7 @@ async function minimizeFixtureWindow(win: BrowserWindow): Promise<void> {
 function assertOwnedWindows(win: BrowserWindow, host: BrowserHost) {
   const parked = (host.getTabHost(host.activeTabId!) as unknown as { parkedScreenshotWindow: BrowserWindow | null }).parkedScreenshotWindow;
   const expected = parked ? [win, parked] : [win];
-  assert.deepEqual(BrowserWindow.getAllWindows().map(window => window.id).sort(), expected.map(window => window.id).sort(), "capture owns at most one presenter");
+  assert.deepEqual(BaseWindow.getAllWindows().map(window => window.id).sort(), expected.map(window => window.id).sort(), "capture owns at most one presenter");
   if (parked) {
     assert(win.isMinimized(), "presenter is retained only while the parent is minimized");
     assert.equal(parked.contentView.children.length, 0, "parked presenter contains no child page content");

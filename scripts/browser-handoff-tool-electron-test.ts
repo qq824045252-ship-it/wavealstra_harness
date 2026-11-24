@@ -17,6 +17,7 @@ import { BrowserAutomationService, type BrowserExecInput, type BrowserExecOutput
 import { BuiltinCapabilityRuntime } from "../src/main/capabilities/BuiltinCapabilityRuntime";
 import { BuiltinCapabilityStore } from "../src/main/capabilities/BuiltinCapabilityStore";
 import { createBuiltinCapabilityExtension } from "../src/main/capabilities/builtin-capability-extension";
+import { browserNativeInput } from "../src/main/capabilities/BrowserNativeInput";
 import { DEFAULT_BUILTIN_CAPABILITIES_CONFIG } from "../src/shared/builtin-capabilities";
 
 interface ToolResult { isError?: boolean; details?: unknown; }
@@ -134,17 +135,31 @@ void (async () => {
     const question = interactions.listByTask("task-a").find(item => item.status === "pending"); assert(question);
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal(settled, false, "registered browser tool must wait for actual user answer");
-    assert.equal(host.activeTabId, opened.tabId, "handoff presents exact retained tab");
-    const guessed = await tool.execute("guessed-resume", { action: "resume", tabId: opened.tabId, token: "model-guessed", expect: [{ kind: "text", selector: "#status", value: "Signed in" }] }, signal);
-    assert.equal(guessed.isError, true, "model cannot self-assert handoff completion");
-    const page = host.getTabHost(opened.tabId)?.inspectionWebContents; assert(page);
-    const rect = await page.executeJavaScript("(() => {const r=document.querySelector('#login').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()") as { x: number; y: number };
-    const inspector = pageInspectionService.sessionFor(page, "browser-host"); assert(inspector?.isAttached);
-    await inspector.protocolCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: rect.x, y: rect.y, button: "left", clickCount: 1 });
-    await inspector.protocolCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: rect.x, y: rect.y, button: "left", clickCount: 1 });
+    assert.equal(host.getTaskTab("task-a")?.control, "handoff", "handoff presents exact retained tab");
+    host.selectTab(opened.tabId);
+    assert(host.visible, "the exact page is attached for human input");
+    const guessing = tool.execute("guessed-resume", { action: "resume", tabId: opened.tabId, token: "model-guessed", expect: [{ kind: "text", selector: "#status", value: "Signed in" }] }, signal);
+    const surface = host.getTabHost(opened.tabId); assert(surface);
+    const page = surface.inspectionWebContents; assert(page);
+    await surface.captureScreenshot({ timeoutMs: 5000 });
+    const rect = await page.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+      const button = document.querySelector('#login');
+      const bounds = button.getBoundingClientRect();
+      const x = bounds.x + bounds.width / 2;
+      const y = bounds.y + bounds.height / 2;
+      resolve(document.elementFromPoint(x, y) === button ? { x, y } : null);
+    })))`) as { x: number; y: number } | null;
+    assert(rect, "the fixture button is at the observed point");
+    const inspector = pageInspectionService.acquire(page, "browser-host");
+    await inspector.attach(page.debugger);
+    const input = browserNativeInput(inspector);
+    await input.send({ type: "mouseMove", ...rect });
+    await input.send({ type: "mouseDown", ...rect, button: "left", clickCount: 1 });
+    await input.send({ type: "mouseUp", ...rect, button: "left", clickCount: 1 });
     await until(() => page.executeJavaScript("document.querySelector('#status').textContent === 'Signed in'"), "trusted login click must reach the fixture");
     assert.equal(interactions.respond(question.id, true).ok, true);
     const handed = output(await waiting); assert(handed.handoff?.token);
+    assert.equal((await guessing).isError, true, "model cannot self-assert handoff completion");
     const resumed = output(await tool.execute("resume-call", { action: "resume", tabId: opened.tabId, token: handed.handoff.token,
       expect: [{ kind: "text", selector: "#status", value: "Signed in" }] }, signal));
     assert.equal(resumed.handoff?.status, "confirmed");
@@ -200,10 +215,19 @@ void (async () => {
       });
       await required.promise;
       assert.equal(host.getTaskTab("task-a")?.loginChallenge, kind);
-      assert.equal((await tool.execute("busy-" + kind, { action: "screenshot", tabId }, signal)).isError, true);
+      let readFinished = false;
+      const queuedRead = tool.execute("queued-" + kind, { action: "read", tabId }, signal).then(value => { readFinished = true; return value; });
+      if (kind === "password") {
+        host.returnControl("task-a", tabId);
+        await until(() => host.getTaskTab("task-a")?.loginRetry === true, "unverified confirmation keeps the handoff open");
+      }
       const authPage = host.getTabHost(tabId)!.inspectionWebContents!;
       await authPage.executeJavaScript("document.querySelector('input').value='fixture-only'; document.forms[0].requestSubmit()");
+      await until(() => authPage.getURL() === account, "human login reaches the business page");
+      assert.equal(readFinished, false, "successful navigation alone does not return control");
+      host.returnControl("task-a", tabId);
       assert.match((await pending)!, /订单 123/);
+      assert(!(await queuedRead).isError);
       assert.equal(host.getTaskTab("task-a")?.loginChallenge, undefined);
     }
     const opener = await navigate("popup-entry");
@@ -214,6 +238,8 @@ void (async () => {
     assert.equal(popup.loginChallenge, "qr");
     await host.getTabHost(opener)!.inspectionWebContents!.loadURL(account);
     host.closeTab(popup.id);
+    await until(() => host.listTaskTabs("task-a").some(tab => tab.id === opener && tab.control === "login"), "closed QR popup returns confirmation to the opener");
+    host.returnControl("task-a", opener);
     const qrResult = output(await pendingQr);
     assert.equal(qrResult.login?.status, "confirmed");
     assert.equal(qrResult.tabId, opener);
@@ -230,7 +256,7 @@ void (async () => {
     await entryPage.session.cookies.remove(account, "fixture_auth");
     await until(() => host.loginRenewalStatus(account)?.state === "sign_in_required", "deleting the login cookie must disarm the profile timer");
     assert.equal(host.loginRenewalStatus(account)?.nextAttemptAt, undefined);
-    console.log("PASS password, OTP and popup QR hand back to the original task automatically; cancellation releases the tab");
+    console.log("PASS password, OTP and popup QR resume after verified confirmation; cancellation releases the tab");
     const restartRoot = mkdtempSync(join(tmpdir(), "browser-login-restart-"));
     let token = 0, expires = 0, originalExpiry = 0, signedIn = 0, renewed = 0, siteRefreshes = 0, freshRead = false;
     let recoverMode = false;

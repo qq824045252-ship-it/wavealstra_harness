@@ -3,7 +3,7 @@
  * 允许 http(s) 站内导航（Penpot SPA 需要）；与产物预览 ArtifactPreviewHost 分离，
  * 避免 mybuddy-artifact 协议宿主拦截外链。
  */
-import { BrowserWindow, dialog, WebContentsView, type Rectangle } from "electron";
+import { BaseWindow, dialog, session, WebContentsView, type BrowserWindow, type Rectangle } from "electron";
 import { BrowserIpc } from "../../shared/agent-ipc";
 import { randomUUID } from "node:crypto";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../../shared/browser-tabs";
@@ -18,9 +18,11 @@ import {
 import { runtimeProbeService } from "../capabilities/RuntimeProbeService";
 import { tryHandleBrowserBeforeUnload } from "../capabilities/browser/BrowserPrompt";
 import { BrowserSessionRenewal } from "./BrowserSessionRenewal";
+import { BrowserSpaceControls } from "./BrowserSpaceControls";
 
 export const BROWSER_CAPTURE_ARTIFACT_ID = "extension-browser";
 const DEFAULT_BROWSER_VIEWPORT = { x: 0, y: 0, width: 1280, height: 720 };
+const BROWSER_PARTITION = "persist:extension-browser";
 
 function sameBounds(left: Rectangle, right: Rectangle): boolean {
   return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height;
@@ -62,8 +64,8 @@ class BrowserTabSurface {
   private captureState: CaptureModeState = "idle";
   private captureGeneration: number | null = null;
   private inspector: PageInspectionSession | null = null;
-  private screenshotWindow: BrowserWindow | null = null;
-  private parkedScreenshotWindow: BrowserWindow | null = null;
+  private screenshotWindow: BaseWindow | null = null;
+  private parkedScreenshotWindow: BaseWindow | null = null;
   private detachParkedScreenshotWindow: (() => void) | null = null;
   private releaseScreenshotSurface: (() => void) | null = null;
   private preserveScreenshotSurface: (() => void) | null = null;
@@ -75,7 +77,9 @@ class BrowserTabSurface {
   onSelection: ((selection: SelectionDescriptor) => void) | null = null;
   onSurfaceChanged: ((change: BrowserSurfaceChange) => void) | null = null;
 
-  constructor(private readonly confirmUnload: (win: BrowserWindow) => boolean = (win) =>
+  constructor(
+    private readonly getConfirmationWindow: () => BrowserWindow | null,
+    private readonly confirmUnload: (win: BrowserWindow) => boolean = (win) =>
     dialog.showMessageBoxSync(win, {
       type: "question",
       message: "网页请求确认离开",
@@ -88,7 +92,7 @@ class BrowserTabSurface {
 
   onCreatePopup: ((options: Electron.BrowserWindowConstructorOptions) => Electron.WebContents) | null = null;
 
-  attach(win: BrowserWindow, preferences?: Electron.WebPreferences, webContents?: Electron.WebContents): void {
+  create(preferences?: Electron.WebPreferences, webContents?: Electron.WebContents): void {
     if (this.view) return;
     this.view = new WebContentsView({
       ...(webContents ? { webContents } : {}),
@@ -99,12 +103,10 @@ class BrowserTabSurface {
         nodeIntegration: false,
         javascript: true,
         backgroundThrottling: false,
-        partition: "persist:extension-browser",
+        partition: BROWSER_PARTITION,
       },
     });
-    this.win = win;
     this.setViewVisible(false);
-    win.contentView.addChildView(this.view);
     this.ensureViewport();
 
     const wc = this.view.webContents;
@@ -112,7 +114,8 @@ class BrowserTabSurface {
     // loadURL/reload 以 ERR_FAILED 结束，页面看起来仍是旧内容。
     wc.on("will-prevent-unload", (event) => {
       if (tryHandleBrowserBeforeUnload(wc, event)) return;
-      if (this.confirmUnload(win)) event.preventDefault();
+      const win = this.getConfirmationWindow();
+      if (win && !win.isDestroyed() && this.confirmUnload(win)) event.preventDefault();
     });
     wc.setWindowOpenHandler(({ url }) => {
       // Preserve Chromium opener/post-body semantics without creating an external
@@ -143,6 +146,23 @@ class BrowserTabSurface {
       this.view = null;
       this.advanceSurface("destroy");
     });
+  }
+
+  setWindow(win: BrowserWindow | null): void {
+    if (!this.view || this.win === win) return;
+    this.hide();
+    if (!this.screenshotWindow) {
+      if (this.win && !this.win.isDestroyed()) this.win.contentView.removeChildView(this.view);
+      win?.contentView.addChildView(this.view);
+    }
+    this.win = win;
+  }
+
+  resetTaskViewport(): void {
+    this.setWindow(null);
+    this.lastBounds = null;
+    this.layoutVersion++;
+    if (!this.screenshotWindow) this.view?.setBounds(DEFAULT_BROWSER_VIEWPORT);
   }
 
   get visible(): boolean {
@@ -267,15 +287,13 @@ class BrowserTabSurface {
   private leaseScreenshotSurface(view: WebContentsView, bounds: Rectangle): () => void {
     const mainWindow = this.win;
     const contents = view.webContents;
-    if (!mainWindow || mainWindow.isDestroyed()) throw new PageCaptureError("SURFACE_CHANGED", "浏览器宿主已关闭");
-    if (this.isVisible && mainWindow.isVisible() && !mainWindow.isMinimized()) return () => {};
+    if (this.isVisible && mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()) return () => {};
     const parkedWindow = this.parkedScreenshotWindow;
     this.detachParkedScreenshotWindow?.();
-    const captureWindow = parkedWindow && !parkedWindow.isDestroyed() ? parkedWindow : new BrowserWindow({
+    const captureWindow = parkedWindow && !parkedWindow.isDestroyed() ? parkedWindow : new BaseWindow({
       show: false, width: bounds.width, height: bounds.height, useContentSize: true,
       frame: false, transparent: true, opacity: 0, hasShadow: false,
       focusable: false, skipTaskbar: true, resizable: false,
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
     });
     captureWindow.setIgnoreMouseEvents(true);
     captureWindow.setContentSize(bounds.width, bounds.height);
@@ -288,13 +306,15 @@ class BrowserTabSurface {
       this.releaseScreenshotSurface = null;
       if (!contents.isDestroyed()) view.setVisible(false);
       if (!captureWindow.isDestroyed()) captureWindow.contentView.removeChildView(view);
-      if (this.view === view && !contents.isDestroyed() && !mainWindow.isDestroyed()) {
-        mainWindow.contentView.addChildView(view);
-        view.setBounds(this.lastBounds && this.lastBounds.width >= 8 && this.lastBounds.height >= 8 ? this.lastBounds : bounds);
+      if (this.view === view && !contents.isDestroyed()) {
+        const window = this.win;
+        if (window && !window.isDestroyed()) window.contentView.addChildView(view);
+        view.setBounds(this.lastBounds && this.lastBounds.width >= 8 && this.lastBounds.height >= 8
+          ? this.lastBounds : window ? bounds : DEFAULT_BROWSER_VIEWPORT);
         this.applyVisibility();
       }
       if (!captureWindow.isDestroyed()) {
-        if (!mainWindow.isDestroyed() && mainWindow.isMinimized()) {
+        if (mainWindow && this.win === mainWindow && !mainWindow.isDestroyed() && mainWindow.isMinimized()) {
           // Closing even an empty inactive native window can restore another
           // minimized window on Wayland. Keep one empty, non-interactive
           // presenter until the user restores/closes the parent, and reuse it.
@@ -316,7 +336,7 @@ class BrowserTabSurface {
     };
     this.releaseScreenshotSurface = release;
     try {
-      mainWindow.contentView.removeChildView(view);
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.contentView.removeChildView(view);
       captureWindow.contentView.addChildView(view);
       view.setBounds({ x: 0, y: 0, width: bounds.width, height: bounds.height });
       view.setVisible(true);
@@ -418,12 +438,24 @@ class BrowserTabSurface {
       const view = this.view;
       if (!view || view.webContents.isDestroyed()) throw new PageCaptureError("SURFACE_CHANGED", "浏览器页面已关闭");
       let release = () => {};
+      const win = this.win;
+      const preserve = () => {
+        if (this.view === view && !view.webContents.isDestroyed() && !this.screenshotWindow) {
+          release = this.leaseScreenshotSurface(view, view.getBounds());
+        }
+      };
       const inspecting = this.captureState === "active";
       try {
         if (inspecting) await this.pauseCapture();
-        release = this.leaseScreenshotSurface(view, view.getBounds());
+        this.preserveScreenshotSurface = preserve;
+        win?.on("hide", preserve);
+        win?.on("minimize", preserve);
+        preserve();
         return await operation();
       } finally {
+        if (this.preserveScreenshotSurface === preserve) this.preserveScreenshotSurface = null;
+        win?.off("hide", preserve);
+        win?.off("minimize", preserve);
         release();
         if (inspecting && this.view === view) await this.resumeCapture();
       }
@@ -596,7 +628,7 @@ export type BrowserPageHost = Pick<BrowserTabSurface,
   "inspectionWebContents" | "url" | "captureVersion" | "navigateForAutomation" | "captureScreenshot" | "readDocumentHtml" | "withAutomationSurface">;
 
 interface ManagedBrowserTab {
-  loginChallenge?: BrowserTabInfo["loginChallenge"];
+  space: BrowserTabInfo["space"];
   id: string;
   key: string;
   taskId?: string;
@@ -618,16 +650,18 @@ export class BrowserHost {
   private desiredVisible = false;
   private readonly blockers = new Set<string>();
   private selectionVersion = 0;
+  private readonly controls = new BrowserSpaceControls(id => this.controlChanged(id));
   onUrlChanged: ((url: string) => void) | null = null;
   onTabsChanged: ((state: BrowserTabsState) => void) | null = null;
   onCaptureStateChanged: BrowserTabSurface["onCaptureStateChanged"] = null;
   onSelection: BrowserTabSurface["onSelection"] = null;
   onSurfaceChanged: BrowserTabSurface["onSurfaceChanged"] = null;
+  onHumanControlRequested: (() => void) | null = null;
 
   constructor(private readonly confirmUnload?: (win: BrowserWindow) => boolean) {}
 
   private get active(): BrowserTabSurface | null { return this.tabs.get(this.activeId ?? "")?.surface ?? null; }
-  get attached(): boolean { return Boolean(this.win && !this.win.isDestroyed()); }
+  get available(): boolean { return this.renewal !== undefined; }
   get activeTabId(): string | null { return this.activeId; }
   get inspectionWebContents(): Electron.WebContents | null { return this.active?.inspectionWebContents ?? null; }
   get captureSurface(): BrowserTabSurface["captureSurface"] { return this.active?.captureSurface ?? null; }
@@ -635,11 +669,30 @@ export class BrowserHost {
   get url(): string { return this.active?.url ?? ""; }
   get captureVersion(): number { return this.selectionVersion; }
 
+  initialize(): void {
+    if (this.available) return;
+    this.renewal = new BrowserSessionRenewal(session.fromPartition(BROWSER_PARTITION));
+  }
+
   attach(win: BrowserWindow): void {
-    if (this.win) return;
+    this.initialize();
+    if (this.win === win) return;
+    this.detach();
     this.win = win;
-    this.ensureTab({ key: "legacy", activate: true });
-    this.renewal = new BrowserSessionRenewal(this.inspectionWebContents!.session);
+    if (this.activeId) this.selectTab(this.activeId, false);
+    else this.ensureTab({ key: "legacy" });
+    win.once("closed", () => { if (this.win === win) this.detach(); });
+    win.webContents.on("did-finish-load", () => {
+      if (this.win === win) this.notifyHumanControl();
+    });
+  }
+
+  detach(): void {
+    this.close();
+    this.active?.setWindow(null);
+    this.win = null;
+    this.lastBounds = null;
+    for (const token of this.blockers) this.removeBlocker(token);
   }
 
   trackVerifiedLogin(url: string) { return this.renewal?.track(url); }
@@ -647,45 +700,118 @@ export class BrowserHost {
 
   private info(tab: ManagedBrowserTab): BrowserTabInfo {
     const wc = tab.surface.inspectionWebContents;
-    return { id: tab.id, key: tab.key, taskId: tab.taskId, gadgetId: tab.gadgetId, openerTabId: tab.openerTabId,
+    const control = this.tabControl(tab);
+    return { id: tab.id, key: tab.key, space: tab.space, taskId: tab.taskId, gadgetId: tab.gadgetId, openerTabId: tab.openerTabId,
       url: wc && !wc.isDestroyed() ? wc.getURL() : tab.surface.url,
       title: wc && !wc.isDestroyed() ? wc.getTitle() : "",
       loading: Boolean(wc && !wc.isDestroyed() && wc.isLoadingMainFrame()),
-      ...(tab.loginChallenge ? { loginChallenge: tab.loginChallenge } : {}) };
+      ...(control ? { control: control.pending ? "pending" : control.mode, loginRetry: control.retry } : {}),
+      ...(control?.challenge ? { loginChallenge: control.challenge } : {}) };
   }
   listTabs(): BrowserTabInfo[] { return [...this.tabs.values()].map((tab) => this.info(tab)); }
+  listTaskTabs(taskId: string): BrowserTabInfo[] {
+    return [...this.tabs.values()].filter(tab => tab.space === "task" && tab.taskId === taskId).map(tab => this.info(tab));
+  }
   getTabsState(): BrowserTabsState { return { activeTabId: this.activeId, tabs: this.listTabs() }; }
   getTabHost(id: string): BrowserPageHost | null { return this.tabs.get(id)?.surface ?? null; }
   getTaskTab(taskId: string): BrowserTabInfo | undefined {
     const tab = this.tabs.get(this.taskTabs.get(taskId) ?? "");
-    return tab?.taskId === taskId ? this.info(tab) : undefined;
+    return tab?.space === "task" && tab.taskId === taskId ? this.info(tab) : undefined;
   }
   setTaskTab(taskId: string, id: string): boolean {
-    if (this.tabs.get(id)?.taskId !== taskId) return false;
+    const tab = this.tabs.get(id);
+    if (tab?.space !== "task" || tab.taskId !== taskId) return false;
     this.taskTabs.set(taskId, id);
     return true;
   }
   private emitTabs(): void { this.onTabsChanged?.(this.getTabsState()); }
 
+  private tabControl(tab: ManagedBrowserTab) {
+    const control = tab.space === "task" && tab.taskId ? this.controls.get(tab.taskId) : undefined;
+    return control?.tabId === tab.id ? control : undefined;
+  }
+
+  enterTaskAction(taskId: string, signal?: AbortSignal): Promise<() => void> {
+    return this.controls.enter(taskId, signal);
+  }
+
+  takeControl(taskId: string, id: string): void {
+    const tab = this.tabs.get(id);
+    if (tab?.space === "task" && tab.taskId === taskId) this.controls.take(taskId, id);
+  }
+
+  returnControl(taskId: string, id: string): void {
+    this.controls.answer(taskId, id);
+  }
+
+  waitForLoginConfirmation(taskId: string, signal?: AbortSignal): Promise<void> {
+    return this.controls.waitForLogin(taskId, signal);
+  }
+
+  requestLoginRetry(taskId: string): void { this.controls.requestLoginRetry(taskId); }
+
+  private controlChanged(id: string): void {
+    const tab = this.tabs.get(id);
+    const control = tab && this.tabControl(tab);
+    if (tab && control && !control.pending && control.mode !== "manual") {
+      if (!this.win?.isVisible()) this.onHumanControlRequested?.();
+      this.presentControlTab(tab);
+    } else if (!control) {
+      tab?.surface.resetTaskViewport();
+      if (this.activeId === id) this.hide();
+    }
+    this.emitTabs();
+  }
+
+  private notifyHumanControl(): void {
+    for (const tab of this.tabs.values()) {
+      const control = this.tabControl(tab);
+      if (control && !control.pending && control.mode !== "manual") this.presentControlTab(tab);
+    }
+  }
+
+  private presentControlTab(tab: ManagedBrowserTab): void {
+    const win = this.win;
+    if (!win || win.isDestroyed() || win.webContents.isLoadingMainFrame()) return;
+    win.webContents.send(BrowserIpc.openRequest, { url: tab.surface.url, tabId: tab.id, key: tab.key, taskId: tab.taskId });
+  }
+
+  async previewTaskTab(taskId: string, id: string): Promise<Uint8Array | null> {
+    const tab = this.tabs.get(id);
+    if (tab?.space !== "task" || tab.taskId !== taskId || this.tabControl(tab) || !tab.surface.url) return null;
+    return tab.surface.captureScreenshot({ timeoutMs: 4000 });
+  }
+
   ensureTab(options: BrowserOpenOptions = {}): BrowserTabInfo {
-    if (!this.win || this.win.isDestroyed()) throw new Error("MyBuddy 浏览器尚未挂载");
+    return this.ensureSpaceTab("personal", options);
+  }
+
+  ensureTaskTab(taskId: string, options: Omit<BrowserOpenOptions, "taskId" | "activate">): BrowserTabInfo {
+    return this.ensureSpaceTab("task", { ...options, taskId, activate: false });
+  }
+
+  private ensureSpaceTab(space: BrowserTabInfo["space"], options: BrowserOpenOptions): BrowserTabInfo {
+    if (!this.available) throw new Error("MyBuddy 浏览器尚未初始化");
     const key = options.key || "legacy";
-    const existing = [...this.tabs.values()].find((tab) => tab.key === key && tab.taskId === options.taskId);
+    const existing = [...this.tabs.values()].find(tab => tab.space === space && tab.key === key && tab.taskId === options.taskId);
     if (existing) {
       if (options.activate !== false) this.selectTab(existing.id);
       return this.info(existing);
     }
-    return this.createTab({ ...options, key });
+    return this.createTab(space, { ...options, key });
   }
 
-  private createTab(options: BrowserOpenOptions, preferences?: Electron.WebPreferences, openerTabId?: string, webContents?: Electron.WebContents): BrowserTabInfo {
-    const surface = new BrowserTabSurface(this.confirmUnload);
+  private createTab(space: BrowserTabInfo["space"], options: BrowserOpenOptions, preferences?: Electron.WebPreferences, openerTabId?: string, webContents?: Electron.WebContents): BrowserTabInfo {
+    const surface = new BrowserTabSurface(
+      () => space === "personal" || this.tabControl(tab)?.pending === false ? this.win : null,
+      this.confirmUnload,
+    );
     const tab: ManagedBrowserTab = { id: randomUUID(), key: options.key || randomUUID(),
-      taskId: options.taskId, gadgetId: options.gadgetId, openerTabId, surface };
-    surface.attach(this.win!, preferences, webContents);
+      space, taskId: options.taskId, gadgetId: options.gadgetId, openerTabId, surface };
+    surface.create(preferences, webContents);
     for (const token of this.blockers) surface.addBlocker(token);
     this.tabs.set(tab.id, tab);
-    if (tab.taskId && (!this.taskTabs.has(tab.taskId) || openerTabId && this.taskTabs.get(tab.taskId) === openerTabId)) {
+    if (space === "task" && tab.taskId && (!this.taskTabs.has(tab.taskId) || openerTabId && this.taskTabs.get(tab.taskId) === openerTabId)) {
       this.setTaskTab(tab.taskId, tab.id);
     }
     surface.onUrlChanged = (url) => {
@@ -705,9 +831,16 @@ export class BrowserHost {
         artifactVersion: this.selectionVersion, surfaceGeneration: this.selectionVersion });
     };
     surface.onCreatePopup = (popupOptions) => {
-      const popup = this.createTab({ key: `popup:${randomUUID()}`, taskId: tab.taskId,
-        gadgetId: tab.gadgetId, activate: this.activeId === tab.id }, popupOptions.webPreferences, tab.id,
+      const popup = this.createTab(space, { key: `popup:${randomUUID()}`, taskId: tab.taskId,
+        gadgetId: tab.gadgetId, activate: space === "personal" && this.activeId === tab.id }, popupOptions.webPreferences, tab.id,
         (popupOptions as Electron.BrowserWindowConstructorOptions & { webContents?: Electron.WebContents }).webContents);
+      if (tab.taskId) {
+        const taskId = tab.taskId;
+        setImmediate(() => {
+          const control = this.tabControl(tab);
+          if (control && !control.pending && this.tabs.has(popup.id)) this.controls.transfer(taskId, popup.id);
+        });
+      }
       return this.tabs.get(popup.id)!.surface.inspectionWebContents!;
     };
     const wc = surface.inspectionWebContents!;
@@ -724,7 +857,7 @@ export class BrowserHost {
         if (options.activate !== false && this.activeId === openerTabId) this.selectTab(tab.id);
         this.emitTabs();
       });
-      return { id: tab.id, key: tab.key, taskId: tab.taskId, gadgetId: tab.gadgetId,
+      return { id: tab.id, key: tab.key, space, taskId: tab.taskId, gadgetId: tab.gadgetId,
         openerTabId, url: "", title: "", loading: true };
     }
     if (options.activate !== false) this.selectTab(tab.id);
@@ -739,10 +872,11 @@ export class BrowserHost {
   selectTab(id: string, refreshDirty = true): boolean {
     const tab = this.tabs.get(id);
     if (!tab) return false;
-    if (tab.taskId) this.setTaskTab(tab.taskId, id);
     if (this.activeId !== id) {
       this.active?.exitCapture();
-      this.active?.hide();
+      const previous = this.tabs.get(this.activeId ?? "");
+      if (previous?.space === "task") previous.surface.resetTaskViewport();
+      else previous?.surface.setWindow(null);
       const oldWc = this.inspectionWebContents;
       if (oldWc) runtimeProbeService.detach("browser", oldWc);
       this.activeId = id;
@@ -751,7 +885,8 @@ export class BrowserHost {
       this.selectionVersion++;
       this.onSurfaceChanged?.({ generation: this.selectionVersion, reason: "select" });
     }
-    if (this.lastBounds) tab.surface.setBounds(this.lastBounds);
+    if (tab.space === "personal" || this.tabControl(tab)?.pending === false) tab.surface.setWindow(this.win);
+    if (this.lastBounds && tab.surface.captureSurface) tab.surface.setBounds(this.lastBounds);
     if (!this.desiredVisible) tab.surface.hide();
     if (refreshDirty && tab.dirty) { tab.dirty = false; tab.surface.hardReload(); }
     this.emitTabs();
@@ -761,22 +896,14 @@ export class BrowserHost {
   /** Reveal an existing task page for login without creating a navigation intent. */
   showLoginChallenge(id: string, challenge: NonNullable<BrowserTabInfo["loginChallenge"]>): () => void {
     const tab = this.tabs.get(id);
-    if (!tab || tab.loginChallenge) throw new Error("登录标签已关闭或正在等待用户操作");
-    tab.loginChallenge = challenge;
-    try {
-      if (!this.presentTabForUser(id)) throw new Error("无法呈现登录标签");
-    } catch (error) {
-      delete tab.loginChallenge;
-      throw error;
-    }
-    return () => { delete tab.loginChallenge; this.emitTabs(); };
+    if (tab?.space !== "task" || !tab.taskId) throw new Error("登录标签已关闭");
+    return this.controls.offer(tab.taskId, id, "login", challenge);
   }
 
-  presentTabForUser(id: string): boolean {
+  beginHandoff(id: string): () => void {
     const tab = this.tabs.get(id);
-    if (!tab || !this.win || this.win.isDestroyed() || !this.selectTab(id, false)) return false;
-    this.win.webContents.send(BrowserIpc.openRequest, { url: tab.surface.url, tabId: id, key: tab.key, taskId: tab.taskId });
-    return true;
+    if (tab?.space !== "task" || !tab.taskId) throw new Error("人工交接标签已关闭");
+    return this.controls.offer(tab.taskId, id, "handoff");
   }
 
   /** Explicit tab close honors beforeunload; a denied close keeps its tab. */
@@ -785,12 +912,22 @@ export class BrowserHost {
     if (wc && !wc.isDestroyed()) wc.close({ waitForBeforeUnload: true });
   }
 
+  closePersonalTab(id: string): void {
+    if (this.tabs.get(id)?.space === "personal") this.closeTab(id);
+  }
+
   private removeTab(id: string): void {
     const tab = this.tabs.get(id);
     if (!tab) return;
+    const control = this.tabControl(tab);
+    const opener = tab.openerTabId && this.tabs.get(tab.openerTabId);
+    if (tab.taskId && control) {
+      if (opener) this.controls.transfer(tab.taskId, opener.id);
+      else this.controls.clear(tab.taskId);
+    }
     this.tabs.delete(id);
     if (tab.taskId && this.taskTabs.get(tab.taskId) === id) {
-      const next = [...this.tabs.values()].filter(candidate => candidate.taskId === tab.taskId).at(-1);
+      const next = this.listTaskTabs(tab.taskId).at(-1);
       if (next) this.setTaskTab(tab.taskId, next.id);
       else this.taskTabs.delete(tab.taskId);
     }
@@ -798,7 +935,7 @@ export class BrowserHost {
     if (this.activeId === id) {
       this.activeId = null;
       const remaining = [...this.tabs.values()];
-      const next = remaining.filter((candidate) => candidate.taskId === tab.taskId).at(-1);
+      const next = remaining.filter(candidate => candidate.space === "personal" && candidate.taskId === tab.taskId).at(-1);
       if (next) this.selectTab(next.id);
       else { this.selectionVersion++; this.onSurfaceChanged?.({ generation: this.selectionVersion, reason: "close" }); }
     }
@@ -806,14 +943,14 @@ export class BrowserHost {
   }
 
   open(url: string, options?: BrowserOpenOptions): void {
-    if (!this.win) return;
+    if (!this.available) return;
     if (!url) { this.close(); return; }
     let tab: ManagedBrowserTab | undefined;
     if (options?.key || options?.taskId) {
       const info = this.ensureTab({ ...options, activate: false });
       tab = this.tabs.get(info.id);
     } else {
-      if (!this.active) this.ensureTab({ key: "legacy" });
+      if (!this.active || this.tabs.get(this.activeId ?? "")?.space !== "personal") this.ensureTab({ key: "legacy" });
       tab = this.tabs.get(this.activeId ?? "");
     }
     if (!tab) return;
@@ -832,11 +969,15 @@ export class BrowserHost {
   setBounds(rect: Rectangle): void {
     this.lastBounds = rect;
     this.desiredVisible = rect.width >= 8 && rect.height >= 8;
-    this.active?.setBounds(rect);
+    if (this.active?.captureSurface) this.active.setBounds(rect);
   }
   addBlocker(token: string): void { this.blockers.add(token); for (const tab of this.tabs.values()) tab.surface.addBlocker(token); }
   removeBlocker(token: string): void { this.blockers.delete(token); for (const tab of this.tabs.values()) tab.surface.removeBlocker(token); }
-  navigate(url: string): void { this.active?.navigate(url); }
+  private get personalActive(): ManagedBrowserTab | undefined {
+    const tab = this.tabs.get(this.activeId ?? "");
+    return tab?.space === "personal" ? tab : undefined;
+  }
+  navigate(url: string): void { this.personalActive?.surface.navigate(url); }
   navigateForAutomation(url: string, signal?: AbortSignal, options?: { reload?: boolean }): Promise<void> {
     const surface = this.active;
     if (!surface) return Promise.reject(new Error("MyBuddy 浏览器尚未挂载"));
@@ -854,11 +995,11 @@ export class BrowserHost {
   }
   reload(): void { this.hardReload(); }
   hardReload(): void {
-    const tab = this.tabs.get(this.activeId ?? "");
+    const tab = this.personalActive;
     if (tab) { tab.dirty = false; tab.surface.hardReload(); }
   }
-  back(): void { this.active?.back(); }
-  forward(): void { this.active?.forward(); }
+  back(): void { this.personalActive?.surface.back(); }
+  forward(): void { this.personalActive?.surface.forward(); }
   async enterCapture(): Promise<void> { await this.active?.enterCapture(); }
   exitCapture(): void { this.active?.exitCapture(); }
   async resumeCapture(): Promise<void> { await this.active?.resumeCapture(); }
@@ -866,6 +1007,7 @@ export class BrowserHost {
   async readDocumentHtml(): Promise<string | null> { return await this.active?.readDocumentHtml() ?? null; }
   dispose(): void {
     const tabs = [...this.tabs.values()];
+    for (const taskId of this.taskTabs.keys()) this.controls.clear(taskId);
     this.renewal?.dispose(); this.renewal = undefined;
     this.tabs.clear(); this.taskTabs.clear(); this.activeId = null;
     for (const tab of tabs) tab.surface.dispose();

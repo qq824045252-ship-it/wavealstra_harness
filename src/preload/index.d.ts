@@ -704,6 +704,9 @@ export interface PreloadApi {
     ensureTab: (options: BrowserOpenOptions) => Promise<BrowserTabInfo>;
     selectTab: (id: string) => void;
     closeTab: (id: string) => void;
+    previewTaskTab: (taskId: string, id: string) => Promise<Uint8Array | null>;
+    takeControl: (taskId: string, id: string) => void;
+    returnControl: (taskId: string, id: string) => void;
     onTabsChanged: (callback: (state: BrowserTabsState) => void) => () => void;
     open: (url: string, options?: BrowserOpenOptions) => void;
     close: () => void;

@@ -11,7 +11,10 @@ export async function run(base: string): Promise<string[]> {
     open: (...args: unknown[]) => { void invoke("open", ...args); },
     getTabs: () => invoke("getTabsState"), ensureTab: (...args: unknown[]) => invoke("ensureTab", ...args),
     selectTab: (...args: unknown[]) => { void invoke("selectTab", ...args); },
-    closeTab: (...args: unknown[]) => { void invoke("closeTab", ...args); },
+    closeTab: (...args: unknown[]) => { void invoke("closePersonalTab", ...args); },
+    previewTaskTab: (...args: unknown[]) => invoke("previewTaskTab", ...args),
+    takeControl: (...args: unknown[]) => { void invoke("takeControl", ...args); },
+    returnControl: (...args: unknown[]) => { void invoke("returnControl", ...args); },
     hide: () => { void invoke("hide"); }, close: () => { void invoke("close"); },
     setRect: (...args: unknown[]) => { void invoke("setBounds", ...args); },
     navigate: (...args: unknown[]) => { void invoke("navigate", ...args); },
@@ -95,13 +98,34 @@ export async function run(base: string): Promise<string[]> {
   await until(() => container.querySelectorAll('[role="tab"]').length === 3, "new blank tab");
   const blank = (await state()).activeTabId!;
   assert(useAppStore.getState().browserUrlByTask.one === "", "blank tab clears address");
-  await invoke("closeTab", blank);
+  await invoke("closePersonalTab", blank);
   await until(async () => (await state()).activeTabId === b.id, "close selects sibling");
-  await invoke("closeTab", b.id); await invoke("closeTab", a.id);
+  await invoke("closePersonalTab", b.id); await invoke("closePersonalTab", a.id);
   await until(() => container.querySelectorAll('[role="tab"]').length === 0, "close last task tab");
   assert(!useAppStore.getState().browserUrlByTask.one, "last tab clears stale address");
   assert((await state()).tabs.some(tab => tab.taskId === "two"), "other task remains alive");
   checks.push("blank/close tab controls clear stale address and preserve other tasks");
+
+  const ai = await invoke("openTaskPage", `${base}/same-site`);
+  await invoke("eval", ai.tabId, "document.querySelector('#draft').value='AI draft'");
+  useAppStore.getState().setBrowserUrl(`${base}/same-site`);
+  await until(async () => (await state()).tabs.some(tab => tab.space === "personal" && tab.url === `${base}/same-site` && !tab.loading), "personal page finished loading");
+  await until(() => Boolean(container.querySelector('[aria-label="关闭标签：/same-site"]')), "personal page at AI URL");
+  (container.querySelector('[aria-label="关闭标签：/same-site"]') as HTMLButtonElement).click();
+  const click = (label: string) => Array.from(container.querySelectorAll("button"))
+    .find(button => button.textContent === label)?.click();
+  click("任务 Space");
+  await until(() => Boolean(container.querySelector('img[alt="任务浏览器页面预览"]')), "read-only Space image");
+  assert(!container.querySelector(".browser-tab-close"), "task tabs have no manual close control");
+  click("接管");
+  await until(() => container.textContent?.includes("人工控制") ?? false, "manual control selected");
+  await until(async () => (await state()).activeTabId === ai.tabId, "live original tab attached");
+  await invoke("eval", ai.tabId, "document.querySelector('#draft').value='human draft'");
+  click("交回 AI");
+  await until(() => container.textContent?.includes("AI 控制") ?? false, "AI control restored");
+  await until(() => Boolean(container.querySelector('img[alt="任务浏览器页面预览"]')), "preview restored after handoff");
+  assert(await invoke("eval", ai.tabId, "document.querySelector('#draft').value") === "human draft", "Space returns same original page");
+  checks.push("same-URL personal close, task Space preview, take over and return retain the actual task document");
   flushSync(() => root.unmount()); container.remove();
   return checks;
 }

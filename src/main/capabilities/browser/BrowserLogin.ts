@@ -84,7 +84,7 @@ export async function runBrowserLogin(request: LoginRequest): Promise<BrowserExe
   const origin = new URL(input.url).origin;
   const verifyTabId = input.verifyTabId ?? tab.id;
   const verificationPage = host.getTabHost(verifyTabId);
-  if (!verificationPage || !host.listTabs().some(t => t.id === verifyTabId && t.taskId === taskId)) throw new Error("业务标签已关闭");
+  if (!verificationPage || !host.listTaskTabs(taskId).some(t => t.id === verifyTabId)) throw new Error("业务标签已关闭");
   const urlOnly = input.expect.every(c => c.kind === "url");
   const noLoginPrompt = withBrowserDom(`!__mbDom.all('button,a,[role=button],[role=link]').some(el =>
     el.checkVisibility({visibilityProperty:true}) && /^(?:登录|立即登录|sign in|log in|login)$/i.test((el.innerText||el.getAttribute('aria-label')||'').trim()))`);
@@ -117,7 +117,7 @@ export async function runBrowserLogin(request: LoginRequest): Promise<BrowserExe
       automatic.check();
       if (await verified() === true) return result("confirmed", "业务页已就绪，可以继续原任务");
       if (click && authTabId === tab.id && !click.openedTabId) {
-        const children = host.listTabs().filter(t => t.taskId === taskId && t.openerTabId === tab.id && !originalTabs.has(t.id));
+        const children = host.listTaskTabs(taskId).filter(t => t.openerTabId === tab.id && !originalTabs.has(t.id));
         if (children.length === 1) {
           authTabId = children[0]!.id;
           frameId = undefined;
@@ -151,15 +151,14 @@ export async function runBrowserLogin(request: LoginRequest): Promise<BrowserExe
         try {
           humanWaiting = true;
           request.onLoginRequired?.();
-          let goneSince: number | undefined;
           for (;;) {
-            if (await verified() === true) return result("confirmed", "已核验登录结果，继续原任务");
-            const current = host.getTabHost(authTabId);
-            const remaining = current && await sample(current, challengeScript(false, input), request, frameId);
-            if (remaining) goneSince = undefined;
-            else goneSince ??= Date.now();
-            if (goneSince && Date.now() - goneSince >= 1500) return result("inspect", "验证步骤已变化，请读取业务页或下一步登录界面后继续");
-            await delay(350, undefined, { signal });
+            await host.waitForLoginConfirmation(taskId, signal);
+            const verifyUntil = Date.now() + 4000;
+            do {
+              if (await verified() === true) return result("confirmed", "已核验登录结果，继续原任务");
+              await delay(350, undefined, { signal });
+            } while (Date.now() < verifyUntil);
+            host.requestLoginRetry(taskId);
           }
         } finally { release(); }
       }

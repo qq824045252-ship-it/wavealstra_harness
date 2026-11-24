@@ -114,8 +114,8 @@ export const browserStructuredOutputSchema = Type.Object({
 }, { additionalProperties: true });
 
 export const browserToolDescription = browserAgentPolicy + [
-  "login({tabId,url,expect}) 的 url 是原业务地址，expect 使用登录后才有的目标页 URL、可见控件或文字。工具先只读核验，再尝试一次明确的登录入口，密码/扫码/验证码页面会自动等待业务页就绪。login.status=confirmed 就继续原任务；inspect 时读取当前页/frames，自己点击已观察的其它登录步骤，未知效果先核对。frameId 可指定登录控件的 iframe；弹窗登录后回到原页时 verifyTabId 指定其 opener。不要用登录框消失作为成功依据。",
-  "识别出未标注的登录二维码或验证码框时，先 find 对应图片、画布或输入框，再给 login 传 challenge:'qr' 或 'code' 和该节点的 selector 引用，仍能在登录成功后自动继续。",
+  "login({tabId,url,expect}) 的 url 是原业务地址，expect 使用登录后才有的目标页 URL、可见控件或文字。工具先只读核验，再尝试一次明确的登录入口。遇到密码、扫码或验证码时交给用户，等用户点「已登录」后核验业务页。login.status=confirmed 就继续原任务；inspect 时读取当前页/frames，自己点击已观察的其它登录步骤，未知效果先核对。frameId 可指定登录控件的 iframe；弹窗登录后回到原页时 verifyTabId 指定其 opener。不要用登录框消失作为成功依据。",
+  "识别出未标注的登录二维码或验证码框时，先 find 对应图片、画布或输入框，再给 login 传 challenge:'qr' 或 'code' 和该节点的 selector 引用发起人工登录。",
   "login 成功登记该站登录续期，status 返回本标签站点的 renewal。cookie_extended 表示网站 Cookie 到期时间延后，checked 仅表示已检查，不能据此推断账户有效。sign_in_required 时在原业务页重新核验登录。",
   "使用 MyBuddy 内置 Electron 浏览器，每个任务保留独立标签、共享登录 session，popup 也留在内置浏览器。",
   "evaluate({expression}) 在当前文档的隔离 DOM 副本中计算 JavaScript 表达式并返回 JSON value，可用 document.querySelectorAll 过滤、转换与汇总。页面交互走 click/fill 等原生动作。fetch({url}) 在当前 HTTP(S) 文档中读取同源文本/JSON 资源，沿用网站会话和浏览器请求策略，返回 fetched.status/body/truncated。",
@@ -130,9 +130,9 @@ export const browserToolDescription = browserAgentPolicy + [
   "在画布或绘图控件内画线时，drag({selector,points:[{x,y},...]}) 用 0 到 1 的比例指定控件内路径，支持 modifiers 组合拖动。结束或取消时释放本次输入。",
   "screenshot 返回 captureId 与像素 viewport，click_at/scroll_at 必须携带该 captureId、截图像素 x/y；页面像素、文档、滚动、视口或缩放变化会拒绝旧截图。每张截图只允许一次坐标操作。",
   "特殊验证界面无法识别或缺少可靠的成功条件时，确认已出现密码、扫码或验证码再用 handoff({tabId,reason:'login'或'2fa'}) 请求人工操作；用户确认后用 resume({tabId,token,expect}) 核验并继续。不得自行代答或重复提交业务动作。",
-  "切换浏览器顶部标签不要点击网页中的 tab 或用 navigate 重开：先 tabs 查看本任务标签的 id/title/url，再 select_tab({tabId,after:{mode:'interactive'}}) 切换并观察已有页面。也可用精确 tabTitle/tabUrl；同名时必须从候选中选 tabId。切换保留登录、草稿和页面状态。",
-  "tabs/status 返回 tabId（当前任务默认操作目标）及 activeTabId（当前任务在侧栏显示的标签）；其它任务的标签不会返回。open 新建本任务标签，select_tab/close/back/forward/reload 只操作本任务标签。",
-  "不传 tabId 时跟随本任务当前标签；手动切换、open/navigate 和由当前页打开的 popup 会更新默认目标，切换到其它任务不影响本任务。popup 回执的 tabId/openedTabId 是新页，sourceTabId 是触发动作的旧页，后续观察新页后再交互。",
+  "先 tabs 查看本任务标签，再用 select_tab({tabId,after:{mode:'interactive'}}) 切换操作目标并观察同一页面。也可用精确 tabTitle/tabUrl；同名时从候选中选 tabId。切换保留登录、草稿和页面状态。",
+  "tabs/status 返回 tabId 和 activeTabId，分别表示请求的目标和任务默认操作目标。open 新建本任务标签，select_tab/close/back/forward/reload 只操作本任务标签。",
+  "不传 tabId 时使用本任务默认标签。select_tab、open/navigate 和由当前页打开的 popup 会更新默认目标。人看侧栏或关闭个人标签不会改变 AI 目标。popup 回执的 tabId/openedTabId 是新页，sourceTabId 是触发动作的旧页，后续观察新页后再交互。",
   "并行操作不同页面时必须显式传 tabId；单次调用固定其目标页面，不随中途的界面切换重定向。",
   "navigate 支持 http(s) 或本机 file://，不支持网络共享；返回已有标签会保留页面，reload:true 强制刷新，本机源码变更会自动刷新。",
   "Gadget 可传 gadgetId 按身份恢复当前端口。",

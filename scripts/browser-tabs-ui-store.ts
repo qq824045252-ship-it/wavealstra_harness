@@ -2,7 +2,7 @@ import { create } from "zustand";
 // The production BrowserView runs unchanged; only the surrounding app store is a
 // fixture. Browser IPC below is backed by the real native BrowserHost.
 export const useAppStore = create<any>((set, get) => ({
-  activeTaskId: "one", activeModelId: "fixture", browserUrlByTask: {}, browserTabByTask: {},
+  activeTaskId: "one", activeModelId: "fixture", browserSpace: "personal", browserUrlByTask: {}, browserTabByTask: {},
   browserGadgetByTask: {}, browserFrameKey: 0, browserNavigationVersion: 0,
   selection: { status: "empty" }, browserPreviousPanelMode: "gadgets", panelOpen: true, panelMode: "browser",
   setBrowserUrl: (url: string | null, gadgetId?: string) => {
@@ -10,7 +10,7 @@ export const useAppStore = create<any>((set, get) => ({
     const tabs = { ...s.browserTabByTask }, gadgets = { ...s.browserGadgetByTask };
     delete tabs[key]; delete gadgets[key];
     if (url && gadgetId) gadgets[key] = { gadgetId, url };
-    set({ browserUrlByTask: { ...s.browserUrlByTask, [key]: url ?? "" }, browserGadgetByTask: gadgets,
+    set({ browserSpace: "personal", browserUrlByTask: { ...s.browserUrlByTask, [key]: url ?? "" }, browserGadgetByTask: gadgets,
       browserTabByTask: tabs, browserNavigationVersion: s.browserNavigationVersion + 1 });
   },
   refreshBrowser: () => set({ browserFrameKey: get().browserFrameKey + 1 }),

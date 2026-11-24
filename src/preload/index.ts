@@ -1239,6 +1239,9 @@ const api = {
     ensureTab: (options: BrowserOpenOptions): Promise<BrowserTabInfo> => ipcRenderer.invoke(BrowserIpc.ensureTab, options),
     selectTab: (id: string): void => ipcRenderer.send(BrowserIpc.selectTab, id),
     closeTab: (id: string): void => ipcRenderer.send(BrowserIpc.closeTab, id),
+    previewTaskTab: (taskId: string, id: string): Promise<Uint8Array | null> => ipcRenderer.invoke(BrowserIpc.previewTaskTab, taskId, id),
+    takeControl: (taskId: string, id: string): void => ipcRenderer.send(BrowserIpc.takeControl, taskId, id),
+    returnControl: (taskId: string, id: string): void => ipcRenderer.send(BrowserIpc.returnControl, taskId, id),
     onTabsChanged: (callback: (state: BrowserTabsState) => void): (() => void) => {
       const handler = (_: Electron.IpcRendererEvent, state: BrowserTabsState): void => callback(state);
       ipcRenderer.on(BrowserIpc.tabsChanged, handler);

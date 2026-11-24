@@ -16,8 +16,38 @@ import BrowserNavBar from "./BrowserNavBar";
 import CaptureModeStatus from "./CaptureModeStatus";
 import BrowserConsolePanel from "./BrowserConsolePanel";
 import LibraryClipDialog from "./LibraryClipDialog";
+import BrowserTaskSpace from "./BrowserTaskSpace";
 
 export default function BrowserView(): React.JSX.Element {
+  const space = useAppStore(s => s.browserSpace);
+  const taskId = useAppStore(s => s.activeTaskId);
+  const taskSpace = space === "task" && Boolean(taskId);
+  return (
+    <div className="browser-view">
+      <div className="browser-space-switch" role="group" aria-label="浏览器 Space">
+        <button type="button" className="btn" aria-pressed={!taskSpace} onClick={() => useAppStore.setState({ browserSpace: "personal" })}>我的浏览器</button>
+        <button type="button" className="btn" aria-pressed={taskSpace} disabled={!taskId} onClick={() => useAppStore.setState({ browserSpace: "task" })}>任务 Space</button>
+      </div>
+      {taskSpace && taskId ? <BrowserTaskSpace key={taskId} taskId={taskId} onClose={closeBrowserPreview} /> : <PersonalBrowserView />}
+    </div>
+  );
+}
+
+function closeBrowserPreview(): void {
+  window.api?.captureMode?.exit();
+  window.api?.browser?.hide();
+  const store = useAppStore.getState();
+  const prevMode = store.browserPreviousPanelMode ?? "gadgets";
+  if (prevMode === "overview") store.showOverview();
+  else if (prevMode === "artifacts") store.showArtifacts();
+  else if (prevMode === "workspace") store.showWorkspace();
+  else if (prevMode === "terminal") store.showTerminal();
+  else if (prevMode === "changes") store.showChanges();
+  else if (prevMode === "file" && store.savedArtifactTab?.artifact.id === store.activeArtifactId) store.openArtifact(store.activeArtifactId);
+  else store.showGadgets();
+}
+
+function PersonalBrowserView(): React.JSX.Element {
   const modelId = useAppStore((s) => s.activeModelId);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
   const sessionKey = activeTaskId ?? HOME_BROWSER_KEY;
@@ -36,7 +66,7 @@ export default function BrowserView(): React.JSX.Element {
   const [openBrowserError, setOpenBrowserError] = useState<string | null>(null);
   const [clipTabId, setClipTabId] = useState<string | null>(null);
 
-  const tabs = tabsState.tabs.filter((tab) => tab.taskId === (activeTaskId ?? undefined) && tab.key !== "legacy");
+  const tabs = tabsState.tabs.filter(tab => tab.space === "personal" && tab.taskId === (activeTaskId ?? undefined) && tab.key !== "legacy");
   const selectedTab = tabs.find((tab) => tab.id === tabsState.activeTabId);
   const activeUrl = selectedTab?.url ?? browserUrl ?? null;
   const tabsAvailable = typeof window.api?.browser?.getTabs === "function";
@@ -45,7 +75,7 @@ export default function BrowserView(): React.JSX.Element {
   // navigation intent or erase the Gadget identity of the retained document.
   const rememberTab = useCallback((tab: BrowserTabInfo): void => {
     const store = useAppStore.getState();
-    if (tab.taskId !== (store.activeTaskId ?? undefined)) return;
+    if (tab.space !== "personal" || tab.taskId !== (store.activeTaskId ?? undefined)) return;
     const key = store.activeTaskId ?? HOME_BROWSER_KEY;
     requestRef.current = { sessionKey: key, url: tab.url, version: store.browserNavigationVersion, frame: store.browserFrameKey };
     useAppStore.setState((state) => {
@@ -69,6 +99,7 @@ export default function BrowserView(): React.JSX.Element {
       const current = useAppStore.getState();
       if (requestRef.current && requestRef.current.version !== current.browserNavigationVersion) return;
       const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
+      if (tab && tab.space !== "personal") return;
       if (!tab) {
         const store = useAppStore.getState();
         const key = store.activeTaskId ?? HOME_BROWSER_KEY;
@@ -118,7 +149,7 @@ export default function BrowserView(): React.JSX.Element {
         const current = useAppStore.getState();
         if ((current.activeTaskId ?? HOME_BROWSER_KEY) !== sessionKey
           || current.browserNavigationVersion !== browserNavigationVersion) return;
-        const tab = state.tabs.find((candidate) => candidate.id === retained.id);
+        const tab = state.tabs.find(candidate => candidate.space === "personal" && candidate.id === retained.id);
         if (!tab) { open(); return; }
         pendingOpen.current = null;
         rememberTab(tab);
@@ -214,30 +245,6 @@ export default function BrowserView(): React.JSX.Element {
     }
   }, [activeUrl, showOpenBrowserError]);
 
-  const closeBrowserPreview = (): void => {
-    window.api?.captureMode?.exit();
-    window.api?.browser?.hide();
-    const store = useAppStore.getState();
-    const prevMode = store.browserPreviousPanelMode ?? "gadgets";
-    if (prevMode === "gadgets") {
-      store.showGadgets();
-    } else if (prevMode === "overview") {
-      store.showOverview();
-    } else if (prevMode === "artifacts") {
-      store.showArtifacts();
-    } else if (prevMode === "workspace") {
-      store.showWorkspace();
-    } else if (prevMode === "terminal") {
-      store.showTerminal();
-    } else if (prevMode === "changes") {
-      store.showChanges();
-    } else if (prevMode === "file" && store.savedArtifactTab?.artifact.id === store.activeArtifactId) {
-      store.openArtifact(store.activeArtifactId);
-    } else {
-      store.showGadgets();
-    }
-  };
-
   const navigateTo = useCallback(
     (raw: string): void => {
       const url = normalizeBrowserUrl(raw) ?? raw.trim();
@@ -253,7 +260,7 @@ export default function BrowserView(): React.JSX.Element {
   );
 
   return (
-    <div className="browser-view">
+    <div className="browser-view browser-space-content">
       {tabsAvailable && (
         <div className="browser-tabs" role="tablist" aria-label="浏览器标签页">
           {tabs.map((tab) => (
@@ -308,11 +315,6 @@ export default function BrowserView(): React.JSX.Element {
       {selectedTab && !selectedTab.loading && /^https?:\/\//i.test(selectedTab.url) && window.api?.library?.note &&
         <div className="artifact-browser-notice"><button type="button" className="btn" onClick={() => setClipTabId(selectedTab.id)}>剪藏到笔记</button></div>}
       {clipTabId && <LibraryClipDialog tabId={clipTabId} onClose={() => setClipTabId(null)} />}
-      {selectedTab?.loginChallenge && (
-        <div className="artifact-browser-notice" role="status">
-          {({ password: "请在网页中输入密码", qr: "请扫码登录", code: "请在网页中填写验证码" })[selectedTab.loginChallenge]}。登录成功后任务会自动继续。
-        </div>
-      )}
       {!tabsAvailable && (
         <div className="artifact-browser-notice" role="status">多标签功能需要重启 MyBuddy 后使用</div>
       )}

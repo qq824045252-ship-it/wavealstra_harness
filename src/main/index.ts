@@ -424,7 +424,10 @@ const residentLifecycle = new ResidentLifecycle({
   argv: process.argv, packaged: app.isPackaged, executable: process.execPath, appPath: app.getAppPath(),
   enabled: () => agentService?.getAppSettings().residentHostEnabled === true,
   quit: () => app.quit(), relaunch: args => app.relaunch({ args }),
-  closeInterface: () => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.destroy(); },
+  closeInterface: () => {
+    browserHost.detach();
+    for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.destroy();
+  },
   diagnosticsPath: join(getMyBuddyDir(), "logs", "resident-launcher.log"),
   developmentOutput: join(__dirname, ".."),
   log: (event, data) => console.log(`[ResidentHost] ${event}`, data),
@@ -701,8 +704,6 @@ function createWindow(): void {
 
   // 扩展栏浏览器宿主（手动浏览 / 抓取 / Penpot·Draw.io openInApp）
   browserHost.attach(win);
-  uiAutomationService.setBrowserHost(browserHost);
-  bindBrowserBridge(browserHost); // WebAccess/Browser 收敛 B：注入浏览器只读桥
   browserHost.onTabsChanged = (state) => {
     if (!win.isDestroyed()) win.webContents.send(BrowserIpc.tabsChanged, state);
   };
@@ -2635,7 +2636,15 @@ function registerIpc(): void {
   ipcMain.handle(BrowserIpc.tabs, () => browserHost.getTabsState());
   ipcMain.handle(BrowserIpc.ensureTab, (_e, options: BrowserOpenOptions) => browserHost.ensureTab(options));
   ipcMain.on(BrowserIpc.selectTab, (_e, id: string) => browserHost.selectTab(id));
-  ipcMain.on(BrowserIpc.closeTab, (_e, id: string) => browserHost.closeTab(id));
+  ipcMain.on(BrowserIpc.closeTab, (_e, id: string) => browserHost.closePersonalTab(id));
+  ipcMain.handle(BrowserIpc.previewTaskTab, (event, taskId: string, id: string) =>
+    event.sender === botManagementWindow?.webContents ? browserHost.previewTaskTab(taskId, id) : null);
+  ipcMain.on(BrowserIpc.takeControl, (event, taskId: string, id: string) => {
+    if (event.sender === botManagementWindow?.webContents) browserHost.takeControl(taskId, id);
+  });
+  ipcMain.on(BrowserIpc.returnControl, (event, taskId: string, id: string) => {
+    if (event.sender === botManagementWindow?.webContents) browserHost.returnControl(taskId, id);
+  });
   ipcMain.on(BrowserIpc.navigate, (_e, url: string) => browserHost.navigate(url ?? ""));
   ipcMain.on(BrowserIpc.reload, () => browserHost.reload());
   ipcMain.on(BrowserIpc.hardReload, () => browserHost.hardReload());
@@ -3094,6 +3103,10 @@ app.whenReady().then(async () => {
     );
     console.log(`[index] 任务执行工作区路径重绑完成：cwd=${rebind.cwds}, trash_path=${rebind.trashPaths}`);
   }
+  browserHost.initialize();
+  browserHost.onHumanControlRequested = showClientInterface;
+  uiAutomationService.setBrowserHost(browserHost);
+  bindBrowserBridge(browserHost);
   agentService = new AgentService(db);
   agentService.builtinCapabilities.speechStreams.onAudio(event => {
     if (botManagementWindow && !botManagementWindow.isDestroyed() && !botManagementWindow.webContents.isDestroyed()) {

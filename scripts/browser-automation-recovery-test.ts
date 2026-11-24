@@ -35,7 +35,7 @@ function hostWith(options: { url?: string; loadError?: Error; captureError?: Err
   const host = {
     getTaskTab: () => undefined,
     setTaskTab: () => false,
-    attached: true, activeTabId: "fixture", captureVersion: 0,
+    available: true, activeTabId: "fixture", captureVersion: 0,
     getTabHost: () => host,
     listTabs: () => [],
     withAutomationSurface: async <T>(operation: () => Promise<T>) => operation(),

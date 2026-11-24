@@ -7,6 +7,9 @@ export interface BrowserOpenOptions {
   reload?: boolean;
 }
 export interface BrowserTabInfo {
+  space: "personal" | "task";
+  control?: "pending" | "manual" | "login" | "handoff";
+  loginRetry?: boolean;
   loginChallenge?: "password" | "qr" | "code";
   openerTabId?: string;
   id: string;

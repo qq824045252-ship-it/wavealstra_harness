@@ -1,6 +1,6 @@
 # Managed built-in browser tabs
 
-The native `BrowserHost` is a registry of sandboxed `WebContentsView` documents. It does not substitute an external browser. Every tab shares the existing `persist:extension-browser` session, while its document, history, capture generation and screenshot queue are independent.
+The native `BrowserHost` owns sandboxed `WebContentsView` documents for the app process. It initializes before the interface and supports resident operation with no main window. Personal and task Spaces share the existing `persist:extension-browser` login session. Each tab has its own document, history, capture generation and screenshot queue.
 
 ## Browser routing
 
@@ -9,13 +9,14 @@ The native `BrowserHost` is a registry of sandboxed `WebContentsView` documents.
 
 ## Ownership and selection
 
-- `ensureTab({ key, taskId?, gadgetId?, activate? })` returns a `BrowserTabInfo`. Identity is the pair `(taskId, key)`, not the current URL. Shared `browserTabKey(url, gadgetId?)` gives `gadget:<id>` or `url:<initial-url>`; do not add a second task prefix.
+- `ensureTab(options)` creates personal tabs. `ensureTaskTab(taskId, options)` creates task tabs. Identity is `(space, taskId, key)`. Shared `browserTabKey(url, gadgetId?)` gives `gadget:<id>` or `url:<initial-url>`.
 - `getTabHost(tabId)` returns a fixed `BrowserPageHost` or `null`. Keep that handle for the entire automation operation. It does not follow the UI's selected tab. A removed tab must be reported unavailable, never silently rebound to another document.
 - `BrowserPageHost` exposes `inspectionWebContents`, `url`, `captureVersion`, `navigateForAutomation`, `captureScreenshot`, and `readDocumentHtml`.
 - `navigateForAutomation(url, signal?, { reload? })` preserves the existing document for an already-loaded identical URL unless a source revision requires explicit reload. It never changes UI selection.
 - `markGadgetUpdated(gadgetId)` marks matching tabs dirty without navigation, UI activation or service startup. The next selection/open refreshes that source once. Ordinary reopen never refreshes; cancelled beforeunload retains the old page and explicit refresh remains available.
 - `selectTab(tabId)` normally only switches native visibility and the active inspection target. It does not reload or destroy the previous document. The renderer keeps `{id,key,url}` per task so returning after internal navigation or a hidden-panel update restores the actual native tab, rather than opening a URL-derived duplicate.
-- `BrowserHost.getTaskTab(taskId)` owns the default automation target. Manual selection, explicit Agent targets, and popups from the current task page update it through `setTaskTab(taskId, tabId)`. `BrowserAutomationService` has no separate current-tab cache. A delayed popup updates this target when its native tab is created, even after the initiating tool call has returned. Other tasks keep their own targets. An in-flight call retains its original page handle; parallel operations on different pages must pass `tabId` explicitly.
+- `BrowserHost.getTaskTab(taskId)` owns the default automation target. Explicit Agent targets and popups from the current task page update it through `setTaskTab(taskId, tabId)`. Sidebar selection only changes what the user sees. A delayed popup updates the target when its native tab is created. An in-flight call retains its original page handle; parallel operations on different pages must pass `tabId` explicitly.
+- Task Space shows a screenshot while AI has control. Taking over waits for admitted operations before attaching the original page to the sidebar. Further browser calls wait for the user to return control. Closing the sidebar preserves the page and the current control state.
 
 ## Compatibility and lifecycle
 
@@ -23,7 +24,7 @@ The native `BrowserHost` is a registry of sandboxed `WebContentsView` documents.
 - Keyed `open(url, options)` creates or selects its managed document; reopening the same keyed document preserves DOM/JS state. `activate:false` never displays another tab over the current one.
 - `close()` remains the legacy panel-dismiss operation. It hides the page without destroying retained tabs. `hide`, `show`, bounds, and modal blockers remain supported.
 - Explicit `closeTab(id)` honors `beforeunload`. A cancelled close keeps the tab. A confirmed close removes its native view, inspection ownership, runtime probe binding and WebContents. `dispose()` closes every retained WebContents and screenshot presenter.
-- Closing the last tab of a task does not close other tasks or disable the attached browser. `attached` indicates the host window exists even when no tab is selected.
+- Closing a personal tab only affects that personal page. Detaching the main window preserves task documents. The browser remains available while its process is running.
 
 ## Popups
 
@@ -97,7 +98,7 @@ DOM observation searches open shadow roots. Text reading follows assigned slot n
 
 `screenshot` returns a one-use `captureId` and viewport metadata. `click_at` and `scroll_at` require that capture and screenshot pixel coordinates. The service validates the exact task, tab, frame document tree, viewport, scroll, zoom, and decoded pixels before sending browser-local input. Canvas-only changes invalidate the capture. Animated content or caret changes can therefore require a fresh screenshot. Unsupported pinch offsets fail explicitly.
 
-`tabs` lists the current task's tabs, with `tabId` identifying its default automation target and `activeTabId` identifying its visible sidebar tab when one is selected. `select_tab` accepts a `tabId` or an exact `tabTitle`/`tabUrl` match. Duplicate matches return candidates without switching. `after` reads the selected page in the same call. Switching preserves the document, login session, and drafts. A click that opens a popup returns the new page as `tabId`/`openedTabId`, retains the initiating page as `sourceTabId`, and excludes the old page's control references from the new page's result.
+`tabs` lists the current task's tabs. `activeTabId` identifies its default automation target. `select_tab` accepts a `tabId` or an exact `tabTitle`/`tabUrl` match. Duplicate matches return candidates without switching. `after` reads the selected page in the same call. Switching preserves the document, login session, and drafts. A click that opens a popup returns the new page as `tabId`/`openedTabId`, retains the initiating page as `sourceTabId`, and excludes the old page's control references from the new page's result.
 
 `open`, `select_tab`, `close`, `back`, `forward`, and `reload` operate on the current task's retained tabs. Closing waits for actual destruction, and same-document history changes count as navigation completion. `handoff({tabId,reason:'login'})` or reason `2fa` presents the existing tab and uses the real persisted conversation interaction. Human waiting is outside the page action deadline. Only an affirmative user answer issues a token. `resume({tabId,token,expect})` checks current page conditions on that same tab and consumes the token only after verification. User secrets remain in the browser; the agent cannot supply its own completion answer.
 
@@ -107,7 +108,7 @@ The focused fixtures exercise the actual Electron engine, public service, regist
 
 Start at the requested business page. Implicit navigation reuses a matching live URL in this task, including a page reached by redirect. A new path on the same origin prefers the current verified tab or the sole verified tab in that task, preserving tab-scoped storage. Explicit tab IDs and new-tab requests keep their usual behavior. The shared Electron profile retains cookies for as long as the website permits.
 
-When authentication blocks the task, call `login({tabId, url, expect})` with the business URL and a positive marker visible only after authentication, such as the account menu. The action checks the business page first and clicks at most one unambiguous login entry or saved identity. A visible password, QR, or verification-code challenge opens in the sidebar. The call watches for the business marker and returns the verified tab without requiring a chat response. Stopping the task releases the prompt. For an existing login popup, pass its opener as `verifyTabId` when the business result appears there. Pass `frameId` for a challenge inside a frame.
+When authentication blocks the task, call `login({tabId, url, expect})` with the business URL and a positive marker visible only after authentication, such as the account menu. The action checks the business page first and clicks at most one unambiguous login entry or saved identity. A visible password, QR, or verification-code challenge hands the live task page to the user. After the user clicks **已登录**, the call verifies the business marker before returning the page to AI. If the marker is still absent, the user can finish and confirm again. Stopping the task releases the prompt. For an existing login popup, pass its opener as `verifyTabId` when the business result appears there. Pass `frameId` for a challenge inside a frame.
 
 A `login.status` of `confirmed` resumes the original work on the returned tab. With `inspect`, read the page or frames and choose the next observed step. This includes custom controls, multiple possible accounts, and redirects whose business result cannot yet be verified.
 

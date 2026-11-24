@@ -105,7 +105,7 @@ await check("computer_exec exposes distinct native contracts to Linux and Window
 });
 
 await check("browser and native desktop contracts forbid autonomous external-browser fallback", () => {
-  assert.match(browserAgentPolicy, /一律使用侧栏 browser_exec/);
+  assert.match(browserAgentPolicy, /一律使用任务 Space 的 browser_exec/);
   assert.match(browserAgentPolicy, /用户亲自点击/);
   assert.match(browserAgentPolicy, /Agent 不得代点/);
   assert.match(browserAgentPolicy, /失败时报告具体原因/);

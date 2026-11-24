@@ -36,7 +36,7 @@ export function createBrowserNavigationActions(
       const bindings = { ...get().browserGadgetByTask };
       delete bindings[key];
       if (url && gadgetId) bindings[key] = { gadgetId, url };
-      const identity = { browserTabByTask: tabs, browserGadgetByTask: bindings, browserNavigationVersion: get().browserNavigationVersion + 1 };
+      const identity = { browserSpace: "personal" as const, browserTabByTask: tabs, browserGadgetByTask: bindings, browserNavigationVersion: get().browserNavigationVersion + 1 };
       if (!url) {
         set((s) => {
           const urls = { ...s.browserUrlByTask };

@@ -931,8 +931,10 @@ try {
       const page = { inspectionWebContents: wc, captureVersion: 0, url: "https://example.test", withAutomationSurface: async (operation: () => Promise<unknown>) => operation(),
         navigateForAutomation: async () => { throw new Error("connection lost after navigation began"); },
       };
-      const tab = { id: "fixture-tab", taskId, url: page.url };
-      return { attached: true, activeTabId: tab.id, listTabs: () => [tab], getTabHost: () => page, ensureTab: () => tab, getTaskTab: () => tab, setTaskTab: () => true } as any;
+      const tab = { id: "fixture-tab", taskId, space: "task", url: page.url };
+      return { available: true, activeTabId: tab.id, enterTaskAction: async () => () => {},
+        listTabs: () => [tab], listTaskTabs: () => [tab], getTabHost: () => page,
+        ensureTaskTab: () => tab, getTaskTab: () => tab, setTaskTab: () => true } as any;
     });
     const taskId = `receipt-${scenario}`;
     const args: JsonObject = scenario === "invalid-url" ? { action: "navigate", url: "file:///tmp/test.html" }

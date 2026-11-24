@@ -3,6 +3,7 @@ import { readFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { BrowserHost } from "../src/main/browser/BrowserHost";
+import { BrowserAutomationService } from "../src/main/capabilities/BrowserAutomationService";
 const output = join(process.cwd(), "out/diagnostics/browser-tabs-ui"); mkdirSync(output, { recursive: true });
 app.setPath("userData", join(mkdtempSync(join(output, "profile-")), "data"));
 app.on("window-all-closed", () => {});
@@ -16,11 +17,13 @@ void (async () => {
  win = new BrowserWindow({ show: false, width: 1100, height: 800, webPreferences: { nodeIntegration: true, contextIsolation: false } });
  win.webContents.on("console-message", event => { if (event.level === "error") console.error("renderer:", event.message); });
  await win.loadURL("about:blank"); host.attach(win);
+ const browser = new BrowserAutomationService(() => host);
  host.onTabsChanged = state => { if (win && !win.isDestroyed()) win.webContents.send("tabs-state",state); };
  ipcMain.handle("tabs-test", async (_e,method: string,...args: unknown[]) => {
    if (method === "markGadgetUpdated") { sourceVersion++; host.markGadgetUpdated(args[0] as string); return; }
    if (method === "eval") return host.getTabHost(args[0] as string)!.inspectionWebContents!.executeJavaScript(args[1] as string);
-   const allowed = ["getTabsState","open","ensureTab","selectTab","closeTab","hide","close","setBounds","navigate","hardReload","navigateForAutomation"];
+   if (method === "openTaskPage") return browser.execute({ action: "navigate", url: args[0] as string }, undefined, { taskId: "one" });
+   const allowed = ["getTabsState","open","ensureTab","selectTab","closePersonalTab","hide","close","setBounds","navigate","hardReload","navigateForAutomation","previewTaskTab","takeControl","returnControl"];
    if (!allowed.includes(method)) throw new Error("Unknown fixture method");
    return (host as any)[method](...args);
  });

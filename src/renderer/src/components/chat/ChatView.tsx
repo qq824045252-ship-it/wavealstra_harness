@@ -15,6 +15,7 @@ import type { ConversationGoalDto } from "@shared/conversation-goal";
 import ChatAnswerRuleDialog from "@/components/answer-routing/ChatAnswerRuleDialog";
 import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
+import BrowserLoginNotice from "./BrowserLoginNotice";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
 import ChatProjectCrumb from "./ChatProjectCrumb";
@@ -888,6 +889,7 @@ export default function ChatView(): React.JSX.Element {
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
         <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
         <TaskModelRecoveryNotice recovery={task.modelRecovery} />
+        <BrowserLoginNotice taskId={task.id} />
         {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey="history" />}
         {/* 空会话没有消息可撑高：Dots 用首页同款窄栏摆放输入框，其余任务保持原位置 */}
         {isDots
@@ -1057,6 +1059,7 @@ export default function ChatView(): React.JSX.Element {
       <SessionHistoryRecoveryNotice recovery={task.sessionRecovery} />
       {task.id === DOTS_TASK_ID && <ChatAnswerRuleDialog key={task.id} taskId={task.id} />}
       <TaskModelRecoveryNotice recovery={task.modelRecovery} />
+      <BrowserLoginNotice taskId={task.id} />
       {task.welcomeMode !== "general" && <TaskRecoveryNotice key={task.id} taskId={task.id} projectId={task.projectId} refreshKey={`${task.messages.length}:${task.messages.some((message) => message.streaming)}:${task.messages.filter((message) => message.generateError).length}`} />}
       {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
       {task.durable && <div className="durable-bot-state" role="status">

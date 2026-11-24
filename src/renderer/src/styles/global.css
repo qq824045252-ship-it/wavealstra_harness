@@ -23824,3 +23824,11 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 .browser-tab > [role="tab"] { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; font-size:12px; }
 .browser-tab > .browser-tab-close { flex:0 0 25px; padding:3px; }
 .browser-tab-new { border:0; background:transparent; color:var(--fg); cursor:pointer; font-size:19px; padding:2px 8px; }
+.browser-space-content { flex: 1; }
+.browser-space-switch, .browser-space-controls { display:flex; flex-wrap:wrap; flex-shrink:0; align-items:center; gap:6px; padding:5px 8px; border-bottom:1px solid var(--border); }
+.browser-space-switch button[aria-pressed="true"] { background:var(--bg-hover); border-color:var(--fg); }
+.browser-space-controls [role="status"] { font-size:12px; }
+.browser-space-dismiss { margin-left:auto; }
+.browser-space-preview { flex:1; min-height:0; display:flex; align-items:flex-start; justify-content:center; overflow:auto; font-size:13px; }
+.browser-space-preview img { max-width:100%; max-height:100%; object-fit:contain; object-position:top center; }
+.browser-space-preview > span { margin:auto; }

@@ -19,7 +19,7 @@ let sourceVersion = 1;
 const server = createServer((req, res) => {
   const title = req.url?.split("?")[0] ?? "/";
   res.setHeader("content-type", "text/html; charset=utf-8");
-  res.end(`<title>${title}</title><h1>${title}</h1><input id="draft"><p id="source">${sourceVersion}</p><a id="popup" href="/popup" target="_blank">Popup</a><button id="blank" onclick="window.open('about:blank')">Blank</button><script>window.created = Math.random(); document.cookie='fixture=shared;path=/';</script>`);
+  res.end(`<title>${title}</title><h1>${title}</h1><input id="draft"><p id="source">${sourceVersion}</p><a id="popup" href="/popup" target="_blank">Popup</a><button id="blank" onclick="window.open('about:blank')">Blank</button><button id="count" onclick="if(event.isTrusted) this.textContent=Number(this.textContent)+1">0</button><script>window.created = Math.random(); document.cookie='fixture=shared;path=/';</script>`);
 });
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate: () => boolean, label: string) {
@@ -34,12 +34,58 @@ void (async () => {
   await app.whenReady();
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  win = new BrowserWindow({ show: false, width: 1000, height: 800 });
-  await win.loadURL("data:text/html,Isolated managed tab regression");
   let allowUnload = false;
   let unloadPrompts = 0;
   host = new BrowserHost(() => { unloadPrompts++; return allowUnload; });
+  host.initialize();
+  const browser = new BrowserAutomationService(() => host!);
+  const coldTask = { taskId: "resident-task" };
+  const coldUrl = `${base}/resident`;
+  const cold = await browser.execute({ action: "navigate", url: coldUrl }, undefined, coldTask);
+  const coldId = cold.tabId!;
+  const coldPage = host.getTabHost(coldId)!;
+  const coldWc = coldPage.inspectionWebContents!;
+  assert.equal(BrowserWindow.getAllWindows().length, 0);
+  assert((await coldPage.captureScreenshot()).length > 1000);
+  await browser.execute({ action: "find", selector: "#count" }, undefined, coldTask);
+  await browser.execute({ action: "click", selector: "#count" }, undefined, coldTask);
+  assert.equal(await coldWc.executeJavaScript("document.querySelector('#count').textContent"), "1");
+  assert.equal(BrowserWindow.getAllWindows().length, 0);
+  checks.push("cold browser navigation, screenshot and trusted input before creating any UI");
+
+  win = new BrowserWindow({ show: false, width: 1000, height: 800 });
+  await win.loadURL("data:text/html,Isolated managed tab regression");
   host.attach(win);
+  host.open(coldUrl, { key: `url:${coldUrl}`, taskId: coldTask.taskId });
+  const personalId = host.activeTabId!;
+  assert.notEqual(personalId, coldId);
+  await until(() => host!.listTabs().some(tab => tab.id === personalId && tab.url === coldUrl && !tab.loading), "personal same-site tab loaded");
+  assert.deepEqual(host.listTaskTabs(coldTask.taskId).map(tab => tab.id), [coldId]);
+  await assert.rejects(browser.execute({ action: "read", tabId: personalId }, undefined, coldTask),
+    error => error instanceof BrowserAutomationError && error.code === "PAGE_UNAVAILABLE");
+  host.closePersonalTab(coldId);
+  assert.equal(coldWc.isDestroyed(), false);
+  host.closePersonalTab(personalId);
+  await until(() => !host!.getTabHost(personalId), "personal tab closed");
+  host.detach();
+  win.destroy();
+  await browser.execute({ action: "find", selector: "#count" }, undefined, coldTask);
+  host.takeControl(coldTask.taskId, coldId);
+  let completed = false;
+  const queued = browser.execute({ action: "click", selector: "#count" }, undefined, coldTask).then(() => { completed = true; });
+  await delay(100);
+  assert.equal(completed, false);
+  assert.equal(await coldWc.executeJavaScript("document.querySelector('#count').textContent"), "1");
+  host.returnControl(coldTask.taskId, coldId);
+  await queued;
+  assert.equal(await coldWc.executeJavaScript("document.querySelector('#count').textContent"), "2");
+  assert.equal(host.getTabHost(coldId)?.inspectionWebContents, coldWc);
+  checks.push("same-URL personal closure and UI teardown preserve AI page; manual control queues later AI input");
+
+  win = new BrowserWindow({ show: false, width: 1000, height: 800 });
+  await win.loadURL("data:text/html,Reopened managed tab regression");
+  host.attach(win);
+  host.selectTab(host.listTabs().find(tab => tab.key === "legacy")!.id);
   const legacy = host.inspectionWebContents!;
   await host.navigateForAutomation(`${base}/legacy`);
   host.close();
@@ -166,7 +212,6 @@ void (async () => {
   assert.equal(await bWc.executeJavaScript("document.querySelector('#source').textContent"), "2");
   console.log("PASS group", checks.length + 1); checks.push("global blockers survive tab changes; explicit source reload updates the fixed page");
 
-  const browser = new BrowserAutomationService(() => host!);
   const task = { taskId: "switch-task" };
   const first = await browser.execute({ action: "open", url: `${base}/switch-a` }, undefined, task);
   const second = await browser.execute({ action: "open", url: `${base}/switch-b` }, undefined, task);
@@ -175,15 +220,15 @@ void (async () => {
   const firstCreated = await firstWc.executeJavaScript("document.querySelector('#draft').value='保留草稿';window.created");
   assert.equal((await browser.execute({ action: "read", mode: "text" }, undefined, task)).tabId, second.tabId, "open updates the default even while a different tab remains visible");
   host.selectTab(first.tabId);
-  assert.equal((await browser.execute({ action: "read", mode: "text" }, undefined, task)).tabId, first.tabId, "manual task-tab selection must replace the Agent's older implicit target");
+  assert.equal((await browser.execute({ action: "read", mode: "text" }, undefined, task)).tabId, second.tabId, "view selection leaves the AI target unchanged");
   host.selectTab(taskTwo.id);
   const listed = await browser.execute({ action: "tabs" }, undefined, task);
   assert.deepEqual(listed.tabs?.map(tab => tab.id), [first.tabId, second.tabId]);
-  assert.equal(listed.tabId, first.tabId);
-  assert.equal(listed.activeTabId, undefined, "another task's visible tab is never exposed as this task's active tab");
+  assert.equal(listed.tabId, second.tabId);
+  assert.equal(listed.activeTabId, second.tabId, "Space reports its own default tab");
   const switched = await browser.execute({ action: "select_tab", tabTitle: "/switch-a", after: { mode: "interactive" } }, undefined, task);
   assert.equal(switched.tabId, first.tabId); assert.equal(switched.activeTabId, first.tabId);
-  assert.equal(host.activeTabId, first.tabId);
+  assert.equal(host.activeTabId, taskTwo.id);
   assert.equal(switched.url, `${base}/switch-a`); assert.equal(switched.title, "/switch-a");
   assert(switched.observation?.status === "completed" && switched.observation.result.text?.includes("/switch-a"));
   const resumed = await browser.execute({ action: "read", mode: "text" }, undefined, task);
@@ -195,12 +240,12 @@ void (async () => {
   const duplicateA = await browser.execute({ action: "open", url: `${base}/duplicate?1` }, undefined, task);
   const duplicateB = await browser.execute({ action: "open", url: `${base}/duplicate?2` }, undefined, task);
   await assert.rejects(browser.execute({ action: "select_tab", tabTitle: "/duplicate" }, undefined, task), error => error instanceof BrowserAutomationError && error.code === "ELEMENT_AMBIGUOUS");
-  assert.equal(host.activeTabId, second.tabId, "ambiguous switching does not change UI selection");
+  assert.equal(host.activeTabId, taskTwo.id, "ambiguous switching does not change UI selection");
   const count = host.listTabs().length;
   await assert.rejects(browser.execute({ action: "select_tab", tabTitle: "not-open" }, undefined, task), error => error instanceof BrowserAutomationError && error.code === "SELECTOR_NOT_FOUND");
   await assert.rejects(browser.execute({ action: "select_tab", tabId: taskTwo.id }, undefined, task), error => error instanceof BrowserAutomationError && error.code === "PAGE_UNAVAILABLE");
   await browser.execute({ action: "select_tab", tabId: duplicateA.tabId }, undefined, task);
-  assert.equal(host.activeTabId, duplicateA.tabId); assert.equal(host.listTabs().length, count);
+  assert.equal(host.activeTabId, taskTwo.id); assert.equal(host.listTabs().length, count);
   assert(duplicateB.tabId);
   console.log("PASS group", checks.length + 1); checks.push("Agent lists and switches retained tabs by id/title/URL, observes the chosen page, keeps drafts and rejects ambiguous/foreign targets");
 
@@ -226,7 +271,7 @@ void (async () => {
 
   const ownedIds = host.listTabs().map(tab => host!.getTabHost(tab.id)!.inspectionWebContents!.id);
   host.dispose();
-  assert.equal(host.attached, false);
+  assert.equal(host.available, false);
   assert.equal(host.listTabs().length, 0);
   await until(() => ownedIds.every(id => !webContents.fromId(id)), "all contents destroyed after dispose");
   for (const id of ownedIds) assert.equal(webContents.fromId(id), undefined);
