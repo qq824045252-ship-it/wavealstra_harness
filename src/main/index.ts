@@ -337,10 +337,10 @@ const TITLE_BAR_HEIGHT = 32;
 let nativePalette: DesktopPalette = "paper";
 
 function titleBarOverlayForTheme(theme: AppTheme) {
-  const { background, foreground } = desktopChrome(theme, nativePalette);
   return {
-    color: background,
-    symbolColor: foreground,
+    // Use the rendered title bar as the backdrop, including its modal scrim.
+    color: "#00000000",
+    symbolColor: desktopChrome(theme, nativePalette).foreground,
     height: TITLE_BAR_HEIGHT,
   };
 }
