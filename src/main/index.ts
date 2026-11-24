@@ -1153,6 +1153,15 @@ function registerIpc(): void {
     });
     return savedArtifactPreviewService.prepare(id, request);
   });
+  ipcMain.handle(SavedArtifactIpc.prepareBinary, (event, request) => {
+    const frame = event.senderFrame;
+    if (!frame || !officeSender(event)) throw new Error("仅应用主界面可以打开保存版本");
+    const sender = event.sender;
+    savedArtifactPreviewService.attachOwner(sender, url => {
+      if (!sender.isDestroyed()) sender.send(BrowserIpc.openRequest, { url });
+    });
+    return savedArtifactPreviewService.prepareBinary(sender.id, new URL(frame.url).origin, request, savedArtifactActions);
+  });
   ipcMain.handle(SavedArtifactIpc.release, (event, token: string) => {
     if (event.senderFrame !== event.sender.mainFrame) throw new Error("仅应用主界面可以关闭保存版本");
     savedArtifactPreviewService.release(event.sender.id, token);

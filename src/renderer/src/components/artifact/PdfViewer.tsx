@@ -104,11 +104,10 @@ const PdfPageView = memo(function PdfPageView({
         pdfViewerStats.canvasesRendered += 1;
         if (cancelled) return;
 
-        const textContent = await page.getTextContent();
         if (cancelled) return;
         const layer = await renderTextLayerTo(textLayerDiv, page, viewport as PdfViewportLike);
+        if (cancelled) { layer.cancel(); return; }
         textLayerApiRef.current = layer;
-        if (cancelled) return;
         const { ranges, active } = searchRef.current;
         if (ranges.length > 0) applySearchHighlights(textLayerDiv, ranges, active);
       } catch {
@@ -192,6 +191,7 @@ export default function PdfViewer({ content, name }: Props): React.JSX.Element {
   // 打开/关闭文档
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setError("");
     setNumPages(0);
@@ -203,7 +203,7 @@ export default function PdfViewer({ content, name }: Props): React.JSX.Element {
 
     void (async () => {
       try {
-        const pdfSession = await openPdf(content);
+        const pdfSession = await openPdf(content, controller.signal);
         if (cancelled) {
           pdfSession.close();
           return;
@@ -240,6 +240,7 @@ export default function PdfViewer({ content, name }: Props): React.JSX.Element {
 
     return () => {
       cancelled = true;
+      controller.abort();
       searchTokenRef.current && (searchTokenRef.current.cancelled = true);
       sessionRef.current?.close();
       sessionRef.current = null;

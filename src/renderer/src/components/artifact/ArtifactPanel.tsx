@@ -1,7 +1,7 @@
 import { DOTS_TASK_ID } from "@shared/dots";
 import { findDescriptorByIdAnyTask } from "@/store/app/selectors";
 import { toRendererArtifact } from "@/lib/artifactIngest";
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useDesktopShell } from "@/components/desktop/DesktopSection";
 import { useActiveTaskArtifacts, useAppStore } from "@/store/appStore";
 import CodeView from "./CodeView";
@@ -26,6 +26,18 @@ import { cadCraftExtension } from "@shared/cadcraft";
 import { isOfficeUseKind } from "@/lib/officeUseFile";
 import { ensureHtmlDocument } from "@/components/chat/DetailCard";
 import { canNativeDrag, startNativeFileDrag } from "@/lib/nativeFileDrag";
+import { openDotsTask } from "@/lib/taskBoardVisits";
+import type { SavedArtifactTab } from "@/store/app/slices/workbench";
+
+const WorkFilePreview = lazy(() => import("../pages/WorkFilePreview"));
+
+function ArtifactPanelFrame({ children }: { children: ReactNode }): React.JSX.Element {
+  const width = useAppStore(s => s.panelWidth);
+  const expanded = useAppStore(s => s.panelExpanded);
+  return <div className={`artifact-panel extension-panel ${expanded ? "expanded" : ""}`} style={expanded ? undefined : { width }}>
+    {children}
+  </div>;
+}
 
 function ArtifactBody({
   artifact,
@@ -129,12 +141,11 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const reviewTaskId = useCodeReviewTaskId();
   const ownArtifacts = useActiveTaskArtifacts();
   const panelMode = useAppStore((s) => s.panelMode);
-  const panelWidth = useAppStore((s) => s.panelWidth);
-  const panelExpanded = useAppStore((s) => s.panelExpanded);
   const togglePanelExpanded = useAppStore((s) => s.togglePanelExpanded);
   const desktop = useDesktopShell();
   const artifactTabs = useAppStore((s) => s.artifactTabs);
   const activeArtifactId = useAppStore((s) => s.activeArtifactId);
+  const savedTab = useAppStore((s) => s.savedArtifactTab);
   const linkedDescriptors = useAppStore(s => activeTaskId === DOTS_TASK_ID ? s.artifactProjection.artifactsByTask : undefined);
   const linkedCache = useAppStore(s => activeTaskId === DOTS_TASK_ID ? s.artifactRenderCache : undefined);
   const artifacts = useMemo(() => {
@@ -218,12 +229,13 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   }
 
   const tabs = artifactTabs
-    .map((id) => artifacts.find((artifact) => artifact.id === id))
+    .map((id) => id === savedTab?.artifact.id ? savedTab.artifact : artifacts.find((artifact) => artifact.id === id))
     .filter((a): a is Artifact => Boolean(a));
   const current =
     panelMode === "file"
       ? artifacts.find((artifact) => artifact.id === (activeArtifactId ?? ""))
       : undefined;
+  const saved = panelMode === "file" && savedTab?.artifact.id === activeArtifactId ? savedTab : undefined;
 
   const widen = (): void => {
     togglePanelExpanded(desktop);
@@ -236,17 +248,10 @@ export default function ArtifactPanel(): React.JSX.Element | null {
   const isCadPreview = showFilePreview && Boolean(current.path && cadCraftExtension(current.path));
 
   return (
-    <div
-      className={`artifact-panel extension-panel ${panelExpanded ? "expanded" : ""}`}
-      style={
-        panelExpanded
-          ? undefined
-          : { width: panelWidth }
-      }
-    >
+    <ArtifactPanelFrame>
       <ExtensionTopBar
         tabs={tabs}
-        activeId={current?.id}
+        activeId={saved?.artifact.id ?? current?.id}
         onWiden={widen}
         onOpenTab={openArtifact}
         onCloseTab={closeArtifactTab}
@@ -255,7 +260,11 @@ export default function ArtifactPanel(): React.JSX.Element | null {
 
       {showFilePreview && !isHtmlPreview && <FileActionBar artifact={current} />}
 
-      {showFilePreview ? (
+      {saved ? (
+        <Suspense fallback={<div className="artifact-render-load" role="status">正在打开文件…</div>}>
+          <SavedFilePanel key={saved.artifact.id} entry={saved} blocked={extensionFlyoutOpen && !extensionFlyoutPinned} />
+        </Suspense>
+      ) : showFilePreview ? (
         <div
           className={`artifact-body artifact-body-with-flyout ${current.kind === "markdown" || current.kind === "table" ? "doc-mode" : ""} ${isHtmlPreview || isSvgPreview || isOfficePreview || isCadPreview || current.kind === "pdf" ? "html-mode" : ""}`}
         >
@@ -300,8 +309,24 @@ export default function ArtifactPanel(): React.JSX.Element | null {
       ) : (
         <OverviewView />
       )}
-    </div>
+    </ArtifactPanelFrame>
   );
+}
+
+function SavedFilePanel({ entry, blocked }: { entry: SavedArtifactTab; blocked: boolean }): React.JSX.Element {
+  const { file, sourceTask } = entry;
+  const [error, setError] = useState("");
+  return <WorkFilePreview
+    target={file.snapshotPath}
+    file={{ ref: file.snapshotPath, name: file.name, previewManifestPath: file.manifestPath }}
+    panel={{ blocked, actions: sourceTask.taskId !== DOTS_TASK_ID && <>
+      <button type="button" title={sourceTask.title} onClick={() => {
+        setError("");
+        void openDotsTask(sourceTask.taskId).catch(reason => setError(String(reason)));
+      }}>来源任务</button>
+      {error && <span role="alert">{error}</span>}
+    </> }}
+  />;
 }
 
 function ArtifactOfficeView({ artifact, taskId, blocked }: { artifact: Artifact; taskId?: string; blocked: boolean }): React.JSX.Element {

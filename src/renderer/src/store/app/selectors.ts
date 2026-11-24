@@ -176,6 +176,8 @@ export function findDescriptorByIdAnyTask(
 export function selectCanvasPanelOpen(state: AppState): boolean {
   if (state.panelMode === "changes" || state.panelMode === "browser") return true;
   if (state.panelMode !== "file") return false;
+  const saved = state.savedArtifactTab?.artifact;
+  if (saved && saved.id === state.activeArtifactId) return usesCanvasPanelWidth(saved.kind);
   const descriptor = findDescriptorByIdAnyTask(state, state.activeArtifactId);
   return descriptor !== null && usesCanvasPanelWidth(toRendererKind(descriptor));
 }

@@ -231,6 +231,8 @@ export default function BrowserView(): React.JSX.Element {
       store.showTerminal();
     } else if (prevMode === "changes") {
       store.showChanges();
+    } else if (prevMode === "file" && store.savedArtifactTab?.artifact.id === store.activeArtifactId) {
+      store.openArtifact(store.activeArtifactId);
     } else {
       store.showGadgets();
     }

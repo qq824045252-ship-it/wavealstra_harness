@@ -1,0 +1,50 @@
+.artifact-panel .work-file-preview-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+
+.work-file-preview-panel > :not(.bot-work-file-preview-body) {
+  flex: 0 0 auto;
+  margin-inline: 14px;
+}
+
+.work-file-preview-panel .bot-work-file-preview-header {
+  margin-top: 12px;
+}
+
+.work-file-preview-panel :is(.bot-work-file-version, .bot-work-file-warnings) {
+  max-height: 20%;
+  overflow: auto;
+}
+
+.work-file-preview-panel .bot-work-file-preview-body {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.work-file-preview-panel .bot-work-file-preview-body > p {
+  margin: 12px 14px;
+}
+
+.work-file-preview-panel .bot-work-file-preview-tabs {
+  margin-block: 8px 0;
+}
+
+.work-file-preview-panel footer {
+  margin: auto 0 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+}

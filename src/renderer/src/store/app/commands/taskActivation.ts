@@ -120,6 +120,8 @@ export function createTaskActivationActions(
         sidebarBeforePanelExpand: keepPanel ? s.sidebarBeforePanelExpand : null,
         artifactTabs: first ? [first] : [],
         activeArtifactId: first,
+        savedArtifactTab: undefined,
+        chatUploadPreview: undefined,
         contextUsedTokens: null,
         contextEstimated: false,
         activeModelId: taskModelId,

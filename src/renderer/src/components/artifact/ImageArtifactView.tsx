@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   clampPan,
   clampZoom,
@@ -21,6 +21,7 @@ interface Props {
 type FitMode = "fit-window" | "fit-width" | "manual";
 
 const ZOOM_STEP = 1.25;
+const EMPTY_SIZE = { w: 0, h: 0 };
 
 /**
  * Wave 5B — Image Artifact 视图（§87）
@@ -34,16 +35,18 @@ const ZOOM_STEP = 1.25;
 export default function ImageArtifactView({ content, name }: Props): React.JSX.Element {
   const stageRef = useRef<HTMLDivElement>(null);
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
-  const [natural, setNatural] = useState({ w: 0, h: 0 });
-  const [loaded, setLoaded] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [decode, setDecode] = useState<{ source: string; retry: number; size?: typeof EMPTY_SIZE; error?: string }>();
   const [scale, setScale] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [fitMode, setFitMode] = useState<FitMode>("fit-window");
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
-  const meta = metadataFromDataUri(content);
+  const currentDecode = decode?.source === content && decode.retry === retryKey ? decode : undefined;
+  const natural = currentDecode?.size ?? EMPTY_SIZE;
+  const loaded = Boolean(currentDecode?.size);
+  const loadError = currentDecode?.error ?? (content ? undefined : "图片内容为空");
+  const meta = useMemo(() => metadataFromDataUri(content), [content]);
   const degrade = degradationPolicy(natural.w * natural.h);
 
   // 生命周期统计（E2E 泄漏断言）
@@ -71,35 +74,6 @@ export default function ImageArtifactView({ content, name }: Props): React.JSX.E
       imageViewerStats.observers -= 1;
     };
   }, []);
-
-  // 图片解码：失败时进入 error 态（此前无 onerror，无限停留在“解码中…”）
-  useEffect(() => {
-    setLoaded(false);
-    setLoadError(null);
-    setNatural({ w: 0, h: 0 });
-    if (!content || !content.trim()) {
-      setLoadError("图片内容为空（可能尚未加载完成）");
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
-        setLoadError("图片解码失败：无法识别尺寸（文件可能已损坏）");
-        return;
-      }
-      setNatural({ w: img.naturalWidth, h: img.naturalHeight });
-      setLoaded(true);
-    };
-    img.onerror = () => {
-      setLoadError("图片解码失败：文件可能已损坏或格式不受支持");
-    };
-    img.src = content;
-    return () => {
-      img.onload = null;
-      img.onerror = null;
-      img.src = "";
-    };
-  }, [content, retryKey]);
 
   // 内容/尺寸变化 → fit-window（首次打开与切换 artifact 的统一入口）
   useEffect(() => {
@@ -290,11 +264,10 @@ export default function ImageArtifactView({ content, name }: Props): React.JSX.E
               重试
             </button>
           </div>
-        ) : !loaded ? (
-          <div className="image-viewer-loading">正在解码图片…</div>
-        ) : (
+        ) : <>
+          {!loaded && <div className="image-viewer-loading">正在解码图片…</div>}
           <img
-            key={`${content.length}-${content.slice(22, 86)}-${retryKey}`}
+            key={retryKey}
             src={content}
             alt={name ?? "image artifact"}
             draggable={false}
@@ -302,11 +275,18 @@ export default function ImageArtifactView({ content, name }: Props): React.JSX.E
             style={{
               width: dispW,
               height: dispH,
+              visibility: loaded ? "visible" : "hidden",
               transform: `translate(${pan.x}px, ${pan.y}px)`,
             }}
-            onError={() => setLoadError("图片渲染失败：文件可能已损坏或格式不受支持")}
+            onLoad={event => {
+              const { naturalWidth: w, naturalHeight: h } = event.currentTarget;
+              setDecode(w > 0 && h > 0
+                ? { source: content, retry: retryKey, size: { w, h } }
+                : { source: content, retry: retryKey, error: "图片解码失败：无法识别尺寸" });
+            }}
+            onError={() => setDecode({ source: content, retry: retryKey, error: "图片解码失败：文件可能已损坏或格式不受支持" })}
           />
-        )}
+        </>}
       </div>
       <div className="image-viewer-hint">双击 100%/fit 切换 · Ctrl+滚轮缩放 · 拖拽平移 · 重置回 fit</div>
     </div>

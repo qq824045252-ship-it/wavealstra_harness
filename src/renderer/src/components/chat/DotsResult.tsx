@@ -1,6 +1,5 @@
 import "./DotsResult.css";
-import type { SavedArtifactRequest } from "@shared/saved-artifact";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { DOTS_TASK_ID, type DotsDelegation, type DotsTaskDelivery } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import ChatMarkdown from "./ChatMarkdown";
@@ -10,7 +9,6 @@ import { inferArtifactKind } from "@/lib/workspace";
 import { ArtifactChip } from "../common/FileBadge";
 import { IconDots } from "../common/icons";
 
-const WorkFilePreview = lazy(() => import("../pages/WorkFilePreview"));
 const labels = { pending: "已排队", running: "执行中", blocked: "需要你回复", completed: "已完成", failed: "失败", superseded: "已改向" };
 
 export function useDotsDelegations(sourceKey: string | undefined) {
@@ -34,13 +32,6 @@ export function useDotsDelegations(sourceKey: string | undefined) {
     return () => { generation++; unsubscribe(); };
   }, [sourceKey]);
   return { rows, error };
-}
-
-export function DotsSavedFilePreview({ file, onClose }: { file: SavedArtifactRequest; onClose: () => void }) {
-  return <div className="dots-result"><Suspense fallback={<span role="status">正在打开文件…</span>}>
-    <WorkFilePreview target={file.snapshotPath} file={{ ref: file.snapshotPath, name: file.name, previewManifestPath: file.manifestPath }}
-      onClose={onClose} />
-  </Suspense></div>;
 }
 
 export function useTaskDotsDelivery(taskId: string | undefined) {
@@ -87,9 +78,7 @@ function TaskLink({ row, onError }: { row: {taskId: string; title: string}; onEr
   }}>{row.title}</button>;
 }
 
-export function DotsResult({ row, selected, onPreview }: {
-  row: DotsDelegation; selected: boolean; onPreview: (file: SavedArtifactRequest) => void;
-}): React.JSX.Element | null {
+export function DotsResult({ row }: { row: DotsDelegation }): React.JSX.Element | null {
   const [error, setError] = useState("");
   const waiting = row.dependencyWait || row.status === "pending" || row.status === "running" || row.status === "superseded";
   if (!waiting && row.proactiveReply) return null;
@@ -97,13 +86,13 @@ export function DotsResult({ row, selected, onPreview }: {
   return <div className="dots-result" data-delegation-id={row.id} data-status={row.status}>
     {!files && <><TaskLink row={row} onError={setError} /><span className="dots-result-status">{row.dependencyWait ? "等待依赖" : labels[row.status]}</span></>}
     {!files && row.text && row.status !== "running" && row.status !== "superseded" && <ChatMarkdown text={row.text} streaming={false} resolveTaskFiles={false} />}
-    {files && <DotsDeliveryFiles row={row} selected={selected} onPreview={onPreview} />}
+    {files && <DotsDeliveryFiles row={row} />}
     {error && <div role="alert">{error}</div>}
   </div>;
 }
 
-export function DotsDeliveryFiles({ row, selected, onPreview }: {
-  row: Pick<DotsDelegation,"taskId"|"artifacts"|"title">; selected: boolean; onPreview: (file: SavedArtifactRequest) => void;
+export function DotsDeliveryFiles({ row }: {
+  row: Pick<DotsDelegation, "taskId" | "artifacts" | "title">;
 }): React.JSX.Element {
   const [error, setError] = useState("");
   const descriptors = useAppStore(s => s.artifactProjection.artifactsByTask[row.taskId]);
@@ -124,7 +113,7 @@ export function DotsDeliveryFiles({ row, selected, onPreview }: {
       const preview = async () => {
         setError("");
         if (saved) {
-          onPreview(saved);
+          useAppStore.getState().openSavedArtifact(saved, { taskId: row.taskId, title: row.title });
           return;
         }
         if (!descriptor) {
@@ -137,7 +126,6 @@ export function DotsDeliveryFiles({ row, selected, onPreview }: {
         onPreview={() => void preview().catch(reason => setError(String(reason)))}
         onSystemOpen={saved ? () => void openSaved().catch(reason => setError(String(reason))) : undefined} />;
     })}</div>}
-    {selected && <TaskLink row={row} onError={setError} />}
     {error && <div role="alert">{error}</div>}
   </div>;
 }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { inferArtifactKind } from "@/lib/workspace";
 import ImageArtifactView from "@/components/artifact/ImageArtifactView";
 import MediaArtifactView from "@/components/artifact/MediaArtifactView";
@@ -9,6 +9,7 @@ import { cadCraftExtension } from "@shared/cadcraft";
 import { isOfficeUseFile } from "@/lib/officeUseFile";
 import { useAppStore } from "@/store/appStore";
 import { previewManifestFor, type WorkFile } from "./workFileIdentity";
+import "./WorkFilePreview.css";
 
 const PdfViewer = lazy(() => import("@/components/artifact/PdfViewer"));
 const languageFor = (name: string): string => {
@@ -17,7 +18,14 @@ const languageFor = (name: string): string => {
 };
 
 /** The saved identity is independent of the selected ordinary Task and mutable source path. */
-export default function WorkFilePreview({ file, target, onClose, cardControlled = false, id }: { file: WorkFile; target: string; onClose: () => void; cardControlled?: boolean; id?: string }): React.JSX.Element {
+export default function WorkFilePreview({ file, target, onClose, cardControlled = false, id, panel }: {
+  file: WorkFile;
+  target: string;
+  onClose?: () => void;
+  cardControlled?: boolean;
+  id?: string;
+  panel?: { blocked: boolean; actions?: ReactNode };
+}): React.JSX.Element {
   const html = /\.html?$/i.test(file.name);
   const markdown = /\.md$/i.test(file.name);
   const office = isOfficeUseFile(file.name);
@@ -27,6 +35,7 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
     [target, file.name, manifestPath]);
   const kind = inferArtifactKind(file.name, "");
   const binary = kind === "image" || kind === "pdf" || kind === "video" || kind === "audio";
+  const streamBinary = Boolean(panel) && binary;
   const supported = binary || /\.(?:txt|md|json|jsonl|csv|tsv|xml|ya?ml|log|py|js|ts|tsx|jsx|css|html?|svg|sh)$/i.test(file.name);
   const [content, setContent] = useState<string>();
   const [truncated, setTruncated] = useState(false);
@@ -41,14 +50,20 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
   useEffect(() => {
     let current = true;
     let token: string | undefined;
+    const api = window.api?.savedArtifact;
     setError(""); setContent(undefined); setPrepared(undefined); setWarnings([]); setTruncated(false);
     if (supported) {
       if (html) {
-        const api = window.api?.savedArtifact;
         if (!api) setError("网页预览接口尚未加载，请重启 MyBuddy 后重试");
         else void api.prepare({ snapshotPath: target, name: file.name, manifestPath: previewManifestFor(file) }).then(result => {
           if (!current) { void api.release(result.token).catch(() => {}); return; }
           token = result.token; setPrepared(result); setContent(result.source); setWarnings(result.warnings);
+        }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
+      } else if (streamBinary && api?.prepareBinary) {
+        void api.prepareBinary({ snapshotPath: target, name: file.name }).then(result => {
+          if (!current) { void api.release(result.token).catch(() => {}); return; }
+          token = result.token;
+          setContent(result.url);
         }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
       } else if (!window.api?.readWorkspaceFile) setError("文件读取接口不可用");
       else void window.api.readWorkspaceFile(target, "", !binary).then(result => {
@@ -56,8 +71,8 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
         setContent(result.content); setTruncated(result.truncated === true);
       }).catch(reason => { if (current) setError(reason instanceof Error ? reason.message : String(reason)); });
     }
-    return () => { current = false; if (token) void window.api?.savedArtifact?.release(token).catch(() => {}); };
-  }, [target, supported, binary, html, file.name, file.previewManifestPath, file.artifact?.previewManifestPath, attempt]);
+    return () => { current = false; if (token) void api?.release(token).catch(() => {}); };
+  }, [target, supported, binary, streamBinary, html, file.name, file.previewManifestPath, file.artifact?.previewManifestPath, attempt]);
 
   useEffect(() => {
     if (!prepared) return;
@@ -86,15 +101,15 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
     // Resize in-place rather than reparenting the document or changing chat history.
     setExpanded(value => !value);
   };
-  let formatted = content ?? "";
-  if (/\.json$/i.test(file.name) && content && !truncated) {
-    try { formatted = JSON.stringify(JSON.parse(content), null, 2); } catch { /* Preserve invalid JSON verbatim. */ }
-  }
+  const formatted = useMemo(() => {
+    if (!/\.json$/i.test(file.name) || !content || truncated) return content ?? "";
+    try { return JSON.stringify(JSON.parse(content), null, 2); } catch { return content; }
+  }, [content, file.name, truncated]);
   const plain = /\.(txt|log|csv|tsv)$/i.test(file.name);
-  return <section id={id} className={`bot-work-file-preview${cardControlled || expanded ? " is-expanded" : ""}`} aria-label={`文件预览：${file.name}`}>
+  return <section id={id} className={`bot-work-file-preview${panel ? " work-file-preview-panel" : ""}${cardControlled || expanded ? " is-expanded" : ""}`} aria-label={`文件预览：${file.name}`}>
     <header className="bot-work-file-preview-header">
       <div><strong>{file.name}</strong><span className="bot-work-file-version-label">{office || cad ? "保存版本 · 可编辑副本" : "保存版本 · 只读"}</span></div>
-      {!cardControlled && <div className="bot-work-file-preview-actions">
+      {!panel && !cardControlled && <div className="bot-work-file-preview-actions">
         <button type="button" aria-expanded={expanded} onClick={toggleExpanded}>{expanded ? "收起查看" : "展开查看"}</button>
         <button type="button" onClick={onClose}>关闭预览</button>
       </div>}
@@ -109,8 +124,8 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
         : cad ? "编辑副本以交付时的保存版本为起点。"
         : "此处查看交付时的保存版本，不修改原文件或历史成果。页面内操作仅用于本次预览，重新打开后重置。"}</p>
     </details>
-    {office ? <div className="bot-work-file-preview-body"><OfficeDocumentView source={officeSource} name={file.name} /></div>
-      : cad ? <div className="bot-work-file-preview-body"><OfficeDocumentView kind="cad" name={file.name} source={officeSource} /></div>
+    {office ? <div className="bot-work-file-preview-body"><OfficeDocumentView source={officeSource} name={file.name} blocked={panel?.blocked} /></div>
+      : cad ? <div className="bot-work-file-preview-body"><OfficeDocumentView kind="cad" name={file.name} source={officeSource} blocked={panel?.blocked} /></div>
       : !supported ? <p role="status">此格式暂不支持内置预览。可尝试系统应用打开，或定位保存文件。</p>
       : error ? <><p role="alert">无法读取文件：{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>重试读取</button></>
       : content === undefined ? <p role="status">正在读取文件…</p>
@@ -132,11 +147,12 @@ export default function WorkFilePreview({ file, target, onClose, cardControlled 
         {truncated && <p role="status">仅显示文件前 256 KiB 的文本；完整文件保留在上述路径。</p>}
       </>}
     <footer className="bot-work-file-preview-actions">
-      <button type="button" onClick={() => void openSystem()}>尝试用系统应用打开</button>
+      <button type="button" onClick={() => void openSystem()}>{panel ? "用系统应用打开" : "尝试用系统应用打开"}</button>
       <button type="button" onClick={() => {
         if (!window.api?.showItemInFolder) { setNotice("定位文件接口不可用"); return; }
         void window.api.showItemInFolder(target).catch(reason => setNotice(`无法定位文件：${String(reason)}`));
       }}>定位保存文件</button>
+      {panel?.actions}
     </footer>
     {notice && <p role="status">{notice}</p>}
   </section>;

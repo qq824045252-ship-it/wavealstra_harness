@@ -4,6 +4,7 @@ import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { inspectDurableArtifact, createDurableArtifactRegistrationTool, DURABLE_ARTIFACT_ENTRY_KIND } from '../src/main/agent/durable/DurableArtifactRegistration';
 import { captureSavedWebBundle, SavedArtifactPreviewService, savedResourceReferences } from '../src/main/artifact/SavedArtifactPreview';
+import { SavedArtifactActions } from '../src/main/artifact/SavedArtifactActions';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
 import { GenerationTask } from '@earendil-works/pi-durable';
 import type { GoalNativeEvidence } from '../src/shared/conversation-goal-activity';
@@ -32,6 +33,39 @@ try {
   assert.equal(Object.keys(manifest.resources).length, 5);
   assert.deepEqual(manifest.warnings, []);
   const service = new SavedArtifactPreviewService();
+  const mediaPath = join(cwd, 'audio.wav');
+  const mediaStore = join(root, 'durable', '2'.repeat(64));
+  const mediaBytes = Buffer.from(Array.from({ length: 256 }, (_, index) => index));
+  await writeFile(mediaPath, mediaBytes);
+  const mediaReceipt = await inspectDurableArtifact(cwd, mediaPath, mediaStore);
+  const mediaRequest = { name: 'audio.wav', snapshotPath: mediaReceipt.snapshotPath! };
+  const mediaActions = new SavedArtifactActions({
+    storageRoot: root, exportRoot: join(root, 'exports'), chooseDestination: async () => undefined, openPath: async () => '',
+  });
+  const origin = 'http://localhost:5173';
+  const media = await service.prepareBinary(1, origin, mediaRequest, mediaActions);
+  await writeFile(mediaPath, 'changed workspace source');
+  const head = await service.handle(new Request(media.url, { method: 'HEAD', headers: { origin } }));
+  assert.equal(head.status, 200);
+  assert.equal(head.body, null);
+  assert.equal(head.headers.get('content-length'), '256');
+  assert.equal(head.headers.get('access-control-allow-origin'), origin);
+  assert.equal(head.headers.get('content-type'), 'audio/wav');
+  const range = await service.handle(new Request(media.url, { headers: { origin, range: 'bytes=20-29' } }));
+  assert.equal(range.status, 206);
+  assert.equal(range.headers.get('content-range'), 'bytes 20-29/256');
+  assert.deepEqual(Buffer.from(await range.arrayBuffer()), mediaBytes.subarray(20, 30));
+  const responseBytes = await service.handle(new Request(media.url));
+  assert.deepEqual(Buffer.from(await responseBytes.arrayBuffer()), mediaBytes);
+  assert.equal((await service.handle(new Request(media.url, { headers: { origin: 'https://other.example' } }))).status, 403);
+  assert.equal((await service.handle(new Request(new URL('anything-else', media.url)))).status, 404);
+  service.release(2, media.token);
+  assert.equal((await service.handle(new Request(media.url, { headers: { range: 'bytes=999-' } }))).status, 416);
+  await writeFile(mediaRequest.snapshotPath, 'changed snapshot');
+  assert.equal((await service.handle(new Request(media.url))).status, 410);
+  service.release(1, media.token);
+  assert.equal((await service.handle(new Request(media.url))).status, 404);
+  await assert.rejects(service.prepareBinary(1, origin, { ...mediaRequest, snapshotPath: mediaPath }, mediaActions), /已登记/);
   const handlers = new Map<string, (event: any) => void>(), routed: string[] = [];
   service.attachOwner({ id: 1, once: () => {}, on: (name: string, handler: any) => handlers.set(name, handler), isDestroyed: () => false,
     session: { clearStorageData: async () => {} } } as any, url => routed.push(url));

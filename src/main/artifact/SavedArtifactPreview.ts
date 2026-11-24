@@ -1,10 +1,14 @@
 import type { WebContents } from "electron";
 import { createHash, randomBytes } from 'node:crypto';
-import { readFile, writeFile, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readFile, writeFile, realpath, stat } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { basename, dirname, extname, join, relative, resolve, sep, posix } from 'node:path';
 import { parse } from 'parse5';
 import { mimeFor } from './WebArtifactRuntime';
-import type { SavedArtifactPreview, SavedArtifactRequest } from '../../shared/saved-artifact';
+import { resolveByteRange } from './ByteRange';
+import type { SavedArtifactActions } from './SavedArtifactActions';
+import type { SavedArtifactBinaryPreview, SavedArtifactPreview, SavedArtifactRequest } from '../../shared/saved-artifact';
 
 const MAX_FILE = 8 * 1024 * 1024;
 const MAX_FILES = 128;
@@ -125,7 +129,11 @@ function bridge(token: string): string {
   return `<script>(()=>{const token=${JSON.stringify(token)};const send=(type,data)=>parent.postMessage({type,token,...data},'*');const link=url=>{try{const u=new URL(url,location.href);if(/^https?:$/.test(u.protocol)){send('mybuddy:saved-artifact-link',{url:u.href});return true}}catch{}return false};document.addEventListener('click',e=>{const a=e.target.closest?.('a[href]');if(a&&link(a.href)){e.preventDefault();e.stopImmediatePropagation()}},true);window.open=(url)=>{link(url);return null};window.addEventListener('error',e=>{if(e.target!==window)send('mybuddy:saved-artifact-error',{message:'页面资源加载失败；保存版本可能缺少依赖'})},true);})();</script>`;
 }
 interface SavedBundle { store: string; manifest: Manifest; source: string }
-interface Session extends SavedBundle { owner: number }
+type BinarySnapshot = Awaited<ReturnType<SavedArtifactActions['previewSnapshot']>>;
+type Session = { owner: number } & (
+  | { kind: 'html'; bundle: SavedBundle }
+  | { kind: 'binary'; snapshot: BinarySnapshot; mimeType: string; origin: string }
+);
 export class SavedArtifactPreviewService {
   private readonly sessions = new Map<string, Session>();
   private readonly owners = new Map<number, WebContents>();
@@ -183,14 +191,34 @@ export class SavedArtifactPreviewService {
   async prepare(owner: number, request: SavedArtifactRequest): Promise<SavedArtifactPreview> {
     const bundle = await this.loadBundle(request);
     const { manifest, source } = bundle;
-    if (this.sessions.size >= 64) throw new Error('打开的预览过多，请先关闭未使用的预览');
-    const token = randomBytes(24).toString('hex');
-    this.sessions.set(token, { owner, ...bundle });
+    const token = this.addSession({ owner, kind: 'html', bundle });
     return { token, url: `mybuddy-artifact://saved-${token}/${manifest.entry.split('/').map(encodeURIComponent).join('/')}`, source, warnings: manifest.warnings };
   }
+  async prepareBinary(owner: number, origin: string, request: SavedArtifactRequest, actions: SavedArtifactActions): Promise<SavedArtifactBinaryPreview> {
+    const contents = this.owners.get(owner);
+    const snapshot = await actions.previewSnapshot(request);
+    const mimeType = mimeFor(snapshot.path);
+    if (!/^(?:image\/(?:avif|bmp|gif|jpeg|png|webp|x-icon)|audio\/[a-z0-9+.-]+|video\/[a-z0-9+.-]+|application\/pdf)$/.test(mimeType)) {
+      throw new Error('该格式不支持二进制预览');
+    }
+    if (contents?.isDestroyed()) throw new Error('预览窗口已关闭');
+    const token = this.addSession({ owner, kind: 'binary', snapshot, mimeType, origin });
+    const url = new URL(`mybuddy-artifact://saved-${token}/file`);
+    url.searchParams.set('mime', mimeType);
+    url.searchParams.set('bytes', String(snapshot.stamp.size));
+    return { token, url: url.href };
+  }
+  private addSession(session: Session): string {
+    if (this.sessions.size >= 64) throw new Error('打开的预览过多，请先关闭未使用的预览');
+    const token = randomBytes(24).toString('hex');
+    this.sessions.set(token, session);
+    return token;
+  }
   release(owner: number, token: string): void {
-    if (this.sessions.get(token)?.owner !== owner) return;
+    const state = this.sessions.get(token);
+    if (state?.owner !== owner) return;
     this.sessions.delete(token);
+    if (state.kind === 'binary') return;
     const wc = this.owners.get(owner);
     if (wc && !wc.isDestroyed()) void wc.session.clearStorageData({ origin: `mybuddy-artifact://saved-${token}`, storages: ['localstorage', 'indexdb', 'cachestorage'] }).catch(() => {});
   }
@@ -201,12 +229,14 @@ export class SavedArtifactPreviewService {
     const state = this.sessions.get(token);
     if (!state) return new Response('保存版本预览已关闭', { status: 404 });
     if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method Not Allowed', { status: 405 });
+    if (state.kind === 'binary') return this.handleBinary(request, url, state);
+    const { store, manifest } = state.bundle;
     let path: string;
     try { path = decodeURIComponent(url.pathname.slice(1)); } catch { return new Response('Bad Request', { status: 400 }); }
-    const resource = Object.hasOwn(state.manifest.resources, path) ? state.manifest.resources[path] : undefined;
+    const resource = Object.hasOwn(manifest.resources, path) ? manifest.resources[path] : undefined;
     if (!resource) return new Response('此资源未包含在保存版本中', { status: 404 });
     try {
-      const bytes = await this.verifiedRead(state.store, resource);
+      const bytes = await this.verifiedRead(store, resource);
       const mimeType = mimeFor(path);
       let body: string | Uint8Array = bytes;
       if (/\.html?$/i.test(path)) {
@@ -219,6 +249,42 @@ export class SavedArtifactPreviewService {
         'content-security-policy': `default-src ${origin} data: blob:; script-src ${origin} 'unsafe-inline' 'unsafe-eval' blob:; style-src ${origin} 'unsafe-inline'; connect-src ${origin}; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'`,
       } });
     } catch (error) { return new Response(`无法读取保存版本：${error instanceof Error ? error.message : String(error)}`, { status: 410 }); }
+  }
+  private async handleBinary(request: Request, url: URL, state: Extract<Session, { kind: 'binary' }>): Promise<Response> {
+    if (url.pathname !== '/file') return new Response(null, { status: 404 });
+    const origin = request.headers.get('origin');
+    if (origin && origin !== state.origin) return new Response(null, { status: 403 });
+    const head = request.method === 'HEAD';
+    const { snapshot } = state;
+    const { status, start, end, headers } = resolveByteRange(head ? null : request.headers.get('range'), snapshot.stamp.size);
+    const responseHeaders = {
+      ...headers,
+      'content-type': state.mimeType,
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      'access-control-allow-origin': state.origin,
+      'access-control-expose-headers': 'Accept-Ranges, Content-Range',
+    };
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      if (await realpath(snapshot.path) !== snapshot.path) return new Response(null, { status: 410 });
+      file = await open(snapshot.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const current = await file.stat();
+      const saved = snapshot.stamp;
+      if (!current.isFile() || current.ino !== saved.ino || current.dev !== saved.dev ||
+        current.size !== saved.size || current.mtimeMs !== saved.mtimeMs || current.ctimeMs !== saved.ctimeMs) {
+        return new Response(null, { status: 410 });
+      }
+      if (head || status === 416 || end < start) return new Response(null, { status, headers: responseHeaders });
+      const stream = file.createReadStream({ start, end, signal: request.signal });
+      file = undefined; // The stream closes its own handle on end, error, or cancellation.
+      return new Response(Readable.toWeb(stream) as BodyInit, { status, headers: responseHeaders });
+    } catch {
+      return new Response(null, { status: 410 });
+    } finally {
+      await file?.close();
+    }
   }
   private async verifiedRead(store: string, resource: Resource): Promise<Buffer> {
     if (!resource || !/^[a-f0-9]{64}\.[a-z0-9]{1,16}$/.test(resource.snapshot) || !/^[a-f0-9]{64}$/.test(resource.digest)) throw new Error('资源版本记录无效');

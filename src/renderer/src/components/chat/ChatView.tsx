@@ -1,6 +1,5 @@
 import { UiIcon } from "@mybuddy/shared/icons";
-import type { SavedArtifactRequest } from "@shared/saved-artifact";
-import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, useDotsDelegations, useTaskDotsDelivery } from "./DotsResult";
+import { DotsDeliveryFiles, DotsResult, useDotsDelegations, useTaskDotsDelivery } from "./DotsResult";
 import { DotsAllTasks } from "./DotsActivity";
 import ChatMarkdown from "./ChatMarkdown";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsLiveReport } from "@shared/dots";
@@ -302,20 +301,14 @@ function HistoryPopup({
   );
 }
 
-function DotsProgressHistory({ entries, preview, onPreview }: {
-  entries: readonly ChatMessage[];
-  preview?: { rowId: string; file: SavedArtifactRequest };
-  onPreview: (file?: { rowId: string; file: SavedArtifactRequest }) => void;
-}) {
+function DotsProgressHistory({ entries }: { entries: readonly ChatMessage[] }) {
   const [open, setOpen] = useState(false);
   return <details className="dots-progress-history" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>阶段进展 · {entries.length} 条</summary>
     {open && entries.map(({ dotsDelivery: delivery }) => delivery && <div key={delivery.deliveryKey} className="dots-progress-history-item">
       <strong>{delivery.title}</strong>
       {delivery.text && <ChatMarkdown text={delivery.text} streaming={false} resolveTaskFiles={false} />}
-      {delivery.artifacts.length > 0 && <DotsDeliveryFiles row={delivery} selected={preview?.rowId === delivery.deliveryKey}
-        onPreview={file => onPreview({ rowId: delivery.deliveryKey, file })} />}
-      {preview?.rowId === delivery.deliveryKey && <DotsSavedFilePreview file={preview.file} onClose={() => onPreview()} />}
+      {delivery.artifacts.length > 0 && <DotsDeliveryFiles row={delivery} />}
     </div>)}
   </details>;
 }
@@ -355,8 +348,6 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
   onGoalCreated: (goal: ConversationGoalDto) => void;
   toolFocusMessageId?: string;
 }): React.JSX.Element {
-  const [preview, setPreview] = useState<{ rowId: string; file: SavedArtifactRequest }>();
-  useEffect(() => { setPreview(undefined); }, [taskId]);
   const grouped = new Map<string, typeof delegations>();
   if (delegations.length) {
     const anchors = new Map<string, string>();
@@ -397,12 +388,12 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
   let precedingUser: ChatMessage | undefined;
   return (
     <div className="message-list" ref={listRef}>
-      {messages.flatMap((msg) => {
+      {messages.map((msg) => {
         const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
         if (delivery?.kind === "progress" && delivery.presentation !== "report") {
           const entries = progressBySource.get(delivery.sourceMessageId);
           return entries?.at(-1) === msg ? <div key={`dots-progress:${delivery.sourceMessageId}`} id={`msg-${msg.id}`}>
-            <DotsProgressHistory entries={entries} preview={preview} onPreview={setPreview} />
+            <DotsProgressHistory entries={entries} />
           </div> : null;
         }
         if (msg.role === "user") precedingUser = msg;
@@ -410,24 +401,18 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
         const hideMessage = !msg.dotsDelivery && ((automatic && msg.role === "user") || isQuietDotsReply(msg, automatic));
         if (hideMessage && !grouped.has(msg.id)) return null;
         const rows = grouped.get(msg.id) ?? [];
-        const showPreview = preview && (delivery?.deliveryKey === preview.rowId || rows.some(row => row.id === preview.rowId));
-        return [
+        return (
           <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
             {!hideMessage && <MessageItem message={msg} taskId={taskId} sourceQuestion={!automatic && !delivery && msg.role === "assistant" ? precedingUser : undefined}
               dotsDeliveryKey={taskDelivery && msg.role === "assistant" && !msg.streaming
                 && precedingUser?.inputRequestId === taskDelivery.operationId ? taskDelivery.deliveryKey : undefined}
               deliveryQuestion={delivery?.kind === "conclusion" ? dotsQuestions.get(delivery.sourceMessageId) : undefined}
-              deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} selected={Boolean(showPreview)}
-                onPreview={file => setPreview({ rowId: delivery.deliveryKey, file })} /> : undefined}
+              deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} /> : undefined}
               artifacts={artifacts} visibleArtifacts={visibleArtifacts}
               onGoalCreated={onGoalCreated} focusTool={toolFocusMessageId === msg.id} />}
-            {rows.map(row => <DotsResult key={row.id} row={row} selected={preview?.rowId === row.id}
-              onPreview={file => setPreview({ rowId: row.id, file })} />)}
-          </div>,
-          // Keep the native viewer mounted when streaming history changes the delivery's parent message.
-          showPreview && <DotsSavedFilePreview key={`dots-preview:${preview.rowId}:${preview.file.snapshotPath}`}
-            file={preview.file} onClose={() => setPreview(undefined)} />,
-        ];
+            {rows.map(row => <DotsResult key={row.id} row={row} />)}
+          </div>
+        );
       })}
       {taskId === DOTS_TASK_ID && <DotsStreamingReport messages={messages} />}
     </div>

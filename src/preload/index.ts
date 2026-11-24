@@ -383,6 +383,8 @@ const api = {
     openSystem: (request: SavedArtifactRequest): Promise<void> => ipcRenderer.invoke(SavedArtifactIpc.openSystem, request),
     saveAs: (request: SavedArtifactRequest): Promise<{ canceled: boolean; path?: string }> => ipcRenderer.invoke(SavedArtifactIpc.saveAs, request),
     prepare: (request: SavedArtifactRequest): Promise<SavedArtifactPreview> => ipcRenderer.invoke(SavedArtifactIpc.prepare, request),
+    prepareBinary: (request: SavedArtifactRequest): Promise<import('../shared/saved-artifact').SavedArtifactBinaryPreview> =>
+      ipcRenderer.invoke(SavedArtifactIpc.prepareBinary, request),
     release: (token: string): Promise<void> => ipcRenderer.invoke(SavedArtifactIpc.release, token),
   },
   readWorkspaceFile: (root: string, relativePath: string, textPreview?: boolean): Promise<WorkspaceFilePreviewDto> =>

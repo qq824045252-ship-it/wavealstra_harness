@@ -1,5 +1,9 @@
 import { fileUrlForAbsolutePath } from "../../../lib/browserLinks";
 import { PANEL_RAIL_WIDTH, adaptivePanelWidth } from "../../../lib/panelWidth";
+import { inferArtifactKind } from "../../../lib/workspace";
+import { cadCraftExtension } from "../../../../../shared/cadcraft";
+import { DOTS_TASK_ID } from "../../../../../shared/dots";
+import type { ArtifactKind } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import { getRenderHydration } from "../runtime/artifactRender";
@@ -8,12 +12,38 @@ import {
   findDescriptorByIdAnyTask,
 } from "../selectors";
 import { defaultFlyoutViewForArtifact } from "../workbench/panelPolicy";
+import type { AppState } from "../types";
+
+function openFileTab(state: AppState, id: string, kind: ArtifactKind | undefined, tabs = state.artifactTabs): Partial<AppState> {
+  return {
+    panelOpen: true,
+    panelMode: "file",
+    activeArtifactId: id,
+    artifactTabs: tabs.includes(id) ? tabs : [...tabs, id],
+    extensionView: state.extensionFlyoutOpen && kind ? defaultFlyoutViewForArtifact({ kind }) : state.extensionView,
+    extensionMenuOpen: false,
+    panelWidth: adaptivePanelWidth(kind, state.sidebarCollapsed),
+  };
+}
 
 export function createArtifactPreviewActions(
   storeContext: AppContext,
-): Pick<AppActions, "openArtifact" | "closeArtifactTab"> {
+): Pick<AppActions, "openArtifact" | "openSavedArtifact" | "closeArtifactTab"> {
   const { get, set } = storeContext;
   return {
+    openSavedArtifact: (file, sourceTask) => {
+      const state = get();
+      if (state.activeTaskId !== DOTS_TASK_ID) return;
+      const id = `saved:${JSON.stringify([sourceTask.taskId, file.snapshotPath, file.name, file.manifestPath])}`;
+      const kind = cadCraftExtension(file.name) ? "cad" : inferArtifactKind(file.name, "");
+      const tabs = state.artifactTabs.filter(tab => tab !== state.savedArtifactTab?.artifact.id);
+      get().closeExtensionFlyout();
+      set(s => ({
+        ...openFileTab(s, id, kind, tabs),
+        savedArtifactTab: { artifact: { id, kind, name: file.name, path: file.snapshotPath, content: "" }, file, sourceTask },
+      }));
+    },
+
     openArtifact: (id) => {
       // 点击产物即收起右侧扩展栏悬浮菜单（钉住时保持打开，由 closeExtensionFlyout 内部判定）
       get().closeExtensionFlyout();
@@ -28,23 +58,9 @@ export function createArtifactPreviewActions(
         return;
       }
       set((s) => {
-        const artifact = findActiveTaskArtifact(s, id);
-        const extensionView =
-          s.extensionFlyoutOpen && artifact
-            ? defaultFlyoutViewForArtifact(artifact)
-            : s.extensionView;
-        return {
-          panelOpen: true,
-          panelMode: "file",
-          activeArtifactId: id,
-          artifactTabs: s.artifactTabs.includes(id)
-            ? s.artifactTabs
-            : [...s.artifactTabs, id],
-          extensionView,
-          extensionMenuOpen: false,
-          // 打开文档/网页：自动扩到阅读宽度（对齐官方半屏+ 预览）
-          panelWidth: adaptivePanelWidth(artifact?.kind, s.sidebarCollapsed),
-        };
+        const saved = s.savedArtifactTab?.artifact;
+        const artifact = saved?.id === id ? saved : findActiveTaskArtifact(s, id);
+        return openFileTab(s, id, artifact?.kind);
       });
       // V3.5 hotfix §8：打开即触发 hydration（cache 缺失/版本过期 → readContent；
       // single-flight；二进制 Viewer 不挂载空内容，UI 层显示 loading/error）
@@ -60,19 +76,20 @@ export function createArtifactPreviewActions(
 
     closeArtifactTab: (id) => {
       set((s) => {
+        if (!s.artifactTabs.includes(id)) return s;
         const tabs = s.artifactTabs.filter((x) => x !== id);
-        const active =
-          s.activeArtifactId === id
-            ? (tabs[tabs.length - 1] ?? null)
-            : s.activeArtifactId;
+        const saved = s.savedArtifactTab?.artifact;
+        const savedArtifactTab = saved?.id === id ? undefined : s.savedArtifactTab;
+        if (s.activeArtifactId !== id) return { artifactTabs: tabs, savedArtifactTab };
+        const active = tabs.at(-1) ?? null;
         const noTabs = tabs.length === 0;
-        const nextArtifact = findActiveTaskArtifact(s, active);
+        const nextArtifact = saved?.id === active ? saved : findActiveTaskArtifact(s, active);
         return {
           artifactTabs: tabs,
           activeArtifactId: active,
+          savedArtifactTab,
           panelMode:
             noTabs && s.panelMode === "file" ? s.extensionView : s.panelMode,
-          panelOpen: true,
           extensionFlyoutOpen: noTabs ? false : s.extensionFlyoutOpen,
           extensionMenuOpen: noTabs ? false : s.extensionMenuOpen,
           // 关完文件 → 窄轨；切换 tab → 按新类型重算

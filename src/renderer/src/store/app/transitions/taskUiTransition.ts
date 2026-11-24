@@ -58,6 +58,8 @@ export function resetTaskScopedUiState(
     extensionMenuOpen: false,
     artifactTabs: [],
     activeArtifactId: null,
+    savedArtifactTab: undefined,
+    chatUploadPreview: undefined,
     browserUrlInput: options.clearBrowserUrl
       ? ""
       : (state.browserUrlInput ?? ""),

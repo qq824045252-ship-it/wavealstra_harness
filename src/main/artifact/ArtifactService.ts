@@ -14,12 +14,14 @@
  * Service 提供能力，不内置 prefetch N（§24：recent N 不是 Domain contract）。
  */
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   previewWorkspaceFile,
   workspaceImageVariant,
 } from "../workspace/WorkspaceService";
 import { artifactImageUrl } from "../../shared/artifact-ipc";
+import { chatUploadName } from "../../shared/chat-upload";
 import {
   isPathInsideOrEqual,
   MANIFEST_FILENAME,
@@ -56,6 +58,15 @@ function isPptdProjectDependency(manifestPath: string, candidatePath: string): b
   const slash = manifest.lastIndexOf("/");
   const projectDir = slash >= 0 ? manifest.slice(0, slash) : manifest;
   return candidate.startsWith(`${projectDir}/pages/`) || candidate.startsWith(`${projectDir}/media/`);
+}
+
+function isChatUpload(path: string): boolean {
+  return Boolean(chatUploadName(path)) &&
+    normalizePathForComparison(dirname(path)) === normalizePathForComparison(join(homedir(), ".mybuddy", "uploads"));
+}
+
+function isOutputArtifact({ source }: ArtifactDescriptor): boolean {
+  return source.type !== "workspace-file" || !isChatUpload(source.entryFile);
 }
 
 export interface ArtifactEventSink {
@@ -124,6 +135,7 @@ export class ArtifactService {
     // Step A：materialize（managed-content 落盘；workspace-file 不落盘）
     let source: ArtifactDescriptor["source"];
     if (registration.workspaceFile) {
+      if (isChatUpload(registration.workspaceFile.entryFile)) throw new Error("聊天上传附件不能登记为任务产物");
       source = {
         type: "workspace-file",
         entryFile: registration.workspaceFile.entryFile,
@@ -234,12 +246,13 @@ export class ArtifactService {
   // ---------- 查询 ----------
 
   get(id: string): ArtifactDescriptor | null {
-    return this.registry.get(id) ?? this.repository.get(id);
+    const artifact = this.registry.get(id) ?? this.repository.get(id);
+    return artifact && isOutputArtifact(artifact) ? artifact : null;
   }
 
   listByTask(taskId: string): ArtifactDescriptor[] {
     const cached = this.registry.listByTask(taskId);
-    return cached.length > 0 ? cached : this.repository.listByTask(taskId);
+    return cached.length > 0 ? cached : this.repository.listByTask(taskId).filter(isOutputArtifact);
   }
 
   /**
@@ -285,7 +298,7 @@ export class ArtifactService {
    * 未知 id → null。
    */
   rootOf(artifactId: string): string | null {
-    const descriptor = this.registry.get(artifactId) ?? this.repository.get(artifactId);
+    const descriptor = this.get(artifactId);
     if (!descriptor) return null;
     if (descriptor.source.type === "workspace-file") return descriptor.source.rootDir;
     // managed-content：storagePath = <taskId>/<artifactId>/index.<ext>（相对 storage root）
@@ -371,7 +384,7 @@ export class ArtifactService {
    */
   hydrateTask(taskId: string): ArtifactSnapshot {
     try {
-      const artifacts = this.repository.listByTask(taskId);
+      const artifacts = this.repository.listByTask(taskId).filter(isOutputArtifact);
       const revision = this.repository.getTaskRevision(taskId);
       this.registry.invalidateTask(taskId);
       for (const d of artifacts) this.registry.upsert(d);
@@ -786,7 +799,7 @@ export class ArtifactService {
     targetRoot: string;
   }): Promise<{ inheritedCount: number; skippedCount: number; warnings: string[] }> {
     const result = { inheritedCount: 0, skippedCount: 0, warnings: [] as string[] };
-    const sourceArtifacts = this.repository.listByTask(input.parentTaskId);
+    const sourceArtifacts = this.listByTask(input.parentTaskId);
     for (const descriptor of sourceArtifacts) {
       const toolCallId = descriptor.createdByToolCallId;
       if (!toolCallId) {
@@ -913,7 +926,7 @@ export class ArtifactService {
 
   /** 从 Repository 全量重建 Registry（启动时） */
   rebuildRegistry(): void {
-    this.registry.rebuild(this.repository.listAll());
+    this.registry.rebuild(this.repository.listAll().filter(isOutputArtifact));
   }
 }
 

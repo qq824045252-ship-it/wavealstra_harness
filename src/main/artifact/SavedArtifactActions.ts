@@ -78,6 +78,12 @@ export class SavedArtifactActions {
     await this.verify(saved.path);
     return saved;
   }
+  async previewSnapshot(request: SavedArtifactRequest) {
+    const saved = await this.identity(request);
+    const stamp = await lstat(saved.path);
+    if (!stamp.isFile() || stamp.isSymbolicLink()) throw new Error('保存版本不是普通文件');
+    return { ...saved, stamp };
+  }
   async readText(request: SavedArtifactRequest): Promise<string> {
     const bytes = await this.readVerifiedBytes(request, 1_048_576, '文件超过文本预览大小上限');
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);

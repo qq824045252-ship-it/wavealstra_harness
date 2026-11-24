@@ -1,10 +1,11 @@
 import type { ArtifactDescriptor } from "../../../../../shared/artifact-types";
 import { cadCraftExtension } from "../../../../../shared/cadcraft";
+import { chatUploadName } from "../../../../../shared/chat-upload";
 import { buildRegistration } from "../../../lib/artifactIngest";
 import { fileUrlForAbsolutePath } from "../../../lib/browserLinks";
 import { fileNameFromPath, parentDir } from "../../../lib/localFilePath";
 import { adaptivePanelWidth } from "../../../lib/panelWidth";
-import { languageFromName, normalizeComparePath } from "../../../lib/workspace";
+import { inferArtifactKind, languageFromName, normalizeComparePath } from "../../../lib/workspace";
 import type { AppActions } from "../actions";
 import { guessCanvasArtifactName } from "../artifacts/artifactName";
 import type { AppContext } from "../context";
@@ -188,6 +189,17 @@ export function createFileArtifactsActions(
       if (!path) return;
       const taskId = get().activeTaskId;
       if (!taskId) return;
+      const uploadName = chatUploadName(path);
+      if (uploadName) {
+        if (inferArtifactKind(uploadName, "") === "image") {
+          set({ chatUploadPreview: { taskId, name: uploadName, path } });
+        } else {
+          await storeContext.getApi()?.openFolder(path).catch(error => {
+            window.alert(`无法打开附件「${uploadName}」\n${String(error)}`);
+          });
+        }
+        return;
+      }
       const name = fileNameFromPath(path);
       const norm = normalizeComparePath(path);
       const existing = get().artifactProjection.artifactsByTask[taskId]?.find(

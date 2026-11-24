@@ -134,14 +134,23 @@ function releaseWorker(): void {
   }
 }
 
-/** 打开 PDF（data URI 内容）。失败时自动归还 worker。 */
-export async function openPdf(dataUri: string): Promise<PdfSession> {
+/** 打开 PDF。已保存文件通过协议直接传输字节，旧产物仍可能提供 data URI。 */
+export async function openPdf(content: string, signal?: AbortSignal): Promise<PdfSession> {
+  let bytes: Uint8Array;
+  if (content.startsWith("mybuddy-artifact://")) {
+    const response = await fetch(content, { signal });
+    if (!response.ok) throw new Error(`无法读取 PDF（${response.status}）`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+  } else {
+    bytes = decodeDataUriBytes(content);
+  }
+  signal?.throwIfAborted();
   const pdfWorker = await ensureWorker();
   api.GlobalWorkerOptions.workerPort = pdfWorker;
   try {
     const doc = await api
       .getDocument({
-        data: decodeDataUriBytes(dataUri),
+        data: bytes,
         isEvalSupported: false,
         disableAutoFetch: true,
         useSystemFonts: true,

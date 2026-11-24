@@ -5,6 +5,14 @@ import { loadPanelPinned, savePanelPinned } from "../persistence/uiPreferences";
 import { findActiveTaskArtifact } from "../selectors";
 import type { PanelMode } from "../types";
 import { defaultFlyoutViewForArtifact } from "../workbench/panelPolicy";
+import type { SavedArtifactRequest } from "../../../../../shared/saved-artifact";
+import type { Artifact } from "../../../types";
+
+export interface SavedArtifactTab {
+  artifact: Artifact;
+  file: SavedArtifactRequest;
+  sourceTask: { taskId: string; title: string };
+}
 
 export interface WorkbenchState {
   workspaceFilesCount: number;
@@ -19,6 +27,8 @@ export interface WorkbenchState {
   extensionMenuOpen: boolean;
   artifactTabs: string[];
   activeArtifactId: string | null;
+  savedArtifactTab?: SavedArtifactTab;
+  chatUploadPreview?: { taskId: string; name: string; path: string };
   panelWidth: number;
   panelExpanded: boolean;
   sidebarBeforePanelExpand: boolean | null;

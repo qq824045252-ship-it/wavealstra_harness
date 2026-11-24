@@ -4,6 +4,7 @@ import { applyTheme } from "@/lib/theme";
 import { useAppStore } from "@/store/appStore";
 import Sidebar from "@/components/Sidebar";
 import ChatView from "@/components/chat/ChatView";
+import ChatUploadPreview from "@/components/chat/ChatUploadPreview";
 import ArtifactPanel from "@/components/artifact/ArtifactPanel";
 import PanelResizeHandle from "@/components/artifact/PanelResizeHandle";
 import SettingsModal from "@/components/settings/SettingsModal";
@@ -58,6 +59,7 @@ function chatLocation(s: Store) {
     extensionView: s.extensionView,
     artifactTabs: s.artifactTabs,
     activeArtifactId: s.activeArtifactId,
+    savedArtifactTab: s.savedArtifactTab,
   };
 }
 
@@ -111,10 +113,10 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
       }
       const saved = lastChat.current;
       if (!saved) { current.setPage("chat"); return; }
-      const { activeTaskId, draft, panelOpen, panelExpanded, panelMode, panelWidth, extensionView, artifactTabs, activeArtifactId } = saved;
+      const { activeTaskId, draft, panelOpen, panelExpanded, panelMode, panelWidth, extensionView, artifactTabs, activeArtifactId, savedArtifactTab } = saved;
       if (activeTaskId && current.tasks.some(candidate => candidate.id === activeTaskId && !candidate.archived)) {
         current.setActiveTask(activeTaskId);
-        useAppStore.setState({ panelOpen, panelExpanded, panelMode, panelWidth, extensionView, artifactTabs, activeArtifactId });
+        useAppStore.setState({ panelOpen, panelExpanded, panelMode, panelWidth, extensionView, artifactTabs, activeArtifactId, savedArtifactTab });
       } else if (activeTaskId) {
         current.newTask();
       } else {
@@ -222,6 +224,7 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
             <div className="content-col">
               <ChatView />
             </div>
+            {!settingsOpen && <ChatUploadPreview />}
             {showArtifactPanel && (
               <>
                 <PanelResizeHandle />

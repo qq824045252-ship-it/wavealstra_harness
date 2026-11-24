@@ -32,6 +32,7 @@ import type {
 import type { RefFileItem } from "../../lib/refTaskArtifacts";
 import type { Theme } from "../../lib/theme";
 import type { NotificationMessageFocus } from "./slices/appUi";
+import type { SavedArtifactTab } from "./slices/workbench";
 import type {
   Attachment,
   ChatSelection,
@@ -266,6 +267,7 @@ export interface AppActions {
   >;
   revokeTaskWriteGrant: (path: string) => Promise<boolean>;
   openArtifact: (id: string) => void;
+  openSavedArtifact: (file: SavedArtifactTab["file"], sourceTask: SavedArtifactTab["sourceTask"]) => void;
   closeArtifactTab: (id: string) => void;
   removeArtifact: (
     id: string,

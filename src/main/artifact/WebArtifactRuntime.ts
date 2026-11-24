@@ -19,6 +19,7 @@
  */
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { join, sep } from "node:path";
+import { resolveByteRange } from "./ByteRange";
 
 /**
  * Artifact 来源解析器（装配处注入，基于 ArtifactService —— Runtime 唯一 Domain 入口）。
@@ -57,7 +58,10 @@ const MIME: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
   ".ico": "image/x-icon",
+  ".pdf": "application/pdf",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
@@ -188,23 +192,8 @@ export class WebArtifactRuntime {
     try {
       const info = fstatSync(fd);
       if (!info.isFile()) return null;
-      const total = info.size;
-      const headers: Record<string, string> = { "accept-ranges": "bytes", "content-length": String(total) };
-      let start = 0, end = total - 1;
-      const partial = Boolean(options.range && !options.head);
-      if (partial) {
-        const match = /^bytes=(\d*)-(\d*)$/.exec(options.range!.trim());
-        if (match && (match[1] || match[2])) {
-          if (!match[1]) { const suffix = Number(match[2]); start = Number.isSafeInteger(suffix) && suffix > 0 ? Math.max(0, total - suffix) : total; }
-          else { start = Number(match[1]); if (match[2]) end = Math.min(Number(match[2]), total - 1); }
-        } else start = total;
-        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= total) {
-          return { status: 416, body: null, mimeType, cachePolicy: "no-store",
-            headers: { "accept-ranges": "bytes", "content-range": `bytes */${total}`, "content-length": "0" } };
-        }
-        headers["content-range"] = `bytes ${start}-${end}/${total}`;
-        headers["content-length"] = String(end - start + 1);
-      }
+      const { status, start, end, headers } = resolveByteRange(options.head ? null : options.range, info.size);
+      if (status === 416) return { status, body: null, mimeType, cachePolicy: "no-store", headers };
       const length = Math.max(0, end - start + 1);
       let body: Uint8Array | null = null;
       if (!options.head) {
@@ -217,7 +206,7 @@ export class WebArtifactRuntime {
         }
         body = bytes;
       }
-      return { status: partial ? 206 : 200, body, mimeType, cachePolicy: "no-store", headers };
+      return { status, body, mimeType, cachePolicy: "no-store", headers };
     } finally { closeSync(fd); }
   }
 }

@@ -49,9 +49,11 @@ if (process.argv.includes("--excel")) {
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
+const { DatabaseSync } = require("node:sqlite");
 const marker = "报价原件 A · 137";
 const quotesResult = "报价单已生成。\n\n已核对原件编号 A · 137。";
 const continuedQuestion = "普通追问：原件编号是什么？";
+const screenshotQuestion = "这是截图附件测试";
 const spaceId = "dots-test-quotes";
 const retiredReplyPreference = "旧设置里的回答指令样本";
 const routingInstruction = "按工具组列出本次可用操作。";
@@ -286,10 +288,20 @@ run(async env => {
   assert.ok(await evaluate("!!document.querySelector('.message-list [id^=msg-] .dots-result')"), "native delivery is in a Dots assistant message");
   assert.ok(job.artifacts[0].saved?.snapshotPath);
   writeFileSync(path.join(workspace, "报价.md"), "覆盖后的版本");
+  const previewBody = ".artifact-panel .bot-work-file-preview-body";
+  const hasSavedQuote = () => evaluate(`document.querySelector(${JSON.stringify(previewBody)})?.textContent.includes(${JSON.stringify(marker)})`);
+  const messagesBeforePreview = await body();
   await press("document.querySelector('.dots-result .artifact-chip-main')", "preview source artifact");
-  await until(() => evaluate("document.querySelector('.dots-result .bot-work-file-preview-body')?.textContent.includes('报价原件 A · 137')"), "saved original after workspace overwrite");
+  await until(hasSavedQuote, "saved original after workspace overwrite");
+  assert.equal(await body(), messagesBeforePreview, "preview does not insert content into the conversation");
+  assert.equal(await evaluate("Boolean(document.querySelector('.message-list .bot-work-file-preview'))"), false);
+  await press("document.querySelector('.artifact-panel button[title=展开]')", "expand the file pane");
+  await until(() => evaluate("Boolean(document.querySelector('.artifact-panel.expanded .work-file-preview-panel'))"), "expanded file pane");
+  await press("document.querySelector('.artifact-panel button[title=还原宽度]')", "restore the split view");
+  await until(() => evaluate("Boolean(document.querySelector('.artifact-panel:not(.expanded) .work-file-preview-panel'))"), "restored split view");
+  await screenshot("dots-saved-file-preview");
   assert.equal(await active(), "MyBuddy Dots");
-  await click("报价任务", ".dots-result");
+  await click("来源任务", ".artifact-panel");
   await until(async () => await active() === "报价任务", "source task opened");
   const taskDelivery = await evaluate(`window.api.dots.taskDelivery(${JSON.stringify(job.taskId)})`);
   assert.equal(taskDelivery?.deliveryKey, delivered.dotsDelivery.deliveryKey);
@@ -316,7 +328,7 @@ run(async env => {
   const deliveryMessage = "document.getElementById(" + JSON.stringify("msg-" + delivered.id) + ")";
   await until(() => evaluate("window.dotsDeliveryFocus && Boolean(" + deliveryMessage + "?.querySelector('.artifact-chip-main'))"), "the original Dots delivery is focused");
   await press(deliveryMessage + "?.querySelector('.artifact-chip-main')", "preview the original delivery from Dots");
-  await until(() => evaluate("document.querySelector('.dots-result .bot-work-file-preview-body')?.textContent.includes('报价原件 A · 137')"), "saved version reached from the worker icon");
+  await until(hasSavedQuote, "saved version reached from the worker icon");
   report.actualControlChecks.push("The worker reopened with the saved conclusion, one artifact chip, and a footer icon just before the model badge. The icon stayed on the delegated reply after an ordinary follow-up and opened its Dots delivery and immutable file.");
   await press("document.querySelector('.message-list a.md-link')", "open task link in Dots reply");
   await until(async () => await active() === "报价任务", "native task link opened");
@@ -337,6 +349,43 @@ run(async env => {
   await until(async () => (await evaluate("window.api.notification.list()")).some(n => n.sourceId === "dots-update" && n.body === "新的报价已到达"), "actual progress notification");
   assert(!(await evaluate("window.api.notification.list()")).some(n => n.sourceId === "dots-quiet"));
   assert.doesNotMatch(await body(), /桌面静默用例|桌面有进展用例|\[\[dots:no-change\]\]/);
+  const upload = await api("saveTempFile", { name: "用户截图.png", mimeType: "image/png",
+    base64: readFileSync(path.join(__dirname, "../src/shared/assets/app.png")).toString("base64") });
+  assert(upload?.path, "the actual clipboard upload IPC wrote the image");
+  const historicalUploadId = "historical-chat-upload";
+  const taskId = "mybuddy-dots";
+  await assert.rejects(api("artifactDomain.register", { taskId, kind: "image", title: upload.name,
+    workspaceFile: { entryFile: upload.path, rootDir: path.dirname(upload.path) } }), /聊天上传附件不能登记为任务产物/);
+  const db = new DatabaseSync(path.join(env.home, ".mybuddy", "app.db"), { timeout: 1000 });
+  try {
+    db.prepare(`INSERT INTO artifacts (id, task_id, kind, source_type, entry_file, root_dir, title, created_at, updated_at)
+      VALUES (?, ?, 'image', 'workspace-file', ?, ?, ?, ?, ?)`)
+      .run(historicalUploadId, taskId, upload.path, path.dirname(upload.path), path.basename(upload.path), Date.now(), Date.now());
+  } finally { db.close(); }
+  const sent = await api("agent.prompt", { taskId, text: screenshotQuestion, userMessageId: "dots-upload-user",
+    assistantMessageId: "dots-upload-answer", attachments: [upload] });
+  assert.equal((await api("agent.waitForSubmission", sent.receipt)).receipt?.status, "done");
+  await env.restart();
+  await dots();
+  const uploadChip = "[...document.querySelectorAll('.user-attachment-file')].find(button => button.textContent === '用户截图.png')";
+  await until(() => evaluate(`Boolean(${uploadChip})`), "original screenshot message attachment is visible after restart");
+  assert.equal((await api("artifactDomain.get", { artifactId: historicalUploadId })).artifact, null);
+  assert(!(await api("artifactDomain.snapshot", { taskId })).artifacts.some(artifact => artifact.id === historicalUploadId));
+  assert.equal(await evaluate("Boolean(document.querySelector('.artifact-panel'))"), false);
+  assert(!(await body()).includes(path.basename(upload.path)), "historical screenshot did not become a new output chip");
+  await press(uploadChip, "open the original screenshot from the user message");
+  await until(() => evaluate(`Boolean(document.querySelector('dialog[open] img[alt="用户截图.png"]')?.naturalWidth)`), "screenshot decoded in the dialog");
+  assert.equal(await evaluate("Boolean(document.querySelector('.artifact-panel'))"), false);
+  await click("关闭", "dialog[open]");
+  const storeState = "import('/src/store/appStore.ts').then(m => m.useAppStore.getState())";
+  const otherArtifact = await api("artifactDomain.register", { taskId, title: "临时产物.txt", kind: "code", content: "separate output" });
+  await evaluate(`${storeState}.then(state => { state.openArtifact(${JSON.stringify(otherArtifact.id)}); state.closePanel(); })`);
+  await evaluate(`window.testArtifactRemoved = false; window.api.artifactDomain.onRemoved(() => { window.testArtifactRemoved = true; });`);
+  await api("artifactDomain.remove", { artifactId: otherArtifact.id });
+  await until(() => evaluate("window.testArtifactRemoved"), "background artifact removal reached the renderer");
+  assert.equal(await evaluate(`${storeState}.then(state => state.panelOpen)`), false);
+  assert.equal(await evaluate("Boolean(document.querySelector('.artifact-panel'))"), false);
+  report.actualControlChecks.push("Clipboard screenshot stayed in the user message after restart, decoded in a dialog, and did not create an output or open the sidebar. A background artifact removal kept the closed sidebar closed.");
   report.actualControlChecks.push("Two native timers finished. Only the meaningful update appeared in Dots and in local notifications.");
   report.actualControlChecks.push("Opened Dots settings from app settings, changed model, memory, follow-up, space scope and individual tools. The Dots request used the matching dialogue rule and omitted the retired reply preference. The worker used the main model. Preferences survived restart.");
   report.actualControlChecks.push("Dots loaded categories in the editor. The provider received both saved category edits, then received the restored delivery default and the unchanged memory edit. Overrides survived restart and did not reach the worker.");
@@ -347,6 +396,7 @@ run(async env => {
     const names = request.tools?.map(tool => tool.function.name) ?? [];
     const last = request.messages.findLast(message => !isEvidenceSupplement(message));
     const incoming = JSON.stringify(last?.content ?? "");
+    if (last?.role === "user" && incoming.includes(screenshotQuestion)) return "截图已收到。";
     if (last?.role === "user" && incoming.includes(continuedQuestion)) return "原件编号是 A · 137。";
     if (last?.role === "user" && incoming.includes("检查已关闭能力的工具列表")) {
       const actions = name => JSON.stringify(request.tools.find(tool => tool.function.name === name).function.parameters.properties.action);
