@@ -10,15 +10,18 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { defineTool, GenerationTask, type TaskId } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { getCurrentTools, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
 import { readGoalNativeEvidence } from "../src/main/agent/durable/DurableGoalNativeEvidence";
 import { readGoalObservations } from "../src/main/agent/durable/DurableGoalCompletion";
 import { withDurableExecution } from "../src/main/agent/durable/DurableExecutionContext";
-import { normalizePstackSettings } from "../src/shared/pstack";
+import { normalizePstackSettings, THERMOS_CRITERIA } from "../src/shared/pstack";
+import { pstackSubagentOptions } from "../src/main/agent/PstackDispatch";
+import { createDurableSubagentTools } from "../src/main/agent/durable/DurableSubagents";
 import { createPstackWorkflow, isPstackCheck } from "../src/main/agent/pstack/PstackWorkflow";
 import { isPstackObservation } from "../src/main/agent/pstack/PstackObservationCommand";
-import { WorkflowState } from "../src/main/agent/pstack/PstackState";
+import { WorkflowFiles, WorkflowState } from "../src/main/agent/pstack/PstackState";
 import { formatPstackBlock, formatStoredPstackReply } from "../src/main/agent/pstack/PstackBlockReport";
 
 const rawBlock = String.raw`目录 C:\new\repo。\n已完成：验证通过。\n解除条件：\n1) 选择仓库。\n2) 再次验证。`;
@@ -70,6 +73,204 @@ const models = { getModel: () => model, getAuth: async () => undefined, streamSi
   queueMicrotask(() => { stream.push({ type: "done", reason: call ? "toolUse" : "stop", message: base }); stream.end(); });
   return stream;
 } } as unknown as DurableBotOptions["models"];
+
+async function testPotetoRouting() {
+  const cwd = join(root, "routing");
+  await mkdir(cwd);
+  await writeFile(join(cwd, "source.txt"), "Actual workspace evidence");
+  const settings = normalizePstackSettings();
+  settings.playbooks.feature.enabled = false;
+  settings.skills.reframe.enabled = false;
+  const host = createPstackWorkflow({ taskId: "routing", cwd, tag: { id: "minimal" }, settings: () => settings, active: () => true,
+    githubAvailable: () => false });
+  const runtime = await DurableBotRuntime.open({ directory: join(root, "routing-store"), cwd, models,
+    model: { provider: model.provider, modelId: model.id }, toolMode: "native", instructions: () => "Fixture",
+    tools: host.tools, foregroundHooks: host, onSnapshot: () => {} });
+  let turn = 0;
+  async function invoke(calls: Call[]) {
+    queue.push(...calls);
+    const done = await (await runtime.submit("Inspect routing without changing the objective", "route-" + (++turn))).wait(ctx);
+    await runtime.conversation.waitForIdle(ctx);
+    assert.equal(queue.length, 0);
+    assert.equal(done.status, "done");
+    const history = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+      minEntryId: done.entry, order: "ascending" }, 100), ctx);
+    return history.items.flatMap(entry => entry.model ?? []).flatMap(message => message.role === "toolResult" && message.toolName === "pstack_workflow"
+      ? message.content.flatMap(part => {
+        if (part.type !== "text") return [];
+        try { return [JSON.parse(part.text)]; } catch { return [{ error: part.text }]; }
+      }) : []);
+  }
+  const snapshot = () => runtime.harness.snapshot(WorkflowState, runtime.conversation.id, ctx);
+  try {
+    const navigation = await invoke([work("status"), work("start"), work("start", { playbook: "auto" }), work("start", { skill: "poteto-mode" })]);
+    assert.equal(navigation[0].phase, "idle");
+    assert.equal(navigation[0].router.id, "poteto-mode");
+    for (const result of navigation.slice(1)) {
+      assert.equal(result.phase, "routing");
+      assert.equal(result.started, false);
+      assert.equal(result.router.id, "poteto-mode");
+      assert.ok(result.router.instructions.length > 100);
+      assert.ok(!result.playbooks.some((book: { id: string }) => book.id === "feature"));
+      assert.ok(!result.skills.includes("reframe"));
+    }
+    assert.equal((await snapshot())?.run ?? null, null, "Routing guidance does not start a run");
+    assert.equal((await runtime.harness.snapshot(WorkflowFiles, runtime.conversation.id, ctx))?.base ?? null, null,
+      "Routing guidance does not freeze a workspace baseline");
+    settings.skills["poteto-mode"].enabled = false;
+    settings.skills["poteto-mode"].parameters.preferredPlaybook = "feature";
+    settings.skills["poteto-mode"].parameters.githubBinding = "required";
+    settings.playbooks.feature.enabled = true;
+    const disabled = await invoke([work("status"), work("start"), work("start", { skill: "poteto-mode" })]);
+    assert.equal(disabled[0].router, null);
+    assert.equal(disabled[0].preferredPlaybook, "auto", "A disabled router cannot supply a saved default route");
+    assert.ok(disabled.slice(1).every(result => /Poteto routing is disabled/.test(result.error)), JSON.stringify(disabled));
+    assert.equal((await snapshot())?.run ?? null, null);
+    const selected = "principle-prove-it-works";
+    await invoke([work("start", { skill: selected }), { name: "read", arguments: { path: "source.txt" } },
+      work("advance", { stage: "apply", note: "Read the source" }), work("complete")]);
+    assert.equal((await snapshot())?.run?.phase, "complete", "Explicit routes do not inherit disabled poteto's GitHub requirement");
+    settings.skills["poteto-mode"].enabled = true;
+    settings.skills["poteto-mode"].parameters.githubBinding = "on-demand";
+    await invoke([work("start", { skill: selected }), work("block", { note: "Fixture keeps this workflow available for navigation" })]);
+    const frozen = (await snapshot())!.run!;
+    const active = await invoke([work("start", { playbook: "auto" })]);
+    assert.equal(active[0].phase, "routing");
+    assert.equal(active[0].currentWorkflow.run, frozen.run);
+    assert.deepEqual((await snapshot())!.run, frozen, "Requesting poteto guidance leaves an active workflow untouched");
+    settings.skills["poteto-mode"].enabled = false;
+    const persisted = await invoke([work("status")]);
+    assert.equal(persisted[0].router.id, "poteto-mode", "An active workflow retains its frozen router setting");
+    console.log("PASS poteto auto navigation, enabled route catalog, disabled defaults, explicit workflow, active-run preservation");
+  } finally { await runtime.close(); }
+}
+
+async function testFrozenReadOnlyWorkflows() {
+  const profile = join(root, "readonly-profile"), previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  await mkdir(profile);
+  process.env.PI_CODING_AGENT_DIR = profile;
+  const parentCalls: Call[] = [], children: Array<{ model: string; tools: string[]; readSucceeded: boolean }> = [];
+  const native = await ModelRuntime.create({ authPath: join(profile, "auth.json"), modelsPath: null,
+    modelsStorePath: join(profile, "models.json"), allowModelNetwork: false, refreshOnCreate: false });
+  native.registerProvider("fixture", { api: model.api, apiKey: "isolated-fixture", baseUrl: model.baseUrl,
+    models: ["fixture", "reviewer", "writer"].map(id => ({ id, name: id, reasoning: false, input: ["text"],
+      contextWindow: 128000, maxTokens: 1024, cost: model.cost })),
+    streamSimple(active, input) {
+      const stream = createAssistantMessageEventStream();
+      const previous = input.messages.filter(message => message.role === "toolResult");
+      let call: Call | undefined;
+      if (active.id === "fixture") call = parentCalls.shift();
+      else {
+        children.push({ model: active.id, tools: getCurrentTools(input.messages).map(tool => tool.name),
+          readSucceeded: previous.some(message => message.toolName === "read" && !message.isError &&
+            message.content.some(part => part.type === "text" && part.text.includes("unresolved fixture defect"))) });
+        if (!previous.length) call = active.id === "writer"
+          ? { name: "write", arguments: { path: "writer.txt", content: "authorized child\n" } }
+          : { name: "read", arguments: { path: "source.txt" } };
+      }
+      const answer = active.id === "reviewer" ? JSON.stringify({ verdict: "revise", findings: ["source.txt:1 documents an unresolved fixture defect."],
+        checks: Object.fromEntries(THERMOS_CRITERIA.map(item => [item.id, "Read source.txt line 1 and retained the unresolved defect."])) }) : "Fixture settled.";
+      const message: AssistantMessage = { role: "assistant", api: active.api, model: active.id, provider: active.provider, timestamp: Date.now(),
+        content: call ? [{ type: "toolCall", id: "readonly-" + (++serial), ...call }] : [{ type: "text", text: answer }],
+        stopReason: call ? "toolUse" : "stop", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      queueMicrotask(() => { stream.push({ type: "done", reason: call ? "toolUse" : "stop", message }); stream.end(); });
+      return stream;
+    },
+  });
+  await native.refresh({ allowNetwork: false });
+  await writeFile(join(profile, "settings.json"), JSON.stringify({ defaultProvider: "fixture", defaultModel: "fixture",
+    enabledModels: ["fixture/fixture", "fixture/reviewer", "fixture/writer"], retry: { enabled: false }, compaction: { enabled: false } }));
+  try {
+    for (const [tagId, route] of [["code-review", "skill:thermo-nuclear-code-quality-review"], ["plan-design", "skill:architect"],
+      ["readonly-explain", "investigation"], ["minimal", "skill:thermo-nuclear-code-quality-review"]]) {
+      const taskId = "readonly-" + tagId, cwd = join(root, taskId);
+      await mkdir(cwd); await writeFile(join(cwd, "source.txt"), "unresolved fixture defect\n");
+      const git = (...args: string[]) => exec("git", ["-C", cwd, ...args], { windowsHide: true });
+      await git("init", "-q", "-b", "main"); await git("add", ".");
+      await git("-c", "user.name=fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", "review baseline");
+      const settings = normalizePstackSettings();
+      settings.roles["interrogate-reviewers"] = { ...settings.roles["interrogate-reviewers"], model: "fixture/reviewer", count: 1,
+        isolation: tagId === "code-review" ? "worktree" : "shared" };
+      const db = new AppDatabase(join(root, taskId + ".db"));
+      db.upsertTask({ id: taskId, title: "Read-only continuation", updatedAt: Date.now() });
+      const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => "auto",
+        attempts: new ExecutionAttemptRepository(db.connection), failures: new ExecutionFailureRepository(db.connection),
+        interactions: new ConversationInteractionService(new ConversationInteractionRepository(db.connection), () => {}),
+        getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd }) });
+      const open = (selected: string) => {
+        const host = createPstackWorkflow({ taskId, cwd, tag: { id: selected }, settings: () => settings, active: () => true });
+        return DurableBotRuntime.open({ taskId, directory: join(root, taskId + "-store"), cwd, models: native,
+          model: { provider: "fixture", modelId: "fixture" }, toolMode: "native", instructions: () => "Fixture",
+          tools: [...host.tools, ...createDurableSubagentTools({ taskId, cwd, models: native, permissionMode: () => "auto",
+            ...pstackSubagentOptions(taskId, settings) })], foregroundHooks: host, toolHooks: policy.hooks, onSnapshot: () => {} });
+      };
+      let runtime = await open(tagId), turn = 0;
+      const invoke = async (calls: Call[]) => {
+        parentCalls.push(...calls);
+        const done = await (await runtime.submit("Inspect source.txt and preserve the reviewed code.", taskId + "-" + (++turn))).wait(ctx);
+        await runtime.conversation.waitForIdle(ctx);
+        assert.equal(parentCalls.length, 0);
+        const history = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+          minEntryId: done.entry, order: "ascending" }, 200), ctx);
+        const results = history.items.flatMap(entry => entry.model ?? []).filter(message => message.role === "toolResult");
+        assert.equal(done.status, "done", JSON.stringify({ done, errors: results.filter(message => message.isError)
+          .map(message => ({ tool: message.toolName, content: message.content })) }));
+        return results;
+      };
+      try {
+        await invoke([work("start", { playbook: route }), work("block", { note: "Persist this review for the next user input." })]);
+        await runtime.close(); runtime = await open("minimal");
+        assert.equal((await runtime.harness.snapshot(WorkflowState, runtime.conversation.id, ctx))!.run!.tagId, tagId);
+        const worker = { agent: "pstack-feature", model: "fixture/writer", isolation: "shared", task: "Write writer.txt." };
+        const reader = { agent: "pstack-how-explorer", model: "fixture/reviewer", isolation: "worktree", task: "Read source.txt and report its defect." };
+        const attacks: Call[] = [
+          { id: "blocked-write", name: "write", arguments: { path: "source.txt", content: "changed" } },
+          { id: "blocked-edit", name: "edit", arguments: { path: "source.txt", oldText: "unresolved", newText: "fixed" } },
+          { id: "blocked-shell", name: process.platform === "win32" ? "powershell" : "bash",
+            arguments: { command: "node -e \"require('node:fs').writeFileSync('shell.txt','changed')\"" } },
+          { id: "blocked-writer", name: "subagent", arguments: worker },
+          { id: "blocked-batch", name: "subagent", arguments: { tasks: [reader, worker] } },
+          { id: "blocked-chain", name: "subagent", arguments: { chain: [reader, worker] } },
+          { id: "blocked-execution-review", name: "subagent", arguments: { ...worker, agent: "pstack-interrogate-adversary" } },
+        ];
+        const beforeChildren = children.length;
+        const thermos = route === "skill:thermo-nuclear-code-quality-review";
+        const allowed: Call[] = thermos
+          ? [{ name: "pstack_delegate", arguments: { purpose: "thermos", role: "interrogate-reviewers", tasks: ["Read source.txt and report the existing defect; preserve the source."] } },
+            work("advance", { stage: "apply", note: "The independent reader reported the existing defect." }), work("complete")]
+          : [{ name: "subagent", arguments: reader }, work("block", { note: "The read-only inspection is preserved for a later decision." })];
+        const results = await invoke([work("resume"), ...attacks, ...allowed]);
+        for (const attack of attacks) {
+          const result = results.find(message => message.toolCallId === attack.id);
+          assert(result?.isError && result.content.some(part => part.type === "text" && part.text.includes("This workflow is read-only")), tagId + ": " + attack.id);
+        }
+        const reviewed = children.slice(beforeChildren);
+        assert.equal(reviewed.length, 2, "Only the permitted reader reaches the real child model: " + tagId);
+        assert(reviewed.every(item => item.model === "reviewer" && item.tools.includes("read") &&
+          !item.tools.some(tool => ["write", "edit", "bash", "powershell"].includes(tool))));
+        assert(reviewed.some(item => item.readSucceeded), "The permitted reviewer actually read the source: " + tagId);
+        assert.equal(await readFile(join(cwd, "source.txt"), "utf8"), "unresolved fixture defect\n");
+        for (const file of ["shell.txt", "writer.txt"]) await assert.rejects(readFile(join(cwd, file)), { code: "ENOENT" });
+        const frozen = (await runtime.harness.snapshot(WorkflowState, runtime.conversation.id, ctx))!.run!;
+        assert.equal(frozen.tagId, tagId);
+        if (thermos) {
+          assert.equal(frozen.phase, "complete"); assert.equal(frozen.review?.passed, false);
+          assert.match(frozen.thermosOutcome ?? "", /待修复/);
+        }
+        await invoke([work("start", { skill: "principle-prove-it-works", replace: true, note: "The user now requests an authorized coding change." }),
+          { name: "write", arguments: { path: "new-parent.txt", content: "authorized parent\n" } },
+          { name: "subagent", arguments: worker }, work("block", { note: "New coding work is available for the next step." })]);
+        assert.equal(await readFile(join(cwd, "new-parent.txt"), "utf8"), "authorized parent\n");
+        assert.equal(await readFile(join(cwd, "writer.txt"), "utf8"), "authorized child\n");
+        assert.equal((await runtime.harness.snapshot(WorkflowState, runtime.conversation.id, ctx))!.run!.tagId, "minimal");
+      } finally { await runtime.close(); db.close(); }
+    }
+    console.log("PASS frozen read-only tags and standalone Thermos reject native writes, shells and writer delegation; real isolated readers and newly authorized minimal workflows remain usable");
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  }
+}
 
 async function testProjectVerification() {
   const cwd = join(root, "project-verification");
@@ -150,6 +351,8 @@ async function testProjectVerification() {
 }
 
 try {
+  await testPotetoRouting();
+  await testFrozenReadOnlyWorkflows();
   await testProjectVerification();
   const repo = join(root, "repo"), cwd = join(root, "plain");
   await mkdir(repo); await mkdir(cwd);

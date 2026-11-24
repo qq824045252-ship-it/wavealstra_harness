@@ -72,7 +72,7 @@ export class RuntimeRequirementOrchestrator {
   onModePresetSelected(welcomeMode: WelcomeMode, modePresetId: string | null): void {
     try {
       const profile = this.modeProfiles.getProfile(welcomeMode);
-      const preset = resolveModePreset(profile.policy, modePresetId);
+      const preset = resolveModePreset(profile.policy, modePresetId, profile.id);
       this.prewarmPreset(preset);
     } catch {
       // Selection prewarm is best-effort; send-time ensurePresetReady remains authoritative.

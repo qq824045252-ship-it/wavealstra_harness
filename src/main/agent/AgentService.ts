@@ -1650,7 +1650,7 @@ export class AgentService {
         if (!task) return false;
         const welcomeMode = resolveWelcomeMode(task.welcomeMode);
         const profile = this.modeProfiles.getProfile(welcomeMode);
-        const preset = resolveModePreset(profile.policy, task.modePresetId);
+        const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
         const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile, projectContext: this.projectContextResolver.resolveTask(taskId), preset,
           expertId: this.expertBindings.active(taskId)?.sourceExpertId ?? task.expertId,
           connectorIds: this.expertConnectorIds(taskId),
@@ -1720,7 +1720,8 @@ export class AgentService {
       assertDotsCapabilities: (task, cwd, requirements) => this.assertDotsCapabilityPolicy(requirements, cwd, task),
       toolMode: task => {
         if (task.id === DOTS_TASK_ID || isGatewayBotTaskId(task.id)) return "native";
-        const preset = resolveModePreset(this.modeProfiles.getProfile(resolveWelcomeMode(task.welcomeMode)).policy, task.modePresetId);
+        const profile = this.modeProfiles.getProfile(resolveWelcomeMode(task.welcomeMode));
+        const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
         return preset?.durableToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
       instructions: task => this.botInstructions(task),
@@ -2100,10 +2101,11 @@ export class AgentService {
     }
     const codingPolicy = task.welcomeMode === "coding"
       ? this.modeProfiles.getProfile("coding").policy : undefined;
+    const codingPreset = codingPolicy && resolveModePreset(codingPolicy, task.modePresetId, "coding");
     const workflowSettings = codingPolicy?.pstackThermosEnabled ? normalizePstackSettings(codingPolicy.pstackThermos) : undefined;
     const workflow = workflowSettings && (await import("./pstack/PstackWorkflow")).createPstackWorkflow({
       taskId: task.id, cwd, settings: () => workflowSettings,
-      tag: codingPolicy && resolveModePreset(codingPolicy, task.modePresetId),
+      tag: codingPreset,
       active: () => this.pstackActive(this.db.getTask(task.id)),
       githubAvailable: () => this.durableAssembly(this.db.getTask(task.id) ?? task).mcpFilter.enabled.includes("github"),
       worktreeActivity: () => this.db.listTasks().flatMap(item => {
@@ -2117,7 +2119,7 @@ export class AgentService {
     const getPolicy = () => new TaskFileAccessPolicy({ taskId: task.id, taskRoot: cwd,
       writeGrants: this.db.listTaskWriteGrants(task.id).map(grant => ({ path: grant.path, source: "user-approval", createdAt: grant.createdAt })) });
     const sessionPolicy = getPolicy();
-    const readOnlyTag = task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId);
+    const readOnlyTag = readOnlyCodingTag(codingPreset?.id);
     const policy = createDurableToolPolicy({ taskId: task.id, taskRoot: cwd, getPermissionMode,
       interactions: this.conversationInteractions, failures: this.executionFailures, attempts: this.executionAttempts,
       providerIds, getPolicy, effectRecovery, ensureRuntimeReady: id => this.runtimeRequirements.ensureProviderReady(id),
@@ -2272,7 +2274,8 @@ export class AgentService {
     if (name === DOTS_RECOVER_COMMIT) return this.dotsWorkerActive(task.id) && task.permissionMode !== "readonly"
       && this.durableToolAllowed(task, "bash");
     if (name === PROJECT_VERIFY_TOOL) return this.boundedLocalTask(task.id) && this.durableToolAllowed(task, "bash");
-    if (task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId) &&
+    if (task.welcomeMode === "coding" && readOnlyCodingTag(resolveModePreset(
+      this.modeProfiles.getProfile("coding").policy, task.modePresetId, "coding")?.id) &&
         ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
     if (isPstackForegroundTool(name) && !this.pstackActive(task)) return false;
     if (["pstack_decision_append","pstack_eval_save"].includes(name) && !this.durableToolAllowed(task, "write")) return false;
@@ -2371,7 +2374,7 @@ export class AgentService {
       expertId: (task && this.expertBindings.active(task.id)?.sourceExpertId) || task?.expertId || configuration?.expertId,
     });
     const profile = this.modeProfiles.getProfile(assembly.welcomeMode);
-    const preset = resolveModePreset(profile.policy, modePresetId);
+    const preset = resolveModePreset(profile.policy, modePresetId, profile.id);
     const permission = resolveEffectivePermission(task?.permissionMode, profile.policy.suggestedPermissionMode,
       this.settingsStore.read().permissionMode ?? "default");
     const available = (requirement: DotsCapabilityRequirement): boolean => {
@@ -2413,7 +2416,7 @@ export class AgentService {
     if (task.id !== DOTS_TASK_ID && !modelId && !task.modelId) modelId = await this.assertDefaultModelEnabled(cwd);
     const profile = this.modeProfiles.getProfile(welcomeMode);
     const requestedPreset = request.modePresetId !== undefined ? request.modePresetId : task.modePresetId;
-    const preset = resolveModePreset(profile.policy, requestedPreset);
+    const preset = resolveModePreset(profile.policy, requestedPreset, profile.id);
     const resolved = resolveRuntimeContextPolicy({ welcomeMode, profile,
       projectContext: this.projectContextResolver.resolveTask(task.id), preset,
       expertId: this.expertBindings.active(task.id)?.sourceExpertId ?? request.expertId ?? task.expertId,
@@ -3729,7 +3732,7 @@ export class AgentService {
     const welcomeMode = resolveWelcomeMode(req.welcomeMode);
     const profile = this.modeProfiles.getProfile(welcomeMode);
     // 预览同样走 preset 合成，保证与 createSession 一致
-    const preset = resolveModePreset(profile.policy, req.modePresetId);
+    const preset = resolveModePreset(profile.policy, req.modePresetId, profile.id);
     const projectContext = req.projectId
       ? this.projectContextResolver.resolveProject(req.projectId)
       : null;
@@ -3970,7 +3973,7 @@ export class AgentService {
     if (!task) throw new Error(`任务不存在：${taskId}`);
     const welcomeMode = resolveWelcomeMode(task.welcomeMode);
     const profile = this.modeProfiles.getProfile(welcomeMode);
-    const preset = resolveModePreset(profile.policy, task.modePresetId);
+    const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
     const projectContext = this.projectContextResolver.resolveTask(taskId);
     const connectorIds =
       this.registry.get(taskId)?.connectorIds ??

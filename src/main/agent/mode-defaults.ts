@@ -128,11 +128,9 @@ const workingPolicy: ModePolicyDto = {
 };
 
 /**
- * coding 出厂 Mode Presets：覆盖日常开发闭环。
- * 顺序按「动手 → 检查 → 理解」分组，方便欢迎页两行排布。
- * 旧任务 id（bugfix-test / code-review / readonly-explain）保持不变。
- * 已退役：feature-dev / add-tests（addon 与 base 重复、prefer 为 base 子集，
- * add-tests 的测试意图改为 coding scenes 芯片；旧任务回落 minimal，见 RETIRED_MODE_PRESET_IDS）。
+ * coding 出厂 Tags：最小模式 + HTML。
+ * 开发流程由启用的 Poteto 按本轮意图选择，Tag 只保留产物类型所需的指引。
+ * 旧开发场景 id 回落 minimal，见 RETIRED_MODE_PRESET_IDS；自定义 preset 仍保留。
  */
 export const CODING_MODE_PRESETS: ModePresetDto[] = [
   {
@@ -141,91 +139,15 @@ export const CODING_MODE_PRESETS: ModePresetDto[] = [
     description: "不追加任何 Tag 场景提示词或额外策略，仅使用代码开发基础配置",
   },
   {
-    id: "bugfix-test",
-    label: "修 Bug",
-    description: "DimAgent 式证据优先调试：真实复现 → 对照 → 根因 → 最小修复 → 原路径重放",
+    id: "web-html",
+    label: "HTML",
+    description: "可运行的网页与 HTML 产物：沿用项目设计，实际打开页面并核对交互",
     promptAddon:
-      "当前为「修 Bug」场景：采用证据优先调试。若 dimagent-debug 技能可用，优先加载；禁止未复现就猜补丁。\n" +
-      "1. 先确认现实状态：必要时核对仓库/分支/进程/构建产物；只检查会影响本 Bug 的项。\n" +
-      "2. 对可运行的 UI/交互 Bug，改源码前必须先尝试实际复现：交互前可用 runtime_probe mark 建立证据起点，MyBuddy Renderer/内嵌页面优先 ui_exec，交互后用 runtime_probe read 读取新增错误/导航/焦点证据；原生桌面（Windows UIA / Linux AT-SPI）对话框、焦点或桌面行为才用 computer_exec；browser_exec/ui_exec/computer_exec 的 screenshot 结果已自动按当前模型做原生多模态或委托 Vision 路由，不要再重复调用 describe_image，除非是在分析已有图片文件；框架真实窗口测试更可控时可以用测试复现。\n" +
-      "3. 优先做一个正常相邻路径的对照实验。测试结果与真实现象矛盾时，先检查测试本身的持久队列、残留状态、异步、缓存、重复元素或错误目标，不把 green test 当成产品正确。\n" +
-      "4. 根因必须能同时解释失败路径与已有证据；必要时读取当前锁定版本的框架/依赖源码确认底层语义。\n" +
-      "5. 只做根因相关的最小修改，不顺手重构或扩大变更面。修改后必须用同一路径重放；再跑最小相关测试/typecheck/build。\n" +
-      "6. 交付分别说明：修改前实际现象、对照证据（如有）、根因、最小修改、修改后同路径现象、回归检查与残留风险。",
-    skillPolicy: {
-      prefer: ["dimagent-debug", "debug", "test", "git"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-  },
-  {
-    id: "refactor",
-    label: "重构",
-    description: "行为不变，只改结构：小步重构并保持测试绿色",
-    promptAddon:
-      "当前为「重构」场景：改善结构与可读性，行为必须保持不变。\n" +
-      "1. 先读懂现有行为与测试，再动手；没有测试时先补能锁住行为的最小测试，再重构。\n" +
-      "2. 一次只做一个意图（抽函数、去重复、理清边界、降复杂度），禁止夹带功能变更或修无关 bug。\n" +
-      "3. 保持对外接口与可观察行为不变；若必须改接口，明确列出破坏点与迁移方式并征得确认。\n" +
-      "4. 每步后跑相关测试；交付时说明重构动机、结构变化、为何行为不变、如何验证。",
-    skillPolicy: {
-      prefer: ["refactor", "test", "git"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-  },
-  {
-    id: "code-review",
-    label: "代码审查",
-    description: "独立审查当前/被引用任务的工作成果：正确性、架构、安全、性能、测试充分性",
-    promptAddon:
-      "当前为「代码审查」场景：独立审查当前任务（或被引用任务）所完成的工作。\n" +
-      "1. 不要假设原实现/原模型结论正确：自行读取当前代码、Git 状态、最近改动与测试，基于证据判断。\n" +
-      "2. 重点检查：正确性（含边界条件）、架构、安全性、性能、可维护性、测试充分性、回归风险。\n" +
-      "3. 输出结构化评审：按严重程度（阻断/警告/建议/细节）列出问题，每条给出位置、原因与修复建议；\n" +
-      "   最后给出结论（通过 / 需修改 / 有阻断）与总体摘要。\n" +
-      "4. 用 read、grep、find 检查源码和已有测试证据。启用内置流程时调用 review 查看审查基准、变更路径和修改前后片段。\n" +
-      "5. 审查不等于动手修：发现阻断问题时给出建议补丁即可，真正落地请切到「修 Bug」或「重构」。",
-    skillPolicy: {
-      prefer: ["review", "github", "test", "git"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    suggestedPermissionMode: "readonly",
-    recommendedExpertIds: ["code-review-expert"],
-  },
-  {
-    id: "plan-design",
-    label: "方案设计",
-    description: "先设计再动手：对比方案、标出风险与落地步骤，默认不改代码",
-    promptAddon:
-      "当前为「方案设计」场景：先想清楚再写代码，默认只读。\n" +
-      "1. 先读现有架构、相关模块与约束（接口、数据、性能、兼容），基于仓库事实做方案，不要空谈最佳实践。\n" +
-      "2. 给出 2–3 个可落地的备选，比较复杂度、风险、迁移成本与对现有代码的影响，并给出推荐。\n" +
-      "3. 推荐方案写清：目标、非目标、关键接口/数据变化、分步落地顺序、验证方式、回滚点。\n" +
-      "4. 默认不修改文件；用户明确要求按方案开工时，再提示切换到「新功能」或「重构」。",
-    skillPolicy: {
-      prefer: ["review"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    suggestedPermissionMode: "readonly",
-  },
-  {
-    id: "readonly-explain",
-    label: "只读解释",
-    description: "不改仓库，基于真实代码解释职责、调用链与数据流",
-    promptAddon:
-      "当前为「只读解释」场景：讲清楚代码怎么工作，不改仓库。\n" +
-      "1. 禁止修改、创建、删除文件；验证只用只读手段（阅读、搜索、只读命令）。\n" +
-      "2. 先读真实代码再解释，禁止凭文件名或常识臆测职责。\n" +
-      "3. 按「做什么 → 关键入口 → 调用/数据流 → 边界与坑」组织，并引用具体文件与符号。\n" +
-      "4. 范围不明时先圈定模块再展开，避免整库漫谈；不确定处明确标为推断。",
-    suggestedPermissionMode: "readonly",
+      "当前为「HTML」：按用户目标制作、修改或检查可运行的网页与 HTML 产物。\n" +
+      "1. 先读取相关页面、项目技术栈与设计约定；已有项目沿用其组件、样式与交互规则。布局、文字层级、配色、间距和窄屏表现保持一致。\n" +
+      "2. 用户要求交付网页时，实际创建或修改文件，并提供可打开的产物路径；交付 HTML 文件时包含运行所需的样式、脚本和资源。\n" +
+      "3. 需要验证页面时，使用当前任务 Space 的 browser_exec 打开本地 HTML 或项目开发服务，核对布局、窄屏显示及任务涉及的按钮、表单和交互，并记录真实验证结果。\n" +
+      "4. 按本轮意图决定需要设计、修复、实现、审查还是解释；启用 Poteto 时由其选择相应流程。只解释或审查时保持本轮授权范围。",
   },
 ];
 

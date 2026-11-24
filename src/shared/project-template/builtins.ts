@@ -48,7 +48,7 @@ export const PROJECT_TEMPLATES: readonly ProjectTemplateDefinition[] = [
     name: "软件开发",
     description: "开发、Review、测试与持续维护",
     icon: "💻",
-    taskSuggestions: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
+    taskSuggestions: { recommendedModeId: "coding", recommendedPresetId: defaultModePresetId("coding") },
     instructions: `# 软件开发模式
 
 ## 角色

@@ -62,7 +62,7 @@ export function resolveRelatedTaskSpec(options: ResolveRelatedTaskOptions): Rela
   let suggestedPermission: PermissionMode | null = null;
   let suggestedModel: string | null = null;
   if (options.profile) {
-    const preset = resolveModePreset(options.profile.policy, modePresetId);
+    const preset = resolveModePreset(options.profile.policy, modePresetId, options.profile.id);
     const effective = resolveEffectiveModePolicy(options.profile.policy, preset);
     suggestedPermission = effective.suggestedPermissionMode;
     suggestedModel = effective.suggestedModelId;

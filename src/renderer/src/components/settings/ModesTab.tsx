@@ -61,14 +61,14 @@ import {
 import { previewBlockedHint } from "@/lib/modesPreviewGuard";
 import { isRetiredDesignSkill, isRetiredManagedProvider } from "@shared/professional-tools";
 import { normalizePstackSettings, validatePstackSettings, PSTACK_PLAYBOOKS, PSTACK_SKILLS, type PstackSettings } from "@shared/pstack";
-import { codingTagRoute, codingTagSupportsRoute } from "@shared/pstack/coding-tags";
+import { codingTagSupportsRoute } from "@shared/pstack/coding-tags";
 import PstackSettingsEditor from "./PstackSettingsEditor";
 
 type EditPane = ModeBlockId | "skills" | "mcp" | "artifacts" | "policy" | "presets" | "pstack";
 
 const PANE_LABELS: Record<EditPane, string> = {
   ...MODE_BLOCK_LABELS,
-  pstack: "pstack + thermos",
+  pstack: "pstack 工作流",
   skills: "技能限制",
   mcp: "MCP 限制",
   artifacts: "产物显示过滤",
@@ -77,7 +77,7 @@ const PANE_LABELS: Record<EditPane, string> = {
 };
 
 const PANE_HINTS: Record<EditPane, string> = {
-  pstack: "按任务选择工程流程，并在交付前检查是否需要严格代码审查。",
+  pstack: "由 poteto 按任务选择工程流程；Thermos 严格审查可以单独开关。",
   goal: "场景目标与角色定位",
   workflow: "推荐工作步骤与节奏",
   delivery: "输出格式与交付物要求",
@@ -691,8 +691,8 @@ function PresetEditor({
         {coding && <label className="modes-preset-field">
           <span className="modes-preset-field-label">启用 pstack 时的默认流程</span>
           <select aria-label="启用 pstack 时的默认流程" value={p.pstackRoute ?? ""} onChange={e => patch({ pstackRoute: e.target.value || undefined })}>
-            <option value="">跟随标签默认（{codingTagRoute({ id: p.id }) ?? "代码开发设置"}）</option>
-            <option value="auto">按本次任务选择</option>
+            <option value="">跟随 poteto 设置</option>
+            <option value="auto">由 poteto 按本次任务选择</option>
             {PSTACK_PLAYBOOKS.filter(b => codingTagSupportsRoute(p.id, b.id)).map(b => <option key={b.id} value={b.id}>{b.label}</option>)}
             {PSTACK_SKILLS.filter(s => codingTagSupportsRoute(p.id, "skill:" + s.id)).map(s => <option key={s.id} value={"skill:" + s.id}>{s.label}</option>)}
           </select>
@@ -1457,7 +1457,7 @@ export default function ModesTab(): React.JSX.Element {
       setTrace(t);
       setPreviewOpen(true);
       const mcpHidden = t.mcpFilter?.hidden?.length ?? 0;
-      const scopeNote = pane === "pstack" ? (pstackEnabled ? "可选工作流 pstack + thermos" : "内置流程已关闭") : selectedPreset?.id
+      const scopeNote = pane === "pstack" ? (pstackEnabled ? "可选 pstack 工作流" : "内置流程已关闭") : selectedPreset?.id
         ? `Tag「${selectedPreset.label}」`
         : "基础 Mode 策略（未选 Tag）";
       setHint(

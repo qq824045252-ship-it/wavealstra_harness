@@ -23,6 +23,7 @@ mkdirSync(sandbox, { recursive: true });
 // eslint-disable-next-line import/first
 import {
   MODE_SEED_PRESET_IDS,
+  RETIRED_MODE_PRESET_IDS,
   defaultModePresetId,
   emptyModePolicy,
   isKnownModePresetId,
@@ -195,51 +196,38 @@ async function main(): Promise<void> {
       JSON.stringify(generalOffice.mcpPolicy?.deny) === JSON.stringify(["drawio-ai"]),
       "general-office deny OFFICE_PROVIDER_MCP_IDS（防 drawio 泄漏）",
     );
-    assert(codingPresets.length === 6, "coding 出厂 6 presets（最小模式 + 原 5 个场景）");
+    assert(codingPresets.length === 2, "coding 出厂仅 2 presets（最小模式 + HTML）");
     assert(
       codingPresets.map((p) => p.id).join(",") ===
-        "minimal,bugfix-test,refactor,code-review,plan-design,readonly-explain",
-      "coding preset ids（feature-dev / add-tests 已退役）",
+        "minimal,web-html",
+      "coding preset ids（开发流程交给 Poteto 按意图选择）",
     );
     const minimalCoding = codingPresets[0]!;
     assert(
       minimalCoding.id === "minimal" && minimalCoding.label === "最小模式" && !minimalCoding.promptAddon && !minimalCoding.skillPolicy && !minimalCoding.mcpPolicy,
       "minimal 是第一 Tag，且不追加 prompt / skill / MCP 策略",
     );
+    const html = resolveModePreset(MODE_SEEDS.coding.policy, "web-html")!;
     assert(
-      codingPresets.slice(1).every((p) => p.promptAddon),
-      "minimal 之外的 coding presets 保留 promptAddon",
-    );
-    const codingReview = codingPresets.find((p) => p.id === "code-review")!;
-    assert(
-      codingReview.skillPolicy?.prefer?.includes("review") === true &&
-        codingReview.suggestedPermissionMode === "readonly" &&
-        (codingReview.recommendedExpertIds ?? []).includes("code-review-expert"),
-      "code-review preset 为完整场景配置（skill/权限/推荐专家）",
+      html.promptAddon?.includes("实际创建或修改文件") && html.promptAddon?.includes("browser_exec") &&
+        html.promptAddon?.includes("项目技术栈与设计约定"),
+      "HTML 保留设计、实际文件交付和浏览器验收指引",
     );
     assert(
-      codingPresets.find((p) => p.id === "bugfix-test")?.skillPolicy?.prefer?.includes("debug") ===
-        true,
-      "bugfix-test preset 携带 skillPolicy",
+      !html.pstackRoute && !html.suggestedPermissionMode && !html.recommendedExpertIds?.length &&
+        !html.skillPolicy && !html.mcpPolicy && !html.providerMcpIds?.length && !html.requiredRuntimes?.length,
+      "HTML 不固定开发流程，不叠加只读权限、专家或工具白名单",
     );
-    const refactor = codingPresets.find((p) => p.id === "refactor")!;
     assert(
-      refactor.promptAddon?.includes("行为必须保持不变") === true &&
-        refactor.skillPolicy?.prefer?.includes("refactor") === true,
-      "refactor 强调行为不变并偏好 refactor 技能",
+      JSON.stringify(MODE_SEED_PRESET_IDS.coding) === JSON.stringify(codingPresets.map(preset => preset.id)),
+      "coding seed 清单与实际装配一致",
     );
-    const planDesign = codingPresets.find((p) => p.id === "plan-design")!;
-    assert(
-      planDesign.suggestedPermissionMode === "readonly" &&
-        planDesign.promptAddon?.includes("2–3 个可落地的备选") === true,
-      "plan-design 只读方案对比",
-    );
-    const readonlyExplain = codingPresets.find((p) => p.id === "readonly-explain")!;
-    assert(
-      readonlyExplain.suggestedPermissionMode === "readonly" &&
-        readonlyExplain.promptAddon?.includes("先读真实代码再解释") === true,
-      "readonly-explain 禁止臆测、强制读代码",
-    );
+    for (const retiredId of RETIRED_MODE_PRESET_IDS.coding) {
+      assert(
+        !isKnownModePresetId("coding", retiredId) && resolveModePresetId("coding", retiredId) === "minimal",
+        `退役 coding Tag ${retiredId} 回落 minimal`,
+      );
+    }
     assert(designPresets.length === 2, "Bot 出厂 2 个 Tags");
     assert(
       designPresets.map((p) => p.id).join(",") === "native,codemode",
@@ -283,6 +271,45 @@ async function main(): Promise<void> {
       JSON.stringify(MODE_SEED_PRESET_IDS.working) ===
         JSON.stringify(["general-office", "drawio-ai"]),
       "MODE_SEED_PRESET_IDS.working 与出厂一致（2 个，web-prototype/Penpot 及首批精简 tag 均已退役）",
+    );
+  }
+
+  console.log("\n== 1.55 退役 coding Tag 使用用户最小模式配置 ==");
+  {
+    const customMinimal: ModePresetDto = {
+      id: "minimal",
+      label: "我的最小模式",
+      promptAddon: "我的基础开发约定",
+      skillPolicy: { prefer: ["my-skill"], demote: [], hide: ["hidden-skill"], allow: ["my-skill"] },
+      mcpPolicy: { mode: "hard", allow: ["allowed-mcp"], deny: ["blocked-mcp"] },
+      suggestedModelId: "minimal-model",
+      suggestedPermissionMode: "readonly",
+      recommendedExpertIds: ["minimal-expert"],
+      pstackRoute: "debug",
+    };
+    const otherModeReview: ModePresetDto = { id: "code-review", label: "其它模式的自定义审查", promptAddon: "其它模式配置" };
+    const customPreset: ModePresetDto = { id: "my-coding-preset", label: "自定义开发", promptAddon: "用户自定义配置" };
+    const policy: ModePolicyDto = { ...emptyModePolicy(), presets: [customMinimal, otherModeReview, customPreset] };
+    const expected = resolveEffectiveModePolicy(policy, customMinimal);
+    for (const retiredId of RETIRED_MODE_PRESET_IDS.coding) {
+      const preset = resolveModePreset(policy, retiredId, "coding");
+      assert(
+        preset === customMinimal && preset.pstackRoute === "debug" &&
+          JSON.stringify(resolveEffectiveModePolicy(policy, preset)) === JSON.stringify(expected),
+        `退役 ${retiredId} 使用用户 minimal 的提示词、策略、建议模型和路由`,
+      );
+    }
+    assert(
+      resolveModePreset(policy, "missing-custom", "coding") === undefined &&
+        resolveModePreset(policy, null, "coding") === undefined,
+      "未知自定义 id 和未选 Tag 保持回落 base，不切到用户 minimal",
+    );
+    assert(resolveModePreset(policy, customPreset.id, "coding") === customPreset, "现有自定义 coding preset 按自身配置解析");
+    assert(
+      resolveModePreset(policy, "code-review", "working") === otherModeReview &&
+        resolveModePreset(policy, "code-review", "general") === otherModeReview &&
+        resolveModePreset(policy, "code-review") === otherModeReview,
+      "其它模式及未提供 mode 的通用查找不受 coding 退役影响",
     );
   }
 
@@ -618,10 +645,10 @@ async function main(): Promise<void> {
       "trace.mcpPolicy 为 effective（web-prototype + 专业工具 base => 仅 penpot）",
     );
 
-    // coding code-review：promptAddon 进入 system 装配（与 createSession 同一路径）
+    // coding HTML：promptAddon 进入 system 装配（与 createSession 同一路径）
     const codingSeed = MODE_SEEDS.coding.policy;
-    const codeReview = resolveModePreset(codingSeed, "code-review")!;
-    const effCoding = resolveEffectiveModePolicy(codingSeed, codeReview);
+    const htmlPreset = resolveModePreset(codingSeed, "web-html")!;
+    const effCoding = resolveEffectiveModePolicy(codingSeed, htmlPreset);
     const effCodingProfile = withEffectiveModePolicy(
       {
         id: "coding",
@@ -644,17 +671,17 @@ async function main(): Promise<void> {
       platform: "win32",
       memoryEnabled: false,
       skills: [],
-      modePreset: { id: codeReview.id, label: codeReview.label, content: codeReview.promptAddon ?? "" },
+      modePreset: { id: htmlPreset.id, label: htmlPreset.label, content: htmlPreset.promptAddon ?? "" },
     });
     assert(
       cAssembly.appendParts.some(
-        (p) => p.includes("场景预设：代码审查") && p.includes("独立审查"),
+        (p) => p.includes("场景预设：HTML") && p.includes("browser_exec"),
       ),
-      "coding code-review promptAddon 进入 system 装配",
+      "coding HTML promptAddon 进入 system 装配",
     );
     assert(
       JSON.stringify(cAssembly.mcpPolicy) === JSON.stringify(codingSeed.mcpPolicy),
-      "code-review 未配置 mcpPolicy => effective 保持 base（无收窄）",
+      "HTML 未配置 mcpPolicy => effective 保持 base（无收窄）",
     );
 
     // working 流程图：promptAddon 进入 system 装配
@@ -905,7 +932,7 @@ async function main(): Promise<void> {
       "用户自定义 scenes => 运行时转 legacy preset（保留标签与提示词）",
     );
     assert(
-      legacy.some((p) => p.id === "bugfix-test") && legacy.some((p) => p.id === "code-review"),
+      legacy.some((p) => p.id === "minimal") && legacy.some((p) => p.id === "web-html"),
       "legacy 场景与出厂 seed preset 并存（tag 不消失、能力不缩水）",
     );
     assert(
@@ -929,13 +956,91 @@ async function main(): Promise<void> {
     );
     const coding2 = store.getProfile("coding");
     assert(
-      coding2.policy.presets?.length === 7 && coding2.policy.presets[0]?.id === "minimal" && coding2.policy.presets.at(-1)?.id === "my-preset",
+      coding2.policy.presets?.length === 3 && coding2.policy.presets[0]?.id === "minimal" && coding2.policy.presets.at(-1)?.id === "my-preset",
       "用户自带 presets => minimal 固定第一 + 用户 preset 保留 + 缺失 seed 并入",
     );
     assert(
       coding2.policy.presets?.map((p) => p.id).join(",") ===
-        "minimal,bugfix-test,refactor,code-review,plan-design,readonly-explain,my-preset",
+        "minimal,web-html,my-preset",
       "并入顺序：minimal 和其余 seed 在前，用户自定义项保留在 seed 区块之后",
+    );
+  }
+  {
+    const cFile = join(sandbox, ".mybuddy", "modes", "coding", "policy.json");
+    const customHtml: ModePresetDto = {
+      id: "web-html",
+      label: "我的 HTML",
+      promptAddon: "沿用我的网页设计规范",
+      pstackRoute: "feature",
+      skillPolicy: { prefer: ["my-html-skill"], demote: [], hide: [], allow: [] },
+      mcpPolicy: { mode: "hard", allow: ["my-browser"], deny: [] },
+      suggestedModelId: "my-html-model",
+      suggestedPermissionMode: "auto",
+      recommendedExpertIds: ["my-html-expert"],
+    };
+    const customReview: ModePresetDto = {
+      id: "my-code-review",
+      label: "我的审查流程",
+      promptAddon: "保留用户自定义审查说明",
+      pstackRoute: "review",
+      suggestedPermissionMode: "readonly",
+      recommendedExpertIds: ["my-review-expert"],
+    };
+    const oldPolicy: ModePolicyDto = {
+      ...emptyModePolicy(),
+      presets: [
+        ...RETIRED_MODE_PRESET_IDS.coding.map(id => ({
+          id,
+          label: `旧 ${id}`,
+          promptAddon: "旧内置流程不得泄漏到最小模式",
+          suggestedPermissionMode: "readonly" as const,
+          recommendedExpertIds: ["retired-review-expert"],
+          skillPolicy: { prefer: ["retired-skill"], demote: [], hide: [], allow: [] },
+          pstackRoute: "review",
+        })),
+        customHtml,
+        customReview,
+      ],
+    };
+    const oldDisk = JSON.stringify(oldPolicy);
+    writeFileSync(cFile, oldDisk, "utf8");
+    const upgraded = store.getProfile("coding");
+    assert(
+      upgraded.policy.presets?.map(preset => preset.id).join(",") === "minimal,web-html,my-code-review",
+      "旧 coding presets 升级为两项出厂 Tag，并保留非内置自定义项",
+    );
+    for (const retiredId of RETIRED_MODE_PRESET_IDS.coding) {
+      const resolved = resolveModePreset(upgraded.policy, retiredId, "coding");
+      const effective = resolveEffectiveModePolicy(upgraded.policy, resolved);
+      assert(
+        resolved?.id === "minimal" && effective.promptAddon === null &&
+          effective.suggestedPermissionMode === null && effective.recommendedExpertIds.length === 0 &&
+          !effective.skillPolicy.prefer.includes("retired-skill"),
+        `退役 ${retiredId} 不继承旧提示词、只读权限、专家或技能偏好`,
+      );
+    }
+    const html = resolveModePreset(upgraded.policy, "web-html")!;
+    assert(
+      html.label === customHtml.label && html.promptAddon === customHtml.promptAddon &&
+        html.pstackRoute === customHtml.pstackRoute && html.suggestedModelId === customHtml.suggestedModelId &&
+        html.suggestedPermissionMode === customHtml.suggestedPermissionMode &&
+        JSON.stringify(html.recommendedExpertIds) === JSON.stringify(customHtml.recommendedExpertIds) &&
+        JSON.stringify(html.skillPolicy) === JSON.stringify(customHtml.skillPolicy) &&
+        JSON.stringify(html.mcpPolicy) === JSON.stringify(customHtml.mcpPolicy),
+      "已有同名 HTML 的设计说明、明确路由、模型、权限及工具配置均保留",
+    );
+    const review = resolveModePreset(upgraded.policy, customReview.id);
+    assert(
+      review?.promptAddon === customReview.promptAddon && review?.pstackRoute === "review" &&
+        review?.suggestedPermissionMode === "readonly" && review?.recommendedExpertIds?.includes("my-review-expert"),
+      "非内置自定义审查 preset 不随旧内置 Tag 退役",
+    );
+    assert(readFileSync(cFile, "utf8") === oldDisk, "读时升级不改写用户原始配置文件");
+    store.savePolicy("coding", upgraded.policy);
+    const reopened = new ModeProfileStore().getProfile("coding");
+    assert(
+      JSON.stringify(reopened.policy.presets) === JSON.stringify(upgraded.policy.presets),
+      "两项出厂 Tag 与用户自定义配置保存重开后保持一致",
     );
   }
 
@@ -1071,6 +1176,11 @@ async function main(): Promise<void> {
     db.upsertTask({ id: "t2", title: "旧任务", updatedAt: 4, welcomeMode: "coding" });
     const old = db.listTasks().find((t) => t.id === "t2");
     assert(old?.modePresetId === undefined && old?.welcomeMode === "coding", "旧任务无字段正常加载");
+    const retiredSession = join(sandbox, "db-test", "retired-review.jsonl");
+    const retiredHistory = '{"type":"message","role":"user","content":"保留旧任务对话"}\n';
+    writeFileSync(retiredSession, retiredHistory, "utf8");
+    db.upsertTask({ id: "retired-review", title: "历史审查任务", updatedAt: 5, welcomeMode: "coding", modePresetId: "code-review", sessionFile: retiredSession });
+    store.getProfile("coding");
     // 旧 persisted id：tasks / cron_jobs / runtime snapshot 在打开时迁为 general。
     db.connection.prepare("INSERT INTO tasks(id,title,updated_at,welcome_mode) VALUES ('legacy-bot-mode','Legacy',1,'bot')").run();
     db.connection.prepare("INSERT INTO cron_jobs(id,name,prompt,schedule_type,schedule_expr,enabled,created_at,updated_at,welcome_mode) VALUES ('legacy-cron-mode','Legacy','prompt','every','1h',1,1,1,'bot')").run();
@@ -1079,6 +1189,13 @@ async function main(): Promise<void> {
     // 迁移幂等：同一连接再开一次不报错
     const db2 = new AppDatabase(dbPath);
     assert(db2.listTasks().some((t) => t.id === "t1"), "迁移幂等：重复打开正常");
+    const retiredTask = db2.listTasks().find(task => task.id === "retired-review");
+    assert(
+      retiredTask?.modePresetId === "code-review" && retiredTask.sessionFile === retiredSession &&
+        readFileSync(retiredSession, "utf8") === retiredHistory &&
+        resolveModePresetId("coding", retiredTask.modePresetId) === "minimal",
+      "退役 Tag 仅改变当前解析，保留历史任务、原 preset id 和对话文件",
+    );
     const legacyTaskRow = db2.connection.prepare("SELECT welcome_mode FROM tasks WHERE id='legacy-bot-mode'").get() as { welcome_mode: string };
     const legacyCronRow = db2.connection.prepare("SELECT welcome_mode FROM cron_jobs WHERE id='legacy-cron-mode'").get() as { welcome_mode: string };
     const legacySnapshot = db2.connection.prepare("SELECT welcome_mode FROM task_runtime_context_snapshots WHERE id='legacy-snap'").get() as { welcome_mode: string };
@@ -1150,12 +1267,13 @@ async function main(): Promise<void> {
     assert(drawioEnabled?.disabled === false, "已有旧服务配置时流程图标签仍可选择");
     const codingChips = buildPresetBarChips({
       presets: MODE_SEEDS.coding.policy.presets ?? [],
-      selectedPresetId: "code-review",
+      selectedPresetId: "web-html",
       availableMcpServerNames: new Set(),
       locked: true,
     });
     assert(
-      codingChips.length === 6 && codingChips.every((c) => c.disabled),
+      codingChips.length === 2 && codingChips.every((c) => c.disabled) &&
+        codingChips.find(chip => chip.id === "web-html")?.selected === true,
       "coding locked => 全部 disabled（与 design 同语义）",
     );
   }
@@ -1280,7 +1398,7 @@ async function main(): Promise<void> {
       messages: [{ id: "m1" }], welcomeMode: "coding", modePresetId: "minimal", sessionFile: "/tmp/s.jsonl" };
     upserts.length = 0;
     useAppStore.setState({ tasks: [lockedTask as never], activeTaskId: "t-locked" });
-    useAppStore.getState().setModePreset("code-review");
+    useAppStore.getState().setModePreset("web-html");
     assert(useAppStore.getState().tasks[0]?.modePresetId === "minimal", "代码开发任务仍锁定 preset");
     assert(upserts.length === 0, "锁定的代码开发任务不写库");
 

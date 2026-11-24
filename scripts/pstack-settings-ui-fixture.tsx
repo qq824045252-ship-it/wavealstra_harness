@@ -50,8 +50,8 @@ async function selectItem(id: string) {
 }
 async function openEditor() {
   await button("代码开发");
-  await button("pstack + thermos");
-  await field("启用内置 pstack + thermos");
+  await button("pstack 工作流");
+  await field("启用 pstack 工作流");
 }
 async function save() {
   await button("保存");
@@ -66,7 +66,8 @@ export async function run() {
   let root = createRoot(mount);
   root.render(<ModesTab />);
   await openEditor();
-  const activation = "启用内置 pstack + thermos";
+  const activation = "启用 pstack 工作流";
+  const thermosActivation = "启用 Thermos 深度质量评审";
   await button("预设 / Tags");
   const routeField = "启用 pstack 时的默认流程";
   async function pickTag(id: string) {
@@ -74,17 +75,33 @@ export async function run() {
       el.querySelector(".modes-preset-rail-id")?.textContent === id), id);
     tag.click(); await tick();
   }
-  await pickTag("bugfix-test");
+  const initialPolicy = await readPolicy();
+  assert(JSON.stringify(initialPolicy.presets?.map(tag => tag.id)) === JSON.stringify(["minimal", "web-html"]),
+    "Coding presets should contain only minimal and HTML by default");
+  for (const id of ["minimal", "web-html"]) {
+    await pickTag(id);
+    const route = await field(routeField) as HTMLSelectElement;
+    assert(route.value === "" && initialPolicy.presets?.find(tag => tag.id === id)?.pstackRoute === undefined,
+      id + " should follow the poteto setting without an implicit route override");
+    assert([...route.options].find(option => option.value === "")?.textContent === "跟随 poteto 设置",
+      "Default route must explain that it follows poteto settings");
+    assert([...route.options].find(option => option.value === "auto")?.textContent === "由 poteto 按本次任务选择",
+      "Automatic routing must explain selection by the current task");
+  }
+  await pickTag("minimal");
   await enter(routeField, "prototype");
   await button("保存");
   await until(() => !document.querySelector<HTMLButtonElement>(".modes-editor-actions .primary")?.matches(":enabled"), "tag route save");
-  assert((await readPolicy()).presets?.find(tag => tag.id === "bugfix-test")?.pstackRoute === "prototype", "Tag route did not reach disk");
-  await pickTag("plan-design");
-  assert(![...(await field(routeField) as HTMLSelectElement).options].some(o=>o.value === "feature"), "Design tag offers an implementation route");
-  await pickTag("bugfix-test");
+  assert((await readPolicy()).presets?.find(tag => tag.id === "minimal")?.pstackRoute === "prototype", "Explicit tag route did not reach disk");
+  await pickTag("web-html");
+  assert((await field(routeField)).value === "", "Changing minimal must not override HTML's poteto setting");
+  await pickTag("minimal");
   assert((await field(routeField)).value === "prototype","Saved tag route not displayed");
-  await button("pstack + thermos");
+  await button("pstack 工作流");
   assert(!(await field(activation) as HTMLInputElement).checked, "Builtin workflow should start disabled");
+  assert((await field(thermosActivation) as HTMLInputElement).checked, "Thermos should initially be enabled within pstack");
+  await toggle(thermosActivation);
+  assert(!(await field(activation) as HTMLInputElement).checked, "Thermos preference must not enable the pstack workflow");
   assert(document.querySelector(".pstack-top")?.textContent?.includes("所有代码开发任务"), "The switch must explain its mode-wide scope");
   assert(document.querySelectorAll(".pstack-list button").length === PSTACK_SKILLS.length, "Incomplete skill catalog");
   for (const skill of PSTACK_SKILLS) {
@@ -179,6 +196,8 @@ export async function run() {
   const policy = await readPolicy();
   const config = policy.pstackThermos!;
   assert(policy.pstackThermosEnabled, "App did not enable workflow");
+  assert(!config.skills["thermo-nuclear-code-quality-review"].enabled && config.skills["poteto-mode"].enabled,
+    "Saving Thermos off must keep poteto enabled");
   assert(policy.presets?.some(tag => tag.id === "parallel-editor"), "A workflow save overwrote changes in another mode settings window");
   assert(config.skills["benchmark-checklist"].parameters.samplesPerVariant === 7 && !config.skills["principle-attack-the-premise"].enabled, "Lost skill edits");
   assert(config.skills.architect.parameters.checkpoint === true && config.playbooks.eval.parameters.rubricCount === 5 && !config.playbooks.eval.enabled, "Lost playbook edits");
@@ -192,6 +211,7 @@ export async function run() {
   root.render(<ModesTab />);
   await openEditor();
   assert((await field(activation) as HTMLInputElement).checked, "Reopen lost activation");
+  assert(!(await field(thermosActivation) as HTMLInputElement).checked, "Reopen lost independent Thermos preference");
   await selectSection("Thermos 审查");
   assert((await field("变更行数阈值")).value === "37", "Reopen lost changed threshold");
   await toggle(activation);
@@ -207,7 +227,7 @@ export async function run() {
   panel.scrollTop = 0;
   window.scrollTo(0, 0);
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  return `PASS Electron ModesTab → isolated ModeProfileStore: ${PSTACK_SKILLS.length} skills, ${PSTACK_SKILLS.filter(skill => skill.kind === "principle").length} principles, ${PSTACK_PLAYBOOKS.length} playbooks, ${PSTACK_ROLES.length} roles, ${THERMOS_CRITERIA.length} review criteria, validation, global controls, save, reopen, disable, narrow layout.`;
+  return `PASS Electron ModesTab → isolated ModeProfileStore: ${PSTACK_SKILLS.length} skills, ${PSTACK_SKILLS.filter(skill => skill.kind === "principle").length} principles, ${PSTACK_PLAYBOOKS.length} playbooks, ${PSTACK_ROLES.length} roles, ${THERMOS_CRITERIA.length} review criteria, validation, global controls, independent Thermos toggle, save, reopen, disable, narrow layout.`;
 }
 
 export async function resetAndVerify() {

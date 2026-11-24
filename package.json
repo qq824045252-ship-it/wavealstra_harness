@@ -311,6 +311,7 @@
     "pstack:live-case": "pnpm -s pstack:live-prepare && node out/tests/pstack-live-run.mjs",
     "pstack:thermos-live": "esbuild scripts/pstack-thermos-live.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/pstack-thermos-live.mjs && node out/tests/pstack-thermos-live.mjs",
     "test:pstack-settings-ui": "node scripts/pstack-settings-ui-test.cjs",
+    "test:pstack-settings-toggle": "esbuild scripts/pstack-settings-toggle-test.tsx --bundle --platform=node --format=cjs --external:linkedom --external:react --external:react-dom --jsx=automatic --alias:@=./src/renderer/src --alias:@shared=./src/shared --outfile=out/tests/pstack-settings-toggle-test.cjs && node scripts/test-guard.mjs out/tests/pstack-settings-toggle-test.cjs",
     "test:pstack-watch": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-watch-test.ts",
     "test:pstack-orchestration": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-orchestration-test.ts",
     "test:pstack-decision-trail": "esbuild scripts/pstack-decision-trail-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/pstack-decision-trail-test.mjs && node scripts/test-guard.mjs out/tests/pstack-decision-trail-test.mjs",

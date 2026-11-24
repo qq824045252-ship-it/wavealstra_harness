@@ -1,4 +1,10 @@
 import type { WelcomeMode } from "@shared/agent-ipc";
+import { defaultModePresetId, isRetiredModePresetId } from "@shared/mode-profile";
+
+/** Normalize the displayed selection without rewriting historical tasks or custom tags. */
+export function heroPresetId(mode: WelcomeMode, presetId: string | null | undefined): string | null | undefined {
+  return mode === "coding" && isRetiredModePresetId(mode, presetId) ? defaultModePresetId(mode) : presetId;
+}
 
 export const HERO_SUBTITLE: Record<WelcomeMode, string> = {
   working: "在知识的星空里翱翔",
@@ -9,6 +15,7 @@ export const HERO_SUBTITLE: Record<WelcomeMode, string> = {
 const HERO_HEADLINE: Record<string, string> = {
   "general-office": "先写成能发出去的东西",
   "drawio-ai": "先画成一张能扫读的图",
+  "web-html": "制作可运行的 HTML 页面",
   "bugfix-test": "先把这个 bug 钉住",
   refactor: "先改结构，行为保持不变",
   "code-review": "先把风险看清楚",
@@ -17,6 +24,7 @@ const HERO_HEADLINE: Record<string, string> = {
 };
 
 export function heroHeadline(mode: WelcomeMode, presetId: string | null | undefined): string {
+  presetId = heroPresetId(mode, presetId);
   if (presetId && HERO_HEADLINE[presetId]) return HERO_HEADLINE[presetId];
   return HERO_SUBTITLE[mode] ?? HERO_SUBTITLE.working;
 }
@@ -24,6 +32,7 @@ export function heroHeadline(mode: WelcomeMode, presetId: string | null | undefi
 const HERO_SUBLINE: Record<string, string> = {
   "general-office": "结论先行，做成能直接转发的成品",
   "drawio-ai": "节点少、标签人话、能扫读",
+  "web-html": "沿用项目设计，验证布局和交互",
   "bugfix-test": "复现、最小改动、用测试验证",
   refactor: "小步重构，对外行为不变",
   "code-review": "正确性、架构、安全、测试充分性",
@@ -32,6 +41,7 @@ const HERO_SUBLINE: Record<string, string> = {
 };
 
 export function heroSubline(mode: WelcomeMode, presetId: string | null | undefined): string {
+  presetId = heroPresetId(mode, presetId);
   if (presetId && HERO_SUBLINE[presetId]) return HERO_SUBLINE[presetId];
   if (mode === "general") return "读取资料、调用工具、验证结果，接着上次的工作继续";
   return HERO_SUBTITLE[mode] ?? HERO_SUBTITLE.working;
@@ -71,6 +81,12 @@ const HERO_SUGGESTIONS_BY_PRESET: Record<string, string[]> = {
     "节点少、标签用人话",
     "把流程画成可给同事看的 UML",
   ],
+  "web-html": [
+    "制作一个可运行的 HTML 页面",
+    "修改这个页面并验证交互",
+    "检查页面在窄屏下的布局",
+    "沿用现有项目的组件和样式",
+  ],
   "bugfix-test": [
     "帮我排查这个报错",
     "先复现，再给最小改动",
@@ -104,6 +120,7 @@ const HERO_SUGGESTIONS_BY_PRESET: Record<string, string[]> = {
 };
 
 export function heroSuggestions(mode: WelcomeMode, presetId: string | null | undefined): string[] {
+  presetId = heroPresetId(mode, presetId);
   if (presetId && HERO_SUGGESTIONS_BY_PRESET[presetId]) {
     return HERO_SUGGESTIONS_BY_PRESET[presetId];
   }
@@ -113,6 +130,7 @@ export function heroSuggestions(mode: WelcomeMode, presetId: string | null | und
 const HERO_PLACEHOLDER_BY_PRESET: Record<string, string> = {
   "general-office": "拖入文件，或说你想写成什么",
   "drawio-ai": "描述你想画的流程或结构",
+  "web-html": "描述要制作或修改的网页，或拖入 HTML 文件",
   "bugfix-test": "贴上报错，或说哪里坏了",
   refactor: "指出要整理的代码范围",
   "code-review": "拖入或指出要审查的改动",
@@ -127,6 +145,7 @@ const HERO_PLACEHOLDER_BY_MODE: Record<WelcomeMode, string> = {
 };
 
 export function heroPlaceholder(mode: WelcomeMode, presetId: string | null | undefined): string {
+  presetId = heroPresetId(mode, presetId);
   if (presetId && HERO_PLACEHOLDER_BY_PRESET[presetId]) {
     return HERO_PLACEHOLDER_BY_PRESET[presetId];
   }

@@ -284,7 +284,7 @@ export default function InputAddMenu({
     if (!modeProfile) return null;
     const task = tasks.find((t) => t.id === activeTaskId) ?? null;
     const selectedPresetId = task?.modePresetId ?? modePresetId ?? null;
-    const preset = resolveModePreset(modeProfile.policy, selectedPresetId);
+    const preset = resolveModePreset(modeProfile.policy, selectedPresetId, modeProfile.id);
     return resolveEffectiveModePolicy(modeProfile.policy, preset);
   }, [modeProfile, tasks, activeTaskId, modePresetId]);
 

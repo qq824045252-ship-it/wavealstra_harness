@@ -42,9 +42,10 @@ for (const tag of ["readonly-explain", "plan-design", "code-review"]) {
   for (const route of ["feature", "bug-fix", "orchestrate", "skill:correct", "skill:ketchup-video", "skill:create-formal-verification-skill", "skill:statechart"])
     assert.equal(codingTagSupportsRoute(tag, route), false, `${tag} must not expose a writing route: ${route}`);
 }
-assert.equal(codingTagRoute({ id: "code-review" }), "skill:thermo-nuclear-code-quality-review");
-assert.equal(codingTagRoute({ id: "code-review", pstackRoute: "skill:interrogate" }), "skill:interrogate",
-  "An explicit user route must be preserved so missing execution authority can be reported");
+for (const id of ["minimal", "web-html", "bugfix-test", "refactor", "code-review", "plan-design", "readonly-explain", "add-tests", "feature-dev"])
+  assert.equal(codingTagRoute({ id }), undefined, "Tags do not infer task routes: " + id);
+assert.equal(codingTagRoute({ id: "custom-review", pstackRoute: "skill:interrogate" }), "skill:interrogate",
+  "A custom Tag's explicit route remains supported");
 const newMethodSettings = normalizePstackSettings({
   skills: { reframe: { enabled: false }, ketchup: { enabled: false }, sharpen: { enabled: true } },
   roles: { "architect-runners": { model: "fixture/custom", count: 4 }, "reflect-tooling": { model: "inherit-parent" } },

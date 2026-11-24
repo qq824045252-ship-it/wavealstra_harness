@@ -9,7 +9,7 @@ import type {
   ModeToolPolicy,
   WelcomeMode,
 } from "../../shared/mode-profile";
-import { emptyArtifactPolicy } from "../../shared/mode-profile";
+import { codingWorkflowEnabled, emptyArtifactPolicy } from "../../shared/mode-profile";
 import { CODING_TASK_INTENT_INSTRUCTIONS } from "./mode-defaults";
 import type { ResolvedProjectContext } from "../../shared/project-domain";
 import {
@@ -324,6 +324,8 @@ export function assemblePrompt(input: PromptAssemblyInput): AssemblyTraceDto {
   const modeParts = [
     `## 场景模式：${profile.labelZh}`,
     ...(welcomeMode === "coding" ? [CODING_TASK_INTENT_INSTRUCTIONS] : []),
+    ...(codingWorkflowEnabled(welcomeMode, profile.policy) && profile.policy.pstackThermos?.skills["poteto-mode"]?.enabled !== false
+      ? ["已启用 poteto 任务路由。最小模式和 HTML Tag 提供输出偏好，修复、开发、重构、审查等流程按本轮目标选择。需要工作流时先查看 pstack_workflow status；没有明确流程时调用 start(playbook=auto)，阅读返回的路由指引与已启用清单，自行选择具体 playbook 或 skill 后再次 start。路由指引本身不启动流程，不需要让用户分类任务。用户明确指定的可用流程和 Tag 保存的显式默认流程优先；普通交流及只需阅读代码的解释继续直接回答。"] : []),
     ...profile.blocks.map((b) => {
       if (b.source === "user") {
         /* mark later */

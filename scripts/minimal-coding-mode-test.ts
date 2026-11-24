@@ -101,9 +101,9 @@ try {
     assert(!trace.appendParts.some((text) => text.includes("场景预设：最小模式")));
   });
 
-  test("non-minimal coding tags still inject their preset prompt", () => {
-    const bugfix = resolveModePreset(migrated.policy, "bugfix-test");
-    assert(bugfix?.promptAddon);
+  test("HTML still injects its preset prompt", () => {
+    const html = resolveModePreset(migrated.policy, "web-html", "coding");
+    assert(html?.promptAddon);
     const trace = assemblePrompt({
       welcomeMode: "coding",
       profile: migrated,
@@ -111,10 +111,10 @@ try {
       permissionMode: "default",
       platform: process.platform,
       memoryEnabled: false,
-      modePreset: { id: bugfix.id, label: bugfix.label, content: bugfix.promptAddon },
+      modePreset: { id: html.id, label: html.label, content: html.promptAddon },
     } as any);
     assert(trace.segments.some((segment) => segment.id === "modePreset"));
-    assert(trace.appendParts.some((text) => text.includes("场景预设：修 Bug")));
+    assert(trace.appendParts.some((text) => text.includes("场景预设：HTML") && text.includes("browser_exec")));
   });
 } finally {
   mkdirSync("artifacts/pi-minimal-mode", { recursive: true });

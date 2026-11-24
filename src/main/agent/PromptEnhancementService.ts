@@ -285,6 +285,7 @@ export class PromptEnhancementService {
       const preset = resolveModePreset(
         this.deps.modeProfiles.getProfile(args.welcomeMode).policy,
         args.modePresetId,
+        args.welcomeMode,
       );
       if (preset) lines.push(`- 场景预设：${preset.id}（${preset.label}）`);
     } catch { /* ignore */ }

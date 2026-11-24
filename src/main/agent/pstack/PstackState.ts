@@ -167,6 +167,10 @@ export function reviewReasons(settings: PstackSettings, delta: WorkspaceDelta, e
 }
 export const criteria = (settings: PstackSettings) => THERMOS_CRITERIA.filter(item => settings.thermos.criteria[item.id]);
 
+/** A standalone review reports substantiated defects; implementation and answer-review gates still require a passing verdict. */
+export const reportOnlyReview = (run: Pick<WorkflowRun, "playbook" | "tagId">) =>
+  run.playbook === "skill:" + REVIEW || run.tagId === "code-review";
+
 function parameterGuidance(definition: Pick<PstackPlaybook, "parameters">) {
   return definition.parameters.length ? {
     parameterGuidance: Object.fromEntries(definition.parameters.map(p => [p.id, p.label + "。" + p.description])),

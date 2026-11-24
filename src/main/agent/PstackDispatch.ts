@@ -21,6 +21,19 @@ export const pstackWorkerRoles: BuiltinSubagentRole[] = PSTACK_ROLES.map(role =>
   systemPrompt: `${PSTACK_WORKER_CONTRACT}\n\n你是 MyBuddy 代码开发流程的${role.label}。\n${role.description}\n报告依据、结论和仍未确认的部分。`,
 }));
 
+/** Frozen read-only workflows may delegate only to the same built-in roles
+ * whose native child tool catalogue is read-only. Unknown/general aliases and
+ * execution-review workers must not regain write authority through delegation. */
+export function readOnlyPstackDispatch(args: Record<string, unknown>): boolean {
+  const assignments = [
+    ...(typeof args.agent === "string" ? [args] : []),
+    ...(Array.isArray(args.tasks) ? args.tasks : []),
+    ...(Array.isArray(args.chain) ? args.chain : []),
+  ];
+  return assignments.length > 0 && assignments.every(item => item && typeof item === "object" &&
+    pstackWorkerRoles.some(role => role.name === item.agent && role.readOnly));
+}
+
 const interrogateAdversary: BuiltinSubagentRole = {
   name: INTERROGATE_ADVERSARY_ROLE, description: "Execute isolated adversarial probes without modifying reviewed source",
   source: "builtin", readOnly: false, executionReview: true,

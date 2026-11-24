@@ -3,7 +3,7 @@
  *
  * 覆盖：
  * - §31.1 Project 无 Mode/Tag（创建 payload 结构性守卫）
- * - §31.2 Template Suggestion（software → coding + bugfix-test）
+ * - §31.2 Template Suggestion（software → coding + minimal）
  * - §31.3 最近任务优先于模板推荐
  * - §31.4 模板推荐次优先于系统默认
  * - §31.5 System Fallback
@@ -36,7 +36,7 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
   return {
     projectId: "p1",
     welcomeMode: "coding",
-    modePresetId: "bugfix-test" as string | null,
+    modePresetId: "minimal" as string | null,
     updatedAt: 1000,
     ...overrides,
   };
@@ -69,11 +69,11 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
   assert.equal(Object.prototype.hasOwnProperty.call(dirty, "mode"), false, "dirty 不允许 mode 键");
 }
 
-/* ---------- §31.2：Template Suggestion（软件模板 → coding + bugfix-test） ---------- */
+/* ---------- §31.2：Template Suggestion（软件模板 → coding + minimal） ---------- */
 
 {
   const suggestion = resolveProjectTemplateTaskSuggestion({ templateId: "software-development" }, TEMPLATES);
-  assert.deepEqual(suggestion, { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" });
+  assert.deepEqual(suggestion, { recommendedModeId: "coding", recommendedPresetId: "minimal" });
 
   const design = resolveProjectTemplateTaskSuggestion({ templateId: "design-creative" }, TEMPLATES);
   // Penpot tag（web-prototype）已退役：设计创意模板不再预选 tag，新建任务回落模式默认 general-office。
@@ -89,15 +89,15 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
 
 {
   const defaults = pickDefaults(resolveProjectTaskDefaults({
-    tasks: [makeTask({ welcomeMode: "coding", modePresetId: "code-review", updatedAt: 2000 })],
+    tasks: [makeTask({ welcomeMode: "coding", modePresetId: "custom-review", updatedAt: 2000 })],
     projectId: "p1",
-    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
+    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "minimal" },
   }));
   assert.deepEqual(defaults, {
     welcomeMode: "coding",
-    modePresetId: "code-review",
+    modePresetId: "custom-review",
     source: "recent-task",
-  }, "recent task 优先于模板推荐，不被拉回 bugfix-test");
+  }, "recent task 的自定义 Tag 优先于模板推荐，不被拉回 minimal");
 }
 
 /* ---------- §31.4：无最近任务 → 模板推荐（次优先） ---------- */
@@ -106,11 +106,11 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
   const defaults = pickDefaults(resolveProjectTaskDefaults({
     tasks: [],
     projectId: "p1",
-    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
+    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "minimal" },
   }));
   assert.deepEqual(defaults, {
     welcomeMode: "coding",
-    modePresetId: "bugfix-test",
+    modePresetId: "minimal",
     source: "project-template",
   });
 }
@@ -151,9 +151,20 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
     source: "project-template",
   });
 
+  assert.deepEqual(
+    resolveTemplateTaskSuggestion({ recommendedModeId: "coding", recommendedPresetId: "bugfix-test" }),
+    { recommendedModeId: "coding", recommendedPresetId: "minimal" },
+    "历史模板的退役 coding Tag 回落 minimal",
+  );
+  assert.deepEqual(
+    resolveTemplateTaskSuggestion({ recommendedModeId: "coding", recommendedPresetId: "web-html" }),
+    { recommendedModeId: "coding", recommendedPresetId: "web-html" },
+    "HTML 是可保留的出厂 coding 模板推荐",
+  );
+
   // mode 非法 → 整条推荐丢弃，不虚构模式（§14 / §19）
-  assert.equal(resolveTemplateTaskSuggestion({ recommendedModeId: "unknown-mode", recommendedPresetId: "bugfix-test" }), null);
-  assert.equal(resolveTemplateTaskSuggestion({ recommendedPresetId: "bugfix-test" }), null, "缺 recommendedModeId → 丢弃");
+  assert.equal(resolveTemplateTaskSuggestion({ recommendedModeId: "unknown-mode", recommendedPresetId: "minimal" }), null);
+  assert.equal(resolveTemplateTaskSuggestion({ recommendedPresetId: "minimal" }), null, "缺 recommendedModeId → 丢弃");
   assert.equal(resolveTemplateTaskSuggestion(undefined), null);
 }
 
@@ -172,28 +183,28 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
 /* ---------- 跨 Tag / 跨 Mode：同一 Project 的不同 Task 互不干扰 ---------- */
 
 {
-  // 不同 Task 不同 Tag：Task A=code-review、Task B=bugfix-test、Task C=readonly-explain
-  const taskA = makeTask({ welcomeMode: "coding", modePresetId: "code-review", updatedAt: 1000 });
-  const taskB = makeTask({ welcomeMode: "coding", modePresetId: "bugfix-test", updatedAt: 2000 });
-  const taskC = makeTask({ welcomeMode: "coding", modePresetId: "readonly-explain", updatedAt: 3000 });
+  // 不同 Task 不同 Tag：Task A=用户自定义、Task B=minimal、Task C=HTML
+  const taskA = makeTask({ welcomeMode: "coding", modePresetId: "custom-review", updatedAt: 1000 });
+  const taskB = makeTask({ welcomeMode: "coding", modePresetId: "minimal", updatedAt: 2000 });
+  const taskC = makeTask({ welcomeMode: "coding", modePresetId: "web-html", updatedAt: 3000 });
   const latest = pickDefaults(resolveProjectTaskDefaults({
     tasks: [taskA, taskB, taskC],
     projectId: "p1",
-    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
+    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "minimal" },
   }));
   assert.deepEqual(latest, {
     welcomeMode: "coding",
-    modePresetId: "readonly-explain",
+    modePresetId: "web-html",
     source: "recent-task",
-  }, "默认值取最近 Task 的 Tag（readonly-explain），不被模板或其他 Task 覆盖");
+  }, "默认值取最近 Task 的 Tag（HTML），不被模板或其他 Task 覆盖");
 
   // 不同 Task 不同 Mode：Task A=coding、Task B=design —— 各自独立
-  const modeA = makeTask({ welcomeMode: "coding", modePresetId: "code-review", updatedAt: 1000 });
+  const modeA = makeTask({ welcomeMode: "coding", modePresetId: "custom-review", updatedAt: 1000 });
   const modeB = makeTask({ welcomeMode: "general", modePresetId: "ai-ui", updatedAt: 2000 });
   const latestMode = resolveProjectTaskDefaults({
     tasks: [modeA, modeB],
     projectId: "p1",
-    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
+    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "minimal" },
   });
   assert.equal(latestMode.welcomeMode, "general", "最近 Task 是通用模式 → 默认通用模式，不被模板的 coding 限制（§0.2 / Rule 6）");
 
@@ -201,13 +212,22 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
   const foreign = pickDefaults(resolveProjectTaskDefaults({
     tasks: [makeTask({ projectId: "other-project", welcomeMode: "general", modePresetId: "ai-ui", updatedAt: 9999 })],
     projectId: "p1",
-    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" },
+    templateSuggestion: { recommendedModeId: "coding", recommendedPresetId: "minimal" },
   }));
   assert.deepEqual(foreign, {
     welcomeMode: "coding",
-    modePresetId: "bugfix-test",
+    modePresetId: "minimal",
     source: "project-template",
   }, "跨 Project 任务不串扰");
+}
+
+/* ---------- 历史 Task 保留原始 Tag，运行时再按当前模式解析 ---------- */
+
+{
+  const legacy = makeTask({ modePresetId: "code-review" });
+  const defaults = resolveProjectTaskDefaults({ tasks: [legacy], projectId: "p1" });
+  assert.equal(defaults.modePresetId, "code-review", "近期历史任务保留原始 Tag id，不改写任务记录");
+  assert.equal(legacy.modePresetId, "code-review", "默认值解析不修改输入的历史 Task");
 }
 
 console.log("project-task-defaults-test: PASS");

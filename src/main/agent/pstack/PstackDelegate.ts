@@ -6,7 +6,7 @@ import { prepareInterrogateDispatch, preparePstackDispatch } from "../PstackDisp
 import { auditParticipant, contestDispatch } from "./PstackContest";
 import { arenaSubmission, arenaSurvivors } from "./PstackArenaSubmission";
 import { readOnlyCodingTag, resolvePstackRole } from "../../../shared/pstack";
-import { checked, criteria, failure, live, owner, playbookFor, REVIEW, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success, transcript, update, WorkflowFiles, type WorkflowOptions } from "./PstackState";
+import { checked, criteria, failure, live, owner, playbookFor, reportOnlyReview, REVIEW, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success, transcript, update, WorkflowFiles, type WorkflowOptions } from "./PstackState";
 import { measureWorkspace, reviewBaseline, reviewScope, verificationCheckout } from "./PstackWorkspace";
 import { auditPstackDecisions } from "./PstackDecisionTrail";
 import { auditTranscript, decisionAuthorsMemo, decisionDigest, independentAttention } from "./PstackAttention";
@@ -237,7 +237,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           const fresh = await Promise.all(answers.map(async (answer, i): Promise<ThermosMember> => {
             const member = { child: ids[i], model: models[i], answer: answer.slice(0, 16_000), inspection: inspections![i] };
             try {
-              const passed = parseThermosVerdict(answer, rubric.map(c => c.id), run.tagId === "code-review");
+              const passed = parseThermosVerdict(answer, rubric.map(c => c.id), reportOnlyReview(run));
               await validateInspections(base.cwd, targets, [member.inspection], false, fileVersions);
               return { ...member, passed };
             } catch (error) { return { ...member, passed: false, error: (error as Error).message }; }

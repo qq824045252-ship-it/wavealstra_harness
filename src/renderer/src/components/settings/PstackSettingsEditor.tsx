@@ -113,8 +113,11 @@ export default function PstackSettingsEditor({ value, enabled, saving, models, c
 
   return <fieldset className="pstack-settings" aria-label="内置工作流设置" disabled={saving}>
     <div className="pstack-top">
-      <CheckField label="启用内置 pstack + thermos" checked={enabled} onChange={checked => change(value, checked)}
-        help="启用后，模型可以根据本轮任务选择调用 pstack。标签继续提供各自的指令和权限。" />
+      <CheckField label="启用 pstack 工作流" checked={enabled} onChange={checked => change(value, checked)}
+        help="作用于所有代码开发任务。启用后，可由 poteto 根据任务目标选择流程。" />
+      {review && <CheckField label="启用 Thermos 深度质量评审" checked={value.skills[review.id].enabled}
+        onChange={checked => change({ ...value, skills: { ...value.skills, [review.id]: { ...value.skills[review.id], enabled: checked } } }, enabled)}
+        help="关闭并保存后，新任务跳过 Thermos，保留 pstack 流程与验证；已有工作流继续使用启动时的设置。" />}
     </div>
     <nav className="pstack-tabs" aria-label="工作流配置分类">
       {(Object.keys(sections) as Section[]).map(key => <button type="button" key={key} aria-label={sections[key]}
@@ -122,8 +125,6 @@ export default function PstackSettingsEditor({ value, enabled, saving, models, c
         {key !== "thermos" && <span>{counts[key]}</span>}</button>)}
     </nav>
     {section === "thermos" ? <>
-      {review && <div className="pstack-review-toggle"><CheckField label="启用 Thermos 深度质量评审" checked={value.skills[review.id].enabled}
-        onChange={checked => change({ ...value, skills: { ...value.skills, [review.id]: { ...value.skills[review.id], enabled: checked } } }, enabled)} /></div>}
       <ThermosFields value={value.thermos} onChange={thermos => change({ ...value, thermos }, enabled)} inspectRole={id => go("roles", id)} />
     </> : <>
       <div className="pstack-filter">

@@ -389,7 +389,16 @@ export const RETIRED_MODE_PRESET_IDS: Record<WelcomeMode, readonly string[]> = {
     "deep-research",
     "web-prototype",
   ],
-  coding: [PSTACK_THERMOS_ID, "feature-dev", "add-tests"],
+  coding: [
+    PSTACK_THERMOS_ID,
+    "feature-dev",
+    "add-tests",
+    "bugfix-test",
+    "refactor",
+    "code-review",
+    "plan-design",
+    "readonly-explain",
+  ],
   general: ["general", "web-prototype"],
 };
 
@@ -403,14 +412,7 @@ export function isRetiredModePresetId(
 /** 各模式出厂 preset id 清单（测试/防御性校验用；用户自定义 preset 不在其中） */
 export const MODE_SEED_PRESET_IDS: Record<WelcomeMode, string[]> = {
   working: ["general-office", "drawio-ai"],
-  coding: [
-    "minimal",
-    "bugfix-test",
-    "refactor",
-    "code-review",
-    "plan-design",
-    "readonly-explain",
-  ],
+  coding: ["minimal", "web-html"],
   general: ["native", "codemode"],
 };
 
@@ -497,7 +499,8 @@ export function codingWorkflowEnabled(mode: WelcomeMode, policy: ModePolicyDto):
 }
 
 export function codingWorkflowRequiresGithub(mode: WelcomeMode, policy: ModePolicyDto): boolean {
-  return codingWorkflowEnabled(mode, policy) && policy.pstackThermos?.skills["poteto-mode"]?.parameters.githubBinding === "required";
+  return codingWorkflowEnabled(mode, policy) && policy.pstackThermos?.skills["poteto-mode"]?.enabled !== false
+    && policy.pstackThermos?.skills["poteto-mode"]?.parameters.githubBinding === "required";
 }
 
 export interface ModeBlockDto {
@@ -595,12 +598,14 @@ export interface EffectiveModePolicy {
   recommendedExpertIds: string[];
 }
 
-/** 从 policy.presets 中按 id 取 preset；未知 id / 未配置 → undefined（回落 base，不静默切别的 preset） */
+/** 运行时传入 coding 时，已退役的代码 Tag 回落到当前最小模式配置；未知自定义 id 仍回落 base。 */
 export function resolveModePreset(
   policy: Pick<ModePolicyDto, "presets">,
   presetId?: string | null,
+  mode?: WelcomeMode,
 ): ModePresetDto | undefined {
   if (!presetId) return undefined;
+  if (mode === "coding" && isRetiredModePresetId(mode, presetId)) presetId = defaultModePresetId(mode);
   const presets = policy.presets ?? [];
   return presets.find((p) => p.id === presetId);
 }

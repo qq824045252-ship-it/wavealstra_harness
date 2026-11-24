@@ -40,7 +40,7 @@ import { TASK_TITLE_MAX_CHARS } from "@shared/task-title";
 import { WELCOME_MODES, WELCOME_MODE_LABELS } from "@shared/mode-profile";
 import { buildPresetBarChips, isTaskModeLocked } from "@/lib/modePresetBar";
 import { COPY, getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
-import { heroHeadline, heroSubline } from "./heroCopy";
+import { heroHeadline, heroPresetId, heroSubline } from "./heroCopy";
 import HeroSuggestChips from "./HeroSuggestChips";
 import {
   initialFollowState,
@@ -143,8 +143,8 @@ function HomeHero(): React.JSX.Element {
     () => new Set(mcpServers.filter((s) => s.installed && !s.disabled).map((s) => s.name)),
     [mcpServers],
   );
-  // 无任务 = 全局 selection（跟随当前模式，始终合法）；有（未锁定）任务 = 任务 selection
-  const selectedPresetId = task?.modePresetId ?? modePresetId;
+  // Display retired coding selections as minimal; preserve task history and custom IDs.
+  const selectedPresetId = heroPresetId(welcomeMode, task?.modePresetId ?? modePresetId) ?? null;
   const presetChips = useMemo(
     () =>
       buildPresetBarChips({

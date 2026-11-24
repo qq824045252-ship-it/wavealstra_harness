@@ -1,14 +1,19 @@
 import type { GenerationHooks, HookApi, ToolHooks } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import { live, runSettings, state, transcript, WorkflowFiles, type WorkflowOptions } from "./PstackState";
+import { live, reportOnlyReview, runSettings, state, transcript, WorkflowFiles, type WorkflowOptions } from "./PstackState";
 import { measureWorkspace, reviewScope, verificationCheckout } from "./PstackWorkspace";
 import { reviewMatchesVerification } from "./PstackVerificationEvidence";
 import { MERGE_REVIEW_BLOCK } from "./PstackReviewIntent";
 import { authoredFiles, captureAuthoredSkill } from "./PstackAuthoredSkills";
 import { formatPstackBlock } from "./PstackBlockReport";
 import { promptPstackMethod, readOnlyPstackMethod } from "./PstackPromptEvidence";
+import { readOnlyCodingTag } from "../../../shared/pstack/coding-tags";
+import { READONLY_TOOLS } from "../../capabilities/subagent/policy";
+import { readOnlyPstackDispatch } from "../PstackDispatch";
 
 const mutatingTools = new Set(["write", "edit", "bash", "powershell", "subagent", "terminal_exec", "execute_code", "apply_patch", "skill_authoring_create"]);
+const reviewTools = new Set<string>([...READONLY_TOOLS, "codemode", "pstack_workflow", "pstack_delegate", "subagent_list", "request_user_input"]);
+const reviewWrites = new Set(["verify", "decision", "export-eval", "audit", "pr-body"]);
 export const textMessage = (content: string | readonly { type: string; text?: string }[]) =>
   typeof content === "string" ? content : content.filter(item => item.type === "text").map(item => item.text).join("\n");
 
@@ -22,10 +27,15 @@ export function createPstackWorkflowHooks(options: WorkflowOptions) {
   }
 
   const beforeTool: ToolHooks["beforeTool"] = async (call, api, ctx) => {
-    if (!mutatingTools.has(call.name)) return;
     const current = await currentWorkflow(api, ctx);
     if (!current) return;
     const { run } = current;
+    if (readOnlyCodingTag(run.tagId) || reportOnlyReview(run)) {
+      const allowed = call.name === "subagent" ? readOnlyPstackDispatch(call.arguments) : reviewTools.has(call.name) &&
+        (call.name !== "pstack_workflow" || !reviewWrites.has(String(call.arguments.action)) && !call.arguments.artifactDirectory);
+      if (!allowed) return { block: "This workflow is read-only. Read the source or delegate to a built-in read-only pstack reviewer; do not write files, execute commands, or dispatch a writer. Start a new authorized workflow to make changes." };
+    }
+    if (!mutatingTools.has(call.name)) return;
     if ((run.playbook === "investigation" || readOnlyPstackMethod(run.playbook)) &&
         (["write", "edit", "apply_patch", "skill_authoring_create"].includes(call.name) || promptPstackMethod(run.playbook)))
       return { block: "This method is read-only. Deliver the explanation, prompt or progress in the reply; do not execute the underlying task or change the workspace." };

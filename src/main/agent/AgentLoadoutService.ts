@@ -60,7 +60,7 @@ export class AgentLoadoutService {
     if (!task) throw new Error(`Task not found: ${taskId}`);
     const welcomeMode = task.welcomeMode ?? DEFAULT_WELCOME_MODE;
     const profile = d.modeProfiles.getProfile(welcomeMode);
-    const preset = resolveModePreset(profile.policy, task.modePresetId);
+    const preset = resolveModePreset(profile.policy, task.modePresetId, profile.id);
     const projectContext = d.projectContextResolver.resolveTask(taskId);
     const connectorIds = connectorIdsOverride;
     const selectedExpertId = normalizeSingleExpertId(expertIdOverride === undefined ? task.expertId : expertIdOverride);

@@ -10,8 +10,7 @@
   font-size: 13px;
 }
 .pstack-settings * { box-sizing: border-box; }
-.pstack-top { padding: 0 0 12px; }
-.pstack-review-toggle { padding-top: 12px; }
+.pstack-top { display: grid; gap: 12px; padding: 0 0 12px; }
 .pstack-settings .pstack-check { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; line-height: 1.5; }
 .pstack-check input { margin: 3px 0 0; accent-color: var(--accent); }
 .pstack-top .pstack-check { font-weight: 600; }

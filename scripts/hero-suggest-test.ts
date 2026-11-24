@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { heroSuggestions } from "../src/renderer/src/components/chat/heroCopy";
+import { heroHeadline, heroPlaceholder, heroPresetId, heroSubline, heroSuggestions } from "../src/renderer/src/components/chat/heroCopy";
+import { defaultModePresetId, RETIRED_MODE_PRESET_IDS } from "../src/shared/mode-profile";
 import {
   HERO_SUGGEST_MAX,
   HERO_SUGGEST_MAX_LEN,
@@ -39,6 +40,25 @@ function memoryStorage(seed: Record<string, string> = {}): HeroSuggestStorage & 
       data[key] = value;
     },
   };
+}
+
+{
+  const minimal = defaultModePresetId("coding");
+  for (const id of RETIRED_MODE_PRESET_IDS.coding) {
+    ok(heroPresetId("coding", id) === minimal, `retired coding selection ${id} displays minimal`);
+    ok(heroHeadline("coding", id) === heroHeadline("coding", minimal), `${id} uses the current coding headline`);
+    ok(heroSubline("coding", id) === heroSubline("coding", minimal), `${id} drops obsolete scene restrictions`);
+    ok(heroPlaceholder("coding", id) === heroPlaceholder("coding", minimal), `${id} uses the current coding placeholder`);
+    ok(heroSuggestions("coding", id).join("|") === heroSuggestions("coding", minimal).join("|"), `${id} uses current coding suggestions`);
+    ok(heroPresetId("working", id) === id, `${id} normalization applies only to coding`);
+  }
+  for (const id of [minimal, "web-html", "my-personal-code-tag", null, undefined]) {
+    ok(heroPresetId("coding", id) === id, "current, custom and missing selections are preserved");
+  }
+  ok(heroHeadline("coding", "web-html").includes("HTML"), "HTML has a specific headline");
+  ok(heroPlaceholder("coding", "web-html").includes("HTML"), "HTML has a specific composer placeholder");
+  ok(heroSuggestions("coding", "web-html").some(text => text.includes("HTML")), "HTML has relevant suggested tasks");
+  ok(isHeroSuggestion("先设计落地步骤，默认不改代码"), "retired suggested text remains recognizable for scene-switch cleanup");
 }
 
 {

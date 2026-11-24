@@ -42,6 +42,7 @@ import {
   // taskSuggestions.recommendedModeId 与 preset 合法性
   const byId = new Map(ids.map((id, index) => [id, templates[index]]));
   assert.equal(byId.get("software-development")!.taskSuggestions?.recommendedModeId, "coding");
+  assert.equal(byId.get("software-development")!.taskSuggestions?.recommendedPresetId, "minimal", "software template follows the default coding Tag");
   assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedModeId, "working");
   // Penpot tag 已退役：设计创意模板不再预选 preset。
   assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedPresetId, undefined);
@@ -88,7 +89,7 @@ import {
   assert.equal(resolved.warnings.includes("pi MCP 尚未配置"), false, "installed mcp has no warning");
   assert.equal(resolved.instructions.length > 0, true);
   assert.equal(resolved.taskSuggestion?.recommendedModeId, "coding");
-  assert.equal(resolved.taskSuggestion?.recommendedPresetId, "bugfix-test");
+  assert.equal(resolved.taskSuggestion?.recommendedPresetId, "minimal");
 
   // 全部包含 → 全 resolved、无 warning
   const full = resolveProjectTemplate("design-creative", {

@@ -11,7 +11,7 @@
  * E. Connector Private Skills：安装/激活/卸载；仅 Active Connector 进入 Session；旧全局副本迁移
  * F. Skill Resolver：Global + selected Expert + Active Connector → skillPolicy 过滤
  * G. MCP：drawio-ai(working)/penpot(design)/serena(coding) 模式过滤回归
- * H. coding code-review 作为通用样例：推荐专家/readonly/技能/MCP 全走通用机制
+ * H. coding minimal + HTML 通过通用机制装配；旧内置流程退出出厂目录
  * I. Related Task：同 Space、独立 task/session 字段、引用源任务；无新增 DB schema
  * J. 会话装配路径唯一合成 + renderer 显式/默认契约（P0：真实 sendMessage 主路径）
  * J2. F2 跨任务显式隔离 / F1 regenerate payload / F4 summonExpert 清空（任务级 explicit 作用域）
@@ -48,6 +48,7 @@ import {
   resolveEffectiveModePolicy,
   resolveEffectivePermission,
   resolveModePreset,
+  resolveModePresetId,
   splitProviderModelId,
   withEffectiveModePolicy,
   type ModePolicyDto,
@@ -205,7 +206,7 @@ async function main(): Promise<void> {
       (custom?.recommendedExpertIds ?? []).includes("code-review-expert"),
       "preset recommendedExpertIds 保存后不丢",
     );
-    // 旧 policy（无 presets）→ 回退出厂 coding presets（含升级后的 code-review）
+    // 旧 policy（无 presets）→ 回退出厂 working presets
     const legacy = {
       skillPolicy: { prefer: ["review"], demote: [], hide: [], allow: [] },
       toolPolicy: { mode: "soft", prefer: [], demote: [], deny: [] },
@@ -458,44 +459,53 @@ async function main(): Promise<void> {
     assert(!c.enabled.includes("drawio-ai") && !c.enabled.includes("penpot"), "coding 隐藏 working/design 服务器");
   }
 
-  /* ================= H. code-review 通用样例 ================= */
-  console.log("\nH. coding code-review 走通用机制（无特判）");
+  /* ================= H. coding 两项出厂 Tag ================= */
+  console.log("\nH. coding minimal + HTML 走通用机制");
   {
     const codingPolicy = MODE_SEEDS.coding.policy;
-    const preset = resolveModePreset(codingPolicy, "code-review");
-    assert(!!preset, "code-review preset 存在");
+    assert(codingPolicy.presets?.map(preset => preset.id).join(",") === "minimal,web-html", "coding 出厂仅 minimal + HTML");
+    const minimal = resolveModePreset(codingPolicy, "minimal", "coding");
+    assert(minimal?.id === "minimal" && !minimal.promptAddon, "minimal 不追加场景提示词");
+    const preset = resolveModePreset(codingPolicy, "web-html", "coding");
+    assert(!!preset, "HTML preset 存在");
     const eff = resolveEffectiveModePolicy(codingPolicy, preset);
-    assert(eff.suggestedPermissionMode === "readonly", "code-review → effective readonly（通用合成）");
+    assert(eff.suggestedPermissionMode === null, "HTML 不强制只读权限");
     assert(
-      JSON.stringify(eff.recommendedExpertIds) === JSON.stringify(["code-review-expert"]),
-      "code-review → 推荐 code-review-expert（通用合成）",
+      JSON.stringify(eff.recommendedExpertIds) === JSON.stringify(codingPolicy.recommendedExpertIds),
+      "HTML 不再预选旧 code-review 专家",
     );
-    assert((preset!.skillPolicy?.prefer ?? []).includes("review"), "code-review skillPolicy 偏好 review");
-    assert((preset!.skillPolicy?.prefer ?? []).includes("github"), "code-review skillPolicy 偏好 github（私有技能）");
-    assert(!!preset!.promptAddon && preset!.promptAddon!.length > 100, "code-review promptAddon 完整");
-    // 其余 coding preset 也按同一机制解析
-    for (const id of ["bugfix-test", "refactor", "plan-design", "readonly-explain"]) {
-      const p = resolveModePreset(codingPolicy, id);
-      assert(!!p, `${id} preset 可解析`);
-      resolveEffectiveModePolicy(codingPolicy, p); // 不抛错即通用
+    assert(
+      JSON.stringify(eff.skillPolicy) === JSON.stringify(codingPolicy.skillPolicy) &&
+        JSON.stringify(eff.mcpPolicy) === JSON.stringify(codingPolicy.mcpPolicy),
+      "HTML 保留 coding base 的技能和 MCP 能力",
+    );
+    assert(!!eff.promptAddon?.includes("browser_exec") && !!eff.promptAddon?.includes("实际创建或修改文件"), "HTML 装配文件交付与真实浏览器验收指引");
+    assert(!preset?.pstackRoute, "HTML 不固定 feature 路由，由 Poteto 按本轮意图选择");
+    for (const id of ["bugfix-test", "refactor", "code-review", "plan-design", "readonly-explain"]) {
+      const p = resolveModePreset(codingPolicy, id, "coding");
+      assert(!codingPolicy.presets?.some(preset => preset.id === id) && resolveModePresetId("coding", id) === "minimal", `${id} 退出出厂目录并回落 minimal`);
+      const retired = resolveEffectiveModePolicy(codingPolicy, p);
+      assert(retired.promptAddon === null && retired.suggestedPermissionMode === null && retired.recommendedExpertIds.length === 0,
+        `${id} 不残留固定流程、只读权限或审查专家`);
     }
-    const bugfix = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "bugfix-test"));
-    assert(bugfix.suggestedPermissionMode === null, "bugfix-test 不强制权限（常规开发）");
-    const plan = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "plan-design"));
-    assert(plan.suggestedPermissionMode === "readonly", "plan-design 建议只读");
-    const explain = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "readonly-explain"));
-    assert(explain.suggestedPermissionMode === "readonly", "readonly-explain 建议只读");
   }
 
   /* ================= I. Related Task ================= */
   console.log("\nI. 通用关联任务（同 Space、独立 session、无新 schema）");
   {
-    const codingPolicy = MODE_SEEDS.coding.policy;
-    const profile = { policy: codingPolicy } as Parameters<typeof resolveRelatedTaskSpec>[0]["profile"];
+    const codingPolicy: ModePolicyDto = {
+      ...MODE_SEEDS.coding.policy,
+      presets: [...(MODE_SEEDS.coding.policy.presets ?? []), {
+        id: "custom-review",
+        label: "我的审查流程",
+        suggestedPermissionMode: "readonly",
+      }],
+    };
+    const profile = { id: "coding", policy: codingPolicy } as Parameters<typeof resolveRelatedTaskSpec>[0]["profile"];
     const spec = resolveRelatedTaskSpec({
       sourceTitle: "任务A",
       welcomeMode: "coding",
-      modePresetId: "code-review",
+      modePresetId: "custom-review",
       expertId: "code-review-expert",
       fallbackPermission: "default",
       fallbackModelId: "m1",
@@ -504,7 +514,7 @@ async function main(): Promise<void> {
       profile,
     });
     assert(spec.permissionMode === "readonly", "关联任务权限 = preset 建议 readonly");
-    assert(spec.modePresetId === "code-review" && spec.expertId === "code-review-expert", "关联任务 tag/专家透传");
+    assert(spec.modePresetId === "custom-review" && spec.expertId === "code-review-expert", "关联任务自定义 tag/专家透传");
     assert(spec.modelId === "m1", "无有效建议模型 → 回退源模型");
     assert(spec.title.includes("任务A"), "标题关联源任务");
 
@@ -512,7 +522,7 @@ async function main(): Promise<void> {
     const spec2 = resolveRelatedTaskSpec({
       sourceTitle: "任务A",
       welcomeMode: "coding",
-      modePresetId: "code-review",
+      modePresetId: "custom-review",
       permissionMode: "auto",
       modelId: "explicit-model",
       fallbackPermission: "default",
@@ -527,11 +537,11 @@ async function main(): Promise<void> {
     const spec3 = resolveRelatedTaskSpec({
       sourceTitle: "任务A",
       welcomeMode: "coding",
-      modePresetId: "code-review",
+      modePresetId: "custom-review",
       fallbackPermission: "default",
       fallbackModelId: "m1",
       isModelAvailable: (id) => id === "review-model",
-      profile: { policy: withSuggestion } as Parameters<typeof resolveRelatedTaskSpec>[0]["profile"],
+      profile: { id: "coding", policy: withSuggestion } as Parameters<typeof resolveRelatedTaskSpec>[0]["profile"],
     });
     assert(spec3.modelId === "review-model", "Tag 建议模型可用 → 生效");
 
@@ -556,12 +566,12 @@ async function main(): Promise<void> {
       modelId: "m1",
       permissionMode: "readonly",
       expertId: "code-review-expert",
-      modePresetId: "code-review",
+      modePresetId: "custom-review",
     });
     const row = db.listTasks().find((t) => t.id === "related-1");
     assert(!!row, "关联任务落库");
     assert(row?.spaceId === "space-1", "同 Space");
-    assert(row?.welcomeMode === "coding" && row?.modePresetId === "code-review", "mode/tag 持久化");
+    assert(row?.welcomeMode === "coding" && row?.modePresetId === "custom-review", "mode/自定义 tag 持久化");
     assert(row?.permissionMode === "readonly" && row?.expertId === "code-review-expert", "权限/专家持久化");
     assert(row?.modelId === "m1", "模型持久化");
     const rawDb = new Database(join(sandbox, ".mybuddy", "app.db"));
@@ -743,7 +753,7 @@ async function main(): Promise<void> {
         ...emptyModePolicy(),
         presets: [
           {
-            id: "code-review",
+            id: "custom-review",
             label: "代码审查",
             suggestedModelId: "review-model",
             suggestedPermissionMode: "readonly",
@@ -789,7 +799,7 @@ async function main(): Promise<void> {
           permissionMode: "readonly",
           permissionExplicit: true,
           welcomeMode: "coding",
-          modePresetId: "code-review",
+          modePresetId: "custom-review",
           connectorIds: [],
         },
         {
@@ -800,7 +810,7 @@ async function main(): Promise<void> {
           modelId: "m-b",
           permissionMode: "default",
           welcomeMode: "coding",
-          modePresetId: "code-review",
+          modePresetId: "custom-review",
           connectorIds: [],
         },
       ],
@@ -812,7 +822,7 @@ async function main(): Promise<void> {
       permissionExplicit: true,
       activeConnectorIds: [],
       welcomeMode: "coding",
-      modePresetId: "code-review",
+      modePresetId: "custom-review",
       homeSpaceId: null,
       models: [
         {
@@ -898,7 +908,7 @@ async function main(): Promise<void> {
           permissionMode: "readonly",
           permissionExplicit: true,
           welcomeMode: "coding",
-          modePresetId: "code-review",
+          modePresetId: "custom-review",
           connectorIds: [],
         },
       ],
@@ -940,7 +950,7 @@ async function main(): Promise<void> {
           modelId: "gpt-5",
           permissionMode: "default",
           welcomeMode: "coding",
-          modePresetId: "code-review",
+          modePresetId: "custom-review",
           connectorIds: ["c1", "c2"],
         },
       ],
@@ -1779,7 +1789,10 @@ async function main(): Promise<void> {
     );
     assert(!resolveModePreset(working.policy, "web-prototype"), "N6：办公 Penpot 预设已退役");
     assert(!resolveModePreset(design.policy, "web-prototype") && !resolveModePreset(design.policy, "general"), "N6：Bot 不再保留通用设计和 Penpot");
-    assert(resolveModePreset(coding.policy, "code-review") != null, "N6：coding/code-review 预设存在");
+    assert(resolveModePreset(coding.policy, "minimal", "coding") != null && resolveModePreset(coding.policy, "web-html", "coding") != null,
+      "N6：coding 最小模式和 HTML 预设均存在");
+    assert(!coding.policy.presets?.some(preset => ["bugfix-test", "refactor", "code-review", "plan-design", "readonly-explain"].includes(preset.id)),
+      "N6：退役 coding 内置 Tag 不复活");
     for (const id of ["drawio-ai", "penpot"]) {
       assert(
         (MANAGED_TOOL_PROVIDER_IDS as readonly string[]).includes(id),

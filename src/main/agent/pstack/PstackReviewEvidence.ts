@@ -39,6 +39,7 @@ export async function reviewTargets(root: string, changed: string[], requests: s
 export function observedReviewFiles(entries: readonly EntryRecord[], cwd: string, root: string, registered: readonly string[] = []): Seen[] {
   const calls = new Map<string, { tool: "read" | "ls"; raw: string }>(), observed: Seen[] = [];
   const allowed = new Map(registered.map(path => [canonicalPathKey(path),path]));
+  const outside = (path: string) => path === ".." || path.startsWith(".." + sep) || isAbsolute(path);
   for (const entry of entries) {
     if (entry.byTaskId === undefined) continue;
     for (const message of entry.model ?? []) {
@@ -57,8 +58,12 @@ export function observedReviewFiles(entries: readonly EntryRecord[], cwd: string
         if (!missing && !nativeExecutionSucceeded(message, identity)) continue;
         const target = missing ? executionReceipt?.fileReadAttempt?.target : executionReceipt?.fileRead?.target;
         if (executionReceipt && called.tool === "read" && !target) continue;
-        const full = target ?? resolve(cwd, called.raw), rel = relative(root, full);
-        const path = rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)
+        const full = target ?? resolve(cwd, called.raw), parentPath = relative(root, full), childPath = relative(cwd, full);
+        // A native isolated reviewer reads the same project-relative file in its
+        // host-assigned worktree. Keep the signed receipt and compare its digest
+        // with the measured parent version in validateInspections.
+        const rel = outside(parentPath) && !outside(childPath) ? childPath : parentPath;
+        const path = outside(rel)
           ? called.tool === "read" ? allowed.get(canonicalPathKey(full)) : undefined
           : rel.split(sep).join("/") || ".";
         if (path) observed.push({ tool: missing ? "read_missing" : called.tool, path, entry: entry.id,

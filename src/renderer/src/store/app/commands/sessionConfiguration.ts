@@ -248,6 +248,7 @@ export function createSessionConfigurationActions(
           ? resolveModePreset(
               profile.policy,
               task?.modePresetId ?? modePresetId ?? null,
+              profile.id,
             )
           : undefined;
         const effective = profile
@@ -303,6 +304,7 @@ export function createSessionConfigurationActions(
           ? resolveModePreset(
               profile.policy,
               task?.modePresetId ?? modePresetId ?? null,
+              profile.id,
             )
           : undefined;
         const effective = profile

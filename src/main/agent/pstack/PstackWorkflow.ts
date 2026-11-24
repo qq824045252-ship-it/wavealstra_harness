@@ -9,7 +9,7 @@ import { codingTagRoute, codingTagSupportsRoute, readOnlyCodingTag } from "../..
 import { isPstackObservation } from "./PstackObservationCommand";
 import { contestStep, prepareContestAdvance } from "./PstackContest";
 import { checkEvalExport, createEvalSave, exportEval, requestedEvalFiles } from "./PstackEvalExport";
-import { checked, criteria, detached, failure, live, observation, owner, playbookFor, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success,
+import { checked, criteria, detached, failure, live, observation, owner, playbookFor, reportOnlyReview, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success,
   transcript, update, view, WorkflowFiles, WorkflowState, type WorkflowOptions, type WorkflowRun } from "./PstackState";
 import { baselineWorkspace, branchReviewBase, measureWorkspace, readPlanFile, reviewBaseline, reviewCommit, reviewScope, verificationCheckout } from "./PstackWorkspace";
 import { checkWorkspaceStamp, latestCheck, passedCurrentCheck, pstackCheckReceipt, reviewMatchesVerification, type PstackCheckReceipt } from "./PstackVerificationEvidence";
@@ -70,18 +70,25 @@ const checkReply = (receipt: PstackCheckReceipt) => ({
 export function createPstackWorkflow(options: WorkflowOptions) {
   const workflow: ToolRegistration = defineTool({
     name: "pstack_workflow", replay: "safe", executionMode: "sequential",
-    description: "Optional pstack workflow. Choose it based on the user's intent and the task's needs, such as an explicitly requested playbook, formal review, or multi-stage change that benefits from staged verification. For ordinary chat or explaining existing code, answer directly using relevant source reads if needed. status lists available workflows and the tag's preferred playbook. start opts this input into a playbook or skill; resume opts into a paused run. skill displays instructions. invoke(skill) runs a supporting method. advance(stage,note) records a stage outcome. verify(shell,command) records a check against the workspace version. review shows Thermos triggers. decision appends to the configured TSV. complete checks current evidence. block(note) records a real dependency.",
+    description: "Optional pstack workflow. Choose it based on the user's intent and the task's needs, such as an explicitly requested playbook, formal review, or multi-stage change that benefits from staged verification. For ordinary chat or explaining existing code, answer directly using relevant source reads if needed. Tags provide output preferences, not task categories. status lists enabled workflows, the preferred playbook, and poteto routing guidance. start(playbook=auto) or start(skill=poteto-mode) returns routing guidance without starting a run: select a concrete enabled route yourself, then call start again. A concrete start opts this input into a playbook or skill; resume opts into a paused run. skill displays instructions. invoke(skill) runs a supporting method. advance(stage,note) records a stage outcome. verify(shell,command) records a check against the workspace version. review shows Thermos triggers. decision appends to the configured TSV. complete checks current evidence. block(note) records a real dependency.",
     parameters,
     async execute(args, api, ctx) {
       try {
         checked(options, ctx); await owner(api, ctx);
         const { action, note } = args;
         const current = await state(api, ctx), run = current?.task === options.taskId ? current : null;
-        const settings = run && run.phase !== "complete" && !(action === "start" && args.replace) ? runSettings(run) : normalizePstackSettings(options.settings());
-        const preferred = codingTagRoute(options.tag) ?? settings.skills["poteto-mode"]?.parameters.preferredPlaybook;
-        const tagId = options.tag?.id;
+        const frozenRun = run && run.phase !== "complete" && !(action === "start" && args.replace) ? run : null;
+        const settings = frozenRun ? runSettings(frozenRun) : normalizePstackSettings(options.settings());
+        const routerEnabled = settings.skills["poteto-mode"]?.enabled === true;
+        const preferred = codingTagRoute(options.tag) ?? (routerEnabled ? settings.skills["poteto-mode"].parameters.preferredPlaybook : undefined);
+        const tagId = frozenRun ? frozenRun.tagId : options.tag?.id;
         const allowedRoute = (id: string) => codingTagSupportsRoute(tagId, id) && !!routeSettings(settings, id)?.enabled;
         const defaultRoute = typeof preferred === "string" && allowedRoute(preferred) ? preferred : "auto";
+        const routes = () => ({ preferredPlaybook: defaultRoute,
+          router: routerEnabled ? skillView(settings, "poteto-mode") : null,
+          playbooks: PSTACK_PLAYBOOKS.filter(s => allowedRoute(s.id)).map(({ id, description }) => ({ id, description })),
+          skills: PSTACK_SKILLS.filter(s => s.id !== "poteto-mode" && allowedRoute("skill:" + s.id)).map(({ id }) => id),
+        });
         if (readOnlyCodingTag(tagId) && (["verify", "decision", "export-eval", "audit", "pr-body"].includes(action) || args.artifactDirectory))
           throw new Error("当前标签只读。请使用 read、find、grep 或 review 核实证据。");
         if (run && run.phase !== "complete" && !codingTagSupportsRoute(tagId, run.playbook) &&
@@ -89,14 +96,21 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           throw new Error("原有流程超出当前只读标签的范围。用 start(replace=true,note) 记录新目标并启动当前标签的流程。");
         if (action === "skill") return success({ ...skillView(settings, args.skill ?? ""),
           ...(args.skill === "ketchup" && { currentWorkflow: run ? view(run) : null }) });
-        if (action === "status") return success(run ? { ...view(run), preferredPlaybook: defaultRoute, ...(isAutopilot(run.playbook) && { ownerAuditHistory: await recordedOwnerAudits(api, ctx, run.run) }) } : {
-          phase: "idle", upstream: PSTACK_UPSTREAM, preferredPlaybook: defaultRoute,
-          playbooks: PSTACK_PLAYBOOKS.filter(s => allowedRoute(s.id)).map(({ id, description }) => ({ id, description })),
-          skills: PSTACK_SKILLS.filter(s => allowedRoute("skill:" + s.id)).map(({ id }) => id),
+        if (action === "status") return success(run ? { ...view(run), ...routes(), ...(isAutopilot(run.playbook) && { ownerAuditHistory: await recordedOwnerAudits(api, ctx, run.run) }) } : {
+          phase: "idle", upstream: PSTACK_UPSTREAM, ...routes(),
         });
         const active = await live(api, ctx);
         if (!active?.first || !active.inputs.length) throw new Error("Workflow requires a current user input.");
-        if ((action === "start" || action === "resume") && options.settings().skills["poteto-mode"]?.parameters.githubBinding === "required"
+        const requested = args.skill ? "skill:" + args.skill : args.playbook ??
+          (run && run.phase !== "complete" && !args.replace ? run.playbook : defaultRoute);
+        if (action === "start" && (requested === "auto" || requested === "skill:poteto-mode")) {
+          if (!routerEnabled) throw new Error("Poteto routing is disabled. Select a concrete enabled playbook or skill from status, or enable poteto-mode in settings.");
+          return success({ phase: "routing", started: false, upstream: PSTACK_UPSTREAM, ...routes(),
+            currentWorkflow: run ? view(run) : null,
+            next: "Use the user's objective and the poteto instructions to choose a concrete enabled playbook or skill, then call start with it. Do not ask the user to classify the task. An existing workflow remains unchanged; changing its objective still requires replace=true and note on the concrete start.",
+          });
+        }
+        if ((action === "start" || action === "resume") && routerEnabled && settings.skills["poteto-mode"].parameters.githubBinding === "required"
           && !options.githubAvailable?.()) {
           throw new Error("此流程要求 GitHub MCP。请启用 GitHub MCP 并允许本场景使用，或在 pstack 任务路由中改为按需绑定。");
         }
@@ -108,8 +122,6 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           return check ? checkReply(check) : success(view(run));
         }
         if (action === "start") {
-          const requested = args.skill ? "skill:" + args.skill : args.playbook ??
-            (run && run.phase !== "complete" && !args.replace ? run.playbook : defaultRoute);
           if (run && run.phase !== "complete" && !args.replace) {
             if (requested !== run.playbook) throw new Error("A workflow is already active. Finish it or resume its current stage.");
             if (run.phase === "running" && active.inputs.some(id => !run.inputs.includes(id)))
@@ -344,10 +356,10 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         const reviewed = currentReview && !!run.review?.passed
           && (run.playbook !== "investigation" || !!run.review.answerDraft);
         // A read-only review can deliver a substantiated negative verdict. Missing or invalid member receipts still block delivery.
-        const reportedFindings = currentReview && run.tagId === "code-review" && run.review?.passed === false && !run.review.error &&
+        const reportedFindings = currentReview && reportOnlyReview(run) && run.review?.passed === false && !run.review.error &&
           !!run.review.members?.length && run.review.members.every(member => !member.error);
         if (action === "review") return success({ reasons, reviewBase: run.reviewCommit ?? "task start", reviewerRole: settings.thermos.reviewerRole,
-          ...(tagId === "code-review" && await reviewBaseline(scope, reviewedDelta.paths, ctx.abortSignal, scoped)),
+          ...(reportOnlyReview(run) && await reviewBaseline(scope, reviewedDelta.paths, ctx.abortSignal, scoped)),
           currentReviewPassed: reviewed, currentReviewFinished: reviewed || reportedFindings, criteria: criteria(settings), authoredSkills:scoped.map(f=>({file:f.path,sha256:f.current.digest})), ...reviewedDelta });
         const snapshotDone = run.watch?.allowed && ["STATUS", "ORIGIN_STATUS"].includes(run.watch.verdict) && !delta.paths.length &&
           (run.watch.mergedSnapshot || (run.playbook === "babysit" && settings.playbooks.babysit.parameters.mode === "check"));
@@ -382,7 +394,7 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           if (current.digest !== run.prBody?.digest) throw new Error("The PR body changed after its review. Call pr-body(artifact) to inspect its current content before claiming publication.");
           await inspectPublishedPr(base.cwd, args.pullRequest ?? run.publishedPr?.url, current, settings.playbooks[run.playbook].parameters.forge, ctx.abortSignal);
         }
-        if ((run.playbook === "investigation" || readOnlyCodingTag(run.tagId) || readOnlyPstackMethod(run.playbook)) && delta.paths.length)
+        if ((run.playbook === "investigation" || reportOnlyReview(run) || readOnlyCodingTag(run.tagId) || readOnlyPstackMethod(run.playbook)) && delta.paths.length)
           throw new Error("The read-only investigation changed the workspace: " + delta.paths.join(", ") + ". Reconcile the changes before claiming completion.");
         if (run.playbook === "orchestrate") {
           const missing = await orchestrationProgress(api, ctx, run);
@@ -428,7 +440,7 @@ export function createPstackWorkflow(options: WorkflowOptions) {
             throw new Error(verification.error);
           if (!verifiedCurrentWorkspace)
             throw new Error("Current workspace needs a successful verification. Call verify with the project's focused check.");
-        } else if (!planReceipt && !auditedTrail && !authored.length && !observation(history) && !verifiedCurrentWorkspace && !run.delegates.length && !reviewed && !run.watch?.allowed &&
+        } else if (!planReceipt && !auditedTrail && !authored.length && !observation(history) && !verifiedCurrentWorkspace && !run.delegates.length && !reviewed && !reportedFindings && !run.watch?.allowed &&
             !textOnlyPstackMethod(run.playbook) && !(run.playbook === "skill:reframe" && run.reframe?.length) &&
             !(run.playbook === "skill:ketchup" && observedPstackStatus(history)) && !advanced.length) {
           if (verification?.passed) throw new Error("The successful check covered a different workspace version. Verify a stable current snapshot before completing.");

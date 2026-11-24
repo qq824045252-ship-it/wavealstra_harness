@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     // 三模式 seed 一致
     assert(MODE_SEEDS.working.policy.presets?.length === 2, "working 出厂 2 presets");
     assert(MODE_SEEDS.general.policy.presets?.length === 2, "Bot 出厂 2 Tags");
-    assert(MODE_SEEDS.coding.policy.presets?.length === 6, "coding 出厂 6 presets");
+    assert(MODE_SEEDS.coding.policy.presets?.map(preset => preset.id).join(",") === "minimal,web-html", "coding 出厂仅最小模式 + HTML");
   }
 
   console.log("\n== 5. buildPresetBarChips：providerMcpIds 与编辑器数据一致 ==");
@@ -264,7 +264,11 @@ async function main(): Promise<void> {
 
   // 6. 出厂预设删除 gate（seed preset 不可删：读时会被 ModeProfileStore 合并还原）
   {
-    assert(isSeedPreset("coding", "code-review") === true, "coding code-review 是 seed（不可删）");
+    assert(isSeedPreset("coding", "minimal") === true, "coding 最小模式是 seed（不可删）");
+    assert(isSeedPreset("coding", "web-html") === true, "coding HTML 是 seed（不可删）");
+    for (const id of ["bugfix-test", "refactor", "code-review", "plan-design", "readonly-explain"]) {
+      assert(isSeedPreset("coding", id) === false, `coding ${id} 已退役，不再是 seed`);
+    }
     assert(isSeedPreset("working", "general-office") === true, "working general-office 是 seed");
     assert(isSeedPreset("working", "web-prototype") === false, "办公 Penpot 已退役");
     assert(isSeedPreset("general", "web-prototype") === false, "Bot Penpot 已移除");

@@ -309,6 +309,7 @@ const KNOWN_HEADLESS_RED = new Set([
  * 显式清单优先于下面的命名兜底，否则它们会被 `^test:browser-` 之类正则误伤。
  */
 const HEADLESS_TESTS = new Set([
+  "test:pstack-settings-toggle",
   "test:pstack-worker-contract", "test:pstack-interrogate", "test:pstack-advanced-artifacts", "test:pstack-statechart",
   "test:improvement-release", "test:native-improvement", "test:improvement-weekly-report", "test:improvement-delivery-contract", "test:native-hooks",
   "test:gateway-conversation",

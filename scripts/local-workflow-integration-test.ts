@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,7 +12,7 @@ import { traverseFast } from "@babel/types";
 import { PSTACK_THERMOS_ID } from "../src/shared/mode-profile";
 import { normalizePstackSettings, THERMOS_CRITERIA } from "../src/shared/pstack";
 import { checkProviderRecovery, providerFixtureResponse } from "./pstack-provider-recovery-fixture";
-import { assertTagCase, seedTagCase, tagCases, tagFixtureReply } from "./coding-tag-fixture";
+import { assertTagCase, seedTagCase, tagCases, tagFixtureReply, tagPresetId } from "./coding-tag-fixture";
 
 // Persisted sessions require both domain services and window-backed tools before opening.
 const bootstrap = parse(readFileSync("src/main/index.ts", "utf8"), { sourceType: "module", plugins: ["typescript"] });
@@ -111,19 +111,35 @@ const draftAdvance = (stage: string): [string, Record<string, unknown>] =>
   ["pstack_workflow",{action:"advance",stage,note:"Inspected tested.txt."}];
 const draftCalls: [string, Record<string, unknown>][] = [
   ["pstack_workflow",{action:"start",playbook:"investigation"}],["read",{path:"tested.txt"}],
+  ["write",{path:"forbidden.txt",content:"An explanation must preserve its source."}],
   draftStage("how-explorer"), draftAdvance("trace"), draftAdvance("scope"),
   draftStage("how-explainer"), draftAdvance("explain"), draftAdvance("edit"),
   draftReview("The first line contains red."), draftReview("The first line contains red."), ["pstack_workflow",{action:"complete"}],
   draftReview(acceptedDraft), ["pstack_workflow",{action:"complete"}],
 ];
 let draftRound=0, draftReads=0, draftStageReads=0;
-const readOnlyInterrogateCalls: [string, Record<string, unknown>][] = [
-  ["pstack_workflow", {action:"start"}],
-  ...["scope","intent"].map(stage => ["pstack_workflow", {action:"advance",stage,note:"Review the preserved source without changing permissions."}] as [string,Record<string,unknown>]),
-  ["pstack_delegate", {purpose:"stage",role:"interrogate-reviewers",tasks:["Run a reproduction for the proposed source change."]}],
-  ["pstack_workflow", {action:"block",note:"Interrogate needs isolated test execution; this task retains its read-only permissions. Use the default read-only Thermos review or a coding task authorized to execute tests."}],
+const interrogateShell = process.platform === "win32" ? "powershell" : "bash";
+const interrogateCommand = "node --test check.cjs";
+const interrogateCalls: [string, Record<string, unknown>][] = [
+  ["pstack_workflow", {action:"status"}],
+  ["pstack_workflow", {action:"skill",skill:"interrogate"}],
+  ["pstack_workflow", {action:"start",skill:"interrogate"}],
+  ["write", {path:"forbidden.txt",content:"Interrogate must preserve the reviewed source."}],
+  ...["scope","intent"].map(stage => ["pstack_workflow", {action:"advance",stage,note:"Review the committed source with one isolated native probe."}] as [string,Record<string,unknown>]),
+  ["pstack_delegate", {purpose:"stage",role:"interrogate-reviewers",tasks:["PSTACK_INTERROGATE_NO_THERMOS Execute node --test check.cjs in your isolated worktree. Report the actual probe and any demonstrated findings."]}],
+  ...["panel","synthesize","judge"].map(stage => ["pstack_workflow", {action:"advance",stage,note:"The isolated native check passed; no confirmed defect was found in the tested behavior."}] as [string,Record<string,unknown>]),
+  ["pstack_workflow", {action:"complete"}],
 ];
-let readOnlyInterrogateRound=0;
+let interrogateRound=0;
+const routerDisabledCalls: [string,Record<string,unknown>][] = [
+  ["pstack_workflow",{action:"status"}],
+  ["pstack_workflow",{action:"start",playbook:"auto"}],
+  ["pstack_workflow",{action:"start",skill:"principle-prove-it-works"}],
+  ["read",{path:"tested.txt"}],
+  ["pstack_workflow",{action:"advance",stage:"apply",note:"Read the requested file with an explicitly selected method."}],
+  ["pstack_workflow",{action:"complete"}],
+];
+let routerDisabledRound=0;
 let quotaRound=0, billedCalls=0;
 const quotaCalls: [string,Record<string,unknown>][] = [
   ["pstack_workflow",{action:"start",skill:"principle-prove-it-works"}],
@@ -147,6 +163,7 @@ const server = createServer(async (request, response) => {
   requests.push(raw);
   const body = JSON.parse(raw);
   let call: [string, Record<string, unknown>] | undefined;
+  let callId = `call_${requests.length}`;
   let answer = "CRON_ACTUAL_OK";
   const fixture = providerFixtureResponse(raw, body.model);
   const tagCase = /CODING_TAG_CASE_([a-z-]+)/.exec(raw)?.[1];
@@ -170,9 +187,25 @@ const server = createServer(async (request, response) => {
       return;
     } else if (!body.input.some((item:{type:string})=>item.type==="function_call_output")) call=["read",{path:"tested.txt"}];
     else answer=JSON.stringify({verdict:"pass",findings:[],checks:Object.fromEntries(THERMOS_CRITERIA.map(c=>[c.id,"Read line 1."]))});
-  } else if (raw.includes("PSTACK_INTERROGATE_READONLY")) {
-    if (body.model === "cron") call=readOnlyInterrogateCalls[readOnlyInterrogateRound++];
-    answer="Execution coverage is blocked by the current read-only task.";
+  } else if (raw.includes("PSTACK_INTERROGATE_NO_THERMOS")) {
+    if (body.model === "cron") {
+      call=interrogateCalls[interrogateRound++];
+      answer="Interrogate completed with actual isolated execution and no confirmed defects.";
+    }
+    else if (!body.input.some((item:{type:string}) => item.type === "function_call_output")) {
+      call=[interrogateShell,{command:interrogateCommand}];
+      callId="interrogate-native-probe";
+    } else {
+      const probe=body.input.findLast((item:{type:string;name?:string})=>item.type==="function_call" && item.name===interrogateShell);
+      assert(probe,"The Interrogate verdict must identify its actual native call");
+      answer=JSON.stringify({
+        coverage:"Executed the committed check for tested.txt. Other behavior was not assessed.",
+        probes:[{toolCallId:`${probe.call_id}|${probe.id}`,shell:interrogateShell,command:interrogateCommand}], findings:[],
+      });
+    }
+  } else if (raw.includes("PSTACK_DISABLED_ROUTER")) {
+    call=routerDisabledCalls[routerDisabledRound++];
+    answer="Completed the explicitly chosen method while automatic task routing is disabled.";
   } else if (raw.includes("PSTACK_DRAFT_STAGE") && body.model !== "cron") {
     if (!body.input.some((item:{type:string}) => item.type === "function_call_output")) {
       call=["read",{path:"tested.txt"}]; draftStageReads++;
@@ -209,7 +242,7 @@ const server = createServer(async (request, response) => {
     answer = round === 2 ? "已经完成。" : "PSTACK_VERIFIED";
   }
   const item = call
-    ? { type: "function_call", id: `fc_${requests.length}`, call_id: `call_${requests.length}`, name: call[0], arguments: JSON.stringify(call[1]) }
+    ? { type: "function_call", id: `fc_${requests.length}`, call_id: callId, name: call[0], arguments: JSON.stringify(call[1]) }
     : { type: "message", id: `msg_${requests.length}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: answer, annotations: [] }] };
   response.writeHead(200, { "content-type": "text/event-stream" });
   for (const type of ["response.output_item.added", "response.output_item.done"]) response.write(`data: ${JSON.stringify({ type, output_index: 0, item })}\n\n`);
@@ -293,13 +326,16 @@ try {
   assert(!agent.getModeProfile("coding").policy.presets?.some(tag => tag.id === PSTACK_THERMOS_ID));
   assert.equal(agent.getModeProfile("coding").policy.presets?.find(tag => tag.id === legacy.id)?.promptAddon, legacy.promptAddon);
   for (const tag of [undefined, ...agent.getModeProfile("coding").policy.presets!.map(p => p.id), PSTACK_THERMOS_ID]) {
-    assert.match(modePrompt("coding", tag), /按用户目标和任务复杂度自行决定是否使用可选工作流/);
-    assert(!modePrompt("coding", tag).includes("pstack_workflow"), "Coding mode must not prescribe pstack: " + tag);
+    const prompt=modePrompt("coding", tag);
+    assert.match(prompt, /按用户目标和任务复杂度自行决定是否使用可选工作流/);
+    assert(prompt.includes("pstack_workflow status") && prompt.includes("路由指引本身不启动流程"),
+      "Coding mode exposes optional poteto routing without starting a workflow: " + tag);
+    assert(prompt.includes("普通交流及只需阅读代码的解释继续直接回答"), "Ordinary conversation retains its direct path: " + tag);
   }
   assert(modePrompt("coding", legacy.id).includes(legacy.promptAddon));
   assert(!modePrompt("working", PSTACK_THERMOS_ID).includes("pstack_workflow"));
   assert(!modePrompt("general", "native").includes("pstack_workflow"));
-  const selected = { welcomeMode: "coding" as const, modePresetId: "bugfix-test" };
+  const selected = { welcomeMode: "coding" as const, modePresetId: "minimal" };
   assert(!agent.assembleModePreview(selected).skillFilter.visible.includes(PSTACK_THERMOS_ID));
   const request = { ...selected, taskId: "pstack", modelId: "fixture/cron", text: "PSTACK_NATIVE_RUN 修复本地测试样例，严格看下质量，先不要合并",
     userMessageId: "pstack-input", assistantMessageId: "pstack-output" };
@@ -308,7 +344,8 @@ try {
   writeFileSync(join(workflowRoot, "check.cjs"), "const assert = require('node:assert/strict'); assert.equal(require('fs').readFileSync('tested.txt','utf8'), 'verified\\n'); console.log('HOST_RECEIPT_CHECK_PASSED');");
   const firstCodingRequest = requests.length;
   await agent.prompt(request, { durableAdmissionOnly: false });
-  assert(requests[firstCodingRequest].includes("Optional pstack workflow") && requests[firstCodingRequest].includes("当前为「修 Bug」场景"));
+  assert(requests[firstCodingRequest].includes("Optional pstack workflow") && requests[firstCodingRequest].includes("按本轮话语和对话上下文判断用户的意图"));
+  assert(!requests[firstCodingRequest].includes("当前为「修 Bug」场景"), "A selected playbook does not depend on retired tag instructions");
   assert.equal(parentRounds, workflowCalls.length + 2, "premature answer must trigger a continuation, then complete once");
   assert.deepEqual([...reviewRounds].sort(), [["reviewer-a", 2], ["reviewer-b", 4]], "only the reviewer without a machine-readable verdict must reread and correct its own receipt");
   for (const raw of requests.filter(raw => JSON.parse(raw).model !== "cron")) {
@@ -367,8 +404,9 @@ try {
   agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,pstackThermos:draftFlow});
   const draftRoot=workspaces.ensureTaskExecutionWorkspace("draft");
   writeFileSync(join(draftRoot,"tested.txt"),"verified\n");
-  db.upsertTask({id:"draft",title:"Reviewed answer",welcomeMode:"coding",modePresetId:"readonly-explain",modelId:request.modelId,updatedAt:1});
-  await agent.prompt({...request,modePresetId:"readonly-explain",taskId:"draft",text:"PSTACK_DRAFT_CASE Read tested.txt. 请独立审查结论。",userMessageId:"draft-in",assistantMessageId:"draft-out"},{durableAdmissionOnly:false});
+  db.upsertTask({id:"draft",title:"Reviewed answer",...selected,modelId:request.modelId,updatedAt:1});
+  const beforeDraft=requests.length;
+  await agent.prompt({...request,taskId:"draft",text:"PSTACK_DRAFT_CASE Use investigation to explain tested.txt without changing files. 请独立审查结论。",userMessageId:"draft-in",assistantMessageId:"draft-out"},{durableAdmissionOnly:false});
   assert.equal(draftReads,4,"Each of two different drafts must get two independent file reads. Repeating a rejected draft must reuse its verdict.");
   assert.equal(draftStageReads,2,"The direct investigation stages require their own actual read-only worker receipts.");
   const draftDb=new DatabaseSync(join(config,"durable",createHash("sha256").update("draft").digest("hex"),"durable.sqlite"),{readOnly:true});
@@ -379,6 +417,8 @@ try {
     assert(userText?.startsWith(acceptedDraft) && !userText.includes("Substituted"),userText);
   } finally {draftDb.close();}
   assert.equal(readFileSync(join(draftRoot,"tested.txt"),"utf8"),"verified\n");
+  assert.equal(existsSync(join(draftRoot,"forbidden.txt")),false,"The explicit investigation route preserves source under the minimal tag");
+  assert(requests.slice(beforeDraft).some(raw => raw.includes("This method is read-only")),"The selected investigation method enforces its own write boundary");
   console.log("PASS read-only investigation revised and delivered its exact approved answer after independent rejection");
   const quotaRoot=workspaces.ensureTaskExecutionWorkspace("quota");
   writeFileSync(join(quotaRoot,"tested.txt"),"verified\n");
@@ -429,38 +469,63 @@ try {
   const tagFlow = normalizePstackSettings(undefined);
   for (const role of Object.values(tagFlow.roles)) Object.assign(role,{ model:"fixture/observer", count:1, isolation:"shared" });
   const presetFile = process.env.MYBUDDY_CODING_TAGS_FIXTURE;
-  const tagPresets = presetFile ? JSON.parse(readFileSync(presetFile, "utf8")) :
-    [...coding.policy.presets ?? [], { id:"web-html", label:"HTML 开发", pstackRoute:"feature", promptAddon:"Use Modern Web Guidance." }];
-  const explicitInterrogatePresets=tagPresets.map((preset: {id:string}) => preset.id === "code-review" ? {...preset,pstackRoute:"skill:interrogate"} : preset);
-  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...explicitInterrogatePresets,legacy],pstackThermos:tagFlow});
-  const explicitReviewTask="interrogate-readonly", explicitReviewRoot=workspaces.ensureTaskExecutionWorkspace(explicitReviewTask);
+  const tagPresets = presetFile ? JSON.parse(readFileSync(presetFile, "utf8")) : coding.policy.presets ?? [];
+  const customRoute = { id:"custom-route", label:"Custom route fixture", pstackRoute:"feature", promptAddon:"Use the saved custom coding guidance." };
+  const noThermosFlow=structuredClone(tagFlow);
+  noThermosFlow.skills["thermo-nuclear-code-quality-review"].enabled=false;
+  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...tagPresets,legacy,customRoute],pstackThermos:noThermosFlow});
+  const explicitReviewTask="interrogate-without-thermos", explicitReviewRoot=workspaces.ensureTaskExecutionWorkspace(explicitReviewTask);
   writeFileSync(join(explicitReviewRoot,"tested.txt"),"verified\n");
-  db.upsertTask({id:explicitReviewTask,title:"Explicit executed review without shell permission",cwd:explicitReviewRoot,
-    welcomeMode:"coding",modePresetId:"code-review",modelId:request.modelId,updatedAt:1});
+  writeFileSync(join(explicitReviewRoot,"check.cjs"),readFileSync(join(workflowRoot,"check.cjs")));
+  const interrogateGit=(...args:string[])=>execFileSync("git",["-C",explicitReviewRoot,...args],{encoding:"utf8",windowsHide:true}).trim();
+  interrogateGit("init","-q","-b","main"); interrogateGit("add",".");
+  interrogateGit("-c","user.name=fixture","-c","user.email=fixture@invalid","commit","-qm","independent interrogate baseline");
+  db.upsertTask({id:explicitReviewTask,title:"Interrogate with Thermos independently disabled",cwd:explicitReviewRoot,
+    ...selected,modelId:request.modelId,updatedAt:1});
   const explicitReviewStart=requests.length;
-  await agent.prompt({...request,modePresetId:"code-review",taskId:explicitReviewTask,text:"PSTACK_INTERROGATE_READONLY Review using my explicitly selected interrogate route.",
-    userMessageId:"interrogate-readonly-in",assistantMessageId:"interrogate-readonly-out"},{durableAdmissionOnly:false});
+  await agent.prompt({...request,taskId:explicitReviewTask,text:"PSTACK_INTERROGATE_NO_THERMOS Use interrogate to check tested.txt with actual isolated probes; report findings without changing reviewed source.",
+    userMessageId:"interrogate-no-thermos-in",assistantMessageId:"interrogate-no-thermos-out"},{durableAdmissionOnly:false});
   const explicitReviewBodies=requests.slice(explicitReviewStart).map(raw=>JSON.parse(raw));
-  const explicitReviewOutputs=explicitReviewBodies.flatMap(body=>body.input ?? []).filter(item=>item.type==="function_call_output").map(item=>String(item.output));
-  assert(explicitReviewOutputs.some(output=>output.includes("This read-only task has no shell/write authority")));
-  assert(explicitReviewOutputs.some(output=>{try {const result=JSON.parse(output);return result.playbook==="skill:interrogate" && result.phase==="blocked";}catch{return false;}}));
-  assert(explicitReviewBodies.every(body=>body.model==="cron"),"A denied execution-backed panel must not dispatch a static reviewer and claim coverage");
-  assert(!explicitReviewBodies[0].tools.some((tool:{name:string})=>["write","edit","bash","powershell"].includes(tool.name)));
-  assert.equal(agent.getModeProfile("coding").policy.presets?.find(preset=>preset.id==="code-review")?.pstackRoute,"skill:interrogate",
-    "An explicitly saved route remains unchanged when its execution authority is unavailable");
+  const explicitReviewOutputs=explicitReviewBodies.filter(body=>body.model==="cron").flatMap(body=>body.input ?? [])
+    .filter(item=>item.type==="function_call_output").map(item=>{try{return JSON.parse(item.output);}catch{return String(item.output);}});
+  const idle=explicitReviewOutputs.find(output=>output?.phase==="idle");
+  assert(idle.skills.includes("interrogate") && !idle.skills.includes("thermo-nuclear-code-quality-review"));
+  const interrogated=explicitReviewOutputs.find(output=>output?.phase==="complete");
+  assert.equal(interrogated?.playbook,"skill:interrogate",JSON.stringify(explicitReviewOutputs.at(-1)));
+  assert.equal(interrogated.review,null);
+  assert.match(interrogated.thermosOutcome,/已关闭/);
+  const panel=interrogated.delegates.find((receipt:{stageId:string})=>receipt.stageId==="panel");
+  assert.equal(panel.interrogate.reviewers.length,1);
+  const reviewer=panel.interrogate.reviewers[0];
+  assert.equal(reviewer.workspace.kind,"worktree");
+  assert.equal(reviewer.probes.length,1);
+  assert.equal(reviewer.probes[0].command,interrogateCommand);
+  assert.equal(reviewer.probes[0].exitCode,0);
+  assert.match(reviewer.probes[0].executionId,/./);
+  assert.deepEqual(reviewer.findings,[]);
+  assert(explicitReviewBodies.some(body=>body.model==="observer" && body.tools.some((tool:{name:string})=>tool.name===interrogateShell)),
+    "Interrogate retains native execution tools after Thermos is disabled");
+  assert.equal(existsSync(join(explicitReviewRoot,"forbidden.txt")),false);
+  assert.equal(readFileSync(join(explicitReviewRoot,"tested.txt"),"utf8"),"verified\n");
+  assert.equal(interrogateGit("status","--porcelain"),"");
   await agent.releaseDurableTask(explicitReviewTask);
-  console.log("PASS explicit interrogate route reports missing execution authority and preserves read-only task permissions");
-  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...tagPresets,legacy],pstackThermos:tagFlow});
+  console.log("PASS Thermos disabled independently while explicit Interrogate completes from a real isolated native probe");
+  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...tagPresets,legacy,customRoute],pstackThermos:tagFlow});
+  assert(!agent.getModeProfile("coding").policy.presets?.some(preset=>
+    ["bugfix-test","refactor","add-tests","feature-dev","code-review","plan-design","readonly-explain"].includes(preset.id)));
+  assert.equal(agent.getModeProfile("coding").policy.presets?.find(preset=>preset.id===customRoute.id)?.promptAddon,customRoute.promptAddon);
   for (const [id, preferred] of tagCases) {
     const taskId = "tag-" + id, cwd = workspaces.ensureTaskExecutionWorkspace(taskId);
+    const modePresetId=tagPresetId(id);
     seedTagCase(id,cwd);
     if (id === "web-html" && process.env.MYBUDDY_TAG_HTML_GUIDE)
       writeFileSync(join(cwd,"dialog-guide.md"),readFileSync(process.env.MYBUDDY_TAG_HTML_GUIDE));
-    db.upsertTask({ id:taskId, title:id, cwd, ...selected, modePresetId:id, modelId:request.modelId, updatedAt:1 });
+    db.upsertTask({ id:taskId, title:id, cwd, ...selected, modePresetId, modelId:request.modelId, updatedAt:1 });
     const begin = requests.length;
-    const text = "CODING_TAG_CASE_" + id + (id === "code-review" ? " 请独立审查 value.cjs。" : "");
-    await agent.prompt({...request,modePresetId:id,taskId,text,userMessageId:taskId+"-in",assistantMessageId:taskId+"-out"},{durableAdmissionOnly:false});
-    assertTagCase(id,preferred,cwd,requests.slice(begin));
+    const text = "CODING_TAG_CASE_" + id + (id === "thermos-review" ? " Use Thermos to report defects in value.cjs without fixing them." : " Apply and verify the requested fixture change.");
+    await agent.prompt({...request,modePresetId,taskId,text,userMessageId:taskId+"-in",assistantMessageId:taskId+"-out"},{durableAdmissionOnly:false});
+    const savedRoute=agent.getModeProfile("coding").policy.presets?.find(preset=>preset.id===modePresetId)?.pstackRoute;
+    assertTagCase(id,savedRoute ?? preferred,cwd,requests.slice(begin));
     if (id === "web-html" && process.env.MYBUDDY_TAG_HTML_OUTPUT)
       writeFileSync(process.env.MYBUDDY_TAG_HTML_OUTPUT,readFileSync(join(cwd,"index.html")));
     await agent.releaseDurableTask(taskId);
@@ -491,7 +556,29 @@ try {
     assert(JSON.parse(requests.at(-1)!).input.some((item: {type: string; output?: unknown}) =>
       item.type === "function_call_output" && String(item.output).includes("要求 GitHub MCP")));
   }
-  console.log("PASS optional workflow, tag instructions, native completion and review, same-task disable, and GitHub checked only after opt-in");
+  const routerDisabledFlow=structuredClone(flow);
+  routerDisabledFlow.skills["poteto-mode"].enabled=false;
+  routerDisabledFlow.skills["poteto-mode"].parameters.preferredPlaybook="feature";
+  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,pstackThermos:routerDisabledFlow});
+  assert(!modePrompt("coding","minimal").includes("已启用 poteto 任务路由"),"A disabled router is not advertised in the system instructions");
+  const routerDisabledTask="disabled-poteto", routerDisabledRoot=workspaces.ensureTaskExecutionWorkspace(routerDisabledTask);
+  writeFileSync(join(routerDisabledRoot,"tested.txt"),"verified\n");
+  db.upsertTask({id:routerDisabledTask,title:"Explicit method with poteto disabled",cwd:routerDisabledRoot,...selected,modelId:request.modelId,updatedAt:1});
+  const routerDisabledStart=requests.length;
+  await agent.prompt({...request,taskId:routerDisabledTask,text:"PSTACK_DISABLED_ROUTER Read tested.txt with the explicitly chosen principle-prove-it-works method.",
+    userMessageId:"disabled-router-in",assistantMessageId:"disabled-router-out"},{durableAdmissionOnly:false});
+  const disabledRouterBodies=requests.slice(routerDisabledStart).map(raw=>JSON.parse(raw));
+  const disabledRouterOutputs=disabledRouterBodies.flatMap(body=>body.input ?? []).filter(item=>item.type==="function_call_output")
+    .map(item=>{try{return JSON.parse(item.output);}catch{return String(item.output);}});
+  const disabledIdle=disabledRouterOutputs.find(output=>output?.phase==="idle");
+  assert.equal(disabledIdle.router,null);
+  assert.notEqual(disabledIdle.preferredPlaybook,"feature","A disabled router does not impose its saved default playbook");
+  assert(disabledRouterOutputs.some(output=>typeof output==="string" && /poteto-mode/i.test(output) && /disabled|关闭/i.test(output)),
+    "An automatic route request explains that poteto is disabled");
+  assert(disabledRouterOutputs.some(output=>output?.phase==="complete" && output.playbook==="skill:principle-prove-it-works"),
+    "Other enabled methods remain directly usable; disabled poteto does not impose its saved required GitHub binding");
+  await agent.releaseDurableTask(routerDisabledTask);
+  console.log("PASS optional workflows, native review, same-task disable, GitHub checked after opt-in, and independent poteto routing disable");
 } finally {
   cron.stop();
   await agent.abort("scheduled");
