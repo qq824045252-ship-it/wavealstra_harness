@@ -136,7 +136,7 @@ try {
   await fixture.prompt(request);
   assert.equal(requests.length, 1);
   assert(requests[0]!.instructions.includes(project.instructions!));
-  const snapshots = agent.listRuntimeContextSnapshots("runtime-task");
+  const snapshots = await agent.listRuntimeContextSnapshots("runtime-task");
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0]?.status, "completed");
   assert.equal(snapshots[0]?.projectId, project.id);
@@ -146,8 +146,9 @@ try {
   await fixture.prompt({ ...request, text: "run after resource change", assistantMessageId: "assistant-2", userMessageId: "user-2" });
   assert.equal(requests.length, 2);
   assert.equal((await agent.loadTaskHistory("runtime-task")).durable?.conversationId, beforeHistory.durable?.conversationId, "resource changes keep the native conversation");
-  assert.equal(agent.listRuntimeContextSnapshots("runtime-task")[0]?.assemblyHash, snapshots[0]?.assemblyHash);
-  assert(!agent.listRuntimeContextSnapshots("runtime-task")[0]?.resolvedInstructions.some(segment => segment.content.includes("resource revision two")));
+  const refreshedSnapshots = await agent.listRuntimeContextSnapshots("runtime-task");
+  assert.equal(refreshedSnapshots[0]?.assemblyHash, snapshots[0]?.assemblyHash);
+  assert(!refreshedSnapshots[0]?.resolvedInstructions.some(segment => segment.content.includes("resource revision two")));
   projects.update({ id: project.id, instructions: "Changed after execution" });
   assert(snapshots[0]?.resolvedInstructions.some(segment => segment.content.includes(project.instructions!)), "prior audit is immutable");
   const notice = patches.find(patch => patch.type === "capability_notices");
@@ -163,7 +164,7 @@ try {
   assert(!requests.at(-1)!.tools.includes("project_plan_list"));
   assert(requests.at(-1)!.tools.includes("memory_search"));
   await agent.releaseDurableTask("no-project-task"); db.deleteTask("no-project-task");
-  assert.throws(() => agent.listRuntimeContextSnapshots("no-project-task"), /任务不存在/, "deleted tasks cannot be inspected");
+  await assert.rejects(agent.listRuntimeContextSnapshots("no-project-task"), /任务不存在/, "deleted tasks cannot be inspected");
   assert.equal((db.connection.prepare("SELECT COUNT(*) AS n FROM task_runtime_context_snapshots WHERE task_id = ?").get("no-project-task") as { n: number }).n, 0, "task purge cascades audit rows");
   db.upsertTask({ id: "global-gate-task", title: "Unavailable capabilities", updatedAt: 1, welcomeMode: "coding", expertId: "missing-expert" });
   agent.setTaskConnectorIds("global-gate-task", ["missing-connector"]);

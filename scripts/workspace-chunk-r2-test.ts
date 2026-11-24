@@ -7,7 +7,8 @@
  * - 测试不得手工 INSERT library_chunks_fts / library_fts 冒充生产索引
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
@@ -24,6 +25,7 @@ import {
 } from "../src/main/library/MaterialRetrievalSettings";
 import { getSemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 let passed = 0, failed = 0;
 function ok(cond: unknown, msg: string) { if (cond) { passed++; console.log(`  ✓ ${msg}`); } else { failed++; console.error(`  ✗ ${msg}`); } }
@@ -53,10 +55,13 @@ function syntheticLong(spaceId: string, seed: string, paras = 80): string {
       Array.from({ length: 3 }, () => "填充文本 用于验证分块与检索 的长文档场景。").join("");
   }).join("\n\n");
 }
-async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void>) {
+async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void>, runtimeAuditExecutable?: string) {
   const dir = mkdtempSync(join(tmpdir(), "r2-"));
-  const db = new AppDatabase(join(dir, "test.db"));
-  try { await fn(db, dir); } finally { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
+  const db = new AppDatabase(join(dir, "test.db"), { runtimeAuditExecutable });
+  try { await fn(db, dir); } finally {
+    await db.runtimeAuditReader?.close();
+    try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function until(predicate: () => boolean, description: string): Promise<void> {
@@ -133,7 +138,7 @@ async function verifyMaterialRetrievalIndex(): Promise<void> {
     const originalEmbed = runtime.embed;
     let blocked: { text: string; release: () => void } | undefined;
     let pauseNext = true;
-    runtime.getModelStatus = () => ({ status: "ready", error: null, modelsRoot: dir });
+    runtime.getModelStatus = async () => ({ status: "ready", error: null, modelsRoot: dir });
     runtime.ensureSession = async () => ({});
     runtime.embed = async text => {
       if (pauseNext) {
@@ -186,6 +191,9 @@ async function verifyMaterialRetrievalIndex(): Promise<void> {
 }
 
 async function verifyLargeTextIndex(): Promise<void> {
+  const useNative = process.argv.includes("--native");
+  const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (useNative) assert(runtimeAuditExecutable);
   await withTmpDb(async (db, dir) => {
     const lib = new LibraryService(db, { libraryRoot: join(dir, "library") });
     addProject(db, "large-text-project");
@@ -198,8 +206,24 @@ async function verifyLargeTextIndex(): Promise<void> {
     const overlapCrossing = 680 * 128 + 60;
     const body = firstPart + "b".repeat(overlapCrossing - firstPart.length) + longPhrase
       + "c".repeat(1024 * 1024) + tail + "霓羚🪁🪂";
-    writeFileSync(path, body);
-    const item = lib.importFile({ spaceId: space.id, sourcePath: path });
+    const bytes = Buffer.concat([Buffer.from(body), Buffer.from([0xf0, 0x9f])]);
+    writeFileSync(path, bytes);
+    const reader = db.runtimeAuditReader;
+    let directCopy: boolean | undefined;
+    if (reader) {
+      const stageText = reader.stageLibraryText.bind(reader);
+      reader.stageLibraryText = async request => {
+        const stage = await stageText(request);
+        if (request.path === path) directCopy = Boolean(request.copyTo && stage);
+        else assert(stage, "large recovery must use the Rust file reader");
+        return stage;
+      };
+    }
+    const item = await lib.importFileAsync({ spaceId: space.id, sourcePath: path });
+    if (reader) {
+      assert.equal(directCopy, true);
+      assert.equal(item.contentHash, createHash("sha256").update(bytes).digest("hex"));
+    }
     const owner = { type: "project", projectId: "large-text-project" } as const;
     assert.deepStrictEqual(lib.retrieve(utf8Anchor).map(hit => hit.itemId), [item.id]);
     assert.deepStrictEqual(lib.retrieve(longPhrase).map(hit => hit.itemId), [item.id]);
@@ -220,7 +244,15 @@ async function verifyLargeTextIndex(): Promise<void> {
       WHERE item_id = ? AND content LIKE ? ORDER BY char_offset LIMIT 1
     `).get(item.id, `%${tail}%`) as { offset: number; content: string };
     assert.equal(matchingChunk.offset + matchingChunk.content.indexOf(tail), body.indexOf(tail));
-    assert.deepStrictEqual(lib.semanticIndexStats.pending, chunkText(item.id, body).length);
+    const expectedChunks = chunkText(item.id, bytes.toString("utf8"));
+    const actualChunks = db.connection.prepare(
+      "SELECT content,char_offset AS charOffset,hash FROM library_chunks WHERE item_id=? ORDER BY chunk_index",
+    ).all(item.id);
+    assert.equal(actualChunks.length, expectedChunks.length);
+    for (const [index, { content, charOffset, hash }] of expectedChunks.entries()) {
+      assert.deepEqual(actualChunks[index], { content, charOffset, hash });
+    }
+    assert.deepStrictEqual(lib.semanticIndexStats.pending, expectedChunks.length);
     passed += 10;
 
     // Simulate an upgraded profile and fail partway through the first replacement.
@@ -229,7 +261,7 @@ async function verifyLargeTextIndex(): Promise<void> {
       VALUES ('text-fts-coverage-version', '3', ?)
     `).run(Date.now());
     db.connection.exec(`
-      CREATE TEMP TRIGGER fail_large_chunk BEFORE INSERT ON library_chunks
+      CREATE TRIGGER fail_large_chunk BEFORE INSERT ON library_chunks
       WHEN NEW.chunk_index = 8
       BEGIN SELECT RAISE(ABORT, 'injected large text write failure'); END;
     `);
@@ -239,6 +271,78 @@ async function verifyLargeTextIndex(): Promise<void> {
     assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 1, failed: 0 });
     assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 0, failed: 0 });
     assert.deepStrictEqual(lib.retrieve(tail).map(hit => hit.itemId), [item.id]);
+    if (reader) {
+      const publish = reader.publishLibraryIndex.bind(reader);
+      const statuses: Array<string | undefined> = [];
+      reader.publishLibraryIndex = async request => {
+        const status = await publish(request);
+        statuses.push(status);
+        return status;
+      };
+      db.connection.prepare("DELETE FROM library_chunks WHERE item_id=?").run(item.id);
+      db.connection.prepare("DELETE FROM library_chunks_fts WHERE item_id=?").run(item.id);
+      db.connection.pragma("query_only = ON");
+      try {
+        const recovered = await lib.backfillMissingChunks();
+        assert.equal(recovered.succeeded, 1, "background recovery persists with the host DB read-only");
+        assert.deepEqual(statuses, ["indexed"]);
+      } finally {
+        db.connection.pragma("query_only = OFF");
+      }
+      assert.deepStrictEqual(lib.retrieve(tail).map(hit => hit.itemId), [item.id]);
+      assert.deepEqual(db.connection.prepare(
+        "SELECT content,char_offset AS charOffset,hash FROM library_chunks WHERE item_id=? ORDER BY chunk_index",
+      ).all(item.id), actualChunks, "native publication retains exact chunk text, offsets and hashes");
+
+      db.connection.prepare("UPDATE library_index_state SET value='3' WHERE key='text-fts-coverage-version'").run();
+      reader.publishLibraryIndex = async request => {
+        db.connection.prepare("UPDATE library_items SET title=? WHERE id=?").run("Renamed while staged", item.id);
+        const status = await publish(request);
+        statuses.push(status);
+        return status;
+      };
+      assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 1, failed: 0 });
+      assert.equal(statuses.at(-1), "skipped");
+      assert.deepEqual(db.connection.prepare("SELECT value FROM library_index_state WHERE key='text-fts-coverage-version'").get(),
+        { value: "3" }, "the coverage version cannot advance past a skipped current item");
+      reader.publishLibraryIndex = publish;
+      assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 1, failed: 0 });
+      assert.deepEqual(db.connection.prepare("SELECT title FROM library_fts WHERE item_id=?").get(item.id), { title: "Renamed while staged" });
+
+      db.connection.prepare("UPDATE library_index_state SET value='3' WHERE key='text-fts-coverage-version'").run();
+      reader.publishLibraryIndex = async request => {
+        writeFileSync(request.sourcePath, "Replaced between staging and publishing.");
+        try {
+          const status = await publish(request);
+          statuses.push(status);
+          return status;
+        } finally {
+          writeFileSync(request.sourcePath, bytes);
+        }
+      };
+      assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 0, failed: 1 });
+      assert.equal(statuses.at(-1), "sourceChanged");
+      assert.deepStrictEqual(lib.retrieve(tail).map(hit => hit.itemId), [item.id]);
+      reader.publishLibraryIndex = publish;
+      assert.deepStrictEqual(await lib.recoverTextFtsCoverageV2(), { processed: 1, failed: 0 });
+
+      const racePath = join(dir, "changed-while-staging.txt");
+      writeFileSync(racePath, bytes);
+      const stageText = reader.stageLibraryText.bind(reader);
+      let unpublished: { stage: string; copy: string } | undefined;
+      reader.stageLibraryText = async request => {
+        if (request.path !== racePath) return stageText(request);
+        const stage = await stageText(request);
+        assert(stage && request.copyTo);
+        unpublished = { stage: request.stagingPath, copy: request.copyTo };
+        writeFileSync(racePath, "changed after preparation");
+        return stage;
+      };
+      await assert.rejects(lib.importFileAsync({ spaceId: space.id, sourcePath: racePath }), /资料文件在索引期间已变化/);
+      assert(unpublished && !existsSync(unpublished.stage) && !existsSync(unpublished.copy));
+      assert.deepEqual(db.connection.prepare("SELECT count(*) AS n FROM library_items WHERE space_id=?").get(space.id), { n: 1 });
+    }
+    await db.runtimeAuditReader?.close();
     db.close();
     const reopened = new AppDatabase(join(dir, "test.db"));
     try {
@@ -249,7 +353,7 @@ async function verifyLargeTextIndex(): Promise<void> {
       reopened.close();
     }
     passed += 7;
-  });
+  }, runtimeAuditExecutable);
 }
 
 async function main() {

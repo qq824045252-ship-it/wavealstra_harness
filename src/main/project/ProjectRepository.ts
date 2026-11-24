@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { statSync } from "node:fs";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import {
   emptyProjectPolicies,
   PROJECT_EVENT_LIST_MAX_LIMIT,
@@ -21,6 +22,7 @@ import {
   type ProjectEventTriageStatus,
   type ProjectResourceDto,
   type ProjectReviewDto,
+  type ProjectStatusSnapshotDto,
   type ProjectTodoDto,
   type ProjectTodoPriority,
   type ProjectTodoStatus,
@@ -39,6 +41,36 @@ interface ProjectRow {
   resource_budget_chars: number;
   template_id: string | null;
   default_space_id: string | null;
+}
+
+type EventRow = {
+  id: string;
+  project_id: string;
+  source: string;
+  kind: string;
+  title: string;
+  body: string | null;
+  ref: string | null;
+  payload_json: string;
+  triage_status: string;
+  created_at: number;
+};
+
+export interface ProjectStatusFact {
+  kind: "blockingOverdue" | "overdue" | "nearDue" | "staleTask" | "activeRisk" | "importantQuestion";
+  refId: string;
+  title: string;
+  dueAt?: number;
+}
+
+export interface ProjectStatusData {
+  status: Omit<ProjectStatusSnapshotDto, "blockers" | "atRisks" | "nextActions"> & {
+    blockers: ProjectStatusFact[];
+    atRisks: ProjectStatusFact[];
+    nextActions: Array<Omit<ProjectStatusSnapshotDto["nextActions"][number], "dueAt"> & { dueAt?: number | null }>;
+  };
+  proposalsTotal: number;
+  needsConfirmation: number;
 }
 
 interface ProjectResourceRow {
@@ -177,7 +209,7 @@ function mapProject(row: ProjectRow): ProjectDto {
 }
 
 export class ProjectRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly runtimeAuditReader?: RuntimeAuditReader) {}
 
   validateDefaultSpace(id: string): string {
     if (typeof id !== "string" || !id.trim()) throw new Error("请选择有效的项目文件夹");
@@ -203,15 +235,29 @@ export class ProjectRepository {
     return rows.map(mapProject);
   }
 
+  async readList(includeArchived = false): Promise<ProjectDto[]> {
+    const rows = await this.runtimeAuditReader?.projectMetadata<ProjectRow[]>({ kind: "list", includeArchived });
+    return rows?.map(mapProject) ?? this.list(includeArchived);
+  }
+
+  readStatus(projectId: string, now: number): Promise<ProjectStatusData | null | undefined> | undefined {
+    if (!Number.isSafeInteger(now)) return undefined;
+    return this.runtimeAuditReader?.projectMetadata<ProjectStatusData | null>({ kind: "status", projectId, now });
+  }
+
   get(id: string): ProjectDetailsDto | undefined {
+    const project = this.getSummary(id);
+    return project ? { ...project, policies: this.getPolicies(id), resources: this.listResources(id) } : undefined;
+  }
+
+  getSummary(id: string): ProjectDto | undefined {
     const row = this.db
       .prepare(
         `SELECT id, name, description, instructions, goal, current_stage, created_at, updated_at, archived, resource_budget_chars, template_id, default_space_id
          FROM projects WHERE id = ?`,
       )
       .get(id) as ProjectRow | undefined;
-    if (!row) return undefined;
-    return { ...mapProject(row), policies: this.getPolicies(id), resources: this.listResources(id) };
+    return row ? mapProject(row) : undefined;
   }
 
   findByName(name: string): ProjectDto | undefined {
@@ -462,18 +508,22 @@ export class ProjectRepository {
     const rows = this.db.prepare(
       `SELECT id, project_id, source, kind, title, body, ref, payload_json, triage_status, created_at
        FROM project_events WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(projectId, clamped) as Array<{
-      id: string;
-      project_id: string;
-      source: string;
-      kind: string;
-      title: string;
-      body: string | null;
-      ref: string | null;
-      payload_json: string;
-      triage_status: string;
-      created_at: number;
-    }>;
+    ).all(projectId, clamped) as EventRow[];
+    return this.mapEventPage(rows, this.listProjectEventPromotions(projectId, rows.map(event => event.id)));
+  }
+
+  async readProjectEvents(projectId: string, limit = 50): Promise<ProjectEventDto[] | undefined> {
+    const clamped = Math.max(1, Math.min(limit, PROJECT_EVENT_LIST_MAX_LIMIT));
+    const native = Number.isSafeInteger(clamped) ? await this.runtimeAuditReader?.projectMetadata<{
+      events: EventRow[];
+      promotions: Array<Parameters<typeof mapPromotionRow>[0]>;
+    } | null>({ kind: "events", projectId, limit: clamped }) : undefined;
+    if (native === null) return undefined;
+    if (native) return this.mapEventPage(native.events, native.promotions.map(mapPromotionRow));
+    return this.getSummary(projectId) ? this.listProjectEvents(projectId, limit) : undefined;
+  }
+
+  private mapEventPage(rows: EventRow[], promotions: ProjectEventPromotionDto[]): ProjectEventDto[] {
     const events: ProjectEventDto[] = rows.map((row) => ({
       id: row.id,
       projectId: row.project_id,
@@ -487,13 +537,15 @@ export class ProjectRepository {
       createdAt: row.created_at,
     }));
     // 填充提升审计链接（事件 → 已提升真实对象）
-    const promotions = this.listProjectEventPromotions(
-      projectId,
-      events.map((event) => event.id),
-    );
     if (promotions.length > 0) {
+      const byEvent = new Map<string, ProjectEventPromotionDto[]>();
+      for (const promotion of promotions) {
+        const entries = byEvent.get(promotion.eventId);
+        if (entries) entries.push(promotion);
+        else byEvent.set(promotion.eventId, [promotion]);
+      }
       for (const event of events) {
-        event.promotions = promotions.filter((promotion) => promotion.eventId === event.id);
+        event.promotions = byEvent.get(event.id) ?? [];
       }
     }
     return events;
@@ -723,6 +775,14 @@ export class ProjectRepository {
     return rows.map(mapTodoRow);
   }
 
+  async readTodos(projectId: string): Promise<ProjectTodoDto[] | undefined> {
+    const rows = await this.runtimeAuditReader?.projectMetadata<Array<Parameters<typeof mapTodoRow>[0]> | null>({
+      kind: "todos", projectId,
+    });
+    if (rows === null) return undefined;
+    return rows?.map(mapTodoRow) ?? (this.getSummary(projectId) ? this.listTodos(projectId) : undefined);
+  }
+
   getTodo(id: string): ProjectTodoDto | undefined {
     const row = this.db.prepare(
       `SELECT id, project_id, title, description, status, assignee, priority, tags_json, start_at, due_at, created_at, updated_at
@@ -869,6 +929,19 @@ export class ProjectRepository {
         `SELECT id, title, status, updated_at, archived FROM tasks WHERE project_id = ?`,
       )
       .all(projectId) as Array<{ id: string; title: string; status: string | null; updated_at: number; archived: number }>;
+  }
+
+  listStatusMemories(projectId: string): Array<{
+    id: string; title: string; kind: string; status: string; importance: number; updatedAt: number;
+  }> {
+    const rows = this.db.prepare(
+      `SELECT m.id,m.title,m.kind,m.status,m.importance,m.updated_at AS updatedAt
+       FROM memory_records m JOIN memory_scopes s ON s.memory_id=m.id
+       WHERE s.scope_type='project' AND s.scope_id=? AND m.status IN ('active','superseded','resolved')
+       ORDER BY m.importance DESC,m.explicit DESC,m.updated_at DESC LIMIT 2000`,
+    ).all(projectId) as ReturnType<ProjectRepository["listStatusMemories"]>;
+    const byId = new Map(rows.map(row => [row.id, row]));
+    return [...byId.values()];
   }
 
   insertReview(review: ProjectReviewDto): void {

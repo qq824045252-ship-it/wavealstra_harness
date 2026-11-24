@@ -23,6 +23,7 @@ export const ArtifactDomainIpc = {
   list: "artifact-domain:list",
   /** renderer → main：取 task 快照（含 load state，§25；首次触发 legacy migration） */
   snapshot: "artifact-domain:snapshot",
+  snapshotBatch: "artifact-domain:snapshotBatch",
   /** renderer → main：注册新 artifact（3C：Artifact create 唯一通道） */
   register: "artifact-domain:register",
   /** renderer → main：读取 artifact 内容（managed→storage；workspace-file→fs+root 边界） */
@@ -153,6 +154,12 @@ export interface ArtifactDomainGetRequest {
 /** artifact-domain:list / snapshot / removeTask 请求 */
 export interface ArtifactDomainTaskRequest {
   taskId: string;
+}
+
+export const ARTIFACT_SNAPSHOT_BATCH_SIZE = 64;
+
+export interface ArtifactSnapshotBatchRequest {
+  taskIds: string[];
 }
 
 /** artifact-domain:remove 请求 */

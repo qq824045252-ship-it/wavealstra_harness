@@ -200,7 +200,8 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
       execute: async (_toolCallId: string, params: PlanListParams) => {
         try {
           const projectId = requireProject();
-          const todos = bridge.service.listTodos(projectId);
+          const todos = await bridge.service.readTodos(projectId);
+          if (requireProject() !== projectId) throw new ProjectPlanToolError("项目归属已变化，请重新读取");
           let items = todos;
           if (params.status) items = items.filter((todo) => todo.status === params.status);
           const query = params.query?.trim().toLowerCase();

@@ -8,10 +8,12 @@
  *  5. 手机端（RemoteClient）调用的是同一条路由
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { RemoteEventBus } from "../src/main/remote/RemoteEventBus";
 import { RemoteDeviceStore } from "../src/main/remote/RemoteDeviceStore";
 import { RemoteAccessPairing } from "../src/main/remote/RemoteAccessPairing";
@@ -30,11 +32,16 @@ function check(cond: unknown, label: string): void {
   else { failed += 1; console.error(`  ✗ ${label}`); }
 }
 
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
 const root = mkdtempSync(join(tmpdir(), "mybuddy-remote-done-ack-"));
-const db = new AppDatabase(":memory:");
+const db = new AppDatabase(useNative ? join(root, "app.db") : ":memory:", { runtimeAuditExecutable });
 const now = Date.now();
 db.upsertTask({ id: "t-done", title: "已完成任务", status: "completed", updatedAt: now - 60_000 });
 db.upsertTask({ id: "t-running", title: "进行中任务", status: "in_progress", updatedAt: now - 1_000 });
+db.connection.exec(`INSERT INTO projects (id,name,created_at,updated_at,archived)
+  VALUES ('p-active','进行中的项目',1,2,0),('p-archived','已归档项目',1,1,1)`);
 
 const agent = {
   isTaskBusy: (taskId: string) => taskId === "t-running",
@@ -42,14 +49,16 @@ const agent = {
   listModels: async () => [],
   getModeProfile: () => ({ labelZh: "日常办公", policy: { presets: [] } }),
 } as never;
-const service = new RemoteAccessService(db, agent, { unreadCount: () => 0 } as never, { list: () => [] } as never, { read: () => ({ permissionMode: "default" }) } as never);
+const projects = new ProjectRepository(db.connection, db.runtimeAuditReader);
+const service = new RemoteAccessService(db, agent, { unreadCount: () => 0 } as never, projects as never, { read: () => ({ permissionMode: "default" }) } as never);
 const commands = new RemoteTaskCommandService(db, agent, { read: () => ({ permissionMode: "default" }) } as never, { get: () => undefined });
 
-const before = service.listTasks().find((task) => task.id === "t-done");
+const beforeTasks = await service.listTasks();
+const before = beforeTasks.find((task) => task.id === "t-done");
 check(before !== undefined && before.doneAckedAt === null, "bootstrap 摘要带 doneAckedAt（未确认 = null）");
 check(Object.prototype.hasOwnProperty.call(before, "doneAckedAt"), "该字段始终存在（旧手机端也不会因为缺字段而误判为空闲）");
 check(taskStatusDot(before!, 0) === "done-unread", "手机端判定：已结束 + 未确认 → 绿点");
-check(taskStatusDot(service.listTasks().find((task) => task.id === "t-running")!, 0) === "running", "手机端判定：busy → 蓝点");
+check(taskStatusDot(beforeTasks.find((task) => task.id === "t-running")!, 0) === "running", "手机端判定：busy → 蓝点");
 
 try {
   const devices = new RemoteDeviceStore(join(root, "devices.json"));
@@ -65,7 +74,13 @@ try {
   const auth = { authorization: `Bearer ${token}` };
   try {
     // 1. 手机端能拿到绿点所需的字段
-    const bootstrap = await fetch(`${base}/v1/bootstrap`, { headers: auth }).then((r) => r.json()) as { tasks: Array<Record<string, unknown>> };
+    const bootstrap = await fetch(`${base}/v1/bootstrap`, { headers: auth }).then((r) => r.json()) as {
+      tasks: Array<Record<string, unknown>>;
+      projects: Array<{ id: string; name: string; archived: boolean }>;
+    };
+    assert.deepEqual(bootstrap.projects.map(({ id, name, archived }) => [id, name, archived]), [
+      ["p-active", "进行中的项目", false], ["p-archived", "已归档项目", true],
+    ]);
     const summary = bootstrap.tasks.find((task) => task.id === "t-done")!;
     check(summary.doneAckedAt === null, "GET /v1/bootstrap 返回 doneAckedAt=null");
     const tasks = await fetch(`${base}/v1/tasks`, { headers: auth }).then((r) => r.json()) as Array<Record<string, unknown>>;
@@ -77,7 +92,7 @@ try {
     const acked = db.getTask("t-done")!;
     check(typeof acked.doneAckedAt === "number" && acked.doneAckedAt >= now - 60_000, "ackDone 写入 tasks.done_acked_at");
     check(acked.updatedAt === now - 60_000, "ackDone 不触碰 updated_at（不重排手机端列表）");
-    const afterSummary = service.listTasks().find((task) => task.id === "t-done")!;
+    const afterSummary = (await service.listTasks()).find((task) => task.id === "t-done")!;
     check(taskStatusDot(afterSummary, 0) === null, "确认后手机端判定 → 不显示绿点");
     check(mapRemoteTask(acked, { busy: false, pendingActionCount: 0 }).doneAckedAt === acked.doneAckedAt, "DTO 映射与 DB 值一致");
 
@@ -97,6 +112,7 @@ try {
     await server.stop();
   }
 } finally {
+  await db.runtimeAuditReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
 }

@@ -6,6 +6,7 @@ import type { MemoryRepository } from "./MemoryRepository";
 import { memorySearchWhere, type MemorySearchScope } from "./MemorySearchScope";
 import { buildMemoryFtsQuery, normalizeSearchText } from "./MemorySearchText";
 import { dotsQuestionTerms } from "./DotsRecallRanking";
+import type { RuntimeAuditReader, RuntimeMemoryLexicalCandidates } from "../platform/runtime-audit";
 
 type Row = { id: string; title: string; content: string; content_hash: string; importance: number; updated_at: number };
 // Exact postings for alphanumeric bigrams. Each row occupies 164 bytes and CJK
@@ -21,7 +22,8 @@ function gram(text: string, i: number): number {
 }
 type IndexedRow = Row & { normalized?: true; postings?: Uint32Array; offset?: number; ascii?: boolean };
 const textIndex = new WeakMap<Database.Database, { key: string; version: number; validUntil: number; pages: IndexedRow[][] }>();
-type Ranked = { row: Row; exact: number; relevance: number; memory: MemoryRecordDto };
+type CandidateRow = Pick<Row, "id" | "content_hash" | "importance" | "updated_at">;
+type Ranked = { row: CandidateRow; exact: number; relevance: number; memory: MemoryRecordDto };
 const compare = (a: Ranked, b: Ranked) => b.exact - a.exact || b.relevance - a.relevance
   || b.row.importance - a.row.importance || b.row.updated_at - a.row.updated_at || a.row.id.localeCompare(b.row.id);
 
@@ -64,12 +66,17 @@ export class MemoryQueryCandidates {
         JOIN memory_records m ON m.id=memory_fts.memory_id WHERE memory_fts MATCH ? AND ${where.sql}
         ORDER BY score,m.id`).iterate(query, ...where.args) as Iterable<{ id: string }>;
       for (const row of rows) {
-        const memory = this.options.repository.get(row.id);
-        if (!memory || !this.options.accept(memory)) continue;
-        this.fts.set(row.id, memory); this.ftsRanks.set(row.id, this.fts.size);
+        this.collectFtsId(row.id);
         if (this.fts.size >= this.options.limit) break;
       }
     } catch { /* A missing FTS index does not disable the complete lexical path. */ }
+  }
+
+  private collectFtsId(id: string): void {
+    const memory = this.options.repository.get(id);
+    if (!memory || !this.options.accept(memory)) return;
+    this.fts.set(id, memory);
+    this.ftsRanks.set(id, this.fts.size);
   }
 
   private *pages(): Generator<IndexedRow[]> {
@@ -150,17 +157,34 @@ export class MemoryQueryCandidates {
       }
       if (!relevance) continue;
       const exact = Number(title.includes(this.compact) || content.includes(this.compact));
-      const worst = this.lexical.at(-1);
-      // Compare lightweight rows before expanding an atom's evidence/relations.
-      if (worst && this.lexical.length >= this.options.limit) {
-        const order = worst.exact - exact || worst.relevance - relevance || worst.row.importance - row.importance
-          || worst.row.updated_at - row.updated_at || row.id.localeCompare(worst.row.id);
-        if (order >= 0) continue;
-      }
-      const memory = this.fts.get(row.id) ?? this.options.repository.get(row.id);
-      if (!memory || memory.contentHash !== row.content_hash || !this.options.accept(memory)) continue;
-      this.lexical.push({ row, exact, relevance, memory }); this.lexical.sort(compare);
-      if (this.lexical.length > this.options.limit) this.lexical.pop();
+      this.collectLexicalMatch(row, exact, relevance);
+    }
+  }
+
+  private collectLexicalMatch(row: CandidateRow, exact: number, relevance: number): void {
+    const worst = this.lexical.at(-1);
+    // Compare lightweight rows before expanding an atom's evidence/relations.
+    if (worst && this.lexical.length >= this.options.limit) {
+      const order = worst.exact - exact || worst.relevance - relevance || worst.row.importance - row.importance
+        || worst.row.updated_at - row.updated_at || row.id.localeCompare(worst.row.id);
+      if (order >= 0) return;
+    }
+    const memory = this.fts.get(row.id) ?? this.options.repository.get(row.id);
+    if (!memory || memory.contentHash !== row.content_hash || !this.options.accept(memory)) return;
+    this.lexical.push({ row, exact, relevance, memory });
+    this.lexical.sort(compare);
+    if (this.lexical.length > this.options.limit) this.lexical.pop();
+  }
+
+  private *collectNativeMatches(candidates: RuntimeMemoryLexicalCandidates): Generator<void> {
+    for (const id of candidates.fts) {
+      this.collectFtsId(id);
+      if (this.fts.size >= this.options.limit) break;
+      yield;
+    }
+    for (const match of candidates.lexical) {
+      this.collectLexicalMatch(match, match.exact, match.relevance);
+      yield;
     }
   }
 
@@ -215,7 +239,26 @@ export class MemoryQueryCandidates {
     return this.finish();
   }
 
-  async searchAsync() {
+  async searchAsync(reader?: RuntimeAuditReader) {
+    const db = this.options.db;
+    if (reader && db.open && !db.inTransaction) {
+      const version = searchEpoch(db, "text_version");
+      const candidates = await reader.memoryLexical({
+        scope: memorySearchWhere(this.options.scope), ftsQuery: this.ftsQuery,
+        compact: this.compact, terms: this.terms.map(term => term.text), exactIdentifier: this.exactIdentifier,
+      });
+      if (!db.open) return { scoped: [], ftsRanks: new Map<string, number>() };
+      if (candidates && version === searchEpoch(db, "text_version")) {
+        let started = performance.now();
+        for (const _ of this.collectNativeMatches(candidates)) {
+          if (performance.now() - started < 4) continue;
+          await yieldThread();
+          if (!db.open) return { scoped: [], ftsRanks: new Map<string, number>() };
+          started = performance.now();
+        }
+        return this.finishAsync();
+      }
+    }
     this.collectFts();
     let started = performance.now();
     for (const page of this.pages()) {

@@ -1,0 +1,191 @@
+use crate::{Result, SqlScope};
+use icu_casemap::CaseMapper;
+use icu_locale_core::LanguageIdentifier;
+use icu_normalizer::ComposingNormalizer;
+use icu_properties::{
+    CodePointMapData,
+    props::{GeneralCategory, GeneralCategoryGroup},
+};
+use rusqlite::{Connection, params_from_iter, types::Value as Param};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, rc::Rc};
+
+const MAX_MATCHES: usize = 100_000;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Search {
+    scope: SqlScope,
+    compact: Vec<u16>,
+    terms: Vec<Vec<u16>>,
+    fts_query: Option<Vec<u16>>,
+    exact_identifier: bool,
+}
+
+#[derive(Serialize)]
+pub struct Candidates {
+    fts: Vec<String>,
+    lexical: Vec<Match>,
+}
+
+#[derive(Serialize)]
+struct Match {
+    id: String,
+    content_hash: String,
+    importance: f64,
+    updated_at: f64,
+    exact: u8,
+    relevance: usize,
+}
+
+fn normalize(raw: &str) -> String {
+    if raw.is_ascii() {
+        return raw
+            .bytes()
+            .filter(|byte| {
+                !byte.is_ascii_punctuation() && !crate::javascript_whitespace(char::from(*byte))
+            })
+            .map(|byte| char::from(byte.to_ascii_lowercase()))
+            .collect();
+    }
+    let normalized = ComposingNormalizer::new_nfkc().normalize(raw);
+    let lower = CaseMapper::new().lowercase_to_string(&normalized, &LanguageIdentifier::UNKNOWN);
+    let categories = CodePointMapData::<GeneralCategory>::new();
+    lower
+        .chars()
+        .filter(|&ch| {
+            let category = categories.get(ch);
+            !GeneralCategoryGroup::Punctuation.contains(category)
+                && !GeneralCategoryGroup::Symbol.contains(category)
+                && !crate::javascript_whitespace(ch)
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct NormalizedText {
+    entries: HashMap<String, Rc<str>>,
+    bytes: usize,
+}
+
+impl NormalizedText {
+    fn get(&mut self, raw: &str) -> Rc<str> {
+        if let Some(text) = self.entries.get(raw) {
+            return Rc::clone(text);
+        }
+        let text: Rc<str> = normalize(raw).into();
+        let bytes = raw.len() + text.len();
+        if raw.len() <= 32 * 1024 && self.bytes + bytes <= 256 * 1024 {
+            self.bytes += bytes;
+            self.entries.insert(raw.to_owned(), Rc::clone(&text));
+        }
+        text
+    }
+}
+
+enum Needle {
+    Text(String),
+    CodeUnits(Vec<u16>),
+}
+
+impl Needle {
+    fn from_utf16(units: Vec<u16>) -> Self {
+        match String::from_utf16(&units) {
+            Ok(text) => Self::Text(text),
+            // JavaScript's two-unit sampling can split an astral code point.
+            Err(_) => Self::CodeUnits(units),
+        }
+    }
+
+    fn matches(&self, title: &str, content: &str, units: Option<&(Vec<u16>, Vec<u16>)>) -> bool {
+        match self {
+            Self::Text(text) => title.contains(text) || content.contains(text),
+            Self::CodeUnits(needle) => units.is_some_and(|(title, content)| {
+                title
+                    .windows(needle.len())
+                    .chain(content.windows(needle.len()))
+                    .any(|window| window == needle)
+            }),
+        }
+    }
+}
+
+pub fn search(db: &Connection, request: Search) -> Result<Candidates> {
+    let where_sql = request.scope.sql.clone();
+    let parameters: Vec<Param> = request.scope.parameters().collect();
+    let fts = match request.fts_query {
+        Some(query) if !query.is_empty() => {
+            let mut statement = db.prepare(&format!(
+                "SELECT m.id,bm25(memory_fts,0.0,3.0,1.0) score FROM memory_fts
+                 JOIN memory_records m ON m.id=memory_fts.memory_id WHERE memory_fts MATCH ? AND {where_sql}
+                 ORDER BY score,m.id",
+            ))?;
+            let query = Param::Text(String::from_utf16_lossy(&query));
+            let mut rows =
+                statement.query(params_from_iter(std::iter::once(&query).chain(&parameters)))?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next()? {
+                if ids.len() >= MAX_MATCHES {
+                    return Err("FTS candidate reply exceeds its budget".into());
+                }
+                ids.push(row.get(0)?);
+            }
+            ids
+        }
+        _ => Vec::new(),
+    };
+    let mut lexical = Vec::new();
+    if request.compact.is_empty() || request.terms.is_empty() {
+        return Ok(Candidates { fts, lexical });
+    }
+
+    let compact = Needle::from_utf16(request.compact);
+    let terms: Vec<_> = request
+        .terms
+        .into_iter()
+        .filter(|term| !term.is_empty())
+        .map(Needle::from_utf16)
+        .collect();
+    let needs_code_units = std::iter::once(&compact)
+        .chain(&terms)
+        .any(|term| matches!(term, Needle::CodeUnits(_)));
+    // Walk the id index directly so SQLite does not sort or spill full memory bodies.
+    let mut statement = db.prepare(&format!(
+        "SELECT m.id,m.title,m.content,m.content_hash,m.importance,m.updated_at
+         FROM memory_records m INDEXED BY sqlite_autoindex_memory_records_1
+         WHERE m.id>'' AND {where_sql} ORDER BY m.id",
+    ))?;
+    let mut rows = statement.query(params_from_iter(&parameters))?;
+    let mut normalized = NormalizedText::default();
+    while let Some(row) = rows.next()? {
+        let title = normalized.get(row.get_ref(1)?.as_str()?);
+        let content = normalized.get(row.get_ref(2)?.as_str()?);
+        let units = needs_code_units.then(|| {
+            (
+                title.encode_utf16().collect(),
+                content.encode_utf16().collect(),
+            )
+        });
+        let contains = |needle: &Needle| needle.matches(&title, &content, units.as_ref());
+        let exact = contains(&compact);
+        if request.exact_identifier && !exact {
+            continue;
+        }
+        let relevance = terms.iter().filter(|needle| contains(needle)).count();
+        if relevance == 0 {
+            continue;
+        }
+        if lexical.len() >= MAX_MATCHES {
+            return Err("lexical candidate reply exceeds its budget".into());
+        }
+        lexical.push(Match {
+            id: row.get(0)?,
+            content_hash: row.get(3)?,
+            importance: row.get(4)?,
+            updated_at: row.get(5)?,
+            exact: u8::from(exact),
+            relevance,
+        });
+    }
+    Ok(Candidates { fts, lexical })
+}

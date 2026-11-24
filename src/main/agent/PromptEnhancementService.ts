@@ -125,7 +125,7 @@ export class PromptEnhancementService {
         ? this.resolveWorkspaceCwd(req.taskId!)
         : this.resolveWorkspaceCwdForNewTask(req.spaceId);
       const environment = surface === "chat"
-        ? this.buildEnvironmentContext(req.taskId!)
+        ? await this.buildEnvironmentContext(req.taskId!)
         : this.buildEnvironmentContextForNewTask({
             projectId: req.projectId,
             spaceId: req.spaceId,
@@ -170,7 +170,8 @@ export class PromptEnhancementService {
     return "";
   }
 
-  private buildEnvironmentContext(taskId: string): string[] {
+  private async buildEnvironmentContext(taskId: string): Promise<string[]> {
+    await this.deps.runtimeSnapshots.flush();
     const task = this.deps.db.getTask(taskId);
     if (!task) return [];
     const connectorIds =

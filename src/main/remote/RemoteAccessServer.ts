@@ -239,7 +239,7 @@ export class RemoteAccessServer {
         this.options.commands.invalidateModelCache();
         return replyJson(200, models);
       }
-      if (request.method === "GET" && path === "/v1/tasks") return replyJson(200, this.options.service.listTasks());
+      if (request.method === "GET" && path === "/v1/tasks") return replyJson(200, await this.options.service.listTasks());
       if (request.method === "GET" && path === "/v1/device/me") return replyJson(200, auth.device);
       // ACP 外部 Agent 目录：手机端选择器的数据源（只读，不启动子进程）
       if (request.method === "GET" && path === "/v1/acp/agents") {

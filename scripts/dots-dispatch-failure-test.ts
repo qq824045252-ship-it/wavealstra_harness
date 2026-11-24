@@ -62,8 +62,8 @@ const dispatch = (source: string, input: DotsActionInput, text: string) =>
   actions.execute(DOTS_TASK_ID, source, input, text);
 const tasks = () => db.connection.prepare("SELECT id,title,status FROM tasks WHERE id<>? ORDER BY id").all(DOTS_TASK_ID) as
   Array<{ id: string; title: string; status: string | null }>;
-const lane = (id: "pending" | "attention" | "finished", spaceId: string) =>
-  board.page({ view: id === "attention" ? "attention" : "all", lane: id, scope: spaceId }).rows;
+const lane = async (id: "pending" | "attention" | "finished", spaceId: string) =>
+  (await board.page({ view: id === "attention" ? "attention" : "all", lane: id, scope: spaceId })).rows;
 /** 状态投射跟随后台快照写入，这里等到库里的终态真正就位。 */
 const settled = async (taskId: string, expected: string, label: string) => {
   const deadline = Date.now() + 20000;
@@ -90,7 +90,7 @@ try {
   assert.equal(normalDelegation?.taskId, normalId);
   await agent.waitForSubmission(accepted.receipt as never);
   await settled(normalId, "completed", "正常派发跑到终态");
-  assert.equal(lane("pending", spaceId).length, 0, "正常任务不留在排队中");
+  assert.equal((await lane("pending", spaceId)).length, 0, "正常任务不留在排队中");
   console.log("PASS 正常派发：建任务、受理、跑完、离开 pending 栏");
 
   // 2) 前置校验前移：默认模型在该工作空间不可用时，一条任务记录都不能建。
@@ -102,8 +102,8 @@ try {
   );
   assert.deepEqual(tasks().map(task => task.id), [normalId], "可预期失败不得留下空壳任务记录");
   assert.equal(journal.list(["dots-user-2"]).length, 0, "被前置校验挡下的交办不落库");
-  assert.equal(lane("pending", spaceId).length, 0, "被挡下的交办不出现在排队中");
-  assert.equal(lane("attention", spaceId).filter(row => row.status === "failed").length, 0);
+  assert.equal((await lane("pending", spaceId)).length, 0, "被挡下的交办不出现在排队中");
+  assert.equal((await lane("attention", spaceId)).filter(row => row.status === "failed").length, 0);
   console.log("PASS 前置校验：模型不可用在建任务之前挡住，没有空壳、没有排队中");
 
   // 3) 残余兜底 A：建任务之后、委派关联阶段才失败（空间目录消失）也必须回写终态。
@@ -120,9 +120,9 @@ try {
   const createdDelegation = journal.list(["dots-user-3"])[0];
   assert.equal(createdDelegation?.status ?? "missing", "missing", "关联阶段就失败时不留下 pending 委派");
   const byReason = <T extends { id: string }>(rows: T[]) => rows.filter(row => row.id === created.id);
-  assert.equal(byReason(lane("pending", spaceId)).length, 0, "失败的空壳任务不在 pending 栏");
-  assert.equal(byReason(lane("finished", spaceId)).length, 0, "也不冒充已完成");
-  const attention = byReason(lane("attention", spaceId))[0];
+  assert.equal(byReason(await lane("pending", spaceId)).length, 0, "失败的空壳任务不在 pending 栏");
+  assert.equal(byReason(await lane("finished", spaceId)).length, 0, "也不冒充已完成");
+  const attention = byReason(await lane("attention", spaceId))[0];
   assert(attention, "失败任务进入待处理栏，用户能看到它");
   assert.equal(attention.status, "failed");
   assert.match(attention.failureReason ?? "", /工作文件夹不可用|Bot 工作目录不存在|ENOENT/, "看板卡片带出失败原因");
@@ -149,8 +149,8 @@ try {
   const admittedDelegation = journal.list(["dots-user-4"])[0];
   assert.equal(admittedDelegation?.status, "failed", "已关联的委派也要进入失败终态");
   assert.match(admittedDelegation?.text ?? "", /主对话默认模型 fixture\/model 在这个工作空间不可用/, "委派保留失败原因供 Dots 转述");
-  assert.equal(lane("pending", spaceId).filter(row => row.id === admitted.id).length, 0, "受理阶段失败也不在 pending 栏");
-  assert.match(lane("attention", spaceId).find(row => row.id === admitted.id)?.failureReason ?? "",
+  assert.equal((await lane("pending", spaceId)).filter(row => row.id === admitted.id).length, 0, "受理阶段失败也不在 pending 栏");
+  assert.match((await lane("attention", spaceId)).find(row => row.id === admitted.id)?.failureReason ?? "",
     /主对话默认模型 fixture\/model 在这个工作空间不可用/, "看板卡片带出模型不可用原因");
   await agent.updateAppSettings({ enabledModels: ["fixture/model", "fixture/pinned-worker"] });
   // 重启恢复会打开全部已绑定的普通任务；失败记录不得因此被重新投射回 pending。
@@ -159,7 +159,7 @@ try {
   await agent.loadTaskHistory(created.id);
   assert.equal(db.getTask(admitted.id)?.status, "failed", "重启恢复后受理阶段失败的任务仍是终态");
   assert.equal(db.getTask(created.id)?.status, "failed", "重启恢复后关联阶段失败的任务仍是终态");
-  assert.equal(lane("pending", spaceId).filter(row => row.id === admitted.id || row.id === created.id).length, 0,
+  assert.equal((await lane("pending", spaceId)).filter(row => row.id === admitted.id || row.id === created.id).length, 0,
     "重启恢复后两条失败记录都不回到排队中");
   console.log("PASS 残余兜底 B：受理阶段失败时任务与委派都进 failed 终态、原因可见");
 

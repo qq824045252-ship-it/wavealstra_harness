@@ -238,7 +238,7 @@ async function main(): Promise<void> {
   /* ================= [8] 切 Tag → fingerprint 变化 → 重建 → 新 loader ================= */
   console.log("\n[8] Tag 变化后 Session Runtime 重建");
   {
-    const beforeHash = agent.listRuntimeContextSnapshots("skill-task")[0]?.assemblyHash;
+    const beforeHash = (await agent.listRuntimeContextSnapshots("skill-task"))[0]?.assemblyHash;
     const beforeConversation = (await agent.loadTaskHistory("skill-task")).durable?.conversationId;
     // 同一 preset id，allow 收窄为 g-ok only
     savePreset({
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
     const result = await prompt("skill-gate");
     assert(result.queued === false, "第二次 prompt 完成");
 
-    const afterHash = agent.listRuntimeContextSnapshots("skill-task")[0]?.assemblyHash;
+    const afterHash = (await agent.listRuntimeContextSnapshots("skill-task"))[0]?.assemblyHash;
     assert(beforeHash !== afterHash, "runtime fingerprint 随允许技能集变化");
     assert((await agent.loadTaskHistory("skill-task")).durable?.conversationId === beforeConversation, "policy refresh keeps the native conversation identity");
     const names = loaderNames();
@@ -446,14 +446,14 @@ async function main(): Promise<void> {
   /* ================= [L10] Runtime Audit governance clears both projections ================= */
   console.log("\n[L10] Unified Runtime Audit clear");
   {
-    const beforeSnapshots = agent.listRuntimeContextSnapshots("skill-task", 200).length;
+    const beforeSnapshots = (await agent.listRuntimeContextSnapshots("skill-task", 200)).length;
     const beforeLoadout = agent.listAgentLoadoutObservations("skill-task", 200).length;
     assert(beforeSnapshots > 0 && beforeLoadout > 0, "[L10] fixture has both Runtime snapshots and Loadout observations");
-    const cleared = agent.clearRuntimeAudit("skill-task");
+    const cleared = await agent.clearRuntimeAudit("skill-task");
     assert(cleared.runtimeSnapshots === beforeSnapshots, "[L10] unified clear removes Runtime snapshots");
     assert(cleared.loadoutObservations === beforeLoadout, "[L10] unified clear removes Loadout observations");
     assert(cleared.total === cleared.runtimeSnapshots + cleared.loadoutObservations, "[L10] clear result total is auditable");
-    assert(agent.listRuntimeContextSnapshots("skill-task", 10).length === 0 && agent.listAgentLoadoutObservations("skill-task", 10).length === 0, "[L10] both histories are empty after clear");
+    assert((await agent.listRuntimeContextSnapshots("skill-task", 10)).length === 0 && agent.listAgentLoadoutObservations("skill-task", 10).length === 0, "[L10] both histories are empty after clear");
   }
 
   /* ================= Matcher 收敛（P3）纯函数语义 ================= */

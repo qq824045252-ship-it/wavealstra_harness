@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels, type AssistantMessage } from "@earendil-works/pi-ai";
-import { AgentDoc, InboxDoc, GenerationTask } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, GenerationTask, type EntryId } from "@earendil-works/pi-durable";
 import { ActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
 import { migrateDurableWorkspace, WorkspaceMigrationBusyError } from "../src/main/agent/durable/DurableWorkspaceMigration";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { DurableSqliteDatabase } from "../src/main/agent/durable/DurableSqliteDatabase";
+import { readDurableConversationHead, readDurableReadOnlyHistory, readDurableUserQuestions } from "../src/main/agent/durable/DurableReadOnlyHistory";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 import { verifyHistoryNavigation } from "./history-navigation-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "durable-history-block-"));
@@ -78,6 +81,57 @@ try {
   console.log(`PASS AI naming head is ${head.length} chars from the oldest entries`);
   assert.equal(runtime.snapshot, snapshot);
   console.log(`PASS ${blocks} history blocks, complete ordered transcript, tool results and live snapshot isolation`);
+  if (process.argv.includes("--native")) {
+    const executable = locateRuntimeAudit(process.cwd());
+    assert(executable);
+    const stored = { directory: join(directory, "state"), cwd, models: createModels() };
+    const reader = new RuntimeAuditReader(executable, join(stored.directory, "durable.sqlite"));
+    const native = { ...stored, reader };
+    const openDatabase = DurableSqliteDatabase.open;
+    const openRuntime = DurableBotRuntime.open;
+    try {
+      const anchor = { aroundEntryId: Number(firstUser.id.slice("durable-".length)) };
+      const expectedPage = await readDurableReadOnlyHistory({ ...stored, beforeEntryId: anchor });
+      const expectedArchive = await readDurableReadOnlyHistory(stored);
+      DurableSqliteDatabase.open = (path, options) => {
+        if (options?.readonly) throw new Error("The native test cannot fall back to the host reader");
+        return openDatabase(path, options);
+      };
+      const page = await readDurableReadOnlyHistory({ ...native, beforeEntryId: anchor });
+      assert.equal(page.messages[0]?.text, "question 0");
+      assert.equal(page.messages[1]?.tools?.[0]?.output, "done");
+      assert.deepEqual(page, expectedPage);
+      assert.deepEqual(await readDurableReadOnlyHistory(native), expectedArchive);
+      DurableBotRuntime.open = async () => { throw new Error("The native index and head may not open a Pi runtime"); };
+      const nativeQuestions = await readDurableUserQuestions(native);
+      assert.equal(nativeQuestions.questions.length, 200);
+      const older = await readDurableUserQuestions({ ...native, query: { historyId: nativeQuestions.historyId, beforeEntryId: nativeQuestions.nextBefore } });
+      assert.deepEqual([...older.questions, ...nativeQuestions.questions], questions);
+      assert.equal(await readDurableConversationHead({ ...native, maxTokens: 1024 }), head);
+      assert.equal(await readDurableConversationHead({ ...native, maxTokens: 2 }), "用户：question 0");
+
+      const parentAnchor = Number(messages.find(message => message.text === "question 1")!.id.slice("durable-".length)) as EntryId;
+      const branch = await runtime.conversation.fork(parentAnchor, { ownership: { kind: "ownerless" }, init: async (tx, id) => {
+        (await tx.doc(AgentDoc, id)).cwd = cwd;
+        (await tx.doc(ActiveDurableConversation)).conversationId = id;
+      } }, context);
+      await branch.commit(async tx => {
+        await tx.appendEntry(branch.id, { kind: "mybuddy.user", model: [{ role: "user", content: "branch underlying text", timestamp: 1000 }],
+          data: { mybuddyInput: { text: "branch underlying text", displayText: "分支提问 🙂", attachments: [] } } });
+      }, context);
+      const forked = await readDurableUserQuestions(native);
+      assert.deepEqual(forked.questions.map(question => question.text), ["question 0", "question 1", "分支提问 🙂"]);
+      assert.notEqual(forked.historyId, nativeQuestions.historyId);
+      assert.equal(await readDurableConversationHead(native), "用户：question 0\n\n助手：answer 0\n\n用户：question 1\n\n用户：branch underlying text");
+      await assert.rejects(readDurableUserQuestions({ ...native, query: { historyId: nativeQuestions.historyId } }), /历史分支已变化/);
+      await runtime.conversation.commit(async tx => { (await tx.doc(ActiveDurableConversation)).conversationId = null; }, context);
+      console.log("PASS Rust passive history archive and anchored tools, complete question pagination, title head and fork isolation");
+    } finally {
+      DurableSqliteDatabase.open = openDatabase;
+      DurableBotRuntime.open = openRuntime;
+      reader.close();
+    }
+  }
   const target = join(directory, "moved"); await mkdir(target);
   assert.equal(await runtime.canRebindWorkspace(), true);
   await runtime.conversation.commit(async tx => {

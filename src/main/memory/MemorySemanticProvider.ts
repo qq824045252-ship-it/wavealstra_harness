@@ -1,9 +1,10 @@
-import { isDotsSearch } from "./MemorySearchEpoch";
+import { isDotsSearch, searchEpoch } from "./MemorySearchEpoch";
 import { searchDotsVectors } from "./DotsVectorSearch";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryIndexResult, MemoryRecordDto } from "../../shared/memory-kernel";
 import { memorySearchWhere, type MemorySearchScope } from "./MemorySearchScope";
 import { setImmediate as yieldThread } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
 import {
   SEMANTIC_DIMENSION,
   SEMANTIC_MODEL_ID,
@@ -34,16 +35,26 @@ export interface MemorySemanticHit {
   contentHash: string;
 }
 
+type IndexableMemory = Pick<MemoryRecordDto, "id" | "status" | "contentHash" | "kind" | "title" | "content">;
+type IndexOutcome = "indexed" | "current" | "skipped";
+const INDEX_MODEL = { modelId: SEMANTIC_MODEL_ID, modelVersion: SEMANTIC_MODEL_VERSION, dimension: SEMANTIC_DIMENSION };
+
+function indexIssue(error: unknown): NonNullable<MemoryIndexResult["issue"]> {
+  return error instanceof SemanticUnavailableError
+    ? { kind: error.kind, detail: error.message, modelDirectory: error.modelDirectory }
+    : { kind: "runtime", detail: error instanceof Error ? error.message : String(error) };
+}
+
 /** Shared BGE-M3 runtime, separate Memory index truth. */
 export class MemorySemanticProvider {
   private readonly runtime: ReturnType<typeof getSemanticRuntime>;
 
   constructor(private readonly db: AppDatabase) {
     const manager = new SemanticModelManager();
-    this.runtime = getSemanticRuntime(manager);
+    this.runtime = getSemanticRuntime(manager, db.runtimeAuditReader);
   }
 
-  async index(record: Pick<MemoryRecordDto, "id" | "status" | "contentHash" | "kind" | "title" | "content">): Promise<"indexed" | "current" | "skipped"> {
+  async index(record: IndexableMemory): Promise<IndexOutcome> {
     if (record.status !== "active") return "skipped";
     const conn = this.db.connection;
     if (!conn.open) return "skipped";
@@ -52,6 +63,25 @@ export class MemorySemanticProvider {
        AND content_hash=? AND dimension=? AND length(embedding)=?`,
     ).get(record.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, record.contentHash, SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4);
     if (existing) return "current";
+    return await this.indexNative(record.id, record.contentHash) ?? this.indexOnHost(record);
+  }
+
+  private async indexNative(id: string, hash: string): Promise<IndexOutcome | undefined> {
+    const conn = this.db.connection;
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || conn.inTransaction || !conn.open) return;
+    const staged = await this.runtime.stageIndex({ kind: "memory", id, hash });
+    if (staged?.status === "current" || staged?.status === "skipped") return staged.status;
+    if (staged?.status === "staged") {
+      const published = await reader.publishEmbeddings([staged.token]);
+      if (published) return published.indexed ? "indexed" : published.current ? "current" : "skipped";
+      await reader.discardEmbeddings([staged.token]);
+    }
+  }
+
+  private async indexOnHost(record: IndexableMemory): Promise<IndexOutcome> {
+    const conn = this.db.connection;
+    if (!conn.open) return "skipped";
     const vector = await this.runtime.embed(`${record.kind}: ${record.title}\n${record.content}`.trim());
     if (vector.length !== SEMANTIC_DIMENSION) throw new Error(`Memory embedding dimension mismatch: ${vector.length}`);
     if (!conn.open) return "skipped";
@@ -71,6 +101,66 @@ export class MemorySemanticProvider {
   }
 
   async backfill(limit?: number): Promise<MemoryIndexResult> {
+    return await this.backfillNative(limit) ?? this.backfillOnHost(limit);
+  }
+
+  private async backfillNative(limit?: number): Promise<MemoryIndexResult | undefined> {
+    const reader = this.db.runtimeAuditReader;
+    const conn = this.db.connection;
+    if (!reader || conn.inTransaction || !conn.open) return;
+    const queueId = randomUUID();
+    const boundedLimit = limit === undefined || limit === Infinity ? undefined
+      : Number.isNaN(limit) ? 0 : Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(Math.max(1, limit)));
+    const stats = await reader.embeddingIndex({ kind: "openMemoryQueue", queueId, model: INDEX_MODEL, limit: boundedLimit });
+    if (!stats) return;
+    const result: MemoryIndexResult = {
+      indexed: 0, current: stats.completed, skipped: 0, failed: 0, pending: stats.total - stats.completed,
+    };
+    const queued = Math.min(result.pending, boundedLimit ?? result.pending);
+    if (!stats.total) return result;
+    try {
+      await this.runtime.ensureSession();
+      let remaining = queued;
+      while (remaining > 0) {
+        const page = await reader.embeddingIndex({ kind: "memoryPage", queueId, limit: Math.min(64, remaining) });
+        if (!page?.length) throw new Error("本次记忆索引队列已中断，可继续补齐其余记录");
+        for (const row of page) {
+          await this.indexPending(result, async () => {
+            if (!row.hash || !conn.open) return "skipped";
+            const outcome = await this.indexNative(row.id, row.hash);
+            if (outcome) return outcome;
+            const record = this.readIndexableMemory(row.id);
+            return record ? this.indexOnHost(record) : "skipped";
+          });
+        }
+        remaining -= page.length;
+      }
+    } catch (error) {
+      result.issue = indexIssue(error);
+    } finally {
+      if (queued) await reader.embeddingIndex({ kind: "closeMemoryQueue", queueId });
+    }
+    return result;
+  }
+
+  private readIndexableMemory(id: string): IndexableMemory | undefined {
+    if (!this.db.connection.open) return;
+    return this.db.connection.prepare(`SELECT id,status,kind,title,content,content_hash AS contentHash
+      FROM memory_records WHERE id=? AND status='active'`).get(id) as IndexableMemory | undefined;
+  }
+
+  private async indexPending(result: MemoryIndexResult, index: () => Promise<IndexOutcome>): Promise<void> {
+    try {
+      result[await index()]++;
+    } catch (error) {
+      if (error instanceof SemanticUnavailableError) throw error;
+      result.failed++;
+      result.issue ??= { kind: "index", detail: error instanceof Error ? error.message : String(error) };
+    }
+    result.pending--;
+  }
+
+  private async backfillOnHost(limit?: number): Promise<MemoryIndexResult> {
     const conn = this.db.connection;
     const rows = conn.prepare(`SELECT m.id, e.memory_id IS NOT NULL AS ready FROM memory_records m
       LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model_id=? AND e.model_version=?
@@ -80,25 +170,16 @@ export class MemorySemanticProvider {
     const missing = rows.filter(row => !row.ready);
     const result: MemoryIndexResult = { indexed: 0, current: rows.length - missing.length, skipped: 0, failed: 0, pending: missing.length };
     if (!rows.length) return result;
-    const read = conn.prepare("SELECT id,status,kind,title,content,content_hash AS contentHash FROM memory_records WHERE id=?");
     try {
       await this.runtime.ensureSession();
       for (const row of missing.slice(0, limit === undefined ? missing.length : Math.max(1, limit))) {
-        const record = read.get(row.id) as Pick<MemoryRecordDto, "id" | "status" | "kind" | "title" | "content" | "contentHash"> | undefined;
-        try {
-          const outcome = record ? await this.index(record) : "skipped";
-          result[outcome]++;
-        } catch (error) {
-          if (error instanceof SemanticUnavailableError) throw error;
-          result.failed++;
-          result.issue ??= { kind: "index", detail: error instanceof Error ? error.message : String(error) };
-        }
-        result.pending--;
+        await this.indexPending(result, async () => {
+          const record = this.readIndexableMemory(row.id);
+          return record ? this.index(record) : "skipped";
+        });
       }
     } catch (error) {
-      result.issue = error instanceof SemanticUnavailableError
-        ? { kind: error.kind, detail: error.message, modelDirectory: error.modelDirectory }
-        : { kind: "runtime", detail: error instanceof Error ? error.message : String(error) };
+      result.issue = indexIssue(error);
     }
     return result;
   }
@@ -112,6 +193,27 @@ export class MemorySemanticProvider {
     if (!conn.open) return [];
     const hits: MemorySemanticHit[] = [];
     const keep = Math.max(1, Math.min(100, limit));
+    const reader = this.db.runtimeAuditReader;
+    if (reader && !conn.inTransaction && Number.isFinite(keep)) {
+      const textEpoch = searchEpoch(conn, "text_version");
+      const vectorEpoch = searchEpoch(conn, "vector_version");
+      const native = await reader.semantic({
+        target: "memory", scope: memorySearchWhere(scope), modelId: SEMANTIC_MODEL_ID,
+        modelVersion: SEMANTIC_MODEL_VERSION, dimension: SEMANTIC_DIMENSION, query: queryVec, threshold,
+      });
+      if (!conn.open) return [];
+      if (native && textEpoch === searchEpoch(conn, "text_version") && vectorEpoch === searchEpoch(conn, "vector_version")) {
+        const current = memorySearchWhere(scope);
+        const exists = conn.prepare("SELECT 1 FROM memory_records m WHERE m.id=? AND m.content_hash=? AND " + current.sql);
+        native.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
+        for (const hit of native) {
+          if (!exists.get(hit.id, hit.hash, ...current.args) || !accept(hit.id, hit.hash)) continue;
+          hits.push({ memoryId: hit.id, score: hit.score, contentHash: hit.hash });
+          if (hits.length >= Math.floor(keep)) break;
+        }
+        return hits;
+      }
+    }
     if (isDotsSearch(scope)) {
       const indexed = await searchDotsVectors(conn,queryVec,scope,accept,keep,threshold);
       if (indexed) return indexed;

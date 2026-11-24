@@ -3,9 +3,9 @@
  * 与目标策略一致（统一框架 + 每 Tag 不同 launch policy）。
  *
  * 断言：
- * - web-prototype（penpot）→ backend + http + 系统浏览器打开 9001；
- * - drawio-ai / 其它 preset → 零自动启动（不声明 requiredRuntimes）；
- * - Ardot / Blender / FreeCAD / OpenDesign Tag 已退役，不再出厂（design 模式已删除）。
+ * - 出厂 Tag 均不再声明 requiredRuntimes（web-prototype/Penpot 已退役）；
+ * - requiredRuntimes 契约本身用 fixture preset 验证：backend + http + 系统浏览器打开 9001；
+ * - Ardot / Blender / FreeCAD / OpenDesign / Penpot Tag 已退役，不再出厂（design 模式已删除）。
  */
 import { WORKING_MODE_PRESETS, CODING_MODE_PRESETS } from "../src/main/agent/mode-defaults";
 import { resolveRuntimeRequirementList } from "../src/shared/runtime-requirement";
@@ -31,19 +31,27 @@ function requirementsFor(presetId: string, list: typeof WORKING_MODE_PRESETS) {
 async function main(): Promise<void> {
   console.log("== 1) Ardot / Blender / FreeCAD / OpenDesign Tag 已退役 ==");
   {
-    for (const id of ["ai-ui", "3d-blender", "mechanical-cad", "opendesign", "general"]) {
+    for (const id of ["ai-ui", "3d-blender", "mechanical-cad", "opendesign", "general", "web-prototype"]) {
       const { preset } = requirementsFor(id, WORKING_MODE_PRESETS);
       assert(preset === undefined, `${id} 不再出厂`);
     }
   }
 
-  console.log("== 2) 服务类 Tag：backend + http ==");
+  console.log("== 2) requiredRuntimes 契约（fixture）：backend + http ==");
   {
-    const penpot = requirementsFor("web-prototype", WORKING_MODE_PRESETS).requirements.find((x) => x.providerId === "penpot");
-    assert(penpot !== undefined, "web-prototype 声明 requiredRuntimes[penpot]");
-    assert(penpot?.launchPolicy === "backend", "web-prototype → launchPolicy=backend（只起服务）");
-    assert(penpot?.readinessPolicy === "http", "web-prototype → readinessPolicy=http");
-    assert(penpot?.openUi === "browser", "web-prototype → openUi=browser（Ready 后系统浏览器打开 9001）");
+    const fixturePreset = {
+      id: "penpot-fixture",
+      label: "Penpot",
+      mcpPolicy: { mode: "hard" as const, allow: ["penpot"], deny: [] },
+      requiredRuntimes: [
+        { providerId: "penpot", launchPolicy: "backend" as const, readinessPolicy: "http" as const, openUi: "browser" as const },
+      ],
+    };
+    const penpot = resolveRuntimeRequirementList(fixturePreset.requiredRuntimes).find((x) => x.providerId === "penpot");
+    assert(penpot !== undefined, "fixture 声明 requiredRuntimes[penpot]");
+    assert(penpot?.launchPolicy === "backend", "penpot → launchPolicy=backend（只起服务）");
+    assert(penpot?.readinessPolicy === "http", "penpot → readinessPolicy=http");
+    assert(penpot?.openUi === "browser", "penpot → openUi=browser（Ready 后系统浏览器打开 9001）");
   }
 
   console.log("== 3) 零自动启动：drawio-ai / 其它 preset ==");
@@ -51,7 +59,6 @@ async function main(): Promise<void> {
     const drawio = requirementsFor("drawio-ai", WORKING_MODE_PRESETS);
     assert(drawio.preset !== undefined && drawio.requirements.length === 0, "drawio-ai（流程图）零自动启动（进程由会话 adapter 托管）");
     for (const p of WORKING_MODE_PRESETS) {
-      if (p.id === "web-prototype") continue;
       assert((p.requiredRuntimes ?? []).length === 0, `${p.id} 未声明 requiredRuntimes`);
     }
   }

@@ -1,6 +1,6 @@
 import type { AppDatabase } from "../db/AppDatabase";
 import type { MemoryPipelineStateDto, MemoryTurnDto } from "../../shared/memory-kernel";
-import { MemoryTurnRepository, type CaptureMemoryTurnInput } from "./MemoryTurnRepository";
+import { MemoryTurnRepository, prepareMemoryTurn, type CaptureMemoryTurnInput, type DurableMemoryTurn, type RuntimeMemoryCapture } from "./MemoryTurnRepository";
 
 export interface MemoryCaptureDecision {
   turn: MemoryTurnDto;
@@ -18,9 +18,56 @@ export interface MemoryCaptureDecision {
  */
 export class MemoryPipelineManager {
   readonly turns: MemoryTurnRepository;
+  private captureWrites: Promise<unknown> = Promise.resolve();
+  private capturesClosed = false;
 
-  constructor(db: AppDatabase) {
+  constructor(private readonly db: AppDatabase) {
     this.turns = new MemoryTurnRepository(db);
+  }
+
+  captureCompleted(input: CaptureMemoryTurnInput): Promise<boolean> {
+    const turn = prepareMemoryTurn(input);
+    return this.withCaptureWrites(async () => {
+      if (this.capturesClosed) return false;
+      return (await this.storeCapture({ kind: "turn", turn })) > 0;
+    });
+  }
+
+  projectCompleted(taskId: string, turns: readonly DurableMemoryTurn[], enabled: () => boolean): Promise<boolean> {
+    return this.withCaptureWrites(async () => {
+      if (this.capturesClosed || !turns.length) return false;
+      const capture = enabled();
+      const entries = turns.map(turn => ({
+        entryId: turn.entryId,
+        turn: capture && !turn.skipCapture ? prepareMemoryTurn(turn) : undefined,
+      }));
+      return (await this.storeCapture({ kind: "durable", taskId, entries })) > 0;
+    });
+  }
+
+  private async storeCapture(capture: RuntimeMemoryCapture): Promise<number> {
+    const saved = await this.db.runtimeAuditReader?.captureMemory(capture);
+    if (saved !== undefined) return saved;
+    const recovered = this.turns.captureCompletedOnHost(capture);
+    // A worker that exited after commit already advanced the Durable watermark.
+    // Any pending originals can still be picked up by the extraction queue.
+    if (!recovered && capture.kind === "durable" && capture.entries.some(entry => entry.turn)
+        && this.turns.listPending(capture.taskId, 1).length) return 1;
+    return recovered;
+  }
+
+  withCaptureWrites<T>(operation: () => T | Promise<T>): Promise<T> {
+    const result = this.captureWrites.then(operation);
+    this.captureWrites = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async flushCaptureWrites(): Promise<void> {
+    await this.captureWrites;
+  }
+
+  closeCaptureWrites(): Promise<void> {
+    return this.withCaptureWrites(() => { this.capturesClosed = true; });
   }
 
   capture(input: CaptureMemoryTurnInput): MemoryCaptureDecision {

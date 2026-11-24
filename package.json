@@ -50,7 +50,7 @@
     "test:cloudflared-cli-detect": "esbuild scripts/cloudflared-cli-detect-test.ts --bundle --platform=node --format=esm --packages=external --outfile=out/tests/cloudflared-cli-detect-test.mjs && node scripts/test-guard.mjs out/tests/cloudflared-cli-detect-test.mjs",
     "test:remote-renderer-stdio": "node scripts/test-guard.mjs scripts/remote-renderer-stdio-test.cjs",
     "test:remote-connection": "esbuild scripts/remote-connection-setup-test.ts --bundle --platform=node --format=esm --outfile=out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs out/tests/remote-connection-setup.mjs && node scripts/test-guard.mjs scripts/remote-connection-ui-test.cjs",
-    "dev": "node scripts/prepare-drawio.cjs && electron-vite dev",
+    "dev": "node scripts/prepare-drawio.cjs && node scripts/prepare-runtime-audit.cjs --dev && electron-vite dev",
     "prepare:drawio": "node scripts/prepare-drawio.cjs",
     "prepare:office-runtime": "node scripts/prepare-craft-office.cjs",
     "prepare:cadcraft": "node scripts/prepare-cadcraft.cjs",
@@ -853,6 +853,7 @@
       "output": "release"
     },
     "extraResources": [
+      { "from": "out/native/${os}-${arch}", "to": "runtime-audit", "filter": ["mybuddy-runtime-audit", "mybuddy-runtime-audit.exe"] },
       { "from": "builtin-skills/mybuddy", "to": "builtin-skills/mybuddy" },
       { "from": "vendor/canban-review", "to": "licenses/canban-review", "filter": ["LICENSE", "licenses/**/*", "SOURCE.md"] },
       { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets", "filter": ["**/*", "!native/**"] },

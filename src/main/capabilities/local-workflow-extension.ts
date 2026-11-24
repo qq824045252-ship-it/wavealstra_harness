@@ -56,7 +56,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
       cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
     }, { additionalProperties: false }),
-    execute: async (_id, input, signal) => result(() => {
+    execute: async (_id, input, signal) => result(async () => {
       signal?.throwIfAborted();
       const source = context.sourceOperation?.();
       if (context.currentTaskOnly && source && /^cron-[0-9a-f-]{36}-input$/i.test(source))
@@ -65,16 +65,18 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         throw new Error("只有 Dots 新建跟进计划时可以指定归属");
       if (!allowed(input.action)) throw new Error("Dots 设置已关闭「定时计划和文件订阅」");
       const visible = (id: string) => !context.currentTaskOnly || services.cron.dotsScheduleVisible(id);
-      const visibleJobs = () => services.cron.listForTask(taskId).filter(job => visible(job.id));
       if (input.id && !visible(input.id) && input.action !== "pause" && input.action !== "cancel")
         throw new Error("计划不在 Dots 已授权的空间内");
-      if (input.action === "list") return { jobs: visibleJobs(), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
+      if (input.action === "list") {
+        const jobs = (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
+        return { jobs, localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
+      }
       if (input.action === "get") {
         if (!input.id) throw new Error("get requires id");
         return services.cron.getForTask(taskId, input.id);
       }
       if (input.action === "runs") {
-        if (input.id) return services.cron.runPageForTask(taskId, input.id, input.limit, input.cursor);
+        if (input.id) return services.cron.runPageForTask(taskId, input.id, input.limit, input.cursor, visible);
         if (input.cursor !== undefined) throw new Error("runs pagination requires id");
         return services.cron.runsForTask(taskId, input.limit, visible);
       }

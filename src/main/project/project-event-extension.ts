@@ -255,7 +255,8 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
       execute: async (_toolCallId: string, params: { source?: string; kind?: string; triage?: "open" | "handled"; limit?: number }) => {
         try {
           const projectId = requireProject();
-          let events = bridge.service.listProjectEvents(projectId, params.limit ?? 50);
+          let events = await bridge.service.readProjectEvents(projectId, params.limit ?? 50);
+          if (requireProject() !== projectId) throw new Error("项目归属已变化，请重新读取");
           if (params.source) events = events.filter((event) => event.source === params.source);
           if (params.kind) events = events.filter((event) => event.kind === params.kind);
           if (params.triage === "open") {

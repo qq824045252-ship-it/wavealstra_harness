@@ -23,6 +23,8 @@ interface SpaceRow {
   workspace_id: string | null;
   created_at: number;
   updated_at: number;
+  project_name?: string | null;
+  workspace_name?: string | null;
 }
 
 interface CollectionRow {
@@ -83,19 +85,21 @@ const ITEM_COLUMNS = `id, space_id, collection_id, kind, title, filename, mime_t
   favorite, url, source_type, source_task_id, source_artifact_id, original_path,
   content_hash, extract_status, created_at, updated_at, last_visited_at, trashed_at, note_metadata`;
 
-function toSpace(row: SpaceRow): LibrarySpaceDto {
+export function toSpace(row: SpaceRow): LibrarySpaceDto {
   return {
     id: row.id,
     name: row.name,
     kind: row.kind as LibrarySpaceKind,
     projectId: row.project_id ?? undefined,
     workspaceId: row.workspace_id ?? undefined,
+    ...(row.workspace_id && row.workspace_name != null ? { workspaceName: row.workspace_name } : {}),
+    ...(!row.workspace_id && row.project_name != null ? { projectName: row.project_name } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-function toCollection(row: CollectionRow): LibraryCollectionDto {
+export function toCollection(row: CollectionRow): LibraryCollectionDto {
   return {
     id: row.id,
     spaceId: row.space_id,
@@ -107,7 +111,7 @@ function toCollection(row: CollectionRow): LibraryCollectionDto {
   };
 }
 
-function toItem(row: ItemRow): LibraryItemDto {
+export function toItem(row: ItemRow): LibraryItemDto {
   const metadata = row.note_metadata ? JSON.parse(row.note_metadata) as Pick<LibraryItemDto, "pinned" | "tags" | "clipSource"> : {};
   return {
     ...metadata,
@@ -133,6 +137,27 @@ function toItem(row: ItemRow): LibraryItemDto {
     updatedAt: row.updated_at,
     lastVisitedAt: row.last_visited_at,
   };
+}
+
+export function toVersion(row: VersionRow): LibraryVersionDto {
+  return {
+    id: row.id,
+    itemId: row.item_id,
+    version: row.version,
+    contentHash: row.content_hash,
+    path: row.path,
+    createdBy: row.created_by,
+    sourceTaskId: row.source_task_id ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+export interface LibraryCatalogRows {
+  spaces: SpaceRow[];
+  collections: CollectionRow[];
+  items: ItemRow[];
+  recentIds: string[];
+  usedBytes: number;
 }
 
 export class LibraryRepository {
@@ -712,6 +737,42 @@ export class LibraryRepository {
     })();
   }
 
+  replaceExtractedIndex(item: LibraryItemDto, text: string | null, status: string, chunks: Iterable<LibraryChunk>): void {
+    this.db.transaction(() => {
+      this.updateExtractStatus(item.id, status);
+      if (text === null) this.deleteFts(item.id);
+      else this.upsertFts(item.id, item.title, item.filename, text);
+      this.replaceChunks(item.id, chunks, true);
+    })();
+  }
+
+  replaceLargeTextIndexFromStage(item: LibraryItemDto, file: string, chunkCount: number, updatedAt: number): void {
+    this.db.prepare("ATTACH DATABASE ? AS library_index_stage").run(file);
+    try {
+      this.db.transaction(() => {
+        this.upsertFts(item.id, item.title, item.filename, "");
+        if (!this.tableExists("library_chunks")) return;
+        this.db.prepare(
+          "INSERT INTO library_chunks(id,item_id,chunk_index,content,char_offset,hash,updated_at) "
+          + "SELECT ? || chunk_index, ?, chunk_index, content, char_offset, hash, ? "
+          + "FROM library_index_stage.chunks WHERE 1 ORDER BY chunk_index "
+          + "ON CONFLICT(id) DO UPDATE SET chunk_index=excluded.chunk_index,content=excluded.content,"
+          + "char_offset=excluded.char_offset,hash=excluded.hash,updated_at=excluded.updated_at",
+        ).run(item.id + "#", item.id, updatedAt);
+        if (this.tableExists("library_chunks_fts")) {
+          this.db.prepare("DELETE FROM library_chunks_fts WHERE item_id=?").run(item.id);
+          this.db.prepare(
+            "INSERT INTO library_chunks_fts(item_id,chunk_id,content) "
+            + "SELECT ?,? || chunk_index,content FROM library_index_stage.chunks ORDER BY chunk_index",
+          ).run(item.id, item.id + "#");
+        }
+        this.pruneLargeChunks(item.id, chunkCount);
+      })();
+    } finally {
+      this.db.exec("DETACH DATABASE library_index_stage");
+    }
+  }
+
   /** 批量写入 item 的 chunks（先删旧 chunk+FTS，再插入新）；item 删除时由 deleteItem 显式调用清理 */
   upsertChunks(
     itemId: string,
@@ -747,18 +808,20 @@ export class LibraryRepository {
         insertFts?.run(itemId, c.id, c.content);
         count++;
       }
-      if (reuseEmbeddings) {
-        this.db.prepare(`
-          DELETE FROM library_chunk_embeddings
-          WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?)
-            AND NOT EXISTS (
-              SELECT 1 FROM library_chunks c WHERE c.id = library_chunk_embeddings.chunk_id
-                AND c.chunk_index < ? AND c.hash = library_chunk_embeddings.chunk_hash
-            )
-        `).run(itemId, count);
-        this.db.prepare(`DELETE FROM library_chunks WHERE item_id = ? AND chunk_index >= ?`).run(itemId, count);
-      }
+      if (reuseEmbeddings) this.pruneLargeChunks(itemId, count);
     })();
+  }
+
+  private pruneLargeChunks(itemId: string, count: number): void {
+    this.db.prepare(`
+      DELETE FROM library_chunk_embeddings
+      WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM library_chunks c WHERE c.id = library_chunk_embeddings.chunk_id
+            AND c.chunk_index < ? AND c.hash = library_chunk_embeddings.chunk_hash
+        )
+    `).run(itemId, count);
+    this.db.prepare("DELETE FROM library_chunks WHERE item_id = ? AND chunk_index >= ?").run(itemId, count);
   }
 
   deleteChunks(itemId: string): void {
@@ -957,16 +1020,7 @@ export class LibraryRepository {
            FROM library_versions WHERE item_id = ? ORDER BY version DESC LIMIT ?`,
         )
         .all(itemId, limit) as VersionRow[]
-    ).map((row) => ({
-      id: row.id,
-      itemId: row.item_id,
-      version: row.version,
-      contentHash: row.content_hash,
-      path: row.path,
-      createdBy: row.created_by,
-      sourceTaskId: row.source_task_id ?? undefined,
-      createdAt: row.created_at,
-    }));
+    ).map(toVersion);
   }
 
   nextVersion(itemId: string): number {

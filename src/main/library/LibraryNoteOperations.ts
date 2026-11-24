@@ -34,15 +34,13 @@ clipMarkdown.use(gfm);
 
 export async function runLibraryNoteOperation(library: LibraryService, browser: BrowserHost, parent: BrowserWindow | null, request: LibraryNoteOperation) {
   switch (request.type) {
-    case "trashList": return library.listTrashedNotes(request.owner);
+    case "trashList": return library.readTrashedNotes(request.owner);
     case "metadata": return library.setNoteMetadata(request.owner, request.id, request);
     case "trash": return library.setNoteTrashed(request.owner, request.ids, true);
     case "restore": return library.setNoteTrashed(request.owner, request.ids, false);
     case "move": return library.moveNotes(request.owner, request.ids, request.collectionId);
     case "merge": return library.mergeNotes(request.owner, request.ids);
-    case "versions":
-      if (!library.getItem(request.id)) throw new Error("笔记已不可用");
-      return library.listVersions(request.id);
+    case "versions": return library.readVersions(request.id);
     case "readVersion": return library.readVersion(request.id, request.version);
     case "noteImage": return library.noteImageUrl(request.id, request.href, request.version);
     case "restoreVersion": {

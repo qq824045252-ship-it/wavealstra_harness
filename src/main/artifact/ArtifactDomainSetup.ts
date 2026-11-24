@@ -19,8 +19,10 @@ import { ArtifactDomainIpc } from "../../shared/artifact-ipc";
 import type {
   ArtifactCreatedEvent,
   ArtifactRemovedEvent,
+  ArtifactSnapshot,
   ArtifactUpdatedEvent,
 } from "../../shared/artifact-types";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import { getMyBuddyDir } from "../paths";
 import { ArtifactRefreshCoordinator } from "./ArtifactRefreshCoordinator";
 import { ArtifactRegistry } from "./ArtifactRegistry";
@@ -44,6 +46,8 @@ export interface LegacyArtifactSource {
   ): Promise<{ artifacts: LegacyArtifactInput[]; cwd?: string } | null>;
 }
 
+const legacyMigrations = new WeakMap<ArtifactService, Map<string, Promise<void>>>();
+
 /**
  * 一次性 legacy migration 编排（3B.2-3.4）：
  * - 未迁移 → 读取旧数据源 → registerLegacy（0 条也标记完成）
@@ -55,13 +59,56 @@ export async function ensureTaskLegacyMigrated(
   source: LegacyArtifactSource,
   taskId: string,
 ): Promise<void> {
-  if (service.isLegacyMigrated(taskId)) return;
-  const legacy = await source.loadLegacyArtifacts(taskId);
-  if (!legacy) {
-    await service.registerLegacy(taskId, []); // 无 session → 空迁移，标记完成
-    return;
+  let pending = legacyMigrations.get(service);
+  if (!pending) {
+    pending = new Map();
+    legacyMigrations.set(service, pending);
   }
-  await service.registerLegacy(taskId, legacy.artifacts, legacy.cwd);
+  const existing = pending.get(taskId);
+  if (existing) return existing;
+  if (service.isLegacyMigrated(taskId)) return;
+  const migration = (async () => {
+    const legacy = await source.loadLegacyArtifacts(taskId);
+    await service.registerLegacy(taskId, legacy?.artifacts ?? [], legacy?.cwd);
+  })();
+  pending.set(taskId, migration);
+  try {
+    await migration;
+  } finally {
+    pending.delete(taskId);
+  }
+}
+
+export async function readArtifactSnapshotBatch(
+  service: ArtifactService,
+  source: LegacyArtifactSource | null,
+  taskIds: readonly string[],
+): Promise<ArtifactSnapshot[]> {
+  const current = await service.readTaskSnapshots(taskIds);
+  const replacements = new Map<string, ArtifactSnapshot>();
+  if (source) {
+    const pending = current.filter(snapshot => !snapshot.legacyMigrated);
+    const migrated: string[] = [];
+    const concurrency = 4;
+    for (let start = 0; start < pending.length; start += concurrency) {
+      await Promise.all(pending.slice(start, start + concurrency).map(async ({ taskId }) => {
+        try {
+          await ensureTaskLegacyMigrated(service, source, taskId);
+          migrated.push(taskId);
+        } catch (error) {
+          console.error("[ArtifactDomain] legacy migration failed:", error);
+          replacements.set(taskId, {
+            taskId, artifacts: [], revision: 0, state: "error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }));
+    }
+    for (const { legacyMigrated: _, ...snapshot } of await service.readTaskSnapshots(migrated)) {
+      replacements.set(snapshot.taskId, snapshot);
+    }
+  }
+  return current.map(({ legacyMigrated: _, ...snapshot }) => replacements.get(snapshot.taskId) ?? snapshot);
 }
 
 /** Main → Renderer 事件广播（全窗口 webContents.send） */
@@ -87,6 +134,7 @@ function broadcastSink(): ArtifactEventSink {
 export function createArtifactDomain(
   db: Database.Database,
   extraSink?: ArtifactEventSink,
+  runtimeAuditReader?: RuntimeAuditReader,
 ): ArtifactDomain {
   const storage = new ArtifactStorage(join(getMyBuddyDir(), "artifacts"));
   const repository = new ArtifactRepository(db);
@@ -105,7 +153,7 @@ export function createArtifactDomain(
       broadcast.removed?.(e);
       extraSink?.removed?.(e);
     },
-  });
+  }, runtimeAuditReader);
   const coordinator = new ArtifactRefreshCoordinator(service);
 
   // 启动：Registry 从 Repository 全量重建（§7 Registry 可完全重建）

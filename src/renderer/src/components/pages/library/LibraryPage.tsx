@@ -49,7 +49,9 @@ export default function LibraryPage(): React.JSX.Element {
         let collectionId: string | null | undefined;
         let itemId: string | undefined;
         if (nav) {
-          const snapshot = await window.api.library.snapshot();
+          const snapshot = await window.api.library.snapshot(
+            nav.view === "item" ? { itemId: nav.itemId } : { spaceId: nav.spaceId },
+          );
           const item = nav.view === "item" ? snapshot.items.find((entry) => entry.id === nav.itemId) : undefined;
           if (nav.view === "item" && !item) throw new Error("这份资料已不存在");
           spaceId = nav.view === "space" ? nav.spaceId : item?.spaceId;

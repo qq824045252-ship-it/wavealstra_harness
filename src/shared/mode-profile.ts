@@ -376,8 +376,20 @@ export const MODE_DEFAULT_PRESET_IDS: Record<WelcomeMode, string> = {
  * 读盘时从欢迎页 tag 列表剔除（见 ModeProfileStore）。
  */
 export const RETIRED_MODE_PRESET_IDS: Record<WelcomeMode, readonly string[]> = {
-  working: ["inventory-summary", "documents", "spreadsheets", "presentations"],
-  coding: [PSTACK_THERMOS_ID],
+  working: [
+    "inventory-summary",
+    "documents",
+    "spreadsheets",
+    "presentations",
+    "summary",
+    "weekly-report",
+    "meeting-notes",
+    "project-management",
+    "data-analysis",
+    "deep-research",
+    "web-prototype",
+  ],
+  coding: [PSTACK_THERMOS_ID, "feature-dev", "add-tests"],
   general: ["general", "web-prototype"],
 };
 
@@ -390,22 +402,11 @@ export function isRetiredModePresetId(
 
 /** 各模式出厂 preset id 清单（测试/防御性校验用；用户自定义 preset 不在其中） */
 export const MODE_SEED_PRESET_IDS: Record<WelcomeMode, string[]> = {
-  working: [
-    "general-office",
-    "summary",
-    "weekly-report",
-    "meeting-notes",
-    "project-management",
-    "data-analysis",
-    "drawio-ai",
-    "web-prototype",
-  ],
+  working: ["general-office", "drawio-ai"],
   coding: [
     "minimal",
     "bugfix-test",
-    "feature-dev",
     "refactor",
-    "add-tests",
     "code-review",
     "plan-design",
     "readonly-explain",

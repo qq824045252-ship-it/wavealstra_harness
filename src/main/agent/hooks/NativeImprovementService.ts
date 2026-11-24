@@ -46,7 +46,7 @@ export class NativeImprovementService {
   private timer?: ReturnType<typeof setInterval>;
   private readonly abort = new AbortController();
   constructor(private readonly app: AppDatabase, private readonly hooks: NativeHookStore, path: string, private readonly now = Date.now, private readonly reviewer?: Reviewer,
-    readonly knowledge:()=>ImprovementKnowledge|undefined = ()=>undefined) {
+    readonly knowledge:()=>ImprovementKnowledge|undefined = ()=>undefined, private readonly flushDiagnostics?: () => Promise<void>) {
     this.ledger = new Database(path);
     this.ledger.pragma("journal_mode = WAL");
     this.ledger.exec([
@@ -113,6 +113,7 @@ export class NativeImprovementService {
       const c = await storage.conversation(conversation as ConversationId,ctx);
       const evidence = c && await readImprovementChild(storage,task,c,true);
       if (!evidence || evidence.child.childId !== indexed) throw new Error("子代理原始身份已变化");
+      await this.flushDiagnostics?.();
       return { ...evidence, ...this.childContext(task,String(conversation)) };
     } finally { await storage.close(ctx); }
   }
@@ -138,6 +139,7 @@ export class NativeImprovementService {
   private async evidence(directory: string, source: ObservationSource) {
     const raw = await reflectionEvidence(directory,source);
     if (raw.length) {
+      await this.flushDiagnostics?.();
       const context=await improvementSourceContext(this.app.connection,directory,source,this.hooks);
       raw[0]!.content.push({role:"原始决策的诊断、能力和验收凭据",text:JSON.stringify(context)});
       const used=this.packages.sourceUses(source);

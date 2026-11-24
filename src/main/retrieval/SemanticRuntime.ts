@@ -4,6 +4,12 @@
  * Never falls back to hashEmbedding in production.
  */
 import { existsSync, readFileSync } from "node:fs";
+import {
+  locateSemanticInferenceLibrary,
+  type RuntimeAuditReader,
+  type RuntimeEmbeddingSource,
+  type RuntimeSemanticModel,
+} from "../platform/runtime-audit";
 import { SemanticModelManager, SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION } from "./SemanticModelManager";
 
 type TokenizerCache = {
@@ -31,61 +37,124 @@ export class SemanticRuntime {
   private sessLoading: Promise<any | null> | null = null;
   private tokCache: TokenizerCache | null = null;
   private loadMs: number | null = null;
+  private nativeSession?: Promise<RuntimeSemanticModel | undefined>;
+  private modelIdentity?: string;
+  private modelRevision?: string;
+  private modelLoadEpoch = 0;
 
-  constructor(private readonly manager: SemanticModelManager) {}
+  constructor(private readonly manager: SemanticModelManager, private readonly native?: RuntimeAuditReader) {}
 
   get modelId() { return SEMANTIC_MODEL_ID; }
   get modelVersion() { return SEMANTIC_MODEL_VERSION; }
   get dimension() { return SEMANTIC_DIMENSION; }
 
   getLoadMs(): number | null { return this.loadMs; }
-  getModelStatus(): ReturnType<SemanticModelManager["getStatus"]> { return this.manager.getStatus(); }
+  getModelStatus(): ReturnType<SemanticModelManager["getStatusAsync"]> { return this.manager.getStatusAsync(this.native); }
 
-  isAvailable(): boolean {
-    const st = this.manager.getStatus();
+  async isAvailable(): Promise<boolean> {
+    const st = await this.getModelStatus();
     return st.status === "ready";
   }
 
   /** Throw if not ready — caller maps to lexical-only vs explicit unavailable */
-  ensureAvailableOrThrow(): void {
-    const st = this.manager.getStatus();
+  async ensureAvailableOrThrow(): Promise<void> {
+    const st = await this.getModelStatus();
     if (st.status !== "ready") throw new SemanticUnavailableError(
       st.error ?? (st.status === "not_installed" ? "未找到 BGE-M3 INT8 模型包" : `模型状态：${st.status}`),
       st.status === "not_installed" ? "missing" : st.status === "corrupt" ? "invalid" : "runtime", st.modelsRoot);
+    const identity = JSON.stringify([st.modelsRoot, st.revision]);
+    if (this.modelIdentity !== identity) {
+      this.dispose();
+      this.modelIdentity = identity;
+      this.modelRevision = st.revision ?? undefined;
+    }
   }
 
   async ensureSession(): Promise<any> {
-    this.ensureAvailableOrThrow();
+    await this.ensureAvailableOrThrow();
+    return await this.ensureNativeSession() ?? this.ensureHostSession();
+  }
+
+  private ensureNativeSession(): Promise<RuntimeSemanticModel | undefined> {
+    this.nativeSession ??= this.startNativeSession();
+    return this.nativeSession;
+  }
+
+  private async startNativeSession(): Promise<RuntimeSemanticModel | undefined> {
+    if (!this.native) return;
+    const libraryPath = locateSemanticInferenceLibrary();
+    if (!libraryPath) return;
+    const model = {
+      libraryPath, modelPath: this.manager.getModelPath(), tokenizerPath: this.manager.getTokenizerPath(),
+      dimension: this.dimension, revision: this.modelRevision,
+    };
+    const loaded = await this.native.semanticInference(model);
+    if (!loaded) return;
+    this.loadMs = loaded.loadMs;
+    console.info("[RuntimeAudit] Rust semantic model ready");
+    return model;
+  }
+
+  private async ensureHostSession(): Promise<any> {
     if (this.sess) return this.sess;
     if (this.sessLoading) return this.sessLoading;
     const modelPath = this.manager.getModelPath();
+    const epoch = this.modelLoadEpoch;
     if (!existsSync(modelPath)) throw new SemanticUnavailableError("model.onnx not found at " + modelPath);
-    this.sessLoading = (async () => {
+    const loading = (async () => {
       try {
         const ort: any = await import("onnxruntime-node");
         const t0 = Date.now();
         const sess = await ort.InferenceSession.create(modelPath, { executionProviders: ["cpu"], logSeverityLevel: 3 });
+        if (epoch !== this.modelLoadEpoch) {
+          await sess.release();
+          throw new Error("模型在加载期间发生变化");
+        }
         this.loadMs = Date.now() - t0;
         this.sess = sess;
         return sess;
       } catch (error) {
         throw new SemanticUnavailableError(error instanceof Error ? error.message : String(error), "runtime", this.manager.getModelsRoot());
-      } finally { this.sessLoading = null; }
+      }
     })();
-    const s = await this.sessLoading;
-    if (!s) throw new SemanticUnavailableError("failed to create ORT session");
-    return s;
+    this.sessLoading = loading;
+    try { return await loading; }
+    finally { if (this.sessLoading === loading) this.sessLoading = null; }
+  }
+
+  async stageIndex(source: RuntimeEmbeddingSource) {
+    if (!this.native) return;
+    await this.ensureAvailableOrThrow();
+    const model = await this.ensureNativeSession();
+    if (model) return this.native.stageEmbedding(model, this.modelId, this.modelVersion, source);
   }
 
   dispose(): void {
+    this.modelLoadEpoch++;
     try { this.sess?.release?.(); } catch { /* ignore */ }
     this.sess = null;
     this.sessLoading = null;
     this.tokCache = null;
+    this.nativeSession = undefined;
+    this.modelIdentity = undefined;
+    this.modelRevision = undefined;
   }
 
   async embed(text: string): Promise<Float32Array> {
-    const sess = await this.ensureSession();
+    await this.ensureAvailableOrThrow();
+    const native = await this.ensureNativeSession();
+    if (native) {
+      // Preserve JavaScript's Unicode version and its treatment of lone surrogates.
+      let input: string | number[] = text;
+      if (process.versions.unicode !== "17.0" || /[\uD800-\uDFFF]/u.test(text)) {
+        const normalized = text.normalize("NFKC");
+        input = Array.from({ length: normalized.length }, (_, index) => normalized.charCodeAt(index));
+      }
+      const result = await this.native?.semanticInference(native, input);
+      if (result?.vector?.length === this.dimension) return Float32Array.from(result.vector);
+      this.nativeSession = Promise.resolve(undefined);
+    }
+    const sess = await this.ensureHostSession();
     const ids = this.tokenize(text);
     const maxLen = Math.min(ids.length, 512);
     const sliced = ids.slice(0, maxLen);
@@ -183,11 +252,18 @@ export class SemanticRuntime {
 
 // Global lazy singleton per process (keyed by modelsRoot for tests)
 const singletons = new Map<string, SemanticRuntime>();
-export function getSemanticRuntime(manager?: SemanticModelManager): SemanticRuntime {
+const nativeSingletons = new WeakMap<RuntimeAuditReader, Map<string, SemanticRuntime>>();
+export function getSemanticRuntime(manager?: SemanticModelManager, native?: RuntimeAuditReader): SemanticRuntime {
   const m = manager ?? new SemanticModelManager();
   const key = m.getModelsRoot();
-  let rt = singletons.get(key);
-  if (!rt) { rt = new SemanticRuntime(m); singletons.set(key, rt); }
+  let runtimes = singletons;
+  if (native) {
+    const existing = nativeSingletons.get(native);
+    runtimes = existing ?? new Map();
+    if (!existing) nativeSingletons.set(native, runtimes);
+  }
+  let rt = runtimes.get(key);
+  if (!rt) { rt = new SemanticRuntime(m, native); runtimes.set(key, rt); }
   return rt;
 }
 export function resetSemanticRuntimeForTest(modelsRoot?: string): void {

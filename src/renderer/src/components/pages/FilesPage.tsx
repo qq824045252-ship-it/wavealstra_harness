@@ -5,6 +5,7 @@ import type { Artifact, Task } from "@/types";
 import { relativeTime, sizeLabel, useAppStore } from "@/store/appStore";
 import type { WelcomeMode } from "@shared/agent-ipc";
 import type { ArtifactSnapshot } from "@shared/artifact-types";
+import { ARTIFACT_SNAPSHOT_BATCH_SIZE } from "@shared/artifact-ipc";
 import { artifactVisibleForDisplay } from "@shared/mode-profile";
 import { toRendererArtifact } from "@/lib/artifactIngest";
 import { inferArtifactKind } from "@/lib/workspace";
@@ -90,7 +91,7 @@ export default function FilesPage(): React.JSX.Element {
   const [loading, setLoading] = useState(false);
   const resultsScroll = useRef<HTMLDivElement>(null);
 
-  const taskIdKey = tasks.map((task) => task.id).join(",");
+  const taskIdKey = JSON.stringify(tasks.map((task) => task.id).sort());
   useEffect(() => {
     const api = window.api?.artifactDomain;
     const state = useAppStore.getState();
@@ -101,24 +102,26 @@ export default function FilesPage(): React.JSX.Element {
     }
     let cancelled = false;
     setLoading(true);
-    void Promise.all(missing.map(async (task) => {
+    void (async () => {
       try {
-        return await api.snapshot({ taskId: task.id });
-      } catch (error) {
-        console.warn("[FilesPage] artifact snapshot failed", task.id, error);
-        return null;
-      }
-    })).then((results) => {
-      if (cancelled) return;
-      setSnapshots((previous) => {
-        const next = { ...previous };
-        for (const snapshot of results) {
-          if (snapshot) next[snapshot.taskId] = snapshot;
+        for (let start = 0; start < missing.length && !cancelled; start += ARTIFACT_SNAPSHOT_BATCH_SIZE) {
+          const taskIds = missing.slice(start, start + ARTIFACT_SNAPSHOT_BATCH_SIZE).map(task => task.id);
+          try {
+            const results = await api.snapshotBatch({ taskIds });
+            if (cancelled) break;
+            setSnapshots(previous => {
+              const next = { ...previous };
+              for (const snapshot of results) next[snapshot.taskId] = snapshot;
+              return next;
+            });
+          } catch (error) {
+            console.warn("[FilesPage] artifact snapshot batch failed", error);
+          }
         }
-        return next;
-      });
-      setLoading(false);
-    });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => { cancelled = true; };
   }, [taskIdKey]);
 

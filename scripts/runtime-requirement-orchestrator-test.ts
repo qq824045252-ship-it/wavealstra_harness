@@ -3,11 +3,25 @@ import { MODE_SEEDS } from "../src/main/agent/mode-defaults";
 import { RuntimeRequirementOrchestrator } from "../src/main/professional-tools/RuntimeRequirementOrchestrator";
 import type { ManagedToolProviderId, ProfessionalToolStatusDto } from "../src/shared/professional-tools";
 
-// Exercise readiness with the real Penpot preset after its move to office.
-const officePreset = MODE_SEEDS.working.policy.presets!.find(preset => preset.id === "web-prototype")!;
+// Penpot tag（web-prototype）已退役：用同形状 fixture 验证 requiredRuntimes 编排契约。
+const fixturePreset = {
+  id: "web-prototype",
+  label: "Penpot",
+  promptAddon: "fixture",
+  mcpPolicy: { mode: "hard" as const, allow: ["penpot"], deny: [] },
+  requiredRuntimes: [
+    { providerId: "penpot", launchPolicy: "backend" as const, readinessPolicy: "http" as const, openUi: "browser" as const },
+  ],
+};
+const workingWithFixture = {
+  ...MODE_SEEDS.working,
+  policy: { ...MODE_SEEDS.working.policy, presets: [fixturePreset] },
+};
+const officePreset = fixturePreset;
 const profileStore = {
   getProfile(mode: "working" | "coding" | "general") {
-    return { ...MODE_SEEDS[mode], id: mode, version: "fixture", blocks: [], totalChars: 0, userDir: "", policyPath: "", hasUserOverride: false };
+    const base = mode === "working" ? workingWithFixture : MODE_SEEDS[mode];
+    return { ...base, id: mode, version: "fixture", blocks: [], totalChars: 0, userDir: "", policyPath: "", hasUserOverride: false };
   },
 };
 

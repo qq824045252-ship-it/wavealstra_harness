@@ -23,7 +23,14 @@ export class ScopedLibraryOperations {
     private readonly artifactTaskIds: () => ReadonlySet<string> | Promise<ReadonlySet<string>> = () => new Set(),
   ) { this.readOnly = readOnly || Boolean(reference); }
 
-  async snapshot() { return scopedLibrarySnapshot(await this.getApi().snapshot(), this.scope, this.reference); }
+  async snapshot(itemId?: string) {
+    const snapshot = await this.getApi().snapshot({
+      owner: this.scope,
+      spaceId: this.reference?.spaceId,
+      itemId: this.reference?.collectionId ? undefined : this.reference?.itemId ?? itemId,
+    });
+    return scopedLibrarySnapshot(snapshot, this.scope, this.reference);
+  }
 
   private writable(): void {
     if (this.readOnly) throw new Error("这里只能阅读资料，请到资料所属位置修改");
@@ -31,7 +38,7 @@ export class ScopedLibraryOperations {
 
   private async item(id: string, write = false) {
     if (write) this.writable();
-    return requireLibraryItem(await this.snapshot(), id);
+    return requireLibraryItem(await this.snapshot(id), id);
   }
 
   async destination(location: LibraryLocation): Promise<{ spaceId: string; collectionId: string | null }> {

@@ -242,7 +242,7 @@ export class MemoryRepository {
   }
 
   searchScopedAsync(query: string, input: MemorySearchScope, limit: number, accept: (memory: MemoryRecordDto) => boolean) {
-    return new MemoryQueryCandidates({ db: this.conn, repository: this, query, scope: input, limit, accept }).searchAsync();
+    return new MemoryQueryCandidates({ db: this.conn, repository: this, query, scope: input, limit, accept }).searchAsync(this.db.runtimeAuditReader);
   }
 
   insert(record: MemoryRecordDto, changeReason?: string): MemoryRecordDto {

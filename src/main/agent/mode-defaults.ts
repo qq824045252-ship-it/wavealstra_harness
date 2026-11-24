@@ -11,20 +11,6 @@ import { DRAWIO_MCP_SERVER_ID } from "../../shared/professional-tools";
 export const CODING_TASK_INTENT_INSTRUCTIONS =
   "按本轮话语和对话上下文判断用户的意图。普通交流直接回答。用户想理解现有代码、职责或调用链时，用只读工具优先阅读点名的文件，只查到能回答为止。在对话中解释，依据不足时说明边界。详细讲解仍可以是只读请求，不需要执行命令或修改文件。测试、报告、发布等行动也要有本轮任务授权。按用户目标和任务复杂度自行决定是否使用可选工作流。";
 
-/** Stable id keeps existing Penpot configuration and task references compatible. */
-export const PENPOT_PRESET: ModePresetDto = {
-  id: "web-prototype",
-  label: "Penpot",
-  description: "Web UI/UX 原型 / Design System / Flex/Grid/Token",
-  promptAddon:
-    "当前为「Penpot」预设：必须优先调用 penpot MCP 工具创建、读取或更新 Penpot 原型/设计稿，不要跳过 Penpot 只用文字自行设计。使用 Penpot 做 Web UI/UX 原型、Design System、Flex/Grid/Token 与组件库；产出为设计稿/原型文件或结构说明，不要直接修改真实网页源码，真实代码实现属于代码开发模式。",
-  mcpPolicy: { mode: "hard", allow: ["penpot"], deny: [] },
-  providerMcpIds: ["penpot"],
-  requiredRuntimes: [
-    { providerId: "penpot", launchPolicy: "backend", readinessPolicy: "http", openUi: "browser" },
-  ],
-};
-
 export interface ModeSeed {
   labelZh: string;
   version: string;
@@ -40,10 +26,6 @@ const WORKING_DENY_DRAWIO: ModePresetDto["mcpPolicy"] = {
 };
 
 const OFFICE_DOCUMENT_GUIDANCE = "用 Office Use 新建和读取办公文档。修改已打开的文档时，提交建议供用户确认。";
-const SUMMARY_OUTPUT_GUIDANCE = "需要落盘时可用 Markdown，或用 Office Use 新建 Word 文档。";
-const PROJECT_OUTPUT_GUIDANCE = "需要 Office 文件时使用 Office Use 创建。";
-const ANALYSIS_OUTPUT_GUIDANCE = "需要 .xlsx 时使用 Office Use 创建。";
-
 /** Refresh the previous factory prompt while preserving custom settings. */
 export function refreshLegacyOfficePreset(preset: ModePresetDto, seed: ModePresetDto): ModePresetDto {
   const prompt = seed.promptAddon;
@@ -69,8 +51,10 @@ export function refreshLegacyDrawioPreset(preset: ModePresetDto, seed: ModePrese
 
 /**
  * working 出厂 Mode Presets：对人交付的办公闭环。
- * 顺序：通用办公 → 总结 → 周报 → 会议纪要 → 项目管理 → 数据分析 → 流程图 → Penpot。
- * 已退役：inventory-summary / documents / spreadsheets / presentations
+ * 顺序：通用办公 → 流程图。
+ * 已退役：inventory-summary / documents / spreadsheets / presentations（历史批次），
+ * summary / weekly-report / meeting-notes / project-management / data-analysis /
+ * deep-research（用户点名精简批次），以及 web-prototype / Penpot（含项目模板预选引用一并移除）。
  * （旧任务 id 回落到 general-office，见 RETIRED_MODE_PRESET_IDS）。
  * 流程图预设用内置 Draw.io Use。
  */
@@ -87,114 +71,12 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
       `4. ${OFFICE_DOCUMENT_GUIDANCE}引用源文件或字段名。\n` +
       "5. 收尾给出产物路径，并点明局限。不写空话套话。流程图请切到「流程图」标签。",
     skillPolicy: {
-      prefer: ["fastcopy-copy", "weekly-report-fill", "周报", "summary", "report", "excel", "文档", "会议"],
+      prefer: ["fastcopy-copy", "weekly-report-fill", "周报", "summary", "report", "会议"],
       demote: [],
       hide: [],
       allow: [],
     },
     mcpPolicy: WORKING_DENY_DRAWIO,
-  },
-  {
-    id: "summary",
-    label: "总结",
-    description: "把长材料压成两分钟能看完的短文：一句话结论、要点、下一步",
-    promptAddon:
-      "当前为「总结」：把长材料压成别人两分钟能看完、并知道「所以呢」的短文。不是缩写版原文，也不是周报或会议纪要。\n" +
-      "1. 先定读者和用途（转发同事 / 汇报上级 / 自己留底）。多份材料要标来源，不要揉成没有出处的一团。\n" +
-      "2. 开头一句话结论：这件事现在是什么状态、对读者意味着什么。\n" +
-      "3. 正文按主题归并 3–7 条要点，每条一个意思；删过程、留判断和事实。数字、人名、日期、出处必须可对账。\n" +
-      "4. 单独列出：分歧 / 待确认 / 读者需要拍板或跟进的下一步（没有就写「无」）。\n" +
-      `5. 篇幅克制，默认一页内读完。原文只在容易断章取义时短引。${SUMMARY_OUTPUT_GUIDANCE}\n` +
-      "禁止按段落复述、堆形容词、把不确定写成定论。",
-    skillPolicy: {
-      prefer: ["summary", "report", "文档"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    mcpPolicy: WORKING_DENY_DRAWIO,
-    recommendedExpertIds: ["doc-polish"],
-  },
-  {
-    id: "weekly-report",
-    label: "周报",
-    description: "给上级/同事扫读的一页进展：本周完成 → 成果 → 风险 → 下周计划",
-    promptAddon:
-      "当前为「周报」：写给上级或同步同事的一页进展，不是流水账。\n" +
-      "1. 本周结论（3 行内）：做成了什么、卡在哪、下周最重要的一件事。\n" +
-      "2. 本周完成：按主题归并，写结果不写过程；能量化就量化。\n" +
-      "3. 关键成果：只留真正有进展或可对外说的。\n" +
-      "4. 问题与风险：事实 + 影响 + 需要谁拍板。\n" +
-      "5. 下周计划：可执行，带责任人/时间；禁止「持续推进」这类空句。\n" +
-      "根据对话与工作区笔记整理，缺材料标「待确认」。版式干净，可直接粘贴到聊天或邮件。",
-    skillPolicy: {
-      prefer: ["weekly-report-fill", "周报", "summary", "report"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    mcpPolicy: WORKING_DENY_DRAWIO,
-    recommendedExpertIds: ["weekly-report"],
-  },
-  {
-    id: "meeting-notes",
-    label: "会议纪要",
-    description: "让没到场的人也能接着干活：决议、行动项、待决分开",
-    promptAddon:
-      "当前为「会议纪要」：让没到场的人也能接着干活，不是逐字稿。\n" +
-      "1. 会头：主题、时间、出席/缺席（材料里有的才写）。\n" +
-      "2. 决议：已拍板事项，一句一条，不含讨论过程。\n" +
-      "3. 行动项：可勾选清单，每条含 负责人 / 截止 / 完成标准；不清楚标「待确认」。\n" +
-      "4. 待决与分歧：没定的单独放，避免混进决议。\n" +
-      "5. 备忘：只留会影响后续的上下文。原话只在容易误解时引用。\n" +
-      "把用户粘贴的记录压成上述结构。语气中性、可转发，不要写成聊天记录。",
-    skillPolicy: {
-      prefer: ["会议", "summary"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    mcpPolicy: WORKING_DENY_DRAWIO,
-  },
-  {
-    id: "project-management",
-    label: "项目管理",
-    description: "把进展收成能对齐人的看板：责任、依赖、风险、下一步",
-    promptAddon:
-      "当前为「项目管理」：把混乱的进展收成一张能对齐人的图，不是写项目章程。\n" +
-      "1. 先画清：目标、范围边界、关键里程碑、当前状态（只用材料里的事实）。\n" +
-      "2. 再列看板：任务 / 责任人 / 状态 / 截止 / 依赖。缺项标「待确认」，不编进度。\n" +
-      "3. 风险写成「会发生什么 → 对谁有影响 → 建议动作」，不要只喊「需关注」。\n" +
-      "4. 输出可扫读的 Markdown 表格或清单；必要时附一段可转发的对齐说明。\n" +
-      `5. 收尾只留 3 个以内「现在就要有人做的决定或动作」。${PROJECT_OUTPUT_GUIDANCE}\n` +
-      "不要写成空的 OKR / 赋能套话。",
-    skillPolicy: {
-      prefer: ["文档", "summary", "report"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    mcpPolicy: WORKING_DENY_DRAWIO,
-  },
-  {
-    id: "data-analysis",
-    label: "数据分析",
-    description: "用证据回答一个具体问题：结论带数字，口径可对账",
-    promptAddon:
-      "当前为「数据分析」：用证据回答一个具体问题，给能拍板的人看。\n" +
-      "1. 先写清问题与口径（时间范围、分子分母、对比对象）；口径不明先问或标假设。\n" +
-      "2. 用工具真实读表/CSV，禁止心算编造。先做数据体检：缺失、异常、重复、单位不一致。\n" +
-      "3. 结论 3–5 条，每条带数字与对比（环比/同比/结构/贡献），并写清「所以建议怎么做」。\n" +
-      "4. 关键对比用表格；趋势说方向与幅度，不堆原始行。相关关系不要写成因果。\n" +
-      `5. 附录交代样本、口径、局限。${ANALYSIS_OUTPUT_GUIDANCE}图表为结论服务，不装饰。`,
-    skillPolicy: {
-      prefer: ["excel", "summary"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-    mcpPolicy: WORKING_DENY_DRAWIO,
-    recommendedExpertIds: ["data-analysis"],
   },
   {
     id: "drawio-ai",
@@ -207,13 +89,12 @@ export const WORKING_MODE_PRESETS: ModePresetDto[] = [
     mcpPolicy: WORKING_DENY_DRAWIO,
     skillPolicy: { prefer: ["drawio-use"], demote: [], hide: [], allow: [] },
   },
-  PENPOT_PRESET,
 ];
 
 const workingPolicy: ModePolicyDto = {
   ...emptyModePolicy(),
   skillPolicy: {
-    prefer: [MYBUDDY_GUIDE_SKILL_ID, "周报", "summary", "report", "excel", "文档", "会议"],
+    prefer: [MYBUDDY_GUIDE_SKILL_ID, "周报", "summary", "report", "会议"],
     demote: ["deploy", "k8s", "docker"],
     hide: [],
     allow: [],
@@ -236,19 +117,11 @@ const workingPolicy: ModePolicyDto = {
     allow: [],
     deny: [...WORKING_ARTIFACT_DENY_DEFAULT],
   },
-  recommendedExpertIds: ["weekly-report", "data-analysis", "doc-polish"],
+  recommendedExpertIds: ["doc-polish"],
   scenes: [
     {
       label: "库存摘要",
       prompt: "根据工作区中的表格/CSV，写一份库存或数据摘要 Markdown，含总数、分类统计，并引用源文件。",
-    },
-    {
-      label: "周报结构",
-      prompt: "根据当前对话与工作区笔记，整理一页周报：本周完成 → 关键成果 → 问题风险 → 下周计划，结论优先。",
-    },
-    {
-      label: "会议纪要",
-      prompt: "把我粘贴的会议记录整理成可勾选的行动项清单，并标出负责人/待确认项。",
     },
   ],
   presets: WORKING_MODE_PRESETS,
@@ -258,6 +131,8 @@ const workingPolicy: ModePolicyDto = {
  * coding 出厂 Mode Presets：覆盖日常开发闭环。
  * 顺序按「动手 → 检查 → 理解」分组，方便欢迎页两行排布。
  * 旧任务 id（bugfix-test / code-review / readonly-explain）保持不变。
+ * 已退役：feature-dev / add-tests（addon 与 base 重复、prefer 为 base 子集，
+ * add-tests 的测试意图改为 coding scenes 芯片；旧任务回落 minimal，见 RETIRED_MODE_PRESET_IDS）。
  */
 export const CODING_MODE_PRESETS: ModePresetDto[] = [
   {
@@ -285,23 +160,6 @@ export const CODING_MODE_PRESETS: ModePresetDto[] = [
     },
   },
   {
-    id: "feature-dev",
-    label: "新功能",
-    description: "按需求实现功能：对齐现有风格与边界，补必要测试",
-    promptAddon:
-      "当前为「新功能」场景：在现有仓库里落地可工作的功能，而不是另起炉灶。\n" +
-      "1. 先读相关模块、约定与邻近实现，对齐命名、目录、错误处理与测试风格。\n" +
-      "2. 需求不清时先列出假设与待确认点，再按最小可用范围实现；不要扩大到未要求的周边功能。\n" +
-      "3. 改动贴着现有抽象走，避免无关重构；公共逻辑能复用就复用。\n" +
-      "4. 补上关键路径与边界测试并实际执行相关验证；交付时说明入口、行为变化与如何验证。",
-    skillPolicy: {
-      prefer: ["git", "test"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-  },
-  {
     id: "refactor",
     label: "重构",
     description: "行为不变，只改结构：小步重构并保持测试绿色",
@@ -313,24 +171,6 @@ export const CODING_MODE_PRESETS: ModePresetDto[] = [
       "4. 每步后跑相关测试；交付时说明重构动机、结构变化、为何行为不变、如何验证。",
     skillPolicy: {
       prefer: ["refactor", "test", "git"],
-      demote: [],
-      hide: [],
-      allow: [],
-    },
-  },
-  {
-    id: "add-tests",
-    label: "补测试",
-    description: "为现有代码补齐可回归的测试，默认不改生产逻辑",
-    promptAddon:
-      "当前为「补测试」场景：提高可回归性，默认不改生产代码。\n" +
-      "1. 先读被测代码与现有测试风格（目录、命名、fixture、断言习惯），新测试必须融入现有框架。\n" +
-      "2. 优先覆盖：关键路径、边界条件、失败/回退路径、曾经出过 bug 的回归点。\n" +
-      "3. 测试要可独立运行、断言具体、不依赖人工观察；避免只测实现细节的易碎测试。\n" +
-      "4. 发现生产代码不可测或确有缺陷时，先说明；仅在为了可测而必须的最小改动时才动生产代码。\n" +
-      "5. 跑通相关测试并给出命令；交付时列出新增用例与仍未覆盖的风险。",
-    skillPolicy: {
-      prefer: ["test"],
       demote: [],
       hide: [],
       allow: [],
@@ -421,6 +261,10 @@ const codingPolicy: ModePolicyDto = {
     {
       label: "修 bug + 测试",
       prompt: "定位并修复当前工作区中的问题，给出最小 diff，并补充或运行可验证的测试/命令。",
+    },
+    {
+      label: "补测试",
+      prompt: "为当前工作区的现有代码补齐可回归的测试，默认不改生产代码：先读被测代码与现有测试风格，新测试融入现有框架；优先覆盖关键路径、边界条件、失败/回退路径和曾出 bug 的回归点；测试可独立运行、断言具体，跑通后给出命令，并说明新增用例与仍未覆盖的风险。",
     },
     {
       label: "代码审查",

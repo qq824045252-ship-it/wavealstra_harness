@@ -474,15 +474,13 @@ async function main(): Promise<void> {
     assert((preset!.skillPolicy?.prefer ?? []).includes("github"), "code-review skillPolicy 偏好 github（私有技能）");
     assert(!!preset!.promptAddon && preset!.promptAddon!.length > 100, "code-review promptAddon 完整");
     // 其余 coding preset 也按同一机制解析
-    for (const id of ["bugfix-test", "feature-dev", "refactor", "add-tests", "plan-design", "readonly-explain"]) {
+    for (const id of ["bugfix-test", "refactor", "plan-design", "readonly-explain"]) {
       const p = resolveModePreset(codingPolicy, id);
       assert(!!p, `${id} preset 可解析`);
       resolveEffectiveModePolicy(codingPolicy, p); // 不抛错即通用
     }
     const bugfix = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "bugfix-test"));
     assert(bugfix.suggestedPermissionMode === null, "bugfix-test 不强制权限（常规开发）");
-    const feature = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "feature-dev"));
-    assert(feature.suggestedPermissionMode === null, "feature-dev 不强制权限（常规开发）");
     const plan = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "plan-design"));
     assert(plan.suggestedPermissionMode === "readonly", "plan-design 建议只读");
     const explain = resolveEffectiveModePolicy(codingPolicy, resolveModePreset(codingPolicy, "readonly-explain"));
@@ -1779,10 +1777,7 @@ async function main(): Promise<void> {
         workingPreset.mcpPolicy.deny.includes("drawio-ai"),
       "N6：流程图预设不自动启动旧 Draw.io MCP，且明确禁止它",
     );
-    const penpotPreset = resolveModePreset(working.policy, "web-prototype");
-    assert(penpotPreset?.label === "Penpot", "N6：working/Penpot 预设存在");
-    assert(penpotPreset?.providerMcpIds?.includes("penpot"), "N6：办公 Penpot 保留 provider 声明");
-    assert(penpotPreset?.mcpPolicy?.allow.includes("penpot"), "N6：办公 Penpot MCP allow");
+    assert(!resolveModePreset(working.policy, "web-prototype"), "N6：办公 Penpot 预设已退役");
     assert(!resolveModePreset(design.policy, "web-prototype") && !resolveModePreset(design.policy, "general"), "N6：Bot 不再保留通用设计和 Penpot");
     assert(resolveModePreset(coding.policy, "code-review") != null, "N6：coding/code-review 预设存在");
     for (const id of ["drawio-ai", "penpot"]) {

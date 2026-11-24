@@ -36,6 +36,25 @@ export interface SemanticSearchInput {
   threshold?: number; // cosine; 0 = disabled (return all)
 }
 
+interface ChunkLocation {
+  chunk_id: string;
+  item_id: string;
+  chunk_index: number;
+  char_offset: number;
+  content: string;
+}
+
+function candidate(row: ChunkLocation, score: number): SemanticCandidate {
+  return {
+    itemId: row.item_id,
+    chunkId: row.chunk_id,
+    chunkIndex: row.chunk_index,
+    charOffset: row.char_offset,
+    score,
+    preview: (row.content ?? "").slice(0, 160).replace(/\s+/g, " ").trim(),
+  };
+}
+
 function cosine(a: Float32Array, b: Float32Array): number {
   let s = 0;
   const n = Math.min(a.length, b.length);
@@ -58,7 +77,7 @@ export class WorkspaceSemanticProvider {
 
   constructor(private readonly db: AppDatabase, opts?: { manager?: SemanticModelManager; runtime?: ReturnType<typeof getSemanticRuntime> }) {
     this.manager = opts?.manager ?? new SemanticModelManager();
-    this.runtime = opts?.runtime ?? getSemanticRuntime(this.manager);
+    this.runtime = opts?.runtime ?? getSemanticRuntime(this.manager, db.runtimeAuditReader);
   }
 
   /** 仅定位，不含全文；调用方从统一任务范围提供三类明确的读取授权。 */
@@ -80,42 +99,63 @@ export class WorkspaceSemanticProvider {
     const dbAny = this.db as any;
     const conn = dbAny.connection ?? dbAny.db ?? dbAny;
     if (!conn || typeof conn.prepare !== "function") return [];
+    const scopeClauses: string[] = [];
+    const scopeParams: string[] = [];
+    for (const [column, values] of [
+      ["space_id", allowed], ["collection_id", allowedCollections], ["id", allowedItems],
+    ] as const) {
+      if (!values.length) continue;
+      scopeClauses.push("li." + column + " IN (" + values.map(() => "?").join(",") + ")");
+      scopeParams.push(...values);
+    }
+    const scope = { sql: scopeClauses.join(" OR "), args: scopeParams };
+    const threshold = input.threshold ?? SEMANTIC_THRESHOLD;
+    const reader = this.db.runtimeAuditReader;
+    if (reader && !conn.inTransaction && Number.isFinite(limit)) {
+      const native = await reader.semantic({
+        target: "library", limit, scope, modelId: SEMANTIC_MODEL_ID, modelVersion: SEMANTIC_MODEL_VERSION,
+        dimension: SEMANTIC_DIMENSION, query: qVec, threshold,
+      });
+      if (!conn.open) return [];
+      if (native) {
+        // Read only winning snippets. Re-check the scope, hash and index before exposing them.
+        const current = conn.prepare(
+          "SELECT c.id AS chunk_id,c.item_id,c.chunk_index,c.char_offset,c.content "
+          + "FROM library_chunks c JOIN library_items li ON li.id=c.item_id "
+          + "JOIN library_chunk_embeddings e ON e.chunk_id=c.id "
+          + "WHERE c.id=? AND c.hash=? AND e.chunk_hash=c.hash AND li.trashed_at IS NULL AND ("
+          + scope.sql + ") AND e.model_id=? AND e.model_version=? AND e.dimension=? AND length(e.embedding)=?",
+        );
+        const results: SemanticCandidate[] = [];
+        for (const hit of native) {
+          const row = current.get(hit.id, hit.hash, ...scope.args, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION,
+            SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4) as ChunkLocation | undefined;
+          if (row) results.push(candidate(row, hit.score));
+        }
+        if (results.length === native.length) return results;
+      }
+    }
     try {
       const hasEmb = conn.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_chunk_embeddings'`).get() != null;
       if (!hasEmb) return [];
     } catch { return []; }
 
-    let rows: Array<{
-      chunk_id: string; item_id: string; chunk_index: number; char_offset: number;
-      chunk_hash: string; embedding: Uint8Array | Buffer; content: string; space_id: string;
+    let rows: Array<ChunkLocation & {
+      chunk_hash: string; embedding: Uint8Array | Buffer;
       dimension: number; cur_hash: string;
     }> = [];
     {
-      const scopeClauses: string[] = [];
-      const scopeParams: string[] = [];
-      if (allowed.length > 0) {
-        scopeClauses.push(`li.space_id IN (${allowed.map(() => "?").join(",")})`);
-        scopeParams.push(...allowed);
-      }
-      if (allowedCollections.length > 0) {
-        scopeClauses.push(`li.collection_id IN (${allowedCollections.map(() => "?").join(",")})`);
-        scopeParams.push(...allowedCollections);
-      }
-      if (allowedItems.length > 0) {
-        scopeClauses.push(`li.id IN (${allowedItems.map(() => "?").join(",")})`);
-        scopeParams.push(...allowedItems);
-      }
       try {
         rows = conn.prepare(
           `SELECT e.chunk_id, c.item_id AS item_id, c.chunk_index AS chunk_index, c.char_offset AS char_offset,
                   e.chunk_hash, e.embedding, e.dimension,
-                  c.content AS content, c.hash AS cur_hash, li.space_id AS space_id
+                  c.content AS content, c.hash AS cur_hash
            FROM library_chunk_embeddings e
            JOIN library_chunks c ON c.id = e.chunk_id
            JOIN library_items li ON li.id = c.item_id
-           WHERE (${scopeClauses.join(" OR ")}) AND li.trashed_at IS NULL
-             AND e.model_id = ? AND e.model_version = ?`
-        ).all(...scopeParams, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION) as any;
+           WHERE (${scope.sql}) AND li.trashed_at IS NULL
+             AND e.model_id = ? AND e.model_version = ? ORDER BY e.chunk_id`
+        ).all(...scope.args, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION) as any;
       } catch (e) {
         console.error("[SemanticProvider] SQL failed:", e instanceof Error ? e.message : String(e));
         throw e;
@@ -139,7 +179,6 @@ export class WorkspaceSemanticProvider {
         scored.push({ r, s });
       } catch { continue; }
     }
-    const threshold = input.threshold ?? SEMANTIC_THRESHOLD;
     const filtered = scored.filter((x) => x.s >= threshold);
     const toRank = filtered.length > 0 ? filtered : []; // allow 0 result for negatives
     toRank.sort((a, b) => b.s - a.s);
@@ -149,14 +188,7 @@ export class WorkspaceSemanticProvider {
       if (!prev || it.s > prev.s) bestByItem.set(it.r.item_id, it);
     }
     const best = [...bestByItem.values()].sort((a, b) => b.s - a.s).slice(0, limit);
-    return best.map(({ r, s }) => ({
-      itemId: r.item_id,
-      chunkId: r.chunk_id,
-      chunkIndex: r.chunk_index,
-      charOffset: r.char_offset,
-      score: s,
-      preview: (r.content ?? "").slice(0, 160).replace(/\s+/g, " ").trim(),
-    }));
+    return best.map(({ r, s }) => candidate(r, s));
   }
 
   async embed(text: string): Promise<Float32Array> {

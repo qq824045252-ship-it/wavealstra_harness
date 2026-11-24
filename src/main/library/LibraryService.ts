@@ -13,7 +13,7 @@ import { SemanticRouter } from "../retrieval/SemanticRouter";
 import { WorkspaceSemanticProvider, type SemanticCandidate } from "../retrieval/WorkspaceSemanticProvider";
 import { fuseHits } from "../workspace/WorkspaceResourceLocator.semantic";
 import type { WorkspaceResourceHit } from "../../shared/workspace-resource-locator";
-import { LibraryRepository } from "./LibraryRepository";
+import { LibraryRepository, toCollection, toItem, toSpace, toVersion, type LibraryCatalogRows } from "./LibraryRepository";
 import { runLibraryDeepSearch, type LibraryEvidenceJudge } from "./LibraryDeepSearch";
 import type { LibraryNotesBackup } from "./library-note-backup";
 import { rewriteImportedFolderLinks, scanLibraryImportFolder } from "./library-folder-import";
@@ -30,7 +30,7 @@ import {
 export type { LibraryTaskScope, LibraryTaskScopeOptions } from "./library-task-scope";
 import { assertManagedPathSafe, assertManagedWritePathSafe, atomicCopyFileSync, atomicWriteFileSync, readUtf8Prefix, sha256File } from "./library-file-io";
 import type { ExtractionResult } from "./ContentExtractorRegistry";
-import { LibraryIndexMaintenance } from "./LibraryIndexMaintenance";
+import { LibraryIndexMaintenance, type LibraryTextStage } from "./LibraryIndexMaintenance";
 import { LIBRARY_CHUNK_DEFAULTS } from "./library-chunker";
 import { LARGE_LIBRARY_TEXT_BYTES, libraryTextContains, readLibraryTextParts } from "./library-text-parts";
 import { getSemanticRuntime } from "../retrieval/SemanticRuntime";
@@ -64,6 +64,7 @@ import {
   type LibrarySaveArtifactRequest,
   type LibrarySearchRequest,
   type LibrarySnapshotDto,
+  type LibrarySnapshotRequest,
   type LibrarySpaceDto,
   type LibraryTaskReferenceDto,
   type LibraryTaskReferencesDto,
@@ -634,6 +635,52 @@ export class LibraryService {
     };
   }
 
+  async readSnapshot(request: LibrarySnapshotRequest = {}): Promise<LibrarySnapshotDto> {
+    const { owner, spaceId, itemId } = request;
+    let spaceIds = owner ? ownedLibraryQueryScope(this.db, this.repo, owner).spaceIds : undefined;
+    if (spaceId !== undefined) spaceIds = new Set(!spaceIds || spaceIds.has(spaceId) ? [spaceId] : []);
+    const scoped = spaceIds !== undefined || itemId !== undefined;
+    const ownerName = this.ownerName();
+    const catalog = await this.db.runtimeAuditReader?.libraryMetadata<LibraryCatalogRows>({
+      kind: "catalog", spaceIds: spaceIds ? [...spaceIds] : undefined, itemId,
+    });
+    if (catalog) {
+      const spaces = catalog.spaces.map(toSpace);
+      const items = catalog.items.map(toItem);
+      const names = new Map(spaces.map(space => [space.id, space.name]));
+      const entries = new Map(items.map(item => [item.id, item]));
+      const recent = catalog.recentIds.flatMap(id => {
+        const item = entries.get(id);
+        return item ? [this.toRow(item, names.get(item.spaceId) ?? "我的文档")] : [];
+      });
+      return {
+        spaces, collections: catalog.collections.map(toCollection), items, recent, ownerName,
+        artifacts: scoped ? [] : this.listLocalArtifacts(ownerName),
+        storage: { usedBytes: catalog.usedBytes },
+      };
+    }
+    if (itemId !== undefined) {
+      const item = this.repo.getItem(itemId);
+      const space = item && (!spaceIds || spaceIds.has(item.spaceId)) ? this.repo.getSpace(item.spaceId) : null;
+      const items = item && space ? [item] : [];
+      return {
+        spaces: space ? [this.withOwnerName(space)] : [], collections: [], items, recent: [], artifacts: [], ownerName,
+        storage: { usedBytes: items[0]?.sizeBytes ?? 0 },
+      };
+    }
+    if (!spaceIds) return this.snapshot();
+    const spaces = this.repo.listSpaces().filter(space => spaceIds.has(space.id)).map(space => this.withOwnerName(space));
+    const items = this.repo.listItemsInScope({ spaceIds });
+    const names = new Map(spaces.map(space => [space.id, space.name]));
+    return {
+      spaces, items, artifacts: [], ownerName,
+      collections: this.repo.listCollections().filter(folder => names.has(folder.spaceId)),
+      recent: this.repo.listRecent().filter(item => names.has(item.spaceId))
+        .map(item => this.toRow(item, names.get(item.spaceId) ?? "我的文档")),
+      storage: { usedBytes: items.reduce((sum, item) => sum + item.sizeBytes, 0) },
+    };
+  }
+
   listItems(spaceId: string, collectionId?: string | null): LibraryItemDto[] {
     return this.repo.listItems(spaceId, collectionId);
   }
@@ -997,6 +1044,14 @@ export class LibraryService {
     return this.repo.listVersions(itemId);
   }
 
+  async readVersions(itemId: string): Promise<import("../../shared/library-ipc").LibraryVersionDto[]> {
+    const rows = await this.db.runtimeAuditReader?.libraryMetadata<Array<Parameters<typeof toVersion>[0]> | null>({
+      kind: "versions", itemId,
+    });
+    if (rows === null || (rows === undefined && !this.getItem(itemId))) throw new Error("笔记已不可用");
+    return rows?.map(toVersion) ?? this.listVersions(itemId);
+  }
+
   readVersion(itemId: string, version: number): string {
     if (!this.repo.getItem(itemId)) throw new Error("笔记不存在或已移入回收站");
     const bytes = this.versionBytes(itemId, version, LIBRARY_INLINE_FILE_MAX_BYTES);
@@ -1092,6 +1147,17 @@ export class LibraryService {
   listTrashedNotes(owner: LibraryOwnerScope): LibraryItemDto[] {
     const { spaceIds } = ownedLibraryQueryScope(this.db, this.repo, owner);
     return [...spaceIds].flatMap((spaceId) => this.repo.listItems(spaceId, undefined, true).filter((item) => item.trashedAt));
+  }
+
+  async readTrashedNotes(owner: LibraryOwnerScope): Promise<LibraryItemDto[]> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader) return this.listTrashedNotes(owner);
+    const { spaceIds } = ownedLibraryQueryScope(this.db, this.repo, owner);
+    if (!spaceIds.size) return [];
+    const rows = await reader.libraryMetadata<Array<Parameters<typeof toItem>[0]>>({
+      kind: "trash", spaceIds: [...spaceIds],
+    });
+    return rows?.map(toItem) ?? this.listTrashedNotes(owner);
   }
 
   requireOwnedNoteItems(owner: LibraryOwnerScope, ids: string[], includeTrash = false): LibraryItemDto[] {
@@ -1409,45 +1475,95 @@ export class LibraryService {
   }
 
   importFile(req: LibraryImportFileRequest): LibraryItemDto {
+    return this.importPreparedFile(req, this.prepareImportedFile(req));
+  }
+
+  async importFileAsync(req: LibraryImportFileRequest): Promise<LibraryItemDto> {
+    if (!this.db.runtimeAuditReader) return this.importFile(req);
+    const item = this.prepareImportedFile(req);
+    if (item.sizeBytes <= LARGE_LIBRARY_TEXT_BYTES || !this.repo.isTextSearchable(item.kind)) {
+      return this.importPreparedFile(req, item);
+    }
+    const linked = new Map<string, LibraryItemDto>();
+    const path = this.absolutePath(item);
+    try {
+      const publish = (stage?: LibraryTextStage, changed = false) => {
+        this.requireWritableSpace(req.spaceId);
+        if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
+        item.sizeBytes = statSync(path).size;
+        if (stage) item.contentHash = stage.contentHash;
+        else if (changed) item.contentHash = sha256File(path);
+        return this.commitNewManagedItem(item, () => {}, stage);
+      };
+      mkdirSync(this.spaceDir(item.spaceId), { recursive: true });
+      this.assertManagedWritePath(path);
+      const copied = await this.indexMaintenance.withLargeTextStage(req.sourcePath.trim(),
+        stage => stage ? publish(stage) : undefined,
+        { copyTo: path, refuseMarkdownLinks: item.kind === "markdown" });
+      if (copied) return copied;
+      this.removeFile(item);
+      const changed = this.copyImportedFile(req, item, linked);
+      return await this.indexMaintenance.withLargeTextStage(path, stage => publish(stage, changed));
+    } catch (error) {
+      try { if (!this.repo.getItem(item.id)) this.removeFile(item); }
+      catch (cleanupError) { console.warn("[Library] 导入文件清理失败", cleanupError); }
+      this.cleanupImportedAssets(linked);
+      throw error;
+    }
+  }
+
+  private prepareImportedFile(req: LibraryImportFileRequest): LibraryItemDto {
     const source = req.sourcePath?.trim();
     if (!source || !existsSync(source)) throw new Error("源文件不存在");
     const st = statSync(source);
     if (!st.isFile()) throw new Error("只能导入文件");
     this.requireWritableSpace(req.spaceId);
     if (req.collectionId) this.requireCollectionInSpace(req.spaceId, req.collectionId);
-    const item = this.describeImportedFile(source, st.size, req);
+    return this.describeImportedFile(source, st.size, req);
+  }
+
+  private importPreparedFile(req: LibraryImportFileRequest, item: LibraryItemDto): LibraryItemDto {
     const linked = new Map<string, LibraryItemDto>();
-    mkdirSync(this.spaceDir(item.spaceId), { recursive: true });
     try {
       return this.commitNewManagedItem(item, () => {
-        const target = this.absolutePath(item);
-        this.assertManagedWritePath(target);
-        if (item.kind !== "markdown") {
-          copyFileSync(source, target);
-          item.sizeBytes = statSync(target).size;
-          return;
-        }
-        const root = dirname(resolve(source));
-        const changed = copyWithRewrittenNoteLinks(source, target, (href) => {
-          let local: string;
-          try { local = decodeURIComponent(href); } catch { return; }
-          if (/^(?:[a-z][a-z0-9+.-]*:|[\\/]|#)/i.test(local) || local.split(/[\\/]/).includes("..")) return;
-          const path = resolve(root, local);
-          if (!existsSync(path) || !statSync(path).isFile()) return;
-          try { assertManagedPathSafe(root, path); } catch { return; }
-          const assetKind = kindFromFilename(path);
-          if (!["image", "office", "pdf"].includes(assetKind) && !/\.(txt|zip|mp[34]|wav)$/i.test(path)) return;
-          if (!linked.has(path)) linked.set(path, this.importFile({ ...req, sourcePath: path }));
-          return this.previewUrl(linked.get(path)!.id);
-        });
-        item.sizeBytes = statSync(target).size;
-        if (changed) item.contentHash = sha256File(target);
+        if (this.copyImportedFile(req, item, linked)) item.contentHash = sha256File(this.absolutePath(item));
       });
     } catch (error) {
-      for (const asset of linked.values()) {
-        try { this.deleteItem(asset.id); } catch (cleanupError) { console.warn("[Library] 导入附件清理失败", cleanupError); }
-      }
+      this.cleanupImportedAssets(linked);
       throw error;
+    }
+  }
+
+  private copyImportedFile(req: LibraryImportFileRequest, item: LibraryItemDto, linked: Map<string, LibraryItemDto>): boolean {
+    const source = req.sourcePath.trim();
+    const target = this.absolutePath(item);
+    mkdirSync(this.spaceDir(item.spaceId), { recursive: true });
+    this.assertManagedWritePath(target);
+    if (item.kind !== "markdown") {
+      copyFileSync(source, target);
+      item.sizeBytes = statSync(target).size;
+      return false;
+    }
+    const root = dirname(resolve(source));
+    const changed = copyWithRewrittenNoteLinks(source, target, (href) => {
+      let local: string;
+      try { local = decodeURIComponent(href); } catch { return; }
+      if (/^(?:[a-z][a-z0-9+.-]*:|[\\/]|#)/i.test(local) || local.split(/[\\/]/).includes("..")) return;
+      const path = resolve(root, local);
+      if (!existsSync(path) || !statSync(path).isFile()) return;
+      try { assertManagedPathSafe(root, path); } catch { return; }
+      const assetKind = kindFromFilename(path);
+      if (!["image", "office", "pdf"].includes(assetKind) && !/\.(txt|zip|mp[34]|wav)$/i.test(path)) return;
+      if (!linked.has(path)) linked.set(path, this.importFile({ ...req, sourcePath: path }));
+      return this.previewUrl(linked.get(path)!.id);
+    });
+    item.sizeBytes = statSync(target).size;
+    return changed;
+  }
+
+  private cleanupImportedAssets(linked: ReadonlyMap<string, LibraryItemDto>): void {
+    for (const asset of linked.values()) {
+      try { this.deleteItem(asset.id); } catch (error) { console.warn("[Library] 导入附件清理失败", error); }
     }
   }
 
@@ -1747,7 +1863,7 @@ export class LibraryService {
    *  图片/URL/未知 → 清理 FTS + unsupported（绝不把未抽取的二进制当正文）。
    *  R2：每次 FTS 维护后同步维护 library_chunks + library_chunks_fts（chunk 仅定位辅助）。
    */
-  private refreshFts(item: LibraryItemDto): void { this.indexMaintenance.refreshFts(item); }
+  private refreshFts(item: LibraryItemDto, stage?: LibraryTextStage): void { this.indexMaintenance.refreshFts(item, stage); }
 
   recoverTextFtsCoverageV2(opts?: Parameters<LibraryIndexMaintenance["recoverTextFtsCoverageV2"]>[0]) {
     return this.indexMaintenance.recoverTextFtsCoverageV2(opts);
@@ -1761,6 +1877,7 @@ export class LibraryService {
   scheduleSemanticIndex(): void { this.indexMaintenance.scheduleSemanticIndex(); }
   stopSemanticIndexing(): Promise<void> { return this.indexMaintenance.stopSemanticIndexing(); }
   get semanticIndexStats() { return this.indexMaintenance.semanticIndexStats; }
+  readSemanticIndexStats() { return this.indexMaintenance.readSemanticIndexStats(); }
 
   backfillEmbeddings(opts?: Parameters<LibraryIndexMaintenance["backfillEmbeddings"]>[0]) {
     return this.indexMaintenance.backfillEmbeddings(opts);
@@ -2141,14 +2258,14 @@ export class LibraryService {
   }
 
   /** New managed item is one logical commit across filesystem + SQLite + FTS. */
-  private commitNewManagedItem(item: LibraryItemDto, materialize: () => void): LibraryItemDto {
+  private commitNewManagedItem(item: LibraryItemDto, materialize: () => void, stage?: LibraryTextStage): LibraryItemDto {
     const target = this.absolutePath(item);
     let rowInserted = false;
     try {
       materialize();
       this.repo.insertItem(item);
       rowInserted = true;
-      this.refreshFts(item);
+      this.refreshFts(item, stage);
       return item;
     } catch (error) {
       let retained = false;

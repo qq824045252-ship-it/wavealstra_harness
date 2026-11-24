@@ -10,8 +10,8 @@ const verify = () => workflow("verify", { shell: process.platform === "win32" ? 
 const test = "const assert=require('node:assert/strict');require('node:test')('twice accepts a positive and zero',()=>{const twice=require('./value.cjs');assert.equal(twice(3),6);assert.equal(twice(0),0)});";
 const button = '<button type="button" onclick="document.querySelector(\'dialog\').showModal()">Open</button><dialog aria-label="Details"><form method="dialog"><button>Close</button></form></dialog>';
 export const tagCases = [
-  ["minimal", "auto"], ["bugfix-test", "bug-fix"], ["feature-dev", "feature"], ["refactor", "refactoring"],
-  ["add-tests", "skill:principle-test-behavior-not-implementation"], ["code-review", "skill:interrogate"],
+  ["minimal", "auto"], ["bugfix-test", "bug-fix"], ["refactor", "refactoring"],
+  ["code-review", "skill:interrogate"],
   ["plan-design", "skill:architect"], ["readonly-explain", "investigation"], ["web-html", "feature"],
 ] as const;
 const readOnly = (id: string) => ["code-review", "plan-design", "readonly-explain"].includes(id);
@@ -24,16 +24,15 @@ export function seedTagCase(id: string, cwd: string) {
     git("init", "-q", "-b", "main"); git("add", "value.cjs");
     git("-c", "user.name=fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", "baseline");
   }
-  if (["bugfix-test", "feature-dev", "code-review"].includes(id)) writeFileSync(join(cwd, "value.cjs"), "module.exports = n => n;\n");
-  if (id !== "add-tests" && id !== "code-review") writeFileSync(join(cwd, "check.cjs"), id === "web-html" ?
+  if (["bugfix-test", "code-review"].includes(id)) writeFileSync(join(cwd, "value.cjs"), "module.exports = n => n;\n");
+  if (id !== "code-review") writeFileSync(join(cwd, "check.cjs"), id === "web-html" ?
     "require('node:test')('native dialog markup',()=>{const a=require('node:assert/strict');const html=require('node:fs').readFileSync('index.html','utf8');a.match(html,/<dialog aria-label=\"Details\">/);a.match(html,/showModal\\(\\)/);a.match(html,/<form method=\"dialog\">/)});" : test);
 }
 
 function tagActions(id: string): Call[] {
   const calls: Call[] = [workflow("status"), workflow("start", id === "minimal" ? { skill: "principle-prove-it-works" } : {}), ["read", { path: "value.cjs" }]];
   if (readOnly(id)) calls.push(write("forbidden.txt", "must not be written"), workflow("review"));
-  if (["bugfix-test", "feature-dev", "refactor"].includes(id)) calls.push(verify(), write("value.cjs", "module.exports = n => 2 * n;\n"), verify());
-  if (id === "add-tests") calls.push(write("check.cjs", test));
+  if (["bugfix-test", "refactor"].includes(id)) calls.push(verify(), write("value.cjs", "module.exports = n => 2 * n;\n"), verify());
   if (id === "web-html") {
     if (process.env.MYBUDDY_TAG_HTML_GUIDE) calls.push(["read",{path:"dialog-guide.md"}]);
     calls.push(write("index.html", button), verify());
@@ -69,9 +68,6 @@ export function tagFixtureReply(id: string, body: {model: string; input: Item[]}
     }
     return { call: workflow("advance", {stage:stage.id,note:"Read value.cjs and checked the fixture result."}), answer };
   }
-  if (id === "add-tests" && session.triedCompletion && !session.verified) {
-    session.verified = true; return { call: verify(), answer };
-  }
   if (id === "code-review" && session.triedCompletion && !session.verified) {
     session.verified = true;
     return {call:["pstack_delegate",{purpose:"thermos",role:"interrogate-reviewers",tasks:["Inspect value.cjs and its previous return value."]}],answer};
@@ -96,9 +92,8 @@ export function assertTagCase(id: string, preferred: string, cwd: string, raw: s
     assert(bodies.some(b => b.model !== "cron" && JSON.stringify(b).includes("Changed excerpts at the selected baseline") && JSON.stringify(b).includes("n + n")));
   }
   if (id === "plan-design") assert.deepEqual(finished.steps, ["ground","sketch","synthesize"]);
-  if (["bugfix-test","feature-dev","refactor","add-tests","web-html"].includes(id)) assert.equal(finished.verification?.passed,true,id);
-  if (["bugfix-test","feature-dev"].includes(id)) assert(outputs.some(v => v?.passed === false && v.exitCode === 1),id);
-  if (id === "add-tests") assert(outputs.some(v => typeof v === "string" && v.includes("successful verification")));
+  if (["bugfix-test", "refactor", "web-html"].includes(id)) assert.equal(finished.verification?.passed,true,id);
+  if (id === "bugfix-test") assert(outputs.some(v => v?.passed === false && v.exitCode === 1),id);
   if (id === "web-html") {
     assert.equal(readFileSync(join(cwd,"index.html"),"utf8"),button);
     if (process.env.MYBUDDY_TAG_HTML_GUIDE) assert(outputs.some(v=>typeof v === "string" && v.includes("Use the native `<dialog>` element")));

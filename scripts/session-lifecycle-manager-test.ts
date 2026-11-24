@@ -18,7 +18,7 @@ const mcpRuntime = {
   attachSession(taskId: string) { attached.push(taskId); },
 };
 const approvals = { release(taskId: string) { releasedApprovals.push(taskId); } };
-const usageStats = { backfillSession(path: string) { backfilled.push(path); } };
+const usageStats = { async backfillSessionAsync(path: string) { backfilled.push(path); return 0; } };
 
 const manager = new SessionLifecycleManager({
   registry,

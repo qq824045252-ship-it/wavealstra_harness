@@ -13,6 +13,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { ActiveDurableConversation } from "../src/main/agent/durable/DurableConversationBranch";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 
 const root = mkdtempSync(join(tmpdir(), "durable-passive-"));
 const cwd = join(root, "cwd");
@@ -21,6 +22,9 @@ process.env.USERPROFILE = root;
 process.env.HOME = root;
 const directory = join(root, "durable", createHash("sha256").update("task").digest("hex"));
 const db = new AppDatabase(join(root, "app.db"));
+const executable = process.argv.includes("--native") ? locateRuntimeAudit(process.cwd()) : undefined;
+if (process.argv.includes("--native")) assert(executable);
+const passiveReader = executable ? new RuntimeAuditReader(executable, db.connection.name) : undefined;
 const models = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null,
   modelsStorePath: join(root, "models.json"), refreshOnCreate: false });
 let requests = 0, effects = 0;
@@ -83,7 +87,8 @@ try {
   assert.deepEqual(files(), committed, "passive native viewer must not rewrite the journal, agent or pending regeneration");
   db.upsertTask({ id: "task", title: "task", cwd, modelId: "fixture/fixture", updatedAt: Date.now() });
   let factoryBroken = false, factoryCalls = 0;
-  service = new DurableBotService({ db, models, agentDir: root, mcpDir: join(root, "mcp"), resolveCwd: () => cwd,
+  service = new DurableBotService({ db, models, passiveReader,
+    agentDir: root, mcpDir: join(root, "mcp"), resolveCwd: () => cwd,
     instructions: () => "fixture", toolMode: () => "codemode", defaultModel: () => "fixture/fixture", emit: () => {},
     tools: async () => { factoryCalls++; if (factoryBroken) throw new Error("factory unavailable"); return { tools: [tool], contextHooks: [] }; } });
   db.connection.prepare("INSERT INTO durable_bot_bindings VALUES (?, 'pi-durable', ?, ?)").run("task", directory, cwd);
@@ -180,6 +185,7 @@ try {
 } finally {
   DurableBotRuntime.open = nativeOpen;
   await service?.close();
+  passiveReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
 }

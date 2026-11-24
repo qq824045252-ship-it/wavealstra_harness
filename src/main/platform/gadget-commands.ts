@@ -4,6 +4,7 @@ export type GadgetCommandOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   env?: Record<string, string>;
+  onOutput?: (stream: "stdout" | "stderr", chunk: Buffer) => void;
 };
 
 export type GadgetCommandResult = {
@@ -235,13 +236,15 @@ export function createGadgetCommandRunner(config: {
       const abort = (): void => stop(failure("COMMAND_ABORTED", "Gadget command was cancelled"));
       options.signal?.addEventListener("abort", abort, { once: true });
       const timer = setTimeout(() => stop(failure("COMMAND_TIMEOUT", "Gadget command exceeded its deadline")), timeoutMs);
-      const collect = (chunks: Buffer[], chunk: Buffer): void => {
+      const collect = (stream: "stdout" | "stderr", chunks: Buffer[], chunk: Buffer): void => {
         outputBytes += chunk.length;
         if (outputBytes > 1024 * 1024) { stop(failure("COMMAND_OUTPUT_LIMIT", "Gadget command output exceeds 1 MiB")); return; }
         chunks.push(chunk);
+        try { options.onOutput?.(stream, chunk); }
+        catch { stop(failure("COMMAND_OUTPUT_FAILED", "Command output could not be processed")); }
       };
-      child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
-      child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
+      child.stdout.on("data", (chunk: Buffer) => collect("stdout", stdout, chunk));
+      child.stderr.on("data", (chunk: Buffer) => collect("stderr", stderr, chunk));
       child.stdin.on("error", (error: NodeJS.ErrnoException) => {
         if (error.code !== "EPIPE") stop(failure("COMMAND_STDIN_FAILED", error.message));
       });

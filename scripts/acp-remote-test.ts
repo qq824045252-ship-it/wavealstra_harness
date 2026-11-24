@@ -122,7 +122,7 @@ const agentStub = {
   abort: async () => undefined,
 } as never;
 const notifications = { unreadCount: () => 0, list: () => [], markRead: () => undefined, markAllRead: () => undefined, dismissAll: () => undefined } as never;
-const projects = { list: () => [], get: () => undefined } as never;
+const projects = { readList: async () => [], get: () => undefined } as never;
 const settings = {
   read: () => ({ ...appSettings }),
   write: (partial: Record<string, unknown>) => Object.assign(appSettings, partial),

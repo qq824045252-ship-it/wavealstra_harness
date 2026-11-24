@@ -513,11 +513,10 @@ export default function ContextUsageControl({ executing = false }: Props): React
           </div>
 
           <div className="context-usage-popup-summary">
-            <span className="context-usage-popup-pct">
-              {unknown ? "—" : `${contextEstimated ? "约 " : ""}${pct}%`}
-            </span>
+            <strong className="context-usage-popup-pct">{unknown ? "—" : `${pct}%`}</strong>
             <span className="context-usage-popup-used">
-              已使用 {usedLabel}/{winLabel}
+              <span>已使用</span>
+              <strong>{usedLabel}/{winLabel}</strong>
             </span>
           </div>
 

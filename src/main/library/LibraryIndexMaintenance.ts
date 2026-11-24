@@ -1,9 +1,19 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { AppDatabase } from "../db/AppDatabase";
 import type { LibraryItemDto, LibraryItemKind } from "../../shared/library-ipc";
+import type {
+  RuntimeLibraryDocumentContent,
+  RuntimeEmbeddingStats,
+  RuntimeLibraryIndexStatus,
+  RuntimeLibrarySourceVersion,
+} from "../platform/runtime-audit";
 import type { LibraryRepository } from "./LibraryRepository";
 import { hybridLibrarySpaceIds } from "./MaterialRetrievalSettings";
-import { chunkText, chunkTextParts } from "./library-chunker";
+import { chunkText, chunkTextParts, LIBRARY_CHUNK_DEFAULTS } from "./library-chunker";
 import { readUtf8Prefix } from "./library-file-io";
 import { LARGE_LIBRARY_TEXT_BYTES, readLibraryTextParts } from "./library-text-parts";
 import { getSemanticRuntime } from "../retrieval/SemanticRuntime";
@@ -26,11 +36,30 @@ const SEMANTIC_INDEX_JOIN = `
     AND e.model_id = ? AND e.model_version = ? AND e.dimension = ? AND length(e.embedding) = ?
 `;
 const SEMANTIC_INDEX_PARAMS = [SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION, SEMANTIC_DIMENSION * 4] as const;
+const SEMANTIC_INDEX_MODEL = { modelId: SEMANTIC_MODEL_ID, modelVersion: SEMANTIC_MODEL_VERSION, dimension: SEMANTIC_DIMENSION };
+
+function indexItemVersion(item: LibraryItemDto) {
+  const { id, spaceId, title, filename, kind, mimeType, contentHash, updatedAt, sizeBytes, extractStatus } = item;
+  return { id, spaceId, title, filename, kind, mimeType, contentHash, updatedAt, sizeBytes, extractStatus };
+}
+
+function extractableKind(kind: LibraryItemKind): boolean {
+  return kind === "office" || kind === "pdf";
+}
 
 interface LibraryIndexFiles {
   absolutePath(item: LibraryItemDto): string;
   assertManagedFile(path: string): void;
   isManagedFileSafe(path: string): boolean;
+}
+
+export interface LibraryTextStage {
+  stagingPath: string;
+  contentHash: string;
+  chunkCount: number;
+  updatedAt: number;
+  sourceSize: number;
+  sourceModifiedNanos: string;
 }
 
 /** Maintains derived Library FTS, chunks and embeddings. Managed file ownership stays with LibraryService. */
@@ -69,12 +98,12 @@ export class LibraryIndexMaintenance {
     }
   }
 
-  refreshFts(item: LibraryItemDto): void {
+  refreshFts(item: LibraryItemDto, stage?: LibraryTextStage): void {
     this.extractCache.delete(item.id);
     if (this.repo.isTextSearchable(item.kind)) {
       const abs = this.files.absolutePath(item);
       if (item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) {
-        this.indexLargeText(item, abs);
+        this.indexLargeText(item, abs, stage);
         return;
       }
       let body = "";
@@ -95,7 +124,7 @@ export class LibraryIndexMaintenance {
       this.refreshChunksForItem(item.id, body);
       return;
     }
-    if (this.isExtractableKind(item.kind)) {
+    if (extractableKind(item.kind)) {
       // 先清旧 FTS + chunks（绝不返回陈旧索引），置 pending，异步抽取后重建
       this.repo.deleteFts(item.id);
       this.repo.deleteChunks(item.id);
@@ -112,11 +141,167 @@ export class LibraryIndexMaintenance {
     this.repo.updateExtractStatus(item.id, "unsupported");
   }
 
-  private indexLargeText(item: LibraryItemDto, path: string): void {
+  private indexLargeText(item: LibraryItemDto, path: string, stage?: LibraryTextStage): void {
     this.files.assertManagedFile(path);
-    this.repo.replaceLargeTextIndex(item, chunkTextParts(item.id, readLibraryTextParts(path)));
-    this.textFtsFallbackIds.delete(item.id);
+    if (stage) this.repo.replaceLargeTextIndexFromStage(item, stage.stagingPath, stage.chunkCount, stage.updatedAt);
+    else this.repo.replaceLargeTextIndex(item, chunkTextParts(item.id, readLibraryTextParts(path)));
+    this.completeTextIndex(item.id);
+  }
+
+  private completeTextIndex(id: string): void {
+    this.textFtsFallbackIds.delete(id);
     this.scheduleSemanticIndex();
+  }
+
+  /** Hold the temporary index until the async publisher has finished using it. */
+  async withLargeTextStage<T>(path: string, publish: (stage?: LibraryTextStage) => T | Promise<T>,
+    copy?: { copyTo: string; refuseMarkdownLinks: boolean },
+  ): Promise<T> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || this.db.connection.inTransaction) return publish();
+    if (!copy) this.files.assertManagedFile(path);
+    const before = statSync(path, { bigint: true });
+    const stagingDir = await mkdtemp(join(tmpdir(), "mybuddy-library-index-"));
+    const stagingPath = join(stagingDir, "chunks.sqlite");
+    const updatedAt = Date.now();
+    try {
+      const result = await reader.stageLibraryText({
+        path, stagingPath, expectedSize: Number(before.size), ...LIBRARY_CHUNK_DEFAULTS, ...copy,
+      });
+      if (!copy) this.files.assertManagedFile(path);
+      else if (result) this.files.assertManagedFile(copy.copyTo);
+      const after = statSync(path, { bigint: true });
+      if (before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs
+          || before.dev !== after.dev || before.ino !== after.ino) throw new Error("资料文件在索引期间已变化");
+      return await publish(result ? {
+        ...result, stagingPath, updatedAt, sourceSize: Number(after.size), sourceModifiedNanos: after.mtimeNs.toString(),
+      } : undefined);
+    } finally {
+      await rm(stagingDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 50 })
+        .catch(error => console.warn("[Library] 无法清理片段索引临时目录", error));
+    }
+  }
+
+  private indexLargeTextAsync(item: LibraryItemDto, onlyMissing: boolean, signal?: AbortSignal): Promise<boolean> {
+    const path = this.files.absolutePath(item);
+    const currentVersion = (): LibraryItemDto | undefined => {
+      if (signal?.aborted) return;
+      const current = this.currentIndexItem(item);
+      if (current && (!onlyMissing || !this.repo.hasChunks(item.id))) return current;
+    };
+    return this.withLargeTextStage(path, async stage => {
+      const current = currentVersion();
+      if (!current) return false;
+      if (stage) {
+        const status = await this.db.runtimeAuditReader?.publishLibraryIndex({
+          item: indexItemVersion(current),
+          sourcePath: path, sourceSize: stage.sourceSize, sourceModifiedNanos: stage.sourceModifiedNanos,
+          stagingUri: pathToFileURL(stage.stagingPath).href + "?mode=ro",
+          chunkCount: stage.chunkCount, indexedAt: stage.updatedAt, onlyMissing,
+        });
+        if (status === "sourceChanged") throw new Error("资料文件在索引期间已变化");
+        if (status === "skipped") return false;
+        if (status === "indexed") {
+          this.completeTextIndex(current.id);
+          return true;
+        }
+        // The fallback may run after another writer changed the source or item.
+        if (!currentVersion()) return false;
+        this.files.assertManagedFile(path);
+        const source = statSync(path, { bigint: true });
+        if (source.size !== BigInt(stage.sourceSize) || source.mtimeNs.toString() !== stage.sourceModifiedNanos) {
+          throw new Error("资料文件在索引期间已变化");
+        }
+      }
+      this.indexLargeText(current, path, stage);
+      return true;
+    });
+  }
+
+  private currentIndexItem(item: LibraryItemDto): LibraryItemDto | undefined {
+    if (!this.db.connection.open) return;
+    const current = this.repo.getItem(item.id);
+    if (!current || current.trashedAt != null) return;
+    const expected = indexItemVersion(item);
+    if (Object.entries(indexItemVersion(current)).every(([key, value]) => expected[key as keyof typeof expected] === value)
+        && this.files.absolutePath(current) === this.files.absolutePath(item)) return current;
+  }
+
+  private sourceVersion(item: LibraryItemDto): RuntimeLibrarySourceVersion | undefined {
+    const sourcePath = this.files.absolutePath(item);
+    if (!sourcePath || !this.files.isManagedFileSafe(sourcePath)) return;
+    try {
+      const stamp = statSync(sourcePath, { bigint: true });
+      if (stamp.isFile()) {
+        return { sourcePath, sourceSize: Number(stamp.size), sourceModifiedNanos: stamp.mtimeNs.toString() };
+      }
+    } catch {
+      // Files can be moved or removed between path validation and stat.
+    }
+  }
+
+  private sourceUnchanged(item: LibraryItemDto, source: RuntimeLibrarySourceVersion | undefined): boolean {
+    const current = this.sourceVersion(item);
+    return current?.sourcePath === source?.sourcePath && current?.sourceSize === source?.sourceSize
+      && current?.sourceModifiedNanos === source?.sourceModifiedNanos;
+  }
+
+  private publishDocument(
+    item: LibraryItemDto, source: RuntimeLibrarySourceVersion | undefined,
+    content: RuntimeLibraryDocumentContent, onlyMissing = false,
+  ): Promise<RuntimeLibraryIndexStatus | undefined> | undefined {
+    if (this.db.connection.inTransaction) return;
+    if (content.kind === "extracted" && content.text !== null) {
+      // A parser's UTF-16 truncation can leave an unpaired surrogate. SQLite uses UTF-8.
+      content = { ...content, text: content.text.replace(/[\uD800-\uDFFF]/gu, "\uFFFD") };
+    }
+    return this.db.runtimeAuditReader?.publishLibraryDocument({
+      item: indexItemVersion(item), source, content, indexedAt: Date.now(), onlyMissing, ...LIBRARY_CHUNK_DEFAULTS,
+    });
+  }
+
+  private async recoverTextIndex(item: LibraryItemDto, signal?: AbortSignal): Promise<boolean> {
+    if (item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) return this.indexLargeTextAsync(item, false, signal);
+    if (signal?.aborted) return false;
+    const source = this.sourceVersion(item);
+    const status = await this.publishDocument(item, source, { kind: "textFile" });
+    if (status === "indexed") {
+      this.completeTextIndex(item.id);
+      return true;
+    }
+    if (status || signal?.aborted || !this.currentIndexItem(item) || !this.sourceUnchanged(item, source)) return false;
+    this.refreshFts(item);
+    return true;
+  }
+
+  private async backfillDocumentChunks(item: LibraryItemDto, signal?: AbortSignal): Promise<boolean> {
+    const source = this.sourceVersion(item);
+    let content: RuntimeLibraryDocumentContent = { kind: "textFile" };
+    if (extractableKind(item.kind)) {
+      const result = source ? await this.getIndexExtractedText(item).catch(() => undefined) : undefined;
+      content = { kind: "extracted", status: result?.status ?? "unsupported", text: result?.text ?? null };
+    }
+    if (signal?.aborted || !this.currentIndexItem(item) || !this.sourceUnchanged(item, source)) return false;
+    const status = await this.publishDocument(item, source, content, true);
+    if (status === "indexed") {
+      this.scheduleSemanticIndex();
+      return true;
+    }
+    if (status || signal?.aborted || !this.currentIndexItem(item)
+        || !this.sourceUnchanged(item, source) || this.repo.hasChunks(item.id)) return false;
+    let text: string | null = null;
+    if (content.kind === "extracted") {
+      if (content.status === "extracted") text = content.text;
+    } else if (source) {
+      try { text = readFileSync(source.sourcePath, "utf8"); } catch { /* Unreadable files have no indexable body. */ }
+    }
+    if (!text?.trim()) {
+      this.repo.deleteChunks(item.id);
+      return false;
+    }
+    this.repo.upsertChunks(item.id, chunkText(item.id, text));
+    this.scheduleSemanticIndex();
+    return true;
   }
 
   /** R2+R3：基于文本 body 刷新 chunks，同步失效 stale embeddings */
@@ -188,35 +373,6 @@ export class LibraryIndexMaintenance {
     conn.prepare(`DELETE FROM library_chunk_embeddings WHERE chunk_id IN (SELECT id FROM library_chunks WHERE item_id = ?) AND chunk_hash != (SELECT hash FROM library_chunks WHERE library_chunks.id = library_chunk_embeddings.chunk_id)`).run(itemId);
   }
 
-  /** 文本 body 读取（复用 refreshFts/refreshChunksForItem 的读取路径）：文本类→文件；office/pdf→抽取正文 */
-  private async resolveBackfillText(item: LibraryItemDto): Promise<string | null> {
-    if (this.repo.isTextSearchable(item.kind)) {
-      const abs = this.files.absolutePath(item);
-      try {
-        if (existsSync(abs)) {
-          this.files.assertManagedFile(abs);
-          const st = statSync(abs);
-          if (st.isFile()) {
-            return readFileSync(abs, "utf8");
-          }
-        }
-      } catch {}
-      return null;
-    }
-    if (this.isExtractableKind(item.kind)) {
-      const abs = this.files.absolutePath(item);
-      if (!abs || !this.files.isManagedFileSafe(abs)) return null;
-      try {
-        const result = await this.getIndexExtractedText(item);
-        return result.status === "extracted" && result.text ? result.text : null;
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-
-
   /**
    * FTS text recovery：分批补齐旧版限长索引和缺失的派生行，完成后记录覆盖版本。
    */
@@ -229,12 +385,19 @@ export class LibraryIndexMaintenance {
     const batchSize = Math.max(1, Math.min(100, Math.floor(opts?.batchSize ?? 20)));
     let processed = 0;
     let failed = 0;
+    let deferred = false;
     for (let offset = 0; offset < ids.length; offset += batchSize) {
       if (opts?.signal?.aborted) return { processed, failed };
       for (const id of ids.slice(offset, offset + batchSize)) {
         try {
           const item = this.repo.getItem(id);
-          if (item) this.refreshFts(item);
+          if (item && this.repo.isTextSearchable(item.kind)) {
+            const indexed = await this.recoverTextIndex(item, opts?.signal);
+            if (!indexed && this.db.connection.open) {
+              const current = this.repo.getItem(id);
+              if (current && current.trashedAt == null) deferred = true;
+            }
+          }
           processed += 1;
         } catch (error) {
           failed += 1;
@@ -243,7 +406,9 @@ export class LibraryIndexMaintenance {
       }
       await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 0));
     }
-    if (!opts?.signal?.aborted && failed === 0 && needsCoverageUpgrade) this.repo.setIndexState(stateKey, String(TEXT_FTS_COVERAGE_VERSION));
+    if (!opts?.signal?.aborted && failed === 0 && !deferred && needsCoverageUpgrade) {
+      this.repo.setIndexState(stateKey, String(TEXT_FTS_COVERAGE_VERSION));
+    }
     if (!opts?.signal?.aborted) this.refreshTextFtsFallbackState();
     return { processed, failed };
   }
@@ -284,22 +449,14 @@ export class LibraryIndexMaintenance {
           const item = this.repo.getItem(itemId);
           if (!item) { skipped++; continue; }
           // URL/file/image 等无可索引正文的类型不产生 chunk
-          if (!this.repo.isTextSearchable(item.kind) && !this.isExtractableKind(item.kind)) { skipped++; continue; }
+          if (!this.repo.isTextSearchable(item.kind) && !extractableKind(item.kind)) { skipped++; continue; }
           if (this.repo.isTextSearchable(item.kind) && item.sizeBytes > LARGE_LIBRARY_TEXT_BYTES) {
-            this.indexLargeText(item, this.files.absolutePath(item));
-            succeeded++;
+            if (await this.indexLargeTextAsync(item, true, signal)) succeeded++;
+            else skipped++;
             continue;
           }
-          const text = await this.resolveBackfillText(item);
-          const current = this.repo.getItem(itemId);
-          if (!current || current.contentHash !== item.contentHash || current.updatedAt !== item.updatedAt) { skipped++; continue; }
-          if (!text || text.trim().length === 0) { this.repo.deleteChunks(itemId); skipped++; continue; }
-          // 幂等双检：并发写入刚好补上的情况
-          if (this.repo.hasChunks(itemId)) { skipped++; continue; }
-          const chunks = chunkText(itemId, text);
-          this.repo.upsertChunks(itemId, chunks as any);
-          this.scheduleSemanticIndex();
-          succeeded++;
+          if (await this.backfillDocumentChunks(item, signal)) succeeded++;
+          else skipped++;
         } catch (err) {
           failed++;
           console.warn(`[Library] chunk backfill 单项失败 ${itemId}，已跳过：`, err);
@@ -350,36 +507,46 @@ export class LibraryIndexMaintenance {
     this.semanticIndexController = undefined;
   }
 
-  get semanticIndexStats(): { running: boolean; pending: number; failed: number; processed: number; total: number; completed: number } {
+  get semanticIndexStats() {
     const row = this.db.connection.prepare(`
       SELECT COUNT(*) AS total, COUNT(e.chunk_id) AS completed
       FROM library_chunks c JOIN library_items i ON i.id = c.item_id
       ${SEMANTIC_INDEX_JOIN}
       WHERE i.trashed_at IS NULL AND i.space_id IN (SELECT value FROM json_each(?))
     `).get(...SEMANTIC_INDEX_PARAMS, JSON.stringify(hybridLibrarySpaceIds(this.db))) as { total: number; completed: number };
+    return this.semanticIndexState(row);
+  }
+
+  async readSemanticIndexStats() {
+    const native = await this.db.runtimeAuditReader?.embeddingIndex({ kind: "libraryStats", model: SEMANTIC_INDEX_MODEL });
+    return native ? this.semanticIndexState(native) : this.semanticIndexStats;
+  }
+
+  private semanticIndexState(counts: RuntimeEmbeddingStats) {
     return {
-      ...row,
+      ...counts,
       running: this.semanticBackfillRunning,
-      pending: row.total - row.completed,
+      pending: counts.total - counts.completed,
       failed: this.semanticIndexFailures,
-      processed: row.completed,
+      processed: counts.completed,
     };
   }
 
   async backfillEmbeddings(opts?: { batchSize?: number; signal?: AbortSignal; onProgress?: (done: number, totalHint: number) => void }): Promise<{ processed: number; succeeded: number; failed: number; skipped: number }> {
     const result = { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
     if (this.semanticBackfillRunning || opts?.signal?.aborted) return result;
-    const runtime = getSemanticRuntime();
-    if (runtime.getModelStatus().status !== "ready") return result;
+    const runtime = getSemanticRuntime(undefined, this.db.runtimeAuditReader);
     const batchSize = Math.max(1, Math.min(100, Math.round(opts?.batchSize ?? 20)));
     this.semanticBackfillRunning = true;
     try {
-      const totalHint = this.semanticIndexStats.pending;
+      if ((await runtime.getModelStatus()).status !== "ready" || opts?.signal?.aborted) return result;
+      const totalHint = (await this.readSemanticIndexStats()).pending;
       if (totalHint === 0) return result;
       await runtime.ensureSession();
       const conn = this.db.connection;
+      const reader = this.db.runtimeAuditReader;
       const select = conn.prepare(`
-        SELECT c.id, c.hash, c.content
+        SELECT c.id, c.hash
         FROM library_chunks c JOIN library_items i ON i.id = c.item_id
         ${SEMANTIC_INDEX_JOIN}
         WHERE e.chunk_id IS NULL AND i.trashed_at IS NULL
@@ -387,6 +554,7 @@ export class LibraryIndexMaintenance {
           AND (? IS NULL OR c.id > ?)
         ORDER BY c.id LIMIT ?
       `);
+      const readContent = conn.prepare("SELECT content FROM library_chunks WHERE id=? AND hash=?");
       const store = conn.prepare(`
         INSERT OR REPLACE INTO library_chunk_embeddings
           (chunk_id, model_id, model_version, chunk_hash, dimension, embedding, created_at)
@@ -396,36 +564,73 @@ export class LibraryIndexMaintenance {
           AND i.space_id IN (SELECT value FROM json_each(?))
       `);
       let cursor: string | null = null;
+      type Chunk = { id: string; hash: string };
       while (!opts?.signal?.aborted) {
-        const eligible = JSON.stringify(hybridLibrarySpaceIds(this.db));
-        const batch = select.all(...SEMANTIC_INDEX_PARAMS, eligible, cursor, cursor, batchSize) as Array<{
-          id: string; hash: string; content: string;
-        }>;
+        const nativePage = await reader?.embeddingIndex({
+          kind: "libraryPage", model: SEMANTIC_INDEX_MODEL, after: cursor, limit: batchSize,
+        });
+        const batch: Chunk[] = nativePage ?? select.all(...SEMANTIC_INDEX_PARAMS,
+          JSON.stringify(hybridLibrarySpaceIds(this.db)), cursor, cursor, batchSize) as Chunk[];
         if (!batch.length) break;
-        const embeddings: Array<{ chunk: typeof batch[number]; bytes: Buffer }> = [];
-        for (const chunk of batch) {
-          if (opts?.signal?.aborted) return result;
-          result.processed++;
-          cursor = chunk.id;
+        const embeddings: Array<{ chunk: Chunk; bytes: Buffer }> = [];
+        const staged: Array<{ chunk: Chunk; token: string }> = [];
+        const computeFallback = async (chunk: Chunk) => {
           try {
-            const vector = await runtime.embed(chunk.content);
+            const content = (readContent.get(chunk.id, chunk.hash) as { content: string } | undefined)?.content;
+            if (content === undefined) { result.skipped++; return; }
+            const vector = await runtime.embed(content);
             if (vector.length !== SEMANTIC_DIMENSION) throw new Error("语义向量维度不匹配");
-            embeddings.push({ chunk, bytes: Buffer.from(new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength)) });
+            embeddings.push({ chunk, bytes: Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength) });
           } catch (err) {
             result.failed++;
             console.warn("[Library] 片段语义索引失败：", chunk.id, err);
           }
+        };
+        try {
+          for (const chunk of batch) {
+            if (opts?.signal?.aborted) return result;
+            result.processed++;
+            cursor = chunk.id;
+            try {
+              const native = await runtime.stageIndex({ kind: "library", id: chunk.id, hash: chunk.hash });
+              if (native?.status === "staged") staged.push({ chunk, token: native.token });
+              else if (native?.status === "skipped") result.skipped++;
+              else if (native?.status === "current") result.succeeded++;
+              else await computeFallback(chunk);
+            } catch (error) {
+              result.failed++;
+              console.warn("[Library] 片段语义索引失败：", chunk.id, error);
+            }
+          }
+          if (opts?.signal?.aborted) return result;
+          if (staged.length) {
+            const published = await reader?.publishEmbeddings(staged.map(entry => entry.token));
+            if (published) {
+              result.succeeded += published.indexed + published.current;
+              result.skipped += published.skipped;
+              staged.length = 0;
+            } else {
+              for (const { chunk } of staged) {
+                if (opts?.signal?.aborted) return result;
+                await computeFallback(chunk);
+              }
+            }
+          }
+        } finally {
+          if (staged.length) await reader?.discardEmbeddings(staged.map(entry => entry.token));
         }
         if (opts?.signal?.aborted) return result;
-        const currentEligible = JSON.stringify(hybridLibrarySpaceIds(this.db));
-        conn.transaction(() => {
-          for (const { chunk, bytes } of embeddings) {
-            const { changes } = store.run(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION,
-              bytes, Date.now(), chunk.id, chunk.hash, currentEligible);
-            if (changes) result.succeeded++;
-            else result.skipped++;
-          }
-        })();
+        if (embeddings.length) {
+          const currentEligible = JSON.stringify(hybridLibrarySpaceIds(this.db));
+          conn.transaction(() => {
+            for (const { chunk, bytes } of embeddings) {
+              const { changes } = store.run(SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, SEMANTIC_DIMENSION,
+                bytes, Date.now(), chunk.id, chunk.hash, currentEligible);
+              if (changes) result.succeeded++;
+              else result.skipped++;
+            }
+          })();
+        }
         opts?.onProgress?.(result.processed, totalHint);
         await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
@@ -436,11 +641,6 @@ export class LibraryIndexMaintenance {
     return result;
   }
 
-  /** 可抽取的 Office/PDF 类型（文本类直接内联；image/file 不抽取） */
-  private isExtractableKind(kind: LibraryItemKind): boolean {
-    return kind === "office" || kind === "pdf";
-  }
-
   /**
    * 异步抽取并建立 FTS 索引（写入后 fire-and-forget 调用；读取路径亦可显式调用）。
    * 与 getExtractedText 共享 per-item in-flight 去重与缓存（并发 search/read 只解析一次）；
@@ -448,27 +648,26 @@ export class LibraryIndexMaintenance {
    */
   async indexExtractedText(itemId: string): Promise<void> {
     const item = this.repo.getItem(itemId);
-    if (!item) return;
-    if (!this.isExtractableKind(item.kind)) return;
-    const abs = this.files.absolutePath(item);
-    if (!abs || !this.files.isManagedFileSafe(abs)) {
-      this.repo.updateExtractStatus(item.id, "unsupported");
-      this.repo.deleteFts(item.id);
-      this.repo.deleteChunks(item.id);
-      return;
-    }
-    const key = this.extractCacheKey(abs, item);
-    const result = await this.getIndexExtractedText(item);
-    const current = this.repo.getItem(item.id);
-    if (!current || this.extractCacheKey(abs, current) !== key || this.files.absolutePath(current) !== abs) return;
-    this.repo.updateExtractStatus(current.id, result.status);
-    if (result.status === "extracted" && result.text) {
-      this.repo.upsertFts(item.id, current.title, current.filename, result.text);
-      this.refreshChunksForItem(item.id, result.text);
-    } else {
-      this.repo.deleteFts(item.id);
-      this.repo.deleteChunks(item.id);
-    }
+    if (!item || !extractableKind(item.kind) || item.trashedAt != null) return;
+    const source = this.sourceVersion(item);
+    const result = source ? await this.getIndexExtractedText(item) : { status: "unsupported" as const, text: null };
+    const currentSourceItem = (): LibraryItemDto | undefined => {
+      if (!this.db.connection.open) return;
+      const current = this.repo.getItem(itemId);
+      if (current && current.trashedAt == null && current.kind === item.kind && current.mimeType === item.mimeType
+          && current.contentHash === item.contentHash && this.files.absolutePath(current) === this.files.absolutePath(item)
+          && this.sourceUnchanged(current, source)) return current;
+    };
+    const current = currentSourceItem();
+    if (!current) return;
+    const status = await this.publishDocument(current, source, { kind: "extracted", status: result.status, text: result.text });
+    if (status === "indexed") this.scheduleSemanticIndex();
+    if (status) return;
+    const fallback = currentSourceItem();
+    if (!fallback || fallback.extractStatus !== current.extractStatus) return;
+    const text = result.status === "extracted" && result.text ? result.text : null;
+    this.repo.replaceExtractedIndex(fallback, text, result.status, chunkText(fallback.id, text ?? ""));
+    this.scheduleSemanticIndex();
   }
 
   /**

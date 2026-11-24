@@ -8,20 +8,12 @@ export const HERO_SUBTITLE: Record<WelcomeMode, string> = {
 
 const HERO_HEADLINE: Record<string, string> = {
   "general-office": "先写成能发出去的东西",
-  summary: "先收成一页能看完的",
-  "weekly-report": "先把这周说清楚",
-  "meeting-notes": "先让没到场的人也能接着干",
-  "project-management": "先对齐人、进度和下一步",
-  "data-analysis": "先用数字把问题说死",
   "drawio-ai": "先画成一张能扫读的图",
   "bugfix-test": "先把这个 bug 钉住",
-  "feature-dev": "先按现有风格把功能落地",
   refactor: "先改结构，行为保持不变",
-  "add-tests": "先把该补的测试补上",
   "code-review": "先把风险看清楚",
   "plan-design": "先把方案想清楚再动手",
   "readonly-explain": "先讲清楚这段代码在干什么",
-  "web-prototype": "先把页面结构搭出来",
 };
 
 export function heroHeadline(mode: WelcomeMode, presetId: string | null | undefined): string {
@@ -31,20 +23,12 @@ export function heroHeadline(mode: WelcomeMode, presetId: string | null | undefi
 
 const HERO_SUBLINE: Record<string, string> = {
   "general-office": "结论先行，做成能直接转发的成品",
-  summary: "一句话结论、要点、下一步",
-  "weekly-report": "完成、成果、风险、下周计划",
-  "meeting-notes": "决议、行动项、待决分开写",
-  "project-management": "责任人、依赖、下一步能对齐",
-  "data-analysis": "结论带数字，口径可对账",
   "drawio-ai": "节点少、标签人话、能扫读",
   "bugfix-test": "复现、最小改动、用测试验证",
-  "feature-dev": "对齐现有风格和边界再动手",
   refactor: "小步重构，对外行为不变",
-  "add-tests": "补回归测试，默认不改生产代码",
   "code-review": "正确性、架构、安全、测试充分性",
   "plan-design": "对比方案、标风险，默认不改代码",
   "readonly-explain": "讲职责、调用链和数据流",
-  "web-prototype": "页面结构、token、栅格先搭起来",
 };
 
 export function heroSubline(mode: WelcomeMode, presetId: string | null | undefined): string {
@@ -81,36 +65,6 @@ const HERO_SUGGESTIONS_BY_PRESET: Record<string, string[]> = {
     "先写清结论、所以呢、下一步",
     "整理成一页能交差的简报",
   ],
-  summary: [
-    "把下面材料收成一页总结",
-    "先给一句话结论，再列要点",
-    "压成两分钟能看完的短文",
-    "标出下一步谁做什么",
-  ],
-  "weekly-report": [
-    "按本周完成 / 成果 / 风险 / 下周计划整理",
-    "把流水账收成一页周报",
-    "只保留上级扫读需要的信息",
-    "补上还没对齐的风险和下周计划",
-  ],
-  "meeting-notes": [
-    "整理成决议、行动项、待决",
-    "写成没到场也能接着干的纪要",
-    "列出每项的责任人和截止",
-    "把讨论压成可执行的结论",
-  ],
-  "project-management": [
-    "更新当前进展、责任人和下一步",
-    "列出依赖、风险和该谁拍板",
-    "收成能对齐人的项目看板",
-    "把现状说成一页状态更新",
-  ],
-  "data-analysis": [
-    "用数字回答这个具体问题",
-    "找出异常并核对口径",
-    "结论带证据，写成能对账的一页",
-    "先说结论，再补方法和限制",
-  ],
   "drawio-ai": [
     "根据这段描述画流程图",
     "收成一张能扫读的架构图",
@@ -123,23 +77,11 @@ const HERO_SUGGESTIONS_BY_PRESET: Record<string, string[]> = {
     "定位根因并补一个验证",
     "解释这个失败从哪来",
   ],
-  "feature-dev": [
-    "按现有风格实现这个需求",
-    "先对齐边界，再动手改",
-    "补必要测试后给出 diff",
-    "对照仓库里同类写法落地",
-  ],
   refactor: [
     "小步重构，行为保持不变",
     "把这块结构拆干净",
     "标出风险，保持测试绿色",
     "只改结构，不改对外行为",
-  ],
-  "add-tests": [
-    "为这段代码补回归测试",
-    "列出该覆盖的边界",
-    "默认不改生产逻辑",
-    "写一个最小复现测试",
   ],
   "code-review": [
     "审查正确性、架构和测试",
@@ -159,12 +101,6 @@ const HERO_SUGGESTIONS_BY_PRESET: Record<string, string[]> = {
     "不要改仓库，只讲清楚",
     "说明职责边界和入口",
   ],
-  "web-prototype": [
-    "出一版 Web 原型结构",
-    "按 token / 栅格排这个页面",
-    "整理成 design system 草案",
-    "说明 Flex / Grid 怎么分",
-  ],
 };
 
 export function heroSuggestions(mode: WelcomeMode, presetId: string | null | undefined): string[] {
@@ -176,20 +112,12 @@ export function heroSuggestions(mode: WelcomeMode, presetId: string | null | und
 
 const HERO_PLACEHOLDER_BY_PRESET: Record<string, string> = {
   "general-office": "拖入文件，或说你想写成什么",
-  summary: "把材料拖进来，或说你想总结什么",
-  "weekly-report": "说说本周做了什么，或拖入材料",
-  "meeting-notes": "拖入会议记录，或说要点",
-  "project-management": "说说进展、风险和下一步",
-  "data-analysis": "拖入数据，或抛一个要回答的问题",
   "drawio-ai": "描述你想画的流程或结构",
   "bugfix-test": "贴上报错，或说哪里坏了",
-  "feature-dev": "说说要做的功能和边界",
   refactor: "指出要整理的代码范围",
-  "add-tests": "指出要补测试的代码",
   "code-review": "拖入或指出要审查的改动",
   "plan-design": "说说方案和约束，先不改代码",
   "readonly-explain": "指出要讲清楚的代码",
-  "web-prototype": "说说页面结构和要表达的东西",
 };
 
 const HERO_PLACEHOLDER_BY_MODE: Record<WelcomeMode, string> = {

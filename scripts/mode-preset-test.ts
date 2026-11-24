@@ -169,43 +169,10 @@ async function main(): Promise<void> {
     const workingPresets = MODE_SEEDS.working.policy.presets ?? [];
     const codingPresets = MODE_SEEDS.coding.policy.presets ?? [];
     const designPresets = MODE_SEEDS.general.policy.presets ?? [];
-    assert(workingPresets.length === 8, "working 出厂 8 presets（对人交付闭环 + 流程图）");
+    assert(workingPresets.length === 2, "working 出厂 2 presets（通用办公 + 流程图）");
     assert(
-      workingPresets.map((p) => p.id).join(",") ===
-        "general-office,summary,weekly-report,meeting-notes,project-management,data-analysis,drawio-ai,web-prototype",
-      "working preset ids（通用办公 / 总结 / 周报 / 会议纪要 / 项目管理 / 数据分析 / 流程图）",
-    );
-    const officeSummary = workingPresets.find((p) => p.id === "summary")!;
-    assert(
-      officeSummary.label === "总结" &&
-        officeSummary.promptAddon?.includes("不是缩写版原文") === true &&
-        officeSummary.mcpPolicy?.deny.includes("drawio-ai") === true &&
-        (officeSummary.recommendedExpertIds ?? []).includes("doc-polish"),
-      "summary 压长材料、禁复述、推荐润色专家",
-    );
-    const weekly = workingPresets.find((p) => p.id === "weekly-report")!;
-    assert(
-      weekly.label === "周报" && weekly.promptAddon!.includes("本周完成"),
-      "weekly-report 标签为「周报」且保留本周完成结构",
-    );
-    const meeting = workingPresets.find((p) => p.id === "meeting-notes")!;
-    assert(
-      meeting.promptAddon?.includes("行动项") === true && meeting.mcpPolicy?.deny.includes("drawio-ai") === true,
-      "meeting-notes 为完整场景配置（行动项 + 禁 drawio）",
-    );
-    const projectMgmt = workingPresets.find((p) => p.id === "project-management")!;
-    assert(
-      projectMgmt.label === "项目管理" &&
-        projectMgmt.promptAddon?.includes("责任人") === true &&
-        projectMgmt.mcpPolicy?.deny.includes("drawio-ai") === true,
-      "project-management 强调责任人对齐",
-    );
-    const dataAnalysis = workingPresets.find((p) => p.id === "data-analysis")!;
-    assert(
-      dataAnalysis.label === "数据分析" &&
-        dataAnalysis.promptAddon?.includes("口径") === true &&
-        (dataAnalysis.recommendedExpertIds ?? []).includes("data-analysis"),
-      "data-analysis 强调口径并推荐数据分析专家",
+      workingPresets.map((p) => p.id).join(",") === "general-office,drawio-ai",
+      "working preset ids（web-prototype/Penpot 已退役）",
     );
     const drawio = workingPresets.find((p) => p.id === "drawio-ai")!;
     assert(
@@ -228,11 +195,11 @@ async function main(): Promise<void> {
       JSON.stringify(generalOffice.mcpPolicy?.deny) === JSON.stringify(["drawio-ai"]),
       "general-office deny OFFICE_PROVIDER_MCP_IDS（防 drawio 泄漏）",
     );
-    assert(codingPresets.length === 8, "coding 出厂 8 presets（最小模式 + 原 7 个场景）");
+    assert(codingPresets.length === 6, "coding 出厂 6 presets（最小模式 + 原 5 个场景）");
     assert(
       codingPresets.map((p) => p.id).join(",") ===
-        "minimal,bugfix-test,feature-dev,refactor,add-tests,code-review,plan-design,readonly-explain",
-      "coding preset ids（最小模式排第一 + 原 7 个场景）",
+        "minimal,bugfix-test,refactor,code-review,plan-design,readonly-explain",
+      "coding preset ids（feature-dev / add-tests 已退役）",
     );
     const minimalCoding = codingPresets[0]!;
     assert(
@@ -255,25 +222,11 @@ async function main(): Promise<void> {
         true,
       "bugfix-test preset 携带 skillPolicy",
     );
-    const featureDev = codingPresets.find((p) => p.id === "feature-dev")!;
-    assert(
-      featureDev.label === "新功能" &&
-        !!featureDev.promptAddon &&
-        featureDev.promptAddon.includes("现有仓库") &&
-        featureDev.skillPolicy?.prefer?.includes("test") === true,
-      "feature-dev 为完整开发场景（贴仓库实现 + 测试）",
-    );
     const refactor = codingPresets.find((p) => p.id === "refactor")!;
     assert(
       refactor.promptAddon?.includes("行为必须保持不变") === true &&
         refactor.skillPolicy?.prefer?.includes("refactor") === true,
       "refactor 强调行为不变并偏好 refactor 技能",
-    );
-    const addTests = codingPresets.find((p) => p.id === "add-tests")!;
-    assert(
-      addTests.promptAddon?.includes("默认不改生产代码") === true &&
-        addTests.skillPolicy?.prefer?.includes("test") === true,
-      "add-tests 默认不改生产代码",
     );
     const planDesign = codingPresets.find((p) => p.id === "plan-design")!;
     assert(
@@ -297,16 +250,18 @@ async function main(): Promise<void> {
       "opendesign Tag 已退役，不再出厂",
     );
     assert(!designPresets.some((p) => ["general", "web-prototype"].includes(p.id)), "Bot 移除通用设计与 Penpot");
-    assert(isKnownModePresetId("working", "web-prototype"), "Penpot 属于日常办公");
+    assert(!isKnownModePresetId("working", "web-prototype"), "Penpot 已退出 working seed");
+    assert(resolveModePresetId("working", "web-prototype") === "general-office", "旧 Penpot → 通用办公");
     assert(resolveModePresetId("general", "general") === "native", "旧通用设计回落原生 Tag");
     assert(resolveModePresetId("general", "web-prototype") === "native", "旧 Bot Penpot 回落原生 Tag");
     // 默认/校验 helper
     assert(defaultModePresetId("working") === "general-office", "working 默认 = general-office（通用办公）");
     assert(defaultModePresetId("coding") === "minimal", "coding 默认 = minimal");
     assert(defaultModePresetId("general") === "native", "Bot 默认 = native");
-    assert(isKnownModePresetId("working", "meeting-notes"), "working 已知 id 校验（会议纪要）");
-    assert(isKnownModePresetId("working", "project-management"), "working 已知 id 校验（项目管理）");
     assert(isKnownModePresetId("working", "drawio-ai"), "working 已知 id 校验（drawio-ai）");
+    assert(!isKnownModePresetId("working", "meeting-notes"), "会议纪要已退出 working seed");
+    assert(resolveModePresetId("working", "meeting-notes") === "general-office", "旧会议纪要 → 通用办公");
+    assert(resolveModePresetId("working", "weekly-report") === "general-office", "旧周报 → 通用办公");
     assert(!isKnownModePresetId("working", "inventory-summary"), "库存摘要已退出 working seed");
     assert(resolveModePresetId("working", "inventory-summary") === "general-office", "旧库存摘要 → 通用办公");
     assert(resolveModePresetId("working", "documents") === "general-office", "旧文档 tag → 通用办公");
@@ -326,17 +281,8 @@ async function main(): Promise<void> {
     );
     assert(
       JSON.stringify(MODE_SEED_PRESET_IDS.working) ===
-        JSON.stringify([
-          "general-office",
-          "summary",
-          "weekly-report",
-          "meeting-notes",
-          "project-management",
-          "data-analysis",
-          "drawio-ai",
-          "web-prototype",
-        ]),
-      "MODE_SEED_PRESET_IDS.working 与出厂一致（8 个）",
+        JSON.stringify(["general-office", "drawio-ai"]),
+      "MODE_SEED_PRESET_IDS.working 与出厂一致（2 个，web-prototype/Penpot 及首批精简 tag 均已退役）",
     );
   }
 
@@ -375,14 +321,7 @@ async function main(): Promise<void> {
     const rDesign = filterMcpConfigForMode(workingMcp, "general", workingBase.mcpPolicy);
     assert(!rDesign.enabled.includes("drawio-ai"), "drawio-ai 不泄漏到 design（modes: working）");
     // 非流程图办公 tag => deny drawio-ai
-    for (const id of [
-      "general-office",
-      "summary",
-      "weekly-report",
-      "meeting-notes",
-      "project-management",
-      "data-analysis",
-    ]) {
+    for (const id of ["general-office"]) {
       const eff = resolveEffectiveModePolicy(workingBase, resolveModePreset(workingBase, id))!;
       const r = filterMcpConfigForMode(workingMcp, "working", eff.mcpPolicy);
       assert(
@@ -390,13 +329,6 @@ async function main(): Promise<void> {
         `${id} 合成：drawio-ai 被 deny（原因=${r.reasons["drawio-ai"] ?? "无"}）`,
       );
     }
-    // 技能：weekly-report 偏好周报技能（不额外白名单收窄）
-    const weeklyEff = resolveEffectiveModePolicy(workingBase, resolveModePreset(workingBase, "weekly-report"))!;
-    assert(
-      weeklyEff.skillPolicy.prefer.includes("weekly-report-fill") &&
-        weeklyEff.skillPolicy.prefer.includes("周报"),
-      "weekly-report 技能偏好 weekly-report-fill / 周报",
-    );
     const drawioEff2 = resolveEffectiveModePolicy(workingBase, resolveModePreset(workingBase, "drawio-ai"))!;
     assert(
       drawioEff2.skillPolicy.allow.length === 0 &&
@@ -725,10 +657,10 @@ async function main(): Promise<void> {
       "code-review 未配置 mcpPolicy => effective 保持 base（无收窄）",
     );
 
-    // working weekly-report：promptAddon 进入 system 装配
+    // working 流程图：promptAddon 进入 system 装配
     const workingSeed = MODE_SEEDS.working.policy;
-    const weekly = resolveModePreset(workingSeed, "weekly-report")!;
-    const effWorking = resolveEffectiveModePolicy(workingSeed, weekly);
+    const drawioPreset = resolveModePreset(workingSeed, "drawio-ai")!;
+    const effWorking = resolveEffectiveModePolicy(workingSeed, drawioPreset);
     const effWorkingProfile = withEffectiveModePolicy(
       {
         id: "working",
@@ -751,13 +683,13 @@ async function main(): Promise<void> {
       platform: "win32",
       memoryEnabled: false,
       skills: [],
-      modePreset: { id: weekly.id, label: weekly.label, content: weekly.promptAddon ?? "" },
+      modePreset: { id: drawioPreset.id, label: drawioPreset.label, content: drawioPreset.promptAddon ?? "" },
     });
     assert(
       wAssembly.appendParts.some(
-        (p) => p.includes("场景预设：周报") && p.includes("本周完成"),
+        (p) => p.includes("场景预设：流程图") && p.includes("Draw.io"),
       ),
-      "working weekly-report promptAddon 进入 system 装配",
+      "working 流程图 promptAddon 进入 system 装配",
     );
 
     // 无 preset：working 无 preset 段（旧行为不变）
@@ -816,8 +748,7 @@ async function main(): Promise<void> {
       "Bot 不保留技能白名单",
     );
     assert(!resolveModePreset(p.policy, "web-prototype"), "Bot 不再补入 Penpot");
-    const officePenpot = resolveModePreset(store.getProfile("working").policy, "web-prototype");
-    assert(officePenpot?.label === "Penpot", "办公补入 Penpot");
+    assert(!resolveModePreset(store.getProfile("working").policy, "web-prototype"), "Penpot 已退役，working 不再回补");
     // 保存 round-trip：presets 随保存落盘
     store.savePolicy("general", p.policy);
     const after = store.getProfile("general");
@@ -848,10 +779,10 @@ async function main(): Promise<void> {
     const working = store.getProfile("working");
     assert(
       (working.policy.presets ?? []).map((p) => p.id).join(",") ===
-        "general-office,summary,weekly-report,meeting-notes,project-management,data-analysis,drawio-ai,web-prototype",
-      "working 旧 policy（无 presets，scenes=出厂）=> 回退出厂 presets（8 个）",
+        "general-office,drawio-ai",
+      "working 旧 policy（无 presets，scenes=出厂）=> 回退出厂 presets（2 个）",
     );
-    assert(working.policy.scenes.length === 3, "scenes 字段仍保留（兼容）");
+    assert(working.policy.scenes.length === 1, "scenes 字段仍保留（兼容，库存摘要）");
     const wDisk = JSON.parse(readFileSync(wFile, "utf-8"));
     assert(
       !Array.isArray(wDisk.presets),
@@ -892,19 +823,19 @@ async function main(): Promise<void> {
         suggestedPermissionMode: null,
         recommendedExpertIds: [],
         scenes: [],
-        presets: MODE_SEEDS.working.policy.presets!.slice(0, 3), // 仅前 3 个出厂
+        presets: MODE_SEEDS.working.policy.presets!.slice(0, 1), // 仅第一个出厂
       }),
       "utf-8",
     );
     const merged = store.getProfile("working");
     const ids = (merged.policy.presets ?? []).map((p) => p.id);
-    assert(ids.length === 8, `seed 并入：磁盘 3 个 + 新增 5 个 = 8（实际=${ids.length}）`);
+    assert(ids.length === 2, `seed 并入：磁盘 1 个 + 新增 1 个 = 2（实际=${ids.length}）`);
     assert(
       JSON.stringify(merged.policy.skillPolicy.allow) === JSON.stringify(["fastcopy-copy", "weekly-report-fill"]),
       "seed 并入不覆盖用户 base 个性化（skillPolicy.allow 保留）",
     );
-    const userWeekly = merged.policy.presets?.find((p) => p.id === "weekly-report");
-    assert(userWeekly?.promptAddon?.includes("本周完成"), "用户同名 preset 不被 seed 覆盖");
+    const userOffice = merged.policy.presets?.find((p) => p.id === "general-office");
+    assert(!!userOffice, "用户同名 preset 不被 seed 覆盖");
     const mergedDrawio = merged.policy.presets?.find((p) => p.id === "drawio-ai");
     assert(mergedDrawio?.skillPolicy?.prefer.includes("drawio-use") && !mergedDrawio.providerMcpIds?.length,
       "自动并入的流程图标签可直接使用本机 Draw.io");
@@ -925,6 +856,7 @@ async function main(): Promise<void> {
         presets: [
           { id: "inventory-summary", label: "库存摘要", promptAddon: "旧库存" },
           { id: "documents", label: "文档", promptAddon: "旧文档" },
+          { id: "general-office", label: "通用办公", promptAddon: "旧通用" },
           { id: "weekly-report", label: "周报结构", promptAddon: "本周完成：旧版" },
         ],
       }),
@@ -933,16 +865,16 @@ async function main(): Promise<void> {
     const pruned = store.getProfile("working");
     const prunedIds = (pruned.policy.presets ?? []).map((p) => p.id);
     assert(
-      !prunedIds.includes("inventory-summary") && !prunedIds.includes("documents"),
-      "退役 working tag 读时从列表剔除",
+      !prunedIds.includes("inventory-summary") && !prunedIds.includes("documents") &&
+        !prunedIds.includes("weekly-report"),
+      "退役 working tag（含本周精简批次 weekly-report）读时从列表剔除",
     );
-    assert(prunedIds.includes("weekly-report"), "未退役的用户 weekly-report 保留");
     assert(
-      prunedIds.includes("project-management") && prunedIds.includes("data-analysis"),
-      "退役后补入项目管理 / 数据分析",
+      prunedIds.includes("drawio-ai") && !prunedIds.includes("web-prototype"),
+      "退役后补入流程图，Penpot 不再回补",
     );
-    const keptWeekly = pruned.policy.presets?.find((p) => p.id === "weekly-report");
-    assert(keptWeekly?.promptAddon?.includes("旧版"), "用户同名 weekly-report 不被 seed 覆盖");
+    const keptOffice = pruned.policy.presets?.find((p) => p.id === "general-office");
+    assert(keptOffice?.promptAddon?.includes("旧通用"), "用户同名 general-office 不被 seed 覆盖");
   }
   {
     // 用户自定义 scenes => 运行时转 promptAddon-only legacy presets（tag 不消失）
@@ -997,12 +929,12 @@ async function main(): Promise<void> {
     );
     const coding2 = store.getProfile("coding");
     assert(
-      coding2.policy.presets?.length === 9 && coding2.policy.presets[0]?.id === "minimal" && coding2.policy.presets.at(-1)?.id === "my-preset",
+      coding2.policy.presets?.length === 7 && coding2.policy.presets[0]?.id === "minimal" && coding2.policy.presets.at(-1)?.id === "my-preset",
       "用户自带 presets => minimal 固定第一 + 用户 preset 保留 + 缺失 seed 并入",
     );
     assert(
       coding2.policy.presets?.map((p) => p.id).join(",") ===
-        "minimal,bugfix-test,feature-dev,refactor,add-tests,code-review,plan-design,readonly-explain,my-preset",
+        "minimal,bugfix-test,refactor,code-review,plan-design,readonly-explain,my-preset",
       "并入顺序：minimal 和其余 seed 在前，用户自定义项保留在 seed 区块之后",
     );
   }
@@ -1191,18 +1123,18 @@ async function main(): Promise<void> {
     });
     assert(allAvail.every((c) => !c.disabled), "current design chips enabled when required provider exists");
 
-    // 仅 Penpot 标签需要服务配置。
+    // 出厂 working tag 均无需服务配置（Penpot 已退役）。
     const workingChips = buildPresetBarChips({
       presets: MODE_SEEDS.working.policy.presets ?? [],
-      selectedPresetId: "weekly-report",
+      selectedPresetId: "general-office",
       availableMcpServerNames: new Set(),
       locked: false,
     });
     assert(
-      workingChips.length === 8 &&
-        workingChips.filter((c) => !c.disabled).length === 7 &&
-        workingChips.find((c) => c.id === "weekly-report")?.selected === true,
-      "办公标签中七个可直接选择，并保留选中态",
+      workingChips.length === 2 &&
+        workingChips.filter((c) => !c.disabled).length === 2 &&
+        workingChips.find((c) => c.id === "general-office")?.selected === true,
+      "办公标签中两个可直接选择，并保留选中态",
     );
     const drawioChip = workingChips.find((c) => c.id === "drawio-ai");
     assert(
@@ -1223,7 +1155,7 @@ async function main(): Promise<void> {
       locked: true,
     });
     assert(
-      codingChips.length === 8 && codingChips.every((c) => c.disabled),
+      codingChips.length === 6 && codingChips.every((c) => c.disabled),
       "coding locked => 全部 disabled（与 design 同语义）",
     );
   }
@@ -1383,7 +1315,7 @@ async function main(): Promise<void> {
     useAppStore.getState().setWelcomeMode("general");
     assert(
       useAppStore.getState().modePresetId === "codemode",
-      "重选当前模式 => 保留已有 selection（web-prototype）",
+      "重选当前模式 => 保留已有 selection（codemode）",
     );
 
     // 锁定任务上切顶层模式：任务不动，全局对新模式合法

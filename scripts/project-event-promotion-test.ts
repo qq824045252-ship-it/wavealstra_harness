@@ -5,7 +5,7 @@
  * 重启持久化 → ref 幂等 ingest → cron 适配器（纯翻译 + CronService 集成）→ 扩展工具面。
  * 真实 SQLite + 注入时钟（确定性）。
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -18,6 +18,7 @@ import { ProjectAttentionTracker } from "../src/main/project/ProjectAttention";
 import { createProjectEventExtension } from "../src/main/project/project-event-extension";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { CronService } from "../src/main/cron/CronService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import {
   PROJECT_EVENT_RETENTION_PER_PROJECT,
   type ProjectEventDto,
@@ -52,8 +53,11 @@ const root = mkdtempSync(join(tmpdir(), "mybuddy-promotion-"));
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 const dbPath = join(root, "app.db");
-const db = new AppDatabase(dbPath);
-const projects = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative && (!runtimeAuditExecutable || !existsSync(runtimeAuditExecutable))) throw new Error("Rust helper required");
+const db = new AppDatabase(dbPath, { runtimeAuditExecutable });
+const projects = new ProjectService(new ProjectRepository(db.connection, db.runtimeAuditReader), new MemoryService(db, { semantic: false }));
 const library = new LibraryService(db);
 const NOW = 1_800_000_000_000;
 const DAY = 24 * 3600 * 1000;
@@ -89,7 +93,7 @@ async function main(): Promise<void> {
   ok(mem?.sourceType === "manual", "1c. UI 路径来源 manual");
   const memEvidence = mem?.evidence.find((e) => e.evidenceKind === "event");
   ok(memEvidence?.refId === ev.id && memEvidence.refTitle === ev.title, "1d. 目标侧溯源：memory evidence kind=event");
-  const listA = projects.listProjectEvents("proj-a");
+  const listA = await projects.readProjectEvents("proj-a");
   const withPromo = listA.find((e) => e.id === ev.id);
   ok(withPromo?.promotions?.length === 1 && withPromo.promotions[0]!.targetId === r1.targetId, "1e. 事件侧溯源：list 带 promotion 链接");
   ok(withPromo?.promotions?.[0]!.eventTitle === ev.title, "1f. 链接带事件标题快照");
@@ -119,7 +123,7 @@ async function main(): Promise<void> {
   ok(libItem != null && libItem.title === "客户反馈记录", "3c. 资料真源可见");
   const libContent = library.getItem(r3.targetId) != null;
   ok(libContent, "3d. 资料条目存在（正文经 writeContent 落受管文件）");
-  ok(projects.listProjectEvents("proj-a").find((e) => e.id === ev.id)?.promotions?.length === 3, "3e. 同一事件三种目标共 3 条链接");
+  ok((await projects.readProjectEvents("proj-a")).find((e) => e.id === ev.id)?.promotions?.length === 3, "3e. 同一事件三种目标共 3 条链接");
 
   /* ============ 4. Autopilot 派生：promotion 落真源后既有派生自然重算 ============ */
   const tracker = new ProjectAttentionTracker(projects);
@@ -286,6 +290,7 @@ async function main(): Promise<void> {
   ok(agentLink === "agent", "11j. 提升主体记录 agent");
 
   /* ============ 12. 重启持久化（关闭重开，事件/链接/目标全在） ============ */
+  await db.runtimeAuditReader?.close();
   db.close();
   const db2 = new AppDatabase(dbPath);
   const projects2 = new ProjectService(new ProjectRepository(db2.connection), new MemoryService(db2, { semantic: false }));

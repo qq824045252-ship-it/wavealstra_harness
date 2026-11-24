@@ -119,7 +119,7 @@ export const PROJECT_TEMPLATES: readonly ProjectTemplateDefinition[] = [
     name: "设计创意",
     description: "UI、网页、流程图与视觉设计",
     icon: "🎨",
-    taskSuggestions: { recommendedModeId: "working", recommendedPresetId: "web-prototype" },
+    taskSuggestions: { recommendedModeId: "working" },
     instructions: `# 设计创意模式
 
 ## 角色

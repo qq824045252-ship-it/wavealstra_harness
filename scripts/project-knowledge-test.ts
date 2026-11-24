@@ -33,6 +33,7 @@ import {
 } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
 import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 let passed = 0;
 function ok(cond: unknown, label: string): void {
@@ -57,7 +58,10 @@ const root = mkdtempSync(join(tmpdir(), "mybuddy-knowledge-"));
 // 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
 process.env.HOME = root;
 process.env.USERPROFILE = root;
-const db = new AppDatabase(join(root, "app.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable);
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const memory = new MemoryService(db, { semantic: false });
 const repository = new ProjectRepository(db.connection);
 const projects = new ProjectService(repository, memory);
@@ -995,8 +999,57 @@ void (async () => {
     const pdfItem = library.importFile({ spaceId: aSpace.id, sourcePath: pdfFile });
     ok(docxItem.kind === "office" && pdfItem.kind === "pdf" && xlsxItem.kind === "office", "office/pdf 导入 kind 正确");
     ok(/wordprocessingml/.test(docxItem.mimeType), "docx 精确 mime（抽取器匹配）");
-    for (const item of [docxItem, pptxItem, xlsxItem, pdfItem]) {
-      await library.indexExtractedText(item.id); // 确定性等待异步抽取索引
+    const extractedItems = [docxItem, pptxItem, xlsxItem, pdfItem];
+    if (useNative) {
+      db.connection.pragma("query_only = ON");
+      try {
+        await library.flushPendingIndexes();
+        for (const item of extractedItems) {
+          assert.deepEqual(db.connection.prepare("SELECT extract_status FROM library_items WHERE id=?").get(item.id),
+            { extract_status: "extracted" }, "only the Rust connection can publish extracted status");
+          assert(db.connection.prepare("SELECT 1 FROM library_chunks WHERE item_id=?").get(item.id));
+        }
+      } finally {
+        db.connection.pragma("query_only = OFF");
+      }
+      const existing = db.connection.prepare("SELECT body FROM library_fts WHERE item_id=?").get(docxItem.id);
+      db.connection.prepare("UPDATE library_items SET extract_status='pending' WHERE id=?").run(docxItem.id);
+      const fixtureId = "'" + docxItem.id.replaceAll("'", "''") + "'";
+      db.connection.exec(`CREATE TRIGGER reject_extracted_chunk BEFORE INSERT ON library_chunks
+        WHEN NEW.item_id = ${fixtureId}
+        BEGIN SELECT RAISE(ABORT, 'fixture rejects extracted chunk'); END`);
+      try {
+        await assert.rejects(() => library.indexExtractedText(docxItem.id), /fixture rejects extracted chunk/);
+        assert.deepEqual(db.connection.prepare("SELECT extract_status FROM library_items WHERE id=?").get(docxItem.id),
+          { extract_status: "pending" });
+        assert.deepEqual(db.connection.prepare("SELECT body FROM library_fts WHERE item_id=?").get(docxItem.id), existing);
+      } finally {
+        db.connection.exec("DROP TRIGGER reject_extracted_chunk");
+      }
+      await library.indexExtractedText(docxItem.id);
+      console.log("PASS Rust Office/PDF index publication and atomic rollback");
+
+      const smallPath = join(offDir, "small-index.txt");
+      const smallMarker = "小文件Rust回填检索词";
+      writeFileSync(smallPath, smallMarker);
+      const small = library.importFile({ spaceId: aSpace.id, sourcePath: smallPath });
+      assert.equal((await library.recoverTextFtsCoverageV2()).failed, 0);
+      db.connection.prepare("DELETE FROM library_chunks WHERE item_id=?").run(small.id);
+      db.connection.prepare("DELETE FROM library_chunks_fts WHERE item_id=?").run(small.id);
+      db.connection.prepare("DELETE FROM library_fts WHERE item_id=?").run(small.id);
+      db.connection.pragma("query_only = ON");
+      try {
+        assert.equal((await library.recoverTextFtsCoverageV2()).failed, 0);
+        assert.deepEqual(db.connection.prepare("SELECT body FROM library_fts WHERE item_id=?").get(small.id), { body: smallMarker });
+        assert(db.connection.prepare("SELECT 1 FROM library_chunks WHERE item_id=?").get(small.id));
+      } finally {
+        db.connection.pragma("query_only = OFF");
+      }
+      console.log("PASS Rust small text recovery with the host read-only");
+    } else {
+      for (const item of extractedItems) {
+        await library.indexExtractedText(item.id); // 确定性等待异步抽取索引
+      }
     }
 
     // 检索命中 + read 内联（含抽取标注）
@@ -1301,6 +1354,7 @@ void (async () => {
     await assert.rejects(deletedRead, /已删除|可见范围/);
     ok(true, "提取期间原资料删除后不返回悬空正文或文件路径");
   } finally {
+    await db.runtimeAuditReader?.close();
     library.getExtractedText = originalExtraction;
   }
 

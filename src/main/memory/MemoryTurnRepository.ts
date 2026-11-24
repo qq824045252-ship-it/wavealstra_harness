@@ -27,21 +27,80 @@ export interface CaptureMemoryTurnInput {
   capturedAt?: number;
 }
 
+type PreparedTurn = Omit<CaptureMemoryTurnInput, "metadata" | "capturedAt"> & {
+  id: string;
+  capturedAt: number;
+  metadataJson: string;
+};
+
+export type RuntimeMemoryCapture =
+  | { kind: "turn"; turn: PreparedTurn }
+  | { kind: "durable"; taskId: string; entries: Array<{ entryId: number; turn?: PreparedTurn }> };
+
+export type DurableMemoryTurn = CaptureMemoryTurnInput & { entryId: number; skipCapture?: boolean };
+
+export function prepareMemoryTurn(input: CaptureMemoryTurnInput): PreparedTurn {
+  return {
+    id: `mturn_${randomUUID()}`, taskId: input.taskId, sessionId: input.sessionId,
+    userMessageId: input.userMessageId, assistantMessageId: input.assistantMessageId,
+    userText: input.userText, assistantText: input.assistantText, capturedAt: input.capturedAt ?? Date.now(),
+    metadataJson: JSON.stringify(input.metadata ?? {}),
+  };
+}
+
 export class MemoryTurnRepository {
   constructor(private readonly db: AppDatabase) {}
   private get conn() { return this.db.connection; }
 
   capture(input: CaptureMemoryTurnInput): { turn: MemoryTurnDto; created: boolean } {
+    const prepared = prepareMemoryTurn(input);
+    return this.conn.transaction(() => {
+      const { id, created } = this.insertTurn(prepared);
+      const turn = created ? this.get(id) : this.mapTurn(this.conn.prepare("SELECT * FROM memory_turns WHERE id=?").get(id) as Record<string, unknown>);
+      return { turn: turn!, created };
+    }).immediate();
+  }
+
+  captureCompletedOnHost(capture: RuntimeMemoryCapture): number {
+    return this.conn.transaction(() => {
+      const save = (turn: PreparedTurn): number => {
+        const { id, created } = this.insertTurn(turn);
+        if (created) this.updateCaptureCount(turn.taskId, turn.capturedAt);
+        return Number(id === turn.id);
+      };
+      if (capture.kind === "turn") return save(capture.turn);
+      const { taskId, entries } = capture;
+      const prior = (this.conn.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id=?")
+        .get(taskId) as { entry_id: number } | undefined)?.entry_id ?? 0;
+      let through = prior;
+      let saved = 0;
+      for (const { entryId, turn } of entries) {
+        if (entryId <= prior) continue;
+        through = Math.max(through, entryId);
+        if (turn) {
+          if (turn.taskId !== taskId) throw new Error("Memory turn does not belong to the projection task");
+          saved += save(turn);
+        }
+      }
+      if (through > prior) {
+        this.conn.prepare(`INSERT INTO durable_bot_memory_projection(task_id,entry_id) VALUES (?,?)
+          ON CONFLICT(task_id) DO UPDATE SET entry_id=excluded.entry_id`).run(taskId, through);
+      }
+      return saved;
+    }).immediate();
+  }
+
+  private insertTurn(input: PreparedTurn): { id: string; created: boolean } {
+    const { id, capturedAt } = input;
     const userText = input.userText.trim();
     const assistantText = input.assistantText.trim();
-    const capturedAt = input.capturedAt ?? Date.now();
     const contentHash = hashTurn(userText, assistantText);
-    const existing = input.assistantMessageId
-      ? this.getByAssistantMessageId(input.assistantMessageId)
-      : this.getByTaskAndHash(input.taskId, contentHash);
-    if (existing) return { turn: existing, created: false };
+    const existing = (input.assistantMessageId
+      ? this.conn.prepare("SELECT id FROM memory_turns WHERE assistant_message_id=?").get(input.assistantMessageId)
+      : this.conn.prepare("SELECT id FROM memory_turns WHERE task_id=? AND content_hash=? ORDER BY captured_at DESC LIMIT 1")
+        .get(input.taskId, contentHash)) as { id: string } | undefined;
+    if (existing) return { id: existing.id, created: false };
 
-    const id = `mturn_${randomUUID()}`;
     this.conn.prepare(
       `INSERT INTO memory_turns (
         id,task_id,session_id,user_message_id,assistant_message_id,user_text,assistant_text,content_hash,
@@ -57,9 +116,9 @@ export class MemoryTurnRepository {
       assistantText,
       contentHash,
       capturedAt,
-      JSON.stringify(input.metadata ?? {}),
+      input.metadataJson,
     );
-    return { turn: this.get(id)!, created: true };
+    return { id, created: true };
   }
 
   get(id: string): MemoryTurnDto | undefined {
@@ -303,6 +362,11 @@ export class MemoryTurnRepository {
   }
 
   noteCaptured(taskId: string, now = Date.now()): MemoryPipelineStateDto {
+    this.updateCaptureCount(taskId, now);
+    return this.getPipelineState(taskId);
+  }
+
+  private updateCaptureCount(taskId: string, now: number): void {
     this.conn.prepare(
       `INSERT INTO memory_pipeline_state (
         task_id,captured_turns,turns_since_l1,last_l1_at,last_l2_at,last_l3_at,l1_run_count,l2_run_count,l3_run_count,updated_at
@@ -312,7 +376,6 @@ export class MemoryTurnRepository {
         turns_since_l1=turns_since_l1+1,
         updated_at=excluded.updated_at`,
     ).run(taskId, now);
-    return this.getPipelineState(taskId);
   }
 
   noteL1Completed(taskId: string, remainingPending = 0, now = Date.now()): MemoryPipelineStateDto {

@@ -121,7 +121,7 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
       return text("fixture reply");
     }),
       refresh: async () => ({}), getAvailable: async () => [model] },
-    answerRouting: routing, onTurns: (_id, turns) => { for (const turn of turns) capture.capture(turn); },
+    answerRouting: routing, onTurns: async (id, turns) => { await capture.projectCompleted(id, turns, () => true); },
     evidenceProjection: task => ({ memory: memories, enabled: () => true, scope: () => ({ taskId: task.id }), supplementalEvidence: () => [] }),
     auditInput: request => ({ userMessageId: request.userMessageId, assistantMessageId: request.assistantMessageId, cwd, skills: [],
       recommendation: { query: request.text, mode: "general", context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] } }),

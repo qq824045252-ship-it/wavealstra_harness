@@ -16,12 +16,15 @@
  *    provider 未上报时回落 pi 原生计数（known 全 true）、两边都没有仍为 unknown，
  *    观测值（诊断口径）的 null 不覆盖 pi 账本算出的计数与命中率。
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import nodeAssert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { PerformanceTracker } from "../src/main/usage/PerformanceTracker";
-import { UsageStatsService, parseSessionJsonl, parseSubagentArchive } from "../src/main/usage/UsageStatsService";
+import { UsageStatsService, parseSessionJsonl, parseSubagentArchive, type RecordLiveInput, type UsageReport } from "../src/main/usage/UsageStatsService";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 import { TaskDiagnosticsRepository } from "../src/main/agent/TaskDiagnosticsRepository";
 import { mergeContextUsage } from "../src/main/usage/context-usage-merge";
 import {
@@ -904,8 +907,228 @@ console.log("== 阶段 6：legacy 行 known 兜底 / 零用量行不污染 / 历
   rmSync(dir, { recursive: true, force: true });
 }
 
-console.log(`\n结果: passed=${passed} failed=${failed}`);
-process.exit(failed > 0 ? 1 : 0);
+async function verifyNativeReports(): Promise<void> {
+  const executable = locateRuntimeAudit(process.cwd());
+  nodeAssert(executable);
+  const previousZone = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  const dir = mkdtempSync(join(tmpdir(), "usage-native-"));
+  const db = new AppDatabase(join(dir, "usage.db"));
+  const reader = new RuntimeAuditReader(executable, db.connection.name);
+  const host = new UsageStatsService(db.connection);
+  const native = new UsageStatsService(db.connection, reader);
+  native.queryRows = () => { throw new Error("Native reports must not read ledger rows on the host"); };
+  try {
+    await native.flushWrites();
+    const jsonl = join(dir, "session.jsonl");
+    writeFileSync(jsonl, [
+      { type: "message", message: { role: "user", content: [{ text: "/Weekly-Report. 下一行" }, { content: "$Docs_Sprint" }] } },
+      { type: "message", message: { role: "assistant", content: "$ignore-me" } },
+      { type: "message", message: { role: "user", content: "\ufeff /weekly-report\n /dev-notes-\n读 /path/that/does/not/count\n /unicode-skill \ud800" } },
+    ].map(entry => JSON.stringify(entry)).join("\n"));
+    const event = db.connection.prepare(`INSERT INTO usage_events
+      (entry_id,task_id,session_file,source_kind,provider,model,response_model,ts,user_turn,
+       input_tokens,output_tokens,cache_read,cache_write,total_tokens,cost_total,
+       reasoning_tokens,cache_write_1h,stop_reason,error_message,ttft_ms,generation_tps,model_wall_ms)
+      VALUES (@id,'task',@session,@source,@provider,@model,@response,@ts,@turn,
+       @input,@output,@read,@write,@total,@cost,@reasoning,@oneHour,@stop,@error,@ttft,@tps,@wall)`);
+    const none = { session: null, source: "main", provider: "fixture", model: null, response: "fallback-id",
+      turn: null, input: 0, output: 0, read: 0, write: 0, total: 0, cost: 0,
+      reasoning: null, oneHour: null, stop: null, error: null, ttft: null, tps: null, wall: null };
+    const now = new Date(2026, 2, 10, 12).getTime();
+    const from = new Date(2026, 2, 7, 23, 59, 59).getTime();
+    db.connection.transaction(() => {
+      event.run({ ...none, id: "january", ts: new Date(2026, 0, 2).getTime(), total: 5, input: 5 });
+      event.run({ ...none, id: "future", ts: new Date(2026, 2, 12).getTime(), input: 3, total: 3 });
+      event.run({ ...none, id: "year-end-fraction", ts: new Date(2026, 11, 31, 23, 59, 59, 500).getTime(),
+        total: 1, input: 1 });
+      for (let i = 0; i < 8_000; i++) {
+        const source = i % 7 === 0 ? "compaction" : i % 6 === 0 ? "subagent" : "main";
+        event.run({ ...none, id: `row-${i}`, session: i % 3 === 0 ? jsonl : null, model: i % 3 === 0 ? "configured" : null,
+          source, ts: from + i * 31_000, turn: i % 11, input: 20, output: 4, read: 22, write: 2,
+          total: 48, reasoning: i % 2, oneHour: i % 2 ? 0 : null, cost: i % 2 ? 0.0025 : 0,
+          stop: i % 13 === 0 ? "disposed" : "stop", error: i % 17 === 0 ? "fixture failure" : null,
+          ttft: i % 2 ? 25 : null, tps: i % 2 ? 2.5 : null, wall: i % 2 ? 120 : null });
+      }
+      event.run({ ...none, id: "partial-coverage", ts: now, input: 0, output: 3, read: 7, total: 10, cost: 0, stop: "stop" });
+      db.connection.prepare("INSERT INTO usage_event_coverage VALUES (?,?,?,?,?,?)").run("partial-coverage", 0, 1, 1, 0, 1);
+      event.run({ ...none, id: "unknown-zero", ts: now, stop: "error" });
+      db.connection.prepare("INSERT INTO usage_event_coverage VALUES (?,?,?,?,?,?)").run("unknown-zero", 0, 0, 0, 0, 0);
+    })();
+    const views: UsageReport[] = [
+      { kind: "dashboard", rangeDays: 7 }, { kind: "dashboard", rangeDays: 1 },
+      { kind: "summary", rangeDays: 7 }, { kind: "models", rangeDays: 7 },
+      { kind: "trend", rangeDays: 7 }, { kind: "heatmap", year: 2026 }, { kind: "monthly" },
+    ];
+    for (const view of views) nodeAssert.deepEqual(await native.readReport(view, now), await host.readReport(view, now), view.kind);
+    const panel = await native.readReport({ kind: "dashboard", rangeDays: 7 }, now);
+    nodeAssert("skills" in panel);
+    nodeAssert.deepEqual(panel.skills, [{ name: "weekly-report", count: 2 }, { name: "dev-notes", count: 1 },
+      { name: "docs_sprint", count: 1 }, { name: "unicode-skill", count: 1 }]);
+    nodeAssert.equal(panel.from, "2026-03-04");
+    nodeAssert.equal(panel.to, "2026-03-10");
+    event.run({ ...none, id: "quoted-export", model: '指标,"模型"\n下一行', ts: now + 199,
+      input: 1, total: 1, tps: 2.625, cost: 0.0000005, stop: "stop" });
+    const expectedCsv = host.exportCsv(7, now);
+    const csv = await native.exportCsvAsync(7, now);
+    nodeAssert.equal(csv, expectedCsv, "CSV preserves order, UTC milliseconds, unknown fields and ECMAScript rounding");
+    nodeAssert(csv.includes('"指标,""模型""\n下一行"'));
+    nodeAssert(csv.includes('"2.63"'));
+    console.log("PASS Rust usage reports across DST, missing coverage, overhead, skill files and 8,000 ledger observations");
+  } finally {
+    await reader.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+    if (previousZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousZone;
+  }
+}
+
+async function verifyNativeHistory(): Promise<void> {
+  const executable = locateRuntimeAudit(process.cwd());
+  nodeAssert(executable);
+  const dir = mkdtempSync(join(tmpdir(), "usage-history-native-"));
+  const db = new AppDatabase(join(dir, "app.db"));
+  const reader = new RuntimeAuditReader(executable, db.connection.name);
+  const usage = new UsageStatsService(db.connection, reader);
+  const fallback = () => { throw new Error("Native historical import must not backfill on the host"); };
+  usage.backfillSession = fallback;
+  usage.scanSubagentArchive = fallback;
+  usage.reattributeToMyBuddyModels = fallback;
+  try {
+    const first = join(dir, "甲.jsonl");
+    const second = join(dir, "乙.jsonl");
+    db.upsertTask({ id: "a", title: "甲", sessionFile: first, modelId: "selected/model-a", updatedAt: 1 });
+    db.upsertTask({ id: "b", title: "乙", sessionFile: second, modelId: "selected/model-b", updatedAt: 1 });
+    const timestamp = Date.parse("2026-10-01T00:00:00.123Z");
+    const user = { type: "message", message: { role: "user" } };
+    const assistant = (id: string, responseId?: string) => ({ type: "message", id,
+      message: { role: "assistant", timestamp, provider: "fixture", model: "provider-model", responseId,
+        usage: { input: 3, output: 4, cacheRead: 1, cacheWrite: 0, totalTokens: 8 }, stopReason: "stop" } });
+    const overheadTime = "2026-10-01T08:00:00.123456+08:00";
+    const overhead = { type: "branch_summary", id: "a-overhead", timestamp: overheadTime,
+      provider: "fixture", model: "summary-model", usage: { input: 2, output: 1, cost: { total: 0.000002 } } };
+    const toolResult = { type: "message", id: "a-tool", message: {
+      role: "toolResult", timestamp, usage: { input: 2, output: 3, cacheWrite: 1 },
+    } };
+    const jsonl = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join("\n");
+    writeFileSync(first, jsonl([user, assistant("a-1", "shared"), assistant("a-2"), overhead, toolResult, user]) + "\n{");
+    writeFileSync(second, jsonl([user, assistant("b-1", "shared")]));
+    const live = db.connection.prepare(
+      "INSERT INTO usage_events(entry_id,session_file,provider,model,response_id,turn_index,ts,total_tokens,input_tokens,output_tokens) VALUES (?,?,'fixture','raw-live',?,?,?,8,3,4)",
+    );
+    live.run("live:a", first, "shared", 0, timestamp);
+    live.run("live:a-2", first, null, 1, timestamp + 1);
+    live.run("live:b", second, "shared", 0, timestamp);
+    db.connection.prepare("INSERT INTO usage_event_coverage VALUES (?,?,?,?,?,?)").run("live:a", 1, 1, 1, 1, 1);
+    nodeAssert.deepEqual(await Promise.all([usage.backfillSessionAsync(first), usage.backfillSessionAsync(first)]), [4, 0]);
+    nodeAssert.equal(db.connection.prepare("SELECT session_file FROM usage_events WHERE entry_id='live:b'").pluck().get(), second);
+    nodeAssert.equal(await usage.backfillSessionAsync(second), 1);
+    nodeAssert.equal(db.connection.prepare("SELECT count(*) FROM usage_events WHERE entry_id LIKE 'live:%'").pluck().get(), 0);
+    nodeAssert.equal(db.connection.prepare("SELECT count(*) FROM usage_event_coverage WHERE entry_id='a-1'").pluck().get(), 1);
+    nodeAssert.equal(db.connection.prepare("SELECT ts FROM usage_events WHERE entry_id='a-overhead'").pluck().get(), Date.parse(overheadTime));
+    nodeAssert.equal(db.connection.prepare("SELECT user_messages FROM usage_backfill_state WHERE session_file=?").pluck().get(first), 2);
+    nodeAssert.equal(db.connection.prepare("SELECT file_mtime FROM usage_backfill_state WHERE session_file=?").pluck().get(first), statSync(first).mtimeMs);
+    appendFileSync(first, "\n" + jsonl([assistant("a-3")]));
+    nodeAssert.equal(await usage.backfillSessionAsync(first), 1);
+    nodeAssert.deepEqual(db.connection.prepare("SELECT model,user_turn FROM usage_events WHERE entry_id='a-3'").get(),
+      { model: "model-a", user_turn: 2 });
+    nodeAssert.equal(await usage.reattributeToMyBuddyModelsAsync(), 3);
+    nodeAssert.equal(await usage.reattributeToMyBuddyModelsAsync(), 0);
+    nodeAssert.deepEqual(db.connection.prepare("SELECT provider,model,response_model FROM usage_events WHERE entry_id='b-1'").get(),
+      { provider: "selected", model: "model-b", response_model: "raw-live" });
+
+    const archive = join(dir, "usage-archive.jsonl");
+    writeFileSync(archive, jsonl([1, 2].map(runCount => ({
+      subagentId: "reuse", runCount, finishedAt: timestamp, model: "archive-model", usage: { input: 4, output: 2, cost: 0 },
+    }))));
+    nodeAssert.equal(await usage.scanSubagentArchiveAsync(archive), 2);
+    nodeAssert.equal(await usage.scanSubagentArchiveAsync(archive), 0);
+    const archived = usage.queryRows({ sourceKinds: ["subagent"] });
+    nodeAssert.equal(archived.length, 2);
+    nodeAssert.equal(archived[0].known?.cacheRead, false);
+    nodeAssert.equal(archived[0].known?.cost, true);
+    await usage.closeWrites();
+    nodeAssert.equal(await usage.backfillSessionAsync(first), 0);
+    console.log("PASS Rust historical usage reconciliation, session scoping, checkpoints, attribution and archive coverage");
+  } finally {
+    await reader.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function verifyNativeLiveUsage(): Promise<void> {
+  const executable = locateRuntimeAudit(process.cwd());
+  nodeAssert(executable);
+  const dir = mkdtempSync(join(tmpdir(), "usage-live-native-"));
+  const migrated = new AppDatabase(join(dir, "native.db"));
+  const reference = new AppDatabase(join(dir, "host.db"));
+  const reader = new RuntimeAuditReader(executable, migrated.connection.name);
+  try {
+    for (const db of [migrated, reference]) {
+      new UsageStatsService(db.connection);
+      db.connection.prepare("INSERT INTO usage_events(entry_id,ts,input_tokens,total_tokens) VALUES ('old',1,2,2)").run();
+      db.connection.prepare("INSERT INTO usage_event_coverage VALUES ('old',0,0,0,0,0)").run();
+    }
+    const host = new UsageStatsService(reference.connection);
+    const native = new UsageStatsService(migrated.connection, reader);
+    migrated.connection.pragma("query_only=ON");
+    const now = Date.now();
+    const base: RecordLiveInput = {
+      taskId: "task", sessionFile: "durable:fixture:1", sourceKind: "main", sourceDetail: "pi-durable", modelId: "catalog/selected",
+      sample: { turnIndex: 1, requestStartedAt: now - 50, firstResponseAt: now - 40, completedAt: now,
+        ttftMs: 10, decodeMs: 40, generationTps: 2.625, modelWallMs: 50, outputTokens: 8, reasoningTokens: 2 },
+      message: { provider: "fixture", model: "raw", timestamp: now, responseId: "provider-receipt", stopReason: "stop",
+        usage: { input: 30, output: 8, cacheRead: 4, cacheWrite: 12, cacheWrite1h: 0, reasoning: 2,
+          cost: { total: 1.5, input: 0.5, output: 1, cacheRead: 0, cacheWrite: 0 } } },
+      reportedUsage: { input: 42, output: 8, cacheRead: 4, cacheWrite: null, costTotal: 0 },
+      pricingConfigured: false, userTurn: 1,
+    };
+    const events: RecordLiveInput[] = [
+      base,
+      { ...base, reportedUsage: { ...base.reportedUsage!, output: 99, costTotal: 9 } },
+      { ...base, persistedEntryId: "aux:1", sourceKind: "btw", pricingConfigured: false, reportedUsage: undefined,
+        message: { ...base.message, stopReason: "error", errorMessage: "fixture unknown", usage: { cost: { total: 0 } } } },
+      { ...base, persistedEntryId: "aux:2", pricingConfigured: true, reportedUsage: undefined,
+        message: { ...base.message, usage: { input: 4, output: 6, cost: { total: 0 } } } },
+    ];
+    for (const usage of events) {
+      native.recordLive(usage);
+      host.recordLive(usage);
+    }
+    nodeAssert.deepEqual(await native.readReport({ kind: "summary", rangeDays: 1 }, now), host.summarize(1, now),
+      "the usage panel waits for the accepted live rows");
+    for (const table of ["usage_events", "usage_event_coverage"]) {
+      nodeAssert.deepEqual(migrated.connection.prepare(`SELECT * FROM ${table} ORDER BY entry_id`).all(),
+        reference.connection.prepare(`SELECT * FROM ${table} ORDER BY entry_id`).all(), table);
+    }
+    const persisted = native.queryRows({ since: now });
+    nodeAssert.equal(persisted.length, 3);
+    nodeAssert.equal(persisted.find(row => row.entryId.startsWith("live:"))?.inputTokens, 30);
+    nodeAssert.equal(persisted.find(row => row.entryId.startsWith("live:"))?.costTotal, 0);
+    nodeAssert.equal(persisted.find(row => row.entryId === "aux:1")?.known?.cost, false);
+    await native.closeWrites();
+    native.recordLive({ ...base, persistedEntryId: "after-close" });
+    nodeAssert.equal(native.countRows(), 4);
+    console.log("PASS Rust live usage normalization, atomic coverage, startup repair, replay and report visibility");
+  } finally {
+    await reader.close();
+    migrated.close();
+    reference.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+void (async () => {
+  if (process.argv.includes("--native")) {
+    await verifyNativeReports();
+    await verifyNativeHistory();
+    await verifyNativeLiveUsage();
+  }
+  console.log(`\n结果: passed=${passed} failed=${failed}`);
+  process.exitCode = failed > 0 ? 1 : 0;
+})().catch(error => { console.error(error); process.exitCode = 1; });
 
 
 

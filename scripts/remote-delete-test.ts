@@ -41,7 +41,7 @@ const agent = {
   listModels: async () => [],
   getModeProfile: () => ({ labelZh: "日常办公", policy: { presets: [] } }),
 } as never;
-const service = new RemoteAccessService(db, agent, { unreadCount: () => 0 } as never, { list: () => [] } as never, { read: () => ({ permissionMode: "default" }) } as never);
+const service = new RemoteAccessService(db, agent, { unreadCount: () => 0 } as never, { readList: async () => [] } as never, { read: () => ({ permissionMode: "default" }) } as never);
 
 // 用真实生命周期语义的上游替身：trash 后写 archived + trashed（与 commitTrashedMetadata 等价结果）
 const trashed: string[] = [];
@@ -76,7 +76,7 @@ try {
   const auth = { authorization: `Bearer ${token}` };
   try {
     // 删除前：任务在手机端列表里
-    const before = service.listTasks().map((task) => task.id);
+    const before = (await service.listTasks()).map((task) => task.id);
     check(before.includes("t-del"), "删除前任务出现在 /v1/tasks");
 
     // 1. 正常删除
@@ -87,7 +87,7 @@ try {
     check(published.includes("task.changed"), "删除后广播 task.changed 让其它设备刷新");
 
     // 2. 回收后从列表消失
-    const after = service.listTasks().map((task) => task.id);
+    const after = (await service.listTasks()).map((task) => task.id);
     check(!after.includes("t-del"), "回收后任务从 /v1/tasks 消失");
     check(after.includes("t-keep"), "其它任务不受影响");
     const bootstrap = await fetch(`${base}/v1/bootstrap`, { headers: auth }).then((r) => r.json()) as { tasks: Array<{ id: string }> };
@@ -116,7 +116,7 @@ try {
     const client = new RemoteClient(base, token);
     await client.deleteTask("t-keep");
     check(trashed.includes("t-keep"), "RemoteClient.deleteTask 命中同一路由");
-    check(!service.listTasks().some((task) => task.id === "t-keep"), "客户端删除后服务端列表同步消失");
+    check(!(await service.listTasks()).some((task) => task.id === "t-keep"), "客户端删除后服务端列表同步消失");
   } finally {
     await server.stop();
   }

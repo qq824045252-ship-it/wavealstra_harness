@@ -20,8 +20,12 @@ import { WorkspaceSemanticProvider, SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMAN
 import type { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { assembleWorkspaceSharedContext } from "../src/shared/workspace-shared-context";
 import type { SpaceDto } from "../src/shared/agent-ipc";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 let passed = 0, failed = 0;
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable);
 function ok(cond: unknown, msg: string) { if (cond) { passed++; console.log(`  ✓ ${msg}`);} else { failed++; console.error(`  ✗ ${msg}`);} }
 function eq<T>(a: T, b: T, msg: string) { try { assert.deepStrictEqual(a,b); passed++; console.log(`  ✓ ${msg}`);} catch(e){ failed++; console.error(`  ✗ ${msg}\n    expected ${JSON.stringify(b)}\n    actual ${JSON.stringify(a)}`);} }
 
@@ -47,8 +51,11 @@ async function mkItem(lib: LibraryService, spaceId: string, title: string, conte
 
 async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void> | void) {
   const dir = mkdtempSync(join(tmpdir(), "r1scope-"));
-  const db = new AppDatabase(join(dir, "test.db"));
-  try { await fn(db, dir); } finally { try{ db.close(); }catch{} rmSync(dir,{recursive:true, force:true}); }
+  const db = new AppDatabase(join(dir, "test.db"), { runtimeAuditExecutable });
+  try { await fn(db, dir); } finally {
+    await db.runtimeAuditReader?.close();
+    try{ db.close(); }catch{} rmSync(dir,{recursive:true, force:true});
+  }
 }
 
 async function main() {
@@ -324,6 +331,16 @@ async function main() {
     for (const chunk of chunks) insert.run(chunk.id, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION, chunk.hash, SEMANTIC_DIMENSION, f32ToBlob(vector), 1);
     const runtime = { embed: async () => vector, getLoadMs: () => 0 } as unknown as SemanticRuntime;
     const provider = new WorkspaceSemanticProvider(db, { runtime });
+    const reader = db.runtimeAuditReader;
+    if (reader) {
+      const search = reader.semantic.bind(reader);
+      const chunk = db.connection.prepare("SELECT id,hash FROM library_chunks WHERE item_id=?").get(referenced.id) as { id: string; hash: string };
+      reader.semantic = async request => {
+        const result = await search(request);
+        assert.deepEqual(result, [{ ...chunk, score: 1 }], "Rust excludes vectors outside the explicit item scope");
+        return result;
+      };
+    }
     const semantic = await provider.search({ query: "semantic synonym", allowedLibrarySpaceIds: [], allowedLibraryItemIds: [referenced.id], limit: 1 });
     eq(semantic.map((hit) => hit.itemId), [referenced.id], "语义Provider单条白名单在SQL召回前生效，不放大到整个人库");
     const semanticLoc = new WorkspaceResourceLocator(db, lib, undefined, { semanticProvider: provider });
@@ -341,6 +358,16 @@ async function main() {
     lib.detachFromTask({ taskId: "scope-task", itemId: referenced.id });
     release();
     eq((await pending).hits, [], "异步语义检索期间取消引用，返回前撤销旧结果");
+    if (reader) {
+      const search = reader.semantic.bind(reader);
+      reader.semantic = async request => {
+        const stale = await search(request);
+        db.connection.prepare("UPDATE library_items SET trashed_at=1 WHERE id=?").run(referenced.id);
+        return stale;
+      };
+      const afterTrash = await provider.search({ query: "semantic synonym", allowedLibrarySpaceIds: [], allowedLibraryItemIds: [referenced.id], limit: 1 });
+      eq(afterTrash, [], "Rust 返回后删掉的资料不会出现在语义结果里");
+    }
   });
 
   console.log("== Mixed retrieval preserves distinct identifier hits within the project ==");

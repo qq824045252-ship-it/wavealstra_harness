@@ -5,6 +5,24 @@ import { botWorkspaceSpaceId, teamWorkspaceSpaceId } from "../agent/work/BotWork
 
 // One observation per local day and kind. History can match an older day even after a newer visit.
 const localDay = (time: string) => `date((${time})/1000.0,'unixepoch','localtime')`;
+const botId = "'bot-request:'||r.bot_id||':'||r.request_id";
+const botSource = `FROM bot_send_receipts r JOIN bot_conversations c ON c.conversation_id=r.conversation_id
+  JOIN bot_messages u ON u.message_id=r.user_message_id JOIN bot_messages a ON a.message_id=r.assistant_message_id
+  WHERE r.user_id='${LOCAL_USER_ID}' AND c.user_id=r.user_id AND c.conversation_id NOT GLOB 'bot-inbox-*'`;
+
+export const boardSources = `board_native AS (SELECT t.id,t.title,t.space_id,t.status,t.updated_at,t.start_at,t.due_at,
+  t.is_favorited AS pinned,t.done_acked_at AS ack,NULL AS request_data,NULL AS source_error,t.project_id
+  FROM tasks t WHERE t.archived=0 AND t.id!='${DOTS_TASK_ID}'
+  AND (t.space_id IS NOT NULL OR NOT (t.id GLOB 'gateway-chat-*' AND length(t.id)=77 AND substr(t.id,14) NOT GLOB '*[^a-f0-9]*'))
+  AND NOT EXISTS (SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id=t.id AND w.state='trashed')),
+board_requests AS (SELECT ${botId} AS id,coalesce(nullif(trim(substr(u.text,1,120)),''),'附件对话') AS title,
+  board_space(r.bot_id,c.team_id) AS space_id,
+  CASE a.status WHEN 'queued' THEN 'pending' WHEN 'running' THEN 'in_progress' WHEN 'cancelled' THEN 'stopped' ELSE a.status END AS status,
+  a.updated_at,NULL AS start_at,NULL AS due_at,0 AS pinned,NULL AS ack,
+  json_object('botId',r.bot_id,'teamId',c.team_id,'conversationId',r.conversation_id,'requestId',r.request_id,
+    'messageId',a.message_id,'createdAt',u.created_at,'status',a.status) AS request_data,a.error AS source_error,NULL AS project_id
+  ${botSource} AND c.archived_at IS NULL)`;
+
 function observation(id: string, kind: string, at: string, from: string, detail = "''"): string {
   return `INSERT INTO task_board_days(id,kind,day,at,detail)
     SELECT ${id},'${kind}',${localDay(at)},${at},substr(${detail},1,120) ${from}
@@ -15,10 +33,6 @@ export function ensureTaskBoard(db: Database.Database): void {
   db.function("board_space", { deterministic: true }, (bot: string, team: string | null) =>
     team ? teamWorkspaceSpaceId(team) : botWorkspaceSpaceId(bot),
   );
-  const botId = "'bot-request:'||r.bot_id||':'||r.request_id";
-  const botSource = `FROM bot_send_receipts r JOIN bot_conversations c ON c.conversation_id=r.conversation_id
-    JOIN bot_messages u ON u.message_id=r.user_message_id JOIN bot_messages a ON a.message_id=r.assistant_message_id
-    WHERE r.user_id='${LOCAL_USER_ID}' AND c.user_id=r.user_id AND c.conversation_id NOT GLOB 'bot-inbox-*'`;
   const humanSource =
     botSource +
     " AND c.source_kind='user' AND c.ingress_kind='desktop' AND NOT EXISTS (SELECT 1 FROM bot_peer_inputs p WHERE p.assistant_message_id=a.message_id)";
@@ -42,18 +56,6 @@ export function ensureTaskBoard(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_board_cron_job ON cron_runs(job_id,started_at DESC,id DESC);
       CREATE INDEX IF NOT EXISTS idx_board_cron_started ON cron_runs(started_at DESC,id);
       CREATE TEMP TABLE IF NOT EXISTS board_waits(id TEXT NOT NULL, token TEXT NOT NULL, message TEXT, detail TEXT, at INTEGER, PRIMARY KEY(id,token));
-      CREATE TEMP VIEW IF NOT EXISTS board_native AS SELECT t.id,t.title,t.space_id,t.status,t.updated_at,t.start_at,t.due_at,
-        t.is_favorited AS pinned,t.done_acked_at AS ack,NULL AS request_data,NULL AS source_error,t.project_id
-        FROM tasks t WHERE t.archived=0 AND t.id!='${DOTS_TASK_ID}'
-        AND (t.space_id IS NOT NULL OR NOT (t.id GLOB 'gateway-chat-*' AND length(t.id)=77 AND substr(t.id,14) NOT GLOB '*[^a-f0-9]*'))
-        AND NOT EXISTS (SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id=t.id AND w.state='trashed');
-      CREATE TEMP VIEW IF NOT EXISTS board_requests AS SELECT ${botId} AS id,coalesce(nullif(trim(substr(u.text,1,120)),''),'附件对话') AS title,
-        board_space(r.bot_id,c.team_id) AS space_id,
-        CASE a.status WHEN 'queued' THEN 'pending' WHEN 'running' THEN 'in_progress' WHEN 'cancelled' THEN 'stopped' ELSE a.status END AS status,
-        a.updated_at,NULL AS start_at,NULL AS due_at,0 AS pinned,NULL AS ack,
-        json_object('botId',r.bot_id,'teamId',c.team_id,'conversationId',r.conversation_id,'requestId',r.request_id,
-          'messageId',a.message_id,'createdAt',u.created_at,'status',a.status) AS request_data,a.error AS source_error,NULL AS project_id
-        ${botSource} AND c.archived_at IS NULL;
       CREATE TRIGGER IF NOT EXISTS board_task_end_insert AFTER INSERT ON tasks WHEN NEW.status IN ${terminal} BEGIN
         ${observation("NEW.id", "result", "NEW.updated_at", "WHERE 1")}; END;
       CREATE TRIGGER IF NOT EXISTS board_task_end_update AFTER UPDATE OF status ON tasks WHEN NEW.status IN ${terminal} AND OLD.status IS NOT NEW.status BEGIN

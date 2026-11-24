@@ -43,7 +43,7 @@ import {
 } from "../../shared/runtime-requirement";
 import { getModesDir } from "../paths";
 import { normalizePstackSettings, validatePstackSettings } from "../../shared/pstack";
-import { MODE_SEEDS, PENPOT_PRESET, refreshLegacyDrawioPreset, refreshLegacyOfficePreset } from "./mode-defaults";
+import { MODE_SEEDS, refreshLegacyDrawioPreset, refreshLegacyOfficePreset } from "./mode-defaults";
 
 function isWelcomeMode(id: string): id is WelcomeMode {
   return (WELCOME_MODES as string[]).includes(id);
@@ -357,23 +357,6 @@ function policiesEqual(a: ModePolicyDto, b: ModePolicyDto): boolean {
  * source：磁盘内容与出厂一致 → seed；有改动 → user
  */
 export class ModeProfileStore {
-  private penpotPreset(current?: ModePresetDto): ModePresetDto {
-    let preset = { ...PENPOT_PRESET };
-    // Read the legacy general/policy original before the mode strips execution metadata. Working edits win.
-    for (const source of ["general"]) {
-      const raw = readText(join(getModesDir(), source, "policy.json"));
-      if (!raw) continue;
-      try {
-        const prior = normalizePresets(JSON.parse(raw).presets).find(item => item.id === PENPOT_PRESET.id);
-        if (prior) preset = { ...preset, ...Object.fromEntries(Object.entries(prior).filter(([, value]) => value !== undefined && value !== null)) };
-      } catch { /* Invalid legacy files do not block the working preset. */ }
-    }
-    if (current) preset = { ...preset, ...Object.fromEntries(Object.entries(current).filter(([, value]) => value !== undefined)) };
-    return { ...preset, label: "Penpot", durableToolMode: undefined,
-      promptAddon: preset.promptAddon?.replaceAll("网页原型 · Penpot", "Penpot"),
-    };
-  }
-
   private modeDir(id: WelcomeMode): string {
     return join(getModesDir(), id);
   }
@@ -480,7 +463,6 @@ export class ModeProfileStore {
         const pol = this.policyFilePath(mid);
         if (!existsSync(pol)) {
           const policy = normalizePolicy(seed.policy);
-          if (mid === "working") policy.presets = policy.presets?.map(preset => preset.id === PENPOT_PRESET.id ? this.penpotPreset() : preset);
           writeText(pol, JSON.stringify(policy, null, 2));
           console.log("[ModeProfile] materialized", pol);
         }
@@ -558,11 +540,6 @@ export class ModeProfileStore {
       try {
         let diskRaw = JSON.parse(policyUser) as Record<string, unknown>;
         let seedPresets = seedPolicy.presets;
-        if (id === "working") {
-          const current = normalizePresets(diskRaw.presets).find(preset => preset.id === PENPOT_PRESET.id);
-          seedPresets = seedPresets?.map(preset => preset.id === PENPOT_PRESET.id ? this.penpotPreset(current) : preset);
-          if (current) diskRaw = { ...diskRaw, presets: normalizePresets(diskRaw.presets).map(preset => preset.id === PENPOT_PRESET.id ? this.penpotPreset(current) : preset) };
-        }
         // 向后兼容：旧 policy.json 无 artifactPolicy 时回退出厂产物黑名单（办公禁 py 等）
         if (diskRaw.artifactPolicy === undefined || diskRaw.artifactPolicy === null) {
           diskRaw = { ...diskRaw, artifactPolicy: seedPolicy.artifactPolicy };

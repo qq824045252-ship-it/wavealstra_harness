@@ -16,11 +16,14 @@
  * 运行：pnpm test:workspace-tree
  */
 import assertStrict from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { AppDatabase, computeEffectiveArchived, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
+import { TaskExpertBindingService } from "../src/main/experts/TaskExpertBindingService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 import {
   buildWorkspaceTree,
   buildWorkspaceTreeIndex,
@@ -85,6 +88,55 @@ async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "workspace-tree-"));
 
   try {
+    console.log("== 可见任务：排序、显式归档、回收站与专家绑定 ==");
+    {
+      const runtimeAuditExecutable = process.argv.includes("--native") ? locateRuntimeAudit(process.cwd()) : undefined;
+      if (process.argv.includes("--native")) assertStrict.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+      const db = new AppDatabase(join(dir, "visible.db"), { runtimeAuditExecutable });
+      try {
+        db.upsertTask({ id: "normal", title: "仪表复核", updatedAt: 80, isFavorited: true });
+        db.upsertTask({ id: "archived", title: "旧结果", updatedAt: 90 });
+        db.archiveTask("archived", true);
+        db.upsertTask({ id: "trashed", title: "已回收", updatedAt: 100 });
+        db.upsertTaskExecutionWorkspaceState({
+          taskId: "trashed", directoryName: "trash-fixture", state: "trashed", createdAt: 100, updatedAt: 100,
+        });
+        db.openDots();
+        const experts = new TaskExpertBindingService(db, {} as never, { rootDir: join(dir, "bindings") });
+        experts.save({ taskId: "normal", custom: {
+          name: "校准助手", instructions: "逐项记录读数。", skillIds: [], mcpIds: [], connectorIds: [],
+        } });
+        const rows = await db.readNonTrashedTasks();
+        assertStrict.deepEqual(rows.map(task => [task.id, task.title, task.archived, task.isFavorited]), [
+          ["archived", "旧结果", true, false], ["normal", "仪表复核", false, true],
+        ]);
+        const binding = rows[1]?.expertBinding;
+        assertStrict.deepEqual([binding?.desired?.name, binding?.active, binding?.pending], ["校准助手", null, true]);
+        const remote = await db.readNonTrashedTasks({ includeExpertBindings: false });
+        assertStrict.deepEqual(remote.map(task => [task.id, task.expertBinding?.desired?.name]), [
+          ["archived", undefined], ["normal", undefined],
+        ]);
+        experts.promote("normal");
+        db.upsertTaskExecutionWorkspaceState({
+          taskId: "trashed", directoryName: "trash-fixture", state: "active", createdAt: 100, updatedAt: 110,
+        });
+        const restored = await db.readNonTrashedTasks();
+        assertStrict.deepEqual(restored.map(task => [task.id, task.expertBinding?.active?.name, task.expertBinding?.pending]), [
+          ["archived", undefined, undefined], ["trashed", undefined, undefined], ["normal", "校准助手", false],
+        ]);
+        if (db.runtimeAuditReader) {
+          assertStrict.deepEqual(
+            (await db.runtimeAuditReader.taskList(DOTS_TASK_ID, true))?.map(row => row.id),
+            ["archived", "trashed", "normal"],
+          );
+        }
+        assert(true, "可见任务返回当前的归档、恢复及人设状态");
+      } finally {
+        await db.runtimeAuditReader?.close();
+        db.close();
+      }
+    }
+
     console.log("== 1) 迁移：v12（旧 spaces）→ v13 零损 + 幂等 ==");
     {
       const path = join(dir, "migrate.db");

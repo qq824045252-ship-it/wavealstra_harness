@@ -43,11 +43,14 @@ import {
   const byId = new Map(ids.map((id, index) => [id, templates[index]]));
   assert.equal(byId.get("software-development")!.taskSuggestions?.recommendedModeId, "coding");
   assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedModeId, "working");
-  assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedPresetId, "web-prototype");
+  // Penpot tag 已退役：设计创意模板不再预选 preset。
+  assert.equal(byId.get("design-creative")!.taskSuggestions?.recommendedPresetId, undefined);
   for (const template of templates) {
     if (template.id === "blank") continue;
     assert.ok(template.taskSuggestions?.recommendedModeId, `recommendedModeId present: ${template.id}`);
-    assert.ok(template.taskSuggestions?.recommendedPresetId, `recommendedPresetId present: ${template.id}`);
+    if (template.id !== "design-creative") {
+      assert.ok(template.taskSuggestions?.recommendedPresetId, `recommendedPresetId present: ${template.id}`);
+    }
   }
 }
 
@@ -99,8 +102,8 @@ import {
   assert.deepEqual(full.resolvedMcps, ["penpot"]);
   assert.deepEqual(full.warnings, []);
   assert.equal(full.taskSuggestion?.recommendedModeId, "working");
-  // 设计创意模板跟随迁入日常办公的 Penpot，不能推荐已删除的通用设计。
-  assert.equal(full.taskSuggestion?.recommendedPresetId, "web-prototype");
+  // Penpot tag 已退役：设计创意模板不再预选 preset。
+  assert.equal(full.taskSuggestion?.recommendedPresetId, undefined);
 }
 
 // T4：缺失能力 → missing 列表与 warnings 有值且不 throw；未提供 registries → 不报错

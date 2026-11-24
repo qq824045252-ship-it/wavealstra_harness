@@ -1,6 +1,7 @@
 import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRegistrationState } from "../shared/gateway-registration";
 import type { GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import type { GoogleWorkspaceApi } from "../shared/google-workspace";
+import type { DotsGoogleApi } from "../shared/dots-google";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import type { BrowserConsoleEventDto, BrowserConsoleSnapshotDto, BrowserConsoleTarget } from "../shared/browser-console";
 import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../shared/archive-deletion";
@@ -197,6 +198,7 @@ export interface PreloadApi {
   dots: import("../shared/dots").DotsApi;
   googleWorkspaceWrite: GoogleWorkspaceWriteApi;
   googleWorkspace: GoogleWorkspaceApi;
+  dotsGoogle: DotsGoogleApi;
   plugins: {
     paths: () => Promise<import("../shared/plugin-storage").PluginStoragePathsDto>;
     openDirectory: () => Promise<{ ok: boolean; path: string; error?: string }>;
@@ -803,6 +805,9 @@ export interface PreloadApi {
     snapshot: (req: import("../shared/artifact-ipc").ArtifactDomainTaskRequest) => Promise<
       import("../shared/artifact-types").ArtifactSnapshot
     >;
+    snapshotBatch: (req: import("../shared/artifact-ipc").ArtifactSnapshotBatchRequest) => Promise<
+      import("../shared/artifact-types").ArtifactSnapshot[]
+    >;
     register: (req: import("../shared/artifact-ipc").ArtifactDomainRegisterRequest) => Promise<
       import("../shared/artifact-types").ArtifactDescriptor
     >;
@@ -822,7 +827,7 @@ export interface PreloadApi {
   };
   library: {
     note: <T extends import("../shared/library-ipc").LibraryNoteOperation>(request: T) => Promise<import("../shared/library-ipc").LibraryNoteOperationResult<T["type"]>>;
-    snapshot: () => Promise<import("../shared/library-ipc").LibrarySnapshotDto>;
+    snapshot: (request?: import("../shared/library-ipc").LibrarySnapshotRequest) => Promise<import("../shared/library-ipc").LibrarySnapshotDto>;
     listItems: (req: import("../shared/library-ipc").LibraryListItemsRequest) => Promise<import("../shared/library-ipc").LibraryItemDto[]>;
     getItem: (id: string) => Promise<import("../shared/library-ipc").LibraryItemDto | null>;
     createSpace: (req: import("../shared/library-ipc").LibraryCreateSpaceRequest) => Promise<{ ok: true; value: import("../shared/library-ipc").LibrarySpaceDto } | { ok: false; error: string }>;

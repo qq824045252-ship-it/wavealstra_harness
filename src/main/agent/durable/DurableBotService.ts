@@ -57,6 +57,7 @@ import { DurableMcp } from "./DurableMcp";
 import type { ExternalEffectRecovery } from "./DurableEffectRecovery";
 import { DurableStorageOwnedError } from "./DurableStorageLease";
 import type { WorkExecutionBindingDto } from "../../../shared/bot-work";
+import type { RuntimeAuditReader } from "../../platform/runtime-audit";
 import { snapshotWorkspace } from "../../workspace/WorkspaceService";
 import { AgentDoc, LiveDoc, SessionFailed, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -92,6 +93,7 @@ export interface DurableInputOrigin {
 
 export interface DurableBotServiceOptions {
   db: AppDatabase;
+  passiveReader?: RuntimeAuditReader;
   codeReview?: import("../CodeReviewService").CodeReviewService;
   models: ModelRuntime;
   agentDir: string;
@@ -115,7 +117,7 @@ export interface DurableBotServiceOptions {
   mcpSelection?: (task: TaskDto) => readonly string[] | undefined;
   toolAllowed?: (task: TaskDto, name: string) => boolean;
   assertDotsCapabilities?: (task: TaskDto, cwd: string, requirements: readonly DotsCapabilityRequirement[]) => void;
-  onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
+  onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => Promise<void>;
   onDotsProgress?: (taskId: string, operationId: string, identity: string, at: number) => void;
   dotsRecoveryScope?: (taskId: string, operationId: string) => DotsRecoveryToolScope | undefined;
   onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
@@ -570,18 +572,7 @@ export class DurableBotService {
         isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
           && Boolean(db.connection.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dots_delegations'").get())
           && Boolean(db.connection.prepare("SELECT 1 FROM dots_delegations WHERE task_id=? AND operation_id=?").get(taskId, requestId))),
-        onTurns: turns => {
-          if (!this.options.onTurns || !turns.length) return;
-          db.connection.transaction(() => {
-            const prior = db.connection.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id=?").get(taskId) as { entry_id: number } | undefined;
-            const fresh = turns.filter(turn => turn.entryId > (prior?.entry_id ?? 0));
-            if (!fresh.length) return;
-            const originals = fresh.filter(turn => !turn.skipCapture);
-            if (originals.length) this.options.onTurns!(taskId, originals);
-            db.connection.prepare("INSERT INTO durable_bot_memory_projection VALUES (?,?) ON CONFLICT(task_id) DO UPDATE SET entry_id=excluded.entry_id")
-              .run(taskId, fresh.at(-1)!.entryId);
-          })();
-        },
+        onTurns: this.options.onTurns && (turns => this.options.onTurns!(taskId, turns)),
         assets: durableSandboxAssets(this.options.assetsDir),
         instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
         onSnapshot: snapshot => {
@@ -1174,8 +1165,11 @@ export class DurableBotService {
     try {
       const opening = this.opening.get(taskId);
       const live = this.opened.get(taskId)?.runtime ?? (opening ? (await opening).runtime : undefined);
-      if (live) return await live.loadUserQuestions(query);
-      return await readDurableUserQuestions({ directory: binding.directory, cwd: binding.cwd, models: this.options.models, query });
+      if (live && !this.options.passiveReader) return await live.loadUserQuestions(query);
+      return await this.passiveRead(taskId, { questions: [] }, current => readDurableUserQuestions({
+        directory: current.directory, cwd: current.cwd, models: this.options.models, reader: this.options.passiveReader, query,
+        live: live && (() => live.loadUserQuestions(query)),
+      }));
     } catch (error) {
       console.warn("[Durable] Cannot read the complete user-question index", taskId, error);
       throw error;
@@ -1189,15 +1183,26 @@ export class DurableBotService {
     try {
       const opening = this.opening.get(taskId);
       const live = this.opened.get(taskId)?.runtime ?? (opening ? (await opening).runtime : undefined);
-      if (live) return await live.loadHistoryHead(maxTokens);
-      return await readDurableConversationHead({ directory: binding.directory, cwd: binding.cwd, models: this.options.models, maxTokens });
+      if (live && !this.options.passiveReader) return await live.loadHistoryHead(maxTokens);
+      return await this.passiveRead(taskId, "", current => readDurableConversationHead({
+        directory: current.directory, cwd: current.cwd, models: this.options.models, reader: this.options.passiveReader, maxTokens,
+        live: live && (() => live.loadHistoryHead(maxTokens)),
+      }));
     } catch (error) {
       console.warn("[Durable] Cannot read the conversation head", taskId, error);
       return "";
     }
   }
 
-  private async passiveHistory(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
+  private passiveHistory(taskId: string, beforeEntryId?: TaskHistoryTarget): Promise<TaskHistoryDto> {
+    return this.passiveRead(taskId, { messages: [] }, binding => readDurableReadOnlyHistory({
+      directory: binding.directory, cwd: binding.cwd, models: this.options.models, reader: this.options.passiveReader,
+      beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId),
+      isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId), hasDotsDelegation: () => this.hasDotsDelegation(taskId),
+    }));
+  }
+
+  private async passiveRead<T>(taskId: string, empty: T, read: (binding: BotBinding) => Promise<T>): Promise<T> {
     for (;;) {
       const prior = this.passiveReads.get(taskId);
       if (!prior) break;
@@ -1206,10 +1211,8 @@ export class DurableBotService {
     if (this.closing) throw new Error("Bot runtime is closing");
     // Passive readers never claim a writer lease, even if a live runtime exists.
     const binding = this.binding(taskId);
-    if (!binding) return { messages: [] };
-    const reading = readDurableReadOnlyHistory({ directory: binding.directory, cwd: binding.cwd,
-      models: this.options.models, beforeEntryId, observedUsage: this.options.observedUsage?.bind(undefined, taskId),
-      isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId), hasDotsDelegation: () => this.hasDotsDelegation(taskId) });
+    if (!binding) return empty;
+    const reading = read(binding);
     const barrier = reading.then(() => {}, () => {}).finally(() => {
       if (this.passiveReads.get(taskId) === barrier) this.passiveReads.delete(taskId);
     });

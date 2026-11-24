@@ -1,4 +1,5 @@
 import type { AppDatabase } from "../db/AppDatabase";
+import { memoryProjectionQuery } from "../agent/MemoryContextProjection";
 import {
   MEMORY_KINDS,
   MEMORY_SCOPE_TYPES,
@@ -8,6 +9,7 @@ import {
   type MemoryRecordDto,
   type MemoryScopeType,
   type MemorySearchHit,
+  type MemorySearchRequest,
   type MemoryStatus,
 } from "../../shared/memory-kernel";
 import type { MemoryService } from "./MemoryService";
@@ -208,14 +210,14 @@ export class MemoryGatewayService {
       .map((hit) => ({ ...hit, memory: this.externalizeMemory(hit.memory) }));
   }
 
-  resolveMemoryContext(input: MemoryGatewayContextRequest) {
+  async resolveMemoryContext(input: MemoryGatewayContextRequest) {
     const context = this.resolveContext(input);
     for (const kind of input.kinds ?? []) assertKnownKind(kind);
     for (const status of input.statuses ?? []) assertKnownStatus(status);
     for (const scope of input.scopeTypes ?? []) assertKnownScope(scope);
     const scopeTypes = this.restrictReadScopeTypes(input.scopeTypes);
     if (this.hasFullDataAccess) {
-      return this.memory.resolveContext({
+      const request = {
         ...context,
         query: input.query?.trim(),
         kinds: input.kinds,
@@ -224,18 +226,20 @@ export class MemoryGatewayService {
         limit: Math.max(1, Math.min(100, input.limit ?? 20)),
         budgetChars: input.budgetChars,
         trackRecall: false,
-      });
+      } satisfies MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean };
+      const recalled = await this.memory.searchLexical(memoryProjectionQuery(request));
+      return this.memory.resolveContext(request, recalled);
     }
     const budget = Math.max(800, Math.min(9000, input.budgetChars ?? 5000));
     const limit = Math.max(1, Math.min(100, input.limit ?? 20));
-    const hits = this.memory.search({
+    const hits = (await this.memory.searchLexical({
       ...context,
       query: input.query?.trim(),
       kinds: input.kinds,
       statuses: input.statuses?.length ? input.statuses : ["active"],
       scopeTypes,
       limit: 100,
-    }).filter((hit) => this.memoryReadableByPrincipal(hit.memory));
+    })).filter((hit) => this.memoryReadableByPrincipal(hit.memory));
     const items: Array<{ id: string; kind: MemoryKind; title: string; content: string; scopeType: MemoryScopeType; scopeId?: string; importance: number; confidence: number; score: number; reasons: string[] }> = [];
     let chars = 0;
     let trimmed = false;

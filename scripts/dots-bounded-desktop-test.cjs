@@ -60,6 +60,15 @@ const calls = (messages, name) => messages.filter(message => message.role === "a
 
 function fixtureModel(request) {
   const names = request.tools?.map(item => item.function.name) ?? [];
+  if (!names.length) {
+    const content = request.messages.findLast(message => message.role === "user")?.content;
+    if (typeof content === "string" && content.startsWith("{")) {
+      const report = JSON.parse(content);
+      if ((report.kind === "conclusion" || report.kind === "progress") && typeof report.evidence === "string")
+        return report.evidence;
+    }
+    return '{"candidates":[]}';
+  }
   const user = latestInput(request);
   const recent = afterInput(request);
   const answers = recent.filter(message => message.role === "tool");

@@ -201,7 +201,8 @@ import {
   resolveRuntimeContextPolicy,
   type RuntimeContextPolicyInput,
 } from "./RuntimeContextResolver";
-import { RuntimeContextSnapshotRepository } from "./RuntimeContextSnapshotRepository";
+import { decodeRuntimeSnapshotPage, RuntimeContextSnapshotRepository } from "./RuntimeContextSnapshotRepository";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import { CodeReviewService } from "./CodeReviewService";
 import { GitCodeReview } from "./GitCodeReview";
 import { withCodeReviewLease } from "./durable/DurableToolCoordination";
@@ -548,6 +549,7 @@ export class AgentService {
   private readonly projectContextResolver: ProjectContextResolver;
   private readonly projectService: ProjectService;
   private readonly runtimeSnapshots: RuntimeContextSnapshotRepository;
+  private readonly runtimeAuditReader?: RuntimeAuditReader;
   private readonly codeReview: CodeReviewService;
   private readonly taskDiagnostics: TaskDiagnosticsRepository;
   private readonly conversationGoalActivity: ConversationGoalActivity;
@@ -809,6 +811,7 @@ export class AgentService {
     dependencies: { models?: ModelRuntime } = {},
   ) {
     this.modelRuntime = dependencies.models ?? null;
+    this.runtimeAuditReader = db.runtimeAuditReader;
     let improvementKnowledge: ImprovementKnowledge | undefined;
     this.nativeImprovement = new NativeImprovementService(db, this.nativeHooks, join(getMyBuddyDir(), "native-improvement.sqlite"), Date.now, {
       scope: taskId => {
@@ -837,7 +840,7 @@ export class AgentService {
     }, () => {
       if (this.memoryDisposed || !this.settingsStore.read().memoryEnabled || !this.memoryService) return;
       return improvementKnowledge ??= new ImprovementKnowledge(join(getMyBuddyDir(), "native-improvement-knowledge"), this.memoryService);
-    });
+    }, () => this.taskDiagnostics.flush());
     this.expertBindings = new TaskExpertBindingService(db, this.expertsService, {
       resolveSkillDirectory: (id) => {
         const skill = this.skillsService.listInstalled().find(item => item.id === id || item.name === id);
@@ -846,7 +849,7 @@ export class AgentService {
       isSkillEnabled: (id, taskId) => this.skillsService.listInstalled(undefined, [], { botId: this.runtimeBotId(taskId) })
         .some(item => (item.id === id || item.name === id) && item.enabled),
     });
-    this.usageStats = new UsageStatsService(db.connection);
+    this.usageStats = new UsageStatsService(db.connection, this.runtimeAuditReader);
     // P0：任务执行工作区唯一解析器（可注入测试 root；默认 ~/.mybuddy/task-workspaces）
     this.taskWorkspace = taskWorkspace ?? new TaskExecutionWorkspace();
     this.runtimeRequirements = new RuntimeRequirementOrchestrator(this.modeProfiles);
@@ -885,9 +888,9 @@ export class AgentService {
       (taskId, evidence) => taskId !== DOTS_TASK_ID || this.dotsAnswerEvidenceAllowed(evidence),
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
-    this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection);
+    this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection, this.runtimeAuditReader);
     this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event));
-    this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection);
+    this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection, this.runtimeAuditReader);
     this.conversationGoalActivity = new ConversationGoalActivity(db.connection);
     this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.connection);
     this.stopDiagnosticObservation = observeCacheRequestTraces((event, model) => this.taskDiagnostics.observeTrace(event, model));
@@ -1271,6 +1274,7 @@ export class AgentService {
   }
 
   async getConversationGoalEvidence(taskId: string, goalId: string) {
+    await this.taskDiagnostics.flush();
     if (!this.db.getTask(taskId)) return undefined;
     const evidence = this.conversationGoals.readEvidence(taskId, goalId);
     if (!evidence) return undefined;
@@ -1638,6 +1642,7 @@ export class AgentService {
       (taskId, childId) => this.durableBots?.subagentSteerReceipts(taskId, childId) ?? Promise.resolve([]),
     ));
     this.durableBots = new DurableBotService(isolateGatewayConversations({
+      passiveReader: this.runtimeAuditReader,
       nativeHooks: this.nativeHooks,
       nativeImprovement: this.nativeImprovement,
       improvementSkillAllowed: (taskId, name) => {
@@ -1777,7 +1782,7 @@ export class AgentService {
         const task = this.db.getTask(taskId);
         if (!task) return;
         const assembly = this.durableAssembly(task);
-        this.runtimeSnapshots.recordOnce({ taskId, executionId: `durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
+        this.runtimeSnapshots.capture({ taskId, executionId: `durable:${taskId}:${info.conversationId}:${info.generationTaskId}`,
           userMessageId: `durable-run-${info.generationTaskId}`, assistantMessageId: `durable-generation-${info.generationTaskId}`,
           status: "running", startedAt: Date.now(), workingDirectory: task.cwd,
           assemblyHash: fingerprintRuntimeAssembly(assembly), modelId: task.modelId, permissionMode: task.permissionMode,
@@ -1793,8 +1798,8 @@ export class AgentService {
             if (message.role !== "assistant") continue;
             this.recordDurableUsage(taskId, message, { conversationId: String(entry.conversationId), generationTaskId: entry.byTaskId,
               sourceKind: info.sourceKind, assistantMessageId: `durable-${entry.id}` });
-            this.db.connection.prepare("UPDATE task_runtime_context_snapshots SET assistant_message_id = ? WHERE task_id = ? AND execution_id = ?")
-              .run(`durable-${entry.id}`, taskId, `durable:${taskId}:${entry.conversationId}:${entry.byTaskId}`);
+            this.runtimeSnapshots.bindAssistantMessage({ taskId, executionId: `durable:${taskId}:${entry.conversationId}:${entry.byTaskId}`,
+              assistantMessageId: `durable-${entry.id}` });
           }
         }
       },
@@ -1814,11 +1819,10 @@ export class AgentService {
           : this.libraryWorkspaceContext.validateEvidenceAccess(task.id, access),
         scope: () => resolveTaskMemoryScope(task.id, this.db.getTask(task.id)),
       }),
-      onTurns: (taskId, turns) => {
-        if (this.memoryDisposed || !this.memoryCaptureEnabled(taskId)) return;
-        let extract = false;
-        for (const turn of turns) extract = this.memoryPipeline.capture(turn).shouldExtractL1 || extract;
-        if (!extract) return;
+      onTurns: async (taskId, turns) => {
+        const extract = await this.memoryPipeline.projectCompleted(taskId, turns,
+          () => !this.memoryDisposed && this.memoryCaptureEnabled(taskId));
+        if (!extract || this.memoryDisposed) return;
         this.notifyMemoryChanged({ scope: "settings" });
         // A separate background consumer of committed evidence. It never steers or blocks Bot execution.
         void this.queuePendingMemoryExtraction([taskId]).catch(error => console.warn("[Durable] Memory extraction failed", error));
@@ -4049,29 +4053,44 @@ export class AgentService {
     };
   }
 
-  listRuntimeContextSnapshots(taskId: string, limit = 50): RuntimeContextSnapshotDto[] {
+  async listRuntimeContextSnapshots(taskId: string, limit = 50): Promise<RuntimeContextSnapshotDto[]> {
     if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
+    await this.runtimeSnapshots.flush();
+    const page = await this.runtimeAuditReader?.snapshots(taskId, limit);
+    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
+    if (page) {
+      try { return decodeRuntimeSnapshotPage(page); }
+      catch { /* retain the host reader if the native page is invalid */ }
+    }
     return this.runtimeSnapshots.list(taskId, limit);
   }
 
-  getTaskDiagnostics(taskId: string, limit?: number, offset = 0): TaskDiagnosticsDto {
+  async getTaskDiagnostics(taskId: string, limit?: number, offset = 0): Promise<TaskDiagnosticsDto> {
     if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    return this.taskDiagnostics.list(taskId, limit, offset);
+    await this.taskDiagnostics.flush();
+    const diagnostics = await this.runtimeAuditReader?.diagnostics(taskId, limit, offset);
+    if (!this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
+    return diagnostics?.taskId === taskId ? diagnostics : this.taskDiagnostics.list(taskId, limit, offset);
   }
 
   getTaskFailuresForDiagnosis(taskId: string) {
     return this.executionFailures.list(taskId, { includeDismissed: true, limit: 5 });
   }
 
-  clearRuntimeContextSnapshots(taskId?: string): number {
-    if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    return this.runtimeSnapshots.clear(taskId);
+  async inspectSavedRuntimeContext(taskId: string): Promise<RuntimeContextInspectionDto> {
+    await this.runtimeSnapshots.flush();
+    return this.inspectRuntimeContext(taskId);
   }
 
-  clearRuntimeAudit(taskId?: string): import("../../shared/agent-loadout").RuntimeAuditClearResultDto {
+  async clearRuntimeContextSnapshots(taskId?: string): Promise<number> {
     if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
-    const runtimeSnapshots = this.runtimeSnapshots.clear(taskId);
+    return this.runtimeSnapshots.clearSaved(taskId);
+  }
+
+  async clearRuntimeAudit(taskId?: string): Promise<import("../../shared/agent-loadout").RuntimeAuditClearResultDto> {
+    if (taskId && !this.db.getTask(taskId)) throw new Error(`任务不存在：${taskId}`);
     const loadoutObservations = this.loadoutObservations.clear(taskId);
+    const runtimeSnapshots = await this.runtimeSnapshots.clearSaved(taskId);
     return { runtimeSnapshots, loadoutObservations, total: runtimeSnapshots + loadoutObservations };
   }
 
@@ -4638,7 +4657,8 @@ export class AgentService {
   listKernelMemory(request?: import("../../shared/memory-kernel").MemoryListRequest | number) {
     return this.memoryService.list(request ?? {});
   }
-  listKernelMemoryTurns(request?: import("../../shared/memory-kernel").MemoryTurnListRequest) {
+  async listKernelMemoryTurns(request?: import("../../shared/memory-kernel").MemoryTurnListRequest) {
+    await this.memoryPipeline.flushCaptureWrites();
     return this.memoryService.listTurns(request ?? {});
   }
   getKernelMemoryTurn(id: string) { return this.memoryService.getTurn(id); }
@@ -4720,28 +4740,33 @@ export class AgentService {
   async extractKernelPendingTurns(): Promise<import("../../shared/memory-kernel").MemoryExtractionRunResult> {
     if (!this.settingsStore.read().memoryEnabled) throw new Error("请先开启记忆再处理待提炼对话");
     if (!this.modelRuntime) throw new Error("模型尚未就绪，请稍后重试");
+    await this.memoryPipeline.flushCaptureWrites();
     return this.queuePendingMemoryExtraction(this.memoryPipeline.turns.pendingTaskIds());
   }
 
-  deleteAllKernelMemoryTurns(): number {
-    // Clear immediately; a slow model request must not delay a user's deletion.
-    const deleted = this.memoryPipeline.turns.deleteAll();
-    this.memorySourceEpoch += 1;
-    if (deleted > 0) this.memoryService.cognition.invalidateDotsSources();
-    this.notifyMemoryChanged({ scope: "settings" });
-    return deleted;
+  deleteAllKernelMemoryTurns(): Promise<number> {
+    // Serialize with accepted originals, independently of the model extraction queue.
+    return this.memoryPipeline.withCaptureWrites(() => {
+      const deleted = this.memoryPipeline.turns.deleteAll();
+      this.memorySourceEpoch += 1;
+      if (deleted > 0) this.memoryService.cognition.invalidateDotsSources();
+      this.notifyMemoryChanged({ scope: "settings" });
+      return deleted;
+    });
   }
 
-  deleteKernelMemoryTurns(ids: readonly string[]): number {
+  async deleteKernelMemoryTurns(ids: readonly string[]): Promise<number> {
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id.trim())) {
       throw new Error("请选择有效的对话来源");
     }
-    const deleted = this.memoryPipeline.turns.deleteMany(ids);
-    if (deleted > 0) {
-      this.memoryService.cognition.invalidateDotsSources();
-      this.notifyMemoryChanged({ scope: "settings" });
-    }
-    return deleted;
+    return this.memoryPipeline.withCaptureWrites(() => {
+      const deleted = this.memoryPipeline.turns.deleteMany(ids);
+      if (deleted > 0) {
+        this.memoryService.cognition.invalidateDotsSources();
+        this.notifyMemoryChanged({ scope: "settings" });
+      }
+      return deleted;
+    });
   }
 
   /** One writer for automatic capture, manual catch-up and retries. Read batches only after acquiring the queue. */
@@ -5820,6 +5845,13 @@ export class AgentService {
     // Do not replay old Bot schedules after system resume.
   }
 
+  async closeAuditWrites(): Promise<void> {
+    await Promise.all([
+      this.taskDiagnostics.closeWrites(), this.runtimeSnapshots.closeWrites(), this.usageStats.closeWrites(),
+      this.memoryPipeline.closeCaptureWrites(),
+    ]);
+  }
+
   dispose(): void {
     this.goalContinuations?.dispose();
     this.builtinCapabilities.speechStreams.close();
@@ -5877,7 +5909,7 @@ export class AgentService {
     this.pendingMemoryTurns.delete(assistantMessageId);
     const model = session.model;
     if (!model || !this.settingsStore.read().memoryEnabled) return;
-    this.queueMemoryExtraction({
+    void this.queueMemoryExtraction({
       ...pending,
       assistantMessageId,
       assistantText: latestAssistantText(session.messages),
@@ -5886,7 +5918,7 @@ export class AgentService {
     });
   }
 
-  private queueMemoryExtraction(input: {
+  private async queueMemoryExtraction(input: {
     taskId: string;
     spaceId?: string;
     userMessageId?: string;
@@ -5895,13 +5927,13 @@ export class AgentService {
     assistantText: string;
     procedureExecution?: import("../../shared/memory-kernel").MemoryProcedureExecutionDto;
     model: NonNullable<AgentSession["model"]>;
-  }): void {
+  }): Promise<void> {
     if (this.memoryDisposed || !this.memoryCaptureEnabled(input.taskId)) return;
     const task = this.db.getTask(input.taskId);
-    let decision: ReturnType<MemoryPipelineManager["capture"]>;
+    let created: boolean;
     try {
-      // L0 is captured synchronously at the completed-turn boundary. Heavy cognition may queue, raw evidence may not.
-      decision = this.memoryPipeline.capture({
+      // Persist the original before scheduling extraction. The capture queue is independent of model requests.
+      created = await this.memoryPipeline.captureCompleted({
         taskId: input.taskId,
         sessionId: task?.sessionFile ?? undefined,
         userMessageId: input.userMessageId,
@@ -5914,8 +5946,9 @@ export class AgentService {
       console.warn("[AgentService] L0 memory capture failed", error);
       return;
     }
+    if (this.memoryDisposed) return;
     this.notifyMemoryChanged({ scope: "settings" });
-    if (decision.shouldExtractL1) {
+    if (created) {
       void this.queuePendingMemoryExtraction([input.taskId], input.model)
         .catch((error) => console.warn("[AgentService] memory extraction queue failed", error));
     }

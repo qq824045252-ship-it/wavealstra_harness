@@ -87,6 +87,7 @@ import { durableInputAuditSchema, type DurableInputAudit } from "./DurableSkillP
 import { mergeContextUsage } from "../../usage/context-usage-merge";
 import { GenerationTiming, generationContentTokens } from "../../usage/generation-timing";
 import { deepseekCitationMarkdown } from "../../../shared/deepseek";
+import type { RuntimeAuditReader } from "../../platform/runtime-audit";
 
 type BotInputMetadata = DurableInputMetadata;
 
@@ -115,6 +116,7 @@ export interface DurableBotOptions {
   codeReview?: import("./DurableCodeReview").DurableCodeReview;
   /** Native passive viewer: never configure, recover, admit or settle work. */
   readOnly?: boolean;
+  passiveReader?: RuntimeAuditReader;
   directory: string;
   cwd: string;
   /** Host-persisted migration source; only an idle native store may adopt cwd. */
@@ -158,7 +160,7 @@ export interface DurableBotOptions {
   dotsRecoveryScope?: (operationId: string) => DotsRecoveryToolScope | undefined;
   hasDotsDelegation?: () => boolean;
   deliveredDotsInput?: () => string | undefined;
-  onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
+  onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void | Promise<void>;
   onDotsProgress?: (operationId: string, identity: string, at: number) => void;
   onEntries?: (entries: readonly EntryRecord[], identity: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   projectionAfterEntryId?: number;
@@ -343,7 +345,9 @@ export class DurableBotRuntime {
         return { documentRetentionMs: 0, compaction: resolveDurableCompactionSettings(initialModelWindow || 128_000, { ratio: 0.8, absoluteTokens: 200_000 }, { modelKey: initialModelKey, estimateRawContext: (options.contextManagement!.engine?.() ?? "billion-context") !== "native" }) };
       }
     } : undefined;
-    const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, { readOnly: options.readOnly });
+    const handle = options.storage ? undefined : await openDurableStorage(options.directory, ctx, {
+      readOnly: options.readOnly, reader: options.passiveReader,
+    });
     const storage = options.storage ?? handle!.storage;
     const registry = createRegistry();
     const native = [...codingTools(options.directory, options.readonlyShell), ...(options.tools ?? [])];
@@ -1651,8 +1655,13 @@ export class DurableBotRuntime {
     }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     for (const entry of fresh) {
       if (entry.head) this.contextTokens = null;
+      // Dots deliveries are stored as assistant messages without model usage.
+      if (entry.kind !== "pi.assistant") continue;
       const assistant = entry.model?.find(message => message.role === "assistant");
-      if (assistant) this.contextTokens = assistant.usage.input + assistant.usage.cacheRead + assistant.usage.cacheWrite + assistant.usage.output;
+      if (!assistant) continue;
+      const { input, cacheRead, cacheWrite, output } = assistant.usage;
+      const tokens = input + cacheRead + cacheWrite + output;
+      if (Number.isFinite(tokens) && tokens > 0) this.contextTokens = tokens;
     }
     const usedTokens = this.contextTokens;
     const queued = inbox?.items?.length ?? 0;
@@ -1721,7 +1730,7 @@ export class DurableBotRuntime {
         try {
           const turns = durableCompletedTurns(this.options.taskId ?? this.options.directory, String(this.conversation.id), this.pendingTurnEntries, nestedEntries, this.metadataByEntry, this.options.isDelegatedMemoryInput);
           if (turns.length) {
-            this.options.onTurns(turns);
+            await this.options.onTurns(turns);
             const consumed = turns.at(-1)!.entryId;
             this.pendingTurnEntries = this.pendingTurnEntries.filter(entry => entry.id > consumed);
           }

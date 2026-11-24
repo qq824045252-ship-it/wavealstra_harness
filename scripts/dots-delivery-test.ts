@@ -295,7 +295,7 @@ try {
   for (let sample = 0; sample < 60; sample++) {
     const id = "quote-board-" + ((sample * 23) % 1000).toString().padStart(4, "0");
     const start = performance.now();
-    const page = board.page({ view: "all", scope: space.id, search: id });
+    const page = await board.page({ view: "all", scope: space.id, search: id });
     assert.ok(page.rows.some(task => task.id === id), "The task board found the exact task");
     timings.push(performance.now() - start);
   }

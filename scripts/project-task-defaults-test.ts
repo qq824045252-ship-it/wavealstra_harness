@@ -76,10 +76,8 @@ function makeTask(overrides: Partial<ProjectTaskDefaultCandidate> = {}): Project
   assert.deepEqual(suggestion, { recommendedModeId: "coding", recommendedPresetId: "bugfix-test" });
 
   const design = resolveProjectTemplateTaskSuggestion({ templateId: "design-creative" }, TEMPLATES);
-  // 现行模板定义：working + web-prototype（Penpot）。旧断言期望 bot/general，与模板在 95dbe28
-  // 的变更不符（且 bot 已不再保留 general/web-prototype，见 mode-preset-test）。
-  // project-template-test 同样断言 web-prototype，是同一契约的权威来源。
-  assert.deepEqual(design, { recommendedModeId: "working", recommendedPresetId: "web-prototype" }, "设计创意推荐 working + web-prototype");
+  // Penpot tag（web-prototype）已退役：设计创意模板不再预选 tag，新建任务回落模式默认 general-office。
+  assert.deepEqual(design, { recommendedModeId: "working" }, "设计创意推荐 working（不预选已退役的 Penpot tag）");
 
   // blank 模板不提供推荐
   assert.equal(resolveProjectTemplateTaskSuggestion({ templateId: "blank" }, TEMPLATES), null);

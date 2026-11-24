@@ -42,7 +42,8 @@ import type {
   ArtifactLoadState,
 } from "../../shared/artifact-types";
 import { ArtifactStorage } from "./ArtifactStorage";
-import { ArtifactRepository } from "./ArtifactRepository";
+import { ArtifactRepository, type StoredArtifactSnapshot } from "./ArtifactRepository";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import { ArtifactRegistry } from "./ArtifactRegistry";
 import { inspectArtifactFolderRelocation, type ArtifactFolderChange } from "./ArtifactFolderRelocation";
 
@@ -81,6 +82,7 @@ export class ArtifactService {
     private readonly repository: ArtifactRepository,
     private readonly registry: ArtifactRegistry,
     private readonly eventSink?: ArtifactEventSink,
+    private readonly runtimeAuditReader?: RuntimeAuditReader,
   ) {}
 
   inspectFolderRelocation(oldRoot: string, newRoot: string, taskIds: ReadonlySet<string>): ArtifactFolderChange[] {
@@ -377,6 +379,15 @@ export class ArtifactService {
   }
 
   // ---------- hydrate（§21-23/§25） ----------
+
+  async readTaskSnapshots(taskIds: readonly string[]): Promise<StoredArtifactSnapshot[]> {
+    if (taskIds.length === 0) return [];
+    const ids = [...new Set(taskIds)];
+    const native = await this.runtimeAuditReader?.artifactSnapshots(ids);
+    return (native ?? this.repository.readSnapshots(ids)).map(snapshot => ({
+      ...snapshot, artifacts: snapshot.artifacts.filter(isOutputArtifact),
+    }));
+  }
 
   /**
    * task 级 lazy hydrate：repository → registry → snapshot。

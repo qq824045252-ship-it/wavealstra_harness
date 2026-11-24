@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyModePolicy } from "../src/shared/mode-profile";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-memory-drain-"));
 process.env.USERPROFILE = sandbox;
@@ -82,11 +83,11 @@ try {
   task("automatic");
   const callsBeforeAuto = requests.length;
   for (let i = 0; i < 3; i++) {
-    agent.queueMemoryExtraction({ taskId: "automatic", userText: "好", assistantText: "完成", assistantMessageId: `auto-${i}`, model: {} });
+    await agent.queueMemoryExtraction({ taskId: "automatic", userText: "好", assistantText: "完成", assistantMessageId: `auto-${i}`, model: {} });
     await agent.memoryWriteQueue;
   }
   assert.equal(requests.length - callsBeforeAuto, 3, "third/final successful turn does not remain pending");
-  agent.queueMemoryExtraction({ taskId: "automatic", userText: "好", assistantText: "完成", assistantMessageId: "auto-2", model: {} });
+  await agent.queueMemoryExtraction({ taskId: "automatic", userText: "好", assistantText: "完成", assistantMessageId: "auto-2", model: {} });
   await agent.memoryWriteQueue;
   assert.equal(requests.length - callsBeforeAuto, 3, "duplicate completion event does not repeat extraction");
 
@@ -135,11 +136,11 @@ try {
   const l1Before = memory.stats().total;
   const eventsBeforeDelete = notifications;
   db.connection.exec("CREATE TRIGGER fail_source_delete BEFORE DELETE ON memory_turns BEGIN SELECT RAISE(ABORT, 'test deletion failure'); END");
-  assert.throws(() => agent.deleteAllKernelMemoryTurns(), /test deletion failure/);
+  await assert.rejects(() => agent.deleteAllKernelMemoryTurns(), /test deletion failure/);
   assert.equal(pipeline.turns.countByState(), l0Before, "failed deletion rolls back sources");
   assert.equal(memory.get(retained.id)?.evidence[0]?.excerpt ?? null, null, "evidence snapshot and source deletion are atomic");
   db.connection.exec("DROP TRIGGER fail_source_delete");
-  assert.equal(agent.deleteAllKernelMemoryTurns(), l0Before, "deletion works with memory disabled and includes hidden/trash/archive rows");
+  assert.equal(await agent.deleteAllKernelMemoryTurns(), l0Before, "deletion works with memory disabled and includes hidden/trash/archive rows");
   assert.ok(l0Before > 500);
   assert.equal(pipeline.turns.countByState(), 0);
   assert.equal(memory.stats().l0Turns, 0);
@@ -151,7 +152,7 @@ try {
   assert.ok(db.getTask("purge-many"), "source cleanup must not delete tasks or their chat history");
   assert.equal(pipeline.turns.getPipelineState("purge-many").capturedTurns, 0);
   assert.ok(notifications > eventsBeforeDelete);
-  assert.equal(agent.deleteAllKernelMemoryTurns(), 0, "empty delete is an idempotent no-op");
+  assert.equal(await agent.deleteAllKernelMemoryTurns(), 0, "empty delete is an idempotent no-op");
 
   // Delete immediately while one request is in flight and another is queued.
   enabled = true;
@@ -164,7 +165,7 @@ try {
   const inFlight = agent.queuePendingMemoryExtraction(["purge-race"]);
   const queued = agent.queuePendingMemoryExtraction(["purge-race"]);
   await started;
-  assert.equal(agent.deleteAllKernelMemoryTurns(), 1, "deletion does not wait for the model");
+  assert.equal(await agent.deleteAllKernelMemoryTurns(), 1, "deletion does not wait for the model");
   const afterDelete = capture("purge-race", "删除之后的新对话");
   response = async () => ({ candidates: [] });
   const fresh = agent.queuePendingMemoryExtraction(["purge-race"]);
@@ -192,13 +193,13 @@ try {
   const countBeforeSelection = pipeline.turns.countByState();
   const throwSelected = db.connection.prepare("CREATE TRIGGER fail_selected_delete BEFORE DELETE ON memory_turns WHEN OLD.id='" + selectedC.id + "' BEGIN SELECT RAISE(ABORT, 'test selected deletion failure'); END");
   throwSelected.run();
-  assert.throws(() => agent.deleteKernelMemoryTurns([selectedA.id, selectedC.id]), /test selected deletion failure/);
+  await assert.rejects(() => agent.deleteKernelMemoryTurns([selectedA.id, selectedC.id]), /test selected deletion failure/);
   assert.equal(pipeline.turns.countByState(), countBeforeSelection);
   assert.deepEqual(pipeline.turns.getPipelineState("select-partial"), partialBefore);
   assert.ok(memory.get(selectionMemory.id)?.evidence.every((item) => !item.excerpt), "failed selection rolls back evidence writes too");
   db.connection.exec("DROP TRIGGER fail_selected_delete");
   enabled = false;
-  assert.equal(agent.deleteKernelMemoryTurns([selectedA.id, selectedA.id, selectedC.id, "missing-source"]), 2);
+  assert.equal(await agent.deleteKernelMemoryTurns([selectedA.id, selectedA.id, selectedC.id, "missing-source"]), 2);
   assert.equal(pipeline.turns.countByState(), countBeforeSelection - 2);
   assert.equal(pipeline.turns.get(selectedA.id), undefined);
   assert.equal(pipeline.turns.get(selectedC.id), undefined);
@@ -209,10 +210,10 @@ try {
   const selectionEvidence = memory.get(selectionMemory.id)!.evidence;
   assert.match(selectionEvidence.find((item) => item.refId === selectedA.id)?.excerpt ?? "", /删除选中 A/);
   assert.equal(selectionEvidence.find((item) => item.refId === unselected.id)?.excerpt ?? null, null, "unselected evidence is untouched");
-  assert.equal(agent.deleteKernelMemoryTurns([]), 0);
-  assert.equal(agent.deleteKernelMemoryTurns([selectedA.id]), 0);
-  assert.throws(() => agent.deleteKernelMemoryTurns(null), /有效的对话来源/);
-  assert.throws(() => agent.deleteKernelMemoryTurns([42]), /有效的对话来源/);
+  assert.equal(await agent.deleteKernelMemoryTurns([]), 0);
+  assert.equal(await agent.deleteKernelMemoryTurns([selectedA.id]), 0);
+  await assert.rejects(() => agent.deleteKernelMemoryTurns(null), /有效的对话来源/);
+  await assert.rejects(() => agent.deleteKernelMemoryTurns([42]), /有效的对话来源/);
 
   // A mixed in-flight batch restarts with survivors; unrelated queued work continues normally.
   enabled = true;
@@ -234,7 +235,7 @@ try {
     const mixedRun = agent.queuePendingMemoryExtraction([mixedId]);
     const unrelatedRun = agent.queuePendingMemoryExtraction([otherId]);
     await extractionStarted;
-    assert.equal(agent.deleteKernelMemoryTurns([removed.id]), 1);
+    assert.equal(await agent.deleteKernelMemoryTurns([removed.id]), 1);
     const callsBeforeRestart = requests.length;
     response = async () => ({ candidates: [] });
     settleOld();
@@ -316,7 +317,7 @@ try {
       });
       agent.settingsStore.setTaskConnectorIds = () => {};
       const send = agent.prepareDurableTask({
-        taskId: "foreground-send", userMessageId: "fast-send", assistantMessageId: "fast-answer", text: "继续",
+        taskId: "foreground-send", userMessageId: "fast-send", assistantMessageId: "fast-answer", text: "继续", modelId: "test/model",
       });
       const admitted = await Promise.race([send, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("foreground send waited for background memory model")), 500);
@@ -337,6 +338,68 @@ try {
     }
   }
   console.log("memory-extraction-lifecycle-test: PASS (bulk/selected deletion, atomic rollback, exact scope, preserved memories, and safe in-flight/queued extraction and projection generation)");
+  if (process.argv.includes("--native")) {
+    const executable = locateRuntimeAudit(process.cwd());
+    assert(executable, "native capture fixture requires the resident helper");
+    const nativeDb = new AppDatabase(join(sandbox, "capture.db"), { runtimeAuditExecutable: executable });
+    try {
+      const writer = new MemoryPipelineManager(nativeDb);
+      const taskId = "completed-durable";
+      nativeDb.upsertTask({ id: taskId, title: "Durable fixture", updatedAt: 1 });
+      nativeDb.connection.exec(`CREATE TABLE durable_bot_memory_projection (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE, entry_id INTEGER NOT NULL
+      )`);
+      const through = () => (nativeDb.connection.prepare("SELECT entry_id FROM durable_bot_memory_projection WHERE task_id=?")
+        .get(taskId) as { entry_id: number } | undefined)?.entry_id;
+      const turn = { taskId, userText: "\uFEFF 记录🧪 \t", assistantText: " 已完成。\r\n", capturedAt: 7 };
+      const originals = [
+        { ...turn, entryId: 11, assistantMessageId: "durable-11" },
+        { ...turn, entryId: 17, assistantMessageId: "durable-17", skipCapture: true },
+      ];
+      nativeDb.connection.pragma("query_only = ON");
+      assert.equal(await writer.captureCompleted(turn), true);
+      assert.equal(await writer.captureCompleted({ ...turn, userText: "记录🧪", assistantText: "已完成。" }), false);
+      assert.equal(await writer.projectCompleted(taskId, originals, () => true), true);
+      assert.equal(await writer.projectCompleted(taskId, originals, () => true), false);
+      assert.deepEqual(writer.turns.listPending(taskId).map(row => [row.userText, row.assistantText, row.assistantMessageId]), [
+        ["记录🧪", "已完成。", undefined], ["记录🧪", "已完成。", "durable-11"],
+      ]);
+      assert.equal(through(), 17, "skipped turns still advance the projection");
+      assert.equal(writer.turns.getPipelineState(taskId).capturedTurns, 2);
+
+      nativeDb.connection.pragma("query_only = OFF");
+      nativeDb.connection.exec(`CREATE TRIGGER reject_capture_checkpoint BEFORE UPDATE ON durable_bot_memory_projection
+        WHEN NEW.entry_id=22 BEGIN SELECT RAISE(ABORT, 'fixture rejects projection'); END`);
+      nativeDb.connection.pragma("query_only = ON");
+      await assert.rejects(() => writer.projectCompleted(taskId, [
+        { ...turn, entryId: 22, assistantMessageId: "durable-22" },
+      ], () => true));
+      assert.equal(through(), 17);
+      assert.equal(writer.turns.getByAssistantMessageId("durable-22"), undefined);
+      assert.equal(writer.turns.getPipelineState(taskId).capturedTurns, 2);
+
+      nativeDb.connection.pragma("query_only = OFF");
+      nativeDb.connection.exec("DROP TRIGGER reject_capture_checkpoint");
+      const beforePurge = writer.projectCompleted(taskId, [
+        { ...turn, entryId: 22, assistantMessageId: "durable-22" },
+      ], () => true);
+      const purge = writer.withCaptureWrites(() => writer.turns.deleteAll());
+      assert.equal(await beforePurge, true);
+      assert.equal(await purge, 3, "deletion orders after a previously accepted capture");
+      nativeDb.connection.pragma("query_only = ON");
+      assert.equal(await writer.projectCompleted(taskId, originals, () => true), false);
+      assert.equal(writer.turns.countByState(), 0, "replaying a deleted durable original cannot restore it");
+      assert.equal(through(), 22);
+      const closingTurn = writer.captureCompleted(turn);
+      await writer.closeCaptureWrites();
+      assert.equal(await closingTurn, true);
+      assert.equal(await writer.captureCompleted({ ...turn, userText: "after close" }), false);
+      console.log("PASS Rust memory capture, replay, atomic rollback, deletion ordering and shutdown");
+    } finally {
+      await nativeDb.runtimeAuditReader?.close();
+      nativeDb.close();
+    }
+  }
 } finally {
   db.close();
   rmSync(sandbox, { recursive: true, force: true });

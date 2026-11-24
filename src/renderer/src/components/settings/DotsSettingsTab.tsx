@@ -5,13 +5,14 @@ import type { AppSettingsDto, ModelInfoDto, SpaceDto } from "@shared/agent-ipc";
 import { DOTS_TASK_ID, dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import AnswerRoutingTab from "./AnswerRoutingTab";
+import DotsGoogleSettings from "./DotsGoogleSettings";
 import DotsPromptSection from "./DotsPromptSection";
 import MemoryKernelExplorer from "./MemoryKernelExplorer";
 import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import "./DotsSettingsTab.css";
 import "./Memory.css";
 
-const sections = ["调度", "提示词", "模型与记忆", "专属记忆", "读取额度", "跟进与空间", "工具与操作"] as const;
+const sections = ["调度", "提示词", "模型与记忆", "专属记忆", "读取额度", "跟进与空间", "工具与操作", "常驻能力"] as const;
 const dotsMemoryScope = { scopeType: "task", scopeId: DOTS_TASK_ID } as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
 const memoryWrites = new Set<DotsOperation>(["memory_create", "memory_update", "memory_promote", "memory_forget"]);
@@ -115,6 +116,8 @@ export default function DotsSettingsTab() {
     {!settings ? (!error && <p role="status">正在读取 Dots 设置…</p>) : !settings.dotsSettingsRuntime ?
       <p role="alert">当前运行的 MyBuddy 主进程还不支持这些设置。请完全退出并重开 MyBuddy。</p> : <>
       <fieldset disabled={saving}>
+      {section === "常驻能力" && <DotsGoogleSettings rules={prefs.google}
+        onSave={(source, rule) => void save(source === "gmail" ? "邮箱设置" : "日历设置", { google: { ...prefs.google, [source]: rule } })} />}
       {section === "模型与记忆" && <>
         <SettingsSection title="对话模型">
           <SettingsSelect label="Dots 使用的模型" value={prefs.modelId ?? ""} onChange={e => void save("对话模型", { modelId: e.target.value || null })}>

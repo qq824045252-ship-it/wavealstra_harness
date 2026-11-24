@@ -12,6 +12,7 @@ import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/App
 import { LibraryService } from "../src/main/library/LibraryService";
 import { atomicWriteFileSync, assertManagedPathSafe, sha256File } from "../src/main/library/library-file-io";
 import { libraryNotesBackup } from "../src/main/library/library-note-backup";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
 import { assemblePrompt } from "../src/main/agent/PromptAssembly";
 import { emptyModePolicy, type ModeProfileDto } from "../src/shared/mode-profile";
@@ -25,6 +26,62 @@ const db = new AppDatabase(join(root, "app.db"));
 const libraryRoot = join(root, "library");
 const service = new LibraryService(db, { libraryRoot });
 const pendingAsyncChecks: Promise<void>[] = [];
+
+pendingAsyncChecks.push((async () => {
+  const useNative = process.argv.includes("--native");
+  const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (useNative) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+  const catalogDb = new AppDatabase(join(root, "note-catalog.db"), { runtimeAuditExecutable });
+  const catalog = new LibraryService(catalogDb, { libraryRoot: join(root, "note-catalog") });
+  const personal = { type: "personal" as const };
+  const project = { type: "project" as const, projectId: "p-catalog" };
+  try {
+    assert.equal((await catalog.readSnapshot({ owner: personal })).spaces.length, 0);
+    catalogDb.connection.exec("INSERT INTO projects(id,name,created_at,updated_at) VALUES ('p-catalog','项目验收',1,1)");
+    const own = catalog.ensureOwnedSpace(personal);
+    const folder = catalog.createCollection({ spaceId: own.id, name: "笔记分类" });
+    const projectSpace = catalog.ensureOwnedSpace(project);
+    const secret = catalog.createItem({ spaceId: projectSpace.id, kind: "markdown", title: "项目笔记", content: "# Project" });
+    const note = catalog.createItem({ spaceId: own.id, collectionId: folder.id, kind: "markdown", title: "个人笔记", content: "版本一" });
+    catalog.writeContent({ id: note.id, content: "版本二" });
+    catalog.writeContent({ id: note.id, content: "版本三" });
+    catalog.setNoteMetadata(personal, note.id, { tags: ["测试", "研究"], pinned: true });
+    catalog.markVisited(note.id);
+    catalog.markVisited(secret.id);
+
+    const visible = await catalog.readSnapshot({ owner: personal, spaceId: own.id });
+    const loaded = visible.items.find(item => item.id === note.id);
+    assert.deepEqual(visible.collections.map(entry => [entry.id, entry.name]), [[folder.id, "笔记分类"]]);
+    assert.deepEqual([loaded?.tags, loaded?.pinned, loaded?.collectionId], [["测试", "研究"], true, folder.id]);
+    assert(visible.recent.some(entry => entry.id === note.id));
+    assert(!visible.items.some(entry => entry.id === secret.id) && !visible.recent.some(entry => entry.id === secret.id));
+    assert.equal(visible.storage.usedBytes, visible.items.reduce((sum, entry) => sum + entry.sizeBytes, 0));
+    const ownedProject = await catalog.readSnapshot({ owner: project });
+    assert.deepEqual(ownedProject.items.map(entry => entry.title), ["项目笔记"]);
+    assert.equal(ownedProject.spaces[0]?.projectName, "项目验收");
+    assert.deepEqual((await catalog.readSnapshot({ owner: project, itemId: note.id })).items, []);
+    assert.deepEqual((await catalog.readSnapshot({ owner: personal, spaceId: projectSpace.id })).spaces, []);
+    const exact = await catalog.readSnapshot({ owner: personal, itemId: note.id });
+    assert.deepEqual(exact.items.map(entry => entry.title), ["个人笔记"]);
+    assert.deepEqual(exact.collections, []);
+    assert.deepEqual((await catalog.readVersions(note.id)).map(entry => entry.version), [2, 1]);
+
+    catalog.setNoteTrashed(project, [secret.id], true);
+    catalog.setNoteTrashed(personal, [note.id], true);
+    assert.deepEqual((await catalog.readTrashedNotes(personal)).map(entry => [entry.title, entry.tags]), [
+      ["个人笔记", ["测试", "研究"]],
+    ]);
+    assert.deepEqual((await catalog.readSnapshot({ owner: personal, itemId: note.id })).items, []);
+    await assert.rejects(catalog.readVersions(note.id), /笔记已不可用/);
+    catalog.setNoteTrashed(personal, [note.id], false);
+    assert.deepEqual((await catalog.readVersions(note.id)).map(entry => entry.version), [2, 1]);
+    console.log("PASS note catalog, exact item reads, scoped trash and version metadata");
+  } finally {
+    await catalog.flushPendingIndexes();
+    await catalogDb.runtimeAuditReader?.close();
+    catalogDb.close();
+  }
+})());
 
 {
   assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);

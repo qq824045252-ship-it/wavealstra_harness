@@ -214,14 +214,14 @@ async function main(): Promise<void> {
     const aiUi = design.policy.presets?.find((p) => p.id === "ai-ui");
     assert(!blender && !freecad && !aiUi, "Ardot / Blender / FreeCAD Tag 已退役");
     const penpot = store.getProfile("working").policy.presets?.find((p) => p.id === "web-prototype");
-    assert(penpot?.label === "Penpot" && penpot.providerMcpIds?.includes("penpot"), "Penpot 移到办公并保留 MCP 配置");
+    assert(!penpot, "Penpot 已退役，办公不再提供");
     assert(!design.policy.presets?.some((p) => ["general", "web-prototype"].includes(p.id)), "Bot 不保留通用设计和 Penpot");
     const opendesign = design.policy.presets?.find((p) => p.id === "opendesign");
     assert(!opendesign, "OpenDesign Tag 已退役");
     // 三模式 seed 一致
-    assert(MODE_SEEDS.working.policy.presets?.length === 8, "working 出厂 8 presets");
+    assert(MODE_SEEDS.working.policy.presets?.length === 2, "working 出厂 2 presets");
     assert(MODE_SEEDS.general.policy.presets?.length === 2, "Bot 出厂 2 Tags");
-    assert(MODE_SEEDS.coding.policy.presets?.length === 8, "coding 出厂 8 presets");
+    assert(MODE_SEEDS.coding.policy.presets?.length === 6, "coding 出厂 6 presets");
   }
 
   console.log("\n== 5. buildPresetBarChips：providerMcpIds 与编辑器数据一致 ==");
@@ -266,12 +266,12 @@ async function main(): Promise<void> {
   {
     assert(isSeedPreset("coding", "code-review") === true, "coding code-review 是 seed（不可删）");
     assert(isSeedPreset("working", "general-office") === true, "working general-office 是 seed");
-    assert(isSeedPreset("working", "web-prototype") === true, "办公 Penpot 是 seed");
+    assert(isSeedPreset("working", "web-prototype") === false, "办公 Penpot 已退役");
     assert(isSeedPreset("general", "web-prototype") === false, "Bot Penpot 已移除");
     assert(isSeedPreset("general", "ai-ui") === false, "design ai-ui 已退役");
     assert(isSeedPreset("general", "opendesign") === false, "design opendesign 已退役");
     assert(isSeedPreset("coding", "custom-tag") === false, "自定义 preset 不是 seed（可删）");
-    assert(isSeedPreset("working", "project-management") === true, "working project-management 是 seed");
+    assert(isSeedPreset("working", "project-management") === false, "project-management 已退役，不再是 seed");
     assert(isSeedPreset("working", "inventory-summary") === false, "库存摘要已退役，不再是 seed");
   }
 

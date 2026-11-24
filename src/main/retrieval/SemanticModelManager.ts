@@ -17,16 +17,25 @@
  *  - explicit semantic mode: unavailable → throw/return unavailable (never hash fallback)
  */
 import { createHash } from "node:crypto";
-import { closeSync, createWriteStream, existsSync, openSync, readSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
+import { join, dirname, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { getMyBuddyDir } from "../paths";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 
 export const SEMANTIC_MODEL_ID = "BAAI/bge-m3";
 export const SEMANTIC_MODEL_VERSION = "int8-v1";
 export const SEMANTIC_DIMENSION = 1024;
 
 export type SemanticModelStatus = "not_installed" | "downloading" | "ready" | "corrupt" | "failed";
+
+export interface SemanticInstallation {
+  status: SemanticModelStatus;
+  error: string | null;
+  modelsRoot: string;
+  revision?: string | null;
+}
 
 export interface ModelManifestFile {
   name: string;
@@ -52,26 +61,20 @@ function modelDirectories(): string[] {
   return [portable];
 }
 
-function sha256File(path: string): string {
+async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
-  const buffer = Buffer.allocUnsafe(1024 * 1024);
-  const fd = openSync(path, "r");
-  try {
-    let size: number;
-    while ((size = readSync(fd, buffer)) > 0) hash.update(buffer.subarray(0, size));
-    return hash.digest("hex");
-  } finally {
-    closeSync(fd);
-  }
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
-function readManifest(root: string): ModelManifest | null {
+function readManifest(root: string): { manifest: ModelManifest; revision: string } | null {
   const mp = join(root, "manifest.json");
   if (!existsSync(mp)) return null;
   try {
-    const j = JSON.parse(readFileSync(mp, "utf8"));
+    const bytes = readFileSync(mp);
+    const j = JSON.parse(bytes.toString("utf8"));
     if (!j.modelId || !j.modelVersion || !Array.isArray(j.files)) return null;
-    return j as ModelManifest;
+    return { manifest: j as ModelManifest, revision: createHash("sha256").update(bytes).digest("hex") };
   } catch { return null; }
 }
 
@@ -79,8 +82,11 @@ export class SemanticModelManager {
   private status: SemanticModelStatus = "not_installed";
   private statusError: string | null = null;
   private downloadingPromise: Promise<void> | null = null;
-  private readonly verified = new Map<string, { mtime: number; size: number; sha: string }>();
+  private readonly verified = new Map<string, { mtime: number; ctime: number; size: number; sha: string }>();
   private selectedRoot?: string;
+  private revision?: string | null;
+  private verification?: Promise<SemanticInstallation>;
+  private installationEpoch = 0;
 
   constructor(private readonly modelsRootOverride?: string) {}
 
@@ -98,39 +104,42 @@ export class SemanticModelManager {
   getConfigPath(): string { return join(this.getModelsRoot(), "config.json"); }
   getManifestPath(): string { return join(this.getModelsRoot(), "manifest.json"); }
 
-  getStatus(): { status: SemanticModelStatus; error: string | null; modelsRoot: string } {
-    const s = this.checkSync();
-    return { status: s.status, error: s.error, modelsRoot: this.getModelsRoot() };
+  private snapshot(): SemanticInstallation {
+    return { status: this.status, error: this.statusError, modelsRoot: this.getModelsRoot(), revision: this.revision };
   }
 
-  /** Verify existing installation; returns status. Does not trigger download. */
-  checkSync(): { status: SemanticModelStatus; error: string | null } {
-    if (this.status === "downloading") return { status: this.status, error: this.statusError };
+  async getStatusAsync(reader?: RuntimeAuditReader): Promise<SemanticInstallation> {
+    if (this.status === "downloading") return this.snapshot();
+    if (this.verification) return this.verification;
+    const epoch = this.installationEpoch;
+    const { candidates, fallbackRoot } = this.verificationRoots();
+    const pending = (async () => {
+      const verified = await reader?.probeSemanticModel({
+        roots: candidates, fallbackRoot, modelId: SEMANTIC_MODEL_ID, modelVersion: SEMANTIC_MODEL_VERSION,
+        dimension: SEMANTIC_DIMENSION, requiredFiles: REQUIRED_FILES,
+      }) ?? await this.verifyOnHost(candidates, fallbackRoot);
+      if (epoch !== this.installationEpoch) return this.snapshot();
+      this.status = verified.status;
+      this.statusError = verified.error;
+      this.selectedRoot = verified.modelsRoot;
+      this.revision = verified.revision;
+      return this.snapshot();
+    })();
+    this.verification = pending;
+    try { return await pending; }
+    finally { if (this.verification === pending) this.verification = undefined; }
+  }
+
+  private verificationRoots(): { candidates: string[]; fallbackRoot: string } {
     const roots = this.directories();
-    let firstError: { root: string; detail: string } | undefined;
     const preferred = this.status === "ready" && this.selectedRoot && roots.includes(this.selectedRoot) ? this.selectedRoot : undefined;
-    const candidates = preferred ? [preferred, ...roots.filter(root => root !== preferred)] : roots;
-    for (const root of candidates) {
-      if (!existsSync(join(root, "manifest.json")) && !REQUIRED_FILES.some(name => existsSync(join(root, name)))) continue;
-      try {
-        this.verifyRoot(root);
-        this.selectedRoot = root;
-        this.status = "ready";
-        this.statusError = null;
-        return { status: this.status, error: null };
-      } catch (error) {
-        firstError ??= { root, detail: error instanceof Error ? error.message : String(error) };
-      }
-    }
-    this.selectedRoot = firstError?.root ?? roots.at(-1);
-    this.status = firstError ? "corrupt" : "not_installed";
-    this.statusError = firstError?.detail ?? null;
-    return { status: this.status, error: this.statusError };
+    return { candidates: preferred ? [preferred, ...roots.filter(root => root !== preferred)] : roots, fallbackRoot: roots.at(-1)! };
   }
 
-  private verifyRoot(root: string): void {
-    const manifest = readManifest(root);
-    if (!manifest) throw new Error("manifest.json 缺失或无法读取");
+  private readModelManifest(root: string): { manifest: ModelManifest; revision: string } {
+    const info = readManifest(root);
+    if (!info) throw new Error("manifest.json 缺失或无法读取");
+    const { manifest } = info;
     if (manifest.modelId !== SEMANTIC_MODEL_ID || manifest.modelVersion !== SEMANTIC_MODEL_VERSION || manifest.dimension !== SEMANTIC_DIMENSION) {
       throw new Error(`模型包与 ${SEMANTIC_MODEL_ID} ${SEMANTIC_MODEL_VERSION}（${SEMANTIC_DIMENSION} 维）不匹配`);
     }
@@ -139,31 +148,49 @@ export class SemanticModelManager {
         throw new Error(`manifest.json 缺少 ${name} 的 SHA-256`);
       }
     }
-    for (const entry of manifest.files) {
-      const file = join(root, entry.name);
-      if (!existsSync(file)) throw new Error(`缺少文件 ${entry.name}`);
-      const stat = statSync(file);
-      if (entry.size !== undefined && stat.size !== entry.size) throw new Error(`文件大小不匹配：${entry.name}`);
-      const sha = entry.sha256?.toLowerCase();
-      if (!sha) continue;
-      const cached = this.verified.get(file);
-      if (cached && cached.size === stat.size && cached.mtime === stat.mtimeMs && cached.sha === sha) continue;
-      if (sha256File(file) !== sha) throw new Error(`SHA-256 校验失败：${entry.name}`);
-      this.verified.set(file, { size: stat.size, mtime: stat.mtimeMs, sha });
+    return info;
+  }
+
+  private assetPath(root: string, name: string): string {
+    if (!name || isAbsolute(name) || name.split(/[\\/]/).includes("..")) {
+      throw new Error("manifest.json 包含无效的模型文件名");
     }
+    return join(root, name);
   }
 
-  /** Ensure model is ready; throws if not. Caller maps to lexical-only vs explicit unavailable. */
-  ensureAvailable(): string {
-    const chk = this.checkSync();
-    if (chk.status !== "ready") throw new Error(`semantic model unavailable: ${chk.status}${chk.error ? ` (${chk.error})` : ""}`);
-    return this.getModelPath();
+  private async verifyOnHost(candidates: string[], fallbackRoot: string): Promise<SemanticInstallation> {
+    let failed: SemanticInstallation | undefined;
+    for (const root of candidates) {
+      if (!existsSync(join(root, "manifest.json")) && !REQUIRED_FILES.some(name => existsSync(join(root, name)))) continue;
+      try {
+        const { manifest, revision } = this.readModelManifest(root);
+        for (const entry of manifest.files) await this.verifyAssetOnHost(root, entry);
+        if (readManifest(root)?.revision !== revision) throw new Error("模型清单在校验期间发生变化");
+        return { status: "ready", error: null, modelsRoot: root, revision };
+      } catch (error) {
+        failed ??= { status: "corrupt", error: error instanceof Error ? error.message : String(error), modelsRoot: root };
+      }
+    }
+    return failed ?? { status: "not_installed", error: null, modelsRoot: fallbackRoot };
   }
 
-  verify(): { ok: boolean; error?: string } {
-    const chk = this.checkSync();
-    if (chk.status === "ready") return { ok: true };
-    return { ok: false, error: chk.error ?? chk.status };
+  private async verifyAssetOnHost(root: string, entry: ModelManifestFile): Promise<void> {
+    const path = this.assetPath(root, entry.name);
+    const before = await stat(path).catch(() => { throw new Error(`缺少文件 ${entry.name}`); });
+    if (!before.isFile() || (entry.size !== undefined && before.size !== entry.size)) {
+      throw new Error(`文件大小不匹配：${entry.name}`);
+    }
+    const sha = entry.sha256?.toLowerCase();
+    if (!sha) return;
+    const cached = this.verified.get(path);
+    if (cached?.sha === sha && cached.size === before.size && cached.mtime === before.mtimeMs && cached.ctime === before.ctimeMs) return;
+    const actual = await sha256File(path);
+    const after = await stat(path);
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+      throw new Error(`模型文件在校验期间发生变化：${entry.name}`);
+    }
+    if (actual !== sha) throw new Error(`SHA-256 校验失败：${entry.name}`);
+    this.verified.set(path, { size: after.size, mtime: after.mtimeMs, ctime: after.ctimeMs, sha });
   }
 
   deleteModel(): void {
@@ -171,6 +198,9 @@ export class SemanticModelManager {
     try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
     this.status = "not_installed";
     this.statusError = null;
+    this.installationEpoch++;
+    this.verification = undefined;
+    this.revision = undefined;
   }
 
   /**
@@ -181,6 +211,9 @@ export class SemanticModelManager {
   async download(manifestUrl: string, opts?: { signal?: AbortSignal }): Promise<void> {
     if (this.downloadingPromise) return this.downloadingPromise;
     const root = this.getModelsRoot();
+    this.installationEpoch++;
+    this.verification = undefined;
+    this.revision = undefined;
     this.status = "downloading";
     this.statusError = null;
     this.downloadingPromise = (async () => {
@@ -203,7 +236,7 @@ export class SemanticModelManager {
           mkdirSync(dirname(tmpPath), { recursive: true });
           await downloadFile(url, tmpPath, opts?.signal);
           if (f.sha256) {
-            const actual = sha256File(tmpPath);
+            const actual = await sha256File(tmpPath);
             if (actual !== f.sha256.toLowerCase()) throw new Error(`sha256 mismatch after download: ${f.name}`);
           }
           if (f.size) {

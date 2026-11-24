@@ -22,6 +22,9 @@ import { GoogleWorkspaceWriteIpc } from "../shared/google-workspace-write";
 import { googleWorkspaceWriteService } from "./connectors/GoogleWorkspaceWriteService";
 import { GoogleWorkspaceIpc } from "../shared/google-workspace";
 import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
+import { DotsGoogleIpc, normalizeDotsGoogleRules, type DotsGoogleAccount, type DotsGoogleStatus } from "../shared/dots-google";
+import { DotsGoogleAccounts } from "./dots/DotsGoogleAccounts";
+import { DotsGoogleMonitor } from "./dots/DotsGoogleMonitor";
 import "./agent-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
@@ -91,7 +94,7 @@ import type {
   SaveBuiltinCapabilitySettingsRequest,
   WebSearchConfigDto,
 } from "../shared/agent-ipc";
-import { ArtifactDomainIpc } from "../shared/artifact-ipc";
+import { ARTIFACT_SNAPSHOT_BATCH_SIZE, ArtifactDomainIpc } from "../shared/artifact-ipc";
 import { ConversationRuntimeIpc } from "../shared/conversation-runtime";
 import type { ConversationInteractionRespondRequest } from "../shared/conversation-interaction";
 import type { ConversationGoalCreateRequest, ConversationGoalUpdateRequest } from "../shared/conversation-goal";
@@ -189,8 +192,10 @@ import type {
   ArtifactDomainRegisterRequest,
   ArtifactDomainRemoveRequest,
   ArtifactDomainTaskRequest,
+  ArtifactSnapshotBatchRequest,
 } from "../shared/artifact-ipc";
 import { AgentService } from "./agent/AgentService";
+import { locateRuntimeAudit } from "./platform/runtime-audit";
 import { armStartupReport, onStartupReport, startupMark, startupMarkEnabled } from "./perf/startupMarks";
 import { createTaskInteractionNotificationListener, publishTaskLifecycleNotification } from "./notification/TaskLifecycleNotifications";
 import { ExternalAgentRuntime } from "./external-agent/ExternalAgentRuntime";
@@ -204,6 +209,7 @@ import {
 import {
   createArtifactDomain,
   ensureTaskLegacyMigrated,
+  readArtifactSnapshotBatch,
   type LegacyArtifactSource,
 } from "./artifact/ArtifactDomainSetup";
 import { artifactPreviewHost } from "./artifact/ArtifactPreviewHost";
@@ -384,6 +390,8 @@ let conversationBranchService: ConversationBranchService;
 /** 扩展栏终端宿主（按 taskId 保活 PTY；App 退出时 dispose） */
 let terminalHost: TerminalHost | null = null;
 let cronService: CronService;
+let dotsGoogleAccounts: DotsGoogleAccounts;
+let dotsGoogleMonitor: DotsGoogleMonitor;
 let gatewayService: GatewayService;
 let memoryGatewayController: MemoryGatewayController | null = null;
 let externalCliMemoryBridge: ExternalCliMemoryBridge | null = null;
@@ -743,7 +751,7 @@ function createWindow(): void {
 
 function registerIpc(): void {
   registerFileDialogIpc();
-  const taskBoard = new TaskBoardRepository(db.connection);
+  const taskBoard = new TaskBoardRepository(db.connection, db.runtimeAuditReader);
   const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
     () => broadcastToWindows(DotsIpc.changed, null),
     () => resolveDotsPreferences(agentService.getAppSettings().dotsSettings).summaryIntervalSeconds * 1_000);
@@ -1451,6 +1459,43 @@ function registerIpc(): void {
   ipcMain.handle(GoogleWorkspaceIpc.searchMail, (_event, request) => googleWorkspaceService.searchMail(request));
   ipcMain.handle(GoogleWorkspaceIpc.readMail, (_event, request) => googleWorkspaceService.readMail(request));
   ipcMain.handle(GoogleWorkspaceIpc.listEvents, (_event, request) => googleWorkspaceService.listEvents(request));
+  dotsGoogleAccounts = new DotsGoogleAccounts(join(getMyBuddyDir(), "dots", "google"),
+    url => shell.openExternal(url),
+    async () => {
+      const result = await dialog.showOpenDialog({
+        title: "选择 Google 桌面应用的 OAuth 客户端配置",
+        filters: [{ name: "OAuth 客户端 JSON", extensions: ["json"] }],
+        properties: ["openFile"],
+      });
+      return result.canceled ? undefined : result.filePaths[0];
+    },
+    app.getPath("appData"),
+  );
+  dotsGoogleMonitor = new DotsGoogleMonitor(dotsGoogleAccounts,
+    () => normalizeDotsGoogleRules(agentService.getAppSettings().dotsSettings?.google),
+    () => agentService.getAppSettings().dotsSettings?.followupMode === "paused",
+    notice => notificationService.publish({
+      type: "reminder.due", level: "info", title: notice.title, body: notice.body,
+      sourceType: "automation", sourceId: "dots-google", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
+    }),
+  );
+  const googleStatus = (): DotsGoogleStatus => ({ accounts: dotsGoogleAccounts.status(), sources: dotsGoogleMonitor.status() });
+  const googleAccount = (value: unknown): DotsGoogleAccount => {
+    if (value !== "personal" && value !== "company") throw new Error("未知的 Google 账号位置。");
+    return value;
+  };
+  ipcMain.handle(DotsGoogleIpc.status, googleStatus);
+  ipcMain.handle(DotsGoogleIpc.login, async (_event, value) => {
+    await dotsGoogleAccounts.login(googleAccount(value));
+    dotsGoogleMonitor.refresh();
+    return googleStatus();
+  });
+  ipcMain.handle(DotsGoogleIpc.check, async (_event, value) => {
+    await dotsGoogleAccounts.check(googleAccount(value));
+    dotsGoogleMonitor.refresh();
+    return googleStatus();
+  });
+  ipcMain.handle(DotsGoogleIpc.cancelLogin, (_event, value) => dotsGoogleAccounts.cancel(googleAccount(value)));
   ipcMain.handle(AgentIpc.listConnectors, () => agentService.listConnectors());
   ipcMain.handle(AgentIpc.installConnector, (_e, id: string) =>
     agentService.installConnector(id),
@@ -1512,7 +1557,10 @@ function registerIpc(): void {
       await remoteAccessController.configure({ enabled: remoteAccessEnabled, port: remoteAccessPort, baseUrl: remoteAccessBaseUrl });
     }
     const next = await agentService.updateAppSettings(ordinary);
-    if (ordinary.dotsSettings !== undefined) broadcastToWindows(DotsIpc.changed, null);
+    if (ordinary.dotsSettings !== undefined) {
+      dotsGoogleMonitor?.refresh();
+      broadcastToWindows(DotsIpc.changed, null);
+    }
     // 关闭到托盘开关实时生效
     trayService?.setCloseToTray(next.closeToTray !== false);
     trayService?.refreshMenu();
@@ -1603,23 +1651,23 @@ function registerIpc(): void {
   // 用量统计（账户面板）：主进程 usage_events 事实表查询
   const clampRange = (rangeDays: number): number => Math.max(1, Math.min(3650, Math.round(rangeDays) || 7));
   ipcMain.handle(UsageIpc.summary, (_e, rangeDays: number) =>
-    agentService.usageStats.summarize(clampRange(rangeDays)),
+    agentService.usageStats.readReport({ kind: "summary", rangeDays: clampRange(rangeDays) }),
   );
   ipcMain.handle(UsageIpc.drilldown, (_e, rangeDays: number) =>
-    agentService.usageStats.drilldown(clampRange(rangeDays)),
+    agentService.usageStats.readReport({ kind: "models", rangeDays: clampRange(rangeDays) }),
   );
   ipcMain.handle(UsageIpc.trend, (_e, rangeDays: number) =>
-    agentService.usageStats.trend(clampRange(rangeDays)),
+    agentService.usageStats.readReport({ kind: "trend", rangeDays: clampRange(rangeDays) }),
   );
   ipcMain.handle(UsageIpc.heatmap, (_e, year: number) =>
-    agentService.usageStats.heatmap(Number.isFinite(year) ? year : new Date().getFullYear()),
+    agentService.usageStats.readReport({ kind: "heatmap", year: Number.isFinite(year) ? year : new Date().getFullYear() }),
   );
-  ipcMain.handle(UsageIpc.monthly, () => agentService.usageStats.monthly());
+  ipcMain.handle(UsageIpc.monthly, () => agentService.usageStats.readReport({ kind: "monthly" }));
   ipcMain.handle(UsageIpc.exportCsv, (_e, rangeDays: number) =>
-    agentService.usageStats.exportCsv(clampRange(rangeDays)),
+    agentService.usageStats.exportCsvAsync(clampRange(rangeDays)),
   );
   ipcMain.handle(UsageIpc.dashboard, (_e, rangeDays: number) =>
-    agentService.usageStats.dashboard(clampRange(rangeDays)),
+    agentService.usageStats.readReport({ kind: "dashboard", rangeDays: clampRange(rangeDays) }),
   );
   ipcMain.handle(AgentIpc.loadTaskHistory, async (_e, taskId: string, beforeEntryId?: import("../shared/agent-ipc").TaskHistoryTarget) => {
     const [nativeHistory, externalHistory] = await Promise.all([
@@ -1670,7 +1718,7 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.openModeFile, (_e, id, target) => agentService.openModeFile(id, target));
   ipcMain.handle(AgentIpc.assembleModePreview, (_e, req) => agentService.assembleModePreview(req));
   ipcMain.handle(AgentIpc.inspectRuntimeContext, (_e, taskId: string) =>
-    agentService.inspectRuntimeContext(taskId),
+    agentService.inspectSavedRuntimeContext(taskId),
   );
   ipcMain.handle(AgentIpc.getTaskDiagnostics, (_e, taskId: string, limit?: number, offset?: number) =>
     agentService.getTaskDiagnostics(taskId, limit, offset),
@@ -1691,9 +1739,9 @@ function registerIpc(): void {
   // DB
   ipcMain.handle(DbIpc.listSpaces, () => agentService.botWorkspaceNavigation().spaces);
   // Renderer 只接收正常/显式归档任务；安全回收（trashed）任务保留在 DB 至 purge，但不应重启后“复活”。
-  ipcMain.handle(DbIpc.listTasks, () => db.listNonTrashedTasks());
+  ipcMain.handle(DbIpc.listTasks, () => db.readNonTrashedTasks());
   ipcMain.handle(DbIpc.listProjects, (_e, includeArchived?: boolean) =>
-    projectService.list(includeArchived === true),
+    projectService.readList(includeArchived === true),
   );
   ipcMain.handle(DbIpc.getProject, (_e, id: string) => projectService.get(id));
   ipcMain.handle(DbIpc.createProject, (_e, request: ProjectCreateRequest) => {
@@ -1758,7 +1806,9 @@ function registerIpc(): void {
       return { ok: true, value: await runLibraryNoteOperation(libraryService, browserHost, BrowserWindow.fromWebContents(event.sender), request) };
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
   });
-  ipcMain.handle(LibraryIpc.snapshot, () => libraryService.snapshot());
+  ipcMain.handle(LibraryIpc.snapshot, (_e, request?: import("../shared/library-ipc").LibrarySnapshotRequest) =>
+    libraryService.readSnapshot(request),
+  );
   ipcMain.handle(LibraryIpc.listItems, (_e, req: LibraryListItemsRequest) =>
     libraryService.listItems(req.spaceId, req.collectionId),
   );
@@ -1796,9 +1846,10 @@ function registerIpc(): void {
   ipcMain.handle(LibraryIpc.writeContent, (_e, req: LibraryWriteContentRequest) =>
     libraryResult(() => libraryService.writeContent(req)),
   );
-  ipcMain.handle(LibraryIpc.importFile, (_e, req: LibraryImportFileRequest) =>
-    libraryResult(() => libraryService.importFile(req)),
-  );
+  ipcMain.handle(LibraryIpc.importFile, async (_e, req: LibraryImportFileRequest) => {
+    try { return { ok: true as const, value: await libraryService.importFileAsync(req) }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
   ipcMain.handle(LibraryIpc.pickAndImport, async (_e, req: { spaceId: string; collectionId?: string | null }) => {
     const win = BrowserWindow.getFocusedWindow();
     const pickOpts = {
@@ -1811,9 +1862,10 @@ function registerIpc(): void {
     const result = await showOpenFileDialog(win, pickOpts);
     if (result.canceled || result.filePaths.length === 0) return { ok: true as const, value: [] as import("../shared/library-ipc").LibraryItemDto[] };
     try {
-      const items = result.filePaths.map((sourcePath) =>
-        libraryService.importFile({ spaceId: req.spaceId, collectionId: req.collectionId, sourcePath }),
-      );
+      const items = [];
+      for (const sourcePath of result.filePaths) {
+        items.push(await libraryService.importFileAsync({ spaceId: req.spaceId, collectionId: req.collectionId, sourcePath }));
+      }
       return { ok: true as const, value: items };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
@@ -1944,7 +1996,7 @@ function registerIpc(): void {
     projectService.createPost(request),
   );
   ipcMain.handle(DbIpc.deleteProjectPost, (_e, id: string) => projectService.deletePost(id));
-  ipcMain.handle(DbIpc.listProjectTodos, (_e, projectId: string) => projectService.listTodos(projectId));
+  ipcMain.handle(DbIpc.listProjectTodos, (_e, projectId: string) => projectService.readTodos(projectId));
   ipcMain.handle(DbIpc.createProjectTodo, (_e, request: ProjectTodoCreateRequest) => {
     try {
       const todo = projectService.createTodo(request);
@@ -2001,10 +2053,10 @@ function registerIpc(): void {
     } catch {
       /* 建议层失败不影响注意度 */
     }
-    return attentionTracker.getAttention(projectId);
+    return attentionTracker.readAttention(projectId);
   });
   ipcMain.handle(DbIpc.listProjectEvents, (_e, projectId: string, limit?: number) =>
-    projectService.listProjectEvents(projectId, limit),
+    projectService.readProjectEvents(projectId, limit),
   );
   ipcMain.handle(DbIpc.promoteProjectEvent, (_e, request: import("../shared/project-domain").ProjectEventPromoteRequest) => {
     // UI 路径固定 promotedBy=user（不信任 renderer 声明）；Agent 路径走扩展（固定 agent）
@@ -2048,8 +2100,8 @@ function registerIpc(): void {
     broadcastToWindows(DbIpc.projectEventsChanged, { projectId });
     return updated;
   });
-  ipcMain.handle(DbIpc.acknowledgeProjectAttention, (_e, projectId: string) => {
-    const digest = attentionTracker.acknowledge(projectId);
+  ipcMain.handle(DbIpc.acknowledgeProjectAttention, async (_e, projectId: string) => {
+    const digest = await attentionTracker.acknowledgeRead(projectId);
     if (digest) broadcastToWindows(DbIpc.projectAttentionChanged, digest);
     return digest;
   });
@@ -2075,13 +2127,7 @@ function registerIpc(): void {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
-  ipcMain.handle(DbIpc.getProjectStatus, (_e, projectId: string) => {
-    try {
-      return projectService.buildStatusSnapshot(projectId);
-    } catch (err) {
-      throw new Error(err instanceof Error ? err.message : String(err));
-    }
-  });
+  ipcMain.handle(DbIpc.getProjectStatus, (_e, projectId: string) => projectService.readStatusSnapshot(projectId));
   ipcMain.handle(DbIpc.recordProjectReview, (_e, request: { projectId: string; note?: string }) => {
     try {
       const owner = (() => {
@@ -2240,10 +2286,11 @@ function registerIpc(): void {
     // 必须经 AgentService：DB 删除 + 存活会话 policy 立即内存失效（撤销后同会话不得继续放行）
     return agentService.revokeTaskWriteGrant(taskId, path);
   });
-  ipcMain.handle(DbIpc.getSemanticIndexStats, () => libraryService.semanticIndexStats);
-  ipcMain.handle(DbIpc.getSemanticModelStatus, () => {
+  ipcMain.handle(DbIpc.getSemanticIndexStats, () => libraryService.readSemanticIndexStats());
+  ipcMain.handle(DbIpc.getSemanticModelStatus, async () => {
     try {
-      return getSemanticRuntime().getModelStatus();
+      const { status, error, modelsRoot } = await getSemanticRuntime(undefined, db.runtimeAuditReader).getModelStatus();
+      return { status, error, modelsRoot };
     } catch (e) { return { status: "failed", error: String(e), modelsRoot: "" }; }
   });
   ipcMain.handle(DbIpc.getSoul, () => agentService.getSoul());
@@ -2474,7 +2521,7 @@ function registerIpc(): void {
   ipcMain.handle(MemoryIpc.reindexSemantic, (_e, limit?: number) => agentService.reindexKernelMemory(limit));
 
   // Cron
-  ipcMain.handle(CronIpc.list, () => cronService.list());
+  ipcMain.handle(CronIpc.list, () => cronService.readJobs());
   ipcMain.handle(CronIpc.runs, (_e, limit?: number) => cronService.listRuns(limit));
   ipcMain.handle(CronIpc.upsert, (_e, job: CronJobDto) => cronService.upsert(job));
   ipcMain.handle(CronIpc.setEnabled, (_e, id: string, enabled: boolean) => {
@@ -2536,6 +2583,14 @@ function registerIpc(): void {
       return { taskId: req.taskId, artifacts: [], revision: 0, state: "error", error: err instanceof Error ? err.message : String(err) };
     }
     return artifactDomainService.hydrateTask(req.taskId);
+  });
+  ipcMain.handle(ArtifactDomainIpc.snapshotBatch, (_e, req: ArtifactSnapshotBatchRequest) => {
+    const ids = req?.taskIds;
+    if (!Array.isArray(ids) || ids.length > ARTIFACT_SNAPSHOT_BATCH_SIZE ||
+        ids.some(id => typeof id !== "string" || id.length === 0)) {
+      throw new Error("任务成果批量请求无效");
+    }
+    return readArtifactSnapshotBatch(artifactDomainService, artifactLegacySource, ids);
   });
   ipcMain.handle(ArtifactDomainIpc.register, async (_e, req: ArtifactDomainRegisterRequest) => {
     // 3C：Artifact create 唯一通道（openLocalFile/openWorkspaceFile/ensureCanvasArtifact/Agent ingest）
@@ -3025,7 +3080,8 @@ app.whenReady().then(async () => {
   // TaskExecutionWorkspace 语义纠偏：目录决策先行（幂等迁移/legacy 回退）；
   // 决策结果缓存于 paths 模块，后续 getters 与本次一致。
   const workspacesMigration = migrateLegacyTaskWorkspacesDirs();
-  db = new AppDatabase();
+  const runtimeAuditExecutable = locateRuntimeAudit(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
+  db = new AppDatabase(undefined, { runtimeAuditExecutable });
   notificationService = new NotificationService(db);
   notificationService.setChangedListener((event) => {
     broadcastToWindows(NotificationIpc.changed, event);
@@ -3056,7 +3112,7 @@ app.whenReady().then(async () => {
   });
   libraryService.startSemanticIndexing();
   libraryProtocol = new LibraryProtocol(libraryService);
-  const projectRepository = new ProjectRepository(db.connection);
+  const projectRepository = new ProjectRepository(db.connection, db.runtimeAuditReader);
   const memoryKernel = new MemoryService(db);
   memoryGatewayController = new MemoryGatewayController(db, memoryKernel);
   externalCliMemoryBridge = new ExternalCliMemoryBridge(memoryGatewayController);
@@ -3072,6 +3128,7 @@ app.whenReady().then(async () => {
   // 不信任旧 timeout（系统睡眠期间 Node timer 不保证按墙钟推进；时钟跳变同样由此收敛）。
   powerMonitor.on("resume", () => {
     cronService?.resumeDotsTimers();
+    dotsGoogleMonitor?.refresh();
     cadenceEngine?.catchUp();
     cadenceEngine?.scheduleAll();
     agentService?.onSystemResume();
@@ -3173,29 +3230,14 @@ app.whenReady().then(async () => {
     setImmediate(() => {
       void agentService.usageStats
         .backfillAllTasksAsync(agentService.usageStats.listSessionFiles())
-        .then(() => {
-          try {
-            agentService.usageStats.reattributeToMyBuddyModels();
-          } catch (err) {
-            console.warn(
-              `[usage] MyBuddy 模型回写失败: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-        })
+        .then(() => agentService.usageStats.reattributeToMyBuddyModelsAsync())
         .catch((err) => console.warn(`[usage] 启动回填失败: ${err instanceof Error ? err.message : String(err)}`));
-      try {
-        agentService.usageStats.reattributeToMyBuddyModels();
-      } catch (err) {
-        console.warn(`[usage] MyBuddy 模型回写失败: ${err instanceof Error ? err.message : String(err)}`);
-      }
     });
     const subagentArchive = join(getMyBuddyDir(), "subagent", "usage-archive.jsonl");
     setImmediate(() => {
-      try {
-        agentService.usageStats.scanSubagentArchive(subagentArchive);
-      } catch (err) {
+      void agentService.usageStats.scanSubagentArchiveAsync(subagentArchive).catch(err => {
         console.warn(`[usage] subagent 归档扫描失败: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      });
     });
   } catch (err) {
     console.warn(`[usage] 启动回填调度失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -3464,7 +3506,7 @@ app.whenReady().then(async () => {
     created: (e) => remoteAccessController?.publishArtifactChanged(e.taskId),
     updated: (e) => { selectionStore?.onArtifactUpdated(e); remoteAccessController?.publishArtifactChanged(e.taskId); },
     removed: (e) => { selectionStore?.onArtifactRemoved(e); remoteAccessController?.publishArtifactChanged(e.taskId); },
-  });
+  }, db.runtimeAuditReader);
   artifactDomainService = artifactDomain.service;
   // Construct only after the real Artifact Domain exists; never capture undefined.
   conversationBranchService = new ConversationBranchService({
@@ -3608,7 +3650,7 @@ app.whenReady().then(async () => {
   // 3B.2：legacy artifact 数据源（session jsonl + artifact-index.json），首次 hydrate 时一次性迁移
   artifactLegacySource = {
     loadLegacyArtifacts: async (taskId) => {
-      const row = db.listTasks().find((t) => t.id === taskId);
+      const row = taskId === DOTS_TASK_ID ? undefined : db.getTask(taskId);
       if (!row?.sessionFile) return null;
       const history = await agentService.loadTaskHistory(taskId);
       return { artifacts: history.artifacts ?? [], cwd: history.cwd };
@@ -3725,6 +3767,12 @@ app.whenReady().then(async () => {
     console.log(`[ResidentHost] online pid=${process.pid} storage=${getMyBuddyDir()}`);
   }
 
+  setTimeout(() => {
+    void db.runtimeAuditReader?.compactSnapshots().then(migrated => {
+      if (migrated > 0) console.log(`[RuntimeAudit] Deduplicated ${migrated} saved snapshots`);
+    });
+  }, 2_000).unref();
+
   await agentService.resumePersistedTasks();
   void dotsDelegations?.recover(request => agentService.prompt(request, { durableAdmissionOnly: true }), id => {
     const task = db.getTask(id);
@@ -3737,6 +3785,7 @@ app.whenReady().then(async () => {
   dotsActions?.startFileWatches();
   startupMark("restoreDelivered");
   cronService.start();
+  dotsGoogleMonitor.start();
   startupMark("cronReady");
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
   void gatewayService.restoreChannels().finally(() => startupMark("gatewayRestored"));
@@ -3802,6 +3851,8 @@ app.on("before-quit", (event) => {
     try { trayService?.dispose(); } catch { /* best effort */ }
     dotsDelegations?.close();
     await dotsActions?.closeFileWatches();
+    dotsGoogleMonitor?.close();
+    dotsGoogleAccounts?.close();
     try { cronService?.stop(); } catch { /* best effort */ }
     try { cadenceEngine?.shutdown(); } catch { /* best effort */ }
     try { surfaceCoordinator.dispose(); } catch { /* best effort */ }
@@ -3827,6 +3878,8 @@ app.on("before-quit", (event) => {
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
     } catch { /* best effort */ }
     try { await semanticIndexStopped; } catch { /* best effort */ }
+    await agentService?.closeAuditWrites();
+    await db?.runtimeAuditReader?.close();
     // Keep the data-directory mutex held until the last database writer is closed.
     db?.close();
     hostDataLease?.release();

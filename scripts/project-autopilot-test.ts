@@ -3,7 +3,7 @@
  * 覆盖：A/B 隔离、派生规则（逾期/停滞/风险/下一步）、改绑/解绑、readonly/归档门禁、
  * 删除级联、重启一致性、工具入口 scope。真实 SQLite + service + extension execute。
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -14,6 +14,7 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { createProjectAutopilotExtension } from "../src/main/project/project-autopilot-extension";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 let passed = 0;
 function ok(cond: unknown, label: string): void {
@@ -54,8 +55,12 @@ function makeTools(projectId: string | null, permissionMode = "default"): Map<st
 }
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-autopilot-"));
-const db = new AppDatabase(join(root, "app.db"));
-const projects = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
+const projects = new ProjectService(new ProjectRepository(db.connection, db.runtimeAuditReader), new MemoryService(db, { semantic: false }));
+let reopenedDb: AppDatabase | undefined;
 
 const NOW = 1_800_000_000_000; // 固定时钟（2027-01-18 前后）
 const DAY = 24 * 3600 * 1000;
@@ -81,7 +86,11 @@ async function main(): Promise<void> {
   projects.createMemory({ projectId: "proj-a", kind: "risk", title: "供应商风险", importance: 2 }, { sourceType: "agent", sourceTaskId: "task-a1" });
   projects.createMemory({ projectId: "proj-a", kind: "open_question", title: "交付范围待确认", importance: 3 }, { sourceType: "manual" });
 
-  const snap = projects.buildStatusSnapshot("proj-a", NOW);
+  const snap = await projects.readStatusSnapshot("proj-a", NOW);
+  assert.deepEqual(snap, projects.buildStatusSnapshot("proj-a", NOW));
+  assert.deepEqual(new Set((await projects.readList()).map(project => project.id)), new Set(["proj-a", "proj-b"]));
+  assert.deepEqual((await projects.readTodos("proj-a")).find(todo => todo.id === todoOverdue.id)?.title, "逾期交付项");
+  await assert.rejects(projects.readTodos("proj-nope"), /项目不存在/);
   ok(snap.health === "red", "1. 有阻塞 → health=red");
   ok(snap.blockers.some((b) => b.source === "plan" && b.refId === todoOverdue.id && b.reason.includes("逾期")), "1b. 逾期计划项入 blockers");
   ok(snap.atRisks.some((b) => b.source === "task" && b.refId === "task-a2" && b.reason.includes("7 天")), "1c. 停滞任务入 atRisks");
@@ -95,20 +104,20 @@ async function main(): Promise<void> {
 
   /* 2. 状态变化 → 快照实时派生（无缓存） */
   projects.updateTodo({ id: todoOverdue.id, status: "done" });
-  const snap2 = projects.buildStatusSnapshot("proj-a", NOW);
+  const snap2 = await projects.readStatusSnapshot("proj-a", NOW);
   ok(snap2.blockers.every((b) => b.refId !== todoOverdue.id), "2. 逾期项完成后 blockers 即时消失（派生无缓存）");
   ok(snap2.health === "yellow" || snap2.health === "red", "2b. 停滞任务仍保持非 green");
   projects.updateTodo({ id: todoOverdue.id, status: "doing", dueAt: NOW - 5 * DAY });
 
   /* 3. A/B 隔离：B 快照不含 A 内容 */
-  const snapB = projects.buildStatusSnapshot("proj-b", NOW);
+  const snapB = await projects.readStatusSnapshot("proj-b", NOW);
   ok(snapB.tasks.total === 1 && snapB.blockers.length === 0 && snapB.plan.total === 0, "3. B 快照独立（不含 A 数据）");
 
   /* 4. review：记录 + lastReviewedAt + 门禁 */
   ok(snap.lastReviewedAt === null, "4. 初始无 review");
   assert.throws(() => projects.recordReview("proj-a", "x".repeat(501), "task:t"), /备注不能超过 500/);
   projects.recordReview("proj-a", "本周评审：跟进供应商", "task:task-a1");
-  const snapRev = projects.buildStatusSnapshot("proj-a", NOW);
+  const snapRev = await projects.readStatusSnapshot("proj-a", NOW);
   ok(snapRev.lastReviewedAt !== null, "4b. review 后 lastReviewedAt 更新（审计标记）");
   ok(projects.listReviews("proj-a").length === 1, "4c. review 历史可查");
   // review 不影响派生数据
@@ -153,9 +162,11 @@ async function main(): Promise<void> {
   db.upsertTask({ id: "task-a1", title: "A进行中任务", updatedAt: NOW - 2 * DAY, projectId: "proj-a", status: "in_progress", welcomeMode: "coding" });
 
   /* 8. 重启一致性：reviews 持久化 */
+  await db.runtimeAuditReader?.close();
   db.close();
-  const db2 = new AppDatabase(join(root, "app.db"));
-  const proj2 = new ProjectService(new ProjectRepository(db2.connection), new MemoryService(db2, { semantic: false }));
+  const db2 = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
+  reopenedDb = db2;
+  const proj2 = new ProjectService(new ProjectRepository(db2.connection, db2.runtimeAuditReader), new MemoryService(db2, { semantic: false }));
   const snapRestart = proj2.buildStatusSnapshot("proj-a", NOW);
   ok(snapRestart.lastReviewedAt !== null, "8. 重启后 review 持久（lastReviewedAt 保留）");
   ok(snapRestart.atRisks.some((b) => b.title === "供应商风险"), "8b. 重启后派生快照一致");
@@ -194,11 +205,12 @@ async function main(): Promise<void> {
   /* 11. Attention：派生 / 去重 / 确认 / 隔离 / 自动收敛 */
   const { ProjectAttentionTracker } = require("../src/main/project/ProjectAttention") as typeof import("../src/main/project/ProjectAttention");
   const tracker = new ProjectAttentionTracker(proj2);
-  const att1 = tracker.getAttention("proj-a", NOW);
+  const att1 = await tracker.readAttention("proj-a", NOW);
+  assert.deepEqual(att1, tracker.computeDigest("proj-a", NOW));
   ok(att1 !== null && att1.health === "yellow" && att1.blockerCount === 0 && att1.atRiskCount > 0, "11. 风险项目 attention=yellow，非强制 blocker");
   ok(att1!.seen === false, "11b. 初始未确认");
   ok(tracker.onChange("proj-a", NOW) === null, "11c. 无变化不重复广播（指纹去重）");
-  const acked = tracker.acknowledge("proj-a", NOW);
+  const acked = await tracker.acknowledgeRead("proj-a", NOW);
   ok(acked !== null && acked.seen === true, "11d. 确认后 seen=true");
   ok(acked!.fingerprint === att1!.fingerprint, "11e. 确认指纹与当前一致");
   // 状态变化 → 新指纹 → 重新未确认 + 广播（完成停滞任务，blocker 减少）
@@ -215,7 +227,8 @@ async function main(): Promise<void> {
   const attB = tracker.getAttention("proj-b", NOW);
   ok(attB !== null && attB.blockerCount === 0 && attB.health !== "red", "11h. B 项目 attention 独立且无阻塞");
   // 不存在项目 → null（受控）
-  ok(tracker.getAttention("proj-nope", NOW) === null, "11i. 不存在项目返回 null");
+  ok(await tracker.readAttention("proj-nope", NOW) === null, "11i. 不存在项目返回 null");
+  await db2.runtimeAuditReader?.close();
   db2.close();
   rmSync(root, { recursive: true, force: true });
   if (process.exitCode) {
@@ -225,9 +238,14 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((err) => {
+void main().catch(async (err) => {
   console.error("project-autopilot-test: FAILED", err);
   process.exitCode = 1;
+  for (const database of [db, reopenedDb]) {
+    await database?.runtimeAuditReader?.close();
+    database?.close();
+  }
+  rmSync(root, { recursive: true, force: true });
 });
 
 

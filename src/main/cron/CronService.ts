@@ -218,8 +218,12 @@ export class CronService {
     return this.db.listCronJobs().map(job => this.withNext(job));
   }
 
-  listRuns(limit = 50): CronRunDto[] {
-    return this.db.listCronRuns(limit);
+  async readJobs(): Promise<CronJobDto[]> {
+    return (await this.db.readCronJobs()).map(job => this.withNext(job));
+  }
+
+  listRuns(limit = 50): Promise<CronRunDto[]> {
+    return this.db.readCronRuns(limit);
   }
 
   listForTask(taskId: string): CronJobDto[] {
@@ -294,8 +298,10 @@ export class CronService {
     }
   }
 
-  runsForTask(taskId: string, limit = 50, allowed = (_jobId: string) => true): CronRunDto[] {
-    return this.db.listCronRuns(Math.max(1, Math.min(200, limit)), this.listForTask(taskId).map(job => job.id).filter(allowed));
+  async runsForTask(taskId: string, limit = 50, allowed = (_jobId: string) => true): Promise<CronRunDto[]> {
+    const jobs = await this.db.readCronJobs();
+    const ids = jobs.filter(job => job.sourceTaskId === taskId && allowed(job.id)).map(job => job.id);
+    return (await this.db.readCronRuns(Math.max(1, Math.min(200, limit)), ids)).filter(run => allowed(run.jobId));
   }
 
   private requireTaskJob(taskId: string, id: string): CronJobDto {
@@ -326,7 +332,7 @@ export class CronService {
     };
   }
 
-  runPageForTask(taskId: string, id: string, limit = 25, cursor?: string) {
+  async runPageForTask(taskId: string, id: string, limit = 25, cursor?: string, allowed = (_jobId: string) => true) {
     this.requireTaskJob(taskId, id);
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("Invalid run page size");
     const schema = z.tuple([z.literal(id), z.number().int().nonnegative(), z.string().min(1).max(256)]);
@@ -338,7 +344,9 @@ export class CronService {
         before = { startedAt, id: runId };
       } catch { throw new Error("Invalid automation run cursor"); }
     }
-    const rows = this.db.listCronJobRuns(id, limit + 1, before);
+    const rows = await this.db.readCronJobRuns(id, limit + 1, before);
+    this.requireTaskJob(taskId, id);
+    if (!allowed(id)) throw new Error("计划不在 Dots 已授权的空间内");
     const runs = rows.slice(0, limit);
     const last = runs.at(-1);
     return {
@@ -701,13 +709,17 @@ export class CronService {
   }
 
   private async resumeRun(run: CronRunDto): Promise<void> {
-    const job = this.db.getCronJob(run.jobId);
+    let job = this.db.getCronJob(run.jobId);
     let saved: z.infer<typeof storedCronRun> | undefined;
     try {
       if (!job || !run.taskId) throw new Error("找不到待恢复的计划或任务");
-      const stored = this.db.connection.prepare("SELECT request_json FROM cron_run_inputs WHERE run_id = ?").get(run.id) as { request_json: string } | undefined;
-      if (!stored) throw new Error("旧运行未保存操作身份，不能自动重放");
-      saved = storedCronRun.parse(JSON.parse(stored.request_json));
+      const stored = await this.db.readCronRunInput(run.id);
+      if (this.stopped) return;
+      job = this.db.getCronJob(run.jobId);
+      if (!job) throw new Error("找不到待恢复的计划或任务");
+      if (job.reminder || job.cancelledAt === undefined && this.dotsPolicy(job) !== "continue") return;
+      if (stored === undefined) throw new Error("旧运行未保存操作身份，不能自动重放");
+      saved = storedCronRun.parse(JSON.parse(stored));
       const { request } = saved;
       if (request.taskId !== run.taskId || request.userMessageId !== `cron-${run.id}-input`) throw new Error("计划运行的操作身份不一致");
       if (saved.job.id !== run.jobId) throw new Error("计划运行的来源身份不一致");

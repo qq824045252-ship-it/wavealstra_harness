@@ -89,7 +89,7 @@ export class ProjectDocumentImporter {
     const resolved = this.resolveProjectLibrarySpace(currentProject);
     let item: LibraryItemDto | undefined;
     try {
-      item = this.library.importFile({ spaceId: resolved.space.id, sourcePath: path });
+      item = await this.library.importFileAsync({ spaceId: resolved.space.id, sourcePath: path });
     } catch (error) {
       this.rollbackImportOrThrow(projectId, resolved, undefined, error);
       throw error;

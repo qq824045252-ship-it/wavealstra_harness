@@ -2,8 +2,10 @@ import type { ModePresetDto } from "../mode-profile";
 
 const tagRoutes: Record<string, string> = {
   "bugfix-test": "bug-fix",
-  "feature-dev": "feature",
   refactor: "refactoring",
+  // 兼容旧数据：feature-dev / add-tests 已退役（RETIRED_MODE_PRESET_IDS），旧任务/旧配置
+  // 仍可能带这两个 id。add-tests 的原则剧本路由保留；feature-dev 的 feature 剧本
+  // 与 web-html 显式 pstackRoute 重叠，条目已删（旧任务回落 minimal + preferredPlaybook）。
   "add-tests": "skill:principle-test-behavior-not-implementation",
   "code-review": "skill:interrogate",
   "plan-design": "skill:architect",

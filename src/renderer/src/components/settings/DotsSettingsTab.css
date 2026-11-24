@@ -33,6 +33,13 @@
 .dots-config-check:has(:disabled) { opacity: .65; cursor: default; }
 .dots-tool-group details[open] > summary { margin-bottom: 5px; }
 .dots-config [role=alert] { color: var(--danger); }
+.dots-google-account { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; padding: 8px 0; }
+.dots-google-account + .dots-google-account { border-top: 1px solid var(--border); }
+.dots-google-account .settings-field-hint { overflow-wrap: anywhere; }
+.dots-google-account-actions, .dots-google-times { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+.dots-google-rule { display: grid; justify-items: start; gap: 12px; }
+.dots-google-rule fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.dots-google-times > label { min-width: min(170px, 100%); }
 
 .dots-prompt-editor { display: grid; gap: 14px; }
 .dots-prompt-layout { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2.3fr); align-items: start; gap: 16px; }

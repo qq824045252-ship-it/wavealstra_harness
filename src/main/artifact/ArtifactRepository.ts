@@ -13,6 +13,7 @@ import type {
   ArtifactFileDependency,
   ArtifactMessageRef,
   ArtifactMessageRelation,
+  ArtifactSnapshot,
   ArtifactSource,
 } from "../../shared/artifact-types";
 
@@ -34,6 +35,8 @@ interface ArtifactRow {
   created_at: number;
   updated_at: number;
 }
+
+export type StoredArtifactSnapshot = ArtifactSnapshot & { legacyMigrated: boolean };
 
 function toDescriptor(row: ArtifactRow): ArtifactDescriptor {
   const source: ArtifactSource =
@@ -194,6 +197,42 @@ export class ArtifactRepository {
       .prepare("SELECT * FROM artifacts ORDER BY created_at, rowid")
       .all() as ArtifactRow[];
     return rows.map(toDescriptor);
+  }
+
+  readSnapshots(taskIds: readonly string[]): StoredArtifactSnapshot[] {
+    const snapshots = new Map<string, StoredArtifactSnapshot>();
+    const statement = this.db.prepare(
+      `SELECT q.value AS requested_task_id, coalesce(r.revision, 0) AS task_revision,
+              s.task_id IS NOT NULL AS legacy_migrated, a.*
+       FROM json_each(?) q
+       LEFT JOIN artifact_task_revisions r ON r.task_id = q.value
+       LEFT JOIN artifact_task_state s ON s.task_id = q.value
+       LEFT JOIN artifacts a ON a.task_id = q.value
+       ORDER BY q.key, a.created_at, a.rowid`,
+    );
+    const rows = statement.iterate(JSON.stringify(taskIds)) as Iterable<ArtifactRow & {
+      requested_task_id: string;
+      task_revision: number;
+      legacy_migrated: number;
+    }>;
+    for (const row of rows) {
+      const taskId = row.requested_task_id;
+      let snapshot = snapshots.get(taskId);
+      if (!snapshot) {
+        snapshot = {
+          taskId, artifacts: [], revision: row.task_revision, state: "ready", legacyMigrated: Boolean(row.legacy_migrated),
+        };
+        snapshots.set(taskId, snapshot);
+      }
+      if (row.id === null || snapshot.state === "error") continue;
+      try {
+        snapshot.artifacts.push(toDescriptor(row));
+      } catch (error) {
+        snapshots.set(taskId, { ...snapshot, artifacts: [], revision: 0, state: "error",
+          error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return [...snapshots.values()];
   }
 
   /**

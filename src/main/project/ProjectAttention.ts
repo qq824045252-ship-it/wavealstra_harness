@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type {
   ProjectAttentionDigestDto,
   ProjectHealthLevel,
+  ProjectStatusSnapshotDto,
 } from "../../shared/project-domain";
 import type { ProjectService } from "./ProjectService";
 
@@ -33,17 +34,28 @@ export class ProjectAttentionTracker {
     } catch {
       return null; // 项目不存在/归档不可读等
     }
+    return this.digest(snapshot, this.proposalCounts(projectId));
+  }
+
+  private proposalCounts(projectId: string): { needsConfirmation: number; proposalsTotal: number } {
     let proposals: ReturnType<ProjectService["listActionProposals"]> = [];
     try {
       proposals = this.projects.listActionProposals(projectId);
     } catch {
       proposals = [];
     }
-    // 建议层严格 recommendation-only；字段暂留在 DTO，当前运行时恒为 0。
+    return {
+      needsConfirmation: proposals.filter(p => p.actionType === "needs_confirmation" && p.status === "proposed").length,
+      proposalsTotal: proposals.length,
+    };
+  }
+
+  private digest(
+    snapshot: ProjectStatusSnapshotDto,
+    { needsConfirmation, proposalsTotal }: { needsConfirmation: number; proposalsTotal: number },
+  ): ProjectAttentionDigestDto {
+    const { projectId, generatedAt } = snapshot;
     const executableProposals = 0;
-    const needsConfirmation = proposals.filter(
-      (p) => p.actionType === "needs_confirmation" && p.status === "proposed",
-    ).length;
     const fingerprint = createHash("sha256")
       .update(
         JSON.stringify({
@@ -52,23 +64,34 @@ export class ProjectAttentionTracker {
           atRisks: snapshot.atRisks.length,
           executableProposals,
           needsConfirmation,
-          proposalsTotal: proposals.length,
+          proposalsTotal,
         }),
       )
       .digest("hex")
       .slice(0, 16);
     return {
       projectId,
-      generatedAt: now,
+      generatedAt,
       health: snapshot.health as ProjectHealthLevel,
       blockerCount: snapshot.blockers.length,
       atRiskCount: snapshot.atRisks.length,
       executableProposals,
       needsConfirmation,
-      proposalsTotal: proposals.length,
+      proposalsTotal,
       fingerprint,
       seen: this.ackedFingerprint.get(projectId) === fingerprint,
     };
+  }
+
+  private async readDigest(projectId: string, now: number): Promise<ProjectAttentionDigestDto | null> {
+    const previous = this.lastFingerprint.get(projectId);
+    try {
+      const { snapshot, proposalCounts } = await this.projects.readStatusWithProposalCounts(projectId, now);
+      if (this.lastFingerprint.get(projectId) !== previous) return this.computeDigest(projectId, now);
+      return this.digest(snapshot, proposalCounts ?? this.proposalCounts(projectId));
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -91,10 +114,25 @@ export class ProjectAttentionTracker {
     return digest;
   }
 
+  async readAttention(projectId: string, now = Date.now()): Promise<ProjectAttentionDigestDto | null> {
+    const digest = await this.readDigest(projectId, now);
+    if (digest) this.lastFingerprint.set(projectId, digest.fingerprint);
+    return digest;
+  }
+
   /** 用户确认当前注意度（seen=true；下次指纹变化重新未确认） */
   acknowledge(projectId: string, now = Date.now()): ProjectAttentionDigestDto | null {
     const digest = this.computeDigest(projectId, now);
+    return this.recordAcknowledgement(digest);
+  }
+
+  async acknowledgeRead(projectId: string, now = Date.now()): Promise<ProjectAttentionDigestDto | null> {
+    return this.recordAcknowledgement(await this.readDigest(projectId, now));
+  }
+
+  private recordAcknowledgement(digest: ProjectAttentionDigestDto | null): ProjectAttentionDigestDto | null {
     if (!digest) return null;
+    const { projectId } = digest;
     this.ackedFingerprint.set(projectId, digest.fingerprint);
     this.lastFingerprint.set(projectId, digest.fingerprint);
     return { ...digest, seen: true };

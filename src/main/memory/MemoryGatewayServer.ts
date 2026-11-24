@@ -238,7 +238,7 @@ export function createMemoryGatewayMcpServer(gateway: MemoryGatewayService): Mcp
     inputSchema: memoryContextSchema,
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async (input) => {
-    try { return toolResult(gateway.resolveMemoryContext(input)); } catch (error) { return toolError(error); }
+    try { return toolResult(await gateway.resolveMemoryContext(input)); } catch (error) { return toolError(error); }
   });
 
   if (gateway.isOwnerAccess) {
@@ -444,7 +444,7 @@ export class MemoryGatewayServer {
       case "/v1/memory/search": data = await gateway.search(searchSchema.parse(body)); break;
       case "/v1/memory/get": data = gateway.get(idRequestSchema.parse(body)); break;
       case "/v1/memory/history": data = gateway.history(idRequestSchema.parse(body)); break;
-      case "/v1/memory/context": data = gateway.resolveMemoryContext(memoryContextSchema.parse(body)); break;
+      case "/v1/memory/context": data = await gateway.resolveMemoryContext(memoryContextSchema.parse(body)); break;
       case "/v1/memory/create": data = gateway.create(createSchema.parse(body)); break;
       case "/v1/memory/update": data = gateway.update(updateSchema.parse(body)); break;
       case "/v1/memory/forget": data = gateway.forget(idRequestSchema.parse(body)); break;

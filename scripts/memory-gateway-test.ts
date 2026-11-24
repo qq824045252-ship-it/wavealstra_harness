@@ -34,7 +34,11 @@ try {
   const { MemoryGatewayServer, loadOrCreateMemoryGatewayToken } = await import("../src/main/memory/MemoryGatewayServer");
   const { MemoryGatewayAccessControl } = await import("../src/main/memory/MemoryGatewayAccessControl");
 
-  const db = new AppDatabase(join(root, "app.db"));
+  const useNative = process.argv.includes("--native");
+  const { locateRuntimeAudit } = await import("../src/main/platform/runtime-audit");
+  const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (useNative) assert(runtimeAuditExecutable);
+  const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
   db.upsertSpace({ id: "ws-root", name: "Root", archived: false });
   db.upsertSpace({ id: "ws-child", name: "Child", parentId: "ws-root", archived: false });
   db.upsertSpace({ id: "ws-sibling", name: "Sibling", parentId: "ws-root", archived: false });
@@ -139,7 +143,20 @@ try {
   await expectGatewayError(() => Promise.resolve(writable.forget({ taskId: "task-a", id: projectB.id })), "not_found");
 
   const recallBefore = memory.get(projectA.id)?.recallCount ?? -1;
-  const projected = readOnly.resolveMemoryContext({ taskId: "task-a", query: "Project A", budgetChars: 1800 });
+  const reader = db.runtimeAuditReader;
+  if (reader) {
+    const candidates = reader.memoryLexical.bind(reader);
+    reader.memoryLexical = async request => {
+      const result = await candidates(request);
+      assert(result);
+      if (request.compact === "projecta") {
+        assert(result.lexical.some(hit => hit.id === projectA.id && hit.exact === 1));
+        assert(!result.lexical.some(hit => hit.id === projectB.id));
+      }
+      return result;
+    };
+  }
+  const projected = await readOnly.resolveMemoryContext({ taskId: "task-a", query: "Project A", budgetChars: 1800 });
   assert(projected.items.some((item) => item.id === projectA.id));
   assert.equal(memory.get(projectA.id)?.recallCount, recallBefore, "external read-only context projection does not mutate recall counters");
 
@@ -175,6 +192,14 @@ try {
   assert.equal(unauthorized.status, 401);
 
   const authHeaders = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+  const httpContext = await fetch(`${base}/v1/memory/context`, {
+    method: "POST", headers: authHeaders, body: JSON.stringify({ taskId: "task-a", query: "Project A" }),
+  });
+  assert.equal(httpContext.status, 200);
+  const httpContextBody = await httpContext.json() as { ok: boolean; data: { items: Array<{ id: string }> } };
+  assert.equal(httpContextBody.ok, true);
+  assert(httpContextBody.data.items.some(item => item.id === projectA.id));
+  assert(!httpContextBody.data.items.some(item => item.id === projectB.id));
   const evilOrigin = await fetch(`${base}/v1/memory/stats`, { headers: { authorization: `Bearer ${token}`, origin: "https://evil.example" } });
   assert.equal(evilOrigin.status, 403, "non-loopback browser Origin is rejected even with token");
 
@@ -457,6 +482,7 @@ try {
   assert.equal(ownerStats.status, 200, "owner bootstrap token retains owner-only diagnostics");
   await delegatedServer.stop();
 
+  await db.runtimeAuditReader?.close();
   db.close();
   console.log("memory-gateway-test: PASS");
 } finally {

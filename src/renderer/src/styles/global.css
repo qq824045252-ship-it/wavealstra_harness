@@ -15291,9 +15291,12 @@ html[data-theme="dark"] .context-usage-ring-track {
 
 .context-usage-popup-summary {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 .context-usage-popup-pct {
@@ -15302,11 +15305,22 @@ html[data-theme="dark"] .context-usage-ring-track {
   letter-spacing: -0.02em;
   color: var(--fg);
   line-height: 1;
+  white-space: nowrap;
 }
 
 .context-usage-popup-used {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  margin-inline-start: auto;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+.context-usage-popup-used strong {
+  color: var(--fg-secondary);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .context-usage-popup-cache {

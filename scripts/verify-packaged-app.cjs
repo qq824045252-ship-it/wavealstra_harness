@@ -283,6 +283,12 @@ function verifyPackagedApp(appDir, options = {}) {
   }
   if (targetPlatform === "win32" || targetPlatform === "linux") {
     const target = targetPlatform === "win32" ? "win-x64" : "linux-x64";
+    const runtimeAudit = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-runtime-audit.cjs"),
+      "--verify", path.join(resources, "runtime-audit"), target], {
+      encoding: "utf8", windowsHide: true, timeout: 10_000,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    });
+    if (runtimeAudit.status !== 0) fail("Runtime audit payload verification failed: " + (runtimeAudit.stderr || runtimeAudit.error));
     const nativeOffice = cp.spawnSync(process.execPath, [path.join(__dirname, "prepare-craft-office-native.cjs"),
       target, "--verify-assets", path.join(officeEditor, "native")], {
       encoding: "utf8", windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },

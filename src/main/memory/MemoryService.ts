@@ -818,7 +818,7 @@ export class MemoryService {
     return dots ? this.rankDotsQuery(request, hits) : hits;
   }
 
-  private async searchLexicalAsync(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
+  async searchLexical(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
     const query = request.query?.trim() ?? "";
     if (!query) return this.search(request);
     const stamp = this.recallScopeStamp(request);
@@ -895,7 +895,7 @@ export class MemoryService {
     const initialScopeStamp = this.recallScopeStamp(request);
     const freshLexical = async (): Promise<MemorySearchHit[]> => this.db.connection.open
       && this.recallScopeStamp(request) === initialScopeStamp
-      ? this.searchLexicalAsync({ ...request, limit: Math.max(requestedLimit * 3, 40) }) : [];
+      ? this.searchLexical({ ...request, limit: Math.max(requestedLimit * 3, 40) }) : [];
     if (query.length < 4 || !this.semantic) {
       onLexicalFallback?.(query.length < 4 ? "short-query" : "unavailable");
       return (await freshLexical()).slice(0, requestedLimit);
@@ -959,8 +959,8 @@ export class MemoryService {
   }
 
   /** Compatibility facade for Gateway callers; selection is owned by Context Projection. */
-  resolveContext(input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean }): ResolvedMemoryContext {
-    return projectMemoryContext(this, input);
+  resolveContext(input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean }, recalled?: MemorySearchHit[]): ResolvedMemoryContext {
+    return projectMemoryContext(this, input, recalled);
   }
 
   noteContextRecall(ids: string[]): void {

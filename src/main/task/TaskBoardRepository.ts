@@ -9,7 +9,8 @@ import {
   type BoardQuery,
   type TaskBoardRow,
 } from "../../shared/task-board";
-import { ensureTaskBoard } from "./TaskBoardActivity";
+import type { RuntimeAuditReader, RuntimeTaskBoardPage, RuntimeTaskBoardQuery } from "../platform/runtime-audit";
+import { boardSources, ensureTaskBoard } from "./TaskBoardActivity";
 
 const querySchema = z.object({
   view: z.enum(boardViews),
@@ -26,6 +27,10 @@ const querySchema = z.object({
 });
 const hidden = `hidden(id) AS (SELECT id FROM spaces WHERE archived=1 UNION
   SELECT s.id FROM spaces s JOIN hidden h ON s.parent_id=h.id)`;
+const currentWaits = `board_waits AS MATERIALIZED (
+  SELECT key AS rowid, value->>0 AS id, value->>1 AS token, value->>2 AS message,
+    value->>3 AS detail, value->>4 AS at FROM json_each(@waits)
+)`;
 const visibility = "AND (b.space_id IS NULL OR b.space_id NOT IN (SELECT id FROM hidden))";
 const latestResult =
   "(SELECT d.at FROM task_board_days d WHERE d.id=b.id AND d.kind='result' ORDER BY d.day DESC LIMIT 1)";
@@ -86,7 +91,7 @@ export class TaskBoardRepository {
   private waiting = new Set<string>();
   private activities = new Map<string, NonNullable<TaskBoardRow["activity"]>>();
 
-  constructor(private db: Database.Database) {
+  constructor(private db: Database.Database, private readonly runtimeAuditReader?: RuntimeAuditReader) {
     ensureTaskBoard(db);
   }
 
@@ -114,7 +119,7 @@ export class TaskBoardRepository {
     if (
       !this.db
         .prepare(
-          `WITH RECURSIVE ${hidden} SELECT 1 FROM board_native b WHERE b.id=? ${visibility}
+          `WITH RECURSIVE ${hidden},${boardSources} SELECT 1 FROM board_native b WHERE b.id=? ${visibility}
       UNION ALL SELECT 1 FROM board_requests b WHERE b.id=? ${visibility} LIMIT 1`,
         )
         .get(id, id)
@@ -167,7 +172,7 @@ export class TaskBoardRepository {
     }
   }
 
-  page(input: BoardQuery, now = Date.now(), ordinary?: { taskId?: string; spaceIds?: readonly string[] | null }): BoardPage {
+  async page(input: BoardQuery, now = Date.now(), ordinary?: { taskId?: string; spaceIds?: readonly string[] | null }): Promise<BoardPage> {
     const q = querySchema.parse(input);
     if (q.view === "automation") {
       if (ordinary) throw new Error("自动化记录不属于普通任务看板");
@@ -259,7 +264,7 @@ export class TaskBoardRepository {
       WHERE (${match}) ${visibility} ${scope} ${project} ${search} ${ordinaryFilter}
       ${paged && q.cursor ? `AND ((${rank})<@rank OR ((${rank})=@rank AND ((${at})<@at OR ((${at})=@at AND b.id>@id))))` : ""}`;
     const hiddenSpaces = ordinary ? hidden.replace("WHERE archived=1", "WHERE archived=1 OR id GLOB 'sp-gw-*' OR id GLOB 'bot-space-*' OR id GLOB 'bot-team-space-*' OR id GLOB 'bot-workspace-group-*'") : hidden;
-    const prefix = `WITH RECURSIVE ${hiddenSpaces}${candidates ? ", ranked AS MATERIALIZED (" + candidates + ")" : ""}`;
+    const prefix = `WITH RECURSIVE ${hiddenSpaces},${boardSources},${currentWaits}${candidates ? ", ranked AS MATERIALIZED (" + candidates + ")" : ""}`;
     const selection = sources.map((source) => select(source, true)).join(" UNION ALL ");
     // Deferring keeps a card out of focus until a new request arrives. The historical card still shows live blockers.
     const waitSince = q.view === "today" || q.view === "attention" ? afterDeferral : "0";
@@ -303,17 +308,18 @@ export class TaskBoardRepository {
       rank: q.cursor?.rank ?? 0,
       at: q.cursor?.at ?? 0,
       id: q.cursor?.id ?? "",
+      waits: this.db.prepare(
+        "SELECT json_group_array(json_array(id,token,message,detail,at) ORDER BY rowid) FROM temp.board_waits",
+      ).pluck().get() as string,
     };
-    const rows = this.db.prepare(sql).all(params) as SqlRow[];
-    let total: number | undefined;
     // 焦点预览也要给出总数：栏目标题旁的计数和「还有 N 个被折叠」都依赖它。
-    if (q.lane || (q.preview && (q.view === "attention" || q.view === "review" || q.view === "running"))) {
-      if (!q.cursor && rows.length <= size) total = rows.length;
-      else {
-        const all = sources.map((source) => select(source, false)).join(" UNION ALL ");
-        total = this.db.prepare(`${prefix} SELECT count(*) FROM (${all})`).pluck().get(params) as number;
-      }
-    }
+    const includeTotal = q.lane || (q.preview && (q.view === "attention" || q.view === "review" || q.view === "running"));
+    const countSql = includeTotal
+      ? `${prefix} SELECT count(*) FROM (${sources.map(source => select(source, false)).join(" UNION ALL ")})`
+      : undefined;
+    const { rows, total } = await this.query<SqlRow>({
+      sql, countSql, parameters: params, size, hasCursor: Boolean(q.cursor),
+    });
     const page = rows.slice(0, size).map((row) => this.card(row, q.view));
     const last = page.at(-1);
     return {
@@ -323,7 +329,19 @@ export class TaskBoardRepository {
     };
   }
 
-  private automation(q: BoardQuery, now: number): BoardPage {
+  private async query<Row>(request: RuntimeTaskBoardQuery): Promise<RuntimeTaskBoardPage<Row>> {
+    const native = await this.runtimeAuditReader?.taskBoard<Row>(request);
+    if (native) return native;
+    return this.db.transaction(() => {
+      const rows = this.db.prepare(request.sql).all(request.parameters) as Row[];
+      const total = request.countSql === undefined ? undefined
+        : !request.hasCursor && rows.length <= request.size ? rows.length
+          : this.db.prepare(request.countSql).pluck().get(request.parameters) as number;
+      return { rows, total };
+    })();
+  }
+
+  private async automation(q: BoardQuery, now: number): Promise<BoardPage> {
     const size = q.preview ? 4 : 25;
     const scope = q.scope === undefined ? "" : " AND b.space_id IS @scope";
     const base = `SELECT r.id AS run_id,r.job_id,r.started_at,r.status,r.error,b.id AS task_id,b.title,b.space_id,j.name
@@ -333,21 +351,10 @@ export class TaskBoardRepository {
       ? `SELECT *,run_id AS id,1 AS runs FROM runs WHERE job_id=@job`
       : `SELECT *,job_id AS id FROM (SELECT *,count(*) OVER(PARTITION BY job_id) AS runs,
         row_number() OVER(PARTITION BY job_id ORDER BY started_at DESC,run_id DESC) AS position FROM runs) WHERE position=1`;
-    const rows = this.db
-      .prepare(
-        `WITH RECURSIVE ${hidden},runs AS (${base}),chosen AS (${source})
+    const sql = `WITH RECURSIVE ${hidden},${boardSources},runs AS (${base}),chosen AS (${source})
       SELECT * FROM chosen WHERE started_at<@before OR (started_at=@before AND id>@id)
-      ORDER BY started_at DESC,id LIMIT @limit`,
-      )
-      .all({
-        from: localOffset(now, -29),
-        scope: q.scope ?? null,
-        term: q.search?.trim() ?? "",
-        job: q.jobId ?? "",
-        before: q.cursor?.at ?? Number.MAX_SAFE_INTEGER,
-        id: q.cursor?.id ?? "",
-        limit: size + 1,
-      }) as Array<{
+      ORDER BY started_at DESC,id LIMIT @limit`;
+    const { rows } = await this.query<{
       id: string;
       task_id: string;
       job_id: string;
@@ -358,7 +365,13 @@ export class TaskBoardRepository {
       status: string;
       runs: number;
       error: string | null;
-    }>;
+    }>({
+      sql, size, hasCursor: Boolean(q.cursor),
+      parameters: {
+        from: localOffset(now, -29), scope: q.scope ?? null, term: q.search?.trim() ?? "",
+        job: q.jobId ?? "", before: q.cursor?.at ?? Number.MAX_SAFE_INTEGER, id: q.cursor?.id ?? "", limit: size + 1,
+      },
+    });
     const last = rows[size - 1];
     return {
       rows: rows.slice(0, size).map((r) => ({

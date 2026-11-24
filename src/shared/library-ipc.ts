@@ -194,6 +194,12 @@ export interface LibrarySnapshotDto {
   ownerName: string;
 }
 
+export interface LibrarySnapshotRequest {
+  owner?: LibraryOwnerScope;
+  spaceId?: string;
+  itemId?: string;
+}
+
 export interface LibraryListItemsRequest {
   spaceId: string;
   collectionId?: string | null;

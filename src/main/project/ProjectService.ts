@@ -56,9 +56,27 @@ import {
   type ProjectResourceUpdateRequest,
   type ProjectUpdateRequest,
 } from "../../shared/project-domain";
-import { ProjectRepository } from "./ProjectRepository";
+import { ProjectRepository, type ProjectStatusFact } from "./ProjectRepository";
 import type { MemoryService } from "../memory/MemoryService";
 import type { MemoryRecordDto } from "../../shared/memory-kernel";
+
+function statusIssue(fact: ProjectStatusFact): ProjectStatusIssueDto {
+  const issue = { refId: fact.refId, title: fact.title };
+  switch (fact.kind) {
+    case "blockingOverdue":
+      return { ...issue, source: "plan", reason: `高优先级进行中计划已逾期（截止 ${formatPlanLocalDate(fact.dueAt!)}）` };
+    case "overdue":
+      return { ...issue, source: "plan", reason: `计划项已逾期（截止 ${formatPlanLocalDate(fact.dueAt!)}）` };
+    case "nearDue":
+      return { ...issue, source: "plan", reason: `计划项 3 天内到期（截止 ${formatPlanLocalDate(fact.dueAt!)}）` };
+    case "staleTask":
+      return { ...issue, source: "task", reason: "任务 7 天无更新" };
+    case "activeRisk":
+      return { ...issue, source: "memory", reason: "项目记忆中的 active 风险" };
+    case "importantQuestion":
+      return { ...issue, source: "memory", reason: "高重要度待确认问题" };
+  }
+}
 
 function kernelMemoryToProject(item: MemoryRecordDto, projectId: string): ProjectMemoryItemDto {
   const kernelKind = ["fact", "decision", "constraint", "risk", "open_question", "progress"].includes(item.kind)
@@ -247,6 +265,10 @@ export class ProjectService {
 
   list(includeArchived = false): ProjectDto[] {
     return this.repository.list(includeArchived);
+  }
+
+  readList(includeArchived = false): Promise<ProjectDto[]> {
+    return this.repository.readList(includeArchived);
   }
 
   get(id: string): ProjectDetailsDto | undefined {
@@ -442,6 +464,12 @@ export class ProjectService {
     return this.repository.listProjectEvents(projectId, limit);
   }
 
+  async readProjectEvents(projectId: string, limit?: number): Promise<ProjectEventDto[]> {
+    const events = await this.repository.readProjectEvents(projectId, limit);
+    if (!events) throw new Error(`项目不存在：${projectId}`);
+    return events;
+  }
+
   /** 按 id 读取事件（作用域校验由调用方按 event.projectId 执行） */
   getProjectEvent(eventId: string): ProjectEventDto | undefined {
     return this.repository.getProjectEventById(eventId);
@@ -498,6 +526,12 @@ export class ProjectService {
   listTodos(projectId: string): ProjectTodoDto[] {
     if (!this.repository.get(projectId)) throw new Error(`项目不存在：${projectId}`);
     return this.repository.listTodos(projectId);
+  }
+
+  async readTodos(projectId: string): Promise<ProjectTodoDto[]> {
+    const todos = await this.repository.readTodos(projectId);
+    if (!todos) throw new Error(`项目不存在：${projectId}`);
+    return todos;
   }
 
   getTodo(id: string): ProjectTodoDto | undefined {
@@ -837,12 +871,50 @@ export class ProjectService {
    * - health：blockers>0 → red；atRisks>0 → yellow；否则 green。
    */
   buildStatusSnapshot(projectId: string, now = Date.now()): ProjectStatusSnapshotDto {
-    const project = this.repository.get(projectId);
+    return this.summarizeStatus(this.statusSources(projectId), now);
+  }
+
+  async readStatusSnapshot(projectId: string, now = Date.now()): Promise<ProjectStatusSnapshotDto> {
+    return (await this.readStatusWithProposalCounts(projectId, now)).snapshot;
+  }
+
+  async readStatusWithProposalCounts(projectId: string, now: number): Promise<{
+    snapshot: ProjectStatusSnapshotDto;
+    proposalCounts?: { needsConfirmation: number; proposalsTotal: number };
+  }> {
+    const native = await this.repository.readStatus(projectId, now);
+    if (native === null) throw new Error(`项目不存在：${projectId}`);
+    if (!native) return { snapshot: this.buildStatusSnapshot(projectId, now) };
+    const { status, needsConfirmation, proposalsTotal } = native;
+    return {
+      snapshot: {
+        ...status,
+        blockers: status.blockers.map(statusIssue),
+        atRisks: status.atRisks.map(statusIssue),
+        nextActions: status.nextActions.map(action => action.source === "plan"
+          ? { ...action, dueAt: action.dueAt ?? undefined }
+          : { source: action.source, refId: action.refId, title: action.title }),
+      },
+      proposalCounts: { needsConfirmation, proposalsTotal },
+    };
+  }
+
+  private statusSources(projectId: string) {
+    const project = this.repository.getSummary(projectId);
     if (!project) throw new Error(`项目不存在：${projectId}`);
+    return {
+      project,
+      tasks: this.repository.listTasksByProject(projectId),
+      todos: this.repository.listTodos(projectId),
+      memory: this.repository.listStatusMemories(projectId),
+    };
+  }
+
+  private summarizeStatus(
+    { project, tasks, todos, memory }: ReturnType<ProjectService["statusSources"]>, now: number,
+  ): ProjectStatusSnapshotDto {
+    const projectId = project.id;
     const staleAfter = now - 7 * 24 * 3600 * 1000;
-    const tasks = this.repository.listTasksByProject(projectId);
-    const todos = this.repository.listTodos(projectId);
-    const memory = this.listMemory(projectId);
     const reviews = this.repository.listReviews(projectId, 1);
 
     const activeTasks = tasks.filter((t) => !t.archived && t.status !== "completed" && t.status !== "failed");
@@ -862,8 +934,9 @@ export class ProjectService {
       .sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
       .slice(0, 3);
     const importantOpen = openQuestions.filter((m) => m.importance >= 2).slice(0, 3);
-    const blockingOverdue = overdueTodos.filter((todo) => todo.status === "doing" && todo.priority === "high");
-    const attentionOverdue = overdueTodos.filter((todo) => !blockingOverdue.some((blocking) => blocking.id === todo.id));
+    const isBlocking = (todo: ProjectTodoDto) => todo.status === "doing" && todo.priority === "high";
+    const blockingOverdue = overdueTodos.filter(isBlocking);
+    const attentionOverdue = overdueTodos.filter(todo => !isBlocking(todo));
 
     const blockers: ProjectStatusIssueDto[] = [
       ...blockingOverdue.slice(0, 5).map((t) => ({
@@ -919,12 +992,9 @@ export class ProjectService {
         .map((t) => ({ source: "task" as const, refId: t.id, title: t.title })),
     ].slice(0, 8);
 
-    const lastActivityAt = Math.max(
-      project.updatedAt,
-      ...tasks.map((t) => t.updated_at),
-      ...todos.map((t) => t.updatedAt),
-      ...memory.map((m) => m.updatedAt),
-    );
+    const latestTask = tasks.reduce((latest, task) => Math.max(latest, task.updated_at), project.updatedAt);
+    const latestTodo = todos.reduce((latest, todo) => Math.max(latest, todo.updatedAt), latestTask);
+    const lastActivityAt = memory.reduce((latest, record) => Math.max(latest, record.updatedAt), latestTodo);
 
     return {
       projectId,
@@ -977,13 +1047,12 @@ export class ProjectService {
    * 指纹幂等（不堆重复）；已 applied 不复活；源不再匹配的旧建议 → stale/obsolete。
    */
   generateActionProposals(projectId: string, now = Date.now()): ProjectActionProposalDto[] {
-    const snapshot = this.buildStatusSnapshot(projectId, now);
-    if (snapshot.archived) return this.repository.listActionProposals(projectId);
+    const sources = this.statusSources(projectId);
+    if (sources.project.archived) return this.repository.listActionProposals(projectId);
+    const snapshot = this.summarizeStatus(sources, now);
     const owner = this.ownerName();
     const proposals: ProjectActionProposalDto[] = [];
-    const todos = this.repository.listTodos(projectId);
-    const tasks = this.repository.listTasksByProject(projectId);
-    const memory = this.listMemory(projectId);
+    const { todos, tasks, memory } = sources;
 
     // 逾期计划项：只定位/提示，不从时间推断业务状态。
     for (const item of todos.filter((todo) => todo.status !== "done" && todo.dueAt !== undefined && todo.dueAt < now)) {

@@ -1077,6 +1077,8 @@ async function delegateInventory(host: Awaited<ReturnType<typeof open>>, source:
     const history = (await originalHost.agent.loadTaskHistory(DOTS_TASK_ID)).messages;
     const delivery = history.find(message => message.dotsDelivery?.sourceMessageId === legacySource);
     assert(delivery?.dotsDelivery);
+    assert.equal(originalHost.agent.getContextUsage(DOTS_TASK_ID)?.usedTokens, 2,
+      "a delivered result preserves the foreground model's last measured context use");
     originalDate = delivery.createdAt;
     originalHost.db.connection.prepare("UPDATE dots_reply_events SET snapshot='' WHERE event_key=?").run(delivery.dotsDelivery.deliveryKey);
     const activity = new DotsActivity(originalHost.db.connection, () => true);

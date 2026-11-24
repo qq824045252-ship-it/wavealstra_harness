@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { testSchedulingContinuity } from "./cron-scheduling-continuity";
 import { testAutomationLifecycle } from "./automation-lifecycle-test";
 import { testAutomationUpdate } from "./automation-update-test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { CronService, type CronAgent } from "../src/main/cron/CronService";
 import { computeNextRunAt, parseEveryExpr } from "../src/main/cron/CronSchedule";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import type { AgentPromptRequest, ChatMessageDto, CronJobDto } from "../src/shared/agent-ipc";
 
 async function until(predicate: () => boolean, label: string) {
@@ -25,14 +26,18 @@ function barrier() {
 }
 
 async function main() {
-  await testAutomationLifecycle();
+  const useNative = process.argv.includes("--native");
+  const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable), "Rust worker executable is required in native mode");
+  const dbOptions = { runtimeAuditExecutable };
+  await testAutomationLifecycle(dbOptions);
   await testAutomationUpdate();
   await testSchedulingContinuity();
   const root = mkdtempSync(join(tmpdir(), "mybuddy-cron-native-"));
   process.env.HOME = root;
   process.env.USERPROFILE = root;
   const dbPath = join(root, "app.db");
-  let db = new AppDatabase(dbPath);
+  let db = new AppDatabase(dbPath, dbOptions);
   const prompts: AgentPromptRequest[] = [];
   const history = new Map<string, ChatMessageDto[]>();
   let busy = false;
@@ -93,8 +98,8 @@ async function main() {
     assert.equal(db.getCronJob(scoped.id)?.enabled, false);
     cron.upsert({ ...scoped, enabled: true, runCount: 0 });
     assert.equal(db.getCronJob(scoped.id)?.enabled, false);
-    assert.equal(cron.runsForTask("other").length, 0);
-    assert.equal(cron.runsForTask("source").length, 1);
+    assert.deepEqual(await cron.runsForTask("other"), []);
+    assert.deepEqual((await cron.runsForTask("source")).map(run => [run.jobId, run.status, run.taskId]), [[scoped.id, "success", "source"]]);
 
     promptBarrier = barrier();
     cron.upsert(job("timer", { scheduleType: "at", scheduleExpr: new Date(Date.now() + 80).toISOString(), cwd: root }));
@@ -145,8 +150,8 @@ async function main() {
     db.insertCronRun({ id: "saved", jobId: "resume", taskId: "source", startedAt: 1, status: "running" });
     db.connection.prepare("INSERT INTO cron_run_inputs VALUES (?, ?)").run("saved", JSON.stringify({ request: savedRequest, newTask: false, job: { id: "resume", name: "Original schedule" } }));
     db.insertCronRun({ id: "interrupted", jobId: "resume", startedAt: 1, status: "running" });
-    cron.stop(); db.close();
-    db = new AppDatabase(dbPath);
+    cron.stop(); await db.runtimeAuditReader?.close(); db.close();
+    db = new AppDatabase(dbPath, dbOptions);
     cron = new CronService(db, agent); cron.start();
     assert.equal(db.getCronJob("pause")?.enabled, false);
     assert.equal(db.getCronJob("resume")?.enabled, true);
@@ -156,12 +161,12 @@ async function main() {
     const recoveredCronInput = JSON.parse((db.connection.prepare("SELECT request_json FROM cron_run_inputs WHERE run_id = ?").get("saved") as { request_json: string }).request_json);
     assert.equal(recoveredCronInput.request.welcomeMode, "general", "cron_run_inputs legacy welcomeMode migrated");
     assert.equal(db.getTask("source")?.title, "Keep title", "editing the plan target cannot rename its original task on recovery");
-    assert.ok((cron.list().find(item => item.id === "resume")?.nextRunAt ?? 0) > Date.now());
+    assert.ok(((await cron.readJobs()).find(item => item.id === "resume")?.nextRunAt ?? 0) > Date.now());
     assert.equal(db.getTask("source")?.cwd, root);
     console.log("PASS cron: real SQLite/reopen, timers, 90s, busy, cancellation during await, quota, deadline, restart, task scope/context");
   } finally {
     promptBarrier?.release(); historyBarrier?.release();
-    cron.stop(); await delay(20); db.close(); rmSync(root, { recursive: true, force: true });
+    cron.stop(); await delay(20); await db.runtimeAuditReader?.close(); db.close(); rmSync(root, { recursive: true, force: true });
   }
 }
 void main().catch(error => { console.error(error); process.exitCode = 1; });

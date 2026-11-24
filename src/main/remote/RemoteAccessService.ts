@@ -69,8 +69,9 @@ export class RemoteAccessService {
     return { apiVersion: REMOTE_API_VERSION, service: "mybuddy-remote" as const, name: "MyBuddy", now: Date.now() };
   }
 
-  listTasks() {
-    return this.db.listNonTrashedTasks().map((task) => mapRemoteTask(task, {
+  async listTasks() {
+    const tasks = await this.db.readNonTrashedTasks({ includeExpertBindings: false });
+    return tasks.map((task) => mapRemoteTask(task, {
       busy: this.agent.isTaskBusy(task.id) || Boolean(this.liveAcpRun(task.id)),
       // 审批计数同时包含内置工具与 ACP 权限请求，否则手机端任务行不显示「待审批」
       pendingActionCount: this.pendingActions(task.id).length,
@@ -178,8 +179,8 @@ export class RemoteAccessService {
       apiVersion: REMOTE_API_VERSION,
       server: this.serverInfo(),
       spaces: this.db.listSpaces().map(mapRemoteSpace),
-      projects: this.projects.list(true).map(mapRemoteProject),
-      tasks: this.listTasks(),
+      projects: (await this.projects.readList(true)).map(mapRemoteProject),
+      tasks: await this.listTasks(),
       dots: mapRemoteTask(dots, {
         busy: this.agent.isTaskBusy(dots.id),
         pendingActionCount: this.agent.listPendingActions(dots.id).length,

@@ -38,13 +38,11 @@ export class SessionLifecycleManager {
     else this.deps.userTurnCounters.delete(taskId);
     this.deps.approvals.release(taskId);
     if (sessionFile) {
-      try {
-        this.deps.usageStats.backfillSession(sessionFile);
-      } catch (error) {
+      void this.deps.usageStats.backfillSessionAsync(sessionFile).catch(error => {
         console.warn(
           `[usage] backfillSession failed ${sessionFile}: ${error instanceof Error ? error.message : String(error)}`,
         );
-      }
+      });
     }
   }
 

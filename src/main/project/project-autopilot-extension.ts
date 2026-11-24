@@ -104,7 +104,8 @@ export function createProjectAutopilotExtension(bridge: ProjectAutopilotExtensio
       execute: async () => {
         try {
           const projectId = requireProject();
-          const snapshot = service.buildStatusSnapshot(projectId);
+          const snapshot = await service.readStatusSnapshot(projectId);
+          if (requireProject() !== projectId) throw new Error("项目归属已变化，请重新读取");
           return textResult(renderStatus(snapshot), { projectId, snapshot });
         } catch (error) {
           return errorResult(error);

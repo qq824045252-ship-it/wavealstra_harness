@@ -7,6 +7,8 @@ import { CacheRequestTracer } from "../src/main/agent/CacheRequestTracer";
 import { TaskDiagnosticsRepository } from "../src/main/agent/TaskDiagnosticsRepository";
 import { reportedTokenUsage } from "../src/main/agent/ReportedTokenUsage";
 import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
+import { decodeRuntimeSnapshotPage, RuntimeContextSnapshotRepository } from "../src/main/agent/RuntimeContextSnapshotRepository";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 import { UsageStatsService } from "../src/main/usage/UsageStatsService";
 import { isCallRow } from "../src/shared/usage-stats";
 
@@ -150,6 +152,203 @@ try {
   assert.equal(absent?.known?.cacheRead, false, "原生与上报都缺失时保持未知");
   assert.equal(absent?.totalTokens, 0);
   assert.equal(absent?.inputTokens, 0, "未知字段不参与合计");
+
+  const snapshots = new RuntimeContextSnapshotRepository(db.connection);
+  const commonSnapshot = {
+    taskId: "task", userMessageId: "user", assistantMessageId: "assistant",
+    startedAt: now, assemblyHash: "audit", status: "completed" as const, mode: "general" as const,
+    resolvedInstructions: [{ id: "prompt", title: "说明", source: "seed" as const, chars: 2, content: "保留" }],
+    resolvedCapabilities: [], warnings: ["同一份配置"],
+  };
+  for (const executionId of ["early", "late"]) snapshots.record({ ...commonSnapshot, executionId });
+  const countPayloads = db.connection.prepare("SELECT COUNT(*) FROM runtime_audit_payloads").pluck();
+  assert.equal(countPayloads.get(), 2, "repeated snapshot payloads are stored once");
+  assert.equal(snapshots.recordOnce({ ...commonSnapshot, executionId: "late", warnings: [] }).warnings[0], "同一份配置");
+  db.upsertTask({ id: "legacy", title: "inline snapshot fixture", updatedAt: 1 });
+  const legacyInsert = db.connection.prepare(`
+    INSERT INTO task_runtime_context_snapshots
+      (id, task_id, user_message_id, assistant_message_id, created_at, schema_version, welcome_mode,
+       resolved_instructions_json, resolved_capabilities_json, execution_id)
+    VALUES (?, 'legacy', 'old-user', 'old-assistant', ?, 2, 'general', ?, ?, ?)
+  `);
+  const sharedInstructions = db.connection.prepare(`
+    SELECT p.body FROM runtime_audit_payloads p
+    JOIN task_runtime_context_snapshots s ON s.instructions_hash = p.hash WHERE s.execution_id = 'late'
+  `).pluck().get();
+  for (let index = 0; index < 17; index += 1) {
+    const id = `legacy-${index}`;
+    legacyInsert.run(id, now + index, sharedInstructions, "[]", id);
+  }
+  assert.equal(snapshots.list("legacy", 17)[0].resolvedInstructions[0].content, "保留");
+
+  if (process.argv.includes("--native")) {
+    const executable = locateRuntimeAudit(process.cwd());
+    assert(executable, "the Rust reader must be available for native verification");
+    const reader = new RuntimeAuditReader(executable, db.connection.name);
+    try {
+      const native = await reader.diagnostics("task");
+      assert(native, "Rust must return the diagnostic data without using the host reader");
+      assert.equal(native.requests.length, 264);
+      assert.equal(native.truncated, false);
+      const observed = native.tools.find(row => row.callId === "call" && row.observedMs === 1000);
+      assert.equal(observed?.executionId, "durable:task:7:11");
+      assert.equal(observed?.waitingMs, 400);
+      assert.equal(observed?.activeMs, 600);
+      assert.equal(native.requests.find(row => row.generationTaskId === 13)?.knownCostUsd, 0);
+      const host = diagnostics.list("task");
+      assert.deepEqual({ ...native, capturedAt: host.capturedAt }, host);
+
+      const page = await reader.diagnostics("task", 1, 1);
+      assert.equal(page?.requests.length, 1);
+      assert.equal(page?.offset, 1);
+      assert.equal(page?.truncated, true);
+
+      const auditPage = await reader.snapshots("task", 2);
+      assert(auditPage, "Rust must return the retained snapshots");
+      const audit = decodeRuntimeSnapshotPage(auditPage);
+      assert.deepEqual(audit.map(row => [row.executionId, row.resolvedInstructions[0]?.content, row.warnings[0]]), [
+        ["late", "保留", "同一份配置"], ["early", "保留", "同一份配置"],
+      ]);
+      assert.deepEqual(audit, snapshots.list("task", 2));
+      assert.deepEqual(await reader.snapshots("unknown-task", 2), { rows: [], payloads: [] });
+
+      const legacy = snapshots.list("legacy", 17);
+      assert.equal(await reader.compactSnapshots(), 17, "Rust must compact all inline rows across batches");
+      assert.equal(await reader.compactSnapshots(), 0, "a completed migration can be retried");
+      assert.equal(countPayloads.get(), 2, "Rust and host writes share the same exact content");
+      const inlineRows = db.connection.prepare(`
+        SELECT COUNT(*) FROM task_runtime_context_snapshots WHERE instructions_hash IS NULL OR capabilities_hash IS NULL
+      `).pluck();
+      assert.equal(inlineRows.get(), 0);
+      assert.deepEqual(snapshots.list("legacy", 17), legacy);
+      const legacyPage = await reader.snapshots("legacy", 17);
+      assert(legacyPage);
+      assert.deepEqual(decodeRuntimeSnapshotPage(legacyPage), legacy, "compaction preserves the entire audit record");
+      db.deleteTask("legacy");
+      assert.equal(countPayloads.get(), 2, "cascade deletion preserves payloads still shared by another task");
+
+      db.upsertTask({ id: "native-write", title: "Rust diagnostic writer", updatedAt: 1 });
+      db.upsertTask({ id: "native-removed", title: "removed before write", updatedAt: 1 });
+      const writer = new TaskDiagnosticsRepository(db.connection, reader);
+      const request = tracer.start(model, "native-write", undefined, event => writer.observeTrace(event, model));
+      request.received(request.sent("https://fixture.invalid", { body }), 503);
+      request.providerEvent({ usage: { cost: 0 } });
+      request.identify({ taskId: "native-write", conversationId: "9", generationTaskId: 52, sourceKind: "main" });
+      db.connection.pragma("query_only=ON");
+      try { await writer.flush(); }
+      finally { db.connection.pragma("query_only=OFF"); }
+      const running = (await reader.diagnostics("native-write"))?.requests[0];
+      assert(running);
+      assert.equal(running?.status, "running");
+      assert.deepEqual(running?.attempts.map(attempt => attempt.httpStatus), [503], "Rust attaches attempts observed before identity");
+      request.received(request.sent("https://fixture.invalid", { body }), 200);
+      writer.observeTrace({ request: running.id, event: "request", stage: "http", attempt: 2, at: now,
+        previous: { request: "baseline", prefix: true, changedFields: ["tools"] }, coverage: "partial" }, model);
+      request.firstResponse();
+      request.providerEvent({ type: "message_start", message: { usage: { input_tokens: 11, output_tokens: 4, cost: 0 } } });
+      request.result({ stopReason: "stop", usage: { input: 11, output: 4, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } });
+      request.result(result);
+      const immediate = writer.usageForGeneration("native-write", "9", 52);
+      assert.deepEqual(immediate, { input: 11, output: 4, cacheRead: null, cacheWrite: null, costTotal: 0 },
+        "the accounting callback sees the terminal usage even before the Rust reply");
+      assert.equal(writer.usageForConversation("native-write", "9").requests, 1);
+      const nativeTool = { ...tool, taskId: "native-write", conversationId: "9", toolTaskId: 55, generationTaskId: 52 };
+      writer.observeTool({ ...nativeTool, phase: "start", at: now });
+      writer.observeTool({ ...nativeTool, phase: "finish", at: now + 1000, diagnostics: ["原样保留"] });
+      writer.observeTool({ ...nativeTool, phase: "finish", at: now + 9000 });
+      writer.observeTool({ ...nativeTool, taskId: "native-removed", phase: "start", at: now });
+      db.deleteTask("native-removed");
+      db.connection.pragma("query_only=ON");
+      try { await writer.flush(); }
+      finally { db.connection.pragma("query_only=OFF"); }
+      const receipt = db.connection.prepare("SELECT epoch, sequence FROM runtime_diagnostic_writer WHERE id=1")
+        .get() as { epoch: number; sequence: number };
+      assert(receipt.sequence > 0, "the Rust worker committed while the host SQLite connection was read-only");
+      const persisted = await reader.diagnostics("native-write");
+      assert(persisted);
+      assert.equal(persisted.requests.length, 1);
+      assert.deepEqual(persisted.requests[0].attempts.map(attempt => attempt.httpStatus), [503, 200]);
+      assert.deepEqual(persisted.requests[0].cacheContext,
+        { previousRequestId: "baseline", prefixStable: true, changedFields: ["tools"], coverage: "partial" });
+      assert.equal(typeof persisted.requests[0].firstResponseAt, "number");
+      assert.equal(persisted.requests[0].knownCostUsd, 0);
+      assert.deepEqual(persisted.requests[0].usage, { input: 11, output: 4, cacheRead: null, cacheWrite: null });
+      assert.deepEqual(persisted.tools.map(tool => [tool.executionId, tool.observedMs, tool.diagnostics]),
+        [["durable:native-write:9:52", 1000, ["原样保留"]]]);
+      assert.equal(writer.requestsForGenerations("native-write", [{ conversationId: "9", generationTaskId: 52 }]).length, 1);
+      assert.equal(writer.usageForConversation("native-write", "9").requests, 1, "acknowledgement does not double-count usage");
+      assert.equal((await reader.diagnostics("native-removed"))?.tools.length, 0);
+      const savedRequest = persisted.requests[0];
+      assert.equal(await reader.writeDiagnostics(receipt.epoch, receipt.sequence, [{ kind: "trace", request: {
+        id: savedRequest.id, provider: savedRequest.provider, model: savedRequest.model, startedAt: savedRequest.startedAt,
+        events: [{ request: savedRequest.id, event: "execution", at: now,
+          taskId: "native-write", conversationId: "9", generationTaskId: 999 }],
+      } }]), true);
+      assert.equal((await reader.diagnostics("native-write"))?.requests[0].generationTaskId, 52, "a replay cannot overwrite the committed observation");
+      const unfinished = { ...nativeTool, toolTaskId: 56, name: "unfinished" };
+      writer.observeTool({ ...unfinished, phase: "start", at: now });
+      await writer.flush();
+      const fallback = new TaskDiagnosticsRepository(db.connection, new RuntimeAuditReader(undefined, db.connection.name));
+      assert.equal(await reader.writeDiagnostics(receipt.epoch, receipt.sequence + 10,
+        [{ kind: "tool", event: { ...unfinished, phase: "finish", at: now + 5000 } }]), true);
+      assert.equal(fallback.list("native-write").tools.find(tool => tool.name === "unfinished")?.status, "interrupted",
+        "a previous host cannot close an interrupted interval after recovery");
+      const cachedUsage = fallback.usageForConversation("native-write", "9");
+      fallback.observeTrace({ request: savedRequest.id, event: "started", at: now }, model);
+      fallback.observeTrace({ request: savedRequest.id, event: "execution", at: now,
+        taskId: "native-write", conversationId: "9", generationTaskId: 52 }, model);
+      fallback.observeTrace({ request: savedRequest.id, event: "result", at: now,
+        reportedUsage: { input: 99, output: 0, cacheRead: 0, cacheWrite: 0 } }, model);
+      assert.deepEqual(fallback.usageForConversation("native-write", "9"), cachedUsage,
+        "a replay after reopening cannot replace settled usage or count it twice");
+      assert.deepEqual(fallback.usageForGeneration("native-write", "9", 52), immediate);
+      fallback.observeTool({ ...nativeTool, toolTaskId: 57, name: "host-fallback", phase: "finish", at: now });
+      const fallbackTrace = tracer.start(model, "fallback-trace", undefined, event => fallback.observeTrace(event, model));
+      fallbackTrace.identify({ taskId: "native-write", conversationId: "9", generationTaskId: 53, sourceKind: "main" });
+      fallbackTrace.received(fallbackTrace.sent("https://fixture.invalid", { body }), 200);
+      fallbackTrace.result(result);
+      await fallback.flush();
+      assert.equal(fallback.list("native-write").tools.find(tool => tool.name === "host-fallback")?.status, "completed");
+      assert.equal(fallback.list("native-write").requests.find(row => row.generationTaskId === 53)?.attempts[0]?.httpStatus, 200);
+
+      const pressure = new TaskDiagnosticsRepository(db.connection, reader);
+      const send = reader.writeDiagnostics.bind(reader);
+      let releaseAck!: () => void;
+      let workerCommitted!: (success: boolean) => void;
+      const heldAck = new Promise<void>(resolve => { releaseAck = resolve; });
+      const committed = new Promise<boolean>(resolve => { workerCommitted = resolve; });
+      reader.writeDiagnostics = async (...args) => {
+        workerCommitted(await send(...args));
+        await heldAck;
+        return false;
+      };
+      try {
+        const burst = { ...nativeTool, toolTaskId: 58, name: "queued-under-pressure" };
+        pressure.observeTool({ ...burst, phase: "start", at: now });
+        assert(await committed, "Rust committed the start before the delayed acknowledgement");
+        for (let index = 0; index < 512; index += 1) {
+          pressure.observeTool({ ...burst, phase: "finish", at: now + 1000 + index });
+        }
+        const finished = pressure.list("native-write").tools.find(tool => tool.name === burst.name);
+        assert.equal(finished?.observedMs, 1000);
+        assert.equal(finished?.status, "completed");
+        await pressure.flush();
+      } finally {
+        releaseAck();
+        reader.writeDiagnostics = send;
+      }
+      console.log("PASS Rust diagnostic writes, same-turn accounting, replay and task deletion");
+
+      db.connection.prepare("UPDATE task_request_diagnostics SET record_json='{}' WHERE request_id=?").run(native.requests[0].id);
+      assert.equal(await reader.diagnostics("task"), undefined);
+      const retained = diagnostics.list("task");
+      assert.equal(retained.unavailable, undefined);
+      assert.equal(retained.requests.length, native.requests.length - 1);
+      console.log("PASS native audit snapshot history and diagnostic totals");
+    } finally { await reader.close(); }
+  }
+  assert.equal(snapshots.clear("task"), 2);
+  assert.equal(countPayloads.get(), 0, "deleting the last reference removes the payload");
   console.log("PASS request retries, raw usage presence, idempotent recovery, wait subtraction and account coverage");
 } finally { db.close(); }
 assert.doesNotThrow(() => diagnostics.observeTool({ phase: "finish", taskId: "task", conversationId: "7", toolTaskId: 99, callId: "closed", name: "read", sourceKind: "main", at: Date.now() }));

@@ -9,12 +9,13 @@ import { CronService, type CronAgent } from "../src/main/cron/CronService";
 import { registerLocalWorkflowTools } from "../src/main/capabilities/local-workflow-extension";
 import type { TaskTerminalService } from "../src/main/terminal/TaskTerminalService";
 import { isDangerousTool } from "../src/shared/pi-event-mapper";
+import type { CronJobDto, CronRunDto } from "../src/shared/agent-ipc";
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-export async function testAutomationLifecycle() {
+export async function testAutomationLifecycle(dbOptions: { runtimeAuditExecutable?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "automation-lifecycle-"));
-  const db = new AppDatabase(join(root, "app.db"));
+  const db = new AppDatabase(join(root, "app.db"), dbOptions);
   mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.UTC(2035, 1, 1) });
   let release = () => {};
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -59,12 +60,19 @@ export async function testAutomationLifecycle() {
       db.insertCronRun({ id, jobId: history.id, startedAt: stamp, status, error: status === "success" ? undefined : status + " reason" });
     }
     db.insertCronRun({ id: "different", jobId: unrelated.id, startedAt: stamp + 1, status: "success" });
-    const first = cron.runPageForTask("source", history.id, 2);
+    const catalog = (await invoke({ action: "list" })).details as { jobs: CronJobDto[] };
+    assert.deepEqual(catalog.jobs.map(job => job.name).sort(), ["due", "history", "second own plan"]);
+    assert.equal(catalog.jobs.find(job => job.name === "history")?.runCount, 2, "skipped attempts use no quota");
+    const scoped = (await invoke({ action: "runs" })).details as CronRunDto[];
+    assert.deepEqual(scoped.map(run => run.id), ["c", "b", "a"]);
+    assert.deepEqual((await cron.listRuns(2)).map(run => run.id), ["different", "c"]);
+    type RunPage = Awaited<ReturnType<CronService["runPageForTask"]>>;
+    const first = (await invoke({ action: "runs", id: history.id, limit: 2 })).details as RunPage;
     assert.deepEqual(first.runs.map(r => r.id), ["c", "b"]);
     assert.equal(first.runs[0].error, "skipped reason");
     assert(first.nextCursor);
     db.insertCronRun({ id: "newer", jobId: history.id, startedAt: stamp + 1, status: "success" });
-    const next = cron.runPageForTask("source", history.id, 2, first.nextCursor);
+    const next = (await invoke({ action: "runs", id: history.id, limit: 2, cursor: first.nextCursor })).details as RunPage;
     assert.deepEqual(next.runs.map(r => r.id), ["a"], "stable page boundary even with tied timestamps and a new run");
     assert.equal(next.nextCursor, null);
     assert((await invoke({ action: "runs", id: otherOwned.id, cursor: first.nextCursor })).isError, "cursor bound to its job");
@@ -109,6 +117,7 @@ export async function testAutomationLifecycle() {
     } finally { reopened.close(); }
     console.log("PASS automation detail, scoped tied-timestamp paging, durable soft-cancel, and in-flight completion");
   } finally {
-    release(); await flush(); cron.stop(); db.close(); mock.timers.reset(); rmSync(root, { recursive: true, force: true });
+    release(); await flush(); cron.stop(); await db.runtimeAuditReader?.close(); db.close(); mock.timers.reset();
+    rmSync(root, { recursive: true, force: true });
   }
 }

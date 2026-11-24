@@ -171,7 +171,7 @@ export class DotsActions {
   private controlRecovery?: Promise<void>;
 
   constructor(private readonly db: AppDatabase, private readonly agent: Agent & DiagnosticAgent, private readonly hooks: DotsActionHooks,
-    private readonly board = new TaskBoardRepository(db.connection)) {
+    private readonly board = new TaskBoardRepository(db.connection, db.runtimeAuditReader)) {
     this.foreground = new DotsForegroundReads(db.connection);
     this.deferred = new DotsDeferredRequirements(db.connection);
     db.connection.exec(`CREATE TABLE IF NOT EXISTS dots_control_batches(id TEXT PRIMARY KEY, selection TEXT NOT NULL);
@@ -952,15 +952,15 @@ ${input.text}`),
       return { id: task.id, ...dotsTextPage(text, task.id, textRef, offset ?? 0, textVersion), messages: [], deliveries: [] };
     }
     const history = await this.agent.loadTaskHistory(task.id, beforeEntryId, "current");
+    checkScope();
+    const expanded = detail === "execution";
+    const observation = await this.agent.getTaskDiagnostics(task.id, expanded ? dotsExecutionPageSize : 30, offset);
+    const progress = (await this.board.page({ view: "all" }, Date.now(), { taskId: checkScope().id })).rows[0];
     const current = checkScope();
-
     const summary = this.summary(current);
-    const progress = this.board.page({ view: "all" }, Date.now(), { taskId: current.id }).rows[0];
     const goals = this.agent.getConversationGoals().listByTask(current.id).map(({ id, title, description, status, criteria }) => ({
       id, title, description, status, criteria,
     }));
-    const expanded = detail === "execution";
-    const observation = this.agent.getTaskDiagnostics(current.id, expanded ? dotsExecutionPageSize : 30, offset);
     const diagnostics = dotsTaskExecutionDiagnostics(history, observation, expanded);
     const failures = this.agent.getTaskFailuresForDiagnosis(current.id)
       .map(({ id, causeCode, phase, sideEffects, message, nextAction, createdAt, resolvedAt, dismissedAt }) => ({
@@ -1084,7 +1084,7 @@ ${input.text}`),
             ...this.delegationExcerpt(task.id, item.id, result.text, 1200, query), artifacts: artifacts.slice(0, 10) });
           if (hits.length === offset + 21) break;
         }
-        const page = this.board.page({view:"all", scope:input.spaceId, cursor:input.cursor}, Date.now(),
+        const page = await this.board.page({view:"all", scope:input.spaceId, cursor:input.cursor}, Date.now(),
           {taskId:input.targetTaskId,spaceIds:this.preferences.spaceIds});
         const delegated = new Set(links.map(item => item.id));
         const batch = page.rows.slice(0,4);

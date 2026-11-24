@@ -73,7 +73,7 @@ export async function testAutomationUpdate() {
     mock.timers.tick(60000); await drain();
     assert.equal(prompts.length, 2); assert.equal(prompts[1].text, "later");
     assert.equal(db.getCronJob(job.id)?.runCount, 2);
-    assert.equal(cron.runsForTask("source").length, 2, "history remains under original ID");
+    assert.equal((await cron.runsForTask("source")).length, 2, "history remains under original ID");
     cron.changeForTask("source", job.id, "pause");
     const paused = db.getCronJob(job.id)!;
     await invoke({ action: "update", id: job.id, name: "Paused edit", max_runs: 3 });

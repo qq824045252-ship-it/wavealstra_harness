@@ -1,0 +1,19 @@
+[package]
+name = "mybuddy-runtime-audit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+icu_casemap = "=2.3.0"
+icu_locale_core = "=2.3.0"
+icu_normalizer = "=2.3.0"
+icu_properties = "=2.3.0"
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "api-24"] }
+rusqlite = { version = "=0.32.1", features = ["bundled", "functions"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+sha2 = "=0.10.9"
+
+[profile.release]
+strip = "symbols"

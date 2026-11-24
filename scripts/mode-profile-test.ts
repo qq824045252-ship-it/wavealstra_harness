@@ -303,18 +303,17 @@ async function main(): Promise<void> {
   const existingOffice = store.getProfile("working").policy;
   writeFileSync(working.policyPath, JSON.stringify({ ...existingOffice, presets: existingOffice.presets?.filter(p => p.id !== "web-prototype") }));
   const migrated = store.getProfile("working");
+  // Penpot tag（web-prototype）已退役：磁盘残留项读时剔除，出厂也不再回补。
   const penpot = migrated.policy.presets?.find(p => p.id === "web-prototype");
-  assert(penpot?.label === "Penpot" && penpot.promptAddon === "Penpot：最新提示词", "重命名且保留最新旧提示词");
-  assert(penpot?.suggestedModelId === "custom-model", "保留旧模型推荐");
-  assert(penpot?.suggestedModelId !== "design-only-model", "design 目录的旧模型推荐不再被读取");
-  assert(penpot?.providerMcpIds?.includes("penpot") && penpot.mcpPolicy?.allow.includes("penpot"), "保留 Penpot MCP 能力");
-  assert(penpot?.requiredRuntimes?.some(r => typeof r !== "string" && r.providerId === "penpot" && r.launchPolicy === "backend" && r.readinessPolicy === "http" && r.openUi === "browser"), "保留后端启动、HTTP 就绪与浏览器打开");
+  assert(!penpot, "退役 Penpot 不再出现在办公列表");
+  assert(migrated.policy.presets?.some(p => p.id === "general-office"), "办公 seed 仍保留通用办公");
   const cleanBot = store.getProfile("general");
   assert(!cleanBot.policy.presets?.some(p => ["general", "web-prototype"].includes(p.id)), "旧磁盘 Tag 不在 Bot 复活");
   assert(cleanBot.policy.presets?.some(p => p.id === "custom-bot"), "保留其它自定义 Bot Tag");
-  store.savePolicy("working", { ...migrated.policy, presets: migrated.policy.presets?.map(p => p.id === "web-prototype" ? { ...p, promptAddon: "办公编辑优先" } : p) });
-  const reloadedPenpot = new ModeProfileStore().getProfile("working").policy.presets?.find(p => p.id === "web-prototype");
-  assert(reloadedPenpot?.promptAddon === "办公编辑优先" && reloadedPenpot.label === "Penpot", "重开后办公修改优先于旧配置");
+  store.savePolicy("working", migrated.policy);
+  const reloaded = new ModeProfileStore().getProfile("working");
+  assert(reloaded.policy.presets?.some(p => p.id === "general-office"), "重开后办公 seed 仍保留");
+  assert(!reloaded.policy.presets?.some(p => p.id === "web-prototype"), "重开后退役 Penpot 不再复活");
 
   console.log(`\n[mode-profile-test] ${passed} passed, ${failed} failed`);
   try {

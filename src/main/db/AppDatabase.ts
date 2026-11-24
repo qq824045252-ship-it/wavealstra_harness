@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
+import { RuntimeAuditReader } from "../platform/runtime-audit";
 import {
   normalizeStoredAuditInstructions,
   runtimeAuditStorageBytes,
@@ -106,8 +107,8 @@ function isExistingDirectory(p: string | null): boolean {
 }
 
 /** tasks 表行（含迁移补列），供 getTask/listTasks 共用映射 */
-interface TaskRow {
-  gateway_sidebar_channel_id?: string;
+export interface TaskRow {
+  gateway_sidebar_channel_id?: string | null;
   id: string;
   title: string;
   space_id: string | null;
@@ -289,6 +290,7 @@ function resetIncompatibleDatabaseFile(dbPath: string): void {
 
 export class AppDatabase {
   private readonly db: Database.Database;
+  readonly runtimeAuditReader?: RuntimeAuditReader;
   private expertBindingReader?: (taskId: string) => import("../../shared/expert-binding").TaskExpertBindingDto | null;
   /** List projection reads every task's binding in one query instead of one per row. */
   private expertBindingBatchReader?: (taskIds: readonly string[]) => Map<string, import("../../shared/expert-binding").TaskExpertBindingDto | null>;
@@ -301,7 +303,7 @@ export class AppDatabase {
     this.expertBindingBatchReader = reader;
   }
 
-  constructor(dbPath = getDbPath()) {
+  constructor(dbPath = getDbPath(), options: { runtimeAuditExecutable?: string } = {}) {
     resetIncompatibleDatabaseFile(dbPath);
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
@@ -315,6 +317,7 @@ export class AppDatabase {
       throw new Error(`数据库初始化失败：${cause instanceof Error ? cause.message : String(cause)}`);
     }
     this.db.pragma("foreign_keys = ON");
+    if (options.runtimeAuditExecutable) this.runtimeAuditReader = new RuntimeAuditReader(options.runtimeAuditExecutable, this.db.name);
   }
 
   /** 共享 SQLite 连接（ArtifactRepository 复用同一连接，§6：优先使用现有 SQLite） */
@@ -1911,6 +1914,18 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_project_todos_project
         ON project_todos(project_id, updated_at DESC);
 
+      CREATE TABLE IF NOT EXISTS runtime_audit_payloads (
+        hash TEXT PRIMARY KEY NOT NULL,
+        body TEXT NOT NULL
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS runtime_snapshot_writer (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        epoch INTEGER NOT NULL,
+        write_id TEXT NOT NULL,
+        result INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO runtime_snapshot_writer VALUES (1, 0, '', 0);
+
       CREATE TABLE IF NOT EXISTS task_runtime_context_snapshots (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -1988,6 +2003,8 @@ export class AppDatabase {
       ["model_id", "TEXT"],
       ["permission_mode", "TEXT"],
       ["storage_bytes", "INTEGER NOT NULL DEFAULT 0"],
+      ["instructions_hash", "TEXT REFERENCES runtime_audit_payloads(hash)"],
+      ["capabilities_hash", "TEXT REFERENCES runtime_audit_payloads(hash)"],
     ];
     for (const [name, definition] of runtimeSnapshotMigrations) {
       if (!runtimeSnapshotColumnNames.has(name)) {
@@ -2002,6 +2019,21 @@ export class AppDatabase {
       WHERE execution_id IS NULL OR started_at IS NULL OR assembly_hash IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runtime_snapshots_execution
         ON task_runtime_context_snapshots(execution_id);
+      CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_instructions_hash
+        ON task_runtime_context_snapshots(instructions_hash) WHERE instructions_hash IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_capabilities_hash
+        ON task_runtime_context_snapshots(capabilities_hash) WHERE capabilities_hash IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_runtime_snapshots_inline_payloads
+        ON task_runtime_context_snapshots(id) WHERE instructions_hash IS NULL OR capabilities_hash IS NULL;
+      CREATE TRIGGER IF NOT EXISTS runtime_snapshot_delete_payloads
+      AFTER DELETE ON task_runtime_context_snapshots
+      WHEN OLD.instructions_hash IS NOT NULL OR OLD.capabilities_hash IS NOT NULL
+      BEGIN
+        DELETE FROM runtime_audit_payloads
+        WHERE hash IN (OLD.instructions_hash, OLD.capabilities_hash)
+          AND NOT EXISTS (SELECT 1 FROM task_runtime_context_snapshots WHERE instructions_hash = runtime_audit_payloads.hash)
+          AND NOT EXISTS (SELECT 1 FROM task_runtime_context_snapshots WHERE capabilities_hash = runtime_audit_payloads.hash);
+      END;
     `);
 
     // V2 Workspace Tree（schema v13）：spaces 自引用层级 + 显式排序（只加列/索引，零数据破坏）。
@@ -2856,16 +2888,22 @@ export class AppDatabase {
   }
 
   listTasks(): TaskDto[] {
-    const rows = this.db
+    return this.projectTaskRows(this.taskListRows(false));
+  }
+
+  private taskListRows(excludeTrashed: boolean): TaskRow[] {
+    const visibility = excludeTrashed ? `AND NOT EXISTS (
+      SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id = tasks.id AND w.state = 'trashed'
+    )` : "";
+    return this.db
       .prepare(
         `SELECT id, title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode,
                 model_id, permission_mode, archived, expert_id, mode_preset_id, start_at, due_at,
                 space_sort_order, is_favorited, external_agent_pin_json, done_acked_at,
                 (SELECT g.channel_id FROM gateway_sidebar_conversations g WHERE g.task_id = tasks.id) AS gateway_sidebar_channel_id
-         FROM tasks WHERE id != ? ORDER BY updated_at DESC`,
+         FROM tasks WHERE id != ? ${visibility} ORDER BY updated_at DESC, rowid`,
       )
       .all(DOTS_TASK_ID) as TaskRow[];
-    return this.projectTaskRows(rows);
   }
 
   /** Batch readers keep list projection at one query per relation regardless of task count. */
@@ -2881,11 +2919,20 @@ export class AppDatabase {
    * trashed 任务行会保留至 purge，仅用于恢复/审计，不应在重启后重新出现在归档管理或任务列表。
    */
   listNonTrashedTasks(): TaskDto[] {
-    const trashedIds = new Set(
-      this.listTaskExecutionWorkspaceStates({ state: "trashed" }).map((row) => row.taskId),
+    return this.projectTaskRows(this.taskListRows(true));
+  }
+
+  async readNonTrashedTasks(options: { includeExpertBindings?: boolean } = {}): Promise<TaskDto[]> {
+    const includeExpertBindings = options.includeExpertBindings !== false;
+    const rows = await this.runtimeAuditReader?.taskList(
+      DOTS_TASK_ID, includeExpertBindings && this.expertBindingBatchReader !== undefined,
     );
-    if (trashedIds.size === 0) return this.listTasks();
-    return this.listTasks().filter((task) => !trashedIds.has(task.id));
+    if (!rows) return includeExpertBindings ? this.listNonTrashedTasks() :
+      this.taskListRows(true).map(row => this.mapTaskRow(row));
+    if (includeExpertBindings && !this.expertBindingBatchReader && this.expertBindingReader) {
+      return this.projectTaskRows(rows);
+    }
+    return rows.map(row => this.mapTaskRow(row, row.expertBinding));
   }
 
   /** 按 id 查询任务；不存在返回 undefined（P0 §6：主进程权威 cwd 读回） */
@@ -3744,6 +3791,11 @@ export class AppDatabase {
     return rows.map((r) => this.rowToCronJob(r));
   }
 
+  async readCronJobs(): Promise<CronJobDto[]> {
+    const rows = await this.runtimeAuditReader?.cronData<Array<Record<string, unknown>>>({ kind: "jobs" });
+    return rows?.map(row => this.rowToCronJob(row)) ?? this.listCronJobs();
+  }
+
   upsertCronJob(job: CronJobDto): void {
     const executionJson = JSON.stringify({
       reminder: job.reminder,
@@ -3870,9 +3922,17 @@ export class AppDatabase {
     if (jobIds?.length === 0) return [];
 
     const rows = this.db
-      .prepare(`SELECT * FROM cron_runs ${jobIds ? `WHERE job_id IN (${jobIds.map(() => "?").join(",")})` : ""} ORDER BY started_at DESC LIMIT ?`)
+      .prepare(`SELECT * FROM cron_runs ${jobIds ? `WHERE job_id IN (${jobIds.map(() => "?").join(",")})` : ""} ORDER BY started_at DESC, id DESC LIMIT ?`)
       .all(...(jobIds ?? []), limit) as Array<Record<string, unknown>>;
     return rows.map(row => this.rowToCronRun(row));
+  }
+
+  async readCronRuns(limit = 50, jobIds?: string[]): Promise<CronRunDto[]> {
+    if (jobIds?.length === 0) return [];
+    const rows = Number.isSafeInteger(limit) ? await this.runtimeAuditReader?.cronData<Array<Record<string, unknown>>>(
+      { kind: "runs", limit, jobIds },
+    ) : undefined;
+    return rows?.map(row => this.rowToCronRun(row)) ?? this.listCronRuns(limit, jobIds);
   }
 
   listCronJobRuns(jobId: string, limit: number, before?: { startedAt: number; id: string }, status?: CronRunDto["status"]): CronRunDto[] {
@@ -3886,6 +3946,18 @@ export class AppDatabase {
     const query = "SELECT * FROM cron_runs WHERE " + clauses.join(" AND ") + " ORDER BY started_at DESC, id DESC LIMIT ?";
     const rows = this.db.prepare(query).all(...values, limit) as Array<Record<string, unknown>>;
     return rows.map(row => this.rowToCronRun(row));
+  }
+
+  async readCronJobRuns(jobId: string, limit: number, before?: { startedAt: number; id: string }): Promise<CronRunDto[]> {
+    const rows = await this.runtimeAuditReader?.cronData<Array<Record<string, unknown>>>({ kind: "jobRuns", jobId, limit, before });
+    return rows?.map(row => this.rowToCronRun(row)) ?? this.listCronJobRuns(jobId, limit, before);
+  }
+
+  async readCronRunInput(runId: string): Promise<string | undefined> {
+    const result = await this.runtimeAuditReader?.cronData<string | null>({ kind: "runInput", runId });
+    if (result !== undefined) return result ?? undefined;
+    return (this.db.prepare("SELECT request_json FROM cron_run_inputs WHERE run_id = ?").get(runId) as
+      { request_json: string } | undefined)?.request_json;
   }
 
   private rowToCronRun(r: Record<string, unknown>): CronRunDto {
@@ -4001,6 +4073,7 @@ export class AppDatabase {
   }
 
   close(): void {
+    void this.runtimeAuditReader?.close();
     this.db.close();
   }
 

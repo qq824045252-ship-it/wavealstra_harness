@@ -1,9 +1,11 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import type { ModelRequestDiagnostic, TaskDiagnosticsDto, ToolDiagnosticEvent, WaitDiagnostic } from "../../shared/task-diagnostics";
+import type { ConversationUsageReceipt, ModelRequestDiagnostic, TaskDiagnosticsDto, ToolDiagnosticEvent, WaitDiagnostic } from "../../shared/task-diagnostics";
 import type { CacheTraceRecord } from "./CacheRequestTracer";
 import type { DiagnosticModel } from "./CacheRequestTrace";
 import { unknownTokenUsage } from "./ReportedTokenUsage";
+import type { RuntimeAuditReader, RuntimeDiagnosticWrite } from "../platform/runtime-audit";
+import { TaskDiagnosticWrites } from "./TaskDiagnosticWrites";
 
 const nullableNumber = z.number().finite().nullable();
 const usageSchema = z.object({ input: nullableNumber, output: nullableNumber, cacheRead: nullableNumber, cacheWrite: nullableNumber });
@@ -28,6 +30,27 @@ const traceSchema = z.object({
   stage: z.string().optional(), attempt: z.number().optional(), status: nullableNumber.optional(), coverage: z.string().optional(),
   previous: z.object({ request: z.string(), prefix: z.boolean().nullable(), changedFields: z.array(z.string()) }).nullable().optional(),
 });
+const projectedTraceEvents = new Set(["started", "execution", "first-response", "request", "http-result", "result"]);
+export type RuntimeDiagnosticTrace = z.infer<typeof traceSchema>;
+export type DiagnosticUsageReceipt = Pick<ModelRequestDiagnostic,
+  "id" | "taskId" | "executionScope" | "conversationId" | "generationTaskId" | "startedAt" | "usage"> & {
+  terminal: boolean;
+  finished: boolean;
+  costTotal: number | null;
+};
+interface ObservedRequest {
+  startedAt: number;
+  beforeExecution: RuntimeDiagnosticTrace[];
+  receipt?: DiagnosticUsageReceipt;
+}
+
+function usageReceipt(row: Omit<ModelRequestDiagnostic, "executionId">): DiagnosticUsageReceipt {
+  return { id: row.id, taskId: row.taskId, executionScope: row.executionScope,
+    conversationId: row.conversationId, generationTaskId: row.generationTaskId, startedAt: row.startedAt,
+    usage: row.usage, costTotal: row.costComplete ? row.knownCostUsd : null,
+    terminal: row.status !== "running", finished: row.finishedAt !== null };
+}
+
 const recordRow = z.object({ record_json: z.string() });
 const intervalSchema = z.object({ start: z.number(), end: z.number() });
 const toolSchema = z.object({
@@ -107,10 +130,13 @@ function overlapMs(intervals: Interval[], waits: Interval[]): number {
 
 /** A bounded, idempotent projection of observations; it never owns or resumes work. */
 export class TaskDiagnosticsRepository {
-  private readonly pending = new Map<string, ModelRequestDiagnostic>();
+  // Keep the request envelope and immediate billing fields available before the worker commits.
+  private readonly observations = new Map<string, ObservedRequest>();
   private readonly conversationUsage = new Map<string, ConversationUsage>();
+  private readonly writes?: TaskDiagnosticWrites;
+  private closed = false;
   private unavailable: string | undefined;
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: Database.Database, reader?: RuntimeAuditReader) {
     try {
     db.exec(`CREATE TABLE IF NOT EXISTS task_request_diagnostics (
       request_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
@@ -124,41 +150,124 @@ export class TaskDiagnosticsRepository {
       CREATE INDEX IF NOT EXISTS idx_scope_tool_diagnostics ON scope_tool_diagnostics(task_id,started_at);
       CREATE INDEX IF NOT EXISTS idx_task_request_scope ON task_request_diagnostics(json_extract(record_json,'$.executionScope'),started_at);
       CREATE INDEX IF NOT EXISTS idx_task_diagnostic_waits ON conversation_interactions(task_id, execution_id);`);
-    // A process restart loses the observation interval. Keep that gap unknown rather than charging downtime.
-    db.prepare(`UPDATE task_request_diagnostics SET record_json=json_set(record_json,'$.status','interrupted')
-      WHERE json_extract(record_json,'$.status')='running'`).run();
-    db.prepare(`UPDATE task_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
-      WHERE json_extract(record_json,'$.status')='running'`).run();
-    db.prepare(`UPDATE scope_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
-      WHERE json_extract(record_json,'$.status')='running'`).run();
+    this.writes = db.transaction(() => {
+      let writes: TaskDiagnosticWrites | undefined;
+      if (reader) {
+        try { writes = new TaskDiagnosticWrites(db, reader, write => this.writeOnHost(write)); }
+        catch { /* Synchronous persistence remains available. */ }
+      }
+      // Fence out the previous process before marking its observation intervals interrupted.
+      db.prepare(`UPDATE task_request_diagnostics SET record_json=json_set(record_json,'$.status','interrupted')
+        WHERE json_extract(record_json,'$.status')='running'`).run();
+      db.prepare(`UPDATE task_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
+        WHERE json_extract(record_json,'$.status')='running'`).run();
+      db.prepare(`UPDATE scope_tool_diagnostics SET record_json=json_set(record_json,'$.status','interrupted','$.complete',json('false'),'$.segmentStartedAt',NULL)
+        WHERE json_extract(record_json,'$.status')='running'`).run();
+      return writes;
+    }).immediate();
     } catch { this.unavailable = "本次启动未能打开诊断存储，执行功能仍可使用"; }
   }
 
-  observeTrace(record: CacheTraceRecord, model: DiagnosticModel): void {
-    if (this.unavailable) return;
-    try { this.applyTrace(record, model); } catch { /* Diagnostics must not affect execution. */ }
+  async flush(): Promise<void> {
+    await this.writes?.flush();
   }
 
-  private applyTrace(record: CacheTraceRecord, model: DiagnosticModel): void {
-    const parsed = traceSchema.safeParse(record);
-    if (!parsed.success) return;
-    const event = parsed.data;
-    let value: ModelRequestDiagnostic | undefined = this.pending.get(event.request);
-    if (!value) {
-      const row = recordRow.optional().parse(this.db.prepare("SELECT record_json FROM task_request_diagnostics WHERE request_id=?").get(event.request));
-      const stored = row ? requestSchema.parse(JSON.parse(row.record_json)) : null;
-      value = stored
+  closeWrites(): Promise<void> {
+    this.closed = true;
+    return this.flush();
+  }
+
+  observeTrace(record: CacheTraceRecord, model: DiagnosticModel): void {
+    if (this.closed || this.unavailable || typeof record.event !== "string" || !projectedTraceEvents.has(record.event)) return;
+    try {
+      const parsed = traceSchema.safeParse(record);
+      if (parsed.success) this.queueTrace(parsed.data, model);
+    } catch { /* Diagnostics must not affect execution. */ }
+  }
+
+  private loadRequest(id: string) {
+    const row = recordRow.optional().parse(this.db.prepare("SELECT record_json FROM task_request_diagnostics WHERE request_id=?").get(id));
+    if (!row) return undefined;
+    try { return requestSchema.parse(JSON.parse(row.record_json)); }
+    catch { return null; }
+  }
+
+  private queueTrace(event: RuntimeDiagnosticTrace, model: DiagnosticModel): void {
+    let observed = this.observations.get(event.request);
+    if (!observed || (!observed.receipt && event.event === "execution")) {
+      const staged = event.event === "started" ? undefined : this.writes?.requestReceipts().get(event.request);
+      const stored = !staged && event.event !== "started" ? this.loadRequest(event.request) : undefined;
+      if (stored === null) return;
+      const receipt = staged ?? (stored ? usageReceipt(stored) : undefined);
+      if (!observed) {
+        observed = { startedAt: receipt?.startedAt ?? event.startedAt ?? event.at, beforeExecution: [], receipt };
+        this.observations.set(event.request, observed);
+        if (this.observations.size > 256) this.observations.delete(this.observations.keys().next().value!);
+      } else if (receipt) {
+        observed.startedAt = receipt.startedAt;
+        observed.receipt = receipt;
+      }
+    }
+    const previous = observed.receipt;
+    if (previous?.finished && event.event === "result") return;
+    let receipt = previous;
+    const { conversationId, generationTaskId } = event;
+    if (event.event === "execution" && conversationId && generationTaskId !== undefined) {
+      const scope = event.executionScope ?? event.taskId ?? "global";
+      const taskId = event.taskId && this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId) ? event.taskId : null;
+      // Scope reflects the original invocation. The task FK reflects current ownership.
+      event = { ...event, taskId: taskId ?? undefined, executionScope: scope };
+      receipt = { id: event.request, taskId, executionScope: scope, conversationId,
+        generationTaskId, startedAt: observed.startedAt, usage: previous?.usage ?? unknownTokenUsage(),
+        terminal: previous?.terminal ?? false, finished: previous?.finished ?? false, costTotal: previous?.costTotal ?? null };
+    }
+    if (!receipt) {
+      if (observed.beforeExecution.length < 64) observed.beforeExecution.push(event);
+      return;
+    }
+    const events = [...observed.beforeExecution, event];
+    observed.beforeExecution = [];
+    if (!receipt.finished) {
+      const result = events.find(item => item.event === "result");
+      if (result) receipt = { ...receipt, terminal: true, finished: true, usage: result.reportedUsage ?? unknownTokenUsage(),
+        costTotal: result.nativeCostComplete ? result.nativeCostTotal ?? null : null };
+    }
+    observed.receipt = receipt;
+    this.write({ kind: "trace", request: { id: event.request, provider: model.provider, model: model.id,
+      startedAt: observed.startedAt, events } }, receipt);
+    if (receipt.terminal && !previous?.terminal && receipt.taskId && receipt.executionScope === receipt.taskId) {
+      const summary = this.conversationUsage.get(JSON.stringify([receipt.taskId, receipt.conversationId]));
+      if (summary) addUsage(summary, receipt.usage);
+    } else if (previous?.terminal && (receipt.finished !== previous.finished || receipt.taskId !== previous.taskId ||
+      receipt.conversationId !== previous.conversationId || receipt.executionScope !== previous.executionScope)) {
+      this.conversationUsage.delete(JSON.stringify([previous.taskId, previous.conversationId]));
+      this.conversationUsage.delete(JSON.stringify([receipt.taskId, receipt.conversationId]));
+    }
+  }
+
+  private writeTraceOnHost(request: Extract<RuntimeDiagnosticWrite, { kind: "trace" }>["request"]): void {
+    const stored = this.loadRequest(request.id);
+    if (stored === null) return;
+    const value: ModelRequestDiagnostic = stored
         ? { ...stored, executionId: stored.executionId ?? requestExecutionId(stored) }
         : {
-          id: event.request, taskId: null, executionScope: "", conversationId: "", generationTaskId: 0, executionId: "", sourceKind: "main",
-          provider: model.provider, model: model.id, startedAt: event.startedAt ?? event.at, firstResponseAt: null, finishedAt: null,
+          id: request.id, taskId: null, executionScope: "", conversationId: "", generationTaskId: 0, executionId: "", sourceKind: "main",
+          provider: request.provider, model: request.model, startedAt: request.startedAt, firstResponseAt: null, finishedAt: null,
           modelMs: null, status: "running", outcome: null, error: null, usage: unknownTokenUsage(), usageSource: null,
           knownCostUsd: null, costComplete: false, costSource: null, attempts: [],
           cacheContext: { previousRequestId: null, prefixStable: null, changedFields: [], coverage: "unobserved" },
         };
-    }
+    for (const event of request.events) this.reduceTraceOnHost(value, event);
+    if (!value.conversationId) return;
+    this.db.prepare(`INSERT INTO task_request_diagnostics
+      SELECT @id,@taskId,@startedAt,@json WHERE @taskId IS NULL OR EXISTS(SELECT 1 FROM tasks WHERE id=@taskId)
+      ON CONFLICT(request_id) DO UPDATE SET record_json=excluded.record_json,task_id=excluded.task_id`)
+      .run({ id: value.id, taskId: value.taskId, startedAt: value.startedAt, json: JSON.stringify(value) });
+  }
+
+  private reduceTraceOnHost(value: ModelRequestDiagnostic, event: RuntimeDiagnosticTrace): void {
     if (event.event === "execution" && event.conversationId && event.generationTaskId !== undefined) {
-      value.taskId = event.taskId && this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId) ? event.taskId : null;
+      value.taskId = event.taskId ?? null;
       value.executionScope = event.executionScope ?? event.taskId ?? "global";
       value.conversationId = event.conversationId; value.generationTaskId = event.generationTaskId;
       value.sourceKind = event.sourceKind ?? "main";
@@ -168,7 +277,7 @@ export class TaskDiagnosticsRepository {
     if (event.event === "first-response") value.firstResponseAt ??= event.at;
     if (event.event === "request") {
       if (event.stage === "http" && event.attempt && !value.attempts.some(item => item.number === event.attempt)) {
-        value.attempts.push({ number: event.attempt, startedAt: event.at, finishedAt: null, httpStatus: null });
+        value.attempts = [...value.attempts, { number: event.attempt, startedAt: event.at, finishedAt: null, httpStatus: null }];
       }
       if (event.previous?.request !== value.id && (event.stage === "http" || value.cacheContext.coverage === "unobserved")) value.cacheContext = {
         previousRequestId: event.previous?.request ?? null, prefixStable: event.previous?.prefix ?? null,
@@ -176,8 +285,8 @@ export class TaskDiagnosticsRepository {
       };
     }
     if (event.event === "http-result") {
-      const attempt = value.attempts.find(item => item.number === event.attempt);
-      if (attempt) { attempt.finishedAt = event.at; attempt.httpStatus = event.status ?? null; }
+      value.attempts = value.attempts.map(item => item.number === event.attempt
+        ? { ...item, finishedAt: event.at, httpStatus: event.status ?? null } : item);
     }
     if (event.event === "result") {
       if (value.finishedAt !== null) return;
@@ -190,20 +299,26 @@ export class TaskDiagnosticsRepository {
         ? event.nativeCostTotal ?? null : value.costComplete ? event.nativeCostTotal! : null;
       value.costSource = event.nativeCostSource ?? null;
     }
-    this.pending.set(value.id, value);
-    while (this.pending.size > 256) this.pending.delete(this.pending.keys().next().value!);
-    if (value.conversationId) {
-      this.db.prepare(`INSERT INTO task_request_diagnostics VALUES(?,?,?,?) ON CONFLICT(request_id)
-        DO UPDATE SET record_json=excluded.record_json,task_id=excluded.task_id`).run(value.id, value.taskId, value.startedAt, JSON.stringify(value));
-      if (event.event === "result" && value.taskId && value.executionScope === value.taskId) {
-        const summary = this.conversationUsage.get(JSON.stringify([value.taskId, value.conversationId]));
-        if (summary) addUsage(summary, value.usage);
-      }
-    }
   }
 
   observeTool(event: ToolDiagnosticEvent): void {
-    if (this.unavailable) return;
+    if (this.closed || this.unavailable) return;
+    try {
+      this.write({ kind: "tool", event: { ...event, diagnostics: event.diagnostics?.slice() } });
+    } catch { /* Observation cannot affect the tool outcome. */ }
+  }
+
+  private write(write: RuntimeDiagnosticWrite, receipt?: DiagnosticUsageReceipt): void {
+    if (this.writes) this.writes.add(write, receipt);
+    else this.writeOnHost(write);
+  }
+
+  private writeOnHost(write: RuntimeDiagnosticWrite): void {
+    if (write.kind === "tool") this.writeToolOnHost(write.event);
+    else this.writeTraceOnHost(write.request);
+  }
+
+  private writeToolOnHost(event: ToolDiagnosticEvent): void {
     try {
       const scoped = !event.taskId && Boolean(event.executionScope);
       if (!scoped && (!event.taskId || !this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(event.taskId))) return;
@@ -241,7 +356,7 @@ export class TaskDiagnosticsRepository {
     } catch { /* Observation cannot affect the tool outcome. */ }
   }
 
-  usageForConversation(taskId: string, conversationId: string) {
+  usageForConversation(taskId: string, conversationId: string): ConversationUsageReceipt {
     const unknown = { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheHitRate: null };
     if (this.unavailable) return unknown;
     try {
@@ -252,8 +367,15 @@ export class TaskDiagnosticsRepository {
       AND json_extract(record_json,'$.conversationId')=? AND json_extract(record_json,'$.executionScope')=?
       AND json_extract(record_json,'$.status')!='running'`).all(taskId, conversationId, taskId)
       .map(row => requestSchema.parse(JSON.parse(recordRow.parse(row).record_json)));
+      const staged = this.writes?.requestReceipts();
       records = emptyConversationUsage();
-      for (const row of rows) addUsage(records, row.usage);
+      for (const row of rows) {
+        if (!staged?.has(row.id)) addUsage(records, row.usage);
+      }
+      for (const row of staged?.values() ?? []) {
+        if (row.taskId === taskId && row.conversationId === conversationId && row.executionScope === taskId
+          && row.terminal) addUsage(records, row.usage);
+      }
       this.conversationUsage.set(key, records);
       while (this.conversationUsage.size > 32) this.conversationUsage.delete(this.conversationUsage.keys().next().value!);
     }
@@ -275,11 +397,18 @@ export class TaskDiagnosticsRepository {
   usageForGeneration(taskId: string | undefined, conversationId: string, generationTaskId: number, executionScope = taskId ?? "global") {
     if (this.unavailable) return { ...unknownTokenUsage(), costTotal: null };
     try {
-    const row = recordRow.optional().parse(this.db.prepare(`SELECT record_json FROM task_request_diagnostics WHERE task_id IS ?
+    const rows = this.db.prepare(`SELECT request_id,record_json FROM task_request_diagnostics WHERE task_id IS ?
       AND json_extract(record_json,'$.conversationId')=? AND json_extract(record_json,'$.generationTaskId')=?
-      AND json_extract(record_json,'$.executionScope')=? ORDER BY started_at DESC LIMIT 1`).get(taskId ?? null, conversationId, generationTaskId, executionScope));
-    const value = row ? requestSchema.parse(JSON.parse(row.record_json)) : undefined;
-    return { ...(value?.usage ?? unknownTokenUsage()), costTotal: value?.costComplete ? value.knownCostUsd : null };
+      AND json_extract(record_json,'$.executionScope')=? ORDER BY started_at DESC,rowid DESC`)
+      .all(taskId ?? null, conversationId, generationTaskId, executionScope) as Array<{ request_id: string; record_json: string }>;
+    const staged = this.writes?.requestReceipts();
+    const committed = rows.find(row => !staged?.has(row.request_id));
+    let value = committed ? usageReceipt(requestSchema.parse(JSON.parse(committed.record_json))) : undefined;
+    for (const row of staged?.values() ?? []) {
+      if (row.taskId === (taskId ?? null) && row.conversationId === conversationId && row.generationTaskId === generationTaskId
+        && row.executionScope === executionScope && (!value || row.startedAt >= value.startedAt)) value = row;
+    }
+    return { ...(value?.usage ?? unknownTokenUsage()), costTotal: value?.costTotal ?? null };
     } catch { return { ...unknownTokenUsage(), costTotal: null }; }
   }
 
@@ -295,8 +424,8 @@ export class TaskDiagnosticsRepository {
       const rows = this.db.prepare(`SELECT d.record_json FROM task_request_diagnostics d
         WHERE d.task_id=? AND json_valid(d.record_json)
         AND json_extract(d.record_json,'$.executionScope')=d.task_id
-        AND json_array(json_extract(d.record_json,'$.conversationId'),json_extract(d.record_json,'$.generationTaskId'))
-          IN (SELECT value FROM json_each(?))
+        AND (json_extract(d.record_json,'$.conversationId'),json_extract(d.record_json,'$.generationTaskId'))
+          IN (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?))
         ORDER BY d.started_at,d.request_id`)
         .all(taskId, JSON.stringify(generations.map(item => [item.conversationId, item.generationTaskId])));
       return rows.flatMap(row => {

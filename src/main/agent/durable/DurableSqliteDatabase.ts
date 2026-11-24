@@ -4,6 +4,7 @@ import { mkdir, open } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, toNamespacedPath } from 'node:path';
 import type { SqliteDatabase, SqliteExecutor, SqliteValue } from '@earendil-works/pi-durable/storage/sqlite';
+import type { RuntimeAuditDurableSnapshot, RuntimeAuditReader } from '../../platform/runtime-audit';
 
 export interface DurableSqliteDatabaseOptions {
   readonly readonly?: boolean;
@@ -215,6 +216,56 @@ export class DurableSqliteDatabase implements SqliteDatabase {
       this.closing = undefined;
       throw error;
     });
+    return this.closing;
+  }
+}
+
+/** The official Pi reader uses the same pinned transaction for every SELECT in this view. */
+export class DurableRustSqliteDatabase implements SqliteDatabase {
+  private closing?: Promise<void>;
+
+  private constructor(readonly snapshot: RuntimeAuditDurableSnapshot, private readonly release: () => void) {}
+
+  static async open(path: string, reader: RuntimeAuditReader): Promise<DurableRustSqliteDatabase> {
+    const { gate, releaseGate } = gateFor(path);
+    const releaseRead = await gate.read();
+    const release = () => { releaseRead(); releaseGate(); };
+    try {
+      const snapshot = await reader.openDurable(path);
+      if (!snapshot) throw new Error('Rust Durable snapshot is unavailable');
+      return new DurableRustSqliteDatabase(snapshot, release);
+    } catch (error) { release(); throw error; }
+  }
+
+  private async select(sql: string, parameters: SqliteValue[], first: boolean): Promise<unknown> {
+    if (this.closing) throw new Error('Rust Durable snapshot is closing');
+    const scalars = parameters.map(value => {
+      if (value !== null && typeof value !== 'number' && typeof value !== 'string') throw new Error('Invalid Durable SQLite parameter');
+      return value;
+    });
+    const data = await this.snapshot.select(sql, scalars, first);
+    if (data === undefined) throw new Error('Rust Durable SELECT failed');
+    return data;
+  }
+
+  async get<T extends object>(sql: string, ...parameters: SqliteValue[]): Promise<T | undefined> {
+    return (await this.select(sql, parameters, true) ?? undefined) as T | undefined;
+  }
+
+  async all<T extends object>(sql: string, ...parameters: SqliteValue[]): Promise<T[]> {
+    return await this.select(sql, parameters, false) as T[];
+  }
+
+  async exec(): Promise<never> { throw new Error('Rust Durable snapshot is read-only'); }
+  run = this.exec;
+  runCounted = this.exec;
+
+  async transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
+    return callback(this);
+  }
+
+  close(): Promise<void> {
+    this.closing ??= this.snapshot.close().finally(this.release);
     return this.closing;
   }
 }

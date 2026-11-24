@@ -617,7 +617,7 @@ try {
   const experience = reviewed.items.find(item => item.pathHint?.includes("weekly/index.txt") && item.sources.some(source => source.taskId === learning.id));
   assert(experience, "weekly learning reads the Dots worker's matched native failure and success");
   assert(experience.sources.some(source => source.actor === "main" && source.trigger > source.input && source.entry > source.trigger));
-  assert.deepEqual(agent.listKernelMemoryTurns({taskId:learning.id}),[], "worker prose is not a user memory turn");
+  assert.deepEqual(await agent.listKernelMemoryTurns({taskId:learning.id}),[], "worker prose is not a user memory turn");
   const hint = await agent.nativeImprovement.readHints.suggest(learning.id,folder,"index.txt","verify","reuse","test");
   assert(hint?.includes("weekly/index.txt"),"verified task-scoped experience can be reused");
   assert.equal(await agent.nativeImprovement.readHints.suggest(task.id,folder,"index.txt","verify","other","test"),undefined);

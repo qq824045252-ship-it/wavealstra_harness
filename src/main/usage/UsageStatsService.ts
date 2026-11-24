@@ -27,6 +27,7 @@
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import type { PerfSample } from "./PerformanceTracker";
 import { nativeCostEvidence } from "../agent/NativeCostEvidence";
 import {
@@ -40,6 +41,8 @@ import {
   toCsv,
   rangeStartMs,
   localDayKey,
+  localDayStart,
+  isoWeek,
   streakStats,
   longestSessionMs,
   parseSkillInvocations,
@@ -252,6 +255,50 @@ export interface UsageQueryRow extends UsageEventRow {
   backfilled: number;
 }
 
+export type UsageReport =
+  | { kind: "summary" | "models" | "dashboard" | "trend"; rangeDays: number }
+  | { kind: "heatmap"; year: number }
+  | { kind: "monthly" };
+
+interface UsageCalendar {
+  buckets: Array<{ start: number; key: string }>;
+  end: number;
+}
+
+export type RuntimeUsageReport =
+  | { kind: "summary" | "models"; since: number }
+  | { kind: "dashboard"; since: number; rangeDays: number; calendar: UsageCalendar }
+  | { kind: "trend" | "monthly"; calendar: UsageCalendar }
+  | { kind: "heatmap"; calendar: UsageCalendar; until: number };
+
+export type RuntimeUsageJob =
+  | { kind: "session"; file: string; capturedAt: number }
+  | { kind: "subagents"; file: string; coverage: boolean }
+  | { kind: "live"; input: RecordLiveInput; capturedAt: number; coverage: boolean }
+  | { kind: "repairCoverage" }
+  | { kind: "reattribute" };
+
+export type UsageReportResult =
+  | ReturnType<typeof summarizeRows> | ReturnType<typeof groupByProviderModel>
+  | ReturnType<typeof dailyTrend> | ReturnType<typeof weekHeatmap> | ReturnType<typeof monthlySummary>
+  | ReturnType<UsageStatsService["dashboard"]>;
+
+function usageCalendar(start: number, through: number, grain: "day" | "month", label: (date: Date) => string): UsageCalendar | undefined {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(through) || start > through) return undefined;
+  const date = new Date(start);
+  if (grain === "month") date.setDate(1);
+  date.setHours(0, 0, 0, 0);
+  const buckets: UsageCalendar["buckets"] = [];
+  while (date.getTime() <= through) {
+    if (buckets.length >= 4_000) return undefined;
+    buckets.push({ start: date.getTime(), key: label(date) });
+    if (grain === "month") date.setMonth(date.getMonth() + 1, 1);
+    else date.setDate(date.getDate() + 1);
+    date.setHours(0, 0, 0, 0);
+  }
+  return Number.isSafeInteger(date.getTime()) ? { buckets, end: date.getTime() } : undefined;
+}
+
 type UsageCoverageRow = Pick<UsageEventRow,
   "inputTokens" | "outputTokens" | "cacheRead" | "cacheWrite" | "totalTokens" | "costTotal"> & {
   inputKnown: number | null; outputKnown: number | null; cacheReadKnown: number | null;
@@ -287,13 +334,17 @@ function normalizeUsageRow<T extends UsageCoverageRow>(row: T) {
 
 export class UsageStatsService {
   private coverageAvailable = true;
-  constructor(private readonly db: Database) {
+  private writesClosed = false;
+  private writeTail: Promise<void> = Promise.resolve();
+  constructor(private readonly db: Database, private readonly reader?: RuntimeAuditReader) {
     try {
       db.exec(`CREATE TABLE IF NOT EXISTS usage_event_coverage (entry_id TEXT PRIMARY KEY REFERENCES usage_events(entry_id) ON DELETE CASCADE ON UPDATE CASCADE,
         input_known INTEGER NOT NULL, output_known INTEGER NOT NULL, cache_read_known INTEGER NOT NULL, cache_write_known INTEGER NOT NULL, cost_known INTEGER NOT NULL)`);
     } catch { this.coverageAvailable = false; }
-    // 启动即修一次历史 coverage（幂等，见 repairLegacyCoverage 注释）。
-    this.repairLegacyCoverage();
+    if (this.coverageAvailable) {
+      if (reader) void this.runWrite({ kind: "repairCoverage" }, () => this.repairLegacyCoverage());
+      else this.repairLegacyCoverage();
+    }
   }
 
   /**
@@ -330,6 +381,27 @@ export class UsageStatsService {
   // ---------- live 投影 ----------
 
   recordLive(input: RecordLiveInput): void {
+    if (this.writesClosed) return;
+    const capturedAt = Date.now();
+    if (!this.reader) {
+      this.recordLiveOnHost(input, capturedAt);
+      return;
+    }
+    const { provider, model, responseModel, responseId, usage, stopReason, errorMessage, timestamp } = input.message;
+    // The Pi message can contain large content blocks. Only forward ledger fields.
+    const event: RecordLiveInput = {
+      ...input,
+      sample: { ...input.sample },
+      reportedUsage: input.reportedUsage && { ...input.reportedUsage },
+      message: { provider, model, responseModel, responseId, stopReason, errorMessage, timestamp,
+        usage: usage && { ...usage, cost: usage.cost && { ...usage.cost } } },
+    };
+    void this.runWrite({ kind: "live", input: event, capturedAt, coverage: this.coverageAvailable },
+      () => this.recordLiveOnHost(event, capturedAt)).catch(error =>
+      console.warn(`[usage] recordLive failed: ${error instanceof Error ? error.message : String(error)}`));
+  }
+
+  private recordLiveOnHost(input: RecordLiveInput, capturedAt: number): number {
     const { sample, message } = input;
     const sessionFile = input.sessionFile ?? null;
     const reported = input.reportedUsage;
@@ -364,74 +436,77 @@ export class UsageStatsService {
     // 与执行诊断同一个费用口径：模型没有配置单价时，pi 算出的 0 不是账单，
     // 记成「未知」（cost_known=0），而不是把 0 当真实费用写进事实表。
     const cost = nativeCostEvidence(native, reported, reported?.costTotal ?? null, input.pricingConfigured);
-    this.db
-      .prepare(
-        `INSERT OR IGNORE INTO usage_events (
-          entry_id, task_id, session_file, source_kind, source_detail,
-          provider, model, response_model, ts,
-          input_tokens, output_tokens, cache_read, cache_write, cache_write_1h, reasoning_tokens, total_tokens,
-          cost_total, cost_input, cost_output, cost_cache_read, cost_cache_write,
-          stop_reason, error_message,
-          request_started_at, first_response_at, completed_at, ttft_ms, decode_ms, generation_tps, model_wall_ms,
-          response_id, turn_index, user_turn, backfilled
-        ) VALUES (
-          @entryId, @taskId, @sessionFile, @sourceKind, @sourceDetail,
-          @provider, @model, @responseModel, @ts,
-          @inputTokens, @outputTokens, @cacheRead, @cacheWrite, @cacheWrite1h, @reasoningTokens, @totalTokens,
-          @costTotal, @costInput, @costOutput, @costCacheRead, @costCacheWrite,
-          @stopReason, @errorMessage,
-          @requestStartedAt, @firstResponseAt, @completedAt, @ttftMs, @decodeMs, @generationTps, @modelWallMs,
-          @responseId, @turnIndex, @userTurn, 0
-        )`,
-      )
-      .run({
-        entryId,
-        taskId: input.taskId,
-        sessionFile,
-        sourceKind: input.sourceKind,
-        sourceDetail: input.sourceDetail ?? null,
-        provider: attributed.provider,
-        model: attributed.model,
-        responseModel: attributed.responseModel,
-        ts: message.timestamp ?? sample.completedAt ?? Date.now(),
-        inputTokens: counts.input ?? 0,
-        outputTokens: counts.output ?? 0,
-        cacheRead: counts.cacheRead ?? 0,
-        cacheWrite: counts.cacheWrite ?? 0,
-        cacheWrite1h: native?.cacheWrite1h ?? null,
-        reasoningTokens: native?.reasoning ?? null,
-        totalTokens: total,
-        costTotal: cost.total ?? 0,
-        costInput: native?.cost?.input ?? 0,
-        costOutput: native?.cost?.output ?? 0,
-        costCacheRead: native?.cost?.cacheRead ?? 0,
-        costCacheWrite: native?.cost?.cacheWrite ?? 0,
-        stopReason: message.stopReason ?? null,
-        errorMessage: message.errorMessage ?? null,
-        requestStartedAt: sample.requestStartedAt,
-        firstResponseAt: sample.firstResponseAt,
-        completedAt: sample.completedAt,
-        ttftMs: sample.ttftMs,
-        decodeMs: sample.decodeMs,
-        generationTps: sample.generationTps,
-        modelWallMs: sample.modelWallMs,
-        responseId: message.responseId ?? null,
-        turnIndex: sample.turnIndex,
-        userTurn: input.userTurn ?? null,
-      });
-    // coverage：记录这次调用实际知道哪些分量——已合并上报/原生之后仍为 null 的字段才算
-    // 未知。每行都写，取代 queryRows 里「token>0 才算已知」的旧启发式（它把真实的 0
-    // 当成未知，让面板整片显示「未知」）。
-    // cost：有真实用量即视为已知（没上报费用就是 0，见 queryRows 的同款口径）。
-    // cost：显式给出定价状态时按「未配置单价 = 未知」；否则沿用旧口径（有真实用量即视为已知，
-    // 没上报费用就是 0），避免让不掌握模型目录的历史调用方出现口径漂移。
-    const costKnown = input.pricingConfigured === undefined
-      ? total > 0 || reported?.costTotal != null || nativeCostEvidence(native, reported).complete
-      : reported?.costTotal != null || cost.complete;
-    if (this.coverageAvailable) try {
-      this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
-        .run(entryId, Number(counts.input !== null), Number(counts.output !== null), Number(counts.cacheRead !== null), Number(counts.cacheWrite !== null), Number(costKnown));
-    } catch { /* Unknown coverage must not affect a completed model call. */ }
+    return this.db.transaction(() => {
+      const saved = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO usage_events (
+            entry_id, task_id, session_file, source_kind, source_detail,
+            provider, model, response_model, ts,
+            input_tokens, output_tokens, cache_read, cache_write, cache_write_1h, reasoning_tokens, total_tokens,
+            cost_total, cost_input, cost_output, cost_cache_read, cost_cache_write,
+            stop_reason, error_message,
+            request_started_at, first_response_at, completed_at, ttft_ms, decode_ms, generation_tps, model_wall_ms,
+            response_id, turn_index, user_turn, backfilled
+          ) VALUES (
+            @entryId, @taskId, @sessionFile, @sourceKind, @sourceDetail,
+            @provider, @model, @responseModel, @ts,
+            @inputTokens, @outputTokens, @cacheRead, @cacheWrite, @cacheWrite1h, @reasoningTokens, @totalTokens,
+            @costTotal, @costInput, @costOutput, @costCacheRead, @costCacheWrite,
+            @stopReason, @errorMessage,
+            @requestStartedAt, @firstResponseAt, @completedAt, @ttftMs, @decodeMs, @generationTps, @modelWallMs,
+            @responseId, @turnIndex, @userTurn, 0
+          )`,
+        )
+        .run({
+          entryId,
+          taskId: input.taskId,
+          sessionFile,
+          sourceKind: input.sourceKind,
+          sourceDetail: input.sourceDetail ?? null,
+          provider: attributed.provider,
+          model: attributed.model,
+          responseModel: attributed.responseModel,
+          ts: message.timestamp ?? sample.completedAt ?? capturedAt,
+          inputTokens: counts.input ?? 0,
+          outputTokens: counts.output ?? 0,
+          cacheRead: counts.cacheRead ?? 0,
+          cacheWrite: counts.cacheWrite ?? 0,
+          cacheWrite1h: native?.cacheWrite1h ?? null,
+          reasoningTokens: native?.reasoning ?? null,
+          totalTokens: total,
+          costTotal: cost.total ?? 0,
+          costInput: native?.cost?.input ?? 0,
+          costOutput: native?.cost?.output ?? 0,
+          costCacheRead: native?.cost?.cacheRead ?? 0,
+          costCacheWrite: native?.cost?.cacheWrite ?? 0,
+          stopReason: message.stopReason ?? null,
+          errorMessage: message.errorMessage ?? null,
+          requestStartedAt: sample.requestStartedAt,
+          firstResponseAt: sample.firstResponseAt,
+          completedAt: sample.completedAt,
+          ttftMs: sample.ttftMs,
+          decodeMs: sample.decodeMs,
+          generationTps: sample.generationTps,
+          modelWallMs: sample.modelWallMs,
+          responseId: message.responseId ?? null,
+          turnIndex: sample.turnIndex,
+          userTurn: input.userTurn ?? null,
+        }).changes;
+      // coverage：记录这次调用实际知道哪些分量——已合并上报/原生之后仍为 null 的字段才算
+      // 未知。每行都写，取代 queryRows 里「token>0 才算已知」的旧启发式（它把真实的 0
+      // 当成未知，让面板整片显示「未知」）。
+      // cost：有真实用量即视为已知（没上报费用就是 0，见 queryRows 的同款口径）。
+      // cost：显式给出定价状态时按「未配置单价 = 未知」；否则沿用旧口径（有真实用量即视为已知，
+      // 没上报费用就是 0），避免让不掌握模型目录的历史调用方出现口径漂移。
+      const costKnown = input.pricingConfigured === undefined
+        ? total > 0 || reported?.costTotal != null || nativeCostEvidence(native, reported).complete
+        : reported?.costTotal != null || cost.complete;
+      if (this.coverageAvailable) try {
+        this.db.prepare("INSERT OR IGNORE INTO usage_event_coverage VALUES (?,?,?,?,?,?)")
+          .run(entryId, Number(counts.input !== null), Number(counts.output !== null), Number(counts.cacheRead !== null), Number(counts.cacheWrite !== null), Number(costKnown));
+      } catch { /* Unknown coverage must not affect a completed model call. */ }
+      return saved;
+    })();
   }
 
   /** subagent 实例结束归档（usage-archive.jsonl → 事实表；key = sub:{id}:{finishedAt}，
@@ -529,8 +604,7 @@ export class UsageStatsService {
     for (const row of rows) yield normalizeUsageRow(row);
   }
 
-  summarize(rangeDays: number): ReturnType<typeof summarizeRows> {
-    const now = Date.now();
+  summarize(rangeDays: number, now = Date.now()): ReturnType<typeof summarizeRows> {
     const rows = this.queryRows({ since: rangeStartMs(rangeDays, now) });
     return summarizeRows(rows);
   }
@@ -543,14 +617,12 @@ export class UsageStatsService {
     return new Map(rows.map((r) => [r.sf, r.n]));
   }
 
-  drilldown(rangeDays: number): ReturnType<typeof groupByProviderModel> {
-    const now = Date.now();
+  drilldown(rangeDays: number, now = Date.now()): ReturnType<typeof groupByProviderModel> {
     const rows = this.queryRows({ since: rangeStartMs(rangeDays, now) });
     return groupByProviderModel(rows);
   }
 
-  trend(rangeDays: number): ReturnType<typeof dailyTrend> {
-    const now = Date.now();
+  trend(rangeDays: number, now = Date.now()): ReturnType<typeof dailyTrend> {
     const rows = this.queryRows({ since: rangeStartMs(rangeDays, now) });
     return dailyTrend(rows, rangeDays, now);
   }
@@ -558,7 +630,7 @@ export class UsageStatsService {
   /**
    * 面板一次拉取：窗口内汇总 + 近 53 周活跃度/连续天数 + skills + 模型明细。
    */
-  dashboard(rangeDays: number): {
+  dashboard(rangeDays: number, now = Date.now()): {
     known?: import("../../shared/usage-stats").UsageKnownFields;
     rangeDays: number;
     from: string;
@@ -590,7 +662,6 @@ export class UsageStatsService {
     models: ReturnType<typeof groupByProviderModel>;
     skills: Array<{ name: string; count: number }>;
   } {
-    const now = Date.now();
     const since = rangeStartMs(rangeDays, now);
     const rangeRows = this.queryRows({ since });
     const summary = summarizeRows(rangeRows);
@@ -644,10 +715,63 @@ export class UsageStatsService {
     return monthlySummary(this.queryRows({}));
   }
 
-  exportCsv(rangeDays: number): string {
-    const now = Date.now();
+  async readReport(report: UsageReport, now = Date.now()): Promise<UsageReportResult> {
+    if (this.reader) {
+      await this.flushWrites();
+      const query = this.nativeReport(report, now);
+      const result = query && await this.reader.usageReport(query, this.coverageAvailable);
+      if (result !== undefined) {
+        if ("skills" in result) result.skills = result.skills.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0, 20);
+        return result;
+      }
+    }
+    switch (report.kind) {
+      case "summary": return this.summarize(report.rangeDays, now);
+      case "models": return this.drilldown(report.rangeDays, now);
+      case "dashboard": return this.dashboard(report.rangeDays, now);
+      case "trend": return this.trend(report.rangeDays, now);
+      case "heatmap": return this.heatmap(report.year);
+      case "monthly": return this.monthly();
+    }
+  }
+
+  private nativeReport(report: UsageReport, now: number): RuntimeUsageReport | undefined {
+    if (report.kind === "monthly") {
+      const first = this.db.prepare("SELECT ts FROM usage_events ORDER BY ts ASC LIMIT 1").pluck().get() as number | undefined;
+      if (first === undefined) return { kind: "monthly", calendar: { buckets: [], end: 0 } };
+      const last = this.db.prepare("SELECT ts FROM usage_events ORDER BY ts DESC LIMIT 1").pluck().get() as number | undefined;
+      if (new Date(first).getFullYear() < 1000 || new Date(last ?? first).getFullYear() > 9999) return undefined;
+      const calendar = last === undefined ? undefined : usageCalendar(first, last, "month", date => localDayKey(date.getTime()).slice(0, -3));
+      return calendar && { kind: "monthly", calendar };
+    }
+    if (report.kind === "heatmap") {
+      if (!Number.isInteger(report.year) || report.year < 100 || report.year > 9999) return undefined;
+      const start = new Date(report.year, 0, 1).getTime();
+      const until = new Date(report.year, 11, 31, 23, 59, 59).getTime();
+      const calendar = usageCalendar(start, until, "day", date => String(isoWeek(date)));
+      return calendar && { kind: "heatmap", calendar, until };
+    }
+    const since = rangeStartMs(report.rangeDays, now);
+    if (report.kind === "summary" || report.kind === "models") {
+      return Number.isSafeInteger(since) ? { kind: report.kind, since } : undefined;
+    }
+    const start = report.kind === "dashboard" ? rangeStartMs(Math.max(report.rangeDays, 371), now) : localDayStart(since);
+    const calendar = usageCalendar(start, now, "day", date => localDayKey(date.getTime()));
+    if (!calendar) return undefined;
+    return report.kind === "dashboard"
+      ? { kind: "dashboard", since, rangeDays: report.rangeDays, calendar }
+      : { kind: "trend", calendar };
+  }
+
+  exportCsv(rangeDays: number, now = Date.now()): string {
     const rows = this.queryRows({ since: rangeStartMs(rangeDays, now) });
     return toCsv(rows);
+  }
+
+  async exportCsvAsync(rangeDays: number, now = Date.now()): Promise<string> {
+    await this.flushWrites();
+    const csv = await this.reader?.usageCsv(rangeStartMs(rangeDays, now), this.coverageAvailable);
+    return csv ?? this.exportCsv(rangeDays, now);
   }
 
   private skillUsageForRows(rows: UsageEventRow[]): Array<{ name: string; count: number }> {
@@ -722,7 +846,7 @@ export class UsageStatsService {
     //    jsonl 为准（应用中途接入时 live 计数可能低于 jsonl 重建值）
     const claimByResponseId = this.db.prepare(
       `UPDATE usage_events SET entry_id = @entryId, backfilled = 1, user_turn = @userTurn
-       WHERE response_id = @responseId AND entry_id LIKE 'live:%' AND source_kind = 'main'`,
+       WHERE session_file = @sessionFile AND response_id = @responseId AND entry_id LIKE 'live:%' AND source_kind = 'main'`,
     );
     // 2) 顺序对齐认领：无 response_id 的 live 行按顺序匹配（同取 jsonl user_turn）
     const liveRows = this.db
@@ -762,7 +886,7 @@ export class UsageStatsService {
       const claimedIds = new Set<string>();
       for (const e of entries) {
         if (!e.responseId) continue;
-        const res = claimByResponseId.run({ entryId: e.entryId, responseId: e.responseId, userTurn: e.userTurn });
+        const res = claimByResponseId.run({ entryId: e.entryId, responseId: e.responseId, userTurn: e.userTurn, sessionFile });
         if (res.changes > 0) {
           handled += 1;
           claimedIds.add(e.entryId);
@@ -882,16 +1006,51 @@ export class UsageStatsService {
    */
   async backfillAllTasksAsync(listSessionFiles: Array<{ sessionFile: string | null }>, batchSize = 8): Promise<number> {
     let total = 0;
-    for (let i = 0; i < listSessionFiles.length; i += batchSize) {
+    for (let i = 0; !this.writesClosed && i < listSessionFiles.length; i += batchSize) {
       const batch = listSessionFiles.slice(i, i + batchSize);
       for (const t of batch) {
-        total += this.backfillSession(t.sessionFile);
+        total += await this.backfillSessionAsync(t.sessionFile);
       }
       if (i + batchSize < listSessionFiles.length) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
     return total;
+  }
+
+  backfillSessionAsync(file: string | null): Promise<number> {
+    if (!file) return Promise.resolve(0);
+    return this.runWrite({ kind: "session", file, capturedAt: Date.now() }, () => this.backfillSession(file));
+  }
+
+  scanSubagentArchiveAsync(file: string): Promise<number> {
+    return this.runWrite({ kind: "subagents", file, coverage: this.coverageAvailable }, () => this.scanSubagentArchive(file));
+  }
+
+  reattributeToMyBuddyModelsAsync(): Promise<number> {
+    return this.runWrite({ kind: "reattribute" }, () => this.reattributeToMyBuddyModels());
+  }
+
+  flushWrites(): Promise<void> {
+    return this.writeTail;
+  }
+
+  closeWrites(): Promise<void> {
+    this.writesClosed = true;
+    return this.flushWrites();
+  }
+
+  private runWrite(job: RuntimeUsageJob, fallback: () => number): Promise<number> {
+    if (this.writesClosed) return Promise.resolve(0);
+    const pending = this.writeTail.then(async () => {
+      const result = await this.reader?.usageHistory(job);
+      if (result !== "changed") return result ?? fallback();
+      const retry = await this.reader?.usageHistory(job);
+      if (retry === "changed") return 0;
+      return retry ?? fallback();
+    });
+    this.writeTail = pending.then(() => {}, () => {});
+    return pending;
   }
 
   /** 扫描 subagent usage-archive.jsonl（幂等）。 */

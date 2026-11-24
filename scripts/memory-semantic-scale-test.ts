@@ -13,11 +13,16 @@ import { SemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { SEMANTIC_DIMENSION, SEMANTIC_MODEL_ID, SEMANTIC_MODEL_VERSION } from "../src/main/retrieval/SemanticModelManager";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
 import { memorySearchWhere } from "../src/main/memory/MemorySearchScope";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 
 // Budgets apply to this fixed fixture, not an arbitrary production profile.
 const BUDGET = { queryMs: 1500, eventLoopDelayMs: 50, rssGrowthBytes: 256 * 1024 * 1024 };
 const root = mkdtempSync(join(tmpdir(), "memory-vector-scale-"));
-const db = new AppDatabase(join(root, "app.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable);
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const originalEmbed = SemanticRuntime.prototype.embed;
 const samples: Array<{ path: string; durationMs: number; eventLoopDelayMs: number; firstTickMs: number; histogramMaxMs: number; rssBytes: number; returned: number }> = [];
 const loop = monitorEventLoopDelay({ resolution: 5 });
@@ -65,6 +70,28 @@ try {
   const bridge = (memory: MemoryService) => ({ search: (botId: string, query: string, conversationId: string) =>
     memory.searchHybrid({ botId, conversationId, scopeTypes: ["global", "conversation", "bot"], includeInherited: true, query, statuses: ["active"], limit: 20 }) });
   const routes = [{ path: "lexical", adapter: bridge(lexical), query: "QZVXNEEDLE" }, { path: "semantic", adapter: bridge(semantic), query: "ZZYXYX" }];
+  const reader = db.runtimeAuditReader;
+  let rustLexicalRuns = 0;
+  if (reader) {
+    const candidates = reader.memoryLexical.bind(reader);
+    reader.memoryLexical = async request => {
+      const result = await candidates(request);
+      assert(result, "Rust must return candidates without the host scanner");
+      if (request.compact === "qzvxneedle") {
+        assert.deepEqual(result.fts, [target.id]);
+        assert.equal(result.lexical.length, 10000);
+        assert.deepEqual(result.lexical.filter(hit => hit.exact).map(hit => hit.id), [target.id]);
+        rustLexicalRuns++;
+      }
+      return result;
+    };
+    const search = reader.semantic.bind(reader);
+    reader.semantic = async request => {
+      const result = await search(request);
+      assert.deepEqual(result, [{ id: target.id, hash: target.contentHash, score: 1 }], "Rust scans all 10K vectors and returns the eligible target");
+      return result;
+    };
+  }
   for (const route of routes) assert((await route.adapter.search("scale-owner", route.query, receipt.conversationId)).some(hit => hit.memory.id === target.id));
   const baselineRss = process.memoryUsage().rss;
   loop.enable();
@@ -84,14 +111,59 @@ try {
     }
   }
   assert.equal(embeddings, 6, "all five semantic requests plus warmup actually embedded and searched");
+  if (reader) assert.equal(rustLexicalRuns, 6, "all five keyword requests plus warmup actually use Rust");
   const failures = samples.filter(sample => sample.durationMs > BUDGET.queryMs || sample.eventLoopDelayMs > BUDGET.eventLoopDelayMs);
   const rssGrowth = Math.max(0, process.resourceUsage().maxRSS * 1024 - baselineRss);
-  const report = { fixture: counts, dimension: SEMANTIC_DIMENSION, embeddingComputation: "controlled; 10000 real stored vectors", budget: BUDGET,
+  const report = { fixture: counts, dimension: SEMANTIC_DIMENSION, nativeVectors: useNative,
+    embeddingComputation: "controlled; 10000 real stored vectors", budget: BUDGET,
     samples, vectorPlan, baselineRss, rssGrowth, failedSamples: failures.length, rssPassed: rssGrowth <= BUDGET.rssGrowthBytes };
   writeFileSync("out/tests/memory-semantic-scale.json", JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
   assert.equal(failures.length, 0, "10K long-text multi-scope foreground recall must meet latency and event-loop budgets");
   assert(rssGrowth <= BUDGET.rssGrowthBytes, "10K query RSS growth must stay inside its stated budget");
+  if (reader) {
+    const search = reader.semantic.bind(reader);
+    reader.semantic = async request => {
+      const stale = await search(request);
+      db.connection.prepare("UPDATE memory_records SET status='invalid' WHERE id=?").run(target.id);
+      return stale;
+    };
+    assert.deepEqual(await routes[1].adapter.search("scale-owner", routes[1].query, receipt.conversationId), [],
+      "a memory retired after Rust ranks it is never returned");
+    assert.equal(lexical.repository.get(target.id)?.status, "invalid");
+
+    const privateTaskId = "private-lexical-fixture";
+    for (const id of [DOTS_TASK_ID, privateTaskId]) db.upsertTask({ id, title: id, updatedAt: Date.now() });
+    const scoped = lexical.create({
+      scopeType: "task", scopeId: DOTS_TASK_ID, kind: "fact", sourceType: "user",
+      title: "ＡＢ１２：真空－检漏", content: "ΔΟΣ　𠀀字X。编号 0123456789abcdef。失效校验",
+    });
+    lexical.create({
+      scopeType: "task", scopeId: privateTaskId, kind: "fact", sourceType: "user",
+      title: "ＡＢ１２：真空检漏", content: "ΔΟΣ　𠀀字X。编号 0123456789abcdef。失效校验",
+    });
+    const scope = { scopes: [{ scopeType: "task" as const, scopeId: DOTS_TASK_ID }] };
+    for (const query of ["AB12 真空检漏", "δος", "𠀀字X", "0123456789abcdef"]) {
+      const outcomes = await lexical.repository.searchScopedAsync(query, scope, 10, () => true);
+      assert.deepEqual(outcomes.scoped.map(item => item.memory.id), [scoped.id], "only the current task's Unicode match is visible");
+      assert.deepEqual(outcomes, lexical.repository.searchScoped(query, scope, 10, () => true));
+    }
+    const candidates = reader.memoryLexical.bind(reader);
+    reader.memoryLexical = async request => {
+      const stale = await candidates(request);
+      if (request.compact === "失效校验") {
+        assert(stale?.lexical.some(hit => hit.id === scoped.id));
+        db.connection.prepare("UPDATE memory_records SET status='invalid' WHERE id=?").run(scoped.id);
+      }
+      return stale;
+    };
+    assert.deepEqual(await lexical.searchLexical({ taskId: DOTS_TASK_ID, query: "失效校验" }), [],
+      "a keyword candidate invalidated after native selection must be removed");
+    assert.equal(lexical.repository.get(scoped.id)?.status, "invalid");
+    console.log("PASS Rust FTS and lexical candidates preserve Unicode matches, scope and concurrent invalidation");
+  }
 } finally {
-  loop.disable(); SemanticRuntime.prototype.embed = originalEmbed; db.close(); rmSync(root, { recursive: true, force: true });
+  loop.disable(); SemanticRuntime.prototype.embed = originalEmbed;
+  await db.runtimeAuditReader?.close();
+  db.close(); rmSync(root, { recursive: true, force: true });
 }

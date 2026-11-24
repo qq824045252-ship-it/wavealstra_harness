@@ -5,6 +5,7 @@ import { SavedArtifactIpc, type SavedArtifactRequest, type SavedArtifactPreview 
 import { CadCraftIpc, type CadCraftSource } from "../shared/cadcraft";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
+import { DotsGoogleIpc, type DotsGoogleApi } from "../shared/dots-google";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
@@ -269,6 +270,7 @@ import {
   type LibraryListRowDto,
   type LibraryRenameSpaceRequest,
   type LibrarySnapshotDto,
+  type LibrarySnapshotRequest,
   type LibrarySpaceDto,
   type LibraryUpdateItemRequest,
   type LibraryWriteContentRequest,
@@ -305,6 +307,7 @@ import type {
   ArtifactDomainRegisterRequest,
   ArtifactDomainRemoveRequest,
   ArtifactDomainTaskRequest,
+  ArtifactSnapshotBatchRequest,
 } from "../shared/artifact-ipc";
 import type {
   ArtifactCreatedEvent,
@@ -1415,6 +1418,8 @@ const api = {
       ipcRenderer.invoke(ArtifactDomainIpc.list, req),
     snapshot: (req: ArtifactDomainTaskRequest): Promise<ArtifactSnapshot> =>
       ipcRenderer.invoke(ArtifactDomainIpc.snapshot, req),
+    snapshotBatch: (req: ArtifactSnapshotBatchRequest): Promise<ArtifactSnapshot[]> =>
+      ipcRenderer.invoke(ArtifactDomainIpc.snapshotBatch, req),
     register: (req: ArtifactDomainRegisterRequest): Promise<ArtifactDescriptor> =>
       ipcRenderer.invoke(ArtifactDomainIpc.register, req),
     readContent: (req: ArtifactDomainReadContentRequest): Promise<ArtifactDomainReadContentResponse | null> =>
@@ -1491,7 +1496,7 @@ const api = {
   library: {
     note: <T extends import("../shared/library-ipc").LibraryNoteOperation>(request: T): Promise<import("../shared/library-ipc").LibraryNoteOperationResult<T["type"]>> =>
       ipcRenderer.invoke(LibraryIpc.note, request),
-    snapshot: (): Promise<LibrarySnapshotDto> => ipcRenderer.invoke(LibraryIpc.snapshot),
+    snapshot: (request?: LibrarySnapshotRequest): Promise<LibrarySnapshotDto> => ipcRenderer.invoke(LibraryIpc.snapshot, request),
     listItems: (req: LibraryListItemsRequest): Promise<LibraryItemDto[]> =>
       ipcRenderer.invoke(LibraryIpc.listItems, req),
     getItem: (id: string): Promise<LibraryItemDto | null> => ipcRenderer.invoke(LibraryIpc.getItem, id),
@@ -1565,6 +1570,12 @@ const api = {
     readMail: request => ipcRenderer.invoke(GoogleWorkspaceIpc.readMail, request),
     listEvents: request => ipcRenderer.invoke(GoogleWorkspaceIpc.listEvents, request),
   } satisfies GoogleWorkspaceApi,
+  dotsGoogle: {
+    status: () => ipcRenderer.invoke(DotsGoogleIpc.status),
+    login: account => ipcRenderer.invoke(DotsGoogleIpc.login, account),
+    check: account => ipcRenderer.invoke(DotsGoogleIpc.check, account),
+    cancelLogin: account => ipcRenderer.invoke(DotsGoogleIpc.cancelLogin, account),
+  } satisfies DotsGoogleApi,
 
   projectNotes: {
     read: (projectId: string) => ipcRenderer.invoke(ProjectNotesIpc.read, projectId),

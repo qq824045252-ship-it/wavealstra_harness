@@ -25,12 +25,12 @@ const modeProfiles = {
 };
 
 const catalogService = new RemoteAccessService({
-  listSpaces: () => [], listNonTrashedTasks: () => [],
+  listSpaces: () => [], readNonTrashedTasks: async () => [],
   getTask: () => undefined, openDots: () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 }),
 } as any,
   { listModels: async () => [], isTaskBusy: () => false, listPendingActions: () => [],
     getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id] } as any,
-  { unreadCount: () => 0 } as any, { list: () => [] } as any, { read: () => ({ permissionMode: 'default' }) } as any);
+  { unreadCount: () => 0 } as any, { readList: async () => [] } as any, { read: () => ({ permissionMode: 'default' }) } as any);
 const catalogBootstrap = await catalogService.bootstrap({ id: 'test', name: 'Test', createdAt: 1, lastSeenAt: 1, capabilities: [] });
 assert.equal(catalogBootstrap.taskModes?.find(mode => mode.id === 'coding')?.tags[0].label, '自定义开发');
 assert.equal(JSON.stringify(catalogBootstrap).includes('private prompt'), false, 'catalog must only expose display metadata');
@@ -391,7 +391,7 @@ try {
         return dots;
       },
       listSpaces: () => [],
-      listNonTrashedTasks: () => Array.from(savedTasks.values()).filter(task => task.id !== DOTS_TASK_ID),
+      readNonTrashedTasks: async () => Array.from(savedTasks.values()).filter(task => task.id !== DOTS_TASK_ID),
       upsertTask: (task: Record<string, unknown>) => { upsertCalls.push(task); savedTasks.set(String(task.id), task); },
       isTaskEffectiveArchived: () => false,
       getSpace: () => undefined,
@@ -510,7 +510,7 @@ try {
     assert.deepEqual([...savedTasks.keys()].filter((id) => !savedBefore.has(id)), [], "失败的新任务必须回滚任务行");
     assert.deepEqual(readdirSync(uploadsRoot).filter((entry) => entry !== "t-ro"), [], "失败的新任务不得残留附件目录");
     const commandHost = new RemoteAccessService(
-      db as never, agent as never, { unreadCount: () => 0 } as never, { list: () => [] } as never, settings as never,
+      db as never, agent as never, { unreadCount: () => 0 } as never, { readList: async () => [] } as never, settings as never,
     );
     const promptServer = new RemoteAccessServer({ port: 0, staticRoot: webRoot, devices, pairing, service: commandHost, commands, events });
     const promptAddress = await promptServer.start();
@@ -520,6 +520,13 @@ try {
       assert.equal(dots?.id, DOTS_TASK_ID);
       assert.deepEqual((await phone.bootstrap()).dots, dots, "paired bootstrap reuses the same Dots conversation");
       assert.equal((await phone.bootstrap()).tasks.some(task => task.id === DOTS_TASK_ID), false);
+      const listing = await fetch(`http://127.0.0.1:${promptAddress.port}/v1/tasks`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(listing.status, 200);
+      const visible = await listing.json() as Array<{ id: string; permissionMode?: string }>;
+      assert.equal(visible.find(task => task.id === "t-ro")?.permissionMode, "readonly");
+      assert.equal(visible.some(task => task.id === DOTS_TASK_ID), false);
       assert.deepEqual((await phone.history(DOTS_TASK_ID)).messages[0]?.dotsDelivery, {
         taskId: "t-ro", kind: "conclusion", title: "报告", files: [{ id: "file-1", name: "报告.pdf" }],
       });

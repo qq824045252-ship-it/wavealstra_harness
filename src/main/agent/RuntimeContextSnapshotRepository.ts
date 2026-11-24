@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type {
   RuntimeMaterialUseDto,
@@ -7,6 +7,7 @@ import type {
 } from "../../shared/agent-ipc";
 import { normalizeWelcomeMode, type AssemblySegmentDto } from "../../shared/mode-profile";
 import type { ResolvedCapabilityDto } from "../../shared/runtime-policy";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import {
   compactRuntimeAuditInstructions,
   normalizeStoredAuditInstructions,
@@ -43,19 +44,88 @@ interface SnapshotRow {
   storage_bytes: number | null;
 }
 
-function parseArray<T>(value: string): T[] {
+const selectSnapshots = `
+  SELECT s.id, s.task_id, s.user_message_id, s.assistant_message_id, s.created_at, s.schema_version,
+         s.welcome_mode, s.tag_id, s.project_id, s.project_updated_at,
+         COALESCE(instructions.body, s.resolved_instructions_json) AS resolved_instructions_json,
+         COALESCE(capabilities.body, s.resolved_capabilities_json) AS resolved_capabilities_json,
+         s.warnings_json, s.execution_id, s.status, s.started_at, s.completed_at, s.error,
+         s.assembly_hash, s.model_id, s.permission_mode, s.working_directory, s.material_usage_json, s.storage_bytes
+  FROM task_runtime_context_snapshots s
+  LEFT JOIN runtime_audit_payloads instructions ON instructions.hash = s.instructions_hash
+  LEFT JOIN runtime_audit_payloads capabilities ON capabilities.hash = s.capabilities_hash
+`;
+
+type SnapshotPayloadKey = "resolved_instructions_json" | "resolved_capabilities_json" | "warnings_json" | "material_usage_json";
+type SnapshotMetadata = Omit<SnapshotRow, SnapshotPayloadKey>;
+
+export interface RuntimeSnapshotPage {
+  rows: Array<SnapshotMetadata & Record<SnapshotPayloadKey, number | null>>;
+  payloads: unknown[];
+  rawPayloads?: Record<number, string>;
+}
+
+function parseJson(value: string | null): unknown {
+  if (value === null) return undefined;
   try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed as T[] : [];
-  } catch {
-    return [];
-  }
+    return JSON.parse(value) as unknown;
+  } catch { return undefined; }
+}
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
 }
 
 function mapRow(row: SnapshotRow): RuntimeContextSnapshotDto {
-  const parsedInstructions = parseArray<RuntimeAuditInstructionDto>(row.resolved_instructions_json);
+  return mapSnapshot(row, {
+    instructions: normalizeStoredAuditInstructions(parseJson(row.resolved_instructions_json)),
+    capabilities: parseJson(row.resolved_capabilities_json),
+    warnings: parseJson(row.warnings_json),
+    materialUsage: parseJson(row.material_usage_json),
+    bytes: row.storage_bytes ?? runtimeAuditStorageBytes([
+      row.resolved_instructions_json,
+      row.resolved_capabilities_json,
+      row.warnings_json,
+    ]),
+  });
+}
+
+export function decodeRuntimeSnapshotPage(page: RuntimeSnapshotPage): RuntimeContextSnapshotDto[] {
+  const instructions = new Map<number | null, RuntimeAuditInstructionDto[]>();
+  const payload = (index: number | null): unknown => {
+    if (index === null) return undefined;
+    if (!Number.isSafeInteger(index) || index < 0 || index >= page.payloads.length) {
+      throw new Error("Invalid audit snapshot payload reference");
+    }
+    const raw = page.rawPayloads?.[index];
+    if (typeof raw === "string") return parseJson(raw);
+    return page.payloads[index];
+  };
+  return page.rows.map(row => {
+    let normalized = instructions.get(row.resolved_instructions_json);
+    if (!normalized) {
+      normalized = normalizeStoredAuditInstructions(payload(row.resolved_instructions_json));
+      instructions.set(row.resolved_instructions_json, normalized);
+    }
+    return mapSnapshot(row, {
+      instructions: normalized,
+      capabilities: payload(row.resolved_capabilities_json),
+      warnings: payload(row.warnings_json),
+      materialUsage: payload(row.material_usage_json),
+      bytes: row.storage_bytes ?? 0,
+    });
+  });
+}
+
+function mapSnapshot(row: SnapshotMetadata, payload: {
+  instructions: RuntimeAuditInstructionDto[];
+  capabilities: unknown;
+  warnings: unknown;
+  materialUsage: unknown;
+  bytes: number;
+}): RuntimeContextSnapshotDto {
   return {
-    materialUsage: parseMaterialUsage(row.material_usage_json),
+    materialUsage: parseMaterialUsage(payload.materialUsage),
     id: row.id,
     workingDirectory: row.working_directory ?? undefined,
     executionId: row.execution_id ?? row.id,
@@ -77,28 +147,21 @@ function mapRow(row: SnapshotRow): RuntimeContextSnapshotDto {
     tagId: row.tag_id ?? undefined,
     projectId: row.project_id ?? undefined,
     projectUpdatedAt: row.project_updated_at ?? undefined,
-    resolvedInstructions: normalizeStoredAuditInstructions(parsedInstructions),
-    resolvedCapabilities: parseArray<ResolvedCapabilityDto>(row.resolved_capabilities_json),
-    warnings: parseArray<string>(row.warnings_json),
-    storageBytes: row.storage_bytes ?? runtimeAuditStorageBytes([
-      row.resolved_instructions_json,
-      row.resolved_capabilities_json,
-      row.warnings_json,
-    ]),
+    resolvedInstructions: payload.instructions,
+    resolvedCapabilities: asArray<ResolvedCapabilityDto>(payload.capabilities),
+    warnings: asArray<string>(payload.warnings),
+    storageBytes: payload.bytes,
   };
 }
 
-function parseMaterialUsage(json: string | null): RuntimeContextSnapshotDto["materialUsage"] {
-  if (!json) return undefined;
-  try {
-    const value = JSON.parse(json);
-    if (!value || !Array.isArray(value.items) || !Number.isSafeInteger(value.omitted) || value.omitted < 0) return undefined;
-    if (value.items.length > 100 || !value.items.every((item: RuntimeMaterialUseDto) => item &&
-      ["file-content", "knowledge-content", "web-content", "search-snippet", "metadata"].includes(item.kind) &&
-      [item.toolCallId, item.toolName, item.title, item.target, item.outputHash].every((text) => typeof text === "string") &&
-      [item.at, item.returnedChars, item.images].every((number) => Number.isFinite(number) && number >= 0))) return undefined;
-    return value;
-  } catch { return undefined; }
+function parseMaterialUsage(input: unknown): RuntimeContextSnapshotDto["materialUsage"] {
+  const value = input as RuntimeContextSnapshotDto["materialUsage"];
+  if (!value || !Array.isArray(value.items) || !Number.isSafeInteger(value.omitted) || value.omitted < 0) return undefined;
+  if (value.items.length > 100 || !value.items.every(item => item &&
+    ["file-content", "knowledge-content", "web-content", "search-snippet", "metadata"].includes(item.kind) &&
+    [item.toolCallId, item.toolName, item.title, item.target, item.outputHash].every(text => typeof text === "string") &&
+    [item.at, item.returnedChars, item.images].every(number => Number.isFinite(number) && number >= 0))) return undefined;
+  return value;
 }
 
 type RuntimeContextSnapshotRecordInput = Omit<
@@ -106,119 +169,197 @@ type RuntimeContextSnapshotRecordInput = Omit<
   "id" | "executionId" | "createdAt" | "schemaVersion" | "resolvedInstructions" | "storageBytes"
 > & { executionId?: string; resolvedInstructions: AssemblySegmentDto[] };
 
+type SnapshotIdentity = { taskId: string; executionId: string; assistantMessageId: string };
+type SnapshotFinish = Exclude<RuntimeContextSnapshotDto["status"], "running">;
+
+export type RuntimeSnapshotMutation =
+  | { kind: "insert"; snapshot: ReturnType<typeof prepareSnapshot>["row"] }
+  | { kind: "appendMaterials"; identity: SnapshotIdentity; items: RuntimeMaterialUseDto[]; at: number }
+  | { kind: "finish"; executionId: string; status: SnapshotFinish; error?: string; at: number }
+  | { kind: "finishByMessage"; taskId: string; assistantMessageId: string; status: SnapshotFinish; error?: string; at: number }
+  | { kind: "bindMessage"; identity: SnapshotIdentity }
+  | { kind: "abort"; taskId: string; at: number }
+  | { kind: "clear"; taskId?: string };
+
+function prepareSnapshot(input: RuntimeContextSnapshotRecordInput) {
+  const id = `rsnap_${randomUUID()}`;
+  const resolvedInstructions = compactRuntimeAuditInstructions(input.resolvedInstructions);
+  const instructions = JSON.stringify(resolvedInstructions);
+  const capabilities = JSON.stringify(input.resolvedCapabilities);
+  const warnings = JSON.stringify(input.warnings);
+  const materialUsage = '{"items":[],"omitted":0}';
+  const snapshot: RuntimeContextSnapshotDto = {
+    ...input,
+    materialUsage: { items: [], omitted: 0 },
+    resolvedInstructions,
+    id,
+    executionId: input.executionId ?? id,
+    createdAt: Date.now(),
+    schemaVersion: 3,
+    storageBytes: runtimeAuditStorageBytes([instructions, capabilities, warnings, input.workingDirectory ?? "", materialUsage]),
+  };
+  const row = {
+    id: snapshot.id, executionId: snapshot.executionId, taskId: snapshot.taskId,
+    userMessageId: snapshot.userMessageId, assistantMessageId: snapshot.assistantMessageId,
+    createdAt: snapshot.createdAt, schemaVersion: snapshot.schemaVersion,
+    mode: snapshot.mode, tagId: snapshot.tagId ?? null, projectId: snapshot.projectId ?? null,
+    projectUpdatedAt: snapshot.projectUpdatedAt ?? null, instructions, capabilities, warnings, materialUsage,
+    status: snapshot.status, startedAt: snapshot.startedAt, completedAt: snapshot.completedAt ?? null,
+    error: snapshot.error ?? null, assemblyHash: snapshot.assemblyHash, modelId: snapshot.modelId ?? null,
+    permissionMode: snapshot.permissionMode ?? null, workingDirectory: snapshot.workingDirectory ?? null,
+    storageBytes: snapshot.storageBytes,
+  };
+  return { snapshot, row };
+}
+
 export class RuntimeContextSnapshotRepository {
-  constructor(private readonly db: Database.Database) {}
+  private readonly epoch?: number;
+  private tail: Promise<unknown> = Promise.resolve();
+  private closed = false;
+
+  constructor(private readonly db: Database.Database, private readonly reader?: RuntimeAuditReader) {
+    if (reader) this.epoch = db.prepare(`UPDATE runtime_snapshot_writer SET epoch=epoch+1, write_id='', result=0
+      WHERE id=1 RETURNING epoch`).pluck().get() as number;
+  }
+
+  async flush(): Promise<void> { await this.tail; }
+
+  closeWrites(): Promise<void> {
+    this.closed = true;
+    return this.flush();
+  }
+
+  private write(mutation: RuntimeSnapshotMutation, fallback: () => number): number | Promise<number> {
+    if (this.closed) return 0;
+    if (!this.reader || this.epoch === undefined) return fallback();
+    const reader = this.reader;
+    const epoch = this.epoch;
+    const writeId = randomUUID();
+    const pending = this.tail.then(async () => {
+      const result = await reader.mutateSnapshot(epoch, writeId, mutation);
+      if (result !== undefined) return result;
+      return this.db.transaction(() => {
+        const receipt = this.db.prepare("SELECT epoch,write_id,result FROM runtime_snapshot_writer WHERE id=1")
+          .get() as { epoch: number; write_id: string; result: number };
+        if (receipt.epoch !== epoch) return 0;
+        if (receipt.write_id === writeId) return receipt.result;
+        const updated = fallback();
+        this.db.prepare("UPDATE runtime_snapshot_writer SET write_id=?,result=? WHERE id=1").run(writeId, updated);
+        return updated;
+      }).immediate();
+    });
+    this.tail = pending.catch(() => { console.warn("[RuntimeAudit] Snapshot mutation could not be saved"); });
+    return pending;
+  }
+
+  capture(input: RuntimeContextSnapshotRecordInput & { executionId: string }): void {
+    const { row } = prepareSnapshot(input);
+    void this.write({ kind: "insert", snapshot: row }, () => this.insertRow(row, true));
+  }
 
   recordOnce(input: RuntimeContextSnapshotRecordInput & { executionId: string }): RuntimeContextSnapshotDto {
-    const row = this.db.prepare("SELECT * FROM task_runtime_context_snapshots WHERE task_id = ? AND execution_id = ? LIMIT 1").get(input.taskId, input.executionId) as SnapshotRow | undefined;
+    const row = this.db.prepare(`${selectSnapshots} WHERE s.task_id = ? AND s.execution_id = ? LIMIT 1`)
+      .get(input.taskId, input.executionId) as SnapshotRow | undefined;
     return row ? mapRow(row) : this.record(input);
   }
 
   record(input: RuntimeContextSnapshotRecordInput): RuntimeContextSnapshotDto {
-    const id = `rsnap_${randomUUID()}`;
-    const resolvedInstructions = compactRuntimeAuditInstructions(input.resolvedInstructions);
-    const instructions = JSON.stringify(resolvedInstructions);
-    const capabilities = JSON.stringify(input.resolvedCapabilities);
-    const warnings = JSON.stringify(input.warnings);
-    const snapshot: RuntimeContextSnapshotDto = {
-      ...input,
-      materialUsage: { items: [], omitted: 0 },
-      resolvedInstructions,
-      id,
-      executionId: input.executionId ?? id,
-      createdAt: Date.now(),
-      schemaVersion: 3,
-      storageBytes: runtimeAuditStorageBytes([instructions, capabilities, warnings, input.workingDirectory ?? "", JSON.stringify({ items: [], omitted: 0 })]),
-    };
-    this.db.prepare(
+    const { row, snapshot } = prepareSnapshot(input);
+    this.insertRow(row, false);
+    return snapshot;
+  }
+
+  private insertRow(row: ReturnType<typeof prepareSnapshot>["row"], once: boolean): number {
+    const insertSnapshot = this.db.prepare(
       `INSERT INTO task_runtime_context_snapshots
          (id, task_id, user_message_id, assistant_message_id, created_at, schema_version,
           welcome_mode, tag_id, project_id, project_updated_at,
-          resolved_instructions_json, resolved_capabilities_json, warnings_json,
+          resolved_instructions_json, resolved_capabilities_json, instructions_hash, capabilities_hash, warnings_json,
           execution_id, status, started_at, completed_at, error, assembly_hash, model_id, permission_mode,
           working_directory, material_usage_json, storage_bytes)
        VALUES (@id, @taskId, @userMessageId, @assistantMessageId, @createdAt, @schemaVersion,
                @mode, @tagId, @projectId, @projectUpdatedAt,
-               @instructions, @capabilities, @warnings,
+               '[]', '[]', @instructionsHash, @capabilitiesHash, @warnings,
                @executionId, @status, @startedAt, @completedAt, @error, @assemblyHash, @modelId, @permissionMode,
                @workingDirectory, @materialUsage, @storageBytes)`,
-    ).run({
-      id: snapshot.id,
-      taskId: snapshot.taskId,
-      userMessageId: snapshot.userMessageId,
-      assistantMessageId: snapshot.assistantMessageId,
-      createdAt: snapshot.createdAt,
-      schemaVersion: snapshot.schemaVersion,
-      mode: snapshot.mode,
-      tagId: snapshot.tagId ?? null,
-      projectId: snapshot.projectId ?? null,
-      projectUpdatedAt: snapshot.projectUpdatedAt ?? null,
-      instructions,
-      capabilities,
-      warnings,
-      executionId: snapshot.executionId,
-      status: snapshot.status,
-      startedAt: snapshot.startedAt,
-      completedAt: snapshot.completedAt ?? null,
-      error: snapshot.error ?? null,
-      assemblyHash: snapshot.assemblyHash,
-      modelId: snapshot.modelId ?? null,
-      permissionMode: snapshot.permissionMode ?? null,
-      materialUsage: JSON.stringify(snapshot.materialUsage),
-      workingDirectory: snapshot.workingDirectory ?? null,
-      storageBytes: snapshot.storageBytes,
-    });
-    this.prune(snapshot.taskId);
-    return snapshot;
+    );
+    const { instructions, capabilities, ...fields } = row;
+    const instructionsHash = createHash("sha256").update(instructions).digest("hex");
+    const capabilitiesHash = createHash("sha256").update(capabilities).digest("hex");
+    const insertPayload = this.db.prepare(
+      "INSERT INTO runtime_audit_payloads(hash, body) VALUES (?, ?) ON CONFLICT(hash) DO NOTHING",
+    );
+    return this.db.transaction(() => {
+      if (once && (!this.db.prepare("SELECT 1 FROM tasks WHERE id=?").get(row.taskId)
+        || this.db.prepare("SELECT 1 FROM task_runtime_context_snapshots WHERE execution_id=?").get(row.executionId))) return 0;
+      insertPayload.run(instructionsHash, instructions);
+      insertPayload.run(capabilitiesHash, capabilities);
+      insertSnapshot.run({ ...fields, instructionsHash, capabilitiesHash });
+      this.prune(row.taskId, row.createdAt);
+      return 1;
+    }).immediate();
   }
 
-  appendMaterials(ctx: { taskId: string; executionId: string; assistantMessageId: string }, items: RuntimeMaterialUseDto[]): void {
+  appendMaterials(ctx: SnapshotIdentity, items: RuntimeMaterialUseDto[]): void {
     if (!items.length) return;
-    this.db.transaction(() => {
+    const at = Date.now();
+    const materials = items.map(item => ({ ...item }));
+    void this.write({ kind: "appendMaterials", identity: { ...ctx }, items: materials, at }, () => this.db.transaction(() => {
       const row = this.db.prepare(`SELECT id, material_usage_json FROM task_runtime_context_snapshots
         WHERE task_id = ? AND execution_id = ? AND assistant_message_id = ? AND status = 'running'`)
         .get(ctx.taskId, ctx.executionId, ctx.assistantMessageId) as { id: string; material_usage_json: string | null } | undefined;
-      if (!row?.material_usage_json) return;
-      const usage = parseMaterialUsage(row.material_usage_json);
-      if (!usage) return;
-      for (const item of items) {
-        if (usage.items.some((old) => old.toolCallId === item.toolCallId && old.target === item.target && old.kind === item.kind)) continue;
-        if (usage.items.length >= 100) { usage.omitted++; continue; }
-        usage.items.push(item);
+      const usage = row && parseMaterialUsage(parseJson(row.material_usage_json));
+      if (row?.material_usage_json && usage) {
+        for (const item of materials) {
+          if (usage.items.some((old) => old.toolCallId === item.toolCallId && old.target === item.target && old.kind === item.kind)) continue;
+          if (usage.items.length >= 100) { usage.omitted++; continue; }
+          usage.items.push(item);
+        }
+        const json = JSON.stringify(usage);
+        this.db.prepare(`UPDATE task_runtime_context_snapshots SET material_usage_json = ?, storage_bytes = storage_bytes + ? WHERE id = ?`)
+          .run(json, Buffer.byteLength(json) - Buffer.byteLength(row.material_usage_json), row.id);
       }
-      const json = JSON.stringify(usage);
-      this.db.prepare(`UPDATE task_runtime_context_snapshots SET material_usage_json = ?, storage_bytes = storage_bytes + ? WHERE id = ?`)
-        .run(json, Buffer.byteLength(json) - Buffer.byteLength(row.material_usage_json), row.id);
-    })();
-    this.prune(ctx.taskId);
+      this.prune(ctx.taskId, at);
+      return 0;
+    }).immediate());
   }
 
-  finish(executionId: string, status: "completed" | "failed" | "aborted", error?: string): void {
-    this.db.prepare(
+  finish(executionId: string, status: SnapshotFinish, error?: string): void {
+    const at = Date.now();
+    void this.write({ kind: "finish", executionId, status, error, at }, () => this.db.prepare(
       `UPDATE task_runtime_context_snapshots
        SET status = ?, completed_at = ?, error = ?
        WHERE execution_id = ? AND status = 'running'`,
-    ).run(status, Date.now(), error ?? null, executionId);
+    ).run(status, at, error ?? null, executionId).changes);
   }
 
-  finishByAssistantMessage(taskId: string, assistantMessageId: string, status: "completed" | "failed" | "aborted", error?: string): void {
-    this.db.prepare(
+  finishByAssistantMessage(taskId: string, assistantMessageId: string, status: SnapshotFinish, error?: string): void {
+    const at = Date.now();
+    void this.write({ kind: "finishByMessage", taskId, assistantMessageId, status, error, at }, () => this.db.prepare(
       `UPDATE task_runtime_context_snapshots
        SET status = ?, completed_at = ?, error = ?
        WHERE task_id = ? AND assistant_message_id = ? AND status = 'running'`,
-    ).run(status, Date.now(), error ?? null, taskId, assistantMessageId);
+    ).run(status, at, error ?? null, taskId, assistantMessageId).changes);
+  }
+
+  bindAssistantMessage(identity: SnapshotIdentity): void {
+    const { taskId, executionId, assistantMessageId } = identity;
+    void this.write({ kind: "bindMessage", identity: { ...identity } }, () => this.db.prepare(
+      `UPDATE task_runtime_context_snapshots SET assistant_message_id = ? WHERE task_id = ? AND execution_id = ?`,
+    ).run(assistantMessageId, taskId, executionId).changes);
   }
 
   abortRunningForTask(taskId: string): void {
-    this.db.prepare(
+    const at = Date.now();
+    void this.write({ kind: "abort", taskId, at }, () => this.db.prepare(
       `UPDATE task_runtime_context_snapshots
        SET status = 'aborted', completed_at = ?
        WHERE task_id = ? AND status = 'running'`,
-    ).run(Date.now(), taskId);
+    ).run(at, taskId).changes);
   }
 
-  private prune(taskId: string): void {
-    const cutoff = Date.now() - RUNTIME_AUDIT_MAX_AGE_MS;
+  private prune(taskId: string, at: number): void {
+    const cutoff = at - RUNTIME_AUDIT_MAX_AGE_MS;
     this.db.prepare("DELETE FROM task_runtime_context_snapshots WHERE task_id = ? AND created_at < ?")
       .run(taskId, cutoff);
     this.db.prepare(
@@ -246,13 +387,7 @@ export class RuntimeContextSnapshotRepository {
   list(taskId: string, limit = 50): RuntimeContextSnapshotDto[] {
     const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit)));
     const rows = this.db.prepare(
-      `SELECT id, task_id, user_message_id, assistant_message_id, created_at, schema_version,
-              welcome_mode, tag_id, project_id, project_updated_at,
-              resolved_instructions_json, resolved_capabilities_json, warnings_json,
-              execution_id, status, started_at, completed_at, error, assembly_hash, model_id, permission_mode,
-              working_directory, material_usage_json, storage_bytes
-       FROM task_runtime_context_snapshots WHERE task_id = ?
-       ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      `${selectSnapshots} WHERE s.task_id = ? ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?`,
     ).all(taskId, safeLimit) as SnapshotRow[];
     return rows.map(mapRow);
   }
@@ -262,5 +397,9 @@ export class RuntimeContextSnapshotRepository {
       ? this.db.prepare("DELETE FROM task_runtime_context_snapshots WHERE task_id = ?").run(taskId)
       : this.db.prepare("DELETE FROM task_runtime_context_snapshots").run();
     return result.changes;
+  }
+
+  async clearSaved(taskId?: string): Promise<number> {
+    return this.write({ kind: "clear", taskId }, () => this.clear(taskId));
   }
 }

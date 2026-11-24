@@ -16,15 +16,17 @@
  */
 import Database from "better-sqlite3";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import assert from "node:assert/strict";
 
 import { ArtifactStorage } from "../src/main/artifact/ArtifactStorage";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { ArtifactRegistry } from "../src/main/artifact/ArtifactRegistry";
 import { ArtifactService, type ArtifactEventSink } from "../src/main/artifact/ArtifactService";
 import { ArtifactRefreshCoordinator } from "../src/main/artifact/ArtifactRefreshCoordinator";
-import { ensureTaskLegacyMigrated } from "../src/main/artifact/ArtifactDomainSetup";
+import { ensureTaskLegacyMigrated, readArtifactSnapshotBatch } from "../src/main/artifact/ArtifactDomainSetup";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 
 const results: Array<[string, boolean, string]> = [];
@@ -861,6 +863,65 @@ async function main(): Promise<void> {
     const evts2 = await coord.onWorkspaceChanged({ taskId: "task-ref", cwd: ws, changedFiles: [a, b, c] });
     check("T28d 第二 turn → version=3（每 turn 每 artifact 最多 +1）", evts2.length === 1 && evts2[0]?.version === 3, `v=${evts2[0]?.version}`);
     h.close();
+  }
+
+  // ---------- T29: 任务成果批量读取与并发补迁 ----------
+  {
+    const executable = process.argv.includes("--native") ? locateRuntimeAudit(process.cwd()) : undefined;
+    if (process.argv.includes("--native")) assert.ok(executable && existsSync(executable));
+    const h = makeHarness();
+    const reader = executable ? new RuntimeAuditReader(executable, h.db.name) : undefined;
+    const service = new ArtifactService(h.storage, h.repository, h.registry, h.sink, reader);
+    try {
+      await service.register({ taskId: "current", kind: "markdown", title: "校验记录", content: "# 工作记录" });
+      const old = await service.register({
+        taskId: "current", kind: "html", title: "成果页面", content: "<html/>", capabilities: { fixture: true },
+      });
+      h.repository.markLegacyMigrated("current");
+      const uploadDir = join(homedir(), ".mybuddy", "uploads");
+      h.repository.insert({
+        ...old, id: "historical-upload", title: "历史输入",
+        source: { type: "workspace-file", rootDir: uploadDir, entryFile: join(uploadDir, "1795522613044-abcdef12-input.html") },
+      });
+      const corrupt = await service.register({ taskId: "corrupt", kind: "html", content: "<html/>" });
+      h.repository.markLegacyMigrated("corrupt");
+      h.db.prepare("UPDATE artifacts SET capabilities_json = ? WHERE id = ?").run("invalid-json", corrupt.id);
+      const source = {
+        async loadLegacyArtifacts(taskId: string) {
+          if (taskId === "retry") throw new Error("legacy unavailable");
+          if (taskId !== "legacy") return null;
+          return { artifacts: [{ kind: "markdown", name: "旧会话成果", content: "# 已保留" }] };
+        },
+      };
+      const [page, concurrent] = await Promise.all([
+        readArtifactSnapshotBatch(service, source, ["current", "empty", "legacy", "retry", "corrupt", "current"]),
+        readArtifactSnapshotBatch(service, source, ["legacy"]),
+      ]);
+      assert.deepEqual(page.map(s => [s.taskId, s.state, s.revision, s.artifacts.map(a => a.title)]), [
+        ["current", "ready", 2, ["校验记录", "成果页面"]],
+        ["empty", "ready", 0, []],
+        ["legacy", "ready", 1, ["旧会话成果"]],
+        ["retry", "error", 0, []],
+        ["corrupt", "error", 0, []],
+      ]);
+      assert.deepEqual(concurrent[0]?.artifacts.map(a => a.title), ["旧会话成果"]);
+      assert.equal(service.isLegacyMigrated("retry"), false);
+      assert.equal(page[0]?.artifacts[1]?.source.type, "managed-content");
+      assert.deepEqual(page[0]?.artifacts[1]?.capabilities, { fixture: true });
+      await service.remove(old.id);
+      const after = await readArtifactSnapshotBatch(service, null, ["current"]);
+      assert.deepEqual([after[0]?.revision, after[0]?.artifacts.map(a => a.title)], [3, ["校验记录"]]);
+      if (reader) {
+        const native = await reader.artifactSnapshots(["legacy", "current"]);
+        assert.deepEqual(native?.map(snapshot => [snapshot.taskId, snapshot.revision, snapshot.legacyMigrated]), [
+          ["legacy", 1, true], ["current", 3, true],
+        ]);
+      }
+      check("T29 批量返回有序快照，隔离失败，旧成果不重复补迁", true);
+    } finally {
+      await reader?.close();
+      h.close();
+    }
   }
 
   // ---------- 汇总 ----------
