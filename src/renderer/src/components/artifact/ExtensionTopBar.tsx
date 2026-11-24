@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { useEffect, useMemo, useRef } from "react";
 import {
   useActiveTerminalTabs,
@@ -8,17 +9,9 @@ import type { Artifact } from "@/types";
 import { FileBadge } from "@/components/common/FileBadge";
 import { canNativeDrag, fileTitleDragProps } from "@/lib/nativeFileDrag";
 import {
-  IconExpand,
-  IconFileBox,
-  IconFolder,
-  IconGitBranch,
   IconGlobe,
-  IconPanel,
   IconPin,
-  IconPuzzle,
-  IconTerminal,
   IconX,
-  IconZap,
 } from "@/components/common/icons";
 import { hasActiveExecutionMessages } from "@/utils/taskFilters";
 import TerminalTabsBar from "./TerminalTabsBar";
@@ -123,7 +116,7 @@ export default function ExtensionTopBar({
             aria-pressed={panelMode === "overview"}
             title="概览与运行态"
           >
-            <IconZap size={16} />
+            <UiIcon name="run-overview" size={16} accent />
             {isRunning && <span className="extension-tab-dot" title="正在运行中" />}
           </button>
 
@@ -136,7 +129,7 @@ export default function ExtensionTopBar({
             aria-pressed={panelMode === "artifacts"}
             title={artifactsCount > 0 ? `任务产物 (${artifactsCount})` : "任务产物"}
           >
-            <IconFileBox size={16} />
+            <UiIcon name="artifact" size={16} accent />
             {artifactsCount > 0 && (
               <span className="extension-tab-badge">
                 {artifactsCount > 99 ? "99+" : artifactsCount}
@@ -153,7 +146,7 @@ export default function ExtensionTopBar({
             aria-description={pendingReviewCount ? `${pendingReviewCount} 个文件待审查` : undefined}
             aria-pressed={panelMode === "changes"}
           >
-            <IconGitBranch size={16} />
+            <UiIcon name="git-branch" size={16} accent />
             <PendingReviewBadge count={pendingReviewCount} />
           </button>
 
@@ -166,7 +159,7 @@ export default function ExtensionTopBar({
             aria-pressed={panelMode === "workspace"}
             title={workspaceFilesCount > 0 ? `工作空间文件 (${workspaceFilesCount})` : "工作空间文件"}
           >
-            <IconFolder size={16} />
+            <UiIcon name="workspace-files" size={16} accent />
             {workspaceFilesCount > 0 && (
               <span className="extension-tab-badge">
                 {workspaceFilesCount > 99 ? "99+" : workspaceFilesCount}
@@ -183,7 +176,7 @@ export default function ExtensionTopBar({
             aria-pressed={panelMode === "gadgets"}
             title={gadgetsCount > 0 ? `工作台 (${gadgetsCount})` : "工作台"}
           >
-            <IconPuzzle size={16} />
+            <UiIcon name="workbench-tools" size={16} accent />
             {gadgetsCount > 0 && (
               <span className="extension-tab-badge">
                 {gadgetsCount > 99 ? "99+" : gadgetsCount}
@@ -200,7 +193,7 @@ export default function ExtensionTopBar({
             aria-pressed={panelMode === "terminal"}
             title={terminalTabs.length > 0 ? `终端 (${terminalTabs.length})` : "终端"}
           >
-            <IconTerminal size={16} />
+            <UiIcon name="terminal-compact" size={16} accent />
             {terminalTabs.length > 0 && (
               <span className="extension-tab-badge">
                 {terminalTabs.length > 99 ? "99+" : terminalTabs.length}
@@ -217,7 +210,7 @@ export default function ExtensionTopBar({
             aria-pressed={panelMode === "browser"}
             title="内置浏览器"
           >
-            <IconGlobe size={16} />
+            <UiIcon name="globe" size={16} accent />
           </button>
         </div>
 
@@ -229,7 +222,7 @@ export default function ExtensionTopBar({
             title={panelExpanded ? "还原宽度" : "展开"}
             onClick={onWiden}
           >
-            <IconExpand size={15} />
+            <UiIcon name={panelExpanded ? "collapse" : "expand"} size={15} />
           </button>
           <button
             type="button"
@@ -242,7 +235,7 @@ export default function ExtensionTopBar({
             <IconPin size={15} fill={panelPinned ? "currentColor" : "none"} />
           </button>
           <button type="button" className="icon-btn" title="关闭侧栏" onClick={closePanel}>
-            <IconPanel size={15} />
+            <UiIcon name="panel-right" size={15} />
           </button>
         </div>
       </div>

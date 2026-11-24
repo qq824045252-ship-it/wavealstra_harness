@@ -1,10 +1,11 @@
+import { MyBuddyBrandIcon as MyBuddyIcon } from "@mybuddy/shared/icons"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown, ArrowUp, Bell, Bot, Briefcase, Camera, Check,
   ChevronDown, ChevronRight, Cloud, Copy, FileUp, Folder, Globe, Image,
   LoaderCircle, Settings, Menu, Plus, Redo2, RotateCcw, Sparkles, Square, Terminal,
   ThumbsDown, ThumbsUp, Trash2, X, Shield,
-} from 'lucide-react'
+} from './icons'
 import { App as CapacitorApp } from '@capacitor/app'
 import { activityTimeOrUndefined, DOTS_TASK_ID } from '@mybuddy/shared'
 import type { RemoteAcpAgentSummary, RemoteAcpPermissionPolicy, RemoteConversationInteraction, RemoteImageArtifact, RemoteTaskSummary } from '@mybuddy/shared'
@@ -2150,25 +2151,6 @@ function NotificationsOverlay({
 /* ==========================================================================
    Helpers & SVG Marks
    ========================================================================== */
-// Desktop source: build/pi-source/favicon.svg.
-function MyBuddyIcon({ className = '', size = 28 }: { className?: string; size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 800 800"
-      className={className}
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <rect width="800" height="800" rx="120" fill="#09090b" />
-      <path fill="#fff" fillRule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29Z M282.65 282.65V400H400V282.65Z" />
-      <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
-    </svg>
-  )
-}
-
 function pickGreeting(): string {
   const hour = new Date().getHours()
   if (hour < 5) return '深夜了，还在忙什么呢？'

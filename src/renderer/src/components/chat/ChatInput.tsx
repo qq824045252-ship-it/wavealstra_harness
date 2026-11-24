@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { ModelMenu } from "./ModelMenu";
 import { DOTS_TASK_ID } from "@shared/dots";
 import { selectChatModelId } from "@/store/app/slices/activeContext";
@@ -1730,7 +1731,7 @@ export default function ChatInput({
             >
               <button type="button" className="expert-editor-chip-button" disabled={!activeTask} onClick={() => activeTask && setExpertManagerTaskId(activeTask.id)}>
               <span className="input-expert-chip-emoji" aria-hidden>
-                {selectedExpert.emoji || "🧙"}
+                {selectedExpert.emoji || <UiIcon name="expert" size="1em" />}
               </span>
               <span className="input-expert-chip-name">{selectedExpert.name}</span>
               {activeTask?.expertBinding?.pending && <span className="expert-editor-notice">待生效</span>}

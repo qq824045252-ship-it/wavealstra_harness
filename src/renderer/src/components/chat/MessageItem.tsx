@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { DOTS_TASK_ID } from "@shared/dots";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -25,7 +26,7 @@ import { ConversationInteractionCard } from "./ConversationRuntimeCards";
 import {
   IconCopy,
   IconBlocks,
-  IconBot,
+  IconDots,
   IconPiLogo,
   IconChevronDown,
   IconChevronUp,
@@ -628,7 +629,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, delive
                   title={`专家：${expert.name}`}
                 >
                   <span className="user-expert-emoji" aria-hidden>
-                    {expert.emoji?.trim() || "🧙"}
+                    {expert.emoji?.trim() || <UiIcon name="expert" size="1em" />}
                   </span>
                   <span className="user-attachment-name">{expert.name}</span>
                 </span>
@@ -808,7 +809,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, delive
             className={`assistant-avatar${message.externalAgent ? " external-agent-avatar" : ""}`}
             title={message.externalAgent ? `${message.externalAgent.name} · ACP` : taskId === DOTS_TASK_ID ? "MyBuddy Dots" : "MyBuddy (Pi Agent)"}
           >
-            {message.externalAgent ? <IconBlocks size={13} /> : taskId === DOTS_TASK_ID ? <IconBot size={13} /> : <IconPiLogo size={13} />}
+            {message.externalAgent ? <IconBlocks size={13} /> : taskId === DOTS_TASK_ID ? <IconDots size={13} /> : <IconPiLogo size={13} />}
           </div>
           <span className="assistant-name">
             {message.externalAgent ? (

@@ -37,7 +37,7 @@ import type { Space, Task, TaskFilterStatus, TaskFilterTime } from "@/types";
 import {
   IconAlert,
   IconArchive,
-  IconBot,
+  IconDots,
   IconMessageDashed,
   IconChevronDown,
   IconChevronRight,
@@ -49,7 +49,7 @@ import {
   IconPencil,
   IconPlus,
   IconMore,
-  IconShield,
+  IconPermission,
   IconTrash,
 } from "@/components/common/icons";
 
@@ -83,7 +83,7 @@ const dotsStatusLabels = {
 
 const dotsActionMarks = {
   reply: <IconMessages size={13} />,
-  approve: <IconShield size={13} />,
+  approve: <IconPermission size={13} />,
 };
 
 function DotsStatusIndicator(): React.JSX.Element | null {
@@ -857,7 +857,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       }} />}
 
       <div className="sidebar-dots-entry">
-        <DesktopSectionRow className="sidebar-dots-row" icon={<IconBot size={22} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
+        <DesktopSectionRow className="sidebar-dots-row" icon={<IconDots size={22} />} active={page === "chat" && activeTaskId === DOTS_TASK_ID}
           meta={<DotsStatusIndicator />}
           onClick={() => { setDotsError(""); void openDots({ showLatest: true }).catch(error => setDotsError(String(error))); }}>
           MyBuddy Dots

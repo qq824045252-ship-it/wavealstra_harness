@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/store/appStore";
 import type { Expert, Page, Skill } from "@/types";
@@ -284,7 +285,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
     <HubCard
       key={expert.id}
       expansionCommand={bulkExpansion.command}
-      icon={<span style={{ fontSize: 16 }}>{expert.emoji || "🧙"}</span>}
+      icon={<span style={{ fontSize: 16 }}>{expert.emoji || <UiIcon name="expert" size="1em" />}</span>}
       title={expert.name}
       meta={
         <>
@@ -360,7 +361,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
         <div className="expert-examples" style={{ marginTop: 6 }}>
           {expert.examples.slice(0, 2).map((ex) => (
             <div key={ex} className="expert-example" title={ex}>
-              💬 {ex}
+              <UiIcon name="conversation" size="1em" /> {ex}
             </div>
           ))}
           {expert.examples.length > 2 && <div className="expert-example">… +{expert.examples.length - 2}</div>}
@@ -446,7 +447,7 @@ function ExpertsTab({ query }: { query: string }): React.JSX.Element {
 
                 {empty ? (
                   <HubEmpty
-                    icon="🛍️"
+                    icon={<UiIcon name="market" size="1em" accent />}
                     title={showInstalledOnly ? "尚未安装专家" : "市场暂无更多专家"}
                     description={showInstalledOnly ? "切换到「全部」或分类浏览并安装专家" : "从市场安装专家后，可在「已安装」中管理"}
                   />
@@ -763,15 +764,15 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
           <HubCategoryPills label="已安装技能分类" pills={installedByCategory.pills} activeId={installedCategory} onChange={setInstalledCategory} />
           {installedByCategory.visible.length === 0 ? (
             skills.length > 0
-              ? <HubEmpty icon="🧩" title="没有匹配的技能" />
-              : <HubEmpty icon="🧩" title="尚未安装技能" description="可从「市场」安装；「卸载」只移除本地副本，市场仍可再装" />
+              ? <HubEmpty icon={<UiIcon name="extensions" size="1em" accent />} title="没有匹配的技能" />
+              : <HubEmpty icon={<UiIcon name="extensions" size="1em" accent />} title="尚未安装技能" description="可从「市场」安装；「卸载」只移除本地副本，市场仍可再装" />
           ) : (
             <HubGrid density="compact">
               {installedByCategory.visible.map((skill) => (
                 <HubCard
                   key={skill.id}
                   expansionCommand={bulkExpansion.command}
-                  icon={skill.icon ? <span className="skill-card-icon">{skill.icon}</span> : <span>🧩</span>}
+                  icon={skill.icon ? <span className="skill-card-icon">{skill.icon}</span> : <UiIcon name="extensions" size="1em" accent />}
                   title={skill.name}
                   meta={
                     <div className="hub-card-meta-stack">
@@ -837,8 +838,8 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
           <HubCategoryPills label="市场技能分类" pills={marketByCategory.pills} activeId={marketCategory} onChange={setMarketCategory} />
           {marketByCategory.visible.length === 0 ? (
             filteredMarket.length > 0 || query.trim()
-              ? <HubEmpty icon="🛍️" title="没有匹配的技能" />
-              : <HubEmpty icon="🛍️" title={marketSource === "全部" ? "市场暂无更多技能" : `暂无「${marketSource}」技能`}
+              ? <HubEmpty icon={<UiIcon name="market" size="1em" accent />} title="没有匹配的技能" />
+              : <HubEmpty icon={<UiIcon name="market" size="1em" accent />} title={marketSource === "全部" ? "市场暂无更多技能" : `暂无「${marketSource}」技能`}
                   description="市场为只读来源：安装是复制到 ~/.mybuddy/plugins/skills/，删除本地后可随时重新安装" />
           ) : (
             <HubGrid density="compact">
@@ -849,7 +850,7 @@ function SkillsTab({ query }: { query: string }): React.JSX.Element {
                   <HubCard
                     key={skill.id}
                     expansionCommand={bulkExpansion.command}
-                    icon={skill.icon ? <span className="skill-card-icon">{skill.icon}</span> : <span>🧩</span>}
+                    icon={skill.icon ? <span className="skill-card-icon">{skill.icon}</span> : <UiIcon name="extensions" size="1em" accent />}
                     title={skill.name}
                     meta={skill.author ?? "—"}
                     description={skill.description}
@@ -1195,7 +1196,7 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
         id={`hub-mcp-${server.name}`}
         focused={focusName === server.name}
         expansionCommand={bulkExpansion.command}
-        icon={<span>🔌</span>}
+        icon={<UiIcon name="connector" size="1em" accent />}
         title={server.name}
         meta={
           <div className="hub-card-meta-stack">
@@ -1259,8 +1260,8 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
       <HubHeader title="已安装到 MyBuddy" count={installed.length} description="支持本地程序、Streamable HTTP、OAuth 与工具提供方式配置" />
       {installed.length === 0 ? (
         servers.some((server) => server.installed)
-          ? <HubEmpty icon="🔌" title="没有匹配的已安装 MCP" />
-          : <HubEmpty icon="🔌" title="还没有安装任何 MCP 服务器" description="点击“新增 MCP”配置服务器，或从下方来源导入；安装后即可在对话中调用" />
+          ? <HubEmpty icon={<UiIcon name="connector" size="1em" accent />} title="没有匹配的已安装 MCP" />
+          : <HubEmpty icon={<UiIcon name="connector" size="1em" accent />} title="还没有安装任何 MCP 服务器" description="点击“新增 MCP”配置服务器，或从下方来源导入；安装后即可在对话中调用" />
       ) : (
         <HubGrid density="normal">
           {installed.map((server) =>
@@ -1325,8 +1326,8 @@ function McpTab({ query }: { query: string }): React.JSX.Element {
       />
       {available.length === 0 ? (
         servers.some((server) => !server.installed)
-          ? <HubEmpty icon="🔌" title="没有匹配的可安装 MCP" />
-          : <HubEmpty icon="✅" title="没有可安装的服务器" description="全部来源的服务器都已安装到 MyBuddy" />
+          ? <HubEmpty icon={<UiIcon name="connector" size="1em" accent />} title="没有匹配的可安装 MCP" />
+          : <HubEmpty icon={<UiIcon name="circle-check" size="1em" accent />} title="没有可安装的服务器" description="全部来源的服务器都已安装到 MyBuddy" />
       ) : (
         <>
           {groups.map(([sourceId, list]) => (
@@ -1611,8 +1612,8 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
         onChange={(id) => setCategories((current) => ({ ...current, [subTab]: id }))} />
       {visibleConnectors.length === 0 ? (
         q || connectorSource.length > 0
-          ? <HubEmpty icon="🔌" title="没有匹配的连接器" />
-          : <HubEmpty icon="🔌" title={subTab === "installed" ? "暂无已安装连接器" : "暂无可用连接器"}
+          ? <HubEmpty icon={<UiIcon name="connector" size="1em" accent />} title="没有匹配的连接器" />
+          : <HubEmpty icon={<UiIcon name="connector" size="1em" accent />} title={subTab === "installed" ? "暂无已安装连接器" : "暂无可用连接器"}
               description={subTab === "installed" ? "到「市场」标签选择连接器安装" : "本地市场（mybuddyskills-main/connectors）未发现连接器"} />
       ) : (
         <HubGrid density="compact">
@@ -1624,7 +1625,7 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
                 connector.iconPath ? (
                   <img src={`file://${connector.iconPath.replace(/\\/g, "/")}`} className="connector-icon" alt="" style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover" }} />
                 ) : (
-                  <span>🔌</span>
+                  <UiIcon name="connector" size="1em" accent />
                 )
               }
               title={connector.name}
@@ -1728,7 +1729,7 @@ function ConnectorsTab({ query }: { query: string }): React.JSX.Element {
                 <div className="expert-examples" style={{ marginTop: 6 }}>
                   {connector.examples.slice(0, 2).map((ex) => (
                     <div key={ex} className="expert-example" title={ex}>
-                      💬 {ex}
+                      <UiIcon name="conversation" size="1em" /> {ex}
                     </div>
                   ))}
                 </div>

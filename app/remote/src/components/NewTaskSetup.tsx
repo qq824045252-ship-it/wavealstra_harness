@@ -1,4 +1,4 @@
-import { LayoutGrid, Briefcase, Check, ChevronDown, ChevronLeft, ChevronRight, Code2, Folder, Tag, X } from 'lucide-react'
+import { LayoutGrid, Briefcase, Check, ChevronDown, ChevronLeft, ChevronRight, Code2, Folder, Tag, X } from '../icons'
 import { useRemoteStore } from '../store/remoteStore'
 import { spaceBreadcrumb } from '../lib/spaceGroups'
 

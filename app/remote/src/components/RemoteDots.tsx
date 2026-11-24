@@ -1,4 +1,4 @@
-import { Bot, ChevronRight, FileText } from 'lucide-react'
+import { Dots, ChevronRight, FileText } from '../icons'
 import type { RemoteHistoryMessage } from '@mybuddy/shared'
 import { taskDotLabel, taskStatusDot } from '../lib/taskStatusDot'
 import { localDoneAckAt, useRemoteStore } from '../store/remoteStore'
@@ -13,7 +13,7 @@ export function DotsEntry({ placement, onOpen }: { placement: 'home' | 'drawer';
 
   return <button type="button" className={`dots-entry dots-entry--${placement}`}
     aria-current={active ? 'page' : undefined} onClick={() => onOpen(dots.id)}>
-    <span className="dots-entry-icon"><Bot size={21} aria-hidden /></span>
+    <span className="dots-entry-icon"><Dots size={21} /></span>
     <span className="dots-entry-label">
       <strong>MyBuddy Dots</strong>
       {placement === 'home' && <span>问问题、交办和跟进任务</span>}

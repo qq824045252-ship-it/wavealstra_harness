@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { Children, isValidElement, memo, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -338,7 +339,7 @@ function Markdown({
                       className="md-img-placeholder"
                       title={`相对路径图片（${src}）`}
                     >
-                      🖼 {alt || src.split(/[\\/]/).pop() || "图片"}（本地图片不可用）
+                      <UiIcon name="image" size="1em" /> {alt || src.split(/[\\/]/).pop() || "图片"}（本地图片不可用）
                     </span>
                   );
                 },

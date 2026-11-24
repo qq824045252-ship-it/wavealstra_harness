@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 /**
  * 用量统计面板。
  * 布局参照活跃度仪表：KPI + 日热力图 + 活跃/Token/Cache + skills/模型。
@@ -170,7 +171,7 @@ function Kpi({
   value,
   label,
 }: {
-  icon: string;
+  icon: React.ReactNode;
   value: React.ReactNode;
   label: string;
 }): React.JSX.Element {
@@ -298,14 +299,14 @@ export default function UsageStatsPage(): React.JSX.Element {
           <div className="us-body">
             <div className="us-kpis">
               <Kpi
-                icon="☰"
+                icon={<UiIcon name="usage" size="1em" accent />}
                 value={<TokenValue value={data.totalTokens} known={allTokensKnown(data.known)} />}
                 label="累计 tokens"
               />
-              <Kpi icon="⌃" value={formatTokenCount(data.dailyPeakTokens)} label="单日峰值 tokens" />
-              <Kpi icon="◷" value={fmtDuration(data.longestTaskMs)} label="最长任务" />
-              <Kpi icon="🔥" value={`${formatCount(data.currentStreakDays)} 天`} label="当前连续" />
-              <Kpi icon="▦" value={`${formatCount(data.longestStreakDays)} 天`} label="最长连续" />
+              <Kpi icon={<UiIcon name="peak" size="1em" accent />} value={formatTokenCount(data.dailyPeakTokens)} label="单日峰值 tokens" />
+              <Kpi icon={<UiIcon name="clock" size="1em" accent />} value={fmtDuration(data.longestTaskMs)} label="最长任务" />
+              <Kpi icon={<UiIcon name="flame" size="1em" accent />} value={`${formatCount(data.currentStreakDays)} 天`} label="当前连续" />
+              <Kpi icon={<UiIcon name="streak-calendar" size="1em" accent />} value={`${formatCount(data.longestStreakDays)} 天`} label="最长连续" />
             </div>
 
             <section className="us-box us-heat-box">

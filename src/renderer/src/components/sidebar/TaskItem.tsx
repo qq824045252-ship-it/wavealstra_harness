@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { isGatewayConversation } from "../../../../shared/gateway-task";
@@ -387,7 +388,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       <div className="task-item-meta">
         {taskExpert && (
           <span className="task-expert-badge" title={`专家：${taskExpert.name}`}>
-            {taskExpert.emoji || "🧙"}
+            {taskExpert.emoji || <UiIcon name="expert" size="1em" />}
           </span>
         )}
         {pinned && (

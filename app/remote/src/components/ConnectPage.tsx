@@ -7,7 +7,7 @@ import {
   LoaderCircle,
   Plus,
   Trash2,
-} from 'lucide-react'
+} from '../icons'
 import {
   type RemoteServerNode,
 } from '../api/credentialStore'

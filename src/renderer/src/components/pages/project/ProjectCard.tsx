@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { useEffect, useRef, useState } from "react";
 import { IconFolderKanban, IconMore } from "@/components/common/icons";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
@@ -74,7 +75,7 @@ export default function ProjectCard({
             className={`project-attention-badge ${attention!.health === "red" ? "att-red" : "att-yellow"} ${attention!.seen ? "att-seen" : "att-new"}`}
             title={`${attention!.health === "red" ? "有阻塞" : "有风险"}：阻塞/风险 ${attention!.blockerCount + attention!.atRiskCount} 项，待确认 ${attention!.needsConfirmation}`}
           >
-            {attention!.health === "red" ? "🔴" : "🟡"}
+            <UiIcon name={attention!.health === "red" ? "status-blocked" : "status-risk"} size="1em" />
             {counts}
           </span>
         )}

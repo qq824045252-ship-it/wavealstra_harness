@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import type { SavedArtifactRequest } from "@shared/saved-artifact";
 import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, TaskDotsDelivery, useDotsDelegations } from "./DotsResult";
 import { DotsAllTasks } from "./DotsActivity";
@@ -30,9 +31,10 @@ import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import {
   IconChevronDown,
   IconClock,
-  IconBot,
+  IconDots,
   IconAlert,
   IconPanel,
+  IconPanelRight,
   IconX,
 } from "@/components/common/icons";
 import type { McpServerDto, ModePresetDto, WelcomeMode } from "@shared/agent-ipc";
@@ -788,7 +790,7 @@ export default function ChatView(): React.JSX.Element {
   const boundProjectId = task?.projectId ?? draftProjectId;
   const subagentView = useAppStore((s) => s.subagentView);
   const sidePanelButton = <button className={`icon-btn ${panelOpen ? "toggled" : ""}`} title={panelOpen ? "关闭侧栏" : "打开概览"}
-    onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanel size={15} /></button>;
+    onClick={() => (panelOpen ? closePanel() : openSidePanel())}><IconPanelRight size={15} /></button>;
 
   // 子代理对话页：共用同一个聊天外壳（同一批消息组件/输入外壳），只是数据源换成子会话。
   // 放在所有 hook 之后，避免条件返回改变 hook 顺序。
@@ -801,7 +803,7 @@ export default function ChatView(): React.JSX.Element {
   const dotsHeader = (
     <div className="chat-header task-chat-header">
       <CollapsedSidebarActions />
-      <IconBot size={22} />
+      <IconDots size={22} />
       <div className="chat-header-title">MyBuddy Dots</div>
       <DotsAllTasks />
     </div>
@@ -845,7 +847,7 @@ export default function ChatView(): React.JSX.Element {
           {taskExpert && (
             <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
               <span className="chat-expert-chip-symbol" aria-hidden="true">
-                {taskExpert.emoji || "🧙"}
+                {taskExpert.emoji || <UiIcon name="expert" size="1em" />}
               </span>
               <span className="chat-expert-chip-label">{taskExpert.name}</span>
             </span>
@@ -929,7 +931,7 @@ export default function ChatView(): React.JSX.Element {
         {taskExpert && (
           <span className="chat-expert-chip" title={`专家：${taskExpert.name}`}>
             <span className="chat-expert-chip-symbol" aria-hidden="true">
-              {taskExpert.emoji || "🧙"}
+              {taskExpert.emoji || <UiIcon name="expert" size="1em" />}
             </span>
             <span className="chat-expert-chip-label">{taskExpert.name}</span>
           </span>

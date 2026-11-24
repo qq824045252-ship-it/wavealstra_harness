@@ -1,20 +1,17 @@
-import {
-  IconBarChart, IconBook, IconClock, IconKanban, IconFile, IconFolderKanban, IconGrid,
-  IconConversation, IconPanel, IconPuzzle, IconSettings,
-} from "@/components/common/icons";
+import { UiIcon } from "@mybuddy/shared/icons";
 import { useAppStore } from "@/store/appStore";
 import type { Page } from "@/types";
 import DesktopNotifications from "./DesktopNotifications";
 
 const MODULES = [
-  { page: "chat", label: "MyBuddy", icon: IconConversation },
-  { page: "task-board", label: "任务看板", icon: IconKanban },
-  { page: "library", label: "笔记", icon: IconBook },
-  { page: "projects", label: "项目", icon: IconFolderKanban },
-  { page: "automation", label: "自动化", icon: IconClock },
-  { page: "experts", label: "扩展", icon: IconPuzzle },
-  { page: "gadgets", label: "工作台", icon: IconGrid },
-  { page: "files", label: "任务成果", icon: IconFile },
+  { page: "chat", label: "MyBuddy", glyph: "conversation" },
+  { page: "task-board", label: "任务看板", glyph: "task-board-compact" },
+  { page: "library", label: "笔记", glyph: "notes" },
+  { page: "projects", label: "项目", glyph: "projects" },
+  { page: "automation", label: "自动化", glyph: "automation" },
+  { page: "experts", label: "扩展", glyph: "extensions" },
+  { page: "gadgets", label: "工作台", glyph: "workbench" },
+  { page: "files", label: "任务成果", glyph: "task-results" },
 ] as const;
 
 export function isTaskPage(page: Page): boolean {
@@ -44,22 +41,22 @@ export default function DesktopRail({ onNavigate, onSettings }: {
       {sidebarCollapsed && (page !== "notifications" || settingsOpen) && (
       <button type="button" className="desktop-rail-icon" title="展开模块列表" aria-label="展开模块列表"
         aria-controls="desktop-module-list" aria-expanded={false} onClick={toggleSidebar}>
-        <IconPanel size={16} />
+        <UiIcon name="panel-left" size={16} />
       </button>
     )}
     <div className="desktop-rail-modules">
-      {MODULES.map(({ page: destination, label, icon: Icon }) => (
+      {MODULES.map(({ page: destination, label, glyph }) => (
         <button key={destination} type="button" className="desktop-rail-module" title={label} aria-label={label}
           aria-current={selected === destination ? "page" : undefined} onClick={() => onNavigate(destination)}>
-          <Icon size={19} fill={destination === "chat" && selected === destination ? "currentColor" : "none"} />
+          <UiIcon name={glyph} size={19} accent={selected !== destination} />
         </button>
       ))}
     </div>
     <div className="desktop-rail-footer">
       <DesktopNotifications onOpen={() => onNavigate("notifications")} />
       <button type="button" className="desktop-rail-icon" title="用量统计" aria-label="用量统计"
-        aria-current={selected === "usage" ? "page" : undefined} onClick={() => onNavigate("usage")}><IconBarChart size={17} /></button>
-      <button type="button" className="desktop-rail-icon" title="设置" aria-label="设置" aria-current={settingsOpen ? "page" : undefined} onClick={onSettings}><IconSettings size={16} /></button>
+        aria-current={selected === "usage" ? "page" : undefined} onClick={() => onNavigate("usage")}><UiIcon name="usage" size={17} accent={selected !== "usage"} /></button>
+      <button type="button" className="desktop-rail-icon" title="设置" aria-label="设置" aria-current={settingsOpen ? "page" : undefined} onClick={onSettings}><UiIcon name="settings" size={16} accent={!settingsOpen} /></button>
     </div>
   </nav>;
 }

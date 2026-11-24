@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowLeft, ArrowRight, ArrowUp, File, Folder, FolderPlus, Search, X } from "lucide-react";
+import { IconArrowLeft as ArrowLeft, IconArrowRight as ArrowRight, IconArrowUp as ArrowUp, IconFileGeneric as File, IconFolder as Folder, IconFolderPlus as FolderPlus, IconSearch as Search, IconX as X } from "@/components/common/icons";
 import type { FileDialogApi, FileDialogDirectory, FileDialogEntry, FileDialogSelection, FileDialogState } from "@shared/file-dialog";
 import "../styles/global.css";
 import "./file-dialog.css";

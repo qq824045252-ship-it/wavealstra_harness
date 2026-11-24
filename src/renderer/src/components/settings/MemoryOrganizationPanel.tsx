@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Sparkles, ChevronDown, ChevronRight, RotateCcw, Check, Pause, Play, AlertCircle } from "lucide-react";
+import { IconSparkles as Sparkles, IconChevronDown as ChevronDown, IconChevronRight as ChevronRight, IconRotate as RotateCcw, IconCheck as Check, IconPause as Pause, IconPlay as Play, IconAlertCircle as AlertCircle } from "@/components/common/icons";
 import type { MemoryOrganizationProposal, MemoryOrganizationRun } from "@shared/memory-organization";
 import type { MemoryScopeDto } from "@shared/memory-kernel";
 

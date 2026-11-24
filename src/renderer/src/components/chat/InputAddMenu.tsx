@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { DOTS_TASK_ID } from "@shared/dots";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -926,7 +927,7 @@ export default function InputAddMenu({
                           onClose();
                         }}
                       >
-                        <span className="add-menu-emoji">{expert.emoji || "🧙"}</span>
+                        <span className="add-menu-emoji">{expert.emoji || <UiIcon name="expert" size="1em" />}</span>
                         <span className="add-menu-flyout-text">
                           {expert.name}
                           {recommended ? " · 推荐" : ""}
@@ -1187,7 +1188,7 @@ export default function InputAddMenu({
               {connectorInstalled.map((conn) => (
                 <div key={conn.id} className="add-menu-connector-row">
                   <span className="add-menu-emoji" aria-hidden>
-                    🔌
+                    <UiIcon name="connector" size="1em" />
                   </span>
                   <div className="add-menu-connector-info">
                     <span className="add-menu-connector-name">{conn.name}</span>
@@ -1221,7 +1222,7 @@ export default function InputAddMenu({
               {connectorAvailable.slice(0, 12).map((conn) => (
                 <div key={conn.id} className="add-menu-connector-row">
                   <span className="add-menu-emoji" aria-hidden>
-                    🔌
+                    <UiIcon name="connector" size="1em" />
                   </span>
                   <div className="add-menu-connector-info">
                     <span className="add-menu-connector-name">{conn.name}</span>

@@ -1,3 +1,4 @@
+import { IconChevronRight } from "@/components/common/icons";
 import { useEffect, useMemo, useState } from "react";
 import type { ConversationInteractionAnswer, ConversationInteractionDto } from "@shared/conversation-interaction";
 
@@ -48,9 +49,7 @@ export function ConversationInteractionCard({ interaction, onRespond, onDismiss,
     return (
       <details className={`conversation-interaction-history is-${interaction.status}`} data-interaction-id={interaction.id}>
         <summary>
-          <svg className="conversation-interaction-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="m6 3 5 5-5 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <IconChevronRight className="conversation-interaction-chevron" size={12} />
           <span className="conversation-interaction-history-title">{interaction.title}</span>
           <span className="conversation-interaction-history-status">{interaction.status === "resolved" ? "已回答" : interaction.status === "cancelled" ? "已取消" : "已过期"}</span>
         </summary>

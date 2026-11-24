@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Search } from "lucide-react";
+import { IconArrowLeft as ArrowLeft, IconArrowRight as ArrowRight, IconSearch as Search } from "@/components/common/icons";
 import type { MemorySkillCandidateDto, MemorySkillHistoryDeleteRequest } from "@shared/memory-kernel";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import MemorySkillHistoryControls, { useSkillHistorySelection } from "./MemorySkillHistoryControls";

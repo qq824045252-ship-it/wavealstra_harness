@@ -28,7 +28,7 @@ run(async env => {
   const row = (state, title) => `[...document.querySelectorAll('.dots-all-tasks:popover-open li[data-state="${state}"]')].find(li => li.querySelector('strong')?.textContent === ${JSON.stringify(title)})`;
   const listCount = () => evaluate("document.querySelectorAll('.dots-all-tasks:popover-open li').length");
   const waitingIndicator = '.sidebar-dots-row [aria-label="Dots 正在等待委托结果"]';
-  const showsWaitingAnimation = () => evaluate(`document.querySelector(${JSON.stringify(waitingIndicator + " .lucide-clock")})
+  const showsWaitingAnimation = () => evaluate(`document.querySelector(${JSON.stringify(waitingIndicator + ' [data-icon=clock]')})
     ?.getAnimations().some(animation => animation.playState === 'running') === true`);
   const send = async text => {
     await press("document.querySelector('textarea.input-textarea')", "Dots composer");
@@ -48,8 +48,8 @@ run(async env => {
 
   const pendingIndicators = [
     { label: "Dots 正在接收请求", mark: ".task-status-mark > i", count: 3, messages: [], botPendingSubmissions: [{ submitting: true }] },
-    { label: "等待你回答", mark: ".lucide-messages-square", count: 1, messages: [{ blocks: [], interactions: [{ status: "pending" }] }] },
-    { label: "等待你确认操作", mark: ".lucide-shield", count: 1, messages: [{ blocks: [{ type: "tool", toolCall: { status: "pending_approval" } }] }] },
+    { label: "等待你回答", mark: '[data-icon=messages]', count: 1, messages: [{ blocks: [], interactions: [{ status: "pending" }] }] },
+    { label: "等待你确认操作", mark: '[data-icon=permission]', count: 1, messages: [{ blocks: [{ type: "tool", toolCall: { status: "pending_approval" } }] }] },
   ];
   for (const { label, mark, count, messages, botPendingSubmissions } of pendingIndicators) {
     await evaluate(`(async () => {

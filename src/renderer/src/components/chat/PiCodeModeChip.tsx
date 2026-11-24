@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Code2 } from "lucide-react";
+import { IconCode as Code2 } from "@/components/common/icons";
 import type { McpStatusSnapshotDto, WelcomeMode } from "@shared/agent-ipc";
 import { piCodeModeLabel, type PiCodeModeState } from "@shared/pi-code-mode";
 import "./PiCodeModeChip.css";

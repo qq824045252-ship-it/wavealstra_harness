@@ -1,3 +1,4 @@
+import { IconPencil } from "@/components/common/icons";
 import { useEffect, useState } from "react";
 import type { HtmlEditTarget } from "@shared/html-edit";
 
@@ -25,7 +26,7 @@ export default function HtmlEditButton({ target, artifactId, modelId }: { target
   };
   return <>
     <button type="button" className={`icon-btn${active ? " active" : ""}`} title={error || (active ? "完成 HTML 编辑（保留草稿）" : "编辑页面文案与格式")} aria-label={active ? "完成 HTML 编辑" : "编辑 HTML"} disabled={busy} onClick={() => void toggle()}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z"/></svg>
+      <IconPencil size={15} />
     </button>
     {error && <span role="alert" style={{ fontSize: 12, maxWidth: 220 }} onClick={() => setError("")}>{error}</span>}
     {message && <span role="status" style={{ fontSize: 12 }}>{message}</span>}

@@ -148,7 +148,7 @@ export default function ProjectConfigRail({
   const selected = selectedProjectPolicyIds(project.policies);
   const expertItems: CapabilityItem[] = selected.experts.map((id) => {
     const expert = experts.find((item) => item.id === id);
-    return expert ? { id, name: expert.name, emoji: expert.emoji } : { id, name: id, emoji: "🧙" };
+    return expert ? { id, name: expert.name, emoji: expert.emoji } : { id, name: id };
   });
   const skillItems: CapabilityItem[] = selected.skills.map((id) => {
     const skill = skills.find((item) => item.id === id);

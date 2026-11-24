@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { RemoteImageArtifact } from '@mybuddy/shared'
@@ -70,7 +71,7 @@ function ImageViewer({ label, src, fallback, onClose }: { label: string; src: st
 
 function ImageChip({ label, detail, onOpen }: { label: string; detail?: string; onOpen: () => void }) {
   return <button type="button" className="remote-image-chip" onClick={onOpen} title="点击查看原图">
-    <span className="remote-image-chip-icon" aria-hidden="true">🖼</span>
+    <span className="remote-image-chip-icon" aria-hidden="true"><UiIcon name="image" size="1em" /></span>
     <span className="remote-image-chip-label">{label}</span>
     {detail ? <span className="remote-image-chip-detail">{detail}</span> : null}
     <span className="remote-image-chip-action">查看</span>

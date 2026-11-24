@@ -1,6 +1,6 @@
 import type { WelcomeMode } from "@shared/agent-ipc";
 import { WELCOME_MODE_LABELS, resolveWelcomeMode } from "@shared/mode-profile";
-import { Code2, FileText, LayoutGrid } from "lucide-react";
+import { IconCode as Code2, IconFile as FileText, IconGrid as LayoutGrid } from "@/components/common/icons";
 
 type Props = {
   mode?: WelcomeMode | null;

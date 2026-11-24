@@ -1,3 +1,4 @@
+import { UiIcon, type UiIconName } from "@mybuddy/shared/icons";
 import { useCallback, useEffect, useState } from "react";
 import type { ProjectActionProposalDto, ProjectDetailsDto, ProjectStatusSnapshotDto } from "@shared/project-domain";
 import { formatRelativeTime } from "@/lib/projectWorkspace";
@@ -9,10 +10,10 @@ interface Props {
   onToast: (text: string) => void;
 }
 
-const HEALTH_LABEL: Record<string, { icon: string; label: string; cls: string }> = {
-  red: { icon: "🔴", label: "有阻塞", cls: "health-red" },
-  yellow: { icon: "🟡", label: "有风险", cls: "health-yellow" },
-  green: { icon: "🟢", label: "正常", cls: "health-green" },
+const HEALTH_LABEL: Record<string, { icon: UiIconName; label: string; cls: string }> = {
+  red: { icon: "status-blocked", label: "有阻塞", cls: "health-red" },
+  yellow: { icon: "status-risk", label: "有风险", cls: "health-yellow" },
+  green: { icon: "status-normal", label: "正常", cls: "health-green" },
 };
 
 function shortDate(ms: number | null | undefined): string {
@@ -98,7 +99,7 @@ export default function ProjectStatusCard({ project, onOpenTask, onNavigateTab, 
     <div className="project-status-card">
       <div className="project-status-head">
         <span className={`project-status-health ${health.cls}`}>
-          {health.icon} 项目健康度：{health.label}
+          <UiIcon name={health.icon} size="1em" /> 项目健康度：{health.label}
         </span>
         <span className="project-status-meta">
           任务 {snap.tasks.doing}/{snap.tasks.active} 进行中 · 计划逾期 {snap.plan.overdue} · 记忆风险 {snap.memory.risks}

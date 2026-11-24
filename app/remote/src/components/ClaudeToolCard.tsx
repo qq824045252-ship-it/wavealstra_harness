@@ -1,5 +1,5 @@
 import { useState, type MouseEvent } from 'react'
-import { Check, ChevronDown, Copy, Terminal, Wrench } from 'lucide-react'
+import { Check, ChevronDown, Copy, Terminal, Wrench } from '../icons'
 import type { RemoteToolCall } from '@mybuddy/shared'
 import { AnimatedDisclosure } from './RemoteMotion'
 

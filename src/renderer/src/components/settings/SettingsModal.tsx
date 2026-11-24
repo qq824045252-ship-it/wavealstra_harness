@@ -1,3 +1,4 @@
+import { UiIcon, type UiIconName } from "@mybuddy/shared/icons";
 import { DesktopSectionRow, DesktopSectionSidebar } from "@/components/desktop/DesktopSection";
 import { APP_VERSION } from "@shared/app-version";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -9,25 +10,14 @@ import type {
 } from "@shared/agent-ipc";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import {
-  IconArchive,
-  IconBell,
-  IconBlocks,
-  IconBook,
   IconClock,
-  IconCode,
   IconFile,
   IconFolder,
   IconGrid,
-  IconLink,
-  IconMore,
-  IconPencil,
   IconPlus,
-  IconPuzzle,
   IconRefresh,
-  IconSettings,
   IconShare,
   IconShield,
-  IconSparkles,
   IconX,
 } from "@/components/common/icons";
 import "./RecordManagement.css";
@@ -68,28 +58,28 @@ import {
   userFontCssFamily,
 } from "@/lib/fontSettings";
 
-const TABS: Array<{ id: SettingsTab; icon: React.ComponentType<{ size?: number }>; label: string }> = [
-  { id: "system", icon: IconSettings, label: "系统设置" },
-  { id: "extensions", icon: IconBlocks, label: "工具能力" },
-  { id: "modes", icon: IconPencil, label: "模式与提示词" },
-  { id: "personalize", icon: IconSparkles, label: "个性化" },
-  { id: "memory", icon: IconClock, label: "记忆" },
-  { id: "materialRetrieval", icon: IconBook, label: "资料检索" },
-  { id: "dots", icon: IconSettings, label: "Dots 设置" },
-  { id: "nativeHooks", icon: IconCode, label: "执行钩子" },
-  { id: "nativeImprovement", icon: IconClock, label: "自我改进" },
-  { id: "archive", icon: IconArchive, label: "归档管理" },
-  { id: "models", icon: IconGrid, label: "模型" },
-  { id: "subagent", icon: IconBlocks, label: "子代理设置" },
-  { id: "assistant", icon: IconLink, label: "助理设置" },
-  { id: "acp", icon: IconPuzzle, label: "ACP 管理" },
-  { id: "data", icon: IconFile, label: "数据管理" },
-  { id: "python", icon: IconCode, label: "Python 运行时" },
-  { id: "shortcuts", icon: IconMore, label: "快捷键" },
-  { id: "notifications", icon: IconBell, label: "通知" },
-  { id: "remote", icon: IconShare, label: "远程连接" },
-  { id: "security", icon: IconShield, label: "安全中心" },
-  { id: "help", icon: IconBook, label: "帮助与反馈" },
+const TABS: Array<{ id: SettingsTab; glyph: UiIconName; label: string }> = [
+  { id: "system", glyph: "settings", label: "系统设置" },
+  { id: "extensions", glyph: "tools", label: "工具能力" },
+  { id: "modes", glyph: "modes", label: "模式与提示词" },
+  { id: "personalize", glyph: "personalize", label: "个性化" },
+  { id: "memory", glyph: "memory", label: "记忆" },
+  { id: "materialRetrieval", glyph: "retrieval", label: "资料检索" },
+  { id: "dots", glyph: "pi", label: "Dots 设置" },
+  { id: "nativeHooks", glyph: "hooks", label: "执行钩子" },
+  { id: "nativeImprovement", glyph: "improvement", label: "自我改进" },
+  { id: "archive", glyph: "archive", label: "归档管理" },
+  { id: "models", glyph: "models", label: "模型" },
+  { id: "subagent", glyph: "subagents", label: "子代理设置" },
+  { id: "assistant", glyph: "settings-assistant", label: "助理设置" },
+  { id: "acp", glyph: "acp", label: "ACP 管理" },
+  { id: "data", glyph: "data", label: "数据管理" },
+  { id: "python", glyph: "python", label: "Python 运行时" },
+  { id: "shortcuts", glyph: "shortcuts", label: "快捷键" },
+  { id: "notifications", glyph: "notifications", label: "通知" },
+  { id: "remote", glyph: "remote", label: "远程连接" },
+  { id: "security", glyph: "settings-security", label: "安全中心" },
+  { id: "help", glyph: "help", label: "帮助与反馈" },
 ];
 
 /** 内容区分区卡片：标题 + 描述 + 行条目容器（透明底 + 细边框，清新风格） */
@@ -1385,7 +1375,7 @@ export default function SettingsModal({ desktop = false }: { desktop?: boolean }
   const content = (
       <div className={desktop ? "settings-modal desktop-settings" : "settings-modal"} onClick={(e) => e.stopPropagation()}>
         {desktop ? <DesktopSectionSidebar title="设置" scrollKey="settings">
-          {TABS.map(t => <DesktopSectionRow key={t.id} className={`settings-nav-btn${tab === t.id ? " active" : ""}`} active={tab === t.id} icon={<t.icon size={15} />} onClick={() => changeTab(t.id)}>{t.label}</DesktopSectionRow>)}
+          {TABS.map(t => <DesktopSectionRow key={t.id} className={`settings-nav-btn${tab === t.id ? " active" : ""}`} active={tab === t.id} icon={<UiIcon name={t.glyph} size={15} accent={tab !== t.id} />} onClick={() => changeTab(t.id)}>{t.label}</DesktopSectionRow>)}
         </DesktopSectionSidebar> : <div className="settings-nav">
           {TABS.map((t) => (
             <button
@@ -1394,7 +1384,7 @@ export default function SettingsModal({ desktop = false }: { desktop?: boolean }
               onClick={() => changeTab(t.id)}
             >
               <span className="nav-icon">
-                <t.icon size={15} />
+                <UiIcon name={t.glyph} size={15} accent={tab !== t.id} />
               </span>
               <span>{t.label}</span>
             </button>

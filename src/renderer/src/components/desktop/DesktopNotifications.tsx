@@ -125,7 +125,7 @@ export default function DesktopNotifications({ onOpen }: { onOpen: () => void })
     <button type="button" className="desktop-rail-icon notification-bell" title="通知中心"
       aria-current={active ? "page" : undefined}
       aria-label={unreadCount ? `通知中心，${unreadCount} 条未读` : "通知中心"} onClick={onOpen}>
-      <IconBell size={17} />
+      <IconBell size={17} accent />
       {unreadCount > 0 && <span className="notification-bell-dot" />}
     </button>
     <ConfirmDialog open={notificationError !== null} title="通知操作失败" body={notificationError}

@@ -1,3 +1,4 @@
+import { UiIcon } from "@mybuddy/shared/icons";
 import { IconStop, IconX } from "@/components/common/icons";
 import { TASK_STATUS_LABELS } from "@/utils/taskFilters";
 import type { TaskStatus } from "@/types";
@@ -19,7 +20,7 @@ const marks = {
   planning: <><i /><i /><i /></>,
   failed: <IconX size={13} strokeWidth={2.3} />,
   stopped: <IconStop size={11} strokeWidth={2.3} />,
-  unknown: <span className="task-status-question">?</span>,
+  unknown: <UiIcon name="help" size={13} className="task-status-question" />,
 };
 
 export default function TaskStatusIndicator({

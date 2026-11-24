@@ -61,12 +61,11 @@ async function launch(label) {
 const visibleTaskTitles = () => evaluate(`[...document.querySelectorAll('.task-item .task-item-title')].map(el => el.textContent.trim())`);
 /**
  * 空间行探测。收起与否以真实 DOM 为据：chevron 内含 IconChevronRight 时 = 收起，IconChevronDown = 展开。
- * lucide 图标渲染为 <svg class="lucide lucide-chevron-right|chevron-down">。
  */
 const spaceRows = () => evaluate(`(() => {
   return [...document.querySelectorAll('.space-header')].map(row => ({
     name: (row.querySelector('.space-name')?.textContent ?? '').trim(),
-    chevron: (row.querySelector('.space-chevron svg')?.getAttribute('class') ?? 'none'),
+    chevron: (row.querySelector('.space-chevron svg')?.getAttribute('data-icon') ?? 'none'),
   }));
 })()`);
 const spaceCollapsed = (row) => /chevron-right/.test(row.chevron);

@@ -27,6 +27,7 @@ export async function buildSubagentRuntime(root) {
     ['core/tools/find.js', 'createFindTool'],
     ['core/tools/grep.js', 'createGrepTool'],
     ['core/tools/ls.js', 'createLsTool'],
+    ['extensions/mcp/oauth.js', 'createMcpAuthProvider'],
     ['utils/frontmatter.js', 'parseFrontmatter'],
   ].map(([file, names]) => `export { ${names} } from ${spec(join(piRoot, 'dist', file))};`).join('\n');
   const entry = 'export { VERSION, verifyPackagedDurable } from ' + spec(join(root, 'src/main/agent/durable/PackagedDurableProbe.ts')) + ';';

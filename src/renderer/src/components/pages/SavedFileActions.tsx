@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Eye, ExternalLink, Download } from 'lucide-react';
+import { IconEye as Eye, IconOpenExternal as ExternalLink, IconDownload as Download } from "@/components/common/icons";
 import './SavedFileActions.css';
 import type { SavedArtifactRequest } from '@shared/saved-artifact';
 
