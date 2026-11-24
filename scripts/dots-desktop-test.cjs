@@ -86,8 +86,14 @@ run(async env => {
   const dots = () => click("MyBuddy Dots", ".sidebar-dots-entry");
   const active = () => evaluate("document.querySelector('.chat-header-title')?.textContent");
   const body = () => evaluate("document.querySelector('.message-list')?.textContent");
+  const closeSidebarButton = "document.querySelector('.chat-header button[title=关闭侧栏]')";
+  const sidebarClosed = () => evaluate("!document.querySelector('.artifact-panel')");
   await dots();
   await until(async () => await active() === "MyBuddy Dots", "empty Dots chat");
+  await press("document.querySelector('.chat-header button[title=打开概览]')", "open the Dots sidebar");
+  await until(() => evaluate("!!document.querySelector('.artifact-panel .overview-view')"), "Dots shows the sidebar overview");
+  await press(closeSidebarButton, "close the Dots sidebar");
+  await until(sidebarClosed, "Dots sidebar closed");
   assert.equal(await evaluate("document.querySelector('.sidebar-dots-entry').nextElementSibling?.querySelector('.section-title')?.textContent.trim()"), "独立任务");
   assert.equal(await evaluate("window.api.db.listTasks().then(rows => rows.length)"), 0);
   const openDotsSettings = async () => {
@@ -293,6 +299,11 @@ run(async env => {
   const messagesBeforePreview = await body();
   await press("document.querySelector('.dots-result .artifact-chip-main')", "preview source artifact");
   await until(hasSavedQuote, "saved original after workspace overwrite");
+  await press(closeSidebarButton, "close the Dots file preview from the chat header");
+  await until(sidebarClosed, "file preview closed with the Dots sidebar");
+  await press("document.querySelector('.dots-result .artifact-chip-main')", "reopen the Dots file preview from the attachment");
+  await until(hasSavedQuote, "attachment reopens the sidebar with the saved file");
+  report.actualControlChecks.push("The Dots chat header opens the sidebar overview and closes both the overview and an open file preview. A file attachment reopens the sidebar with the saved file.");
   assert.equal(await body(), messagesBeforePreview, "preview does not insert content into the conversation");
   assert.equal(await evaluate("Boolean(document.querySelector('.message-list .bot-work-file-preview'))"), false);
   await press("document.querySelector('.artifact-panel button[title=展开]')", "expand the file pane");

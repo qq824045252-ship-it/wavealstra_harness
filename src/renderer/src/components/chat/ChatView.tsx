@@ -822,6 +822,7 @@ export default function ChatView(): React.JSX.Element {
       <IconDots size={22} />
       <div className="chat-header-title">MyBuddy Dots</div>
       <DotsAllTasks />
+      {sidePanelButton}
     </div>
   );
   if (!task || (!isDots && task.welcomeMode !== "general" && !hasMessages && !task.sessionFile && !task.durable && !task.botInputError)) {
