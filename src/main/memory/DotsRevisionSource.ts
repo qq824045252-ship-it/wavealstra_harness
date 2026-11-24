@@ -95,6 +95,7 @@ const words = new Intl.Segmenter(undefined, { granularity: "word" });
 const wording = (value: string) => value.trim().replace(/[.!?。！？;；]+$/u, "").trim();
 const scopeNoun = /项目|工作区|工作空间|空间|任务|客户|甲方|乙方|\b(?:project|workspace|workstream|client|customer|task)\b/iu;
 const generalCue = /默认|通用|全局|所有|一律|一直|以后|今后|从今|长期|平时|通常|\b(?:default|general(?:ly)?|global(?:ly)?|always|every|normally|from now on|going forward)\b/iu;
+const globalMemoryHeader = /^(?:(?:请你?|帮我|麻烦你?)\s*)?(?:(?:新增|增加|添加|写入|保存)(?:一条|一个)?\s*(?:全局|通用)(?:长期)?(?:记忆|偏好|规则)|(?:把(?:这条|下面这条|以下内容))?(?:记为|存为|保存为)\s*(?:全局|通用)(?:长期)?(?:记忆|偏好|规则)|(?:please\s+)?(?:add|save|store)\s+(?:a\s+|this\s+as\s+a\s+)?global\s+(?:memory|preference|rule))(?:\s*[，,:：]\s*[^，,:：]+)?$/iu;
 const universalScope = /所有|全部|每个|各个|一律|\b(?:all|every|any)\b/iu;
 const unresolved: DotsApplicability = { kind: "unresolved", name: "" };
 type ResolveDotsScope = (kind: "project" | "workspace", name: string, id?: string) => { id?: string; name: string } | undefined;
@@ -117,7 +118,7 @@ function continuingPolicy(source: string, after: number): string | undefined {
   return clauses.length && clauses.every(clause => clause.kind === "user") ? sentence : undefined;
 }
 
-function bindApplicability(source: string, quote: string, changeDefault: boolean, value?: unknown,
+function bindApplicability(source: string, quote: string, changeDefault: boolean, explicitGlobalSave: boolean, value?: unknown,
   resolveName?: ResolveDotsScope)
   : { applicability?: DotsApplicability; quote: string } {
   const declared = value && typeof value === "object" ? value as Partial<DotsApplicabilityInput> : undefined;
@@ -154,7 +155,7 @@ function bindApplicability(source: string, quote: string, changeDefault: boolean
     return { applicability: unresolved, quote };
   }
   const continuation = !declared || declared.kind === "general" ? continuingPolicy(source, tailAt) : undefined;
-  const general = (declared?.kind === "general" && uniqueRef && refAt >= quoteAt && refEnd <= tailAt
+  const general = explicitGlobalSave || (declared?.kind === "general" && uniqueRef && refAt >= quoteAt && refEnd <= tailAt
     && (generalCue.test(ref) || universalScope.test(ref)))
     || continuation && (!declared || uniqueRef && continuation.includes(ref) && refAt >= tailAt);
   return { applicability: changeDefault && !general ? unresolved : undefined, quote };
@@ -173,9 +174,7 @@ export function dotsSubject(title: string, source: string): string | undefined {
   }
 }
 
-function sourcePassage(text: string, anchors: readonly (string | undefined)[]) {
-  const passages = Array.from(sentences.segment(text), s => s.segment)
-    .flatMap(sentence => sentence.split(/[\n；;]+/u)).map(s => s.trim()).filter(Boolean);
+function sourcePassage(passages: readonly string[], anchors: readonly (string | undefined)[]) {
   for (const hint of anchors) {
     if (!hint?.trim()) continue;
     const found = passages.filter(s => s.includes(wording(hint)));
@@ -185,25 +184,34 @@ function sourcePassage(text: string, anchors: readonly (string | undefined)[]) {
 }
 
 export function groundDotsClaim(claim: Claim, input: DotsSourceInput, anchor?: string,
-  scope?: { declaration?: unknown; changeDefault?: boolean; resolveName?: ResolveDotsScope }) {
+  scope?: { declaration?: unknown; changeDefault?: boolean; globalCreate?: boolean; resolveName?: ResolveDotsScope }) {
   const text = input.text.trim();
   if (!input.messageId || !text || (anchor && !text.includes(anchor))) return;
+  const document = MemoryInstructionDocument.parse(text);
+  const passages = Array.from(sentences.segment(text), s => s.segment)
+    .flatMap(sentence => sentence.split(/[\n；;]+/u)).map(s => s.trim()).filter(Boolean);
+  const [header, body] = passages;
+  // A standalone save directive supplies scope for its sole following statement.
+  // Keep the directive out of the stored content and its exact source excerpt.
+  const hasGlobalHeader = scope?.globalCreate && passages.length === 2 && header && body
+    && globalMemoryHeader.test(wording(header)) && !scopeNoun.test(header) && document.allowsEvidence(header);
+  const explicitGlobalSave = Boolean(hasGlobalHeader && body
+    && (!anchor || wording(anchor).includes(wording(body)) || body.includes(wording(anchor))));
   // Expand the anchor to its complete sentence so the speaker, condition and
   // negation on either side stay attached. Independent sentences stay apart.
-  const passage = sourcePassage(text, [anchor, claim.content, claim.title]);
-  if (!passage) return;
-  const { quote, applicability } = bindApplicability(text, passage, scope?.changeDefault ?? false, scope?.declaration, scope?.resolveName);
+  const passage = explicitGlobalSave ? body : sourcePassage(passages, [anchor, claim.content, claim.title]);
+  if (!passage || hasGlobalHeader && passage === header) return;
+  const { quote, applicability } = bindApplicability(text, passage, scope?.changeDefault ?? false, explicitGlobalSave, scope?.declaration, scope?.resolveName);
   if (!quote || quote.length > 1200 || isSensitive(quote) || text.indexOf(quote) !== text.lastIndexOf(quote)) return;
   const start = text.indexOf(quote);
   const original = input.originalText ?? input.text;
   const offset = original.indexOf(quote);
   if (offset < 0 || offset !== original.lastIndexOf(quote)) return;
-  const document = MemoryInstructionDocument.parse(text);
   const clauses = document.clauses.filter(c => c.start < start + quote.length && c.end > start);
   const stance: DotsRevisionSource["stance"] = reported.test(quote) || clauses.some(c => c.kind === "reference") ? "reported"
     : uncertainty.test(quote) ? "uncertain"
     : clauses.some(c => c.kind !== "user") ? "source_note"
-    : [passage, quote].some(value => wording(claim.content ?? "") === wording(value)) ? "statement" : "source_note";
+    : explicitGlobalSave || [passage, quote].some(value => wording(claim.content ?? "") === wording(value)) ? "statement" : "source_note";
   // A complete exact quotation is safe in every language. A short fragment
   // cannot establish who owns the statement or whether the user endorsed it.
   const statement = stance === "statement";
@@ -214,7 +222,7 @@ export function groundDotsClaim(claim: Claim, input: DotsSourceInput, anchor?: s
   const typedNote = stance === "source_note" && clauses.every(c => c.kind === "user")
     && (claim.kind === "preference" || claim.kind === "constraint");
   const kind = statement || typedNote ? claim.kind : "fact";
-  const explicitlySaved = clauses.some(c => c.kind === "user" && memoryRememberClause(c.text));
+  const explicitlySaved = explicitGlobalSave || clauses.some(c => c.kind === "user" && memoryRememberClause(c.text));
   const explicit = (statement && claim.explicit === true) || (statement || typedNote) && explicitlySaved;
   const confidence = explicit ? claim.confidence : Math.min(claim.confidence ?? 0.7, 0.7);
   const ref = { messageId: input.messageId, turnId: input.turnId, capturedAt: input.createdAt,

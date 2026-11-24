@@ -160,14 +160,15 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
     pi.registerTool({
       name: "memory_create",
       label: "长期记忆 · 沉淀",
-      description: "沉淀长期有价值的认知。默认 scope 由宿主绑定：后台委托使用持久 Work，团队使用 Team，个人 Bot 使用 Bot；普通任务选择 Project > Workspace > Task。Work 可记录跨轮需要的进展、决策与未决项，不保存冗长工具日志。Global 只应保存跨项目稳定身份、偏好、约束或通用 procedure。",
+      description: "沉淀长期有价值的认知。默认 scope 由宿主绑定：后台委托使用持久 Work，团队使用 Team，个人 Bot 使用 Bot；普通任务选择 Project > Workspace > Task。Work 可记录跨轮需要的进展、决策与未决项，不保存冗长工具日志。Global 只应保存跨项目稳定身份、偏好、约束或通用 procedure。"
+        + (bridge.taskId === DOTS_TASK_ID ? " 用户明确要求全局时传 scopeType=global、applicability.kind=general。content 与 sourceQuote 用规则原文，applicability.evidence 引用范围原话。两段可以来自相邻句。同一原话重复创建会返回同一记忆。" : ""),
       promptSnippet: "memory_create(kind,title,content?,importance?,confidence?,scopeType?) — 沉淀长期认知",
       parameters: Type.Object({
         kind: kindSchema,
         title: Type.String({ minLength: 1, maxLength: 240 }),
         content: Type.Optional(Type.String({ maxLength: 6000 })),
         ...(bridge.taskId === DOTS_TASK_ID ? {
-          sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持这一项的逐字引文", maxLength: 1200 })),
+          sourceQuote: Type.Optional(Type.String({ description: "本轮用户发言中支持这一项规则的逐字引文；范围声明可单独放在 applicability.evidence", maxLength: 1200 })),
           applicability: dotsApplicabilitySchema,
         } : {}),
         importance: Type.Optional(Type.Integer({ minimum: 0, maximum: 3 })),
@@ -204,7 +205,11 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             evidence: source ? [{ evidenceKind: "message", refId: source.messageId, excerpt: source.text.slice(0, 1200) }]
               : [{ evidenceKind: "task", refId: bridge.taskId }],
           }, source, typeof params.sourceQuote === "string" ? params.sourceQuote : undefined, params.applicability);
-          return textResult(`已沉淀：${short(memory)}`, { memory });
+          const scopeUnresolved = dotsRecordApplicability(memory)?.kind === "unresolved";
+          const label = scopeUnresolved ? "已保存待确认原话" : "已保存记忆";
+          const exactText = bridge.taskId === DOTS_TASK_ID && params.content?.trim() !== memory.content
+            ? `\n实际保存的是用户原话，回复请按此确认。\n${memory.content}` : "";
+          return textResult(`${label} ${short(memory)}${exactText}`, { memory, outcome: scopeUnresolved ? "scope_unresolved" : "saved" });
         } catch (error) { return errorResult(error); }
       },
     });
@@ -229,6 +234,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
       execute: async (_id: string, params: { id: string; title?: string; content?: string; sourceQuote?: unknown; applicability?: unknown; status?: MemoryStatus; importance?: number; confidence?: number }) => {
         try {
           writable(); requireVisible(params.id);
+          const revision = bridge.taskId === DOTS_TASK_ID ? bridge.service.history(params.id)[0]?.revision : undefined;
           const { sourceQuote, applicability, ...update } = params;
           const memory = bridge.service.updateFromTask(bridge.taskId, { ...update, changedBy: "agent", changeReason: `agent task ${bridge.taskId}` }, bridge.sourceInput?.(), typeof sourceQuote === "string" ? sourceQuote : undefined, applicability);
           if (memory.id !== params.id) {
@@ -236,6 +242,9 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
             return textResult(
               `已单独保存${scope?.kind === "unresolved" ? "待明确适用范围的原话" : scope ? "有适用条件的例外" : "来源说明"}（${memory.id}）。原记忆（${params.id}）仍然有效。\n${short(memory)}`,
               { memory, originalId: params.id, newId: memory.id, outcome: scope?.kind === "unresolved" ? "scope_unresolved" : scope ? "scope_exception_created" : "source_note_created" });
+          }
+          if (revision !== undefined && bridge.service.history(params.id)[0]?.revision === revision) {
+            return textResult(`记忆现有版本未发生变化。\n${short(memory)}`, { memory, outcome: "unchanged" });
           }
           return textResult(`已更新：${short(memory)}`, { memory });
         } catch (error) { return errorResult(error); }
@@ -245,7 +254,7 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
     pi.registerTool({
       name: "memory_promote",
       label: "长期记忆 · 提升作用域",
-      description: "把同一条 Memory 绑定到更高作用域，不复制正文。Workspace 记忆可提升到直接父 Workspace；当前 Project/Workspace/Task 记忆可在明确需要跨项目复用时提升 Global（仅 identity/preference/constraint/procedure）。",
+      description: "把同一条 Memory 绑定到更高作用域，不复制正文。Workspace 记忆可提升到直接父 Workspace；当前 Project/Workspace/Task 记忆可在明确需要跨项目复用时提升 Global（仅 identity/preference/constraint/procedure）。Dots 的待确认原话及项目或工作空间例外无法提升。",
       promptSnippet: "memory_promote(id,targetScopeType,targetScopeId?) — 作用域提升（不复制 Memory）",
       parameters: Type.Object({
         id: Type.String({ minLength: 1, maxLength: 120 }),
@@ -256,7 +265,9 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
         try {
           writable();
           const memory = requireVisible(params.id);
-          if (bridge.taskId === DOTS_TASK_ID && dotsRecordApplicability(memory)) throw new Error("项目或工作空间例外保留在 Dots 记忆内");
+          const condition = bridge.taskId === DOTS_TASK_ID ? dotsRecordApplicability(memory) : undefined;
+          if (condition?.kind === "unresolved") throw new Error("无法提升：这条记忆的适用范围尚未确认");
+          if (condition) throw new Error(`无法提升：这条记忆仅适用于${condition.kind === "project" ? "项目" : "工作空间"}「${condition.name}」`);
           if (bridge.taskId !== "transient" && !bridge.service.canPromoteFromTask(bridge.taskId, params.targetScopeType, params.targetScopeId)) {
             throw new Error("目标作用域不属于当前任务的 Project / Workspace 祖先 / 当前 Task，拒绝越界提升");
           }
@@ -271,14 +282,14 @@ export function createMemoryExtension(bridge: MemoryExtensionBridge): ExtensionF
 
     if (bridge.sourceInput) pi.registerTool({
       name: "memory_forget", label: "长期记忆 · 遗忘",
-      description: "用户明确要求遗忘时，搜索确认所指记忆 ID 后移除该记忆在当前可见作用域的绑定。多范围记录必须指定要移除的 scopeType。",
+      description: "用户明确要求遗忘时，搜索确认所指记忆 ID 后移除该记忆在当前可见作用域的绑定。多范围记录必须指定要移除的 scopeType。重复保存应复用创建回执。",
       parameters: Type.Object({ id: Type.String({ minLength: 1, maxLength: 120 }), scopeType: Type.Optional(scopeSchema) }, { additionalProperties: false }),
       execute: async (_id, params) => {
         try {
           writable();
           const source = bridge.sourceInput?.();
           const clauses = source && MemoryInstructionDocument.parse(source.text).removalIntents().filter(intent => intent.kind === "forget");
-          if (!source || !clauses?.length) throw new Error("本轮没有明确的遗忘指令");
+          if (!source || !clauses?.length) throw new Error("未移除记忆：本轮用户没有明确要求遗忘");
           const memory = requireVisible(params.id);
           const chain = bridge.service.resolveScopeChain(context());
           const scopes = memory.scopes.filter(scope => (!params.scopeType || params.scopeType === scope.scopeType)

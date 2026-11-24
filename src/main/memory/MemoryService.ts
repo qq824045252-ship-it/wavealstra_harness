@@ -438,16 +438,35 @@ export class MemoryService {
 
   /** Model tools carry their host-bound task identity separately from memory provenance. */
   createFromTask(request: MemoryCreateRequest, source?: DotsSourceInput, sourceQuote?: string, applicability?: unknown): MemoryRecordDto {
-    if (request.sourceTaskId !== DOTS_TASK_ID || !source) return this.create(request);
+    if (request.sourceTaskId !== DOTS_TASK_ID) return this.create(request);
+    if (!source) throw new Error("缺少本轮用户原话，未写入 Dots 记忆");
+    const globalCreate = request.scopeType === "global";
     const bound = groundDotsClaim(request, source, sourceQuote, { declaration: applicability, resolveName: this.resolveDotsScope,
-      changeDefault: request.scopeType === "global" });
-    if (!bound) throw new Error("请在 sourceQuote 中提供本轮用户消息的一段明确原话，以定位这条记忆");
+      changeDefault: globalCreate, globalCreate });
+    if (!bound) throw new Error("未写入记忆：sourceQuote 须逐字引用本轮支持这条规则的原话；范围声明放在 applicability.evidence");
     if (isDotsSingleUse(bound.quote, source.text)) throw new Error("本次例外只用于当前请求，无需写入长期记忆");
-    return this.create({ ...request, kind: bound.kind, title: bound.title, content: bound.content,
+    if (globalCreate && bound.applicability) {
+      throw new Error(bound.applicability.kind === "unresolved"
+        ? "未写入全局记忆：本轮原话未能确认这条规则的全局适用范围"
+        : "未写入全局记忆：本轮原话将这条规则限定在指定项目或工作空间");
+    }
+    if (globalCreate && (bound.kind !== request.kind || bound.stance !== "statement" && !bound.explicit)) {
+      throw new Error("未写入全局记忆：请用本轮用户明确制定的原文作为 content");
+    }
+    const groundedRequest: MemoryCreateRequest = { ...request, kind: bound.kind, title: bound.title, content: bound.content,
       confidence: bound.confidence, explicit: bound.explicit,
       ...(bound.applicability ? { scopeType: "task", scopeId: DOTS_TASK_ID,
         metadata: { ...request.metadata, dotsApplicability: bound.applicability } } : {}),
-      evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt: bound.quote }] }, bound.reason);
+      evidence: [{ evidenceKind: "message", refId: source.messageId, excerpt: bound.quote }] };
+    const content = cleanMultilineText(bound.content, MEMORY_CONTENT_MAX_CHARS);
+    return this.db.connection.transaction(() => {
+      const existing = this.repository.listByEvidence("message", source.messageId).find(record =>
+        record.sourceTaskId === DOTS_TASK_ID && record.status === "active" && record.content === content
+        && record.evidence.some(evidence => evidence.evidenceKind === "message" && evidence.refId === source.messageId && evidence.excerpt === bound.quote)
+        && record.scopes.some(scope => scope.scopeType === groundedRequest.scopeType && scope.scopeId === groundedRequest.scopeId)
+        && sameDotsApplicability(dotsRecordApplicability(record), bound.applicability));
+      return existing ?? this.create(groundedRequest, bound.reason);
+    })();
   }
 
   private resolveDotsScope = (kind: "project" | "workspace", name: string, id?: string, allowTaskId = true): { id?: string; name: string } | undefined => {
@@ -1267,9 +1286,11 @@ export class MemoryService {
       const originalIds = sourceTurns.flatMap(turn => turn.userMessageId ? [turn.userMessageId] : []);
       if (originalIds.length) {
         const explicitWrites = this.db.connection.prepare(`SELECT DISTINCT m.id FROM memory_records m
-          JOIN memory_evidence e ON e.memory_id=m.id WHERE m.kind=? AND m.status='active' AND e.evidence_kind='message'
-          AND e.ref_id IN (${originalIds.map(() => "?").join(",")}) AND m.content=?`)
-          .all(candidate.kind, ...originalIds, candidate.content) as Array<{ id: string }>;
+          JOIN memory_evidence e ON e.memory_id=m.id WHERE m.status='active' AND e.evidence_kind='message'
+          AND e.ref_id IN (${originalIds.map(() => "?").join(",")})
+          AND ((m.kind=? AND m.content=?) OR (m.source_task_id=? AND e.excerpt=? AND m.content=?))`)
+          .all(...originalIds, candidate.kind, candidate.content, DOTS_TASK_ID, grounded?.quote ?? null,
+            cleanMultilineText(grounded?.content, MEMORY_CONTENT_MAX_CHARS)) as Array<{ id: string }>;
         const saved = explicitWrites.find(row => this.canAccess(row.id, { taskId: DOTS_TASK_ID }));
         if (saved) {
           this.addConversationEvidence(saved.id, sourceTurns);

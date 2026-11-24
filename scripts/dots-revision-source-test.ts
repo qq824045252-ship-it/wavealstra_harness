@@ -122,7 +122,9 @@ try {
   await extract(amendment, { title: "entrega", content: "El jueves.", userEvidence: "jueves", replaces: "entrega", operationHint: "update" });
   assert.equal(quote(parcel, 2)?.quote, "El jueves.");
 
-  type ToolResult = { content: { text: string }[]; isError?: boolean; details: { memory: MemoryRecordDto; originalId?: string; newId?: string } };
+  type ToolResult = { content: { text: string }[]; isError?: boolean; details: {
+    memory: MemoryRecordDto; originalId?: string; newId?: string; outcome?: string;
+  } };
   const execute = new Map<string, (id: string, params: Record<string, unknown>) => Promise<ToolResult>>();
   let source = { messageId: "tool-1", createdAt: Date.now(), text: "  预算定为四百元。🚲 交车选在周三。" };
   createMemoryExtension({ taskId: DOTS_TASK_ID, service: memory, sourceInput: () => source })({
@@ -133,12 +135,68 @@ try {
     assert(!result.isError);
     return result.details.memory;
   };
+  const globalHeader = "增加一条全局记忆，报价相关。";
+  const pricingRule = "核对报价时，如果有厂商价目表和勘误页，一定要先查看价目表和勘误页。";
+  const globalTurn = capture(globalHeader + pricingRule);
+  source = { messageId: globalTurn.userMessageId!, createdAt: globalTurn.capturedAt, text: globalTurn.userText };
+  const globalArgs = { kind: "procedure", title: "报价核对来源", content: "先查厂商价目表和勘误页，再决定能否使用第三方来源。",
+    scopeType: "global", sourceQuote: source.text, applicability: { kind: "general", evidence: source.text } };
+  const confirmed = await execute.get("memory_create")!("global", globalArgs);
+  assert.equal(confirmed.isError, undefined);
+  assert.equal(confirmed.details.outcome, "saved");
+  assert(confirmed.content[0]?.text.includes("实际保存的是用户原话") && confirmed.content[0].text.endsWith(pricingRule));
+  const globalMemory = confirmed.details.memory;
+  assert.equal(globalMemory.kind, "procedure");
+  assert.equal(globalMemory.explicit, true);
+  assert.equal(globalMemory.content, pricingRule);
+  assert.deepEqual(globalMemory.scopes.map(scope => scope.scopeType), ["global"]);
+  assert.equal(quote(globalMemory, 1)?.quote, pricingRule);
+  assert(readDots(memory, "核对报价 价目表 勘误页").items.some(item => item.id === globalMemory.id));
+  const retry = { ...globalArgs, kind: "preference", title: "先看价目表", content: pricingRule, sourceQuote: "查看价目表和勘误页",
+    applicability: { kind: "general", evidence: globalHeader } };
+  assert.equal((await tool("memory_create", retry)).id, globalMemory.id);
+  assert.equal((await tool("memory_create", { ...retry, sourceQuote: "报价相关。" + pricingRule,
+    applicability: { kind: "general", evidence: "增加一条全局记忆" } })).id, globalMemory.id);
+  assert.equal(memory.history(globalMemory.id).length, 1);
+  await extract(globalTurn, { ...retry, userEvidence: pricingRule, operationHint: "create" });
+  assert.deepEqual(memory.repository.listByEvidence("message", source.messageId).map(item => item.id), [globalMemory.id]);
+  assert(!all().some(record => record.content === pricingRule), "background extraction must not create a second Dots copy");
+  const forgetRetry = await execute.get("memory_forget")!("forget-retry", { id: globalMemory.id, scopeType: "global" });
+  assert.equal(forgetRetry.isError, true);
+  assert.match(forgetRetry.content[0]!.text, /本轮用户没有明确要求遗忘/);
+  assert.equal(memory.get(globalMemory.id)?.status, "active");
+
+  source = { messageId: "unconfirmed-global", createdAt: Date.now(), text: "这个项目的搜索先看官网。" };
+  const ambiguousArgs = { kind: "preference", title: "搜索", content: source.text, sourceQuote: source.text };
+  const rejected = await execute.get("memory_create")!("reject-global", { ...ambiguousArgs, scopeType: "global" });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0]!.text, /未写入全局记忆.*未能确认/);
+  assert.equal(memory.repository.listByEvidence("message", source.messageId).length, 0);
+  const sourceNote = await execute.get("memory_create")!("save-note", ambiguousArgs);
+  assert.equal(sourceNote.details.outcome, "scope_unresolved");
+  assert.match(sourceNote.content[0]!.text, /已保存待确认原话/);
+  const noChange = await execute.get("memory_update")!("rewrite-note", {
+    id: sourceNote.details.memory.id, content: "先查官网，再查所有转载站。", sourceQuote: source.text,
+  });
+  assert.equal(noChange.details.outcome, "unchanged");
+  assert.equal(noChange.details.memory.content, source.text);
+  const unresolvedPromotion = await execute.get("memory_promote")!("promote-note", {
+    id: sourceNote.details.memory.id, targetScopeType: "global",
+  });
+  assert.equal(unresolvedPromotion.isError, true);
+  assert.match(unresolvedPromotion.content[0]!.text, /适用范围尚未确认/);
+  assert.deepEqual(memory.get(sourceNote.details.memory.id)?.scopes.map(scope => scope.scopeType), ["task"]);
+  console.log("PASS Dots global writes, retries, background deduplication, scoped receipts and withdrawal guard");
+
   const globalDefault = memory.create({ kind: "preference", title: "交付清单语言", content: "交付清单默认用中文。", scopeType: "global" });
   const projectQuote = "只在远山项目，交付清单用英文。";
   source = { messageId: "scope-exception", createdAt: Date.now(), text: projectQuote };
   const projectOverride = await tool("memory_update", { id: globalDefault.id, content: projectQuote });
   assert.notEqual(projectOverride.id, globalDefault.id);
   assert.deepEqual(projectOverride.metadata, { dotsApplicability: { kind: "project", name: "远山" }, dotsOverrides: globalDefault.id });
+  const projectPromotion = await execute.get("memory_promote")!("promote-project", { id: projectOverride.id, targetScopeType: "global" });
+  assert.equal(projectPromotion.isError, true);
+  assert.match(projectPromotion.content[0]!.text, /仅适用于项目「远山」/);
   assert.equal(memory.get(globalDefault.id)?.content, "交付清单默认用中文。");
   assert(readDots(memory, "远山项目的交付清单").items.some(item => item.id === projectOverride.id));
   assert(!readDots(memory, "远山项目的交付清单").items.some(item => item.id === globalDefault.id));
