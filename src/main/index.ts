@@ -229,6 +229,7 @@ import { DotsActivity } from "./dots/DotsActivity";
 import { resolveDotsPreferences } from "../shared/dots-settings";
 import { DotsDelegations } from "./dots/DotsDelegations";
 import { DotsActions } from "./dots/DotsActions";
+import { DotsDesktopPreview } from "./dots/DotsDesktopPreview";
 import { GadgetRepository } from "./gadget/GadgetRepository";
 import { GadgetStorage } from "./gadget/GadgetStorage";
 import { GadgetRegistry } from "./gadget/GadgetRegistry";
@@ -376,6 +377,7 @@ let projectContextResolver: ProjectContextResolver;
 let agentService: AgentService;
 let dotsDelegations: DotsDelegations | undefined;
 let dotsActions: DotsActions | undefined;
+const dotsDesktopPreview = new DotsDesktopPreview();
 let externalAgentRuntime: ExternalAgentRuntime;
 /** 对话分支（Branch in new task）服务 */
 let conversationBranchService: ConversationBranchService;
@@ -775,6 +777,7 @@ function registerIpc(): void {
   dots.connect((job, request) => actions.followup(job, request), (reply, current) => agentService.appendDotsReply(reply, current),
     taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
   agentService.setDotsActions(dotsActions);
+  agentService.setDotsDesktopPreview(dotsDesktopPreview);
   ipcMain.handle(DotsIpc.open, () => db.openDots());
   ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
   ipcMain.handle(DotsIpc.activity, () => activity.list());
@@ -3778,6 +3781,7 @@ app.on("before-quit", (event) => {
         memoryGatewayController?.stop(),
         remoteAccessController?.dispose(),
         gadgetService?.disposeAll(),
+        dotsDesktopPreview.close(),
         computerAutomationService.shutdown(),
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
     } catch { /* best effort */ }

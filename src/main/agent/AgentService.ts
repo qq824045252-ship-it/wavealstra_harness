@@ -1,10 +1,12 @@
 import { DOTS_TASK_ID, isDotsAutomaticInput } from "../../shared/dots";
-import { dotsOperationEnabled, resolveDotsPreferences } from "../../shared/dots-settings";
+import { DOTS_DESKTOP_PREVIEW, dotsOperationEnabled, resolveDotsPreferences } from "../../shared/dots-settings";
 import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
 import { registerLocalWorkflowTools } from "../capabilities/local-workflow-extension";
 import type { DotsActions } from "../dots/DotsActions";
 import { DOTS_ACTION, DOTS_MEMORY_READ_TOOLS, DOTS_MEMORY_TOOLS, assembleDotsPrompt, dotsExtension } from "../dots/DotsExtension";
+import type { DotsDesktopPreview } from "../dots/DotsDesktopPreview";
+import { dotsDesktopPreviewExtension } from "../dots/DotsDesktopPreviewExtension";
 import { dotsCalendarContext } from "../dots/DotsCalendar";
 import { isolateGatewayConversations } from "./durable/GatewayConversationIsolation";
 import { isGatewayConversation } from "../gateway/GatewayConversation";
@@ -572,8 +574,10 @@ export class AgentService {
   private localWorkflow?: Omit<LocalWorkflowBridge, "getPermissionMode">;
 
   private dotsActions?: DotsActions;
+  private dotsDesktopPreview?: DotsDesktopPreview;
 
   setDotsActions(actions: DotsActions): void { this.dotsActions = actions; }
+  setDotsDesktopPreview(preview: DotsDesktopPreview): void { this.dotsDesktopPreview = preview; }
 
   dotsMemoryReferenceCurrent(taskId: string, id: string, revision: number): boolean {
     if (this.dotsMemoryMode() === "off") return false;
@@ -2036,9 +2040,18 @@ export class AgentService {
 
   private async durableTaskTools(task: TaskDto, cwd: string, effectRecovery: import("./durable/DurableEffectRecovery").ExternalEffectRecovery) {
     if (task.id === DOTS_TASK_ID) {
-      if (!this.dotsActions) throw new Error("Dots 操作服务尚未初始化");
+      const actions = this.dotsActions;
+      if (!actions) throw new Error("Dots 操作服务尚未初始化");
       const workflow = this.localWorkflow;
-      return durableDomainTools([dotsExtension(this.dotsActions, () => this.settingsStore.read().dotsSettings), createAnswerRuleExtension(task.id, this.answerRouting),
+      const preview = this.dotsDesktopPreview;
+      return durableDomainTools([dotsExtension(actions, () => this.settingsStore.read().dotsSettings), createAnswerRuleExtension(task.id, this.answerRouting),
+        ...(preview ? [dotsDesktopPreviewExtension({
+          preview,
+          enabled: () => dotsOperationEnabled(this.settingsStore.read().dotsSettings, DOTS_DESKTOP_PREVIEW),
+          workspace: spaceId => actions.previewWorkspace(spaceId),
+          artifactService: () => this.artifactService,
+          vision: () => this.builtinCapabilities.visionProvider(),
+        })] : []),
         ...(workflow ? [(pi: import("@earendil-works/pi-coding-agent").ExtensionAPI) => registerLocalWorkflowTools(pi, {
           taskId: task.id, taskRoot: cwd, services: workflow, terminalEnabled: false,
           currentTaskOnly: true, sourceOperation: () => currentDurableInvocation()?.sourceUserMessageId,
@@ -2188,6 +2201,7 @@ export class AgentService {
       if (name === DOTS_ACTION || name === "automation_exec") return true;
       const settings = this.settingsStore.read();
       if (!dotsOperationEnabled(settings.dotsSettings, name)) return false;
+      if (name === DOTS_DESKTOP_PREVIEW) return Boolean(this.dotsDesktopPreview);
       if (["answer_rule_list", "answer_rule_save", "answer_rule_test"].includes(name)) {
         return true;
       }

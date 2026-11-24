@@ -2,6 +2,7 @@ import { resolveDotsMemoryLimits, type DotsMemoryLimits } from "./dots-limits";
 
 /** Dots 提示词编辑器每个输入框的字符上限。 */
 export const maxDotsPromptChars = 8000;
+export const DOTS_DESKTOP_PREVIEW = "dots_desktop_preview";
 
 export const dotsPromptCategories = [
   { id: "role", label: "身份与办事范围", description: "Dots 是谁，什么时候直接答或交办。" },
@@ -18,6 +19,7 @@ export const dotsCapabilityOptions = [
   { id: "taskControl", label: "委派和接续任务", description: "新建或接续普通任务、转发答复和恢复执行。关闭后仍可暂停或停止任务。" },
   { id: "spaceManagement", label: "管理工作空间", description: "绑定目录、创建子空间和重命名空间。" },
   { id: "workspaceReading", label: "读取文件和资料", description: "浏览工作空间目录，搜索资料并读取内容。" },
+  { id: "desktopPreview", label: "桌面预览", description: "根据本轮指令，在已授权工作空间启动已有的 MyBuddy 工作树预览，并核对版本和截图。" },
   { id: "scheduling", label: "定时计划和文件订阅", description: "让 Dots 新建、修改或恢复定时计划与文件订阅。关闭后仍可查看、暂停或取消已有计划。" },
   { id: "answerRouting", label: "调度", description: "允许 Dots 按保存的流程和规则为本轮对话选择处理方式，并使用对话中的规则工具。" },
   { id: "memoryTools", label: "记忆工具", description: "允许 Dots 主动查询、保存、更正和遗忘统一记忆。" },
@@ -27,11 +29,13 @@ export type DotsCapability = typeof dotsCapabilityOptions[number]["id"];
 export const dotsOperations = {
   board: ["taskControl", "查看任务看板"], task: ["taskControl", "查看任务进度"], deliveries: ["taskControl", "查找任务成果"],
   delegate: ["taskControl", "委派普通任务"], steer: ["taskControl", "修改运行中的要求"],
+  follow_up: ["taskControl", "追问原任务"],
   resume: ["taskControl", "恢复事项"], answer: ["taskControl", "转发对阻塞问题的回答"],
   spaces: ["spaceManagement", "列出空间"], bind: ["spaceManagement", "绑定文件夹"],
   create_space: ["spaceManagement", "创建子空间"], rename: ["spaceManagement", "重命名空间"],
   files: ["workspaceReading", "浏览目录"], read_file: ["workspaceReading", "读取文件内容"],
   materials: ["workspaceReading", "搜索资料库"], read_material: ["workspaceReading", "读取资料及历史版本"],
+  [DOTS_DESKTOP_PREVIEW]: ["desktopPreview", "打开并核对桌面预览"],
   watch_file: ["scheduling", "订阅文件变化"], resume_proactive: ["scheduling", "恢复主动跟进"],
   "schedule.create": ["scheduling", "创建定时计划"], "schedule.update": ["scheduling", "修改定时计划"],
   "schedule.resume": ["scheduling", "恢复定时计划"],

@@ -43,7 +43,7 @@ export async function durableSourceUserMessageId(...args: Parameters<typeof dura
 // Reading may use the first placed input as its accounting root even when
 // steering has placed more inputs. The normal side-effect provenance stays strict.
 export async function durableForegroundInputs(native: Pick<ToolExecutionApi, "commit">, context: Context,
-  conversationId: ConversationId, inputs: readonly SubmissionId[], first?: EntryId) {
+  conversationId: ConversationId, inputs: readonly SubmissionId[], first?: EntryId, includeAttachments = false) {
   return native.commit(async tx => {
     const remaining = new Set(inputs);
     const resolved = new Map<SubmissionId, import("../../dots/DotsForegroundReads").ForegroundInput>();
@@ -61,8 +61,13 @@ export async function durableForegroundInputs(native: Pick<ToolExecutionApi, "co
         if (typeof requestId !== "string") continue;
         const receipt = await tx.submissionByRequest(conversationId, requestId);
         if (receipt?.type !== "input" || receipt.entry !== entry.id || !remaining.delete(receipt.id)) continue;
+        const attachments = includeAttachments && Array.isArray(meta.attachments) ? meta.attachments.flatMap(attachment => {
+          if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)
+            || typeof attachment.name !== "string" || !attachment.name.trim() || typeof attachment.path !== "string" || !attachment.path.trim()) return [];
+          return [{ name: attachment.name, path: attachment.path }];
+        }) : undefined;
         resolved.set(receipt.id, { id: requestId, entryId: entry.id, text: meta.displayText,
-          createdAt: entry.model?.find(message => message.role === "user")?.timestamp });
+          createdAt: entry.model?.find(message => message.role === "user")?.timestamp, ...(attachments?.length ? { attachments } : {}) });
       }
       cursor = page.next;
       if (!cursor) break;

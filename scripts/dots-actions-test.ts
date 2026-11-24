@@ -20,6 +20,7 @@ writeFileSync(join(folder, "input.txt"), "客户档案编号 A456");
 const { DOTS_TASK_ID } = await import("../src/shared/dots");
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
+const { dotsFollowUpInput } = await import("../src/main/dots/DotsFollowUpInput");
 const { DotsDelegations } = await import("../src/main/dots/DotsDelegations");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const { CronService } = await import("../src/main/cron/CronService");
@@ -154,6 +155,20 @@ async function until(check: () => boolean, label: string) {
   assert(check(), label);
 }
 try {
+  const directive = { id: "follow-original", entryId: 100, text: "还是没看到效果啊，你追问下" };
+  const screenshot = { id: "supplement", entryId: 101, text: "乱七八糟的", attachments: [{ name: "proof.png", path: join(root, "proof.png") }] };
+  const expected = { source: directive, assignmentQuote: "你追问下", attachments: screenshot.attachments, captions: [screenshot.text] };
+  assert.deepEqual(dotsFollowUpInput([directive, screenshot]), expected);
+  assert.deepEqual(dotsFollowUpInput([screenshot, directive]), expected);
+  assert.deepEqual(dotsFollowUpInput([directive, { ...screenshot, text: "截图里状态栏都挤在回复下面了" }]).attachments, screenshot.attachments);
+  assert.throws(() => dotsFollowUpInput([directive, { ...screenshot, text: "只讨论，不要委派" }]), /没有授权/);
+  assert.throws(() => dotsFollowUpInput([directive, { ...screenshot, text: "先停一下，我再看看" }]), /没有授权/);
+  assert.throws(() => dotsFollowUpInput([directive, { ...screenshot, text: "请把另一个项目部署了" }]), /无法确认/);
+  assert.throws(() => dotsFollowUpInput([directive, { ...screenshot, text: "截图里有个问题，顺便部署测试环境" }]), /无法确认/);
+  assert.throws(() => dotsFollowUpInput([{ ...directive, text: "追问这个词怎么用" }]), /明确的追问原话/);
+  assert.throws(() => dotsFollowUpInput([{ ...directive, text: "我上次说过「追问一下」" }]), /明确的追问原话/);
+  assert.throws(() => dotsFollowUpInput([{ ...directive, text: "你追问下。也请跟进另一个任务。" },
+    { ...screenshot, text: "你再追问下" }]), /明确的追问原话/);
   const space = await success({ action: "bind", name: "客户 A", path: folder }, 2);
   assert.equal(space.path, folder);
   assert.match(space.link, /mybuddy:\/\/space\//);
@@ -563,6 +578,27 @@ try {
     assert.equal(result.receipt.operationId, finished.receipt.operationId);
   }
   assert.equal(fixture.requests.length, beforeResume, "resuming a finished native turn keeps its result without a second worker call");
+
+  journal.refresh(finished.receipt.taskId);
+  await until(() => journal.list(["before-pause"]).some(item => item.status === "completed"), "original task completes");
+  const followCommand = { action: "follow_up", targetTaskId: finished.receipt.taskId, operationId: finished.receipt.operationId } as const;
+  const deniedFollow = await turn(followCommand, "dots_action", 1, "你追问下。先停一下，不要委派。");
+  assert.match(deniedFollow.text, /没有授权/);
+  assert.equal(journal.list(["dots-user-" + serial]).length, 0);
+  const followed = await turn({ ...followCommand, text: "untrusted-worker-instruction-31" }, "dots_action", 2, directive.text);
+  assert(!followed.error, followed.text);
+  const followedSource = "dots-user-" + serial;
+  const followReceipt = JSON.parse(followed.text).receipt;
+  assert.equal(followReceipt.taskId, finished.receipt.taskId);
+  assert.notEqual(followReceipt.operationId, finished.receipt.operationId);
+  assert.equal((await agent.waitForSubmission(followReceipt)).receipt?.status, "done");
+  assert.equal(journal.list([followedSource]).length, 1);
+  const followWorkerPrompt = fixture.requests.filter(request => request.tools.includes("read"))
+    .map(request => JSON.stringify(request.input.messages.at(-1)) ?? "").find(text => text.includes(directive.text));
+  assert(followWorkerPrompt, "worker receives the real follow-up request");
+  assert.doesNotMatch(followWorkerPrompt, /untrusted-worker-instruction-31/);
+  console.log("PASS Dots original-task follow-up preserves input attribution, replays once, and honors a later stop");
+
   await agent.releaseDurableTask(second.receipt.taskId);
   db.deleteTask(second.receipt.taskId);
   await assert.rejects(actions.execute(DOTS_TASK_ID,splitSource,nextAssignment,splitInput), /原任务已删除/);

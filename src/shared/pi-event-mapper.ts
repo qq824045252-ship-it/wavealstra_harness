@@ -122,7 +122,7 @@ function summarizeToolInput(tool: string, input: unknown): { summary: string; de
       spaces: "查看工作空间", board: "查看任务看板", task: "查看任务进度", files: "查看文件列表",
       read_file: "读取文件", materials: "查找资料", read_material: "读取资料", deliveries: "查找已有成果",
       delegate: "委派普通任务", steer: "传达修改", bind: "绑定文件夹", create_space: "创建工作空间",
-      rename: "重命名工作空间", answer: "转交答复", pause: "暂停任务", stop: "停止任务", resume: "恢复任务",
+      rename: "重命名工作空间", answer: "转交答复", pause: "暂停任务", stop: "停止任务", resume: "恢复任务", follow_up: "追问原任务",
       watch_file: "跟进文件变化", file_watches: "查看文件订阅", cancel_watch: "取消订阅",
       pause_all: "暂停相关执行", stop_all: "停止相关执行", pause_proactive: "暂停主动跟进", resume_proactive: "恢复主动跟进",
     };

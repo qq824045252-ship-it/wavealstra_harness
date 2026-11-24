@@ -1,3 +1,11 @@
+if (process.argv.includes("--followup-burst") || process.argv.includes("--followup-live")) {
+  require("./dots-followup-desktop-test.cjs");
+  return;
+}
+if (process.argv.includes("--desktop-preview") || process.argv.includes("--desktop-preview-live")) {
+  require("./dots-preview-desktop-test.cjs");
+  return;
+}
 if (process.argv.includes("--activity")) {
   require("./dots-activity-desktop-test.cjs");
   return;

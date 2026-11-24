@@ -1,11 +1,12 @@
 import type Database from "better-sqlite3";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, type AnswerRule, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import { DOTS_TASK_ID, type DotsReplyOrigin } from "../../shared/dots";
+import type { AgentPromptRequest } from "../../shared/agent-ipc";
 
 export type ForegroundRead = { source: string; description: string; characters: number; excerpt?: string };
 type Limits = DotsSchedulingPolicy["foregroundReadLimits"];
 type Turn = { policy: DotsSchedulingPolicy; calls: number; characters: number; exhausted: boolean; reads: ForegroundRead[] };
-export type ForegroundInput = { id: string; text: string; entryId: number; createdAt?: number };
+export type ForegroundInput = { id: string; text: string; entryId: number; createdAt?: number; attachments?: AgentPromptRequest["attachments"] };
 
 type Handoff = { spaceId: string; targetTaskId?: string; priorOperationId?: string; text: string; inputs: readonly ForegroundInput[]; origin: DotsReplyOrigin };
 

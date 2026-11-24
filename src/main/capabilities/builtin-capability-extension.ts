@@ -165,7 +165,7 @@ async function nativeImageContent(filePath: string) {
   return { type: "image" as const, data: bytes.toString("base64"), mimeType: imageMimeForPath(filePath) };
 }
 
-async function visionAwareImageResult(options: {
+export async function visionAwareImageResult(options: {
   summary: string;
   details: Record<string, unknown>;
   images: Array<{ path: string; bytes: Uint8Array; mimeType: string }>;

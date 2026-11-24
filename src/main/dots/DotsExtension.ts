@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
 import { DotsForegroundUnavailable } from "./DotsForegroundReads";
+import { dotsFollowUpInput, dotsForwardingDenied } from "./DotsFollowUpInput";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
 export const DOTS_ACTION = "dots_action";
@@ -33,7 +34,8 @@ const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
     "能当场完成就直接给结果。收到普通任务的受理回执后，用一句自然的话告诉用户正在处理什么，附原任务链接，由 Dots 在原对话跟进和交付。尚未收到回执时如实说明当前状态。",
     "用户回答普通任务的问题或说已补齐之前缺的资料时，先使用 task 查当前委派的 deliveries，再用 answer 给原操作。若工具返回尚未回答的问题，用它给出的 operationId、interactionId 和原任务 ID 回答。只补资料且没有 interactionId 时，仍用 answer 接续原操作，由原任务读文件和交付；本轮回执只在确认受理后简短告知原任务已接上。不要把答复改写成 steer 或新的 delegate。",
     "交办时只查定位原任务和空间所需的信息。用户一条消息中有多个独立事项要分别派工时，从第一次委派起每项带上互不重叠的 assignmentQuote 原文。一次交办的改写或重试仍属原事项。",
-    "查进度、解释失败或追查停止原因时，用 task 的 executionDiagnostics 回答。只有用户本轮明确要求继续、恢复或重跑，才用 resume 加原 targetTaskId、最新委派的 operationId 和新要求。接续失败时保留原任务 ID、说明原因。一条消息也交办另一事项时，为接续和新建分别引用互不重叠的 assignmentQuote 原话。",
+    "查进度、解释失败或追查停止原因时，用 task 的 executionDiagnostics 回答。用户要求追问已结的原任务，先用 task 确认原任务和最新交办，再调用 follow_up，保留原 targetTaskId 和 operationId。宿主从本轮用户消息识别追问原话。如果本轮补了截图，宿主会把同轮截图直接附给原任务。你可转述可见状态，但不要替用户增加修改要求。follow_up 未受理时，说明原因、保留原任务 ID。只有用户明确要求恢复暂停或重跑失败的任务才用 resume。",
+    "像「你追问下」这样的明确请求需要把追问交给原任务。紧接着发来的截图和简短点评是补充材料，除非用户取消，仍按追问办理。task 返回 followUpCall 且原任务匹配时，用其参数实际调用，再向用户报告受理结果。",
   ],
   delivery: [
     "时间范围以用户发消息时的本地日历为准。查到对应期间的已有成果时，沿用用户指定的期间，不推到下一期。",
@@ -71,7 +73,7 @@ export function assembleDotsPrompt(memoryMode: DotsSettings["memoryMode"], overr
 
 const controls = ["pause", "stop", "pause_all", "stop_all", "file_watches", "cancel_watch", "pause_proactive"] as const;
 const configuredActions = ["board", "task", "spaces", "deliveries", "materials", "read_material", "files", "read_file",
-  "bind", "create_space", "rename", "delegate", "steer", "resume", "answer", "watch_file", "resume_proactive"] as const satisfies readonly (keyof typeof dotsOperations)[];
+  "bind", "create_space", "rename", "delegate", "steer", "resume", "follow_up", "answer", "watch_file", "resume_proactive"] as const satisfies readonly (keyof typeof dotsOperations)[];
 
 function actionAllowed(action: DotsActionInput["action"], settings: Partial<DotsSettings> | undefined): boolean {
   return controls.some(key => key === action) || configuredActions.some(key => key === action) && dotsOperationEnabled(settings, action);
@@ -84,7 +86,7 @@ export function dotsAvailableActions(settings: Partial<DotsSettings> | undefined
 export function dotsExtension(actions: DotsActions, settings: () => Partial<DotsSettings> | undefined): ExtensionFactory {
   return pi => pi.registerTool({
     name: DOTS_ACTION, label: "Dots · 看板、空间与任务",
-description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；read_material 按 itemId 读取，可传 version 读已列出的旧版本。board 按 query 标题、spaceId 检索，task 读 targetTaskId 的进度、已有 Goal 和成果。spaces 列举空间，files 每页列出指定空间或其相对子目录的 100 个条目，传 nextOffset 作为 offset 翻页；read_file 读相对路径文本。资料、目录和文件读取时，用 allowHandoff 标明达到内部读取上限后，同一事项是否可以在已获准的空间内继续，并传入该 spaceId。根据用户本轮请求和最新修订判断，无需用户专门提到委派。bind 绑定绝对目录，可用 spaceId 或 name 新建空间；create_space 在已绑定的父 spaceId 下创建名为 name 的实际子文件夹和空间，随后可在返回的空间里委派任务；rename 保留原空间身份。用户明确交代按顺序做多件事时可用 steps 固定各步；只给目标时直接传完整目标和限制。delegate 在指定空间新建普通任务或接续 targetTaskId；steer 将 text 发给正在执行的原任务，pause/stop 停止本轮，resume 在原任务接续。deliveries 按标题、文字或文件名查找本地普通任务已有成果，包括用户自行建立的任务。结果给出原任务及登记文件链接；有 nextOffset 时保留 cursor 并传 offset，否则把 next 作为 cursor 从 offset 0 继续。answer 传原委派 operationId、目标任务和 interactionId；系统原样转发本轮用户输入，选择或确认题需要用户明确给出选项。watch_file 订阅原任务空间里的单个相对文件路径，传 text 指定变化后要办的事；文件新增、元数据变化或删除一次触发后结束。file_watches 查看，cancel_watch 传原任务与 watchId 取消。pause_all/stop_all 仅控制 Dots 已关联的活动事项，可指定 spaceId；不指定空间时一起暂停或取消 Dots 自有计划。pause_proactive/resume_proactive 暂停或恢复主动跟进，保留正在运行的普通任务。goalId 可将本次委派关联到指定原任务已有 Goal。用户对这一个任务明确约定交付格式、语言或篇幅时，把对应原文摘录放入 deliveryInstruction，即使 text 已提及也要填。不要引用其他交办或只让 Dots 知道的内容。仅当用户明确表示由自己验收时，使用 goalUserAcceptanceQuote 原样引用这一约定。",
+description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；read_material 按 itemId 读取，可传 version 读已列出的旧版本。board 按 query 标题、spaceId 检索，task 读 targetTaskId 的进度、已有 Goal 和成果。spaces 列举空间，files 每页列出指定空间或其相对子目录的 100 个条目，传 nextOffset 作为 offset 翻页；read_file 读相对路径文本。资料、目录和文件读取时，用 allowHandoff 标明达到内部读取上限后，同一事项是否可以在已获准的空间内继续，并传入该 spaceId。根据用户本轮请求和最新修订判断，无需用户专门提到委派。bind 绑定绝对目录，可用 spaceId 或 name 新建空间；create_space 在已绑定的父 spaceId 下创建名为 name 的实际子文件夹和空间，随后可在返回的空间里委派任务；rename 保留原空间身份。用户明确交代按顺序做多件事时可用 steps 固定各步；只给目标时直接传完整目标和限制。delegate 在指定空间新建普通任务或接续 targetTaskId；steer 将 text 发给正在执行的原任务，pause/stop 停止本轮；follow_up 按本轮原话追问已完成的原任务，传 targetTaskId、最新 operationId，由宿主识别追问原话并转发同轮截图；resume 恢复或重跑原任务。deliveries 按标题、文字或文件名查找本地普通任务已有成果，包括用户自行建立的任务。结果给出原任务及登记文件链接；有 nextOffset 时保留 cursor 并传 offset，否则把 next 作为 cursor 从 offset 0 继续。answer 传原委派 operationId、目标任务和 interactionId；系统原样转发本轮用户输入，选择或确认题需要用户明确给出选项。watch_file 订阅原任务空间里的单个相对文件路径，传 text 指定变化后要办的事；文件新增、元数据变化或删除一次触发后结束。file_watches 查看，cancel_watch 传原任务与 watchId 取消。pause_all/stop_all 仅控制 Dots 已关联的活动事项，可指定 spaceId；不指定空间时一起暂停或取消 Dots 自有计划。pause_proactive/resume_proactive 暂停或恢复主动跟进，保留正在运行的普通任务。goalId 可将本次委派关联到指定原任务已有 Goal。用户对这一个任务明确约定交付格式、语言或篇幅时，把对应原文摘录放入 deliveryInstruction，即使 text 已提及也要填。不要引用其他交办或只让 Dots 知道的内容。仅当用户明确表示由自己验收时，使用 goalUserAcceptanceQuote 原样引用这一约定。",
     parameters: Type.Object({
       handoffOperationId: Type.Optional(Type.String({description:"仅当用户明确授权在原任务续办时，和 targetTaskId 一起提供该任务最新交办操作 ID。仅借用任务查资料时不要填。"})),
       allowHandoff: Type.Optional(Type.Boolean({description:"读取上限时可否用同一事项自动交给已指定空间内的普通任务。用户已交代完成事项且该空间获准时可用 true；禁止委派、只要求当前对话处理或授权不明确时用 false。按最新修订判断。"})),
@@ -128,10 +130,37 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
         const op = configuredActions.find(key => key === input.action);
         throw new Error(op ? `Dots 设置已关闭「${dotsOperations[op][1]}」` : "Dots 操作不可用");
       }
+      if (input.action === "follow_up") {
+        const { source, assignmentQuote, attachments, captions } = dotsFollowUpInput(invocation.foregroundInputs ?? []);
+        const checkCurrent = async () => {
+          invocation.context.abortSignal?.throwIfAborted();
+          await checkCurrentToolInput();
+          if (!actionAllowed(input.action, settings())) throw new Error("Dots 设置已关闭「追问原任务」");
+        };
+        await checkCurrent();
+        const origin = { conversationId: invocation.presentationConversationId ?? invocation.native.conversationId, entryId: source.entryId };
+        const work = { action: input.action, targetTaskId: input.targetTaskId, operationId: input.operationId,
+          spaceId: input.spaceId, assignmentQuote, deliveryInstruction: input.deliveryInstruction };
+        return toolResult(await actions.execute(invocation.execution.taskId, source.id, work, source.text, origin, source.createdAt,
+          { followUp: { attachments, captions, checkCurrent } }));
+      }
+      if (["delegate", "steer", "resume"].includes(input.action)
+        && (invocation.foregroundInputs?.some(source => dotsForwardingDenied(source.text))
+          || dotsForwardingDenied(invocation.sourceDisplayText ?? ""))) {
+        throw new Error("本轮要求留在当前对话。可用 task 查询原任务进度。");
+      }
       if (actions.requiresResumeInstruction(input) && !hasResumeInstruction(invocation.sourceDisplayText, input.assignmentQuote)) {
         throw new Error("本轮用户原话没有要求恢复或重跑原任务。查询进度或失败原因时请使用 task 读取原任务的执行诊断。");
       }
-      const details = await actions.execute(invocation.execution.taskId, invocation.sourceUserMessageId, input, invocation.sourceDisplayText, invocation.sourceOrigin, invocation.sourceCreatedAt);
+      let offerFollowUp = false;
+      if (input.action === "task" && actionAllowed("follow_up", settings())) {
+        try {
+          dotsFollowUpInput(invocation.foregroundInputs ?? []);
+          offerFollowUp = true;
+        } catch { /* A plain task lookup does not require a follow-up directive. */ }
+      }
+      const details = await actions.execute(invocation.execution.taskId, invocation.sourceUserMessageId, input, invocation.sourceDisplayText,
+        invocation.sourceOrigin, invocation.sourceCreatedAt, offerFollowUp ? { offerFollowUp } : undefined);
       return toolResult(details);
     },
   });

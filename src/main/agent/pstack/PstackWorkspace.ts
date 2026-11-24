@@ -12,7 +12,7 @@ const exec = promisify(execFile);
 const hash = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 const maxFiles = 1200, maxFileBytes = 512 * 1024, maxBytes = 12 * 1024 * 1024;
 const generated = new Set([".git", ".hg", ".svn", "node_modules", "dist", "out", "build", ".next", "target", "__pycache__"]);
-export type FileState = { digest: string; lines: number; hashes: string; branches: Record<string, number>; source?: string; binary?: boolean };
+export type FileState = { digest: string; lines: number; hashes: string; branches: Record<string, number>; source?: string; binary?: boolean; link?: boolean };
 export type ScopedFile = { path: string; before: FileState; current: FileState };
 export type WorkspaceBaseline = { cwd: string; root: string; head: string; files: Record<string, FileState>; unknown: string[] };
 export type WorkspaceDelta = { fingerprint: string; paths: string[]; fileDigests: ReadonlyMap<string, string>; changedLines: number; largestCrossing: number; addedBranches: number; unknown: string[]; coverageComplete: boolean };
@@ -52,7 +52,7 @@ async function fileState(cwd: string, path: string, budget: { bytes: number }, r
   if (!rel || rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)) throw new Error("outside workspace");
   try {
     const st = await lstat(target);
-    if (st.isSymbolicLink()) return { digest: hash("link:" + await readlink(target)), lines: -1, hashes: "", branches: {} };
+    if (st.isSymbolicLink()) return { digest: hash("link:" + await readlink(target)), lines: -1, hashes: "", branches: {}, link: true };
     if (!st.isFile() || await realpath(target) !== target) throw new Error("non-regular file");
     budget.bytes += st.size;
     let state: FileState;
@@ -140,6 +140,28 @@ export async function baselineWorkspace(directory: string, signal?: AbortSignal)
   } catch { signal?.throwIfAborted(); }
   const base: WorkspaceBaseline = { cwd, root, head, files: {}, unknown: [] };
   return { ...base, ...await collect(base, true, signal) };
+}
+
+export async function projectVerificationWorkspace(directory: string, signal?: AbortSignal) {
+  const cwd = await realpath(directory);
+  const root = await realpath((await git(cwd, ["rev-parse", "--show-toplevel"], signal)).toString().trim());
+  const checkout = async () => (await git(root, ["rev-parse", "--verify", "HEAD^{commit}"], signal)).toString().trim();
+  const status = () => git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], signal);
+  const [head, before] = await Promise.all([checkout(), status()]);
+  const [state, index] = await Promise.all([
+    collect({ cwd: root, root, head, files: {}, unknown: [] }, false, signal),
+    git(root, ["ls-files", "-v", "--stage", "-z"], signal),
+  ]);
+  const [afterHead, after] = await Promise.all([checkout(), status()]);
+  const unknown = [...state.unknown];
+  if (head !== afterHead || !before.equals(after)) unknown.push("Git changed during inspection");
+  if (index.toString().split("\0").some(entry => /^[a-zS] |^. (?:120000|160000) /u.test(entry)) ||
+      Object.values(state.files).some(file => file.link))
+    unknown.push("Git input has an unmeasured link, submodule, or index flag");
+  const fileDigests = new Map(Object.entries(state.files).map(([path, file]) => [path, file.digest]));
+  return { cwd, root, head, clean: after.length === 0, fileDigests, paths: [...fileDigests.keys()], unknown,
+    coverageComplete: unknown.length === 0,
+    fingerprint: hash(JSON.stringify([cwd, root, head, hash(index), after.toString("base64"), [...fileDigests]])) };
 }
 
 export async function reviewCommit(base: WorkspaceBaseline, ref: string, signal?: AbortSignal) {

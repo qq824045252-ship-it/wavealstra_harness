@@ -1,4 +1,5 @@
 import { DOTS_TASK_ID, isDotsAutomaticInput } from "../../../shared/dots";
+import { DOTS_DESKTOP_PREVIEW } from "../../../shared/dots-settings";
 import { GadgetPreviewEntry, gadgetPreviewIdentities } from "./DurableGadgetPreviewIdentity";
 import { durableExtensionDiagnostics } from "./DurableToolDiagnostics";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -95,8 +96,11 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           const source = (goalCompletion || personalWrite || tool.name === "conversation_goal_create" || tool.name === "dots_action" || (tool.name === "automation_exec" && capabilities.taskId === DOTS_TASK_ID))
             ? await durableSourceInput(native, context, conversationId, live?.run?.inputs ?? [], goalCompletion) : undefined;
           if (personalWrite && (!source || isDotsAutomaticInput(source.id))) throw new Error("更改个人记忆或对话规则需要本轮用户输入");
-          const foregroundInputs = tool.name === "dots_action" && capabilities.taskId === DOTS_TASK_ID
-            ? await durableForegroundInputs(native, context, conversationId, live?.run?.inputs ?? [], live?.run?.first) : undefined;
+          const dotsForegroundTool = capabilities.taskId === DOTS_TASK_ID && (tool.name === "dots_action" || tool.name === DOTS_DESKTOP_PREVIEW);
+          const includeAttachments = tool.name === "dots_action" && args !== null && typeof args === "object"
+            && "action" in args && (args.action === "follow_up" || args.action === "task");
+          const foregroundInputs = dotsForegroundTool
+            ? await durableForegroundInputs(native, context, conversationId, live?.run?.inputs ?? [], live?.run?.first, includeAttachments) : undefined;
           return withDurableExecution({ execution, cwd, runId, native, context, foregroundInputs, sourceUserMessageId: source?.id, sourceDisplayText: source?.text, sourceCreatedAt: source?.createdAt, presentationConversationId: conversationId,
             sourceOrigin: source && capabilities.taskId === DOTS_TASK_ID ? { conversationId, entryId: source.entryId } : undefined,
             memorySource: tool.name.startsWith("memory_") && source?.createdAt !== undefined ? { text: source.text, createdAt: source.createdAt,

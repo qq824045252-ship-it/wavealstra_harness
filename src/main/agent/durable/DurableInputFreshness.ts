@@ -1,6 +1,7 @@
 import { InboxDoc, ToolTask, type Cursor, type EntryId, type Harness, type HookApi, type TaskId, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapper";
+import { DOTS_DESKTOP_PREVIEW } from "../../../shared/dots-settings";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { workShellRead } from "../work/WorkShellRead";
 import { durableMcpToolName } from "./DurableMcp";
@@ -45,6 +46,8 @@ export function needsFreshUserInput(name: string, args: unknown): boolean {
   const mcp = classifyMcpToolCall(name, args);
   if (mcp) return mcp.sideEffect;
   if (publicationTools.has(name)) return true;
+  if (name === DOTS_DESKTOP_PREVIEW || name === "dots_action" && args && typeof args === "object" &&
+    "action" in args && args.action === "follow_up") return true;
   if (name === "conversation_goal_update" && args && typeof args === "object" && "status" in args)
     return args.status === "cancelled" || args.status === "achieved";
   if (name === "browser_exec" && args && typeof args === "object" && "action" in args && typeof args.action === "string") {
