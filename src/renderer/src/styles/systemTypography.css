@@ -57,7 +57,7 @@
 .system-settings-v4 .typography-code-size-control input[type="range"] {
   width: 100%;
   margin: 0;
-  accent-color: var(--fg);
+  accent-color: var(--accent);
 }
 
 .system-settings-v4 .typography-code-size-marks {

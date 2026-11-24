@@ -1,4 +1,6 @@
-export type Theme = "light" | "dark";
+import { DESKTOP_CHROME, type AppTheme } from "@shared/desktop-theme";
+
+export type Theme = AppTheme;
 
 const STORAGE_KEY = "mybuddy-theme";
 
@@ -6,6 +8,7 @@ export function applyTheme(theme: Theme): void {
   if (typeof document === "undefined") return;
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
+  document.documentElement.style.setProperty("--desktop-chrome", DESKTOP_CHROME[theme].background);
   try {
     localStorage.setItem(STORAGE_KEY, theme);
   } catch {

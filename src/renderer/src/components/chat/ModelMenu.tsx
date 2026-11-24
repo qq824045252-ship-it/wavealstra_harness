@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import type { ModelConfig } from "@/types";
 import type { ModelPreferencesDto, ModelReasoningPreferenceDto } from "@shared/model-metadata";
 import { reasoningEffortLabel, reasoningEffortValues, reasoningPreferenceSummary, hasReasoningOption } from "@shared/model-metadata";
-import { IconCheck, IconSparkles, IconPencil, IconChevronDown } from "@/components/common/icons";
+import { IconBrain, IconCheck, IconSparkles, IconPencil, IconChevronDown } from "@/components/common/icons";
 import ModelBrandIcon from "@/components/common/ModelBrandIcon";
 import { ModelOptionButton } from "./ModelOptionButton";
 import { layoutRect, layoutViewportSize, placeFixedSideFlyout, placeStackOrSide } from "@/lib/placeFixedMenu";
@@ -13,9 +13,9 @@ import { maxReasoningPreference } from "@shared/model-menu";
 
 /** Shared ordinary/Bot model menu. Hosts own selection persistence; no active-task fallback. */
 export function ModelMenu({ models: availableModels, modelId: activeModelId, preferences: modelPreferences,
-  label = "模型列表", explicit: modelExplicit, followLabel = "跟随场景建议（Tag/Mode）", showReasoning = true, onSelect: setActiveModel,
+  label = "模型列表", explicit: modelExplicit, followLabel = "跟随场景建议（Tag/Mode）", onSelect: setActiveModel,
   onPreference: setModelReasoningPreference, onFollow: followSuggestedModel, onConfigure, onClose }: {
-  label?: string; models: ModelConfig[]; modelId?: string; preferences: ModelPreferencesDto; explicit: boolean; followLabel?: string; showReasoning?: boolean;
+  label?: string; models: ModelConfig[]; modelId?: string; preferences: ModelPreferencesDto; explicit: boolean; followLabel?: string;
   onSelect(id: string): void; onPreference(id: string, value: ModelReasoningPreferenceDto | undefined): void;
   onFollow(): void; onConfigure(): void; onClose(): void;
 }) {
@@ -109,7 +109,8 @@ export function ModelMenu({ models: availableModels, modelId: activeModelId, pre
   /** Product capability truth comes from model metadata, not Pi transport levels. */
   const reasoningOptionsForModel = (m: ModelConfig) => m.metadata?.reasoningOptions ?? [];
   const canThinkOn = (m: ModelConfig): boolean =>
-    Boolean(showReasoning && m.supportsReasoning && reasoningOptionsForModel(m).length > 0);
+    Boolean(m.supportsReasoning && reasoningOptionsForModel(m).length > 0);
+  const canSetActiveReasoning = Boolean(active && canThinkOn(active));
 
   useLayoutEffect(() => {
     if (!modelOpen || !hoverModelId) return;
@@ -133,7 +134,7 @@ export function ModelMenu({ models: availableModels, modelId: activeModelId, pre
                 ref={modelPopupRef}
                 onClick={(e) => e.stopPropagation()}
               >
-                {showReasoning && <div className="model-max-row">
+                <div className="model-max-row">
                   <span className="model-max-label">
                     <span className="model-max-icon">M</span>
                     Max 模式
@@ -146,7 +147,25 @@ export function ModelMenu({ models: availableModels, modelId: activeModelId, pre
                     className={`switch model-max-switch ${isMax ? "on" : ""}`}
                     onClick={() => toggleMax()}
                   />
-                </div>}
+                </div>
+                <button type="button" className="model-preference-button"
+                  disabled={!canSetActiveReasoning}
+                  title={canSetActiveReasoning ? "按模型保存，使用此模型的对话共用" : "此模型未声明可调的思考选项"}
+                  aria-expanded={hoverModelId === active?.id && thinkingDetailOpen}
+                  onClick={(event) => {
+                    if (!active) return;
+                    openThinkingFlyout(active.id, event.currentTarget);
+                    setThinkingDetailOpen(true);
+                  }}>
+                  <IconBrain size={15} aria-hidden="true" />
+                  <span>思考偏好</span>
+                  <span className="model-preference-value">
+                    {canSetActiveReasoning
+                      ? reasoningPreferenceSummary(modelPreferences[activeModelId ?? ""]?.reasoning, active?.metadata)
+                      : "无可调选项"}
+                  </span>
+                  <IconChevronDown size={12} aria-hidden="true" />
+                </button>
                 <input className="model-menu-search" aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={event => setQuery(event.target.value)} />
                 <div className="model-options" ref={modelOptionsRef}>
                   {/* F2：显式模型标记的复位路径 —— 跟随 Tag/Mode 建议（不写全局默认） */}

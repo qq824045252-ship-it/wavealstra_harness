@@ -48,6 +48,7 @@ import {
   IconAt,
   IconBlocks,
   IconBot,
+  IconBrain,
   IconBtw,
   IconCheck,
   IconChevronDown,
@@ -568,7 +569,8 @@ export default function ChatInput({
   }, [models, isDots]);
 
   const activeModel = availableModels.find((m) => m.id === activeModelId);
-  const modelLabel = activeModel?.name ?? (isDots && activeModelId ? "当前模型不可用" : "选择模型");
+  const modelUnavailable = isDots && Boolean(activeModelId) && !activeModel;
+  const modelLabel = activeModel?.name ?? (modelUnavailable ? "当前模型不可用" : "选择模型");
 
   const slashQuery =
     btwActive || !text.startsWith("/") || text.includes(" ") ? null : text.slice(1);
@@ -1722,8 +1724,8 @@ export default function ChatInput({
             <button
               type="button"
               className="pill-select ghost as-btn model-trigger"
-              title={isDots && activeModelId && !activeModel ? `${activeModelId} 不可用，请在 Dots 设置中更改模型` : modelLabel}
-              aria-label={modelLabel}
+              title={modelUnavailable ? `${activeModelId} 不可用，请选择其他模型` : modelLabel}
+              aria-label={activeModel ? `选择模型，当前 ${modelLabel}` : modelLabel}
               aria-expanded={modelOpen}
               aria-haspopup="listbox"
               onClick={() => {
@@ -1734,18 +1736,19 @@ export default function ChatInput({
                 setModelOpen(!modelOpen);
               }}
             >
-              {activeModel && (
+              {activeModel ? (
                 <ModelBrandIcon modelName={activeModel.name} vendor={activeModel.vendor} size={16} />
+              ) : (
+                <IconBrain size={16} aria-hidden="true" />
               )}
               <span className="model-trigger-label">
-                {modelLabel}
+                {activeModel?.name ?? (modelUnavailable ? "不可用" : "未选择")}
               </span>
               <IconChevronDown size={12} className="model-trigger-chevron" />
             </button>
             {modelOpen && <ModelMenu models={availableModels} modelId={activeModelId} preferences={modelPreferences}
               explicit={modelExplicit} onSelect={setActiveModel} onPreference={setModelReasoningPreference}
               followLabel={isDots ? "跟随主模型" : undefined}
-              showReasoning={!isDots}
               onFollow={() => void followSuggestedModel()} onConfigure={() => setSettingsOpen(true, isDots ? "dots" : "models")}
               onClose={() => setModelOpen(false)} />}
           </div>

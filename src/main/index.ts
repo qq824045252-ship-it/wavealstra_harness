@@ -289,6 +289,7 @@ import { ProfessionalToolRuntimeService } from "./professional-tools/Professiona
 import { TrayService } from "./TrayService";
 import { applyPlatformAppIdentity, applyPlatformCommandLineSwitches, nodePlatformName } from "./platform/app";
 import { applyPlatformTitleBarOverlay, applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
+import { DESKTOP_CHROME, type AppTheme } from "../shared/desktop-theme";
 import { shouldQuitOnAllWindowsClosed, windowOpenProperties } from "./platform/lifecycle";
 import { configureCrashReporting, createProcessGoneReporter, installFaultHandlers } from "./crash-reporting";
 import { getRuntimeLogger } from "./runtime-logging";
@@ -331,19 +332,16 @@ function prepareNativeDragFile(filePath: string): string | null {
   }
 }
 
-type AppTheme = "light" | "dark";
-
-const THEME_WINDOW_BG: Record<AppTheme, string> = {
-  light: "#f1f5fc",
-  dark: "#101827",
-};
-
-const THEME_TITLEBAR: Record<AppTheme, { color: string; symbolColor: string }> = {
-  light: { color: THEME_WINDOW_BG.light, symbolColor: "#17253b" },
-  dark: { color: THEME_WINDOW_BG.dark, symbolColor: "#e9f0fc" },
-};
-
 const TITLE_BAR_HEIGHT = 32;
+
+function titleBarOverlayForTheme(theme: AppTheme) {
+  const { background, foreground } = DESKTOP_CHROME[theme];
+  return {
+    color: background,
+    symbolColor: foreground,
+    height: TITLE_BAR_HEIGHT,
+  };
+}
 
 // 产物预览自定义协议：privileges 必须在 app ready 前声明（standard 才能解析 host/相对路径）
 protocol.registerSchemesAsPrivileged([
@@ -540,18 +538,16 @@ function applyNativeChrome(theme: AppTheme): void {
 
   const win = botManagementWindow;
   if (!win || win.isDestroyed()) return;
-  win.setBackgroundColor(THEME_WINDOW_BG[theme]);
-  applyPlatformTitleBarOverlay(win, { titleBar: { ...THEME_TITLEBAR[theme], height: TITLE_BAR_HEIGHT } });
+  win.setBackgroundColor(DESKTOP_CHROME[theme].background);
+  applyPlatformTitleBarOverlay(win, { titleBar: titleBarOverlayForTheme(theme) });
 }
 
 function createWindow(initialTheme: AppTheme = "light"): void {
-  const overlay = THEME_TITLEBAR[initialTheme];
-
   // 平台差异集中在 src/main/platform/window-shell.ts：图标格式 / titleBarOverlay / 任务栏身份。
   const shellOptions = {
     windowsIconPath: appIconPath,
     linuxIconPath: appPngPath,
-    titleBar: { color: overlay.color, symbolColor: overlay.symbolColor, height: TITLE_BAR_HEIGHT },
+    titleBar: titleBarOverlayForTheme(initialTheme),
     isPackaged: app.isPackaged,
     execPath: process.execPath,
     appPath: app.getAppPath(),
@@ -565,7 +561,7 @@ function createWindow(initialTheme: AppTheme = "light"): void {
     minHeight: 640,
     title: "MyBuddy",
     icon: appIcon.isEmpty() ? undefined : appIcon,
-    backgroundColor: THEME_WINDOW_BG[initialTheme],
+    backgroundColor: DESKTOP_CHROME[initialTheme].background,
     autoHideMenuBar: true,
     // The A1 baseline needs a visible window: a hidden page never paints, so its "interactive"
     // mark would measure throttling instead of first paint.

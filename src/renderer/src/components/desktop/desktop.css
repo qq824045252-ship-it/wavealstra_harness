@@ -1,19 +1,30 @@
 .desktop-app {
   --desktop-rail-width: 48px;
   --desktop-section-width: 200px;
-  --desktop-heading-height: 46px;
+  --desktop-heading-height: 44px;
   --desktop-row-height: 34px;
-  --desktop-selected: color-mix(in srgb, var(--accent) 12%, var(--surface-sidebar));
+  --desktop-selected: var(--accent-surface);
+  --desktop-controls-top: env(titlebar-area-y, 0px);
   --desktop-controls-height: env(titlebar-area-height, 0px);
+  --desktop-titlebar-bottom: calc(var(--desktop-controls-top) + var(--desktop-controls-height));
   position: relative;
   min-height: 0;
-  padding-top: var(--desktop-controls-height);
+  padding-top: var(--desktop-titlebar-bottom);
   background: var(--surface-main);
+}
+
+.desktop-app::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--desktop-titlebar-bottom);
+  background: var(--desktop-chrome, var(--surface-app));
+  pointer-events: none;
 }
 
 .desktop-titlebar-brand {
   position: absolute;
-  top: env(titlebar-area-y, 0px);
+  top: var(--desktop-controls-top);
   left: env(titlebar-area-x, 0px);
   width: env(titlebar-area-width, 0px);
   max-width: calc(100% - env(titlebar-area-x, 0px));
@@ -23,7 +34,6 @@
   gap: 8px;
   padding-inline: 12px;
   overflow: hidden;
-  background: var(--surface-app);
   color: var(--fg);
   font-size: 12px;
   font-weight: 650;
@@ -95,6 +105,7 @@
   gap: 4px;
   padding: 5px 9px 5px 13px;
   border-bottom: 1px solid var(--border);
+  background: var(--desktop-chrome, var(--surface-app));
 }
 .desktop-section-heading h2 {
   min-width: 0;
@@ -152,19 +163,18 @@
 }
 .desktop-app :is(.desktop-rail, .desktop-section) button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .desktop-app .desktop-task-tree { width: 100%; flex: 1; min-height: 0; border: 0; }
-.desktop-app .desktop-task-tree .sidebar-primary-action { padding: 8px 8px 4px; }
+.desktop-app .desktop-task-tree .sidebar-primary-action { padding: 6px 8px 2px; }
 .desktop-app .desktop-task-tree .sidebar-cta-btn {
   justify-content: flex-start;
-  height: 32px;
-  padding-inline: 9px;
+  min-height: var(--desktop-row-height);
+  padding-inline: 7px;
   border: 0;
-  border-radius: var(--radius-sm);
-  background: var(--desktop-selected);
+  background: transparent;
   color: var(--accent);
-  box-shadow: none;
 }
-.desktop-app .desktop-task-tree .sidebar-cta-btn:hover,
+.desktop-app .desktop-task-tree .sidebar-cta-btn:hover { background: var(--surface-hover); }
 .desktop-app .desktop-task-tree .sidebar-cta-btn:active { background: var(--surface-active); }
+.desktop-app .desktop-task-tree .sidebar-cta-icon { width: 22px; flex: none; }
 .desktop-app .desktop-task-tree .sidebar-tree-header { min-height: 26px; padding-top: 2px; padding-bottom: 2px; }
 .desktop-app .desktop-task-tree .sidebar-tree-header--spaced { margin-top: 4px; border-top: 0; }
 /* Dots 入口沿用「新建任务」的字体；Pi logo 图形只占画布 58.7%，图标盒放大到 22px 后视觉高度才等于 13px 字高。 */
@@ -187,7 +197,7 @@
 }
 .desktop-task-tree .sidebar-dots-row[aria-current] {
   background: var(--desktop-selected);
-  color: var(--accent);
+  color: var(--fg);
 }
 .desktop-task-tree .space-header { border-left-width: 0; }
 .desktop-task-tree .space-entry-icons {
@@ -269,6 +279,9 @@
   cursor: pointer;
 }
 .desktop-app .chat-header { height: var(--desktop-heading-height); min-height: var(--desktop-heading-height); }
+.desktop-app .chat-header.hero-header {
+  background: var(--desktop-chrome, var(--surface-app));
+}
 .desktop-app .input-textarea { min-height: 44px; }
 .desktop-app .hero-input .input-textarea { min-height: 54px; padding-block: 8px 4px; }
 .desktop-app .hero-brand { display: none; }

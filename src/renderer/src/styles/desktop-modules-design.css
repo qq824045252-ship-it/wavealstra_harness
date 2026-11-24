@@ -1,16 +1,16 @@
 /* Desktop modules share the shell palette. Keep scroll, selection and dialog ownership with the module. */
 .desktop-app {
   --module-gutter: clamp(16px, 2.7vw, 32px);
-  --module-header: color-mix(in srgb, var(--accent) 3%, var(--surface-main));
-  --module-tint: color-mix(in srgb, var(--accent) 10%, var(--surface-main));
-  --module-accent-edge: color-mix(in srgb, var(--accent) 33%, var(--border-default));
-  --module-card-shadow: 0 1px 2px rgb(7 20 39 / 8%);
+  --module-header: var(--surface-right);
+  --module-tint: var(--accent-surface);
+  --module-accent-edge: var(--accent-border);
+  --module-card-shadow: var(--shadow-sm);
 }
 
 .desktop-app :is(.desktop-secondary-heading, .settings-content-head, .task-board-header, .workspace-detail-header) {
   padding: 18px var(--module-gutter);
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--module-header);
+  background: var(--desktop-chrome, var(--surface-app));
 }
 
 .desktop-app :is(.desktop-secondary-heading h1, .desktop-assistant-heading .chat-header-title, .settings-content-title, .task-board-header h1, .workspace-detail-heading h1, .notifications-title h1, .us-title) {
@@ -654,7 +654,7 @@
 
 /* Full settings navigation and controls */
 .desktop-app .desktop-settings .settings-content-body {
-  background: var(--surface-app);
+  background: var(--surface-right);
 }
 
 .desktop-app .desktop-settings .settings-content-head {
@@ -681,10 +681,10 @@
 }
 
 .desktop-app .desktop-settings :is(.settings-section-card, .models-provider-models-section) {
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--surface-elevated);
-  box-shadow: var(--module-card-shadow);
+  box-shadow: none;
 }
 
 .desktop-app .desktop-settings .system-settings-v4 .settings-section-card {

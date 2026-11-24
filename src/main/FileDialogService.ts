@@ -5,6 +5,7 @@ import {
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, normalize, parse } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DESKTOP_CHROME } from "../shared/desktop-theme";
 import {
   FileDialogIpc, type FileDialogDirectory, type FileDialogEntry, type FileDialogPlace,
   type FileDialogSelection, type FileDialogState, type FileDialogSubmission,
@@ -138,7 +139,7 @@ function openPicker(parent: BrowserWindow | null, request: RequestOptions): Prom
       title: request.title,
       width, height, minWidth: Math.min(width, 480), minHeight: Math.min(height, 350),
       frame: false, show: false, skipTaskbar: true, minimizable: false, maximizable: false,
-      backgroundColor: dark ? "#101827" : "#f1f5fc",
+      backgroundColor: DESKTOP_CHROME[dark ? "dark" : "light"].background,
       webPreferences: {
         contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: false,
         preload: join(__dirname, "../preload/fileDialog.js"),
