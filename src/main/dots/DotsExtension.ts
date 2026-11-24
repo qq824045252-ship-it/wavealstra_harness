@@ -1,4 +1,5 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { dotsCapabilityKinds } from "../../shared/dots";
 import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import type { AssemblySegmentDto } from "../../shared/mode-profile";
 import { boardViews } from "../../shared/task-board";
@@ -7,7 +8,7 @@ import { Type } from "typebox";
 import { currentDurableInvocation } from "../agent/durable/DurableExecutionContext";
 import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
 import { DotsForegroundUnavailable } from "./DotsForegroundReads";
-import { dotsFollowUpInput, dotsForwardingDenied } from "./DotsFollowUpInput";
+import { dotsFollowUpInput, dotsForwardingDenied, hasDotsResumeInstruction } from "./DotsFollowUpInput";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
 export const DOTS_ACTION = "dots_action";
@@ -29,6 +30,8 @@ const dotsInstructions: Record<DotsPromptCategoryId, readonly string[]> = {
   ],
   tasks: [
     "委派时只传对应任务所需的资料。text 忠实转述本次目标和约束，保留用户指定的交付范围，别自行增加工作步骤或验收项。用户明确指定交付内容、格式、语言或篇幅时，用 deliveryInstruction 逐字摘录。原话要求留在原任务或供回查的记录只用于执行，让普通任务保留在那里，不要在交办中要求把它登记为要交给用户的成品。",
+    "原交办中有明确的先后依赖时，先派发被依赖任务。派发同一空间的后续任务时，把上游委派回执中的 operationId 原样写入任务要求，让后续任务先做可独立完成的工作，再用 dots_task_end 的 wait 动作等依赖交付。",
+    "任务依赖特定工具、技能、连接器、专家、场景或 MCP 时，用 requiredCapabilities 声明必须具备的能力。可对 board 中同一事项、同一空间的候选任务调用 task 并传 requiredCapabilities，查看已有配置是否获准。policy_approved 只表示现有配置满足授权策略，委派受理时还会检查实际工具和指定的 MCP。用户指明原任务时保留它，若配置不满足就说明具体原因。该字段不启用权限，也不切换执行配置。",
     "需要已有记忆时以 memoryRefs 传双方可见的来源 ID 和当前 revision，勿将记忆正文复制进委派指令。",
     "用户约定的定时跟进可用 automation_exec，目标为当前 Dots 对话。",
     "能当场完成就直接给结果。收到普通任务的受理回执后，用一句自然的话告诉用户正在处理什么，附原任务链接，由 Dots 在原对话跟进和交付。尚未收到回执时如实说明当前状态。",
@@ -90,11 +93,16 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
     parameters: Type.Object({
       handoffOperationId: Type.Optional(Type.String({description:"仅当用户明确授权在原任务续办时，和 targetTaskId 一起提供该任务最新交办操作 ID。仅借用任务查资料时不要填。"})),
       allowHandoff: Type.Optional(Type.Boolean({description:"读取上限时可否用同一事项自动交给已指定空间内的普通任务。用户已交代完成事项且该空间获准时可用 true；禁止委派、只要求当前对话处理或授权不明确时用 false。按最新修订判断。"})),
-      assignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"同一条消息交办多个独立事项时，引用这一个事项在用户本轮消息里的原文"})),
+      assignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"引用本轮明确要求追问的原话，或在同一条消息交办多个独立事项时引用该事项原文"})),
       previousAssignmentQuote: Type.Optional(Type.String({minLength:1,maxLength:500,description:"首项未引用原文时，用此字段补上首项原文，并用 assignmentQuote 引用本次独立事项"})),
       action: Type.Union(dotsAvailableActions(settings()).map(action => Type.Literal(action))), targetTaskId: Type.Optional(Type.String()),
       steps:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:400}),{minItems:2,maxItems:8})),
       memoryRefs: Type.Optional(Type.Array(Type.Object({ id: Type.String({ minLength: 1, maxLength: 160 }), revision: Type.Integer({ minimum: 1 }) }, { additionalProperties: false }), { maxItems: 8 })),
+      requiredCapabilities: Type.Optional(Type.Array(Type.Object({
+        kind: Type.Union(dotsCapabilityKinds.map(kind => Type.Literal(kind))),
+        id: Type.String({ minLength: 1, maxLength: 120 }),
+        tool: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+      }, { additionalProperties: false }), { maxItems: 12, description: "task 查询候选任务的授权配置。委派受理时核对实际能力。MCP 的 id 是服务名，tool 可指定该服务上的精确工具名。" })),
       goalUserAcceptanceQuote: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
       deliveryInstruction: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
       goalId: Type.Optional(Type.String()), watchId: Type.Optional(Type.String()), operationId: Type.Optional(Type.String()), interactionId: Type.Optional(Type.String()),
@@ -140,7 +148,7 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
         await checkCurrent();
         const origin = { conversationId: invocation.presentationConversationId ?? invocation.native.conversationId, entryId: source.entryId };
         const work = { action: input.action, targetTaskId: input.targetTaskId, operationId: input.operationId,
-          spaceId: input.spaceId, assignmentQuote, deliveryInstruction: input.deliveryInstruction };
+          spaceId: input.spaceId, assignmentQuote, deliveryInstruction: input.deliveryInstruction, requiredCapabilities: input.requiredCapabilities };
         return toolResult(await actions.execute(invocation.execution.taskId, source.id, work, source.text, origin, source.createdAt,
           { followUp: { attachments, captions, checkCurrent } }));
       }
@@ -149,11 +157,11 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
           || dotsForwardingDenied(invocation.sourceDisplayText ?? ""))) {
         throw new Error("本轮要求留在当前对话。可用 task 查询原任务进度。");
       }
-      if (actions.requiresResumeInstruction(input) && !hasResumeInstruction(invocation.sourceDisplayText, input.assignmentQuote)) {
+      if (actions.requiresResumeInstruction(input) && !hasDotsResumeInstruction(invocation.sourceDisplayText, input.assignmentQuote)) {
         throw new Error("本轮用户原话没有要求恢复或重跑原任务。查询进度或失败原因时请使用 task 读取原任务的执行诊断。");
       }
       let offerFollowUp = false;
-      if (input.action === "task" && actionAllowed("follow_up", settings())) {
+      if (input.action === "task" && !input.requiredCapabilities?.length && actionAllowed("follow_up", settings())) {
         try {
           dotsFollowUpInput(invocation.foregroundInputs ?? []);
           offerFollowUp = true;
@@ -164,14 +172,4 @@ description: "materials 在指定 spaceId 或 targetTaskId 范围搜索资料；
       return toolResult(details);
     },
   });
-}
-
-function hasResumeInstruction(original: string | undefined, quote: string | undefined): boolean {
-  if (!original) return false;
-  const clauses = original.normalize("NFKC").split(/(?<=[。.!?;\n])/u).map(clause => clause.trim()).filter(Boolean);
-  const instruction = quote ? clauses.find(clause => clause.replace(/[。.!;]+$/u, "") === quote.normalize("NFKC").trim().replace(/[。.!;]+$/u, "")) : clauses[0];
-  if (!instruction || /[?]|(?:可否|能否|要不要|是不是|是否|之前先)|(?:吗|么|不了|还是停|失败了)[.!。]*$/u.test(instruction)
-    || /继续\s*(?:查看|查|追查|排查|诊断|调查|分析|看)|continue\s+(?:checking|looking|investigating)/iu.test(instruction)) return false;
-  return /^(?:(?:好|行|可以|确认|请|麻烦|帮我)[,，\s]*)*(?:(?:把|让)(?:这|那|原|该)[^,，。!?]{0,24}任务\s*)?(?:继续|恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])/u.test(instruction)
-    || /^(?:please\s+|go ahead and\s+)?(?:resume|retry|rerun|restart|continue)\b/i.test(instruction);
 }

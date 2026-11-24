@@ -2,7 +2,7 @@ import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, type AnswerRuleDraft, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import type Database from "better-sqlite3";
 import type { AgentUiPatch, AgentPromptRequest } from "../../shared/agent-ipc";
-import type { DotsAssistantReply, DotsDelegation, DotsReplyOrigin } from "../../shared/dots";
+import type { DotsAssistantReply, DotsDelegation, DotsDependencyWait, DotsReplyOrigin } from "../../shared/dots";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import { DotsReplyOutbox, type AppendDotsReply, type DotsFollowup } from "./DotsReplyOutbox";
@@ -11,10 +11,11 @@ import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 export const dotsDelegationScopeMatches = `t.space_id IS d.space_id AND s.path IS d.space_path
   AND (t.cwd IS d.cwd OR (d.cwd IS NULL AND t.cwd IS d.space_path))`;
 
-type Result = Pick<DotsDelegation, "text" | "artifacts" | "interactionId"> & {
+type Result = Pick<DotsDelegation, "text" | "artifacts" | "interactionId" | "dependencyWait"> & {
   status: "running" | "blocked" | "completed" | "failed";
   citations?: ReplyCitation[];
   acceptedGoalReceiptId?: string;
+  verifiedCommit?: string;
 };
 type RecoverSubmit = (request: AgentPromptRequest) => Promise<{ error?: {message: string}; cancelled?: boolean }>;
 type RecoverAvailable = (taskId: string) => boolean;
@@ -28,9 +29,10 @@ type Row = {
 
 type Activity = { operation_id: string; at: number; tool: string; phase: "start" | "finish"; last_report_at: number | null; progress_at?: number | null };
 
-function toDelegation(row: Row, activity?: Activity): DotsDelegation {
+function toDelegation(row: Row, activity?: Activity, dependencyWait?: DotsDependencyWait): DotsDelegation {
   return { id: row.operation_id, taskId: row.task_id, title: row.title, sourceMessageId: row.source_message_id,
     status: row.status, goalId: row.goal_id ?? undefined, proactiveReply: row.proactive_reply ? true : undefined, text: row.text, artifacts: JSON.parse(row.files),
+    ...(dependencyWait && { dependencyWait }),
     ...(activity && { activity: { lastActivityAt: activity.at, lastProgressAt: activity.progress_at ?? undefined, lastReportAt: activity.last_report_at ?? undefined,
       tool: activity.tool, phase: activity.phase } }),
     createdAt: row.created_at, updatedAt: row.updated_at, interactionId: row.interaction_id ?? undefined };
@@ -42,6 +44,7 @@ export class DotsDelegations {
   private readonly dirty = new Set<string>();
   private disposed = false;
   private observationTimer?: ReturnType<typeof setTimeout>;
+  private dependencyTimer?: ReturnType<typeof setTimeout>;
   private readonly recoverable: Row[];
   private readonly outbox: DotsReplyOutbox;
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
@@ -65,23 +68,64 @@ export class DotsDelegations {
         PRIMARY KEY(operation_id,conversation,tool_task,phase));
       CREATE TABLE IF NOT EXISTS dots_control_receipts(operation_id TEXT PRIMARY KEY,target_task_id TEXT NOT NULL,outcome TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_target_controls(task_id TEXT PRIMARY KEY,state TEXT NOT NULL,operation_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS dots_dependency_waits(operation_id TEXT PRIMARY KEY, prerequisite_id TEXT NOT NULL,
+        title TEXT NOT NULL, deadline_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS dots_dependency_prerequisite ON dots_dependency_waits(prerequisite_id);
+      CREATE TABLE IF NOT EXISTS dots_verified_commits(operation_id TEXT PRIMARY KEY,sha TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS dots_delegations_pending ON dots_delegations(task_id,seq) WHERE status IN ('pending','running','blocked');
       CREATE INDEX IF NOT EXISTS dots_delegations_source ON dots_delegations(source_message_id);`);
     this.recoverable = db.prepare("SELECT * FROM dots_delegations WHERE status='pending' AND request_json IS NOT NULL ORDER BY seq").all() as Row[];
-    this.outbox = new DotsReplyOutbox(db, notify);
+    this.outbox = new DotsReplyOutbox(db, operationId => {
+      this.notify();
+      if (!this.disposed) this.refreshDependentTasks(operationId);
+    });
   }
 
   connect(followup: DotsFollowup, append: AppendDotsReply, allowed?: (taskId: string) => boolean,
     allowedReply?: (kind: DotsAssistantReply["kind"]) => boolean): void {
     this.outbox.connect(followup, append, allowed, allowedReply);
     for (const row of this.db.prepare("SELECT * FROM dots_delegations WHERE status='blocked'").all() as Row[])
-      this.outbox.observe(toDelegation(row));
+      this.outbox.observe(toDelegation(row, undefined, this.dependencyWait(row.operation_id)));
     this.resumeObservations();
     this.scheduleObservation();
+    this.scheduleDependencyDeadline();
   }
 
   latestTaskDelivery(taskId: string) {
     return this.outbox.latestTaskDelivery(taskId);
+  }
+
+  private dependencyWait(operation: string, pendingOnly = false) {
+    return this.db.prepare(`SELECT prerequisite_id AS operationId,title,deadline_at AS deadlineAt FROM dots_dependency_waits w
+      WHERE operation_id=? AND (NOT ? OR EXISTS(SELECT 1 FROM dots_reply_events e
+        WHERE e.operation_id=w.operation_id AND e.status='blocked' AND e.settled=0))`)
+      .get(operation, Number(pendingOnly)) as DotsDependencyWait | undefined;
+  }
+
+  private refreshDependentTasks(operationId: string) {
+    const targets = this.db.prepare(`SELECT DISTINCT d.task_id FROM dots_dependency_waits w
+      JOIN dots_delegations d ON d.operation_id=w.operation_id AND d.status='blocked'
+      JOIN dots_reply_events e ON e.operation_id=d.operation_id AND e.status='blocked' AND e.settled=0
+      WHERE w.prerequisite_id=?`).pluck().all(operationId) as string[];
+    for (const target of targets) this.refresh(target);
+  }
+
+  private scheduleDependencyDeadline() {
+    if (this.dependencyTimer) clearTimeout(this.dependencyTimer);
+    this.dependencyTimer = undefined;
+    if (this.disposed) return;
+    const active = `FROM dots_dependency_waits w JOIN dots_delegations d ON d.operation_id=w.operation_id AND d.status='blocked'
+      JOIN dots_reply_events e ON e.operation_id=d.operation_id AND e.status='blocked' AND e.settled=0`;
+    const next = this.db.prepare(`SELECT min(w.deadline_at) ${active} WHERE w.deadline_at>?`).pluck().get(Date.now()) as number | null;
+    if (next === null) return;
+    this.dependencyTimer = setTimeout(() => {
+      this.dependencyTimer = undefined;
+      if (this.disposed) return;
+      const targets = this.db.prepare(`SELECT DISTINCT d.task_id ${active} WHERE w.deadline_at<=?`).pluck().all(Date.now()) as string[];
+      for (const target of targets) this.refresh(target);
+      this.scheduleDependencyDeadline();
+    }, Math.max(1, next - Date.now()));
+    this.dependencyTimer.unref();
   }
 
   private tracking(row: Row): DotsSchedulingPolicy["trackingPolicy"] | undefined {
@@ -333,7 +377,7 @@ export class DotsDelegations {
       if (row) this.outbox.observe(toDelegation(row));
       return Boolean(row);
     })();
-    if (changed) { this.notify(); this.refresh(taskId); }
+    if (changed) { this.notify(); this.refresh(taskId); this.refreshDependentTasks(operationId); }
   }
 
   list(sourceIds?: string[]): DotsDelegation[] {
@@ -346,7 +390,8 @@ export class DotsDelegations {
     const activity = this.db.prepare(`SELECT a.*,
       (SELECT at FROM dots_verified_progress p WHERE p.operation_id=a.operation_id ORDER BY at DESC LIMIT 1) AS progress_at
       FROM dots_tool_observations a WHERE a.operation_id=?`);
-    return (rows as Row[]).map(row => toDelegation(row, activity.get(row.operation_id) as Activity | undefined));
+    return (rows as Row[]).map(row => toDelegation(row, activity.get(row.operation_id) as Activity | undefined,
+      row.status === "blocked" ? this.dependencyWait(row.operation_id, true) : undefined));
   }
 
   onPatch(patch: AgentUiPatch): void {
@@ -355,7 +400,7 @@ export class DotsDelegations {
     const rows = patch.type === "durable_snapshot" ? patch.snapshot.messages : patch.type === "durable_delta" ? patch.delta.upserts : [];
     const checkpoint = rows.some(row => row.dotsWorkerProgress);
     if (checkpoint || patch.type === "conversation_interaction_snapshot" || patch.type === "conversation_goal_snapshot"
-      || state?.status === "waiting_input" || (state && !state.busy && !state.queued)) this.refresh(patch.taskId);
+      || state?.status === "waiting_input" || (state && !state.busy && (!state.queued || state.outcome !== undefined))) this.refresh(patch.taskId);
   }
 
   refresh(taskId?: string): void {
@@ -367,6 +412,7 @@ export class DotsDelegations {
     if (!taskId) {
       this.resumeObservations();
       this.scheduleObservation();
+      this.scheduleDependencyDeadline();
       const targets = this.db.prepare("SELECT DISTINCT task_id FROM dots_delegations WHERE status IN ('pending','running','blocked')").all() as { task_id: string }[];
       for (const target of new Set([...targets.map(row => row.task_id), ...this.outbox.targets()])) this.refresh(target);
       return;
@@ -410,6 +456,7 @@ export class DotsDelegations {
         this.notify();
         return;
       }
+      if (row.status === "blocked" && this.dependencyWait(row.operation_id)) continue;
       const result = await this.inspect(taskId, row.operation_id);
       if (this.disposed) return;
       if (!result) continue;
@@ -419,8 +466,12 @@ export class DotsDelegations {
         const update = this.db.prepare("UPDATE dots_delegations SET status=?,text=?,interaction_id=?,files=?,request_json=NULL,updated_at=? WHERE seq=? AND status IN ('pending','running','blocked') AND (status<>? OR interaction_id IS NOT ? OR text<>? OR files<>?) RETURNING *")
           .get(result.status, result.text, result.interactionId ?? null, files, now, row.seq, result.status, result.interactionId ?? null, result.text, files) as Row | undefined;
         if (!update) return false;
+        if (result.dependencyWait) this.db.prepare("INSERT OR IGNORE INTO dots_dependency_waits VALUES(?,?,?,?)")
+          .run(row.operation_id, result.dependencyWait.operationId, result.dependencyWait.title, result.dependencyWait.deadlineAt);
+        if (result.status === "completed" && result.verifiedCommit) this.db.prepare("INSERT OR IGNORE INTO dots_verified_commits VALUES(?,?)")
+          .run(row.operation_id, result.verifiedCommit);
         if (result.status !== "running" || this.tracking(update)?.milestones)
-          this.outbox.observe(toDelegation(update), result.citations, result.acceptedGoalReceiptId);
+          this.outbox.observe(toDelegation(update, undefined, result.dependencyWait), result.citations, result.acceptedGoalReceiptId);
         if (result.status !== "running")
           this.db.prepare("UPDATE dots_tool_observations SET next_at=NULL WHERE operation_id=?").run(row.operation_id);
         if (row.supersedes) this.db.prepare(`UPDATE dots_delegations SET status='superseded',interaction_id=NULL,request_json=NULL,updated_at=?
@@ -428,7 +479,11 @@ export class DotsDelegations {
           .run(now, taskId, row.seq, row.created_at);
         return true;
       })();
-      if (changed) this.notify();
+      if (changed) {
+        this.notify();
+        if (result.dependencyWait) this.scheduleDependencyDeadline();
+        if (result.status !== "running") this.refreshDependentTasks(row.operation_id);
+      }
     }
   }
 
@@ -439,6 +494,7 @@ export class DotsDelegations {
   close(): void {
     this.disposed = true;
     if (this.observationTimer) clearTimeout(this.observationTimer);
+    if (this.dependencyTimer) clearTimeout(this.dependencyTimer);
     this.dirty.clear();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();

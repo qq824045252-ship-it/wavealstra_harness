@@ -36,6 +36,14 @@ import { reviewIntent } from "../src/main/agent/pstack/PstackReviewIntent";
 import { parseThermosVerdict } from "../src/main/agent/pstack/PstackDelegate";
 import { observedReviewFiles, reviewTargets, validateInspections } from "../src/main/agent/pstack/PstackReviewEvidence";
 import { currentVerificationEvidence, verificationOutcome } from "../src/main/agent/pstack/PstackVerificationEvidence";
+import { createDurableProjectVerification, PROJECT_VERIFY_TOOL, readCurrentProjectVerification } from "../src/main/agent/durable/DurableProjectVerification";
+import { createDurableToolPolicy } from "../src/main/agent/durable/DurableToolPolicy";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { ExecutionAttemptRepository } from "../src/main/agent/ExecutionAttemptRepository";
+import { ExecutionFailureRepository } from "../src/main/agent/ExecutionFailureRepository";
+import { ConversationInteractionRepository } from "../src/main/agent/ConversationInteractionRepository";
+import { ConversationInteractionService } from "../src/main/agent/ConversationInteractionService";
+import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy";
 
 const exec = promisify(execFile), root = await mkdtemp(join(tmpdir(), "mybuddy-pstack-"));
 const model: Model<"openai-completions"> = { id: "fixture", name: "Fixture", provider: "fixture", api: "openai-completions", baseUrl: "http://fixture.invalid",
@@ -55,7 +63,86 @@ const models = { getModel: () => model, getAuth: async () => undefined, streamSi
   return stream;
 } } as unknown as DurableBotOptions["models"];
 
+async function testProjectVerification() {
+  const cwd = join(root, "project-verification");
+  await mkdir(cwd);
+  const git = (...args: string[]) => exec("git", ["-C", cwd, ...args], { windowsHide: true });
+  const commit = () => git("-c", "user.name=fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", "fixture");
+  const taskId = "project-verification";
+  const countPath = join(root, `${taskId}-calls`);
+  const appendCount = `require('node:fs').appendFileSync(${JSON.stringify(countPath)}, 'once\\n');`;
+  const test = "test:project";
+  await git("init", "-q", "-b", "main");
+  await writeFile(join(cwd, "package.json"), JSON.stringify({ name: "fixture", scripts: {
+    [test]: "node check.cjs", "test:masked": "node masked.cjs", "test:changes": "node changes.cjs",
+  } }));
+  await writeFile(join(cwd, "check.cjs"), `${appendCount}\nrequire('node:assert/strict').equal(require('node:fs').readFileSync('input.txt', 'utf8').trim(), 'ok');`);
+  await writeFile(join(cwd, "masked.cjs"), `console.log('# tests 1\\n# fail 1');`);
+  await writeFile(join(cwd, "changes.cjs"), `require('node:fs').writeFileSync('input.txt', 'changed');`);
+  await writeFile(join(cwd, "input.txt"), "ok\n");
+  await git("add", "."); await commit();
+  const db = new AppDatabase(join(root, `${taskId}-app.db`));
+  db.upsertTask({ id: taskId, title: "Project check", updatedAt: Date.now() });
+  const policy = createDurableToolPolicy({ taskId, taskRoot: cwd, getPermissionMode: () => "auto",
+    attempts: new ExecutionAttemptRepository(db.connection), failures: new ExecutionFailureRepository(db.connection),
+    interactions: new ConversationInteractionService(new ConversationInteractionRepository(db.connection), () => {}),
+    getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd }) });
+  const observe = defineTool({ name: "fixture_project_proof", description: "Read current proof", replay: "safe",
+    parameters: Type.Object({}), async execute(_args, api, context) {
+      const proof = await readCurrentProjectVerification(api, context, cwd, [test]);
+      return { output: [{ type: "text", text: JSON.stringify(proof) }] };
+    } });
+  const open = () => DurableBotRuntime.open({ directory: join(root, `${taskId}-store`), cwd, models, model: { provider: model.provider, modelId: model.id },
+    toolMode: "native", instructions: () => "Fixture", tools: [createDurableProjectVerification({ taskId, cwd }), observe],
+    toolHooks: policy.hooks, onSnapshot: () => {} });
+  let runtime = await open();
+  let run = 0;
+  async function invoke(script?: string, args?: string[]) {
+    const name = script ? PROJECT_VERIFY_TOOL : observe.name;
+    queue.push({ name, arguments: script ? { script, ...(args && { args }) } : {} });
+    assert.equal((await (await runtime.submit("Check project", `check-${++run}`)).wait(ctx)).status, "done");
+    const entries = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id, order: "ascending" }, 250), ctx);
+    const latest = entries.items.flatMap(e => e.model ?? []).filter(m => m.role === "toolResult" && m.toolName === name).at(-1);
+    assert(latest?.role === "toolResult" && latest.content[0]?.type === "text");
+    return JSON.parse(latest.content[0].text);
+  }
+  try {
+    const first = await invoke(test);
+    assert.equal(first.outcome, "passed", JSON.stringify(first));
+    assert.equal(first.reused, false);
+    const again = await invoke(test);
+    assert.equal(again.reused, true);
+    assert.equal(again.toolTaskId, first.toolTaskId);
+    assert.deepEqual((await invoke()).verified, [test]);
+    await runtime.close();
+    runtime = await open();
+    assert.equal((await invoke(test)).reused, true);
+    assert.equal((await invoke(test, ["--fixture=extra"])).reused, false);
+    assert.equal(await readFile(countPath, "utf8"), "once\nonce\n");
+    await writeFile(join(cwd, "input.txt"), "failure\n");
+    assert.deepEqual((await invoke()).verified, []);
+    assert.equal((await invoke(test)).outcome, "command_failed");
+    assert.equal((await invoke(test)).outcome, "command_failed");
+    assert.equal((await invoke("test:masked")).outcome, "assertion_failed");
+    assert.equal((await invoke("test:changes")).outcome, "workspace_changed");
+    await writeFile(join(cwd, "input.txt"), "ok\n");
+    assert.equal((await invoke(test)).reused, true);
+    await writeFile(join(cwd, "input.txt"), "ok \n");
+    assert.equal((await invoke(test)).reused, false);
+    await git("add", "."); await commit();
+    assert.deepEqual((await invoke()).verified, []);
+    assert.equal((await invoke(test)).reused, false);
+    const settled = await invoke();
+    assert.equal(settled.head, (await git("rev-parse", "HEAD")).stdout.trim());
+    assert.equal(settled.clean, true);
+    assert.deepEqual(settled.verified, [test]);
+    assert.equal(await readFile(countPath, "utf8"), "once\n".repeat(6));
+    console.log("PASS project verification reuses only current durable native proof and rejects failing, masked and changing checks");
+  } finally { await runtime.close(); db.close(); }
+}
+
 try {
+  await testProjectVerification();
   const repo = join(root, "repo"), cwd = join(root, "plain");
   await mkdir(repo); await mkdir(cwd);
   await writeFile(join(root, "plan.md"), "the configured plan");

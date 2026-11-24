@@ -2125,6 +2125,7 @@ function registerIpc(): void {
     const prevProjectId = db.getTask(id)?.projectId;
     await closeOfficeNativeTask(id);
     await taskLifecycle.trash(id);
+    dots.refresh();
     broadcastToWindows(DotsIpc.changed, null);
     try { workGraphService.cleanupByNode("task", id); } catch {}
     if (prevProjectId) {
@@ -2137,6 +2138,7 @@ function registerIpc(): void {
       db.archiveTask(id, archived);
     } else if (archived) taskLifecycle.archive(id);
     else taskLifecycle.unarchive(id);
+    dots.refresh();
     broadcastToWindows(DotsIpc.changed, null);
   });
   // 侧栏绿点确认：只写 done_acked_at（不碰 updated_at），无需经过生命周期回收流程。
@@ -2183,12 +2185,14 @@ function registerIpc(): void {
   });
   ipcMain.handle(DbIpc.archiveSpace, (_e, id: string, archived: boolean) => {
     db.archiveSpace(id, archived);
+    dots.refresh();
     broadcastToWindows(DotsIpc.changed, null);
   });
   ipcMain.handle(DbIpc.moveSpace, (_e, req: { spaceId: string; targetParentId: string | null; targetIndex?: number }) => {
     try {
       // P3-2：显式 pick 仅 targetIndex，不透传 targetSortOrder（DB 内兼容分支保留，但 IPC 不暴露）
       db.moveSpace({ spaceId: req.spaceId, targetParentId: req.targetParentId, targetIndex: req.targetIndex });
+      dots.refresh();
       libraryService.scheduleSemanticIndex();
       return { ok: true as const };
     } catch (err) {
@@ -2199,6 +2203,7 @@ function registerIpc(): void {
     try {
       // P3-2：显式 pick 仅 targetIndex，不透传 targetSortOrder
       db.moveTaskInWorkspaceTree({ taskId: req.taskId, targetSpaceId: req.targetSpaceId, targetIndex: req.targetIndex });
+      dots.refresh();
       return { ok: true as const };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };

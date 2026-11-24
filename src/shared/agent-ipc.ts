@@ -765,6 +765,8 @@ export interface AgentPromptRequest {
   dotsGoalIntentRevision?: number;
   dotsGoalUserAcceptance?: string;
   dotsMemoryRefs?: Array<{ id: string; revision: number }>;
+  /** Prerequisites for an existing Dots worker loadout. These never grant capabilities. */
+  dotsRequiredCapabilities?: import("./dots").DotsCapabilityRequirement[];
   /** A one-time subscribed file change is valid only for this native task intent. */
   dotsFileWatch?: { id: string; inputVersion: string };
   /** 用户拖入/选择的本地文件路径，主进程拼进 prompt 上下文 */

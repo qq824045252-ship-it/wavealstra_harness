@@ -250,7 +250,7 @@ exports.run = async (scenario, {name, liveModel = false, fixtureModel, fixtureMo
           const reply = await fixtureModel(request);
           if (reply?.fixtureFault === "disconnect") { req.socket.destroy(); return; }
           if (reply?.fixtureFault === "model-error") {
-            res.writeHead(400, {"Content-Type":"application/json"}).end(JSON.stringify({error:{type:"invalid_request_error", message:reply.message}}));
+            res.writeHead(reply.status ?? 400, {"Content-Type":"application/json"}).end(JSON.stringify({error:{type:"invalid_request_error", message:reply.message}}));
             return;
           }
           const textChunks = Array.isArray(reply) ? reply : undefined;

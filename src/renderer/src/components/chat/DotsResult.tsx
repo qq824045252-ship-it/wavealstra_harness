@@ -94,11 +94,11 @@ export function DotsResult({ row, selected, onPreview }: {
   row: DotsDelegation; selected: boolean; onPreview: (file: SavedArtifactRequest) => void;
 }): React.JSX.Element | null {
   const [error, setError] = useState("");
-  const waiting = row.status === "pending" || row.status === "running" || row.status === "superseded";
+  const waiting = row.dependencyWait || row.status === "pending" || row.status === "running" || row.status === "superseded";
   if (!waiting && row.proactiveReply) return null;
   const files = row.status === "completed" && row.artifacts.length > 0;
   return <div className="dots-result" data-delegation-id={row.id} data-status={row.status}>
-    {!files && <><TaskLink row={row} onError={setError} /><span className="dots-result-status">{labels[row.status]}</span></>}
+    {!files && <><TaskLink row={row} onError={setError} /><span className="dots-result-status">{row.dependencyWait ? "等待依赖" : labels[row.status]}</span></>}
     {!files && row.text && row.status !== "running" && row.status !== "superseded" && <ChatMarkdown text={row.text} streaming={false} resolveTaskFiles={false} />}
     {files && <DotsDeliveryFiles row={row} selected={selected} onPreview={onPreview} />}
     {error && <div role="alert">{error}</div>}

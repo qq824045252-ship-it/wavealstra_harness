@@ -20,7 +20,7 @@ writeFileSync(join(folder, "input.txt"), "客户档案编号 A456");
 const { DOTS_TASK_ID } = await import("../src/shared/dots");
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { DotsActions } = await import("../src/main/dots/DotsActions");
-const { dotsFollowUpInput } = await import("../src/main/dots/DotsFollowUpInput");
+const { dotsFollowUpInput, dotsForwardingDenied, hasDotsResumeInstruction } = await import("../src/main/dots/DotsFollowUpInput");
 const { DotsDelegations } = await import("../src/main/dots/DotsDelegations");
 const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const { CronService } = await import("../src/main/cron/CronService");
@@ -167,6 +167,23 @@ try {
   assert.throws(() => dotsFollowUpInput([directive, { ...screenshot, text: "截图里有个问题，顺便部署测试环境" }]), /无法确认/);
   assert.throws(() => dotsFollowUpInput([{ ...directive, text: "追问这个词怎么用" }]), /明确的追问原话/);
   assert.throws(() => dotsFollowUpInput([{ ...directive, text: "我上次说过「追问一下」" }]), /明确的追问原话/);
+  const finishDirective = { ...directive, text: "把刚才的任务继续做完" };
+  assert.equal(dotsFollowUpInput([finishDirective]).assignmentQuote, finishDirective.text);
+  for (const instruction of ["把刚才的任务继续做完", "接着把原任务办完", "麻烦把刚才的任务接着完成"]) {
+    assert(hasDotsResumeInstruction(instruction), instruction);
+    assert(!hasDotsResumeInstruction("先看看进度。" + instruction, "先看看进度。"), instruction);
+  }
+  assert(!hasDotsResumeInstruction("把刚才的任务继续做完需要多久"));
+  assert(!hasDotsResumeInstruction("不要把刚才的任务继续做完"));
+  assert(!dotsForwardingDenied("请委派一个普通任务。不要重跑已通过的同版本检查。只在当前对话回传结果。"));
+  assert(!dotsForwardingDenied("请委派一个普通任务，不要重试已经通过的回归测试，仅在本对话交付报告"));
+  assert(hasDotsResumeInstruction("把刚才的任务继续做完。不要重跑已通过的同版本检查。"));
+  for (const constraint of ["不要重跑原任务", "不要把原任务恢复", "不要重新执行原任务", "不要重跑已通过的测试，也不要委派",
+    "不要重跑已通过的测试也别重跑原任务", "只在当前对话处理", "只在当前对话回传结果并处理",
+    "只在当前对话交付文件。先停一下。"]) {
+    assert(dotsForwardingDenied(constraint), constraint);
+  }
+  assert.throws(() => dotsFollowUpInput([{ ...directive, text: "继续看刚才的任务做到哪了" }]), /明确的追问原话/);
   assert.throws(() => dotsFollowUpInput([{ ...directive, text: "你追问下。也请跟进另一个任务。" },
     { ...screenshot, text: "你再追问下" }]), /明确的追问原话/);
   const space = await success({ action: "bind", name: "客户 A", path: folder }, 2);
@@ -567,6 +584,22 @@ try {
   const replayFirst = await actions.execute(DOTS_TASK_ID,splitSource,{...nextAssignment,assignmentQuote:"整理船期",text:"整理航次时间"},splitInput);
   assert("receipt" in replayFirst && replayFirst.receipt?.taskId === first.receipt.taskId);
   assert.equal(journal.list([splitSource]).length,2);
+  const coveredA = "盘点空箱，只给「甲.txt」";
+  const coveredB = "整理船期，交付「乙.txt」";
+  const incompleteSplit = [coveredA, coveredB, "附上「丙.txt」", "用 project_verify 运行 test:split-summary"].join("。");
+  const incompleteSplitSource = "split-with-unassigned-deliverables";
+  const original = await actions.execute(DOTS_TASK_ID, incompleteSplitSource, {
+    action: "delegate", spaceId: child.id, text: coveredA, deliveryInstruction: "只给「甲.txt」",
+  }, incompleteSplit);
+  assert("receipt" in original && original.receipt);
+  const { taskId: partitionTask, operationId: partitionOperation } = original.receipt;
+  assert.deepEqual(actions.completionRequirements(partitionTask, partitionOperation).files, ["甲.txt", "乙.txt", "丙.txt"]);
+  assert.equal(actions.requestedFilename(partitionTask, partitionOperation), undefined);
+  await assert.rejects(actions.execute(DOTS_TASK_ID, incompleteSplitSource, {
+    action: "delegate", spaceId: child.id, text: coveredB, assignmentQuote: coveredB,
+  }, incompleteSplit), /遗漏了原交办要求：丙\.txt、test:split-summary/);
+  assert.equal(journal.list([incompleteSplitSource]).length, 1);
+  assert.deepEqual(actions.completionRequirements(partitionTask, partitionOperation).files, ["甲.txt", "乙.txt", "丙.txt"]);
   const finished = await actions.execute(DOTS_TASK_ID,"before-pause",{action:"delegate",spaceId:child.id,text:"collect-finished-before-pause"});
   assert("receipt" in finished && finished.receipt);
   await agent.waitForSubmission(finished.receipt);
@@ -605,11 +638,13 @@ try {
   assert.equal(db.getTask(second.receipt.taskId), undefined);
   await agent.updateAppSettings({dotsSettings: {modelId:"fixture/dots-front"}});
   const pinnedTask = "ordinary-independent-model";
-  db.upsertTask({ id:pinnedTask, title:"独立已有任务", spaceId:child.id, modelId:"fixture/pinned-worker", updatedAt:Date.now() });
+  db.upsertTask({ id:pinnedTask, title:"独立已有任务", spaceId:child.id, modelId:"fixture/pinned-worker", welcomeMode:"general", updatedAt:Date.now() });
   const modelStart = fixture.requests.length;
-  const modelDelegation = await success({ action:"delegate", spaceId:child.id, text:"检查独立模型路由" });
+  const modelDelegation = await success({ action:"delegate", spaceId:child.id, text:"检查独立模型路由",
+    requiredCapabilities: [{ kind:"tool", id:"read" }] });
   await agent.waitForSubmission(modelDelegation.receipt);
-  const existingModelDelegation = await success({ action:"delegate", targetTaskId:pinnedTask, text:"沿用该任务已有模型" });
+  const existingModelDelegation = await success({ action:"delegate", targetTaskId:pinnedTask, text:"沿用该任务已有模型和通用场景",
+    requiredCapabilities: [{ kind:"mode", id:"general" }, { kind:"tool", id:"read" }] });
   await agent.waitForSubmission(existingModelDelegation.receipt);
   const modeled = fixture.requests.slice(modelStart);
   assert.deepEqual([...new Set(modeled.filter(req => req.tools.includes("dots_action")).map(req => req.modelId))], ["fixture/dots-front"]);
@@ -617,7 +652,71 @@ try {
     ["fixture/model","fixture/pinned-worker"]);
   assert.equal(agent.getAppSettings().defaultModelId,"fixture/model");
   assert.equal(db.getTask(pinnedTask)?.modelId,"fixture/pinned-worker");
+  assert.equal(db.getTask(pinnedTask)?.welcomeMode,"general");
   assert.equal(db.getTask(DOTS_TASK_ID)?.modelId ?? null,null);
+
+  const capabilityStart = fixture.requests.length;
+  const beforeCapability = db.listNonTrashedTasks().map(task => task.id).sort();
+  for (const [kind, id, error] of [
+    ["mode", "coding", /所需场景「coding」/],
+    ["connector", "fixture-absent", /所需连接器「fixture-absent」/],
+    ["mcp", "unapproved-server", /所需MCP「unapproved-server」/],
+  ] as const) {
+    const unavailable = await turn({ action: "delegate", spaceId: child.id, text: "请执行需要该配置的工作",
+      requiredCapabilities: [{ kind, id }] }, "dots_action", 1, "请执行需要 " + id + " 的工作");
+    assert(unavailable.error, unavailable.text);
+    assert.match(unavailable.text, error);
+    assert.equal(journal.list(["dots-user-" + serial]).length, 0);
+  }
+  assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(), beforeCapability);
+  const toolProbeTask = "ordinary-unregistered-tool-check";
+  db.upsertTask({ id: toolProbeTask, title: "检测未登记工具", spaceId: child.id, modelId: "fixture/pinned-worker", updatedAt: Date.now() });
+  const missingRegistration = await turn({ action: "delegate", targetTaskId: toolProbeTask, text: "使用指定工具",
+    requiredCapabilities: [{ kind: "tool", id: "fixture_unregistered_tool" }] }, "dots_action", 1, "使用 fixture_unregistered_tool");
+  assert(missingRegistration.error, missingRegistration.text);
+  assert.match(missingRegistration.text, /所需工具「fixture_unregistered_tool」/);
+  assert(!fixture.requests.slice(capabilityStart).some(req => req.tools.includes("read")), "impossible requirements never reach the worker model");
+
+  const mcpAudit = join(root, "required-mcp.jsonl");
+  const idleAudit = join(root, "unrequested-mcp.jsonl");
+  const mcpFixture = join(process.cwd(), "scripts", "durable-mcp-lazy-fixture.mjs");
+  writeFileSync(join(root, ".mybuddy", "plugins", "mcp", "mcp.json"), JSON.stringify({ mcpServers: {
+    "required-fixture": { command: process.execPath, args: [mcpFixture, mcpAudit], toolExposure: { hidden_tool: "hidden" } },
+    "idle-fixture": { command: process.execPath, args: [mcpFixture, idleAudit] },
+  } }));
+  const generalPolicy = agent.getModeProfile("general").policy;
+  agent.saveModePolicy("general", { ...generalPolicy, mcpPolicy: { mode: "hard", allow: ["required-fixture", "idle-fixture"], deny: [] } });
+  const beforeProbe = fixture.requests.length;
+  const candidateRequirements = [{ kind: "mode", id: "general" }, { kind: "mcp", id: "required-fixture", tool: "read_cwd" }] as const;
+  const candidate = await success({ action: "task", targetTaskId: pinnedTask, spaceId: child.id,
+    requiredCapabilities: [...candidateRequirements] });
+  assert.equal(candidate.id, pinnedTask);
+  assert.deepEqual(candidate.capabilityEligibility, { status: "policy_approved", requirements: candidateRequirements });
+  assert.equal(candidate.messages, undefined, "candidate lookup does not read the worker transcript");
+  const missingCapability = { kind: "mode", id: "coding" } as const;
+  const unsuitable = await success({ action: "task", targetTaskId: pinnedTask, requiredCapabilities: [missingCapability] });
+  assert.equal(unsuitable.capabilityEligibility.status, "blocked");
+  assert.deepEqual(unsuitable.capabilityEligibility.requirement, missingCapability);
+  assert.match(unsuitable.capabilityEligibility.reason, /所需场景「coding」/);
+  const outOfScope = await turn({ action: "task", targetTaskId: pinnedTask, spaceId: "another-space",
+    requiredCapabilities: [...candidateRequirements] });
+  assert(outOfScope.error, outOfScope.text);
+  assert.match(outOfScope.text, /属于另一个空间/);
+  assert(!existsSync(mcpAudit), "candidate lookup leaves even its named server unconnected");
+  assert(!fixture.requests.slice(beforeProbe).some(req => req.tools.includes("read")));
+  const mcpResult = await success({ action: "delegate", targetTaskId: pinnedTask, text: "使用已批准的 MCP 工具",
+    requiredCapabilities: [{ kind: "mcp", id: "required-fixture" }, { kind: "mcp", id: "required-fixture", tool: "read_cwd" }] });
+  await agent.waitForSubmission(mcpResult.receipt);
+  const beforeHiddenMcp = fixture.requests.length;
+  const hiddenMcp = await turn({ action: "delegate", targetTaskId: pinnedTask, text: "调用隐藏的 MCP 工具",
+    requiredCapabilities: [{ kind: "mcp", id: "required-fixture", tool: "hidden_tool" }] }, "dots_action", 1, "请调用 hidden_tool");
+  assert(hiddenMcp.error, hiddenMcp.text);
+  assert.match(hiddenMcp.text, /required-fixture \/ hidden_tool/);
+  assert(!fixture.requests.slice(beforeHiddenMcp).some(req => req.tools.includes("read")));
+  assert.deepEqual(readFileSync(mcpAudit, "utf8").trim().split("\n").map(line => JSON.parse(line).event), ["start"],
+    "preflight opens the named server to read its catalog without calling any business tools");
+  assert(!existsSync(idleAudit), "preflight leaves an unrequested approved server idle");
+  console.log("PASS Dots required capabilities check approved mode, actual registered tools and scoped MCP discovery before worker submission");
 
   // Keep Dots available while the user's configured main model is outside the enabled scope.
   await agent.updateAppSettings({defaultModelId:"fixture/unavailable",enabledModels:["fixture/model","fixture/dots-front","fixture/pinned-worker"]});
@@ -673,11 +772,15 @@ try {
     assert(deniedResume.error, deniedResume.text);
     assert.match(deniedResume.text, /请使用 task 读取原任务的执行诊断/);
   }
-  const inspectAgain = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, "请继续查看为什么停不下来。");
-  assert(inspectAgain.error, inspectAgain.text);
+  for (const text of ["请继续查看为什么停不下来。", "继续看刚才的任务做到哪了", "把刚才的任务继续做完吗？", "别继续原任务", "把刚才的两个任务继续做完"]) {
+    const inspectAgain = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, text);
+    assert(inspectAgain.error, inspectAgain.text);
+  }
   assert.deepEqual((await success({ action: "task", targetTaskId: interrupted.id })).deliveries.map((row: { operationId: string }) => row.operationId),
     [interrupted.receipt.operationId]);
-  const authorized = await success({ action: "resume", targetTaskId: interrupted.id });
+  const naturalResume = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, "把刚才的任务继续做完");
+  assert(!naturalResume.error, naturalResume.text);
+  const authorized = JSON.parse(naturalResume.text);
   assert.equal(authorized.id, interrupted.id);
   assert.notEqual(authorized.receipt.operationId, interrupted.receipt.operationId);
   assert.equal((await agent.waitForSubmission(authorized.receipt)).receipt?.status, "done");

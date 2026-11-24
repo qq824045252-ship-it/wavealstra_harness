@@ -1,4 +1,5 @@
-import { DOTS_TASK_ID, isDotsAutomaticInput } from "../../shared/dots";
+import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsCapabilityRequirement } from "../../shared/dots";
+import { DotsCapabilityUnavailable } from "../dots/DotsCapabilityRequirements";
 import { DOTS_DESKTOP_PREVIEW, dotsOperationEnabled, resolveDotsPreferences } from "../../shared/dots-settings";
 import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
@@ -32,6 +33,10 @@ import { resolveParallelLimits } from "../capabilities/subagent/shared";
 import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
+import { createDurableDotsWorker, DOTS_TASK_END } from "./durable/DurableDotsWorker";
+import { LOCAL_TASK_MAX_TOOL_ROUNDS } from "./durable/DurableRunLimits";
+import { createDurableProjectVerification, PROJECT_VERIFY_TOOL, readCurrentProjectVerification } from "./durable/DurableProjectVerification";
+import { projectCommitAdvances, projectStartHead } from "./pstack/PstackWorkspace";
 import type { GatewayBotTurnRequest } from "../gateway/GatewayAgentTurn";
 import { botWorkHasSharedOrigin } from "../memory/BotMemorySource";
 import { BotReportImageService } from "./work/BotReportImageService";
@@ -626,6 +631,14 @@ export class AgentService {
   }
 
   isDotsOrdinaryTask(taskId: string): boolean { return !this.workService.repo.bindingForTask(taskId); }
+
+  private boundedLocalTask(taskId: string): boolean {
+    return taskId !== DOTS_TASK_ID && !isGatewayConversation(taskId) && !isGatewayBotTaskId(taskId) && this.isDotsOrdinaryTask(taskId);
+  }
+
+  private dotsWorkerActive(taskId: string): boolean {
+    return this.boundedLocalTask(taskId) && this.dotsActions?.isActiveWorkerOperation(taskId) === true;
+  }
 
   setLocalWorkflowServices(services: Omit<LocalWorkflowBridge, "getPermissionMode">): void {
     this.localWorkflow = services;
@@ -1697,12 +1710,15 @@ export class AgentService {
       },
       mcpSelection: task => task.id === DOTS_TASK_ID ? [] : this.durableAssembly(task).mcpFilter.enabled,
       toolAllowed: (task, name) => this.durableToolAllowed(task, name),
+      assertDotsCapabilities: (task, cwd, requirements) => this.assertDotsCapabilityPolicy(requirements, cwd, task),
       toolMode: task => {
         if (task.id === DOTS_TASK_ID || isGatewayBotTaskId(task.id)) return "native";
         const preset = resolveModePreset(this.modeProfiles.getProfile(resolveWelcomeMode(task.welcomeMode)).policy, task.modePresetId);
         return preset?.durableToolMode ?? (task.modePresetId === "codemode" ? "codemode" : "native");
       },
       instructions: task => this.botInstructions(task),
+      maxTurns: task => this.boundedLocalTask(task.id) ? LOCAL_TASK_MAX_TOOL_ROUNDS : null,
+      dotsRecoveryScope: (taskId, operationId) => this.dotsActions?.recoveryToolScope(taskId, operationId),
       waitingForInput: taskId => this.conversationInteractions.listByTask(taskId).some(interaction => interaction.status === "pending"),
       onRelease: taskId => { this.durableSkills.release(taskId); computerUseRunCoordinator.endTask(taskId, "failed"); },
       onSettled: (taskId, snapshot) => {
@@ -1927,6 +1943,8 @@ export class AgentService {
     return [
       ...assembly.appendParts,
       isGatewayConversation(task.id) || isGatewayBotTaskId(task.id) ? "" : CHAT_REPLY_INSTRUCTIONS,
+      this.boundedLocalTask(task.id) ? "对于有限执行任务，按原要求核对必验项。请用 project_verify 运行项目已声明的本地 typecheck/test 脚本。按约定顺序完成必验检查和已授权的本地提交，最终以交付版本的验收回执为准，再直接结束回复。只有相关输入确有变化、已有证据未涵盖必验项或出现有依据的新失败时，才再运行检查。" : "",
+      this.dotsWorkerActive(task.id) ? "Dots 交办结束时优先单独调用 dots_task_end(action=complete)，在 checks 和 commitSha 中列出当前有效验收和已约定的本地提交。只有在独立工作已做完且只能等另一项委派时，单独调用 dots_task_end(action=wait)，填已知的依赖 operationId 和实质进展。交由 Dots 等待回执，避免用 shell 轮询。" : "",
       // Live Goal state, re-read per model request: a foreground conversation has no
       // execution binding, so this section is the only place the open requirement and
       // its stop rules reach the model. Never cache it with the static capsule.
@@ -2159,7 +2177,28 @@ export class AgentService {
         return await consultHooks.afterTool?.(call, observed ?? result, api, context) ?? observed;
       },
     };
-    return { ...domain, foregroundHooks: workflow, toolHooks, tools: [...domain.tools, ...workflow?.tools ?? [],
+    const dots = this.dotsActions;
+    const workerTools = dots && this.dotsWorkerActive(task.id) ? [createDurableDotsWorker(task.id,
+      (id, operation) => dots.isActiveWorkerOperation(id, operation),
+      (id, operation, dependency) => dots.validateWorkerDependency(id, operation, dependency),
+      async ({ checks, commitSha }, api, context, operationId) => {
+        const contract = dots.completionRequirements(task.id, operationId);
+        const required = [...new Set([...(contract?.checks ?? []), ...(checks ?? [])])];
+        if (contract?.requireCommit && !commitSha) throw new Error("原交办要求提交，请提供已完成的本地提交 SHA。");
+        if (!required.length && !commitSha) return {};
+        const evidence = await readCurrentProjectVerification(api, context, cwd, required);
+        const missing = required.filter(script => !evidence.verified.includes(script));
+        if (missing.length) throw new Error("当前版本缺少通过的验收回执：" + missing.join("、"));
+        if (commitSha && (!evidence.clean || !evidence.head.startsWith(commitSha.toLowerCase())))
+          throw new Error("交付提交必须是当前工作树的 HEAD，且工作树没有未提交的改动。");
+        if (contract?.requireCommit && (contract.commitBase === undefined ||
+          !await projectCommitAdvances(cwd, contract.commitBase, evidence.head, context.abortSignal)))
+          throw new Error("原交办要求新的本地提交。当前提交无法证明任务开始后新增了提交。");
+        return { verifiedChecks: evidence.verified, ...(commitSha ? { verifiedCommit: evidence.head } : {}) };
+      })] : [];
+    const projectVerification = this.durableToolAllowed(task, PROJECT_VERIFY_TOOL)
+      ? [createDurableProjectVerification({ taskId: task.id, cwd })] : [];
+    return { ...domain, foregroundHooks: workflow, toolHooks, tools: [...domain.tools, ...workflow?.tools ?? [], ...workerTools, ...projectVerification,
       ...createDurableSubagentTools({ taskId: task.id, cwd, models: this.durableModels!, permissionMode: getPermissionMode,
         observedUsage: id => this.taskDiagnostics.usageForConversation(task.id, id),
         ...(workflowSettings && (await import("./PstackDispatch")).pstackSubagentOptions(task.id, workflowSettings)),
@@ -2209,6 +2248,8 @@ export class AgentService {
       return memoryMode === "readWrite" ? DOTS_MEMORY_TOOLS.has(name) : memoryMode === "readOnly" && DOTS_MEMORY_READ_TOOLS.has(name);
     }
     if (name === DOTS_ACTION) return false;
+    if (name === DOTS_TASK_END) return this.dotsWorkerActive(task.id);
+    if (name === PROJECT_VERIFY_TOOL) return this.boundedLocalTask(task.id) && this.durableToolAllowed(task, "bash");
     if (task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId) &&
         ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
     if (isPstackForegroundTool(name) && !this.pstackActive(task)) return false;
@@ -2252,13 +2293,48 @@ export class AgentService {
     return modelId;
   }
 
-  /**
-   * Dots 交办的前置校验：在 `upsertTask` 建任务之前先确认默认模型可用。
-   * 判定的是任务将要使用的执行目录（空间路径），与 prepareDurableTask 完全同口径；
-   * 这里只做校验，不创建任务工作区，也不写执行失败记录（原任务尚未存在）。
-   */
-  async assertDelegationAdmissible(spaceId: string): Promise<void> {
-    await this.assertDefaultModelEnabled(this.db.resolveWorkspaceExecutionPath(spaceId) ?? process.cwd());
+  /** Check the candidate's existing configuration before recording a new delegation. */
+  async assertDelegationAdmissible(spaceId: string | undefined, options?: {
+    taskId?: string;
+    requiredCapabilities?: readonly DotsCapabilityRequirement[];
+  }): Promise<void> {
+    const task = options?.taskId ? this.db.getTask(options.taskId) : null;
+    if (options?.taskId && !task) throw new Error("原任务不存在");
+    const cwd = task?.cwd ?? (spaceId ? this.db.resolveWorkspaceExecutionPath(spaceId) : undefined) ?? process.cwd();
+    if (options?.requiredCapabilities?.length)
+      this.assertDotsCapabilityPolicy(options.requiredCapabilities, cwd, task ?? undefined, spaceId);
+    if (!task) await this.assertDefaultModelEnabled(cwd);
+  }
+
+  private assertDotsCapabilityPolicy(requirements: readonly DotsCapabilityRequirement[], cwd: string, task?: TaskDto, spaceId?: string): void {
+    const assembly = this.assembleModePreview({
+      taskId: task?.id, spaceId: task?.spaceId ?? spaceId, projectId: task?.projectId, cwd,
+      welcomeMode: resolveWelcomeMode(task?.welcomeMode), permissionMode: task?.permissionMode,
+      modePresetId: task?.modePresetId,
+      expertId: (task && this.expertBindings.active(task.id)?.sourceExpertId) || task?.expertId,
+    });
+    const profile = this.modeProfiles.getProfile(assembly.welcomeMode);
+    const preset = resolveModePreset(profile.policy, task?.modePresetId);
+    const permission = resolveEffectivePermission(task?.permissionMode, profile.policy.suggestedPermissionMode,
+      this.settingsStore.read().permissionMode ?? "default");
+    const available = (requirement: DotsCapabilityRequirement): boolean => {
+      const { kind, id } = requirement;
+      switch (kind) {
+        case "mode": return id === assembly.welcomeMode;
+        case "preset": return id === preset?.id;
+        case "skill": return assembly.skillFilter.visible.includes(id);
+        case "mcp": return assembly.mcpFilter.enabled.includes(id);
+        case "connector":
+        case "expert": return Boolean(assembly.capabilities?.some(item => item.kind === kind && item.id === id && item.enabled));
+        case "tool":
+          return task ? this.durableToolAllowed(task, id)
+            : !(resolveDurableToolSelection(permission, assembly.toolPolicy, this.builtinCapabilities.config()).excludeTools ?? [])
+              .some(tool => tool.toLowerCase() === id.toLowerCase());
+      }
+    };
+    for (const requirement of requirements) {
+      if (!available(requirement)) throw new DotsCapabilityUnavailable(requirement, "当前授权范围未包含该能力。");
+    }
   }
 
   private async prepareDurableTask(request: AgentPromptRequest, mark?: (stage: string) => void): Promise<AgentPromptRequest> {
@@ -2271,6 +2347,10 @@ export class AgentService {
     else this.expertBindings.ensureLegacy(request.taskId);
     const task = this.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
+    await this.dotsActions?.captureCommitBase(task.id, request.userMessageId, async () => {
+      try { return await projectStartHead(cwd); }
+      catch (cause) { throw new Error("无法确认任务开始时的 Git 提交，请检查当前工作空间是否是可读取的 Git 仓库。", { cause }); }
+    });
     const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);
     let modelId = task.id === DOTS_TASK_ID ? this.configuredDotsModelId() : request.modelId;
     if (task.id !== DOTS_TASK_ID && !modelId && !task.modelId) modelId = await this.assertDefaultModelEnabled(cwd);
@@ -5228,9 +5308,8 @@ export class AgentService {
           saved: saved.get(id), version: item.version });
       }
     }
-    const interactionId = "interactionId" in result && typeof result.interactionId === "string" ? result.interactionId : undefined;
-    return { status: result.status, text: result.text, interactionId, artifacts,
-      citations: "citations" in result ? result.citations : undefined };
+    const { status, text, interactionId, dependencyWait, verifiedCommit, citations } = result;
+    return { status, text, interactionId, artifacts, dependencyWait, verifiedCommit, citations };
   }
   /**
    * 删除一条用户消息，并把当前会话叶子永久切到它之前。

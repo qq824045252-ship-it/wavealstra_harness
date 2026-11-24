@@ -21,12 +21,12 @@ function goalDeliveryKey(taskId: string, completion: { id: string; stateVersion:
   return createHash("sha256").update(JSON.stringify([taskId, completion.id, completion.stateVersion])).digest("hex");
 }
 
-function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery): string {
+function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, terminal: boolean): string {
   return JSON.stringify({
     delivered: reply.kind,
     deliveryKey: reply.deliveryKey,
     ...(reply.completion && { completion: reply.completion }),
-    ...(reply.kind !== "progress" && { summary: activitySummary(reply.text), deliveredAt, fileCount: reply.artifacts.length }),
+    ...((reply.kind !== "progress" || terminal) && { summary: activitySummary(reply.text), deliveredAt, fileCount: reply.artifacts.length }),
   });
 }
 
@@ -35,7 +35,7 @@ function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery): string
 export class DotsReplyOutbox {
   private handler?: { followup: DotsFollowup; append: AppendDotsReply; allowed: (taskId: string) => boolean;
     allowedReply: (kind: DotsAssistantReply["kind"]) => boolean };
-  constructor(private db: Database.Database, private changed?: () => void) {
+  constructor(private db: Database.Database, private changed?: (operationId: string) => void) {
     db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_requests(operation_id TEXT PRIMARY KEY, request TEXT NOT NULL);
@@ -214,7 +214,8 @@ export class DotsReplyOutbox {
     const changed = this.db.transaction(() => {
       // The conversation owns the full reply. Keep the receipt and a short Activity summary.
       const update = this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=? AND settled=? AND snapshot=?")
-        .run(receipt ? deliverySnapshot(receipt) : "", event.event_key, event.settled, event.snapshot);
+        .run(receipt ? deliverySnapshot(receipt, event.status === "completed" || event.status === "failed") : "",
+          event.event_key, event.settled, event.snapshot);
       if (!update.changes) return false;
       if (event.status === "activity" && receipt)
         this.db.prepare("UPDATE dots_tool_observations SET last_report_at=? WHERE operation_id=?").run(receipt.deliveredAt, event.operation_id);
@@ -222,7 +223,7 @@ export class DotsReplyOutbox {
         this.db.prepare("DELETE FROM dots_followup_requests WHERE operation_id=?").run(event.operation_id);
       return true;
     })();
-    if (changed && event.status !== "running" && event.status !== "activity") this.changed?.();
+    if (changed && event.status !== "running" && event.status !== "activity") this.changed?.(event.operation_id);
   }
 
   private async deliver(event: Event, alive: () => boolean, handler: NonNullable<DotsReplyOutbox["handler"]>) {

@@ -38,9 +38,22 @@ const rerunAnswer = "复核完成，库存为 37 件。";
 const externalSource = "external-effect-recovery";
 const effectToolCall = "post-unconfirmed-effect";
 const unconfirmed = "外部操作未收到回执，是否生效需要核查。";
+const recoveryFaults = ["readThen503", "writeThen503", "effectThen503", "effectProgress", "localFiles", "localPreexisting"] as const;
+type RecoveryFault = typeof recoveryFaults[number];
+const recoveryProof = "recovery-proof.txt";
+const recoveryDraft = "recovery-internal-notes.txt";
+const recoveryInstructions: Record<RecoveryFault, string> = {
+  readThen503: "读取 recovery-input.txt 的盘点数量，只回复数字。",
+  writeThen503: "请创建 recovery-proof.txt，只交付这个文件。",
+  effectThen503: "运行盘点登记命令并确认结果。",
+  effectProgress: "运行盘点登记命令并确认结果。",
+  localFiles: "制作本地盘点成果。交付 localFiles-kept.txt 和 localFiles-missing.txt。",
+  localPreexisting: "制作本地盘点成果。交付 localPreexisting-kept.txt 和 localPreexisting-missing.txt。",
+};
 type WorkspaceCase = "bound" | "private" | "inherited" | "rebound";
+const dependencyAssignment = "先准备上游数据。\n再用上游结果完成集成。";
 
-async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect" | "missingInitialDirectory" | "pendingInitialDirectory" | "rerunLegacy" | "stopAfterCommit", effectPort?: number,
+async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect" | "missingInitialDirectory" | "pendingInitialDirectory" | "rerunLegacy" | "stopAfterCommit" | "dependency" | "dependencyDeadline" | RecoveryFault, effectPort?: number,
   workspace: WorkspaceCase = "bound") {
   const db = new AppDatabase(join(root, "app.db"));
   const artifacts = createArtifactDomain(db.connection);
@@ -51,12 +64,154 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
   });
   let enteredTimer = false;
   let reportedProgress = false;
+  let dependencyDispatches = 0;
+  let blockedRecoveryWrite = false;
   let releaseTimer!: () => void;
   const timerGate = new Promise<void>(resolve => { releaseTimer = resolve; });
   if (fault === "activityOnly") writeFileSync(join(root, "signal.txt"), "fixture signal 42");
-  const fixture = await createAgentDurableFixture(root, db, async input => {
+  if (fault === "readThen503") writeFileSync(join(root, "recovery-input.txt"), "42");
+  if (fault === "localPreexisting") writeFileSync(join(root, fault + "-missing.txt"), "之前留下的其他文件");
+  const fixture = await createAgentDurableFixture(root, db, async (input, signal) => {
     const tools = getCurrentTools(input.messages);
     const latest = input.messages.at(-1);
+    if (fault === "localFiles" || fault === "localPreexisting") {
+      const names = tools.map(tool => tool.name);
+      if (!names.length) return [{ type: "text", text: '{"candidates":[]}' }];
+      const kept = fault + "-kept.txt", missing = fault + "-missing.txt";
+      const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
+      const previous = latest?.role === "toolResult" ? latest : undefined;
+      const write = (id: string, path: string, content: string) => ({ type: "toolCall" as const, id, name: "write", arguments: { path, content } });
+      const register = (id: string, path: string) => ({ type: "toolCall" as const, id, name: "register_artifact", arguments: { path } });
+      const complete = [{ type: "text" as const, text: JSON.stringify({ dotsState: "complete", result: "盘点成果已生成。" }) }];
+      if (names.includes("dots_action")) {
+        if (previous) return [{ type: "text", text: "收到。" }];
+        return [{ type: "toolCall", id: "delegate-" + fault, name: "dots_action", arguments: {
+          action: "delegate", spaceId: space.id, name: "补齐盘点文件", assignmentQuote: recoveryInstructions[fault], text: recoveryInstructions[fault],
+        } }];
+      }
+      if (userText.includes("只创建并登记下列缺少的交付文件")) {
+        assert(names.includes("write"));
+        assert(!names.some(name => ["edit", "powershell", "bash", "codemode", "register_artifact"].includes(name)));
+        if (previous?.toolCallId === "recovery-overwrite-kept") {
+          assert.equal(previous.isError, true);
+          return [register("recovery-spoof-missing", missing)];
+        }
+        if (previous?.toolCallId === "recovery-spoof-missing") {
+          assert.equal(previous.isError, true);
+          return [write("recovery-create-missing", missing, "本次补齐的盘点成果")];
+        }
+        if (previous?.toolCallId === "recovery-create-missing") {
+          assert.equal(previous.isError, fault === "localPreexisting", JSON.stringify(previous.content));
+          return fault === "localFiles" ? complete : [{ type: "text", text: JSON.stringify({
+            dotsState: "blocked", result: "指定文件已经被其他人占用，无法创建本轮成果。", question: "要用哪个文件名？",
+          }) }];
+        }
+        return [write("recovery-overwrite-kept", kept, "不得替换已有盘点成果")];
+      }
+      if (previous?.toolCallId === "initial-kept-write") return [register("initial-kept-register", kept)];
+      if (previous?.toolCallId === "initial-kept-register") return complete;
+      return [write("initial-kept-write", kept, "第一份已核实的盘点成果")];
+    }
+    if (fault === "readThen503" || fault === "writeThen503" || fault === "effectThen503" || fault === "effectProgress") {
+      const names = tools.map(tool => tool.name);
+      if (!names.length) return [{ type: "text", text: '{"candidates":[]}' }];
+      const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
+      const previous = latest?.role === "toolResult" ? latest : undefined;
+      if (names.includes("dots_action")) {
+        if (previous) return [{ type: "text", text: "收到。" }];
+        return [{ type: "toolCall", id: "delegate-" + fault, name: "dots_action", arguments: {
+          action: "delegate", spaceId: space.id, name: "盘点恢复", assignmentQuote: recoveryInstructions[fault],
+          text: recoveryInstructions[fault],
+          ...(fault === "writeThen503" ? { deliveryInstruction: "只交付这个文件。" } : {}),
+        } }];
+      }
+      if (userText.includes("当前回合只允许撰写报告")) {
+        assert.equal(fault, "writeThen503");
+        assert.deepEqual(names, ["dots_task_end"], "only terminal reporting is offered to the recovery provider");
+        if (previous?.toolCallId === "forbidden-recovery-write") {
+          assert.equal(previous.isError, true);
+          blockedRecoveryWrite = true;
+          return [{ type: "toolCall", id: "forbidden-recovery-wait", name: "dots_task_end", arguments: {
+            action: "wait", dependencyOperationId: "forbidden-report-dependency", progress: "尝试安排额外工作。",
+          } }];
+        }
+        if (previous?.toolCallId === "forbidden-recovery-wait") {
+          assert.equal(previous.isError, true);
+          assert.match(JSON.stringify(previous.content), /只根据已有结果补报/);
+          return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "已保存并登记原文件。", delivery: { text: "" } }) }];
+        }
+        return [{ type: "toolCall", id: "forbidden-recovery-write", name: "write", arguments: {
+          path: recoveryProof, content: "这条被拒绝的工具调用不得改写原成果。",
+        } }];
+      }
+      if (userText.includes("从短暂故障处继续")) {
+        assert.equal(fault, "readThen503");
+        assert(names.includes("read"), "the resumed read-only task can still complete business steps");
+        assert(input.messages.some(message => message.role === "toolResult" && message.toolCallId === "recovery-read" &&
+          JSON.stringify(message.content).includes("42")), "the read result remains available to the original task");
+        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "原始盘点数量为 42。", delivery: { text: "42" } }) }];
+      }
+      if (previous) {
+        assert.equal(previous.isError, false, JSON.stringify(previous.content));
+        if (previous.toolCallId === "recovery-scratch") return [{ type: "toolCall", id: "recovery-write", name: "write",
+          arguments: { path: recoveryProof, content: "原盘点成果 42。" } }];
+        if (previous.toolCallId === "recovery-write") return [{ type: "toolCall", id: "recovery-register", name: "register_artifact",
+          arguments: { path: recoveryProof } }];
+        if (fault === "effectProgress") return [{ type: "text", text: JSON.stringify({
+          dotsState: "progress", result: "登记命令已经返回。", remainingQuote: "确认结果",
+        }) }];
+        return { content: [], errorMessage: "503: temporarily unavailable" };
+      }
+      if (fault === "readThen503") return [{ type: "toolCall", id: "recovery-read", name: "read", arguments: { path: "recovery-input.txt" } }];
+      if (fault === "writeThen503") return [{ type: "toolCall", id: "recovery-scratch", name: "write",
+        arguments: { path: recoveryDraft, content: "内部记录只保留在原工作区。" } }];
+      const code = 'require("node:fs").appendFileSync("' + fault + '.txt", "accepted\\n")';
+      const windows = process.platform === "win32";
+      const quote = (value: string) => "'" + value.replaceAll("'", windows ? "''" : "'\"'\"'") + "'";
+      return [{ type: "toolCall", id: "recovery-unverified-effect", name: windows ? "powershell" : "bash",
+        arguments: { command: (windows ? "& " : "") + quote(process.execPath) + " -e " + quote(code) } }];
+    }
+    if (fault === "dependency" || fault === "dependencyDeadline") {
+      const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
+      if (tools.some(tool => tool.name === "dots_action")) {
+        const upstreamCall = "dependency-upstream-" + fault;
+        if (dependencyDispatches === 0) {
+          dependencyDispatches++;
+          return [{ type: "toolCall", id: upstreamCall, name: "dots_action", arguments: {
+            action: "delegate", spaceId: space.id, name: "上游依赖", assignmentQuote: "先准备上游数据。", text: "上游任务等待门限",
+          } }];
+        }
+        const admission = input.messages.find(message => message.role === "toolResult" && message.toolCallId === upstreamCall);
+        if (dependencyDispatches === 1 && admission?.role === "toolResult") {
+          dependencyDispatches++;
+          const result = JSON.parse(admission.content.map(block => block.type === "text" ? block.text : "").join(""));
+          assert.equal(result.operationId, result.receipt.operationId);
+          return [{ type: "toolCall", id: "dependency-downstream-" + fault, name: "dots_action", arguments: {
+            action: "delegate", spaceId: space.id, name: "依赖集成", assignmentQuote: "再用上游结果完成集成。",
+            text: "集成测试等待操作 " + result.operationId,
+          } }];
+        }
+      } else if (tools.some(tool => tool.name === "read") && userText?.includes("上游任务等待门限")) {
+        enteredTimer = true;
+        await Promise.race([timerGate, new Promise(resolve => signal?.addEventListener("abort", resolve, { once: true }))]);
+        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "上游结果 47" }) }];
+      } else if (tools.some(tool => tool.name === "read") && userText?.includes("集成测试等待操作")) {
+        workerCalls++;
+        const operationId = /集成测试等待操作 (dots-input-[a-f0-9]+)/.exec(userText)?.[1];
+        assert(operationId);
+        assert(tools.some(tool => tool.name === "dots_task_end"));
+        if (fault === "dependencyDeadline") {
+          const waiting = journal.list([fault]).find(job => job.title === "依赖集成");
+          assert(waiting);
+          const { deadlineAt } = actions.validateWorkerDependency(waiting.taskId, waiting.id, operationId);
+          db.connection.prepare("UPDATE dots_delegations SET created_at=created_at+? WHERE operation_id=?")
+            .run(Date.now() + 3500 - deadlineAt, waiting.id);
+        }
+        return [{ type: "toolCall", id: "park-dependency", name: "dots_task_end", arguments: {
+          action: "wait", dependencyOperationId: operationId, progress: "已完成独立的集成准备。",
+        } }];
+      }
+    }
     if (fault === "activityOnly" && !tools.some(t => t.name === "dots_action") && tools.some(t => t.name === "read")) {
       if (latest?.role === "toolResult" && latest.toolCallId === "activity-read") {
         enteredTimer = true;
@@ -123,7 +278,7 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
       }
       if (fault === "policyProgress" && !reportedProgress) {
         reportedProgress = true;
-        return [{type:"text",text:JSON.stringify({dotsState:"progress",result:"盘点已做完，数字待交付。",remainingQuote:"直接回复数字。"})}];
+        return [{type:"text",text:JSON.stringify({dotsState:"progress",result:"盘点已做完，数字待交付。",remainingQuote:"回复数字"})}];
       }
       return [{type:"text", text:fault==="unchanged" ? DOTS_NO_CHANGE : JSON.stringify({dotsState:"complete",result:answer})}];
     }
@@ -192,7 +347,8 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
   await agent.resumePersistedTasks();
   await journal.recover(async req => { replayAdmissions++; return agent.prompt(req); }, () => true,
     undefined, undefined, (id, cwd) => agent.matchesDotsInitialPrivateWorkspace(id, cwd));
-  return {fixture, db, agent, journal, cron, actions, timerNotices, fileNotices, progressNotices, reached:() => faultReached, enteredTimer:()=>enteredTimer, releaseTimer, async close() {
+  return {fixture, db, agent, journal, cron, actions, timerNotices, fileNotices, progressNotices, reached:() => faultReached,
+    blockedRecoveryWrite: () => blockedRecoveryWrite, enteredTimer:()=>enteredTimer, releaseTimer, async close() {
     releaseTimer();
     cron.stop(); terminal.dispose(); off(); journal.close(); await journal.drain(); await actions.closeFileWatches(); await fixture.close(); db.close();
   }};
@@ -207,6 +363,52 @@ if (faultHost) {
     const deadline = Date.now()+25000;
     while (Date.now()<deadline) { host.journal.refresh(); await host.journal.drain(); await sleep(); }
     assert.fail("did not reach handoff boundary: "+JSON.stringify(host.journal.list()));
+  } finally { await host.close(); }
+}
+for (const fault of recoveryFaults) {
+  const host = await open(fault);
+  try {
+    await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: fault, assistantMessageId: fault + "-ack", text: recoveryInstructions[fault] });
+    const delivered = async () => (await host.agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message =>
+      message.dotsDelivery?.sourceMessageId === fault && message.dotsDelivery.kind !== "progress");
+    for (let i = 0; i < 340 && !(await delivered()).length; i++) {
+      host.journal.refresh();
+      await host.journal.drain();
+      await sleep();
+    }
+    const replies = await delivered();
+    const jobs = host.journal.list([fault]);
+    assert.equal(replies.length, 1, JSON.stringify({ jobs, replies }));
+    assert.equal(new Set(jobs.map(job => job.taskId)).size, 1);
+    if (fault === "effectThen503" || fault === "effectProgress") {
+      assert.equal(jobs.length, 1);
+      assert.equal(readFileSync(join(root, fault + ".txt"), "utf8"), "accepted\n");
+      assert.match(replies[0]!.text, /请先核对原操作是否已生效/);
+    } else if (fault === "localFiles" || fault === "localPreexisting") {
+      assert.equal(jobs.length, 2, JSON.stringify({ jobs, replies }));
+      const kept = fault + "-kept.txt", missing = fault + "-missing.txt";
+      assert.equal(readFileSync(join(root, kept), "utf8"), "第一份已核实的盘点成果");
+      if (fault === "localFiles") {
+        assert.equal(replies[0]!.dotsDelivery!.kind, "conclusion");
+        assert.deepEqual(replies[0]!.dotsDelivery!.artifacts.map(artifact => artifact.name).sort(), [kept, missing]);
+        assert.equal(readFileSync(join(root, missing), "utf8"), "本次补齐的盘点成果");
+      } else {
+        assert.equal(replies[0]!.dotsDelivery!.kind, "question");
+        assert.deepEqual(replies[0]!.dotsDelivery!.artifacts.map(artifact => artifact.name), [kept]);
+        assert.equal(readFileSync(join(root, missing), "utf8"), "之前留下的其他文件");
+      }
+    } else {
+      assert.equal(jobs.length, 2, JSON.stringify({ jobs, replies }));
+      assert.equal(replies[0]!.dotsDelivery!.kind, "conclusion");
+      if (fault === "readThen503") assert.equal(replies[0]!.text, "42");
+      else {
+        assert(host.blockedRecoveryWrite());
+        assert.equal(readFileSync(join(root, recoveryProof), "utf8"), "原盘点成果 42。");
+        assert.equal(readFileSync(join(root, recoveryDraft), "utf8"), "内部记录只保留在原工作区。");
+        assert.deepEqual(replies[0]!.dotsDelivery!.artifacts.map(artifact => artifact.name), [recoveryProof]);
+      }
+    }
+    console.log("PASS original Dots task recovery: " + fault);
   } finally { await host.close(); }
 }
 for (const fault of ["before","after"] as const) {
@@ -788,6 +990,48 @@ for (let round=0; round<2; round++) {
   } finally { await host.close(); }
 }
 console.log("PASS private and inherited workspaces deliver to Dots. A previously omitted private result returns once without re-execution, while a rebound space stays outside recovery.");
+
+for (const scenario of ["dependency", "dependencyDeadline"] as const) {
+  const host = await open(scenario);
+  try {
+    const source = scenario;
+    const previousCalls = workerCalls;
+    await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: source, assistantMessageId: source + "-ack", text: dependencyAssignment });
+    let [upstream, downstream] = host.journal.list([source]);
+    const deadline = Date.now() + 15000;
+    while (!downstream?.dependencyWait && Date.now() < deadline) {
+      await sleep();
+      [upstream, downstream] = host.journal.list([source]);
+    }
+    assert(upstream && downstream?.dependencyWait && host.enteredTimer());
+    assert.equal(downstream.dependencyWait.operationId, upstream.id);
+    assert.equal(new DotsActivity(host.db.connection, () => true).list().find(item => item.taskId === downstream.taskId)?.state, "dependency");
+    const status = await host.actions.execute(DOTS_TASK_ID, undefined, { action: "task", targetTaskId: downstream.taskId });
+    assert(status && "status" in status);
+    assert.equal(status.status, "waiting_dependency");
+    assert.equal(workerCalls, previousCalls + 1, "the downstream run settles after its native park tool");
+    if (scenario === "dependency")
+      await host.actions.execute(DOTS_TASK_ID, "stop-pinned-upstream", { action: "stop", targetTaskId: upstream.taskId });
+    let question: string | undefined;
+    while (!question && Date.now() < deadline) {
+      question = (await host.agent.loadTaskHistory(DOTS_TASK_ID)).messages.find(message =>
+        message.dotsDelivery?.taskId === downstream.taskId && message.dotsDelivery.kind === "question")?.text;
+      if (!question) await sleep();
+    }
+    assert.match(question ?? "", scenario === "dependency" ? /依赖「上游依赖」已停止/ : /等待「上游依赖」已到期/);
+    if (scenario === "dependencyDeadline") {
+      host.releaseTimer();
+      const native = await host.agent.findSubmission(upstream.taskId, upstream.id);
+      assert(native?.receipt);
+      const result = await host.agent.waitForSubmission(native.receipt);
+      assert.equal(result.receipt?.status, "done", "the prerequisite really finishes after the dependency deadline");
+    }
+    for (let round = 0; round < 3; round++) { host.journal.refresh(); await host.journal.drain(); }
+    assert.equal(workerCalls, previousCalls + 1, "an unavailable prerequisite never starts a replacement model turn");
+    assert.equal(host.journal.list([source]).length, 2);
+    console.log("PASS dependency wait has its own state and reports its blocker to the original Dots input", scenario);
+  } finally { await host.close(); }
+}
 
 mkdirSync("out/tests",{recursive:true});
 writeFileSync("out/tests/dots-reply-recovery.json", JSON.stringify(evidence,null,2)+"\n");

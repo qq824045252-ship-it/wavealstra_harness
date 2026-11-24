@@ -219,6 +219,13 @@ export class DurableMcp implements ExternalEffectRecovery {
     return state.listing;
   }
 
+  /** Connect only the server named in the requirement and verify its visible tool when specified. */
+  async hasRequiredCapability(server: string, tool: string | undefined, context: Context): Promise<boolean> {
+    if (tool) return (await awaitWithContext(this.catalog(server), context)).some(candidate => candidate.name === tool);
+    await awaitWithContext(this.client(server), context);
+    return true;
+  }
+
   private clearFailure(name: string): void {
     const prefix = name + ": ";
     const idx = this.errors.findIndex(err => err.startsWith(prefix) || err === name);

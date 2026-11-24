@@ -9,6 +9,7 @@ import {
   IconClock,
   IconConversation,
   IconDiagnostics,
+  IconLink,
   IconListTodo,
   IconStop,
   IconX,
@@ -21,12 +22,13 @@ import "./DotsActivity.css";
 const INITIAL_LIMIT = 8;
 const MORE_LIMIT = 20;
 const states = {
-  waiting: "等待你回复", running: "运行中", blocked: "遇到阻碍", failed: "执行失败",
+  waiting: "等待你回复", running: "运行中", dependency: "等待依赖", blocked: "遇到阻碍", failed: "执行失败",
   paused: "已暂停", stopped: "已停止", delivered: "已交付", undelivered: "尚未交付", superseded: "已改向",
 };
 const stateIcons = {
   waiting: IconConversation,
   running: IconDiagnostics,
+  dependency: IconLink,
   blocked: IconAlert,
   failed: IconX,
   paused: IconCirclePause,

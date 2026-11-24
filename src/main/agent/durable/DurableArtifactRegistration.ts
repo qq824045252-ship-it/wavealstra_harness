@@ -199,9 +199,10 @@ export function createDurableArtifactRegistrationTool(directory: string): ToolRe
 }
 
 /** Verify the immutable version before publishing an implicit file registration. */
-export async function registerNativeMutation(path: string, api: Api, context: Context, directory: string, verified?: EffectEvidence): Promise<EffectEvidence | undefined> {
+export async function registerNativeMutation(path: string, api: Api, context: Context, directory: string, verified?: EffectEvidence,
+  explicitlyRegistered?: true): Promise<EffectEvidence | undefined> {
   try {
-    const artifact = await register(path, api, context, directory, { verified });
+    const artifact = await register(path, api, context, directory, { verified, explicitlyRegistered });
     return { status: "passed", verifierId: "durable-file-content", canonicalTarget: artifact.path,
       expected: { nativeWriteReturned: true }, observed: { sha256: artifact.digest, bytes: artifact.sizeBytes }, checkedAt: artifact.registeredAt };
   } catch (error) {

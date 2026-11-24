@@ -2,7 +2,11 @@ import { DURABLE_ARTIFACT_ENTRY_KIND as DOTS_ARTIFACT_KIND, durableArtifactRegis
 import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
+import { dotsRecoveryAllowsTool, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
 import { appendDurableDotsReply } from "./DurableDotsReply";
+import { DOTS_TASK_END, readDurableDotsTerminal } from "./DurableDotsWorker";
+import { PROJECT_VERIFY_TOOL } from "./DurableProjectVerification";
+import { DURABLE_TURN_LIMIT_MESSAGE } from "./DurableRunLimits";
 import { readDotsWorkerOutcome, recoverDotsNarrativeReply } from "../../dots/DotsWorkerOutcome";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
 import { admittedFileMutationPath, FILE_MUTATION_TARGET_MEMO, resolveFileMutationTarget, withWindowsBashWorkspacePath,
@@ -20,7 +24,9 @@ import { nativeExecutionSucceeded, nativeFileReadAttemptSchema, readNativeExecut
 import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
+import { realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { resolvedPathKey } from "../../platform/paths";
 import { BACKGROUND_CONTEXT as ctx, type Context } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -111,6 +117,8 @@ export interface DurableBotOptions {
   workspaceMigrationFrom?: string;
   models: Models;
   model?: { provider: string; modelId: string };
+  /** Pi's persisted limit for one run. Null clears it; omission preserves the stored value. */
+  maxTurns?: number | null;
   toolMode: BotToolMode;
   instructions: () => string;
   evidence?: (messages: readonly Message[]) => string;
@@ -143,6 +151,7 @@ export interface DurableBotOptions {
   waitingForInput?: () => boolean;
   isDelegatedMemoryInput?: (requestId: string) => boolean;
   isDotsWorkerInput?: (requestId: string) => boolean;
+  dotsRecoveryScope?: (operationId: string) => DotsRecoveryToolScope | undefined;
   hasDotsDelegation?: () => boolean;
   deliveredDotsInput?: () => string | undefined;
   onTurns?: (turns: ReturnType<typeof durableCompletedTurns>) => void;
@@ -364,7 +373,8 @@ export class DurableBotRuntime {
       ? createDurableContextTools({ manager: (conversationId, context) => runtime!.contextManagerFor(conversationId, context) })
       : [];
     native.push(...contextTools);
-    const codemode = createDurableCodeMode(() => native.filter(tool => options.toolAllowed?.(tool.name) !== false), options.assets, join(options.directory, "images"), async (code, context) => {
+    const codemode = createDurableCodeMode(() => native.filter(tool =>
+      (tool.callers?.includes("tools") ?? true) && options.toolAllowed?.(tool.name) !== false), options.assets, join(options.directory, "images"), async (code, context) => {
       const tools = await options.prepareCodeMode?.(code, context) ?? [];
       runtime?.installCompatibility(tools);
       return tools;
@@ -448,13 +458,26 @@ export class DurableBotRuntime {
         runtime.modelKeyCache = `${bound.model.provider}/${bound.model.modelId}`;
       }
       finishOpening(runtime.evidence);
-      // Stored agent choices win on reopen, including an unfinished Code Mode call.
-      const configured = await conversation.commit(async tx => Boolean((await tx.doc(AgentDoc, conversation.id)).tools), ctx);
+      // Preserve existing native tool selections. A task resumed after an upgrade must
+      // also be able to verify its work and end or park a Dots assignment.
+      const configured = await conversation.commit(async tx => {
+        const state = await tx.doc(AgentDoc, conversation.id);
+        if (!options.readOnly && Array.isArray(state.tools) && !state.tools.includes("codemode")) {
+          for (const tool of native) {
+            if ((tool.name === DOTS_TASK_END || tool.name === PROJECT_VERIFY_TOOL) && options.toolAllowed?.(tool.name) !== false
+                && !state.tools.includes(tool.name)) state.tools.push(tool.name);
+          }
+        }
+        return Boolean(state.tools);
+      }, ctx);
       if (configured) {
         options.toolMode = bound.tools.some(tool => tool.name === "codemode") ? "codemode" : "native";
         // Normalize Code Mode sessions persisted before executeTool: scripts may call every registered tool,
         // while the model is still offered only codemode.
         if (!options.readOnly && options.toolMode === "codemode") await runtime.configure(undefined, "codemode");
+        else if (!options.readOnly && options.maxTurns !== undefined && bound.maxTurns !== (options.maxTurns ?? undefined)) {
+          await conversation.configure({ maxTurns: options.maxTurns }, ctx);
+        }
       } else if (!options.readOnly) await runtime.configure(options.model, options.toolMode);
       // Context tools are created after Harness.open, so a reopened (already-configured) session
       // re-installs the extension once to make them visible to the model.
@@ -481,8 +504,18 @@ export class DurableBotRuntime {
 
   async configure(model: DurableBotOptions["model"], toolMode: BotToolMode, thinkingLevel?: import("@earendil-works/pi-ai").ModelThinkingLevel,
     extensions?: readonly ToolRegistration[], contextHooks?: readonly DurableContextHook[], toolHooks?: Partial<ToolHooks>,
-    foregroundHooks?: DurableDomainTools["foregroundHooks"]): Promise<void> {
+    foregroundHooks?: DurableDomainTools["foregroundHooks"],
+    verifyTools?: (names: ReadonlySet<string>) => Promise<void>): Promise<void> {
     this.assertSessionHealthy();
+    const nativeTools = extensions ? [...codingTools(this.options.directory, this.options.readonlyShell), ...extensions,
+      ...this.contextTools.filter(tool => !extensions.some(item => item.name === tool.name))] : this.nativeTools;
+    if (verifyTools) {
+      const available = new Set(nativeTools.filter(tool => this.options.toolAllowed?.(tool.name) !== false
+        && (toolMode !== "codemode" || tool.name === DOTS_TASK_END || (tool.callers?.includes("tools") ?? true)))
+        .map(tool => tool.name));
+      if (toolMode === "codemode") available.add(this.codemode.name);
+      await verifyTools(available);
+    }
     // Request-context hooks come from the same extension factories as the tools; they are re-installed
     // together so a refreshed tool set can never keep a stale (or dropped) context rewrite.
     if (contextHooks) this.options.contextHooks = [...contextHooks];
@@ -495,12 +528,10 @@ export class DurableBotRuntime {
       this.modelKeyCache = `${model.provider}/${model.modelId}`;
     }
     if (extensions || contextHooks) {
-      if (extensions) {
-        this.nativeTools = [...codingTools(this.options.directory, this.options.readonlyShell), ...extensions,
-          ...this.contextTools.filter(tool => !extensions.some(item => item.name === tool.name))];
-      }
+      this.nativeTools = nativeTools;
       const available = this.nativeTools;
-      this.codemode = createDurableCodeMode(() => available.filter(tool => this.options.toolAllowed?.(tool.name) !== false), this.options.assets, join(this.options.directory, "images"), async (code, context) => {
+      this.codemode = createDurableCodeMode(() => available.filter(tool =>
+        (tool.callers?.includes("tools") ?? true) && this.options.toolAllowed?.(tool.name) !== false), this.options.assets, join(this.options.directory, "images"), async (code, context) => {
         const tools = await this.options.prepareCodeMode?.(code, context) ?? [];
         this.installCompatibility(tools);
         return tools;
@@ -508,10 +539,12 @@ export class DurableBotRuntime {
       this.installExtension();
     }
     this.options.toolMode = toolMode;
+    const tools = this.nativeTools.filter(tool => this.options.toolAllowed?.(tool.name) !== false);
     await this.conversation.configure({
       ...(model ? { model } : {}), ...(thinkingLevel ? { thinkingLevel } : {}),
-      tools: [...this.nativeTools.filter(tool => this.options.toolAllowed?.(tool.name) !== false), ...(toolMode === "codemode" ? [this.codemode] : [])],
-      modelTools: toolMode === "codemode" ? [this.codemode] : null,
+      maxTurns: this.options.maxTurns,
+      tools: toolMode === "codemode" ? [...tools, this.codemode] : tools,
+      modelTools: toolMode === "codemode" ? [this.codemode, ...tools.filter(tool => tool.name === DOTS_TASK_END)] : null,
     }, ctx);
   }
 
@@ -1137,6 +1170,7 @@ export class DurableBotRuntime {
     try {
       const settled = await submission.wait(callContext);
       if (settled.status === "unanswered") {
+        if (settled.reason === "turn_limit") throw new DurableReplyError(DURABLE_TURN_LIMIT_MESSAGE);
         throw new DurableReplyError(settled.reason === "aborted" ? "任务已取消" : `Durable 未完成回复：${typeof settled.detail === "string" ? settled.detail : settled.reason}`);
       }
       if (settled.type !== "input") throw new Error("Gateway 需要用户输入回执");
@@ -1361,6 +1395,32 @@ export class DurableBotRuntime {
     return at;
   }
 
+  private async dotsWorkerCompleted(entries: readonly EntryRecord[]): Promise<boolean> {
+    const isWorkerInput = this.options.isDotsWorkerInput;
+    if (!isWorkerInput) return false;
+    const final = [...entries].reverse().find(entry => entry.model?.some(message => message.role === "assistant" || message.role === "user"));
+    if (!final?.model?.some(message => message.role === "assistant" && message.stopReason === "toolUse"
+        && message.content.some(part => part.type === "toolCall" && part.name === DOTS_TASK_END))) return false;
+    const conversationId = this.conversation.id;
+    let cursor: Cursor | undefined;
+    do {
+      const page = await this.storage.scanSubmissions({ conversationId, order: "descending" }, 50, cursor, ctx);
+      const input = page.items.find(item => item.type !== "write");
+      if (input) {
+        if (input.type !== "input" || input.status !== "done" || input.answer !== final.id
+            || !input.requestId || !isWorkerInput(input.requestId)) return false;
+        return this.conversation.commit(async tx => {
+          const live = await tx.doc(LiveDoc, conversationId);
+          const inbox = await tx.doc(InboxDoc, conversationId);
+          if (live.run || live.runFailure || live.compactions?.length || inbox.items.length) return false;
+          return (await readDurableDotsTerminal(tx, input, final))?.action === "complete";
+        }, ctx);
+      }
+      cursor = page.next;
+    } while (cursor);
+    return false;
+  }
+
   private async project(value: ConversationView): Promise<void> {
     if (this.closeState.kind !== "open" || this.failed) return;
     // One observation clock for this revision: the same `now` feeds the stream clocks and the retry countdown.
@@ -1579,11 +1639,14 @@ export class DurableBotRuntime {
       if (assistant) this.contextTokens = assistant.usage.input + assistant.usage.cacheRead + assistant.usage.cacheWrite + assistant.usage.output;
     }
     const usedTokens = this.contextTokens;
+    const queued = inbox?.items?.length ?? 0;
     if (live.runFailure && !live.run) {
       outcome = live.runFailure.reason === "aborted" || live.runFailure.reason === "reset" ? "aborted" : "failed";
-      error = outcome === "failed" ? live.runFailure.detail ?? live.runFailure.reason : undefined;
+      if (outcome === "aborted") error = undefined;
+      else error = live.runFailure.reason === "turn_limit" ? DURABLE_TURN_LIMIT_MESSAGE : live.runFailure.detail ?? live.runFailure.reason;
+    } else if (!busy && !queued && !outcome && await this.dotsWorkerCompleted(entries)) {
+      outcome = "completed";
     }
-    const queued = inbox?.items?.length ?? 0;
     const waitingForInput = this.options.waitingForInput?.() === true || [...live.tools ?? [], ...live.nestedTools ?? []].some(slot => slot.status !== "done"
       && (slot.name === "request_user_input" || (slot.details && typeof slot.details === "object" && !Array.isArray(slot.details) && slot.details.waitingForInput === true)));
     const status: DurableBotSnapshot["status"] = waitingForInput ? "waiting_input" : live.generation?.retry ? "retrying"
@@ -1687,6 +1750,7 @@ async function durableExecutionEnv(target: EnvTarget, context: Context, rootCwd:
 const modelUsageEvidence = new WeakMap<Models, WeakMap<AbortSignal, ProviderUsageEvidence>>();
 type RequestGuard = (providerMessages?: readonly Message[]) => void;
 const modelRequestGuards = new WeakMap<Models, WeakMap<AbortSignal, RequestGuard>>();
+const recoveryToolRequests = new WeakMap<Models, WeakMap<AbortSignal, DotsRecoveryToolScope>>();
 
 /**
  * Durable has no AgentSession, so a task invocation's abort signal identifies its model requests and the
@@ -1702,6 +1766,7 @@ function taskScopedModels(models: Models, cwd: string,
   nextCompactionRequest?: () => Promise<number>, providerAuthorityGuarded?: () => boolean): Models {
   const settings = createAgentSettingsManager(cwd, getMyBuddyDir());
   const guards = new WeakMap<AbortSignal, RequestGuard>();
+  const recoveryTools = new WeakMap<AbortSignal, DotsRecoveryToolScope>();
   const evidence = new WeakMap<AbortSignal, ProviderUsageEvidence>();
   const scoped = new Proxy(models, { get(target, key) {
     if (key === "getModel") return (provider: string, id: string) => target.getModel(provider === "azure-openai-responses" ? "azure" : provider, id);
@@ -1714,7 +1779,21 @@ function taskScopedModels(models: Models, cwd: string,
       // chain, in the provider's awaited payload transform, before any HTTP send.
       const options = args[2];
       const observed=emptyUsageEvidence();if(signal)evidence.set(signal,observed);
-      return withModelInvocationSettings(settings, () => target.streamSimple(args[0], args[1], {
+      const scope = signal && recoveryTools.get(signal);
+      const input = scope
+        ? {
+          ...args[1],
+          tools: args[1].tools?.filter(tool => dotsRecoveryAllowsTool(scope, tool.name)),
+          messages: args[1].messages.map(message => message.role === "system" && (message.toolsAdded || message.toolsRemoved)
+            ? {
+              ...message,
+              toolsAdded: message.toolsAdded?.filter(tool => dotsRecoveryAllowsTool(scope, tool.name)),
+              toolsRemoved: message.toolsRemoved?.filter(tool => dotsRecoveryAllowsTool(scope, tool.name)),
+            }
+            : message),
+        }
+        : args[1];
+      return withModelInvocationSettings(settings, () => target.streamSimple(args[0], input, {
         ...options,
         ...(supportsUsageObservation(args[0].api)?{fetch:withUsageEvidence(options?.fetch??globalThis.fetch,observed,args[0].api)}:{}),
         ...durableAuthorityRequestOptions(args[0].api, Boolean(beforeProviderRequest)),
@@ -1761,6 +1840,7 @@ function taskScopedModels(models: Models, cwd: string,
     return typeof value === "function" ? (...args: unknown[]) => withModelInvocationSettings(settings, () => value.apply(target, args)) : value;
   } });
   modelRequestGuards.set(scoped, guards);
+  recoveryToolRequests.set(scoped, recoveryTools);
   modelUsageEvidence.set(scoped,evidence);
   return scoped;
 }
@@ -1832,8 +1912,52 @@ function botExtension(
       return input.requestId;
     }
   };
+  const recoveryScope = async (api: Pick<HookApi, "conversationId" | "snapshot">,
+    context: Parameters<ToolRegistration["execute"]>[2]): Promise<DotsRecoveryToolScope | undefined> => {
+    if (!options.dotsRecoveryScope || options.hasDotsDelegation?.() === false) return;
+    let id = api.conversationId;
+    for (;;) {
+      const live = await api.snapshot(LiveDoc, id, context);
+      for (const submissionId of live?.run?.inputs ?? []) {
+        const input = await storage.submission(submissionId, context);
+        const scope = input?.type === "input" && input.requestId ? options.dotsRecoveryScope(input.requestId) : undefined;
+        if (scope) return live!.run!.inputs.length === 1 && id === api.conversationId ? scope : { kind: "report-only" };
+      }
+      const owner = (await storage.conversation(id, context))?.owner;
+      if (!owner) return;
+      id = owner.conversationId;
+    }
+  };
+  const toolRecoveryScope = async (api: Pick<HookApi, "conversationId" | "snapshot" | "memo">,
+    context: Parameters<ToolRegistration["execute"]>[2]) => {
+    if (!options.dotsRecoveryScope) return;
+    const key = "mybuddy.dots.recovery-tool-scope";
+    const retained = await api.memo<DotsRecoveryToolScope>(key, context);
+    const active = await recoveryScope(api, context);
+    if (!retained && active) return api.memo(key, active, context);
+    return active?.kind === "report-only" ? active : retained ?? active;
+  };
+  const recoveryTarget = (scope: DotsRecoveryToolScope, args: unknown, cwd: string | undefined) => {
+    if (scope.kind !== "local-files" || !cwd || resolvedPathKey(cwd) !== resolvedPathKey(options.cwd) ||
+      !args || typeof args !== "object" || !("path" in args) || typeof args.path !== "string") return;
+    const target = resolvedPathKey(resolve(cwd, args.path));
+    const file = scope.files.find(name => validDotsRecoveryFilename(name) && resolvedPathKey(resolve(cwd, name)) === target);
+    if (file) return resolve(cwd, file);
+  };
+  const recoveryToolBlock = async (tool: string, args: unknown, api: Pick<HookApi, "conversationId" | "snapshot" | "memo">,
+    context: Parameters<ToolRegistration["execute"]>[2]) => {
+    if (tool === DOTS_TASK_END && args && typeof args === "object" && "action" in args && args.action === "complete") return;
+    const scope = await toolRecoveryScope(api, context);
+    if (!scope) return;
+    if (scope.kind === "report-only") return "本轮只根据已有结果补报，业务工具未启动。";
+    if (!dotsRecoveryAllowsTool(scope, tool) || tool === DOTS_TASK_END || tool === "write" &&
+      !recoveryTarget(scope, args, (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd))
+      return "本轮只可读取资料、创建指定缺失文件并报告。";
+  };
   const toolHooks: Partial<ToolHooks> = {
     beforeTool: async (call, api, context) => {
+      const recoveryBlock = await recoveryToolBlock(call.name, call.arguments, api, context);
+      if (recoveryBlock) return { block: recoveryBlock };
       let mappedArguments: JsonObject | undefined;
       if ((call.name === "write" || call.name === "edit") && typeof call.arguments.path === "string") {
         let target = await api.memo<FileMutationTarget>(FILE_MUTATION_TARGET_MEMO, context);
@@ -1911,10 +2035,31 @@ function botExtension(
       return await managed?.afterTool(call, observed, api, context) ?? changed;
     },
   };
-  const tools = [...native, codemode].map(tool => withDurableToolCoordination(tool, options.cwd, (name, args, cwd) => {
-    if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
-    options.beforeToolExecution?.(name, args, cwd);
-  }, options.admittingUserInputs, options.codeReview, options.directory));
+  const tools = [...native, codemode].map(tool => {
+    const guardedWrite: ToolRegistration = tool.name === "write" && options.dotsRecoveryScope ? { ...tool, execute: async (args, api, context) => {
+      const scope = await toolRecoveryScope(api, context);
+      if (!scope) return tool.execute(args, api, context);
+      const cwd = api.env?.cwd;
+      const path = recoveryTarget(scope, args, cwd);
+      if (!path || !cwd || resolvedPathKey(await realpath(cwd)) !== resolvedPathKey(cwd) ||
+        !args || typeof args !== "object" || !("content" in args) || typeof args.content !== "string")
+        throw new Error("缺失文件的工作区或路径无法确认。");
+      context.abortSignal?.throwIfAborted();
+      await writeFile(path, args.content, { flag: "wx", signal: context.abortSignal });
+      return { output: [{ type: "text", text: `Successfully created ${path}` }] };
+    } } : tool;
+    const coordinated = withDurableToolCoordination(guardedWrite, options.cwd, (name, args, cwd) => {
+      if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
+      options.beforeToolExecution?.(name, args, cwd);
+    }, options.admittingUserInputs, options.codeReview, options.directory,
+      tool.name === "write" && options.dotsRecoveryScope ? async (api, context) => (await toolRecoveryScope(api, context))?.kind === "local-files" : undefined);
+    return { ...coordinated, execute: async (args, api, context) => {
+      // Pi can recover a started or nested ToolTask without re-entering beforeTool.
+      const recoveryBlock = await recoveryToolBlock(tool.name, args, api, context);
+      if (recoveryBlock) return { isError: true, output: [{ type: "text" as const, text: recoveryBlock }] };
+      return coordinated.execute(args, api, context);
+    } } satisfies ToolRegistration;
+  });
   return defineExtension({ name: "mybuddy.bot", tasks: [], tools: managed ? tools.map(tool => managed.wrap(tool)) : tools,
     sections: [section("mybuddy", async (input, context) => {
       const child = await input.read.snapshot(DurableSubagentIdentity, input.conversationId, context);
@@ -1955,6 +2100,8 @@ function botExtension(
       const guards = modelRequestGuards.get(options.models);
       if (context.abortSignal) guards?.set(context.abortSignal, messages => validate(messages));
       try {
+        const scope = context.abortSignal && await recoveryScope(api, context);
+        if (scope && context.abortSignal) recoveryToolRequests.get(options.models)?.set(context.abortSignal, scope);
         const child = await childConversation(api, context);
         const hookNote = await managed?.beforeRequest(messages, api, context);
         const requestWithHook = (projected: readonly Message[]) => hookNote
@@ -2041,6 +2188,7 @@ function botExtension(
         sourceKind: await childConversation(api, context) ? "subagent" : "main",usageEvidence:raw,usagePresence:usagePresence(raw) }); }
       catch (error) { console.warn("[Durable] Request diagnostics failed", error); }
       await recordResponse(api.taskId, message);
+      if (context.abortSignal && recoveryToolRequests.get(options.models)?.has(context.abortSignal)) return;
       const codes = message.content.flatMap(content => content.type === "toolCall" && content.name === "codemode"
         ? [(content.arguments as { code?: unknown }).code].filter((code): code is string => typeof code === "string")
         : []);

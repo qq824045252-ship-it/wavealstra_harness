@@ -142,6 +142,28 @@ export async function baselineWorkspace(directory: string, signal?: AbortSignal)
   return { ...base, ...await collect(base, true, signal) };
 }
 
+export async function projectStartHead(directory: string): Promise<string> {
+  await git(directory, ["rev-parse", "--show-toplevel"]);
+  try {
+    return (await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])).toString().trim();
+  } catch (error) {
+    if ((error as { code?: number }).code !== 1) throw error;
+    return "";
+  }
+}
+
+export async function projectCommitAdvances(directory: string, base: string, head: string, signal?: AbortSignal) {
+  if (base === head) return false;
+  if (!base) return true;
+  try {
+    await git(directory, ["merge-base", "--is-ancestor", base, head], signal);
+    return true;
+  } catch (error) {
+    if ((error as { code?: number }).code !== 1) throw error;
+    return false;
+  }
+}
+
 export async function projectVerificationWorkspace(directory: string, signal?: AbortSignal) {
   const cwd = await realpath(directory);
   const root = await realpath((await git(cwd, ["rev-parse", "--show-toplevel"], signal)).toString().trim());

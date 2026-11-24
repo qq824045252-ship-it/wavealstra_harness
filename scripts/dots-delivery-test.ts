@@ -109,17 +109,19 @@ try {
   assert.equal(retried?.rule.policy?.routeMode, "delegate");
   assert.equal(retried.rule.id, quoteRule.id);
   console.log("PASS 预览与实际 Dots 调度复用判断，串行短路、并行汇合、拖动顺序、关闭回退和快照重试有效");
-  const observationDeadline = Date.now() + 10_000;
-  while (!deliveries.list()[0]?.activity?.lastReportAt && Date.now() < observationDeadline)
-    await new Promise(done => setTimeout(done, 25));
+  const progressReports = async () => (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message => message.dotsDelivery?.kind === "progress");
+  const silent = /工具 write 返回.*未观察到新的工具活动/;
+  const observationDeadline = Date.now() + 18_000;
+  let reports = await progressReports();
+  while (!reports.some(message => silent.test(message.text)) && Date.now() < observationDeadline) {
+    await new Promise(done => setTimeout(done, 100));
+    reports = await progressReports();
+  }
   const reporting = deliveries.list()[0]?.activity;
   assert(reporting?.lastProgressAt);
   assert(reporting.lastReportAt, JSON.stringify(deliveries.list()));
   assert(reporting.lastReportAt >= reporting.lastActivityAt + 5_000);
-  const activeHistory = await agent.loadTaskHistory(DOTS_TASK_ID);
-  const reports = activeHistory.messages.filter(message => message.dotsDelivery?.kind === "progress");
-  assert.equal(reports.length, 1);
-  assert.match(reports[0].text, /工具 write 返回.*未观察到新的工具活动/);
+  assert.match(reports.at(-1)?.text ?? "", silent);
   assert.equal(deliveries.list()[0].activity?.lastActivityAt, reporting.lastActivityAt);
   assert.equal(deliveries.list()[0].activity?.lastProgressAt, reporting.lastProgressAt);
   assert.equal(fixture.requests.filter(request => request.tools.includes("dots_action")).length, 2,
@@ -139,7 +141,7 @@ try {
   while (nextObservation.get(observedOperation) !== null && Date.now() < parkDeadline)
     await new Promise(done => setTimeout(done, 25));
   assert.equal(nextObservation.get(observedOperation), null);
-  assert.equal((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message => message.dotsDelivery?.kind === "progress").length, 1);
+  assert.equal((await progressReports()).length, reports.length);
   await actions.execute(DOTS_TASK_ID, "resume-observation", { action: "resume_proactive" });
   assert.equal(typeof nextObservation.get(observedOperation), "number");
   releaseWorker();

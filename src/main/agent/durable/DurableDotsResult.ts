@@ -7,6 +7,8 @@ import { searchReportFromDetails } from "../../../shared/web-search";
 import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
 import { dotsDeliveryText, dotsMissingInputQuestion, readDotsWorkerOutcome, type DotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
+import { readDurableDotsTerminal } from "./DurableDotsWorker";
+import { DURABLE_TURN_LIMIT_MESSAGE } from "./DurableRunLimits";
 import { durableContentText, nestedToolRow, type NestedCallDetail } from "./DurableHistoryProjection";
 
 export function durableDotsReplySources(entry: EntryRecord, includeUser: boolean) {
@@ -29,17 +31,29 @@ export function durableDotsReplySources(entry: EntryRecord, includeUser: boolean
   return sources;
 }
 
+export interface DurableDotsOutcome {
+  status: "running" | "blocked" | "failed" | "completed";
+  text: string;
+  messageIds: string[];
+  files: { path: string; snapshotPath: string; manifestPath?: string }[];
+  interactionId?: string;
+  citations?: ReplyCitation[];
+  dependencyWait?: import("../../../shared/dots").DotsDependencyWait;
+  verifiedCommit?: string;
+}
+
 /** Registered files name the producing input. Intermediate statements and tool
  * attachments belong only to its native interval, ending before the next user. */
 export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRecord, {type: "input"}>,
   directory: string, question?: ConversationInteractionDto, accepted?: { text: string; citations?: ReplyCitation[] },
-  requestedFilename?: string) {
+  requestedFilename?: string): Promise<DurableDotsOutcome> {
   const files = new Map<string, { path: string; snapshotPath: string; manifestPath?: string }>();
   const registeredForDelivery = new Set<string>();
   const messageIds = new Set<string>();
   const sources: ReturnType<typeof replyToolSources> = [];
   const final = input.status === "done" ? await tx.entry(input.answer) : undefined;
   const answer = final?.model?.find(message => message.role === "assistant");
+  const terminal = await readDurableDotsTerminal(tx, input, final);
   let error = "";
   let checkpoint: Extract<DotsWorkerOutcome, { dotsState: "progress" }> | undefined;
   let inOwnTurn = true;
@@ -56,7 +70,7 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
         if (file.explicitlyRegistered) registeredForDelivery.add(file.path);
       }
       if (!inOwnTurn && item.byTaskId !== final?.byTaskId) continue;
-      if (!accepted?.citations && (answer?.stopReason === "stop" || accepted))
+      if (!accepted?.citations && (answer?.stopReason === "stop" || terminal?.action === "complete" || accepted))
         sources.push(...durableDotsReplySources(item, item.id === input.entry));
       if (item.kind !== "pi.assistant" || item.byTaskId === undefined) continue;
       messageIds.add(`durable-${item.id}`);
@@ -83,14 +97,19 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
   // Only sources retained in this native input can verify its accepted body.
   const acceptedCitations = accepted && (accepted.citations ?? collectReplyCitations(accepted.text, sources));
   if (input.status === "unanswered") {
+    if (input.reason === "turn_limit") return { status: "failed" as const, text: DURABLE_TURN_LIMIT_MESSAGE, ...assets };
     const detail = typeof input.detail === "string" ? input.detail
       : input.detail && typeof input.detail === "object" && !Array.isArray(input.detail) && typeof input.detail.message === "string" ? input.detail.message : "";
     return { status: "failed" as const, text: detail || error || input.reason, citations: acceptedCitations, ...assets };
   }
-  if (!answer || answer.stopReason !== "stop") {
+  if (terminal?.action === "wait") return { status: "blocked" as const, text: terminal.progress,
+    dependencyWait: terminal.dependencyWait, ...deliveryAssets };
+  if (!answer || answer.stopReason !== "stop" && terminal?.action !== "complete") {
     return { status: "failed" as const, text: answer?.errorMessage || error || "本次执行未能完成", citations: acceptedCitations, ...assets };
   }
-  const text = durableContentText(answer.content).trim();
+  const text = terminal?.action === "complete"
+    ? JSON.stringify({ dotsState: "complete", result: terminal.result, delivery: { text: terminal.deliveryText } })
+    : durableContentText(answer.content).trim();
   const outcome = readDotsWorkerOutcome(text);
   const delivery = outcome ? dotsDeliveryText(outcome) : text;
   const citations = acceptedCitations ?? collectReplyCitations(delivery, sources);
@@ -102,16 +121,21 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
     if (question) return { status: "blocked" as const, text: question, ...deliveryAssets };
   }
   if (outcome?.dotsState === "complete") {
+    const proof = terminal?.action === "complete" ? {
+      verifiedCommit: terminal.verifiedCommit,
+      verifiedChecks: terminal.verifiedChecks,
+    } : {};
+    // Preserve internal completion evidence for Dots without exposing it as the
+    // public result. Fields supplied by a raw model envelope are never carried.
+    const result = JSON.stringify({ dotsState: "complete", result: delivery,
+      ...(outcome.result !== delivery && { executionRecord: outcome.result }), ...proof });
     if (requestedFilename) {
-      // A precisely named deliverable can use the host's immutable write/edit receipt.
+      // The follow-up checks this together with prior artifacts from the same
+      // assignment. Do not fail here when a resumed worker only wrote the gap.
       const named = assets.files.filter(file => basename(file.path) === requestedFilename);
-      if (named.length !== 1) return { status: "failed" as const,
-        text: `原任务未能唯一确认交付文件「${requestedFilename}」。`, messageIds: [], files: [] };
-      return { status: "completed" as const, text: JSON.stringify({ dotsState: "complete", result: delivery }),
-        citations, ...deliveryAssets, files: named };
+      return { status: "completed", text: result, citations, ...deliveryAssets, files: named, verifiedCommit: proof.verifiedCommit };
     }
-    if (outcome.delivery) return { status: "completed" as const,
-      text: JSON.stringify({ dotsState: "complete", result: delivery }), citations, ...deliveryAssets };
+    return { status: "completed", text: result, citations, ...(outcome.delivery ? deliveryAssets : assets), verifiedCommit: proof.verifiedCommit };
   }
   return { status: "completed" as const, text, citations, ...(outcome?.dotsState === "progress" ? deliveryAssets : assets) };
 }

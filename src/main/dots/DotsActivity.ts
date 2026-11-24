@@ -7,10 +7,11 @@ type ActivityRow = {
   status: DotsDelegation["status"]; text: string; file_count: number; updated_at: number;
   interaction_id: string | null; question_message_id: string | null; question_title: string | null;
   question_description: string | null; last_activity_at: number | null;
-  delivery_key: string | null; delivered: "question" | "conclusion" | null;
+  delivery_key: string | null; delivered: "question" | "conclusion" | "progress" | null;
   summary: string | null; delivered_at: number | null; delivered_file_count: number | null;
   following: number; control: "paused" | "stopped" | null;
   goal_lifecycle: string | null; goal_conclusion: string | null;
+  dependency_id: string | null; dependency_title: string | null; dependency_deadline: number | null;
 };
 
 export class DotsActivity {
@@ -27,7 +28,8 @@ export class DotsActivity {
       json_extract(e.snapshot,'$.delivered') AS delivered,json_extract(e.snapshot,'$.summary') AS summary,
       json_extract(e.snapshot,'$.deliveredAt') AS delivered_at,json_extract(e.snapshot,'$.fileCount') AS delivered_file_count,
       EXISTS(SELECT 1 FROM dots_reply_events p WHERE p.operation_id=d.operation_id AND p.status=d.status AND p.settled=0) AS following,
-      c.state AS control,w.lifecycle AS goal_lifecycle,w.closure_conclusion AS goal_conclusion
+      c.state AS control,w.lifecycle AS goal_lifecycle,w.closure_conclusion AS goal_conclusion,
+      dw.prerequisite_id AS dependency_id,dw.title AS dependency_title,dw.deadline_at AS dependency_deadline
       FROM tasks t JOIN dots_delegations d ON d.seq=COALESCE(
         (SELECT waiting.seq FROM dots_delegations waiting JOIN conversation_interactions pending
           ON pending.id=waiting.interaction_id AND pending.task_id=t.id AND pending.status='pending'
@@ -37,16 +39,22 @@ export class DotsActivity {
       LEFT JOIN dots_target_controls c ON c.task_id=d.task_id LEFT JOIN works w ON w.work_id=d.goal_id
       LEFT JOIN conversation_interactions i ON i.id=d.interaction_id AND i.task_id=d.task_id AND i.status='pending'
       LEFT JOIN dots_tool_observations a ON a.operation_id=d.operation_id
+      LEFT JOIN dots_dependency_waits dw ON dw.operation_id=d.operation_id AND d.status='blocked'
       LEFT JOIN dots_reply_events e ON e.rowid=(SELECT r.rowid FROM dots_reply_events r
         WHERE r.operation_id=d.operation_id AND r.status=d.status AND r.interaction_id IS d.interaction_id
           AND r.settled=1 AND json_valid(r.snapshot)
-          AND json_extract(r.snapshot,'$.delivered') IN ('question','conclusion') ORDER BY r.rowid DESC LIMIT 1)
+          AND (json_extract(r.snapshot,'$.delivered') IN ('question','conclusion') OR
+            (r.status IN ('completed','failed') AND json_extract(r.snapshot,'$.delivered')='progress'))
+          ORDER BY r.rowid DESC LIMIT 1)
       WHERE t.archived=0
       ORDER BY COALESCE(delivered_at, d.updated_at) DESC,d.seq DESC`).all() as ActivityRow[];
 
     return rows.flatMap<DotsActivityItem>(row => {
       if (!this.visible(row.task_id)) return [];
-      const summary = row.summary ?? activitySummary(readDotsWorkerOutcome(row.text)?.result ?? row.text);
+      const outcome = readDotsWorkerOutcome(row.text);
+      const summary = row.summary ?? (row.status === "completed" && outcome?.dotsState !== "progress"
+        ? row.following ? "正在核对交付结果。" : "本次交办尚未确认完成。"
+        : activitySummary(outcome?.result ?? row.text));
       const task = { id: row.operation_id, taskId: row.task_id, title: row.title, space: row.space ?? "独立任务",
         summary, updatedAt: row.delivered_at ?? row.updated_at };
       if (row.delivered === "conclusion" && row.delivery_key) {
@@ -62,6 +70,10 @@ export class DotsActivity {
       }
       if (!row.interaction_id && row.delivered === "question" && row.delivery_key) {
         return [{ ...task, state: "waiting", target: { taskId: DOTS_TASK_ID, messageId: row.delivery_key } }];
+      }
+      if (row.following && row.dependency_id && row.dependency_title && row.dependency_deadline !== null) {
+        return [{ ...task, state: "dependency", dependencyWait: { operationId: row.dependency_id, title: row.dependency_title,
+          deadlineAt: row.dependency_deadline }, summary: activitySummary([`等待「${row.dependency_title}」交付`, task.summary].filter(Boolean).join("。")) }];
       }
       if (row.status === "failed" || row.status === "superseded") return [{ ...task, state: row.status }];
       if (row.status === "blocked" && !row.interaction_id) return [{ ...task, state: "blocked" }];

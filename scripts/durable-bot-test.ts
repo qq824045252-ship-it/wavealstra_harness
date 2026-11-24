@@ -11,6 +11,8 @@ import { Type } from "typebox";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-durable";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
+import { createDurableDotsWorker, DOTS_TASK_END } from "../src/main/agent/durable/DurableDotsWorker";
+import { DURABLE_TURN_LIMIT_MESSAGE } from "../src/main/agent/durable/DurableRunLimits";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { modelKey, resolveBotModel } from "../src/main/agent/durable/BotModelCatalog";
 import { DurableMcp } from "../src/main/agent/durable/DurableMcp";
@@ -999,6 +1001,105 @@ for (const mode of ["native", "codemode"] as const) {
   assert.equal((await first.wait(ctx)).status,"unanswered"); assert.equal((await second.wait(ctx)).status,"unanswered");
   assert.equal(runtime.snapshot.busy,false); assert.equal(runtime.snapshot.queued,0);
   await runtime.close(); console.log("PASS native abort stops tool and withdraws queued input");
+}
+{
+  const cwd = join(root, "turn-limit");
+  await mkdir(cwd);
+  let firstToolStarted = false;
+  let reopened = false;
+  let readyToAnswer = false;
+  let modelRequests = 0;
+  const check = defineTool({ name: "check", description: "Read the fixture check", parameters: Type.Object({}), replay: "safe",
+    execute: async (_args, _api, toolContext) => {
+      if (!reopened) {
+        firstToolStarted = true;
+        await new Promise<never>((_resolve, reject) => {
+          const signal = toolContext.abortSignal!;
+          signal.throwIfAborted();
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }
+      return { output: text("verified fixture result") };
+    },
+  });
+  const options = {
+    directory: join(cwd, "state"), cwd, model: ref, toolMode: "native" as const, instructions: () => "fixture", onSnapshot: () => {},
+    models: models(() => {
+      modelRequests++;
+      if (modelRequests > 4) throw new Error("The native execution limit did not stop the loop");
+      return readyToAnswer ? text("independent request completed") : call(check.name, {});
+    }),
+    tools: [check],
+  };
+  let runtime = await DurableBotRuntime.open(options);
+  try {
+    const first = await runtime.submit("keep checking forever", "looping-request");
+    await until(() => firstToolStarted);
+    await runtime.close();
+
+    reopened = true;
+    runtime = await DurableBotRuntime.open({ ...options, maxTurns: 1 });
+    const resumed = (await runtime.harness.submission(first.id, ctx))!;
+    const settlement = await resumed.wait(ctx);
+    assert.equal(settlement.status, "unanswered");
+    assert.equal(settlement.reason, "turn_limit");
+    assert.equal(modelRequests, 1, "the recovered final tool round must settle without another provider request");
+    await runtime.refresh();
+    assert.equal(runtime.snapshot.busy, false);
+    assert.equal(runtime.snapshot.status, "failed");
+    assert.equal(runtime.snapshot.error, DURABLE_TURN_LIMIT_MESSAGE);
+    assert(runtime.snapshot.messages.some(message => message.tools?.some(tool => tool.output?.includes("verified fixture result"))));
+    await assert.rejects(runtime.reply(resumed), { message: DURABLE_TURN_LIMIT_MESSAGE });
+
+    readyToAnswer = true;
+    const next = await runtime.submit("new user request", "new-request");
+    assert.equal(await runtime.reply(next), "independent request completed");
+    assert.equal(modelRequests, 2);
+  } finally { await runtime.close(); }
+  console.log("PASS native turn limit stops a recovered loop, preserves its last tool result, and allows a new user request");
+}
+{
+  const cwd = join(root, "dots-codemode-terminal");
+  await mkdir(cwd);
+  const taskId = "dots-worker-fixture";
+  const isDotsWorkerInput = (operationId: string) => operationId === "dots-input-park" || operationId === "dots-input-complete";
+  const tool = createDurableDotsWorker(taskId, (_task, operationId) => isDotsWorkerInput(operationId),
+    (_task, _operation, operationId) => ({ operationId, title: "Prerequisite task", deadlineAt: Date.now() + 60_000 }), async () => ({}));
+  let modelRequests = 0;
+  const options = {
+    taskId, directory: join(cwd, "state"), cwd, model: ref, toolMode: "codemode" as const, instructions: () => "fixture", onSnapshot: () => {},
+    isDotsWorkerInput, tools: [tool], models: models(context => {
+      const offered = getCurrentTools(context.messages);
+      assert(offered.some(entry => entry.name === DOTS_TASK_END));
+      assert(!offered.find(entry => entry.name === "codemode")?.description.includes(DOTS_TASK_END));
+      const request = ++modelRequests;
+      if (request === 1) return call(DOTS_TASK_END, { action: "wait", progress: "report ready", dependencyOperationId: "dots-input-upstream" });
+      if (request === 2) return call(DOTS_TASK_END, { action: "complete", result: "report delivered", deliveryText: "report delivered" });
+      throw new Error("A terminal tool incorrectly started another model request");
+    }),
+  };
+  let runtime = await DurableBotRuntime.open(options);
+  const submit = (input: string, operation: string) => runtime.submit(input, operation, "followUp", {
+    text: input, displayText: input, attachments: [],
+    audit: { userMessageId: operation, assistantMessageId: "assistant-" + operation, cwd, skills: [],
+      recommendation: { query: input, mode: "working", context: { memoryIds: [], scenarioIds: [], profileIds: [] }, capabilities: [] } },
+  });
+  try {
+    const wait = await submit("prepare report and wait", "dots-input-park");
+    assert.equal((await wait.wait(ctx)).status, "done");
+    await until(() => !runtime.snapshot.busy);
+    assert.equal(runtime.snapshot.status, "idle");
+
+    const complete = await submit("dependency ready, deliver report", "dots-input-complete");
+    assert.equal((await complete.wait(ctx)).status, "done");
+    await until(() => !runtime.snapshot.busy);
+    assert.equal(runtime.snapshot.status, "completed");
+    await runtime.close();
+    runtime = await DurableBotRuntime.open(options);
+    assert.equal(runtime.snapshot.status, "completed");
+    assert.equal(modelRequests, 2);
+  } finally { await runtime.close(); }
+  console.log("PASS Dots terminal tool is direct in Code Mode, parks idle and preserves confirmed completion across reopen");
 }
 {
   const cwd = join(root,"compaction"); await mkdir(cwd);

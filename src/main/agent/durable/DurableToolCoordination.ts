@@ -128,7 +128,8 @@ function inspectAccess(name: string, value: unknown, cwd: string): Access[] {
 /** Wrap execution, not beforeTool: Pi's safe recovery re-enters execute without running beforeTool. */
 export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd: string,
   beforeExecute?: (name: string, args: unknown, cwd: string) => void, admitting?: () => readonly string[],
-  codeReview?: DurableCodeReview, artifactDirectory?: string): ToolRegistration {
+  codeReview?: DurableCodeReview, artifactDirectory?: string,
+  registerRecoveryWrite?: (api: Parameters<ToolRegistration["execute"]>[1], context: Parameters<ToolRegistration["execute"]>[2]) => Promise<boolean>): ToolRegistration {
   if (containers.has(tool.name) || isDurableContextToolName(tool.name))
     return { ...tool, execute: (args, api, context) => withToolInputFreshness(undefined, async () => tool.execute(args, api, context)) };
   return { ...tool, execute: async (args, api, context) => {
@@ -159,7 +160,8 @@ export function withDurableToolCoordination(tool: ToolRegistration, fallbackCwd:
         if (intent) evidence = await api.memo(NATIVE_FILE_EVIDENCE_MEMO, await verifyFileEffect(intent, context.abortSignal), withoutAbortSignal(context));
       }
       if (!result.isError && artifactDirectory && typeof fileArgs?.path === "string" && (!evidence || evidence.status === "passed")) {
-        const captured = await registerNativeMutation(fileArgs.path, api, context, artifactDirectory, evidence);
+        const explicit = evidence?.status === "passed" && tool.name === "write" && await registerRecoveryWrite?.(api, context);
+        const captured = await registerNativeMutation(fileArgs.path, api, context, artifactDirectory, evidence, explicit || undefined);
         if (!evidence && captured) await api.memo(NATIVE_FILE_EVIDENCE_MEMO, captured, withoutAbortSignal(context));
       }
       return result;

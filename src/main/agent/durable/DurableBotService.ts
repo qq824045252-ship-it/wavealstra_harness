@@ -1,9 +1,11 @@
 import { DotsIntentChanged } from "../../dots/DotsNativeIntent";
+import type { DotsRecoveryToolScope } from "../../dots/DotsRecovery";
+import { DotsCapabilityUnavailable } from "../../dots/DotsCapabilityRequirements";
 import { dotsGoalConclusion } from "../../dots/DotsGoalConclusion";
 import { ConversationIdle } from "@earendil-works/pi-durable";
-import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
+import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply, type DotsCapabilityRequirement } from "../../../shared/dots";
 import { sameWorkspacePath } from "../../task/QQTaskWorkspace";
-import { readDurableDotsResult } from "./DurableDotsResult";
+import { readDurableDotsResult, type DurableDotsOutcome } from "./DurableDotsResult";
 import { ConversationInteractionRepository } from "../ConversationInteractionRepository";
 import { isGatewayConversation } from "../../gateway/GatewayConversation";
 import { DEFAULT_WELCOME_MODE, defaultModePresetId } from "../../../shared/mode-profile";
@@ -33,6 +35,7 @@ import { emptyMcpFilterResult } from "../../mcp/McpModeFilter";
 import { toNativeMcpConfig } from "../../mcp/NativeMcpConfig";
 import { McpCredentialBackend } from "../../mcp/McpCredentialBackend";
 import { DurableBotRuntime, type DurableBotOptions } from "./DurableBotRuntime";
+import { DURABLE_TURN_LIMIT_MESSAGE } from "./DurableRunLimits";
 import type { AnswerRoutingService } from "../AnswerRoutingService";
 import type { DurableCompactionOutcome, ProductCompactionSettings } from "./context/types";
 import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
@@ -111,8 +114,10 @@ export interface DurableBotServiceOptions {
   tools?: (task: TaskDto, cwd: string, recovery: ExternalEffectRecovery) => Promise<DurableDomainTools>;
   mcpSelection?: (task: TaskDto) => readonly string[] | undefined;
   toolAllowed?: (task: TaskDto, name: string) => boolean;
+  assertDotsCapabilities?: (task: TaskDto, cwd: string, requirements: readonly DotsCapabilityRequirement[]) => void;
   onTurns?: (taskId: string, turns: ReturnType<typeof durableCompletedTurns>) => void;
   onDotsProgress?: (taskId: string, operationId: string, identity: string, at: number) => void;
+  dotsRecoveryScope?: (taskId: string, operationId: string) => DotsRecoveryToolScope | undefined;
   onEntries?: (taskId: string, entries: readonly EntryRecord[], info: { conversationId: string; sourceKind: "main" | "subagent" }) => void;
   onResponse?: (taskId: string, message: AssistantMessage, info: { conversationId: string; generationTaskId: number; sourceKind: "main" | "subagent" }) => void;
   onGoalToolResult?: (taskId: string, identity: import("../../../shared/conversation-goal-activity").GoalActivityIdentity, tool: {
@@ -128,6 +133,7 @@ export interface DurableBotServiceOptions {
   onSettled?: (taskId: string, snapshot: DurableBotSnapshot) => void;
   onRelease?: (taskId: string) => void;
   toolMode: (task: TaskDto) => BotToolMode;
+  maxTurns?: (task: TaskDto) => number | null;
   defaultModel: () => string | undefined;
   dotsModel?: () => Promise<BotModelResolution["target"]>;
   /** 产品压缩阈值（同步 getter：每次使用重新读取，运行中改设置即时生效）。缺省用产品默认值。 */
@@ -533,7 +539,8 @@ export class DurableBotService {
             } : {}),
           },
         } : {}),
-        taskId, model: selected, toolMode: this.toolMode(task), tools: [...mcp.tools, ...domain?.tools ?? []],
+        taskId, model: selected, toolMode: this.toolMode(task), maxTurns: this.options.maxTurns?.(task),
+        tools: [...mcp.tools, ...domain?.tools ?? []],
         contextHooks: domain?.contextHooks ?? [],
         toolHooks: domain?.toolHooks,
         foregroundHooks: domain?.foregroundHooks,
@@ -557,6 +564,7 @@ export class DurableBotService {
         evidence: messages => this.options.evidence?.(db.getTask(taskId) ?? task, messages) ?? "",
         evidenceProjection: this.options.evidenceProjection?.(task),
         isDotsWorkerInput: requestId => this.isDotsWorkerInput(taskId, requestId),
+        dotsRecoveryScope: this.options.dotsRecoveryScope && (operationId => this.options.dotsRecoveryScope?.(taskId, operationId)),
         hasDotsDelegation: () => this.hasDotsDelegation(taskId),
         deliveredDotsInput: () => this.deliveredDotsInput(taskId),
         isDelegatedMemoryInput: requestId => (taskId === DOTS_TASK_ID && isDotsAutomaticInput(requestId)) || (requestId.startsWith("dots-input-")
@@ -705,7 +713,8 @@ export class DurableBotService {
     return request;
   }
 
-  private async configureRequest(open: OpenBot, request: AgentPromptRequest, mark?: AdmissionMark): Promise<BotModelResolution["target"]> {
+  private async configureRequest(open: OpenBot, request: AgentPromptRequest, mark?: AdmissionMark,
+    signal?: AbortSignal): Promise<BotModelResolution["target"]> {
       // Admission is serialized. Queued inputs and resumed work finish with the old active identity;
       // only a newly admitted input after native idle can adopt a saved desired revision.
       if (await open.runtime.isIdle()) {
@@ -714,7 +723,10 @@ export class DurableBotService {
         if (before?.pending && binding) this.options.emit({ type: "expert_binding", taskId: request.taskId, binding });
       }
       const current = this.options.db.getTask(request.taskId)!;
-      const mcp = await this.configuredMcp(open, this.binding(request.taskId)!.cwd, request.taskId);
+      const cwd = this.binding(request.taskId)!.cwd;
+      const requirements = request.dotsRequiredCapabilities;
+      if (requirements?.length) this.options.assertDotsCapabilities?.(current, cwd, requirements);
+      const mcp = await this.configuredMcp(open, cwd, request.taskId);
       mark?.("mcp");
       // 只有真正要发请求时才要求模型可用：这里解析失败会明确报错，而不是把会话标成损坏。
       const resolvedModel = await this.resolveTaskModel(current);
@@ -722,11 +734,30 @@ export class DurableBotService {
       open.modelRepair = resolvedModel.repairedFrom
         ? { from: resolvedModel.repairedFrom, to: modelKey(resolvedModel.target) }
         : undefined;
-      const domain = await this.options.tools?.(current, this.binding(request.taskId)!.cwd, mcp);
+      const domain = await this.options.tools?.(current, cwd, mcp);
       mark?.("tools");
       const configuredRequest = current.id === DOTS_TASK_ID ? { ...request, modelId: modelKey(resolvedModel.target) } : request;
+      const verifyTools = requirements?.length ? async (tools: ReadonlySet<string>) => {
+        for (const requirement of requirements) {
+          if (requirement.kind === "tool" && !tools.has(requirement.id))
+            throw new DotsCapabilityUnavailable(requirement, "执行环境中没有登记可调用的该工具。");
+          if (requirement.kind !== "mcp") continue;
+          const callable = requirement.tool ? tools.has("mcp_list_tools") && tools.has("mcp_call_tool")
+            : tools.has("mcp_call_tool") || tools.has("mcp_read_resource");
+          if (!callable)
+            throw new DotsCapabilityUnavailable(requirement, "当前执行工具策略未开放 MCP 调用。");
+          let available: boolean;
+          try {
+            available = await mcp.hasRequiredCapability(requirement.id, requirement.tool, signal ? withAbortSignal(signal, context) : context);
+          } catch {
+            signal?.throwIfAborted();
+            throw new DotsCapabilityUnavailable(requirement, "未能连接该服务或取得可用工具目录，请检查服务与认证设置。");
+          }
+          if (!available) throw new DotsCapabilityUnavailable(requirement, "该服务的工具目录没有开放所需工具。");
+        }
+      } : undefined;
       await open.runtime.configure(resolvedModel.target, this.toolMode(current), this.options.thinking?.(current, configuredRequest),
-        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks, domain?.foregroundHooks);
+        [...mcp.tools, ...domain?.tools ?? []], domain?.contextHooks ?? [], domain?.toolHooks, domain?.foregroundHooks, verifyTools);
       mark?.("configure");
       return resolvedModel.target;
   }
@@ -764,7 +795,7 @@ export class DurableBotService {
         request = { ...request, attachments: await importGatewayAttachments(this.binding(request.taskId)!.cwd,
           request.userMessageId, request.attachments) };
       }
-      const model = await this.configureRequest(open, request, mark);
+      const model = await this.configureRequest(open, request, mark, signal);
       let text = await this.options.prepareInput?.(request) ?? request.text;
       if (!this.options.prepareInput && request.terminalContext) text += `\n\nTerminal context supplied by the user:\n${JSON.stringify(request.terminalContext)}`;
       const content: Exclude<import("@earendil-works/pi-durable").UserInput, string> = [{ type: "text", text }];
@@ -980,7 +1011,8 @@ export class DurableBotService {
     )`).pluck().get(taskId) as string | undefined;
   }
 
-  async dotsSubmission(taskId: string, operationId: string, requestedFilename?: string) {
+  async dotsSubmission(taskId: string, operationId: string, requestedFilename?: string):
+    Promise<(DurableDotsOutcome & { completion?: import("../../dots/DotsGoalConclusion").DotsGoalCompletion }) | undefined> {
     const binding = this.binding(taskId);
     if (!binding) return undefined;
     return this.withRecovery(taskId, async open => {
@@ -1335,6 +1367,9 @@ export class DurableBotService {
 function submissionResult(taskId: string, state: SubmissionRecord): AgentPromptResult {
   const receipt: AgentSubmissionReceipt = { taskId, operationId: state.requestId ?? "", submissionId: state.id, status: state.status };
   if (state.status === "unanswered") {
+    if (state.reason === "turn_limit") {
+      return { receipt, queued: false, error: { code: "DURABLE_TURN_LIMIT", message: DURABLE_TURN_LIMIT_MESSAGE } };
+    }
     return state.reason === "aborted"
       ? { receipt, queued: false, cancelled: true }
       : { receipt, queued: false, error: { code: "DURABLE_UNANSWERED", message: typeof state.detail === "string" ? state.detail : state.reason } };

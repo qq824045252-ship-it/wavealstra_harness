@@ -1,3 +1,11 @@
+if (process.argv.includes("--responsibility") || process.argv.includes("--responsibility-live")) {
+  require("./dots-responsibility-desktop-test.cjs");
+  return;
+}
+if (process.argv.includes("--bounded") || process.argv.includes("--bounded-live")) {
+  require("./dots-bounded-desktop-test.cjs");
+  return;
+}
 if (process.argv.includes("--followup-burst") || process.argv.includes("--followup-live")) {
   require("./dots-followup-desktop-test.cjs");
   return;

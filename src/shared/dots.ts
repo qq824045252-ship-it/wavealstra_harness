@@ -18,6 +18,20 @@ export { DOTS_TASK_ID, DOTS_NO_CHANGE, isDotsAutomaticInput } from "../../shared
 export const DotsIpc = { open: "dots:open", list: "dots:list", activity: "dots:activity",
   taskDelivery: "dots:taskDelivery", getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
 
+export interface DotsDependencyWait {
+  operationId: string;
+  title: string;
+  deadlineAt: number;
+}
+
+export const dotsCapabilityKinds = ["tool", "skill", "connector", "expert", "mode", "preset", "mcp"] as const;
+export type DotsCapabilityRequirement = {
+  kind: typeof dotsCapabilityKinds[number];
+  id: string;
+  /** Exact visible MCP tool, when the assignment needs more than the server. */
+  tool?: string;
+};
+
 export interface DotsDelegation {
   id: string;
   taskId: string;
@@ -35,6 +49,7 @@ export interface DotsDelegation {
   };
   status: "pending" | "running" | "blocked" | "completed" | "failed" | "superseded";
   interactionId?: string;
+  dependencyWait?: DotsDependencyWait;
   text: string;
   artifacts: { id: string; name: string; saved?: import("./saved-artifact").SavedArtifactRequest; version?: number }[];
   createdAt: number;
@@ -74,6 +89,7 @@ type DotsActivityTask = {
 
 export type DotsActivityItem = DotsActivityTask & (
   | { state: "waiting"; target: { taskId: string; messageId: string; interactionId?: string } }
+  | { state: "dependency"; dependencyWait: DotsDependencyWait }
   | { state: "delivered"; deliveryKey: string; fileCount: number }
   | { state: "running"; phase: "queued" | "working" | "following"; lastActivityAt?: number }
   | { state: "paused" | "stopped" | "failed" | "blocked" | "undelivered" | "superseded" }

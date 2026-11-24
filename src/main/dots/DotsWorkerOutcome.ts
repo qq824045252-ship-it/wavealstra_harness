@@ -1,7 +1,8 @@
 export type DotsWorkerOutcome =
-  | { dotsState: "complete"; result: string; delivery?: { text: string } }
+  | { dotsState: "complete"; result: string; delivery?: { text: string }; executionRecord?: string;
+      verifiedChecks?: string[]; verifiedCommit?: string }
   | { dotsState: "blocked"; result: string; delivery?: { text: string } }
-  | { dotsState: "progress"; result: string; remainingQuote: string };
+  | { dotsState: "progress"; result: string; remainingQuote: string; scopeQuote?: string };
 
 /** An accepted native answer ends a model turn. The worker declares whether it ends the assignment. */
 export function readDotsWorkerOutcome(text: string): DotsWorkerOutcome | undefined {
@@ -47,11 +48,19 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
         return { dotsState: value.dotsState, result: value.result, delivery: { text: value.delivery.text } };
       }
       if (exact && Object.keys(value).length !== 2) return;
-      if (value.dotsState === "blocked" && !value.result.trim()) return;
-      return { dotsState: value.dotsState, result: value.result };
+      if (value.dotsState === "blocked") return value.result.trim() ? { dotsState: "blocked", result: value.result } : undefined;
+      // The native projector rebuilds this envelope using settled receipts.
+      return { dotsState: "complete", result: value.result,
+        ...(typeof value.executionRecord === "string" && { executionRecord: value.executionRecord }),
+        ...(Array.isArray(value.verifiedChecks) && value.verifiedChecks.every((name: unknown) => typeof name === "string")
+          && { verifiedChecks: value.verifiedChecks }),
+        ...(typeof value.verifiedCommit === "string" && /^[a-f0-9]{40,64}$/.test(value.verifiedCommit)
+          && { verifiedCommit: value.verifiedCommit }),
+      };
     }
-    if (value.dotsState === "progress" && typeof value.remainingQuote === "string" && (!exact || Object.keys(value).length === 3)) {
-      return { dotsState: value.dotsState, result: value.result, remainingQuote: value.remainingQuote.trim() };
+    if (value.dotsState === "progress" && typeof value.remainingQuote === "string" && (!exact || Object.keys(value).length === (typeof value.scopeQuote === "string" ? 4 : 3))) {
+      return { dotsState: "progress", result: value.result, remainingQuote: value.remainingQuote.trim(),
+        ...(typeof value.scopeQuote === "string" && { scopeQuote: value.scopeQuote.trim() }) };
     }
   } catch {
     // Ordinary model prose does not declare an outcome.
@@ -87,31 +96,38 @@ export function dotsMissingInputQuestion(delivery: string, executionRecord: stri
 
 /** A worker can finish with a bare report or value. Only accept it when the user's
  * quoted delivery instruction describes a format we can check without guessing. */
-export function matchesDotsDeliveryFormat(text: string, instruction: string | undefined): boolean {
-  if (!instruction || !text.trim()) return false;
+export function dotsDeliveryFormatCheck(text: string, instruction: string | undefined): boolean | undefined {
+  if (!instruction) return;
   if (/只(?:要|给|交|回|回复)\s*(?:一个)?\s*(?:整数|数字)/u.test(instruction)) return /^-?\d+$/u.test(text);
   if (/只(?:要|给|交|回|回复)\s*(?:单行(?:的)?\s*)?JSON\b/iu.test(instruction)) {
     if (!text.startsWith("{") || /\r|\n/u.test(text)) return false;
     const keys = /键名(?:依次)?(?:是|为)\s*([a-z0-9_]+(?:\s*、\s*[a-z0-9_]+)*)/iu.exec(instruction)?.[1]?.split(/\s*、\s*/u);
-    if (!keys) return false;
+    if (!keys) return;
     try { return JSON.stringify(Object.keys(JSON.parse(text))) === JSON.stringify(keys); }
     catch { return false; }
   }
   const hashHeadings = [...instruction.matchAll(/##[ \t]+([^、，。；！？「」“”\r\n]+)/gu)].map(([, heading]) => heading.trim());
   const required = hashHeadings.length ? hashHeadings : [...(instruction.split(/二级标题/u)[1] ?? "")
     .split(/[。；！？\r\n]/u, 1)[0].matchAll(/「([^」]+)」/gu)].map(([, heading]) => heading.trim());
-  if (required.length < 2 || !text.startsWith("## ")) return false;
+  if (required.length < 2) return;
+  if (!text.startsWith("## ")) return false;
   const matches = [...text.replace(/^ {0,3}(?:```|~~~)[^\r\n]*\r?\n[\s\S]*?^ {0,3}(?:```|~~~)[ \t]*$/gmu, "")
     .matchAll(/^##[ \t]+([^\r\n]+)\r?\n([\s\S]*?)(?=^##[ \t]|$(?![\s\S]))/gmu)];
   return matches.length === required.length && matches.every(([, heading, body], index) =>
     heading.trim() === required[index] && Boolean(body.trim()));
 }
 
+export function matchesDotsDeliveryFormat(text: string, instruction: string | undefined): boolean {
+  return !!text.trim() && dotsDeliveryFormatCheck(text, instruction) === true;
+}
+
 export function onlyDeliveryFilename(instruction: string | undefined): string | undefined {
   const requested = /^(?:完成后[，,\s]*)?(?:请\s*)?只(?:给我?|交付?|发(?:给我?)?|要)\s*(.+?)[。！!]?$/u
     .exec(instruction?.trim() ?? "")?.[1]?.trim();
   if (!requested) return;
-  const filename = requested.replace(/^「([^」]+)」$|^“([^”]+)”$|^"([^"]+)"$/u, "$1$2$3");
+  const quoted = /^「([^」]+)」$|^“([^”]+)”$|^"([^"]+)"$/u.exec(requested);
+  const filename = quoted?.[1] ?? quoted?.[2] ?? quoted?.[3] ?? requested;
+  if (!quoted && /\.[a-z\d]+\s*(?:以及|和|与|及|and\b)\s*[^\s]+\.[a-z\d]+/iu.test(filename)) return;
   if (/^[^<>:"/\\|?*「」“”，、。！？；;,\r\n]+\.[a-z\d]+$/iu.test(filename)) return filename;
 }
 
