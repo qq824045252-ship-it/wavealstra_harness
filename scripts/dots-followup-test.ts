@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { DotsActivity } from "../src/main/dots/DotsActivity";
 import { dotsCompletionRequirements, dotsProgressInScope } from "../src/main/dots/DotsCompletion";
+import { readDotsWorkerOutcome } from "../src/main/dots/DotsWorkerOutcome";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -80,6 +81,11 @@ const manualIntro = "已按你的要求更新。";
 const manualResult = "排版已经更新。\n\n1. 保留原有入口。";
 const manualEnvelope = JSON.stringify({ dotsState: "complete", result: manualResult });
 const fencedManualEnvelope = "```json\n" + manualEnvelope + "\n```";
+const unclosedEnvelope = "```json\n" + manualEnvelope;
+assert.deepEqual(readDotsWorkerOutcome(unclosedEnvelope + "</arg_value></tool_call>"),
+  { dotsState: "complete", result: manualResult });
+assert.equal(readDotsWorkerOutcome(unclosedEnvelope.slice(0, -1)), undefined);
+assert.equal(readDotsWorkerOutcome(unclosedEnvelope + "\n这是给用户的附注。"), undefined);
 const leakedReply = `${manualIntro}\n\n${fencedManualEnvelope}`;
 const completedWorkerReply = (result: string) => [{ type: "text" as const, text: JSON.stringify({ dotsState: "complete", result }) }];
 const deliveryReply = (text: string, notes: string) => [{ type: "text" as const,

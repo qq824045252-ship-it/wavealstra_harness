@@ -9,7 +9,7 @@ export type DotsWorkerOutcome =
 
 /** An accepted native answer ends a model turn. The worker declares whether it ends the assignment. */
 export function readDotsWorkerOutcome(text: string): DotsWorkerOutcome | undefined {
-  const standalone = parseWorkerOutcome(outcomeJson(text));
+  const standalone = parseWorkerOutcomeText(text);
   if (standalone) return standalone;
 
   // Some workers put an execution note before the receipt. Only a strict receipt at
@@ -18,7 +18,7 @@ export function readDotsWorkerOutcome(text: string): DotsWorkerOutcome | undefin
   for (const boundary of boundaries.reverse()) {
     const prose = text.slice(0, boundary.index);
     if (!prose.trim() || insideMarkdownFence(prose)) continue;
-    const outcome = parseWorkerOutcome(outcomeJson(text.slice(boundary.index).trim()), true);
+    const outcome = parseWorkerOutcomeText(text.slice(boundary.index), true);
     if (outcome) return outcome.dotsState === "complete" ? { ...outcome, executionRecord: prose.trim() } : outcome;
   }
 }
@@ -32,10 +32,14 @@ function insideMarkdownFence(text: string): boolean {
   return Boolean(open);
 }
 
-function outcomeJson(text: string): string {
+function parseWorkerOutcomeText(text: string, exact = false): DotsWorkerOutcome | undefined {
   const trimmed = text.trim();
-  const fenced = trimmed.startsWith("```") ? /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed) : undefined;
-  return fenced?.[1] ?? trimmed;
+  if (!trimmed.startsWith("```")) return parseWorkerOutcome(trimmed, exact);
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  if (fenced) return parseWorkerOutcome(fenced[1], exact);
+  // A worker can finish the JSON but omit the fence or emit tool-call closing tags in its place.
+  const unclosed = /^```(?:json)?[ \t]*\r?\n([\s\S]*\})(?:\s*<\/arg_value>\s*<\/tool_call>)?$/i.exec(trimmed);
+  if (unclosed) return parseWorkerOutcome(unclosed[1].trim(), true);
 }
 
 function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | undefined {
@@ -151,7 +155,7 @@ const outcomePrefix = /^\s*\{\s*"dotsState"\s*:/;
 /** Presentation only. A manual follow-up can echo the wire envelope from a prior delegation. */
 export function recoverDotsNarrativeReply(text: string, streaming = false): string | undefined {
   if (!text.includes('"dotsState"')) return;
-  const standalone = parseWorkerOutcome(outcomeJson(text), true);
+  const standalone = parseWorkerOutcomeText(text, true);
   if (standalone) return dotsDeliveryText(standalone);
 
   if (streaming) {

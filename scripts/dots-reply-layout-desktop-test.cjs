@@ -24,12 +24,20 @@ const denseParagraphs = [
   "本轮检查确认了交接资料齐备，后续可以沿用同一份已签字的登记记录供有关同事查阅。相关现场照片已由核对人员保留在执行记录，交接原件已归还。",
 ];
 const denseText = denseParagraphs.join("");
+const workerNotes = "核对了两份签字记录。";
 const exactJson = '{"ok":true,"n":2}';
 const fileProof = "已完成排版核对。";
 const tool = (name, arguments_) => ({ tool: { name, arguments: arguments_ } });
 
 function fixtureModel(request) {
-  const user = JSON.stringify(request.messages.findLast(message => message.role === "user")?.content ?? "");
+  const input = request.messages.findLast(message => message.role === "user")?.content;
+  if (!request.tools?.length && typeof input === "string" && input.startsWith('{"kind":')) {
+    const report = JSON.parse(input);
+    assert.equal(report.kind, "conclusion");
+    assert.equal(report.evidence, denseText);
+    return report.evidence;
+  }
+  const user = JSON.stringify(input ?? "");
   const foreground = request.tools?.some(item => item.function.name === "dots_action");
   if (foreground) {
     if (user.includes(recallQuestion)) {
@@ -49,7 +57,8 @@ function fixtureModel(request) {
   } else {
     if (user.includes("核对有两项通过的记录"))
       return tool("dots_task_end", { action: "complete", result: "已确认两项通过。", deliveryText: exactJson });
-    if (user.includes("汇报这次交付核对")) return JSON.stringify({ dotsState: "complete", result: denseText });
+    if (user.includes("汇报这次交付核对"))
+      return "```json\n" + JSON.stringify({ dotsState: "complete", result: workerNotes, delivery: { text: denseText } }) + "\n";
     if (user.includes("生成 layout-proof.txt")) {
       const calls = request.messages.flatMap(message => message.tool_calls ?? []).map(call => call.function.name);
       if (!calls.includes("write")) return tool("write", { path: "layout-proof.txt", content: fileProof });
@@ -219,8 +228,12 @@ run(async env => {
   assert.equal((await readDelivery("legacy-result-only")).id, legacy.id);
   assert.deepEqual(await observed(legacy), legacyLayout);
   assert.equal((await observed(exact)).exactJson, exactJson);
-  await askInChat(taskId, recallQuestion);
-  const recalled = await lastDirect();
+  await send("recall-original", recallQuestion);
+  let recalled;
+  await until(async () => {
+    recalled = await lastDirect();
+    return recalled?.text.includes("### 原任务原文");
+  }, "the completed recall reply is stored");
   const recallLayout = await observed(recalled);
   assert.deepEqual(recallLayout.headings, ["原任务原文"]);
   const quoted = await evaluate("Array.from(" + selector(recalled.id) + ".querySelectorAll('blockquote p'), node => node.textContent.trim())");
@@ -244,13 +257,19 @@ run(async env => {
       && list.querySelector('button[aria-label="收起排版验收"]')?.getAttribute("aria-expanded") === "true"
       && list.scrollTop > 0 && target.top >= viewport.top && target.bottom <= viewport.bottom;
   })()`), "both workspace levels open and the selected task row is visible");
+  const workerHistory = await api("agent.loadTaskHistory", legacy.dotsDelivery.taskId);
+  const workerReply = workerHistory.messages.findLast(message => message.role === "assistant" && message.finalAssistantReply);
+  assert.equal(workerReply?.text, `${denseText}\n\n${workerNotes}`);
+  const workerLayout = await observed(workerReply);
+  assert.equal(workerLayout.paragraphs.at(-1), workerNotes);
+  assert.equal(workerLayout.paragraphs.slice(0, -1).join(""), denseText);
   await evaluate("import('/src/lib/taskBoardVisits.ts').then(m => m.openDotsActivityTarget("
     + JSON.stringify(exact.dotsDelivery.taskId) + "))");
   await until(() => evaluate("document.querySelector('.assistant-card .dots-literal-json')?.textContent === "
     + JSON.stringify(exactJson)), "the native worker's exact JSON remains literal after reopening");
   report.actualControlChecks.push({ originalBodyCharacters: denseText.length, directLayout, legacyLayout, gaps,
     literalParagraphs: 1, exactJson, fileOnly: fileProof, sameDeliveryAfterRestart: true, originalQuoteParagraphs: quoted, quoteGaps,
-    originalTaskRevealedInSidebar: true, workerExactJsonAfterRestart: true });
+    originalTaskRevealedInSidebar: true, workerLayout, workerExactJsonAfterRestart: true });
 }, {
   name: recallOnly ? "dots-reply-layout-recall-live" : liveModel ? "dots-reply-layout-live" : "dots-reply-layout-desktop",
   liveModel,
