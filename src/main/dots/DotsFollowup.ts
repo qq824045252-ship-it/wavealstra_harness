@@ -12,6 +12,7 @@ import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusio
 import { dotsCompletionGaps, dotsCompletionInstruction, dotsCompletionRequirements, dotsProgressInScope,
   type DotsCompletionDeclaration, type DotsCompletionRequirements } from "./DotsCompletion";
 import { dotsDeliveryText, matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
+import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
 
 export type DotsFollowupDecision = {
   kind: "quiet" | "ask" | "deliver" | "progress" | "continued" | "deferred";
@@ -22,7 +23,8 @@ export type DotsFollowupDecision = {
 export const followupInstructions = [
   "这轮是 Dots 的后台任务。普通交办整项完成后，优先单独调用 dots_task_end 的 complete 动作。result 保存原任务执行记录，deliveryText 原样返回最初交办的对话。用户要求的项目检查须用 project_verify 获得当前版本的回执，并在 checks 中列明。有明确本地提交要求时，在 commitSha 提供实际提交。",
   '没有约定项目检查或提交时，还可以用最后一条助手消息返回一个 JSON 对象 {"dotsState":"complete","result":"原任务的执行记录","delivery":{"text":"给用户的交付正文"}}。result 留在原任务，可记录验证过程、日志和改动明细。',
-  "执行类任务默认用一两句说明做成了什么和确实需要用户知道的事项。表格、文件清单、验证步骤和过程都留在 result，登记过的成品由应用附上。只有用户明确要求完整报告或指定正文内容、语言、格式时，才在 delivery.text 按要求完整给出。只要数字、JSON 或某段正文时，直接给该内容。需要交付某个文件并不等于需要在对话里再写一份报告。",
+  "把下面的回复结构用于 deliveryText 或 delivery.text。默认正文只写交付结果和用户下一步需要知道的信息。表格、文件清单、验证步骤和过程留在 result。用户要求在正文中交付的内容按原话给足。登记过的成品由应用附上。",
+  DOTS_REPLY_STYLE,
   "用户要直接打开的成品必须用 register_artifact 登记，包括用 write 或 edit 生成的成品。用户说留在原任务或供回查的文件，以及日志、底稿、代码修改和中间文件，都在原任务可见，无需为 Dots 登记或在交付正文列出。用户明确把其中的文件作为本次交付物时，才登记并随消息交付。用户只要文件且已登记时，delivery.text 留空。",
   '若本轮只完成一个实质里程碑、原授权范围内确有下一步，返回一行 JSON {"dotsState":"progress","result":"给用户的一句实际进展","remainingQuote":"原交办中仍待完成的片段"}。表达同一范围的诊断或核对时，可用 scopeQuote 引用原交办的准确范围，remainingQuote 写自然的下一步。不要把计划、收到指令或重复状态标为进展。下一步会在本普通任务中继续。',
   "若已取得可交付的实质里程碑且本轮仍在执行，可以在调用下一工具前用同一 progress 格式报告里程碑。宿主会继续当前执行。",

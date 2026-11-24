@@ -12,7 +12,13 @@ import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactRegis
 export interface NativeResultHit {
   source: "native"; taskId: string; title: string; link: string; status: "completed";
   conversationId: number; submissionId: number; answerEntryId: number; text: string;
+  textTruncated?: true;
   artifacts: { id: string; name: string; path: string; link: string }[];
+}
+
+export function dotsResultExcerpt(text: string, limit: number, start = 0): { text: string; textTruncated?: true } {
+  const end = start + limit;
+  return { text: text.slice(start, end), ...(start > 0 || end < text.length ? { textTruncated: true } : {}) };
 }
 
 function fileLink(name: string, path: string) {
@@ -77,7 +83,7 @@ export async function nativeResultHits(task: {id: string; title: string; link: s
         if (position < 0 && !matched.length && !task.title.toLowerCase().includes(query)) continue;
         const start = Math.max(0,position - 150);
         hits.push({source:"native", taskId:task.id, title:task.title, link:task.link, status:"completed", conversationId,
-          submissionId:input.id, answerEntryId:input.answer, text:text.slice(start,start+1200), artifacts:(matched.length ? matched : artifacts).slice(0,10)});
+          submissionId:input.id, answerEntryId:input.answer, ...dotsResultExcerpt(text,1200,start), artifacts:(matched.length ? matched : artifacts).slice(0,10)});
         if (hits.length >= limit) return hits;
       }
       cursor = page.next;

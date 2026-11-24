@@ -355,7 +355,12 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
     }
   }
   const progressBySource = new Map<string, ChatMessage[]>();
+  const dotsQuestions = new Map<string, ChatMessage>();
   if (taskId === DOTS_TASK_ID) for (const message of messages) {
+    if (message.role === "user") {
+      dotsQuestions.set(message.id, message);
+      if (message.inputRequestId) dotsQuestions.set(message.inputRequestId, message);
+    }
     const delivery = message.dotsDelivery;
     if (delivery?.kind !== "progress") continue;
     const entries = progressBySource.get(delivery.sourceMessageId) ?? [];
@@ -382,6 +387,7 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
         return [
           <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
             {!hideMessage && <MessageItem message={msg} taskId={taskId} sourceQuestion={!automatic && !delivery && msg.role === "assistant" ? precedingUser : undefined}
+              deliveryQuestion={delivery?.kind === "conclusion" ? dotsQuestions.get(delivery.sourceMessageId) : undefined}
               deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} selected={Boolean(showPreview)}
                 onPreview={file => setPreview({ rowId: delivery.deliveryKey, file })} /> : undefined}
               artifacts={artifacts} visibleArtifacts={visibleArtifacts}

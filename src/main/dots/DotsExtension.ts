@@ -8,6 +8,7 @@ import { currentDurableInvocation } from "../agent/durable/DurableExecutionConte
 import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
 import { DotsForegroundUnavailable } from "./DotsForegroundReads";
 import { dotsFollowUpInput, dotsForwardingDenied, dotsResumeInput, hasDotsResumeInstruction } from "./DotsFollowUpInput";
+import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
 export const DOTS_ACTION = "dots_action";
@@ -78,6 +79,10 @@ export function assembleDotsPrompt(memoryMode: DotsSettings["memoryMode"], overr
     add("dotsMemoryMode", "长期记忆模式", "runtime", "本轮 Dots 长期记忆为只读，可以查看已有记忆。");
   }
   add("chatReply", "通用回复规范", "seed", CHAT_REPLY_INSTRUCTIONS);
+  add("dotsReplyStyle", "Dots 默认回复结构", "seed", DOTS_REPLY_STYLE + "\n\n" + [
+    "查回已交办的结果时，以原任务的已交付正文、状态和登记成果为准。普通查询先用一句说明状态和关键结论，再另起一行给原任务与相关成果入口。问完成没有时，回复围绕是否完成和确有影响的问题。多项结果一项一行，执行日志、逐项验证和绝对路径按需展开。",
+    "用户要原文时，把交付正文单独放在「原任务原文」标题下，以 Markdown 引用或原有 Markdown 结构展示，并另起一行给原任务入口。保留原文字句和现有结构，可以把长纯文本按句分段。带有 textTruncated 的内容只是摘录，明确标为摘录并给完整内容的入口。用户约定只要精确文本或某种格式时，按约定交付。",
+  ].join("\n"));
   const text = append.trim();
   if (text) {
     add("dotsPromptAppend", "Dots 自定义提示词", "user",

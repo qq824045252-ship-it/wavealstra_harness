@@ -4,10 +4,10 @@ import { DotsCapabilityUnavailable, dotsCapabilityRequirements, dotsExecutionCon
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { DotsFollowup, dotsDeliveryInstruction, followupInstructions } from "./DotsFollowup";
 import { dotsCompletionInstruction, dotsCompletionRequirements, missingDotsPartitionRequirements, type DotsCompletionDeclaration } from "./DotsCompletion";
-import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
+import { dotsDeliveryText, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { dotsGoalConclusion } from "./DotsGoalConclusion";
 import { dotsCalendarContext } from "./DotsCalendar";
-import { nativeResultHits, type NativeResultHit } from "./DotsNativeResults";
+import { dotsResultExcerpt, nativeResultHits, type NativeResultHit } from "./DotsNativeResults";
 import { resolvedPathKey } from "../platform/paths";
 import { limitTaskTitle } from "../../shared/task-title";
 import { DotsFileWatches } from "./DotsFileWatches";
@@ -626,7 +626,7 @@ export class DotsActions {
     if (receipt?.kind === "conclusion") {
       const accepted = row.goalId ? dotsGoalConclusion(this.db.connection, row.taskId, row.id) : undefined;
       if (accepted || !row.goalId && row.status === "completed")
-        return { status: "completed" as const, text: accepted?.text ?? outcome?.result ?? row.text,
+        return { status: "completed" as const, text: accepted?.text ?? (outcome ? dotsDeliveryText(outcome) : row.text),
           artifacts: accepted?.completion?.artifacts };
     }
     if (row.status !== "completed") return { status: row.status, text: receipt?.summary ?? outcome?.result ?? row.text };
@@ -641,7 +641,7 @@ export class DotsActions {
       .map(item => {
         const result = this.delegationResult(item);
         return { operationId: item.id, goalId: item.goalId, status: result.status, interactionId: item.interactionId,
-          text: result.text.slice(0, 900), artifacts: (result.artifacts ?? item.artifacts).slice(0, 10),
+          ...dotsResultExcerpt(result.text, 900), artifacts: (result.artifacts ?? item.artifacts).slice(0, 10),
           updatedAt: item.updatedAt, activity: item.activity, dependencyWait: item.dependencyWait };
       });
   }
@@ -1003,17 +1003,18 @@ ${input.text}`),
         const links = this.hooks.list?.() ?? [];
         const candidates = (input.cursor ? [] : links).filter(item => !input.targetTaskId || item.taskId === input.targetTaskId);
         const hits: Array<NativeResultHit | Pick<DotsDelegation, "title" | "text" | "artifacts" | "taskId" | "goalId"> & {
-          status: ReturnType<DotsActions["delegationResult"]>["status"];
+          status: ReturnType<DotsActions["delegationResult"]>["status"]; textTruncated?: true;
           operationId: string; link: string }> = [];
         for (const item of candidates.reverse()) {
           const task = this.db.getTask(item.taskId);
           if (!task || !this.allowsSpace(task.spaceId) || !this.ordinary(task) || this.db.isTaskEffectiveArchived(task.id) ||
             this.db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed" || (input.spaceId && task.spaceId !== input.spaceId)) continue;
           const result = this.delegationResult(item);
-          if (query && ![item.title, result.text, ...item.artifacts.map(file => file.name)]
+          const artifacts = result.artifacts ?? item.artifacts;
+          if (query && ![item.title, result.text, ...artifacts.map(file => file.name)]
             .some(value => value.toLowerCase().includes(query))) continue;
           hits.push({ operationId: item.id, taskId: task.id, goalId: item.goalId, link: taskLink(task), status: result.status, title: item.title,
-            text: result.text.slice(0, 1200), artifacts: item.artifacts.slice(0, 10) });
+            ...dotsResultExcerpt(result.text, 1200), artifacts: artifacts.slice(0, 10) });
           if (hits.length === offset + 21) break;
         }
         const page = this.board.page({view:"all", scope:input.spaceId, cursor:input.cursor}, Date.now(),

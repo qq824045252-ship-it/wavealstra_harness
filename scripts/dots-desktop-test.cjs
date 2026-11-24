@@ -6,6 +6,10 @@ if (process.argv.includes("--task-routing") || process.argv.includes("--task-rou
   require("./dots-task-routing-desktop-test.cjs");
   return;
 }
+if (process.argv.some(arg => ["--reply-layout", "--reply-layout-live", "--reply-layout-recall-live"].includes(arg))) {
+  require("./dots-reply-layout-desktop-test.cjs");
+  return;
+}
 if (process.argv.includes("--bounded") || process.argv.includes("--bounded-live")) {
   require("./dots-bounded-desktop-test.cjs");
   return;

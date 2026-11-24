@@ -7,6 +7,7 @@ import type { Attachment, ChatMessage } from "@/types";
 import type { Artifact } from "@/types";
 import { clockTime, nonEmptyFinalTextBlocks, useAppStore } from "@/store/appStore";
 import { readableChatReply } from "@/lib/chatReplyMarkdown";
+import { allowsDotsProseLayout, layoutDotsProse } from "@/lib/dotsReplyLayout";
 import { ChatReplyOutline } from "./ChatReplyOutline";
 import { stripInjectedUserPromptTail, userPromptDisplayText } from "@shared/user-prompt-display";
 import { selectionLabelsFromPrompt } from "@shared/selection-display";
@@ -48,6 +49,7 @@ interface Props {
   onGoalCreated?: (goal: import("@shared/conversation-goal").ConversationGoalDto) => void;
   focusTool?: boolean;
   sourceQuestion?: ChatMessage;
+  deliveryQuestion?: ChatMessage;
   deliveryFiles?: React.ReactNode;
   /** Only task chat supplies a local image scope; Gateway/BTW must not inherit activeTaskId. */
   taskId?: string;
@@ -455,7 +457,7 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, onGoalCreated, focusTool }: Props): React.JSX.Element {
+function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, onGoalCreated, focusTool }: Props): React.JSX.Element {
   const replyBody = useRef<HTMLDivElement>(null);
   const exactDotsJson = literalDotsJson(message);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
@@ -794,6 +796,9 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
   const artifactCount = chipIds.length;
   const dotsReply = !btw && taskId === DOTS_TASK_ID;
   const dotsFailure = dotsReply && !message.generateError ? executionFailureReason(message) : undefined;
+  const layoutQuestion = message.dotsDelivery ? deliveryQuestion : sourceQuestion;
+  const reflowProse = dotsReply && !message.streaming && !message.generateError && layoutQuestion
+    && layoutQuestion.blocks.every(block => block.type !== "text" || allowsDotsProseLayout(block.text));
 
   return (
     <div className={`msg-row${message.presentationKey && message.streaming ? " bot-message-enter" : ""}`}>
@@ -843,15 +848,18 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryFiles, artifacts
           <ConversationInteractionCard key={interaction.id} interaction={interaction} />
         ))}
 
-        <div className="assistant-card" ref={replyBody}>
+        <div className={dotsReply ? "assistant-card dots-reply-body" : "assistant-card"} ref={replyBody}>
           {/* 助手回复不折叠，完整展示；仅用户消息长文折叠。
               正文区 = finalBlocks 的 prose 段（tool_start 冻结段，空段渲染过滤）。 */}
           {exactDotsJson !== undefined ? <pre className="dots-literal-json">{exactDotsJson}</pre> : nonEmptyFinalTextBlocks(message.finalBlocks).map((block, i) => {
             const canHideRecoveredDirective = Boolean(message.streaming) || (message.interactions?.length ?? 0) > 0;
-            const visibleBlock = block.type === "text" && canHideRecoveredDirective
-              ? { ...block, text: requestUserInputDisplayText(block.text, Boolean(message.streaming)) }
-              : block;
-            if (visibleBlock.type === "text" && !visibleBlock.text.trim()) return null;
+            let visibleBlock = block;
+            if (block.type === "text") {
+              const text = canHideRecoveredDirective ? requestUserInputDisplayText(block.text, Boolean(message.streaming)) : block.text;
+              if (!text.trim()) return null;
+              const presented = reflowProse ? layoutDotsProse(text) : text;
+              if (presented !== block.text) visibleBlock = { ...block, text: presented };
+            }
             return (
               <MessageBlockView
                 key={i}

@@ -45,6 +45,11 @@
 }
 .chat-reading-popover button:hover { background: var(--bg-hover); }
 .assistant-card .md-chat :is(h1,h2,h3,h4,h5,h6) { scroll-margin-top: 12px; }
+.dots-reply-body .md-chat > .markstream-react > .node-slot + .node-slot:is([data-node-type="paragraph"], [data-node-type="heading"], [data-node-type="list"]),
+.dots-reply-body .md-chat .blockquote-node > .markstream-react > .node-slot + .node-slot[data-node-type="paragraph"] {
+  margin-block-start: 0.65em;
+}
+.dots-reply-body .md-chat .blockquote-node { color: inherit; font-style: normal; font-weight: inherit; }
 
 .chat-code-actions {
   display: flex;
