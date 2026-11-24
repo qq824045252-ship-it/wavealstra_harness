@@ -18,7 +18,7 @@ if(!process.argv.includes('--apply')){
   const source=storage.readSource(id);
   const html=source.files.find(file=>file.path===source.manifest.entry);
   const oldBackend=source.manifest.backend;
-  if(!html||!oldBackend)throw Error('Expected an existing web Gadget with a backend');
+  if(!html||!oldBackend||!("entry" in oldBackend))throw Error('Expected an existing web Gadget with a Node backend');
   const api=source.files.find(file=>file.path===oldBackend.entry);
   if(!api)throw Error('Backend source missing');
   const prefix="import createCalendarBackend from './calendar-api.mjs';\n";

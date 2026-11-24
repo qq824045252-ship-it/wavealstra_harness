@@ -386,7 +386,8 @@ function validateGadgetDefinition(value: unknown, seen: Set<string>, budget: Blu
     return { path, content, encoding };
   });
   if (!sourceFiles.some((file) => file.path === manifest.entry)) throw new Error(`Gadget Blueprint 缺少入口文件：${manifest.entry}`);
-  if (manifest.backend && !sourceFiles.some((file) => file.path === manifest.backend?.entry)) throw new Error(`Gadget Blueprint 缺少后台入口：${manifest.backend.entry}`);
+  const backendEntry = manifest.backend && "entry" in manifest.backend ? manifest.backend.entry : undefined;
+  if (backendEntry && !sourceFiles.some((file) => file.path === backendEntry)) throw new Error(`Gadget Blueprint 缺少后台入口：${backendEntry}`);
   if (gadget.description !== undefined && typeof gadget.description !== "string") throw new Error("Blueprint gadget description 必须是字符串");
   const metadata = gadget.metadata === undefined ? undefined : normalizeJsonRecord(gadget.metadata, "Blueprint gadget metadata");
   if (gadget.workspaceKey !== undefined && typeof gadget.workspaceKey !== "string") throw new Error("Blueprint gadget workspaceKey 必须是字符串");

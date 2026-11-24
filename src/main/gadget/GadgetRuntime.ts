@@ -6,6 +6,7 @@ import { createGadgetCommandRunner, terminateGadgetCommands } from "../platform/
 import { runGadgetHost, type GadgetHostOptions } from "./GadgetHost";
 import { createGadgetState } from "./GadgetState";
 import { installGadgetClient } from "./GadgetClient";
+import { startGadgetProcessBackend } from "./GadgetProcessBackend";
 import type { GadgetJson } from "../../shared/gadget-backend";
 import type { GadgetDescriptor, GadgetRuntimeDiagnostics, GadgetRuntimeState } from "../../shared/gadget-types";
 import type { GadgetStorage } from "./GadgetStorage";
@@ -22,7 +23,7 @@ interface RuntimeInstance {
 }
 
 function hostScript(options: GadgetHostOptions): string {
-  return `(${runGadgetHost.toString()})(${JSON.stringify(options)}, ${createGadgetState.toString()}, ${createGadgetCommandRunner.toString()})` +
+  return `(${runGadgetHost.toString()})(${JSON.stringify(options)}, ${createGadgetState.toString()}, ${createGadgetCommandRunner.toString()}, ${startGadgetProcessBackend.toString()})` +
     '.catch(error => { console.error(error); process.exit(1); });';
 }
 
@@ -97,8 +98,15 @@ export class GadgetRuntime {
       instance = owned;
       this.instances.set(descriptor.id, owned);
       child.on("message", (message: unknown) => {
-        if (!message || typeof message !== "object" || !("pid" in message) || typeof message.pid !== "number"
-          || !Number.isSafeInteger(message.pid) || message.pid <= 1 || message.pid === process.pid || message.pid === child.pid || !("type" in message)) return;
+        if (!message || typeof message !== "object" || !("type" in message)) return;
+        if (message.type === "backend-failure" && "message" in message && typeof message.message === "string") {
+          if (this.instances.get(descriptor.id) === owned && owned.state.status === "running" && !owned.termination) {
+            this.fail(owned, "health_failure", message.message.slice(0, 200));
+          }
+          return;
+        }
+        if (!("pid" in message) || typeof message.pid !== "number" || !Number.isSafeInteger(message.pid) ||
+          message.pid <= 1 || message.pid === process.pid || message.pid === child.pid) return;
         if (message.type === "command-started") owned.commandPids.add(message.pid);
         if (message.type === "command-exited") owned.commandPids.delete(message.pid);
       });
@@ -241,6 +249,7 @@ export class GadgetRuntime {
     });
     // Exit events may have run while HTTP was pending. Never revive that child.
     if (this.instances.get(id) !== instance) return this.registry.runtime(id);
+    if (instance.termination) return { ...instance.state };
     if (ok && this.isAlive(instance) && instance.state.status === "running") {
       this.setState(instance.state);
       return { ...instance.state };

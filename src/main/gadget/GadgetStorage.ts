@@ -86,7 +86,7 @@ export class GadgetStorage {
       if (!existsSync(join(target.sourcePath, ...normalized.entry.split("/")))) {
         throw new Error(`Gadget 入口文件不存在：${normalized.entry}`);
       }
-      if (normalized.backend && !existsSync(join(target.sourcePath, ...normalized.backend.entry.split("/")))) {
+      if (normalized.backend && "entry" in normalized.backend && !existsSync(join(target.sourcePath, ...normalized.backend.entry.split("/")))) {
         throw new Error(`Gadget 后台入口不存在：${normalized.backend.entry}`);
       }
       this.writeManifest(id, normalized);
@@ -202,7 +202,7 @@ export class GadgetStorage {
       ...(request.backend === undefined ? {} : { backend: request.backend === null ? undefined : request.backend }),
     });
     if (!merged.has(manifest.entry.toLowerCase())) throw new Error("Gadget 缺少入口文件");
-    if (manifest.backend && !merged.has(manifest.backend.entry.toLowerCase())) throw new Error("Gadget 缺少后台入口文件");
+    if (manifest.backend && "entry" in manifest.backend && !merged.has(manifest.backend.entry.toLowerCase())) throw new Error("Gadget 缺少后台入口文件");
     const paths = this.paths(id);
     const next = join(paths.root, `code.next-${randomUUID()}`);
     const previous = join(paths.root, `code.previous-${randomUUID()}`);

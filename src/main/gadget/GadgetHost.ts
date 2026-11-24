@@ -1,7 +1,8 @@
-import type { GadgetBackend, GadgetBackendContext, GadgetJson } from "../../shared/gadget-backend";
+import type { GadgetBackend, GadgetBackendContext, GadgetJson, GadgetValues } from "../../shared/gadget-backend";
 import type { GadgetManifest } from "../../shared/gadget-types";
 import type { createGadgetCommandRunner } from "../platform/gadget-commands";
 import type { createGadgetState } from "./GadgetState";
+import type { startGadgetProcessBackend } from "./GadgetProcessBackend";
 
 export interface GadgetHostOptions {
   gadgetId: string;
@@ -17,6 +18,7 @@ export async function runGadgetHost(
   options: GadgetHostOptions,
   createState: typeof createGadgetState,
   createCommands: typeof createGadgetCommandRunner,
+  startProcessBackend: typeof startGadgetProcessBackend,
 ): Promise<void> {
   const http: typeof import("node:http") = require("node:http");
   const fs: typeof import("node:fs") = require("node:fs");
@@ -28,9 +30,11 @@ export async function runGadgetHost(
   const root = fs.realpathSync(process.cwd());
   const lifetime = new AbortController();
   const state = createState(options.dataPath, options.manifest.defaultConfig ?? {});
+  const declaration = options.manifest.backend;
+  const processBackend = declaration && "kind" in declaration ? declaration : undefined;
   const commands = createCommands({
     platform: options.platform, cwd: root,
-    allowedCommands: options.manifest.backend?.commands ?? [],
+    allowedCommands: processBackend ? [processBackend.command] : declaration && "commands" in declaration ? declaration.commands : [],
     environment: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), nodeExecutable: process.execPath,
     onSpawn: (pid) => process.send?.({ type: "command-started", pid }),
     onExit: (pid) => process.send?.({ type: "command-exited", pid }),
@@ -73,7 +77,7 @@ export async function runGadgetHost(
       },
     };
   }
-  function safeSource(relative: string): string {
+  function safeSource(relative: string, isDirectory = false): string {
     if (!relative || relative.includes("\\") || relative.includes("\0") || relative.includes(":")) throw failure("NOT_FOUND", "Not found", 404);
     const parts = relative.split("/");
     if (parts.some((part) => !part || part === "." || part === "..")) throw failure("NOT_FOUND", "Not found", 404);
@@ -83,23 +87,9 @@ export async function runGadgetHost(
       if (fs.lstatSync(current).isSymbolicLink()) throw failure("NOT_FOUND", "Not found", 404);
     }
     const real = fs.realpathSync(current);
-    if (!real.startsWith(root + path.sep) || !fs.statSync(real).isFile()) throw failure("NOT_FOUND", "Not found", 404);
+    const info = fs.statSync(real);
+    if (!real.startsWith(root + path.sep) || !(isDirectory ? info.isDirectory() : info.isFile())) throw failure("NOT_FOUND", "Not found", 404);
     return real;
-  }
-  if (options.manifest.backend) {
-    const backendPath = safeSource(options.manifest.backend.entry);
-    const namespace: unknown = await import(pathToFileURL(backendPath).href);
-    if (!record(namespace) || typeof namespace.default !== "function") throw failure("INVALID_BACKEND", "后台必须 default export 一个 createBackend(context) 函数");
-    const result: unknown = await namespace.default(context(lifetime.signal));
-    if (!record(result) || !record(result.actions) || (result.dispose !== undefined && typeof result.dispose !== "function")) {
-      throw failure("INVALID_BACKEND", "后台必须返回 { actions, dispose? }");
-    }
-    for (const [name, action] of Object.entries(result.actions)) {
-      if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$/.test(name) || typeof action !== "function") throw failure("INVALID_BACKEND", "后台 action 名称或函数无效");
-    }
-    // Every callable and the optional disposer were checked at the module boundary.
-    backend = result as unknown as GadgetBackend;
-    for (const [name, action] of Object.entries(backend.actions)) actions.set(name, action);
   }
   const mime: Record<string, string> = {
     ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
@@ -136,6 +126,21 @@ export async function runGadgetHost(
     catch { throw failure("INVALID_JSON", "请求不是有效 JSON"); }
     if (!record(parsed)) throw failure("INVALID_JSON", "请求必须是 JSON 对象");
     return parsed;
+  }
+  async function valueOperation(values: GadgetValues, input: Record<string, unknown>): Promise<unknown> {
+    if (input.operation === "keys") return values.keys();
+    if (typeof input.key !== "string") throw failure("INVALID_KEY", "缺少数据 key");
+    if (input.expectedRevision !== undefined && input.expectedRevision !== null && typeof input.expectedRevision !== "string") {
+      throw failure("INVALID_REVISION", "expectedRevision 无效");
+    }
+    const revision = input.expectedRevision;
+    switch (input.operation) {
+      case "get": return values.get(input.key);
+      case "read": return values.read(input.key);
+      case "set": return values.set(input.key, input.value as GadgetJson, revision);
+      case "delete": await values.delete(input.key, revision); return null;
+      default: throw failure("UNKNOWN_OPERATION", "未知的数据操作");
+    }
   }
   async function invoke(name: string, input: unknown, response: import("node:http").ServerResponse): Promise<void> {
     const action = actions.get(name);
@@ -211,17 +216,7 @@ export async function runGadgetHost(
         if (route.startsWith("/__mybuddy/actions/")) { await invoke(route.slice("/__mybuddy/actions/".length), input.input, response); return; }
         if (route === "/__mybuddy/storage" || route === "/__mybuddy/config") {
           const values = route.endsWith("/config") ? state.config : state.storage;
-          if (input.operation === "keys") { respond(response, 200, await values.keys()); return; }
-          if (typeof input.key !== "string") throw failure("INVALID_KEY", "缺少数据 key");
-          if (input.expectedRevision !== undefined && input.expectedRevision !== null && typeof input.expectedRevision !== "string") throw failure("INVALID_REVISION", "expectedRevision 无效");
-          const revision = input.expectedRevision;
-          switch (input.operation) {
-            case "get": respond(response, 200, await values.get(input.key)); return;
-            case "read": respond(response, 200, await values.read(input.key)); return;
-            case "set": respond(response, 200, await values.set(input.key, input.value as GadgetJson, revision)); return;
-            case "delete": await values.delete(input.key, revision); respond(response, 200, null); return;
-            default: throw failure("UNKNOWN_OPERATION", "未知的数据操作");
-          }
+          respond(response, 200, await valueOperation(values, input)); return;
         }
         throw failure("NOT_FOUND", "接口不存在", 404);
       }
@@ -277,8 +272,9 @@ export async function runGadgetHost(
       server.close(); server.closeAllConnections();
       const hardExit = setTimeout(() => process.exit(code || 1), 1500);
       try {
+        if (processBackend) await backend.dispose?.();
         await commands.dispose();
-        await backend.dispose?.();
+        if (!processBackend) await backend.dispose?.();
         clearTimeout(hardExit); process.exit(code);
       } catch { clearTimeout(hardExit); process.exit(1); }
     })();
@@ -287,6 +283,33 @@ export async function runGadgetHost(
   process.on("disconnect", () => { void shutdown(0); });
   process.on("SIGTERM", () => { void shutdown(0); });
   process.on("SIGINT", () => { void shutdown(0); });
+  if (processBackend) {
+    let cwd: string;
+    try { cwd = processBackend.cwd === "." ? root : safeSource(processBackend.cwd, true); }
+    catch { throw new Error("Gadget 后台工作目录不存在或不在源码目录内"); }
+    if (/[\\/]/.test(processBackend.command) && !path.isAbsolute(processBackend.command)) {
+      throw new Error("Gadget 后台程序路径必须是当前平台的绝对路径");
+    }
+    backend = await startProcessBackend(commands.open(processBackend.command, processBackend.args, cwd), valueOperation, message => {
+      if (closing) return;
+      process.send?.({ type: "backend-failure", message });
+      void shutdown(1);
+    });
+  } else if (declaration && "entry" in declaration) {
+    const backendPath = safeSource(declaration.entry);
+    const namespace: unknown = await import(pathToFileURL(backendPath).href);
+    if (!record(namespace) || typeof namespace.default !== "function") throw failure("INVALID_BACKEND", "后台必须 default export 一个 createBackend(context) 函数");
+    const result: unknown = await namespace.default(context(lifetime.signal));
+    if (!record(result) || !record(result.actions) || (result.dispose !== undefined && typeof result.dispose !== "function")) {
+      throw failure("INVALID_BACKEND", "后台必须返回 { actions, dispose? }");
+    }
+    for (const [name, action] of Object.entries(result.actions)) {
+      if (!/^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$/.test(name) || typeof action !== "function") throw failure("INVALID_BACKEND", "后台 action 名称或函数无效");
+    }
+    backend = result as unknown as GadgetBackend;
+  }
+  if (closing) return;
+  for (const [name, action] of Object.entries(backend.actions)) actions.set(name, action);
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     if (address && typeof address === "object") process.stdout.write(`MYBUDDY_GADGET_PORT:${address.port}\n`);

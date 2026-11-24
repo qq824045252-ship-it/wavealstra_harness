@@ -132,6 +132,30 @@ async function main(): Promise<void> {
   await service.delete(id);
   assert.deepEqual(await call(copy.id, "read"), { value: copy.id, theme: "light", version: "two" });
   assert.deepEqual(await call(blueprintId, "read"), { value: blueprintId, theme: "light", version: "two" });
+
+  const processBackend = { kind: "process", command: "node", args: ["worker.cjs"], cwd: "server" };
+  const worker = { path: "server/worker.cjs", content: readFileSync("scripts/fixtures/gadget-process-backend.cjs", "utf8") };
+  const processCreated = await invoke("gadget_create", {
+    name: "External process",
+    files: [{ path: "index.html", content: "<h1>Process Gadget</h1>" }, worker],
+    backend: processBackend, defaultConfig: { theme: "system" },
+  });
+  assert.equal(processCreated.isError, undefined, JSON.stringify(processCreated));
+  const processId = (processCreated.details as { gadgetId: string }).gadgetId;
+  assert.deepEqual(await call(processId, "store", "before update"), { value: "before update", theme: "system" });
+  const processSnapshot = service.readSource(processId);
+  const updatedProcess = await invoke("gadget_update", {
+    gadgetId: processId, expectedRevision: processSnapshot.revision,
+    files: [worker], backend: { ...processBackend, args: ["worker.cjs", "updated"] },
+  });
+  assert.equal(updatedProcess.isError, undefined, JSON.stringify(updatedProcess));
+  assert.equal((await call(processId, "echo") as { arg: string }).arg, "updated");
+  assert.equal(await runtime.request(service.get(processId)!, "storage", { operation: "get", key: "external" }), "before update");
+  const savedProcess = blueprint.captureGadget(processId);
+  const clonedProcess = await blueprint.instantiate({ blueprintId: savedProcess.id, gadgetScope: { type: "workspace", workspaceId: ws.id } });
+  const clonedId = Object.values(clonedProcess.gadgetIdsByKey)[0];
+  assert.equal((await call(clonedId, "echo") as { arg: string }).arg, "updated");
+  assert.equal(await runtime.request(service.get(clonedId)!, "storage", { operation: "get", key: "external" }), null);
   console.log("gadget-backend-domain-test: ok");
 }
 

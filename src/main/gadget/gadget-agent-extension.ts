@@ -17,7 +17,11 @@ const createCommon = {
   description: Type.Optional(Type.String({ maxLength: 1000 })),
   scope: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("workspace")])),
 };
-const runtimeGuide = "页面自动提供 window.gadget：call(action,input,{signal}?) 调后台、storage.get/read/set/delete/keys 持久数据、config 同接口管理非秘密配置、info() 查能力。后台文件必须在 server/，default export createBackend(ctx)，返回 {actions:{name:async(input,ctx)=>JSON值},dispose?}。ctx 提供 signal、storage、config、exec(command,{args,stdin,timeoutMs,signal,env})、dataPath/sourcePath。exec 只运行 backend.commands 声明的命令；node 使用内置 Node。HTTP 可在后台 fetch 并传 ctx.signal。凭据只放 CLI 自身凭据库或 backend.environment 显式声明的环境变量，勿写到页面/源码/默认配置。后台是受信任本机 Node 代码。无需手动 cmd 桥。";
+const runtimeGuide = "页面自动提供 window.gadget：call(action,input,{signal}?) 调后台、storage.get/read/set/delete/keys 持久数据、config 同接口管理非秘密配置、info() 查能力。"
+  + "Node 后台使用 server/ 下的 .mjs 作为 backend.entry，default export createBackend(ctx)，返回 {actions:{name:async(input,ctx)=>JSON值},dispose?}。ctx 提供 signal、storage、config、exec(command,{args,stdin,timeoutMs,signal,env})、dataPath/sourcePath。exec 只运行 backend.commands 声明的命令；node 使用内置 Node。"
+  + '外部进程用 backend={kind:"process",command,args?,cwd?,environment?,timeoutMs?}，command 是 PATH 程序名或本机绝对路径，cwd 默认源码根。stdin/stdout 是逐行 UTF-8 JSON，启动后 stdout 先发 {type:"ready",version:1,actions:[...]}。接收 {type:"call",id,action,input}，回 {type:"result",id,value} 或 {type:"error",id}。'
+  + '操作内可发 {type:"host",id,call:调用ID,scope:"storage"|"config",operation,key?,value?,expectedRevision?}，等 {type:"hostResult",id,call,value|error}。收到 {type:"cancel",id} 停止该操作并回终态，收到 {type:"shutdown"} 或 stdin EOF 退出。stdout 只写协议并及时 flush。'
+  + "凭据只放 CLI 自身凭据库或 backend.environment 显式声明的环境变量，勿写到页面、源码或默认配置。后台是受信任的本机程序。";
 
 export interface GadgetAgentBridge {
   taskId: string;

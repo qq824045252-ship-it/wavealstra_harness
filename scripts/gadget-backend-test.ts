@@ -67,6 +67,84 @@ function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+async function checkProcessBackend(): Promise<void> {
+  const item = fixture("external-process");
+  const source = storage.readSource(item.id);
+  storage.updateSource({
+    gadgetId: item.id,
+    expectedRevision: source.revision,
+    backend: { kind: "process", command: "node", cwd: "server", args: ["worker.cjs", "argument with spaces"],
+      environment: ["MYBUDDY_TEST_GADGET_MARKER"], timeoutMs: 900 },
+    files: [{ path: "server/worker.cjs", content: readFileSync("scripts/fixtures/gadget-process-backend.cjs", "utf8") }],
+  }, () => {});
+  process.env.MYBUDDY_TEST_GADGET_MARKER = "declared";
+  process.env.MYBUDDY_TEST_GADGET_UNDECLARED = "private";
+  let descendant: number | undefined;
+  try {
+    const running = await runtime.start(item);
+    assert.equal(running.status, "running", running.error);
+    const sdk = await client(running.url!);
+    const first = await sdk.call("echo", "你好") as { pid: number };
+    assert(Number.isSafeInteger(first.pid) && first.pid !== running.pid);
+    assert.deepEqual(first, { input: "你好", count: 1, pid: first.pid, arg: "argument with spaces", marker: "declared", privateMarker: null });
+    assert.deepEqual(await sdk.call("echo", 7), { ...first, input: 7, count: 2 });
+    assert.deepEqual(await sdk.call("store", 34), { value: 34, theme: "light" });
+    assert.equal(await sdk.storage.get("external"), 34);
+    assert.equal((await fetch(new URL("server/worker.cjs", running.url!))).status, 404);
+
+    const abort = new AbortController();
+    const cancelled = assert.rejects(sdk.call("cancellable", null, { signal: abort.signal }));
+    await until(async () => await sdk.storage.get("external-started") === true, "external call is active");
+    abort.abort();
+    await cancelled;
+    await until(async () => await sdk.call("cancelStatus") === "CANCELLED", "cancel reaches worker and revokes its storage writes");
+    assert.equal(await sdk.storage.get("late"), null);
+
+    descendant = await sdk.call("descendant") as number;
+    assert(Number.isSafeInteger(descendant) && alive(descendant));
+    const restarted = await runtime.restart(item);
+    assert.equal(restarted.status, "running", restarted.error);
+    assert.equal(alive(first.pid), false);
+    await until(() => !alive(descendant!), "restart reaps the external backend's descendant");
+    descendant = undefined;
+    const fresh = await client(restarted.url!);
+    assert.equal(await fresh.storage.get("external"), 34);
+    const second = await fresh.call("echo") as { pid: number; count: number };
+    assert.equal(second.count, 1);
+    await assert.rejects(fresh.call("hang"), /超时/);
+    await until(() => registry.runtime(item.id).status === "error" && !alive(second.pid), "hung worker and host stopped");
+
+    const afterTimeout = await runtime.start(item);
+    assert.equal(afterTimeout.status, "running", afterTimeout.error);
+    const afterTimeoutClient = await client(afterTimeout.url!);
+    await assert.rejects(afterTimeoutClient.call("crash"));
+    await until(() => registry.runtime(item.id).error?.includes("code=17") === true, "reports worker's exit code");
+
+    const failedSource = storage.readSource(item.id);
+    storage.updateSource({ gadgetId: item.id, expectedRevision: failedSource.revision,
+      backend: { kind: "process", command: "missing-gadget-test-executable" },
+      files: [{ path: "index.html", content: "<html>missing program test</html>" }],
+    }, () => {});
+    const failed = await runtime.start(item);
+    assert.equal(failed.status, "error");
+    assert.match(failed.error ?? "", /missing-gadget-test-executable/);
+
+    const oversizedSource = storage.readSource(item.id);
+    storage.updateSource({ gadgetId: item.id, expectedRevision: oversizedSource.revision,
+      backend: { kind: "process", command: "node", args: ["-e", "process.stdout.write('x'.repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);"] },
+      files: [{ path: "index.html", content: "<html>oversized process frame test</html>" }],
+    }, () => {});
+    const oversized = await runtime.start(item);
+    assert.equal(oversized.status, "error");
+    assert.match(oversized.error ?? "", /无效的协议消息/);
+  } finally {
+    if (descendant && alive(descendant)) process.kill(descendant, "SIGKILL");
+    delete process.env.MYBUDDY_TEST_GADGET_MARKER;
+    delete process.env.MYBUDDY_TEST_GADGET_UNDECLARED;
+    await runtime.stop(item.id);
+  }
+}
+
 async function main(): Promise<void> {
   const a = fixture("a");
   const b = fixture("b");
@@ -193,6 +271,7 @@ async function main(): Promise<void> {
     await assert.rejects(runtime.request(c, "actions/denied", { input: null }), error => error instanceof Error && "code" in error && error.code === "COMMAND_DENIED");
     await assert.rejects(runtime.request(c, "actions/unsupported", { input: null }), error => error instanceof Error && "code" in error && error.code === "UNSUPPORTED_COMMAND_SHIM");
   }
+  await checkProcessBackend();
   console.log("gadget-backend-test: ok");
 }
 

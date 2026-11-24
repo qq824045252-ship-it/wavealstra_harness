@@ -15,6 +15,10 @@ export type GadgetCommandResult = {
 
 export type GadgetCommandRunner = {
   run(command: string, options?: GadgetCommandOptions): Promise<GadgetCommandResult>;
+  open(command: string, args: string[], cwd: string): {
+    child: import("node:child_process").ChildProcessWithoutNullStreams;
+    stop(): Promise<void>;
+  };
   dispose(): Promise<void>;
 };
 
@@ -85,6 +89,7 @@ export function createGadgetCommandRunner(config: {
   const allowed = new Set(config.allowedCommands);
   const environment = { ...config.environment };
   const active = new Set<{ cancel: () => void; done: Promise<void>; cleanup: () => Promise<void> }>();
+  const resident = new Set<() => Promise<void>>();
   let closed = false;
   let disposal: Promise<void> | undefined;
   const failure = (code: string, message: string): Error & { code: string } =>
@@ -136,28 +141,71 @@ export function createGadgetCommandRunner(config: {
     throw failure("COMMAND_NOT_FOUND", `Gadget command was not found: ${command}`);
   };
 
+  const launch = (command: string, args: string[], cwd: string, env: Record<string, string>) => {
+    const resolved = resolveCommand(command);
+    if (resolved.node) env.ELECTRON_RUN_AS_NODE = "1";
+    const child = spawn(resolved.executable, [...resolved.prefixArgs, ...args], {
+      cwd, env, shell: false, windowsHide: true, detached: !windows, stdio: ["pipe", "pipe", "pipe"],
+    });
+    if (child.pid) {
+      try { config.onSpawn?.(child.pid); } catch { /* Observers cannot abandon an owned child. */ }
+    }
+    return child;
+  };
+  const release = (child: import("node:child_process").ChildProcess): void => {
+    if (child.pid) {
+      try { config.onExit?.(child.pid); } catch { /* Cleanup remains owned by this runner. */ }
+    }
+  };
+  const terminateChild = (child: import("node:child_process").ChildProcess): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      if (!child.pid) { resolve(); return; }
+      if (!windows) {
+        try { process.kill(-child.pid, "SIGKILL"); resolve(); }
+        catch (error) {
+          if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") resolve();
+          else reject(failure("COMMAND_CLEANUP_FAILED", "Unable to terminate Gadget process group"));
+        }
+        return;
+      }
+      if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+      const systemRoot = Object.entries(environment).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
+      const taskkill = systemRoot ? path.join(systemRoot, "System32", "taskkill.exe") : "taskkill.exe";
+      const killer = spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"], { env: environment, shell: false, windowsHide: true, stdio: "ignore" });
+      killer.once("error", () => reject(failure("COMMAND_CLEANUP_FAILED", "Unable to launch taskkill for Gadget command")));
+      killer.once("close", (code) => {
+        if (code === 0 || child.exitCode !== null || child.signalCode !== null) resolve();
+        else reject(failure("COMMAND_CLEANUP_FAILED", `taskkill failed with exit code ${code}`));
+      });
+    });
   return {
+    open(command, args, cwd) {
+      if (closed) throw failure("RUNNER_CLOSED", "Gadget command runner is closed");
+      const env = { ...environment };
+      delete env.ELECTRON_RUN_AS_NODE;
+      const child = launch(command, args, cwd, env);
+      const exited = new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+        child.once("error", () => { if (!child.pid) resolve(); });
+      });
+      let stopping: Promise<void> | undefined;
+      const stop = () => stopping ??= (async () => {
+        await terminateChild(child);
+        await exited;
+        resident.delete(stop);
+        release(child);
+      })().catch((error: unknown) => { stopping = undefined; throw error; });
+      resident.add(stop);
+      return { child, stop };
+    },
     async run(command, options = {}) {
       if (closed) throw failure("RUNNER_CLOSED", "Gadget command runner is closed");
       if (active.size >= 4) throw failure("COMMAND_LIMIT", "At most four Gadget commands may run concurrently");
       if (options.signal?.aborted) throw failure("COMMAND_ABORTED", "Gadget command was cancelled");
       const timeoutMs = options.timeoutMs ?? 30_000;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw failure("INVALID_TIMEOUT", "Command timeout must be between 1 and 300000 milliseconds");
-      const resolved = resolveCommand(command);
-      const env = { ...environment, ...options.env };
-      if (resolved.node) env.ELECTRON_RUN_AS_NODE = "1";
-      const child = spawn(resolved.executable, [...resolved.prefixArgs, ...(options.args ?? [])], {
-        cwd: config.cwd, env, shell: false, windowsHide: true,
-        detached: !windows, stdio: ["pipe", "pipe", "pipe"],
-      });
-      if (child.pid) {
-        try { config.onSpawn?.(child.pid); } catch { /* Observers cannot abandon an owned child. */ }
-      }
-      child.once("exit", () => {
-        if (child.pid) {
-          try { config.onExit?.(child.pid); } catch { /* Cleanup remains owned by this runner. */ }
-        }
-      });
+      const child = launch(command, options.args ?? [], config.cwd, { ...environment, ...options.env });
+      child.once("exit", () => release(child));
       let resolveDone: () => void = () => undefined;
       const done = new Promise<void>((resolve) => { resolveDone = resolve; });
       let pendingError: Error | undefined;
@@ -168,27 +216,7 @@ export function createGadgetCommandRunner(config: {
       const stderr: Buffer[] = [];
       const terminate = (): Promise<void> => {
         if (termination) return termination;
-        termination = new Promise<void>((resolve, reject) => {
-          if (!child.pid) { resolve(); return; }
-          if (!windows) {
-            try { process.kill(-child.pid, "SIGKILL"); resolve(); }
-            catch (error) {
-              if (error && typeof error === "object" && "code" in error && error.code === "ESRCH") resolve();
-              else reject(failure("COMMAND_CLEANUP_FAILED", "Unable to terminate Gadget process group"));
-            }
-            return;
-          }
-          if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
-          const systemRoot = Object.entries(environment).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
-          const taskkill = systemRoot ? path.join(systemRoot, "System32", "taskkill.exe") : "taskkill.exe";
-          const killer = spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"], { env: environment, shell: false, windowsHide: true, stdio: "ignore" });
-          killer.once("error", () => reject(failure("COMMAND_CLEANUP_FAILED", "Unable to launch taskkill for Gadget command")));
-          killer.once("close", (code) => {
-            if (code === 0 || child.exitCode !== null || child.signalCode !== null) resolve();
-            else reject(failure("COMMAND_CLEANUP_FAILED", `taskkill failed with exit code ${code}`));
-          });
-        });
-        termination = termination.catch((error: unknown) => {
+        termination = terminateChild(child).catch((error: unknown) => {
           cleanupFailed = true;
           termination = undefined;
           throw error;
@@ -243,11 +271,12 @@ export function createGadgetCommandRunner(config: {
       closed = true;
       const commands = [...active];
       for (const command of commands) command.cancel();
-      disposal = Promise.all(commands.map(async (command) => {
+      const cleanup = commands.map(async (command) => {
         await command.done;
         await command.cleanup();
         active.delete(command);
-      })).then(() => undefined).catch((error: unknown) => {
+      });
+      disposal = Promise.all([...cleanup, ...[...resident].map(stop => stop())]).then(() => undefined).catch((error: unknown) => {
         disposal = undefined;
         throw error;
       });

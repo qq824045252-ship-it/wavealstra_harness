@@ -55,6 +55,60 @@ export default function createBackend(ctx) {
 
 后台必须默认导出一个工厂函数。工厂接收 `ctx`，返回 `{ actions, dispose? }`。操作名称使用英文字母开头，后续允许字母、数字、点、下划线和连字符，最多 80 个字符。返回值必须能表示为 JSON。工厂可以异步初始化。
 
+## 使用 Python、Go 或 Rust 后台
+
+在创建或更新 Gadget 时传入外部进程声明。MyBuddy 会在同一次 Gadget 运行期间复用这个进程。Python 可以用本机或虚拟环境的解释器。Go 和 Rust 可以用预先编译好的本地可执行文件。
+
+```json
+{
+  "kind": "process",
+  "command": "python",
+  "args": ["-u", "worker.py"],
+  "cwd": "server",
+  "timeoutMs": 30000
+}
+```
+
+`command` 是 PATH 中的程序名或当前平台的绝对路径。也可以为虚拟环境指定完整的解释器路径。参数按数组直接传递。`cwd` 是 Gadget 源码中的相对目录，默认是源码根目录。需要凭据时用 `environment` 声明相应的环境变量名。
+
+将下面的 Python 文件保存为 `server/worker.py`，页面即可调用 `await gadget.call("double", 21)` 得到 `42`。
+
+```python
+import json
+import sys
+
+def send(message):
+    print(json.dumps(message), flush=True)
+
+send({"type": "ready", "version": 1, "actions": ["double"]})
+
+for line in sys.stdin:
+    message = json.loads(line)
+    if message["type"] == "shutdown":
+        break
+    if message["type"] == "call":
+        call_id = message["id"]
+        value = message["input"]
+        if type(value) is int:
+            send({"type": "result", "id": call_id, "value": value * 2})
+        else:
+            send({"type": "error", "id": call_id})
+```
+
+Go 和 Rust 程序使用相同的协议。stdin 和 stdout 每行传输一条 UTF-8 JSON 消息。及时 flush。程序诊断可以写到 stderr，MyBuddy 会消费这些输出，Gadget 日志只记录操作状态和宿主生成的错误信息。
+
+| 方向 | JSON 消息 |
+| --- | --- |
+| 程序 → MyBuddy | `{ "type": "ready", "version": 1, "actions": ["double"] }`，就绪后才能接收操作，启动限时 5 秒。 |
+| MyBuddy → 程序 | `{ "type": "call", "id": 1, "action": "double", "input": 21 }`。每个进程最多 8 个并行操作。 |
+| 程序 → MyBuddy | `{ "type": "result", "id": 1, "value": 42 }` 或 `{ "type": "error", "id": 1 }`。 |
+| 程序 → MyBuddy | `{ "type": "host", "id": 1, "call": 1, "scope": "storage", "operation": "get", "key": "last" }`。用 `call` 关联仍在运行的操作，Config 读写使用 `"scope": "config"`。每个操作一次发送一个数据请求，等待回执再发送下一个。 |
+| MyBuddy → 程序 | `{ "type": "hostResult", "id": 1, "call": 1, "value": null }` 或同样的标识加 `error` 字段。支持下文存储接口的操作和 `expectedRevision`。 |
+| MyBuddy → 程序 | `{ "type": "cancel", "id": 1 }`。停止该操作并回 `error` 或 `result`；宿主会撤销该操作的存储与配置权限，并终止拒绝结束的后台。 |
+| MyBuddy → 程序 | `{ "type": "shutdown" }`。结束后台，stdin 到达 EOF 时也应退出。 |
+
+从 Blueprint 实例化时，每台电脑需要预先准备声明的解释器或可执行文件，并使用该电脑能解析的 `command`。脚本源码可随 Gadget 保存。每个副本有自己的存储和配置。
+
 ## 使用页面接口
 
 | 接口 | 行为 |
