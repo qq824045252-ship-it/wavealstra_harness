@@ -614,7 +614,7 @@ export default function LibraryWorkbench(props: ScopedLibraryManagerProps): Reac
             <button type="button" disabled={!checked.size} onClick={() => batch(async (ids) => { await access.note({ type: "export", ids, format: "markdown" }); })}>导出</button>
             <button type="button" disabled={!checked.size} onClick={() => setConfirmTrash([...checked])}>删除</button>
           </div>}
-          <div className="notes-list-scroll" ref={list} onScroll={desktop ? (event) => captureListScroll(event.currentTarget) : undefined}>
+          <div className="notes-list-scroll thin-scrollbar" ref={list} onScroll={desktop ? (event) => captureListScroll(event.currentTarget) : undefined}>
             {!snapshot && <div className="notes-empty">{error ? "资料加载失败" : "正在加载笔记…"}</div>}
             {snapshot && !visible.length && <div className="notes-empty">{effectiveQuery
               ? searchResults?.key === searchKey ? searchResults.error ?? "常规检索未找到匹配的笔记" : "正在常规检索…"
