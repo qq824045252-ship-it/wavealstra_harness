@@ -74,6 +74,7 @@ export default function TaskBoardPage(): React.JSX.Element {
   );
   const spaces = allSpaces.filter((s) => !hidden.get(s.id));
   const names = new Map(spaces.map((s) => [s.id, s.name]));
+  const projectNames = new Map(projects.map((p) => [p.id, p.name]));
   const [scope, setScope] = useDesktopSectionState<string | null | undefined>("task-board:scope", undefined);
   const [search, setSearch] = useDesktopSectionState("task-board:search", "");
   const [view, setView] = useDesktopSectionState<View>("task-board:focus-view", "focus");
@@ -193,6 +194,28 @@ export default function TaskBoardPage(): React.JSX.Element {
         onToggle={() => setActions(actions === row.id ? null : row.id)}
       />
     );
+  }
+  function recentGroups(items: TaskBoardRow[]) {
+    const groups = new Map<string, { title: string; rows: TaskBoardRow[] }>();
+    for (const row of items) {
+      const projectName = row.projectId ? projectNames.get(row.projectId) : undefined;
+      const key = projectName ? `project:${row.projectId}` : row.spaceId ? `space:${row.spaceId}` : "independent";
+      let group = groups.get(key);
+      if (!group) {
+        group = {
+          title: projectName ?? (row.spaceId ? names.get(row.spaceId) ?? "已移除的工作空间" : "独立任务"),
+          rows: [],
+        };
+        groups.set(key, group);
+      }
+      group.rows.push(row);
+    }
+    return [...groups].map(([key, { title, rows }]) => (
+      <section key={key} className="task-board-recent-group">
+        <h3>{title}</h3>
+        <div className="task-board-card-grid">{rows.map(row => card(row, "recent"))}</div>
+      </section>
+    ));
   }
   function pagination(page: BoardPage | undefined, channel: PageChannel) {
     const trail = cursors[channel] ?? [];
@@ -358,7 +381,9 @@ export default function TaskBoardPage(): React.JSX.Element {
                       {more ? "查看全部" : "打开列表"}
                     </button>
                   </header>
-                  <div className="task-board-lane-body">{items.map((r) => card(r, group))}</div>
+                  <div className="task-board-lane-body">
+                    {group === "recent" ? recentGroups(items) : items.map((r) => card(r, group))}
+                  </div>
                   {more && (
                     <footer className="task-board-lane-more">
                       <button type="button" className="task-board-folded" onClick={() => go(group)}>
@@ -400,7 +425,9 @@ export default function TaskBoardPage(): React.JSX.Element {
                 </button>
               )}
             </header>
-            <div>{rows.map((r) => card(r, actual))}</div>
+            {actual === "recent"
+              ? recentGroups(rows)
+              : <div className="task-board-card-grid">{rows.map((r) => card(r, actual))}</div>}
           </section>
         )}
         {actual !== "focus" && !classic && pagination(pages?.[0], "list")}

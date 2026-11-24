@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { defaultDotsMemoryLimits, dotsMemoryLimitFields, type DotsMemoryLimit, type DotsMemoryLimits } from "@shared/dots-limits";
-import { dotsCapabilityOptions, dotsOperationEnabled, dotsOperations, resolveDotsPreferences, type DotsOperation, type DotsSettings } from "@shared/dots-settings";
+import { dotsCapabilityOptions, dotsOperationEnabled, dotsOperations, dotsSummaryInterval, resolveDotsPreferences, type DotsOperation, type DotsSettings } from "@shared/dots-settings";
 import type { AppSettingsDto, ModelInfoDto, SpaceDto } from "@shared/agent-ipc";
 import { DOTS_TASK_ID, dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
@@ -149,6 +149,16 @@ export default function DotsSettingsTab() {
             <option value="continue">自动继续已授权的工作</option><option value="notify">只通知，由我决定是否继续</option><option value="paused">暂停主动跟进和提醒</option>
           </SettingsSelect>
           <p className="settings-row-desc">已交办任务的最终成果和阻塞问题仍回到原对话。</p>
+          <form key={prefs.summaryIntervalSeconds} onSubmit={event => {
+            event.preventDefault();
+            const seconds = Number(new FormData(event.currentTarget).get("summaryIntervalSeconds"));
+            void save("小结间隔", { summaryIntervalSeconds: seconds });
+          }}>
+            <SettingsInput label="小结间隔（秒）" name="summaryIntervalSeconds" type="number" required step={1}
+              min={dotsSummaryInterval.minSeconds} max={dotsSummaryInterval.maxSeconds} defaultValue={prefs.summaryIntervalSeconds}
+              hint="同一任务的新进展会在这个间隔内合并成一条小结。" />
+            <button className="btn" type="submit">保存小结间隔</button>
+          </form>
         </SettingsSection>
         <SettingsSection title="可访问的工作空间">
           <SettingsSelect label="空间范围" value={prefs.spaceIds === null ? "all" : "selected"} onChange={e => void save("空间范围", {spaceIds: e.target.value === "all" ? null : []})}>

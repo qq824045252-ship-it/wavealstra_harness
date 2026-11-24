@@ -78,11 +78,10 @@ export class DotsReporting {
         } catch (error) {
           if (!available()) return pending;
           console.warn("[Dots] 回报生成失败", reply.operationId, error);
-          body = reply.kind === "conclusion" ? reply.text : "";
+          body = reply.text;
         }
         if (!available()) return pending;
-        if (body === DOTS_NO_CHANGE) body = reply.kind === "conclusion" ? reply.text : "";
-        if (!body && reply.kind === "conclusion") body = reply.text;
+        if (!body || body === DOTS_NO_CHANGE) body = reply.text;
         this.db.prepare("INSERT OR IGNORE INTO dots_report_text VALUES(?,?,?)").run(reply.deliveryKey, reply.operationId, body);
       }
       if (!body) return discarded;

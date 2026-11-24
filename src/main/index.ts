@@ -739,7 +739,8 @@ function registerIpc(): void {
   registerFileDialogIpc();
   const taskBoard = new TaskBoardRepository(db.connection);
   const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
-    () => broadcastToWindows(DotsIpc.changed, null), true);
+    () => broadcastToWindows(DotsIpc.changed, null),
+    () => resolveDotsPreferences(agentService.getAppSettings().dotsSettings).summaryIntervalSeconds * 1_000);
   dotsDelegations = dots;
   dotsActions = new DotsActions(db, agentService, {
     link: (...args) => dots.link(...args), list: () => dots.list(),

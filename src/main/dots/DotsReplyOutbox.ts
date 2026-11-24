@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { collectReplyCitations } from "../../shared/chat-reply-sources";
+import { dotsSummaryInterval } from "../../shared/dots-settings";
 import { DOTS_TASK_ID, type DotsAssistantReply, type DotsDelegation, type DotsReplyOrigin, type DotsTaskDelivery } from "../../shared/dots";
 import { readCommittedDotsDeliveries, type CommittedDotsDelivery, type DotsAppendOutcome } from "../agent/durable/DurableDotsReply";
 import type { DotsFollowupDecision } from "./DotsFollowup";
@@ -16,17 +17,20 @@ export type AppendDotsReply = (reply: DotsAssistantReply, isCurrent: () => boole
 
 type Event = { event_key: string; operation_id: string; status: string; interaction_id: string | null;
   task_id: string; snapshot: string; reply: string | null; settled: number };
+type SampleTiming = { sampledAt?: number; reportAt?: number; sampleFingerprint?: string };
 
 function goalDeliveryKey(taskId: string, completion: { id: string; stateVersion: number }) {
   return createHash("sha256").update(JSON.stringify([taskId, completion.id, completion.stateVersion])).digest("hex");
 }
 
-function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, terminal: boolean, sourceConclusion?: string): string {
+function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, terminal: boolean, sourceConclusion?: string,
+  sampleFingerprint?: string): string {
   return JSON.stringify({
     delivered: reply.kind,
     deliveryKey: reply.deliveryKey,
     ...(reply.completion && { completion: reply.completion }),
     ...(sourceConclusion !== undefined && { sourceConclusion: activitySummary(sourceConclusion) }),
+    ...(sampleFingerprint && { sampleFingerprint, deliveredAt }),
     ...((reply.kind !== "progress" || terminal) && { summary: activitySummary(reply.text), deliveredAt, fileCount: reply.artifacts.length }),
   });
 }
@@ -36,7 +40,8 @@ function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, termina
 export class DotsReplyOutbox {
   private handler?: { followup: DotsFollowup; append: AppendDotsReply; allowed: (taskId: string) => boolean;
     allowedReply: (kind: DotsAssistantReply["kind"]) => boolean };
-  constructor(private db: Database.Database, private changed?: (operationId: string) => void) {
+  constructor(private db: Database.Database, private changed?: (operationId: string) => void,
+    private readonly sampleIntervalMs = () => Number(dotsSummaryInterval.defaultSeconds) * 1_000) {
     db.exec(`CREATE TABLE IF NOT EXISTS dots_reply_origins(source TEXT PRIMARY KEY, conversation INTEGER NOT NULL, entry INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_plans(operation_id TEXT PRIMARY KEY,plan TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS dots_followup_requests(operation_id TEXT PRIMARY KEY, request TEXT NOT NULL);
@@ -89,19 +94,42 @@ export class DotsReplyOutbox {
       VALUES(?,?,?,'activity',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({ ...job, text })).changes > 0;
   }
 
-  observeSample(job: DotsDelegation, observation: { id: string; text: string }, interval: number): boolean {
+  observeSample(job: DotsDelegation, observation: { id: string; text: string }): boolean {
     const key = createHash("sha256").update(JSON.stringify([job.id, "sample", observation.id])).digest("hex");
+    const sampleFingerprint = createHash("sha256").update(observation.text.replace(/\s+/gu, " ").trim()).digest("hex");
     return this.db.transaction(() => {
-      if (this.db.prepare("SELECT 1 FROM dots_reply_events WHERE event_key=?").get(key)) return false;
-      const queued = this.db.prepare(`SELECT event_key, json_extract(snapshot,'$.reportAt') AS reportAt FROM dots_reply_events
+      if (this.db.prepare(`SELECT 1 FROM dots_reply_events WHERE operation_id=? AND status='sample' AND
+        (event_key=? OR CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.sampleFingerprint') END=?)`)
+        .get(job.id, key, sampleFingerprint)) return false;
+      const queued = this.db.prepare(`SELECT event_key, snapshot FROM dots_reply_events
         WHERE operation_id=? AND status='sample' AND settled=0 AND reply IS NULL`).get(job.id) as
-        { event_key: string; reportAt: number } | undefined;
+        { event_key: string; snapshot: string } | undefined;
+      const timing = queued ? JSON.parse(queued.snapshot) as SampleTiming : undefined;
       if (queued) this.db.prepare("UPDATE dots_reply_events SET settled=1,snapshot='' WHERE event_key=?").run(queued.event_key);
-      const reportAt = queued?.reportAt ?? Date.now() + interval;
+      const sampledAt = timing?.sampledAt ?? Date.now();
       this.db.prepare(`INSERT INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
-        VALUES(?,?,?,'sample',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({ ...job, text: observation.text, reportAt }));
+        VALUES(?,?,?,'sample',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({
+        ...job, text: observation.text, sampledAt, sampleFingerprint, reportAt: timing?.reportAt,
+      }));
       return true;
     })();
+  }
+
+  private sampleReadyAt(event: Pick<Event, "snapshot" | "operation_id">): number {
+    const timing = JSON.parse(event.snapshot) as SampleTiming;
+    const lastDelivered = this.db.prepare(`SELECT MAX(CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.deliveredAt') END)
+      FROM dots_reply_events WHERE operation_id=? AND status='sample' AND settled=1`).pluck().get(event.operation_id) as number | null;
+    const interval = this.sampleIntervalMs();
+    const due = timing.reportAt ?? (timing.sampledAt ?? 0) + interval;
+    return Math.max(due, (lastDelivered ?? 0) + interval);
+  }
+
+  nextSampleDelay(taskId: string): number | undefined {
+    const pending = this.db.prepare(`SELECT snapshot, operation_id FROM dots_reply_events
+      WHERE task_id=? AND status='sample' AND settled=0`).all(taskId) as Array<Pick<Event, "snapshot" | "operation_id">>;
+    const now = Date.now();
+    const delays = pending.map(event => this.sampleReadyAt(event) - now).filter(delay => delay > 0);
+    return delays.length ? Math.min(...delays) : undefined;
   }
 
   targets(): string[] {
@@ -232,9 +260,12 @@ export class DotsReplyOutbox {
         ? this.db.prepare("SELECT json_extract(reply,'$.text') FROM dots_reply_events WHERE event_key=?").pluck()
           .get(event.event_key) as string | null | undefined
         : undefined;
+      const sampleFingerprint = receipt && event.status === "sample"
+        ? (JSON.parse(event.snapshot) as SampleTiming).sampleFingerprint ?? event.event_key : undefined;
       // The conversation owns the full reply. Keep the receipt and a short Activity summary.
       const update = this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=? AND settled=? AND snapshot=?")
-        .run(receipt ? deliverySnapshot(receipt, event.status === "completed" || event.status === "failed", sourceConclusion ?? undefined) : "",
+        .run(receipt ? deliverySnapshot(receipt, event.status === "completed" || event.status === "failed",
+          sourceConclusion ?? undefined, sampleFingerprint) : "",
           event.event_key, event.settled, event.snapshot);
       if (!update.changes) return false;
       if (event.status === "activity" && receipt)
@@ -247,7 +278,7 @@ export class DotsReplyOutbox {
   }
 
   private async deliver(event: Event, alive: () => boolean, handler: NonNullable<DotsReplyOutbox["handler"]>) {
-    if (event.status === "sample" && (JSON.parse(event.snapshot) as { reportAt: number }).reportAt > Date.now()) return true;
+    if (event.status === "sample" && this.sampleReadyAt(event) > Date.now()) return true;
     const disposition = this.disposition(event);
     const preparedReply = event.reply ? JSON.parse(event.reply) as DotsAssistantReply : undefined;
     if (disposition !== "active" || !handler.allowed(event.task_id) || preparedReply && !handler.allowedReply(preparedReply.kind)) {

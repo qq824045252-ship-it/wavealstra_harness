@@ -2,9 +2,11 @@ import type { BoardAction, TaskBoardRow, TaskBoardView } from "@shared/task-boar
 import { IconCalendar, IconChevronRight, IconFolder, IconPin } from "@/components/common/icons";
 import { formatDayLabel, msToDateInput, startOfLocalDay } from "@/lib/projectPlanSchedule";
 import { foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
+import { useDotsActivity } from "@/lib/dotsActivityFeed";
 import { TASK_STATUS_LABELS } from "@/utils/taskFilters";
 
 const statuses: Record<string, string> = { ...TASK_STATUS_LABELS, unknown: "状态待核实" };
+const dotsPreviewLabels = { details: "任务详情", streaming: "实时输出", summary: "总结" };
 const format = new Intl.DateTimeFormat("zh-CN", {
   month: "numeric",
   day: "numeric",
@@ -34,6 +36,21 @@ function cardStage(row: TaskBoardRow): { label: string; action: string; detail?:
   if (row.status === "completed") return { label, action: "查看结果" };
   if (row.status === "in_progress") return { label, action: "查看进展" };
   return { label, action: row.request ? "查看原对话" : "打开任务" };
+}
+
+function TaskBoardDotsPreview({ taskId }: { taskId: string }) {
+  const { items } = useDotsActivity();
+  const preview = items.find(item => item.taskId === taskId)?.presentation;
+  if (!preview?.text) return null;
+
+  return (
+    <span className="task-board-dots-preview" data-phase={preview.phase}>
+      <span className="task-board-dots-label">{dotsPreviewLabels[preview.phase]}</span>
+      <span className="task-board-dots-text">
+        <span data-active={preview.phase === "streaming" && preview.active ? true : undefined}>{preview.text}</span>
+      </span>
+    </span>
+  );
 }
 
 export function TaskBoardCard({
@@ -74,6 +91,7 @@ export function TaskBoardCard({
         aria-label={`${stage.action}：${row.title}${unconfirmedCompletion ? " · 未确认" : ""}`}>
         <span className="task-board-status" data-status={row.status} data-wait={row.wait?.kind}>{stage.label}</span>
         <strong>{row.title}</strong>
+        {group === "running" && <TaskBoardDotsPreview taskId={row.id} />}
         {stage.detail && <span className="task-board-blocker">{stage.detail}</span>}
         {why && <span className="task-board-why">{why}</span>}
         {row.resultSinceFollow && (

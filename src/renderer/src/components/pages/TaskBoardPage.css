@@ -118,6 +118,33 @@
   font-weight: 600;
   line-height: 1.5;
 }
+.task-board-dots-preview { display: grid; gap: 3px; min-width: 0; }
+.task-board-dots-label { color: var(--fg-secondary); font-size: 11px; }
+.task-board-dots-text {
+  display: block;
+  max-height: 6em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.task-board-dots-preview[data-phase="streaming"] .task-board-dots-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.task-board-dots-text > span { flex: none; }
+.task-board-dots-text [data-active]::after {
+  content: "";
+  display: inline-block;
+  width: .42em;
+  height: .9em;
+  margin-left: .2em;
+  background: currentColor;
+  vertical-align: -.08em;
+  opacity: .65;
+}
 .task-board-status { display: inline-flex; align-items: center; gap: 5px; min-height: 19px; padding-right: 45px; color: var(--lane-color); font-size: 11px; }
 .task-board-status:not([data-status="completed"])::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .task-board-status[data-status="failed"] { color: light-dark(#ab4240, #f3aaa6); }
@@ -166,9 +193,19 @@
 .task-board-lane .task-board-pagination { justify-content: space-between; gap: 4px; margin: 0; padding: 8px; border-top: 1px solid var(--border-subtle); }
 .task-board-lane .task-board-pagination .btn { min-height: 26px; padding: 3px 5px; font-size: 11px; }
 .task-board-focus, .task-board-list { min-height: 0; overflow: auto; padding: 0 24px 20px; }
-.task-board-focus { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(255px,100%),1fr)); align-content: start; align-items: start; gap: 12px; }
-.task-board-focus .task-board-lane-body { overflow: visible; }
-.task-board-list > div { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(235px,100%),1fr)); gap: 8px; align-items: start; }
+.task-board-focus {
+  display: grid;
+  grid-template-columns: repeat(auto-fit,minmax(min(255px,100%),1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  align-items: start;
+  gap: 12px;
+}
+.task-board-focus .task-board-lane-body { max-height: none; overflow: visible; }
+.task-board-list .task-board-card-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(235px,100%),1fr)); gap: 8px; align-items: start; }
+.task-board-recent-group + .task-board-recent-group { margin-top: 12px; }
+.task-board-recent-group h3 { margin: 0 0 7px; color: var(--fg-secondary); font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
+.task-board-list .task-board-recent-group + .task-board-recent-group { margin-top: 18px; }
 .task-board-list header { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; }
 .task-board-list h2 { margin: 0; font-size: 16px; }
 .task-board-drill, .task-board-refresh, .task-board-actions button { border: 0; font: inherit; font-size: 12px; color: var(--fg-secondary); background: transparent; cursor: pointer; }

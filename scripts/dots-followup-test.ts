@@ -1088,7 +1088,7 @@ try {
   previewDb.upsertTask({ id: previewTaskId, title: "核对三份台账", updatedAt: Date.now() });
   let observation = { id: "1:11", generationId: 10, text: "开始核对三份台账", preview: "开始核对三份台账" };
   const previewJournal = new DotsDelegations(previewDb.connection,
-    async () => ({ status: "running", text: "", artifacts: [], observation }), () => {}, true);
+    async () => ({ status: "running", text: "", artifacts: [], observation }), () => {}, () => 15_000);
   try {
     previewJournal.link(previewTaskId, previewOperationId, "preview-source");
     const activity = new DotsActivity(previewDb.connection, () => true, id => previewJournal.taskLiveOutput(id));

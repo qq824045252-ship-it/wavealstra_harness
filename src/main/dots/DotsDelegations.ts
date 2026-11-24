@@ -54,7 +54,7 @@ export class DotsDelegations {
   private readonly liveOutput = new Map<string, DotsTaskOutput & { generationId: number }>();
   private liveNotify?: ReturnType<typeof setTimeout>;
   constructor(private db: Database.Database, private inspect: (taskId: string, operationId: string) => Promise<Result | undefined>,
-    private notify: () => void, private readonly reportSamples = false) {
+    private notify: () => void, private readonly sampleIntervalMs?: () => number) {
     db.exec(`CREATE TABLE IF NOT EXISTS dots_delegations(
       seq INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, task_id TEXT NOT NULL, source_message_id TEXT NOT NULL,
       title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', text TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]',
@@ -82,7 +82,7 @@ export class DotsDelegations {
     this.outbox = new DotsReplyOutbox(db, operationId => {
       this.notify();
       if (!this.disposed) this.refreshDependentTasks(operationId);
-    });
+    }, sampleIntervalMs);
   }
 
   connect(followup: DotsFollowup, append: AppendDotsReply, allowed?: (taskId: string) => boolean,
@@ -423,7 +423,7 @@ export class DotsDelegations {
     if (!("taskId" in patch)) return;
     const state = patch.type === "durable_snapshot" ? patch.snapshot : patch.type === "durable_delta" ? patch.delta.state : undefined;
     const rows = patch.type === "durable_snapshot" ? patch.snapshot.messages : patch.type === "durable_delta" ? patch.delta.upserts : [];
-    if (this.reportSamples) {
+    if (this.sampleIntervalMs) {
       const live = rows.filter(row => row.dotsWorkerOutput && row.text.trim()).at(-1);
       if (live?.dotsWorkerOutput) {
         const { operationId, generationId } = live.dotsWorkerOutput;
@@ -431,7 +431,7 @@ export class DotsDelegations {
       }
     }
     const checkpoint = rows.some(row => row.dotsWorkerProgress);
-    const observation = this.reportSamples && rows.some(row => row.role === "assistant" && row.entryId && (row.text.trim() || row.thinking?.trim()));
+    const observation = this.sampleIntervalMs && rows.some(row => row.role === "assistant" && row.entryId && (row.text.trim() || row.thinking?.trim()));
     if (checkpoint || observation || patch.type === "conversation_interaction_snapshot" || patch.type === "conversation_goal_snapshot"
       || state?.status === "waiting_input" || (state && !state.busy && (!state.queued || state.outcome !== undefined))) this.refresh(patch.taskId);
   }
@@ -473,7 +473,7 @@ export class DotsDelegations {
       this.retries.delete(taskId);
       if (outboxOnly) this.flushActivity(taskId);
       else this.refresh(taskId);
-    }, 2000);
+    }, Math.min(2_000, this.outbox.nextSampleDelay(taskId) ?? 2_000));
     timer.unref();
     this.retries.set(taskId, timer);
   }
@@ -493,11 +493,11 @@ export class DotsDelegations {
       const result = await this.inspect(taskId, row.operation_id);
       if (this.disposed) return;
       if (!result) continue;
-      const sample = this.reportSamples && result.status === "running" ? result.observation : undefined;
+      const sample = this.sampleIntervalMs && result.status === "running" ? result.observation : undefined;
       if (sample) {
         this.showOutput(row.operation_id, sample.generationId, sample.preview, false);
         const tracking = this.tracking(row);
-        if (tracking?.milestones) this.outbox.observeSample(toDelegation(row), sample, tracking.heartbeatMs ?? 15_000);
+        if (tracking?.milestones) this.outbox.observeSample(toDelegation(row), sample);
       }
       if (result.status !== "running") this.liveOutput.delete(row.operation_id);
       const changed = this.db.transaction(() => {

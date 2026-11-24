@@ -58,6 +58,7 @@ type SqlRow = {
   id: string;
   title: string;
   space_id: string | null;
+  project_id: string | null;
   status: string | null;
   updated_at: number;
   due_at: number | null;
@@ -251,7 +252,7 @@ export class TaskBoardRepository {
     if (q.preview && !["today", "attention"].includes(q.view)) match += ` AND coalesce(${deferred},0)<=@now`;
     const size = q.preview ? 4 : q.lane ? 10 : 25;
     const scope = q.scope === undefined ? "" : " AND b.space_id IS @scope";
-    const project = q.projectId ? " AND b.id IN (SELECT id FROM tasks WHERE project_id=@project)" : "";
+    const project = q.projectId ? " AND b.project_id=@project" : "";
     const search = q.search?.trim() ? " AND instr(lower(b.title),lower(@term))>0" : "";
     const select = (source: string, paged: boolean) => `SELECT ${paged ? `b.*,${rank} AS rank,${at} AS at` : "b.id"} FROM
       ${candidates ? `ranked k CROSS JOIN ${source} b ON b.id=k.id` : `${source} b`}
@@ -385,6 +386,7 @@ export class TaskBoardRepository {
       id: b.id,
       title: b.title,
       spaceId: b.space_id,
+      ...(b.project_id && { projectId: b.project_id }),
       status: b.status ?? "planning",
       updatedAt: b.updated_at,
       dueAt: b.due_at ?? undefined,

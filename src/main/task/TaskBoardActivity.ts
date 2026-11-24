@@ -43,7 +43,8 @@ export function ensureTaskBoard(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_board_cron_started ON cron_runs(started_at DESC,id);
       CREATE TEMP TABLE IF NOT EXISTS board_waits(id TEXT NOT NULL, token TEXT NOT NULL, message TEXT, detail TEXT, at INTEGER, PRIMARY KEY(id,token));
       CREATE TEMP VIEW IF NOT EXISTS board_native AS SELECT t.id,t.title,t.space_id,t.status,t.updated_at,t.start_at,t.due_at,
-        t.is_favorited AS pinned,t.done_acked_at AS ack,NULL AS request_data,NULL AS source_error FROM tasks t WHERE t.archived=0 AND t.id!='${DOTS_TASK_ID}'
+        t.is_favorited AS pinned,t.done_acked_at AS ack,NULL AS request_data,NULL AS source_error,t.project_id
+        FROM tasks t WHERE t.archived=0 AND t.id!='${DOTS_TASK_ID}'
         AND (t.space_id IS NOT NULL OR NOT (t.id GLOB 'gateway-chat-*' AND length(t.id)=77 AND substr(t.id,14) NOT GLOB '*[^a-f0-9]*'))
         AND NOT EXISTS (SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id=t.id AND w.state='trashed');
       CREATE TEMP VIEW IF NOT EXISTS board_requests AS SELECT ${botId} AS id,coalesce(nullif(trim(substr(u.text,1,120)),''),'附件对话') AS title,
@@ -51,7 +52,7 @@ export function ensureTaskBoard(db: Database.Database): void {
         CASE a.status WHEN 'queued' THEN 'pending' WHEN 'running' THEN 'in_progress' WHEN 'cancelled' THEN 'stopped' ELSE a.status END AS status,
         a.updated_at,NULL AS start_at,NULL AS due_at,0 AS pinned,NULL AS ack,
         json_object('botId',r.bot_id,'teamId',c.team_id,'conversationId',r.conversation_id,'requestId',r.request_id,
-          'messageId',a.message_id,'createdAt',u.created_at,'status',a.status) AS request_data,a.error AS source_error
+          'messageId',a.message_id,'createdAt',u.created_at,'status',a.status) AS request_data,a.error AS source_error,NULL AS project_id
         ${botSource} AND c.archived_at IS NULL;
       CREATE TRIGGER IF NOT EXISTS board_task_end_insert AFTER INSERT ON tasks WHEN NEW.status IN ${terminal} BEGIN
         ${observation("NEW.id", "result", "NEW.updated_at", "WHERE 1")}; END;

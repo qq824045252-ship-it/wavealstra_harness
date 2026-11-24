@@ -37,6 +37,7 @@ export interface TaskBoardRow {
   id: string;
   title: string;
   spaceId: string | null;
+  projectId?: string;
   status: string;
   updatedAt: number;
   dueAt?: number;

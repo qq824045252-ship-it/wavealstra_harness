@@ -3,6 +3,7 @@ import { resolveDotsMemoryLimits, type DotsMemoryLimits } from "./dots-limits";
 /** Dots 提示词编辑器每个输入框的字符上限。 */
 export const maxDotsPromptChars = 8000;
 export const DOTS_DESKTOP_PREVIEW = "dots_desktop_preview";
+export const dotsSummaryInterval = { defaultSeconds: 15, minSeconds: 1, maxSeconds: 86_400 } as const;
 
 export const dotsPromptCategories = [
   { id: "role", label: "身份与办事范围", description: "Dots 是谁，什么时候直接答或交办。" },
@@ -52,6 +53,7 @@ export interface DotsSettings extends Record<DotsCapability, boolean> {
   memoryMode: "readWrite" | "readOnly" | "off";
   memoryLimits: DotsMemoryLimits;
   followupMode: "continue" | "notify" | "paused";
+  summaryIntervalSeconds: number;
   spaceIds: string[] | null;
   operations: Partial<Record<DotsOperation, boolean>>;
 }
@@ -84,12 +86,16 @@ export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): 
   }
   const memoryMode = input.memoryMode ?? fallback?.memoryMode ?? "readWrite";
   const followupMode = input.followupMode ?? fallback?.followupMode ?? "continue";
+  const interval = input.summaryIntervalSeconds;
   const spaces = input.spaceIds === undefined ? fallback?.spaceIds : input.spaceIds;
   return { ...groups, operations,
     modelId: input.modelId === null ? null : typeof input.modelId === "string" ? input.modelId.trim() || null : fallback?.modelId ?? null,
     memoryMode: ["readWrite", "readOnly", "off"].includes(memoryMode) ? memoryMode : "readWrite",
     memoryLimits: resolveDotsMemoryLimits(input.memoryLimits, fallback?.memoryLimits),
     followupMode: ["continue", "notify", "paused"].includes(followupMode) ? followupMode : "continue",
+    summaryIntervalSeconds: typeof interval === "number" && Number.isInteger(interval)
+      && interval >= dotsSummaryInterval.minSeconds && interval <= dotsSummaryInterval.maxSeconds
+      ? interval : fallback?.summaryIntervalSeconds ?? dotsSummaryInterval.defaultSeconds,
     spaceIds: spaces === undefined || spaces === null ? null : Array.isArray(spaces) ? [...new Set(spaces.filter(id => typeof id === "string" && id.trim()))] : [],
   };
 }

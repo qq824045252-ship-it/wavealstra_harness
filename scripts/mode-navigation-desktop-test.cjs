@@ -614,6 +614,65 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
       () => evaluate(`document.querySelectorAll('.task-board-list .task-board-card').length===${runningPreview.total}`),
       'the folded hint opens the complete running list',
     );
+
+    await evaluate(`(async () => {
+      const db = window.api.db;
+      await db.upsertSpace({id: 'board-recent-review', name: '交付审查'});
+      await db.upsertSpace({id: 'board-recent-research', name: '市场调研'});
+      const result = await db.createProject({name: '新版交付'});
+      if (!result.ok) throw Error('Could not create the board test project');
+      const rows = [
+        ['recent-review', '核对上线要求', 'board-recent-review', result.project.id],
+        ['recent-research', '整理市场数据', 'board-recent-research'],
+        ['recent-delivery', '确认交付日期', 'board-delivery', result.project.id],
+        ['recent-independent', '记录个人待办', null],
+      ];
+      for (const [id, title, spaceId, projectId] of rows)
+        await db.upsertTask({id, title, spaceId, projectId, status: 'completed', updatedAt: Date.now()});
+    })()`);
+    const recentDb = new (require('better-sqlite3'))(path.join(home, '.mybuddy', 'app.db'));
+    try {
+      const note = recentDb.prepare("INSERT INTO task_board_days VALUES(?,'follow',date(?/1000,'unixepoch','localtime'),?,'测试跟进')");
+      const time = Date.now();
+      for (const [index, id] of ['recent-review', 'recent-research', 'recent-delivery', 'recent-independent'].entries()) {
+        const at = time - index * 1000;
+        note.run(id, at, at);
+      }
+    } finally { recentDb.close(); }
+    await reloadDesktop();
+    await click('.desktop-rail-module', '任务看板');
+    await click('#desktop-module-list button', '全部任务');
+    await boardView('我的焦点');
+    const recent = '[data-section="recent"]';
+    const grouping = (area) => evaluate(`[...document.querySelectorAll(${JSON.stringify(area + ' .task-board-recent-group')})]
+      .map(group => [group.querySelector('h3').textContent, [...group.querySelectorAll('.task-board-card')].map(card => card.title)])`);
+    const expected = [
+      ['新版交付', ['核对上线要求', '确认交付日期']],
+      ['市场调研', ['整理市场数据']],
+      ['独立任务', ['记录个人待办']],
+    ];
+    await visible(recent + ' .task-board-card[title="核对上线要求"]');
+    assert.deepEqual(await grouping(recent), expected);
+    for (const width of [1090, 880, 540]) {
+      await metrics(width, 620);
+      const violations = await evaluate(`(() => {
+        const lanes = [...document.querySelectorAll('.task-board-focus > .task-board-lane')];
+        const bounds = lanes.map(lane => lane.getBoundingClientRect());
+        return lanes.flatMap((lane, index) => {
+          const box = bounds[index];
+          const outside = [...lane.querySelectorAll('.task-board-item')].some(item => item.getBoundingClientRect().bottom > box.bottom + 1);
+          const overlaps = bounds.slice(index + 1).some(next => box.left < next.right && next.left < box.right && box.top < next.bottom && next.top < box.bottom);
+          return outside || overlaps ? [lane.dataset.section] : [];
+        });
+      })()`);
+      assert.deepEqual(violations, [], `focus lane and card bounds are disjoint at ${width}px`);
+    }
+    await metrics(1090, 720);
+    await screenshot('task-board-no-overlap');
+    await boardView('最近在做');
+    await visible('.task-board-list .task-board-card[title="核对上线要求"]');
+    assert.deepEqual((await grouping('.task-board-list')).slice(0, 3), expected);
+    await screenshot('task-board-recent-projects');
   }
 }, { name: process.argv.includes('--task-board') ? 'task-board-desktop' : 'mode-navigation-desktop',
   watchRenderer: !process.argv.includes('--task-board'),
