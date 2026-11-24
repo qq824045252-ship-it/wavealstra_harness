@@ -205,13 +205,13 @@
   background: var(--module-header);
 }
 
-.desktop-app :is(.project-desk-tabs, .workspace-detail-tabs) {
+.desktop-app .project-desk-tabs {
   gap: 4px;
   background: var(--surface-main);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.desktop-app :is(.project-desk-tab, .workspace-detail-tab).active {
+.desktop-app .project-desk-tab.active {
   color: var(--accent);
   background: var(--module-tint);
   box-shadow: inset 0 -2px var(--accent);
@@ -237,6 +237,11 @@
 
 .desktop-app .workspace-detail {
   background: var(--surface-main);
+}
+
+.desktop-app .workspace-detail-header {
+  padding-block-end: 8px;
+  border-bottom: 0;
 }
 
 .desktop-app .workspace-detail-title-row {

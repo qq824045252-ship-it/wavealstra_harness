@@ -16,7 +16,7 @@ import TerminalView from "@/components/artifact/TerminalView";
 import TerminalTabsBar from "@/components/artifact/TerminalTabsBar";
 import BlueprintCaptureDialog from "@/components/blueprint/BlueprintCaptureDialog";
 import MoveWorkspaceDialog from "./MoveWorkspaceDialog";
-import { IconChevronRight } from "@/components/common/icons";
+import { IconChevronRight, IconPuzzle, IconTerminal } from "@/components/common/icons";
 import WorkspaceIcon from "./WorkspaceIcon";
 import WorkspaceIconDialog from "./WorkspaceIconDialog";
 import { getWorkspaceBreadcrumb } from "@/lib/workspaceDisplay";
@@ -24,8 +24,21 @@ import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import type { ProjectUnsavedGuard } from "@/lib/projectWorkspace";
 import UnsavedChangesDialog from "@/components/pages/project/UnsavedChangesDialog";
 
-type Tab = "overview" | "notes" | "memory" | "context" | "library" | "files" | "gadgets" | "terminal";
-const TAB_LABELS: Record<Tab, string> = { overview: "概览", notes: "便签", memory: "记忆", context: "上下文", library: "资料", files: "文件", gadgets: "Gadgets", terminal: "终端" };
+const WORKSPACE_NAVIGATION = [
+  { label: "工作区内容", items: [
+    { id: "overview", label: "概览" },
+    { id: "notes", label: "便签" },
+    { id: "memory", label: "记忆" },
+    { id: "context", label: "上下文" },
+    { id: "library", label: "资料" },
+    { id: "files", label: "文件" },
+  ] },
+  { label: "工作区工具", items: [
+    { id: "gadgets", label: "Gadgets", icon: IconPuzzle },
+    { id: "terminal", label: "终端", icon: IconTerminal },
+  ] },
+] as const;
+type Tab = typeof WORKSPACE_NAVIGATION[number]["items"][number]["id"];
 
 function relativeTimeLabel(ts: number): string {
   const seconds = Math.floor((Date.now() - ts) / 1000);
@@ -62,6 +75,19 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   const spaceRequests = foregroundRequests.filter(request => request.spaceId === activeWorkspaceId);
   const newTask = useAppStore((state) => state.newTask);
   const [tab, setTabNow] = useState<Tab>("overview");
+  const navigationRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const navigation = navigationRef.current;
+    if (!navigation) return;
+    const revealActive = (): void => {
+      navigation.querySelector("[aria-current='page']")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    };
+    revealActive();
+    const observer = new ResizeObserver(revealActive);
+    observer.observe(navigation);
+    for (const group of navigation.children) observer.observe(group);
+    return () => observer.disconnect();
+  }, [activeWorkspaceId, foreground, tab]);
   const materialGuard = useRef<ProjectUnsavedGuard | null>(null);
   const [pendingTab, setPendingTab] = useState<Tab | null>(null);
   const [guardBusy, setGuardBusy] = useState(false);
@@ -96,7 +122,7 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
   const [moveOpen, setMoveOpen] = useState(false);
   const [fileCount, setFileCount] = useState<number | null>(null);
   const [gadgets, setGadgets] = useState<GadgetListItem[]>([]);
-  const { tabs: terminalTabs } = useActiveTerminalTabs();
+  const { tabs: terminalTabs } = useActiveTerminalTabs("workspace");
   const [contextCounts, setContextCounts] = useState({ local: 0, inherited: 0 });
   const [libraryCounts, setLibraryCounts] = useState({ owned: 0, direct: 0, inherited: 0 });
   const [memoryCounts, setMemoryCounts] = useState({ direct: 0, inherited: 0 });
@@ -195,26 +221,23 @@ export default function WorkspaceDetail(): React.JSX.Element | null {
       </div>
     </header>
 
-    <nav className="workspace-detail-tabs">
-      {(Object.keys(TAB_LABELS) as Tab[]).map((key) => {
-        const isTerminal = key === "terminal";
-        const terminalCount = isTerminal ? terminalTabs.length : 0;
-        return (
-          <button
-            key={key}
-            className={`workspace-detail-tab ${tab === key ? "active" : ""}`}
-            onClick={() => setTab(key)}
-          >
-            <span>{TAB_LABELS[key]}</span>
-            {isTerminal && terminalCount > 0 && (
-              <span className="workspace-tab-count-badge">
-                {terminalCount > 99 ? "99+" : terminalCount}
-              </span>
-            )}
-          </button>
-        );
-      })}
-    </nav>
+    <div className="workspace-detail-navigation">
+      <nav ref={navigationRef} className="workspace-detail-tabs" aria-label="工作区导航">
+        {WORKSPACE_NAVIGATION.map(group => <div key={group.label} className="workspace-detail-tab-group" role="group" aria-label={group.label}>
+          {group.items.map(item => {
+            const Icon = "icon" in item ? item.icon : undefined;
+            return <button key={item.id} type="button" className="workspace-detail-tab"
+              aria-current={tab === item.id ? "page" : undefined} onClick={() => setTab(item.id)}>
+              {Icon && <Icon size={14} aria-hidden="true" />}
+              <span>{item.label}</span>
+              {item.id === "terminal" && terminalTabs.length > 0 && <span className="workspace-tab-count-badge">
+                {terminalTabs.length > 99 ? "99+" : terminalTabs.length}
+              </span>}
+            </button>;
+          })}
+        </div>)}
+      </nav>
+    </div>
     <div className={`workspace-detail-body${tab === "terminal" ? " workspace-detail-body--terminal" : ""}`}>
       {tab === "overview" && <div className="workspace-overview">
         {foregroundError && <p role="alert">前台任务暂时无法加载：{foregroundError}</p>}

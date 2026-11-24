@@ -7,10 +7,16 @@
   color: var(--fg);
 }
 
+html[data-theme="light"] :is(.artifact-panel, .extension-flyout-card) {
+  --artifact-selection: var(--accent-surface);
+  --artifact-selection-border: color-mix(in srgb, var(--accent) 16%, var(--border-default));
+  --artifact-toolbar-surface: var(--surface-right);
+}
+
 .artifact-panel .extension-top-bar {
   padding-inline: 8px;
   border-bottom-color: var(--border-default);
-  background: var(--surface-elevated);
+  background: var(--artifact-toolbar-surface, var(--surface-elevated));
 }
 
 .artifact-panel .extension-nav-tabs {
@@ -70,6 +76,10 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: var(--surface-elevated);
+}
+
+html[data-theme="light"] .artifact-panel .extension-url-bar {
+  background: var(--surface-input);
 }
 
 .artifact-panel .extension-url-bar:focus-within,
@@ -181,7 +191,7 @@
 
 .artifact-panel :is(.terminal-toolbar, .code-view-toolbar, .image-viewer-toolbar, .pdf-viewer-toolbar, .browser-console-toolbar) {
   border-bottom-color: var(--border-default);
-  background: var(--surface-elevated);
+  background: var(--artifact-toolbar-surface, var(--surface-elevated));
 }
 
 .artifact-panel :is(.code-view-badge, .image-viewer-scale, .browser-console-filter-chip) {
