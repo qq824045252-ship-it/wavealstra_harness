@@ -1,5 +1,6 @@
 package com.mybuddy.remote
 
+import android.content.res.Configuration
 import android.os.Bundle
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -15,16 +16,25 @@ class MainActivity : BridgeActivity() {
 
         // Edge-to-edge：WebView 内容延伸到系统栏下方，留白由 Web 端 safe-area 处理
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        // Claude 暖浅色 UI：状态栏 / 导航栏图标强制深色（黑/深灰），在米白背景下清晰可辨
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
+        applySystemBarAppearance()
 
         // 确保 WebView 能够响应触控焦点唤起软键盘
         bridge?.webView?.apply {
             isFocusableInTouchMode = true
             isFocusable = true
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applySystemBarAppearance()
+    }
+
+    private fun applySystemBarAppearance() {
+        val darkIcons = resources.getBoolean(R.bool.window_uses_dark_system_icons)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = darkIcons
+            isAppearanceLightNavigationBars = darkIcons
         }
     }
 }

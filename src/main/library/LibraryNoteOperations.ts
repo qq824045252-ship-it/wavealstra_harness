@@ -1,6 +1,7 @@
-import { dialog, shell, type BrowserWindow, type WebContents } from "electron";
+import { shell, type BrowserWindow, type WebContents } from "electron";
+import { showOpenFileDialog, showSaveFileDialog } from "../FileDialogService";
 import { readFileSync, statSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
 import { gzip, gunzip } from "node:zlib";
@@ -9,13 +10,17 @@ import { parseHTML } from "linkedom/worker";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 import JSZip from "jszip";
-import { LIBRARY_INLINE_FILE_MAX_BYTES, type LibraryItemDto, type LibraryNoteOperation } from "../../shared/library-ipc";
+import { LIBRARY_INLINE_FILE_MAX_BYTES, type LibraryItemDto, type LibraryNoteOperation, type LibraryNoteOperationResults } from "../../shared/library-ipc";
 import type { BrowserHost } from "../browser/BrowserHost";
 import type { LibraryService } from "./LibraryService";
 import { libraryNotesBackup } from "./library-note-backup";
 import { rewriteNoteLinks } from "./library-note-links";
 
 const IMAGE_LIMIT = 20 * 1024 * 1024;
+const NOTE_IMAGE_TYPES = new Map([
+  ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"], ["gif", "image/gif"],
+  ["webp", "image/webp"], ["avif", "image/avif"], ["bmp", "image/bmp"],
+]);
 const BACKUP_LIMIT = 256 * 1024 * 1024;
 const NOTE_LINK = /^mybuddy-library:\/\/local\/([A-Za-z0-9_-]+)\/?$/;
 const printing = new WeakSet<WebContents>();
@@ -49,6 +54,7 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
       const [note] = library.requireOwnedNoteItems(request.owner, [request.id]);
       return library.previewUrl(library.addNoteImage(request.owner, note.spaceId, note.collectionId, request.name, request.mime, request.bytes).id);
     }
+    case "pickImages": return pickNoteImages(library, parent, request);
     case "openLink":
       if (!/^https?:$/i.test(new URL(request.url).protocol)) throw new Error("只能打开 HTTP 或 HTTPS 网页");
       await shell.openExternal(request.url);
@@ -63,13 +69,13 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
     case "importFolder": {
       if (request.spaceId) library.requireOwnedNoteDestination(request.owner, request.spaceId, request.collectionId);
       const options: Electron.OpenDialogOptions = { title: "导入本地文件夹", properties: ["openDirectory"] };
-      const selection = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
+      const selection = await showOpenFileDialog(parent, options);
       if (selection.canceled || !selection.filePaths[0]) return null;
       return library.importFolder({ ...request, sourcePath: selection.filePaths[0] });
     }
     case "backup": {
       const options = { defaultPath: "MyBuddy-笔记备份.mynotes", filters: [{ name: "MyBuddy 笔记备份", extensions: ["mynotes"] }] };
-      const result = await (parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options));
+      const result = await showSaveFileDialog(parent, options);
       if (result.canceled || !result.filePath) return false;
       const archive = JSON.stringify(libraryNotesBackup.parse(library.createNoteBackup(request.owner)));
       if (Buffer.byteLength(archive) > BACKUP_LIMIT) throw new Error("资料超过单份本地备份的大小上限");
@@ -78,7 +84,7 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
     }
     case "restoreBackup": {
       const options: Electron.OpenDialogOptions = { properties: ["openFile"], filters: [{ name: "MyBuddy 笔记备份", extensions: ["mynotes"] }] };
-      const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options));
+      const result = await showOpenFileDialog(parent, options);
       const path = result.filePaths[0];
       if (result.canceled || !path) return null;
       if ((await stat(path)).size > BACKUP_LIMIT) throw new Error("备份文件过大");
@@ -89,6 +95,82 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
     }
     case "export": return exportNotes(library, parent, request);
     case "clip": return clipPage(library, browser, request);
+  }
+}
+
+async function pickNoteImages(
+  library: LibraryService,
+  parent: BrowserWindow | null,
+  { owner, id }: Extract<LibraryNoteOperation, { type: "pickImages" }>,
+): Promise<LibraryNoteOperationResults["pickImages"]> {
+  const getNote = () => {
+    const [note] = library.requireOwnedNoteItems(owner, [id]);
+    if (note.kind !== "markdown") throw new Error("请选择可编辑的笔记");
+    return note;
+  };
+  getNote();
+  const selection = await showOpenFileDialog(parent, {
+    title: "插入图片", buttonLabel: "插入", properties: ["openFile", "multiSelections"],
+    filters: [{ name: "图片", extensions: [...NOTE_IMAGE_TYPES.keys()] }],
+  });
+  const images: LibraryNoteOperationResults["pickImages"]["images"] = [];
+  const errors: string[] = [];
+  if (selection.canceled) return { images, errors };
+  for (const path of selection.filePaths) {
+    const name = basename(path);
+    try {
+      const mime = NOTE_IMAGE_TYPES.get(extname(name).slice(1).toLowerCase());
+      if (!mime) throw new Error("请选择 PNG、JPEG、GIF、WebP、AVIF 或 BMP 图片");
+      const bytes = await readPickedImage(path);
+      if (!matchesImageMime(bytes, mime)) throw new Error("图片内容与文件格式不符");
+      const note = getNote();
+      const image = library.addNoteImage(owner, note.spaceId, note.collectionId, name, mime, bytes);
+      images.push({ name, url: library.previewUrl(image.id) });
+    } catch (error) {
+      errors.push(`${name}：${error instanceof Error ? error.message : "无法导入图片"}`);
+    }
+  }
+  return { images, errors };
+}
+
+async function readPickedImage(path: string): Promise<Buffer> {
+  const file = await open(path, "r");
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || !info.size) throw new Error("图片为空或不可读取");
+    if (info.size > IMAGE_LIMIT) throw new Error("图片大小超过 20 MiB");
+    const bytes = Buffer.allocUnsafe(info.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    if (length !== info.size) throw new Error("读取期间图片已更改，请重新选择");
+    return bytes.subarray(0, length);
+  } finally {
+    await file.close();
+  }
+}
+
+function matchesImageMime(bytes: Buffer, mime: string): boolean {
+  const header = (start: number, end: number) => bytes.toString("latin1", start, end);
+  switch (mime) {
+    case "image/png": return bytes.length >= 24 && header(0, 8) === "\x89PNG\r\n\x1a\n";
+    case "image/jpeg": return bytes.length >= 4 && header(0, 3) === "\xff\xd8\xff";
+    case "image/gif": return bytes.length >= 13 && /^GIF8[79]a$/.test(header(0, 6));
+    case "image/webp": return bytes.length >= 16 && header(0, 4) === "RIFF" && header(8, 12) === "WEBP";
+    case "image/bmp": return bytes.length >= 26 && header(0, 2) === "BM";
+    case "image/avif": {
+      if (bytes.length < 16 || header(4, 8) !== "ftyp") return false;
+      if (/^avi[fs]$/.test(header(8, 12))) return true;
+      const boxLength = Math.min(bytes.readUInt32BE(0), bytes.length);
+      for (let offset = 16; offset + 4 <= boxLength; offset += 4) {
+        if (/^avi[fs]$/.test(header(offset, offset + 4))) return true;
+      }
+      return false;
+    }
+    default: return false;
   }
 }
 
@@ -240,7 +322,7 @@ async function exportNotes(library: LibraryService, parent: BrowserWindow | null
   const ext = archive ? "zip" : format === "markdown" ? "md" : format;
   const options = { defaultPath: first.item.title.replace(/[<>:"/\\|?*]/g, "_").slice(0, 120) + "." + ext,
     filters: [{ name: ext.toUpperCase(), extensions: [ext] }] };
-  const result = await (parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options));
+  const result = await showSaveFileDialog(parent, options);
   if (result.canceled || !result.filePath) return false;
   if (archive) {
     const zip = new JSZip();

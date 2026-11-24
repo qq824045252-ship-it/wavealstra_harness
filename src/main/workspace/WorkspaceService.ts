@@ -99,10 +99,18 @@ function tagTexts(xml: string, tag: string): string[] {
 
 function previewShell(title: string, body: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    :root{color-scheme:light dark}body{margin:0;padding:28px;font:14px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;background:#fff;color:#202124}
-    h1{font-size:22px;margin:0 0 22px}h2{font-size:17px;margin:24px 0 10px;padding-bottom:7px;border-bottom:1px solid #e5e7eb}
-    p{margin:8px 0;white-space:pre-wrap}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #d9dde3;padding:7px 9px;text-align:left}tr:nth-child(even){background:#f7f8fa}
-    .empty{color:#8a8f98}@media(prefers-color-scheme:dark){body{background:#1d1d1d;color:#e7e7e7}h2{border-color:#3a3a3a}td,th{border-color:#444}tr:nth-child(even){background:#242424}}
+    :root { color-scheme: light; --paper: #fff; --text: #17253b; --quiet: #596c86; --line: #cfdbea; --stripe: #f1f5fc; }
+    @media (prefers-color-scheme: dark) {
+      :root { color-scheme: dark; --paper: #151f30; --text: #e9f0fc; --quiet: #9aabc5; --line: #354863; --stripe: #1d2b42; }
+    }
+    body { margin: 0; padding: clamp(14px, 4vw, 30px); font: 14px/1.65 system-ui, "Segoe UI", sans-serif; background: var(--paper); color: var(--text); }
+    h1 { font-size: 22px; margin: 0 0 22px; overflow-wrap: anywhere; }
+    h2 { font-size: 17px; margin: 24px 0 10px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+    p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    td, th { border: 1px solid var(--line); padding: 7px 9px; text-align: left; overflow-wrap: anywhere; }
+    th, tr:nth-child(even) { background: var(--stripe); }
+    .empty { color: var(--quiet); }
   </style></head><body><h1>${escapeHtml(title)}</h1>${body}</body></html>`;
 }
 

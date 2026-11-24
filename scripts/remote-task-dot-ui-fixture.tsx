@@ -30,18 +30,32 @@ const tasks: RemoteTaskSummary[] = [
 
 /** 假客户端只记录调用：模拟「电脑端接口不可用」的最差情况，顺带验证本机兜底水位 */
 const ackCalls: string[] = []
+const historyCalls: number[] = []
 const fakeClient = {
   ackDone: async (taskId: string) => { ackCalls.push(taskId); return { ok: true } },
   bootstrap: async () => bootstrapSnapshot(),
   notifications: async () => [],
-  history: async (taskId: string, before?: number) => before === undefined ? ({ taskId, messages: [] }) : pageHistory(taskId, before),
+  history: async (taskId: string, before?: number) => {
+    if (before === undefined) return { taskId, messages: [] }
+    historyCalls.push(before)
+    return pageHistory(taskId, before)
+  },
   runtime: async (taskId: string) => ({ taskId, busy: false, pendingActions: [], interactions: [], activeGoal: null }),
   eventStream: () => new Promise<void>(() => {}),
 } as never
 
 function pageHistory(taskId: string, before: number): RemoteTaskHistory {
   const messages = Array.from({ length: 50 }, (_, index) => ({ id: `older-${before - 49 + index}`, role: 'user' as const, text: `OLDER_PAGE_${before}_${index}`, createdAt: index + 1 }))
-  return { taskId, messages, durable: { backend: 'pi-durable', historyId: 'history-fixture', epoch: 'history-fixture', revision: 1, conversationId: 'fixture', toolMode: 'native', busy: false, queued: 0, pendingInputs: [], compacting: false, messages, historyBefore: before > 50 ? before - 50 : undefined } }
+  const nextBefore = before > 50 ? before - 50 : undefined
+  return {
+    taskId, messages,
+    page: { historyId: 'history-fixture', before: nextBefore },
+    durable: {
+      backend: 'pi-durable', historyId: 'history-fixture', epoch: 'history-fixture', revision: 1,
+      conversationId: 'fixture', toolMode: 'native', busy: false, queued: 0, pendingInputs: [],
+      compacting: false, messages, historyBefore: nextBefore,
+    },
+  }
 }
 function bootstrapSnapshot(): RemoteBootstrap {
   return {
@@ -58,6 +72,7 @@ useRemoteStore.setState({ client: fakeClient, bootstrap: bootstrapSnapshot(), co
 createRoot(document.getElementById('root')!).render(<App />)
 ;(window as unknown as { harness: unknown }).harness = {
   ackCalls,
+  historyCalls,
   history() {
     const history = pageHistory('t-running', 500)
     history.messages = [{ id: 'latest', role: 'user', text: 'LATEST_LIVE', createdAt: 1000 }]

@@ -241,7 +241,7 @@ export default function ArtifactPanel(): React.JSX.Element | null {
       style={
         panelExpanded
           ? undefined
-          : { width: panelWidth, minWidth: panelWidth, maxWidth: panelWidth }
+          : { width: panelWidth }
       }
     >
       <ExtensionTopBar

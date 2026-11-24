@@ -1,6 +1,6 @@
 import { nativeRunPhaseLabel } from "../../../../shared/generation-stats";
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ChatMessage, MessageBlock } from "@/types";
+import type { ChatMessage, MessageBlock, ToolStatus } from "@/types";
 import MessageBlockView from "./MessageBlockView";
 import WebSearchCard from "./WebSearchCard";
 import { isCapabilityTool } from "./CapabilityResultCard";
@@ -133,17 +133,17 @@ function ThinkingSection({
         live ? "streaming" : "complete"
       }`}
     >
-      <header
+      <button
+        type="button"
         className={`assistant-reasoning-header ${live ? "loading" : ""}`}
+        aria-expanded={!collapsed}
         onClick={() => setCollapsed((v) => !v)}
       >
         <span>Thinking</span>
-        {!live && (
-          <span className="assistant-reasoning-icon">
-            <IconChevronRight size={12} />
-          </span>
-        )}
-      </header>
+        <span className="assistant-reasoning-icon" aria-hidden="true">
+          <IconChevronRight size={12} />
+        </span>
+      </button>
       {!collapsed && (
         <div
           className="assistant-reasoning-content"
@@ -213,9 +213,16 @@ export function executionFailureReason(message: ChatMessage): string | undefined
 }
 
 function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Props): React.JSX.Element | null {
-  const hasPendingApproval = message.blocks.some(
-    (b) => b.type === "tool" && b.toolCall.status === "pending_approval",
-  );
+  const toolCounts: Record<ToolStatus, number> = { pending_approval: 0, running: 0, success: 0, error: 0, denied: 0 };
+  const activeToolNames: string[] = [];
+  let toolTotal = 0;
+  for (const block of message.blocks) {
+    if (block.type !== "tool") continue;
+    toolTotal += 1;
+    toolCounts[block.toolCall.status] += 1;
+    if (block.toolCall.status === "running") activeToolNames.push(block.toolCall.tool);
+  }
+  const hasPendingApproval = toolCounts.pending_approval > 0;
   const [open, setOpen] = useState((!compact && Boolean(message.streaming)) || hasPendingApproval);
   const wasStreamingRef = useRef(Boolean(message.streaming));
   const [bodyMounted, setBodyMounted] = useState((!compact && Boolean(message.streaming)) || hasPendingApproval);
@@ -302,7 +309,6 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
   const thinkingLive =
     Boolean(message.streaming) && !hasPendingApproval && !hasFinalOutput;
   const running = Boolean(message.streaming) && !hasPendingApproval;
-  const activeToolNames = message.blocks.flatMap((block) => block.type === "tool" && block.toolCall.status === "running" ? [block.toolCall.tool] : []);
   const lastAction = compact && message.blocks.findLast(block => block.type === "tool");
   const action = lastAction && lastAction.type === "tool" && lastAction.toolCall.tool === "dots_action" ? lastAction.toolCall : undefined;
   const runningLabel = action && !message.generationStats?.retry && !hasFinalOutput
@@ -326,9 +332,9 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
 
   return (
     <>
-    <div className="execution-timeline">
-      <button type="button" className="timeline-header" onClick={() => setOpen(!open)}>
-        {running && <span className="streaming-dot" />}
+    <div className="execution-timeline" data-outcome={message.generationStats?.outcome}>
+      <button type="button" className="timeline-header" aria-expanded={visibleOpen} onClick={() => setOpen(!open)}>
+        {running && <span className="streaming-dot" aria-hidden="true" />}
         <span className={running && message.generationStats?.retry ? "timeline-status timeline-status--retry" : "timeline-status"}
           title={running ? runningLabel : undefined}>
           {running
@@ -337,7 +343,13 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
               ? "等待授权"
               : `${completionLabel}${message.durationLabel ? ` ${message.durationLabel}` : ""}`}
         </span>
-        <span className={`chev ${visibleOpen ? "open" : ""}`}>
+        {toolTotal > 0 && <span className="timeline-tools">
+          <span>{toolTotal} 次调用</span>
+          {toolCounts.pending_approval > 0 && <span className="timeline-tool-warning">{toolCounts.pending_approval} 待授权</span>}
+          {toolCounts.error > 0 && <span className="timeline-tool-error">{toolCounts.error} 失败</span>}
+          {toolCounts.denied > 0 && <span className="timeline-tool-warning">{toolCounts.denied} 已拒绝</span>}
+        </span>}
+        <span className={`chev ${visibleOpen ? "open" : ""}`} aria-hidden="true">
           <IconChevronRight size={12} />
         </span>
       </button>
@@ -346,7 +358,7 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
       {(visibleOpen || bodyMounted) && (
         <div
           className={`timeline-body-shell${visibleOpen ? " is-open" : " is-closed"}`}
-          aria-hidden={!visibleOpen}
+          inert={!visibleOpen}
         >
           <div className="timeline-body-clip">
             <div className="timeline-body">
@@ -354,6 +366,7 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
                 <button
                   type="button"
                   className={`history-toggle${historyOpen ? " open" : ""}`}
+                  aria-expanded={historyOpen}
                   onClick={() => setHistoryOpen((v) => !v)}
                 >
                   <span className="chev">

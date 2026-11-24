@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { app, BrowserWindow, desktopCapturer, screen } from "electron";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +59,10 @@ async function main(): Promise<void> {
     const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: {
       width: Math.round(display.size.width * display.scaleFactor), height: Math.round(display.size.height * display.scaleFactor),
     } });
-    const source = sources.find(item => item.display_id === String(display.id));
+    const sourceByDisplay = sources.find(item => item.display_id === String(display.id));
+    // Some Windows capturers omit the display ID even when returning the sole screen.
+    const onlyScreen = screen.getAllDisplays().length === 1 && sources.length === 1 && !sources[0].display_id;
+    const source = sourceByDisplay ?? (onlyScreen ? sources[0] : undefined);
     assert(source && !source.thumbnail.isEmpty(), "capture the display containing the test window");
     const size = source.thumbnail.getSize();
     const sx = size.width / display.size.width, sy = size.height / display.size.height;
@@ -110,12 +113,13 @@ async function main(): Promise<void> {
     // Exercise the full-monitor overlay and reuse of its window after resize.
     overlay.presentDesktop({ taskId: "overlay-smoke", phase: "acting", action: "mouse_move",
       xPhysical: topLeft.x + Math.round(100 * display.scaleFactor), yPhysical: topLeft.y + Math.round(80 * display.scaleFactor) });
-    await waitUntil(() => border.getBounds().width === display.bounds.width);
+    // Fractional Windows DPI can round a native width by one DIP.
+    await waitUntil(() => Math.abs(border.getBounds().width - display.bounds.width) <= 1);
     const desktopFrame = await sampleDesktop();
     assert.deepEqual(rgb(desktopFrame,.25,.75), rgb(baseline,.25,.75));
     assert.deepEqual(rgb(desktopFrame,200/area.width,150/area.height), rgb(baseline,200/area.width,150/area.height), "the old cursor position clears");
     overlay.present({ taskId: "overlay-smoke", target, phase: "acting", action: "click_client" });
-    await waitUntil(() => border.getBounds().width === area.width);
+    await waitUntil(() => Math.abs(border.getBounds().width - area.width) <= 1);
     border.setContentProtection(true);
     assert.equal(await controls!.webContents.executeJavaScript('document.querySelector("a").textContent'), "停止操作");
     const bounds = controls!.getBounds();

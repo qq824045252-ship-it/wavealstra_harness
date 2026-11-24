@@ -66,6 +66,7 @@ body[data-phase="verifying"] #frame{border-color:rgba(67,178,132,.98);box-shadow
 body[data-phase="recovering"] #frame{border-color:rgba(240,174,61,.98);box-shadow:inset 0 0 0 1px rgba(255,255,255,.45),0 0 18px rgba(240,174,61,.32)}
 body[data-phase="failed"] #frame{border-color:rgba(232,85,85,.98);box-shadow:inset 0 0 0 1px rgba(255,255,255,.45),0 0 18px rgba(232,85,85,.30)}
 body[data-phase="completed"] #frame{opacity:.58}
+@media(prefers-reduced-motion:reduce){#frame{transition:none}body.clicking #cursor::after{animation:none}}
 @keyframes ripple{0%{transform:scale(.3);opacity:.9}100%{transform:scale(1);opacity:0}}
 </style></head><body data-phase="observing"><div id="frame"></div><div id="cursor"></div><script>
 window.__setComputerOverlay=(state)=>{document.body.dataset.phase=state.phase||"observing";const c=document.getElementById("cursor");if(state.cursor){c.style.left=state.cursor.x+"px";c.style.top=state.cursor.y+"px";c.style.opacity="1"}else{c.style.opacity="0"}document.body.classList.toggle("clicking",!!state.cursor?.clicking);if(state.cursor?.clicking){setTimeout(()=>document.body.classList.remove("clicking"),430)}};
@@ -74,9 +75,9 @@ window.__setComputerOverlay=(state)=>{document.body.dataset.phase=state.phase||"
 const CONTROLS_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><title>${CONTROLS_TITLE}</title><style>
 html,body{margin:0;background:transparent;font-family:Inter,"Segoe UI",sans-serif;overflow:hidden}
-#pill{height:36px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;border-radius:18px;background:rgba(25,28,36,.92);color:#fff;box-shadow:0 5px 18px rgba(0,0,0,.22);font-size:12px;white-space:nowrap;user-select:none}
-#spark{font-size:14px;color:#9bb7ff}#state{font-weight:600}#target{max-width:150px;overflow:hidden;text-overflow:ellipsis;color:rgba(255,255,255,.68)}
-a{margin-left:auto;text-decoration:none;color:#fff;background:rgba(255,255,255,.13);padding:5px 10px;border-radius:12px;font-weight:600}a:hover{background:rgba(255,255,255,.22)}
+#pill{height:36px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;border-radius:18px;border:1px solid #526d90;background:rgba(20,33,54,.96);color:#e9f0fc;box-shadow:0 5px 18px rgba(2,8,19,.32);font-size:12px;white-space:nowrap;user-select:none}
+#spark{font-size:14px;color:#9bb7ff}#state{font-weight:600}#target{max-width:150px;overflow:hidden;text-overflow:ellipsis;color:#b2c0d6}
+a{margin-left:auto;text-decoration:none;color:#fff;background:rgba(255,255,255,.13);padding:5px 10px;border-radius:8px;font-weight:650}a:hover{background:#354863}a:focus-visible{outline:2px solid #a4c0ff;outline-offset:1px}
 body[data-phase="recovering"] #spark{color:#f0ae3d}body[data-phase="failed"] #spark{color:#e85555}body[data-phase="verifying"] #spark{color:#43b284}
 </style></head><body data-phase="observing"><div id="pill"><span id="spark">✦</span><span id="state">MyBuddy 正在操作</span><span id="target"></span><a href="mybuddy-computer-use://stop">停止操作</a></div><script>
 window.__setComputerControls=(state)=>{document.body.dataset.phase=state.phase||"observing";document.getElementById("state").textContent="MyBuddy · "+state.phaseLabel;document.getElementById("target").textContent=state.target||""};

@@ -4,7 +4,8 @@
  * 断言：
  *  1. 最近对话 + 抽屉任务列表：进行中 = 蓝点，已结束未查看 = 绿点，已确认 = 无点
  *  2. 点开「已结束未查看」任务 → 调用 ackDone(该任务) → 绿点消失（本机乐观清除）
- *  3. 整页重载（= 重开 App）后绿点仍不复活（本机确认水位落盘；服务端 ack 由 test:remote-done-ack 覆盖）
+ *  3. 整页重载后，已确认的绿点仍不复活
+ *  4. 滚轮或触摸上拉前插历史，点「回到底部」恢复实时窗口
  *
  * 运行：pnpm -s test:remote-task-dot-ui-desktop
  */
@@ -13,10 +14,12 @@ process.chdir(path.resolve(__dirname, '..'));
 const outDir = path.resolve('out/remote-tests/task-dot-ui');
 if (!process.versions.electron) {
   fs.mkdirSync(outDir, { recursive: true });
-  require('esbuild').buildSync({
+  const fixture = require('esbuild').buildSync({
+    write: false,
     entryPoints: ['scripts/remote-task-dot-ui-fixture.tsx'], bundle: true, platform: 'browser', format: 'iife',
     jsx: 'automatic', outfile: path.join(outDir, 'task-dot-ui.js'), define: { 'process.env.NODE_ENV': '"production"' },
   });
+  for (const output of fixture.outputFiles) fs.writeFileSync(output.path, output.contents);
   fs.writeFileSync(path.join(outDir, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="task-dot-ui.css"></head><body><div id="root"></div><script src="task-dot-ui.js"></script></body></html>');
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const args = [__filename]; if (env.REMOTE_TEST_NO_SANDBOX === '1') args.push('--no-sandbox', '--disable-gpu');
@@ -26,7 +29,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow } = require('electron');
-app.setPath('userData', path.resolve('out/remote-tests/task-dot-ui-profile'));
+app.setPath('userData', fs.mkdtempSync(path.resolve('out/remote-tests/task-dot-ui-profile-')));
 let win;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const evalJs = (expression) => win.webContents.executeJavaScript(expression, true);
@@ -115,17 +118,35 @@ app.whenReady().then(async () => {
 
     await evalJs('window.harness.history()');
     await until('document.body.innerText.includes("LATEST_LIVE")', 'live history');
-    for (let page=0;page<4;page++) {
-      await evalJs('[...document.querySelectorAll("button")].find(button=>button.textContent==="加载更早的消息").click()');
-      await until(`document.body.innerText.includes("OLDER_PAGE_${450-page*50}_0")`, 'independent older page');
-      assert.equal(await evalJs('document.querySelectorAll(".message-bubble-user").length'), 50);
+    const earlierRequests = [450, 400, 350, 300];
+    for (const [index, before] of earlierRequests.entries()) {
+      await evalJs(`(() => {
+        const timeline = document.querySelector(".chat-timeline");
+        timeline.scrollTop = 0;
+        if (${index % 2 === 0}) {
+          timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+        } else {
+          const touchAt = clientY => new Touch({ identifier: 1, target: timeline, clientY });
+          timeline.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touchAt(40)] }));
+          timeline.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, touches: [touchAt(100)] }));
+        }
+      })()`);
+      await until(`document.body.innerText.includes("OLDER_PAGE_${before}_0")`, "earlier block prepended");
+      assert.equal(await evalJs('document.querySelectorAll(".message-bubble-user").length'), 51 + index * 50);
+      assert.equal(await evalJs('document.body.innerText.includes("LATEST_LIVE")'), true, "live message stays in the timeline");
+      if (index < earlierRequests.length - 1) await delay(300);
     }
-    await evalJs('window.harness.advance()');
-    assert.equal(await evalJs('document.body.innerText.includes("LATEST_UPDATED")'), false, 'live changes do not replace the page being read');
-    await evalJs('[...document.querySelectorAll("button")].find(button=>button.textContent==="返回最新消息").click()');
-    await until('document.body.innerText.includes("LATEST_UPDATED")', 'return to current live window');
-    assert.equal(await evalJs('document.querySelectorAll(".message-bubble-user").length'), 1);
-    pass('历史窗口有界；翻页不替换实时快照，返回后显示最新消息');
+    assert.deepEqual(await evalJs("window.harness.historyCalls"), earlierRequests);
+    await evalJs('document.querySelector(".chat-timeline").scrollTop = 0');
+    await until('!!document.querySelector("button[aria-label=回到底部]")', 'back to bottom control');
+    await evalJs("window.harness.advance()");
+    await until('document.body.innerText.includes("LATEST_UPDATED")', 'new live content');
+    assert.equal(await evalJs('document.body.innerText.includes("OLDER_PAGE_300_0")'), true, "live updates retain the older history");
+    assert.equal(await evalJs('document.querySelector(".chat-timeline").scrollTop'), 0, "live updates preserve the reader position");
+    await evalJs('document.querySelector("button[aria-label=回到底部]").click()');
+    await until('document.querySelectorAll(".message-bubble-user").length === 1', 'return to current live window');
+    assert.equal(await evalJs('document.body.innerText.includes("LATEST_UPDATED")'), true);
+    pass("滚轮和触摸前插历史；实时更新保留阅读位置，回到底部后恢复最新窗口");
     await screenshot('bounded-history.png');
 
     console.log('remote task dot ui: all assertions passed');

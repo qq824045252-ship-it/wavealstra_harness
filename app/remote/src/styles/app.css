@@ -1,52 +1,80 @@
-/* ==========================================================================
-   MyBuddy Remote · Claude App 1:1 Design System & Typography
-   ========================================================================== */
-
+/* The remote client follows the operating system appearance. */
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
+  --bg: #f1f5fc;
+  --bg-surface: #ffffff;
+  --bg-subtle: #eef3fa;
+  --bg-hover: #e6eef9;
+  --bg-active: #dce7f8;
+  --bg-inset: #eef3fa;
+  --fg: #17243a;
+  --fg-secondary: #455773;
+  --fg-muted: #566987;
+  --fg-inverted: #ffffff;
+  --accent: #2455ba;
+  --accent-hover: #1c449d;
+  --accent-soft: #e5eeff;
+  --accent-border: #b0c7f3;
+  --accent-button: #2455ba;
+  --accent-button-fg: #ffffff;
+  --status-success: #16643d;
+  --status-success-soft: #e4f5eb;
+  --status-warning: #85550b;
+  --status-warning-soft: #fff3d6;
+  --status-danger: #a82c39;
+  --status-danger-soft: #fdebed;
+  --border-subtle: #e1e9f5;
+  --border-default: #cdd9ea;
+  --border-strong: #a2b6d2;
+  --code-surface: #142136;
+  --code-toolbar: #1e2d45;
+  --code-fg: #e3ecfc;
+  --code-muted: #a7bad7;
+  --veil: rgb(10 23 48 / 46%);
+  --shadow-sm: 0 1px 3px rgb(23 45 81 / 8%);
+  --shadow-card: 0 4px 16px rgb(23 45 81 / 8%), 0 1px 2px rgb(23 45 81 / 5%);
+  --shadow-composer: 0 8px 28px rgb(23 45 81 / 14%), 0 2px 6px rgb(23 45 81 / 7%);
+  --shadow-drawer: 8px 0 32px rgb(23 45 81 / 16%);
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
 
-  /* --- Claude Palette (Warm Ivory / Paper & Terracotta) --- */
-  --bg: #FBF9F5;
-  --bg-surface: #FFFFFF;
-  --bg-subtle: #F3EFEA;
-  --bg-hover: #EBE5DF;
-  --bg-active: #E2DBD3;
-
-  /* Typography / Text hierarchy */
-  --fg: #1F1B16;
-  --fg-secondary: #5E584F;
-  --fg-muted: #8F877B;
-  --fg-inverted: #FBF9F5;
-
-  /* Claude Iconic Terracotta Orange Accent */
-  --accent: #D97757;
-  --accent-hover: #C66343;
-  --accent-soft: #F9ECE6;
-  --accent-border: rgba(217, 119, 87, 0.35);
-
-  /* Status Colors (Subdued, Natural Tones) */
-  --status-success: #2E7D4E;
-  --status-success-soft: #E8F5EC;
-  --status-warning: #B78103;
-  --status-warning-soft: #FDF4D9;
-  --status-danger: #C24134;
-  --status-danger-soft: #FDE8E5;
-
-  /* Borders & Dividers */
-  --border-subtle: rgba(31, 27, 22, 0.07);
-  --border-default: rgba(31, 27, 22, 0.12);
-  --border-strong: rgba(31, 27, 22, 0.24);
-
-  /* Shadows (Soft diffuse warm ambient) */
-  --shadow-sm: 0 1px 2px rgba(31, 27, 22, 0.04);
-  --shadow-card: 0 2px 10px rgba(31, 27, 22, 0.05), 0 1px 2px rgba(31, 27, 22, 0.03);
-  --shadow-composer: 0 6px 24px -2px rgba(31, 27, 22, 0.09), 0 2px 6px rgba(31, 27, 22, 0.04);
-  --shadow-drawer: 8px 0 32px rgba(31, 27, 22, 0.12);
-
-  /* Fonts */
-  --font-serif: ui-serif, -apple-system-ui-serif, "Iowan Old Style", "Palatino Linotype", "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101827;
+    --bg-surface: #151f30;
+    --bg-subtle: #131e30;
+    --bg-hover: #1c2a40;
+    --bg-active: #263a56;
+    --bg-inset: #131e30;
+    --fg: #e6eefc;
+    --fg-secondary: #bccbe1;
+    --fg-muted: #9daec9;
+    --fg-inverted: #101827;
+    --accent: #a4c0ff;
+    --accent-hover: #c0d3ff;
+    --accent-soft: #233a60;
+    --accent-border: #455f91;
+    --accent-button: #a4c0ff;
+    --accent-button-fg: #16253e;
+    --status-success: #9cdfb8;
+    --status-success-soft: #1b3d35;
+    --status-warning: #f1c673;
+    --status-warning-soft: #463820;
+    --status-danger: #ffb4bc;
+    --status-danger-soft: #48262f;
+    --border-subtle: #24334b;
+    --border-default: #354761;
+    --border-strong: #617797;
+    --code-surface: #0f1828;
+    --code-toolbar: #19263b;
+    --veil: rgb(4 9 18 / 72%);
+    --shadow-sm: 0 1px 3px rgb(0 0 0 / 25%);
+    --shadow-card: 0 4px 16px rgb(0 0 0 / 26%);
+    --shadow-composer: 0 8px 28px rgb(0 0 0 / 40%);
+    --shadow-drawer: 8px 0 32px rgb(0 0 0 / 42%);
+  }
 }
 
 /* Base resets & touch optimization */
@@ -176,7 +204,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 18px;
   font-weight: 500;
   letter-spacing: -0.015em;
@@ -190,7 +218,7 @@ button:disabled {
 }
 
 .header-title-chat {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 16px;
   font-weight: 500;
   letter-spacing: -0.01em;
@@ -213,8 +241,8 @@ button:disabled {
   height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background-color: var(--accent);
-  color: #FFF;
+  background-color: var(--accent-button);
+  color: var(--accent-button-fg);
   font-size: 10px;
   font-weight: 600;
   display: grid;
@@ -280,12 +308,12 @@ button:disabled {
   height: 56px;
   color: var(--accent);
   margin-bottom: 20px;
-  filter: drop-shadow(0 2px 8px rgba(217, 119, 87, 0.22));
+  filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--accent) 18%, transparent));
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .home-greeting-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 28px;
   font-weight: 400;
   line-height: 1.25;
@@ -492,12 +520,12 @@ button:disabled {
 }
 
 .task-status-dot--running {
-  background-color: #3B82F6;
+  background-color: var(--accent);
   animation: task-status-pulse 1.4s ease-in-out infinite;
 }
 
 .task-status-dot--done-unread {
-  background-color: #22C55E;
+  background-color: var(--status-success);
 }
 
 @keyframes task-status-pulse {
@@ -539,11 +567,11 @@ button:disabled {
   flex-shrink: 0;
 }
 
-/* User Bubble — Claude 1:1：暖灰实心圆角矩形、无边框无阴影 */
+/* User message */
 .message-bubble-user {
   align-self: flex-end;
   max-width: 84%;
-  background-color: #F0EDE6;
+  background-color: var(--bg-active);
   border-radius: 10px;
   padding: 10px 14px;
   color: var(--fg);
@@ -643,7 +671,7 @@ button:disabled {
 .thinking-accordion {
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
-  background-color: rgba(243, 239, 234, 0.5);
+  background-color: var(--bg-subtle);
   overflow: hidden;
   margin: 4px 0 8px;
 }
@@ -701,7 +729,7 @@ button:disabled {
 .process-panel {
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
-  background-color: rgba(243, 239, 234, 0.5);
+  background-color: var(--bg-subtle);
   overflow: hidden;
   margin: 4px 0 8px;
 }
@@ -861,7 +889,7 @@ button:disabled {
 .assistant-markdown-content h1,
 .assistant-markdown-content h2,
 .assistant-markdown-content h3 {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 500;
   letter-spacing: -0.015em;
   color: var(--fg);
@@ -968,7 +996,7 @@ button:disabled {
 }
 
 .markdown-table-scroll tbody tr:nth-child(even) > td {
-  background-color: rgba(243, 239, 234, 0.34);
+  background-color: var(--bg-subtle);
 }
 
 .markdown-table-scroll th[align="center"],
@@ -1001,7 +1029,7 @@ button:disabled {
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--border-default);
-  background-color: #191816; /* Claude Dark Charcoal for Code Blocks */
+  background-color: var(--code-surface);
 }
 
 .code-block-header {
@@ -1009,10 +1037,10 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background-color: #24221E;
+  background-color: var(--code-toolbar);
   font-family: var(--font-mono);
   font-size: 11.5px;
-  color: #A39B8E;
+  color: var(--code-muted);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -1023,7 +1051,7 @@ button:disabled {
   padding: 3px 8px;
   border-radius: 6px;
   font-size: 11px;
-  color: #D6D0C5;
+  color: var(--code-fg);
   background-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -1038,7 +1066,7 @@ button:disabled {
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.5;
-  color: #EDE8DE;
+  color: var(--code-fg);
 }
 
 /* ==========================================================================
@@ -1067,7 +1095,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background-color: rgba(243, 239, 234, 0.45);
+  background-color: var(--bg-subtle);
   cursor: pointer;
   user-select: none;
   transition: background-color 0.12s ease;
@@ -1155,7 +1183,7 @@ button:disabled {
 
 .tool-card-content {
   border-top: 1px solid var(--border-subtle);
-  background-color: #191816; /* Claude Dark Charcoal Terminal */
+  background-color: var(--code-surface);
 }
 
 .tool-card-console {
@@ -1168,10 +1196,10 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background-color: #24221E;
+  background-color: var(--code-toolbar);
   font-family: var(--font-mono);
   font-size: 11px;
-  color: #A39B8E;
+  color: var(--code-muted);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -1182,7 +1210,7 @@ button:disabled {
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 11px;
-  color: #D6D0C5;
+  color: var(--code-fg);
   background-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -1196,7 +1224,7 @@ button:disabled {
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.55;
-  color: #EDE8DE;
+  color: var(--code-fg);
   max-height: 240px;
   overflow-y: auto;
   white-space: pre-wrap;
@@ -1204,17 +1232,17 @@ button:disabled {
 }
 
 .tool-console-cmd {
-  color: #E29B63;
+  color: #b2d0ff;
   margin-bottom: 6px;
   font-weight: 500;
 }
 
 .tool-console-output {
-  color: #D6D0C5;
+  color: var(--code-fg);
 }
 
 .tool-console-empty {
-  color: #7D766B;
+  color: var(--code-muted);
   font-style: italic;
 }
 
@@ -1268,7 +1296,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background-color: rgba(243, 239, 234, 0.45);
+  background-color: var(--bg-subtle);
   cursor: pointer;
   user-select: none;
   transition: background-color 0.12s ease;
@@ -1331,7 +1359,7 @@ button:disabled {
   gap: 6px;
   max-height: 380px;
   overflow-y: auto;
-  background-color: rgba(243, 239, 234, 0.25);
+  background-color: var(--bg-subtle);
 }
 
 /* Tool Approval Card (Claude Style Dialog Card) */
@@ -1389,8 +1417,8 @@ button:disabled {
 }
 
 .btn-pill-primary {
-  background-color: var(--fg);
-  color: var(--fg-inverted);
+  background-color: var(--accent-button);
+  color: var(--accent-button-fg);
 }
 
 .btn-pill-secondary {
@@ -1399,9 +1427,7 @@ button:disabled {
   border: 1px solid var(--border-default);
 }
 
-/* ==========================================================================
-   Claude Floating Composer (1:1 Multi-tier Composite Card)
-   ========================================================================== */
+/* Floating composer */
 .claude-composer-wrapper {
   position: fixed;
   bottom: 0;
@@ -1409,7 +1435,7 @@ button:disabled {
   right: 0;
   z-index: 40;
   padding: 6px 14px calc(12px + env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, rgba(251, 249, 245, 0) 0%, rgba(251, 249, 245, 0.85) 30%, rgba(251, 249, 245, 0.98) 100%);
+  background: linear-gradient(180deg, transparent, var(--bg) 60%);
   pointer-events: none;
 }
 
@@ -1428,8 +1454,8 @@ button:disabled {
 }
 
 .claude-composer-card:focus-within {
-  border-color: rgba(31, 27, 22, 0.28);
-  box-shadow: var(--shadow-composer), 0 0 0 1px rgba(31, 27, 22, 0.08);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-composer), var(--focus-ring);
 }
 
 /* Attachment Chips Row */
@@ -1509,20 +1535,20 @@ button:disabled {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background-color: #F4F3EE;
+  background-color: var(--bg-subtle);
   display: grid;
   place-items: center;
-  color: #1F1B16;
+  color: var(--fg);
   flex-shrink: 0;
   transition: background-color 0.15s ease, transform 0.1s ease;
 }
 
 .composer-circle-btn:hover {
-  background-color: #ECEAE3;
+  background-color: var(--bg-hover);
 }
 .composer-circle-btn:active {
   transform: scale(0.95);
-  background-color: #E2DFD6;
+  background-color: var(--bg-active);
 }
 
 .composer-circle-btn.listening {
@@ -1542,27 +1568,27 @@ button:disabled {
   height: 36px;
   padding: 0 14px;
   border-radius: 999px;
-  background-color: #F4F3EE;
+  background-color: var(--bg-subtle);
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-size: 13.5px;
   font-weight: 500;
-  color: #1F1B16;
+  color: var(--fg);
   flex-shrink: 0;
   transition: background-color 0.15s ease, transform 0.1s ease;
 }
 
 .composer-model-pill:hover {
-  background-color: #ECEAE3;
+  background-color: var(--bg-hover);
 }
 .composer-model-pill:active {
   transform: scale(0.97);
-  background-color: #E2DFD6;
+  background-color: var(--bg-active);
 }
 
 .composer-model-pill-chevron {
-  color: #78756E;
+  color: var(--fg-muted);
 }
 
 /* Main Action Button (Send / Waveform / Stop) */
@@ -1570,12 +1596,12 @@ button:disabled {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background-color: #1F1B16;
-  color: #FBF9F5;
+  background-color: var(--accent-button);
+  color: var(--accent-button-fg);
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  box-shadow: 0 1px 3px rgba(31, 27, 22, 0.2);
+  box-shadow: var(--shadow-sm);
   transition: transform 0.1s ease, background-color 0.15s ease;
 }
 
@@ -1584,8 +1610,8 @@ button:disabled {
 }
 
 .composer-main-btn.stop {
-  background-color: #1F1B16;
-  color: #FFF;
+  background-color: var(--fg);
+  color: var(--fg-inverted);
 }
 
 /* ==========================================================================
@@ -1594,7 +1620,7 @@ button:disabled {
 .claude-sheet-backdrop {
   position: fixed;
   inset: 0;
-  background-color: rgba(31, 27, 22, 0.45);
+  background-color: var(--veil);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   z-index: 110;
@@ -1619,7 +1645,7 @@ button:disabled {
   border-radius: 28px 28px 0 0;
   padding: 8px 20px calc(24px + env(safe-area-inset-bottom)) 20px;
   z-index: 120;
-  box-shadow: 0 -8px 32px rgba(31, 27, 22, 0.15);
+  box-shadow: var(--shadow-composer);
   transform: translateY(100%);
   visibility: hidden;
   pointer-events: none;
@@ -1641,7 +1667,7 @@ button:disabled {
   width: 36px;
   height: 4px;
   border-radius: 2px;
-  background-color: #D6D2CA;
+  background-color: var(--border-strong);
   margin: 6px auto 14px auto;
 }
 
@@ -1687,7 +1713,7 @@ button:disabled {
 }
 
 .add-to-chat-card {
-  background-color: #F4F3EE;
+  background-color: var(--bg-subtle);
   border-radius: 18px;
   padding: 16px 8px;
   display: flex;
@@ -1699,28 +1725,28 @@ button:disabled {
 }
 
 .add-to-chat-card:hover {
-  background-color: #ECEAE3;
+  background-color: var(--bg-hover);
 }
 .add-to-chat-card:active {
   transform: scale(0.96);
-  background-color: #E2DFD6;
+  background-color: var(--bg-active);
 }
 
 .add-to-chat-icon-wrap {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background-color: #FFFFFF;
-  box-shadow: 0 1px 3px rgba(31, 27, 22, 0.06);
+  background-color: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
   display: grid;
   place-items: center;
-  color: #1F1B16;
+  color: var(--fg);
 }
 
 .add-to-chat-card-label {
   font-size: 13.5px;
   font-weight: 500;
-  color: #1F1B16;
+  color: var(--fg);
 }
 
 /* Add To Chat Options List */
@@ -1755,10 +1781,10 @@ button:disabled {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background-color: #F4F3EE;
+  background-color: var(--bg-subtle);
   display: grid;
   place-items: center;
-  color: #1F1B16;
+  color: var(--fg);
   flex-shrink: 0;
 }
 
@@ -1785,7 +1811,7 @@ button:disabled {
   width: 48px;
   height: 28px;
   border-radius: 14px;
-  background-color: #D1D5DB;
+  background-color: var(--border-strong);
   position: relative;
   transition: background-color 0.2s ease;
   cursor: pointer;
@@ -1793,7 +1819,7 @@ button:disabled {
 }
 
 .toggle-switch.active {
-  background-color: #2563EB;
+  background-color: var(--accent-button);
 }
 
 .toggle-switch-handle {
@@ -1809,6 +1835,7 @@ button:disabled {
 }
 
 .toggle-switch.active .toggle-switch-handle {
+  background-color: var(--accent-button-fg);
   transform: translateX(20px);
 }
 
@@ -1864,7 +1891,7 @@ button:disabled {
 }
 
 .select-model-item.active .select-model-name {
-  color: #2563EB;
+  color: var(--accent);
 }
 
 .select-model-badge {
@@ -1872,8 +1899,8 @@ button:disabled {
   border-radius: 6px;
   font-size: 11px;
   font-weight: 600;
-  background-color: #EEF2FF;
-  color: #4338CA;
+  background-color: var(--accent-soft);
+  color: var(--accent);
 }
 
 .select-model-desc {
@@ -1882,11 +1909,11 @@ button:disabled {
 }
 
 .select-model-item.active .select-model-desc {
-  color: #3B82F6;
+  color: var(--accent);
 }
 
 .select-model-check {
-  color: #2563EB;
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -1896,7 +1923,7 @@ button:disabled {
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  background-color: rgba(31, 27, 22, 0.35);
+  background-color: var(--veil);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   z-index: 100;
@@ -1949,11 +1976,11 @@ button:disabled {
   gap: 6px;
   padding: 8px 14px;
   border-radius: 999px;
-  background-color: var(--fg);
-  color: var(--fg-inverted);
+  background-color: var(--accent-button);
+  color: var(--accent-button-fg);
   font-size: 13px;
   font-weight: 550;
-  box-shadow: 0 1px 4px rgba(31, 27, 22, 0.15);
+  box-shadow: var(--shadow-sm);
 }
 
 .drawer-task-groups {
@@ -1976,7 +2003,7 @@ button:disabled {
 .remote-confirm-hint {
   margin-top: 8px;
   font-size: 12px;
-  color: var(--status-warning, #b45309);
+  color: var(--status-warning);
 }
 
 .drawer-item-btn {
@@ -2016,7 +2043,7 @@ button:disabled {
 .drawer-space-new-task:disabled { opacity: .35; }
 /* Compact task configuration; choices live in a touch-sized bottom sheet. */
 .task-setup-chips { pointer-events: auto; display: flex; align-items: center; gap: 4px; max-width: 680px; margin: 0 auto 8px; }
-.task-setup-chip { display: flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; min-height: 36px; padding: 7px 8px; border-radius: 10px; color: var(--fg-muted); background: rgba(251,249,245,.94); font-size: 12px; white-space: nowrap; }
+.task-setup-chip { display: flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; min-height: 36px; padding: 7px 8px; border-radius: 10px; color: var(--fg-muted); background: var(--bg-surface); font-size: 12px; white-space: nowrap; }
 .task-setup-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .task-setup-chip svg { flex-shrink: 0; }
 .task-setup-chip.chosen { color: var(--fg-secondary); }
@@ -2128,13 +2155,13 @@ button:disabled {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background-color: var(--accent);
-  color: #FFF;
+  background-color: var(--accent-button);
+  color: var(--accent-button-fg);
   font-weight: 600;
   font-size: 14px;
   display: grid;
   place-items: center;
-  box-shadow: 0 2px 6px rgba(217, 119, 87, 0.3);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .drawer-user-name {
@@ -2229,11 +2256,11 @@ button:disabled {
   height: 64px;
   color: var(--accent);
   margin-bottom: 24px;
-  filter: drop-shadow(0 3px 12px rgba(217, 119, 87, 0.25));
+  filter: drop-shadow(0 3px 12px color-mix(in srgb, var(--accent) 18%, transparent));
 }
 
 .onboard-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 32px;
   font-weight: 400;
   letter-spacing: -0.02em;
@@ -2260,15 +2287,15 @@ button:disabled {
 .onboard-btn-primary {
   height: 50px;
   border-radius: 999px;
-  background-color: var(--fg);
-  color: var(--fg-inverted);
+  background-color: var(--accent-button);
+  color: var(--accent-button-fg);
   font-size: 15px;
   font-weight: 550;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 2px 8px rgba(31, 27, 22, 0.16);
+  box-shadow: var(--shadow-card);
 }
 
 .onboard-btn-secondary {
@@ -2380,7 +2407,7 @@ button:disabled {
   background-color: var(--accent-soft);
 }
 .btn-action-notice.read-all:hover {
-  background-color: rgba(217, 119, 87, 0.2);
+  background-color: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 .btn-action-notice.clear-all {
@@ -2409,7 +2436,7 @@ button:disabled {
 }
 
 .notification-row.unread {
-  background-color: rgba(217, 119, 87, 0.06);
+  background-color: color-mix(in srgb, var(--accent) 18%, transparent);
   border-left: 3px solid var(--accent);
   padding-left: 9px;
 }
@@ -2436,7 +2463,7 @@ button:disabled {
 
 .notification-row.unread strong {
   font-weight: 600;
-  color: #1F1B16;
+  color: var(--fg);
 }
 
 .notification-row span {
@@ -2695,8 +2722,8 @@ button:disabled {
 
 .remote-interaction-btn.primary {
   border-color: var(--accent-border);
-  background: var(--accent);
-  color: white;
+  background: var(--accent-button);
+  color: var(--accent-button-fg);
 }
 
 .remote-interaction-btn:disabled {
@@ -2752,7 +2779,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background-color: rgba(31, 27, 22, 0.45);
+  background-color: var(--veil);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
 }
@@ -2760,7 +2787,7 @@ button:disabled {
 .remote-confirm-card {
   width: 100%;
   max-width: 360px;
-  background: var(--bg-elevated, #FFFFFF);
+  background: var(--bg-surface);
   border-radius: 16px;
   padding: 20px 20px 16px;
   box-shadow: 0 20px 48px rgba(15, 23, 42, 0.28);
@@ -2769,21 +2796,21 @@ button:disabled {
 .remote-confirm-title {
   font-size: 16px;
   font-weight: 650;
-  color: var(--text-primary, #1F1B16);
+  color: var(--fg);
   margin-bottom: 8px;
 }
 
 .remote-confirm-body {
   font-size: 13.5px;
   line-height: 1.55;
-  color: var(--text-secondary, #57534E);
+  color: var(--fg-secondary);
 }
 
 .remote-confirm-error {
   margin-top: 10px;
   font-size: 12.5px;
   line-height: 1.5;
-  color: var(--status-danger, #B91C1C);
+  color: var(--status-danger);
 }
 
 .remote-confirm-actions {
@@ -2805,13 +2832,13 @@ button:disabled {
 }
 
 .remote-confirm-cancel {
-  background: var(--bg-subtle, #F1EFEA);
-  color: var(--text-primary, #1F1B16);
+  background: var(--bg-subtle);
+  color: var(--fg);
 }
 
 .remote-confirm-danger {
-  background: var(--status-danger, #B91C1C);
-  color: #FFFFFF;
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
 }
 
 .remote-confirm-cancel:disabled,
@@ -2836,8 +2863,8 @@ button:disabled {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  background: var(--bg-subtle, #F6F4F0);
-  border: 1px solid var(--border-subtle, #E8E5DE);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
   border-radius: 12px;
   cursor: pointer;
   text-align: left;
@@ -2846,19 +2873,19 @@ button:disabled {
 
 .drawer-server-card:active,
 .drawer-server-card.expanded {
-  background: var(--bg-hover, #ECE9E2);
-  border-color: var(--border-focus, #D0CCC2);
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
 }
 
 .drawer-server-icon {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: var(--bg, #FFFFFF);
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--fg-accent, #B45309);
+  color: var(--accent);
   flex-shrink: 0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
@@ -2873,7 +2900,7 @@ button:disabled {
 .drawer-server-name {
   font-size: 13.5px;
   font-weight: 600;
-  color: var(--fg, #1F1B16);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2881,7 +2908,7 @@ button:disabled {
 
 .drawer-server-meta {
   font-size: 11.5px;
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   display: flex;
   align-items: center;
   gap: 5px;
@@ -2896,21 +2923,21 @@ button:disabled {
 }
 
 .drawer-server-status-dot.dot-connected {
-  background-color: #16A34A;
+  background-color: var(--status-success);
   box-shadow: 0 0 4px rgba(22, 163, 74, 0.4);
 }
 
 .drawer-server-status-dot.dot-connecting {
-  background-color: #F59E0B;
+  background-color: var(--status-warning);
 }
 
 .drawer-server-status-dot.dot-disconnected,
 .drawer-server-status-dot.dot-unauthorized {
-  background-color: #9CA3AF;
+  background-color: var(--fg-muted);
 }
 
 .drawer-server-arrow {
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   flex-shrink: 0;
 }
@@ -2922,8 +2949,8 @@ button:disabled {
 /* 抽屉下拉电脑选择面板 */
 .drawer-server-dropdown {
   margin-top: 6px;
-  background: var(--bg, #FFFFFF);
-  border: 1px solid var(--border-default, #E2DED6);
+  background: var(--bg);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   overflow: hidden;
@@ -2955,21 +2982,21 @@ button:disabled {
 
 .drawer-server-option:hover,
 .drawer-server-option:active {
-  background: var(--bg-subtle, #F6F4F0);
+  background: var(--bg-subtle);
 }
 
 .drawer-server-option.active {
-  background: rgba(180, 83, 9, 0.07);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .drawer-server-opt-icon {
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   display: flex;
   align-items: center;
 }
 
 .drawer-server-option.active .drawer-server-opt-icon {
-  color: var(--fg-accent, #B45309);
+  color: var(--accent);
 }
 
 .drawer-server-opt-text {
@@ -2982,7 +3009,7 @@ button:disabled {
 .drawer-server-opt-name {
   font-size: 13px;
   font-weight: 550;
-  color: var(--fg, #1F1B16);
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2990,14 +3017,14 @@ button:disabled {
 
 .drawer-server-opt-sub {
   font-size: 11px;
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .drawer-server-check {
-  color: var(--fg-accent, #B45309);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -3009,15 +3036,15 @@ button:disabled {
   padding: 9px;
   font-size: 12.5px;
   font-weight: 500;
-  color: var(--fg-accent, #B45309);
-  background: var(--bg-subtle, #FAF8F5);
+  color: var(--accent);
+  background: var(--bg-subtle);
   border: none;
-  border-top: 1px solid var(--border-subtle, #EFECE6);
+  border-top: 1px solid var(--border-subtle);
   cursor: pointer;
 }
 
 .drawer-server-manage-btn:active {
-  background: var(--bg-hover, #F0ECE4);
+  background: var(--bg-hover);
 }
 
 /* ConnectPage 电脑列表 */
@@ -3035,12 +3062,12 @@ button:disabled {
 }
 
 .onboard-section-head strong {
-  color: var(--fg, #1F1B16);
+  color: var(--fg);
   font-weight: 600;
 }
 
 .onboard-section-head span {
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   font-size: 12px;
 }
 
@@ -3055,8 +3082,8 @@ button:disabled {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  background: var(--bg, #FFFFFF);
-  border: 1px solid var(--border-default, #E8E5DE);
+  background: var(--bg);
+  border: 1px solid var(--border-default);
   border-radius: 12px;
   cursor: pointer;
   transition: all 0.18s ease;
@@ -3064,20 +3091,20 @@ button:disabled {
 }
 
 .onboard-server-card.active {
-  border-color: var(--fg-accent, #B45309);
-  background: #FFFDF9;
-  box-shadow: 0 2px 6px rgba(180, 83, 9, 0.08);
+  border-color: var(--accent);
+  background: var(--bg-surface);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .onboard-server-icon {
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  background: var(--bg-subtle, #F6F4F0);
+  background: var(--bg-subtle);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--fg-accent, #B45309);
+  color: var(--accent);
   flex-shrink: 0;
 }
 
@@ -3097,7 +3124,7 @@ button:disabled {
 
 .onboard-server-title strong {
   font-size: 14.5px;
-  color: var(--fg, #1F1B16);
+  color: var(--fg);
 }
 
 .channel-badge {
@@ -3108,13 +3135,13 @@ button:disabled {
 }
 
 .channel-badge.cloudflare {
-  background: #EFF6FF;
-  color: #1D4ED8;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .channel-badge.tailscale {
-  background: #F0FDF4;
-  color: #15803D;
+  background: var(--status-success-soft);
+  color: var(--status-success);
 }
 
 .active-badge {
@@ -3122,13 +3149,13 @@ button:disabled {
   padding: 1px 6px;
   border-radius: 6px;
   font-weight: 500;
-  background: #FEF3C7;
-  color: #92400E;
+  background: var(--status-warning-soft);
+  color: var(--status-warning);
 }
 
 .onboard-server-url {
   font-size: 12px;
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3149,7 +3176,7 @@ button:disabled {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s ease;
@@ -3157,14 +3184,14 @@ button:disabled {
 
 .icon-action-btn:hover,
 .icon-action-btn:active {
-  background: var(--bg-subtle, #EFECE6);
-  color: var(--fg, #1F1B16);
+  background: var(--bg-subtle);
+  color: var(--fg);
 }
 
 .icon-action-btn.danger:hover,
 .icon-action-btn.danger:active {
-  background: #FEE2E2;
-  color: #DC2626;
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
 }
 
 .onboard-rename-form {
@@ -3177,7 +3204,7 @@ button:disabled {
 .onboard-rename-input {
   flex: 1;
   padding: 4px 8px;
-  border: 1px solid var(--fg-accent, #B45309);
+  border: 1px solid var(--accent);
   border-radius: 6px;
   font-size: 13.5px;
   outline: none;
@@ -3185,8 +3212,8 @@ button:disabled {
 
 .onboard-rename-btn {
   padding: 4px 10px;
-  background: var(--fg-accent, #B45309);
-  color: #FFF;
+  background: var(--accent-button);
+  color: var(--accent-button-fg);
   border: none;
   border-radius: 6px;
   font-size: 12px;
@@ -3194,8 +3221,8 @@ button:disabled {
 }
 
 .onboard-rename-btn.cancel {
-  background: var(--bg-subtle, #EFECE6);
-  color: var(--fg, #1F1B16);
+  background: var(--bg-subtle);
+  color: var(--fg);
 }
 
 .onboard-action-buttons {
@@ -3228,29 +3255,29 @@ button:disabled {
 .edit-form-field label {
   font-size: 11.5px;
   font-weight: 550;
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
 }
 
 .edit-form-field .channel-hint {
   margin-left: 4px;
-  color: var(--fg-accent, #B45309);
+  color: var(--accent);
   font-weight: 500;
 }
 
 .edit-input-field {
   width: 100%;
   padding: 6px 10px;
-  border: 1px solid var(--border-default, #D0CCC2);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   font-size: 13px;
-  background: var(--bg, #FFFFFF);
-  color: var(--fg, #1F1B16);
+  background: var(--bg);
+  color: var(--fg);
   outline: none;
   transition: border-color 0.15s ease;
 }
 
 .edit-input-field:focus {
-  border-color: var(--fg-accent, #B45309);
+  border-color: var(--accent);
 }
 
 .edit-form-actions {
@@ -3262,13 +3289,13 @@ button:disabled {
 }
 
 .onboard-rename-btn.primary {
-  background: var(--fg-accent, #B45309);
-  color: #FFFFFF;
+  background: var(--accent-button);
+  color: var(--accent-button-fg);
 }
 
 .onboard-rename-btn.accent {
-  background: #16A34A;
-  color: #FFFFFF;
+  background: var(--status-success-soft);
+  color: var(--status-success);
 }
 
 
@@ -3286,23 +3313,23 @@ button:disabled {
   gap: 6px;
   font-size: 13px;
   font-weight: 550;
-  color: var(--fg, #1F1B16);
+  color: var(--fg);
 }
 
 .direct-url-input {
   font-size: 15px;
   padding: 12px 14px;
   border-radius: 12px;
-  border: 1.5px solid var(--border-default, #D0CCC2);
-  background: var(--bg, #FFFFFF);
-  color: var(--fg, #1F1B16);
+  border: 1.5px solid var(--border-default);
+  background: var(--bg);
+  color: var(--fg);
   outline: none;
   transition: all 0.18s ease;
 }
 
 .direct-url-input:focus {
-  border-color: var(--fg-accent, #B45309);
-  box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.12);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .direct-form-actions {
@@ -3340,10 +3367,10 @@ button:disabled {
   box-sizing: border-box;
   padding: 0 12px;
   margin: 8px 0;
-  border: 1px solid var(--border-default, #E2DED6);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
-  background: var(--bg-subtle, #F6F4F0);
-  color: var(--fg, #1F1B16);
+  background: var(--bg-subtle);
+  color: var(--fg);
   font-size: 13px;
   line-height: 1;
   text-align: left;
@@ -3353,7 +3380,7 @@ button:disabled {
 }
 
 .remote-image-chip:active {
-  background: var(--bg-hover, #ECE9E2);
+  background: var(--bg-hover);
 }
 
 .remote-image-chip-icon {
@@ -3374,14 +3401,14 @@ button:disabled {
 .remote-image-chip-detail {
   flex: 0 0 auto;
   font-size: 11px;
-  color: var(--fg-muted, #78716C);
+  color: var(--fg-muted);
   text-transform: uppercase;
 }
 
 .remote-image-chip-action {
   flex: 0 0 auto;
   font-size: 12px;
-  color: var(--fg-accent, #B45309);
+  color: var(--accent);
   font-weight: 600;
 }
 
@@ -3425,4 +3452,79 @@ button:disabled {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Navigation, conversation and connection chrome. */
+.claude-header {
+  border-bottom: 1px solid var(--border-subtle);
+  background-color: var(--bg-surface);
+}
 
+.header-brand, .header-title-chat { font-weight: 650; }
+.header-icon-btn { border-radius: 9px; }
+
+.home-hero {
+  padding: clamp(32px, 7vh, 66px) 24px 26px;
+  background: radial-gradient(ellipse at 50% 0%, var(--accent-soft), transparent 74%);
+}
+
+.home-greeting-title { font-size: clamp(24px, 6vw, 32px); font-weight: 700; }
+.home-recents-section { width: min(100%, 680px); margin-inline: auto; }
+
+.home-recent-card {
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.message-bubble-user {
+  border: 1px solid var(--accent-border);
+  border-radius: 14px 14px 5px 14px;
+  background: var(--accent-soft);
+}
+
+.process-panel, .thinking-accordion, .claude-tool-card, .claude-tool-group,
+.approval-card, .dots-delivery, .markdown-table-frame {
+  border-color: var(--border-default);
+  border-radius: 12px;
+}
+
+.thinking-summary, .process-panel-header, .tool-card-header, .tool-group-header {
+  background-color: var(--bg-subtle);
+}
+
+.claude-composer-card { border-radius: 17px; }
+.composer-toolbar { border-top: 1px solid var(--border-subtle); }
+.composer-circle-btn, .composer-model-pill { border-radius: 8px; }
+
+.claude-sheet {
+  border: 1px solid var(--border-default);
+  border-bottom: 0;
+  border-radius: 17px 17px 0 0;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-composer);
+}
+
+.claude-drawer { border-inline-end: 1px solid var(--border-default); }
+.drawer-top-bar, .drawer-footer { background-color: var(--bg-surface); }
+.drawer-item-btn.active { color: var(--accent); background: var(--accent-soft); }
+.onboard-content {
+  padding: 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+}
+.onboard-hero .onboard-title { font-weight: 700; }
+.onboard-progress { color: var(--accent); }
+
+button:focus-visible,
+:is(input, textarea, select):focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-hero, .home-scrollable-content, .home-brand-icon,
+  .home-greeting-title, .home-greeting-sub, .claude-composer-card { transition: none; }
+}

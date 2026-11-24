@@ -6,6 +6,8 @@ import {
   IconChevronDown,
   IconCopy,
   IconFolder,
+  IconArrowUpRight,
+  IconFileGeneric,
   IconOpenExternal,
   IconTrash,
 } from "@/components/common/icons";
@@ -61,7 +63,7 @@ function ArtifactRow({
   artifact: Artifact;
   active: boolean;
   onSelect: (a: Artifact) => void;
-  onContext: (e: React.MouseEvent, artifact: Artifact) => void;
+  onContext: (target: ArtifactMenu) => void;
 }): React.JSX.Element {
   const entryPath = useAppStore((s) => {
     const taskId = s.activeTaskId;
@@ -80,6 +82,7 @@ function ArtifactRow({
     <div
       role="button"
       tabIndex={0}
+      aria-haspopup="menu"
       className={`extension-artifact-item ${active ? "active" : ""}${dragEnabled ? " is-draggable" : ""}`}
       onClick={() => {
         if (draggedRef.current) {
@@ -92,12 +95,18 @@ function ArtifactRow({
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onSelect(artifact);
+        } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+          e.preventDefault();
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          onContext({ x: rect.left, y: rect.bottom, artifact });
         }
       }}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        onContext(e, artifact);
+        e.currentTarget.focus({ preventScroll: true });
+        onContext({ x: e.clientX, y: e.clientY, artifact });
       }}
       draggable={dragEnabled}
       onDragStart={(e) => {
@@ -159,20 +168,29 @@ export default function ArtifactRail({
   };
 
   const menuNode = menu ? (
-    <PopupContextMenu x={menu.x} y={menu.y} onClose={closeMenu}>
+    <PopupContextMenu
+      x={menu.x}
+      y={menu.y}
+      onClose={closeMenu}
+      heading={{ title: menu.artifact.name, icon: <FileBadge name={menu.artifact.name} size={16} /> }}
+    >
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         onClick={() => {
           closeMenu();
           onSelect(menu.artifact);
         }}
       >
-        打开
+        <IconFileGeneric size={14} /> 打开
       </button>
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         disabled={!menu.artifact.path}
         onClick={() => {
           closeMenu();
@@ -184,6 +202,8 @@ export default function ArtifactRail({
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         disabled={!menu.artifact.path}
         onClick={() => {
           closeMenu();
@@ -195,6 +215,8 @@ export default function ArtifactRail({
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         disabled={!menu.artifact.path}
         onClick={() => {
           closeMenu();
@@ -209,17 +231,21 @@ export default function ArtifactRail({
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         onClick={() => {
           closeMenu();
           attachArtifactToChat(artifactToRefFile(menu.artifact));
         }}
       >
-        发送到对话
+        <IconArrowUpRight size={14} /> 发送到对话
       </button>
-      <div className="task-context-sep" />
+      <div className="task-context-sep" role="separator" />
       <button
         type="button"
         className="task-context-item danger"
+        role="menuitem"
+        tabIndex={-1}
         onClick={() => {
           closeMenu();
           setPendingDelete(menu.artifact);
@@ -252,7 +278,7 @@ export default function ArtifactRail({
       artifact={a}
       active={activeArtifactId === a.id}
       onSelect={onSelect}
-      onContext={(e, artifact) => setMenu({ x: e.clientX, y: e.clientY, artifact })}
+      onContext={setMenu}
     />
   ));
 

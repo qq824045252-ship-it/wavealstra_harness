@@ -86,10 +86,11 @@ contains(
   "Goal/Todo chips must inherit the scene-mode tint used by 代码开发",
 );
 contains(globalCssPath, "var(--hero-mode) 14%", "Goal/Todo and mode chips must share the scene-mode fill");
-assert.ok(
-  chatView.indexOf("<ChatProjectCrumb") < chatView.indexOf("<WorkspaceCrumb") &&
-    chatView.indexOf("<WorkspaceCrumb") < chatView.indexOf('className="chat-header-title"'),
-  "chat location order must be Project / Workspace / Task title",
+const taskLocationHeader = /\{task\.projectId && <ChatProjectCrumb[^>]*\/>\}\s*<WorkspaceCrumb[^>]*\/>\s*<div className="chat-header-title"/g;
+assert.equal(
+  [...chatView.matchAll(taskLocationHeader)].length,
+  2,
+  "Both regular task headers must show Project / Workspace / Task title in order",
 );
 contains("src/renderer/src/components/chat/ExecutionTimeline.tsx", "<span>Thinking</span>", "thinking must use the calm product label");
 contains("src/renderer/src/components/chat/ToolCallCard.tsx", "tool-row--${toolCall.status}", "tool rows must expose visual state classes");

@@ -5,6 +5,7 @@ import { useTextPrompt } from "@/components/common/useTextPrompt";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import { useAppStore } from "@/store/appStore";
 import { IconArrowUpRight, IconPlus, IconPuzzle } from "@/components/common/icons";
+import GadgetBlueprintDialog from "@/components/blueprint/GadgetBlueprintDialog";
 import GadgetActionMenu from "./GadgetActionMenu";
 import GadgetMoveDialog from "./GadgetMoveDialog";
 import GadgetCreateDialog from "./GadgetCreateDialog";
@@ -56,6 +57,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [sourceItem, setSourceItem] = useState<GadgetListItem | null>(null);
+  const [blueprintItem, setBlueprintItem] = useState<GadgetListItem | null>(null);
   const [inlineQuery, setInlineQuery] = useState("");
   const query = workbench?.query ?? inlineQuery;
   const { requestText, textPromptDialog } = useTextPrompt();
@@ -66,7 +68,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
   currentScopeKey.current = key;
   const pendingSaves = useRef(new Set<string>());
   const listRequest = useRef(0);
-  useEffect(() => { setMoveItem(null); setPendingRemove(null); setSourceItem(null); setNotice(null); setError(null); setItems([]); setOpenActionId(null); setBusyId(null); }, [key]);
+  useEffect(() => { setMoveItem(null); setPendingRemove(null); setSourceItem(null); setBlueprintItem(null); setNotice(null); setError(null); setItems([]); setOpenActionId(null); setBusyId(null); }, [key]);
 
   const reload = useCallback(async (): Promise<void> => {
     const generation = scopeGeneration.current;
@@ -174,23 +176,18 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
     }
   };
 
-  const saveBlueprint = async (item: GadgetListItem): Promise<void> => {
-    const name = await requestText({
-      title: "保存为 Blueprint",
-      label: "Blueprint 名称",
-      initialValue: item.name,
-      maxLength: 120,
-      confirmLabel: "保存",
-    });
-    if (!name?.trim()) return;
+  const saveBlueprint = async (item: GadgetListItem, name: string): Promise<void> => {
+    const generation = scopeGeneration.current;
+    const stillHere = (): boolean => currentScopeKey.current === key && scopeGeneration.current === generation;
     try {
       setBusyId(item.id);
-      await gadgetApi().saveAsBlueprint({ gadgetId: item.id, name: name.trim() });
-      setNotice("已保存为 Gadget Blueprint");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      await gadgetApi().saveAsBlueprint({ gadgetId: item.id, name });
+      if (stillHere()) {
+        setBlueprintItem(null);
+        setNotice("已保存为 Gadget Blueprint");
+      }
     } finally {
-      setBusyId(null);
+      if (stillHere()) setBusyId(null);
     }
   };
 
@@ -286,7 +283,7 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
                         保存到我的工作台
                       </button>
                     )}
-                    <button type="button" disabled={busy} onClick={() => { closeActions(); void saveBlueprint(item); }}>
+                    <button type="button" disabled={busy} onClick={() => { closeActions(); setBlueprintItem(item); }}>
                       保存为 Blueprint
                     </button>
                     <button type="button" disabled={busy} onClick={() => { closeActions(); void exportArtifact(item); }}>
@@ -423,6 +420,14 @@ export default function GadgetSection({ scope, includeInherited = false, title, 
           </div>
         )}
       </div>
+      {blueprintItem && (
+        <GadgetBlueprintDialog
+          key={blueprintItem.id}
+          gadget={blueprintItem}
+          onClose={() => setBlueprintItem(null)}
+          onSave={(name) => saveBlueprint(blueprintItem, name)}
+        />
+      )}
       {sourceItem && createPortal(<GadgetSourceDialog gadget={sourceItem} onClose={() => setSourceItem(null)} />, document.body)}
       {moveItem && (
         <GadgetMoveDialog

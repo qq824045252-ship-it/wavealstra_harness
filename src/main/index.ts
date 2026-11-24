@@ -125,6 +125,7 @@ import { LibraryProtocol } from "./library/LibraryProtocol";
 import { LibraryService } from "./library/LibraryService";
 import { getSemanticRuntime } from "./retrieval/SemanticRuntime";
 import { runLibraryNoteOperation } from "./library/LibraryNoteOperations";
+import { registerFileDialogIpc, showOpenFileDialog, showSaveFileDialog } from "./FileDialogService";
 import { WorkspaceLibraryBindingService } from "./workspace/WorkspaceLibraryBindingService";
 import { workspaceLibraryBindingView } from "./workspace/WorkspaceLibraryBindingView";
 import { deleteEmptyWorkspace } from "./workspace/WorkspaceDeletion";
@@ -332,13 +333,13 @@ function prepareNativeDragFile(filePath: string): string | null {
 type AppTheme = "light" | "dark";
 
 const THEME_WINDOW_BG: Record<AppTheme, string> = {
-  light: "#ffffff",
-  dark: "#121212",
+  light: "#f1f5fc",
+  dark: "#101827",
 };
 
 const THEME_TITLEBAR: Record<AppTheme, { color: string; symbolColor: string }> = {
-  light: { color: "#ffffff", symbolColor: "#1a1a19" },
-  dark: { color: "#121212", symbolColor: "#ececea" },
+  light: { color: THEME_WINDOW_BG.light, symbolColor: "#17253b" },
+  dark: { color: THEME_WINDOW_BG.dark, symbolColor: "#e9f0fc" },
 };
 
 const TITLE_BAR_HEIGHT = 32;
@@ -736,6 +737,7 @@ function createWindow(initialTheme: AppTheme = "light"): void {
 }
 
 function registerIpc(): void {
+  registerFileDialogIpc();
   const taskBoard = new TaskBoardRepository(db.connection);
   const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
     () => broadcastToWindows(DotsIpc.changed, null));
@@ -939,23 +941,14 @@ function registerIpc(): void {
 
   ipcMain.handle("workspace:pickLocalFile", async (_event, editorPreview?: boolean) => {
     const win = BrowserWindow.getFocusedWindow();
-    const result = win
-      ? await dialog.showOpenDialog(win, {
-          properties: ["openFile"],
-          filters: [
-            { name: "文档与代码", extensions: ["md", "txt", "json", "py", "html", "htm", "css", "js", "ts", "tsx", "docx", "xlsx", "xls", "pptx", "pdf"] },
-            { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg"] },
-            { name: "所有文件", extensions: ["*"] },
-          ],
-        })
-      : await dialog.showOpenDialog({
-          properties: ["openFile"],
-          filters: [
-            { name: "文档与代码", extensions: ["md", "txt", "json", "py", "html", "htm", "css", "js", "ts", "tsx", "docx", "xlsx", "xls", "pptx", "pdf"] },
-            { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg"] },
-            { name: "所有文件", extensions: ["*"] },
-          ],
-        });
+    const result = await showOpenFileDialog(win, {
+      properties: ["openFile"],
+      filters: [
+        { name: "文档与代码", extensions: ["md", "txt", "json", "py", "html", "htm", "css", "js", "ts", "tsx", "docx", "xlsx", "xls", "pptx", "pdf"] },
+        { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
     if (result.canceled || !result.filePaths[0]) return null;
 
     const filePath = result.filePaths[0];
@@ -1019,15 +1012,10 @@ function registerIpc(): void {
     const win = BrowserWindow.getFocusedWindow();
     const properties = windowOpenProperties();
 
-    const result = win
-      ? await dialog.showOpenDialog(win, {
-          properties,
-          title: "打开本地文件夹",
-        })
-      : await dialog.showOpenDialog({
-          properties,
-          title: "打开本地文件夹",
-        });
+    const result = await showOpenFileDialog(win, {
+      properties,
+      title: "打开本地文件夹",
+    });
     if (result.canceled || !result.filePaths[0]) return null;
 
     const folderPath = result.filePaths[0];
@@ -1036,23 +1024,14 @@ function registerIpc(): void {
 
   ipcMain.handle("workspace:pickZipFile", async () => {
     const win = BrowserWindow.getFocusedWindow();
-    const result = win
-      ? await dialog.showOpenDialog(win, {
-          properties: ["openFile"],
-          title: "选择 ZIP 包",
-          filters: [
-            { name: "ZIP 包", extensions: ["zip"] },
-            { name: "所有文件", extensions: ["*"] },
-          ],
-        })
-      : await dialog.showOpenDialog({
-          properties: ["openFile"],
-          title: "选择 ZIP 包",
-          filters: [
-            { name: "ZIP 包", extensions: ["zip"] },
-            { name: "所有文件", extensions: ["*"] },
-          ],
-        });
+    const result = await showOpenFileDialog(win, {
+      properties: ["openFile"],
+      title: "选择 ZIP 包",
+      filters: [
+        { name: "ZIP 包", extensions: ["zip"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
     if (result.canceled || !result.filePaths[0]) return null;
     return { path: result.filePaths[0] };
   });
@@ -1091,7 +1070,7 @@ function registerIpc(): void {
     chooseDestination: async name => {
       const win = BrowserWindow.getFocusedWindow();
       const options = { title: "保存成果副本", defaultPath: name };
-      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+      const result = await showSaveFileDialog(win, options);
       return result.canceled ? undefined : result.filePath;
     },
   });
@@ -1101,7 +1080,7 @@ function registerIpc(): void {
   });
   const chooseOfficeCopy = (owner: BrowserWindow) => async (name: string) => {
     const title = /\.drawio$/i.test(name) ? "保存 Draw.io 图纸副本" : "保存 Office 编辑副本";
-    const result = await dialog.showSaveDialog(owner, { title, defaultPath: name });
+    const result = await showSaveFileDialog(owner, { title, defaultPath: name });
     return result.canceled ? undefined : result.filePath;
   };
   const officeUse = officeUseHost = new OfficeUseHost({
@@ -1127,7 +1106,7 @@ function registerIpc(): void {
       storageRoot: getMyBuddyDir(),
       locateCli: () => locateCadCraftCli(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined),
       choose: async (defaultPath, extension) => {
-        const result = await dialog.showSaveDialog(owner, {
+        const result = await showSaveFileDialog(owner, {
           title: "保存 CAD 编辑副本",
           defaultPath,
           filters: [{ name: `${extension.toUpperCase()} 图纸`, extensions: [extension] }],
@@ -1540,7 +1519,7 @@ function registerIpc(): void {
   ipcMain.handle(AgentIpc.getDiskSpace, () => agentService.getDiskSpace());
   ipcMain.handle(AgentIpc.listUserFonts, () => agentService.listUserFonts());
   ipcMain.handle(AgentIpc.listSystemFonts, () => agentService.listSystemFonts());
-  /** 无 path 时弹原生对话框；有 path 时直接导入（渲染进程 file input + getPathForFile） */
+  /** 有 path 时直接导入；界面可通过文件选择器取得路径 */
   ipcMain.handle(AgentIpc.importUserFont, async (event, sourcePath?: string) => {
     let filePath = typeof sourcePath === "string" ? sourcePath.trim() : "";
     if (!filePath) {
@@ -1556,9 +1535,7 @@ function registerIpc(): void {
           { name: "所有文件", extensions: ["*"] },
         ],
       };
-      const result = win
-        ? await dialog.showOpenDialog(win, opts)
-        : await dialog.showOpenDialog(opts);
+      const result = await showOpenFileDialog(win, opts);
       if (result.canceled || !result.filePaths[0]) return null;
       filePath = result.filePaths[0];
     }
@@ -1804,9 +1781,7 @@ function registerIpc(): void {
         { name: "所有文件", extensions: ["*"] },
       ],
     };
-    const result = win
-      ? await dialog.showOpenDialog(win, pickOpts)
-      : await dialog.showOpenDialog(pickOpts);
+    const result = await showOpenFileDialog(win, pickOpts);
     if (result.canceled || result.filePaths.length === 0) return { ok: true as const, value: [] as import("../shared/library-ipc").LibraryItemDto[] };
     try {
       const items = result.filePaths.map((sourcePath) =>
@@ -2031,7 +2006,7 @@ function registerIpc(): void {
         { name: "所有文件", extensions: ["*"] },
       ],
     };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const result = await showOpenFileDialog(win, options);
     if (result.canceled || !result.filePaths[0]) return null;
     return result.filePaths[0];
   });
@@ -2903,7 +2878,7 @@ function registerIpc(): void {
       defaultPath: `mybuddy-python-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
       filters: [{ name: "JSON", extensions: ["json"] }],
     };
-    const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+    const result = await showSaveFileDialog(win, options);
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true, detail: "已取消" };
     try {
       writeFileSync(result.filePath, JSON.stringify(pythonRuntime.exportDiagnostics(), null, 2), "utf8");
@@ -2930,7 +2905,7 @@ function registerIpc(): void {
       title: "选择 Python 项目目录",
       properties: ["openDirectory"],
     };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const result = await showOpenFileDialog(win, options);
     if (result.canceled || !result.filePaths[0]) return null;
     return result.filePaths[0];
   });
@@ -2942,7 +2917,7 @@ function registerIpc(): void {
       // 不加扩展名过滤：venv 里的解释器在 macOS/Linux 上没有扩展名
       ...(defaultPath ? { defaultPath } : {}),
     };
-    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const result = await showOpenFileDialog(win, options);
     if (result.canceled || !result.filePaths[0]) return null;
     return result.filePaths[0];
   });

@@ -1,6 +1,18 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { DOTS_TASK_ID, type DotsActivityItem } from "@shared/dots";
-import { IconChevronRight, IconListTodo } from "@/components/common/icons";
+import {
+  IconAlert,
+  IconArrowUpRight,
+  IconChevronRight,
+  IconCircleCheck,
+  IconCirclePause,
+  IconClock,
+  IconConversation,
+  IconDiagnostics,
+  IconListTodo,
+  IconStop,
+  IconX,
+} from "@/components/common/icons";
 import { refreshDotsActivity, useDotsActivity } from "@/lib/dotsActivityFeed";
 import { openDotsActivityTarget } from "@/lib/taskBoardVisits";
 import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
@@ -11,6 +23,17 @@ const MORE_LIMIT = 20;
 const states = {
   waiting: "等待你回复", running: "运行中", blocked: "遇到阻碍", failed: "执行失败",
   paused: "已暂停", stopped: "已停止", delivered: "已交付", undelivered: "尚未交付", superseded: "已改向",
+};
+const stateIcons = {
+  waiting: IconConversation,
+  running: IconDiagnostics,
+  blocked: IconAlert,
+  failed: IconX,
+  paused: IconCirclePause,
+  stopped: IconStop,
+  delivered: IconCircleCheck,
+  undelivered: IconClock,
+  superseded: IconArrowUpRight,
 };
 const priority = Object.keys(states) as DotsActivityItem["state"][];
 const phases = { queued: "排队中", working: "执行中", following: "等待 Dots 跟进" };
@@ -75,8 +98,10 @@ export function DotsAllTasks() {
           const state = item.state === "running" ? phases[item.phase] : states[item.state];
           const lastActivity = item.state === "running" ? item.lastActivityAt ?? item.updatedAt : item.updatedAt;
           const action = item.state === "waiting" ? "去回复" : item.state === "delivered" ? "查看交付" : "打开任务";
+          const StateIcon = stateIcons[item.state];
           return <li key={item.taskId} data-state={item.state}>
             <button type="button" className="dots-all-tasks-row" aria-label={`${item.title}，${state}，${action}`} onClick={() => void visit(item)}>
+              <span className="dots-task-state-icon" aria-hidden="true"><StateIcon size={15} /></span>
               <span className="dots-all-tasks-detail">
                 <span className="dots-all-tasks-heading"><strong>{item.title}</strong><span className="dots-all-tasks-state">{state}</span></span>
                 <small>{item.space}{item.state === "delivered" && item.fileCount > 0 ? ` · ${item.fileCount} 个文件` : ""}
@@ -84,7 +109,7 @@ export function DotsAllTasks() {
                 </small>
                 {item.summary && <span className="dots-all-tasks-summary">{item.summary}</span>}
               </span>
-              <IconChevronRight size={14} />
+              <IconChevronRight size={14} aria-hidden="true" />
             </button>
           </li>;
         })}

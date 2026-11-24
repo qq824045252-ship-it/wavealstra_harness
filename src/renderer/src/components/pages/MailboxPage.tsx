@@ -67,9 +67,11 @@ export default function MailboxPage(): React.JSX.Element {
   const switchTab = (next: typeof tab) => { status.clear(); mail.clear(); body.clear(); calendar.clear(); setSelected(null); setTab(next); };
   const messages = mail.result?.ok ? mail.result.data.messages : [];
   const events = calendar.result?.ok ? calendar.result.data.events : [];
-  return <div className="page-scroll"><div className="page-container workspace-page">
-    <div className="page-title">邮箱和日历</div>
-    <div className="page-sub">通过本机 Google 授权连接 Gmail 和 Google Calendar</div>
+  return <div className="page-scroll"><div className="page-container workspace-page mailbox-page">
+    <header className="mailbox-header">
+      <h1 className="page-title">邮箱和日历</h1>
+      <p className="page-sub">通过本机 Google 授权连接 Gmail 和 Google Calendar</p>
+    </header>
     <section className="workspace-panel" aria-label="连接检查">
       <div className="workspace-heading"><strong>Google Workspace</strong><button className="btn" disabled={status.loading} onClick={check}>检查连接</button></div>
       <p className="workspace-note">安装 gws 不代表已连接。此页不会自动登录或读取账户；点击检查或查询后，以实际返回结果为准。</p>

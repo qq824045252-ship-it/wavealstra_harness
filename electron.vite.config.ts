@@ -86,6 +86,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, "src/preload/index.ts"),
           selectionPopover: resolve(__dirname, "src/preload/selectionPopover.ts"),
+          fileDialog: resolve(__dirname, "src/preload/fileDialog.ts"),
         },
       },
     },
@@ -104,6 +105,10 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
+        input: {
+          index: resolve(__dirname, "src/renderer/index.html"),
+          "file-dialog": resolve(__dirname, "src/renderer/file-dialog.html"),
+        },
         onwarn(warning, warn) {
           // markstream-react 2.0.13 still ships a few misplaced @__PURE__ comments.
           // Rollup discards only those invalid annotations; keep every other warning visible.

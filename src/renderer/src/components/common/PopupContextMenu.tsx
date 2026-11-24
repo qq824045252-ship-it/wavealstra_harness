@@ -1,45 +1,46 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
-import { layoutViewportSize, layoutZoom, placeFixedMenu } from "@/lib/placeFixedMenu";
+import { layoutRect, layoutViewportSize, layoutZoom, placeFixedMenu } from "@/lib/placeFixedMenu";
+import ContextMenuSurface, { type ContextMenuHeading } from "./ContextMenuSurface";
 
 const MENU_MIN_WIDTH = 176;
 const MENU_MAX_HEIGHT = 360;
 
-interface Props {
-  x: number;
-  y: number;
+type Props = (
+  | { x: number; y: number; anchorRef?: never }
+  | { x?: never; y?: never; anchorRef: RefObject<HTMLElement | null> }
+) & {
+  heading?: ContextMenuHeading;
   onClose: () => void;
   children: ReactNode;
-}
+};
 
-/** 右键弹出菜单：portal 到 body，按点击坐标贴边。 */
-export default function PopupContextMenu({ x, y, onClose, children }: Props): React.JSX.Element {
+export default function PopupContextMenu({ x, y, anchorRef, heading, onClose, children }: Props): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
 
-  useDismissOnClickOutside(true, onClose, menuRef);
+  useDismissOnClickOutside(true, onClose, menuRef, anchorRef ? [anchorRef] : undefined);
 
   useLayoutEffect(() => {
     const measure = (): void => {
       const el = menuRef.current;
+      if (!el) return;
+      const anchorElement = anchorRef?.current;
       const z = layoutZoom();
+      const left = (x ?? 0) / z;
+      const top = (y ?? 0) / z;
       const placed = placeFixedMenu({
-        anchor: { top: y / z, bottom: y / z, left: x / z, right: x / z },
-        menuWidth: Math.max(el?.offsetWidth ?? 0, MENU_MIN_WIDTH),
-        menuHeight: Math.max(el?.scrollHeight ?? 0, 80),
+        anchor: anchorElement ? layoutRect(anchorElement) : { top, bottom: top, left, right: left },
+        menuWidth: Math.max(el.offsetWidth, MENU_MIN_WIDTH),
+        menuHeight: el.scrollHeight + el.offsetHeight - el.clientHeight,
         viewport: layoutViewportSize(),
         minWidth: MENU_MIN_WIDTH,
         maxHeight: MENU_MAX_HEIGHT,
-        align: "start",
+        align: anchorElement ? "end" : "start",
       });
       setPos((prev) => {
-        if (
-          prev &&
-          prev.top === placed.top &&
-          prev.left === placed.left &&
-          prev.maxHeight === placed.maxHeight
-        ) {
+        if (prev?.top === placed.top && prev.left === placed.left && prev.maxHeight === placed.maxHeight) {
           return prev;
         }
         return { top: placed.top, left: placed.left, maxHeight: placed.maxHeight };
@@ -47,27 +48,25 @@ export default function PopupContextMenu({ x, y, onClose, children }: Props): Re
     };
     measure();
     const raf = requestAnimationFrame(measure);
-    return () => cancelAnimationFrame(raf);
-  }, [x, y]);
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+    };
+  }, [x, y, anchorRef]);
 
   return createPortal(
-    <div
-      ref={menuRef}
-      className="task-context-menu task-context-menu-portal file-context-menu"
-      role="menu"
-      style={
-        pos
-          ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight }
-          : { visibility: "hidden", top: 0, left: 0 }
-      }
-      onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
+    <ContextMenuSurface
+      menuRef={menuRef}
+      className="file-context-menu"
+      heading={heading}
+      style={pos ?? { visibility: "hidden", top: 0, left: 0 }}
+      onClose={onClose}
     >
       {children}
-    </div>,
+    </ContextMenuSurface>,
     document.body,
   );
 }

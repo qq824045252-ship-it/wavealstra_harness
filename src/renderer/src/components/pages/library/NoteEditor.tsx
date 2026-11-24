@@ -66,8 +66,8 @@ export default function NoteEditor(props: Props): React.JSX.Element {
   const [replace, setReplace] = useState("");
   const [assetItems, setAssetItems] = useState<Array<{ id: string; title: string; kind: string }>>([]);
   const [chosenItem, setChosenItem] = useState("");
+  const [pickingImages, setPickingImages] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const surface = useRef<HTMLDivElement>(null);
   const richCursor = useRef(stored?.mode === "rich" ? { from: stored.start, to: stored.end } : null);
   const sourceCursor = useRef(stored?.mode === "source" ? { from: stored.start, to: stored.end } : { from: 0, to: 0 });
@@ -186,15 +186,39 @@ export default function NoteEditor(props: Props): React.JSX.Element {
     requestAnimationFrame(() => { element.focus(); element.setSelectionRange(selectionStart + value.length, selectionStart + value.length); });
   }
 
+  function insertStoredImages(images: Array<{ url: string; name: string }>): void {
+    if (!images.length || latest.current.itemId !== itemId || latest.current.access !== access || access.readOnly) return;
+    if (modeRef.current === "source") {
+      replaceInSource(images.map(({ name, url }) => "\n![" + name.replace(/[\[\]]/g, "") + "](" + url + ")\n").join(""));
+    } else if (modeRef.current === "rich" && editor && !editor.isDestroyed) {
+      const nodes = images.map(({ name, url }) => ({
+        type: "image",
+        attrs: { src: url, alt: name },
+      }));
+      editor.chain().focus().insertContentAt(editor.state.selection.to, nodes).run();
+    }
+  }
+
+  async function pickImages(): Promise<void> {
+    setPickingImages(true);
+    try {
+      const { images, errors } = await access.note({ type: "pickImages", owner: access.scope, id: itemId });
+      insertStoredImages(images);
+      if (errors.length) latest.current.onError(errors.join("\n"));
+    } catch (error) { report(error); }
+    finally { setPickingImages(false); }
+  }
+
   async function insertImages(files: File[]): Promise<void> {
+    const images: Array<{ url: string; name: string }> = [];
     for (const file of files) {
       try {
         const url = await access.note({ type: "addImage", owner: access.scope, id: itemId,
           mime: file.type, name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
-        if (actualMode === "source") replaceInSource("\n![" + file.name.replace(/[\[\]]/g, "") + "](" + url + ")\n");
-        else if (editor && !editor.isDestroyed) editor.chain().focus().setImage({ src: url, alt: file.name }).run();
+        images.push({ url, name: file.name });
       } catch (error) { report(error); }
     }
+    insertStoredImages(images);
   }
 
   const transferImages = (event: DragEvent | ClipboardEvent): void => {
@@ -282,12 +306,10 @@ export default function NoteEditor(props: Props): React.JSX.Element {
           <option value="delrow">删除行</option><option value="delcol">删除列</option><option value="deltable">删除表格</option></select>}
       </>}
       {toolButton("插入链接或笔记引用", "链接", addLink)}
-      {toolButton("插入图片", "图片", () => fileInput.current?.click())}
+      {toolButton("插入图片", "图片", () => void pickImages(), undefined, pickingImages)}
       {toolButton("行内公式", "ƒ", () => { setTool("inlineMath"); setToolValue(""); })}
       {toolButton("块公式", "∑", () => { setTool("blockMath"); setToolValue(""); })}
       {toolButton("查找和替换", "查找", () => setSearchOpen((value) => !value))}
-      <input hidden type="file" ref={fileInput} accept="image/png,image/jpeg,image/gif,image/webp,image/avif,image/bmp" multiple
-        onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void insertImages(files); }} />
     </div>}
     {tool && <form className="note-inline-form" onSubmit={(event) => { event.preventDefault(); submitTool(); }}>
       <input autoFocus aria-label={tool.includes("Math") ? "LaTeX 公式" : "链接网址"} placeholder={tool.includes("Math") ? "LaTeX" : "https://"}

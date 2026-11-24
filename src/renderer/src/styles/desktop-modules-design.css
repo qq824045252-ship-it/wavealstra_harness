@@ -1,0 +1,736 @@
+/* Desktop modules share the shell palette. Keep scroll, selection and dialog ownership with the module. */
+.desktop-app {
+  --module-gutter: clamp(16px, 2.7vw, 32px);
+  --module-header: color-mix(in srgb, var(--accent) 3%, var(--surface-main));
+  --module-tint: color-mix(in srgb, var(--accent) 10%, var(--surface-main));
+  --module-accent-edge: color-mix(in srgb, var(--accent) 33%, var(--border-default));
+  --module-card-shadow: 0 1px 2px rgb(7 20 39 / 8%);
+}
+
+.desktop-app :is(.desktop-secondary-heading, .settings-content-head, .task-board-header, .workspace-detail-header) {
+  padding: 18px var(--module-gutter);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--module-header);
+}
+
+.desktop-app :is(.desktop-secondary-heading h1, .desktop-assistant-heading .chat-header-title, .settings-content-title, .task-board-header h1, .workspace-detail-heading h1, .notifications-title h1, .us-title) {
+  margin: 0;
+  color: var(--fg);
+  font-size: 21px;
+  font-weight: 690;
+  line-height: 1.28;
+  letter-spacing: -0.018em;
+}
+
+.desktop-app :is(.desktop-secondary-search, .task-board-search, .notifications-search, .hub-search, .project-home-search) {
+  min-height: 34px;
+  border-color: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+}
+
+.desktop-app :is(.desktop-secondary-search, .task-board-search, .notifications-search, .hub-search, .project-home-search):focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.desktop-app :is(.desktop-secondary-empty, .task-board-no-results, .library-empty, .us-empty) {
+  color: var(--fg-secondary);
+}
+
+/* Task board */
+.desktop-app .task-board {
+  background: var(--surface-app);
+}
+
+.desktop-app .task-board-views {
+  width: fit-content;
+  max-width: calc(100% - var(--module-gutter) * 2);
+  margin: 14px var(--module-gutter) 16px;
+  padding: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+}
+
+.desktop-app .task-board-views button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--module-accent-edge);
+  background: var(--module-tint);
+  font-weight: 650;
+}
+
+.desktop-app .task-board-columns {
+  padding-inline: var(--module-gutter);
+  gap: 14px;
+}
+
+.desktop-app .task-board-lane {
+  border: 1px solid color-mix(in srgb, var(--lane-color) 22%, var(--border-default));
+  background: color-mix(in srgb, var(--lane-color) 4%, var(--surface-main));
+}
+
+.desktop-app .task-board-lane-header {
+  padding: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--lane-color) 19%, var(--border-subtle));
+}
+
+.desktop-app .task-board-lane-body {
+  padding-top: 9px;
+}
+
+.desktop-app .task-board-count {
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--lane-color) 11%, var(--surface-main));
+  color: var(--lane-color);
+  font-weight: 650;
+}
+
+.desktop-app .task-board-card {
+  background: var(--surface-elevated);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .task-board-card strong {
+  letter-spacing: -0.01em;
+}
+
+.desktop-app .task-board-card:focus-visible {
+  outline-offset: -2px;
+}
+
+.desktop-app .task-board-date-dialog {
+  border-color: var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Local assistant and bot interactions */
+.desktop-app .desktop-assistant-heading .assistant-conn-hint {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-right);
+  border: 1px solid var(--border-default);
+}
+
+.desktop-app .assistant-conv-header {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 16px;
+}
+
+.desktop-app .assistant-conv-badge {
+  border-radius: var(--radius-sm);
+}
+
+.desktop-app .assistant-conv-unread {
+  background: var(--module-tint);
+  color: var(--accent);
+}
+
+.desktop-app :is(.bot-result-report, .bot-advanced, .bot-work-file-preview) {
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .bot-result-report > header {
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.desktop-app .bot-detail-section {
+  border-bottom-color: var(--border-subtle);
+}
+
+.desktop-app .work-execution-metrics {
+  padding: 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-right);
+}
+
+.desktop-app .bot-organization-item {
+  border-left-color: var(--module-accent-edge);
+  background: var(--module-header);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.desktop-app .bot-collaboration-summary {
+  border-color: var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-right);
+}
+
+/* Project directory, project desk and workspace detail */
+.desktop-app .project-home-desktop .project-home-head {
+  padding-block: 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.desktop-app .project-home-desktop .project-home-grid {
+  gap: 5px;
+}
+
+.desktop-app .project-home-desktop .project-home-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-main);
+}
+
+.desktop-app .project-home-desktop .project-home-card:hover {
+  border-color: var(--module-accent-edge);
+  background: var(--module-header);
+}
+
+.desktop-app .project-home-desktop .project-home-card-icon {
+  color: var(--accent);
+  background: var(--module-tint);
+  border-color: var(--module-accent-edge);
+  border-radius: var(--radius-sm);
+}
+
+.desktop-app .project-home-desktop :is(.project-home-card-name, .project-home-section-head) {
+  color: var(--fg);
+  font-weight: 650;
+}
+
+.desktop-app .project-desk-desktop .project-desk-crumb {
+  border-bottom-color: var(--border-subtle);
+  background: var(--module-header);
+}
+
+.desktop-app :is(.project-desk-tabs, .workspace-detail-tabs) {
+  gap: 4px;
+  background: var(--surface-main);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.desktop-app :is(.project-desk-tab, .workspace-detail-tab).active {
+  color: var(--accent);
+  background: var(--module-tint);
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.desktop-app .project-desk-desktop :is(.project-status-card, .project-gantt-sheet, .project-cal-grid) {
+  border-color: var(--border-default);
+  background: var(--surface-elevated);
+}
+
+.desktop-app .project-desk-desktop :is(.project-gantt-toolbar, .project-gantt-label-head, .project-gantt-days, .project-cal-weekdays) {
+  background: var(--module-header);
+}
+
+.desktop-app .project-desk-desktop :is(.project-gantt-tick, .project-gantt-cell, .project-cal-cell).today {
+  background: var(--module-tint);
+}
+
+.desktop-app .project-desk-desktop .project-plan-view.active {
+  color: var(--accent);
+  background: var(--module-tint);
+}
+
+.desktop-app .workspace-detail {
+  background: var(--surface-main);
+}
+
+.desktop-app .workspace-detail-title-row {
+  flex-wrap: wrap;
+}
+
+.desktop-app .workspace-detail-icon:not(.workspace-detail-icon--warn) {
+  border-color: var(--module-accent-edge);
+  background: var(--module-tint);
+  color: var(--accent);
+}
+
+.desktop-app .workspace-detail-body:not(.workspace-detail-body--terminal) {
+  background: var(--surface-app);
+  padding-inline: var(--module-gutter);
+}
+
+.desktop-app :is(.workspace-overview-section, .workspace-memory-section, .ws-context-section, .workspace-conversation-group) {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+}
+
+.desktop-app .workspace-overview-section {
+  padding: 12px 14px;
+}
+
+.desktop-app .workspace-overview-section-head {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.desktop-app :is(.workspace-overview-task-row, .workspace-overview-artifact-row, .workspace-overview-child-row, .workspace-overview-gadget-row, .workspace-overview-summary-row) {
+  border-radius: var(--radius-sm);
+}
+
+.desktop-app .workspace-foreground-heading {
+  border-color: var(--border-default);
+  background: var(--module-header);
+}
+
+.desktop-app :is(.project-create-modal, .project-create-menu, .project-create-summary) {
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+}
+
+.desktop-app .project-create-menu-item.selected {
+  background: var(--module-tint);
+}
+
+.desktop-app .project-desk-desktop :is(.project-desk-toolbar, .project-desk-dock) {
+  border-color: var(--border-subtle);
+  background: var(--module-header);
+}
+
+.desktop-app .workspace-files-standalone {
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+}
+
+.desktop-app .workspace-files-search {
+  padding: 7px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+}
+
+.desktop-app .workspace-files-search:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Hub directory, local imports, MCP tools and connectors */
+.desktop-app .desktop-hub .hub-page-container {
+  padding-inline: var(--module-gutter);
+}
+
+.desktop-app :is(.hub-header, .hub-toolbar, .mcp-toolbar, .skill-toolbar) {
+  row-gap: 8px;
+}
+
+.desktop-app .hub-header-title {
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.desktop-app .hub-header-count {
+  color: var(--accent);
+  background: var(--module-tint);
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-app .hub-card {
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .hub-card:hover {
+  border-color: var(--module-accent-edge);
+}
+
+.desktop-app .hub-card--installed {
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .hub-card-icon {
+  border-radius: var(--radius-sm);
+  background: var(--module-tint);
+  color: var(--accent);
+}
+
+.desktop-app .hub-card-meta,
+.desktop-app .hub-card-desc {
+  color: var(--fg-secondary);
+}
+
+.desktop-app .hub-card-tag {
+  background: var(--surface-right);
+  color: var(--fg-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.desktop-app .hub-card-footer {
+  flex-wrap: wrap;
+}
+
+.desktop-app .mcp-source-group-header {
+  background: var(--module-header);
+  border-radius: var(--radius-sm);
+  padding-inline: 8px;
+}
+
+.desktop-app :is(.expert-editor-modal, .mcp-config-modal) {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Automation list, editor and run detail */
+.desktop-app .desktop-auto-screen :is(.auto-toolbar, .auto-form-topbar) {
+  min-height: 58px;
+  padding-inline: var(--module-gutter);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--module-header);
+}
+
+.desktop-app .desktop-auto-heading {
+  font-size: 21px;
+  font-weight: 690;
+  letter-spacing: -0.018em;
+}
+
+.desktop-app .desktop-auto-screen .auto-row {
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .desktop-auto-screen .auto-row:hover {
+  border-color: var(--module-accent-edge);
+}
+
+.desktop-app .desktop-auto-detail-fields,
+.desktop-app .auto-prompt-shell {
+  background: var(--surface-elevated);
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.desktop-app .desktop-auto-prompt {
+  background: var(--surface-right);
+  border-color: var(--border-subtle);
+}
+
+/* File records, notes, workspace materials and the gadget browser */
+.desktop-app .desktop-results .desktop-results-container {
+  padding-inline: var(--module-gutter);
+}
+
+.desktop-app .desktop-results .files-table {
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+}
+
+.desktop-app .desktop-results :is(.desktop-results-table-head, .files-group-row) {
+  background: var(--module-header);
+  color: var(--fg-secondary);
+}
+
+.desktop-app .desktop-results .files-file-row:hover {
+  background: var(--module-header);
+}
+
+.desktop-app .desktop-results-categories button[aria-pressed="true"] {
+  background: var(--module-tint);
+  color: var(--accent);
+  border-color: var(--module-accent-edge);
+}
+
+.desktop-app :is(.scoped-library-heading, .scoped-library-controls, .scoped-library-breadcrumbs) {
+  gap: 8px;
+}
+
+.desktop-app .scoped-library-heading h3 > span {
+  color: var(--accent);
+  background: var(--module-tint);
+  border-radius: var(--radius-pill);
+  padding: 2px 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-app .scoped-library-table {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+}
+
+.desktop-app .scoped-library-row {
+  padding-inline: 12px;
+  border-bottom-color: var(--border-subtle);
+}
+
+.desktop-app .scoped-library-row--head {
+  color: var(--fg-secondary);
+  background: var(--module-header);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.desktop-app .scoped-library-row:last-child {
+  border-bottom: 0;
+}
+
+.desktop-app .scoped-library-row:not(.scoped-library-row--head):hover {
+  background: var(--module-header);
+}
+
+.desktop-app .scoped-library-manager .library-doc-bar {
+  background: var(--module-header);
+  border-bottom-color: var(--border-default);
+}
+
+.library-compose-modal {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.library-compose-modal .library-kind-pick.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-main));
+  color: var(--accent);
+}
+
+.desktop-app .notes-workbench {
+  --notes-edge: var(--border-default);
+  --notes-text: var(--fg);
+  --notes-muted: var(--fg-secondary);
+  --notes-accent: var(--accent);
+  --notes-bg: var(--surface-main);
+  --notes-paper: var(--surface-main);
+  --notes-side: var(--surface-sidebar);
+  --notes-list: var(--surface-right);
+  --notes-selected: var(--module-tint);
+}
+
+.desktop-app .notes-workbench :is(.notes-top, .notes-list-header) {
+  background: var(--module-header);
+}
+
+.desktop-app .notes-workbench .notes-list-row {
+  border: 1px solid transparent;
+  border-bottom-color: var(--border-subtle);
+}
+
+.desktop-app .notes-workbench .notes-list-row[data-selected="true"] {
+  border-color: var(--module-accent-edge);
+}
+
+.desktop-app .notes-desktop-folders .notes-tree-row[data-selected="true"] {
+  background: var(--module-tint);
+  color: var(--accent);
+}
+
+.desktop-app .notes-workbench .note-document-header {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 11px;
+}
+
+.desktop-app .desktop-workbench .desktop-workbench-detail .gadget-card {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .desktop-workbench .desktop-workbench-detail .gadget-card-description {
+  color: var(--fg-secondary);
+}
+
+/* Mail, calendar, notification inbox and usage */
+.desktop-app .mailbox-page {
+  container-type: inline-size;
+}
+
+.desktop-app .mailbox-page .page-title {
+  margin-top: 0;
+  font-size: 24px;
+  letter-spacing: -0.018em;
+}
+
+.desktop-app .mailbox-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.desktop-app .mailbox-header .page-sub {
+  margin-bottom: 0;
+}
+
+.desktop-app .mailbox-page .workspace-tabs {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  gap: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+}
+
+.desktop-app .mailbox-page .workspace-tabs .btn {
+  min-height: 30px;
+}
+
+.desktop-app .mailbox-page .workspace-tabs .btn[aria-selected="true"] {
+  background: var(--module-tint);
+  color: var(--accent);
+  border-color: var(--module-accent-edge);
+}
+
+.desktop-app .mailbox-page :is(.workspace-panel, .workspace-message) {
+  background: var(--surface-elevated);
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .mailbox-page .workspace-message.selected {
+  outline-color: var(--accent);
+  background: var(--module-tint);
+}
+
+.desktop-app .mailbox-page :is(.workspace-query, .workspace-compose) :is(input:not([type="checkbox"]), select, textarea) {
+  background: var(--surface-input);
+  border-color: var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.desktop-app .notifications-toolbar {
+  padding-block: 8px;
+}
+
+.desktop-app .notifications-row {
+  border-radius: var(--radius-sm);
+}
+
+.desktop-app .notifications-row[data-unread="true"] {
+  background: var(--module-header);
+}
+
+.desktop-app .notifications-row:hover,
+.desktop-app .notifications-row:focus-within {
+  background: var(--bg-hover);
+}
+
+.desktop-app .notifications-control[aria-pressed="true"],
+.desktop-app .notifications-categories button[aria-pressed="true"] {
+  background: var(--module-tint);
+  color: var(--accent);
+}
+
+.desktop-app .notification-reading {
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+}
+
+.desktop-app .us-head {
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--module-header);
+}
+
+.desktop-app :is(.us-box, .us-kpi, .us-model) {
+  border-radius: var(--radius-md);
+  border-color: var(--border-default);
+  background: var(--surface-elevated);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .us-kpi-icon {
+  color: var(--accent);
+  background: var(--module-tint);
+}
+
+.desktop-app :is(.us-kpi-value, .us-stat-value, .us-model-total) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Full settings navigation and controls */
+.desktop-app .desktop-settings .settings-content-body {
+  background: var(--surface-app);
+}
+
+.desktop-app .desktop-settings .settings-content-head {
+  flex-shrink: 0;
+}
+
+.desktop-app .settings-nav-btn.active {
+  color: var(--accent);
+  background: var(--module-tint);
+  font-weight: 650;
+}
+
+.desktop-app .desktop-settings .settings-section-head {
+  margin-bottom: 10px;
+}
+
+.desktop-app .desktop-settings :is(.settings-section-title, .settings-row-label) {
+  color: var(--fg);
+  font-weight: 650;
+}
+
+.desktop-app .desktop-settings :is(.settings-row-desc, .settings-section-desc) {
+  color: var(--fg-secondary);
+}
+
+.desktop-app .desktop-settings :is(.settings-section-card, .models-provider-models-section) {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--module-card-shadow);
+}
+
+.desktop-app .desktop-settings .system-settings-v4 .settings-section-card {
+  padding-inline: 14px;
+}
+
+.desktop-app .desktop-settings .settings-section-card > .settings-row {
+  border-bottom-color: var(--border-subtle);
+}
+
+.desktop-app .desktop-settings :is(.settings-input, select, textarea) {
+  border-color: var(--border-default);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-input);
+}
+
+.desktop-app .desktop-settings :is(.settings-input, select, textarea):focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.desktop-app .desktop-settings .models-provider-toolbar {
+  background: var(--module-header);
+  border-color: var(--border-subtle);
+}
+
+.desktop-app .routing-graph {
+  --routing-accent: var(--accent);
+  --routing-surface: var(--surface-main);
+  border-color: var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.desktop-app .routing-graph__node {
+  box-shadow: var(--module-card-shadow);
+}
+
+@container (max-width: 590px) {
+  .mailbox-page .workspace-mail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 820px) {
+  .desktop-app :is(.desktop-secondary-heading, .settings-content-head, .task-board-header, .workspace-detail-header) {
+    padding-block: 12px;
+  }
+}

@@ -1,0 +1,282 @@
+/* Chrome shared by the docked panel and its floating file and tool menus. */
+.artifact-panel,
+.extension-flyout-card {
+  --artifact-selection: color-mix(in srgb, var(--accent) 12%, var(--surface-elevated));
+  --artifact-selection-border: color-mix(in srgb, var(--accent) 34%, var(--border-default));
+  background: var(--surface-right);
+  color: var(--fg);
+}
+
+.artifact-panel .extension-top-bar {
+  padding-inline: 8px;
+  border-bottom-color: var(--border-default);
+  background: var(--surface-elevated);
+}
+
+.artifact-panel .extension-nav-tabs {
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-right);
+  scrollbar-width: thin;
+}
+
+.artifact-panel .extension-tab-btn:hover,
+.artifact-panel .extension-top-actions .icon-btn:hover {
+  color: var(--fg);
+  background: var(--surface-hover);
+}
+
+.artifact-panel .extension-tab-btn.active,
+.artifact-panel .extension-top-actions .icon-btn.active {
+  color: var(--accent);
+  background: var(--artifact-selection);
+  box-shadow: inset 0 0 0 1px var(--artifact-selection-border);
+}
+
+.artifact-panel .extension-tab-btn.active .extension-tab-badge:not(.changes) {
+  background: var(--surface-elevated);
+  color: var(--accent);
+}
+
+.artifact-panel .extension-top-actions {
+  gap: 2px;
+  padding-inline-start: 4px;
+  border-inline-start: 1px solid var(--border-subtle);
+}
+
+.artifact-panel :is(.extension-file-subbar, .extension-terminal-subbar, .extension-browser-nav) {
+  border-bottom-color: var(--border-default);
+  background: var(--surface-right);
+}
+
+.artifact-panel :is(.extension-top-tab, .extension-terminal-tab, .extension-file-back-btn, .extension-nav-arrow) {
+  border-radius: var(--radius-sm);
+}
+
+.artifact-panel :is(.extension-top-tab, .extension-terminal-tab).active {
+  border-color: var(--artifact-selection-border);
+  background: var(--artifact-selection);
+  color: var(--fg);
+  box-shadow: none;
+}
+
+.artifact-panel .extension-terminal-tab.active .terminal-tab-icon {
+  color: var(--accent);
+}
+
+.artifact-panel .extension-url-bar {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+}
+
+.artifact-panel .extension-url-bar:focus-within,
+.artifact-panel .extension-file-search-bar:focus-within,
+:is(.artifact-panel, .extension-flyout-card) .artifacts-search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.artifact-panel .extension-url-globe {
+  color: var(--accent);
+}
+
+.artifact-panel .extension-file-action-wrap {
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-elevated);
+}
+
+.artifact-panel .extension-file-action-bar {
+  padding-inline: 10px;
+  background: var(--surface-elevated);
+}
+
+.artifact-panel .extension-file-action-name {
+  color: var(--fg);
+  font-weight: 650;
+}
+
+.artifact-panel .extension-file-search-bar {
+  margin: 4px 8px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.extension-mode-menu, .extension-file-more-menu) {
+  padding: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow-md);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.extension-mode-item, .extension-file-more-item) {
+  border-radius: var(--radius-sm);
+}
+
+:is(.artifact-panel, .extension-flyout-card) .extension-mode-item.active {
+  background: var(--artifact-selection);
+  color: var(--accent);
+}
+
+.extension-flyout-card {
+  border-color: var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.extension-flyout-card .extension-flyout-head {
+  background: var(--surface-elevated);
+  border-bottom-color: var(--border-default);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.artifacts-view-header, .workspace-view-header, .gadgets-view-header, .changes-view-header) {
+  min-height: 43px;
+  padding: 8px 12px;
+  border-bottom-color: var(--border-default);
+  background: var(--surface-elevated);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.artifacts-count-label, .workspace-count-label, .gadgets-count-label, .changes-count-label) {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.artifacts-count-badge, .workspace-count-badge, .gadgets-count-badge, .changes-count-badge) {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: var(--surface-right);
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.artifact-panel, .extension-flyout-card) .artifacts-search-box {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.extension-panel-item-btn, .extension-artifact-item, .artifact-overview-item, .ws-tree-row) {
+  border-radius: var(--radius-sm);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.extension-panel-item-btn, .extension-artifact-item, .ws-tree-row).active {
+  background: var(--artifact-selection);
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px var(--artifact-selection-border);
+}
+
+:is(.artifact-panel, .extension-flyout-card) .ws-tree-list {
+  padding-inline: 6px;
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(.extension-empty, .task-gadgets-panel-empty, .terminal-empty) {
+  padding: 18px 14px;
+  color: var(--fg-secondary);
+}
+
+.artifact-panel :is(.terminal-toolbar, .code-view-toolbar, .image-viewer-toolbar, .pdf-viewer-toolbar, .browser-console-toolbar) {
+  border-bottom-color: var(--border-default);
+  background: var(--surface-elevated);
+}
+
+.artifact-panel :is(.code-view-badge, .image-viewer-scale, .browser-console-filter-chip) {
+  border-radius: var(--radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.artifact-panel .browser-console-filter-chip.is-active {
+  color: var(--accent);
+  background: var(--artifact-selection);
+}
+
+.artifact-panel .browser-console-filter-chip.level-error.is-active {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-elevated));
+}
+
+.artifact-panel :is(.browser-console-search, .ws-tree-rename) {
+  background: var(--surface-input);
+  border-color: var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.artifact-panel .artifact-gadget-convert {
+  border-color: var(--border-default);
+  background: var(--surface-elevated);
+  color: var(--fg-secondary);
+}
+
+.artifact-panel .artifact-browser-notice {
+  border-color: var(--border-default);
+  background: var(--surface-elevated);
+}
+
+.artifact-panel .artifact-browser-notice.error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface-elevated));
+}
+
+.artifact-panel .media-artifact-view {
+  background: var(--surface-app);
+}
+
+.artifact-panel .media-artifact-view audio {
+  border-radius: var(--radius-md);
+}
+.artifact-panel .md-doc-viewer {
+  background: var(--surface-main);
+}
+
+.artifact-panel .image-viewer-stage {
+  background-color: var(--surface-app);
+}
+
+.artifact-panel .artifact-render-load {
+  color: var(--fg-secondary);
+  background: var(--surface-main);
+}
+
+.artifact-panel .artifact-render-load-title {
+  color: var(--fg);
+  font-weight: 650;
+}
+
+.artifact-panel .artifact-render-load-spinner {
+  border-top-color: var(--accent);
+}
+
+.artifact-panel .office-document-status {
+  background: var(--surface-main);
+  color: var(--fg-secondary);
+}
+
+:is(.artifact-panel, .extension-flyout-card) :is(button, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.library-clip-dialog {
+  border-color: var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
+  color: var(--fg);
+  box-shadow: var(--shadow-lg);
+}
+
+.library-clip-dialog :is(select, input, button) {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--fg);
+}
+
+.library-clip-dialog button[type="submit"] {
+  border-color: var(--accent-button);
+  background: var(--accent-button);
+  color: var(--accent-button-fg);
+}

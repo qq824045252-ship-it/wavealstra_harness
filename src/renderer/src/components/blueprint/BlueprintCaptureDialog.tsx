@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
-import type { BlueprintCaptureOptions, BlueprintDefinition, BlueprintDescriptor, WorkspaceBlueprintNode } from "@shared/blueprint-types";
-import { blueprintSummaryParts } from "@/lib/blueprintUi";
+import { useId, useRef, useState } from "react";
+import type { BlueprintCaptureOptions, BlueprintDefinition, BlueprintDescriptor } from "@shared/blueprint-types";
+import { IconFolder, IconShield } from "@/components/common/icons";
+import BlueprintDefinitionPreview from "./BlueprintDefinitionPreview";
+import BlueprintDialog from "./BlueprintDialog";
 
 interface Props {
   workspaceId: string;
@@ -9,18 +11,12 @@ interface Props {
   onSaved: (blueprint: BlueprintDescriptor) => void;
 }
 
-function workspacePreview(node: WorkspaceBlueprintNode, depth = 0): React.JSX.Element[] {
-  return [
-    <div key={node.key} className="blueprint-preview-row" style={{ paddingLeft: depth * 16 }}>
-      <strong>{node.name}</strong>
-      <span>{node.tasks?.length ? `${node.tasks.length} tasks` : ""}{node.gadgets?.length ? ` · ${node.gadgets.length} gadgets` : ""}</span>
-    </div>,
-    ...(node.children ?? []).flatMap((child) => workspacePreview(child, depth + 1)),
-  ];
-}
+type Operation = "preview" | "save";
 
 export default function BlueprintCaptureDialog({ workspaceId, workspaceName, onClose, onSaved }: Props): React.JSX.Element {
-  const blueprint = window.api?.blueprint;
+  const formId = useId();
+  const previewHeadingId = useId();
+  const pending = useRef(false);
   const [name, setName] = useState(`${workspaceName} Blueprint`);
   const [description, setDescription] = useState("");
   const [includeChildren, setIncludeChildren] = useState(true);
@@ -29,93 +25,129 @@ export default function BlueprintCaptureDialog({ workspaceId, workspaceName, onC
   const [includeContext, setIncludeContext] = useState(false);
   const [selectedFilesText, setSelectedFilesText] = useState("");
   const [preview, setPreview] = useState<BlueprintDefinition | null>(null);
-  const [busy, setBusy] = useState<"preview" | "save" | null>(null);
+  const [busy, setBusy] = useState<Operation | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const options = useMemo<BlueprintCaptureOptions>(() => ({
-    name: name.trim(),
-    description: description.trim() || undefined,
-    includeChildren,
-    includeTasks,
-    includeGadgets,
-    includeContext,
-    selectedFiles: selectedFilesText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
-  }), [name, description, includeChildren, includeTasks, includeGadgets, includeContext, selectedFilesText]);
-
-  const invalidate = (change: () => void): void => {
-    change();
+  const change = (apply: () => void): void => {
+    apply();
     setPreview(null);
     setError(null);
   };
 
-  const loadPreview = async (): Promise<void> => {
-    if (!options.name) { setError("Blueprint 名称不能为空"); return; }
+  const run = async (operation: Operation): Promise<void> => {
+    if (pending.current) return;
+    const blueprint = window.api?.blueprint;
+    const options: BlueprintCaptureOptions = {
+      name: name.trim(),
+      description: description.trim() || undefined,
+      includeChildren,
+      includeTasks,
+      includeGadgets,
+      includeContext,
+      selectedFiles: selectedFilesText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+    };
+    if (!options.name) { setError("请输入 Blueprint 名称"); return; }
     if (!blueprint) { setError("Blueprint 能力尚未加载，请重启 MyBuddy"); return; }
+    const confirmedDefinition = operation === "save" ? preview : null;
+    if (operation === "save" && !confirmedDefinition) { setError("请先生成预览并确认要保存的结构"); return; }
+
+    pending.current = true;
+    setBusy(operation);
+    setError(null);
     try {
-      setBusy("preview");
-      setPreview(await blueprint.previewCapture({ workspaceId, options }));
-      setError(null);
+      if (confirmedDefinition) {
+        const saved = await blueprint.capture({ workspaceId, options, confirmedDefinition });
+        onSaved(saved);
+      } else {
+        setPreview(null);
+        setPreview(await blueprint.previewCapture({ workspaceId, options }));
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
+      pending.current = false;
       setBusy(null);
     }
   };
 
-  const save = async (): Promise<void> => {
-    if (!preview) { setError("请先预览并确认提取后的结构定义"); return; }
-    if (!blueprint) { setError("Blueprint 能力尚未加载，请重启 MyBuddy"); return; }
-    try {
-      setBusy("save");
-      const saved = await blueprint.capture({ workspaceId, options, confirmedDefinition: preview });
-      onSaved(saved);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(null);
-    }
-  };
+  const scopeOptions: { label: string; checked: boolean; set: (enabled: boolean) => void }[] = [
+    { label: "子工作区", checked: includeChildren, set: setIncludeChildren },
+    { label: "任务定义", checked: includeTasks, set: setIncludeTasks },
+    { label: "Gadget 定义", checked: includeGadgets, set: setIncludeGadgets },
+    { label: "工作区上下文", checked: includeContext, set: setIncludeContext },
+  ];
 
   return (
-    <div className="blueprint-capture-overlay" role="dialog" aria-modal="true" aria-label="Create Blueprint">
-      <div className="blueprint-capture-dialog">
-        <header>
-          <div><h2>Create Blueprint</h2><p>Capture a reusable method and structure, not a Workspace snapshot.</p></div>
-          <button type="button" className="btn btn--ghost" disabled={busy !== null} onClick={onClose}>Close</button>
-        </header>
-        <div className="blueprint-capture-form">
-          <label><span>Name</span><input value={name} onChange={(event) => invalidate(() => setName(event.target.value))} /></label>
-          <label><span>Description</span><input value={description} onChange={(event) => invalidate(() => setDescription(event.target.value))} /></label>
-          <div className="blueprint-capture-options">
-            <label><input type="checkbox" checked={includeChildren} onChange={(event) => invalidate(() => setIncludeChildren(event.target.checked))} />Workspace structure</label>
-            <label><input type="checkbox" checked={includeTasks} onChange={(event) => invalidate(() => setIncludeTasks(event.target.checked))} />Task definitions</label>
-            <label><input type="checkbox" checked={includeGadgets} onChange={(event) => invalidate(() => setIncludeGadgets(event.target.checked))} />Gadget definitions</label>
-            <label><input type="checkbox" checked={includeContext} onChange={(event) => invalidate(() => setIncludeContext(event.target.checked))} />Context structure</label>
-          </div>
-          <label>
-            <span>Selected files (one relative Workspace path per line)</span>
-            <textarea value={selectedFilesText} placeholder={"README.template.md\nconfig/example.json"} onChange={(event) => invalidate(() => setSelectedFilesText(event.target.value))} />
-          </label>
-          <div className="blueprint-capture-warning">Blueprint = a reusable work method, not a Workspace snapshot. Runtime data, workspace history, credentials, sessions, caches, build output, and current business data are not included.</div>
-        </div>
-        {error && <div className="gadget-error" role="alert">{error}</div>}
-        <section className="blueprint-capture-preview">
-          <div className="blueprint-capture-preview-head"><strong>Preview</strong><span>{preview ? "Ready to confirm" : "Not generated"}</span></div>
-          {preview ? (
-            <div className="blueprint-preview">
-              <div className="blueprint-preview-summary">包含：{blueprintSummaryParts(preview).join(" · ") || "可重复使用的工作方法"}</div>
-              {preview.kind === "workspace" && workspacePreview(preview.workspace)}
-              {preview.kind === "composite" && preview.workspace && workspacePreview(preview.workspace)}
-              {preview.kind === "gadget" && <div className="blueprint-preview-row"><strong>{preview.gadget.name}</strong><span>Gadget definition</span></div>}
-              {options.selectedFiles?.length ? <div className="blueprint-preview-files"><strong>模板文件</strong>{options.selectedFiles.map((file) => <span key={file}>{file}</span>)}</div> : null}
+    <BlueprintDialog
+      title="创建 Blueprint"
+      sourceName={workspaceName}
+      kind="workspace"
+      busy={busy !== null}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="bp-button" disabled={busy !== null} onClick={onClose}>取消</button>
+          <button type="submit" form={formId} className={`bp-button${preview ? "" : " bp-button--primary"}`} disabled={busy !== null || !name.trim()}>
+            {busy === "preview" ? "正在生成…" : preview ? "重新预览" : "生成预览"}
+          </button>
+          <button type="button" className={`bp-button${preview ? " bp-button--primary" : ""}`} disabled={!preview || busy !== null} onClick={() => void run("save")}>
+            {busy === "save" ? "正在保存…" : "保存 Blueprint"}
+          </button>
+        </>
+      }
+    >
+      <div className="blueprint-capture-body">
+        <form id={formId} className="blueprint-capture-fields" onSubmit={(event) => { event.preventDefault(); void run("preview"); }}>
+          <fieldset className="blueprint-fields" disabled={busy !== null}>
+            <legend>基本信息</legend>
+            <label className="blueprint-field">
+              <span>名称</span>
+              <input data-blueprint-initial-focus required maxLength={120} value={name} onChange={(event) => change(() => setName(event.target.value))} />
+            </label>
+            <label className="blueprint-field">
+              <span>描述 <small>可选</small></span>
+              <input value={description} onChange={(event) => change(() => setDescription(event.target.value))} />
+            </label>
+          </fieldset>
+          <fieldset className="blueprint-fields" disabled={busy !== null}>
+            <legend>包含内容</legend>
+            <div className="blueprint-scope-options">
+              {scopeOptions.map((option) => (
+                <label className="blueprint-scope-option" key={option.label}>
+                  <input type="checkbox" checked={option.checked} onChange={(event) => change(() => option.set(event.target.checked))} />
+                  <span>{option.label}</span>
+                </label>
+              ))}
             </div>
-          ) : <div className="gadget-empty">Generate a preview to review the structure, tasks, Gadgets, and selected files before saving.</div>}
+            <label className="blueprint-field">
+              <span>模板文件 <small>可选</small></span>
+              <textarea
+                rows={3}
+                aria-describedby={`${formId}-paths`}
+                value={selectedFilesText}
+                onChange={(event) => change(() => setSelectedFilesText(event.target.value))}
+              />
+              <small id={`${formId}-paths`}>每行输入一个相对工作区路径</small>
+            </label>
+          </fieldset>
+          <p className="blueprint-capture-policy"><IconShield size={16} /><span>请只选择可复用的模板材料。任务历史、运行数据、缓存和凭据会被排除。</span></p>
+          {error && <p className="blueprint-dialog-error" role="alert">{error}</p>}
+        </form>
+        <section className="blueprint-definition-pane" aria-labelledby={previewHeadingId} aria-busy={busy === "preview"}>
+          <header className="blueprint-definition-header">
+            <h3 id={previewHeadingId}>结构预览</h3>
+            <span className={preview ? "blueprint-preview-ready" : undefined} role="status">
+              {busy === "preview" ? "正在生成" : preview ? "待确认" : "未生成"}
+            </span>
+          </header>
+          {preview ? <BlueprintDefinitionPreview definition={preview} /> : (
+            <div className="blueprint-preview-empty">
+              <span><IconFolder size={23} /></span>
+              <p>{busy === "preview" ? "正在读取工作区结构…" : "生成预览后，可核对实际包含的工作区、任务、Gadget 和文件。"}</p>
+            </div>
+          )}
         </section>
-        <footer>
-          <button type="button" className="btn" disabled={busy !== null} onClick={() => void loadPreview()}>{busy === "preview" ? "Generating…" : "Generate Preview"}</button>
-          <button type="button" className="btn btn--primary" disabled={!preview || busy !== null} onClick={() => void save()}>{busy === "save" ? "Saving…" : "Save Blueprint"}</button>
-        </footer>
       </div>
-    </div>
+    </BlueprintDialog>
   );
 }

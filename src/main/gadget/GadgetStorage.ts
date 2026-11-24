@@ -380,5 +380,14 @@ export class GadgetStorage {
 
 function defaultHtml(name: string): string {
   const escaped = name.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escaped}</title><style>body{font-family:system-ui;margin:0;padding:40px;background:#f7f7f5;color:#20201e}.card{max-width:720px;margin:auto;background:white;border:1px solid #ddd;border-radius:16px;padding:28px}</style></head><body><main class="card"><h1>${escaped}</h1><p>这个 Gadget 已准备好，可以继续编辑源码。</p></main></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escaped}</title><style>
+:root { color-scheme: light; --canvas: #f1f5fc; --card: #fff; --ink: #17253b; --muted: #475b76; --line: #cfdbea; }
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; --canvas: #101827; --card: #151f30; --ink: #e9f0fc; --muted: #b2c0d6; --line: #354863; }
+}
+body { font: 15px/1.5 system-ui, "Segoe UI", sans-serif; margin: 0; padding: clamp(16px, 6vw, 40px); background: var(--canvas); color: var(--ink); }
+.card { max-width: 720px; margin-inline: auto; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: clamp(16px, 4vw, 28px); }
+h1 { margin: 0; font-size: clamp(20px, 4vw, 28px); overflow-wrap: anywhere; }
+p { color: var(--muted); margin: 8px 0 0; }
+</style></head><body><main class="card"><h1>${escaped}</h1><p>这个 Gadget 已准备好，可以继续编辑源码。</p></main></body></html>`;
 }

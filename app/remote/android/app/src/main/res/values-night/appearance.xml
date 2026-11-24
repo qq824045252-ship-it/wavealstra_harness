@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="window_background">#101827</color>
+    <bool name="window_uses_dark_system_icons">false</bool>
+</resources>

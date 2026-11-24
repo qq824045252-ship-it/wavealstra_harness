@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { isGatewayConversation } from "../../../../shared/gateway-task";
 import { TASK_TITLE_MAX_CHARS } from "../../../../shared/task-title";
 import { createPortal } from "react-dom";
-import { useBlockNativeSurfaces } from "@/hooks/useBlockNativeSurfaces";
+import ContextMenuSurface from "@/components/common/ContextMenuSurface";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { relativeTime, useAppStore } from "@/store/appStore";
 import { deriveTaskStatus, isTaskDoneUnread, taskActionLabel } from "@/utils/taskFilters";
@@ -16,6 +16,7 @@ import {
   IconPencil,
   IconPin,
   IconSparkles,
+  IconTrash,
 } from "@/components/common/icons";
 import WelcomeModeIcon from "@/components/common/WelcomeModeIcon";
 import TaskStatusIndicator from "./TaskStatusIndicator";
@@ -85,7 +86,6 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
     setMenuPos(null);
   }, []);
 
-  useBlockNativeSurfaces(menuOpen);
   useDismissOnClickOutside(menuOpen, closeMenu, menuAnchorRef, [menuPortalRef]);
   useLayoutEffect(() => {
     if (sidebarCollapsed && menuRequested) closeMenu();
@@ -249,23 +249,17 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
   };
 
   const menuContent = menuOpen ? (
-    <div
-      ref={menuPortalRef}
-      className="task-context-menu task-context-menu-portal"
-      style={
-        menuPos
-          ? {
-              top: menuPos.top,
-              left: menuPos.left,
-              maxHeight: menuPos.maxHeight,
-            }
-          : { visibility: "hidden", top: 0, left: 0 }
-      }
-      onClick={(e) => e.stopPropagation()}
+    <ContextMenuSurface
+      menuRef={menuPortalRef}
+      heading={{ title: task.title || "未命名任务", icon: <WelcomeModeIcon mode={task.welcomeMode} size={17} /> }}
+      style={menuPos ?? { visibility: "hidden", top: 0, left: 0 }}
+      onClose={closeMenu}
     >
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         title={folderPath || "当前任务未绑定工作区文件夹"}
         disabled={!folderPath}
         onClick={() => {
@@ -278,6 +272,8 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         onClick={() => {
           closeMenu();
           setDraft(task.title);
@@ -289,25 +285,29 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       <button
         type="button"
         className="task-context-item"
+        role="menuitem"
+        tabIndex={-1}
         disabled={aiTitleBusy}
         title="AI 读取对话开头约 1024 token，生成新的任务名"
         onClick={() => void renameTaskWithAi()}
       >
         <IconSparkles size={14} /> {aiTitleBusy ? "AI 重命名（生成中…）" : "AI 重命名"}
       </button>
-      {aiTitleNotice && <div className="task-context-notice">{aiTitleNotice}</div>}
-      <div className="task-context-sep" />
+      {aiTitleNotice && <div className="task-context-notice" role="status">{aiTitleNotice}</div>}
+      <div className="task-context-sep" role="separator" />
       <button
         type="button"
         className="task-context-item danger"
+        role="menuitem"
+        tabIndex={-1}
         onClick={() => {
           closeMenu();
           deleteTask(task.id);
         }}
       >
-        删除任务
+        <IconTrash size={14} /> 删除任务
       </button>
-    </div>
+    </ContextMenuSurface>
   ) : null;
 
   return (
@@ -318,11 +318,20 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
       style={indent != null ? { paddingLeft: indent } : undefined}
       title={editing ? undefined : `${task.title || "未命名任务"} · ${relativeTime(task.updatedAt)}`}
       onClick={() => !editing && openVisitedTask(task.id)}
-      onKeyDown={(e) => e.key === "Enter" && !editing && openVisitedTask(task.id)}
+      onKeyDown={(event) => {
+        if (editing || event.target !== event.currentTarget) return;
+        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          event.preventDefault();
+          setMenuOpen(true);
+        } else if (event.key === "Enter") {
+          openVisitedTask(task.id);
+        }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
         if (editing) return;
+        e.currentTarget.focus({ preventScroll: true });
         setMenuOpen(true);
       }}
       draggable={!editing && !isGatewayConversation(task.id)}
@@ -395,6 +404,7 @@ export default function TaskItem({ task, nested = false, indent, onDragStartNoti
             type="button"
             className="task-item-action"
             title="更多"
+            aria-haspopup="menu"
             aria-expanded={menuOpen}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {

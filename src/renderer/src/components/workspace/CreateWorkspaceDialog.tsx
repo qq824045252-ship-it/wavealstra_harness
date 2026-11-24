@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { BlueprintDescriptor, ResolvedBlueprint } from "@shared/blueprint-types";
 import type { TemplateCapabilityRegistries } from "@shared/project-template";
-import { blueprintSummaryParts } from "@/lib/blueprintUi";
+import WorkspaceBlueprintPicker from "@/components/blueprint/WorkspaceBlueprintPicker";
 import { buildCapabilityRegistries } from "@/lib/projectCreate";
 import { useAppStore } from "@/store/appStore";
 
@@ -15,6 +15,7 @@ export default function CreateWorkspaceDialog({ open, onClose, parentId = null, 
   const [blueprints, setBlueprints] = useState<BlueprintDescriptor[]>([]);
   const [resolved, setResolved] = useState<Record<string, ResolvedBlueprint>>({});
   const [registries, setRegistries] = useState<TemplateCapabilityRegistries>();
+  const [loadingBlueprints, setLoadingBlueprints] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,13 +26,20 @@ export default function CreateWorkspaceDialog({ open, onClose, parentId = null, 
     setFolder(null);
     setError(null);
     setBusy(false);
+    setBlueprints([]);
+    setResolved({});
+    setRegistries(undefined);
+    setLoadingBlueprints(false);
     const api = window.api;
-    if (!api?.blueprint) return;
+    if (parentId !== null || !api?.blueprint) return;
+    let cancelled = false;
+    setLoadingBlueprints(true);
     const store = useAppStore.getState();
     void Promise.all([
       api.blueprint.list(),
       Promise.allSettled([api.mcp.listServers(), store.refreshExperts(), store.refreshSkills(), store.refreshConnectors()]),
     ]).then(async ([items, capabilityResults]) => {
+      if (cancelled) return;
       const workspaceItems = items.filter((item) => item.kind !== "gadget");
       setBlueprints(workspaceItems);
       const serverResult = capabilityResults[0];
@@ -45,11 +53,14 @@ export default function CreateWorkspaceDialog({ open, onClose, parentId = null, 
       });
       setRegistries(nextRegistries);
       const entries = await Promise.all(workspaceItems.map(async (item) => [item.id, await api.blueprint.resolve(item.id, nextRegistries)] as const));
-      setResolved(Object.fromEntries(entries));
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [open]);
-
-  const selected = useMemo(() => blueprints.find((item) => item.id === choice), [blueprints, choice]);
+      if (!cancelled) setResolved(Object.fromEntries(entries));
+    }).catch((reason) => {
+      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => {
+      if (!cancelled) setLoadingBlueprints(false);
+    });
+    return () => { cancelled = true; };
+  }, [open, parentId]);
 
   const pickFolder = async (): Promise<void> => {
     setError(null);
@@ -135,24 +146,18 @@ export default function CreateWorkspaceDialog({ open, onClose, parentId = null, 
           />
         </label>
 
-        {parentId == null && blueprints.length > 0 && (
-          <div className="workspace-create-options workspace-create-blueprints">
-            <div className="workspace-create-subtitle">从 Blueprint 创建</div>
-            {blueprints.map((item) => (
-              <label key={item.id} className={`workspace-create-option ${choice === item.id ? "selected" : ""}`}>
-                <input type="radio" checked={choice === item.id} onChange={() => { setChoice(item.id); if (!name.trim()) setName(item.name); }} />
-                <span>
-                  <strong>{item.name}</strong>
-                  <small>{item.description || blueprintSummaryParts(item.definition).join(" · ") || "可复用的工作空间结构"}</small>
-                  {resolved[item.id]?.warnings.map((warning) => <em key={warning}>⚠ {warning}</em>)}
-                </span>
-              </label>
-            ))}
-          </div>
+        {parentId == null && (
+          <WorkspaceBlueprintPicker
+            items={blueprints}
+            selectedId={choice}
+            resolved={resolved}
+            loading={loadingBlueprints}
+            busy={busy}
+            onSelect={(item) => { setChoice(item.id); if (!name.trim()) setName(item.name); }}
+          />
         )}
 
-        {parentId == null && selected && <div className="workspace-create-preview">包含：{blueprintSummaryParts(selected.definition).join(" · ") || "可复用的工作空间结构"}。运行状态、历史记录和凭证不会复制。</div>}
-        {error && <div className="workspace-create-error">{error}</div>}
+        {error && <div className="workspace-create-error" role="alert">{error}</div>}
         <footer>
           <button className="btn" onClick={onClose} disabled={busy}>取消</button>
           <button className="btn btn--primary" onClick={() => void create()} disabled={busy || (choice === "folder" && !folder)}>

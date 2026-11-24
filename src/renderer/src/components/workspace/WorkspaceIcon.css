@@ -5,7 +5,7 @@ button.workspace-detail-icon {
 
 button.workspace-detail-icon:hover {
   border-color: var(--border-strong);
-  background: var(--bg-active);
+  background: var(--surface-active);
 }
 
 button.workspace-detail-icon:focus-visible,
@@ -18,54 +18,213 @@ button.workspace-detail-icon:focus-visible,
   position: fixed;
   inset: 0;
   box-sizing: border-box;
-  width: min(456px, calc(100vw - 32px));
-  height: fit-content;
-  max-height: calc(100dvh - 40px);
+  width: min(744px, calc(100% - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 32px);
   margin: auto;
-  padding: 18px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--bg-elevated);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-elevated);
   color: var(--fg);
-  box-shadow: 0 12px 36px #0003;
+  box-shadow: var(--shadow-lg);
 }
 
 .workspace-icon-dialog::backdrop {
-  background: #15132264;
+  background: var(--overlay);
+}
+
+.workspace-icon-dialog > form {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 34px);
 }
 
 .workspace-icon-dialog-header,
-.workspace-icon-preview,
 .workspace-icon-dialog-actions {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 8px;
+  padding: 12px 20px;
 }
 
 .workspace-icon-dialog-header {
   justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .workspace-icon-dialog-header h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.workspace-icon-dialog-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 214px;
+  align-items: start;
+  min-height: 0;
+  overflow: auto;
+}
+
+.workspace-icon-dialog fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.workspace-icon-dialog legend,
+.workspace-icon-preview h3 {
+  margin: 0;
+  padding: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.workspace-icon-dialog .workspace-icon-library {
+  padding: 0 20px 16px;
+  margin-top: 16px;
+}
+
+.workspace-icon-library legend,
+.workspace-icon-palette legend {
+  margin-bottom: 8px;
+}
+
+.workspace-icon-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding-inline: 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
+  color: var(--fg-muted);
+}
+
+.workspace-icon-searchbar:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.workspace-icon-searchbar > svg {
+  flex: none;
+}
+
+.workspace-icon-search {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}
+
+.workspace-icon-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.workspace-icon-searchbar .icon-btn {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+
+.workspace-icon-search-count {
+  margin: 8px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.workspace-icon-shape-list {
+  max-height: min(400px, 45dvh);
+  overflow: auto;
+  margin: 4px -4px 0;
+  padding: 4px 4px 5px;
+  scrollbar-gutter: stable;
+}
+
+.workspace-icon-shape-group + .workspace-icon-shape-group {
+  margin-top: 12px;
+}
+
+.workspace-icon-shape-group h3 {
+  margin: 0 0 7px;
+  color: var(--fg-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.workspace-icon-shapes,
+.workspace-icon-colors {
+  display: grid;
+  gap: 6px;
+}
+
+.workspace-icon-shapes {
+  grid-template-columns: repeat(auto-fill, minmax(66px, 1fr));
+}
+
+.workspace-icon-empty {
+  display: grid;
+  min-height: 104px;
+  place-items: center;
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+.workspace-icon-customization {
+  align-self: stretch;
+  min-width: 0;
+  padding: 16px 14px;
+  border-inline-start: 1px solid var(--border-subtle);
+  background: var(--surface-right);
 }
 
 .workspace-icon-preview {
-  gap: 10px;
-  margin: 12px 0 16px;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-secondary);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 4px;
+  padding: 12px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+  text-align: center;
 }
 
-.workspace-icon-preview > div {
-  min-width: 0;
+.workspace-icon-preview h3 {
+  justify-self: start;
 }
 
-.workspace-icon-preview strong {
-  display: block;
+.workspace-icon-preview-glyph {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  margin-block: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-hover);
+  color: var(--fg-secondary);
+}
+
+.workspace-icon-preview strong,
+.workspace-icon-option-label {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -73,71 +232,20 @@ button.workspace-detail-icon:focus-visible,
 
 .workspace-icon-preview small {
   color: var(--fg-secondary);
-}
-
-.workspace-icon-dialog fieldset {
-  min-width: 0;
-  margin: 0 0 14px;
-  padding: 0;
-  border: 0;
-}
-
-.workspace-icon-dialog legend {
-  margin-bottom: 7px;
-  padding: 0;
-  color: var(--fg-secondary);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.workspace-icon-search {
-  box-sizing: border-box;
-  width: 100%;
-  margin-bottom: 8px;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-secondary);
-  color: var(--fg);
-  font: inherit;
-}
-
-.workspace-icon-search:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.workspace-icon-shape-list {
-  max-height: min(238px, 30dvh);
-  overflow-y: auto;
-  padding: 3px 5px 5px 3px;
-  scrollbar-gutter: stable;
-}
-
-.workspace-icon-shape-group + .workspace-icon-shape-group {
-  margin-top: 9px;
-}
-
-.workspace-icon-group-label {
-  margin: 0 0 5px;
-  color: var(--fg-secondary);
   font-size: 12px;
 }
 
-.workspace-icon-shapes {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(42px, 1fr));
-  gap: 5px;
+.workspace-icon-dialog .workspace-icon-palette {
+  margin-top: 16px;
 }
 
 .workspace-icon-colors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  grid-template-columns: repeat(auto-fit, minmax(81px, 1fr));
 }
 
 .workspace-icon-option {
   position: relative;
+  min-width: 0;
 }
 
 .workspace-icon-option input {
@@ -151,27 +259,54 @@ button.workspace-detail-icon:focus-visible,
 }
 
 .workspace-icon-choice {
+  box-sizing: border-box;
   display: grid;
-  height: 36px;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  min-width: 0;
+  min-height: 54px;
+  justify-items: center;
+  align-content: center;
+  gap: 3px;
+  padding: 8px 4px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-main);
   color: var(--fg-secondary);
 }
 
-.workspace-icon-colors .workspace-icon-choice {
-  width: 31px;
-  height: 31px;
-  border-color: transparent;
+.workspace-icon-option-label {
+  font-size: 11px;
+  line-height: 1.25;
 }
 
-.workspace-icon-option input:hover + .workspace-icon-choice {
-  background: var(--bg-hover);
+.workspace-icon-option-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  color: var(--accent);
+}
+
+.workspace-icon-colors .workspace-icon-choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 6px;
+}
+
+.workspace-icon-color-mark {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--accent);
+}
+
+.workspace-icon-option input:hover:where(:not(:disabled)) + .workspace-icon-choice {
+  border-color: var(--border-default);
+  background: var(--surface-hover);
 }
 
 .workspace-icon-option input:checked + .workspace-icon-choice {
   border-color: var(--accent);
-  background: var(--bg-hover);
+  background: var(--surface-active);
   color: var(--fg);
 }
 
@@ -180,26 +315,108 @@ button.workspace-detail-icon:focus-visible,
 }
 
 .workspace-icon-swatch {
-  display: grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
+  flex: none;
+  width: 13px;
+  height: 13px;
   border-radius: 50%;
   background: var(--fg-secondary);
-  color: light-dark(#fff, #161616);
+}
+
+.workspace-icon-dialog-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-elevated);
 }
 
 .workspace-icon-dialog-actions {
   justify-content: flex-end;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+}
+
+.workspace-icon-dialog-actions .btn:disabled {
+  opacity: .48;
+  cursor: default;
 }
 
 .workspace-icon-dialog-actions > :first-child {
-  margin-right: auto;
+  margin-inline-end: auto;
 }
 
 .workspace-icon-error {
+  margin: 9px 20px 0;
   color: var(--danger);
   font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .workspace-icon-dialog {
+    width: calc(100% - 20px);
+  }
+
+  .workspace-icon-dialog > form {
+    height: min(590px, calc(100dvh - 34px));
+  }
+
+  .workspace-icon-dialog-body {
+    flex: 1;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(155px, 1fr) auto;
+  }
+
+  .workspace-icon-dialog-header,
+  .workspace-icon-dialog-actions {
+    padding-inline: 12px;
+  }
+
+  .workspace-icon-dialog .workspace-icon-library {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding-inline: 12px;
+  }
+
+  .workspace-icon-shape-list {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .workspace-icon-customization {
+    display: grid;
+    grid-template-columns: minmax(102px, 1fr) minmax(0, 1.45fr);
+    align-items: start;
+    gap: 10px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border-subtle);
+    border-inline-start: 0;
+  }
+
+  .workspace-icon-preview {
+    padding: 8px;
+  }
+
+  .workspace-icon-preview-glyph {
+    width: 42px;
+    height: 42px;
+  }
+
+  .workspace-icon-dialog .workspace-icon-palette {
+    margin-top: 0;
+  }
+
+  .workspace-icon-colors {
+    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+    gap: 4px;
+  }
+
+  .workspace-icon-colors .workspace-icon-choice {
+    gap: 4px;
+    padding-inline: 4px;
+  }
+
+  .workspace-icon-swatch,
+  .workspace-icon-color-mark {
+    width: 11px;
+    height: 11px;
+  }
 }

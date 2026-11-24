@@ -1,2 +1,80 @@
-*{box-sizing:border-box}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;background:#fafafa;color:#1d252d;font:14px system-ui,sans-serif}section>div{display:flex;align-items:center;gap:8px}section{padding:7px 12px;border-bottom:1px solid #cbd2d9;overflow:auto;max-height:55%}button,input,textarea{font:inherit}button{cursor:pointer;padding:4px 9px}section label{display:block;margin:.4rem 0}textarea{display:block;width:100%;min-height:2.5rem}input{flex:1;padding:5px}iframe{width:100%;flex:1;min-height:0;border:0}#cancel{margin-left:auto}
-#status{position:absolute;bottom:8px;left:8px;max-width:calc(100% - 16px);padding:4px 8px;border-radius:4px;background:#fafafa;color:#1d252d;box-shadow:0 1px 4px #0003;overflow-wrap:anywhere;pointer-events:none}
+:root {
+  color-scheme: light dark;
+  --office-surface: light-dark(#f1f5fc, #101827);
+  --office-panel: light-dark(#ffffff, #151f30);
+  --office-control: light-dark(#eef3fa, #131e30);
+  --office-ink: light-dark(#17243a, #e6eefc);
+  --office-muted: light-dark(#455773, #bccbe1);
+  --office-border: light-dark(#cdd9ea, #354761);
+  --office-accent: light-dark(#2455ba, #a4c0ff);
+  --office-on-accent: light-dark(#ffffff, #16253e);
+  --office-shadow: 0 3px 10px rgb(15 32 61 / 16%);
+  font: 14px "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--office-surface);
+  color: var(--office-ink);
+}
+
+section {
+  max-height: 55%;
+  padding: 10px 12px;
+  overflow: auto;
+  border-bottom: 1px solid var(--office-border);
+  background: var(--office-panel);
+}
+
+section > div { display: flex; align-items: center; gap: 8px; }
+section label { display: grid; gap: 4px; margin: 10px 0; }
+section :is(label, #format-hint) { color: var(--office-muted); }
+
+button, input, textarea { font: inherit; }
+
+:is(button, input, textarea) {
+  border: 1px solid var(--office-border);
+  border-radius: 8px;
+  background: var(--office-control);
+  color: var(--office-ink);
+}
+
+button { min-height: 30px; padding: 4px 10px; cursor: pointer; }
+button:disabled { opacity: .6; cursor: default; }
+input { flex: 1; min-width: 0; padding: 6px 8px; }
+textarea { display: block; width: 100%; min-height: 2.5rem; padding: 7px 8px; resize: vertical; }
+
+:is(button, input, textarea):focus-visible {
+  outline: 2px solid var(--office-accent);
+  outline-offset: 1px;
+}
+
+#cancel { margin-left: auto; }
+
+:is(#generate, #apply):not(:disabled) {
+  border-color: var(--office-accent);
+  background: var(--office-accent);
+  color: var(--office-on-accent);
+}
+
+#status {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  max-width: calc(100% - 16px);
+  padding: 5px 9px;
+  border: 1px solid var(--office-border);
+  border-radius: 8px;
+  background: var(--office-panel);
+  color: var(--office-muted);
+  box-shadow: var(--office-shadow);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+iframe { width: 100%; flex: 1; min-height: 0; border: 0; }

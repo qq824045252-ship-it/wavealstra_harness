@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PopupContextMenu from "@/components/common/PopupContextMenu";
+import { FileBadge } from "@/components/common/FileBadge";
 import type { Artifact } from "@/types";
 import { useAppStore } from "@/store/appStore";
 import {
@@ -19,6 +21,7 @@ import {
   IconChevronUp,
   IconCopy,
   IconDownload,
+  IconFolder,
   IconOpenExternal,
   IconMore,
   IconSearch,
@@ -81,18 +84,6 @@ export default function FileActionBar({ artifact }: Props): React.JSX.Element {
     if (!m) return;
     scrollArtifactBodyToOffset(m.index, artifact.content.length);
   }, [artifact.content.length, matchIndex, matches, searchOpen]);
-
-  // 点击外部关闭「更多」菜单
-  useEffect(() => {
-    if (!moreOpen) return;
-    const onDown = (e: MouseEvent): void => {
-      if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
-        setMoreOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [moreOpen]);
 
   // Ctrl/Cmd+F 打开文档内搜索
   useEffect(() => {
@@ -260,24 +251,32 @@ export default function FileActionBar({ artifact }: Props): React.JSX.Element {
               type="button"
               className={`icon-btn ${moreOpen ? "active" : ""}`}
               title="更多"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
               onClick={() => setMoreOpen((v) => !v)}
             >
               <IconMore size={15} />
             </button>
             {moreOpen && (
-              <div className="extension-file-more-menu" role="menu">
+              <PopupContextMenu
+                anchorRef={moreRef}
+                heading={{ title: artifact.name, icon: <FileBadge name={artifact.name} size={16} /> }}
+                onClose={() => setMoreOpen(false)}
+              >
                 <button
                   type="button"
-                  className="extension-file-more-item"
+                  className="task-context-item"
+                  tabIndex={-1}
                   role="menuitem"
                   disabled={!artifact.path}
                   onClick={() => void handleReveal()}
                 >
-                  在资源管理器中显示
+                  <IconFolder size={14} /> 在资源管理器中显示
                 </button>
                 <button
                   type="button"
-                  className="extension-file-more-item"
+                  className="task-context-item"
+                  tabIndex={-1}
                   role="menuitem"
                   disabled={!artifact.path}
                   onClick={() => {
@@ -285,12 +284,13 @@ export default function FileActionBar({ artifact }: Props): React.JSX.Element {
                     void handleOpenFile();
                   }}
                 >
-                  用系统应用打开
+                  <IconOpenExternal size={14} /> 用系统应用打开
                 </button>
                 {artifact.path && (
                   <button
                     type="button"
-                    className="extension-file-more-item"
+                    className="task-context-item"
+                    tabIndex={-1}
                     role="menuitem"
                     onClick={() => {
                       setMoreOpen(false);
@@ -299,21 +299,23 @@ export default function FileActionBar({ artifact }: Props): React.JSX.Element {
                       window.setTimeout(() => setCopied(false), 1500);
                     }}
                   >
-                    复制文件路径
+                    <IconCopy size={14} /> 复制文件路径
                   </button>
                 )}
+                <div className="task-context-sep" role="separator" />
                 <button
                   type="button"
-                  className="extension-file-more-item"
+                  className="task-context-item"
+                  tabIndex={-1}
                   role="menuitem"
                   onClick={() => {
                     setMoreOpen(false);
                     handleSendToChat();
                   }}
                 >
-                  发送到对话
+                  <IconArrowUpRight size={14} /> 发送到对话
                 </button>
-              </div>
+              </PopupContextMenu>
             )}
           </div>
         </div>

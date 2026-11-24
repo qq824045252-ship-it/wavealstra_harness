@@ -8,19 +8,19 @@
 import type { ITheme } from "@xterm/xterm";
 
 export const DARK_TERMINAL_THEME: ITheme = {
-  background: "#1e1e1e",
-  foreground: "#e6e6e6",
-  cursor: "#e6e6e6",
-  cursorAccent: "#1e1e1e",
-  selectionBackground: "#264f78",
-  black: "#1e1e1e",
+  background: "#101827",
+  foreground: "#e9f0fc",
+  cursor: "#e9f0fc",
+  cursorAccent: "#101827",
+  selectionBackground: "#354f7d",
+  black: "#101827",
   red: "#f14c4c",
   green: "#23d18b",
   yellow: "#f5f543",
   blue: "#3b8eea",
   magenta: "#d670d6",
   cyan: "#29b8db",
-  white: "#e6e6e6",
+  white: "#e9f0fc",
   brightBlack: "#8a8a8a",
   brightRed: "#f14c4c",
   brightGreen: "#23d18b",
@@ -28,17 +28,17 @@ export const DARK_TERMINAL_THEME: ITheme = {
   brightBlue: "#3b8eea",
   brightMagenta: "#d670d6",
   brightCyan: "#29b8db",
-  brightWhite: "#e6e6e6",
+  brightWhite: "#e9f0fc",
 };
 
 /** 浅色：黄/白必须足够深，否则 pwsh + Oh My Posh 的 cline / 路径会糊进背景。 */
 export const LIGHT_TERMINAL_THEME: ITheme = {
-  background: "#ffffff",
-  foreground: "#1f1f1f",
-  cursor: "#1f1f1f",
-  cursorAccent: "#ffffff",
-  selectionBackground: "#add6ff",
-  black: "#1f1f1f",
+  background: "#f8faff",
+  foreground: "#17253b",
+  cursor: "#17253b",
+  cursorAccent: "#f8faff",
+  selectionBackground: "#dce7f8",
+  black: "#17253b",
   red: "#c50f1f",
   green: "#0b7a0b",
   yellow: "#7a5c00",
@@ -53,7 +53,7 @@ export const LIGHT_TERMINAL_THEME: ITheme = {
   brightBlue: "#0451a5",
   brightMagenta: "#881798",
   brightCyan: "#0078a0",
-  brightWhite: "#1f1f1f",
+  brightWhite: "#17253b",
 };
 
 /** 浅色底上真彩色亮黄（#fce94f / #f5f543）必须拉到 AA 以上才看得见。 */

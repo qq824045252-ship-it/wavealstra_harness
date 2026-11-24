@@ -119,6 +119,8 @@ export default function ExtensionTopBar({
             type="button"
             className={`extension-tab-btn ${panelMode === "overview" ? "active" : ""}`}
             onClick={showOverview}
+            aria-label="概览与运行态"
+            aria-pressed={panelMode === "overview"}
             title="概览与运行态"
           >
             <IconZap size={16} />
@@ -130,6 +132,8 @@ export default function ExtensionTopBar({
             type="button"
             className={`extension-tab-btn ${panelMode === "artifacts" ? "active" : ""}`}
             onClick={showArtifacts}
+            aria-label="任务产物"
+            aria-pressed={panelMode === "artifacts"}
             title={artifactsCount > 0 ? `任务产物 (${artifactsCount})` : "任务产物"}
           >
             <IconFileBox size={16} />
@@ -158,6 +162,8 @@ export default function ExtensionTopBar({
             type="button"
             className={`extension-tab-btn ${panelMode === "workspace" ? "active" : ""}`}
             onClick={showWorkspace}
+            aria-label="工作空间文件"
+            aria-pressed={panelMode === "workspace"}
             title={workspaceFilesCount > 0 ? `工作空间文件 (${workspaceFilesCount})` : "工作空间文件"}
           >
             <IconFolder size={16} />
@@ -173,6 +179,8 @@ export default function ExtensionTopBar({
             type="button"
             className={`extension-tab-btn ${panelMode === "gadgets" ? "active" : ""}`}
             onClick={showGadgets}
+            aria-label="工作台"
+            aria-pressed={panelMode === "gadgets"}
             title={gadgetsCount > 0 ? `工作台 (${gadgetsCount})` : "工作台"}
           >
             <IconPuzzle size={16} />
@@ -188,6 +196,8 @@ export default function ExtensionTopBar({
             type="button"
             className={`extension-tab-btn ${panelMode === "terminal" ? "active" : ""}`}
             onClick={showTerminal}
+            aria-label="终端"
+            aria-pressed={panelMode === "terminal"}
             title={terminalTabs.length > 0 ? `终端 (${terminalTabs.length})` : "终端"}
           >
             <IconTerminal size={16} />
@@ -203,6 +213,8 @@ export default function ExtensionTopBar({
             type="button"
             className={`extension-tab-btn ${panelMode === "browser" ? "active" : ""}`}
             onClick={showBrowser}
+            aria-label="内置浏览器"
+            aria-pressed={panelMode === "browser"}
             title="内置浏览器"
           >
             <IconGlobe size={16} />
@@ -224,6 +236,8 @@ export default function ExtensionTopBar({
             className={`icon-btn ${panelPinned ? "active" : ""}`}
             title={panelPinned ? "已钉住侧栏（切换任务时保持展开）" : "钉住侧栏（切换任务时不收起）"}
             onClick={togglePanelPinned}
+            aria-label="钉住侧栏"
+            aria-pressed={panelPinned}
           >
             <IconPin size={15} fill={panelPinned ? "currentColor" : "none"} />
           </button>

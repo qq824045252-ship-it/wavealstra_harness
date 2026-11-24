@@ -45,22 +45,98 @@ function installEditor(source: string, nodes: HtmlEditNode[], restored: HtmlEdit
 
   const style = document.createElement("style");
   style.textContent = `
-    #__mybuddy_html_hover,#__mybuddy_html_selected{all:initial;position:fixed!important;pointer-events:none!important;border-radius:6px!important;display:none;z-index:2147483645!important;box-sizing:border-box!important}
-    #__mybuddy_html_hover{border:1px dashed rgba(22,120,210,.75)!important;background:rgba(22,120,210,.035)!important}
-    #__mybuddy_html_selected{border:2px solid #1678d2!important;box-shadow:0 0 0 2px rgba(22,120,210,.12)!important}
-    #__mybuddy_html_toolbar{all:initial;position:fixed!important;display:flex!important;align-items:center!important;gap:3px!important;max-width:min(720px,calc(100vw - 16px))!important;padding:5px 6px!important;border:1px solid rgba(90,90,90,.28)!important;border-radius:10px!important;background:rgba(255,255,255,.97)!important;box-shadow:0 8px 30px rgba(0,0,0,.16)!important;font:12px/1.2 system-ui,"Microsoft YaHei",sans-serif!important;color:#222!important;pointer-events:auto!important;z-index:2147483647!important}
-    #__mybuddy_html_toolbar *,#__mybuddy_html_ai *,#__mybuddy_html_preview *{box-sizing:border-box!important;font-family:system-ui,"Microsoft YaHei",sans-serif!important}
-    #__mybuddy_html_toolbar button,#__mybuddy_html_ai button,#__mybuddy_html_preview button{height:27px!important;min-width:27px!important;padding:0 7px!important;border:0!important;border-radius:6px!important;background:transparent!important;color:inherit!important;font:12px/1.2 system-ui,"Microsoft YaHei",sans-serif!important;cursor:pointer!important}
-    #__mybuddy_html_toolbar button:hover,#__mybuddy_html_ai button:hover,#__mybuddy_html_preview button:hover{background:#edf3f9!important}
-    #__mybuddy_html_toolbar button:disabled,#__mybuddy_html_ai button:disabled{opacity:.35!important;cursor:default!important;background:transparent!important}
-    #__mybuddy_html_toolbar .primary,#__mybuddy_html_ai .primary,#__mybuddy_html_preview .primary{background:#1678d2!important;color:#fff!important}
-    #__mybuddy_html_toolbar .danger:hover{background:#fff0f0!important;color:#b42318!important}
-    #__mybuddy_html_toolbar .sep{width:1px!important;height:18px!important;background:#ddd!important;margin:0 2px!important}#__mybuddy_html_toolbar .spacer{flex:1!important}
-    #__mybuddy_html_toolbar .status{max-width:180px!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;color:#666!important;padding:0 3px!important}#__mybuddy_html_toolbar .mode{font-weight:650!important;color:#1678d2!important;padding:0 3px!important;white-space:nowrap!important}
-    #__mybuddy_html_ai{all:initial;position:fixed!important;display:none!important;width:min(420px,calc(100vw - 16px))!important;padding:7px!important;border:1px solid rgba(90,90,90,.28)!important;border-radius:10px!important;background:rgba(255,255,255,.98)!important;box-shadow:0 8px 30px rgba(0,0,0,.16)!important;font:12px/1.3 system-ui,"Microsoft YaHei",sans-serif!important;color:#222!important;pointer-events:auto!important;z-index:2147483647!important}#__mybuddy_html_ai.open{display:flex!important;gap:5px!important;align-items:center!important}
-    #__mybuddy_html_ai input{height:30px!important;min-width:0!important;flex:1!important;border:1px solid #d6d6d6!important;border-radius:7px!important;padding:0 9px!important;outline:none!important;font:12px/1.2 system-ui,"Microsoft YaHei",sans-serif!important;color:inherit!important;background:#fff!important}
-    #__mybuddy_html_preview{all:initial;position:fixed!important;display:none!important;align-items:center!important;gap:5px!important;padding:5px 6px!important;border:1px solid rgba(90,90,90,.28)!important;border-radius:9px!important;background:#fff8e8!important;box-shadow:0 8px 24px rgba(0,0,0,.14)!important;font:12px system-ui,"Microsoft YaHei",sans-serif!important;color:#6d4c00!important;pointer-events:auto!important;z-index:2147483647!important}#__mybuddy_html_preview.open{display:flex!important}
-    @media (prefers-color-scheme:dark){#__mybuddy_html_toolbar,#__mybuddy_html_ai{background:rgba(38,38,38,.97)!important;color:#eee!important;border-color:#555!important}#__mybuddy_html_toolbar button:hover,#__mybuddy_html_ai button:hover{background:#454545!important}#__mybuddy_html_toolbar .sep{background:#555!important}#__mybuddy_html_toolbar .status{color:#bbb!important}#__mybuddy_html_ai input{background:#222!important;color:#eee!important;border-color:#555!important}#__mybuddy_html_preview{background:#493d20!important;color:#ffe9a8!important;border-color:#6c5a2a!important}}
+    :is(#__mybuddy_html_hover, #__mybuddy_html_selected, #__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) {
+      --mybuddy-editor-surface: #ffffff;
+      --mybuddy-editor-ink: #17253b;
+      --mybuddy-editor-muted: #475b76;
+      --mybuddy-editor-line: #cfdbea;
+      --mybuddy-editor-hover: #e7eef9;
+      --mybuddy-editor-accent: #2455ba;
+      --mybuddy-editor-accent-ink: #ffffff;
+      --mybuddy-editor-warn-surface: #fff1d7;
+      --mybuddy-editor-warn-ink: #8d4908;
+      --mybuddy-editor-danger: #ac2b3d;
+      --mybuddy-editor-shadow: 0 8px 30px rgb(18 39 77 / 18%);
+    }
+    @media (prefers-color-scheme: dark) {
+      :is(#__mybuddy_html_hover, #__mybuddy_html_selected, #__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) {
+        --mybuddy-editor-surface: #1d2b42;
+        --mybuddy-editor-ink: #e9f0fc;
+        --mybuddy-editor-muted: #b2c0d6;
+        --mybuddy-editor-line: #354863;
+        --mybuddy-editor-hover: #273956;
+        --mybuddy-editor-accent: #a4c0ff;
+        --mybuddy-editor-accent-ink: #102040;
+        --mybuddy-editor-warn-surface: #402e23;
+        --mybuddy-editor-warn-ink: #ffd18a;
+        --mybuddy-editor-danger: #ff9cac;
+        --mybuddy-editor-shadow: 0 8px 30px rgb(2 8 19 / 45%);
+      }
+    }
+    #__mybuddy_html_hover, #__mybuddy_html_selected {
+      all: initial; position: fixed !important; pointer-events: none !important;
+      border-radius: 6px !important; display: none; z-index: 2147483645 !important;
+      box-sizing: border-box !important;
+    }
+    #__mybuddy_html_hover {
+      border: 1px dashed var(--mybuddy-editor-accent) !important;
+      background: color-mix(in srgb, var(--mybuddy-editor-accent) 5%, transparent) !important;
+    }
+    #__mybuddy_html_selected {
+      border: 2px solid var(--mybuddy-editor-accent) !important;
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--mybuddy-editor-accent) 19%, transparent) !important;
+    }
+    #__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview {
+      all: initial; position: fixed !important; pointer-events: auto !important;
+      z-index: 2147483647 !important; align-items: center !important; gap: 4px !important;
+      border: 1px solid var(--mybuddy-editor-line) !important; border-radius: 12px !important;
+      background: var(--mybuddy-editor-surface) !important; color: var(--mybuddy-editor-ink) !important;
+      box-shadow: var(--mybuddy-editor-shadow) !important;
+      font: 12px/1.3 system-ui, "Microsoft YaHei", sans-serif !important;
+    }
+    #__mybuddy_html_toolbar {
+      display: flex !important; flex-wrap: wrap !important;
+      max-width: min(720px, calc(100vw - 16px)) !important;
+      padding: 5px 6px !important;
+    }
+    :is(#__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) * {
+      box-sizing: border-box !important; font-family: inherit !important;
+    }
+    :is(#__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) button {
+      height: 27px !important; min-width: 27px !important; padding: 0 7px !important;
+      border: 0 !important; border-radius: 7px !important; background: transparent !important;
+      color: inherit !important; font: inherit !important; cursor: pointer !important;
+    }
+    :is(#__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) button:hover:not(:disabled) {
+      background: var(--mybuddy-editor-hover) !important;
+    }
+    :is(#__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) :is(button, input):focus-visible {
+      outline: 2px solid var(--mybuddy-editor-accent) !important; outline-offset: 1px !important;
+    }
+    :is(#__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) button:disabled {
+      opacity: .4 !important; cursor: default !important; background: transparent !important;
+    }
+    :is(#__mybuddy_html_toolbar, #__mybuddy_html_ai, #__mybuddy_html_preview) button.primary:not(:disabled) {
+      background: var(--mybuddy-editor-accent) !important; color: var(--mybuddy-editor-accent-ink) !important;
+    }
+    #__mybuddy_html_toolbar button.danger:hover:not(:disabled) { color: var(--mybuddy-editor-danger) !important; }
+    #__mybuddy_html_toolbar .sep { width: 1px !important; height: 18px !important; background: var(--mybuddy-editor-line) !important; margin: 0 2px !important; }
+    #__mybuddy_html_toolbar .spacer { flex: 1 !important; }
+    #__mybuddy_html_toolbar .status {
+      max-width: 180px !important; overflow: hidden !important; text-overflow: ellipsis !important;
+      white-space: nowrap !important; color: var(--mybuddy-editor-muted) !important; padding: 0 3px !important;
+    }
+    #__mybuddy_html_toolbar .mode { font-weight: 650 !important; color: var(--mybuddy-editor-accent) !important; padding: 0 3px !important; white-space: nowrap !important; }
+    #__mybuddy_html_ai, #__mybuddy_html_preview { display: none !important; padding: 6px !important; }
+    #__mybuddy_html_ai { width: min(420px, calc(100vw - 16px)) !important; }
+    #__mybuddy_html_preview { background: var(--mybuddy-editor-warn-surface) !important; color: var(--mybuddy-editor-warn-ink) !important; }
+    :is(#__mybuddy_html_ai, #__mybuddy_html_preview).open { display: flex !important; }
+    #__mybuddy_html_ai input {
+      height: 30px !important; min-width: 0 !important; flex: 1 !important;
+      border: 1px solid var(--mybuddy-editor-line) !important; border-radius: 8px !important;
+      padding: 0 9px !important; font: inherit !important; color: inherit !important;
+      background: var(--mybuddy-editor-surface) !important;
+    }
   `;
   const hoverBox = document.createElement("div"); hoverBox.id = "__mybuddy_html_hover";
   const selectedBox = document.createElement("div"); selectedBox.id = "__mybuddy_html_selected";

@@ -280,6 +280,7 @@ export type LibraryNoteOperation =
   | { type: "readVersion"; id: string; version: number }
   | { type: "restoreVersion"; owner: LibraryOwnerScope; id: string; version: number; expectedContentHash?: string }
   | { type: "addImage"; owner: LibraryOwnerScope; id: string; name: string; mime: string; bytes: Uint8Array }
+  | { type: "pickImages"; owner: LibraryOwnerScope; id: string }
   | { type: "openLink"; url: string }
   | { type: "attachment"; id: string }
   | { type: "noteImage"; id: string; href: string; version?: number }
@@ -300,6 +301,7 @@ export interface LibraryNoteOperationResults {
   readVersion: string;
   restoreVersion: LibraryItemDto;
   addImage: string;
+  pickImages: { images: Array<{ url: string; name: string }>; errors: string[] };
   openLink: void;
   attachment: string;
   noteImage: string;

@@ -1,9 +1,9 @@
 .desktop-app {
   --desktop-rail-width: 48px;
   --desktop-section-width: 200px;
-  --desktop-heading-height: 44px;
-  --desktop-row-height: 32px;
-  --desktop-selected: color-mix(in srgb, var(--accent) 13%, var(--surface-sidebar));
+  --desktop-heading-height: 46px;
+  --desktop-row-height: 34px;
+  --desktop-selected: color-mix(in srgb, var(--accent) 12%, var(--surface-sidebar));
   --desktop-controls-height: env(titlebar-area-height, 0px);
   position: relative;
   min-height: 0;
@@ -20,11 +20,13 @@
   height: var(--desktop-controls-height);
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding-inline: 8px;
+  gap: 8px;
+  padding-inline: 12px;
   overflow: hidden;
+  background: var(--surface-app);
   color: var(--fg);
   font-size: 12px;
+  font-weight: 650;
   white-space: nowrap;
   -webkit-app-region: drag;
 }
@@ -38,9 +40,9 @@
 .desktop-rail {
   width: var(--desktop-rail-width);
   align-items: center;
-  padding: 7px 3px;
-  gap: 3px;
-  background: color-mix(in srgb, var(--surface-main) 48%, var(--surface-sidebar));
+  padding: 8px 4px;
+  gap: 6px;
+  background: var(--surface-app);
 }
 .desktop-section {
   width: var(--desktop-section-width);
@@ -52,22 +54,29 @@
   flex: 1;
   flex-direction: column;
   width: 100%;
-  gap: 2px;
+  gap: 4px;
   overflow: auto;
   scrollbar-width: none;
 }
-.desktop-rail-footer { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.desktop-rail-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
 .desktop-rail-module,
 .desktop-rail-icon {
   color: var(--fg-secondary);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   flex-shrink: 0;
 }
-.desktop-rail-module { align-self: center; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border-radius: 10px; }
-.desktop-rail-icon { display: grid; place-items: center; width: 32px; height: 29px; }
+.desktop-rail-module { align-self: center; display: grid; place-items: center; width: 38px; height: 37px; padding: 0; border-radius: 10px; }
+.desktop-rail-icon { display: grid; place-items: center; width: 36px; height: 32px; }
 .desktop-rail-module:hover, .desktop-rail-icon:hover { background: var(--bg-hover); color: var(--fg); }
 .desktop-rail-module[aria-current="page"], .desktop-rail-icon[aria-current="page"] {
   color: var(--fg);
@@ -84,7 +93,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding: 4px 8px 4px 12px;
+  padding: 5px 9px 5px 13px;
   border-bottom: 1px solid var(--border);
 }
 .desktop-section-heading h2 {
@@ -102,7 +111,7 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  padding: 6px;
+  padding: 8px;
   scrollbar-gutter: stable;
 }
 .desktop-section-content--own { display: flex; flex-direction: column; padding: 0; overflow: hidden; scrollbar-gutter: auto; }
@@ -114,7 +123,7 @@
   min-height: var(--desktop-row-height);
   padding: 4px 7px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   color: var(--fg);
   background: transparent;
   text-align: left;
@@ -133,27 +142,29 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  min-height: 29px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
   background: var(--surface-main);
   color: var(--fg);
   font: inherit;
 }
 .desktop-app :is(.desktop-rail, .desktop-section) button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .desktop-app .desktop-task-tree { width: 100%; flex: 1; min-height: 0; border: 0; }
-.desktop-app .desktop-task-tree .sidebar-primary-action { padding: 5px 7px 4px; }
+.desktop-app .desktop-task-tree .sidebar-primary-action { padding: 8px 8px 4px; }
 .desktop-app .desktop-task-tree .sidebar-cta-btn {
   justify-content: flex-start;
-  height: 30px;
-  padding-inline: 8px;
+  height: 32px;
+  padding-inline: 9px;
   border: 0;
-  background: transparent;
+  border-radius: var(--radius-sm);
+  background: var(--desktop-selected);
+  color: var(--accent);
   box-shadow: none;
 }
 .desktop-app .desktop-task-tree .sidebar-cta-btn:hover,
-.desktop-app .desktop-task-tree .sidebar-cta-btn:active { background: var(--bg-hover); }
+.desktop-app .desktop-task-tree .sidebar-cta-btn:active { background: var(--surface-active); }
 .desktop-app .desktop-task-tree .sidebar-tree-header { min-height: 26px; padding-top: 2px; padding-bottom: 2px; }
 .desktop-app .desktop-task-tree .sidebar-tree-header--spaced { margin-top: 4px; border-top: 0; }
 /* Dots 入口沿用「新建任务」的字体；Pi logo 图形只占画布 58.7%，图标盒放大到 22px 后视觉高度才等于 13px 字高。 */
@@ -166,6 +177,18 @@
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row { min-height: 28px; color: var(--fg-secondary); }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row:hover { color: var(--fg); }
 .desktop-task-tree :is(.task-item, .space-header) { column-gap: 4px; }
+.desktop-app .desktop-task-tree :is(.task-item.active, .space-header.space-active) {
+  background: var(--desktop-selected);
+  color: var(--fg);
+}
+.desktop-app .desktop-task-tree :is(.task-item, .space-header):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.desktop-task-tree .sidebar-dots-row[aria-current] {
+  background: var(--desktop-selected);
+  color: var(--accent);
+}
 .desktop-task-tree .space-header { border-left-width: 0; }
 .desktop-task-tree .space-entry-icons {
   display: inline-flex;
@@ -199,8 +222,8 @@
   flex: none;
   min-width: 0;
   grid-template-columns: minmax(0, 1fr);
-  gap: 5px;
-  padding: 2px 8px 8px;
+  gap: 6px;
+  padding: 4px 8px 9px;
 }
 .task-filter-search-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .task-filter-search {
@@ -209,13 +232,14 @@
   flex: 1;
   min-width: 0;
   gap: 6px;
-  min-height: 30px;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
   color: var(--fg-secondary);
 }
-.task-filter-search:focus-within { border-color: var(--accent); }
+.task-filter-search:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .task-filter-search > svg { flex: none; }
 .task-filter-search input {
   flex: 1;
@@ -237,8 +261,8 @@
   min-height: 26px;
   padding: 2px 4px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-sidebar);
+  border-radius: var(--radius-sm);
+  background: var(--surface-input);
   color: var(--fg-secondary);
   font: inherit;
   font-size: 12px;

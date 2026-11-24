@@ -7,6 +7,9 @@ import { ScopedLibraryWorkbench, type ScopedLibraryManagerProps } from "@/compon
 import App from "./App";
 import "./styles/global.css";
 import "./styles/systemTypography.css";
+import "./styles/desktop-modules-design.css";
+import "./styles/artifact-design.css";
+import "./styles/chat-design.css";
 
 const LibraryWorkbench = lazy(() => import("@/components/pages/library/LibraryWorkbench"));
 

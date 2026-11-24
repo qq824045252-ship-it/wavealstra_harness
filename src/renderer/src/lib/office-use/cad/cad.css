@@ -1,5 +1,29 @@
-:root { color-scheme: light dark; font: 13px system-ui, sans-serif; }
-body { height: 100vh; margin: 0; background: Canvas; color: CanvasText; }
-#status { position: absolute; z-index: 1; top: 8px; right: 8px; max-width: calc(100% - 36px); padding: 6px 9px; border-radius: 5px; background: Canvas; overflow-wrap: anywhere; pointer-events: none; }
-#status[data-error] { color: #c94c49; }
+:root {
+  color-scheme: light dark;
+  --cad-surface: light-dark(#f1f5fc, #101827);
+  --cad-panel: light-dark(#ffffff, #151f30);
+  --cad-ink: light-dark(#455773, #bccbe1);
+  --cad-border: light-dark(#cdd9ea, #354761);
+  --cad-danger: light-dark(#a82c39, #ffb4bc);
+  font: 13px "Segoe UI", system-ui, sans-serif;
+}
+
+body { height: 100vh; margin: 0; background: var(--cad-surface); color: var(--cad-ink); }
+
+#status {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  max-width: calc(100% - 36px);
+  padding: 5px 9px;
+  border: 1px solid var(--cad-border);
+  border-radius: 8px;
+  background: var(--cad-panel);
+  box-shadow: 0 3px 10px rgb(15 32 61 / 16%);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+#status[data-error] { color: var(--cad-danger); }
 iframe { display: block; width: 100%; height: 100%; border: 0; }

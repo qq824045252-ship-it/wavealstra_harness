@@ -1,4 +1,6 @@
 .code-review {
+  --review-selected: color-mix(in srgb, var(--accent) 11%, var(--surface-elevated));
+  --review-selected-border: color-mix(in srgb, var(--accent) 33%, var(--border-default));
   --review-add: color-mix(in srgb, var(--success) 79%, var(--fg));
   --review-del: color-mix(in srgb, var(--danger) 82%, var(--fg));
   container-type: inline-size;
@@ -26,8 +28,8 @@
   border-bottom: 1px solid var(--border-default);
 }
 
-.code-review-header { min-height: 43px; }
-.code-review-diff-heading { min-height: 37px; padding-block: 4px; }
+.code-review-header { min-height: 43px; background: var(--surface-elevated); }
+.code-review-diff-heading { min-height: 37px; padding-block: 4px; background: var(--surface-elevated); }
 .code-review-title,
 .code-review-actions,
 .code-review-file-meta,
@@ -53,7 +55,7 @@
   min-height: 27px;
   padding: 0 7px;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--surface-elevated);
   color: var(--fg);
   font: inherit;
@@ -80,7 +82,7 @@
   height: 28px;
   padding: 0;
   border: 1px solid color-mix(in srgb, currentColor 27%, var(--border-default));
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--review-decision-bg);
   cursor: pointer;
 }
@@ -146,7 +148,7 @@
   min-height: 26px;
   padding: 0 6px;
   border: 1px solid var(--border-default);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--surface-input);
   color: var(--fg);
   font: inherit;
@@ -178,13 +180,13 @@
   min-height: 27px;
   padding-inline: 6px;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--surface-input);
   color: var(--fg-secondary);
 }
 
 .code-review-search svg { flex: none; }
-.code-review-search:focus-within { border-color: var(--accent); }
+.code-review-search:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .code-review-search input { flex: 1; width: 0; padding: 0; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; }
 
 .code-review-file {
@@ -196,7 +198,7 @@
   min-height: 37px;
   padding: 4px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -205,7 +207,7 @@
 }
 
 .code-review-file:hover { background: var(--surface-hover); }
-.code-review-file[aria-current="true"] { background: var(--surface-active); border-color: var(--border-default); }
+.code-review-file[aria-current="true"] { background: var(--review-selected); border-color: var(--review-selected-border); }
 .code-review-file-path { display: grid; flex: 1; gap: 2px; min-width: 0; }
 .code-review-file-path strong,
 .code-review-file-path small,
@@ -225,6 +227,7 @@
   min-height: 0;
   overflow: auto;
   overflow-anchor: none;
+  background: var(--surface-app);
   padding: 8px;
   padding-bottom: calc(8px + var(--review-anchor-padding, 0px));
   scrollbar-gutter: stable;
@@ -235,7 +238,9 @@
   margin-bottom: 10px;
   overflow: hidden;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
+  background: var(--surface-main);
+  box-shadow: var(--shadow-sm);
 }
 
 .code-review-file-header { justify-content: flex-start; padding: 5px 6px; background: var(--surface-right); }
@@ -261,7 +266,7 @@
 .code-review-feedback.is-error { color: var(--review-del); }
 .code-review-feedback ul { margin: 4px 0 0; padding-left: 18px; }
 
-.code-review-commits { margin-bottom: 10px; padding: 6px; border: 1px solid var(--border-default); border-radius: 6px; }
+.code-review-commits { margin-bottom: 10px; padding: 6px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
 .code-review-commits summary { cursor: pointer; }
 .code-review-commits button {
   display: block;
@@ -293,7 +298,7 @@
 .code-review-line.is-added { background: color-mix(in srgb, var(--success) 14%, var(--surface-main)); }
 .code-review-line.is-deleted { background: color-mix(in srgb, var(--danger) 12%, var(--surface-main)); }
 .code-review-line:hover,
-.code-review-line.is-active { background: var(--surface-active); }
+.code-review-line.is-active { box-shadow: inset 0 0 0 1px var(--review-selected-border); }
 .code-review-line-number {
   flex: none;
   width: 4.6ch;
@@ -383,7 +388,7 @@
   margin: 6px 8px;
   padding: 7px;
   border: 1px solid var(--border-default);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--surface-elevated);
   overflow-wrap: anywhere;
 }
@@ -414,7 +419,7 @@
   background: var(--surface-input);
   color: var(--fg);
   border: 1px solid var(--border-default);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   font: inherit;
 }
 

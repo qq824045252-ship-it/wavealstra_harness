@@ -8,6 +8,7 @@ import {
   IconChevronRight,
   IconCopy,
   IconFolder,
+  IconFolderOpen,
   IconGlobe,
   IconOpenExternal,
   IconPencil,
@@ -128,6 +129,29 @@ function TreeRow({
     }
   };
 
+  const openContext = (x: number, y: number): void => {
+    onContext({ x, y, path, name: node.name, kind: node.kind });
+  };
+
+  const onRowContextMenu = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    if (isRenaming) {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.focus({ preventScroll: true });
+    openContext(event.clientX, event.clientY);
+  };
+
+  const onRowKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>): void => {
+    if (isRenaming || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    openContext(rect.left, rect.bottom);
+  };
+
   const renameInput = (
     <input
       className="ws-tree-rename"
@@ -156,11 +180,9 @@ function TreeRow({
         className={`ws-tree-row file ${selectedPath === path ? "active" : ""}${dragEnabled ? " is-draggable" : ""}${isDragging ? " is-dragging" : ""}`}
         style={{ paddingLeft: `${10 + depth * 16}px` }}
         onClick={() => onSelectFile(path, node.name)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onContext({ x: e.clientX, y: e.clientY, path, name: node.name, kind: "file" });
-        }}
+        aria-haspopup="menu"
+        onContextMenu={onRowContextMenu}
+        onKeyDown={onRowKeyDown}
         draggable={dragEnabled && !isRenaming}
         onDragStart={startDrag}
         onDragEnd={onDragEnd}
@@ -181,11 +203,9 @@ function TreeRow({
         className={`ws-tree-row folder ${isExpanded ? "expanded" : ""}${dragEnabled ? " is-draggable" : ""}${isDrop ? " drop-target" : ""}${isDragging ? " is-dragging" : ""}`}
         style={{ paddingLeft: `${10 + depth * 16}px` }}
         onClick={() => onToggleFolder(path)}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onContext({ x: e.clientX, y: e.clientY, path, name: node.name, kind: "folder" });
-        }}
+        aria-haspopup="menu"
+        onContextMenu={onRowContextMenu}
+        onKeyDown={onRowKeyDown}
         draggable={dragEnabled && !isRenaming}
         onDragStart={startDrag}
         onDragEnd={onDragEnd}
@@ -523,6 +543,7 @@ export default function WorkspaceFilesView({
       className={`extension-body workspace-files-view ${floating ? "workspace-files-floating" : ""}`}
       onContextMenu={(e) => {
         if ((e.target as HTMLElement).closest(".ws-tree-row")) return;
+        e.stopPropagation();
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY, path: "", name: "", kind: "root" });
       }}
@@ -603,23 +624,37 @@ export default function WorkspaceFilesView({
       </div>
 
       {menu && (
-        <PopupContextMenu x={menu.x} y={menu.y} onClose={closeMenu}>
+        <PopupContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={closeMenu}
+          heading={{
+            title: menu.kind === "root"
+              ? root?.split(/[\\/]/).filter(Boolean).at(-1) || "工作空间文件"
+              : menu.name,
+            icon: menu.kind === "file" ? <FileBadge name={menu.name} size={16} /> : <IconFolder size={17} />,
+          }}
+        >
           {menu.kind === "file" && (
             <button
               type="button"
               className="task-context-item"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
                 closeMenu();
                 selectFile(menu.path, menu.name);
               }}
             >
-              打开
+              <IconOpenExternal size={14} /> 打开
             </button>
           )}
           {menu.kind === "file" && /\.html?$/i.test(menu.name) && (
             <button
               type="button"
               className="task-context-item"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
                 closeMenu();
                 openHtmlInBrowser(menu.path);
@@ -632,6 +667,8 @@ export default function WorkspaceFilesView({
             <button
               type="button"
               className="task-context-item"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
                 closeMenu();
                 if (spaceId) {
@@ -649,6 +686,8 @@ export default function WorkspaceFilesView({
               <button
                 type="button"
                 className="task-context-item"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => {
                   closeMenu();
                   reveal(menu.path);
@@ -659,6 +698,8 @@ export default function WorkspaceFilesView({
               <button
                 type="button"
                 className="task-context-item"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => {
                   closeMenu();
                   copyPath(menu.path);
@@ -669,18 +710,22 @@ export default function WorkspaceFilesView({
               <button
                 type="button"
                 className="task-context-item"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => startRename(menu.path, menu.name)}
               >
                 <IconPencil size={14} /> 重命名
               </button>
-              <div className="task-context-sep" />
             </>
           )}
           {(menu.kind === "folder" || menu.kind === "root") && (
             <>
+              {menu.kind === "folder" && <div className="task-context-sep" role="separator" />}
               <button
                 type="button"
                 className="task-context-item"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => void createEntry(menu.path, "file")}
               >
                 <IconPlus size={14} /> 新建文件
@@ -688,18 +733,22 @@ export default function WorkspaceFilesView({
               <button
                 type="button"
                 className="task-context-item"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => void createEntry(menu.path, "folder")}
               >
-                <IconPlus size={14} /> 新建文件夹
+                <IconFolderOpen size={14} /> 新建文件夹
               </button>
             </>
           )}
           {menu.kind !== "root" && (
             <>
-              <div className="task-context-sep" />
+              <div className="task-context-sep" role="separator" />
               <button
                 type="button"
                 className="task-context-item danger"
+                role="menuitem"
+                tabIndex={-1}
                 onClick={() => {
                   closeMenu();
                   setPendingDelete({ path: menu.path, name: menu.name, kind: menu.kind });

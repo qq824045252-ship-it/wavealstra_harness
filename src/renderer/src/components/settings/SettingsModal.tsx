@@ -299,7 +299,6 @@ function SystemTab(): React.JSX.Element {
   const [fontBusy, setFontBusy] = useState(false);
   const [confirmRemoveFont, setConfirmRemoveFont] = useState<UserFontDto | null>(null);
   const [diskSpace, setDiskSpace] = useState<import("@shared/agent-ipc").DiskSpaceDto | null>(null);
-  const fontFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshUserFonts = useCallback(async (): Promise<UserFontDto[]> => {
     const list = (await window.api?.agent?.listUserFonts?.()) ?? [];
@@ -464,17 +463,14 @@ function SystemTab(): React.JSX.Element {
     await persistTypography({ codeFontSize: size });
   };
 
-  const onFontFileChosen = async (fileList: FileList | null): Promise<void> => {
-    const file = fileList?.[0];
-    if (!file) return;
+  const importUserFont = async (): Promise<void> => {
     setFontBusy(true);
     setErrorMsg("");
     setFontHint("正在导入…");
     try {
       const importFn = window.api?.agent?.importUserFont;
       if (!importFn) throw new Error("导入接口未就绪，请完全退出并重新启动应用后再试");
-      const path = (window.api?.getPathForFile?.(file) || "").trim();
-      const imported = path ? await importFn(path) : await importFn();
+      const imported = await importFn();
       if (!imported) {
         setFontHint("");
         return;
@@ -487,7 +483,6 @@ function SystemTab(): React.JSX.Element {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setFontBusy(false);
-      if (fontFileInputRef.current) fontFileInputRef.current.value = "";
     }
   };
 
@@ -694,8 +689,7 @@ function SystemTab(): React.JSX.Element {
             <div className="typography-custom-font-actions">
               <button type="button" className="btn" onClick={() => void refreshSystemFonts()} disabled={systemFontsLoading}><IconRefresh size={14} />刷新</button>
               <button type="button" className="btn" onClick={() => void window.api?.agent?.openFontsDir?.()}><IconFolder size={14} />目录</button>
-              <input ref={fontFileInputRef} type="file" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" className="font-file-input-hidden" tabIndex={-1} onChange={(e) => void onFontFileChosen(e.target.files)} />
-              <button type="button" className="btn" disabled={fontBusy} onClick={() => fontFileInputRef.current?.click()}><IconPlus size={14} />导入字体</button>
+              <button type="button" className="btn" disabled={fontBusy} onClick={() => void importUserFont()}><IconPlus size={14} />导入字体</button>
             </div>
           </div>
 

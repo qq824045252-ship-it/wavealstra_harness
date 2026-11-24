@@ -132,17 +132,46 @@ function popoverHtml(dark: boolean): string {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
-*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}
-body{padding:4px;font:13px system-ui,'Microsoft YaHei',sans-serif;color:${dark ? "#eee" : "#252525"}}
-.card{border:1px solid ${dark ? "#4a4a4a" : "#ddd"};border-radius:12px;background:${dark ? "#292929" : "#fff"};height:100%;overflow:hidden}
-.actions{height:42px;display:flex;align-items:center;padding:4px;gap:3px}
-button{font:inherit;color:inherit;cursor:pointer;border:0;background:transparent;border-radius:7px;padding:6px 8px;white-space:nowrap}
-button:hover{background:${dark ? "#404040" : "#f0f0f0"}}button:focus-visible,textarea:focus-visible{outline:2px solid #2196e0;outline-offset:-2px}
-.actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:7px}.divider{height:19px;border-left:1px solid ${dark ? "#555" : "#ddd"}}
-kbd{font:12px system-ui;color:${dark ? "#aaa" : "#777"}}svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.5}
-#editor{padding:8px 12px}#target{display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-size:11px;opacity:.65;margin-bottom:6px}
-textarea{display:block;width:100%;height:79px;resize:none;border:0;background:transparent;font:inherit;color:inherit;padding:4px 0;outline:none}
-footer{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:5px}footer kbd{margin-right:auto}#submit{background:${dark ? "#eaeaea" : "#252525"};color:${dark ? "#222" : "white"};padding:6px 10px}#submit:disabled{opacity:.35;cursor:default}
+:root {
+  color-scheme: ${dark ? "dark" : "light"};
+  --text: ${dark ? "#e9f0fc" : "#17253b"};
+  --muted: ${dark ? "#b2c0d6" : "#475b76"};
+  --panel: ${dark ? "#1d2b42" : "#ffffff"};
+  --hover: ${dark ? "#273956" : "#e7eef9"};
+  --line: ${dark ? "#354863" : "#cfdbea"};
+  --accent: ${dark ? "#a4c0ff" : "#2455ba"};
+  --on-accent: ${dark ? "#102040" : "#ffffff"};
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+body { padding: 4px; font: 13px system-ui, "Microsoft YaHei", sans-serif; color: var(--text); }
+.card { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); height: 100%; overflow: hidden; }
+.actions { height: 42px; display: flex; align-items: center; padding: 4px; gap: 4px; }
+button {
+  font: inherit; color: inherit; cursor: pointer; border: 0; background: transparent;
+  border-radius: 7px; padding: 6px 8px; white-space: nowrap;
+}
+button:hover:not(:disabled) { background: var(--hover); }
+button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.actions button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.divider { height: 20px; border-left: 1px solid var(--line); }
+kbd { font: 11px system-ui; color: var(--muted); }
+svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+#editor { padding: 6px 12px; }
+#target {
+  display: block; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;
+  font-size: 11px; color: var(--muted); margin-bottom: 5px;
+}
+textarea {
+  display: block; width: 100%; height: 77px; resize: none; border: 1px solid var(--line);
+  background: transparent; border-radius: 8px; font: inherit; color: inherit; padding: 6px 8px;
+}
+footer { display: flex; justify-content: flex-end; align-items: center; gap: 7px; margin-top: 6px; }
+footer kbd { margin-right: auto; }
+#submit { background: var(--accent); color: var(--on-accent); padding: 6px 10px; }
+#submit:disabled { opacity: .44; cursor: default; }
+@media (max-width: 300px) { .actions kbd { display: none; } }
 </style><div class="card"><div class="actions">
 <button id="comment"><svg viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2V11.5A8.5 8.5 0 0 1 10.5 3H15M18 2v6m-3-3h6"/></svg>评论到对话 <kbd>Ctrl J</kbd></button>
 <span class="divider"></span><button id="add">添加到对话 <kbd>↵</kbd></button>

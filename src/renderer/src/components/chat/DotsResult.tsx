@@ -97,7 +97,7 @@ export function DotsResult({ row, selected, onPreview }: {
   const waiting = row.status === "pending" || row.status === "running" || row.status === "superseded";
   if (!waiting && row.proactiveReply) return null;
   const files = row.status === "completed" && row.artifacts.length > 0;
-  return <div className="dots-result" data-delegation-id={row.id}>
+  return <div className="dots-result" data-delegation-id={row.id} data-status={row.status}>
     {!files && <><TaskLink row={row} onError={setError} /><span className="dots-result-status">{labels[row.status]}</span></>}
     {!files && row.text && row.status !== "running" && row.status !== "superseded" && <ChatMarkdown text={row.text} streaming={false} resolveTaskFiles={false} />}
     {files && <DotsDeliveryFiles row={row} selected={selected} onPreview={onPreview} />}

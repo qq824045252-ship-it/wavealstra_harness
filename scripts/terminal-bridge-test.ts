@@ -340,7 +340,7 @@ test("主题对比度: 浅色拉到 7 校正真彩色亮黄；深色保持 1", (
   assert.equal(resolveTerminalContrastRatio("light"), LIGHT_TERMINAL_CONTRAST_RATIO);
   assert.equal(resolveTerminalContrastRatio("dark"), DARK_TERMINAL_CONTRAST_RATIO);
   assert.equal(resolveTerminalTheme("light").brightYellow, LIGHT_TERMINAL_THEME.brightYellow);
-  assert.equal(resolveTerminalTheme("dark").background, "#1e1e1e");
+  assert.equal(resolveTerminalTheme("dark").background, "#101827");
 });
 
 /* ------------------------------------------------------------------ */

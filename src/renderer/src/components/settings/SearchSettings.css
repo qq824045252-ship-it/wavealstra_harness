@@ -22,7 +22,7 @@
 .search-provider-line input { flex:0 0 auto; margin:0; accent-color:var(--accent); }
 .search-provider-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .search-provider-state { flex:0 0 auto; color:var(--fg-muted); font-size:10.5px; }
-.search-provider-state.is-ready { color:#157347; }
+.search-provider-state.is-ready { color:var(--success); }
 .search-providers-toggle { justify-self:start; padding:2px 0; border:0; background:none; color:var(--accent); font:inherit; font-size:11px; cursor:pointer; }
 .search-providers-toggle:hover { text-decoration:underline; }
 .search-settings small,.search-settings p { color:var(--fg-muted); font-size:11px; line-height:1.5; margin:0; }

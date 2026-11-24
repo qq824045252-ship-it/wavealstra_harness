@@ -350,7 +350,7 @@ run(async ({ evaluate, rpc, until, report, out, home }) => {
   await rpc('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 });
   await visible(foundTask);
   await screenshot('task-search-filter');
-  await click(foundTask);
+  await click(foundTask + " .task-mode-icon");
   await until(() => evaluate("import('/src/store/appStore.ts').then(({useAppStore})=>useAppStore.getState().activeTaskId==='task-tree-child-fixture')"), 'matching task opens normally');
   await click('.task-filter-controls button', '清除搜索');
   await until(() => evaluate('document.querySelector(\'.space-chevron[aria-label="展开交付空间"]\')?.getAttribute("aria-expanded") === "false" && !document.querySelector(\'[title^="空间内的任务"]\')'), 'clearing search restores the original collapsed workspace');
