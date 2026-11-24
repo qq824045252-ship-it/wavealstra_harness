@@ -40,6 +40,11 @@ export function dotsDeliveryInstruction(quote: string): string {
 }
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 const automaticContinuationId = (taskId: string, parentId: string) => "dots-input-auto-" + digest(JSON.stringify([taskId, parentId]));
+const acknowledgment = /^(?:好的?|(?:已(?:经)?)?收到(?:了)?|明白(?:了)?|了解(?:了)?|没问题|(?:已(?:经)?)?完成(?:了)?|已核对|已交付|ok(?:ay)?|got it|understood|acknowledged|done|completed)$/iu;
+function hasReportText(text?: string) {
+  return (text ?? "").normalize("NFKC").split(/[。！？、，,.!?\r\n]+/u)
+    .some(part => part.trim() && !acknowledgment.test(part.trim()));
+}
 function humanFailure(raw: string) {
   const body = raw.replace(/^\s*(?:HTTP\s+)?[45]\d\d\s*[:\-]?\s*/i, "");
   let reason = body;
@@ -89,6 +94,7 @@ interface Plan {
   lastProgress?: string;
   request: AgentPromptRequest;
   parent?: string;
+  resumedFrom?: string;
   dependencyWait?: DotsDependencyWait;
   dependencyResultOperationId?: string;
 }
@@ -219,6 +225,7 @@ export class DotsFollowup {
     deliveryInstruction = previous.deliveryInstruction, keepEarlierDelivery = false, completionItems?: DotsCompletionDeclaration[],
     completionAddition = addition) {
     this.put(request, { ...previous, parent: keepEarlierDelivery ? previous.request.userMessageId : undefined, dependencyWait: undefined, request, source,
+      resumedFrom: previous.request.userMessageId,
       goal: [previous.goal, addition].filter(Boolean).join("\n"), deliveryInstruction,
       ...this.resumeCompletion(previous, completionAddition, deliveryInstruction, completionItems),
       dependencyResultOperationId: undefined, retry: false,
@@ -644,7 +651,8 @@ export class DotsFollowup {
       return stopped("无法确认原任务是否接受过这一步。", "是否允许重新提交这一步？");
     }
     const version = await this.hooks.version(row.taskId);
-    if (JSON.parse(version)[1] !== receipt || !this.current(row.id, row.taskId, nextId)) return quiet;
+    const [conversationId, latestReceipt] = JSON.parse(version);
+    if (latestReceipt !== receipt || !this.current(row.id, row.taskId, nextId)) return quiet;
     if (row.status === "failed" && /cancel|abort|取消|停止|暂停|授权|permission|unauthori|forbidden/i.test(text))
       return unresolved();
     if (row.status === "failed" && !transientFailure(text)) return unresolved();
@@ -675,6 +683,15 @@ export class DotsFollowup {
       toolScope = { kind: "local-files", files: localFiles };
     else if (recovery === "local" && (repair || incomplete) || repair && row.status === "completed") toolScope = { kind: "report-only" };
     const reportOnly = toolScope?.kind === "report-only";
+    if (reportOnly && !evidence.hasReportEvidence && !files.length && !hasReportText(plan.lastProgress) &&
+        !hasReportText(outcome ? summary : text) && !hasReportText(complete?.result) && !hasReportText(complete?.executionRecord)) {
+      const priorReceipt = plan.resumedFrom ? await this.hooks.receipt(row.taskId, plan.resumedFrom) : undefined;
+      const prior = plan.resumedFrom && priorReceipt !== undefined
+        ? await this.recoveryEvidence(row.taskId, plan.resumedFrom, JSON.stringify([conversationId, priorReceipt]), requirements.files)
+        : undefined;
+      if (!prior?.hasReportEvidence)
+        return { kind: "ask", text: plan.resumedFrom ? "重试结束，未取得可交付结果。" : "本轮执行已结束，未取得可交付结果。" };
+    }
     const allowedFiles = toolScope && toolScope.kind !== "report-only" ? toolScope.files : [];
     const allowedChecks = toolScope?.kind === "local-repair" ? toolScope.checks : [];
     const allowedEdits = toolScope?.kind === "local-repair" ? toolScope.edits : [];

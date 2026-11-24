@@ -42,6 +42,9 @@ let registerManualReport = false;
 const manualPaymentTerms = "付款条件：尾款在最终验收后结清。";
 const manualReport = "用户自建任务最终核算：批次 B882 净额 6821 元。" +
   "前一批发票已复核。".repeat(350) + manualPaymentTerms + "后一批票据已登记。".repeat(310);
+const retryWithEvidence = "核对验收原始记录";
+const retainedRetryEvidence = "保留本轮中止前已核对的记录";
+const reportFromEvidence = "已核对原始记录，客户档案编号 A456。";
 let askQuestion: false | "short_text" | "confirm" = false;
 let steeringProof = false;
 let ordinaryReadResult = "";
@@ -59,6 +62,15 @@ const fixture = await createAgentDurableFixture(root, db, async (input, signal) 
   for (const message of input.messages) if (message.role === "toolResult" && message.toolName === "read") {
     ordinaryReadResult = message.content.filter(part => part.type === "text").map(part => part.text).join("");
   }
+  const latestUser = JSON.stringify(input.messages.findLast(message => message.role === "user")?.content ?? "");
+  const approvedRetry = latestUser.includes("用户已确认在原任务重试这一步");
+  if (latestUser.includes(retryWithEvidence) && latestUser.includes("当前回合只允许撰写报告")) {
+    assert.deepEqual(tools.map(tool => tool.name), ["dots_task_end"]);
+    assert(input.messages.some(message => message.role === "toolResult" && message.toolCallId === "read-for-retry-report"
+      && !message.isError && JSON.stringify(message.content).includes("客户档案编号 A456")));
+    return [{ type: "toolCall", id: "finish-retry-report", name: "dots_task_end",
+      arguments: { action: "complete", result: reportFromEvidence, deliveryText: reportFromEvidence } }];
+  }
   if (tools.some(tool => tool.name === "dots_action")) {
     const call = planned.shift();
     if (call) return [{ type: "toolCall", ...call }];
@@ -69,6 +81,10 @@ const fixture = await createAgentDurableFixture(root, db, async (input, signal) 
       return [{ type: "toolCall", id, name: "bash", arguments: args }];
     }
     if (JSON.stringify(input.messages).includes("reference-evidence-7462")) observedDelegatedEvidence = true;
+    if (latestUser.includes(retryWithEvidence) && last?.role !== "toolResult" &&
+        (latestUser.includes(retainedRetryEvidence) ? !approvedRetry : approvedRetry)) {
+      return [{ type: "toolCall", id: "read-for-retry-report", name: "read", arguments: { path: "input.txt" } }];
+    }
     if (holdTarget) {
       waiting = true;
       await new Promise<void>(resolve => {
@@ -921,30 +937,48 @@ try {
 
   const unboundApproval = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, "允许");
   assert(unboundApproval.error && /没有对应的原任务重试问题/.test(unboundApproval.text));
-  holdTarget = true;
-  const retryTarget = await success({ action: "delegate", spaceId: space.id, text: "只读核对隔离工作区的资料" });
-  await until(() => waiting, "the original task is generating an answer");
-  journal.connect((job, request) => actions.followup(job, request), (reply, current) => agent.appendDotsReply(reply, current),
-    taskId => taskId === retryTarget.id);
-  holdTarget = false;
-  assert.equal(await agent.abort(retryTarget.id), "idle");
-  assert.equal((await agent.waitForSubmission(retryTarget.receipt)).cancelled, true);
-  journal.refresh(retryTarget.id);
-  await until(async () => (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message =>
-    message.dotsDelivery?.operationId === retryTarget.receipt.operationId
-    && message.dotsDelivery?.kind === "question" && message.text.includes("是否允许在原任务中再试这一步")),
-    "native failure question belongs to the original assignment");
-  const beforeRetry = db.listNonTrashedTasks().map(task => task.id).sort();
-  const replyApproval = await turn({ action: "delegate", spaceId: space.id, text: "同一目标另开一项" }, "dots_action", 2, "允许");
-  assert(!replyApproval.error, replyApproval.text);
-  const retryReceipt = JSON.parse(replyApproval.text).receipt;
-  assert.equal(retryReceipt.taskId, retryTarget.id);
-  assert.notEqual(retryReceipt.operationId, retryTarget.receipt.operationId);
-  assert.equal((await agent.waitForSubmission(retryReceipt)).receipt?.status, "done");
-  assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(), beforeRetry);
-  assert.deepEqual(journal.list(["dots-user-" + serial]).map(item => [item.taskId, item.id]),
-    [[retryTarget.id, retryReceipt.operationId]]);
-  console.log("PASS 单独回复允许后，在原任务只重试一次，另建委派的调用也沿用原任务");
+  for (const evidence of ["none", "retry", "retained"] as const) {
+    const reportEvidence = evidence !== "none";
+    const retryWork = evidence === "retained" ? retryWithEvidence + "，" + retainedRetryEvidence : retryWithEvidence;
+    holdTarget = true;
+    const retryTarget = await success({ action: "delegate", spaceId: space.id,
+      text: reportEvidence ? retryWork : "只读核对隔离工作区的资料" });
+    await until(() => waiting, "the original task is generating an answer");
+    journal.connect((job, request) => actions.followup(job, request), (reply, current) => agent.appendDotsReply(reply, current),
+      taskId => taskId === retryTarget.id);
+    holdTarget = false;
+    assert.equal(await agent.abort(retryTarget.id), "idle");
+    assert.equal((await agent.waitForSubmission(retryTarget.receipt)).cancelled, true);
+    journal.refresh(retryTarget.id);
+    await until(async () => (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message =>
+      message.dotsDelivery?.operationId === retryTarget.receipt.operationId
+      && message.dotsDelivery?.kind === "question" && message.text.includes("是否允许在原任务中再试这一步")),
+      "native failure question belongs to the original assignment");
+    const beforeRetry = db.listNonTrashedTasks().map(task => task.id).sort();
+    const replyApproval = await turn({ action: "delegate", spaceId: space.id, text: "同一目标另开一项" }, "dots_action", 2, "允许");
+    assert(!replyApproval.error, replyApproval.text);
+    const source = "dots-user-" + serial;
+    const retryReceipt = JSON.parse(replyApproval.text).receipt;
+    assert.equal(retryReceipt.taskId, retryTarget.id);
+    assert.notEqual(retryReceipt.operationId, retryTarget.receipt.operationId);
+    assert.equal((await agent.waitForSubmission(retryReceipt)).receipt?.status, "done");
+    const expected = reportEvidence ? reportFromEvidence : "重试结束，未取得可交付结果。";
+    await until(async () => {
+      journal.refresh(retryTarget.id);
+      return (await agent.loadTaskHistory(DOTS_TASK_ID)).messages.some(message =>
+        message.dotsDelivery?.sourceMessageId === source &&
+        message.dotsDelivery.kind === (reportEvidence ? "conclusion" : "question") && message.text === expected);
+    }, expected);
+    await journal.drain();
+    assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(), beforeRetry);
+    const rows = journal.list([source]);
+    const scope = (row: typeof rows[number]) => actions.recoveryToolScope(row.taskId, row.id);
+    assert.deepEqual(rows.filter(row => !scope(row)).map(item => [item.taskId, item.id]), [[retryTarget.id, retryReceipt.operationId]]);
+    assert.deepEqual(rows.flatMap(row => scope(row)?.kind ?? []), reportEvidence ? ["report-only"] : []);
+    assert.equal((await agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message =>
+      message.dotsDelivery?.sourceMessageId === source && message.text === expected).length, 1);
+  }
+  console.log("PASS 用户允许后业务只重试一次，有依据才补报，原对话只回传一次");
 
   const scheduleTimeout = globalThis.setTimeout;
   try {

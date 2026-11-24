@@ -2,7 +2,7 @@ import { basename, isAbsolute } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
-import { matchingNativeExecutionReceipt } from "../../shared/native-execution-receipt";
+import { matchingNativeExecutionReceipt, nativeExecutionSucceeded } from "../../shared/native-execution-receipt";
 import { WEB_ACCESS_TOOL_NAMES } from "../../shared/native-tools";
 import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactReceipt";
@@ -14,7 +14,7 @@ export type DotsRecoveryKind = "continue" | "local" | "report-only" | "unknown" 
 export type DotsRecoveryToolScope = { kind: "report-only" } | { kind: "local-files"; files: string[] }
   | { kind: "local-repair"; files: string[]; checks: string[]; edits: string[];
     checkManagers?: Record<string, ProjectVerificationManager[]>; commitFiles?: string[] };
-export type DotsRecoveryInspection = { kind: DotsRecoveryKind; retainedFiles: string[]; editableFiles?: string[] };
+export type DotsRecoveryInspection = { kind: DotsRecoveryKind; retainedFiles: string[]; editableFiles?: string[]; hasReportEvidence?: true };
 
 const readTools = new Set(["read", "find", "glob", "grep", "ls"]);
 const webReads = new Set<string>(WEB_ACCESS_TOOL_NAMES);
@@ -87,7 +87,9 @@ export async function inspectDotsRecovery(directory: string, taskId: string, ope
   namedFiles: readonly string[]): Promise<DotsRecoveryInspection> {
   const retainedFiles = new Set<string>();
   const editableFiles = new Set<string>();
+  let hasReportEvidence = false;
   const finish = (kind: DotsRecoveryKind): DotsRecoveryInspection => ({ kind, retainedFiles: [...retainedFiles],
+    ...(hasReportEvidence && { hasReportEvidence: true }),
     ...(editableFiles.size && { editableFiles: [...editableFiles] }) });
   const storage = await openDurablePassiveStorage(directory, ctx);
   if (!storage) return finish("unavailable");
@@ -116,6 +118,7 @@ export async function inspectDotsRecovery(directory: string, taskId: string, ope
         const file = durableRegisteredArtifact(entry, input.id, undefined, directory);
         if (file) {
           local = true;
+          hasReportEvidence = true;
           const name = basename(file.path);
           if (file.explicitlyRegistered || namedFiles.includes(name)) retainedFiles.add(dotsRecoveryFileKey(name, file.snapshotPath));
         }
@@ -125,7 +128,13 @@ export async function inspectDotsRecovery(directory: string, taskId: string, ope
             if (pending.has(call.id)) return finish("unknown");
             pending.set(call.id, call.name);
           }
-          if (message.role !== "toolResult" || readTools.has(message.toolName) || webReads.has(message.toolName) || message.toolName === reportTool) continue;
+          if (message.role !== "toolResult" || message.toolName === reportTool) continue;
+          if (readTools.has(message.toolName) || webReads.has(message.toolName)) {
+            if (entry.byTaskId !== undefined && nativeExecutionSucceeded(message, { taskId, conversationId, toolTaskId: entry.byTaskId,
+              toolName: message.toolName, callId: message.toolCallId }) &&
+              message.content.some(part => part.type !== "text" || Boolean(part.text.trim()))) hasReportEvidence = true;
+            continue;
+          }
           const call = pending.get(message.toolCallId);
           if (!call || call !== message.toolName || entry.byTaskId === undefined) return finish("unknown");
           pending.delete(message.toolCallId);
@@ -133,6 +142,9 @@ export async function inspectDotsRecovery(directory: string, taskId: string, ope
             toolName: call, callId: message.toolCallId });
           const kind = toolRecovery(message, receipt);
           if (kind === "unknown") return finish("unknown");
+          if (kind === "local" || kind === "report-only" ||
+              call === PROJECT_VERIFY_TOOL && receipt?.transport === "returned" && receipt.settlement === "consumed")
+            hasReportEvidence = true;
           if (kind === "local") {
             local = true;
             const target = receipt?.fileChange?.target;
