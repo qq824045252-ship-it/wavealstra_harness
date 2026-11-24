@@ -1994,10 +1994,6 @@ html[data-theme="dark"] .extension-top-bar {
   user-select: text;
 }
 
-.assistant-reasoning-conclusion strong {
-  font-weight: 600;
-}
-
 .assistant-reasoning.streaming .assistant-reasoning-content {
   /* 流式期间锁定外框高度，内容增量只改变内部 scrollHeight。
      不使用 background-clip/background-attachment：长思考自动滚动时这两项会让 Chromium

@@ -169,9 +169,7 @@ function ThinkingSection({
         </div>
       )}
       {conclusion && (
-        <p className="assistant-reasoning-conclusion timeline-text">
-          <strong>小结</strong> {conclusion}
-        </p>
+        <p className="assistant-reasoning-conclusion timeline-text">{conclusion}</p>
       )}
     </section>
   );
