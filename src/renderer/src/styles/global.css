@@ -230,9 +230,10 @@ html[data-theme="light"] {
   --fg-muted: #716456;
   --primary: var(--fg);
   --primary-fg: #faf5ec;
-  --accent: #a44731;
-  --accent-button: #8f5947;
-  --accent-button-fg: #faf5ec;
+  --palette-accent: #a44731;
+  --accent: var(--accent-override, var(--palette-accent));
+  --accent-button: var(--accent-override, var(--palette-accent-button, #8f5947));
+  --accent-button-fg: var(--accent-button-ink-override, var(--palette-accent-ink, #faf5ec));
   --accent-surface: color-mix(in srgb, var(--accent) 9%, var(--surface-sidebar));
   --accent-border: color-mix(in srgb, var(--accent) 30%, var(--border-default));
   --link: var(--accent);
@@ -275,9 +276,9 @@ html[data-theme="dark"] {
   --fg-secondary: #c9bdaf;
   --fg-muted: #ada090;
   --primary-fg: #251d17;
-  --accent: #f0a382;
-  --accent-button: var(--accent);
-  --accent-button-fg: #2e1c14;
+  --palette-accent: #f0a382;
+  --palette-accent-button: var(--palette-accent);
+  --palette-accent-ink: #2e1c14;
   --accent-surface: color-mix(in srgb, var(--accent) 12%, var(--surface-sidebar));
   --success: #8bd5ae;
   --success-bg: #23382f;
@@ -660,6 +661,9 @@ select {
 
 .sidebar-cta-text {
   font: inherit;
+  font-family: var(--font-menu-family, inherit);
+  font-size: var(--font-menu-size, inherit);
+  font-weight: var(--font-menu-weight, inherit);
   letter-spacing: 0.01em;
 }
 
@@ -876,7 +880,7 @@ html[data-theme="dark"] .task-item.menu-open {
 }
 
 .task-item.active .task-item-title {
-  font-weight: var(--font-ui-strong);
+  font-weight: var(--font-task-weight, var(--font-ui-strong));
   color: var(--fg);
 }
 
@@ -1006,7 +1010,9 @@ html[data-theme="dark"] .task-item-action:hover {
   width: 100%;
   padding: 7px 10px;
   border-radius: 7px;
-  font-size: 13px;
+  font-family: var(--font-menu-family, inherit);
+  font-size: var(--font-menu-size, 13px);
+  font-weight: var(--font-menu-weight, inherit);
   color: var(--fg);
   cursor: pointer;
   text-align: left;
@@ -1081,6 +1087,9 @@ html[data-theme="dark"] .task-item-action:hover {
 }
 
 .task-item-title {
+  font-family: var(--font-task-family, inherit);
+  font-size: var(--font-task-size, inherit);
+  font-weight: var(--font-task-weight, inherit);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1192,6 +1201,9 @@ html[data-theme="dark"] .task-item-action:hover {
 }
 
 .space-name {
+  font-family: var(--font-workspace-family, inherit);
+  font-size: var(--font-workspace-size, inherit);
+  font-weight: var(--font-workspace-weight, inherit);
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -12029,7 +12041,9 @@ html[data-theme="dark"] .artifact-body.doc-mode {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 7px;
-  font-size: 13px;
+  font-family: var(--font-menu-family, inherit);
+  font-size: var(--font-menu-size, 13px);
+  font-weight: var(--font-menu-weight, inherit);
   color: var(--fg);
   cursor: pointer;
   text-align: left;
@@ -19623,7 +19637,7 @@ html[data-theme="dark"] .task-item.active {
 .space-header[data-depth="2"] .space-name,
 .space-header[data-depth="3"] .space-name,
 .space-header[data-depth="4"] .space-name {
-  font-weight: var(--font-ui-medium);
+  font-weight: var(--font-workspace-weight, var(--font-ui-medium));
   color: var(--fg-muted);
 }
 
@@ -19633,7 +19647,7 @@ html[data-theme="dark"] .task-item.active {
 }
 
 .space-header.space-active .space-name {
-  font-weight: var(--font-ui-strong);
+  font-weight: var(--font-workspace-weight, var(--font-ui-strong));
 }
 
 .sidebar-user {

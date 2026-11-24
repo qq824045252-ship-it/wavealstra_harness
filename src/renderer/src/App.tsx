@@ -71,6 +71,7 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const activeTask = useAppStore((s) => s.tasks.find((t) => t.id === s.activeTaskId));
   const theme = useAppStore((s) => s.theme);
+  const desktopAppearance = useAppStore((s) => s.desktopAppearance);
   const navigate = useDesktopNavigate();
   const mainRef = useRef<HTMLDivElement>(null);
   const [compactPreview, setCompactPreview] = useState(false);
@@ -123,8 +124,8 @@ function DesktopApp({ setSectionTarget }: { setSectionTarget: (element: HTMLElem
   };
 
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+    applyTheme(theme, desktopAppearance);
+  }, [theme, desktopAppearance]);
 
   useEffect(() => subscribeGadgetBrowser(), []);
 

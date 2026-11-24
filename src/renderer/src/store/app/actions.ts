@@ -69,6 +69,7 @@ export interface AppActions {
   closeExtensionSoftware: () => void;
   toggleTheme: () => void;
   setTheme: (theme: Theme) => void;
+  setDesktopAppearance: (appearance: import("../../../../shared/desktop-theme").DesktopAppearance) => void;
   setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
   setTaskFilterStatus: (s: TaskFilterStatus) => void;
   setTaskFilterTime: (t: TaskFilterTime) => void;

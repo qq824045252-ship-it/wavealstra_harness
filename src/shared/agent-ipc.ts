@@ -1557,6 +1557,7 @@ export interface AppSettingsDto {
   remoteAccessBaseUrl?: string;
   remoteAccessBindMode?: "loopback" | "lan";
   theme: "light" | "dark" | "system";
+  desktopAppearance?: import("./desktop-theme").DesktopAppearance | null;
   /** Per-model reasoning preferences; the only persisted reasoning preference source. */
   modelPreferences?: ModelPreferencesDto;
   /** 技能是否按场景模式过滤（默认 true） */
@@ -1585,6 +1586,8 @@ export interface AppSettingsDto {
   replyFontSize?: number | null;
   replyFontWeight?: import("./typography").ReplyFontWeight;
   uiFontWeight?: import("./typography").UiFontWeight;
+  navigationTypography?: import("./typography").NavigationTypography;
+  replyLayout?: import("./typography").ReplyLayout;
   /** 代码块语法高亮主题。 */
   codeTheme?: import("./code-theme").CodeThemeId;
   /**

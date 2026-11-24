@@ -49,7 +49,7 @@
   font-family: var(--font-reply);
   font-size: var(--font-reply-size);
   font-weight: var(--font-reply-weight);
-  line-height: 1.7;
+  line-height: var(--reply-line-height, 1.7);
   color: color-mix(in srgb, var(--fg) 78%, var(--fg-secondary));
 }
 
@@ -63,9 +63,13 @@
 .md-chat h4 {
   margin: 1.45em 0 0.5em;
   line-height: 1.38;
-  font-weight: 650;
+  font-weight: var(--reply-heading-weight, 650);
   letter-spacing: -0.03em;
   color: var(--fg);
+}
+
+.md-chat .markstream-react .heading-node {
+  font-weight: var(--reply-heading-weight, 600);
 }
 
 .md-chat h1:first-child,
@@ -77,26 +81,28 @@
 
 .md-chat h1,
 .md-chat .heading-1 {
-  font-size: 1.18em;
+  font-size: var(--reply-heading-1, 1.18em);
 }
 
 .md-chat h2,
 .md-chat .heading-2 {
-  font-size: 1.06em;
+  font-size: var(--reply-heading-2, 1.06em);
 }
 
 .md-chat h3,
 .md-chat .heading-3 {
-  font-size: 1em;
+  font-size: var(--reply-heading-3, 1em);
 }
 
 .md-chat p,
 .md-chat .paragraph-node {
-  margin: 0 0 1.05em;
+  margin: 0 0 var(--reply-paragraph-gap, 0.85em);
+  line-height: inherit;
 }
 
-.md-chat p:last-child,
-.md-chat .paragraph-node:last-child {
+.md-chat > p:last-child,
+.md-chat li .paragraph-node,
+.md-chat .markdown-renderer > .node-slot:not(:has(~ .node-slot)) > .node-content > .paragraph-node:last-child {
   margin-bottom: 0;
 }
 
@@ -676,10 +682,6 @@ html[data-theme="dark"] .md-doc .hljs-selector-tag {
 
 .md-doc pre {
   max-height: none;
-}
-
-.md-chat p {
-  margin-bottom: var(--md-para-gap, 0.85em);
 }
 
 .md-chat h2,

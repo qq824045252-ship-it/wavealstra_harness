@@ -358,8 +358,8 @@ const api = {
     exportCsv: (rangeDays: number): Promise<string> => ipcRenderer.invoke(UsageIpc.exportCsv, rangeDays),
     dashboard: (rangeDays: number): Promise<UsageDashboardDto> => ipcRenderer.invoke(UsageIpc.dashboard, rangeDays),
   },
-  setTheme: (theme: "light" | "dark"): void => {
-    ipcRenderer.send("theme:set", theme);
+  setTheme: (theme: import("../shared/desktop-theme").AppThemeMode, palette?: import("../shared/desktop-theme").DesktopPalette): void => {
+    ipcRenderer.send("theme:set", theme, palette);
   },
   onThemeRequest: (callback: () => void): void => {
     ipcRenderer.on("theme:request", () => callback());

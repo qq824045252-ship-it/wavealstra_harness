@@ -1,51 +1,52 @@
-import { DESKTOP_CHROME, type AppTheme } from "@shared/desktop-theme";
+import {
+  DESKTOP_ACCENTS, desktopChrome, normalizeDesktopAppearance,
+  type AppTheme, type AppThemeMode, type DesktopAppearance,
+} from "@shared/desktop-theme";
 
 export type Theme = AppTheme;
 
-const STORAGE_KEY = "mybuddy-theme";
+const STORAGE_KEY = "mybuddy-desktop-appearance";
+export const SYSTEM_DARK_MEDIA = "(prefers-color-scheme: dark)";
 
-export function applyTheme(theme: Theme): void {
+export function applyTheme(theme: Theme, appearance: DesktopAppearance): void {
   if (typeof document === "undefined") return;
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
-  document.documentElement.style.setProperty("--desktop-chrome", DESKTOP_CHROME[theme].background);
+  const root = document.documentElement;
+  root.dataset.theme = theme;
+  root.dataset.palette = appearance.palette;
+  root.style.colorScheme = theme;
+  root.style.setProperty("--desktop-chrome", desktopChrome(theme, appearance.palette).background);
+  const accent = DESKTOP_ACCENTS.find((option) => option.id === appearance.accent);
+  const accentColor = accent && "light" in accent ? accent[theme] : "";
+  root.style.setProperty("--accent-override", accentColor);
+  root.style.setProperty("--accent-button-ink-override", accentColor ? (theme === "dark" ? "#15191e" : "#ffffff") : "");
+  syncNativeTheme(appearance);
+}
+
+export function cacheDesktopAppearance(appearance: DesktopAppearance): void {
   try {
-    localStorage.setItem(STORAGE_KEY, theme);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appearance));
   } catch {
     /* private mode */
   }
-  if (window.api?.setTheme) {
-    window.api.setTheme(theme);
-  }
 }
 
-export function syncNativeTheme(): void {
-  const theme =
-    document.documentElement.dataset.theme === "dark"
-      ? "dark"
-      : document.documentElement.dataset.theme === "light"
-        ? "light"
-        : getInitialTheme();
-  if (window.api?.setTheme) {
-    window.api.setTheme(theme);
-  }
+export function syncNativeTheme(appearance: DesktopAppearance): void {
+  window.api?.setTheme?.(appearance.mode, appearance.palette);
 }
 
-export function getStoredTheme(): Theme | null {
+export function getInitialAppearance(fallback: AppThemeMode = "system"): DesktopAppearance {
   try {
     const value = localStorage.getItem(STORAGE_KEY);
-    if (value === "light" || value === "dark") return value;
+    if (value) return normalizeDesktopAppearance(JSON.parse(value));
+    const legacy = localStorage.getItem("mybuddy-theme");
+    if (legacy === "light" || legacy === "dark") return normalizeDesktopAppearance({ mode: legacy });
   } catch {
     /* ignore */
   }
-  return null;
+  return normalizeDesktopAppearance({ mode: fallback });
 }
 
-export function getInitialTheme(): Theme {
-  const stored = getStoredTheme();
-  if (stored) return stored;
-  if (typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-    return "dark";
-  }
-  return "light";
+export function resolveTheme(mode: AppThemeMode): Theme {
+  if (mode !== "system") return mode;
+  return typeof window !== "undefined" && window.matchMedia?.(SYSTEM_DARK_MEDIA)?.matches ? "dark" : "light";
 }

@@ -1,13 +1,20 @@
 import type { AppSettingsDto, UserFontDto } from "@shared/agent-ipc";
 import {
   DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_REPLY_LAYOUT,
   DEFAULT_UI_FONT_SIZE,
+  CHAT_WIDTHS,
+  NAVIGATION_FONT_ROLES,
   normalizeCodeFontSize,
+  normalizeNavigationTypography,
   normalizeReplyFontSize,
   normalizeReplyFontWeight,
+  normalizeReplyLayout,
   normalizeUiFontSize,
   normalizeUiFontWeight,
   type ReplyFontWeight,
+  type NavigationTypography,
+  type ReplyLayout,
   type UiFontWeight,
 } from "@shared/typography";
 
@@ -27,6 +34,8 @@ export interface AppliedFontSettings {
   replyFontSize: number | null;
   replyFontWeight: ReplyFontWeight;
   uiFontWeight: UiFontWeight;
+  navigationTypography: NavigationTypography;
+  replyLayout: ReplyLayout;
 }
 
 /** 旧版 CSS zoom 百分比 / 0–4 档迁移为真实 UI 字号。 */
@@ -47,6 +56,8 @@ export const DEFAULT_APPLIED_FONT_SETTINGS: Readonly<AppliedFontSettings> = {
   replyFontSize: null,
   replyFontWeight: 400,
   uiFontWeight: 400,
+  navigationTypography: {},
+  replyLayout: DEFAULT_REPLY_LAYOUT,
 };
 
 let applied: AppliedFontSettings = { ...DEFAULT_APPLIED_FONT_SETTINGS };
@@ -61,6 +72,8 @@ export function resolveFontSettings(settings: Partial<AppliedFontSettings> & Pic
     replyFontSize: normalizeReplyFontSize(settings.replyFontSize),
     replyFontWeight: normalizeReplyFontWeight(settings.replyFontWeight),
     uiFontWeight: normalizeUiFontWeight(settings.uiFontWeight),
+    navigationTypography: normalizeNavigationTypography(settings.navigationTypography),
+    replyLayout: normalizeReplyLayout(settings.replyLayout),
   };
 }
 
@@ -86,6 +99,16 @@ export function applyFontSettings(input: Partial<AppliedFontSettings>): AppliedF
   root.style.setProperty("--font-reply", replyFamily ? `${replyFamily}, var(--font-ui)` : "var(--font-ui)");
   root.style.setProperty("--font-reply-size", applied.replyFontSize === null ? "var(--font-ui-size)" : `${applied.replyFontSize}px`);
   root.style.setProperty("--font-reply-weight", String(applied.replyFontWeight));
+  for (const role of NAVIGATION_FONT_ROLES) {
+    const font = applied.navigationTypography[role];
+    root.style.setProperty(`--font-${role}-family`, font?.family ? `${font.family}, var(--font-ui)` : "");
+    root.style.setProperty(`--font-${role}-size`, font?.size == null ? "" : `${font.size}px`);
+    root.style.setProperty(`--font-${role}-weight`, font?.weight == null ? "" : String(font.weight));
+  }
+  root.style.setProperty("--reply-line-height", String(applied.replyLayout.lineHeight));
+  root.style.setProperty("--reply-paragraph-gap", `${applied.replyLayout.paragraphGap}em`);
+  root.style.setProperty("--preferred-chat-width", `${CHAT_WIDTHS[applied.replyLayout.width]}px`);
+  root.dataset.replyHeadings = applied.replyLayout.headings;
 
   // 清理旧版本遗留的内联 zoom / font-family，避免字号再次被整体缩放。
   document.body.style.removeProperty("zoom");

@@ -290,7 +290,7 @@ import { ProfessionalToolRuntimeService } from "./professional-tools/Professiona
 import { TrayService } from "./TrayService";
 import { applyPlatformAppIdentity, applyPlatformCommandLineSwitches, nodePlatformName } from "./platform/app";
 import { applyPlatformTitleBarOverlay, applyPlatformWindowIdentity, platformWindowIconPath, platformWindowOptions } from "./platform/window-shell";
-import { DESKTOP_CHROME, type AppTheme } from "../shared/desktop-theme";
+import { desktopChrome, normalizeDesktopAppearance, type AppTheme, type DesktopPalette } from "../shared/desktop-theme";
 import { shouldQuitOnAllWindowsClosed, windowOpenProperties } from "./platform/lifecycle";
 import { configureCrashReporting, createProcessGoneReporter, installFaultHandlers } from "./crash-reporting";
 import { getRuntimeLogger } from "./runtime-logging";
@@ -334,9 +334,10 @@ function prepareNativeDragFile(filePath: string): string | null {
 }
 
 const TITLE_BAR_HEIGHT = 32;
+let nativePalette: DesktopPalette = "paper";
 
 function titleBarOverlayForTheme(theme: AppTheme) {
-  const { background, foreground } = DESKTOP_CHROME[theme];
+  const { background, foreground } = desktopChrome(theme, nativePalette);
   return {
     color: background,
     symbolColor: foreground,
@@ -534,16 +535,20 @@ function hideNativeOverlays(): void {
   }
 }
 
-function applyNativeChrome(theme: AppTheme): void {
-  nativeTheme.themeSource = theme;
-
+function applyNativeChrome(): void {
   const win = botManagementWindow;
   if (!win || win.isDestroyed()) return;
-  win.setBackgroundColor(DESKTOP_CHROME[theme].background);
+  const theme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  win.setBackgroundColor(desktopChrome(theme, nativePalette).background);
   applyPlatformTitleBarOverlay(win, { titleBar: titleBarOverlayForTheme(theme) });
 }
 
-function createWindow(initialTheme: AppTheme = "light"): void {
+function createWindow(): void {
+  const preferences = agentService?.getAppSettings();
+  const appearance = preferences?.desktopAppearance ?? normalizeDesktopAppearance({ mode: preferences?.theme });
+  nativePalette = appearance.palette;
+  nativeTheme.themeSource = appearance.mode;
+  const initialTheme = nativeTheme.shouldUseDarkColors ? "dark" : "light";
   // 平台差异集中在 src/main/platform/window-shell.ts：图标格式 / titleBarOverlay / 任务栏身份。
   const shellOptions = {
     windowsIconPath: appIconPath,
@@ -562,7 +567,7 @@ function createWindow(initialTheme: AppTheme = "light"): void {
     minHeight: 640,
     title: "MyBuddy",
     icon: appIcon.isEmpty() ? undefined : appIcon,
-    backgroundColor: DESKTOP_CHROME[initialTheme].background,
+    backgroundColor: desktopChrome(initialTheme, nativePalette).background,
     autoHideMenuBar: true,
     // The A1 baseline needs a visible window: a hidden page never paints, so its "interactive"
     // mark would measure throttling instead of first paint.
@@ -898,8 +903,12 @@ function registerIpc(): void {
   ipcMain.handle(BlueprintIpc.instantiate, (_event, request: BlueprintInstantiateRequest) => blueprintService.instantiate(request));
   ipcMain.handle(BlueprintIpc.delete, (_event, id: string) => { blueprintService.delete(id); return { ok: true as const }; });
 
-  ipcMain.on("theme:set", (_event, theme: AppTheme) => {
-    if (theme === "light" || theme === "dark") applyNativeChrome(theme);
+  nativeTheme.on("updated", applyNativeChrome);
+  ipcMain.on("theme:set", (_event, mode: unknown, palette: unknown) => {
+    if (mode !== "light" && mode !== "dark" && mode !== "system") return;
+    nativePalette = normalizeDesktopAppearance({ palette }).palette;
+    if (nativeTheme.themeSource !== mode) nativeTheme.themeSource = mode;
+    applyNativeChrome();
   });
 
   /**

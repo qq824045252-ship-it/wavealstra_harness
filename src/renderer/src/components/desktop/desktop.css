@@ -147,6 +147,11 @@
 .desktop-section-row:disabled { opacity: .55; cursor: default; }
 .desktop-section-row > svg { flex: none; }
 .desktop-section-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desktop-section-row:not(.sidebar-dots-row) > .desktop-section-label {
+  font-family: var(--font-menu-family, inherit);
+  font-size: var(--font-menu-size, inherit);
+  font-weight: var(--font-menu-weight, inherit);
+}
 .desktop-section-meta { flex: none; color: var(--fg-muted); font-size: 11px; }
 .desktop-section-group { margin: 9px 7px 3px; color: var(--fg-muted); font-size: 11px; font-weight: 600; }
 .desktop-section-search {
@@ -177,12 +182,11 @@
 .desktop-app .desktop-task-tree .sidebar-cta-icon { width: 22px; flex: none; }
 .desktop-app .desktop-task-tree .sidebar-tree-header { min-height: 26px; padding-top: 2px; padding-bottom: 2px; }
 .desktop-app .desktop-task-tree .sidebar-tree-header--spaced { margin-top: 4px; border-top: 0; }
-/* Dots 入口沿用「新建任务」的字体；Pi logo 图形只占画布 58.7%，图标盒放大到 22px 后视觉高度才等于 13px 字高。 */
+/* Pi 标识只占 SVG 画布的 58.7%，22px 的图标盒与默认 13px 字高对齐。 */
 .desktop-task-tree .sidebar-dots-row .desktop-section-label {
   font-size: var(--font-ui-label);
-  font-weight: var(--font-ui-medium);
+  font-weight: calc(var(--font-ui-strong) + 100);
 }
-.desktop-task-tree .sidebar-dots-row[aria-current] .desktop-section-label { font-weight: var(--font-ui-strong); }
 .desktop-task-tree .sidebar-dots-row > svg { flex: none; width: 22px; height: 22px; }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row { min-height: 28px; color: var(--fg-secondary); }
 .desktop-task-tree .sidebar-workspace-actions .desktop-section-row:hover { color: var(--fg); }

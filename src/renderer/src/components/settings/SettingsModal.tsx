@@ -40,6 +40,7 @@ import PythonRuntimeTab from "./PythonRuntimeTab";
 import AcpTab from "./AcpTab";
 import type { UserFontDto } from "@shared/agent-ipc";
 import CompactionSettingsControl from "./CompactionSettingsControl";
+import DesktopAppearanceControls from "./DesktopAppearanceControls";
 import { CODE_THEME_OPTIONS, DEFAULT_CODE_THEME, normalizeCodeTheme, type CodeThemeId } from "@shared/code-theme";
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
@@ -57,7 +58,19 @@ import {
   userFontCssFamily,
   type AppliedFontSettings,
 } from "@/lib/fontSettings";
-import { REPLY_FONT_WEIGHTS, UI_FONT_WEIGHTS } from "@shared/typography";
+import { type DesktopAppearance } from "@shared/desktop-theme";
+import {
+  DEFAULT_NAVIGATION_FONT,
+  NAVIGATION_FONT_ROLES,
+  NAVIGATION_FONT_WEIGHTS,
+  REPLY_FONT_WEIGHTS,
+  REPLY_LINE_HEIGHTS,
+  REPLY_PARAGRAPH_GAPS,
+  UI_FONT_WEIGHTS,
+  type NavigationFont,
+  type NavigationFontRole,
+  type ReplyLayout,
+} from "@shared/typography";
 
 const TABS: Array<{ id: SettingsTab; glyph: UiIconName; label: string }> = [
   { id: "system", glyph: "settings", label: "系统设置" },
@@ -151,7 +164,11 @@ function Row({
 type FontTarget = "uiFontFamily" | "codeFontFamily" | "replyFontFamily";
 
 const FONT_SIZES = Array.from({ length: 13 }, (_, index) => index + 12);
-const FONT_WEIGHT_LABELS = { 400: "常规", 500: "中等", 600: "半粗" };
+const FONT_WEIGHT_LABELS = { 400: "常规", 500: "中等", 600: "半粗", 700: "粗体" };
+const NAVIGATION_FONT_LABELS = { menu: "菜单", workspace: "空间名称", task: "任务名称" };
+const REPLY_LINE_HEIGHT_LABELS = { 1.5: "紧凑", 1.7: "标准", 1.95: "舒展" };
+const REPLY_PARAGRAPH_GAP_LABELS = { 0.55: "紧凑", 0.85: "标准", 1.2: "舒展" };
+const CHAT_WIDTH_LABELS = { narrow: "窄栏", standard: "标准", wide: "宽栏" };
 
 function FontSizeSelect({ label, value, max, allowInherit, onChange, disabled }: {
   label: string;
@@ -292,9 +309,10 @@ function formatBytes(bytes: number): string {
 
 function SystemTab(): React.JSX.Element {
   const theme = useAppStore(s => s.theme);
-  const setTheme = useAppStore(s => s.setTheme);
+  const appearance = useAppStore(s => s.desktopAppearance);
+  const setDesktopAppearance = useAppStore(s => s.setDesktopAppearance);
   const [typography, setTypography] = useState(getAppliedFontSettings);
-  const { uiFontSize, codeFontSize, uiFontFamily, codeFontFamily, replyFontFamily, replyFontSize, uiFontWeight, replyFontWeight } = typography;
+  const { uiFontSize, codeFontSize, uiFontFamily, codeFontFamily, replyFontFamily, replyFontSize, uiFontWeight, replyFontWeight, navigationTypography, replyLayout } = typography;
   const [codeTheme, setCodeTheme] = useState<CodeThemeId>(DEFAULT_CODE_THEME);
   const [userFonts, setUserFonts] = useState<UserFontDto[]>([]);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
@@ -309,6 +327,8 @@ function SystemTab(): React.JSX.Element {
   const [errorMsg, setErrorMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [fontBusy, setFontBusy] = useState(true);
+  const [appearanceBusy, setAppearanceBusy] = useState(false);
+  const [appearanceError, setAppearanceError] = useState("");
   const [confirmRemoveFont, setConfirmRemoveFont] = useState<UserFontDto | null>(null);
   const [diskSpace, setDiskSpace] = useState<import("@shared/agent-ipc").DiskSpaceDto | null>(null);
 
@@ -412,6 +432,11 @@ function SystemTab(): React.JSX.Element {
     ...fontOptions.slice(1),
   ], [fontOptions]);
 
+  const navigationFontOptions = useMemo((): FontPickerOption[] => [
+    { id: "inherit", label: "跟随界面", family: "", source: "default" },
+    ...fontOptions.slice(1),
+  ], [fontOptions]);
+
   const codeThemePreviewVariants = useMemo<Array<"light" | "dark">>(() => {
     const option = CODE_THEME_OPTIONS.find((item) => item.id === codeTheme);
     return option?.mode === "dark" ? ["dark"] : ["light", "dark"];
@@ -437,16 +462,52 @@ function SystemTab(): React.JSX.Element {
     }
   };
 
-  const selectFontOption = async (target: FontTarget, option: FontPickerOption): Promise<void> => {
+  const loadFontOption = async (option: FontPickerOption): Promise<boolean> => {
     if (option.importedFont) {
       try {
         await ensureUserFontLoaded(option.importedFont);
       } catch (err) {
         setErrorMsg(err instanceof Error ? err.message : String(err));
-        return;
+        return false;
       }
     }
-    await persistTypography({ [target]: option.family });
+    return true;
+  };
+
+  const selectFontOption = async (target: FontTarget, option: FontPickerOption): Promise<void> => {
+    if (await loadFontOption(option)) await persistTypography({ [target]: option.family });
+  };
+
+  const updateNavigationFont = (role: NavigationFontRole, partial: Partial<NavigationFont>): Promise<void> => {
+    const current = getAppliedFontSettings().navigationTypography;
+    return persistTypography({
+      navigationTypography: { ...current, [role]: { ...(current[role] ?? DEFAULT_NAVIGATION_FONT), ...partial } },
+    });
+  };
+
+  const selectNavigationFont = async (role: NavigationFontRole, option: FontPickerOption): Promise<void> => {
+    if (await loadFontOption(option)) await updateNavigationFont(role, { family: option.family });
+  };
+
+  const updateReplyLayout = (partial: Partial<ReplyLayout>): Promise<void> =>
+    persistTypography({ replyLayout: { ...getAppliedFontSettings().replyLayout, ...partial } });
+
+  const changeAppearance = async (partial: Partial<DesktopAppearance>): Promise<void> => {
+    const previous = useAppStore.getState().desktopAppearance;
+    const next = { ...previous, ...partial };
+    setAppearanceBusy(true);
+    setAppearanceError("");
+    setDesktopAppearance(next);
+    try {
+      const update = window.api?.agent?.updateAppSettings;
+      if (!update) throw new Error("主题设置保存接口未就绪");
+      await update({ desktopAppearance: next, theme: next.mode });
+    } catch (err) {
+      setDesktopAppearance(previous);
+      setAppearanceError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAppearanceBusy(false);
+    }
   };
 
   const importUserFont = async (): Promise<void> => {
@@ -485,6 +546,13 @@ function SystemTab(): React.JSX.Element {
       const current = getAppliedFontSettings();
       for (const target of ["uiFontFamily", "codeFontFamily", "replyFontFamily"] as const) {
         if (current[target] === family) reset[target] = "";
+      }
+      for (const role of NAVIGATION_FONT_ROLES) {
+        const override = current.navigationTypography[role];
+        if (override?.family === family) {
+          reset.navigationTypography ??= { ...current.navigationTypography };
+          reset.navigationTypography[role] = { ...override, family: "" };
+        }
       }
       if (Object.keys(reset).length) {
         await agent.updateAppSettings(reset);
@@ -564,12 +632,6 @@ function SystemTab(): React.JSX.Element {
             <option value="en">English</option>
           </select>
         </Row>
-        <Row label="外观">
-          <select className="pill-select" aria-label="应用外观" value={theme} onChange={event => setTheme(event.target.value === "dark" ? "dark" : "light")}>
-            <option value="light">浅色</option>
-            <option value="dark">深色</option>
-          </select>
-        </Row>
         <Row label="关闭时最小化到托盘" desc="关闭窗口后后台继续运行；托盘图标可恢复，菜单可退出。">
           <Toggle on={closeToTray} onChange={(v) => void toggleCloseToTray(v)} />
         </Row>
@@ -584,6 +646,12 @@ function SystemTab(): React.JSX.Element {
         </Row>
       </SettingsSection>
 
+      <SettingsSection title="主题">
+        <DesktopAppearanceControls appearance={appearance} theme={theme} disabled={appearanceBusy || fontBusy}
+          onChange={(partial) => void changeAppearance(partial)} />
+        {appearanceError && <div className="settings-hint err" role="alert">{appearanceError}</div>}
+      </SettingsSection>
+
       <SettingsSection
         title="字体"
       >
@@ -591,7 +659,7 @@ function SystemTab(): React.JSX.Element {
           <div className="typography-flat-row">
             <div className="typography-flat-copy">
               <div className="settings-row-label">界面字体</div>
-              <div className="settings-row-desc">用于菜单、侧栏和输入框</div>
+              <div className="settings-row-desc">用于输入框，也是菜单和侧栏的默认字体</div>
             </div>
             <FontPicker label="界面字体" value={uiFontFamily} options={fontOptions} placeholder="系统默认" onSelect={(option) => void selectFontOption("uiFontFamily", option)} disabled={fontBusy} />
           </div>
@@ -609,6 +677,30 @@ function SystemTab(): React.JSX.Element {
               </select>
             </div>
           </div>
+
+          <details className="typography-navigation">
+            <summary className="settings-row-label">菜单、空间名称与任务名称</summary>
+            {NAVIGATION_FONT_ROLES.map((role) => {
+              const font = navigationTypography[role] ?? DEFAULT_NAVIGATION_FONT;
+              const label = NAVIGATION_FONT_LABELS[role];
+              return (
+                <div key={role} className="typography-flat-row">
+                  <div className="typography-flat-copy"><div className="settings-row-label">{label}</div></div>
+                  <div className="typography-controls navigation-font-controls">
+                    <FontPicker label={`${label}字体`} value={font.family} options={navigationFontOptions} placeholder="跟随界面"
+                      onSelect={(option) => void selectNavigationFont(role, option)} disabled={fontBusy} />
+                    <FontSizeSelect label={`${label}字号`} value={font.size} max={20} allowInherit disabled={fontBusy}
+                      onChange={(size) => void updateNavigationFont(role, { size })} />
+                    <select className="settings-input typography-value-select" aria-label={`${label}粗细`} value={font.weight ?? ""} disabled={fontBusy}
+                      onChange={(event) => void updateNavigationFont(role, { weight: NAVIGATION_FONT_WEIGHTS.find((weight) => String(weight) === event.target.value) ?? null })}>
+                      <option value="">跟随界面</option>
+                      {NAVIGATION_FONT_WEIGHTS.map((weight) => <option key={weight} value={weight}>{FONT_WEIGHT_LABELS[weight]}</option>)}
+                    </select>
+                  </div>
+                </div>
+              );
+            })}
+          </details>
 
           <div className="typography-flat-row">
             <div className="typography-flat-copy">
@@ -714,6 +806,51 @@ function SystemTab(): React.JSX.Element {
               ))}
             </div>
           )}
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="对话排版">
+        <div className="appearance-controls">
+          <div className="typography-flat-row">
+            <div className="typography-flat-copy"><div className="settings-row-label">行距与段距</div></div>
+            <div className="typography-controls">
+              <select className="settings-input typography-value-select" aria-label="回复行距" value={replyLayout.lineHeight} disabled={fontBusy}
+                onChange={(event) => {
+                  const lineHeight = REPLY_LINE_HEIGHTS.find((option) => String(option) === event.target.value);
+                  if (lineHeight !== undefined) void updateReplyLayout({ lineHeight });
+                }}>
+                {REPLY_LINE_HEIGHTS.map((value) => <option key={value} value={value}>行距 · {REPLY_LINE_HEIGHT_LABELS[value]}</option>)}
+              </select>
+              <select className="settings-input typography-value-select" aria-label="回复段距" value={replyLayout.paragraphGap} disabled={fontBusy}
+                onChange={(event) => {
+                  const paragraphGap = REPLY_PARAGRAPH_GAPS.find((option) => String(option) === event.target.value);
+                  if (paragraphGap !== undefined) void updateReplyLayout({ paragraphGap });
+                }}>
+                {REPLY_PARAGRAPH_GAPS.map((value) => <option key={value} value={value}>段距 · {REPLY_PARAGRAPH_GAP_LABELS[value]}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="typography-flat-row">
+            <label className="settings-row-label" htmlFor="appearance-chat-width">对话宽度</label>
+            <select id="appearance-chat-width" className="settings-input typography-value-select" value={replyLayout.width} disabled={fontBusy}
+              onChange={(event) => {
+                const width = event.target.value;
+                if (width === "narrow" || width === "standard" || width === "wide") void updateReplyLayout({ width });
+              }}>
+              {Object.entries(CHAT_WIDTH_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </div>
+          <div className="typography-flat-row">
+            <label className="settings-row-label" htmlFor="appearance-reply-headings">回复标题样式</label>
+            <select id="appearance-reply-headings" className="settings-input typography-value-select" value={replyLayout.headings} disabled={fontBusy}
+              onChange={(event) => void updateReplyLayout({ headings: event.target.value === "prominent" ? "prominent" : "subtle" })}>
+              <option value="subtle">紧凑</option>
+              <option value="prominent">突出层级</option>
+            </select>
+          </div>
+          <div className="typography-preview" aria-label="对话排版预览">
+            <div className="md md-chat"><h2>项目文档</h2><p>已补充项目定位和数据来源，文件可以直接打开。</p><p>详细说明见 <code>README.md</code>。</p></div>
+          </div>
         </div>
       </SettingsSection>
 

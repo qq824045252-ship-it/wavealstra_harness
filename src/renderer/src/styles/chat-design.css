@@ -124,7 +124,7 @@ html[data-theme="light"] {
 }
 
 .chat-column.task-ambient {
-  --chat-content-max: 744px;
+  --chat-content-max: var(--preferred-chat-width, 744px);
   background: var(--chat-canvas, var(--surface-main));
 }
 

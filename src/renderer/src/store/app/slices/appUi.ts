@@ -1,5 +1,6 @@
-import { applyTheme, getInitialTheme } from "../../../lib/theme";
+import { cacheDesktopAppearance, getInitialAppearance, resolveTheme } from "../../../lib/theme";
 import type { Theme } from "../../../lib/theme";
+import type { DesktopAppearance } from "../../../../../shared/desktop-theme";
 import type { Page } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -14,6 +15,7 @@ export interface NotificationMessageFocus {
 export interface AppUiState {
   page: Page;
   theme: Theme;
+  desktopAppearance: DesktopAppearance;
   sidebarCollapsed: boolean;
   libraryNav:
     | { view: "space"; spaceId: string; folderId: string | null }
@@ -36,9 +38,11 @@ export interface AppUiState {
 }
 
 export function createAppUiState(): AppUiState {
+  const desktopAppearance = getInitialAppearance();
   return {
     page: "chat",
-    theme: getInitialTheme(),
+    theme: resolveTheme(desktopAppearance.mode),
+    desktopAppearance,
     sidebarCollapsed: false,
     libraryNav: null,
     settingsOpen: false,
@@ -68,6 +72,7 @@ export function createAppUiActions(
   | "closeExtensionSoftware"
   | "toggleTheme"
   | "setTheme"
+  | "setDesktopAppearance"
   | "setSettingsOpen"
 > {
   const { get, set } = storeContext;
@@ -100,8 +105,11 @@ export function createAppUiActions(
     },
 
     setTheme: (theme) => {
-      applyTheme(theme);
-      set({ theme });
+      get().setDesktopAppearance({ ...get().desktopAppearance, mode: theme });
+    },
+    setDesktopAppearance: (desktopAppearance) => {
+      cacheDesktopAppearance(desktopAppearance);
+      set({ desktopAppearance, theme: resolveTheme(desktopAppearance.mode) });
     },
 
     setSettingsOpen: (open, tab) =>

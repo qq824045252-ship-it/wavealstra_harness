@@ -4,6 +4,7 @@ import { readTaskHistory } from "./taskHistoryRead";
 import type { SpaceDto, TaskDto } from "../../../../../shared/agent-ipc";
 import type { ModelInfoDto } from "../../../../../shared/agent-ipc";
 import { normalizeCodeTheme } from "../../../../../shared/code-theme";
+import { getInitialAppearance } from "../../../lib/theme";
 import {
   applyFontSettings,
   ensureAllUserFontsLoaded,
@@ -196,6 +197,7 @@ markStartup("bootstrapApplied");
 afterInteractiveFrame(() => markStartup("taskListInteractive"));
 
   if (appSettings) {
+    binding.context.get().setDesktopAppearance(appSettings.desktopAppearance ?? getInitialAppearance(appSettings.theme));
     applyFontSettings(resolveFontSettings(appSettings));
     document.documentElement.dataset.codeTheme = normalizeCodeTheme(
       appSettings.codeTheme,

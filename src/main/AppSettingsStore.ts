@@ -24,15 +24,21 @@ import { normalizeModelPreferences, type ModelPreferencesDto } from "../shared/m
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { migrateLegacyShellPreferences, normalizeTerminalShellPath } from "./agent-shell-settings";
 import { DEFAULT_CODE_THEME, normalizeCodeTheme, type CodeThemeId } from "../shared/code-theme";
+import { normalizeDesktopAppearance, type DesktopAppearance } from "../shared/desktop-theme";
 import {
   DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_REPLY_LAYOUT,
   DEFAULT_UI_FONT_SIZE,
   normalizeCodeFontSize,
+  normalizeNavigationTypography,
   normalizeReplyFontSize,
   normalizeReplyFontWeight,
+  normalizeReplyLayout,
   normalizeUiFontSize,
   normalizeUiFontWeight,
   type ReplyFontWeight,
+  type NavigationTypography,
+  type ReplyLayout,
   type UiFontWeight,
 } from "../shared/typography";
 import {
@@ -88,6 +94,7 @@ export interface AppSettings {
   remoteAccessPort: number;
   remoteAccessBaseUrl: string;
   theme: "light" | "dark" | "system";
+  desktopAppearance: DesktopAppearance | null;
   /** UI projection of Pi modelThinkingLevels; never persisted as product state. */
   modelPreferences?: ModelPreferencesDto;
   /** Resume selections only; Pi enabledModels remains the runtime authority. */
@@ -120,6 +127,8 @@ export interface AppSettings {
   replyFontSize: number | null;
   replyFontWeight: ReplyFontWeight;
   uiFontWeight: UiFontWeight;
+  navigationTypography: NavigationTypography;
+  replyLayout: ReplyLayout;
   /** 代码块语法高亮主题。 */
   codeTheme: CodeThemeId;
   /**
@@ -239,6 +248,7 @@ const DEFAULTS: AppSettings = {
   remoteAccessPort: 3352,
   remoteAccessBaseUrl: "",
   theme: "system",
+  desktopAppearance: null,
   modelPreferences: {},
   skillModeFilterEnabled: true,
   closeToTray: true,
@@ -257,6 +267,8 @@ const DEFAULTS: AppSettings = {
   replyFontSize: null,
   replyFontWeight: 400,
   uiFontWeight: 400,
+  navigationTypography: {},
+  replyLayout: DEFAULT_REPLY_LAYOUT,
   codeTheme: DEFAULT_CODE_THEME,
   shellIsolationLevel: DEFAULT_ISOLATION_LEVEL,
   terminalShellPath: "",
@@ -313,6 +325,7 @@ export class AppSettingsStore {
     try {
       const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<AppSettings> & Record<string, unknown>;
       const merged = { ...DEFAULTS, ...migrateLegacyShellPreferences(raw).settings } as AppSettings;
+      merged.desktopAppearance = raw.desktopAppearance ? normalizeDesktopAppearance(raw.desktopAppearance) : null;
       merged.dotsSettings = normalizeDotsSettings(raw.dotsSettings);
       merged.dotsPromptOverride = normalizeDotsPromptText(raw.dotsPromptOverride).trim();
       merged.dotsPromptSections = normalizeDotsPromptSections(raw.dotsPromptSections);
@@ -341,6 +354,8 @@ export class AppSettingsStore {
       merged.replyFontSize = normalizeReplyFontSize(raw.replyFontSize);
       merged.replyFontWeight = normalizeReplyFontWeight(raw.replyFontWeight);
       merged.uiFontWeight = normalizeUiFontWeight(raw.uiFontWeight);
+      merged.navigationTypography = normalizeNavigationTypography(raw.navigationTypography);
+      merged.replyLayout = normalizeReplyLayout(raw.replyLayout);
       merged.codeTheme = normalizeCodeTheme(raw.codeTheme);
       merged.memoryGatewayEnabled = merged.memoryGatewayEnabled === true;
       merged.memoryGatewayWriteEnabled = merged.memoryGatewayWriteEnabled === true;
@@ -402,6 +417,9 @@ export class AppSettingsStore {
   write(partial: Partial<AppSettings>): AppSettings {
     const current = this.read();
     const next = { ...current, ...partial };
+    if (partial.desktopAppearance !== undefined) {
+      next.desktopAppearance = partial.desktopAppearance ? normalizeDesktopAppearance(partial.desktopAppearance) : null;
+    }
     if ("dotsSettings" in partial) {
       next.dotsSettings = normalizeDotsSettings(partial.dotsSettings, normalizeDotsSettings(current.dotsSettings));
     }
@@ -445,6 +463,8 @@ export class AppSettingsStore {
     if (partial.replyFontSize !== undefined) next.replyFontSize = normalizeReplyFontSize(partial.replyFontSize);
     if (partial.replyFontWeight !== undefined) next.replyFontWeight = normalizeReplyFontWeight(partial.replyFontWeight);
     if (partial.uiFontWeight !== undefined) next.uiFontWeight = normalizeUiFontWeight(partial.uiFontWeight);
+    if (partial.navigationTypography !== undefined) next.navigationTypography = normalizeNavigationTypography(partial.navigationTypography);
+    if (partial.replyLayout !== undefined) next.replyLayout = normalizeReplyLayout(partial.replyLayout);
     if (partial.codeTheme !== undefined) {
       next.codeTheme = normalizeCodeTheme(partial.codeTheme);
     }

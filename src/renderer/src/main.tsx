@@ -1,6 +1,6 @@
 import React, { lazy, Suspense } from "react";
 import ReactDOM from "react-dom/client";
-import { applyTheme, getInitialTheme, syncNativeTheme } from "@/lib/theme";
+import { applyTheme, resolveTheme, syncNativeTheme, SYSTEM_DARK_MEDIA } from "@/lib/theme";
 import { useAppStore } from "@/store/appStore";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { ScopedLibraryWorkbench, type ScopedLibraryManagerProps } from "@/components/pages/library/ScopedLibraryManager";
@@ -10,18 +10,23 @@ import "./styles/systemTypography.css";
 import "./styles/desktop-modules-design.css";
 import "./styles/artifact-design.css";
 import "./styles/chat-design.css";
+import "./styles/appearance.css";
 
 const LibraryWorkbench = lazy(() => import("@/components/pages/library/LibraryWorkbench"));
 
 function EmbeddedWorkbench(props: ScopedLibraryManagerProps): React.JSX.Element {
   return <Suspense fallback={<div role="status">正在加载笔记…</div>}><LibraryWorkbench {...props} /></Suspense>;
 }
-const initialTheme = getInitialTheme();
-applyTheme(initialTheme);
-useAppStore.setState({ theme: initialTheme });
+const { theme: initialTheme, desktopAppearance } = useAppStore.getState();
+applyTheme(initialTheme, desktopAppearance);
+window.matchMedia?.(SYSTEM_DARK_MEDIA).addEventListener("change", () => {
+  if (useAppStore.getState().desktopAppearance.mode === "system") {
+    useAppStore.setState({ theme: resolveTheme("system") });
+  }
+});
 
 if (window.api?.onThemeRequest) {
-  window.api.onThemeRequest(() => syncNativeTheme());
+  window.api.onThemeRequest(() => syncNativeTheme(useAppStore.getState().desktopAppearance));
 }
 
 window.addEventListener("error", (event) => {

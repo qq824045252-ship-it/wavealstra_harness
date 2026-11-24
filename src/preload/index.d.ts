@@ -230,7 +230,7 @@ export interface PreloadApi {
     onAudio: (listener: (event: import("../shared/speech-stream").SpeechAudioEvent) => void) => () => void;
   };
   botWork: import("../shared/bot-work-ipc").BotWorkApi;
-  setTheme: (theme: "light" | "dark") => void;
+  setTheme: (theme: import("../shared/desktop-theme").AppThemeMode, palette?: import("../shared/desktop-theme").DesktopPalette) => void;
   onThemeRequest: (callback: () => void) => void;
   pickLocalFile: (editorPreview?: boolean) => Promise<WorkspaceFilePreviewDto | null>;
   pickLocalFolder: () => Promise<{ path: string; name: string } | null>;
