@@ -11,7 +11,7 @@ const steps = {
   UNIT_PROVIDER_BOARD: [workflow("start", {playbook:"orchestrate"}), workUnit("unit",{id:"owner", brief:"UNIT_PROVIDER_BOARD: inspect tested.txt."}),
     unitDispatch, workflow("resume"), unitDispatch, workUnit("status"), workflow("status")],
   UNIT_PROVIDER_STAGE: [workflow("start",{skill:"how"}), workflow("advance",{stage:"scope",note:"Single source file."}),
-    workflow("advance",{stage:"investigate",note:"Inspected the entry."}), stageDispatch, workflow("resume"), stageDispatch, workflow("status")],
+    stageDispatch, workflow("resume"), stageDispatch, workflow("status")],
   UNIT_PROVIDER_DECISIONS: [workflow("start",{skill:"show-me-your-work"}), workflow("decision",{decision:{
     phase:"research",decision:"Keep the existing label.",why:"The API contract specifies this label.",evidence:"Read tested.txt.",result:"No rename."}}),
     auditDispatch, workflow("resume"), auditDispatch, workflow("status")],

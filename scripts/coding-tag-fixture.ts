@@ -11,7 +11,7 @@ const test = "const assert=require('node:assert/strict');require('node:test')('t
 const button = '<button type="button" onclick="document.querySelector(\'dialog\').showModal()">Open</button><dialog aria-label="Details"><form method="dialog"><button>Close</button></form></dialog>';
 export const tagCases = [
   ["minimal", "auto"], ["bugfix-test", "bug-fix"], ["refactor", "refactoring"],
-  ["code-review", "skill:interrogate"],
+  ["code-review", "skill:thermo-nuclear-code-quality-review"],
   ["plan-design", "skill:architect"], ["readonly-explain", "investigation"], ["web-html", "feature"],
 ] as const;
 const readOnly = (id: string) => ["code-review", "plan-design", "readonly-explain"].includes(id);
@@ -89,7 +89,8 @@ export function assertTagCase(id: string, preferred: string, cwd: string, raw: s
     assert.match(finished.thermosOutcome,/待修复/);
     assert(outputs.some(v => typeof v === "string" && v.includes("Independent Thermos review required")));
     assert(outputs.some(v => v?.originals?.["value.cjs"]?.includes("n + n") && v.originals["value.cjs"].includes("After:")));
-    assert(bodies.some(b => b.model !== "cron" && JSON.stringify(b).includes("Changed excerpts at the selected baseline") && JSON.stringify(b).includes("n + n")));
+    assert(bodies.some(b => b.model !== "cron" && JSON.stringify(b).includes("Original task baseline") && JSON.stringify(b).includes("n + n")),
+      "The read-only Thermos reviewer must receive the selected baseline before-image");
   }
   if (id === "plan-design") assert.deepEqual(finished.steps, ["ground","sketch","synthesize"]);
   if (["bugfix-test", "refactor", "web-html"].includes(id)) assert.equal(finished.verification?.passed,true,id);

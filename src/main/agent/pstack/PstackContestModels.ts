@@ -32,16 +32,26 @@ export function chooseDecisionReviewers(settings: PstackSettings, scope: Contest
   }
   return Array.from({length:role.count}, (_,i) => independent[i % independent.length]!);
 }
-/** A cross-judge pool supplies one juror. Reserve its family before picking authors. */
+export function requireArenaJudgeFamily(parent: string | undefined, judge: string): void {
+  const parentFamily = parent && observedModelFamily(parent), judgeFamily = observedModelFamily(judge);
+  if (!parentFamily) throw Error("Arena cannot establish the parent model's vendor. No cross-vendor judgment can be claimed.");
+  if (!judgeFamily || judgeFamily === parentFamily)
+    throw Error("Arena cross-judge must use a different observed model vendor from the parent. Parent: " + parent + "; judge: " + judge + ".");
+}
+
+/** Eval reserves an independent family; Arena compares its judge with the parent vendor. */
 export function chooseContestModels(settings: PstackSettings, scope: ContestScope, isEval: boolean, previous?: string[]) {
   const authors = resolvePstackRole(settings, "arena-runners"), judge = resolvePstackRole(settings, "arena-cross-judge");
   const pool = eligible(authors.model, authors.effort, scope);
   const jurors = eligible(judge.model, judge.effort, scope).slice(0, judge.count);
   if (!isEval) {
-    if (!jurors.length) throw Error("The configured cross-judge pool has no enabled and available model.");
     if (previous) {
       const family = scope.parent && observedModelFamily(scope.parent);
-      return [jurors.find(id => family && observedModelFamily(id) && observedModelFamily(id) !== family) ?? jurors[0]];
+      if (!family) throw Error("Arena cannot establish the parent model's vendor. No cross-judge was dispatched.");
+      const selected = jurors.find(id => observedModelFamily(id) && observedModelFamily(id) !== family);
+      if (!selected) throw Error("The configured Arena cross-judge pool has no available model from another vendor than " + scope.parent +
+        ". No cross-judge was dispatched; a same-vendor fallback is not an independent judgment. Available candidates: " + (jurors.join(", ") || "none") + ".");
+      return [selected];
     }
     if (pool.length >= authors.count) return pool.slice(0, authors.count);
     if (authors.model !== "diverse" && pool.length) return Array.from({ length: authors.count }, () => pool[0]);

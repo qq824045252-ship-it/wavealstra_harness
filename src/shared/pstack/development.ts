@@ -3,8 +3,8 @@ import { book, delivery, step } from "./stages";
 
 export const developmentBooks = [
   book("feature", "功能开发", "从现有调用链到新功能的真实入口验收。", [
-    step("trace", "追踪受影响的功能", "沿一个实际请求找到入口、调用者、状态和必须保持的行为。", ["how"], "how-explorer"),
-    step("design", "比较架构", "独立画出至少两种接口与状态模型，用调用样例测试取舍并选定责任边界。", ["architect"], "architect-runners"),
+    step("trace", "追踪受影响的功能", "直接沿一个实际请求找到入口、调用者、状态和必须保持的行为。需要解释历史取舍时才调查 why，不额外固定调用 how。", ["why"], "how-explorer"),
+    step("design", "比较架构", "画出两种接口与状态模型，用调用样例测试取舍并选定责任边界。大型或有争议的设计由 architect 转入 arena；不固定派发架构候选团。", ["architect"]),
     step("throughput", "划分可并行工作", "记录四项检查：启动前必须完成的门槛、独立工作流、共享可变状态和最小安全切片。无适用项写明原因。", ["principle-separate-before-serializing-shared-state"]),
     step("implement", "按契约实现", "给实现者具体文件范围、已选领域模型与可执行验收。对跨层或并发难点使用复杂实现角色；复核真实差异。", ["principle-model-the-domain"], "feature"),
     step("verify", "在用户入口验证", "用真实输入观察结果，失败与重新打开也要验证；证据缺失的路径单列。", ["principle-prove-it-works"]),
@@ -14,13 +14,13 @@ export const developmentBooks = [
   ]),
   book("bug-fix", "修复缺陷", "重现问题、验证根因，再在原入口复验。", [
     step("reproduce", "重现用户看到的失败", "在匹配的界面、接口或运行环境上操作。记录输入、期望、实际结果，必要时加入可移除的观测点。", ["principle-experience-first"]),
-    step("diagnose", "排除假设", "列出机制不同的候选根因，运行每次可排除最多假设的实验。从历史与源码追到第一个错误状态。", ["how", "why", "principle-fix-root-causes"], "how-explorer"),
+    step("diagnose", "排除假设", "列出机制不同的候选根因，运行每次可排除最多假设的实验。直接从历史与源码追到第一个错误状态，保留运行证据。", ["why", "principle-fix-root-causes"], "how-explorer"),
     step("fix", "实施有证据的修复", "跨边界时先确定接口；让实现者修复已确认的责任点。适合低成本回归时先记录正确原因的红灯。", ["tdd", "architect"], "bug-fix"),
     step("verify", "重跑原始复现", "对同一入口、相同输入比较修复前后的可观察结果，附失败和通过输出。", ["principle-prove-it-works"]),
     step("sequence", "保留前后证据", "使复现与修复可独立核实。若有提交授权，将可执行复现排在修复前面。", ["principle-sequence-verifiable-units"]), delivery(),
   ]),
   book("refactoring", "重构", "以等价行为为基线，减少读者必须理解的状态和分支。", [
-    step("baseline", "固定原行为", "找出调用者依赖的正常、错误与边缘语义，执行特征测试或记录一组实际输出。", ["how", "principle-test-behavior-not-implementation"]),
+    step("baseline", "固定原行为", "直接追踪调用者依赖的正常、错误与边缘语义，执行特征测试或记录一组实际输出。", ["principle-test-behavior-not-implementation"]),
     step("model", "找缺失的领域模型", "指出当前必须组合记忆的状态、重复判断和不可能状态。已有直观结构保持原状。", ["principle-model-the-domain"]),
     step("design", "确定目标结构", "给目标模块、类型与调用图草稿。跨接口改动时评估从初始约束重新设计的候选。", ["architect", "principle-redesign-from-first-principles"]),
     step("subtract", "先删除多余结构", "识别不再使用的代码、可推导状态、转发包装和重复校验，用行为基线验证删除。", ["principle-subtract-before-you-add"]),
@@ -30,13 +30,13 @@ export const developmentBooks = [
   ]),
   book("perf-issue", "性能问题", "用相同工作量和产物验证性能修复。", [
     step("baseline", "获取基线", "在出现症状的入口记录足够复现的负载、配置、计时和 trace，先检查数字是否可信。", ["benchmark-checklist"]),
-    step("trace", "定位瓶颈", "调查架构、资源上限和等待分布，从观测得出可推翻的因果假设。", ["how"], "how-explorer"),
+    step("trace", "定位瓶颈", "直接追踪架构、资源上限和等待分布，从观测得出可推翻的因果假设。", [], "how-explorer"),
     step("fix", "按测量实施", "设计跨边界改动后交给性能实现角色，复核差异，在相同入口获取修改后的 trace。", ["architect"], "perf-issue"),
     step("compare", "比较前后证据", "按相同数据、并发和冷热状态交替执行；报告中位数、范围、错误率，区分局部收益与端到端收益。", ["benchmark-checklist"]),
     step("cite", "报告性能变化", "给出一个与用户等待相关的前后数值、单位、环境和原始测量位置。", ["principle-explain-the-number"]), delivery(),
   ]),
   book("hillclimb", "迭代优化", "冻结测量方法，每轮只改变一个假设。", [
-    step("workload", "验证真实负载", "用真实规模、历史状态和并发重现症状。确定指标、方向和停止条件，写清最低尝试数与目标。", ["how"]),
+    step("workload", "验证真实负载", "直接追踪真实规模、历史状态和并发下的症状。确定指标、方向和停止条件，写清最低尝试数与目标。"),
     step("harness", "校准并冻结测量方法", "用差异已知的两个负载证明测量能分辨它们，记录条件并保持每轮可比。", ["principle-build-the-lever", "benchmark-checklist"]),
     step("ledger", "建立尝试记录", "保存每轮假设、改动、前后数值、差值、正确性验证及是否保留；开始新一轮前读上一轮记录。", ["show-me-your-work"]),
     step("hypothesize", "按机制排列假设", "基于当前热点或用户瓶颈提出可推翻的解释，预测该改动影响哪段工作。", ["principle-fix-root-causes"]),

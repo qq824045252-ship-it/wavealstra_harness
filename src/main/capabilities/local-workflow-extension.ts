@@ -116,7 +116,8 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         });
       }
       services.cron.changeForTask(taskId, input.id, input.action);
-      return { id: input.id, action: input.action, jobs: visibleJobs() };
+      const jobs = (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
+      return { id: input.id, action: input.action, jobs };
     }),
   });
   if (!context.terminalEnabled) return;

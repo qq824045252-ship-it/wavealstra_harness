@@ -6,6 +6,7 @@ import { workspaceDocumentPath } from "../../../shared/pstack/paths";
 import type { DelegateReceipt, WorkflowRun } from "./PstackState";
 import { readPlanFile } from "./PstackWorkspace";
 import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
+import { requireArenaJudgeFamily } from "./PstackContestModels";
 
 export const authorRole = "pstack-project-author";
 export const readerRole = "pstack-project-reader";
@@ -165,12 +166,13 @@ export function contestDispatch(run: WorkflowRun, stage: string, role: string, t
     else if (config.effort !== "default") item.reasoning = { effort: config.effort };
     return item;
   });
-  return { args: count === 1 ? items[0] : { tasks: items }, count, privatePrompt: judging || phase.eval ? task : undefined, check(models: string[], answers: string[]) {
+  return { args: count === 1 ? items[0] : { tasks: items }, count, privatePrompt: judging || phase.eval ? task : undefined, check(models: string[], answers: string[], parentModel?: string) {
     if (answers.some(a => Buffer.byteLength(a) > 128 * 1024)) throw Error("A submitted document exceeds 128 KiB. Retry with a shorter document.");
     if (prev) {
       const family = observedModelFamily(models[0]);
       if (phase.eval && (!family || prev.models.some(id => !observedModelFamily(id) || observedModelFamily(id) === family)))
         throw Error("The observed judge family is not independent of the observed authors.");
+      if (!phase.eval) requireArenaJudgeFamily(parentModel, models[0]);
       checkJudgment(answers[0], contest, prev);
     } else if ((phase.eval || config.model === "diverse") && new Set(models.map(id => id.split("/").at(-1)!.toLowerCase())).size !== models.length) {
       throw Error("The observed author models are not distinct.");

@@ -14,12 +14,16 @@ import type { Contest, ContestAudit } from "./PstackContest";
 import type { EvalExport } from "./PstackEvalExport";
 import type { PstackCheckReceipt, VerificationOutcome } from "./PstackVerificationEvidence";
 import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
+import { PSTACK_UPSTREAM } from "../../../shared/pstack/upstream";
+import { promptPstackMethod, type ReframeSource } from "./PstackPromptEvidence";
+import type { PstackInterrogateReceipt } from "./PstackInterrogateEvidence";
+import type { AdvancedArtifactReceipt } from "./PstackAdvancedArtifacts";
 
 export type Api = Parameters<ToolRegistration["execute"]>[1];
 export type WorkflowOptions = { taskId: string; cwd: string; tag?: CodingTag | null; active: () => boolean; settings: () => PstackSettings;
   githubAvailable?: () => boolean; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
 export const REVIEW = "thermo-nuclear-code-quality-review";
-export type DelegateReceipt = { role: string; stage: number; stageId: string; toolTaskId: number; children: string[]; models: string[]; answers: string[]; ownerReports?: OwnerReport[]; ownerAudit?: OwnerAuditTick; participants?: ContestAudit[] };
+export type DelegateReceipt = { role: string; stage: number; stageId: string; toolTaskId: number; children: string[]; models: string[]; answers: string[]; ownerReports?: OwnerReport[]; ownerAudit?: OwnerAuditTick; participants?: ContestAudit[]; interrogate?: PstackInterrogateReceipt };
 export type WorkflowRun = {
   task: string; run: number; first: EntryId; inputs: number[]; revision: number; playbook: string; config: string;
   tagId?: string;
@@ -27,6 +31,10 @@ export type WorkflowRun = {
   verification: { command: string; fingerprint: string; toolTaskId: number; passed: boolean; exitCode?: number | null;
     outcome?: VerificationOutcome["outcome"]; error?: string; changedPaths?: string[]; checkIdentity?: PstackCheckReceipt["checkIdentity"] } | null;
   checkReceipts?: PstackCheckReceipt[];
+  advanced?: AdvancedArtifactReceipt[];
+  reframe?: { stageId: string; sources: ReframeSource[] }[];
+  interrogateReruns?: { finding: string; stageId: string; sourceFingerprint: string; workspaceFingerprint: string;
+    receipt: PstackCheckReceipt; verdict: "reproduced" | "not-reproduced" | "inconclusive" }[];
   red?: { command: string; fingerprint: string; toolTaskId: number; exitCode: number };
   reviewCommit?: string;
   reviewDependency?: ProviderDependency;
@@ -138,6 +146,8 @@ export function observation(entries: EntryRecord[]) {
 }
 export function reviewReasons(settings: PstackSettings, delta: WorkspaceDelta, entries: EntryRecord[], run?: Pick<WorkflowRun, "playbook">) {
   if (!settings.skills[REVIEW]?.enabled) return [];
+  if (run?.playbook === "skill:interrogate") return [];
+  if (run && promptPstackMethod(run.playbook) && !delta.paths.length) return [];
   const config = settings.thermos;
   const userText = entries.flatMap(e => e.kind === "pi.user" || e.kind === "mybuddy.user" ? (e.model ?? []).flatMap(m =>
     m.role === "user" ? typeof m.content === "string" ? [m.content] : m.content.flatMap(p => p.type === "text" ? [p.text] : []) : []) : [])
@@ -173,10 +183,13 @@ export function view(run: WorkflowRun) {
   const settings = runSettings(run), book = playbookFor(run), stage = book.stages[run.stage];
   const review = run.review && { passed: run.review.passed, fingerprint: run.review.fingerprint, receipt: run.review.receipt,
     inspections: run.review.inspections, reasons: run.review.reasons, error: run.review.error, repairs: run.review.repairs };
-  return { playbook: book.id, run: run.run, phase: run.phase, revision: run.revision, block: run.block || undefined,
+  return { playbook: book.id, upstream: PSTACK_UPSTREAM, run: run.run, phase: run.phase, revision: run.revision, block: run.block || undefined,
     ...(isAutopilot(book.id) && { audit: run.audit, auditSchedule: auditSchedule(run, Number(settings.playbooks[book.id].parameters.auditMinutes)) }),
     ...(run.prBody && { prBody: run.prBody }), ...(run.evalExport && {evalExport:run.evalExport}),
     ...(run.publishedPr && { publishedPr: run.publishedPr }),
+    ...(run.reframe?.length && { reframe: run.reframe }),
+    ...(run.advanced?.length && { artifacts: run.advanced }),
+    ...(run.interrogateReruns?.length && { interrogateReruns: run.interrogateReruns }),
     parameters: routeSettings(settings, book.id).parameters, ...parameterGuidance(book), steps: book.stages.map(s => s.id), completed: run.notes,
     current: stage && { ...stage, roleId: stageRole(settings, stage), skills: stage.skillIds.filter(id => settings.skills[id]?.enabled).map(id => skillView(settings, id)),
       role: stageRole(settings, stage) && resolvePstackRole(settings, stage.roleId!) }, verification: run.verification, red: run.red,

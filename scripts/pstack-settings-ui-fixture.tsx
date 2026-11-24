@@ -74,19 +74,19 @@ export async function run() {
       el.querySelector(".modes-preset-rail-id")?.textContent === id), id);
     tag.click(); await tick();
   }
-  await pickTag("feature-dev");
+  await pickTag("bugfix-test");
   await enter(routeField, "prototype");
   await button("保存");
   await until(() => !document.querySelector<HTMLButtonElement>(".modes-editor-actions .primary")?.matches(":enabled"), "tag route save");
-  assert((await readPolicy()).presets?.find(tag => tag.id === "feature-dev")?.pstackRoute === "prototype", "Tag route did not reach disk");
+  assert((await readPolicy()).presets?.find(tag => tag.id === "bugfix-test")?.pstackRoute === "prototype", "Tag route did not reach disk");
   await pickTag("plan-design");
   assert(![...(await field(routeField) as HTMLSelectElement).options].some(o=>o.value === "feature"), "Design tag offers an implementation route");
-  await pickTag("feature-dev");
+  await pickTag("bugfix-test");
   assert((await field(routeField)).value === "prototype","Saved tag route not displayed");
   await button("pstack + thermos");
   assert(!(await field(activation) as HTMLInputElement).checked, "Builtin workflow should start disabled");
   assert(document.querySelector(".pstack-top")?.textContent?.includes("所有代码开发任务"), "The switch must explain its mode-wide scope");
-  assert(document.querySelectorAll(".pstack-list button").length === 52, "Incomplete skill catalog");
+  assert(document.querySelectorAll(".pstack-list button").length === PSTACK_SKILLS.length, "Incomplete skill catalog");
   for (const skill of PSTACK_SKILLS) {
     await selectItem(skill.id);
     for (const p of skill.parameters) await field(p.label);
@@ -94,7 +94,7 @@ export async function run() {
     assert(document.querySelectorAll(".pstack-stages li").length === (skill.stages?.length ?? 0), "Missing skill stages " + skill.id);
   }
   await enter("技能类别", "principle");
-  assert(document.querySelectorAll(".pstack-list button").length === 24, "Incomplete principle catalog");
+  assert(document.querySelectorAll(".pstack-list button").length === PSTACK_SKILLS.filter(skill => skill.kind === "principle").length, "Incomplete principle catalog");
   await enter("搜索当前分类", "principle-attack-the-premise");
   await toggle("启用此原则");
   await enter("技能类别", "");
@@ -108,7 +108,7 @@ export async function run() {
   assert(document.querySelector(".pstack-empty"), "Missing empty search state");
 
   await selectSection("流程");
-  assert(document.querySelectorAll(".pstack-list button").length === 23, "Incomplete playbook catalog");
+  assert(document.querySelectorAll(".pstack-list button").length === PSTACK_PLAYBOOKS.length, "Incomplete playbook catalog");
   for (const book of PSTACK_PLAYBOOKS) {
     await selectItem(book.id);
     assert(document.querySelectorAll(".pstack-stages li").length === book.stages.length, "Incomplete playbook " + book.id);
@@ -123,10 +123,11 @@ export async function run() {
   await button("架构设计");
   await field("实现前等待确认");
   await toggle("实现前等待确认");
-  await button("架构候选");
+  await selectSection("模型角色");
+  await selectItem("architect-runners");
   await until(() => document.body.innerText.includes("需配置 2 个不同的可用模型，目前有 1 个"), "distinct-model preflight");
 
-  assert(document.querySelectorAll(".pstack-list button").length === 17, "Incomplete role catalog");
+  assert(document.querySelectorAll(".pstack-list button").length === PSTACK_ROLES.length, "Incomplete role catalog");
   for (const role of PSTACK_ROLES) {
     await selectItem(role.id);
     for (const f of ["模型选择", "推理预算"]) await field(f);
@@ -206,7 +207,7 @@ export async function run() {
   panel.scrollTop = 0;
   window.scrollTo(0, 0);
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  return "PASS Electron ModesTab → isolated ModeProfileStore: 52 skills, 24 principles, 23 playbooks, 17 roles, 8 review criteria, validation, global controls, save, reopen, disable, narrow layout.";
+  return `PASS Electron ModesTab → isolated ModeProfileStore: ${PSTACK_SKILLS.length} skills, ${PSTACK_SKILLS.filter(skill => skill.kind === "principle").length} principles, ${PSTACK_PLAYBOOKS.length} playbooks, ${PSTACK_ROLES.length} roles, ${THERMOS_CRITERIA.length} review criteria, validation, global controls, save, reopen, disable, narrow layout.`;
 }
 
 export async function resetAndVerify() {

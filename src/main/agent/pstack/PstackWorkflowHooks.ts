@@ -6,6 +6,7 @@ import { reviewMatchesVerification } from "./PstackVerificationEvidence";
 import { MERGE_REVIEW_BLOCK } from "./PstackReviewIntent";
 import { authoredFiles, captureAuthoredSkill } from "./PstackAuthoredSkills";
 import { formatPstackBlock } from "./PstackBlockReport";
+import { promptPstackMethod, readOnlyPstackMethod } from "./PstackPromptEvidence";
 
 const mutatingTools = new Set(["write", "edit", "bash", "powershell", "subagent", "terminal_exec", "execute_code", "apply_patch", "skill_authoring_create"]);
 export const textMessage = (content: string | readonly { type: string; text?: string }[]) =>
@@ -25,8 +26,9 @@ export function createPstackWorkflowHooks(options: WorkflowOptions) {
     const current = await currentWorkflow(api, ctx);
     if (!current) return;
     const { run } = current;
-    if (run.playbook === "investigation" && ["write", "edit", "apply_patch", "skill_authoring_create"].includes(call.name))
-      return { block: "This investigation is read-only. Cite the files in the chat reply; do not create a report or change the workspace." };
+    if ((run.playbook === "investigation" || readOnlyPstackMethod(run.playbook)) &&
+        (["write", "edit", "apply_patch", "skill_authoring_create"].includes(call.name) || promptPstackMethod(run.playbook)))
+      return { block: "This method is read-only. Deliver the explanation, prompt or progress in the reply; do not execute the underlying task or change the workspace." };
     const command = String(call.arguments.command ?? "");
     const merge = /\b(?:git(?:\.exe)?(?:\s+(?:-C|-c|--git-dir|--work-tree)(?:\s+|=)(?:"[^"]*"|'[^']*'|[^\s;&|]+))*\s+merge|gh(?:\.exe)?\s+pr\s+merge)(?:\s|$)/i.test(command);
     if (["bash", "powershell", "terminal_exec"].includes(call.name) && merge && !/\bmerge\s+--(?:abort|quit|help)\b/i.test(command)) {

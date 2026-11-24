@@ -36,6 +36,7 @@ vendor/
 !/vendor/cadcraft/
 !/vendor/drawio/
 !/vendor/canban-review/
+!/vendor/pstack-statechart/
 /vendor/drawio/assets/
 
 # 本地 MCP 工具索引（codegraph/serena 等）

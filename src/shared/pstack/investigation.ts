@@ -4,9 +4,9 @@ import { book, delivery, step } from "./stages";
 
 export const investigationBooks = [
   book("investigation", "只读调查", "从实际调用、产物和版本记录回答一个明确问题。", [
-    step("trace", "调查实现与动机", "保持任务工作区只读，直接在对话中交付有出处的结论。沿一条实际输入追到消费者，动机类问题另查变更和设计证据。", ["how", "why"], "how-explorer"),
+    step("trace", "调查实现与动机", "保持任务工作区只读，直接沿一条实际输入追到消费者。动机类问题另查变更和设计证据，不固定再套一层 how。", ["why"], "how-explorer"),
     step("scope", "确认只读范围", "记录只读调查的范围、可访问的资料和无法观察的部分。"),
-    step("explain", "综合发现", "说明概览、关键概念、调用链、文件与限制。选择类问题给候选取舍和建议，以原始证据标注推断。", ["how"], "how-explainer"),
+    step("explain", "综合发现", "以原始证据直接回答问题，解释调用链、文件与限制。选择类问题给候选取舍和建议，推断明确标注。", [], "how-explainer"),
     step("edit", "精简交付", "核对文件与符号，将最能回答问题的证据写在前面。若 Thermos 已触发，用 pstack_delegate 的 answerDraft 提交完整答稿。按审查意见修改答稿后可重新提交，宿主会交付通过的原文。", ["unslop"]),
   ]),
   book("runtime-forensics", "运行时取证", "从现场信号定位具体责任代码。", [

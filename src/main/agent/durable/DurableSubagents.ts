@@ -43,11 +43,13 @@ type Invocation = Static<typeof SubagentParams>;
 type Item = NonNullable<Invocation["tasks"]>[number];
 type Selection = ReturnType<typeof resolveSubagentSelection>;
 export type BuiltinSubagentRole = Pick<AgentConfig, "name" | "description" | "systemPrompt" | "tools" | "model"> & {
-  source: "builtin"; readOnly: boolean; privateBrief?: boolean; draftDocuments?: boolean;
+  source: "builtin"; readOnly: boolean; privateBrief?: boolean; draftDocuments?: boolean; executionReview?: boolean;
 };
 type DispatchRole = AgentConfig | BuiltinSubagentRole;
 function childRoleTools(role: DispatchRole, tools: string[]): string[] {
   if (role.source === "builtin" && role.privateBrief) return tools.filter(name => name === "project_document");
+  if (role.source === "builtin" && role.executionReview)
+    return tools.filter(name => ["read", "ls", "find", "grep", "bash", "powershell", "write", "edit"].includes(name));
   return tools.filter(name => name !== "project_document" && (role.source !== "builtin" || !role.readOnly || READONLY_TOOLS.some(tool => name === tool)));
 }
 type IsolationRequest = "auto" | "shared" | "worktree";

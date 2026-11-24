@@ -20,13 +20,21 @@ import { inspectOwnerAudit, inspectPrBody, inspectPublishedPr, isAutopilot } fro
 import { recordedOwnerAudits } from "./PstackOwnerMonitor";
 import { createPstackOrchestrationTools, orchestrationProgress } from "./PstackOrchestration";
 import { recordGoalNativeEvidence as recordPstackGoalEvidence } from "../durable/DurableGoalNativeEvidence";
+import { PSTACK_UPSTREAM } from "../../../shared/pstack/upstream";
+import { observedPstackStatus, promptPstackMethod, readOnlyPstackMethod, textOnlyPstackMethod, validateReframeSources } from "./PstackPromptEvidence";
+import { allInterrogateJudgments, interrogateFinding, interrogateJudgment, rerunInterrogateFinding } from "./PstackInterrogateRerun";
+import { advancedSkillIds, checkAdvancedArtifact, createPstackStatechartTool, createPstackVideoInspectTool,
+  inspectWorkflowAdvancedArtifact, type AdvancedArtifactReceipt } from "./PstackAdvancedArtifacts";
 
 const actions = ["status", "start", "advance", "review", "complete", "block", "resume", "skill", "invoke", "verify", "decision", "decision-audit", "audit", "pr-body", "export-eval"] as const;
 const parameters = Type.Object({
   action: Type.Union(actions.map(value => Type.Literal(value))),
   playbook: Type.Optional(Type.String()), stage: Type.Optional(Type.String()), skill: Type.Optional(Type.String()),
   note: Type.Optional(Type.String({ maxLength: 4000, description: "For block, this note is shown directly to the user. Write concise Markdown with real paragraph breaks, the specific blocker, verified work and the next feasible step. Preserve paths and code in backticks." })), command: Type.Optional(Type.String({ maxLength: 1800 })),
-  artifact: Type.Optional(Type.String({ description: "Workspace path to the multi-phase plan, or the actual PR body at opening-a-pr describe (default pr.md)." })),
+  artifact: Type.Optional(Type.String({ description: "Workspace path to the multi-phase plan, actual PR body, or the advanced method's JSON artifact manifest at handoff/deliver." })),
+  sources: Type.Optional(Type.Array(Type.Object({ term: Type.String({ minLength: 1 }), url: Type.String({ minLength: 1 }) }),
+    { minItems: 8, maxItems: 12, description: "At reframe terms, eight to twelve distinct terms and their sources. Fetch every cited URL with fetch_content first." })),
+  finding: Type.Optional(Type.String({ minLength: 1, description: "At interrogate judge, verify this recorded finding by rerunning its original command in its verified isolated worktree." })),
   scheduleId: Type.Optional(Type.String({ minLength: 1, description: "At an autopilot audit, optionally attach the authorized current-task automation that uses the auditSchedule returned by status." })),
   pullRequest: Type.Optional(Type.String({ minLength: 1, maxLength: 1024, description: "The actual published PR URL for opening-a-pr open and confirm. Do not publish without authorization." })),
   baseRef: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Review existing Git changes relative to this ref. The host freezes the commit." })),
@@ -79,9 +87,10 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         if (run && run.phase !== "complete" && !codingTagSupportsRoute(tagId, run.playbook) &&
             !["status", "skill", "block"].includes(action) && !(action === "start" && args.replace))
           throw new Error("原有流程超出当前只读标签的范围。用 start(replace=true,note) 记录新目标并启动当前标签的流程。");
-        if (action === "skill") return success(skillView(settings, args.skill ?? ""));
+        if (action === "skill") return success({ ...skillView(settings, args.skill ?? ""),
+          ...(args.skill === "ketchup" && { currentWorkflow: run ? view(run) : null }) });
         if (action === "status") return success(run ? { ...view(run), preferredPlaybook: defaultRoute, ...(isAutopilot(run.playbook) && { ownerAuditHistory: await recordedOwnerAudits(api, ctx, run.run) }) } : {
-          phase: "idle", preferredPlaybook: defaultRoute,
+          phase: "idle", upstream: PSTACK_UPSTREAM, preferredPlaybook: defaultRoute,
           playbooks: PSTACK_PLAYBOOKS.filter(s => allowedRoute(s.id)).map(({ id, description }) => ({ id, description })),
           skills: PSTACK_SKILLS.filter(s => allowedRoute("skill:" + s.id)).map(({ id }) => id),
         });
@@ -188,6 +197,25 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         }
         if (action === "advance") {
           if (!stage || stage.id !== args.stage || !note?.trim()) throw new Error("Pass the current stage ID and its concrete outcome.");
+          let advancedArtifact: AdvancedArtifactReceipt | undefined;
+          if ((advancedSkillIds as readonly string[]).includes(method ?? "") && ["handoff", "deliver"].includes(stepId ?? "")) {
+            if (!args.artifact) throw new Error("Submit this method's actual JSON manifest with artifact; instructions define its required evidence.");
+            advancedArtifact = await inspectWorkflowAdvancedArtifact({ cwd: options.cwd, skillId: method!, artifact: args.artifact, run, api, ctx });
+          }
+          const reframeSources = method === "reframe" && stepId === "terms"
+            ? validateReframeSources(args.sources, await transcript(api, ctx, run.first)) : undefined;
+          if (method === "ketchup" && stepId === "gather") {
+            const history = await transcript(api, ctx, run.first);
+            if (!observedPstackStatus(history) && !observation(history))
+              throw new Error("Read the current workflow status or actual workspace evidence before reporting ketchup progress.");
+          }
+          if (method === "interrogate" && stepId === "judge" || stageRole(settings, stage) === "interrogate-reviewers" ||
+              run.delegates.some(item => item.stageId === stage.id && item.interrogate)) {
+            const baseline = (await api.snapshot(WorkflowFiles, api.conversationId, ctx))?.base;
+            if (!baseline) throw new Error("Missing workspace baseline.");
+            const current = await measureWorkspace(baseline, settings.thermos.fileLines, ctx.abortSignal);
+            await interrogateJudgment(run, stage.id, current.fingerprint, ctx.abortSignal);
+          }
           const prBody = run.playbook === "opening-a-pr" && stage.id === "describe"
             ? await inspectPrBody(options.cwd, args.artifact ?? run.prBody?.path, Number(settings.playbooks[run.playbook].parameters.bodyLines)) : undefined;
           if (run.playbook === "opening-a-pr" && ["open", "confirm"].includes(stage.id) && !run.prBody)
@@ -241,6 +269,8 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           return success(view(await save(async (next, tx) => {
             if (contest) next.contests = { ...next.contests, [contestStep(run.playbook, stage.id)!.key]: contest };
             if (exported) next.evalExport=exported;
+            if (reframeSources) next.reframe = [...next.reframe ?? [], { stageId: stage.id, sources: reframeSources }];
+            if (advancedArtifact) next.advanced = [...next.advanced?.filter(item => item.kind !== advancedArtifact!.kind) ?? [], advancedArtifact];
             next.notes.push(note.trim()); next.stage++;
             if (prBody) next.prBody = prBody;
             if (published) {
@@ -261,6 +291,17 @@ export function createPstackWorkflow(options: WorkflowOptions) {
           return success(view(await save(next => { next.audit = receipt; })));
         }
         if (action === "verify") {
+          if (args.finding) {
+            if (!stage || !(method === "interrogate" && ["synthesize", "judge"].includes(stepId ?? "") ||
+                run.delegates.some(item => item.stageId === stage.id && item.interrogate)))
+              throw new Error("Finding reruns belong to interrogate synthesize or judge.");
+            const finding = interrogateFinding(run, stage.id, args.finding);
+            if (args.command && args.command !== finding.probe.command || args.shell && args.shell !== finding.probe.shell)
+              throw new Error("Use the original recorded finding command and shell; the host supplies them when omitted.");
+            const rerun = await rerunInterrogateFinding({ options, run, stageId: stage.id, finding: args.finding, base, delta, api, ctx });
+            await save(next => { next.interrogateReruns = [...next.interrogateReruns ?? [], rerun]; });
+            return success(rerun);
+          }
           const command = args.command?.trim() ?? "";
           const shell = args.shell;
           const memoKey = "pstack-verification-input";
@@ -311,13 +352,37 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         const snapshotDone = run.watch?.allowed && ["STATUS", "ORIGIN_STATUS"].includes(run.watch.verdict) && !delta.paths.length &&
           (run.watch.mergedSnapshot || (run.playbook === "babysit" && settings.playbooks.babysit.parameters.mode === "check"));
         if (stage && !snapshotDone) throw new Error("Complete the current stage: " + stage.id);
+        await allInterrogateJudgments(run, delta.fingerprint, ctx.abortSignal);
+        const advanced = [...run.advanced ?? []];
+        const advancedMethod = run.playbook.startsWith("skill:") ? run.playbook.slice(6) : "";
+        if ((advancedSkillIds as readonly string[]).includes(advancedMethod)) {
+          if (args.artifact) {
+            const receipt = await inspectWorkflowAdvancedArtifact({ cwd: options.cwd, skillId: advancedMethod, artifact: args.artifact, run, api, ctx });
+            const prior = advanced.findIndex(item => item.kind === advancedMethod);
+            if (prior >= 0) advanced[prior] = receipt; else advanced.push(receipt);
+          }
+          if (!advanced.some(item => item.kind === advancedMethod && item.workflowRun === run.run))
+            throw new Error("This method requires a verified artifact manifest before completion.");
+        }
+        const advancedPaths = new Set<string>();
+        for (const receipt of advanced) {
+          if (receipt.workflowRun !== run.run) throw new Error("Artifact evidence belongs to a different workflow.");
+          if (receipt.formal && receipt.formal.syncCommit !== checkoutSha)
+            throw new Error("The checkout changed after formal verification. Recheck the current commit before advancing its sync point.");
+          await checkAdvancedArtifact(receipt, { cwd: options.cwd, signal: ctx.abortSignal });
+          for (const file of receipt.files) if (file.role === "artifact") advancedPaths.add(file.path);
+          if (receipt.statechart) for (const path of [receipt.statechart.spec, receipt.statechart.config, receipt.statechart.view])
+            if (path) advancedPaths.add(path);
+        }
+        if (run.playbook === "skill:ketchup-video" && delta.paths.some(path => !advancedPaths.has(path)))
+          throw new Error("Ketchup video may create its verified media artifacts only; unrelated workspace changes must be reconciled.");
         if (run.evalExport) await checkEvalExport(options.cwd,run.evalExport);
         if (run.playbook === "opening-a-pr") {
           const current = await inspectPrBody(base.cwd, run.prBody?.path, Number(settings.playbooks[run.playbook].parameters.bodyLines));
           if (current.digest !== run.prBody?.digest) throw new Error("The PR body changed after its review. Call pr-body(artifact) to inspect its current content before claiming publication.");
           await inspectPublishedPr(base.cwd, args.pullRequest ?? run.publishedPr?.url, current, settings.playbooks[run.playbook].parameters.forge, ctx.abortSignal);
         }
-        if ((run.playbook === "investigation" || readOnlyCodingTag(run.tagId)) && delta.paths.length)
+        if ((run.playbook === "investigation" || readOnlyCodingTag(run.tagId) || readOnlyPstackMethod(run.playbook)) && delta.paths.length)
           throw new Error("The read-only investigation changed the workspace: " + delta.paths.join(", ") + ". Reconcile the changes before claiming completion.");
         if (run.playbook === "orchestrate") {
           const missing = await orchestrationProgress(api, ctx, run);
@@ -358,23 +423,26 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         }
         const verification = latestCheck(run);
         const verifiedCurrentWorkspace = passedCurrentCheck(verification, delta, checkoutSha);
-        if (run.tagId === "add-tests" || delta.paths.some(path => path !== planReceipt?.path && path !== auditedTrail && !authored.some(f=>f.path===path)) || delta.unknown.length) {
+        if (run.tagId === "add-tests" || delta.paths.some(path => path !== planReceipt?.path && path !== auditedTrail && !authored.some(f=>f.path===path) && !advancedPaths.has(path)) || delta.unknown.length) {
           if (verification?.outcome === "workspace_changed" && verification.fingerprint === delta.fingerprint && verification.error)
             throw new Error(verification.error);
           if (!verifiedCurrentWorkspace)
             throw new Error("Current workspace needs a successful verification. Call verify with the project's focused check.");
-        } else if (!planReceipt && !auditedTrail && !authored.length && !observation(history) && !verifiedCurrentWorkspace && !run.delegates.length && !reviewed && !run.watch?.allowed) {
+        } else if (!planReceipt && !auditedTrail && !authored.length && !observation(history) && !verifiedCurrentWorkspace && !run.delegates.length && !reviewed && !run.watch?.allowed &&
+            !textOnlyPstackMethod(run.playbook) && !(run.playbook === "skill:reframe" && run.reframe?.length) &&
+            !(run.playbook === "skill:ketchup" && observedPstackStatus(history)) && !advanced.length) {
           if (verification?.passed) throw new Error("The successful check covered a different workspace version. Verify a stable current snapshot before completing.");
           throw new Error("No successful workspace observation, verification or worker receipt in this workflow.");
         }
         if ((await measureWorkspace(base, settings.thermos.fileLines, ctx.abortSignal,await authoredFiles(api,ctx,run))).fingerprint !== delta.fingerprint ||
           checkoutSha !== await verificationCheckout(base, ctx.abortSignal))
           throw new Error("Workspace changed while evaluating the completion gate; inspect the latest version.");
-        const thermosOutcome = reportedFindings ? "Thermos 独立审查已完成，代码存在待修复问题。"
+        const thermosOutcome = promptPstackMethod(run.playbook) ? "" : reportedFindings ? "Thermos 独立审查已完成，代码存在待修复问题。"
           : reasons.length ? "Thermos 审查通过（" + reasons.join("，") + "）。"
           : !settings.skills["thermo-nuclear-code-quality-review"]?.enabled ? "Thermos 未触发（任务设置已关闭质量审查）。"
           : "Thermos 未触发（变更 " + reviewedDelta.changedLines + " 行，未满足本任务启用的审查条件）。";
         return success(view(await save(async (next, tx) => { next.phase = "complete"; next.thermosOutcome = thermosOutcome;
+          if (advanced.length) next.advanced = advanced;
           if (planReceipt) {
             next.plan = planReceipt;
             await recordPstackGoalEvidence(tx, api, { kind: "delivery", path: planReceipt.path, digest: planReceipt.digest });
@@ -386,5 +454,6 @@ export function createPstackWorkflow(options: WorkflowOptions) {
   });
 
   return { tools: [workflow, createPstackDelegate(options), createPstackDecisionAppend(options), createPstackWatchTool(options), createEvalSave(options),
+    createPstackStatechartTool(options), createPstackVideoInspectTool(options),
     ...createPstackOrchestrationTools(options)], ...createPstackWorkflowHooks(options) };
 }

@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import {
   normalizePstackSettings, pstackDecisionLogPath, pstackExcludedModels, PSTACK_PLAYBOOKS, PSTACK_ROLES, PSTACK_ROLE_COUNT_MAX,
-  PSTACK_SKILLS, resolvePstackRole, THERMOS_CRITERIA, validatePstackPlan, validatePstackSettings,
+  PSTACK_SKILLS, PSTACK_UPSTREAM, PSTACK_UPSTREAM_COMMANDS, PSTACK_UPSTREAM_PLAYBOOKS, PSTACK_EXTENSION_PLAYBOOKS,
+  PSTACK_TEXT_ONLY_METHODS, PSTACK_READ_ONLY_METHODS, resolvePstackRole, THERMOS_CRITERIA, validatePstackPlan, validatePstackSettings,
 } from "../src/shared/pstack";
 import { MAX_PARALLEL_TASKS } from "../src/shared/subagent-execution-policy";
+import { codingTagRoute, codingTagSupportsRoute } from "../src/shared/pstack/coding-tags";
 
-const expectedSkills = `architect arena automate-me benchmark-checklist blast-radius bro correct create-verification-skill figure-it-out how interrogate maintain-verification-skill make-bot-ui no-comments poteto-help poteto-mode
-principle-attack-the-premise principle-boundary-discipline principle-build-the-lever principle-encode-lessons-in-structure principle-exhaust-the-design-space principle-experience-first principle-explain-the-number principle-fix-root-causes principle-foundational-thinking principle-guard-the-context-window principle-laziness-protocol principle-make-operations-idempotent principle-migrate-callers-then-delete-legacy-apis principle-minimize-reader-load principle-model-the-domain principle-never-block-on-the-human principle-outcome-oriented-execution principle-prove-it-works principle-redesign-from-first-principles principle-separate-before-serializing-shared-state principle-sequence-verifiable-units principle-subtract-before-you-add principle-test-behavior-not-implementation principle-type-system-discipline
-recall reflect setup-pstack show-me-your-work swarm tdd teach technical-writing typescript-best-practices unslop why thermo-nuclear-code-quality-review`.split(/\s+/);
-const expectedBooks = "authoring-a-skill autonomous-run autopilot-full autopilot-stack babysit bug-fix eval feature hillclimb investigation multi-phase-plan opening-a-pr orchestrate pause-safely perf-issue prototype refactoring runtime-forensics session-pickup shipping trace-forensics visual-parity worktree-cleanup".split(" ");
+const principles = "principle-attack-the-premise principle-boundary-discipline principle-build-the-lever principle-encode-lessons-in-structure principle-exhaust-the-design-space principle-experience-first principle-explain-the-number principle-fix-root-causes principle-foundational-thinking principle-guard-the-context-window principle-laziness-protocol principle-make-operations-idempotent principle-migrate-callers-then-delete-legacy-apis principle-minimize-reader-load principle-model-the-domain principle-never-block-on-the-human principle-outcome-oriented-execution principle-prove-it-works principle-redesign-from-first-principles principle-separate-before-serializing-shared-state principle-sequence-verifiable-units principle-subtract-before-you-add principle-test-behavior-not-implementation principle-type-system-discipline".split(" ");
+const expectedSkills = [...PSTACK_UPSTREAM_COMMANDS, ...principles, "thermo-nuclear-code-quality-review"];
+const expectedBooks = [...PSTACK_UPSTREAM_PLAYBOOKS, ...PSTACK_EXTENSION_PLAYBOOKS];
 const expectedRoles = "feature bug-fix perf-issue hillclimb judgment hardest how-explorer how-explainer why-investigators why-synthesizer reflect-tooling reflect-judgment arena-runners arena-cross-judge swarm-workers architect-runners interrogate-reviewers".split(" ");
 const defaults = normalizePstackSettings();
 assert.deepEqual(Object.keys(defaults.skills).sort(), expectedSkills.sort());
@@ -18,9 +19,44 @@ assert.equal(PSTACK_ROLE_COUNT_MAX, MAX_PARALLEL_TASKS);
 assert.equal(PSTACK_SKILLS.length, expectedSkills.length);
 assert.equal(PSTACK_PLAYBOOKS.length, expectedBooks.length);
 assert.equal(PSTACK_ROLES.length, expectedRoles.length);
+assert.match(PSTACK_UPSTREAM.version, /^\d+\.\d+\.\d+$/);
+assert.match(PSTACK_UPSTREAM.commit, /^[a-f\d]{40}$/);
+assert.deepEqual(PSTACK_SKILLS.filter(skill => skill.kind === "method").map(skill => skill.id).sort(), [...PSTACK_UPSTREAM_COMMANDS].sort());
+assert.equal(new Set(PSTACK_UPSTREAM_COMMANDS).size, PSTACK_UPSTREAM_COMMANDS.length);
+assert.equal(PSTACK_UPSTREAM_COMMANDS.length, 35, "Every command in the audited upstream release is represented");
+assert.equal(PSTACK_UPSTREAM_PLAYBOOKS.length, 22, "The audited upstream has 22 playbooks; native extensions are counted separately");
+assert.deepEqual([...PSTACK_EXTENSION_PLAYBOOKS], ["orchestrate"], "Native persisted orchestration remains a supported extension");
 assert.equal(THERMOS_CRITERIA.length, 8);
 assert.deepEqual(validatePstackSettings(defaults), []);
 assert.deepEqual(normalizePstackSettings(JSON.parse(JSON.stringify(defaults))), defaults);
+
+const screenshotMethods = ["reframe", "sharpen", "poteto-mode", "in-your-own-words", "arena", "interrogate", "ketchup", "correct"];
+for (const id of screenshotMethods) {
+  assert.ok(defaults.skills[id]?.enabled, `Missing screenshot method ${id}`);
+  assert.ok(PSTACK_SKILLS.find(skill => skill.id === id)?.instructions, `No callable guidance for ${id}`);
+}
+assert.deepEqual([...PSTACK_TEXT_ONLY_METHODS].sort(), ["in-your-own-words", "sharpen"], "Only supplied-text methods may finish without observed external evidence");
+for (const tag of ["readonly-explain", "plan-design", "code-review"]) {
+  for (const id of PSTACK_READ_ONLY_METHODS) assert.ok(codingTagSupportsRoute(tag, "skill:" + id), `${tag}: ${id}`);
+  assert.ok(codingTagSupportsRoute(tag, "skill:thermo-nuclear-code-quality-review"), `${tag}: read-only review`);
+  for (const route of ["feature", "bug-fix", "orchestrate", "skill:correct", "skill:ketchup-video", "skill:create-formal-verification-skill", "skill:statechart"])
+    assert.equal(codingTagSupportsRoute(tag, route), false, `${tag} must not expose a writing route: ${route}`);
+}
+assert.equal(codingTagRoute({ id: "code-review" }), "skill:thermo-nuclear-code-quality-review");
+assert.equal(codingTagRoute({ id: "code-review", pstackRoute: "skill:interrogate" }), "skill:interrogate",
+  "An explicit user route must be preserved so missing execution authority can be reported");
+const newMethodSettings = normalizePstackSettings({
+  skills: { reframe: { enabled: false }, ketchup: { enabled: false }, sharpen: { enabled: true } },
+  roles: { "architect-runners": { model: "fixture/custom", count: 4 }, "reflect-tooling": { model: "inherit-parent" } },
+  playbooks: { orchestrate: { enabled: true, parameters: { retryLimit: 4 } } },
+});
+assert.equal(newMethodSettings.skills.reframe.enabled, false);
+assert.equal(newMethodSettings.skills.ketchup.enabled, false);
+assert.equal(newMethodSettings.skills.sharpen.enabled, true);
+assert.equal(newMethodSettings.roles["architect-runners"].model, "fixture/custom");
+assert.equal(newMethodSettings.roles["reflect-tooling"].model, "inherit-parent");
+assert.equal(newMethodSettings.playbooks.orchestrate.parameters.retryLimit, 4);
+assert.deepEqual(normalizePstackSettings(JSON.parse(JSON.stringify(newMethodSettings))), newMethodSettings);
 
 for (const entry of [...PSTACK_SKILLS, ...PSTACK_PLAYBOOKS]) {
   const ids = entry.parameters.map(p => p.id);
@@ -91,4 +127,4 @@ assert.ok(validatePstackPlan(plan.replace("保存 `valid.png`。", ""), planSett
 assert.ok(validatePstackPlan(plan.replace("**Files.**", "**Wrong.**"), planSettings).length);
 assert.ok(validatePstackPlan(plan.replace("**Review gate.** None.", "**Review gate.** 用户确认"), planSettings).some(reason => reason.includes("视频")));
 assert.ok(validatePstackPlan("~~~md\n" + plan + "\n~~~", planSettings).length);
-console.log("PASS native pstack catalog: 52 skills, 23 playbooks, 17 native roles, 8 Thermos criteria, configuration and validation");
+console.log(`PASS native pstack ${PSTACK_UPSTREAM.version} catalog: ${PSTACK_SKILLS.length} skills, ${PSTACK_UPSTREAM_PLAYBOOKS.length} upstream + ${PSTACK_EXTENSION_PLAYBOOKS.length} native playbooks, ${PSTACK_ROLES.length} native roles, ${THERMOS_CRITERIA.length} Thermos criteria, configuration and validation`);

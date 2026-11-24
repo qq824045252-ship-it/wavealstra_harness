@@ -2,10 +2,10 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { z } from "zod";
 import { getFinalOutput } from "../../capabilities/subagent/shared";
-import { preparePstackDispatch } from "../PstackDispatch";
+import { prepareInterrogateDispatch, preparePstackDispatch } from "../PstackDispatch";
 import { auditParticipant, contestDispatch } from "./PstackContest";
 import { arenaSubmission, arenaSurvivors } from "./PstackArenaSubmission";
-import { resolvePstackRole } from "../../../shared/pstack";
+import { readOnlyCodingTag, resolvePstackRole } from "../../../shared/pstack";
 import { checked, criteria, failure, live, owner, playbookFor, REVIEW, reviewReasons, routeSettings, runSettings, skillView, stageRole, state, success, transcript, update, WorkflowFiles, type WorkflowOptions } from "./PstackState";
 import { measureWorkspace, reviewBaseline, reviewScope, verificationCheckout } from "./PstackWorkspace";
 import { auditPstackDecisions } from "./PstackDecisionTrail";
@@ -19,6 +19,8 @@ import { authoredFiles } from "./PstackAuthoredSkills";
 import { providerFailures, type ProviderDependency } from "./PstackProviderFailure";
 import { recordBlockedUnit } from "./PstackOrchestration";
 import { isUnitOwnerDispatch } from "./PstackOrchestrationBoard";
+import { pstackUserInstructions, withPstackWorkerContext } from "./PstackWorkerContract";
+import { collectInterrogateEvidence, INTERROGATE_EXECUTION_BRIEF } from "./PstackInterrogateEvidence";
 export { parseThermosVerdict } from "./PstackThermosVerdict";
 
 const dispatchParticipants = z.object({ results: z.array(z.object({
@@ -63,6 +65,9 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         const settings = runSettings(run), stage = playbookFor(run).stages[run.stage];
         const thermos = purpose === "thermos";
         const decisions = purpose === "decisions";
+        const interrogate = !thermos && !decisions && role === "interrogate-reviewers";
+        if (interrogate && readOnlyCodingTag(run.tagId))
+          throw new Error("Interrogate requires isolated native test execution. This read-only task has no shell/write authority, so it cannot provide an executed panel or a verified zero-finding result. Report the missing execution coverage; keep the task's existing read-only permissions.");
         if (thermos && (role !== settings.thermos.reviewerRole || !settings.skills[REVIEW]?.enabled))
           throw new Error("Thermos needs the configured, enabled reviewer role: " + settings.thermos.reviewerRole);
         if (decisions && (role !== "judgment" || !settings.skills["show-me-your-work"]?.enabled)) throw new Error("Decision audit requires the enabled decision trail and the judgment role.");
@@ -79,7 +84,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         const scoped = thermos ? await authoredFiles(api,ctx,run,undefined,true) : [];
         const delta = thermos ? await measureWorkspace(scope, settings.thermos.fileLines, ctx.abortSignal,scoped) : undefined;
         const rubric = criteria(settings);
-        const history = delta || decisions ? await transcript(api, ctx, run.first) : [];
+        const history = await transcript(api, ctx, run.first);
         const reasons = delta ? reviewReasons(settings, delta, history, run) : [];
         if (thermos && !reasons.length) return success({ dispatched: false, reasons: [], next: "Thermos is not required. Continue with the active stage." });
         const draft = thermos && run.playbook === "investigation" ? answerDraft?.replace(/\r\n?/g,"\n").trim() : undefined;
@@ -91,11 +96,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           m.role === "assistant" && m.model && m.stopReason !== "error" && m.stopReason !== "aborted" ? [m.model] : [])),
           ...run.delegates.filter(d => ["feature","bug-fix","hillclimb","perf-issue","hardest","arena-runners","swarm-workers"].includes(d.role)).flatMap(d => d.models)])] : [];
         if (audit) await api.memo(decisionAuthorsMemo, authors, ctx);
-        const userInputs = history.filter(e => e.kind === "pi.user" || e.kind === "mybuddy.user").flatMap(e => (e.model ?? []).flatMap(m => {
-          if (m.role !== "user") return [];
-          const text = typeof m.content === "string" ? m.content : m.content.flatMap(p => p.type === "text" ? [p.text] : []).join("\n");
-          return text.startsWith("[MyBuddy pstack ") ? [] : [{ id: Number(e.id), text: text.slice(0, 5000) }];
-        }));
+        const userInputs = pstackUserInstructions(history).map(({ entry, text }) => ({ id: entry, text }));
         const userRequests = userInputs.map(i => i.text), inputIds = userInputs.map(i => i.id);
         const baseline = delta && await reviewBaseline(scope, delta.paths, ctx.abortSignal,scoped);
         const panelDiff = run.tagId === "code-review" && !thermos && role === "interrogate-reviewers"
@@ -138,8 +139,10 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         ].join("\n") : [stage.instructions, ...(run.reviewCommit ? ["Compare the task changes from the recorded Git baseline " + run.reviewCommit + ", including the current working tree."] : []),
           ...(panelDiff ? ["Changed excerpts at the selected baseline: " + JSON.stringify(panelDiff)] : []),
           "Parameters: " + JSON.stringify(routeSettings(settings, run.playbook).parameters),
-          "Stage methods: " + JSON.stringify(stage.skillIds.filter(id => settings.skills[id]?.enabled).map(id => skillView(settings, id))), task].join("\n"));
-        let args = contest?.args ?? await preparePstackDispatch(settings, role, briefs, options.cwd);
+          "Stage methods: " + JSON.stringify(stage.skillIds.filter(id => settings.skills[id]?.enabled).map(id => skillView(settings, id))),
+          ...(interrogate ? [INTERROGATE_EXECUTION_BRIEF] : []), task].join("\n"));
+        let args = withPstackWorkerContext(contest?.args ?? (interrogate ? prepareInterrogateDispatch(settings, briefs, options.cwd) : preparePstackDispatch(settings, role, briefs, options.cwd)),
+          pstackUserInstructions(history), !!contest?.privatePrompt);
         if (slots?.length && retained) {
           const all = Array.isArray(args.tasks) ? args.tasks : [args];
           const repairs = slots.map(index => {
@@ -154,6 +157,7 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
         const ownerDispatch = !thermos && !decisions && isAutopilot(run.playbook) && role === "swarm-workers" &&
           (stage?.id === "owners" || await api.commit(tx => isUnitOwnerDispatch(tx, api, run, api.taskId), ctx))
           ? await api.memo("owner-dispatch-at", api.now(), ctx) : undefined;
+        const parentModel = contest && await api.agent(ctx);
         const pending = api.executeTool("subagent", args, ctx, { key: "pstack-dispatch", progress: true });
         const timing = settings.playbooks[run.playbook]?.parameters;
         const { result, latest } = ownerDispatch === undefined ? { result: await pending, latest: null }
@@ -205,8 +209,10 @@ export function createPstackDelegate(options: WorkflowOptions): ToolRegistration
           return files && Object.keys(files).length ? text + "\n\n" + JSON.stringify({ files }) : text;
         }));
         if (answers.some(answer => !answer.trim())) throw new Error("A worker did not return an answer.");
-        contest?.check(models, answers);
+        contest?.check(models, answers, parentModel?.model ? `${parentModel.model.provider}/${parentModel.model.modelId}` : undefined);
+        const interrogation = interrogate ? await collectInterrogateEvidence(records, options.cwd, options.taskId, ctx.abortSignal) : undefined;
         const receipt = { stage: run.stage, stageId: stage?.id ?? "", role, toolTaskId: Number(result.taskId), children: ids, models, answers: contest ? answers : answers.map(a => a.slice(0, 12_000)),
+          ...(interrogation && { interrogate: interrogation }),
           ...(observations && { participants: observations.map(o => o.audit) }),
           ...(partial?.dropouts.length && { dropouts: partial.dropouts }),
           ...(latest && { ownerAudit: latest }), ...(ownerDispatch !== undefined && { ownerReports: ownerReports(result.details, ownerDispatch,

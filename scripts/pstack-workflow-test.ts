@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -48,10 +49,17 @@ import { TaskFileAccessPolicy } from "../src/main/security/TaskFileAccessPolicy"
 const exec = promisify(execFile), root = await mkdtemp(join(tmpdir(), "mybuddy-pstack-"));
 const model: Model<"openai-completions"> = { id: "fixture", name: "Fixture", provider: "fixture", api: "openai-completions", baseUrl: "http://fixture.invalid",
   reasoning: false, input: ["text"], contextWindow: 128_000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-type Call = { name: string; id?: string; arguments: Record<string, string | string[] | boolean | Record<string, string>> };
-const work = (action: string, fields: Record<string, string | boolean> = {}): Call => ({ name: "pstack_workflow", arguments: { action, ...fields } });
+type Call = { name: string; id?: string; arguments: Record<string, string | string[] | boolean | Record<string, string> | Record<string, string>[]> };
+const work = (action: string, fields: Record<string, string | boolean | Record<string, string>[]> = {}): Call => ({ name: "pstack_workflow", arguments: { action, ...fields } });
 const queue: Call[] = [];
 let serial = 0, replies = 0, enabled = true;
+const fetchedPaths: string[] = [];
+const sourceServer = createServer((request, response) => {
+  fetchedPaths.push(request.url ?? "");
+  if (request.url === "/missing") { response.writeHead(404); response.end("Missing fixture source"); return; }
+  response.writeHead(200, { "content-type": "text/plain" });
+  response.end("Verified fixture source for " + request.url + ": a term describing an observable system behavior.");
+});
 const models = { getModel: () => model, getAuth: async () => undefined, streamSimple() {
   const stream = createAssistantMessageEventStream(), call = queue.shift();
   const base: AssistantMessage = { role: "assistant", api: model.api, model: model.id, provider: model.provider, timestamp: Date.now(), content: [],
@@ -89,7 +97,7 @@ async function testProjectVerification() {
     getPolicy: () => new TaskFileAccessPolicy({ taskId, taskRoot: cwd }) });
   const observe = defineTool({ name: "fixture_project_proof", description: "Read current proof", replay: "safe",
     parameters: Type.Object({}), async execute(_args, api, context) {
-      const proof = await readCurrentProjectVerification(api, context, cwd, [test]);
+      const proof = await readCurrentProjectVerification(api, context, cwd, [test], { [test]: ["npm"] });
       return { output: [{ type: "text", text: JSON.stringify(proof) }] };
     } });
   const open = () => DurableBotRuntime.open({ directory: join(root, `${taskId}-store`), cwd, models, model: { provider: model.provider, modelId: model.id },
@@ -99,7 +107,7 @@ async function testProjectVerification() {
   let run = 0;
   async function invoke(script?: string, args?: string[]) {
     const name = script ? PROJECT_VERIFY_TOOL : observe.name;
-    queue.push({ name, arguments: script ? { script, ...(args && { args }) } : {} });
+    queue.push({ name, arguments: script ? { script, manager: "npm", ...(args && { args }) } : {} });
     assert.equal((await (await runtime.submit("Check project", `check-${++run}`)).wait(ctx)).status, "done");
     const entries = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id, order: "ascending" }, 250), ctx);
     const latest = entries.items.flatMap(e => e.model ?? []).filter(m => m.role === "toolResult" && m.toolName === name).at(-1);
@@ -292,6 +300,21 @@ try {
 
   const settings = normalizePstackSettings({});
   const host = createPstackWorkflow({ taskId: "pstack-fixture", cwd, settings: () => settings, active: () => enabled });
+  await new Promise<void>(resolve => sourceServer.listen(0, "127.0.0.1", resolve));
+  const sourceAddress = sourceServer.address();
+  assert(sourceAddress && typeof sourceAddress === "object");
+  const sourceBase = "http://127.0.0.1:" + sourceAddress.port;
+  const fetchSources = defineTool({ name: "fetch_content", description: "Fetch local source fixtures", replay: "safe",
+    parameters: Type.Object({ urls: Type.Array(Type.String()) }), async execute({ urls }) {
+      const results = await Promise.all(urls.map(async url => {
+        assert(url.startsWith(sourceBase + "/"), "Source fixtures only fetch this local HTTP server");
+        const response = await fetch(url);
+        const content = await response.text();
+        return { url, content, error: response.ok ? "" : "HTTP " + response.status };
+      }));
+      return { output: [{ type: "text", text: JSON.stringify(results) }], details: { results } };
+    },
+  });
   const acceptedChecks: Array<Awaited<ReturnType<typeof readGoalObservations>>["observations"][number]["checkIdentity"]> = [];
   const rejectedChecks: string[] = [];
   const observe = defineTool({ name: "fixture_observe_goal_check", description: "Resolve this Goal's quoted check", replay: "safe",
@@ -309,7 +332,7 @@ try {
     },
   });
   const open = () => DurableBotRuntime.open({ directory: join(root, "store"), cwd, models, model: { provider: model.provider, modelId: model.id },
-    toolMode: "native", instructions: () => "Fixture", tools: [...host.tools, observe], foregroundHooks: host, onSnapshot: () => {} });
+    toolMode: "native", instructions: () => "Fixture", tools: [...host.tools, observe, fetchSources], foregroundHooks: host, onSnapshot: () => {} });
   let runtime = await open();
   const status = () => runtime.harness.snapshot(WorkflowState, runtime.conversation.id, ctx);
   async function turn(input: string, id: string, calls: Call[]) {
@@ -482,11 +505,25 @@ try {
       { name: "read", arguments: { path: "compare.cjs" } },
     ])).status, "done", "a running workflow does not take over an unrelated input");
     assert.equal((await status())?.run?.run, pendingRun);
-    const nested = await turn("Investigate a new change", "nested-route", [work("start", { playbook: "feature", replace: true, note: "Switch to the new feature." }), work("invoke", { skill: "how" }),
-      work("advance", { stage: "trace", note: "Attempt to skip nested stages" }), work("advance", { stage: "trace::how::scope", note: "Bound the investigation" }),
-      work("block", { note: "Need a second investigator" })]);
+    const beforeKetchup = await status();
+    const ketchupTurn = await turn("Give me a read-only ketchup update without interrupting the current task.", "ketchup-active", [
+      work("skill", { skill: "ketchup" }), work("status"),
+    ]);
+    assert.equal(ketchupTurn.status, "done");
+    assert.deepEqual(await status(), beforeKetchup, "ketchup guidance must not replace, bind a new input to, or advance the active workflow");
+    const ketchupHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+      minEntryId: ketchupTurn.entry, order: "ascending" }, 30), ctx);
+    const ketchupPayload = ketchupHistory.items.flatMap(entry => entry.model ?? []).flatMap(message =>
+      message.role === "toolResult" && message.toolName === "pstack_workflow" && !message.isError
+        ? message.content.flatMap(part => part.type === "text" ? [JSON.parse(part.text)] : []) : [])
+      .find(result => result.currentWorkflow);
+    assert.equal(ketchupPayload?.currentWorkflow.run, pendingRun);
+    assert.equal(ketchupPayload?.currentWorkflow.phase, "running");
+    const nested = await turn("Investigate a new change", "nested-route", [work("start", { playbook: "feature", replace: true, note: "Switch to the new feature." }), work("invoke", { skill: "why" }),
+      work("advance", { stage: "trace", note: "Attempt to skip nested stages" }), work("advance", { stage: "trace::why::target", note: "Bound the historical decision" }),
+      work("block", { note: "Need the introducing change record" })]);
     assert.equal(nested.status, "done"); assert.equal((await status())!.run!.stage, 1);
-    assert.deepEqual((await status())!.run!.invoked, [{ stage: "trace", skill: "how" }]);
+    assert.deepEqual((await status())!.run!.invoked, [{ stage: "trace", skill: "why" }]);
     const readOnly = await turn("只调查标签是怎样去重的，在聊天中解释。", "readonly-investigation", [
       work("start", { playbook: "investigation", replace: true, note: "The user selected a new read-only investigation." }),
       { name: "write", arguments: { path: "unsolicited-report.md", content: "report" } },
@@ -547,6 +584,70 @@ try {
     assert.deepEqual(currentVerificationEvidence(newHead, newHead.verification!.fingerprint, [], newHead.verification!.checkIdentity!.checkoutSha)
       .map(check => check.checkIdentity?.toolTaskId), [newHead.verification?.toolTaskId]);
     console.log("PASS same-tree checkout change invalidates the previous receipt through native workflow completion and review");
+    const promptOutputs: Record<string, Record<string, string>> = {
+      "in-your-own-words": { restate: "You want a rewritten import requirement that preserves empty values. The problem is ambiguous treatment of missing input; this step only restates that intent." },
+      sharpen: {
+        standard: "Specify empty-value semantics at the public import boundary and distinguish absent, null and empty string.",
+        material: "Begin with the supplied user requirement, then ask the executing agent to inspect real input samples and the parser entry point.",
+        methods: "Use a small input matrix and trace each value through the public parser contract.",
+        evidence: "Verify against actual caller outcomes and a failing then passing boundary assertion.",
+        rewrite: "Implement the smallest importer change preserving absent, null and empty string semantics; prototype disputed interpretations, recommend from evidence, and prove the chosen behavior through the public entry point.",
+      },
+    };
+    for (const [method, outputs] of Object.entries(promptOutputs)) {
+      const textRun = await turn("Only rewrite this requirement: support empty input values. Do not implement the task.", "prompt-" + method, [
+        work("start", { skill: method }),
+        { name: "write", arguments: { path: "prompt-method-write.txt", content: "An unauthorized implementation" } },
+        ...Object.entries(outputs).map(([stage, note]) => work("advance", { stage, note })), work("complete"),
+      ]);
+      assert.equal(textRun.status, "done", JSON.stringify(textRun));
+      const promptRun = (await status())!.run!;
+      assert.equal(promptRun.phase, "complete", method);
+      assert.equal(promptRun.verification, null, "Supplied-text methods do not need an artificial workspace check");
+      assert.deepEqual(promptRun.delegates, []);
+      assert.equal(promptRun.thermosOutcome, "", "A prompt rewrite does not add a code review claim");
+      await assert.rejects(readFile(join(cwd, "prompt-method-write.txt")), { code: "ENOENT" });
+      const promptHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+        minEntryId: promptRun.first, order: "ascending" }, 100), ctx);
+      const promptResults = promptHistory.items.flatMap(entry => entry.model ?? []).filter(message => message.role === "toolResult");
+      assert(promptResults.some(message => message.toolName === "write" && message.isError));
+      assert(promptResults.filter(message => !message.isError).every(message => message.toolName === "pstack_workflow"),
+        "The prompt method completed without workspace observations, verification or worker receipts");
+    }
+    const sources = Array.from({ length: 8 }, (_, index) => ({ term: "Term " + index, url: sourceBase + "/term-" + index }));
+    const failedSources = [...sources.slice(0, 7), { term: "Term 7", url: sourceBase + "/missing" }];
+    const reframeTurn = await turn("Reframe this request using actual source terminology without implementing it.", "prompt-reframe", [
+      work("start", { skill: "reframe" }), advance("ambiguity"),
+      work("advance", { stage: "terms", note: "Eight terms with alleged sources", sources }),
+      { name: "fetch_content", arguments: { urls: failedSources.map(source => source.url) } },
+      work("advance", { stage: "terms", note: "One of these source pages returned 404", sources: failedSources }),
+      { name: "fetch_content", arguments: { urls: [sources[7].url] } },
+      work("advance", { stage: "terms", note: "Eight source-backed terms describe observable system behavior", sources }),
+      advance("neighbors"), advance("gaps"), advance("rewrite"), work("complete"),
+    ]);
+    const reframed = (await status())!.run!;
+    const reframeHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+      minEntryId: reframed.first, order: "ascending" }, 100), ctx);
+    const sourceErrors = reframeHistory.items.flatMap(entry => entry.model ?? []).flatMap(message =>
+      message.role === "toolResult" && message.isError ? message.content.flatMap(part => part.type === "text" ? [part.text] : []) : []);
+    assert.equal(reframeTurn.status, "done", JSON.stringify({ reframeTurn, stage: reframed.stage, reframe: reframed.reframe, sourceErrors }));
+    assert.equal(reframed.phase, "complete");
+    assert.deepEqual(reframed.reframe, [{ stageId: "terms", sources }]);
+    assert.equal(sourceErrors.filter(error => error.includes("no successful fetch_content receipt")).length, 2,
+      "Unopened URLs and failed batch members must both be rejected before the terms phase advances");
+    assert.deepEqual([...fetchedPaths].sort(), [...Array.from({ length: 8 }, (_, index) => "/term-" + index), "/missing"].sort());
+    const ketchupStandalone = await turn("Summarize the latest completed work with ketchup.", "ketchup-standalone", [
+      work("start", { skill: "ketchup" }), advance("gather"), work("status"), advance("gather"),
+      advance("changes"), advance("decisions"), work("complete"),
+    ]);
+    assert.equal(ketchupStandalone.status, "done", JSON.stringify(ketchupStandalone));
+    assert.equal((await status())!.run!.phase, "complete");
+    const ketchupStandaloneHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+      minEntryId: ketchupStandalone.entry, order: "ascending" }, 60), ctx);
+    assert(ketchupStandaloneHistory.items.some(entry => entry.model?.some(message => message.role === "toolResult" && message.isError &&
+      message.content.some(part => part.type === "text" && part.text.includes("Read the current workflow status or actual workspace evidence")))),
+      "ketchup cannot claim current progress before reading status or actual evidence");
+    console.log("PASS text-only prompt completion, blocked implementation, fetched reframe sources, read-only ketchup snapshot and current-status gate");
     enabled = false;
     assert.equal((await turn("Question", "run-5", [])).status, "done");
     console.log("PASS actual read receipt, independent next workflow, bounded native onYield and disabled task");
@@ -599,5 +700,8 @@ try {
       console.log("PASS assessed installed skill uses its pre-edit fingerprint after durable reopen; unrelated files stay out of review");
     } finally {await auth.close();}
   } finally { for (const [key,value] of Object.entries(originalEnv)) if(value===undefined) delete process.env[key]; else process.env[key]=value; }
-} finally { await rm(root, { recursive: true, force: true }); }
+} finally {
+  if (sourceServer.listening) await new Promise<void>((resolve, reject) => sourceServer.close(error => error ? reject(error) : resolve()));
+  await rm(root, { recursive: true, force: true });
+}
 await testInFlightOwners();

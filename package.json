@@ -315,6 +315,10 @@
     "test:pstack-orchestration": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-orchestration-test.ts",
     "test:pstack-decision-trail": "esbuild scripts/pstack-decision-trail-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/pstack-decision-trail-test.mjs && node scripts/test-guard.mjs out/tests/pstack-decision-trail-test.mjs",
     "test:pstack-catalog": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-catalog-test.ts",
+    "test:pstack-worker-contract": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-worker-contract-test.ts",
+    "test:pstack-interrogate": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-interrogate-test.ts",
+    "test:pstack-advanced-artifacts": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-advanced-artifacts-test.ts",
+    "test:pstack-statechart": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-statechart-test.ts",
     "test:pstack-eval": "node scripts/test-guard.mjs node --import ./scripts/headless-source-test-hooks.mjs scripts/pstack-eval-test.ts",
     "test:pstack-workflow": "esbuild scripts/pstack-workflow-test.ts --bundle --platform=node --format=esm --packages=external --alias:electron=./scripts/arch-electron-stub.ts --outfile=out/tests/pstack-workflow-test.mjs && node scripts/test-guard.mjs out/tests/pstack-workflow-test.mjs",
     "test:cron-scheduling": "esbuild scripts/cron-scheduling-test.ts --bundle --platform=node --format=cjs --outfile=out/tests/cron-scheduling-test.cjs --external:better-sqlite3 --alias:electron=./scripts/gateway-electron-stub.ts && node scripts/test-guard.mjs out/tests/cron-scheduling-test.cjs",
@@ -855,6 +859,7 @@
     "extraResources": [
       { "from": "out/native/${os}-${arch}", "to": "runtime-audit", "filter": ["mybuddy-runtime-audit", "mybuddy-runtime-audit.exe"] },
       { "from": "builtin-skills/mybuddy", "to": "builtin-skills/mybuddy" },
+      { "from": "vendor/pstack-statechart", "to": "pstack-statechart" },
       { "from": "vendor/canban-review", "to": "licenses/canban-review", "filter": ["LICENSE", "licenses/**/*", "SOURCE.md"] },
       { "from": "vendor/craft-office/assets", "to": "office-editor/craft-assets", "filter": ["**/*", "!native/**"] },
       { "from": "vendor/craft-office/assets/native/${os}-${arch}", "to": "office-editor/native" },

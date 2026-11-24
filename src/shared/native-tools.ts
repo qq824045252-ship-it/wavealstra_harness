@@ -13,6 +13,7 @@
 import { OFFICE_USE_TOOLS } from "./office-use";
 import { CAD_USE_TOOLS } from "./cadcraft";
 import { DRAWIO_USE_TOOLS } from "./drawio-use";
+import { PSTACK_FOREGROUND_TOOLS } from "./pstack/tool-names";
 
 /** pi 内置工具（SDK 自带，非 MCP） */
 export const PI_BUILTIN_TOOL_NAMES = [
@@ -68,6 +69,7 @@ export const NATIVE_CAPABILITY_TOOL_NAMES = [
 
 /** Product-owned ExtensionFactory tools. Exact names only: never use provider-like prefixes here. */
 export const MYBUDDY_NATIVE_EXTENSION_TOOL_NAMES = [
+  ...PSTACK_FOREGROUND_TOOLS,
   // Conversation runtime
   "request_user_input",
   "conversation_goal_get",
@@ -167,6 +169,8 @@ export const MUTATING_BUILTIN_TOOLS = [
   "video_generate",
   "text_to_speech",
   "skill_authoring_create",
+  "pstack_statechart",
+  "pstack_video_inspect",
   "project_notes_save",
   "workspace_notes_save",
   OFFICE_USE_TOOLS.selectionPropose,

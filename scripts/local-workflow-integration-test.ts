@@ -105,13 +105,25 @@ const reviewRounds = new Map<string, number>();
 const acceptedDraft = "The first line of tested.txt contains verified.";
 const draftReview = (answerDraft: string): [string, Record<string, unknown>] =>
   ["pstack_delegate",{purpose:"thermos",role:"interrogate-reviewers",tasks:["Check my explanation."],answerDraft}];
+const draftStage = (role: string): [string, Record<string, unknown>] =>
+  ["pstack_delegate",{purpose:"stage",role,tasks:["PSTACK_DRAFT_STAGE Read tested.txt and report the exact first line."]}];
+const draftAdvance = (stage: string): [string, Record<string, unknown>] =>
+  ["pstack_workflow",{action:"advance",stage,note:"Inspected tested.txt."}];
 const draftCalls: [string, Record<string, unknown>][] = [
   ["pstack_workflow",{action:"start",playbook:"investigation"}],["read",{path:"tested.txt"}],
-  ...["trace","scope","explain","edit"].map(stage => ["pstack_workflow",{action:"advance",stage,note:"Inspected tested.txt."}] as [string,Record<string,unknown>]),
+  draftStage("how-explorer"), draftAdvance("trace"), draftAdvance("scope"),
+  draftStage("how-explainer"), draftAdvance("explain"), draftAdvance("edit"),
   draftReview("The first line contains red."), draftReview("The first line contains red."), ["pstack_workflow",{action:"complete"}],
   draftReview(acceptedDraft), ["pstack_workflow",{action:"complete"}],
 ];
-let draftRound=0, draftReads=0;
+let draftRound=0, draftReads=0, draftStageReads=0;
+const readOnlyInterrogateCalls: [string, Record<string, unknown>][] = [
+  ["pstack_workflow", {action:"start"}],
+  ...["scope","intent"].map(stage => ["pstack_workflow", {action:"advance",stage,note:"Review the preserved source without changing permissions."}] as [string,Record<string,unknown>]),
+  ["pstack_delegate", {purpose:"stage",role:"interrogate-reviewers",tasks:["Run a reproduction for the proposed source change."]}],
+  ["pstack_workflow", {action:"block",note:"Interrogate needs isolated test execution; this task retains its read-only permissions. Use the default read-only Thermos review or a coding task authorized to execute tests."}],
+];
+let readOnlyInterrogateRound=0;
 let quotaRound=0, billedCalls=0;
 const quotaCalls: [string,Record<string,unknown>][] = [
   ["pstack_workflow",{action:"start",skill:"principle-prove-it-works"}],
@@ -158,6 +170,14 @@ const server = createServer(async (request, response) => {
       return;
     } else if (!body.input.some((item:{type:string})=>item.type==="function_call_output")) call=["read",{path:"tested.txt"}];
     else answer=JSON.stringify({verdict:"pass",findings:[],checks:Object.fromEntries(THERMOS_CRITERIA.map(c=>[c.id,"Read line 1."]))});
+  } else if (raw.includes("PSTACK_INTERROGATE_READONLY")) {
+    if (body.model === "cron") call=readOnlyInterrogateCalls[readOnlyInterrogateRound++];
+    answer="Execution coverage is blocked by the current read-only task.";
+  } else if (raw.includes("PSTACK_DRAFT_STAGE") && body.model !== "cron") {
+    if (!body.input.some((item:{type:string}) => item.type === "function_call_output")) {
+      call=["read",{path:"tested.txt"}]; draftStageReads++;
+    }
+    answer="Read tested.txt: its first line is verified.";
   } else if (raw.includes("PSTACK_DRAFT_CASE") && body.model !== "cron") {
     if (!body.input.some((item:{type:string}) => item.type === "function_call_output")) {
       call=["read",{path:"tested.txt"}]; draftReads++;
@@ -343,12 +363,14 @@ try {
   console.log("PASS native orchestration dependency, real nested child, unit verification, inbox drain and ordered frontier");
   const draftFlow=structuredClone(flow);
   for(const method of ["how","why","unslop"]) draftFlow.skills[method].enabled=false;
+  draftFlow.roles["how-explainer"].model="fixture/observer";
   agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,pstackThermos:draftFlow});
   const draftRoot=workspaces.ensureTaskExecutionWorkspace("draft");
   writeFileSync(join(draftRoot,"tested.txt"),"verified\n");
   db.upsertTask({id:"draft",title:"Reviewed answer",welcomeMode:"coding",modePresetId:"readonly-explain",modelId:request.modelId,updatedAt:1});
   await agent.prompt({...request,modePresetId:"readonly-explain",taskId:"draft",text:"PSTACK_DRAFT_CASE Read tested.txt. 请独立审查结论。",userMessageId:"draft-in",assistantMessageId:"draft-out"},{durableAdmissionOnly:false});
   assert.equal(draftReads,4,"Each of two different drafts must get two independent file reads. Repeating a rejected draft must reuse its verdict.");
+  assert.equal(draftStageReads,2,"The direct investigation stages require their own actual read-only worker receipts.");
   const draftDb=new DatabaseSync(join(config,"durable",createHash("sha256").update("draft").digest("hex"),"durable.sqlite"),{readOnly:true});
   try {
     const rows=draftDb.prepare("SELECT record FROM entries WHERE conversation_id=(SELECT MIN(id) FROM conversations) ORDER BY id DESC").all();
@@ -409,6 +431,25 @@ try {
   const presetFile = process.env.MYBUDDY_CODING_TAGS_FIXTURE;
   const tagPresets = presetFile ? JSON.parse(readFileSync(presetFile, "utf8")) :
     [...coding.policy.presets ?? [], { id:"web-html", label:"HTML 开发", pstackRoute:"feature", promptAddon:"Use Modern Web Guidance." }];
+  const explicitInterrogatePresets=tagPresets.map((preset: {id:string}) => preset.id === "code-review" ? {...preset,pstackRoute:"skill:interrogate"} : preset);
+  agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...explicitInterrogatePresets,legacy],pstackThermos:tagFlow});
+  const explicitReviewTask="interrogate-readonly", explicitReviewRoot=workspaces.ensureTaskExecutionWorkspace(explicitReviewTask);
+  writeFileSync(join(explicitReviewRoot,"tested.txt"),"verified\n");
+  db.upsertTask({id:explicitReviewTask,title:"Explicit executed review without shell permission",cwd:explicitReviewRoot,
+    welcomeMode:"coding",modePresetId:"code-review",modelId:request.modelId,updatedAt:1});
+  const explicitReviewStart=requests.length;
+  await agent.prompt({...request,modePresetId:"code-review",taskId:explicitReviewTask,text:"PSTACK_INTERROGATE_READONLY Review using my explicitly selected interrogate route.",
+    userMessageId:"interrogate-readonly-in",assistantMessageId:"interrogate-readonly-out"},{durableAdmissionOnly:false});
+  const explicitReviewBodies=requests.slice(explicitReviewStart).map(raw=>JSON.parse(raw));
+  const explicitReviewOutputs=explicitReviewBodies.flatMap(body=>body.input ?? []).filter(item=>item.type==="function_call_output").map(item=>String(item.output));
+  assert(explicitReviewOutputs.some(output=>output.includes("This read-only task has no shell/write authority")));
+  assert(explicitReviewOutputs.some(output=>{try {const result=JSON.parse(output);return result.playbook==="skill:interrogate" && result.phase==="blocked";}catch{return false;}}));
+  assert(explicitReviewBodies.every(body=>body.model==="cron"),"A denied execution-backed panel must not dispatch a static reviewer and claim coverage");
+  assert(!explicitReviewBodies[0].tools.some((tool:{name:string})=>["write","edit","bash","powershell"].includes(tool.name)));
+  assert.equal(agent.getModeProfile("coding").policy.presets?.find(preset=>preset.id==="code-review")?.pstackRoute,"skill:interrogate",
+    "An explicitly saved route remains unchanged when its execution authority is unavailable");
+  await agent.releaseDurableTask(explicitReviewTask);
+  console.log("PASS explicit interrogate route reports missing execution authority and preserves read-only task permissions");
   agent.saveModePolicy("coding",{...agent.getModeProfile("coding").policy,presets:[...tagPresets,legacy],pstackThermos:tagFlow});
   for (const [id, preferred] of tagCases) {
     const taskId = "tag-" + id, cwd = workspaces.ensureTaskExecutionWorkspace(taskId);

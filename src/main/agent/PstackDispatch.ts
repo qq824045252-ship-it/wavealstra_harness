@@ -8,6 +8,8 @@ import { playbookFor } from "./pstack/PstackState";
 import { authorRole, candidateReceipt, contestStep, readerRole } from "./pstack/PstackContest";
 import { chooseContestModels, chooseDecisionReviewers, type ContestScope } from "./pstack/PstackContestModels";
 import { decisionAuthorsMemo } from "./pstack/PstackAttention";
+import { PSTACK_WORKER_CONTRACT } from "./pstack/PstackWorkerContract";
+import { INTERROGATE_ADVERSARY_ROLE, INTERROGATE_EXECUTION_BRIEF } from "./pstack/PstackInterrogateEvidence";
 
 const implementationRoles = new Set(["feature", "bug-fix", "perf-issue", "hillclimb", "hardest", "arena-runners", "swarm-workers"]);
 
@@ -16,14 +18,20 @@ export const pstackWorkerRoles: BuiltinSubagentRole[] = PSTACK_ROLES.map(role =>
   description: role.label,
   source: "builtin",
   readOnly: !implementationRoles.has(role.id),
-  systemPrompt: `你是 MyBuddy 代码开发流程的${role.label}。\n${role.description}\n报告依据、结论和仍未确认的部分。`,
+  systemPrompt: `${PSTACK_WORKER_CONTRACT}\n\n你是 MyBuddy 代码开发流程的${role.label}。\n${role.description}\n报告依据、结论和仍未确认的部分。`,
 }));
+
+const interrogateAdversary: BuiltinSubagentRole = {
+  name: INTERROGATE_ADVERSARY_ROLE, description: "Execute isolated adversarial probes without modifying reviewed source",
+  source: "builtin", readOnly: false, executionReview: true,
+  systemPrompt: PSTACK_WORKER_CONTRACT + "\n\n" + INTERROGATE_EXECUTION_BRIEF,
+};
 
 export function pstackSubagentOptions(taskId: string, settings: PstackSettings) {
   const privateRoles: BuiltinSubagentRole[] = [authorRole, readerRole].map(name => ({ name, source: "builtin", readOnly: true,
     privateBrief: true, draftDocuments: name === authorRole, description: "Independent project contributor",
     systemPrompt: name === authorRole ? "Complete the user's request directly. Use project_document for any project files you need to read or create." : "Complete the user's request directly." }));
-  return { builtinRoles: [...pstackWorkerRoles, ...privateRoles], privateParticipants: async (agents: string[], scope: ContestScope, api: ToolExecutionApi, ctx: Context) => {
+  return { builtinRoles: [...pstackWorkerRoles, interrogateAdversary, ...privateRoles], privateParticipants: async (agents: string[], scope: ContestScope, api: ToolExecutionApi, ctx: Context) => {
     if (agents.every(name => name === "pstack-judgment")) {
       const nested = await api.getTask(api.taskId, ctx);
       const parent = nested?.owner && await api.getTask(nested.owner, ctx);
@@ -72,4 +80,12 @@ export function preparePstackDispatch(settings: PstackSettings, role: string, ta
     return item;
   });
   return count === 1 ? items[0]! : { tasks: items };
+}
+
+/** Thermos remains a read-only role. Only an Interrogate stage receives the
+ * separate execution-review role, and shared fallback is never permitted. */
+export function prepareInterrogateDispatch(settings: PstackSettings, tasks: string[], cwd: string): JsonObject {
+  const ordinary = preparePstackDispatch(settings, "interrogate-reviewers", tasks, cwd);
+  const isolate = (item: JsonObject): JsonObject => ({ ...item, agent: INTERROGATE_ADVERSARY_ROLE, isolation: "worktree" });
+  return Array.isArray(ordinary.tasks) ? { tasks: (ordinary.tasks as JsonObject[]).map(isolate) } : isolate(ordinary);
 }
