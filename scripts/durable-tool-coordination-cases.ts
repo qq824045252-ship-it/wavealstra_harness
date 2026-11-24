@@ -117,9 +117,10 @@ async function verifyResourceLeases(cwd: string, conversation: Conversation): Pr
     const after = run("read", { path: target }, async () => { started = true; assert.equal(await readFile(target, "utf8"), name); });
     await run("web_search", { query: "independent network query" }, async () => {});
     await run("conversation_goal_get", { taskId: "held-operation" }, async () => {});
-    const actions = ["board", "task", "steer", "pause", "stop"];
+    const actions = ["find_tasks", "task", "steer", "pause", "stop"];
     const completed: string[] = [];
-    const controls = actions.map(action => run("dots_action", { action, targetTaskId: "held-operation" }, async () => {
+    const controls = actions.map(action => run("dots_action", action === "find_tasks" ? { action, query: "held-operation" } :
+      { action, targetTaskId: "held-operation" }, async () => {
       completed.push(action);
     }));
     const readThroughDots = run("dots_action", { action: "read_file", path: target }, async () => { started = true; });

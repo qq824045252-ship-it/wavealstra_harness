@@ -2,6 +2,10 @@ if (process.argv.includes("--responsibility") || process.argv.includes("--respon
   require("./dots-responsibility-desktop-test.cjs");
   return;
 }
+if (process.argv.includes("--task-routing") || process.argv.includes("--task-routing-live")) {
+  require("./dots-task-routing-desktop-test.cjs");
+  return;
+}
 if (process.argv.includes("--bounded") || process.argv.includes("--bounded-live")) {
   require("./dots-bounded-desktop-test.cjs");
   return;

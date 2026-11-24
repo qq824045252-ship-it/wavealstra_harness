@@ -1,5 +1,6 @@
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsCapabilityRequirement } from "../../shared/dots";
-import { DotsCapabilityUnavailable } from "../dots/DotsCapabilityRequirements";
+import { DotsCapabilityUnavailable, type DotsExecutionCatalog, type DotsExecutionConfiguration } from "../dots/DotsCapabilityRequirements";
+import { assertDotsWorkCompletion, dotsProjectTestCheck } from "../dots/DotsCompletion";
 import { DOTS_DESKTOP_PREVIEW, dotsOperationEnabled, resolveDotsPreferences } from "../../shared/dots-settings";
 import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
@@ -2186,12 +2187,15 @@ export class AgentService {
     const workerTools = dots && this.dotsWorkerActive(task.id) ? [createDurableDotsWorker(task.id,
       (id, operation) => dots.isActiveWorkerOperation(id, operation),
       (id, operation, dependency) => dots.validateWorkerDependency(id, operation, dependency),
-      async ({ checks, commitSha }, api, context, operationId) => {
+      async ({ checks, commitSha, completedItems }, api, context, operationId) => {
         const contract = dots.completionRequirements(task.id, operationId);
         const required = [...new Set([...(contract?.checks ?? []), ...(checks ?? [])])];
+        if (contract) assertDotsWorkCompletion(contract, completedItems);
+        if (contract?.requireTests && !required.some(dotsProjectTestCheck))
+          throw new Error("原交办要求运行相关测试，请用 project_verify，并在 checks 中提供通过的测试脚本名。");
         if (contract?.requireCommit && !commitSha) throw new Error("原交办要求提交，请提供已完成的本地提交 SHA。");
         if (!required.length && !commitSha) return {};
-        const evidence = await readCurrentProjectVerification(api, context, cwd, required);
+        const evidence = await readCurrentProjectVerification(api, context, cwd, required, contract.checkManagers);
         const missing = required.filter(script => !evidence.verified.includes(script));
         if (missing.length) throw new Error("当前版本缺少通过的验收回执：" + missing.join("、"));
         if (commitSha && (!evidence.clean || !evidence.head.startsWith(commitSha.toLowerCase())))
@@ -2298,28 +2302,63 @@ export class AgentService {
     return modelId;
   }
 
-  /** Check the candidate's existing configuration before recording a new delegation. */
+  listDotsExecutionConfigurations(spaceId: string): DotsExecutionCatalog {
+    const cwd = this.db.resolveWorkspaceExecutionPath(spaceId, { requireExisting: true });
+    if (!cwd) throw new Error("需要已绑定的工作空间目录。");
+    const activeConnectors = this.connectorsService.list().filter(item => this.connectorsService.isActive(item.id));
+    const eligibleConnectors = new Set<string>();
+    const profiles = this.listModeProfiles();
+    const modes = profiles.map(({ id, labelZh }) => {
+      const profile = this.modeProfiles.getProfile(id);
+      const { capabilities, skillFilter, mcpFilter } = this.assembleModePreview({
+        spaceId, cwd, welcomeMode: id, connectorIds: activeConnectors.map(item => item.id),
+      });
+      for (const item of capabilities ?? []) if (item.kind === "connector" && item.enabled) eligibleConnectors.add(item.id);
+      return { id, label: labelZh, presets: (profile.policy.presets ?? []).map(({ id, label }) => ({ id, label })),
+        skills: skillFilter.visible, mcp: mcpFilter.enabled };
+    });
+    const experts = this.listExperts().filter(expert => expert.installed && expert.enabled && profiles.some(({ id }) =>
+      resolveRuntimeContextPolicy({ welcomeMode: id, profile: this.modeProfiles.getProfile(id), projectContext: null,
+        expertId: expert.id, expertGloballyEnabled: this.expertsService.isRuntimeAvailable(expert.id) }).expertDecision?.enabled));
+    return { defaultMode: resolveWelcomeMode(), modes,
+      experts: experts.map(({ id, name }) => ({ id, label: name })),
+      connectors: activeConnectors.filter(({ id }) => eligibleConnectors.has(id)).map(({ id, name }) => ({ id, label: name })) };
+  }
+
+  /** Check the selected configuration before admitting work. */
   async assertDelegationAdmissible(spaceId: string | undefined, options?: {
     taskId?: string;
     requiredCapabilities?: readonly DotsCapabilityRequirement[];
+    configuration?: DotsExecutionConfiguration;
   }): Promise<void> {
     const task = options?.taskId ? this.db.getTask(options.taskId) : null;
     if (options?.taskId && !task) throw new Error("原任务不存在");
+    const configuration = options?.configuration;
+    if (task && configuration) throw new Error("原任务沿用已保存的执行配置。");
     const cwd = task?.cwd ?? (spaceId ? this.db.resolveWorkspaceExecutionPath(spaceId) : undefined) ?? process.cwd();
-    if (options?.requiredCapabilities?.length)
-      this.assertDotsCapabilityPolicy(options.requiredCapabilities, cwd, task ?? undefined, spaceId);
-    if (!task) await this.assertDefaultModelEnabled(cwd);
+    const requirements = [...(options?.requiredCapabilities ?? [])];
+    if (configuration?.welcomeMode) requirements.push({ kind: "mode", id: configuration.welcomeMode });
+    if (configuration?.modePresetId) requirements.push({ kind: "preset", id: configuration.modePresetId });
+    if (configuration?.expertId) requirements.push({ kind: "expert", id: configuration.expertId });
+    for (const id of configuration?.connectorIds ?? []) requirements.push({ kind: "connector", id });
+    if (requirements.length) this.assertDotsCapabilityPolicy(requirements, cwd, task ?? undefined, spaceId, configuration);
+    if (!task?.modelId) await this.assertDefaultModelEnabled(cwd);
+    else if (!await this.resolveEnabledModel(task.modelId, createAgentSettingsManager(cwd, getMyBuddyDir()))) {
+      throw new Error(`原任务的模型 ${task.modelId} 在当前工作空间不可用。`);
+    }
   }
 
-  private assertDotsCapabilityPolicy(requirements: readonly DotsCapabilityRequirement[], cwd: string, task?: TaskDto, spaceId?: string): void {
+  private assertDotsCapabilityPolicy(requirements: readonly DotsCapabilityRequirement[], cwd: string, task?: TaskDto, spaceId?: string,
+    configuration?: DotsExecutionConfiguration): void {
+    const modePresetId = task?.modePresetId ?? configuration?.modePresetId;
     const assembly = this.assembleModePreview({
       taskId: task?.id, spaceId: task?.spaceId ?? spaceId, projectId: task?.projectId, cwd,
-      welcomeMode: resolveWelcomeMode(task?.welcomeMode), permissionMode: task?.permissionMode,
-      modePresetId: task?.modePresetId,
-      expertId: (task && this.expertBindings.active(task.id)?.sourceExpertId) || task?.expertId,
+      welcomeMode: resolveWelcomeMode(task?.welcomeMode, configuration?.welcomeMode), permissionMode: task?.permissionMode,
+      modePresetId, connectorIds: configuration?.connectorIds,
+      expertId: (task && this.expertBindings.active(task.id)?.sourceExpertId) || task?.expertId || configuration?.expertId,
     });
     const profile = this.modeProfiles.getProfile(assembly.welcomeMode);
-    const preset = resolveModePreset(profile.policy, task?.modePresetId);
+    const preset = resolveModePreset(profile.policy, modePresetId);
     const permission = resolveEffectivePermission(task?.permissionMode, profile.policy.suggestedPermissionMode,
       this.settingsStore.read().permissionMode ?? "default");
     const available = (requirement: DotsCapabilityRequirement): boolean => {

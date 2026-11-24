@@ -8,10 +8,13 @@ import { checkWorkspaceStamp, pstackCheckReceipt } from "../pstack/PstackVerific
 import { projectVerificationWorkspace } from "../pstack/PstackWorkspace";
 
 export const PROJECT_VERIFY_TOOL = "project_verify";
-export const PROJECT_CHECK_NAME_PATTERN = "^(?:typecheck|test:[a-zA-Z0-9][a-zA-Z0-9:_-]*)$";
+export const PROJECT_CHECK_NAME_PATTERN = "^(?:typecheck|test(?::[a-zA-Z0-9][a-zA-Z0-9:_-]*)?)$";
+export const PROJECT_VERIFY_CHILD_KEY = "project-verification";
+export type ProjectVerificationManager = "npm" | "pnpm";
 
 const parameters = Type.Object({
   script: Type.String({ pattern: PROJECT_CHECK_NAME_PATTERN, maxLength: 128 }),
+  manager: Type.Optional(Type.Union([Type.Literal("npm"), Type.Literal("pnpm")])),
   args: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 256, pattern: "^[^\\x00-\\x1f\\x7f]+$" }), { maxItems: 12 })),
 }, { additionalProperties: false });
 
@@ -21,8 +24,14 @@ const ProjectChecks = defineDoc({ kind: "mybuddy.project-checks", version: 1, sc
   initial: () => ({ checks: {} as Record<string, Check> }) });
 
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-const checkKey = (script: string, args: readonly string[]) => sha(JSON.stringify([script, args]));
+const checkKey = (script: string, args: readonly string[], manager: ProjectVerificationManager) =>
+  sha(JSON.stringify(manager === "pnpm" ? [script, args] : [manager, script, args]));
 const shellWord = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+
+export function projectVerificationShellCommand(script: string, args: readonly string[], manager: ProjectVerificationManager = "pnpm"): string {
+  const command = manager === "npm" && script === "test" ? "npm test" : manager + " run " + shellWord(script);
+  return [command, ...(manager === "npm" && args.length ? ["--"] : []), ...args.map(shellWord)].join(" ");
+}
 
 async function localEnvironmentFile(path: string, signal?: AbortSignal) {
   try {
@@ -52,22 +61,24 @@ async function projectStamp(directory: string, signal?: AbortSignal) {
   return { ...checkWorkspaceStamp({ ...state, fingerprint }, state.head), head: state.head, clean: state.clean };
 }
 
-export async function readCurrentProjectVerification(api: ToolExecutionApi, ctx: Context, cwd: string, scripts: readonly string[]) {
+export async function readCurrentProjectVerification(api: ToolExecutionApi, ctx: Context, cwd: string, scripts: readonly string[],
+  managers?: Readonly<Record<string, readonly ProjectVerificationManager[]>>) {
   const current = await projectStamp(cwd, ctx.abortSignal);
   const saved = await api.snapshot(ProjectChecks, api.conversationId, ctx);
   return { head: current.head, clean: current.clean && current.coverageComplete,
-    verified: current.coverageComplete ? scripts.filter(script => saved?.checks[checkKey(script, [])]?.fingerprint === current.fingerprint) : [] };
+    verified: current.coverageComplete ? scripts.filter(script => (managers?.[script] ?? ["pnpm"]).every(manager =>
+      saved?.checks[checkKey(script, [], manager)]?.fingerprint === current.fingerprint)) : [] };
 }
 
 export function createDurableProjectVerification({ taskId, cwd }: { taskId: string; cwd: string }): ToolRegistration {
   return defineTool({ name: PROJECT_VERIFY_TOOL, parameters, replay: "safe", executionMode: "sequential",
-    description: "Run a named local package.json typecheck or test:* script in the task's Git workspace. Use this for required checks. Successful unchanged observations are reused. Supply each optional argument as an individual word. Use only checks scoped to this workspace, not commands that deploy or change another system.",
-    async execute({ script, args = [] }, api, ctx) {
+    description: "Run a named local package.json typecheck, test or test:* script in the task's Git workspace. Use manager: npm when the user specifies npm, otherwise the default is pnpm. Successful unchanged observations are reused. Use only checks scoped to this workspace, not commands that deploy or change another system.",
+    async execute({ script, manager = "pnpm", args = [] }, api, ctx) {
       const respond = (value: object, isError = false) => ({ output: [{ type: "text" as const, text: JSON.stringify(value) }], isError });
       try {
         const agent = await api.agent(ctx);
         if (!agent.cwd || await realpath(agent.cwd) !== await realpath(cwd)) throw new Error("项目校验缺少当前任务目录");
-        const key = checkKey(script, args);
+        const key = checkKey(script, args, manager);
         const memoKey = "project-verification-input";
         const prior = await api.memo<{ key: string; stamp: Awaited<ReturnType<typeof projectStamp>> }>(memoKey, ctx);
         const manifest = join(await realpath(cwd), "package.json");
@@ -83,8 +94,8 @@ export function createDurableProjectVerification({ taskId, cwd }: { taskId: stri
         if (observed.coverageComplete && saved?.fingerprint === observed.fingerprint)
           return respond({ script, args, outcome: "passed", reused: true, ...saved });
         const before = prior?.stamp ?? (await api.memo(memoKey, { key, stamp: observed }, ctx)).stamp;
-        const command = ["pnpm run", shellWord(script), ...args.map(shellWord)].join(" ");
-        const result = await api.executeTool("bash", { command, timeout: 600 }, ctx, { key: "project-verification", progress: true });
+        const command = projectVerificationShellCommand(script, args, manager);
+        const result = await api.executeTool("bash", { command, timeout: 600 }, ctx, { key: PROJECT_VERIFY_CHILD_KEY, progress: true });
         const after = await projectStamp(cwd, ctx.abortSignal);
         const receipt = pstackCheckReceipt({ taskId, conversationId: Number(api.conversationId), workflowRun: Number(api.taskId),
           operationTaskId: Number(api.taskId), shell: "bash", command, measurement: false, before, after, result });

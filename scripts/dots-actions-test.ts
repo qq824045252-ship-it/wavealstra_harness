@@ -169,12 +169,16 @@ try {
   assert.throws(() => dotsFollowUpInput([{ ...directive, text: "我上次说过「追问一下」" }]), /明确的追问原话/);
   const finishDirective = { ...directive, text: "把刚才的任务继续做完" };
   assert.equal(dotsFollowUpInput([finishDirective]).assignmentQuote, finishDirective.text);
-  for (const instruction of ["把刚才的任务继续做完", "接着把原任务办完", "麻烦把刚才的任务接着完成"]) {
+  for (const instruction of ["把刚才的任务继续做完", "接着把原任务办完", "麻烦把刚才的任务接着完成",
+    "你接着把刚才那个任务完成", "我要你继续完成这个任务", "接着把剩下的做完"]) {
     assert(hasDotsResumeInstruction(instruction), instruction);
     assert(!hasDotsResumeInstruction("先看看进度。" + instruction, "先看看进度。"), instruction);
   }
   assert(!hasDotsResumeInstruction("把刚才的任务继续做完需要多久"));
   assert(!hasDotsResumeInstruction("不要把刚才的任务继续做完"));
+  assert(!hasDotsResumeInstruction("这是个例子，接着把剩下的做完"));
+  assert(!hasDotsResumeInstruction("你接着把刚才那个任务完成，顺便继续完成另一个任务"));
+  assert(!hasDotsResumeInstruction("帮我解释这句话\n```\n你接着把刚才那个任务完成\n```"));
   assert(!dotsForwardingDenied("请委派一个普通任务。不要重跑已通过的同版本检查。只在当前对话回传结果。"));
   assert(!dotsForwardingDenied("请委派一个普通任务，不要重试已经通过的回归测试，仅在本对话交付报告"));
   assert(hasDotsResumeInstruction("把刚才的任务继续做完。不要重跑已通过的同版本检查。"));
@@ -211,7 +215,9 @@ try {
   assert((await turn({ action: "read_file", spaceId: space.id, path: "../app.db" })).error);
   assert((await turn({ action: "task", targetTaskId: DOTS_TASK_ID })).error);
   assert.equal(db.listNonTrashedTasks().length, 0);
-  await assert.rejects(actions.execute("other", "user", { action: "board" }), /原生会话/);
+  await assert.rejects(actions.execute("other", "user", { action: "find_tasks", query: "客户" }), /原生会话/);
+  await assert.rejects(actions.execute(DOTS_TASK_ID, "legacy-board", { action: "board" } as unknown as DotsActionInput), /find_tasks/);
+  await assert.rejects(actions.execute(DOTS_TASK_ID, "unrelated", { action: "find_tasks" }), /请提供任务标题/);
   readFile = true;
   holdTarget = true;
   const job = await success({ action: "delegate", spaceId: space.id, name: "客户报价", text: "读取客户档案" }, 2);
@@ -248,12 +254,37 @@ try {
   assert(revisedFile?.saved?.snapshotPath);
   assert.equal(readFileSync(revisedFile.saved.snapshotPath,"utf8"), "客户 A456：采用修订方案");
   console.log("PASS 原任务在运行时收到改向，交付真实修订文件，旧委派不回写文件");
-  const board = await success({ action: "board", query: "客户", spaceId: space.id });
-  assert.deepEqual(board.tasks.map((r: {id: string}) => r.id), [task.id]);
+  const originalLookup = await success({ action: "find_tasks", query: "客户", spaceId: space.id });
+  assert.deepEqual(originalLookup.tasks.map((r: {id: string}) => r.id), [task.id]);
+  assert.equal(originalLookup.inspection.id, task.id);
+  assert(originalLookup.inspection.messages.some((m: {text: string}) => m.text.includes("改为方案")));
+  assert(originalLookup.inspection.executionDiagnostics);
+  assert.equal((await success({ action: "find_tasks", query: task.id })).inspection.id, task.id);
+  await agent.updateAppSettings({ dotsSettings: { operations: { task: false } } });
+  const locatorOnly = await success({ action: "find_tasks", query: "客户", spaceId: space.id });
+  assert.deepEqual(locatorOnly.tasks.map((candidate: {id: string}) => candidate.id), [task.id]);
+  assert(!locatorOnly.inspection, "locating a task respects its separately disabled details permission");
+  await agent.updateAppSettings({ dotsSettings: { operations: { task: true } } });
   const status = await success({ action: "task", targetTaskId: task.id });
   assert.equal(status.progress.id, task.id);
   assert(status.messages.some((m: {text: string}) => m.text.includes("改为方案")));
-  assert(!(await success({action: "board"})).tasks.some((r: {id: string}) => r.id === DOTS_TASK_ID));
+  const execution = await success({ action: "task", targetTaskId: task.id, detail: "execution" });
+  assert(execution.executionDiagnostics.tools.some((tool: {name: string; status: string}) => tool.name === "read" && tool.status === "completed"));
+  const taskHistory = await success({ action: "task", targetTaskId: task.id, detail: "history" });
+  assert(taskHistory.messages.some((message: {text: string}) => message.text.includes("改为方案")));
+  assert(taskHistory.messages.some((message: {tools?: Array<{ name: string; output?: string }>}) =>
+    message.tools?.some(tool => tool.name === "read" && tool.output?.includes("A456"))));
+  const locatedInSpace = await success({ action: "find_tasks", spaceId: space.id });
+  assert(locatedInSpace.tasks.some((r: {id: string}) => r.id === task.id));
+  assert(!locatedInSpace.inspection, "space-only lookup lists candidates without opening a task");
+  db.upsertTask({ id: "routing-near-title", title: "客户报价补充", spaceId: space.id, updatedAt: Date.now() + 1000 });
+  db.upsertTask({ id: "routing-archived-title", title: "客户报价", spaceId: space.id, updatedAt: Date.now() + 2000 });
+  db.archiveTask("routing-archived-title", true);
+  const ambiguous = await success({ action: "find_tasks", query: "　客户报价　", spaceId: space.id });
+  assert.deepEqual(ambiguous.tasks.map((candidate: {id: string}) => candidate.id), [task.id, "routing-near-title"]);
+  assert(!ambiguous.inspection, "ambiguous lookup supplies no candidate's details");
+  db.deleteTask("routing-near-title");
+  db.deleteTask("routing-archived-title");
   assert((await turn({action: "steer", targetTaskId: task.id, text: "迟到的改向"})).error);
   holdTarget = true;
   const agreement = "先整理目录，再计算用量，按升序交付";
@@ -503,9 +534,9 @@ try {
   db.upsertSpace({id:"ordinary-sounding-child",name:"客户子空间",parentId:"sp-gw-test"});
   db.upsertTask({id:"inherited-channel-task",title:"隔离探针甲",spaceId:"ordinary-sounding-child",updatedAt:Date.now()});
   db.upsertTask({id:"externally-pinned",title:"隔离探针乙",spaceId:space.id,externalAgentPin:{id:"devin",name:"external",pinnedAt:1},updatedAt:Date.now()});
-  const isolated = await success({action:"board",query:"隔离探针"});
+  const isolated = await success({action:"find_tasks",query:"隔离探针"});
   assert.deepEqual(isolated.tasks,[]);
-  assert.equal(isolated.next,undefined);
+  assert.equal(isolated.more,false);
   assert((await turn({action:"task",targetTaskId:"externally-pinned"})).error);
   const manualId = "user-native-a08";
   db.upsertTask({id:manualId, spaceId:space.id, title:"月度汇总", updatedAt:Date.now()});
@@ -669,6 +700,26 @@ try {
     assert.equal(journal.list(["dots-user-" + serial]).length, 0);
   }
   assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(), beforeCapability);
+  const catalog = await success({ action: "execution_configs", spaceId: child.id });
+  assert.equal(catalog.spaceId, child.id);
+  assert.equal(catalog.defaultMode, db.getTask(childJob.id)?.welcomeMode);
+  assert(catalog.modes.some((mode: { id: string }) => mode.id === "coding"));
+  const configurationQuote = "新建一个 coding 任务";
+  const configure = { action: "delegate", spaceId: child.id, text: "检查项目说明",
+    requiredCapabilities: [{ kind: "mode", id: "coding" }],
+    executionConfiguration: { welcomeMode: "coding", authorizationQuote: configurationQuote } };
+  for (const text of ["请检查项目说明。", "比如，新建一个 coding 任务。", "这是个例子。新建一个 coding 任务。",
+    "如果有需要，新建一个 coding 任务。", "不要新建一个 coding 任务。", "新建一个 coding 任务吗？",
+    "> 新建一个 coding 任务。"]) {
+    const unapproved = await turn(configure, "dots_action", 1, text);
+    assert(unapproved.error, unapproved.text);
+    assert.match(unapproved.text, /本轮原话|明确授权/);
+  }
+  assert.deepEqual(db.listNonTrashedTasks().map(task => task.id).sort(), beforeCapability);
+  const retargeted = await turn({ ...configure, targetTaskId: pinnedTask }, "dots_action", 1, configurationQuote);
+  assert(retargeted.error, retargeted.text);
+  assert.match(retargeted.text, /仅可.*新任务/);
+  assert.equal(db.getTask(pinnedTask)?.welcomeMode, "general");
   const toolProbeTask = "ordinary-unregistered-tool-check";
   db.upsertTask({ id: toolProbeTask, title: "检测未登记工具", spaceId: child.id, modelId: "fixture/pinned-worker", updatedAt: Date.now() });
   const missingRegistration = await turn({ action: "delegate", targetTaskId: toolProbeTask, text: "使用指定工具",
@@ -676,6 +727,14 @@ try {
   assert(missingRegistration.error, missingRegistration.text);
   assert.match(missingRegistration.text, /所需工具「fixture_unregistered_tool」/);
   assert(!fixture.requests.slice(capabilityStart).some(req => req.tools.includes("read")), "impossible requirements never reach the worker model");
+  const authorizedConfiguration = configurationQuote + "调查如何简化接口，禁止推送。";
+  const selectedMode = await turn({ ...configure, text: "调查如何简化接口。禁止推送。",
+    executionConfiguration: { ...configure.executionConfiguration, authorizationQuote: authorizedConfiguration } }, "dots_action", 2, authorizedConfiguration);
+  assert(!selectedMode.error, selectedMode.text);
+  const selected = JSON.parse(selectedMode.text);
+  assert.equal(db.getTask(selected.id)?.welcomeMode, "coding");
+  assert.equal(journal.list(["dots-user-" + serial]).length, 1);
+  await agent.waitForSubmission(selected.receipt);
 
   const mcpAudit = join(root, "required-mcp.jsonl");
   const idleAudit = join(root, "unrequested-mcp.jsonl");
@@ -687,6 +746,8 @@ try {
   const generalPolicy = agent.getModeProfile("general").policy;
   agent.saveModePolicy("general", { ...generalPolicy, mcpPolicy: { mode: "hard", allow: ["required-fixture", "idle-fixture"], deny: [] } });
   const beforeProbe = fixture.requests.length;
+  const discovered = await success({ action: "execution_configs", spaceId: child.id });
+  assert.deepEqual(discovered.modes.find((mode: { id: string }) => mode.id === "general")?.mcp?.sort(), ["idle-fixture", "required-fixture"]);
   const candidateRequirements = [{ kind: "mode", id: "general" }, { kind: "mcp", id: "required-fixture", tool: "read_cwd" }] as const;
   const candidate = await success({ action: "task", targetTaskId: pinnedTask, spaceId: child.id,
     requiredCapabilities: [...candidateRequirements] });
@@ -778,7 +839,7 @@ try {
   }
   assert.deepEqual((await success({ action: "task", targetTaskId: interrupted.id })).deliveries.map((row: { operationId: string }) => row.operationId),
     [interrupted.receipt.operationId]);
-  const naturalResume = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 1, "把刚才的任务继续做完");
+  const naturalResume = await turn({ action: "resume", targetTaskId: interrupted.id }, "dots_action", 2, "你接着把刚才那个任务完成");
   assert(!naturalResume.error, naturalResume.text);
   const authorized = JSON.parse(naturalResume.text);
   assert.equal(authorized.id, interrupted.id);
@@ -804,7 +865,7 @@ try {
   console.log("PASS disabled main model reported with zero worker requests, paraphrase replay and separate dated assignments");
   console.log("PASS proactive pause, scoped batch and unrelated active task isolation, preserved subscriptions, global stop of Dots timers only, explicit existing Goal");
   console.log("PASS file follow-up: native filesystem event and native target receipt, one-time dispatch, cancellation, stale user intent, offline catch-up");
-  console.log("PASS Dots: native foreground tools, board, bound files, delegation and replay, accepted steer, persistent pause/stop, resume, exact blocked-question answer, prior result search and isolated scheduling");
+  console.log("PASS Dots: native foreground tools, scoped task search and evidence, bound files, delegation and replay, accepted steer, persistent pause/stop, resume, exact blocked-question answer, prior result search and isolated scheduling");
 } finally {
   holdTarget = false;
   release?.();

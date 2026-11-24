@@ -5,7 +5,7 @@ import { digest } from "./OfficeFile";
 
 const MAX_FILE_BYTES = 32 * 1024 * 1024;
 
-export async function readOfficeEvidenceFile(root: string, requestedPath: string, extension: ".xlsx" | ".png",
+export async function readOfficeEvidenceFile(root: string, requestedPath: string, extension: ".xlsx" | ".docx" | ".pptx" | ".png",
   signal?: AbortSignal) {
   signal?.throwIfAborted();
   const canonicalRoot = await realpath(root);

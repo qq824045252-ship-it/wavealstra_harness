@@ -27,7 +27,8 @@ export const dotsCapabilityOptions = [
 
 export type DotsCapability = typeof dotsCapabilityOptions[number]["id"];
 export const dotsOperations = {
-  board: ["taskControl", "查看任务看板"], task: ["taskControl", "查看任务进度"], deliveries: ["taskControl", "查找任务成果"],
+  find_tasks: ["taskControl", "查找任务"], task: ["taskControl", "查看任务详情"], deliveries: ["taskControl", "查找任务成果"],
+  execution_configs: ["taskControl", "查看可用执行配置"],
   delegate: ["taskControl", "委派普通任务"], steer: ["taskControl", "修改运行中的要求"],
   follow_up: ["taskControl", "追问原任务"],
   resume: ["taskControl", "恢复事项"], answer: ["taskControl", "转发对阻塞问题的回答"],
@@ -56,11 +57,19 @@ export interface DotsSettings extends Record<DotsCapability, boolean> {
 }
 
 // The former task and space toggles only gated changes. Preserve read access for existing configurations.
-const independentReads = new Set<string>(["board", "task", "deliveries", "spaces"]);
+const independentReads = new Set<string>(["find_tasks", "task", "deliveries", "spaces"]);
+
+function dotsOperationFlag(operations: DotsSettings["operations"] | undefined, op: DotsOperation): boolean | undefined {
+  const flag = operations?.[op];
+  if (typeof flag === "boolean") return flag;
+  if (op === "find_tasks" && operations && typeof operations === "object" && "board" in operations && typeof operations.board === "boolean")
+    return operations.board;
+}
+
 export function dotsOperationEnabled(settings: Partial<DotsSettings> | undefined, key: string): boolean {
   if (!Object.hasOwn(dotsOperations, key)) return false;
   const op = key as DotsOperation;
-  return (independentReads.has(key) || settings?.[dotsOperations[op][0]] !== false) && settings?.operations?.[op] !== false;
+  return (independentReads.has(key) || settings?.[dotsOperations[op][0]] !== false) && dotsOperationFlag(settings?.operations, op) !== false;
 }
 
 export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): DotsSettings {
@@ -68,9 +77,9 @@ export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): 
   const groups = Object.fromEntries(dotsCapabilityOptions.map(({ id }) =>
     [id, typeof input[id] === "boolean" ? input[id] : fallback?.[id] ?? true],
   )) as Record<DotsCapability, boolean>;
-  const operations = { ...fallback?.operations };
+  const operations: DotsSettings["operations"] = {};
   for (const key of Object.keys(dotsOperations) as DotsOperation[]) {
-    const flag = input.operations?.[key];
+    const flag = dotsOperationFlag(input.operations, key) ?? dotsOperationFlag(fallback?.operations, key);
     if (typeof flag === "boolean") operations[key] = flag;
   }
   const memoryMode = input.memoryMode ?? fallback?.memoryMode ?? "readWrite";

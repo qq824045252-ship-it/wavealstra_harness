@@ -1,22 +1,41 @@
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { ConversationId, Cursor } from "@earendil-works/pi-durable";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { matchingNativeExecutionReceipt } from "../../shared/native-execution-receipt";
+import { WEB_ACCESS_TOOL_NAMES } from "../../shared/native-tools";
+import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactReceipt";
-import { PROJECT_VERIFY_TOOL } from "../agent/durable/DurableProjectVerification";
+import { PROJECT_CHECK_NAME_PATTERN, PROJECT_VERIFY_TOOL } from "../agent/durable/DurableProjectVerification";
 import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 
 export type DotsRecoveryKind = "continue" | "local" | "report-only" | "unknown" | "unavailable";
-export type DotsRecoveryToolScope = { kind: "report-only" } | { kind: "local-files"; files: string[] };
-export type DotsRecoveryInspection = { kind: DotsRecoveryKind; retainedFiles: string[] };
+export type DotsRecoveryToolScope = { kind: "report-only" } | { kind: "local-files"; files: string[] }
+  | { kind: "local-repair"; files: string[]; checks: string[]; edits: string[] };
+export type DotsRecoveryInspection = { kind: DotsRecoveryKind; retainedFiles: string[]; editableFiles?: string[] };
 
 const readTools = new Set(["read", "find", "glob", "grep", "ls"]);
+const webReads = new Set<string>(WEB_ACCESS_TOOL_NAMES);
 const reportTool = "dots_task_end";
 const localMutationTools = new Set(["write", "edit"]);
+const namedProjectCheck = new RegExp(PROJECT_CHECK_NAME_PATTERN, "u");
 
 export function dotsRecoveryAllowsTool(scope: DotsRecoveryToolScope, name: string): boolean {
-  return name === reportTool || scope.kind === "local-files" && (readTools.has(name) || name === "write");
+  if (name === reportTool) return true;
+  if (scope.kind === "report-only") return false;
+  if (readTools.has(name) || webReads.has(name) || name === "request_user_input") return true;
+  if (name === "write" || name === OFFICE_USE_TOOLS.documentCreate) return scope.files.length > 0;
+  return scope.kind === "local-repair" && (name === PROJECT_VERIFY_TOOL && scope.checks.length > 0 || name === "edit" && scope.edits.length > 0);
+}
+
+export function dotsRecoveryAllowsVerify(scope: DotsRecoveryToolScope, params: unknown): boolean {
+  if (scope.kind !== "local-repair" || !params || typeof params !== "object" || Array.isArray(params) ||
+    Object.keys(params).some(key => key !== "script" && key !== "args" && key !== "manager")) return false;
+  const { script, args, manager } = params as { script?: unknown; args?: unknown; manager?: unknown };
+  return typeof script === "string" && namedProjectCheck.test(script) &&
+    (manager === undefined || manager === "npm" || manager === "pnpm") &&
+    (args === undefined || Array.isArray(args) && args.length === 0) &&
+    (scope.checks.includes(script) || scope.checks.includes("test:*") && (script === "test" || script.startsWith("test:")));
 }
 
 export function validDotsRecoveryFilename(name: string): boolean {
@@ -34,6 +53,7 @@ function toolRecovery(result: ToolResultMessage, receipt: ReturnType<typeof matc
   const name = result.toolName;
   if (receipt?.transport === "not_started" && receipt.settlement === "released") return "continue";
   if (receipt?.status !== "passed" || receipt.settlement !== "consumed") return "unknown";
+  if (webReads.has(name) && receipt.verifierId === "durable-tool-result" && receipt.transport === "returned" && !result.isError) return "continue";
   if (name === PROJECT_VERIFY_TOOL && receipt.transport === "returned" && result.content.length === 1 && result.content[0]?.type === "text") {
     try {
       const check = JSON.parse(result.content[0].text);
@@ -43,7 +63,8 @@ function toolRecovery(result: ToolResultMessage, receipt: ReturnType<typeof matc
     } catch { /* No verified check result. */ }
   }
   if (receipt.verifierId === "durable-business-receipt") return "report-only";
-  if (localMutationTools.has(name) && receipt.verifierId === "durable-file-content" && receipt.fileChange?.checkedRange ||
+  if ((localMutationTools.has(name) || name === OFFICE_USE_TOOLS.documentCreate) &&
+    receipt.verifierId === "durable-file-content" && receipt.fileChange?.checkedRange ||
     name === "register_artifact" && receipt.transport === "returned") return "local";
   return "unknown";
 }
@@ -51,7 +72,9 @@ function toolRecovery(result: ToolResultMessage, receipt: ReturnType<typeof matc
 export async function inspectDotsRecovery(directory: string, taskId: string, operationId: string, version: string,
   namedFiles: readonly string[]): Promise<DotsRecoveryInspection> {
   const retainedFiles = new Set<string>();
-  const finish = (kind: DotsRecoveryKind): DotsRecoveryInspection => ({ kind, retainedFiles: [...retainedFiles] });
+  const editableFiles = new Set<string>();
+  const finish = (kind: DotsRecoveryKind): DotsRecoveryInspection => ({ kind, retainedFiles: [...retainedFiles],
+    ...(editableFiles.size && { editableFiles: [...editableFiles] }) });
   const storage = await openDurablePassiveStorage(directory, ctx);
   if (!storage) return finish("unavailable");
   try {
@@ -96,7 +119,11 @@ export async function inspectDotsRecovery(directory: string, taskId: string, ope
             toolName: call, callId: message.toolCallId });
           const kind = toolRecovery(message, receipt);
           if (kind === "unknown") return finish("unknown");
-          if (kind === "local") local = true;
+          if (kind === "local") {
+            local = true;
+            const target = receipt?.fileChange?.target;
+            if (localMutationTools.has(call) && target && isAbsolute(target)) editableFiles.add(target);
+          }
           if (kind === "report-only") reportOnly = true;
         }
       }

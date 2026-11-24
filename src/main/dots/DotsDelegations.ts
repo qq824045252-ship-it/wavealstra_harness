@@ -72,6 +72,7 @@ export class DotsDelegations {
         title TEXT NOT NULL, deadline_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS dots_dependency_prerequisite ON dots_dependency_waits(prerequisite_id);
       CREATE TABLE IF NOT EXISTS dots_verified_commits(operation_id TEXT PRIMARY KEY,sha TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS dots_delegations_task_sequence ON dots_delegations(task_id,seq);
       CREATE INDEX IF NOT EXISTS dots_delegations_pending ON dots_delegations(task_id,seq) WHERE status IN ('pending','running','blocked');
       CREATE INDEX IF NOT EXISTS dots_delegations_source ON dots_delegations(source_message_id);`);
     this.recoverable = db.prepare("SELECT * FROM dots_delegations WHERE status='pending' AND request_json IS NOT NULL ORDER BY seq").all() as Row[];
@@ -103,10 +104,12 @@ export class DotsDelegations {
   }
 
   private refreshDependentTasks(operationId: string) {
-    const targets = this.db.prepare(`SELECT DISTINCT d.task_id FROM dots_dependency_waits w
+    const targets = this.db.prepare(`SELECT DISTINCT d.task_id FROM dots_delegations changed
+      JOIN dots_delegations root ON root.task_id=changed.task_id AND root.seq<=changed.seq
+      JOIN dots_dependency_waits w ON w.prerequisite_id=root.operation_id
       JOIN dots_delegations d ON d.operation_id=w.operation_id AND d.status='blocked'
       JOIN dots_reply_events e ON e.operation_id=d.operation_id AND e.status='blocked' AND e.settled=0
-      WHERE w.prerequisite_id=?`).pluck().all(operationId) as string[];
+      WHERE changed.operation_id=?`).pluck().all(operationId) as string[];
     for (const target of targets) this.refresh(target);
   }
 
@@ -247,7 +250,7 @@ export class DotsDelegations {
       this.outbox.track(operationId, request);
       return insert.changes;
     })();
-    if (inserted) this.notify();
+    if (inserted) { this.notify(); this.refreshDependentTasks(operationId); }
   }
 
   /** Replay only the admission gap inherited from the prior host, using the original native id. */

@@ -1,6 +1,9 @@
+export const DOTS_WORK_ITEM_ID_PATTERN = "^work-[a-f0-9]{16}$";
+export type DotsWorkEvidence = { id: string; evidence: string };
+
 export type DotsWorkerOutcome =
   | { dotsState: "complete"; result: string; delivery?: { text: string }; executionRecord?: string;
-      verifiedChecks?: string[]; verifiedCommit?: string }
+      verifiedChecks?: string[]; verifiedCommit?: string; completedItems?: DotsWorkEvidence[] }
   | { dotsState: "blocked"; result: string; delivery?: { text: string } }
   | { dotsState: "progress"; result: string; remainingQuote: string; scopeQuote?: string };
 
@@ -16,7 +19,7 @@ export function readDotsWorkerOutcome(text: string): DotsWorkerOutcome | undefin
     const prose = text.slice(0, boundary.index);
     if (!prose.trim() || insideMarkdownFence(prose)) continue;
     const outcome = parseWorkerOutcome(outcomeJson(text.slice(boundary.index).trim()), true);
-    if (outcome) return outcome;
+    if (outcome) return outcome.dotsState === "complete" ? { ...outcome, executionRecord: prose.trim() } : outcome;
   }
 }
 
@@ -56,6 +59,8 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
           && { verifiedChecks: value.verifiedChecks }),
         ...(typeof value.verifiedCommit === "string" && /^[a-f0-9]{40,64}$/.test(value.verifiedCommit)
           && { verifiedCommit: value.verifiedCommit }),
+        ...(Array.isArray(value.completedItems) && value.completedItems.every(isWorkEvidence)
+          && { completedItems: value.completedItems }),
       };
     }
     if (value.dotsState === "progress" && typeof value.remainingQuote === "string" && (!exact || Object.keys(value).length === (typeof value.scopeQuote === "string" ? 4 : 3))) {
@@ -65,6 +70,12 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
   } catch {
     // Ordinary model prose does not declare an outcome.
   }
+}
+
+function isWorkEvidence(value: unknown): value is DotsWorkEvidence {
+  if (!value || typeof value !== "object" || !("id" in value) || !("evidence" in value)) return false;
+  return typeof value.id === "string" && new RegExp(DOTS_WORK_ITEM_ID_PATTERN).test(value.id) &&
+    typeof value.evidence === "string" && Boolean(value.evidence.trim());
 }
 
 export function dotsDeliveryText(outcome: DotsWorkerOutcome): string {

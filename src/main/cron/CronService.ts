@@ -20,6 +20,7 @@ import { computeNextRunAt, validateSchedule, withinEffectiveRange, scheduleTimer
 
 const storedCronInput = z.object({
   taskId: z.string().min(1), text: z.string(), userMessageId: z.string().min(1), assistantMessageId: z.string().min(1),
+  displayText: z.string().optional(),
   permissionMode: z.enum(["default", "auto", "readonly"]).optional(), welcomeMode: z.enum(["working", "coding", "general"]).optional(),
   spaceId: z.string().optional(), modelId: z.string().optional(), expertId: z.string().optional(),
   modePresetId: z.string().nullable().optional(), connectorIds: z.array(z.string()).optional(),
@@ -644,6 +645,7 @@ export class CronService {
       run = { id: randomUUID(), jobId: job.id, taskId, startedAt: Date.now(), status: "running" };
       const request: AgentPromptRequest = {
         taskId, text: this.composePrompt(latest),
+        ...(latest.sourceTaskId === DOTS_TASK_ID && { displayText: latest.prompt }),
         permissionMode: task.permissionMode ?? "default",
         welcomeMode: task.welcomeMode, spaceId: task.spaceId ?? undefined,
         modelId: task.modelId, expertId: task.expertId, modePresetId: target?.modePresetId,

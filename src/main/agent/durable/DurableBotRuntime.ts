@@ -2,20 +2,23 @@ import { DURABLE_ARTIFACT_ENTRY_KIND as DOTS_ARTIFACT_KIND, durableArtifactRegis
 import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
-import { dotsRecoveryAllowsTool, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
+import { dotsRecoveryAllowsTool, dotsRecoveryAllowsVerify, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
 import { appendDurableDotsReply } from "./DurableDotsReply";
 import { DOTS_TASK_END, readDurableDotsTerminal } from "./DurableDotsWorker";
-import { PROJECT_VERIFY_TOOL } from "./DurableProjectVerification";
+import { PROJECT_VERIFY_CHILD_KEY, PROJECT_VERIFY_TOOL, projectVerificationShellCommand } from "./DurableProjectVerification";
 import { DURABLE_TURN_LIMIT_MESSAGE } from "./DurableRunLimits";
 import { readDotsWorkerOutcome, recoverDotsNarrativeReply } from "../../dots/DotsWorkerOutcome";
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsAssistantReply } from "../../../shared/dots";
+import { OFFICE_USE_TOOLS } from "../../../shared/office-use";
+import { OFFICE_RECOVERY_CREATE_MEMO } from "../../office-use/OfficeDocumentCreation";
 import { admittedFileMutationPath, FILE_MUTATION_TARGET_MEMO, resolveFileMutationTarget, withWindowsBashWorkspacePath,
   type FileMutationTarget } from "../../platform/bash-workspace-path";
 import { withShellTerminalGuidance } from "./DurableShellTerminal";
 import { durableToolDiagnosticMessages } from "./DurableToolDiagnostics";
 import { emptyUsageEvidence, usagePresence, type ProviderUsageEvidence, type ProviderUsagePresence } from "../../../shared/provider-usage-evidence";
 import { supportsUsageObservation, withUsageEvidence } from "../../usage/provider-usage-evidence";
-import { createDurableArtifactRegistrationTool, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
+import { createDurableArtifactRegistrationTool, registerNativeMutation, withDurableArtifactRegistration } from "./DurableArtifactRegistration";
+import { NATIVE_FILE_EVIDENCE_MEMO } from "./DurableEffectRecovery";
 import { withDurableToolCoordination } from "./DurableToolCoordination";
 import { prioritizeInputAfterDeferredGoal } from "./DurableInputFreshness";
 import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
@@ -27,12 +30,13 @@ import { statSync } from "node:fs";
 import { realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { resolvedPathKey } from "../../platform/paths";
+import { isPathInsideOrEqual } from "../../task/TaskExecutionWorkspace";
 import { BACKGROUND_CONTEXT as ctx, type Context } from "@earendil-works/chord/context";
 import type { Models, Message, AssistantMessage } from "@earendil-works/pi-ai";
 import {
   Harness, SessionFailed, StorageRequestError, NestedCallDoc, createRegistry, defineExtension, section, AgentDoc, LiveDoc, hook, CompactionTask, GenerationTask, ToolTask, defineDoc, InboxDoc,
   type Conversation, type ConversationWatch, type ConversationView, type EntryRecord, type EnvTarget, type JsonObject,
-  type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type UserInput, type Cursor, type UsageState, type Submission, type ToolHooks, type EntryId, type HookApi,
+  type LiveState, type InboxState, type Storage, type TaskId, type ToolRegistration, type ToolTaskInput, type UserInput, type Cursor, type UsageState, type Submission, type ToolHooks, type EntryId, type HookApi,
 } from "@earendil-works/pi-durable";
 import { CodingTools, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { capabilityResultFromDetails } from "../../../shared/capability-result";
@@ -1946,22 +1950,51 @@ function botExtension(
     if (!retained && active) return api.memo(key, active, context);
     return active?.kind === "report-only" ? active : retained ?? active;
   };
-  const recoveryTarget = (scope: DotsRecoveryToolScope, args: unknown, cwd: string | undefined) => {
-    if (scope.kind !== "local-files" || !cwd || resolvedPathKey(cwd) !== resolvedPathKey(options.cwd) ||
+  const recoveryTarget = (scope: DotsRecoveryToolScope, tool: string, args: unknown, cwd: string | undefined) => {
+    if (scope.kind === "report-only" || !cwd || resolvedPathKey(cwd) !== resolvedPathKey(options.cwd) ||
       !args || typeof args !== "object" || !("path" in args) || typeof args.path !== "string") return;
-    const target = resolvedPathKey(resolve(cwd, args.path));
+    const path = resolve(cwd, args.path);
+    const target = resolvedPathKey(path);
+    if (tool === "edit") {
+      if (scope.kind === "local-repair" && isPathInsideOrEqual(cwd, path) && scope.edits.some(file => resolvedPathKey(file) === target)) return path;
+      return;
+    }
     const file = scope.files.find(name => validDotsRecoveryFilename(name) && resolvedPathKey(resolve(cwd, name)) === target);
+    if (tool === "write" && file && /\.(?:xlsx|docx|pptx)$/iu.test(file)) return;
     if (file) return resolve(cwd, file);
   };
-  const recoveryToolBlock = async (tool: string, args: unknown, api: Pick<HookApi, "conversationId" | "snapshot" | "memo">,
+  const verificationChild = async (scope: DotsRecoveryToolScope, args: unknown, api: Pick<HookApi, "conversationId" | "taskId">,
+    context: Parameters<ToolRegistration["execute"]>[2]) => {
+    if (scope.kind !== "local-repair" || !readNativeTask || !args || typeof args !== "object" || !("command" in args)) return false;
+    const task = await readNativeTask(api.taskId, context);
+    const nested = task?.input as ToolTaskInput | undefined;
+    if (task?.kind !== ToolTask.definition.name || task.conversationId !== api.conversationId || nested?.kind !== "nested" ||
+      nested.key !== PROJECT_VERIFY_CHILD_KEY || nested.call.name !== "bash" || task.owner !== nested.parent) return false;
+    const owner = await readNativeTask(nested.parent, context);
+    const parent = owner?.input as ToolTaskInput | undefined;
+    if (owner?.kind !== ToolTask.definition.name || owner.conversationId !== api.conversationId || owner.state.status === "terminal" || !parent) return false;
+    const call = parent.kind === "nested" ? parent.call :
+      (await storage.entry(api.conversationId, parent.assistant, context))?.entry.model
+        ?.find(message => message.role === "assistant")?.content.find(part => part.type === "toolCall" && part.id === parent.callId);
+    if (!call || call.type !== "toolCall" || call.name !== PROJECT_VERIFY_TOOL || call.id !== nested.parentCallId ||
+      !dotsRecoveryAllowsVerify(scope, call.arguments)) return false;
+    const manager = call.arguments.manager === "npm" ? "npm" : "pnpm";
+    return args.command === projectVerificationShellCommand(String(call.arguments.script), [], manager);
+  };
+  const recoveryToolBlock = async (tool: string, args: unknown, api: Pick<HookApi, "conversationId" | "taskId" | "snapshot" | "memo">,
     context: Parameters<ToolRegistration["execute"]>[2]) => {
     if (tool === DOTS_TASK_END && args && typeof args === "object" && "action" in args && args.action === "complete") return;
     const scope = await toolRecoveryScope(api, context);
     if (!scope) return;
     if (scope.kind === "report-only") return "本轮只根据已有结果补报，业务工具未启动。";
-    if (!dotsRecoveryAllowsTool(scope, tool) || tool === DOTS_TASK_END || tool === "write" &&
-      !recoveryTarget(scope, args, (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd))
-      return "本轮只可读取资料、创建指定缺失文件并报告。";
+    if (tool === "bash" && await verificationChild(scope, args, api, context)) return;
+    const denied = "本轮只可读取资料、补做指定的检查及文件修复，并交付结果。";
+    if (!dotsRecoveryAllowsTool(scope, tool) || tool === DOTS_TASK_END ||
+      tool === PROJECT_VERIFY_TOOL && !dotsRecoveryAllowsVerify(scope, args)) return denied;
+    if (tool === "write" || tool === "edit" || tool === OFFICE_USE_TOOLS.documentCreate) {
+      const path = recoveryTarget(scope, tool, args, (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd);
+      if (!path || tool === "edit" && await realpath(path).then(resolvedPathKey, () => undefined) !== resolvedPathKey(path)) return denied;
+    }
   };
   const toolHooks: Partial<ToolHooks> = {
     beforeTool: async (call, api, context) => {
@@ -2045,23 +2078,39 @@ function botExtension(
     },
   };
   const tools = [...native, codemode].map(tool => {
-    const guardedWrite: ToolRegistration = tool.name === "write" && options.dotsRecoveryScope ? { ...tool, execute: async (args, api, context) => {
+    let guarded: ToolRegistration = tool;
+    if (tool.name === "write" && options.dotsRecoveryScope) guarded = { ...tool, execute: async (args, api, context) => {
       const scope = await toolRecoveryScope(api, context);
       if (!scope) return tool.execute(args, api, context);
       const cwd = api.env?.cwd;
-      const path = recoveryTarget(scope, args, cwd);
+      const path = recoveryTarget(scope, "write", args, cwd);
       if (!path || !cwd || resolvedPathKey(await realpath(cwd)) !== resolvedPathKey(cwd) ||
         !args || typeof args !== "object" || !("content" in args) || typeof args.content !== "string")
         throw new Error("缺失文件的工作区或路径无法确认。");
       context.abortSignal?.throwIfAborted();
       await writeFile(path, args.content, { flag: "wx", signal: context.abortSignal });
       return { output: [{ type: "text", text: `Successfully created ${path}` }] };
-    } } : tool;
-    const coordinated = withDurableToolCoordination(guardedWrite, options.cwd, (name, args, cwd) => {
+    } };
+    if (tool.name === OFFICE_USE_TOOLS.documentCreate && options.isDotsWorkerInput) guarded = { ...tool, execute: async (args, api, context) => {
+      const scope = await toolRecoveryScope(api, context);
+      if (scope && scope.kind !== "report-only") await api.memo(OFFICE_RECOVERY_CREATE_MEMO, true, context);
+      const result = await tool.execute(args, api, context);
+      const detail = result.details;
+      if (!result.isError && (scope || dotsToolOwners.has(api.taskId)) && detail && typeof detail === "object" && !Array.isArray(detail) &&
+        detail.status === "created" && typeof detail.path === "string") {
+        const proof = await registerNativeMutation(detail.path, api, context, options.directory, undefined, true);
+        if (proof) await api.memo(NATIVE_FILE_EVIDENCE_MEMO, proof, context);
+      }
+      return result;
+    } };
+    const coordinated = withDurableToolCoordination(guarded, options.cwd, (name, args, cwd) => {
       if (options.toolAllowed?.(name) === false) throw new Error(`当前任务工具已不可用：${name}`);
       options.beforeToolExecution?.(name, args, cwd);
     }, options.admittingUserInputs, options.codeReview, options.directory,
-      tool.name === "write" && options.dotsRecoveryScope ? async (api, context) => (await toolRecoveryScope(api, context))?.kind === "local-files" : undefined);
+      tool.name === "write" && options.dotsRecoveryScope ? async (api, context) => {
+        const scope = await toolRecoveryScope(api, context);
+        return Boolean(scope && scope.kind !== "report-only");
+      } : undefined);
     return { ...coordinated, execute: async (args, api, context) => {
       // Pi can recover a started or nested ToolTask without re-entering beforeTool.
       const recoveryBlock = await recoveryToolBlock(tool.name, args, api, context);

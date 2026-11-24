@@ -400,6 +400,7 @@ const HEADLESS_TESTS = new Set([
   "test:dots-delivery",
   "test:dots-reply-recovery",
   "test:dots-followup",
+  "test:dots-completion",
   "test:durable-subagent",
   "test:durable-consult",
   "test:app-store-structure",

@@ -56,9 +56,18 @@ let reviewFinalStatus: "completed" | "failed" = "failed";
 const conclusion = "东区批次已核对，合计到货 18 件。";
 const executionNotes = "复核底稿：逐行比对到货记录及采购登记，把确认的批次写入内部记录。";
 const reportFormat = "用 Markdown 给我完整报告，包含依据和复核过程。";
+const reportAssignment = "先核对数量，再汇总采购情况。";
 const fullReport = "## 汇总\n\n到货 18 件。\n\n## 依据\n\n原始到货登记 18 件。\n\n## 复核过程\n\n汇总数与登记一致。\n";
 const partial = "验收清单列出仓储、装配两项。财务栏仍空着。";
 const runningMilestone = "周一批次原始记录显示 18 件。";
+const runningRequest = "核对周一批次的原始记录，再核对另一批的原始记录";
+const runningResult = "两份记录均已核对，各为 18 件。";
+const runningWork = (dotsCompletionRequirements(runningRequest).items ?? []).filter(item => item.kind === "work");
+const runningReads = [
+  { callId: "initial-checkpoint-read", text: "周一批次累计 18 件" },
+  { callId: "remaining-checkpoint-read", text: "批次累计 18 件" },
+];
+const runningEvidence = runningWork.map((item, index) => ({ id: item.id, evidence: runningReads[index]!.text }));
 const planResult = "本轮只列出修复方案，具体代码后续再补。";
 const repairedResult = "导入和导出同时恢复，文件名中的中文也能保留。";
 const forgedResult = "本地提交和项目验收均已完成。";
@@ -124,14 +133,14 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
       return [
         {
           type: "text",
-          text: JSON.stringify({ dotsState: "progress", result: baseline, remainingQuote: "发送邮件" }),
+          text: JSON.stringify({ dotsState: "progress", result: baseline, remainingQuote: "确认批次" }),
         },
       ];
     }
     if (phase === "question") {
       const latest = JSON.stringify(input.messages.findLast((m) => m.role === "user")?.content);
       assert(latest.includes(goal), "续办保留完整原目标及否定条件");
-      assert(!latest.includes("这一步：发送邮件") && !latest.includes("当前步骤：发送邮件"), "摘录不是可执行的新命令");
+      assert(!latest.includes("这一步：发送邮件") && !latest.includes("当前步骤：发送邮件"), "续办没有把原交办禁止的发邮件变成新命令");
       phase = "done";
       return [
         {
@@ -149,11 +158,22 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
         arguments: { path: "复核底稿.txt", content: executionNotes } }];
     }
     if (phase === "report-first") {
+      const last = input.messages.at(-1);
+      if (last?.role !== "toolResult") return [{ type: "toolCall", id: "report-check-inventory", name: "read", arguments: { path: "到货记录.txt" } }];
+      assert(last.toolCallId === "report-check-inventory" && !last.isError && JSON.stringify(last.content).includes("批次累计 18 件"));
       phase = "report-last";
       return [{ type: "text", text: "已从到货记录核对 18 件。\n\n" + JSON.stringify({ dotsState: "progress", result: "到货数量已核对。", remainingQuote: "再汇总采购情况" }) }];
     }
     if (phase === "report-last") {
-      return deliveryReply(latestUser.includes(reportFormat) ? fullReport : conclusion, executionNotes);
+      assert(latestUser.includes(reportFormat));
+      const work = (dotsCompletionRequirements(reportAssignment, reportFormat).items ?? []).filter(item => item.kind === "work");
+      assert.equal(work.length, 2);
+      return [{ type: "toolCall", id: "finish-procurement-report", name: "dots_task_end", arguments: {
+        action: "complete", result: executionNotes, deliveryText: fullReport, completedItems: [
+          { id: work[0]!.id, evidence: "到货记录.txt 的批次累计为 18 件。" },
+          { id: work[1]!.id, evidence: "正文已经汇总到货数量，并列出采购依据和复核过程。" },
+        ],
+      } }];
     }
     if (phase === "missing") {
       const last = input.messages.at(-1);
@@ -313,7 +333,11 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
         { type: "text", text: JSON.stringify({ dotsState: "progress", result: runningMilestone, remainingQuote: "核对另一批的原始记录" }) },
         { type: "toolCall", id: "remaining-checkpoint-read", name: "read", arguments: { path: "到货记录.txt" } },
       ];
-      return completedWorkerReply("两份记录均已核对，各为 18 件。");
+      for (const read of runningReads) assert(input.messages.some(message => message.role === "toolResult" &&
+        message.toolCallId === read.callId && !message.isError && JSON.stringify(message.content).includes(read.text)));
+      return [{ type: "toolCall", id: "finish-live-record-check", name: "dots_task_end", arguments: {
+        action: "complete", result: runningResult, deliveryText: runningResult, completedItems: runningEvidence,
+      } }];
     }
     return completedWorkerReply(conclusion);
   }
@@ -763,7 +787,7 @@ try {
   assert.equal(readFileSync(join(folder, "工作底稿.txt"), "utf8"), executionNotes);
   console.log("PASS 仅交付文件的原对话消息只有对应版本附件");
   phase = "running";
-  const runningRequest = "核对周一批次的原始记录，再核对另一批的原始记录";
+  assert.equal(runningWork.length, 2);
   await send(runningRequest, { action: "delegate", spaceId: space.id, name: "两批核对", text: runningRequest });
   const [runningJob] = journal.list(["source-15"]);
   journal.refresh(runningJob.taskId);
@@ -777,15 +801,14 @@ try {
   assert.equal(journal.list(["source-15"])[0].status, "running");
   assert.equal(journal.list(["source-15"]).length, 1);
   await releaseRunningWorker();
-  const completeMessages = await messageContains("两份记录均已核对，各为 18 件。", "source-15");
+  const completeMessages = await messageContains(runningResult, "source-15");
   assert(completeMessages.some(m => m.dotsDelivery?.sourceMessageId === "source-15" && m.dotsDelivery.kind === "conclusion"));
   assert.equal(journal.list(["source-15"]).length, 1);
   const workerHistory = await agent.loadTaskHistory(runningJob.taskId, undefined, "current");
   assert(workerHistory.messages.some(m => m.dotsWorkerProgress && m.text === runningMilestone));
-  assert(workerHistory.messages.some(m => m.finalAssistantReply && m.text === "两份记录均已核对，各为 18 件。"));
   assert(!workerHistory.messages.some(m => m.text.includes('"dotsState"')));
   const nativeOutcome = await agent.dotsSubmission(runningJob.taskId, runningJob.id);
-  assert.equal(nativeOutcome?.text, JSON.stringify({ dotsState: "complete", result: "两份记录均已核对，各为 18 件。" }));
+  assert.deepEqual(JSON.parse(nativeOutcome?.text ?? "null"), { dotsState: "complete", result: runningResult, completedItems: runningEvidence });
   console.log("PASS 原生工具调用期间只回传声明的实质进展，在同一轮结束后单独交付结论");
   await journal.drain();
   for (const [id, text, expected] of [
@@ -870,8 +893,8 @@ try {
   console.log("PASS Dots stop and pause block a Goal check queued by a completed native turn");
   phase = "report-first";
   const reportSource = `source-${turn + 1}`;
-  await send(`先核对数量，再汇总采购情况。${reportFormat}`, { action: "delegate", spaceId: space.id, name: "采购报告",
-    text: "先核对数量，再汇总采购情况。", steps: ["先核对数量", "再汇总采购情况"], deliveryInstruction: reportFormat });
+  await send(reportAssignment + reportFormat, { action: "delegate", spaceId: space.id, name: "采购报告",
+    text: reportAssignment, steps: ["先核对数量", "再汇总采购情况"], deliveryInstruction: reportFormat });
   const reportMessages = await messageContains("## 复核过程", reportSource);
   const reportDelivery = reportMessages.find(m => m.dotsDelivery?.sourceMessageId === reportSource && m.dotsDelivery.kind === "conclusion");
   assert.equal(reportDelivery?.text, fullReport);

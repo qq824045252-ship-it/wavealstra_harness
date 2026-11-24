@@ -3,6 +3,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { z } from "zod";
 import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
+import { DOTS_WORK_ITEM_ID_PATTERN } from "../../dots/DotsWorkerOutcome";
 import { checkDurableInputFreshness } from "./DurableInputFreshness";
 import { durableSourceInput } from "./DurableInputProvenance";
 import { PROJECT_CHECK_NAME_PATTERN } from "./DurableProjectVerification";
@@ -15,9 +16,15 @@ const dependency = z.object({
   deadlineAt: z.number().int().positive(),
 });
 
+const workEvidence = z.array(z.strictObject({
+  id: z.string().regex(new RegExp(DOTS_WORK_ITEM_ID_PATTERN)),
+  evidence: z.string().trim().min(1).max(1800),
+})).max(48);
+
 const outcome = z.discriminatedUnion("action", [
   z.object({ action: z.literal("complete"), result: z.string(), deliveryText: z.string(),
     verifiedCommit: z.string().regex(/^[a-f0-9]{40,64}$/).optional(),
+    completedItems: workEvidence.optional(),
     verifiedChecks: z.array(z.string().regex(new RegExp(PROJECT_CHECK_NAME_PATTERN))).max(25).optional() }),
   z.object({ action: z.literal("wait"), progress: z.string(), dependencyWait: dependency }),
 ]);
@@ -25,14 +32,16 @@ const receipt = z.object({ dotsTerminal: z.object({ operationId: z.string(), out
 type Dependency = z.infer<typeof dependency>;
 type TerminalOutcome = z.infer<typeof outcome>;
 
-const checkNames = z.preprocess(value => {
+function decodeToolArray(value: unknown): unknown {
   // Some OpenAI-compatible model routes encode arrays as JSON strings. Pi may
   // coerce that string to a one-element array while validating the tool schema.
   const candidate = Array.isArray(value) && value.length === 1 ? value[0] : value;
   if (typeof candidate !== "string" || !candidate.trimStart().startsWith("[")) return value;
   try { return JSON.parse(candidate); }
   catch { return value; }
-}, z.array(z.string().max(128).regex(new RegExp(PROJECT_CHECK_NAME_PATTERN))).max(25));
+}
+
+const checkNames = z.preprocess(decodeToolArray, z.array(z.string().max(128).regex(new RegExp(PROJECT_CHECK_NAME_PATTERN))).max(25));
 
 const argsSchema = z.discriminatedUnion("action", [
   z.object({
@@ -41,6 +50,7 @@ const argsSchema = z.discriminatedUnion("action", [
     deliveryText: z.string().max(32000),
     checks: checkNames.optional(),
     commitSha: z.string().regex(/^[a-f0-9]{7,64}$/i).optional(),
+    completedItems: z.preprocess(decodeToolArray, workEvidence).optional(),
   }),
   z.object({
     action: z.literal("wait"),
@@ -50,7 +60,7 @@ const argsSchema = z.discriminatedUnion("action", [
 ]);
 type WorkerArgs = z.infer<typeof argsSchema>;
 type VerifyCompletion = (
-  proof: Pick<Extract<WorkerArgs, { action: "complete" }>, "checks" | "commitSha">,
+  proof: Pick<Extract<WorkerArgs, { action: "complete" }>, "checks" | "commitSha" | "completedItems">,
   api: ToolExecutionApi, context: Context, operationId: string,
 ) => Promise<{ verifiedCommit?: string; verifiedChecks?: string[] }>;
 
@@ -62,7 +72,7 @@ export function createDurableDotsWorker(
 ): ToolRegistration {
   return {
     name: DOTS_TASK_END,
-    description: "结束当前 Dots 后台交办的模型执行。请单独调用。complete 在实际验收和约定交付都已完成后提交回原对话的正文。用 checks 引用 project_verify 的必验检查，用 commitSha 引用已授权并实际存在的本地提交。wait 在独立工作已完成、只能等待同一交办里的另一任务时保存进展并暂停，传入对方委派回执里的 operationId。不使用 shell sleep 轮询。",
+    description: "结束当前 Dots 后台交办的模型执行。请单独调用。complete 在实际验收和约定交付都已完成后提交回原对话的正文。用 completedItems 逐项说明带 work ID 的事项实际产生的结果和依据，用 checks 引用 project_verify 的必验检查，用 commitSha 引用已授权并实际存在的本地提交。wait 在独立工作已完成、只能等待同一交办里的另一任务时保存进展并暂停，传入对方委派回执里的 operationId。不使用 shell sleep 轮询。",
     parameters: Type.Union([
       Type.Object({
         action: Type.Literal("complete"),
@@ -70,6 +80,13 @@ export function createDurableDotsWorker(
         deliveryText: Type.String({ maxLength: 32000 }),
         checks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { maxItems: 25 })),
         commitSha: Type.Optional(Type.String({ pattern: "^[a-fA-F0-9]{7,64}$" })),
+        completedItems: Type.Optional(Type.Union([
+          Type.Array(Type.Object({
+            id: Type.String({ pattern: DOTS_WORK_ITEM_ID_PATTERN }),
+            evidence: Type.String({ minLength: 1, maxLength: 1800 }),
+          }, { additionalProperties: false }), { maxItems: 48 }),
+          Type.String({ pattern: "^\\s*\\[", description: "JSON 编码的同一组完成项。" }),
+        ])),
       }, { additionalProperties: false }),
       Type.Object({
         action: Type.Literal("wait"),
@@ -81,7 +98,7 @@ export function createDurableDotsWorker(
     callers: ["model"],
     execute: async (raw, api, context) => {
       const parsed = argsSchema.safeParse(raw);
-      if (!parsed.success) return toolError("请提供有效的结项参数。checks 只包含 typecheck 或 test: 开头的项目检查名称。");
+      if (!parsed.success) return toolError("请提供有效的结项参数。checks 只包含 typecheck、test 或 test: 开头的项目检查名称。");
       const args = parsed.data;
       const live = await api.snapshot(LiveDoc, api.conversationId, context);
       if (live?.tools?.length !== 1 || live.tools[0]?.taskId !== api.taskId)
@@ -100,6 +117,7 @@ export function createDurableDotsWorker(
           const proof = await verifyCompletion(args, api, context, source.id);
           terminal = { action: "complete", result: args.result, deliveryText: args.deliveryText,
             ...(proof.verifiedCommit ? { verifiedCommit: proof.verifiedCommit } : {}),
+            ...(args.completedItems?.length ? { completedItems: args.completedItems } : {}),
             ...(proof.verifiedChecks?.length ? { verifiedChecks: proof.verifiedChecks } : {}) };
         }
         await checkDurableInputFreshness(api, context);

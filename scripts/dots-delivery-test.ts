@@ -8,6 +8,7 @@ import { defaultAnswerRuleId, newAnswerRule } from "../src/shared/answer-routing
 import type { AnswerRoutingFlow } from "../src/shared/answer-routing-flow";
 import { DotsDelegations } from "../src/main/dots/DotsDelegations";
 import type { CronJobDto } from "../src/shared/agent-ipc";
+import { TaskBoardRepository } from "../src/main/task/TaskBoardRepository";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-dots-delivery-"));
 process.env.USERPROFILE = root;
@@ -289,17 +290,18 @@ try {
       db.upsertTask({ id, title: id, spaceId: space.id, updatedAt: Date.now() });
     }
   });
+  const board = new TaskBoardRepository(db.connection);
   const timings: number[] = [];
   for (let sample = 0; sample < 60; sample++) {
     const id = "quote-board-" + ((sample * 23) % 1000).toString().padStart(4, "0");
     const start = performance.now();
-    const page = await actions.execute(DOTS_TASK_ID, undefined, { action: "board", spaceId: space.id, query: id });
-    assert.ok(page && "tasks" in page && page.tasks?.some(task => task.id === id), "Dots found the exact task");
+    const page = board.page({ view: "all", scope: space.id, search: id });
+    assert.ok(page.rows.some(task => task.id === id), "The task board found the exact task");
     timings.push(performance.now() - start);
   }
   const p95 = timings.sort((a, b) => a - b)[Math.ceil(timings.length * 0.95) - 1]!;
-  console.log(`Dots local board query: 1,000 tasks, 60 queries, p95 ${p95.toFixed(1)} ms on ${cpus()[0]?.model}`);
-  assert.ok(p95 < 1000, "local task lookup p95 should stay below one second");
+  console.log(`Local task board query: 1,000 tasks, 60 queries, p95 ${p95.toFixed(1)} ms on ${cpus()[0]?.model}`);
+  assert.ok(p95 < 1000, "the local task board query p95 should stay below one second");
   // The host was offline for three intervals. Replay only one live native input.
   const now = Date.now();
   const recurring: CronJobDto = { id: "dots-missed", name: "到期报价", prompt: "跟进上次报价", scheduleType: "every",

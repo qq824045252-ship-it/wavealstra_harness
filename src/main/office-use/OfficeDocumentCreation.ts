@@ -1,4 +1,4 @@
-import { realpath, stat, unlink } from "node:fs/promises";
+import { mkdtemp, realpath, rmdir, stat, unlink } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 import PptxGenJS from "pptxgenjs";
@@ -47,6 +47,7 @@ export const officeCreateParameters = Type.Object({
   content: Type.Optional(Type.Union([wordContent, excelContent, pptContent])),
 }, { additionalProperties: false });
 export type OfficeCreateRequest = Static<typeof officeCreateParameters>;
+export const OFFICE_RECOVERY_CREATE_MEMO = "mybuddy.office.recovery-create";
 
 const mime: Record<OfficeKind, string> = {
   word: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -117,6 +118,7 @@ export async function createOfficeDocument(request: OfficeCreateRequest, context
   producerMessageId?: string;
   artifacts: ArtifactService;
   assertWritable(): void;
+  preserveExisting?: boolean;
 }) {
   const name = request.path;
   const kind = kindFor(name);
@@ -129,21 +131,36 @@ export async function createOfficeDocument(request: OfficeCreateRequest, context
 
   const root = await realpath(context.taskRoot);
   const directory = await stat(root);
-  const path = join(root, name);
+  let path = join(root, name);
+  let recoveryDirectory: string | undefined;
   const bytes = await createBytes(kind, request.content);
   await assertOfficePackage(bytes, kind);
+  const validateRoot = async () => {
+    const currentRoot = await realpath(context.taskRoot);
+    const current = await stat(currentRoot);
+    if (currentRoot !== root || current.dev !== directory.dev || current.ino !== directory.ino) {
+      throw new Error("任务目录已变化，请重新创建。");
+    }
+    context.assertWritable();
+  };
   try {
-    await atomicBytes(path, bytes, async () => {
-      const currentRoot = await realpath(context.taskRoot);
-      const current = await stat(currentRoot);
-      if (currentRoot !== root || current.dev !== directory.dev || current.ino !== directory.ino) {
-        throw new Error("任务目录已变化，请重新创建。");
-      }
-      context.assertWritable();
-    }, { create: true });
+    await atomicBytes(path, bytes, validateRoot, { create: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`任务目录已有文件 ${name}，请选择其他文件名。`);
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (!context.preserveExisting) throw new Error(`任务目录已有文件 ${name}，请选择其他文件名。`);
+    await validateRoot();
+    const output = await mkdtemp(join(root, ".mybuddy-recovery-"));
+    recoveryDirectory = output;
+    path = join(output, name);
+    try {
+      await atomicBytes(path, bytes, async () => {
+        await validateRoot();
+        if (await realpath(output) !== output) throw new Error("补件目录已变化，请重新创建。");
+      }, { create: true });
+    } catch (error) {
+      await rmdir(output).catch(() => {});
+      throw error;
+    }
   }
 
   try {
@@ -161,6 +178,7 @@ export async function createOfficeDocument(request: OfficeCreateRequest, context
   } catch (error) {
     try { await unlink(path); }
     catch (cleanup) { throw new Error(`文件已创建在 ${path}，产物登记和清理失败。`, { cause: new AggregateError([error, cleanup]) }); }
+    if (recoveryDirectory) await rmdir(recoveryDirectory).catch(() => {});
     throw error;
   }
 }

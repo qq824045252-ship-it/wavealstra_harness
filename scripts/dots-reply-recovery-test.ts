@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -38,39 +38,54 @@ const rerunAnswer = "复核完成，库存为 37 件。";
 const externalSource = "external-effect-recovery";
 const effectToolCall = "post-unconfirmed-effect";
 const unconfirmed = "外部操作未收到回执，是否生效需要核查。";
-const recoveryFaults = ["readThen503", "writeThen503", "effectThen503", "effectProgress", "localFiles", "localPreexisting"] as const;
+const recoveryFaults = ["readThen503", "webThen503", "writeThen503", "effectThen503", "effectProgress", "localFiles", "localPreexisting", "localCheck", "localEdit"] as const;
 type RecoveryFault = typeof recoveryFaults[number];
 const recoveryProof = "recovery-proof.txt";
 const recoveryDraft = "recovery-internal-notes.txt";
 const recoveryInstructions: Record<RecoveryFault, string> = {
   readThen503: "读取 recovery-input.txt 的盘点数量，只回复数字。",
+  webThen503: "联网查找测试用公开资料，只回复其中的数量。",
   writeThen503: "请创建 recovery-proof.txt，只交付这个文件。",
   effectThen503: "运行盘点登记命令并确认结果。",
   effectProgress: "运行盘点登记命令并确认结果。",
   localFiles: "制作本地盘点成果。交付 localFiles-kept.txt 和 localFiles-missing.txt。",
   localPreexisting: "制作本地盘点成果。交付 localPreexisting-kept.txt 和 localPreexisting-missing.txt。",
+  localCheck: "修复项目代码，并运行 pnpm typecheck。",
+  localEdit: "修复本地导入结果。",
 };
 type WorkspaceCase = "bound" | "private" | "inherited" | "rebound";
 const dependencyAssignment = "先准备上游数据。\n再用上游结果完成集成。";
+const continuedDependencies = ["dependencyContinuation", "dependencyAlreadyContinued", "dependencyPausedContinuation",
+  "dependencyManualRevision", "dependencyChangedScope"] as const;
+type DependencyScenario = "dependency" | "dependencyDeadline" | typeof continuedDependencies[number];
+const isContinuedDependency = (fault: string | undefined): fault is typeof continuedDependencies[number] =>
+  continuedDependencies.some(scenario => scenario === fault);
+const recoveryProjectPath = join(root, "recovery-project");
+const searchFixtureText = "测试用资料记录为 57 件。";
+const verifiedRepairText = "项目代码已修复，类型检查通过。";
+const localEditTarget = "recovery-edit-target.txt", unrelatedEditTarget = "recovery-edit-other.txt";
 
-async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect" | "missingInitialDirectory" | "pendingInitialDirectory" | "rerunLegacy" | "stopAfterCommit" | "dependency" | "dependencyDeadline" | RecoveryFault, effectPort?: number,
+async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "foregroundError" | "cancelInFlight" | "policyProgress" | "activityOnly" | "externalEffect" | "missingInitialDirectory" | "pendingInitialDirectory" | "rerunLegacy" | "stopAfterCommit" | DependencyScenario | RecoveryFault, effectPort?: number,
   workspace: WorkspaceCase = "bound") {
   const db = new AppDatabase(join(root, "app.db"));
   const artifacts = createArtifactDomain(db.connection);
   db.openDots();
   const stock = db.getSpace("sp-stock") ?? db.createSpace({id:"sp-stock",name:"库存",path:root});
-  const space = workspace === "bound" ? stock : db.getSpace("sp-stock-" + workspace) ?? db.createSpace({
+  const space = fault === "localCheck" ? db.createSpace({ id: "recovery-project", name: "恢复验收项目", path: recoveryProjectPath })
+    : workspace === "bound" ? stock : db.getSpace("sp-stock-" + workspace) ?? db.createSpace({
     id:"sp-stock-" + workspace, name:"库存 " + workspace, parentId:workspace === "inherited" ? stock.id : undefined,
   });
   let enteredTimer = false;
   let reportedProgress = false;
   let dependencyDispatches = 0;
+  let downstreamContinuations = 0;
   let blockedRecoveryWrite = false;
   let releaseTimer!: () => void;
   const timerGate = new Promise<void>(resolve => { releaseTimer = resolve; });
   if (fault === "activityOnly") writeFileSync(join(root, "signal.txt"), "fixture signal 42");
   if (fault === "readThen503") writeFileSync(join(root, "recovery-input.txt"), "42");
   if (fault === "localPreexisting") writeFileSync(join(root, fault + "-missing.txt"), "之前留下的其他文件");
+  if (fault === "localEdit") writeFileSync(join(root, unrelatedEditTarget), "其他资料");
   const fixture = await createAgentDurableFixture(root, db, async (input, signal) => {
     const tools = getCurrentTools(input.messages);
     const latest = input.messages.at(-1);
@@ -112,7 +127,77 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
       if (previous?.toolCallId === "initial-kept-register") return complete;
       return [write("initial-kept-write", kept, "第一份已核实的盘点成果")];
     }
-    if (fault === "readThen503" || fault === "writeThen503" || fault === "effectThen503" || fault === "effectProgress") {
+    if (fault === "localEdit") {
+      const names = tools.map(tool => tool.name);
+      if (!names.length) return [{ type: "text", text: '{"candidates":[]}' }];
+      const previous = latest?.role === "toolResult" ? latest : undefined;
+      const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
+      if (names.includes("dots_action")) {
+        if (previous) return [{ type: "text", text: "收到。" }];
+        return [{ type: "toolCall", id: "delegate-local-edit", name: "dots_action", arguments: {
+          action: "delegate", spaceId: space.id, name: "本地修复续办", text: recoveryInstructions.localEdit,
+        } }];
+      }
+      if (!userText.includes("只在下列已确认的原任务改动文件中补齐剩余修复")) {
+        if (previous?.toolCallId === "first-local-edit-write") {
+          assert.equal(previous.isError, false);
+          return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "具体修复之后再补。" }) }];
+        }
+        return [{ type: "toolCall", id: "first-local-edit-write", name: "write", arguments: { path: localEditTarget, content: "导入结果为 41" } }];
+      }
+      assert(names.includes("edit") && !names.includes("write") && !names.includes("bash"));
+      if (previous?.toolCallId === "edit-unrelated-file") {
+        assert.equal(previous.isError, true);
+        return [{ type: "toolCall", id: "finish-local-edit", name: "edit", arguments: {
+          path: localEditTarget, edits: [{ oldText: "41", newText: "42" }],
+        } }];
+      }
+      if (previous?.toolCallId === "finish-local-edit") {
+        assert.equal(previous.isError, false, JSON.stringify(previous.content));
+        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "导入结果已经修复。" }) }];
+      }
+      return [{ type: "toolCall", id: "edit-unrelated-file", name: "edit", arguments: {
+        path: unrelatedEditTarget, edits: [{ oldText: "其他资料", newText: "不应改写" }],
+      } }];
+    }
+    if (fault === "localCheck") {
+      const names = tools.map(tool => tool.name);
+      if (!names.length) return [{ type: "text", text: '{"candidates":[]}' }];
+      const previous = latest?.role === "toolResult" ? latest : undefined;
+      const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
+      if (names.includes("dots_action")) {
+        if (previous) return [{ type: "text", text: "收到。" }];
+        return [{ type: "toolCall", id: "delegate-local-check", name: "dots_action", arguments: {
+          action: "delegate", spaceId: space.id, name: "项目检查续办", text: recoveryInstructions.localCheck,
+        } }];
+      }
+      if (!userText.includes("用 project_verify 校验当前工作区")) {
+        if (previous?.toolCallId === "repair-source-write") {
+          assert.equal(previous.isError, false);
+          return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "已修复项目代码。" }) }];
+        }
+        return [{ type: "toolCall", id: "repair-source-write", name: "write", arguments: { path: "code.cjs", content: "module.exports = 42;\n" } }];
+      }
+      assert(names.includes("project_verify"));
+      assert(!names.some(name => ["bash", "powershell", "edit", "write", "codemode"].includes(name)));
+      if (previous?.toolCallId === "recovery-bypass-shell") {
+        assert.equal(previous.isError, true);
+        return [{ type: "toolCall", id: "recovery-wrong-check", name: "project_verify", arguments: { script: "test:unrelated" } }];
+      }
+      if (previous?.toolCallId === "recovery-wrong-check") {
+        assert.equal(previous.isError, true);
+        return [{ type: "toolCall", id: "recovery-typecheck", name: "project_verify", arguments: { script: "typecheck" } }];
+      }
+      if (previous?.toolCallId === "recovery-typecheck") {
+        assert.equal(previous.isError, false, JSON.stringify(previous.content));
+        assert.match(JSON.stringify(previous.content), /passed/);
+        return [{ type: "toolCall", id: "recovery-local-check-done", name: "dots_task_end", arguments: {
+          action: "complete", result: verifiedRepairText, deliveryText: verifiedRepairText, checks: ["typecheck"],
+        } }];
+      }
+      return [{ type: "toolCall", id: "recovery-bypass-shell", name: "bash", arguments: { command: "pnpm run test:unrelated" } }];
+    }
+    if (fault === "readThen503" || fault === "webThen503" || fault === "writeThen503" || fault === "effectThen503" || fault === "effectProgress") {
       const names = tools.map(tool => tool.name);
       if (!names.length) return [{ type: "text", text: '{"candidates":[]}' }];
       const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
@@ -145,11 +230,12 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
         } }];
       }
       if (userText.includes("从短暂故障处继续")) {
-        assert.equal(fault, "readThen503");
+        assert(fault === "readThen503" || fault === "webThen503");
         assert(names.includes("read"), "the resumed read-only task can still complete business steps");
+        const quantity = fault === "webThen503" ? "57" : "42";
         assert(input.messages.some(message => message.role === "toolResult" && message.toolCallId === "recovery-read" &&
-          JSON.stringify(message.content).includes("42")), "the read result remains available to the original task");
-        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "原始盘点数量为 42。", delivery: { text: "42" } }) }];
+          JSON.stringify(message.content).includes(quantity)), "the read result remains available to the original task");
+        return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: `原始盘点数量为 ${quantity}。`, delivery: { text: quantity } }) }];
       }
       if (previous) {
         assert.equal(previous.isError, false, JSON.stringify(previous.content));
@@ -163,6 +249,9 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
         return { content: [], errorMessage: "503: temporarily unavailable" };
       }
       if (fault === "readThen503") return [{ type: "toolCall", id: "recovery-read", name: "read", arguments: { path: "recovery-input.txt" } }];
+      if (fault === "webThen503") return [{ type: "toolCall", id: "recovery-read", name: "web_search", arguments: {
+        query: "公开资料恢复验收", provider: "brave", workflow: "none", evidenceMode: "snippets",
+      } }];
       if (fault === "writeThen503") return [{ type: "toolCall", id: "recovery-scratch", name: "write",
         arguments: { path: recoveryDraft, content: "内部记录只保留在原工作区。" } }];
       const code = 'require("node:fs").appendFileSync("' + fault + '.txt", "accepted\\n")';
@@ -171,7 +260,7 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
       return [{ type: "toolCall", id: "recovery-unverified-effect", name: windows ? "powershell" : "bash",
         arguments: { command: (windows ? "& " : "") + quote(process.execPath) + " -e " + quote(code) } }];
     }
-    if (fault === "dependency" || fault === "dependencyDeadline") {
+    if (fault === "dependency" || fault === "dependencyDeadline" || isContinuedDependency(fault)) {
       const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
       if (tools.some(tool => tool.name === "dots_action")) {
         const upstreamCall = "dependency-upstream-" + fault;
@@ -192,14 +281,36 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
           } }];
         }
       } else if (tools.some(tool => tool.name === "read") && userText?.includes("上游任务等待门限")) {
+        if (isContinuedDependency(fault) && !userText.includes("继续完成上面的完整交办")) {
+          return [{ type: "text", text: JSON.stringify({ dotsState: "progress", result: "上游基础数据已整理。", remainingQuote: "准备上游数据" }) }];
+        }
         enteredTimer = true;
-        await Promise.race([timerGate, new Promise(resolve => signal?.addEventListener("abort", resolve, { once: true }))]);
+        if (fault !== "dependencyAlreadyContinued")
+          await Promise.race([timerGate, new Promise(resolve => signal?.addEventListener("abort", resolve, { once: true }))]);
         return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "上游结果 47" }) }];
       } else if (tools.some(tool => tool.name === "read") && userText?.includes("集成测试等待操作")) {
+        if (userText.includes("依赖已交付，继续原任务") || userText.includes("以下是对应依赖操作的已交付结果")) {
+          assert(isContinuedDependency(fault));
+          downstreamContinuations++;
+          const original = journal.list([fault]).find(job => job.title === "上游依赖" && !job.id.startsWith("dots-input-auto-"));
+          const child = journal.list([fault]).find(job => job.title === "上游依赖" && job.id.startsWith("dots-input-auto-"));
+          assert(original && child);
+          assert(userText.includes(child.id) && userText.includes("上游结果 47"));
+          return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: "采用上游完整结果，集成值为 47。" }) }];
+        }
         workerCalls++;
         const operationId = /集成测试等待操作 (dots-input-[a-f0-9]+)/.exec(userText)?.[1];
         assert(operationId);
         assert(tools.some(tool => tool.name === "dots_task_end"));
+        if (fault === "dependencyAlreadyContinued") {
+          const deadline = Date.now() + 6000;
+          const deliveredChild = () => db.connection.prepare(`SELECT 1 FROM dots_reply_events e
+            JOIN dots_delegations root ON root.operation_id=? AND root.task_id=e.task_id
+            WHERE e.operation_id<>root.operation_id AND e.settled=1 AND json_valid(e.snapshot)
+            AND json_extract(e.snapshot,'$.delivered')='conclusion'`).get(operationId);
+          while (!deliveredChild() && Date.now() < deadline) await sleep();
+          assert(deliveredChild(), "the upstream child delivery is committed before the dependent waits");
+        }
         if (fault === "dependencyDeadline") {
           const waiting = journal.list([fault]).find(job => job.title === "依赖集成");
           assert(waiting);
@@ -348,7 +459,8 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
   await journal.recover(async req => { replayAdmissions++; return agent.prompt(req); }, () => true,
     undefined, undefined, (id, cwd) => agent.matchesDotsInitialPrivateWorkspace(id, cwd));
   return {fixture, db, agent, journal, cron, actions, timerNotices, fileNotices, progressNotices, reached:() => faultReached,
-    blockedRecoveryWrite: () => blockedRecoveryWrite, enteredTimer:()=>enteredTimer, releaseTimer, async close() {
+    blockedRecoveryWrite: () => blockedRecoveryWrite, enteredTimer:()=>enteredTimer, downstreamContinuations: () => downstreamContinuations,
+    releaseTimer, async close() {
     releaseTimer();
     cron.stop(); terminal.dispose(); off(); journal.close(); await journal.drain(); await actions.closeFileWatches(); await fixture.close(); db.close();
   }};
@@ -366,7 +478,38 @@ if (faultHost) {
   } finally { await host.close(); }
 }
 for (const fault of recoveryFaults) {
+  if (fault === "localCheck") {
+    mkdirSync(recoveryProjectPath);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: recoveryProjectPath, windowsHide: true });
+    git("init", "-q");
+    writeFileSync(join(recoveryProjectPath, "code.cjs"), "module.exports = 41;\n");
+    writeFileSync(join(recoveryProjectPath, "package.json"), JSON.stringify({ name: "recovery-project", scripts: {
+      typecheck: "node check.cjs", "test:unrelated": "node unrelated.cjs",
+    } }));
+    writeFileSync(join(recoveryProjectPath, "check.cjs"), `require('node:assert/strict').equal(require('./code.cjs'), 42);
+require('node:fs').appendFileSync(${JSON.stringify(join(root, "recovery-typecheck-runs.txt"))}, 'checked\\n');`);
+    writeFileSync(join(recoveryProjectPath, "unrelated.cjs"),
+      `require('node:fs').writeFileSync(${JSON.stringify(join(root, "unrelated-check-ran.txt"))}, 'unrelated');`);
+    writeFileSync(join(recoveryProjectPath, ".gitignore"), "node_modules\n");
+    writeFileSync(join(recoveryProjectPath, ".npmrc"), "update-notifier=false\n");
+    const npmEnv = { cwd: recoveryProjectPath, windowsHide: true };
+    if (process.platform === "win32") execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "pnpm install --offline --ignore-scripts"], npmEnv);
+    else execFileSync("pnpm", ["install", "--offline", "--ignore-scripts"], npmEnv);
+    git("add", ".");
+    git("-c", "user.name=fixture", "-c", "user.email=fixture@invalid", "commit", "-qm", "Original fixture");
+  }
   const host = await open(fault);
+  const savedFetch = globalThis.fetch;
+  const previousBraveKey = process.env.BRAVE_API_KEY;
+  let searches = 0;
+  if (fault === "webThen503") {
+    process.env.BRAVE_API_KEY = "isolated-recovery-fixture";
+    globalThis.fetch = (input, init) => {
+      if (!String(input).startsWith("https://api.search.brave.com/res/v1/web/search?")) return savedFetch(input, init);
+      searches++;
+      return Promise.resolve(Response.json({ web: { results: [{ title: "测试用公开资料", url: "https://example.invalid/recovery", description: searchFixtureText }] } }));
+    };
+  }
   try {
     await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: fault, assistantMessageId: fault + "-ack", text: recoveryInstructions[fault] });
     const delivered = async () => (await host.agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message =>
@@ -401,7 +544,19 @@ for (const fault of recoveryFaults) {
       assert.equal(jobs.length, 2, JSON.stringify({ jobs, replies }));
       assert.equal(replies[0]!.dotsDelivery!.kind, "conclusion");
       if (fault === "readThen503") assert.equal(replies[0]!.text, "42");
-      else {
+      else if (fault === "webThen503") {
+        assert.equal(replies[0]!.text, "57");
+        assert.equal(searches, 1, "recover using the settled native search receipt without searching twice");
+      } else if (fault === "localCheck") {
+        assert.equal(replies[0]!.text, verifiedRepairText);
+        assert.equal(readFileSync(join(root, "recovery-typecheck-runs.txt"), "utf8"), "checked\n");
+        assert.throws(() => readFileSync(join(root, "unrelated-check-ran.txt")), { code: "ENOENT" });
+        assert.equal(readFileSync(join(recoveryProjectPath, "code.cjs"), "utf8"), "module.exports = 42;\n");
+      } else if (fault === "localEdit") {
+        assert.equal(replies[0]!.text, "导入结果已经修复。");
+        assert.equal(readFileSync(join(root, localEditTarget), "utf8"), "导入结果为 42");
+        assert.equal(readFileSync(join(root, unrelatedEditTarget), "utf8"), "其他资料");
+      } else {
         assert(host.blockedRecoveryWrite());
         assert.equal(readFileSync(join(root, recoveryProof), "utf8"), "原盘点成果 42。");
         assert.equal(readFileSync(join(root, recoveryDraft), "utf8"), "内部记录只保留在原工作区。");
@@ -409,7 +564,12 @@ for (const fault of recoveryFaults) {
       }
     }
     console.log("PASS original Dots task recovery: " + fault);
-  } finally { await host.close(); }
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (previousBraveKey === undefined) delete process.env.BRAVE_API_KEY;
+    else process.env.BRAVE_API_KEY = previousBraveKey;
+    await host.close();
+  }
 }
 for (const fault of ["before","after"] as const) {
   const source = "inventory-" + fault;
@@ -677,11 +837,46 @@ try {
   writeFileSync(join(deniedDir,"private.txt"),"hidden workspace evidence");
   const denied = policies.db.createSpace({id:"dots-private-scope",name:"不可见空间",path:deniedDir});
   policies.db.upsertTask({id:"dots-private-task",title:"不可见事项",spaceId:denied.id,updatedAt:Date.now()});
+  policies.db.upsertTask({id:"dots-visible-search-probe",title:"允许查找的事项",spaceId:scope,updatedAt:Date.now()});
   const setMode = (followupMode: "paused" | "notify" | "continue", spaceIds: string[] | null = [scope]) =>
     policies.agent.updateAppSettings({dotsSettings:{...resolveDotsPreferences(policies.agent.getAppSettings().dotsSettings),followupMode,spaceIds}});
   await setMode("paused");
-  const board = await policies.actions.execute(DOTS_TASK_ID,undefined,{action:"board"});
-  assert(!JSON.stringify(board).includes("不可见事项"));
+  const search = await policies.actions.execute(DOTS_TASK_ID,undefined,{action:"find_tasks",query:"事项"});
+  assert(search && "tasks" in search && search.tasks?.some(task => task.id === "dots-visible-search-probe"));
+  assert(!JSON.stringify(search).includes("不可见事项"));
+  await assert.rejects(policies.actions.execute(DOTS_TASK_ID,undefined,{action:"find_tasks",spaceId:denied.id}),/未授权/);
+  const readSettings = resolveDotsPreferences(policies.agent.getAppSettings().dotsSettings);
+  await policies.agent.updateAppSettings({ dotsSettings: { ...readSettings, operations: { ...readSettings.operations, task: false } } });
+  const candidateOnly = await policies.actions.execute(DOTS_TASK_ID,undefined,{action:"find_tasks",query:"dots-visible-search-probe"});
+  assert(candidateOnly && "tasks" in candidateOnly && candidateOnly.tasks?.[0]?.id === "dots-visible-search-probe");
+  assert(!("inspection" in candidateOnly));
+  await policies.agent.updateAppSettings({ dotsSettings: { ...readSettings, operations: { ...readSettings.operations, task: true } } });
+  const withInspection = await policies.actions.execute(DOTS_TASK_ID,undefined,{action:"find_tasks",query:"dots-visible-search-probe"});
+  assert(withInspection && "inspection" in withInspection && withInspection.inspection?.id === "dots-visible-search-probe");
+  const east = policies.db.createSpace({ id: "sp-search-east", name: "华东验收" });
+  const west = policies.db.createSpace({ id: "sp-search-west", name: "华西验收" });
+  const sharedTitle = "跨空间同名任务";
+  policies.db.upsertTask({ id: "east-name-probe", title: sharedTitle, spaceId: east.id, updatedAt: 1 });
+  policies.db.upsertTask({ id: "west-name-probe", title: sharedTitle, spaceId: west.id, updatedAt: 2 });
+  await setMode("paused", [scope, east.id, west.id]);
+  const findNamed = (text: string, spaceId?: string) =>
+    policies.actions.execute(DOTS_TASK_ID, "named-local-workspace", { action: "find_tasks", query: sharedTitle, spaceId }, text);
+  const ambiguous = await findNamed("查跨空间同名任务。");
+  assert(ambiguous && "tasks" in ambiguous && ambiguous.tasks?.length === 2 && !("inspection" in ambiguous));
+  for (const text of ["在「华东验收」空间查跨空间同名任务。", "在工作空间「华东验收」查跨空间同名任务。",
+    "在「华东验收」工作空间查跨空间同名任务。"]) {
+    const matched = await findNamed(text);
+    assert(matched && "tasks" in matched && matched.tasks?.length === 1);
+    assert.equal(matched.tasks[0]?.id, "east-name-probe");
+    assert("inspection" in matched && matched.inspection?.id === "east-name-probe");
+  }
+  await assert.rejects(findNamed("在空间「华东验收」查跨空间同名任务。", west.id), /不一致/);
+  await assert.rejects(findNamed("在空间「华东验收」和「华西验收」查跨空间同名任务。"), /多个工作空间/);
+  await assert.rejects(findNamed("在「不可见空间」工作空间查跨空间同名任务。"), /未授权/);
+  const duplicate = policies.db.createSpace({ id: "sp-search-east-duplicate", name: east.name, parentId: west.id });
+  await assert.rejects(findNamed("在「华东验收」空间查跨空间同名任务。"), /无法唯一定位/);
+  policies.db.archiveSpace(duplicate.id, true);
+  await setMode("paused");
   await assert.rejects(policies.actions.execute(DOTS_TASK_ID,undefined,{action:"task",targetTaskId:"dots-private-task"}),/未授权/);
   await assert.rejects(policies.actions.execute(DOTS_TASK_ID,undefined,{action:"read_file",spaceId:scope,path:"dots-private-scope/private.txt"}),/未授权/);
   const sameBinding = {action:"bind" as const,spaceId:scope,path:root};
@@ -699,8 +894,8 @@ try {
   await assert.rejects(policies.actions.execute(DOTS_TASK_ID,undefined,{action:"read_material",itemId:hiddenNote.id}),/当前范围/);
   await assert.rejects(policies.actions.execute(DOTS_TASK_ID,"cancel-hidden-known-task",{action:"stop",targetTaskId:"dots-private-task"}),/没有可控制/);
   await setMode("paused", []);
-  const noSpaces = await policies.actions.execute(DOTS_TASK_ID,undefined,{action:"board"});
-  assert.deepEqual(noSpaces,{tasks:[],next:undefined});
+  const noSpaces = await policies.actions.execute(DOTS_TASK_ID,undefined,{action:"find_tasks",query:"允许查找的事项"});
+  assert.deepEqual(noSpaces,{tasks:[],more:false});
   await setMode("paused");
   const direct = "explicit-delegation-while-automation-paused";
   const settled = await policies.fixture.prompt({taskId:DOTS_TASK_ID,userMessageId:direct,assistantMessageId:direct+"-assistant",text:"请直接替我盘点库存。"});
@@ -1033,10 +1228,65 @@ for (const scenario of ["dependency", "dependencyDeadline"] as const) {
   } finally { await host.close(); }
 }
 
+for (const scenario of continuedDependencies) {
+  const host = await open(scenario);
+  try {
+    await host.fixture.prompt({ taskId: DOTS_TASK_ID, userMessageId: scenario,
+      assistantMessageId: scenario + "-ack", text: dependencyAssignment });
+    const jobs = () => host.journal.list([scenario]);
+    const deadline = Date.now() + 12000;
+    const upstreamChild = () => jobs().find(job => job.title === "上游依赖" && job.id.startsWith("dots-input-auto-"));
+    const dependent = () => jobs().find(job => job.title === "依赖集成" && !job.id.startsWith("dots-input-auto-"));
+    while ((!dependent()?.dependencyWait || !upstreamChild() || !host.enteredTimer()) && Date.now() < deadline) await sleep();
+    const child = upstreamChild(), downstream = dependent();
+    assert(child && downstream?.dependencyWait, JSON.stringify(jobs()));
+    assert.notEqual(downstream.dependencyWait.operationId, child.id);
+
+    if (scenario === "dependencyPausedContinuation") {
+      await host.actions.execute(DOTS_TASK_ID, scenario + "-pause", { action: "pause", targetTaskId: child.taskId });
+      host.releaseTimer();
+    } else if (scenario === "dependencyManualRevision") {
+      host.journal.link(child.taskId, scenario + "-independent", scenario);
+      host.releaseTimer();
+    } else if (scenario === "dependencyChangedScope") {
+      host.db.connection.prepare("UPDATE dots_delegations SET space_path=? WHERE operation_id=?").run(recoveryProjectPath, child.id);
+      host.releaseTimer();
+    } else {
+      host.releaseTimer();
+    }
+
+    const deliveries = async () => (await host.agent.loadTaskHistory(DOTS_TASK_ID)).messages.filter(message =>
+      message.dotsDelivery?.taskId === downstream.taskId && message.dotsDelivery.kind !== "progress");
+    if (scenario !== "dependencyPausedContinuation") {
+      while (!(await deliveries()).length && Date.now() < deadline) await sleep();
+      const native = await host.agent.findSubmission(child.taskId, child.id);
+      assert(native?.receipt);
+      await host.agent.waitForSubmission(native.receipt);
+    }
+    for (let round = 0; round < 3; round++) { host.journal.refresh(); await host.journal.drain(); }
+    const delivered = await deliveries();
+    if (scenario === "dependencyPausedContinuation") {
+      assert.deepEqual(delivered, []);
+      assert.equal(host.downstreamContinuations(), 0);
+      assert.equal(new DotsActivity(host.db.connection, () => true).list().find(item => item.taskId === downstream.taskId)?.state, "dependency");
+    } else if (scenario === "dependencyManualRevision" || scenario === "dependencyChangedScope") {
+      assert.deepEqual(delivered.map(message => message.dotsDelivery?.kind), ["question"]);
+      assert.match(delivered[0]!.text, /已停止、失败或改向/);
+      assert.equal(host.downstreamContinuations(), 0);
+    } else {
+      assert.deepEqual(delivered.map(message => [message.dotsDelivery?.kind, message.text]), [["conclusion", "采用上游完整结果，集成值为 47。"]]);
+      assert.equal(host.downstreamContinuations(), 1);
+      assert.equal(jobs().filter(job => job.taskId === downstream.taskId).length, 2);
+    }
+    console.log("PASS dependency follows exactly the authorized automatic continuation", scenario);
+  } finally { await host.close(); }
+}
+
 const newPage = await open();
 try {
+  const archiveSource = continuedDependencies.at(-1)!;
   const original = await newPage.agent.loadTaskHistory(DOTS_TASK_ID);
-  const source = original.messages.find(message => message.inputRequestId === "dependencyDeadline");
+  const source = original.messages.find(message => message.inputRequestId === archiveSource);
   assert.ok(original.durable && source?.entryId);
   await newPage.agent.newDotsConversation();
   const fresh = await newPage.agent.loadTaskHistory(DOTS_TASK_ID);
@@ -1048,7 +1298,7 @@ try {
     deliveryKey: "archived-page-followup",
     operationId: "archived-page-followup",
     taskId: "archived-page-worker",
-    sourceMessageId: "dependencyDeadline",
+    sourceMessageId: archiveSource,
     origin: { conversationId: Number(original.durable.conversationId), entryId: Number(source.entryId) },
     title: "原页面交付",
     text: "结果回到启动事项的页面",

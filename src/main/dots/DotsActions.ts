@@ -1,9 +1,9 @@
 import { DotsForegroundReads, DotsForegroundUnavailable, type ForegroundInput } from "./DotsForegroundReads";
-import { dotsForwardingDenied } from "./DotsFollowUpInput";
-import { DotsCapabilityUnavailable, dotsCapabilityRequirements } from "./DotsCapabilityRequirements";
+import { dotsForwardingDenied, dotsInstructionText } from "./DotsFollowUpInput";
+import { DotsCapabilityUnavailable, dotsCapabilityRequirements, dotsExecutionConfiguration, type DotsExecutionConfiguration, type DotsExecutionSelection } from "./DotsCapabilityRequirements";
 import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { DotsFollowup, dotsDeliveryInstruction, followupInstructions } from "./DotsFollowup";
-import { missingDotsPartitionRequirements } from "./DotsCompletion";
+import { dotsCompletionInstruction, dotsCompletionRequirements, missingDotsPartitionRequirements, type DotsCompletionDeclaration } from "./DotsCompletion";
 import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { dotsGoalConclusion } from "./DotsGoalConclusion";
 import { dotsCalendarContext } from "./DotsCalendar";
@@ -14,6 +14,7 @@ import { DotsFileWatches } from "./DotsFileWatches";
 import { readDotsLibrary } from "./DotsLibrary";
 import { DotsIntentChanged } from "./DotsNativeIntent";
 import { dotsDelegationScopeMatches } from "./DotsDelegations";
+import { dotsExecutionPageSize, dotsTaskArtifactPreviews, dotsTaskExecutionDiagnostics, dotsTaskHistoryPage, dotsTaskMessageExcerpt } from "./DotsTaskEvidence";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
@@ -31,7 +32,7 @@ import { DOTS_TASK_ID, dotsLocalSpacePath, isDotsAutomaticInput, type DotsDelega
 import { gatewayChannelForSpace, isGatewayConversation } from "../../shared/gateway-task";
 import { assertSafeEntryName, listWorkspaceFiles, readWorkspaceFile } from "../workspace/WorkspaceService";
 
-type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "assertDelegationAdmissible" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
+type Agent = Pick<AgentService, "dotsLibrary" | "dotsAnswerEvidenceAllowed" | "isTaskBusy" | "findSubmission" | "prompt" | "assertDelegationAdmissible" | "listDotsExecutionConfigurations" | "stopDotsTarget" | "loadTaskHistory" | "isDotsOrdinaryTask" | "dotsSubmission" | "getConversationRuntimeSnapshot" | "respondConversationInteraction" | "dotsMemoryReferenceCurrent" | "dotsInputVersion" | "getAppSettings" | "dotsScheduleIds" | "dotsScheduleOwnerTask" | "controlDotsSchedule" | "holdDotsSchedule" | "assertDotsScheduleInput" | "getConversationGoals" | "resolveTaskExecutionWorkspaceCwd" | "matchesDotsInitialPrivateWorkspace">;
 type DiagnosticAgent = Pick<AgentService, "getTaskDiagnostics" | "getTaskFailuresForDiagnosis">;
 export interface DotsActionHooks {
   observeProgress?(taskId: string, operationId: string, identity: string, at: number): void;
@@ -54,9 +55,11 @@ export interface DotsActionInput {
   steps?: string[];
   itemId?: string;
   version?: number;
-action: "materials" | "read_material" | "board" | "task" | "spaces" | "files" | "read_file" | "bind" | "create_space" | "rename" | "delegate" | "steer" | "pause" | "stop" | "resume" | "follow_up" | "answer" | "deliveries" | "watch_file" | "file_watches" | "cancel_watch" | "pause_all" | "stop_all" | "pause_proactive" | "resume_proactive";
+  action: "materials" | "read_material" | "find_tasks" | "task" | "execution_configs" | "spaces" | "files" | "read_file" | "bind" | "create_space" | "rename" | "delegate" | "steer" | "pause" | "stop" | "resume" | "follow_up" | "answer" | "deliveries" | "watch_file" | "file_watches" | "cancel_watch" | "pause_all" | "stop_all" | "pause_proactive" | "resume_proactive";
   memoryRefs?: AgentPromptRequest["dotsMemoryRefs"];
   requiredCapabilities?: AgentPromptRequest["dotsRequiredCapabilities"];
+  executionConfiguration?: DotsExecutionSelection;
+  completionItems?: DotsCompletionDeclaration[];
   goalId?: string;
   goalUserAcceptanceQuote?: string;
   deliveryInstruction?: string;
@@ -64,15 +67,13 @@ action: "materials" | "read_material" | "board" | "task" | "spaces" | "files" | 
   operationId?: string;
   interactionId?: string;
   targetTaskId?: string;
+  detail?: "history" | "execution";
+  beforeEntryId?: number;
   spaceId?: string;
   name?: string;
   path?: string;
   text?: string;
   query?: string;
-  view?: Exclude<BoardQuery["view"], "automation">;
-  from?: number;
-  until?: number;
-  dateKind?: BoardQuery["dateKind"];
   cursor?: BoardQuery["cursor"];
   offset?: number;
 }
@@ -86,6 +87,34 @@ function dotsRequestDigest(sourceId: string, value: string) {
 
 function taskLink(task: Pick<TaskDto, "id" | "title">) {
   return "[" + task.title.replace(/[\\[\]]/g, "\\$&") + "](mybuddy://task/" + encodeURIComponent(task.id) + ")";
+}
+
+function normalizeTaskTitle(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+function taskSearchSpaceName(originalText: string): string | undefined {
+  const instruction = dotsInstructionText(originalText);
+  const mentions = [...instruction.matchAll(/((?:工作)?空间[ \t]*[:：]?[ \t]*)?(?:「([^」\r\n]+)」|『([^』\r\n]+)』|“([^”\r\n]+)”|"([^"\r\n]+)"|\x60([^\x60\r\n]+)\x60)([ \t]*(?:的[ \t]*)?(?:工作)?空间)?/gu)];
+  const listConnector = /^\s*(?:[、和与及或/／]|以及|或者)\s*$/u;
+  const names = new Set<string>();
+  for (const [index, match] of mentions.entries()) {
+    const [whole, before, corner, doubleCorner, curly, straight, inline, after] = match;
+    if (!before && !after) continue;
+    const start = match.index ?? 0;
+    const end = start + whole.length;
+    const previous = mentions[index - 1];
+    const next = mentions[index + 1];
+    const followsList = previous && listConnector.test(instruction.slice((previous.index ?? 0) + previous[0].length, start));
+    const startsList = next && listConnector.test(instruction.slice(end, next.index));
+    if (followsList || startsList) throw new Error("本轮提到多个工作空间，请指明要查哪个空间");
+    if (/(?:不在|排除|除了|(?:不要|别|禁止)[ \t]*(?:在|去|查找?|搜索|浏览|打开|访问))[ \t]*$/u.test(instruction.slice(Math.max(0, start - 24), start))
+      || /^[ \t]*(?:以外|之外|除外)/u.test(instruction.slice(end)))
+      throw new Error("请指明要查的工作空间");
+    names.add(normalizeTaskTitle(corner ?? doubleCorner ?? curly ?? straight ?? inline ?? whole));
+    if (names.size > 1) throw new Error("本轮提到多个工作空间，请指明要查哪个空间");
+  }
+  return names.values().next().value;
 }
 
 function spaceLink(space: SpaceDto) {
@@ -341,13 +370,82 @@ export class DotsActions {
       && (!task.spaceId || this.isLocalSpace(this.db.getSpace(task.spaceId) ?? {id: task.spaceId, name: ""}));
   }
 
+  private visibleOrdinaryTask(task: TaskDto, controlOnly = false) {
+    return (controlOnly || this.allowsSpace(task.spaceId)) && this.ordinary(task)
+      && !this.db.isTaskEffectiveArchived(task.id) && this.db.getTaskExecutionWorkspaceState(task.id)?.state !== "trashed";
+  }
+
   private task(id?: string, spaceId?: string, controlOnly = false) {
     const task = this.db.getTask(required(id, "原任务 ID"));
-    if (!task || !this.ordinary(task) || this.db.isTaskEffectiveArchived(task.id)
-      || this.db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed" || !controlOnly && !this.allowsSpace(task.spaceId))
+    if (!task || !this.visibleOrdinaryTask(task, controlOnly))
       throw new Error("普通任务不存在或未授权给 Dots");
     if (spaceId && task.spaceId !== spaceId) throw new Error("原任务属于另一个空间");
     return task;
+  }
+
+  private findTaskSpace(requestedSpace: string | undefined, originalText?: string) {
+    const name = originalText ? taskSearchSpaceName(originalText) : undefined;
+    const requested = requestedSpace === undefined ? undefined : this.space(requestedSpace);
+    if (name === undefined) return requested;
+    const spaces = this.db.connection.prepare("SELECT id,name,parent_id AS parentId FROM spaces").all() as
+      Pick<SpaceDto, "id" | "name" | "parentId">[];
+    const byId = new Map(spaces.map(space => [space.id, space]));
+    const matching = spaces.filter(space => normalizeTaskTitle(space.name) === name
+      && !this.db.isSpaceEffectiveArchived(space.id) && dotsLocalSpacePath(space, id => byId.get(id)));
+    if (matching.length !== 1) throw new Error("无法唯一定位用户指定的工作空间，请核对空间名称");
+    const named = this.space(matching[0]!.id);
+    if (requested && requested.id !== named.id) throw new Error("查找范围与用户指定的工作空间不一致");
+    return named;
+  }
+
+  private async findTasks(source: string | undefined, query: string | undefined, requestedSpace: string | undefined,
+    originalText: string | undefined, offerFollowUp = false) {
+    const settings = this.agent.getAppSettings().dotsSettings;
+    if (!dotsOperationEnabled(settings, "find_tasks")) throw new Error("Dots 设置已关闭「查找任务」");
+    if (query && query.length > 500) throw new Error("任务标题查询最多 500 个字符");
+    const identifier = query?.trim();
+    const term = normalizeTaskTitle(identifier ?? "");
+    const userText = source && !isDotsAutomaticInput(source) ? originalText : undefined;
+    const spaceId = this.findTaskSpace(requestedSpace, userText)?.id;
+    const linkedIds = source ? this.db.connection.prepare("SELECT DISTINCT task_id FROM dots_delegations WHERE source_message_id=?")
+      .pluck().all(source) as string[] : [];
+    if (!term && !spaceId && !linkedIds.length) throw new Error("请提供任务标题、获准的工作空间或接续本轮已关联的事项");
+    const linked = new Set(linkedIds);
+    const allowedSpaces = this.preferences.spaceIds;
+    const rows = this.db.connection.prepare(`SELECT id,title,updated_at AS updatedAt FROM tasks
+      WHERE id<>@dotsId AND archived=0
+      AND (@spaceId IS NULL OR space_id=@spaceId)
+      AND (@allowedSpaces IS NULL OR space_id IN (SELECT value FROM json_each(@allowedSpaces)))
+      AND (@linkedOnly IS NULL OR id IN (SELECT value FROM json_each(@linkedOnly)))`)
+      .all({ dotsId: DOTS_TASK_ID, spaceId: spaceId ?? null, allowedSpaces: allowedSpaces === null ? null : JSON.stringify(allowedSpaces),
+        linkedOnly: term || spaceId ? null : JSON.stringify(linkedIds) }) as Pick<TaskDto, "id" | "title" | "updatedAt">[];
+    const ranked = rows.flatMap(row => {
+      const title = normalizeTaskTitle(row.title);
+      const byId = row.id === identifier;
+      return byId || title.includes(term) ? [
+        { ...row, byId, rank: byId ? 2 : Number(title === term), linked: Number(linked.has(row.id)) },
+      ] : [];
+    }).sort((a, b) => b.rank - a.rank || b.linked - a.linked || b.updatedAt - a.updatedAt
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const limit = 8;
+    const tasks: Array<ReturnType<DotsActions["summary"]> & { spaceName?: string }> = [];
+    for (const candidate of ranked) {
+      const task = this.db.getTask(candidate.id);
+      if (!task || !this.visibleOrdinaryTask(task) || spaceId && task.spaceId !== spaceId) continue;
+      if (tasks.length === limit) return { tasks, more: true };
+      tasks.push({ ...this.summary(task), spaceName: task.spaceId ? this.db.getSpace(task.spaceId)?.name : undefined });
+      if (candidate.byId) break;
+    }
+    if (term && tasks.length === 1 && dotsOperationEnabled(settings, "task")) {
+      const candidate = tasks[0]!;
+      const inspection = await this.inspectTask({ targetTaskId: candidate.id, spaceId: candidate.spaceId ?? undefined }, offerFollowUp);
+      const current = this.task(candidate.id, candidate.spaceId ?? undefined);
+      if (current.spaceId !== candidate.spaceId) throw new DotsIntentChanged("任务的工作空间已变化，请重新查找");
+      const currentSettings = this.agent.getAppSettings().dotsSettings;
+      if (!dotsOperationEnabled(currentSettings, "find_tasks")) throw new Error("Dots 设置已关闭「查找任务」");
+      if (dotsOperationEnabled(currentSettings, "task")) return { tasks, more: false, inspection };
+    }
+    return { tasks, more: false };
   }
 
   private control(taskId: string) {
@@ -437,7 +535,7 @@ export class DotsActions {
       this.agent.holdDotsSchedule(id, "task:" + taskId, false);
   }
 
-  private async resumeFinishedTurn(task: TaskDto, resumeId: string, previousId?: string) {
+  private async resumeFinishedTurn(task: TaskDto, resumeId: string, previousId?: string, checkCurrent?: () => Promise<void>) {
     const saved = this.db.connection.prepare("SELECT outcome FROM dots_control_receipts WHERE operation_id=? AND target_task_id=?")
       .pluck().get(resumeId, task.id) as string | undefined;
     if (saved) previousId = saved;
@@ -451,6 +549,7 @@ export class DotsActions {
     const version = await this.agent.dotsInputVersion(task.id);
     if (JSON.parse(version)[1] !== receipt.submissionId)
       throw new DotsIntentChanged("原普通任务已收到更新的要求，不能重新派发先前已完成的交办");
+    if (checkCurrent) await checkCurrent();
     this.db.connection.transaction(() => {
       if (this.db.connection.prepare("SELECT 1 FROM dots_control_receipts WHERE operation_id=? AND target_task_id=? AND outcome=?").get(resumeId, task.id, previousId)) return;
       if (this.followups.latestPlan(task.id)?.request.userMessageId !== previousId || this.control(task.id)?.operation_id !== control?.operation_id)
@@ -777,6 +876,60 @@ ${input.text}`),
       root.text, request.origin, root.createdAt, { revisions: request.inputs.map(input => input.id), priorOperationId: request.priorOperationId, validateEvidence });
   }
 
+  async inspectTask(input: Pick<DotsActionInput, "targetTaskId" | "spaceId" | "detail" | "beforeEntryId" | "offset">, offerFollowUp = false) {
+    const { detail, beforeEntryId, offset } = input;
+    if (detail !== undefined && detail !== "history" && detail !== "execution") throw new Error("未知任务详情类型");
+    if (beforeEntryId !== undefined && (detail !== "history" || !Number.isSafeInteger(beforeEntryId) || beforeEntryId < 1))
+      throw new Error("历史续页只接受有效的 beforeEntryId");
+    if (offset !== undefined && (detail !== "execution" || !Number.isSafeInteger(offset) || offset < 0))
+      throw new Error("执行诊断续页只接受有效的 offset");
+    const task = this.task(input.targetTaskId, input.spaceId);
+    const captureScope = (target: TaskDto) => JSON.stringify([
+      target.spaceId, target.projectId, target.cwd, target.sessionFile,
+      this.db.resolveWorkspaceExecutionPath(target.spaceId), this.db.getTaskExecutionWorkspaceState(target.id)?.directoryName,
+    ]);
+    const scope = captureScope(task);
+    const latestOperationId = this.latestOperation(task.id);
+    const history = await this.agent.loadTaskHistory(task.id, beforeEntryId, "current");
+    const current = this.task(task.id, input.spaceId);
+    if (captureScope(current) !== scope || this.latestOperation(current.id) !== latestOperationId)
+      throw new DotsIntentChanged("读取期间原任务工作空间或交办已变化，请重新查看任务");
+
+    const summary = this.summary(current);
+    const progress = this.board.page({ view: "all" }, Date.now(), { taskId: current.id }).rows[0];
+    const goals = this.agent.getConversationGoals().listByTask(current.id).map(({ id, title, description, status, criteria }) => ({
+      id, title, description, status, criteria,
+    }));
+    const expanded = detail === "execution";
+    const observation = this.agent.getTaskDiagnostics(current.id, expanded ? dotsExecutionPageSize : 30, offset);
+    const diagnostics = dotsTaskExecutionDiagnostics(history, observation, expanded);
+    const failures = this.agent.getTaskFailuresForDiagnosis(current.id)
+      .map(({ id, causeCode, phase, sideEffects, message, nextAction, createdAt, resolvedAt, dismissedAt }) => ({
+        id, causeCode, phase, sideEffects, message: diagnosticText(message), nextAction: diagnosticText(nextAction),
+        createdAt, resolvedAt, dismissedAt,
+      }));
+    const deliveries = this.deliveries(current);
+    const followUpCall = !detail && offerFollowUp && !summary.running && !this.control(current.id) && latestOperationId &&
+      deliveries.some(delivery => delivery.operationId === latestOperationId && delivery.status === "completed")
+      ? { action: "follow_up", targetTaskId: current.id, operationId: latestOperationId } : undefined;
+    const state = history.durable;
+    return { ...summary, latestOperationId, spaceName: current.spaceId ? this.db.getSpace(current.spaceId)?.name : undefined,
+      progress: summary.status === "waiting_input" && progress
+        ? { ...progress, status: summary.status, unread: false, wait: progress.wait ?? { kind: "input" } } : progress,
+      ...(state && { executionState: { status: state.status, outcome: state.outcome, queued: state.queued,
+        retry: state.retry && { at: state.retry.at, error: diagnosticText(state.retry.error) }, error: diagnosticText(state.error), modelId: history.modelId } }),
+      goals, deliveries,
+      ...(detail === "history" ? dotsTaskHistoryPage(history) : {
+        messages: history.messages.slice(-5).map(m => ({ role: m.role,
+          ...dotsTaskMessageExcerpt(m.text, 2400), artifacts: dotsTaskArtifactPreviews(m.artifacts, true) })),
+        artifacts: dotsTaskArtifactPreviews(history.artifacts, true),
+      }),
+      ...(followUpCall ? { followUpCall, followUpInstruction: "本轮用户要求追问。确认这是用户所指的原任务后，传入 followUpCall 调用 dots_action，再根据受理回执回答。" } : {}),
+      historyError: diagnosticText(history.historyError),
+      executionDiagnostics: { ...diagnostics, failures },
+    };
+  }
+
   async execute(caller: string, source: string | undefined, input: DotsActionInput, originalText?: string, origin?:DotsReplyOrigin, receivedAt?: number, foreground?: {
     read?: true;
     revisions?: string[];
@@ -784,16 +937,32 @@ ${input.text}`),
     validateEvidence?: () => void;
     offerFollowUp?: boolean;
     followUp?: { attachments: NonNullable<AgentPromptRequest["attachments"]>; captions: readonly string[]; checkCurrent: () => Promise<void> };
+    checkCurrentInstruction?: () => Promise<void>;
   }) {
     if (caller !== DOTS_TASK_ID) throw new Error("只有 Dots 原生会话可以执行此操作");
+    if (String(input.action) === "board") throw new Error("请用 find_tasks 查找普通任务");
     const followUp = input.action === "follow_up";
     const requestedCapabilities = dotsCapabilityRequirements(input.requiredCapabilities);
-    if (requestedCapabilities.length && !["task", "delegate", "steer", "resume", "follow_up"].includes(input.action))
+    const workActions = ["delegate", "steer", "resume", "follow_up"];
+    if (requestedCapabilities.length && input.action !== "task" && !workActions.includes(input.action))
       throw new Error("必要能力只能随候选任务查询、委派、改向、恢复或追问指定。");
+    if (input.executionConfiguration && (input.action !== "delegate" || input.targetTaskId || !source || isDotsAutomaticInput(source)))
+      throw new Error("执行配置仅可按本轮用户明确授权用于新任务。");
+    if (input.completionItems?.length && (!workActions.includes(input.action) || !source || isDotsAutomaticInput(source) || !originalText))
+      throw new Error("完成事项需逐字引用本轮用户交办。");
     if (followUp && (!foreground?.followUp || !input.targetTaskId || !source || isDotsAutomaticInput(source)))
       throw new Error("追问需要本轮用户指令和原任务");
     this.assertScheduleSource(source);
+    if (input.action === "find_tasks") return this.findTasks(source, input.query, input.spaceId, originalText, foreground?.offerFollowUp);
+    if (input.action === "execution_configs") {
+      const space = this.space(input.spaceId);
+      const catalog = await this.agent.listDotsExecutionConfigurations(space.id);
+      this.space(space.id);
+      return { spaceId: space.id, ...catalog };
+    }
     if (input.action === "task" && requestedCapabilities.length) {
+      if (input.detail !== undefined || input.beforeEntryId !== undefined || input.offset !== undefined)
+        throw new Error("任务能力受理检查请单独查询");
       const task = this.task(input.targetTaskId, input.spaceId);
       const summary = this.summary(task);
       try {
@@ -868,45 +1037,7 @@ ${input.text}`),
         return { results: visible.slice(offset, offset + 20), more: Boolean(nextOffset || next),
           nextOffset, next: nextOffset ? undefined : next };
       }
-      case "board": {
-        const page = this.board.page({ view: input.view ?? "all", scope: input.spaceId, search: input.query,
-          dateKind: input.dateKind, from: input.from, until: input.until, cursor: input.cursor }, Date.now(), {spaceIds:this.preferences.spaceIds});
-        return { tasks: page.rows.map(row => ({ ...row, link: taskLink(row) })), next: page.next };
-      }
-      case "task": {
-        const task = this.task(input.targetTaskId, input.spaceId);
-        const progress = this.board.page({ view: "all" }, Date.now(), { taskId: task.id }).rows[0];
-        const history = await this.agent.loadTaskHistory(task.id);
-        const current = this.task(task.id, input.spaceId);
-        const goals = this.agent.getConversationGoals().listByTask(task.id).map(({ id, title, description, status, criteria }) => ({
-          id, title, description, status, criteria,
-        }));
-        const summary = this.summary(current);
-        const observation = this.agent.getTaskDiagnostics(task.id, 30);
-        const failedOutput = new Map(history.messages.flatMap(message => (message.tools ?? [])
-          .filter(tool => tool.status === "error" && tool.output).map(tool => [tool.id, tool.output!] as const)));
-        const tools = observation.tools.filter(tool => tool.status !== "completed")
-          .sort((a, b) => b.startedAt - a.startedAt).slice(0, 5)
-          .map(({ callId, name, status, startedAt, finishedAt, diagnostics }) => ({
-            name, status, startedAt, finishedAt, diagnostics: diagnostics.slice(0, 4).map(message => message.slice(0, 600)),
-            errorOutput: diagnosticText(failedOutput.get(callId)?.slice(-800)),
-          }));
-        const failures = this.agent.getTaskFailuresForDiagnosis(task.id)
-          .map(({ id, causeCode, phase, sideEffects, message, createdAt, resolvedAt, dismissedAt }) => ({
-            id, causeCode, phase, sideEffects, message: diagnosticText(message), createdAt, resolvedAt, dismissedAt,
-          }));
-        const deliveries = this.deliveries(current);
-        const latestOperationId = foreground?.offerFollowUp && !summary.running && !this.control(current.id)
-          ? this.latestOperation(current.id) : null;
-        const followUpCall = latestOperationId && deliveries.some(delivery => delivery.operationId === latestOperationId && delivery.status === "completed")
-          ? { action: "follow_up", targetTaskId: current.id, operationId: latestOperationId } : undefined;
-        return { ...summary, progress: summary.status === "waiting_input" && progress
-          ? { ...progress, status: summary.status, unread: false, wait: progress.wait ?? { kind: "input" } } : progress,
-          goals, deliveries, messages: history.messages.slice(-5).map(m => ({ role: m.role, text: m.text.slice(-2400), artifacts: m.artifacts })),
-          ...(followUpCall ? { followUpCall, followUpInstruction: "本轮用户要求追问。确认这是用户所指的原任务后，传入 followUpCall 调用 dots_action，再根据受理回执回答。" } : {}),
-           artifacts: history.artifacts, historyError: history.historyError,
-           executionDiagnostics: { tools, failures, unavailable: observation.unavailable, truncated: observation.truncated } };
-      }
+      case "task": return this.inspectTask(input, foreground?.offerFollowUp);
       case "spaces": return this.db.listSpaces().filter(s => this.allowsSpace(s.id) && !s.effectiveArchived && this.isLocalSpace(s)).map(spaceLink);
       case "files":
       case "read_file": {
@@ -1044,7 +1175,7 @@ ${input.text}`),
         return space.id;
       });
     }
-    const continuingTask = (!foreground || followUp) && !isDotsAutomaticInput(sourceId) && input.targetTaskId
+    const continuingTask = (!foreground || followUp || foreground.checkCurrentInstruction) && !isDotsAutomaticInput(sourceId) && input.targetTaskId
       && (input.action === "resume" || input.action === "delegate" || followUp) ? this.task(input.targetTaskId, input.spaceId) : undefined;
     // Retries of one user input read the first staged request, independent of the model's wording or tool alias.
     const continuationIdentity = continuingTask ? digest(JSON.stringify(["continue-task", continuingTask.id])) : undefined;
@@ -1060,6 +1191,7 @@ ${input.text}`),
         if (accepted?.receipt) return this.delegationAdmission(continuingTask, operationId, accepted, replay.goal_id ?? undefined);
         if (replay.status === "failed") throw new Error(replay.text || "原任务未接收本次重跑，请在确认后发送新的重跑请求");
         if (foreground?.followUp) await foreground.followUp.checkCurrent();
+        if (foreground?.checkCurrentInstruction) await foreground.checkCurrentInstruction();
         const result = replay.status === "pending" && replay.request_json
           ? await this.agent.prompt(JSON.parse(replay.request_json) as AgentPromptRequest, { durableAdmissionOnly: true }) : undefined;
         return this.delegationAdmission(continuingTask, operationId, result, replay.goal_id ?? undefined);
@@ -1150,6 +1282,9 @@ ${input.text}`),
     let task: TaskDto;
     let newTask = false;
     const splitAnchors: Array<{ operationId: string; quote: string }> = [];
+    let completionSource = originalText;
+    let completionRequirements = dotsCompletionRequirements(originalText ?? text ?? "", deliveryInstruction, input.completionItems);
+    let executionConfiguration: DotsExecutionConfiguration | undefined;
     if (input.goalId && !input.targetTaskId) throw new Error("请指定该 Goal 的原任务");
     if (input.action === "delegate" && !input.targetTaskId) {
       const space = this.space(input.spaceId);
@@ -1189,6 +1324,8 @@ ${input.text}`),
       if (splitAnchors.length && originalText && assignment) {
         const missing = missingDotsPartitionRequirements(originalText, [...splitAnchors.map(anchor => anchor.quote), assignment]);
         if (missing.length) throw new Error("拆分后的事项遗漏了原交办要求：" + missing.join("、") + "。请保留完整交办，或提供覆盖这些要求的事项原文。");
+        completionSource = assignment;
+        completionRequirements = dotsCompletionRequirements(assignment, deliveryInstruction, input.completionItems);
       }
       if (priorOperation) identity = priorOperation.slice("dots-input-".length);
       const title = limitTaskTitle(input.name?.trim() || required(text, "任务要求"));
@@ -1199,9 +1336,19 @@ ${input.text}`),
           throw new Error("原任务已删除");
         // 可预期的失败（默认模型在该工作空间不可用等）必须在建任务之前抛出：
         // 先建记录再校验会让异常路径把一条 pending 空壳永久留在看板「排队中」。
-        await this.agent.assertDelegationAdmissible(space.id, { requiredCapabilities: requestedCapabilities });
-        this.db.upsertTask({ id, spaceId: space.id, title, updatedAt: Date.now() });
-        newTask = true;
+        const selection = input.executionConfiguration;
+        if (selection) {
+          const authorization = required(requestedQuote ?? originalText, "用户授权的执行配置原话");
+          executionConfiguration = dotsExecutionConfiguration(selection, authorization, await this.agent.listDotsExecutionConfigurations(space.id));
+        }
+        await this.agent.assertDelegationAdmissible(space.id, { requiredCapabilities: requestedCapabilities, configuration: executionConfiguration });
+        if (selection && foreground?.checkCurrentInstruction) await foreground.checkCurrentInstruction();
+        this.space(space.id);
+        if (!this.db.getTask(id)) {
+          this.db.upsertTask({ id, spaceId: space.id, title, updatedAt: Date.now(),
+            welcomeMode: executionConfiguration?.welcomeMode, modePresetId: executionConfiguration?.modePresetId, expertId: executionConfiguration?.expertId });
+          newTask = true;
+        }
       }
       task = this.task(id, space.id);
     } else task = this.task(input.targetTaskId, input.spaceId, input.action === "stop" || input.action === "pause");
@@ -1218,14 +1365,13 @@ ${input.text}`),
     const message = required(text, "任务要求");
     const priorPlan = continuePlan || input.action === "steer" ? this.followups.latestPlan(task.id) : undefined;
     const resumed = continuePlan ? priorPlan : undefined;
-    const completionSource = splitAnchors.length ? assignment : originalText;
     const currentDeliveryInstruction = deliveryInstruction ?? (followUp ? undefined : priorPlan?.deliveryInstruction);
     if (unblocked && !continuationIdentity) identity = digest(JSON.stringify(["answer-blocked", unblocked.id, sourceId]));
     const operationId = "dots-input-" + identity;
     const deliverySource = unblocked?.source ?? sourceId;
     if (input.action === "resume" && isDotsAutomaticInput(sourceId)) throw new Error("暂停后的恢复需要用户明确交代");
     if (input.action === "resume" && !input.text?.trim() && !input.goalId && !deliveryInstruction && !input.memoryRefs?.length) {
-      const restored = await this.resumeFinishedTurn(task, operationId, resumed?.request.userMessageId);
+      const restored = await this.resumeFinishedTurn(task, operationId, resumed?.request.userMessageId, foreground?.checkCurrentInstruction);
       if (restored) return restored;
     }
     const previous = newTask ? undefined : await this.agent.findSubmission(task.id, operationId);
@@ -1254,12 +1400,21 @@ ${input.text}`),
     if (calendar) instructions.push(calendar);
     if (currentDeliveryInstruction) instructions.push(dotsDeliveryInstruction(currentDeliveryInstruction));
     if (steps.length) instructions.push("本次依次完成："+JSON.stringify(steps)+"。本轮只做第一步："+steps[0]);
+    if (!goal && steps.length === 0 && !(resumed && !followUp && resumed.steps[resumed.step + 1])) {
+      const requirements = resumed && !followUp
+        ? this.followups.resumeCompletionRequirements(resumed, completionSource, currentDeliveryInstruction, input.completionItems)
+        : currentDeliveryInstruction === deliveryInstruction ? completionRequirements
+          : dotsCompletionRequirements(completionSource ?? message, currentDeliveryInstruction, input.completionItems);
+      const completion = dotsCompletionInstruction(requirements);
+      if (completion) instructions.push(completion);
+    }
     if (input.memoryRefs?.length) instructions.push("以下是本轮引用的记忆版本，仅使用宿主本轮提供的可见证据："+JSON.stringify(input.memoryRefs));
     const goalWork = goal ? goals.workService.getWork(goal.id) : undefined;
     instructions.push(followupInstructions);
     if (goal) instructions.push("本次工作关联原任务 Goal："+goal.title+"（"+goal.id+"）。达到条件后通过 conversation_goal_propose_complete 提交最终交付正文和逐项依据。验收通过后，应用会将已验收的正文和登记文件回传至原对话。此后直接结束本轮，最后一条助手消息仅保留原任务的执行记录。");
     const request: AgentPromptRequest = {
       taskId: task.id, spaceId: task.spaceId ?? undefined,
+      ...(newTask ? executionConfiguration : {}),
       userMessageId: operationId, assistantMessageId: "dots-reply-" + identity,
       dotsMemoryRefs: input.memoryRefs ?? (followUp ? undefined : resumed?.request.dotsMemoryRefs?.filter(ref => this.agent.dotsMemoryReferenceCurrent(task.id, ref.id, ref.revision))), dotsGoalId: goal?.id,
       dotsForegroundInputs: foreground?.revisions,
@@ -1274,6 +1429,7 @@ ${input.text}`),
     let result: Awaited<ReturnType<Agent["prompt"]>> | undefined;
     try {
       if (foreground?.followUp) await foreground.followUp.checkCurrent();
+      if (!newTask && foreground?.checkCurrentInstruction) await foreground.checkCurrentInstruction();
       // 任务记录（upsertTask）已在前面落库：此后的任何失败都必须给委派和任务一个终态。
       const alreadyLinked = this.db.connection.transaction(() => {
         if (foreground?.priorOperationId) {
@@ -1303,9 +1459,9 @@ ${input.text}`),
           this.assertAdmission(request);
         }
         if (resumed && !followUp) this.followups.rememberResume(request, deliverySource, resumed,
-          [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked));
+          [input.text?.trim(), calendar].filter(Boolean).join("\n"), currentDeliveryInstruction, Boolean(unblocked), input.completionItems, completionSource);
         else this.followups.remember(request, sourceId, [message, calendar].filter(Boolean).join("\n"), steps,
-          currentDeliveryInstruction, completionSource);
+          currentDeliveryInstruction, completionSource, input.completionItems);
         for (const anchor of splitAnchors) this.followups.anchorAssignment(anchor.operationId, anchor.quote, true);
         if (creating && assignment) this.followups.anchorAssignment(operationId, assignment, splitAnchors.length > 0);
         this.link(request, deliverySource, input.action === "steer" || continuePlan || Boolean(foreground?.priorOperationId));

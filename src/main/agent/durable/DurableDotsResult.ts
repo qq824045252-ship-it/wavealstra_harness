@@ -112,23 +112,29 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
     : durableContentText(answer.content).trim();
   const outcome = readDotsWorkerOutcome(text);
   const delivery = outcome ? dotsDeliveryText(outcome) : text;
+  const executionRecord = [
+    terminal?.action === "complete" ? durableContentText(answer.content).trim() : undefined,
+    outcome?.dotsState === "complete" ? outcome.executionRecord : undefined,
+    outcome?.result !== delivery ? outcome?.result : undefined,
+  ].filter(Boolean).join("\n\n");
   const citations = acceptedCitations ?? collectReplyCitations(delivery, sources);
   if (!accepted && outcome?.dotsState === "blocked") {
     return { status: "blocked" as const, text: delivery, ...deliveryAssets };
   }
   if (!accepted && outcome?.dotsState !== "progress") {
-    const question = dotsMissingInputQuestion(delivery, outcome?.result ?? "");
+    const question = dotsMissingInputQuestion(delivery, executionRecord);
     if (question) return { status: "blocked" as const, text: question, ...deliveryAssets };
   }
   if (outcome?.dotsState === "complete") {
     const proof = terminal?.action === "complete" ? {
       verifiedCommit: terminal.verifiedCommit,
       verifiedChecks: terminal.verifiedChecks,
+      completedItems: terminal.completedItems,
     } : {};
     // Preserve internal completion evidence for Dots without exposing it as the
-    // public result. Fields supplied by a raw model envelope are never carried.
+    // public result. A raw worker envelope cannot supply structured proof.
     const result = JSON.stringify({ dotsState: "complete", result: delivery,
-      ...(outcome.result !== delivery && { executionRecord: outcome.result }), ...proof });
+      ...(executionRecord && { executionRecord }), ...proof });
     if (requestedFilename) {
       // The follow-up checks this together with prior artifacts from the same
       // assignment. Do not fail here when a resumed worker only wrote the gap.

@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { build } from "esbuild";
 
 const name = process.argv[2];
-if (!["actions", "delivery", "dispatch-failure", "reply-recovery", "followup", "memory-scale", "memory-longmemeval"].includes(name)) throw new Error("Unknown Dots test");
+if (!["actions", "completion", "delivery", "dispatch-failure", "reply-recovery", "followup", "memory-scale", "memory-longmemeval"].includes(name)) throw new Error("Unknown Dots test");
 const test = `dots-${name}-test`;
 const outfile = `out/tests/${test}.mjs`;
 // Let Node write the output. Windows can allow the parent process to write the

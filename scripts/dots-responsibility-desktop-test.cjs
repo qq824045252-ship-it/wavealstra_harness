@@ -3,6 +3,7 @@ const { execFileSync } = require("node:child_process");
 const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { run } = require("./desktop-dev-harness.cjs");
+const XLSX = require("xlsx");
 
 const live = process.argv.includes("--responsibility-live");
 const spaceId = "dots-responsibility-space";
@@ -11,12 +12,16 @@ const partialAssignment = "根据 units.txt 产出并交付「alpha.txt」";
 const recoveryInput = "在「交付验收」空间交办一次只读核对，读取 units.txt 并把两行合计回到本对话。";
 const capabilityInput = "委派缺工具测试，必须使用不存在的工具 demo_unavailable_tool，再决定是否受理。";
 const commitInput = "在「提交验收」空间委派一个普通任务，修改 note.txt 并做一次本地提交，把结果回到本对话。不要重跑已通过的同版本检查。";
+const officeInput = "在「交付验收」空间生成一份报价单.xlsx，工作表叫明细，表头为物料和金额。";
+const npmInput = "在「npm 验收」空间修复 note.txt，运行 npm test 并交付检查结果。";
 const incompleteDelivery = "已完成全部交付。";
 const finalDelivery = "两份文件已交付。";
 const recoveredDelivery = "两行合计是 42。";
 let completionRound = 0;
 let recoveryRound = 0;
 let originalHead;
+let officeRound = 0;
+let npmRound = 0;
 
 const tool = (name, args) => ({ tool: { name, arguments: args } });
 const done = (result, deliveryText = result) => JSON.stringify({ dotsState: "complete", result, delivery: { text: deliveryText } });
@@ -36,6 +41,9 @@ function fixtureModel(request) {
     }
     if (result?.role === "tool") return "已交办。";
     if (text.includes(commitInput)) return tool("dots_action", { action: "delegate", spaceId: "dots-commit-space", text: commitInput });
+    if (text.includes(npmInput)) return tool("dots_action", { action: "delegate", spaceId: "dots-npm-space", text: npmInput });
+    if (text.includes(officeInput)) return tool("dots_action", { action: "delegate", spaceId, text: officeInput,
+      completionItems: [{ kind: "file", quote: officeInput, name: "报价单.xlsx", sheet: "明细", headers: ["物料", "金额"] }] });
     if (text.includes(partialInput)) return tool("dots_action", { action: "delegate", spaceId, text: partialAssignment,
       assignmentQuote: partialAssignment });
     if (text.includes(recoveryInput)) return tool("dots_action", { action: "delegate", spaceId, text: recoveryInput,
@@ -59,6 +67,38 @@ function fixtureModel(request) {
     if (!/继续原任务|补回本轮|本次恢复|原交办及限制/.test(text))
       return { fixtureFault: "model-error", status: 503, message: "temporary service unavailable" };
     return done(recoveredDelivery);
+  }
+  if (text.includes(officeInput)) {
+    switch (++officeRound) {
+      case 1: return tool("write", { path: "报价单.xlsx", content: "plain text" });
+      case 2: return tool("register_artifact", { path: "报价单.xlsx" });
+      case 3: return done("报价单已生成。");
+      case 4:
+        assert.match(text, /无法核验工作簿/);
+        assert(request.tools?.some(entry => entry.function.name === "office_document_create"));
+        assert(!request.tools?.some(entry => entry.function.name === "bash"));
+        return tool("office_document_create", { path: "报价单.xlsx", content: {
+          kind: "excel", sheets: [{ name: "明细", rows: [["物料", "金额"], ["样品", 42]] }],
+        } });
+      default: return finish("报价单已补齐。");
+    }
+  }
+  if (text.includes(npmInput)) {
+    switch (++npmRound) {
+      case 1: return tool("write", { path: "note.txt", content: "fixed\n" });
+      case 2: return done("已经修改代码。测试未运行。");
+      case 3:
+        assert.match(text, /manager 分别填写 npm|manager 填写 npm/);
+        assert(!request.tools?.some(entry => entry.function.name === "bash"));
+        assert(!request.tools?.some(entry => entry.function.name === "edit"));
+        return tool("project_verify", { script: "test", manager: "npm" });
+      default: {
+        const receipt = JSON.parse(request.messages.at(-1).content);
+        assert.equal(receipt.outcome, "passed", JSON.stringify(receipt));
+        assert.match(receipt.output.output, /npm-test-passed/);
+        return finish("修复完成，npm test 已通过。", { checks: ["test"] });
+      }
+    }
   }
   if (text.includes(commitInput)) {
     const messages = request.messages.slice(request.messages.findLastIndex(message => message.role === "user") + 1);
@@ -155,6 +195,42 @@ run(async ({ evaluate, until, home, report, requests }) => {
   assert.equal(git(repo, "show", "HEAD:note.txt"), "new");
   assert.deepEqual(commitReplies.map(reply => [reply.dotsDelivery.kind, reply.text]), [["conclusion", "已完成新提交 " + commit]]);
   report.actualControlChecks.push({ scenario: "old-commit-rejected", newCommit: commit });
+
+  const officeId = "desktop-reject-fake-workbook";
+  await send(officeId, officeInput);
+  await until(async () => (await replies(officeId)).length > 0, "the valid workbook reaches the Dots origin");
+  const officeReplies = await replies(officeId);
+  assert.deepEqual(officeReplies.map(reply => [reply.dotsDelivery.kind, reply.text]), [["conclusion", "报价单已补齐。"]]);
+  const [artifact] = officeReplies[0].dotsDelivery.artifacts;
+  assert.equal(officeReplies[0].dotsDelivery.artifacts.length, 1);
+  assert.equal(artifact.name, "报价单.xlsx");
+  const book = XLSX.read(readFileSync(artifact.saved.snapshotPath), { type: "buffer" });
+  assert.deepEqual(XLSX.utils.sheet_to_json(book.Sheets["明细"], { header: 1 }), [["物料", "金额"], ["样品", 42]]);
+  assert.equal(readFileSync(join(workspace, "报价单.xlsx"), "utf8"), "plain text");
+  assert.equal(officeRound, 5);
+  report.actualControlChecks.push({ scenario: "fake-workbook-recovered", delivered: artifact.name, sheets: book.SheetNames });
+
+  const npmRepo = join(home, "npm-workspace");
+  mkdirSync(npmRepo);
+  writeFileSync(join(npmRepo, "note.txt"), "broken\n");
+  writeFileSync(join(npmRepo, "test.cjs"), [
+    "require('node:assert/strict').equal(require('node:fs').readFileSync('note.txt','utf8').trim(), 'fixed');",
+    "console.log('npm-test-passed');",
+  ].join("\n"));
+  writeFileSync(join(npmRepo, "package.json"), JSON.stringify({ scripts: { test: "node test.cjs" } }));
+  git(npmRepo, "init", "-b", "main");
+  git(npmRepo, "config", "user.name", "MyBuddy Test");
+  git(npmRepo, "config", "user.email", "mybuddy-test@example.invalid");
+  git(npmRepo, "add", "note.txt", "package.json", "test.cjs");
+  git(npmRepo, "commit", "-m", "npm fixture");
+  await api("db.upsertSpace", { id: "dots-npm-space", name: "npm 验收", path: npmRepo });
+  const npmId = "desktop-npm-test-recovery";
+  await send(npmId, npmInput);
+  await until(async () => (await replies(npmId)).length > 0, "npm test runs and reaches the Dots origin");
+  const npmReplies = await replies(npmId);
+  assert.deepEqual(npmReplies.map(reply => [reply.dotsDelivery.kind, reply.text]), [["conclusion", "修复完成，npm test 已通过。"]]);
+  assert.equal(npmRound, 4);
+  report.actualControlChecks.push({ scenario: "npm-test-recovered", jobs: (await jobs(npmId)).length, delivery: npmReplies[0].text });
 }, {
   name: live ? "dots-responsibility-live" : "dots-responsibility-desktop",
   liveModel: live, ...(live ? {} : { fixtureModel }), watchRenderer: false, isolatedDependencyCache: true,

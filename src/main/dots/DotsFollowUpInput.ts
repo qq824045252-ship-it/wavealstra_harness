@@ -7,15 +7,21 @@ const denyContinuation = /(?:不要|别|不必|不用|无需|不许|禁止)\s*(?
 const validationStep = /^(?:(?:运行|执行|做|重跑|重试)\s*)?(?:(?:已(?:经)?|此前|之前|刚才)?(?:通过|成功)的\s*)?(?:(?:同(?:一)?版本|相同版本)\s*)?(?:(?:类型|回归|单元|冒烟|构建|格式)\s*)?(?:检查|测试|校验|验证)$/u;
 const onlyHere = /(?:只|仅)(?:在|用)(?:这个|当前|本)对话(?:中|里)?\s*(.*)$/u;
 const deliveryHere = /^(?:回传|返回|交付|汇报)(?:本次|这次|最终|已完成的)?(?:结果|成果|文件|附件|报告|结论)(?:给我)?$/u;
-const stopDirective = /^(?:请\s*)?(?:先\s*)?(?:停(?:一下|下|掉|止)?|暂停|取消)(?:\s*(?:这(?:件事|个任务|次)|原任务|不用了|吧|下来))?[\s。！!]*$/u;
-const targetBeforeResume = String.raw`(?:把|让)(?:刚才|上一个|前一个|这|那|原|该)[^,，。.!！？?;；\n]{0,24}任务\s*`;
-const actionVerb = "(?:做|办|处理|完成|执行|干|跑)";
-const continueIdentifiedTask = new RegExp("^(?:请\\s*|麻烦\\s*|帮我\\s*)*" + targetBeforeResume + "(?:继续|接着)" + actionVerb, "u");
-const multipleTargets = /(?:所有|每个|各个|[两二三四五六七八九十\d]+个|这[些批]|那[些批]|几个|多个)[^，。！？]{0,6}任务|任务[^，。！？]{0,12}(?:和|与|、|及)\s*[^，。！？]{0,12}任务/u;
-const resumeDirective = new RegExp(String.raw`^(?:(?:好|行|可以|确认|请|麻烦|帮我)[,，\s]*)*(?:${targetBeforeResume})?(?:继续|接着(?:${actionVerb}|${targetBeforeResume}${actionVerb})|恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])`, "u");
+const stopDirective = /^(?:(?:请|先|还是)\s*)*(?:停(?:一下|下|掉|止)?|暂停|取消|算了|不用了|别做了|到此为止)(?:\s*(?:这(?:件事|个任务|次)|原任务|不用了|吧|下来))?[\s。！!]*$/u;
+const directionPrefix = String.raw`(?:(?:好|行|可以|确认|请|麻烦|帮我|给我|我(?:要|想让|希望)你|你|现在|先|再|顺便)[,，\s]*)*`;
+const taskReference = String.raw`(?:(?:刚才|之前|上一个|前一个|这|那|原|该)[^,，。.!！？?;；\n]{0,24}(?:任务|事项|交办|件事)|(?:剩下|余下|未完成|没做完)的(?:事|工作|部分)?)`;
+const targetBeforeAction = String.raw`(?:把|让)\s*${taskReference}\s*`;
+const workVerb = "(?:做|办|处理|完善|完成|执行|干|跑)";
+const continuationVerb = "(?:继续|接着|恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])";
+const restartVerb = "(?:恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])";
+const resumeDirective = new RegExp(String.raw`^${directionPrefix}(?:${targetBeforeAction}(?:${continuationVerb}\s*${workVerb}|完成|${workVerb}完)|(?:继续|接着)(?=\s*(?:${targetBeforeAction}${workVerb}|${taskReference}|${workVerb}|$|[,，。.!！]))|${restartVerb})`, "u");
+const multipleTargets = /(?:所有|每个|各个|[两二三四五六七八九十\d]+[个项件]|这[些批]|那[些批]|几个|多个)[^，。！？]{0,6}(?:任务|事项|交办)|(?:任务|事项|交办)[^，。！？]{0,12}(?:和|与|、|及)\s*[^，。！？]{0,12}(?:任务|事项|交办)/u;
 const resumeQuestion = /[?？]|(?:可否|能否|能不能|可不可以|要不要|是不是|是否|需要多久|还要多久)|(?:吗|么|如何|继续多久)[.!。！]*$/u;
 const inspectProgress = /(?:继续|接着)\s*(?:查看|查|追查|排查|诊断|调查|分析|解释|看|确认进度)|continue\s+(?:to\s+)?(?:check|look|investigat|explain)/iu;
-const followUpDirective = /^(?:(?:好|可以|请|麻烦|你|帮我|给我|先|再)\s*)*(?:(?:跟|问)一下(?:原任务|原交办|原事项)|(?:给|向)原任务(?:再)?(?:追问|跟进)|追问|跟进|(?:接着|继续)(?:处理|完善|办|做|原任务|原交办)|follow up\b)/iu;
+const followUpDirective = new RegExp(String.raw`^${directionPrefix}(?:(?:跟|问)一下(?:原任务|原交办|原事项)|(?:给|向)原任务(?:再)?(?:追问|跟进)|追问|跟进|follow up\b)`, "iu");
+const englishResume = /^(?:please\s+|go ahead and\s+)?(?:resume|retry|rerun|restart|continue)\b/i;
+const reportedSpeech = /(?:这个词|是什么意思|指的是什么|怎么用|怎么做|是为什么|说过|比如|举例|假[设如]|之前先|(?:不了|还是停|失败了)[.!。]*$)/u;
+const reportedContext = /(?:比如|举例|假设|假如|如果|假定|示例|例子|引用|原话是|说过|有人说|\b(?:for example|suppose|if|quote)\b)/iu;
 const supplementalCaption = /^(?:补(?:一张|个)?图|(?:这是|附上|补上|看)(?:这张)?(?:截图|图)|如图|就这个|还是没变|还是没看到效果(?:啊)?|乱七八糟(?:的)?)[\s。！!]*$/u;
 const screenshotDescription = /^(?:这(?:张图|个界面|个页面)|截图|图里|图上|界面|页面|布局|状态栏|顶栏|底栏|回复区|画面)[^?？；;\n]{1,100}$/u;
 const unrelatedRequest = /(?:麻烦|帮我|请你?|顺手|顺便|另一个|另外|接下来|务必|先去|删除|部署|提交|推送|重跑|派活|帮忙|改成|换成|发给)/u;
@@ -26,8 +32,24 @@ function clauses(text: string): string[] {
   return text.split(/(?<=[,，。.!！？?;；\n])/u).map(part => part.trim());
 }
 
+export function dotsInstructionText(text: string): string {
+  let fence: string | undefined;
+  return text.split("\n").map(line => {
+    const marker = /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker?.startsWith(fence) && line.trim() === marker) fence = undefined;
+      return "";
+    }
+    if (marker) {
+      fence = marker;
+      return "";
+    }
+    return /^[ \t]*>/u.test(line) ? "" : line;
+  }).join("\n");
+}
+
 export function dotsForwardingDenied(text: string): boolean {
-  const normalized = text.normalize("NFKC").trim();
+  const normalized = dotsInstructionText(text).normalize("NFKC").trim();
   return denyForwarding.test(normalized) || clauses(normalized).some(clause => {
     if (stopDirective.test(clause.replace(/[,，;；]+$/u, ""))) return true;
     const statement = clause.replace(/[,，.。！？!?;；]+$/u, "").trim();
@@ -40,30 +62,57 @@ export function dotsForwardingDenied(text: string): boolean {
 
 function isFollowUpDirective(clause: string): boolean {
   const normalized = clause.normalize("NFKC");
-  return (followUpDirective.test(normalized) || continueIdentifiedTask.test(normalized))
-    && !multipleTargets.test(normalized)
-    && !resumeQuestion.test(normalized)
-    && !/(?:这个词|是什么意思|指的是什么|怎么用|怎么做|是为什么|说过)/u.test(normalized);
+  const ongoing = /(?:继续|接着)|^\s*(?:please\s+)?continue\b/iu.test(normalized);
+  return ongoing && isResumeDirective(normalized) || followUpDirective.test(normalized) && isSingleDirective(normalized);
 }
 
-/** Resume a single identified task only when the current user sentence authorizes it. */
+function isSingleDirective(clause: string): boolean {
+  return !multipleTargets.test(clause) && !resumeQuestion.test(clause) && !reportedSpeech.test(clause);
+}
+
+function isResumeDirective(clause: string): boolean {
+  const normalized = clause.normalize("NFKC");
+  return isSingleDirective(normalized) && !inspectProgress.test(normalized)
+    && (resumeDirective.test(normalized) || englishResume.test(normalized));
+}
+
+function groundedDirectives(original: string, isDirective: (text: string) => boolean): string[] {
+  const instruction = dotsInstructionText(original);
+  if (multipleTargets.test(instruction.normalize("NFKC"))) return [];
+  const parts = clauses(instruction).filter(Boolean);
+  return parts.filter((part, index) => isDirective(part)
+    && !parts.slice(0, index).some(preceding => reportedContext.test(preceding)));
+}
+
+function resumeQuote(original: string, quote?: string): string | undefined {
+  if (dotsForwardingDenied(original)) return;
+  const instructions = groundedDirectives(original, isResumeDirective);
+  const directive = instructions.length === 1 ? instructions[0] : undefined;
+  if (!directive || !quote) return directive;
+  const plain = (text: string) => text.normalize("NFKC").trim().replace(/[,。.!;]+$/u, "");
+  return plain(directive) === plain(quote) || original.includes(quote.trim()) && plain(quote).includes(plain(directive))
+    ? directive : undefined;
+}
+
+/** Resume a single identified task only when the current user message authorizes it. */
 export function hasDotsResumeInstruction(original: string | undefined, quote?: string): boolean {
-  if (!original || dotsForwardingDenied(original)) return false;
-  const sentences = original.normalize("NFKC").split(/(?<=[。.!?;\n])/u).map(sentence => sentence.trim()).filter(Boolean);
-  const plain = (text: string) => text.normalize("NFKC").trim().replace(/[。.!;]+$/u, "");
-  const instructions = (quote ? sentences.filter(sentence => plain(sentence) === plain(quote)) : sentences).filter(sentence =>
-    !resumeQuestion.test(sentence)
-    && !/(?:之前先)|(?:不了|还是停|失败了)[.!。]*$/u.test(sentence)
-    && !inspectProgress.test(sentence)
-    && !multipleTargets.test(sentence)
-    && (resumeDirective.test(sentence) || /^(?:please\s+|go ahead and\s+)?(?:resume|retry|rerun|restart|continue)\b/i.test(sentence)));
-  return instructions.length === 1 && (Boolean(quote) || instructions[0] === sentences[0]);
+  return Boolean(original && resumeQuote(original, quote));
+}
+
+export function dotsResumeInput(inputs: readonly ForegroundInput[], quote?: string) {
+  if (inputs.some(input => isDotsAutomaticInput(input.id) || dotsForwardingDenied(input.text))) return;
+  const directives = inputs.flatMap(source => {
+    const assignmentQuote = resumeQuote(source.text);
+    return assignmentQuote ? [{ source, assignmentQuote }] : [];
+  });
+  const unique = directives.length === 1 ? directives[0] : undefined;
+  return unique && resumeQuote(unique.source.text, quote) ? unique : undefined;
 }
 
 export function dotsFollowUpInput(inputs: readonly ForegroundInput[]) {
   if (inputs.some(input => isDotsAutomaticInput(input.id) || dotsForwardingDenied(input.text)))
     throw new Error("本轮没有授权把追问发给原任务。请用 task 查看当前状态。");
-  const directives = inputs.flatMap(source => clauses(source.text).filter(isFollowUpDirective).map(assignmentQuote => ({ source, assignmentQuote })));
+  const directives = inputs.flatMap(source => groundedDirectives(source.text, isFollowUpDirective).map(assignmentQuote => ({ source, assignmentQuote })));
   if (directives.length !== 1) throw new Error("请从当前对话找到一条明确的追问原话。查询进度请使用 task。");
   const { source, assignmentQuote } = directives[0]!;
   const attachments = new Map<string, NonNullable<AgentPromptRequest["attachments"]>[number]>();

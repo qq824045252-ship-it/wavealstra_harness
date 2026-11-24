@@ -30,7 +30,7 @@ import { createOfficeSelectionExtension } from "../office-use/OfficeSelectionToo
 import { createOfficeNativeExtension } from "../office-use/OfficeNativeTools";
 import { createCadUseExtension } from "../capabilities/CadUseTools";
 import { createDrawioUseExtension } from "../capabilities/DrawioUseTools";
-import { createOfficeDocument } from "../office-use/OfficeDocumentCreation";
+import { createOfficeDocument, OFFICE_RECOVERY_CREATE_MEMO } from "../office-use/OfficeDocumentCreation";
 import { WorkspaceNotesService } from "../workspace/WorkspaceNotesService";
 import { createWorkspaceResourceLocatorExtension } from "../workspace/workspace-resource-locator-extension";
 import { WorkGraphService } from "../workgraph/WorkGraphService";
@@ -195,14 +195,16 @@ export class SessionExtensionAssembler {
         taskRoot: () => (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
         getPermissionMode,
         isEnabled: officeUseEnabled,
-        create: (request, toolCallId, assertWritable) => {
+        create: async (request, toolCallId, assertWritable) => {
           const artifacts = input.builtinCapability.artifactService();
           if (!artifacts) throw new Error("当前任务的产物服务不可用。");
+          const invocation = durable ? currentDurableInvocation() : undefined;
           return createOfficeDocument(request, {
             taskId: input.taskId,
             taskRoot: (durable ? currentDurableExecutionCwd() : undefined) ?? input.taskRoot,
             producerMessageId: input.builtinCapability.getProducerMessageId(),
             toolCallId, artifacts, assertWritable,
+            preserveExisting: invocation && await invocation.native.memo(OFFICE_RECOVERY_CREATE_MEMO, invocation.context) === true,
           });
         },
       })] : []),
