@@ -16,8 +16,33 @@
 import type { MessageBlock } from "@/types";
 
 export type TimelineGroup =
-  | { kind: "thinking"; blocks: MessageBlock[]; key: string }
+  | { kind: "thinking"; blocks: MessageBlock[]; key: string; complete: boolean }
   | { kind: "other"; block: MessageBlock; index: number; key: string };
+
+export function groupTimelineBlocks(blocks: MessageBlock[], thinkingFinished: boolean): TimelineGroup[] {
+  const groups: TimelineGroup[] = [];
+  let thinking: MessageBlock[] = [];
+  let thinkingSequence = 0;
+  const flushThinking = (complete: boolean): void => {
+    if (!thinking.length) return;
+    groups.push({ kind: "thinking", blocks: thinking, key: `thinking-seg-${thinkingSequence++}`, complete });
+    thinking = [];
+  };
+
+  for (const [index, block] of blocks.entries()) {
+    if (block.type === "thinking") {
+      flushThinking(true);
+      thinking.push(block);
+    } else if (block.type === "text") {
+      thinking.push(block);
+    } else {
+      flushThinking(true);
+      groups.push({ kind: "other", block, index, key: `other-${index}-${block.type}` });
+    }
+  }
+  flushThinking(thinkingFinished || thinking.some(block => block.type === "text" && block.text.trim().length > 0));
+  return groups;
+}
 
 /** 强制可见（豁免）的工具状态。 */
 export const TOOL_STATUS_EXEMPT: ReadonlySet<string> = new Set([

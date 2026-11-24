@@ -1970,6 +1970,7 @@ html[data-theme="dark"] .extension-top-bar {
   background-color: transparent;
 }
 
+.assistant-reasoning-conclusion,
 .assistant-reasoning-content .timeline-text,
 .assistant-reasoning-content .streaming-plain-text {
   font-size: 13.5px;
@@ -1984,6 +1985,17 @@ html[data-theme="dark"] .extension-top-bar {
   word-break: break-word;
   /* Thinking 是纯文本流；上游即使夹带 token 级硬换行也只按容器宽度自然折行。 */
   white-space: normal;
+}
+
+.assistant-reasoning-conclusion {
+  margin: 0 0 2px 10px;
+  padding: 0 6px 0 13px;
+  width: calc(100% - 10px);
+  user-select: text;
+}
+
+.assistant-reasoning-conclusion strong {
+  font-weight: 600;
 }
 
 .assistant-reasoning.streaming .assistant-reasoning-content {

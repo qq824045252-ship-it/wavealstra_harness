@@ -16,11 +16,13 @@
 import {
   computeFocusView,
   findActiveThinkingGroupIndex,
+  groupTimelineBlocks,
   isGroupHiddenInFocus,
   isToolExempt,
   shouldRenderGroup,
   type TimelineGroup,
 } from "../src/renderer/src/components/chat/timelineFocus";
+import { thinkingConclusion } from "../src/renderer/src/components/chat/thinkingConclusion";
 import type { MessageBlock, ToolStatus } from "../src/renderer/src/types";
 
 let passed = 0;
@@ -35,11 +37,28 @@ function assert(cond: unknown, label: string): void {
   }
 }
 
+{
+  const first: MessageBlock = { type: "thinking", text: "先核对两个来源。结论：第一份记录已过期。第二份记录有效。" };
+  const second: MessageBlock = { type: "thinking", text: "需要比对版本。当前版本已经确认。" };
+  const search: MessageBlock = { type: "tool", toolCall: { id: "search-1", tool: "web_search", summary: "搜索", status: "success" } };
+  const blocks = [first, search, second];
+  const live = groupTimelineBlocks(blocks, false).filter(group => group.kind === "thinking");
+  assert(live.length === 2 && live[0]?.complete && !live[1]?.complete, "工具分隔两段思考，第二段仍在流式写入");
+  assert(groupTimelineBlocks(blocks, true).filter(group => group.kind === "thinking").every(group => group.complete), "回复开始后最后一段也完成");
+  assert(groupTimelineBlocks([first, second], false).length === 2, "连续的原生思考块保留各自的小结位置");
+  assert(thinkingConclusion(first.text) === "第一份记录已过期。第二份记录有效。", "使用思考末尾明示的结论，保留原文上下文");
+  assert(thinkingConclusion(second.text) === second.text, "没有标记时保留相邻收尾句的上下文");
+  assert(thinkingConclusion(second.text, "小结：已核对文件，版本号是 A17。") === "已核对文件，版本号是 A17。", "优先使用模型已经写给用户的简短阶段说明");
+  assert(thinkingConclusion(second.text, '{"action":"continue"}') === second.text, "结构化输出不作为小结");
+  assert(thinkingConclusion("  \n  ") === undefined, "空白思考没有小结");
+}
+
 function thinking(seq: number, withThinking = true): TimelineGroup {
   return {
     kind: "thinking",
     key: `thinking-seg-${seq}`,
     blocks: [{ type: withThinking ? "thinking" : "text", text: `t${seq}` }],
+    complete: false,
   };
 }
 

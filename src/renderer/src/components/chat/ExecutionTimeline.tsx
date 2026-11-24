@@ -1,5 +1,5 @@
 import { nativeRunPhaseLabel } from "../../../../shared/generation-stats";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage, MessageBlock, ToolStatus } from "@/types";
 import MessageBlockView from "./MessageBlockView";
 import WebSearchCard from "./WebSearchCard";
@@ -9,9 +9,10 @@ import "./ChatReadability.css";
 import {
   computeFocusView,
   findActiveThinkingGroupIndex,
+  groupTimelineBlocks,
   shouldRenderGroup,
-  type TimelineGroup,
 } from "./timelineFocus";
+import { thinkingConclusion } from "./thinkingConclusion";
 
 /**
  * Thinking 文本规范化：推理草稿只按自然宽度换行，不保留上游硬换行。
@@ -91,19 +92,20 @@ function useReasoningScroll(active: boolean): {
  */
 function ThinkingSection({
   blocks,
-  messageId,
   active,
+  complete,
   messageStreaming,
 }: {
   blocks: MessageBlock[];
-  messageId: string;
   active: boolean;
+  complete: boolean;
   messageStreaming: boolean;
 }): React.JSX.Element {
   // 仅活跃段默认展开；被打断 / 进入最终回复 / 整轮结束 → 收起
   const [collapsed, setCollapsed] = useState(!active);
-  const live = active && messageStreaming;
-  const { containerRef, onScroll, scrollToBottom } = useReasoningScroll(live && !collapsed);
+  const live = active && messageStreaming && !complete;
+  const followText = active && messageStreaming && !collapsed;
+  const { containerRef, onScroll, scrollToBottom } = useReasoningScroll(followText);
   // Provider/工具边界可能把同一段活跃思考拆成多个 thinking/text block。
   // 流式态必须合并成滚动容器里的单一直接文本节点：若逐 block 渲染为 div，
   // 很短的增量会各占一行，视觉上就会退化成逐字/逐词竖排。
@@ -111,6 +113,12 @@ function ThinkingSection({
     if (block.type === "thinking" || block.type === "text") return text + block.text;
     return text;
   }, "");
+  const thinkingText = blocks.find(block => block.type === "thinking")?.text;
+  const progressText = blocks.findLast(block => block.type === "text")?.text;
+  const conclusion = useMemo(
+    () => complete && thinkingText ? thinkingConclusion(thinkingText, progressText) : undefined,
+    [complete, thinkingText, progressText],
+  );
 
   useLayoutEffect(() => {
     if (active && messageStreaming) {
@@ -124,8 +132,8 @@ function ThinkingSection({
 
   // 仅活跃段在内容增量时贴底
   useLayoutEffect(() => {
-    if (live && !collapsed) scrollToBottom();
-  }, [blocks, live, collapsed, scrollToBottom]);
+    if (followText) scrollToBottom();
+  }, [blocks, followText, scrollToBottom]);
 
   return (
     <section
@@ -160,34 +168,13 @@ function ThinkingSection({
           <div className="timeline-text">{normalizeThinkingText(liveText)}</div>
         </div>
       )}
+      {conclusion && (
+        <p className="assistant-reasoning-conclusion timeline-text">
+          <strong>小结</strong> {conclusion}
+        </p>
+      )}
     </section>
   );
-}
-
-/** 连续 thinking/过程 text 合成一段；工具等打断后开启下一段 */
-function groupTimelineBlocks(blocks: MessageBlock[]): TimelineGroup[] {
-  const groups: TimelineGroup[] = [];
-  let thinkingBuf: MessageBlock[] = [];
-  let thinkingSeq = 0;
-
-  const flushThinking = (): void => {
-    if (thinkingBuf.length === 0) return;
-    // 用段序号做稳定 key，避免工具插入后整表 remount 丢折叠态
-    groups.push({ kind: "thinking", blocks: thinkingBuf, key: `thinking-seg-${thinkingSeq}` });
-    thinkingSeq += 1;
-    thinkingBuf = [];
-  };
-
-  blocks.forEach((block, index) => {
-    if (block.type === "thinking" || block.type === "text") {
-      thinkingBuf.push(block);
-      return;
-    }
-    flushThinking();
-    groups.push({ kind: "other", block, index, key: `other-${index}-${block.type}` });
-  });
-  flushThinking();
-  return groups;
 }
 
 function messageHasFinalOutput(message: ChatMessage): boolean {
@@ -260,8 +247,9 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
   }, [visibleOpen, bodyMounted]);
 
   const hasFinalOutput = messageHasFinalOutput(message);
-  const completionLabel = message.generationStats?.outcome === "aborted" ? "已停止"
-    : message.generationStats?.outcome === "error" ? "执行失败" : "已完成";
+  const outcome = message.generationStats?.outcome;
+  const completionLabel = outcome === "aborted" ? "已停止"
+    : outcome === "error" ? "执行失败" : "已完成";
   const failure = executionFailureReason(message);
 
   if (message.streaming && message.pendingBehavior) {
@@ -306,8 +294,6 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
     );
   }
 
-  const thinkingLive =
-    Boolean(message.streaming) && !hasPendingApproval && !hasFinalOutput;
   const running = Boolean(message.streaming) && !hasPendingApproval;
   const lastAction = compact && message.blocks.findLast(block => block.type === "tool");
   const action = lastAction && lastAction.type === "tool" && lastAction.toolCall.tool === "dots_action" ? lastAction.toolCall : undefined;
@@ -319,7 +305,10 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
   const isResultCard = (block: MessageBlock): boolean => block.type === "tool" && (block.toolCall.tool === "multi_model_consult" || Boolean(block.toolCall.webSearch) || isCapabilityTool(block.toolCall.tool));
   const resultBlocks = message.blocks.filter(isResultCard);
   const searchCalls = resultBlocks.flatMap(block => block.type === "tool" && block.toolCall.webSearch ? [block.toolCall] : []);
-  const groups = groupTimelineBlocks(message.blocks.filter(block => !isResultCard(block)));
+  const thinkingFinished = hasFinalOutput || (!message.streaming && outcome !== "aborted" && outcome !== "error");
+  const groups = groupTimelineBlocks(message.blocks, thinkingFinished).filter(
+    group => group.kind === "thinking" || !isResultCard(group.block),
+  );
   const activeThinkingIdx = findActiveThinkingGroupIndex(
     groups,
     Boolean(message.streaming),
@@ -388,8 +377,8 @@ function ExecutionTimeline({ message, taskId, focusTool, compact = false }: Prop
                     <ThinkingSection
                       key={group.key}
                       blocks={group.blocks}
-                      messageId={message.id}
                       active={i === activeThinkingIdx || isFocusLive}
+                      complete={group.complete}
                       messageStreaming={Boolean(message.streaming)}
                     />
                   );
