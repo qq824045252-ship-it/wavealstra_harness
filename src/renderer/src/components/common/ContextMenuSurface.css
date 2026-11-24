@@ -2,7 +2,7 @@
   min-width: min(208px, calc(100vw - 16px));
   max-width: min(292px, calc(100vw - 16px));
   padding: 5px;
-  background: var(--surface-elevated);
+  background: var(--surface-popover);
   border-color: var(--border-strong);
   border-radius: 14px;
   color: var(--fg);
@@ -26,7 +26,7 @@
   height: 30px;
   place-items: center;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface-elevated));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-popover));
   border-radius: var(--radius-sm);
 }
 
@@ -80,7 +80,7 @@
 
 .context-action-menu .task-context-item.danger:hover:not(:disabled),
 .context-action-menu .task-context-item.danger:focus-visible {
-  background: color-mix(in srgb, var(--danger) 11%, var(--surface-elevated));
+  background: color-mix(in srgb, var(--danger) 11%, var(--surface-popover));
 }
 
 .context-action-menu .task-context-item:disabled {
@@ -100,5 +100,5 @@
 .context-action-menu .task-context-notice {
   margin: 3px 4px;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--danger) 8%, var(--surface-elevated));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface-popover));
 }

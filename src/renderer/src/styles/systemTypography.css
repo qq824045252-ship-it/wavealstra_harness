@@ -330,6 +330,10 @@ html[data-code-theme] .md-chat pre {
   border-color: color-mix(in srgb, var(--code-theme-fg) 16%, var(--border-default));
 }
 
+html[data-theme="light"]:is([data-code-theme="vitesse"], [data-code-theme="min"]) .md-chat pre {
+  background: var(--chat-card-surface);
+}
+
 html[data-code-theme] .md .hljs {
   background: transparent;
   color: var(--code-theme-fg);

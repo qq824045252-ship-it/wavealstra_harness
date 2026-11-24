@@ -167,7 +167,7 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: var(--bg-elevated, var(--bg-panel));
+  background: var(--chat-card-surface, var(--bg-elevated, var(--bg-panel)));
 }
 
 .md-chat th,
@@ -189,7 +189,7 @@
 }
 
 .md-chat td {
-  background: var(--bg-elevated, var(--bg-panel));
+  background: var(--chat-card-surface, var(--bg-elevated, var(--bg-panel)));
   color: var(--fg);
 }
 

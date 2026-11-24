@@ -3,6 +3,7 @@
 
 html[data-theme="light"] {
   --chat-canvas: #f5eee4;
+  --chat-card-surface: #faf5ec;
   --chat-composer-surface: #f4eadc;
 }
 
@@ -208,7 +209,7 @@ html[data-theme="light"] {
 .msg-action-more-menu {
   border-color: var(--border-default);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-lg);
 }
 
@@ -368,7 +369,7 @@ html[data-theme="light"] {
   padding: 7px 10px;
   border: 0;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--surface-elevated) 74%, var(--surface-main));
+  background: color-mix(in srgb, var(--chat-card-surface, var(--surface-elevated)) 74%, var(--surface-main));
   overflow-y: auto;
 }
 
@@ -392,7 +393,7 @@ html[data-theme="light"] {
 .approval-acp-shell {
   border-color: var(--border-default);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--chat-card-surface, var(--surface-elevated));
 }
 
 .conversation-runtime-card.interaction-card.is-pending,
@@ -421,7 +422,7 @@ html[data-theme="light"] {
 
 .conversation-interaction-input {
   border-color: var(--border-default);
-  background: var(--surface-input);
+  background: var(--chat-composer-surface, var(--surface-input));
 }
 
 .conversation-interaction-actions button.primary {
@@ -432,6 +433,7 @@ html[data-theme="light"] {
 
 .dots-all-tasks:popover-open {
   border-radius: var(--radius-lg);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-lg);
 }
 
@@ -483,7 +485,7 @@ html[data-theme="light"] {
   padding: 8px 10px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--chat-card-surface, var(--surface-elevated));
 }
 
 .dots-result-status {
@@ -526,7 +528,7 @@ html[data-theme="light"] {
 .td-turn {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--chat-card-surface, var(--surface-elevated));
 }
 
 .md-chat .md-fence-toolbar,
@@ -553,6 +555,13 @@ html[data-theme="light"] {
 .chat-reply-citation-popup:popover-open,
 .chat-reading-popover:popover-open {
   border-radius: var(--radius-sm);
+}
+
+.chat-reply-citation-popup:popover-open,
+.chat-reading-popover:popover-open,
+.chat-reading-dialog,
+.chat-reading-dialog header {
+  background: var(--surface-popover);
 }
 
 .web-search-source,

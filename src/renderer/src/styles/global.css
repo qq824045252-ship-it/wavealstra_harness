@@ -191,6 +191,7 @@ html[data-theme="light"] {
   --surface-main: #fbf8f1;
   --surface-right: #f6f0e6;
   --surface-elevated: #fffdf8;
+  --surface-popover: #fbf6ed;
   --surface-input: #fffdfa;
   --surface-hover: #eee6d9;
   --surface-active: #e8dfd1;
@@ -242,6 +243,7 @@ html[data-theme="dark"] {
   --surface-main: #25231f;
   --surface-right: #29251f;
   --surface-elevated: #322d26;
+  --surface-popover: var(--surface-elevated);
   --surface-input: #302a24;
   --surface-hover: #38312a;
   --surface-active: #41372e;
@@ -941,7 +943,7 @@ html[data-theme="dark"] .task-item-action:hover {
   max-height: min(60vh, 420px);
   overflow-x: hidden;
   overflow-y: auto;
-  background: #ffffff;
+  background: var(--surface-popover);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
@@ -971,10 +973,6 @@ html[data-theme="dark"] .task-item-action:hover {
   line-height: 1.45;
   color: var(--danger);
   white-space: normal;
-}
-
-html[data-theme="dark"] .task-context-menu {
-  background: var(--bg-elevated);
 }
 
 .task-context-item {
@@ -14863,7 +14861,7 @@ html[data-theme="dark"] .us-heat-cell.lv-4 { background: #a8d1f0; }
   max-width: 280px;
   padding: 10px 10px 8px;
   border-radius: 12px;
-  background: var(--bg-elevated, var(--bg-panel));
+  background: var(--surface-popover);
   border: 1px solid var(--border);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
   z-index: 240;
@@ -20076,7 +20074,7 @@ html[data-theme="dark"] .task-item.active {
 .project-feed-menu {
   border-color: var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--surface-elevated);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-lg);
 }
 
@@ -22129,7 +22127,7 @@ html[data-theme="dark"] .chat-column.task-ambient[data-mode="general"] {
 
 .chat-column.task-ambient .jump-to-bottom {
   border-color: var(--border-subtle);
-  background: color-mix(in srgb, var(--surface-elevated) 88%, transparent);
+  background: color-mix(in srgb, var(--surface-popover) 88%, transparent);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(10px);
 }
