@@ -57,7 +57,9 @@ const conclusion = "东区批次已核对，合计到货 18 件。";
 const executionNotes = "复核底稿：逐行比对到货记录及采购登记，把确认的批次写入内部记录。";
 const reportFormat = "用 Markdown 给我完整报告，包含依据和复核过程。";
 const reportAssignment = "先核对数量，再汇总采购情况。";
-const fullReport = "## 汇总\n\n到货 18 件。\n\n## 依据\n\n原始到货登记 18 件。\n\n## 复核过程\n\n汇总数与登记一致。\n";
+const paymentTerms = "付款条件：分三期支付，尾款验收后结清。";
+const fullReport = "## 汇总\n\n到货 18 件。\n\n## 依据\n\n" + "原始到货登记 18 件。".repeat(250) + "\n\n" + paymentTerms +
+  "\n\n" + "采购入库单一致。".repeat(400) + "\n\n## 复核过程\n\n汇总数与登记一致。\n";
 const partial = "验收清单列出仓储、装配两项。财务栏仍空着。";
 const runningMilestone = "周一批次原始记录显示 18 件。";
 const runningRequest = "核对周一批次的原始记录，再核对另一批的原始记录";
@@ -71,6 +73,8 @@ const runningEvidence = runningWork.map((item, index) => ({ id: item.id, evidenc
 const planResult = "本轮只列出修复方案，具体代码后续再补。";
 const repairedResult = "导入和导出同时恢复，文件名中的中文也能保留。";
 const forgedResult = "本地提交和项目验收均已完成。";
+const scopedRepairResult = "隔离项目的配置修复已交付。";
+const scopedRepairContent = "module.exports = n => n * 2;\n";
 const manualIntro = "已按你的要求更新。";
 const manualResult = "排版已经更新。\n\n1. 保留原有入口。";
 const manualEnvelope = JSON.stringify({ dotsState: "complete", result: manualResult });
@@ -117,6 +121,46 @@ const fixture = await createAgentDurableFixture(root, db, async (input) => {
       dotsState: "complete", result: forgedResult, verifiedChecks: ["test:dots-spoof-proof"],
       verifiedCommit: "b2a4cf19b2a4cf19b2a4cf19b2a4cf19b2a4cf19",
     }) }];
+    if (latestUser.includes("修复隔离项目的配置")) {
+      const commitOnly = latestUser.includes("备用配置");
+      const last = input.messages.at(-1);
+      const call = (id: string, name: string, args: Extract<AssistantMessage["content"][number], { type: "toolCall" }>["arguments"]) =>
+        [{ type: "toolCall" as const, id, name, arguments: args }];
+      if (!latestUser.includes("宿主仍未核实")) {
+        if (last?.role === "toolResult") {
+          assert.equal(last.isError ?? false, false, JSON.stringify(last.content));
+          return completedWorkerReply("配置已更新。");
+        }
+        return call("initial-config-change", "write", { path: "calc.cjs", content: commitOnly ? scopedRepairContent : "module.exports = n => n * 3;\n" });
+      }
+      if (last?.role !== "toolResult") {
+        assert(tools.some(tool => tool.name === "dots_recover_commit"), "已授权且缺少提交时应提供受限提交工具");
+        return commitOnly ? call("scoped-local-commit", "dots_recover_commit", { message: "Fix isolated calculation" })
+          : call("missing-project-check", "project_verify", { script: "typecheck", manager: "npm" });
+      }
+      if (last.toolCallId === "missing-project-check") {
+        assert.equal(last.isError, true);
+        assert.match(JSON.stringify(last.content), /63/u);
+        // The original task never changed the test, so recovery must refuse to modify it.
+        return call("outside-scoped-edit", "edit", { path: "verify.cjs", edits: [{ oldText: "42", newText: "63" }] });
+      }
+      if (last.toolCallId === "outside-scoped-edit") {
+        assert.equal(last.isError, true);
+        return call("allowed-scoped-edit", "edit", { path: "calc.cjs", edits: [{ oldText: "n * 3", newText: "n * 2" }] });
+      }
+      if (last.toolCallId === "allowed-scoped-edit") {
+        assert.equal(last.isError ?? false, false, JSON.stringify(last.content));
+        return call("scoped-local-commit", "dots_recover_commit", { message: "Fix isolated calculation" });
+      }
+      const sha = input.messages.find(message => message.role === "toolResult" && message.toolCallId === "scoped-local-commit");
+      const commitSha = JSON.stringify(sha).match(/[a-f0-9]{40}/u)?.[0];
+      assert(commitSha, JSON.stringify(sha));
+      if (last.toolCallId === "scoped-local-commit" && !commitOnly)
+        return call("verify-final-commit", "project_verify", { script: "typecheck", manager: "npm" });
+      assert.equal(last.isError ?? false, false, JSON.stringify(last.content));
+      return call("scoped-repair-complete", "dots_task_end", { action: "complete", result: scopedRepairResult,
+        deliveryText: scopedRepairResult + " " + commitSha, commitSha, checks: commitOnly ? [] : ["typecheck"] });
+    }
     if (phase === "refused")
       return { content: [], errorMessage: '400: {"type":"invalid_request_error","message":"仓储端已拒绝此次校验"}' };
     if (phase === "first") {
@@ -899,6 +943,22 @@ try {
   const reportDelivery = reportMessages.find(m => m.dotsDelivery?.sourceMessageId === reportSource && m.dotsDelivery.kind === "conclusion");
   assert.equal(reportDelivery?.text, fullReport);
   assert.equal(journal.list([reportSource]).length, 2, "完整报告来自同一任务内自动续办后的交付");
+  const reportTask = reportDelivery.dotsDelivery?.taskId;
+  assert(reportTask);
+  const reportHits = await actions.execute(DOTS_TASK_ID, undefined, { action: "deliveries", targetTaskId: reportTask, query: paymentTerms });
+  assert(reportHits && "results" in reportHits && reportHits.results);
+  const reportHit = reportHits.results.find(hit => "operationId" in hit && hit.status === "completed");
+  assert(reportHit && reportHit.text.includes(paymentTerms) && reportHit.readTextCall);
+  let reportCall: import("../src/main/dots/DotsActions").DotsActionInput | undefined = reportHit.readTextCall;
+  let reportText = "";
+  while (reportCall) {
+    const page = await actions.execute(DOTS_TASK_ID, undefined, reportCall);
+    assert(page && "textLength" in page && page.text.length <= 1800);
+    assert.equal(page.offset, reportText.length);
+    reportText += page.text;
+    reportCall = page.readTextCall;
+  }
+  assert.equal(reportText, fullReport);
   console.log("PASS 自动续办保留明确交付要求，原对话逐字收到完整 Markdown 报告");
   phase = "missing";
   const missingSource = `source-${turn + 1}`;
@@ -981,6 +1041,38 @@ try {
   assert.equal(spoofActivity?.state, "undelivered");
   assert(spoofActivity?.summary.includes("缺少已核实的本地提交"));
   console.log("PASS 普通交办只接受宿主原生回执，续办一轮后仍缺回执时如实回报");
+
+  for (const commitOnly of [true, false]) {
+    const name = commitOnly ? "备用配置" : "主配置";
+    const workspace = join(root, "scoped-recovery-" + name);
+    mkdirSync(workspace);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: workspace, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.name", "Dots regression");
+    git("config", "user.email", "dots@example.invalid");
+    git("config", "core.autocrlf", "false");
+    const verify = "require('node:assert/strict').equal(require('./calc.cjs')(21), 42);\n";
+    writeFileSync(join(workspace, "calc.cjs"), "module.exports = n => n + 1;\n");
+    writeFileSync(join(workspace, "verify.cjs"), verify);
+    writeFileSync(join(workspace, "package.json"), JSON.stringify({ scripts: { typecheck: "node verify.cjs" } }));
+    git("add", ".");
+    git("commit", "-qm", "Fixture baseline");
+    const start = git("rev-parse", "HEAD");
+    const repairSpace = db.upsertSpace({ id: "scoped-recovery-" + name, name, path: workspace });
+    const source = `source-${turn + 1}`;
+    const assignment = "修复隔离项目的配置（" + name + "），并做一次本地提交" + (commitOnly ? "。" : "，运行 npm run typecheck。");
+    await send(assignment, { action: "delegate", spaceId: repairSpace.id, text: assignment });
+    const messages = await messageContains(scopedRepairResult, source);
+    const sha = git("rev-parse", "HEAD");
+    assert.deepEqual(messages.filter(m => m.dotsDelivery?.sourceMessageId === source && m.dotsDelivery?.kind === "conclusion")
+      .map(message => message.text), [scopedRepairResult + " " + sha]);
+    assert.equal(git("rev-list", "--count", start + "..HEAD"), "1");
+    assert.equal(git("diff", "--name-only", start, sha), "calc.cjs");
+    assert.equal(git("status", "--porcelain"), "");
+    assert.equal(readFileSync(join(workspace, "verify.cjs"), "utf8"), verify);
+    assert.equal(readFileSync(join(workspace, "calc.cjs"), "utf8"), scopedRepairContent);
+  }
+  console.log("PASS 自动补交真实本地提交；补跑发现错误时仅修原文件并在最终 HEAD 验收");
 
   assert(dotsProgressInScope(["优化系统性能"], "排查性能瓶颈"));
   assert(!dotsProgressInScope(["优化系统性能"], "检查性能并发布到外部", "优化系统性能"));

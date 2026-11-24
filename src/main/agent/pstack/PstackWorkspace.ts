@@ -12,6 +12,7 @@ const exec = promisify(execFile);
 const hash = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 const maxFiles = 1200, maxFileBytes = 512 * 1024, maxBytes = 12 * 1024 * 1024;
 const generated = new Set([".git", ".hg", ".svn", "node_modules", "dist", "out", "build", ".next", "target", "__pycache__"]);
+const verificationGenerated = new Set([".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", ".coverage", "htmlcov"]);
 export type FileState = { digest: string; lines: number; hashes: string; branches: Record<string, number>; source?: string; binary?: boolean; link?: boolean };
 export type ScopedFile = { path: string; before: FileState; current: FileState };
 export type WorkspaceBaseline = { cwd: string; root: string; head: string; files: Record<string, FileState>; unknown: string[] };
@@ -22,6 +23,7 @@ const empty = missingFile;
 async function git(cwd: string, args: string[], signal?: AbortSignal) {
   return (await exec("git", ["--no-optional-locks", "-C", cwd, ...args], {
     encoding: "buffer", windowsHide: true, timeout: 12_000, maxBuffer: 8 * 1024 * 1024, signal,
+    env: { ...process.env, LC_ALL: "C" },
   })).stdout;
 }
 
@@ -74,12 +76,13 @@ async function fileState(cwd: string, path: string, budget: { bytes: number }, r
   }
 }
 
-async function plainPaths(cwd: string, signal?: AbortSignal): Promise<string[]> {
+async function plainPaths(cwd: string, signal?: AbortSignal, verification = false): Promise<string[]> {
   const paths: string[] = [];
   async function visit(dir: string) {
     signal?.throwIfAborted();
     for (const item of await readdir(dir, { withFileTypes: true })) {
       if (paths.length > maxFiles) break;
+      if (verification && verificationGenerated.has(item.name)) continue;
       const path = join(dir, item.name);
       if (item.isDirectory()) { if (!generated.has(item.name)) await visit(path); }
       else paths.push(relative(cwd, path).split(sep).join("/"));
@@ -111,12 +114,12 @@ async function gitPaths(base: WorkspaceBaseline, signal?: AbortSignal) {
   return [...paths(tracked), ...paths(untracked).filter(name => name !== MANIFEST_FILENAME)];
 }
 
-async function collect(base: WorkspaceBaseline, retain: boolean, signal?: AbortSignal) {
+async function collect(base: WorkspaceBaseline, retain: boolean, signal?: AbortSignal, verification = false) {
   const records: Record<string, FileState> = Object.create(null);
   const unknown: string[] = [];
   const budget = { bytes: 0 };
   try {
-    const candidates = base.head ? await gitPaths(base, signal) : await plainPaths(base.cwd, signal);
+    const candidates = base.head ? await gitPaths(base, signal) : await plainPaths(base.cwd, signal, verification);
     const paths = [...new Set([...Object.keys(base.files), ...candidates])].sort();
     if (paths.length > maxFiles) unknown.push("file count exceeds inspection limit");
     for (const path of paths.slice(0, maxFiles)) {
@@ -142,14 +145,61 @@ export async function baselineWorkspace(directory: string, signal?: AbortSignal)
   return { ...base, ...await collect(base, true, signal) };
 }
 
-export async function projectStartHead(directory: string): Promise<string> {
-  await git(directory, ["rev-parse", "--show-toplevel"]);
+export type ProjectCommitStart = { head: string; clean: boolean; ref: string };
+
+export async function projectCommitStart(directory: string, signal?: AbortSignal): Promise<ProjectCommitStart> {
+  await git(directory, ["rev-parse", "--show-toplevel"], signal);
+  const status = await git(directory, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], signal);
+  let head = "";
   try {
-    return (await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])).toString().trim();
+    head = (await git(directory, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], signal)).toString().trim();
   } catch (error) {
     if ((error as { code?: number }).code !== 1) throw error;
-    return "";
   }
+  const ref = (await git(directory, ["rev-parse", "--symbolic-full-name", "HEAD"], signal)
+    .catch(async error => {
+      if (head) throw error;
+      return git(directory, ["symbolic-ref", "HEAD"], signal);
+    })).toString().trim();
+  return { head, clean: !status.length, ref };
+}
+
+export async function recoverProjectCommit(directory: string, start: ProjectCommitStart, editable: readonly string[], message: string,
+  signal?: AbortSignal, prior?: readonly string[], remember?: (paths: string[]) => Promise<unknown>): Promise<string> {
+  if (!start.clean || !start.head || !editable.length) throw new Error("缺少干净的任务起始版本或已核实的改动文件。");
+  const state = await projectVerificationWorkspace(directory, signal);
+  const current = await projectCommitStart(state.root, signal);
+  if (current.ref !== start.ref || current.head !== state.head || !state.coverageComplete)
+    throw new Error("工作树或分支已变化，无法确认本地提交范围。");
+  const names = (bytes: Buffer) => bytes.toString("utf8").split("\0").filter(Boolean).sort();
+  const completed = async (paths: readonly string[]) => {
+    const tip = await projectCommitStart(state.root, signal);
+    const actual = names(await git(state.root, ["diff", "--no-renames", "--name-only", "-z", start.head, tip.head], signal));
+    const parents = (await git(state.root, ["rev-list", "--parents", "-n", "1", tip.head], signal)).toString().trim().split(" ");
+    const subject = (await git(state.root, ["show", "-s", "--format=%s", tip.head], signal)).toString().trim();
+    if (!tip.clean || tip.ref !== start.ref || parents.length !== 2 || parents[1] !== start.head ||
+      JSON.stringify(actual) !== JSON.stringify(paths) || subject !== message)
+      throw new Error("当前 HEAD 无法核实为本轮唯一的本地提交。");
+    return tip.head;
+  };
+  if (current.head !== start.head) {
+    if (prior) return completed(prior);
+    throw new Error("原任务开始后 HEAD 已变化，请先核对现有提交。");
+  }
+  const allowed = new Set(editable.map(path => relative(state.root, path).split(sep).join("/")));
+  const paths = [...state.paths].sort();
+  const staged = names(await git(state.root, ["diff", "--cached", "--no-renames", "--name-only", "-z"], signal));
+  if (!paths.length || paths.some(path => !allowed.has(path) || !state.fileDigests.get(path)) ||
+    staged.some(path => !paths.includes(path)) || prior && JSON.stringify(prior) !== JSON.stringify(paths))
+    throw new Error("工作树包含未核实的改动，无法只提交原交办的文件。");
+  for (const path of paths) {
+    const target = resolve(state.root, path);
+    if (await realpath(target) !== target || !(await lstat(target)).isFile()) throw new Error("提交目标已变化：" + path);
+  }
+  await remember?.(paths);
+  await git(state.root, ["--literal-pathspecs", "add", "--", ...paths], signal);
+  await git(state.root, ["--literal-pathspecs", "commit", "--only", "-m", message, "--", ...paths], signal);
+  return completed(paths);
 }
 
 export async function projectCommitAdvances(directory: string, base: string, head: string, signal?: AbortSignal) {
@@ -166,7 +216,18 @@ export async function projectCommitAdvances(directory: string, base: string, hea
 
 export async function projectVerificationWorkspace(directory: string, signal?: AbortSignal) {
   const cwd = await realpath(directory);
-  const root = await realpath((await git(cwd, ["rev-parse", "--show-toplevel"], signal)).toString().trim());
+  let root: string;
+  try {
+    root = await realpath((await git(cwd, ["rev-parse", "--show-toplevel"], signal)).toString().trim());
+  } catch (error) {
+    if (!/not a git repository/iu.test(String((error as { stderr?: Buffer }).stderr ?? ""))) throw error;
+    const state = await collect({ cwd, root: cwd, head: "", files: {}, unknown: [] }, false, signal, true);
+    const unknown = [...state.unknown];
+    if (Object.values(state.files).some(file => file.link)) unknown.push("Workspace input has an unmeasured link");
+    const fileDigests = new Map(Object.entries(state.files).map(([path, file]) => [path, file.digest]));
+    return { cwd, root: cwd, head: "", clean: false, unknown, fileDigests, paths: [...fileDigests.keys()],
+      coverageComplete: unknown.length === 0, fingerprint: hash(JSON.stringify([cwd, [...fileDigests]])) };
+  }
   const checkout = async () => (await git(root, ["rev-parse", "--verify", "HEAD^{commit}"], signal)).toString().trim();
   const status = () => git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"], signal);
   const [head, before] = await Promise.all([checkout(), status()]);

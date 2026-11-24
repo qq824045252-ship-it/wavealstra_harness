@@ -34,6 +34,9 @@ const modeAliases: Readonly<Record<WelcomeMode, readonly string[]>> = {
 };
 
 const choiceAction = /(?:新建|创建|开(?:个|一个)|委派|交给|交办|指定|选择|选用|采用|使用|用(?!途|法|语|户|例|处)|\b(?:use|select|choose|create|start|delegate|assign)\b)/iu;
+const assignPerson = /(?:让|由)\s*[`"'“‘「『]*$/u;
+const performWork = /^\s*(?:来\s*)?(?:处理|负责|办理|完成|执行|核对|审核|分析|撰写|做)/u;
+const createsTask = /(?:新建|创建|开(?:个|一个)|委派|交办)\s*(?:一个|一项|个)?\s*(?:任务|交办|事项)/u;
 const negativeChoice = /(?:不要|不用|不必|无需|不需要|别|禁止|避免|不能|\b(?:don['’]t|do not|without|avoid|instead of)\b)/iu;
 const hypotheticalChoice = /(?:仅了解|想知道|能否|可否|是否|能不能|怎么|如何|比较|对比|比如|示例|举例|例子|假如|假设|如果|\b(?:if|how|what|whether|can I|could)\b)/iu;
 const introductoryCondition = /^\s*(?:(?:比如|举例|例如|示例|假如|假设|如果|这是.{0,6}(?:示例|例子))|\b(?:if|suppose|for example)\b)/iu;
@@ -50,21 +53,26 @@ function choicePosition(text: string, name: string): { start: number; end: numbe
   if (start >= 0) return { start, end: start + normalized.length };
 }
 
-function explicitlySelects(text: string, names: readonly string[]): boolean {
+function explicitlySelects(text: string, names: readonly string[], expert: boolean, quote = false): boolean {
   const statements = text.split(/(?<=[。！？!?；;\n])/u);
   let selected = false;
   let contextual = false;
   for (const statement of statements) {
+    let taskDirective = false;
     for (const clause of statement.split(/[,，]/u)) {
+      const creates = createsTask.test(clause) && !hypotheticalChoice.test(clause) && !negativeChoice.test(clause);
       for (const name of names) {
         const position = choicePosition(clause, name);
         if (!position) continue;
         const before = clause.slice(0, position.start);
         const after = clause.slice(position.end).replace(/^[`"'”’」』]+/u, "").trimStart();
         if (negativeChoice.test(before) || negativeChoice.test(after) && !choiceAction.test(before)) return false;
-        if (!contextual && choiceAction.test(before) && !hypotheticalChoice.test(before) && !choiceQuestion.test(after)) selected = true;
+        const assigned = expert && (quote || taskDirective || creates) && assignPerson.test(before) && performWork.test(after) &&
+          !choiceQuestion.test(after.replace(performWork, "")) && !/[?？]|(?:还是|或者)/u.test(after);
+        if (!contextual && (choiceAction.test(before) || assigned) && !hypotheticalChoice.test(before) && !choiceQuestion.test(after)) selected = true;
       }
       contextual ||= introductoryCondition.test(clause);
+      taskDirective ||= creates;
     }
   }
   return selected;
@@ -80,7 +88,8 @@ export function dotsExecutionConfiguration(selection: DotsExecutionSelection, in
     const option = available.find(item => item.id === id);
     if (!option) throw new Error(`${label}「${id}」在所选工作空间不可用。`);
     const names = [option.id, option.label, ...aliases];
-    if (!explicitlySelects(quote, names) || !explicitlySelects(original, names)) {
+    const expert = label === "专家";
+    if (!explicitlySelects(quote, names, expert, true) || !explicitlySelects(original, names, expert)) {
       throw new Error(`本轮原话没有明确授权选择${label}「${id}」。`);
     }
   };

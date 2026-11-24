@@ -1,4 +1,4 @@
-import { LiveDoc, type EntryRecord, type SubmissionRecord, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { defineTool, LiveDoc, type EntryRecord, type SubmissionRecord, type ToolExecutionApi, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { z } from "zod";
@@ -8,6 +8,9 @@ import { DOTS_WORK_ITEM_ID_PATTERN } from "../../dots/DotsWorkerOutcome";
 import { DOTS_TASK_END, dotsWorkEvidenceSchema, readDotsTerminalReceipt, type DotsTerminalDependency, type DotsTerminalOutcome } from "./DurableDotsTerminal";
 import { checkDurableInputFreshness } from "./DurableInputFreshness";
 import { durableSourceInput } from "./DurableInputProvenance";
+import { DOTS_RECOVER_COMMIT, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
+import { recoverProjectCommit, type ProjectCommitStart } from "../pstack/PstackWorkspace";
+import { realpath } from "node:fs/promises";
 
 export { DOTS_TASK_END } from "./DurableDotsTerminal";
 
@@ -77,7 +80,7 @@ export function createDurableDotsWorker(
     callers: ["model"],
     execute: async (raw, api, context) => {
       const parsed = argsSchema.safeParse(raw);
-      if (!parsed.success) return toolError("请提供有效的结项参数。checks 只包含 typecheck、test 或 test: 开头的项目检查名称。");
+      if (!parsed.success) return toolError("请提供有效的结项参数。checks 只填写 project_verify 支持的检查名称。");
       const args = parsed.data;
       const live = await api.snapshot(LiveDoc, api.conversationId, context);
       if (live?.tools?.length !== 1 || live.tools[0]?.taskId !== api.taskId)
@@ -112,6 +115,40 @@ export function createDurableDotsWorker(
       };
     },
   };
+}
+
+export function createDurableDotsCommitRecovery(cwd: string,
+  authorization: (operationId: string) => { scope?: DotsRecoveryToolScope; start?: ProjectCommitStart }) {
+  return defineTool({
+    name: DOTS_RECOVER_COMMIT,
+    description: "仅在原交办明确授权且补救轮缺少一次本地提交时，提交已核实的任务改动。返回真实 SHA。",
+    parameters: Type.Object({ message: Type.String({ minLength: 1, maxLength: 200, pattern: "^[^\\x00-\\x1f\\x7f]+$" }) },
+      { additionalProperties: false }),
+    replay: "safe",
+    executionMode: "sequential",
+    async execute({ message }, api, context) {
+      try {
+        const live = await api.snapshot(LiveDoc, api.conversationId, context);
+        if (live?.run?.inputs.length !== 1 || live.tools?.length !== 1 || live.tools[0]?.taskId !== api.taskId)
+          throw new Error("请在主任务中单独调用本地提交工具。");
+        const source = await durableSourceInput(api, context, api.conversationId, live.run.inputs);
+        const { scope, start } = source ? authorization(source.id) : {};
+        if (scope?.kind !== "local-repair" || !scope.commitFiles?.length || !start || !message.trim())
+          throw new Error("当前补救轮没有本地提交授权。");
+        const agent = await api.agent(context);
+        if (!agent.cwd || await realpath(agent.cwd) !== await realpath(cwd)) throw new Error("当前任务目录已变化。");
+        await checkDurableInputFreshness(api, context);
+        const key = "dots-recover-commit-paths";
+        const prior = await api.memo<string[]>(key, context);
+        const commitSha = await recoverProjectCommit(cwd, start, scope.commitFiles, message.trim(), context.abortSignal,
+          prior, paths => api.memo(key, paths, context));
+        return { output: [{ type: "text" as const, text: JSON.stringify({ commitSha }) }] };
+      } catch (error) {
+        context.abortSignal?.throwIfAborted();
+        return toolError(error instanceof Error ? error.message : String(error));
+      }
+    },
+  });
 }
 
 function toolError(text: string) {

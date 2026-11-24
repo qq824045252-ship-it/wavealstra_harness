@@ -3,13 +3,14 @@ import type Database from "better-sqlite3";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type ConversationId, type Cursor } from "@earendil-works/pi-durable";
 import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
+import type { ProjectCommitStart } from "../agent/pstack/PstackWorkspace";
 import { dotsRecoveryFileKey, inspectDotsRecovery, validDotsRecoveryFilename, type DotsRecoveryInspection, type DotsRecoveryToolScope } from "./DotsRecovery";
 import type { AgentPromptRequest } from "../../shared/agent-ipc";
 import type { ConversationGoalDto, GoalContinuationOrigin } from "../../shared/conversation-goal";
 import { DOTS_NO_CHANGE, type DotsDelegation, type DotsDependencyWait } from "../../shared/dots";
 import { dotsDelegationScopeMatches } from "./DotsDelegations";
 import { dotsGoalConclusion, dotsOriginalDestination } from "./DotsGoalConclusion";
-import { dotsCompletionGaps, dotsCompletionInstruction, dotsCompletionRequirements, dotsProgressInScope,
+import { dotsCompletionGaps, dotsCompletionInstruction, dotsCompletionRequirements, dotsCompletionRulesVersion, dotsProgressInScope,
   type DotsCompletionDeclaration, type DotsCompletionRequirements } from "./DotsCompletion";
 import { dotsDeliveryText, matchesDotsDeliveryFormat, onlyDeliveryFilename, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
@@ -26,7 +27,7 @@ export const followupInstructions = [
   "把下面的回复结构用于 deliveryText 或 delivery.text。默认正文只写交付结果和用户下一步需要知道的信息。表格、文件清单、验证步骤和过程留在 result。用户要求在正文中交付的内容按原话给足。登记过的成品由应用附上。",
   DOTS_REPLY_STYLE,
   "用户要直接打开的成品必须用 register_artifact 登记，包括用 write 或 edit 生成的成品。用户说留在原任务或供回查的文件，以及日志、底稿、代码修改和中间文件，都在原任务可见，无需为 Dots 登记或在交付正文列出。用户明确把其中的文件作为本次交付物时，才登记并随消息交付。用户只要文件且已登记时，delivery.text 留空。",
-  '若本轮只完成一个实质里程碑、原授权范围内确有下一步，返回一行 JSON {"dotsState":"progress","result":"给用户的一句实际进展","remainingQuote":"原交办中仍待完成的片段"}。表达同一范围的诊断或核对时，可用 scopeQuote 引用原交办的准确范围，remainingQuote 写自然的下一步。不要把计划、收到指令或重复状态标为进展。下一步会在本普通任务中继续。',
+  '若本轮只完成一个实质里程碑、原授权范围内确有下一步，返回一行 JSON {"dotsState":"progress","result":"给用户的一句实际进展","remainingQuote":"原交办中仍待完成的片段"}。该步骤对应一个带 work ID 的未完成事项时，填 workItemId。可用 scopeQuote 引用原交办的准确范围，remainingQuote 写具体下一步。下一步会在本普通任务中继续。',
   "若已取得可交付的实质里程碑且本轮仍在执行，可以在调用下一工具前用同一 progress 格式报告里程碑。宿主会继续当前执行。",
   "具体业务选择或缺少无法自行取得的资料时，使用 request_user_input 只问一个具体问题，并在题干交代已有结果。",
   '没达到原交办的完成条件、缺源文件或在等人决定时，不得写 complete。如果必须结束当前轮次，返回 {"dotsState":"blocked","result":"用一两句说明还缺什么以及用户如何补齐"}。',
@@ -75,6 +76,7 @@ interface Plan {
   completionRequirements?: DotsCompletionRequirements;
   completionDeclarations?: DotsCompletionDeclaration[];
   commitBase?: string;
+  commitStart?: ProjectCommitStart;
   deliveryInstruction?: string;
   steps: string[];
   step: number;
@@ -173,8 +175,9 @@ export class DotsFollowup {
   }
 
   private requirements(plan: Plan): DotsCompletionRequirements {
-    return plan.completionRequirements ?? dotsCompletionRequirements(plan.completionSource ?? plan.assignmentQuote ?? plan.goal,
-      plan.deliveryInstruction, plan.completionDeclarations);
+    if (plan.completionRequirements?.rulesVersion === dotsCompletionRulesVersion) return plan.completionRequirements;
+    return dotsCompletionRequirements(plan.completionSource ?? plan.assignmentQuote ?? plan.goal, plan.deliveryInstruction,
+      plan.completionDeclarations);
   }
 
   completionRequirements(taskId: string, operationId: string): DotsCompletionRequirements & { commitBase?: string } {
@@ -183,12 +186,17 @@ export class DotsFollowup {
       ? { ...this.requirements(plan), commitBase: plan.commitBase } : { files: [], checks: [], requireCommit: false };
   }
 
-  async captureCommitBase(taskId: string, operationId: string, readHead: () => Promise<string>) {
+  async captureCommitBase(taskId: string, operationId: string, readStart: () => Promise<ProjectCommitStart>) {
     const plan = this.get(operationId);
     if (plan?.taskId !== taskId || plan.request.dotsGoalId || plan.commitBase !== undefined || !this.requirements(plan).requireCommit) return;
-    const head = await readHead();
-    this.db.prepare("UPDATE dots_followup_plans SET plan=json_set(plan,'$.commitBase',?) WHERE operation_id=? AND json_type(plan,'$.commitBase') IS NULL")
-      .run(head, operationId);
+    const start = await readStart();
+    this.db.prepare("UPDATE dots_followup_plans SET plan=json_set(plan,'$.commitBase',?,'$.commitStart',json(?)) WHERE operation_id=? AND json_type(plan,'$.commitBase') IS NULL")
+      .run(start.head, JSON.stringify(start), operationId);
+  }
+
+  recoveryCommitStart(taskId: string, operationId: string) {
+    const plan = this.get(operationId);
+    return plan?.taskId === taskId && this.requirements(plan).requireCommit ? plan.commitStart : undefined;
   }
 
   private resumeCompletion(previous: Plan, addition: string | undefined, deliveryInstruction: string | undefined,
@@ -600,8 +608,12 @@ export class DotsFollowup {
     const scopedProgress = plan.recoveryToolScope?.kind === "local-repair" && Boolean(progress || remaining && complete && payload);
     if (plan.recoveryToolScope && !scopedProgress) return stopped("已保留原任务的执行记录和已有成果。",
       outstanding || "仍有未完成的事项，下一步要怎样处理？");
-    if (progress && !dotsProgressInScope([plan.completionSource ?? plan.goal, plan.assignmentQuote ?? "", ...plan.steps], progress.remainingQuote, progress.scopeQuote))
-      return stopped("原任务提出的下一步超出这次交办可以确认的范围。", "接下来具体要办理哪一项？");
+    if (progress) {
+      const item = progress.workItemId && this.requirements(plan).items?.find(candidate => candidate.kind === "work" && candidate.id === progress.workItemId);
+      if (progress.workItemId && !item || !dotsProgressInScope([plan.completionSource ?? plan.goal, plan.assignmentQuote ?? "", ...plan.steps],
+        progress.remainingQuote, progress.scopeQuote, item || undefined))
+        return stopped("原任务提出的下一步超出这次交办可以确认的范围。", "接下来具体要办理哪一项？");
+    }
     const fingerprint = digest(JSON.stringify(incomplete ? ["未兑现的交付", completion?.repeatKey]
       : [summary, row.artifacts.map(f => [f.id, f.version])]));
     if (!repair && (plan.previous.includes(fingerprint) || plan.previous.length >= 8)) {
@@ -642,15 +654,21 @@ export class DotsFollowup {
     const requirements = this.requirements(plan);
     const localFiles = (completion?.missingFiles ?? (row.status === "failed" ? requirements.files.filter(name =>
       !files.some(file => file.saved?.name === name)) : [])).filter(validDotsRecoveryFilename);
-    const checks = completion?.missingChecks ?? (row.status === "failed"
+    const missingChecks = completion?.missingChecks ?? (row.status === "failed"
       ? [...requirements.checks, ...(requirements.requireTests ? ["test:*"] : [])] : []);
     const workRemains = Boolean(completion?.missingWork.length || completion?.unfinishedWork);
-    const edits = workRemains ? evidence.editableFiles ?? [] : [];
+    const edits = workRemains || missingChecks.length ? evidence.editableFiles ?? [] : [];
+    const commitFiles = completion?.missingCommit && plan.commitStart?.clean && plan.commitStart.head
+      ? evidence.editableFiles ?? [] : [];
+    const checks = edits.length || commitFiles.length
+      ? [...new Set([...missingChecks, ...requirements.checks, ...(requirements.requireTests ? ["test:*"] : [])])]
+      : missingChecks;
     let toolScope: DotsRecoveryToolScope | undefined;
     if (recovery === "report-only") toolScope = { kind: "report-only" };
     else if (scopedProgress) toolScope = plan.recoveryToolScope;
-    else if (recovery === "local" && (checks.length || edits.length))
-      toolScope = { kind: "local-repair", files: localFiles, checks, edits };
+    else if (recovery === "local" && (checks.length || edits.length || commitFiles.length))
+      toolScope = { kind: "local-repair", files: localFiles, checks, edits, checkManagers: requirements.checkManagers,
+        ...(commitFiles.length && { commitFiles }) };
     else if (localFiles.length && (recovery === "local" || completion?.fileOnly))
       toolScope = { kind: "local-files", files: localFiles };
     else if (recovery === "local" && (repair || incomplete) || repair && row.status === "completed") toolScope = { kind: "report-only" };
@@ -658,6 +676,7 @@ export class DotsFollowup {
     const allowedFiles = toolScope && toolScope.kind !== "report-only" ? toolScope.files : [];
     const allowedChecks = toolScope?.kind === "local-repair" ? toolScope.checks : [];
     const allowedEdits = toolScope?.kind === "local-repair" ? toolScope.edits : [];
+    const allowsCommit = toolScope?.kind === "local-repair" && Boolean(toolScope.commitFiles?.length);
     if (!this.hooks.proactive(row.taskId)) return deferred();
     const nextStep = repair || incomplete ? plan.step : remaining ? plan.step + 1 : plan.step;
     const instruction = plan.steps[nextStep];
@@ -686,8 +705,9 @@ export class DotsFollowup {
             ...(allowedFiles.length ? ["只创建并登记下列缺少的交付文件，保留已有文件：" + allowedFiles.join("、"),
               "用可用的文档创建工具或文件创建工具生成成品，工具会自动登记。"] : []),
             ...(allowedChecks.length ? ["用 project_verify 校验当前工作区：" + allowedChecks.map(check => check === "test:*"
-              ? "从 package.json 选择与交办相关的 test 或 test:<名称>" : check).join("、")] : []),
+              ? "选择与项目相关的测试，例如 test、test:<名称>、pytest、go-test 或 cargo-test" : check).join("、")] : []),
             ...(allowedEdits.length ? ["只在下列已确认的原任务改动文件中补齐剩余修复：" + allowedEdits.join("、")] : []),
+            ...(allowsCommit ? ["使用 dots_recover_commit 完成原交办已授权的一次本地提交，把返回的 SHA 填入 commitSha。需要检查时，提交后用 project_verify 验收最终版本。"] : []),
             ...(incomplete ? ["宿主仍未核实的要求：\n" + outstanding] : []),
             ...(instruction ? ["当前约定步骤：" + instruction] : []),
           ].join("\n")

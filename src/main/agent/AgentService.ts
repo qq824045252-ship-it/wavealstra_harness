@@ -34,10 +34,11 @@ import { resolveParallelLimits } from "../capabilities/subagent/shared";
 import { resolvedPathKey } from "../platform/paths";
 import { currentNodePlatform } from "../platform/runtime";
 import { DurableBotService } from "./durable/DurableBotService";
-import { createDurableDotsWorker, DOTS_TASK_END } from "./durable/DurableDotsWorker";
+import { createDurableDotsCommitRecovery, createDurableDotsWorker, DOTS_TASK_END } from "./durable/DurableDotsWorker";
+import { DOTS_RECOVER_COMMIT } from "../dots/DotsRecovery";
 import { LOCAL_TASK_MAX_TOOL_ROUNDS } from "./durable/DurableRunLimits";
 import { createDurableProjectVerification, PROJECT_VERIFY_TOOL, readCurrentProjectVerification } from "./durable/DurableProjectVerification";
-import { projectCommitAdvances, projectStartHead } from "./pstack/PstackWorkspace";
+import { projectCommitAdvances, projectCommitStart } from "./pstack/PstackWorkspace";
 import type { GatewayBotTurnRequest } from "../gateway/GatewayAgentTurn";
 import { botWorkHasSharedOrigin } from "../memory/BotMemorySource";
 import { BotReportImageService } from "./work/BotReportImageService";
@@ -1949,7 +1950,7 @@ export class AgentService {
     return [
       ...assembly.appendParts,
       isGatewayConversation(task.id) || isGatewayBotTaskId(task.id) ? "" : CHAT_REPLY_INSTRUCTIONS,
-      this.boundedLocalTask(task.id) ? "对于有限执行任务，按原要求核对必验项。请用 project_verify 运行项目已声明的本地 typecheck/test 脚本。按约定顺序完成必验检查和已授权的本地提交，最终以交付版本的验收回执为准，再直接结束回复。只有相关输入确有变化、已有证据未涵盖必验项或出现有依据的新失败时，才再运行检查。" : "",
+      this.boundedLocalTask(task.id) ? "对于有限执行任务，按原要求用 project_verify 运行当前项目适用的检查。按约定顺序完成必验检查和已授权的本地提交，最终以交付版本的验收回执为准，再直接结束回复。只有相关输入确有变化、已有证据未涵盖必验项或出现有依据的新失败时，才再运行检查。" : "",
       this.dotsWorkerActive(task.id) ? "Dots 交办结束时优先单独调用 dots_task_end(action=complete)，在 checks 和 commitSha 中列出当前有效验收和已约定的本地提交。只有在独立工作已做完且只能等另一项委派时，单独调用 dots_task_end(action=wait)，填已知的依赖 operationId 和实质进展。交由 Dots 等待回执，避免用 shell 轮询。" : "",
       // Live Goal state, re-read per model request: a foreground conversation has no
       // execution binding, so this section is the only place the open requirement and
@@ -2192,7 +2193,7 @@ export class AgentService {
         const required = [...new Set([...(contract?.checks ?? []), ...(checks ?? [])])];
         if (contract) assertDotsWorkCompletion(contract, completedItems);
         if (contract?.requireTests && !required.some(dotsProjectTestCheck))
-          throw new Error("原交办要求运行相关测试，请用 project_verify，并在 checks 中提供通过的测试脚本名。");
+          throw new Error("原交办要求运行相关测试，请用 project_verify，并在 checks 中提供通过的检查名称。");
         if (contract?.requireCommit && !commitSha) throw new Error("原交办要求提交，请提供已完成的本地提交 SHA。");
         if (!required.length && !commitSha) return {};
         const evidence = await readCurrentProjectVerification(api, context, cwd, required, contract.checkManagers);
@@ -2205,6 +2206,11 @@ export class AgentService {
           throw new Error("原交办要求新的本地提交。当前提交无法证明任务开始后新增了提交。");
         return { verifiedChecks: evidence.verified, ...(commitSha ? { verifiedCommit: evidence.head } : {}) };
       })] : [];
+    if (dots && this.durableToolAllowed(task, DOTS_RECOVER_COMMIT))
+      workerTools.push(createDurableDotsCommitRecovery(cwd, operationId => ({
+        scope: dots.recoveryToolScope(task.id, operationId),
+        start: dots.recoveryCommitStart(task.id, operationId),
+      })));
     const projectVerification = this.durableToolAllowed(task, PROJECT_VERIFY_TOOL)
       ? [createDurableProjectVerification({ taskId: task.id, cwd })] : [];
     return { ...domain, foregroundHooks: workflow, toolHooks, tools: [...domain.tools, ...workflow?.tools ?? [], ...workerTools, ...projectVerification,
@@ -2258,6 +2264,8 @@ export class AgentService {
     }
     if (name === DOTS_ACTION) return false;
     if (name === DOTS_TASK_END) return this.dotsWorkerActive(task.id);
+    if (name === DOTS_RECOVER_COMMIT) return this.dotsWorkerActive(task.id) && task.permissionMode !== "readonly"
+      && this.durableToolAllowed(task, "bash");
     if (name === PROJECT_VERIFY_TOOL) return this.boundedLocalTask(task.id) && this.durableToolAllowed(task, "bash");
     if (task.welcomeMode === "coding" && readOnlyCodingTag(task.modePresetId) &&
         ![...codingReadTools, "pstack_workflow", "pstack_delegate", "subagent", "subagent_list", "request_user_input"].includes(name)) return false;
@@ -2392,7 +2400,7 @@ export class AgentService {
     const task = this.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     await this.dotsActions?.captureCommitBase(task.id, request.userMessageId, async () => {
-      try { return await projectStartHead(cwd); }
+      try { return await projectCommitStart(cwd); }
       catch (cause) { throw new Error("无法确认任务开始时的 Git 提交，请检查当前工作空间是否是可读取的 Git 仓库。", { cause }); }
     });
     const welcomeMode = resolveWelcomeMode(request.welcomeMode, task.welcomeMode);

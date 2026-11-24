@@ -2,7 +2,7 @@ import { DURABLE_ARTIFACT_ENTRY_KIND as DOTS_ARTIFACT_KIND, durableArtifactRegis
 import { durableGoalAdmission, nativeGoalParentGeneration } from "./DurableGoalLineage";
 import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
-import { dotsRecoveryAllowsTool, dotsRecoveryAllowsVerify, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
+import { DOTS_RECOVER_COMMIT, dotsRecoveryAllowsTool, dotsRecoveryAllowsVerify, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
 import { appendDurableDotsReply } from "./DurableDotsReply";
 import { DOTS_TASK_END, readDurableDotsTerminal } from "./DurableDotsWorker";
 import { PROJECT_VERIFY_CHILD_KEY, PROJECT_VERIFY_TOOL, projectVerificationShellCommand } from "./DurableProjectVerification";
@@ -468,7 +468,7 @@ export class DurableBotRuntime {
         const state = await tx.doc(AgentDoc, conversation.id);
         if (!options.readOnly && Array.isArray(state.tools) && !state.tools.includes("codemode")) {
           for (const tool of native) {
-            if ((tool.name === DOTS_TASK_END || tool.name === PROJECT_VERIFY_TOOL) && options.toolAllowed?.(tool.name) !== false
+            if ([DOTS_TASK_END, DOTS_RECOVER_COMMIT, PROJECT_VERIFY_TOOL].includes(tool.name) && options.toolAllowed?.(tool.name) !== false
                 && !state.tools.includes(tool.name)) state.tools.push(tool.name);
           }
         }
@@ -1985,10 +1985,10 @@ function botExtension(
     context: Parameters<ToolRegistration["execute"]>[2]) => {
     if (tool === DOTS_TASK_END && args && typeof args === "object" && "action" in args && args.action === "complete") return;
     const scope = await toolRecoveryScope(api, context);
-    if (!scope) return;
+    if (!scope) return tool === DOTS_RECOVER_COMMIT ? "当前补救轮没有本地提交授权。" : undefined;
     if (scope.kind === "report-only") return "本轮只根据已有结果补报，业务工具未启动。";
     if (tool === "bash" && await verificationChild(scope, args, api, context)) return;
-    const denied = "本轮只可读取资料、补做指定的检查及文件修复，并交付结果。";
+    const denied = "此工具不在本轮补救范围内。";
     if (!dotsRecoveryAllowsTool(scope, tool) || tool === DOTS_TASK_END ||
       tool === PROJECT_VERIFY_TOOL && !dotsRecoveryAllowsVerify(scope, args)) return denied;
     if (tool === "write" || tool === "edit" || tool === OFFICE_USE_TOOLS.documentCreate) {

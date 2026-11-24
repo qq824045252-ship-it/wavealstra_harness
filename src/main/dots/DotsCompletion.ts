@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DotsDelegation } from "../../shared/dots";
+import { isProjectTest, STANDALONE_PROJECT_TESTS } from "../../shared/project-check";
 import type { ProjectVerificationManager } from "../agent/durable/DurableProjectVerification";
 import { checkDotsDeliveryFile } from "./DotsArtifactUsability";
 import { dotsDeliveryFormatCheck, onlyDeliveryFilename, type DotsWorkEvidence } from "./DotsWorkerOutcome";
@@ -18,6 +19,7 @@ export interface DotsCompletionItem extends DotsCompletionDeclaration {
 }
 
 export interface DotsCompletionRequirements {
+  rulesVersion?: number;
   files: string[];
   checks: string[];
   checkManagers?: Record<string, ProjectVerificationManager[]>;
@@ -28,7 +30,7 @@ export interface DotsCompletionRequirements {
 
 function instructions(text: string): string[] {
   return text.replace(/^\s*>.*$/gm, "").replace(/\x60{3}[\s\S]*?(?:\x60{3}|$)|~~~[\s\S]*?(?:~~~|$)/g, "")
-    .split(/[。！？；;\n]+|[,，](?=\s*(?:请|不要|不必|无需|但|同时|务必|再))|(?=\bbut\s+(?:do not|don't)\b|(?:但是?|而且|并且?)?(?:不要|无需|不必|不需要|禁止|不用|不允许))/iu)
+    .split(/[。！？；;\n]+|[,，](?=\s*(?:请|不要|不必|无需|但|同时|务必|再))|(?=\bbut\s+(?:do not|don't)\b|(?:但是?|而且|并且?)?(?:不要|无需|不必|不需要|禁止|不用|不允许|请勿))/iu)
     .map(part => part.trim()).filter(Boolean);
 }
 
@@ -37,7 +39,7 @@ const extension = /\.(?:xlsx?|csv|tsv|docx?|pptx?|md|pdf|txt|rtf|json|html?|png|
 const artifactDirective = /(?:交付|附上|给我|只给|只要|生成|制作|创建|产出|输出|导出|补齐|deliver|attach|send me|create|generate|export)/iu;
 const projectTests = /(?:运行|执行|通过|跑(?:一遍|完)?|补跑)\s*(?:本地|全部|相关|必要|指定|回归|项目的?)?\s*测试|\b(?:run|execute|pass)\s+(?:all |the |relevant |required |project )?tests\b/iu;
 const projectCheck = /(?<![\w:-])(?:typecheck|test(?::[a-zA-Z0-9][a-zA-Z0-9:_-]*)?)(?![\w:-])/gu;
-const negative = /^(?:[-*•]\s*|\d+[.)、]\s*)?(?:(?:请|但是?|而且|并且?)\s*|\bbut\s+)*(?:不要|不必|无需|不需要|禁止|不用|不能|不允许|do not|don't|optional|如果|假如|if\b|例如|比如|for example\b)/iu;
+const negative = /^(?:[-*•]\s*|\d+[.)、]\s*)?(?:(?:请|但是?|而且|并且?)\s*|\bbut\s+)*(?:不要|不必|无需|不需要|禁止|不用|不能|不允许|勿|别|do not|don't|optional|如果|假如|if\b|例如|比如|for example\b)/iu;
 const countedWork = /(?:修复|处理|解决|改正|完成)(?:以下|这)?\s*([一二两三四五六七八九十]|\d{1,2})\s*(?:个|项|处)(?:问题|缺陷|修复项|改动|工作|事项)/u;
 const workLead = /^(?:(?:请(?:你|您)?|帮我)\s*)?(?:(?:先|再|随后|同时|最后)\s*)?/u;
 const workVerb = /(?:核对|检查|对照|整理|列出|补齐|补全|修复|修正|改写|修改|更新|编写|填写|汇总|核算|统计|翻译|校对)/u;
@@ -52,7 +54,7 @@ function positiveInstructions(text: string): string[] {
 function deliveredFiles(clause: string): string[] {
   const names: string[] = [];
   const directives = clause.matchAll(new RegExp(artifactDirective.source +
-    "\\s*(?:(?:一个|一份|一张|一版|一套|an?\\b|the\\b)\\s*)?(?:文件\\s*[:：]?\\s*)?", "giu"));
+    "\\s*(?:(?:一个|一份|一张|一版|一套|an?\\b|the\\b)\\s*)?(?:(?:空白|空的?)\\s*(?:模板|工作簿|工作表)\\s*|(?:blank|empty)\\s+(?:template|workbook|sheet)\\s+)?(?:文件\\s*[:：]?\\s*)?", "giu"));
   for (const directive of directives) {
     if (/(?:已|曾|上次|历史|previously\s+)$/iu.test(clause.slice(0, directive.index))) continue;
     let remaining = clause.slice(directive.index + directive[0].length);
@@ -70,9 +72,7 @@ function deliveredFiles(clause: string): string[] {
   return names;
 }
 
-export function dotsProjectTestCheck(name: string): boolean {
-  return /^test(?::[a-zA-Z0-9][a-zA-Z0-9:_-]*)?$/u.test(name);
-}
+export { isProjectTest as dotsProjectTestCheck };
 
 function validFileName(name: string) {
   return /^[^<>:"/\\|?*\r\n]{1,128}$/u.test(name) && extension.test(name);
@@ -88,6 +88,33 @@ function itemId(item: DotsCompletionDeclaration, label?: string): string {
     .update(JSON.stringify([item.kind, item.kind === "work" ? item.quote : item.name ?? "", label, item.sheet]))
     .digest("hex");
   return item.kind + "-" + hash.slice(0, 16);
+}
+
+const spreadsheetDirective = /(?:工作表(?:名(?:称)?)?|\b(?:worksheet|sheet)(?: name)?)\s*(?:叫(?:作)?|命名为|名称为|名为|为|是|[:：]|named\s+|called\s+|is\s+)\s*/iu;
+const headerDirective = /(?:表头|列名|\b(?:headers?|column names?))\s*(?:包括|包含|分别为|为|是|[:：]|(?:are|include)\s+)\s*/iu;
+const workbookBlank = /(?:空白|空的?)\s*(?:模板|工作簿|工作表)|\b(?:blank|empty)\s+(?:template|workbook|sheet)\b/iu;
+
+function workbookRequirements(clauses: readonly string[], name: string) {
+  const contexts: string[] = [];
+  let active = false;
+  for (const clause of clauses) {
+    const files = deliveredFiles(clause);
+    if (files.length) active = files.length === 1 && files[0] === name;
+    if (active && (files.length || /^(?:工作表|表头|列名|worksheet|sheet|headers?|column names?)/iu.test(clause))) contexts.push(clause);
+  }
+  const source = contexts.join("；");
+  const sheetMatch = spreadsheetDirective.exec(source);
+  const headerMatch = headerDirective.exec(source);
+  const unquote = (value: string) => value.trim().replace(/^[「『“"`]+|[」』”"`]+$/gu, "").trim();
+  const sheet = sheetMatch && unquote(source.slice(sheetMatch.index + sheetMatch[0].length).split(/[,，、；]|\s+and\s+/iu, 1)[0] ?? "");
+  const headers = headerMatch && source.slice(headerMatch.index + headerMatch[0].length)
+    .split(/；|(?:[,，]\s*|\s+)(?=请|然后|随后|且|并|最后|格式|单位|数据|行数|工作表|then\b|with\b)/iu, 1)[0]
+    ?.split(/[,，、]|\s*(?:以及|和|与|及)\s*|\s+and\s+/iu).map(unquote).filter(Boolean);
+  return {
+    ...(sheet && sheet.length <= 31 ? { sheet } : {}),
+    ...(headers?.length && headers.length <= 30 && headers.every(header => header.length <= 120) ? { headers } : {}),
+    allowEmpty: workbookBlank.test(source),
+  };
 }
 
 function validateDeclaration(item: DotsCompletionDeclaration, sources: readonly string[]): DotsCompletionDeclaration {
@@ -108,9 +135,9 @@ function validateDeclaration(item: DotsCompletionDeclaration, sources: readonly 
       throw new Error("工作表和表头必须来自对应 Excel 文件的原交办");
     return { kind: item.kind, quote, name, sheet, headers };
   }
-  if (item.kind === "check" && (name ? (name === "typecheck" || dotsProjectTestCheck(name)) &&
+  if (item.kind === "check" && (name ? (name === "typecheck" || isProjectTest(name)) &&
     (projectChecks(quote).includes(name) || name === "typecheck" && /typecheck|类型检查/iu.test(quote) ||
-      dotsProjectTestCheck(name) && projectTests.test(quote)) : projectTests.test(quote)))
+      isProjectTest(name) && projectTests.test(quote)) : projectTests.test(quote)))
     return { kind: item.kind, quote, name };
   if (item.kind === "commit" && requiresLocalCommit(quote)) return { kind: item.kind, quote };
   throw new Error("完成要求与原交办不一致：" + quote);
@@ -130,11 +157,15 @@ export function dotsCompletionRequirements(assignment: string, deliveryInstructi
   };
   for (const declaration of declarations) add(validateDeclaration(declaration, [assignment, deliveryInstruction ?? ""]));
   const declaredFiles = new Set([...items.values()].filter(item => item.kind === "file").map(item => item.name));
-  for (const quote of [...clauses, ...deliveryClauses]) {
-    for (const name of deliveredFiles(quote)) if (!declaredFiles.has(name)) add({ kind: "file", quote, name });
+  const sources = [...clauses, ...deliveryClauses];
+  for (const quote of sources) {
+    for (const name of deliveredFiles(quote)) if (!declaredFiles.has(name)) {
+      const details = /\.xlsx$/iu.test(name) ? workbookRequirements(sources, name) : undefined;
+      add({ kind: "file", quote, name, sheet: details?.sheet, headers: details?.headers });
+    }
     const checks = projectChecks(quote);
     for (const name of checks) add({ kind: "check", quote, name });
-    if (!checks.some(dotsProjectTestCheck) && projectTests.test(quote)) add({ kind: "check", quote });
+    if (!checks.some(isProjectTest) && projectTests.test(quote)) add({ kind: "check", quote });
     if (requiresLocalCommit(quote)) add({ kind: "commit", quote });
   }
   const onlyFile = onlyDeliveryFilename(deliveryInstruction);
@@ -159,6 +190,14 @@ export function dotsCompletionRequirements(assignment: string, deliveryInstructi
     for (let index = known + 1; index <= Math.min(count, 24); index++) add({ kind: "work", quote },
       count > 24 && index === 24 ? "第 24 至 " + count + " 项问题" : "第 " + index + " 项问题");
   }
+  for (const item of [...items.values()]) {
+    if (item.kind !== "file" || !item.name || !declaredFiles.has(item.name) || !/\.xlsx$/iu.test(item.name)) continue;
+    const { sheet, headers } = workbookRequirements(sources, item.name);
+    if (sheet || headers?.length) {
+      if (!item.sheet && !item.headers?.length) items.delete(item.id);
+      add({ kind: "file", name: item.name, quote: item.quote, sheet, headers });
+    }
+  }
   const contract = [...items.values()];
   const managers = new Map<string, Set<ProjectVerificationManager>>();
   for (const clause of [...clauses, ...deliveryClauses]) for (const { name, manager } of projectCommands(clause)) {
@@ -167,6 +206,7 @@ export function dotsCompletionRequirements(assignment: string, deliveryInstructi
     managers.set(name, used);
   }
   return {
+    rulesVersion: dotsCompletionRulesVersion,
     files: [...new Set(contract.flatMap(item => item.kind === "file" && item.name ? [item.name] : []))],
     checks: contract.flatMap(item => item.kind === "check" && item.name ? [item.name] : []),
     ...(managers.size && { checkManagers: Object.fromEntries([...managers].map(([name, used]) => [name, [...used]])) }),
@@ -175,6 +215,8 @@ export function dotsCompletionRequirements(assignment: string, deliveryInstructi
     ...(contract.length && { items: contract }),
   };
 }
+
+export const dotsCompletionRulesVersion = 2;
 
 export function dotsCompletionInstruction(requirements: DotsCompletionRequirements): string {
   const items = requirements.items ?? [];
@@ -185,8 +227,8 @@ export function dotsCompletionInstruction(requirements: DotsCompletionRequiremen
       (item.sheet ? "，工作表为 " + item.sheet : "") + (item.headers?.length ? "，表头包括 " + item.headers.join("、") : "");
     if (item.kind === "commit") return "- 交回本次任务的新提交 SHA";
     const managers = item.name ? requirements.checkManagers?.[item.name] : undefined;
-    return "- " + (item.name ? "运行项目检查 " + item.name + (managers?.includes("npm")
-      ? "（用 project_verify，manager 填写 " + managers.join("、") + "）" : "") : "运行与改动相关的项目测试");
+    return "- " + (item.name ? "用 project_verify 运行 " + item.name + (managers?.length
+      ? "（manager 填写 " + managers.join("、") + "）" : "") : "用 project_verify 运行与改动相关的项目测试");
   }).join("\n");
   const evidence = items.some(item => item.kind === "work")
     ? "\n结项时在 completedItems 中按 ID 提供每项实际完成的依据，别把准备做的事写成已完成。" : "";
@@ -194,8 +236,14 @@ export function dotsCompletionInstruction(requirements: DotsCompletionRequiremen
 }
 
 function missingWorkItems(requirements: DotsCompletionRequirements, completedItems: readonly DotsWorkEvidence[] = []) {
-  const evidence = new Set(completedItems.filter(item => item.evidence.trim()).map(item => item.id));
-  return (requirements.items ?? []).filter(item => item.kind === "work" && !evidence.has(item.id));
+  const evidence = new Map<string, string[]>();
+  for (const item of completedItems) if (item.evidence.trim()) {
+    const reports = evidence.get(item.id) ?? [];
+    reports.push(item.evidence);
+    evidence.set(item.id, reports);
+  }
+  return (requirements.items ?? []).filter(item => item.kind === "work" &&
+    (!evidence.has(item.id) || evidence.get(item.id)!.some(report => incompleteWorkEvidence(item.quote, report))));
 }
 
 export function assertDotsWorkCompletion(requirements: DotsCompletionRequirements, completedItems?: readonly DotsWorkEvidence[]) {
@@ -213,7 +261,7 @@ export function missingDotsPartitionRequirements(assignment: string, partitions:
   return [
     ...original.files.filter(file => !files.has(file)),
     ...original.checks.filter(check => !checks.has(check)),
-    ...(original.requireTests && !scopes.some(scope => scope.requireTests || scope.checks.some(dotsProjectTestCheck)) ? ["相关项目测试"] : []),
+    ...(original.requireTests && !scopes.some(scope => scope.requireTests || scope.checks.some(isProjectTest)) ? ["相关项目测试"] : []),
     ...(original.requireCommit && !scopes.some(scope => scope.requireCommit) ? ["本地提交"] : []),
     ...(original.items ?? []).flatMap(item => item.kind === "work" && !work.has(item.id) &&
       (item.label || !positiveScopes.some(scope => scope.includes(item.quote.replace(numberedWork, ""))))
@@ -228,8 +276,18 @@ function projectCommands(clause: string) {
 
 function projectChecks(clause: string) {
   const commands = projectCommands(clause).map(command => command.name);
+  const executable = /(?:运行|执行|通过|补跑|跑(?:一遍)?|\b(?:run|execute)\b)\s*(?:本地\s*)?`?(python\s+-m\s+pytest|pytest|go\s+test(?:\s+\.\/\.\.\.)?|cargo\s+test)(?=$|[\s`,，。；;.!！？]|并|再)/giu;
+  for (const match of clause.matchAll(executable)) {
+    const command = match[1]!.toLowerCase().replace(/\s+/gu, " ");
+    const test = Object.entries(STANDALONE_PROJECT_TESTS).find(([, value]) => value === command || command === "go test" && value === "go test ./...");
+    if (test) commands.push(test[0]);
+  }
   const native = /\bproject_verify\b/iu.exec(clause);
-  if (native) commands.push(...[...clause.slice(native.index + native[0].length).matchAll(projectCheck)].map(match => match[0]));
+  if (native) {
+    const names = clause.slice(native.index + native[0].length);
+    commands.push(...[...names.matchAll(projectCheck)].map(match => match[0]));
+    commands.push(...Object.keys(STANDALONE_PROJECT_TESTS).filter(name => names.split(/[^\w-]+/u).includes(name)));
+  }
   if (/(?:运行|执行|通过|跑(?:一遍)?)\s*(?:项目的?)?类型检查/u.test(clause)) commands.push("typecheck");
   return [...new Set(commands)];
 }
@@ -245,6 +303,15 @@ const workerScope = /^(?:目前|本轮|此轮|这轮|当前|这次|我|原任务
 const caseWork = /(?:修复|实现|修好|解决|修改|验收|核对|交付|完成|制作|生成|处理|编写|测试|验证|优化|\b(?:fix|implement|verify|deliver|complete|generate|test)\b)/iu;
 const reportedRemainder = /(?:第\s*[一二三四五六七八九十\d、，,\s第]+项|剩余(?:工作|事项)?)[^。！？\r\n]{0,12}(?:待处理|待完成|未完成|未做|待修复)/u;
 const reportedUnrunCheck = /(?:检查|测试|校验|验收)(?:还|尚|仍)?(?:未|没(?:有)?)(?:运行|执行|通过|完成)|(?:尚|仍|还)?未(?:运行|执行|通过|完成)(?:任何)?(?:测试|验收|检查)/u;
+
+function incompleteWorkEvidence(assignment: string, evidence: string): boolean {
+  const pending = /^(?:(?:本项|该项|这项工作|当前|目前|仍然|仍|还)\s*[:：]?\s*)*(?:(?:尚未|仍未|还未|没有|未)(?:做|执行|开始|处理|完成|修复|核对|实现)|待(?:处理|完成|执行|修复|核对)|(?:准备|计划|打算|下一步(?:将|会)?)(?:着手|下一步)?\s*(?:开始|做|执行|修复|处理|核对|完成|实现)|(?:not (?:yet )?(?:started|done|completed|executed|fixed)|pending|to do|planning to|will (?:start|fix|implement|complete))\b)/iu;
+  const onlyStatus = /^(?:已(?:完成|执行|处理|修复|核对)|完成了?|done|completed|fixed|verified)[\s。.!！]*$/iu;
+  const workLabel = /^(?:(?:[-*•]|\d+[.)、])\s+)?[*_]*(?:(?:第[一二三四五六七八九十\d]+项|本项|该项)\s*[:：]\s*)?[*_]*/u;
+  return onlyStatus.test(evidence.trim().replace(workLabel, "").replace(/[*_]+$/u, "")) ||
+    instructions(evidence).some(report => pending.test(report.replace(workLabel, ""))) ||
+    Boolean(incompleteAdmission(assignment, evidence));
+}
 
 /** Worker admissions are blockers, not authority for a new action. Keep this narrow for informational replies. */
 function incompleteAdmission(assignment: string, text: string): string | undefined {
@@ -286,7 +353,10 @@ export async function dotsCompletionGaps(input: {
     if (snapshots.size !== 1) return "需要唯一的已登记快照";
     const path = snapshots.values().next().value!;
     const sheets = (requirements.items ?? []).filter(item => item.kind === "file" && item.name === name && (item.sheet || item.headers?.length));
-    return checkDotsDeliveryFile(path, name, sheets);
+    const allowEmpty = /\.xlsx$/iu.test(name) && workbookRequirements([
+      ...positiveInstructions(assignment), ...positiveInstructions(deliveryInstruction ?? ""),
+    ], name).allowEmpty;
+    return checkDotsDeliveryFile(path, name, sheets, allowEmpty);
   }));
   for (const [index, file] of requirements.files.entries()) if (verified[index]) {
     missingFiles.push(file);
@@ -294,7 +364,7 @@ export async function dotsCompletionGaps(input: {
     keys.push("file:" + file);
   }
   const missingChecks = requirements.checks.filter(check => !verifiedChecks?.includes(check));
-  if (requirements.requireTests && !verifiedChecks?.some(dotsProjectTestCheck) && !missingChecks.some(dotsProjectTestCheck))
+  if (requirements.requireTests && !verifiedChecks?.some(isProjectTest) && !missingChecks.some(isProjectTest))
     missingChecks.push("test:*");
   if (missingChecks.length) {
     gaps.push("当前版本缺少通过的验收回执：" + missingChecks.map(name => name === "test:*" ? "相关项目测试" : name).join("、"));
@@ -325,10 +395,12 @@ export async function dotsCompletionGaps(input: {
 }
 
 /** Existing work keeps the original assignment as its only authority. A scoped diagnostic can use ordinary phrasing. */
-export function dotsProgressInScope(originals: readonly string[], next: string, anchor?: string): boolean {
+export function dotsProgressInScope(originals: readonly string[], next: string, anchor?: string, item?: DotsCompletionItem): boolean {
   next = next.trim();
-  if (!next || anchor && !originals.some(source => source.includes(anchor.trim()))) return false;
-  const scope = (anchor ? [anchor] : originals).flatMap(positiveInstructions);
+  const authorized = originals.flatMap(positiveInstructions);
+  if (!next || anchor && !authorized.some(source => source.includes(anchor.trim()))) return false;
+  const scope = item ? positiveInstructions(item.quote) : anchor ? positiveInstructions(anchor) : authorized;
+  if (anchor && item && !scope.some(part => anchor.includes(part) || part.includes(anchor.trim()))) return false;
   if (scope.some(source => source.includes(next))) return true;
   const externalOrNew = /(?:另一个|新的项目|其他项目|外部|发给|发布|部署|推送|删除|销毁|付款|下单|授权|新建账户|another project|deploy|publish|delete|send to|purchase|transfer funds)/iu;
   const addedAction = /(?:(?:并(?:且)?|然后|随后|接着|同时|以及|[,，、；;]|(?:把|将).{0,32})\s*(?:请|再|顺便)?\s*(?:格式化|上传|移动|改名|修改|改写|重写|补齐|提交|覆盖|写入)|\b(?:upload|move|rename|modify|rewrite|overwrite|commit)\b)/iu;
@@ -339,7 +411,7 @@ export function dotsProgressInScope(originals: readonly string[], next: string, 
     .split(/(?:并(?=且|补|完|修|验|核|检|发|删|把|将|格式化)|以及|；|，|\s+and\s+)/iu)[0].trim();
   if (topicOf(next) !== next.replace(diagnostic, "").trim()) return false;
   if (topicOf(next).length > 1 && scope.some(source => diagnostic.test(source) && topicOf(source) === topicOf(next))) return true;
-  const topics = next.match(/性能|瓶颈|启动|内存|延迟|吞吐|渲染|滚动|布局|回归|时间|账单|库存|报价|订单|供应商|性能指标|\b[a-z][a-z0-9_-]{3,}\b/giu) ?? [];
+  const topics = next.match(/导入|导出|性能|瓶颈|启动|内存|延迟|吞吐|渲染|滚动|布局|回归|时间|账单|库存|报价|订单|供应商|性能指标|\b[a-z][a-z0-9_-]{3,}\b/giu) ?? [];
   return topics.some(topic => !/^(?:identify|investigate|diagnose|inspect|check)$/iu.test(topic) &&
     scope.some(source => source.toLowerCase().includes(topic.toLowerCase())));
 }

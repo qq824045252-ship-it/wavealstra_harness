@@ -5,7 +5,7 @@ export type DotsWorkerOutcome =
   | { dotsState: "complete"; result: string; delivery?: { text: string }; executionRecord?: string;
       verifiedChecks?: string[]; verifiedCommit?: string; completedItems?: DotsWorkEvidence[] }
   | { dotsState: "blocked"; result: string; delivery?: { text: string } }
-  | { dotsState: "progress"; result: string; remainingQuote: string; scopeQuote?: string };
+  | { dotsState: "progress"; result: string; remainingQuote: string; scopeQuote?: string; workItemId?: string };
 
 /** An accepted native answer ends a model turn. The worker declares whether it ends the assignment. */
 export function readDotsWorkerOutcome(text: string): DotsWorkerOutcome | undefined {
@@ -63,9 +63,13 @@ function parseWorkerOutcome(json: string, exact = false): DotsWorkerOutcome | un
           && { completedItems: value.completedItems }),
       };
     }
-    if (value.dotsState === "progress" && typeof value.remainingQuote === "string" && (!exact || Object.keys(value).length === (typeof value.scopeQuote === "string" ? 4 : 3))) {
+    if (value.dotsState === "progress" && typeof value.remainingQuote === "string") {
+      if ("workItemId" in value && (typeof value.workItemId !== "string" ||
+        !new RegExp(DOTS_WORK_ITEM_ID_PATTERN).test(value.workItemId))) return;
+      if (exact && Object.keys(value).some(key => !["dotsState", "result", "remainingQuote", "scopeQuote", "workItemId"].includes(key))) return;
       return { dotsState: "progress", result: value.result, remainingQuote: value.remainingQuote.trim(),
-        ...(typeof value.scopeQuote === "string" && { scopeQuote: value.scopeQuote.trim() }) };
+        ...(typeof value.scopeQuote === "string" && { scopeQuote: value.scopeQuote.trim() }),
+        ...(value.workItemId && { workItemId: value.workItemId }) };
     }
   } catch {
     // Ordinary model prose does not declare an outcome.

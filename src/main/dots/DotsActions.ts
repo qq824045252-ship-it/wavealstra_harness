@@ -7,14 +7,15 @@ import { dotsCompletionInstruction, dotsCompletionRequirements, missingDotsParti
 import { dotsDeliveryText, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 import { dotsGoalConclusion } from "./DotsGoalConclusion";
 import { dotsCalendarContext } from "./DotsCalendar";
-import { dotsResultExcerpt, nativeResultHits, type NativeResultHit } from "./DotsNativeResults";
+import { dotsResultExcerpt, nativeResultHits, readNativeResultText, type NativeResultHit } from "./DotsNativeResults";
 import { resolvedPathKey } from "../platform/paths";
 import { limitTaskTitle } from "../../shared/task-title";
 import { DotsFileWatches } from "./DotsFileWatches";
 import { readDotsLibrary } from "./DotsLibrary";
 import { DotsIntentChanged } from "./DotsNativeIntent";
 import { dotsDelegationScopeMatches } from "./DotsDelegations";
-import { dotsExecutionPageSize, dotsTaskArtifactPreviews, dotsTaskExecutionDiagnostics, dotsTaskHistoryPage, dotsTaskMessageExcerpt } from "./DotsTaskEvidence";
+import { dotsExecutionPageSize, dotsTaskArtifactPreviews, dotsTaskExecutionDiagnostics, dotsTaskHistoryPage, dotsTaskMessageExcerpt,
+  dotsTextCall, dotsTextPage, type DotsTextReference } from "./DotsTaskEvidence";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath, stat } from "node:fs/promises";
@@ -67,7 +68,9 @@ export interface DotsActionInput {
   operationId?: string;
   interactionId?: string;
   targetTaskId?: string;
-  detail?: "history" | "execution";
+  detail?: "history" | "execution" | "message";
+  textRef?: DotsTextReference;
+  textVersion?: string;
   beforeEntryId?: number;
   spaceId?: string;
   name?: string;
@@ -641,9 +644,15 @@ export class DotsActions {
       .map(item => {
         const result = this.delegationResult(item);
         return { operationId: item.id, goalId: item.goalId, status: result.status, interactionId: item.interactionId,
-          ...dotsResultExcerpt(result.text, 900), artifacts: (result.artifacts ?? item.artifacts).slice(0, 10),
+          ...this.delegationExcerpt(task.id, item.id, result.text, 900), artifacts: (result.artifacts ?? item.artifacts).slice(0, 10),
           updatedAt: item.updatedAt, activity: item.activity, dependencyWait: item.dependencyWait };
       });
+  }
+
+  private delegationExcerpt(taskId: string, operationId: string, text: string, limit: number, query = "") {
+    const start = query ? Math.max(0, text.toLowerCase().indexOf(query) - 150) : 0;
+    const excerpt = dotsResultExcerpt(text, limit, start);
+    return { ...excerpt, ...(excerpt.textTruncated && { readTextCall: dotsTextCall(taskId, { operationId }, text) }) };
   }
 
   private summary(task: TaskDto) {
@@ -690,8 +699,12 @@ export class DotsActions {
     return this.followups.completionRequirements(taskId, operationId);
   }
 
-  captureCommitBase(taskId: string, operationId: string, readHead: () => Promise<string>) {
-    return this.followups.captureCommitBase(taskId, operationId, readHead);
+  captureCommitBase(taskId: string, operationId: string, readStart: Parameters<DotsFollowup["captureCommitBase"]>[2]) {
+    return this.followups.captureCommitBase(taskId, operationId, readStart);
+  }
+
+  recoveryCommitStart(taskId: string, operationId: string) {
+    return this.followups.recoveryCommitStart(taskId, operationId);
   }
 
   async followup(row: DotsDelegation, original?: AgentPromptRequest) {
@@ -876,13 +889,13 @@ ${input.text}`),
       root.text, request.origin, root.createdAt, { revisions: request.inputs.map(input => input.id), priorOperationId: request.priorOperationId, validateEvidence });
   }
 
-  async inspectTask(input: Pick<DotsActionInput, "targetTaskId" | "spaceId" | "detail" | "beforeEntryId" | "offset">, offerFollowUp = false) {
-    const { detail, beforeEntryId, offset } = input;
-    if (detail !== undefined && detail !== "history" && detail !== "execution") throw new Error("未知任务详情类型");
+  async inspectTask(input: Pick<DotsActionInput, "targetTaskId" | "spaceId" | "detail" | "beforeEntryId" | "offset" | "textRef" | "textVersion">, offerFollowUp = false) {
+    const { detail, beforeEntryId, offset, textRef, textVersion } = input;
+    if (detail !== undefined && detail !== "history" && detail !== "execution" && detail !== "message") throw new Error("未知任务详情类型");
     if (beforeEntryId !== undefined && (detail !== "history" || !Number.isSafeInteger(beforeEntryId) || beforeEntryId < 1))
       throw new Error("历史续页只接受有效的 beforeEntryId");
-    if (offset !== undefined && (detail !== "execution" || !Number.isSafeInteger(offset) || offset < 0))
-      throw new Error("执行诊断续页只接受有效的 offset");
+    if (offset !== undefined && (detail !== "execution" && detail !== "message" || !Number.isSafeInteger(offset) || offset < 0))
+      throw new Error("执行诊断和正文续页只接受有效的 offset");
     const task = this.task(input.targetTaskId, input.spaceId);
     const captureScope = (target: TaskDto) => JSON.stringify([
       target.spaceId, target.projectId, target.cwd, target.sessionFile,
@@ -890,10 +903,37 @@ ${input.text}`),
     ]);
     const scope = captureScope(task);
     const latestOperationId = this.latestOperation(task.id);
+    const checkScope = () => {
+      const current = this.task(task.id, input.spaceId);
+      if (captureScope(current) !== scope || this.latestOperation(current.id) !== latestOperationId)
+        throw new DotsIntentChanged("读取期间原任务工作空间或交办已变化，请重新查看任务");
+      return current;
+    };
+    if (detail === "message") {
+      if (!textRef || (offset ?? 0) > 0 && !textVersion) throw new Error("请使用上次返回的 readTextCall 读取正文。");
+      let text: string | undefined;
+      if ("operationId" in textRef) {
+        const item = (this.hooks.list?.() ?? []).find(row => row.id === textRef.operationId && row.taskId === task.id);
+        if (item) text = this.delegationResult(item).text;
+      } else if ("answerEntryId" in textRef) {
+        const binding = this.db.connection.prepare("SELECT directory FROM durable_bot_bindings WHERE task_id=?").get(task.id) as { directory: string } | undefined;
+        if (binding && Number.isSafeInteger(textRef.answerEntryId) && textRef.answerEntryId > 0)
+          text = await readNativeResultText(binding.directory, textRef.answerEntryId, textRef.historyId);
+      } else {
+        const { entryId, historyId, messageId } = textRef;
+        if (entryId !== undefined && (!historyId || !Number.isSafeInteger(entryId) || entryId < 1))
+          throw new Error("历史正文需要原会话和消息定位。");
+        const history = await this.agent.loadTaskHistory(task.id, entryId && { aroundEntryId: entryId }, "current");
+        const currentHistory = history.page?.historyId ?? history.durable?.historyId;
+        if (!historyId || currentHistory === historyId)
+          text = history.messages.find(message => message.id === messageId && (entryId === undefined || Number(message.entryId) === entryId))?.text;
+      }
+      checkScope();
+      if (text === undefined) throw new Error("原任务里找不到该条正文。请重新查看历史或交付。");
+      return { id: task.id, ...dotsTextPage(text, task.id, textRef, offset ?? 0, textVersion), messages: [], deliveries: [] };
+    }
     const history = await this.agent.loadTaskHistory(task.id, beforeEntryId, "current");
-    const current = this.task(task.id, input.spaceId);
-    if (captureScope(current) !== scope || this.latestOperation(current.id) !== latestOperationId)
-      throw new DotsIntentChanged("读取期间原任务工作空间或交办已变化，请重新查看任务");
+    const current = checkScope();
 
     const summary = this.summary(current);
     const progress = this.board.page({ view: "all" }, Date.now(), { taskId: current.id }).rows[0];
@@ -919,9 +959,10 @@ ${input.text}`),
       ...(state && { executionState: { status: state.status, outcome: state.outcome, queued: state.queued,
         retry: state.retry && { at: state.retry.at, error: diagnosticText(state.retry.error) }, error: diagnosticText(state.error), modelId: history.modelId } }),
       goals, deliveries,
-      ...(detail === "history" ? dotsTaskHistoryPage(history) : {
+      ...(detail === "history" ? dotsTaskHistoryPage(history, current.id) : {
         messages: history.messages.slice(-5).map(m => ({ role: m.role,
-          ...dotsTaskMessageExcerpt(m.text, 2400), artifacts: dotsTaskArtifactPreviews(m.artifacts, true) })),
+          ...dotsTaskMessageExcerpt(m, 2400, current.id, history.page?.historyId ?? state?.historyId),
+          artifacts: dotsTaskArtifactPreviews(m.artifacts, true) })),
         artifacts: dotsTaskArtifactPreviews(history.artifacts, true),
       }),
       ...(followUpCall ? { followUpCall, followUpInstruction: "本轮用户要求追问。确认这是用户所指的原任务后，传入 followUpCall 调用 dots_action，再根据受理回执回答。" } : {}),
@@ -1003,7 +1044,7 @@ ${input.text}`),
         const links = this.hooks.list?.() ?? [];
         const candidates = (input.cursor ? [] : links).filter(item => !input.targetTaskId || item.taskId === input.targetTaskId);
         const hits: Array<NativeResultHit | Pick<DotsDelegation, "title" | "text" | "artifacts" | "taskId" | "goalId"> & {
-          status: ReturnType<DotsActions["delegationResult"]>["status"]; textTruncated?: true;
+          status: ReturnType<DotsActions["delegationResult"]>["status"]; textTruncated?: true; readTextCall?: ReturnType<typeof dotsTextCall>;
           operationId: string; link: string }> = [];
         for (const item of candidates.reverse()) {
           const task = this.db.getTask(item.taskId);
@@ -1014,7 +1055,7 @@ ${input.text}`),
           if (query && ![item.title, result.text, ...artifacts.map(file => file.name)]
             .some(value => value.toLowerCase().includes(query))) continue;
           hits.push({ operationId: item.id, taskId: task.id, goalId: item.goalId, link: taskLink(task), status: result.status, title: item.title,
-            ...dotsResultExcerpt(result.text, 1200), artifacts: artifacts.slice(0, 10) });
+            ...this.delegationExcerpt(task.id, item.id, result.text, 1200, query), artifacts: artifacts.slice(0, 10) });
           if (hits.length === offset + 21) break;
         }
         const page = this.board.page({view:"all", scope:input.spaceId, cursor:input.cursor}, Date.now(),

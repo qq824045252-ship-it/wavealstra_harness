@@ -38,13 +38,14 @@ const rerunAnswer = "复核完成，库存为 37 件。";
 const externalSource = "external-effect-recovery";
 const effectToolCall = "post-unconfirmed-effect";
 const unconfirmed = "外部操作未收到回执，是否生效需要核查。";
-const recoveryFaults = ["readThen503", "webThen503", "writeThen503", "effectThen503", "effectProgress", "localFiles", "localPreexisting", "localCheck", "localEdit"] as const;
+const recoveryFaults = ["readThen503", "webThen503", "webFailureThen503", "writeThen503", "effectThen503", "effectProgress", "localFiles", "localPreexisting", "localCheck", "localEdit"] as const;
 type RecoveryFault = typeof recoveryFaults[number];
 const recoveryProof = "recovery-proof.txt";
 const recoveryDraft = "recovery-internal-notes.txt";
 const recoveryInstructions: Record<RecoveryFault, string> = {
   readThen503: "读取 recovery-input.txt 的盘点数量，只回复数字。",
   webThen503: "联网查找测试用公开资料，只回复其中的数量。",
+  webFailureThen503: "重新查找测试用公开资料，只回复找到的数量。",
   writeThen503: "请创建 recovery-proof.txt，只交付这个文件。",
   effectThen503: "运行盘点登记命令并确认结果。",
   effectProgress: "运行盘点登记命令并确认结果。",
@@ -178,8 +179,8 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
         }
         return [{ type: "toolCall", id: "repair-source-write", name: "write", arguments: { path: "code.cjs", content: "module.exports = 42;\n" } }];
       }
-      assert(names.includes("project_verify"));
-      assert(!names.some(name => ["bash", "powershell", "edit", "write", "codemode"].includes(name)));
+      assert(names.includes("project_verify") && names.includes("edit"));
+      assert(!names.some(name => ["bash", "powershell", "write", "codemode"].includes(name)));
       if (previous?.toolCallId === "recovery-bypass-shell") {
         assert.equal(previous.isError, true);
         return [{ type: "toolCall", id: "recovery-wrong-check", name: "project_verify", arguments: { script: "test:unrelated" } }];
@@ -197,11 +198,14 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
       }
       return [{ type: "toolCall", id: "recovery-bypass-shell", name: "bash", arguments: { command: "pnpm run test:unrelated" } }];
     }
-    if (fault === "readThen503" || fault === "webThen503" || fault === "writeThen503" || fault === "effectThen503" || fault === "effectProgress") {
+    if (fault === "readThen503" || fault === "webThen503" || fault === "webFailureThen503" || fault === "writeThen503" || fault === "effectThen503" || fault === "effectProgress") {
       const names = tools.map(tool => tool.name);
       if (!names.length) return [{ type: "text", text: '{"candidates":[]}' }];
       const userText = input.messages.filter(message => message.role === "user").map(message => JSON.stringify(message.content)).join("\n");
       const previous = latest?.role === "toolResult" ? latest : undefined;
+      const search = (id: string) => [{ type: "toolCall" as const, id, name: "web_search", arguments: {
+        query: "公开资料恢复验收", provider: "brave", workflow: "none", evidenceMode: "snippets",
+      } }];
       if (names.includes("dots_action")) {
         if (previous) return [{ type: "text", text: "收到。" }];
         return [{ type: "toolCall", id: "delegate-" + fault, name: "dots_action", arguments: {
@@ -230,15 +234,17 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
         } }];
       }
       if (userText.includes("从短暂故障处继续")) {
-        assert(fault === "readThen503" || fault === "webThen503");
+        assert(fault === "readThen503" || fault === "webThen503" || fault === "webFailureThen503");
         assert(names.includes("read"), "the resumed read-only task can still complete business steps");
-        const quantity = fault === "webThen503" ? "57" : "42";
-        assert(input.messages.some(message => message.role === "toolResult" && message.toolCallId === "recovery-read" &&
+        if (fault === "webFailureThen503" && previous?.toolCallId !== "retry-web-read") return search("retry-web-read");
+        const quantity = fault === "readThen503" ? "42" : "57";
+        assert(input.messages.some(message => message.role === "toolResult" &&
+          message.toolCallId === (fault === "webFailureThen503" ? "retry-web-read" : "recovery-read") &&
           JSON.stringify(message.content).includes(quantity)), "the read result remains available to the original task");
         return [{ type: "text", text: JSON.stringify({ dotsState: "complete", result: `原始盘点数量为 ${quantity}。`, delivery: { text: quantity } }) }];
       }
       if (previous) {
-        assert.equal(previous.isError, false, JSON.stringify(previous.content));
+        assert.equal(previous.isError, fault === "webFailureThen503", JSON.stringify(previous.content));
         if (previous.toolCallId === "recovery-scratch") return [{ type: "toolCall", id: "recovery-write", name: "write",
           arguments: { path: recoveryProof, content: "原盘点成果 42。" } }];
         if (previous.toolCallId === "recovery-write") return [{ type: "toolCall", id: "recovery-register", name: "register_artifact",
@@ -249,9 +255,7 @@ async function open(fault?: "before" | "after" | "waitForStop" | "unchanged" | "
         return { content: [], errorMessage: "503: temporarily unavailable" };
       }
       if (fault === "readThen503") return [{ type: "toolCall", id: "recovery-read", name: "read", arguments: { path: "recovery-input.txt" } }];
-      if (fault === "webThen503") return [{ type: "toolCall", id: "recovery-read", name: "web_search", arguments: {
-        query: "公开资料恢复验收", provider: "brave", workflow: "none", evidenceMode: "snippets",
-      } }];
+      if (fault === "webThen503" || fault === "webFailureThen503") return search("recovery-read");
       if (fault === "writeThen503") return [{ type: "toolCall", id: "recovery-scratch", name: "write",
         arguments: { path: recoveryDraft, content: "内部记录只保留在原工作区。" } }];
       const code = 'require("node:fs").appendFileSync("' + fault + '.txt", "accepted\\n")';
@@ -502,11 +506,13 @@ require('node:fs').appendFileSync(${JSON.stringify(join(root, "recovery-typechec
   const savedFetch = globalThis.fetch;
   const previousBraveKey = process.env.BRAVE_API_KEY;
   let searches = 0;
-  if (fault === "webThen503") {
+  if (fault === "webThen503" || fault === "webFailureThen503") {
     process.env.BRAVE_API_KEY = "isolated-recovery-fixture";
     globalThis.fetch = (input, init) => {
       if (!String(input).startsWith("https://api.search.brave.com/res/v1/web/search?")) return savedFetch(input, init);
       searches++;
+      if (fault === "webFailureThen503" && searches === 1)
+        return Promise.resolve(new Response("fixture search request failed", { status: 400 }));
       return Promise.resolve(Response.json({ web: { results: [{ title: "测试用公开资料", url: "https://example.invalid/recovery", description: searchFixtureText }] } }));
     };
   }
@@ -544,9 +550,9 @@ require('node:fs').appendFileSync(${JSON.stringify(join(root, "recovery-typechec
       assert.equal(jobs.length, 2, JSON.stringify({ jobs, replies }));
       assert.equal(replies[0]!.dotsDelivery!.kind, "conclusion");
       if (fault === "readThen503") assert.equal(replies[0]!.text, "42");
-      else if (fault === "webThen503") {
+      else if (fault === "webThen503" || fault === "webFailureThen503") {
         assert.equal(replies[0]!.text, "57");
-        assert.equal(searches, 1, "recover using the settled native search receipt without searching twice");
+        assert.equal(searches, fault === "webThen503" ? 1 : 2);
       } else if (fault === "localCheck") {
         assert.equal(replies[0]!.text, verifiedRepairText);
         assert.equal(readFileSync(join(root, "recovery-typecheck-runs.txt"), "utf8"), "checked\n");

@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID, type ConversationId, type Cursor } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type ConversationId, type Cursor, type EntryId, type Storage } from "@earendil-works/pi-durable";
 import type Database from "better-sqlite3";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,11 +8,14 @@ import { ActiveDurableConversation } from "../agent/durable/DurableConversationB
 import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 import { durableText } from "../agent/durable/DurableTurnProjection";
 import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactRegistration";
+import { durableHistoryIdentity } from "../agent/durable/DurableHistoryIdentity";
+import { dotsTextCall } from "./DotsTaskEvidence";
 
 export interface NativeResultHit {
   source: "native"; taskId: string; title: string; link: string; status: "completed";
   conversationId: number; submissionId: number; answerEntryId: number; text: string;
   textTruncated?: true;
+  readTextCall?: ReturnType<typeof dotsTextCall>;
   artifacts: { id: string; name: string; path: string; link: string }[];
 }
 
@@ -26,6 +29,24 @@ function fileLink(name: string, path: string) {
   return "[" + name.replace(/[\\[\]]/g, "\\$&") + "](" + href + ")";
 }
 
+async function activeConversation(storage: Storage): Promise<ConversationId> {
+  const branch = await storage.findDocument({ kind: ActiveDurableConversation.definition.kind, scope: { kind: "session" } }, "current", context);
+  const active = branch && (await storage.document(branch.id, "current", context))?.value;
+  return (active?.conversationId ?? ROOT_CONVERSATION_ID) as ConversationId;
+}
+
+export async function readNativeResultText(directory: string, answerEntryId: number, historyId: string) {
+  const storage = await openDurablePassiveStorage(directory, context);
+  if (!storage) return;
+  try {
+    const conversationId = await activeConversation(storage);
+    if (durableHistoryIdentity(directory, String(conversationId)) !== historyId) return;
+    const answer = (await storage.entry(answerEntryId as EntryId, context))?.entry;
+    const message = answer?.conversationId === conversationId && answer.model?.find(m => m.role === "assistant" && m.stopReason === "stop");
+    if (message && message.role === "assistant" && await activeConversation(storage) === conversationId) return durableText(message.content);
+  } finally { await storage.close(context); }
+}
+
 /** Search accepted answers and host-registered files in the selected conversation's read snapshot. */
 export async function nativeResultHits(task: {id: string; title: string; link: string}, directory: string,
   query: string, delegated: Set<string>, limit: number, db: Database.Database) {
@@ -33,9 +54,7 @@ export async function nativeResultHits(task: {id: string; title: string; link: s
   const storage = await openDurablePassiveStorage(directory, context);
   if (!storage) return hits;
   try {
-    const branch = await storage.findDocument({kind: ActiveDurableConversation.definition.kind, scope: {kind:"session"}}, "current", context);
-    const active = branch && (await storage.document(branch.id, "current", context))?.value;
-    const conversationId = (active?.conversationId ?? ROOT_CONVERSATION_ID) as ConversationId;
+    const conversationId = await activeConversation(storage);
     let cursor: Cursor | undefined;
     do {
       const page = await storage.scanSubmissions({conversationId, status:"done", order:"descending"}, 64, cursor, context);
@@ -82,8 +101,12 @@ export async function nativeResultHits(task: {id: string; title: string; link: s
         const position = text.toLowerCase().indexOf(query);
         if (position < 0 && !matched.length && !task.title.toLowerCase().includes(query)) continue;
         const start = Math.max(0,position - 150);
+        const excerpt = dotsResultExcerpt(text, 1200, start);
         hits.push({source:"native", taskId:task.id, title:task.title, link:task.link, status:"completed", conversationId,
-          submissionId:input.id, answerEntryId:input.answer, ...dotsResultExcerpt(text,1200,start), artifacts:(matched.length ? matched : artifacts).slice(0,10)});
+          submissionId:input.id, answerEntryId:input.answer, ...excerpt,
+          ...(excerpt.textTruncated && { readTextCall: dotsTextCall(task.id, {
+            answerEntryId: input.answer, historyId: durableHistoryIdentity(directory, String(conversationId)) }, text) }),
+          artifacts:(matched.length ? matched : artifacts).slice(0,10)});
         if (hits.length >= limit) return hits;
       }
       cursor = page.next;

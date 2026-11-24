@@ -112,6 +112,7 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
       "bind 绑定绝对目录，可用 spaceId 或 name 新建空间。create_space 在已绑定的父 spaceId 下创建名为 name 的子文件夹及空间，随后可在新空间委派任务。rename 保留原空间身份。用户明确交代按顺序做多件事时，可用 steps 固定各步。只给目标时直接传完整目标和限制。",
       "delegate 在指定空间新建普通任务或接续 targetTaskId。steer 将 text 发给正在执行的原任务，pause 或 stop 停止本轮。follow_up 按本轮原话追问已完成的原任务，传 targetTaskId 和最新 operationId，由宿主转发追问及同轮截图。resume 恢复或重跑原任务。answer 传原委派 operationId、目标任务和 interactionId，由宿主原样转发本轮用户输入。选择或确认题需要用户明确给出选项。",
       "deliveries 按标题、文字或文件名找本地普通任务已有成果，包括用户自行建立的任务。结果给出原任务及登记文件链接。有 nextOffset 时保留 cursor 并传 offset，否则把 next 作为 cursor 从 offset 0 继续。",
+      "任务消息或交付标有 textTruncated 时，用其 readTextCall 读取同一条完整正文。按返回的 readTextCall 逐页续读，并按偏移顺序拼接 text。",
       "watch_file 订阅原任务空间里的单个相对文件路径，传 text 指定变化后要办的事。文件新增、元数据变化或删除只触发一次。file_watches 查看，cancel_watch 传原任务与 watchId 取消。pause_all 或 stop_all 控制 Dots 已关联的活动事项，可指定 spaceId。未指定空间时也会暂停或取消 Dots 自有计划。pause_proactive 或 resume_proactive 暂停或恢复主动跟进，保留正在运行的普通任务。",
       "goalId 关联到原任务已有 Goal。用户明确约定本任务的交付格式、语言或篇幅时，将允许转发给执行器的相应原文填入 deliveryInstruction，即使 text 已提及也要填写。用户明确表示由自己验收时，使用 goalUserAcceptanceQuote 引用该约定。",
     ].join("\n"),
@@ -148,9 +149,17 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
       spaceId: Type.Optional(Type.String()), name: Type.Optional(Type.String()), path: Type.Optional(Type.String()),
       itemId: Type.Optional(Type.String({ minLength: 1 })), version: Type.Optional(Type.Integer({ minimum: 1 })),
       query: Type.Optional(Type.String({ maxLength: 500, description: "find_tasks 查找普通任务的标题或 ID。deliveries 查找已有成果。" })),
-      detail: Type.Optional(Type.Union([Type.Literal("history"), Type.Literal("execution")], {
-        description: "仅用于 task。history 读取原任务的对话，execution 查看执行记录和诊断。"
+      detail: Type.Optional(Type.Union([Type.Literal("history"), Type.Literal("execution"), Type.Literal("message")], {
+        description: "仅用于 task。history 读取对话，execution 查看执行诊断，message 逐页读取同一条正文。"
       })),
+      textRef: Type.Optional(Type.Union([
+        Type.Object({ operationId: Type.String({ minLength: 1, maxLength: 180 }) }, { additionalProperties: false }),
+        Type.Object({ messageId: Type.String({ minLength: 1, maxLength: 180 }), entryId: Type.Optional(Type.Integer({ minimum: 1 })),
+          historyId: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })) }, { additionalProperties: false }),
+        Type.Object({ answerEntryId: Type.Integer({ minimum: 1 }), historyId: Type.String({ minLength: 1, maxLength: 180 }) },
+          { additionalProperties: false }),
+      ], { description: "使用 readTextCall 中原样返回的正文定位。" })),
+      textVersion: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
       beforeEntryId: Type.Optional(Type.Integer({ minimum: 1, description: "仅用于 task 的 history。用上次返回的 nextBeforeEntryId 读取更早一页。" })),
       from: Type.Optional(Type.Integer()), until: Type.Optional(Type.Integer()),
       dateKind: Type.Optional(Type.Union((["follow", "result", "due", "updated"] as const).map(k => Type.Literal(k)))),

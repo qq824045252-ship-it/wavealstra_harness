@@ -18,7 +18,7 @@ function richText(element: Element) {
 
 type WorksheetRequirement = { sheet?: string; headers?: readonly string[] };
 
-async function validateWorkbook(bytes: Buffer, requirements: readonly WorksheetRequirement[]) {
+async function validateWorkbook(bytes: Buffer, requirements: readonly WorksheetRequirement[], allowEmpty: boolean) {
   const archive = await Package.open(bytes);
   try {
     root(await archive.xml("[Content_Types].xml"), contentTypes, "Types");
@@ -43,7 +43,12 @@ async function validateWorkbook(bytes: Buffer, requirements: readonly WorksheetR
           data = one(xml, spreadsheet, "sheetData");
           sheetData.set(link, data);
         }
-        matched = !headers.length || children(data, spreadsheet, "row").slice(0, 30).some(row => {
+        const rows = children(data, spreadsheet, "row");
+        matched = !headers.length ? allowEmpty || rows.some(row => children(row, spreadsheet, "c").some(cell =>
+          children(cell, spreadsheet, "v").some(value => Boolean(value.textContent?.trim())) ||
+          children(cell, spreadsheet, "f").some(formula => Boolean(formula.textContent?.trim())) ||
+          children(cell, spreadsheet, "is").some(inline => Boolean(richText(inline).trim()))))
+          : rows.slice(0, 30).some(row => {
           const values = new Set(children(row, spreadsheet, "c").map(cell => {
             const value = children(cell, spreadsheet, "v")[0]?.textContent ?? "";
             if (cell.getAttribute("t") === "s") {
@@ -57,7 +62,7 @@ async function validateWorkbook(bytes: Buffer, requirements: readonly WorksheetR
         });
         if (matched) break;
       }
-      requirePart(matched, "工作表缺少要求的表头：" + headers.join("、"));
+      requirePart(matched, headers.length ? "工作表缺少要求的表头：" + headers.join("、") : "工作表没有内容");
     }
   } finally {
     archive.zip.close();
@@ -85,7 +90,7 @@ async function validateOfficeDocument(bytes: Buffer, format: ".docx" | ".pptx") 
 }
 
 /** Check the saved version used for delivery. Never inspect the mutable source file. */
-export async function checkDotsDeliveryFile(path: string, name: string, requirements: readonly WorksheetRequirement[]): Promise<string | undefined> {
+export async function checkDotsDeliveryFile(path: string, name: string, requirements: readonly WorksheetRequirement[], allowEmpty = false): Promise<string | undefined> {
   const stat = await lstat(path).catch(() => undefined);
   if (!stat?.isFile() || !stat.size) return "快照不是非空的普通文件";
   const format = extname(name).toLowerCase();
@@ -94,7 +99,7 @@ export async function checkDotsDeliveryFile(path: string, name: string, requirem
     const saved = await readOfficeEvidenceFile(dirname(path), path, format);
     const recordedDigest = /^([a-f0-9]{64})\.[a-z0-9]+$/u.exec(basename(path))?.[1];
     if (recordedDigest && recordedDigest !== saved.sha256) return "快照内容与登记版本不一致";
-    if (format === ".xlsx") await validateWorkbook(saved.bytes, requirements);
+    if (format === ".xlsx") await validateWorkbook(saved.bytes, requirements, allowEmpty);
     else await validateOfficeDocument(saved.bytes, format);
   } catch (error) {
     const label = format === ".xlsx" ? "工作簿" : format === ".docx" ? "Word 文档" : "PowerPoint 文稿";

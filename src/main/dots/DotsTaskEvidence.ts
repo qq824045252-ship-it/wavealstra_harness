@@ -1,12 +1,39 @@
 import type { ChatArtifactDto, ChatMessageDto, TaskHistoryDto } from "../../shared/agent-ipc";
+import { createHash } from "node:crypto";
 import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { diagnosticText } from "../agent/durable/DurableToolDiagnostics";
 
 const historyPageSize = 10;
 export const dotsExecutionPageSize = 8;
 
-export function dotsTaskMessageExcerpt(text: string, limit: number) {
-  return { text: text.slice(-limit), ...(text.length > limit ? { textTruncated: true as const } : {}) };
+export type DotsTextReference = { operationId: string } | { messageId: string; historyId?: string; entryId?: number }
+  | { answerEntryId: number; historyId: string };
+
+function textVersion(text: string) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+export function dotsTextCall(targetTaskId: string, textRef: DotsTextReference, text: string, offset = 0) {
+  return { action: "task" as const, detail: "message" as const, targetTaskId, textRef, textVersion: textVersion(text), offset };
+}
+
+export function dotsTextPage(text: string, taskId: string, ref: DotsTextReference, offset: number, expected?: string) {
+  const version = textVersion(text);
+  if (expected !== undefined && version !== expected) throw new Error("正文已变化，请重新定位后从头读取。");
+  if (offset > text.length || offset > 0 && /[\uDC00-\uDFFF]/u.test(text[offset] ?? ""))
+    throw new Error("请使用上次返回的正文偏移量。");
+  let end = Math.min(text.length, offset + 1800);
+  if (end < text.length && /[\uDC00-\uDFFF]/u.test(text[end] ?? "")) end--;
+  return { taskId, textRef: ref, text: text.slice(offset, end), offset, textLength: text.length, textVersion: version,
+    ...(end < text.length && { nextOffset: end, readTextCall: dotsTextCall(taskId, ref, text, end) }) };
+}
+
+export function dotsTaskMessageExcerpt(message: ChatMessageDto, limit: number, taskId: string, historyId?: string) {
+  const { id, text, entryId } = message;
+  const number = Number(entryId);
+  const ref = { messageId: id, ...(historyId && Number.isSafeInteger(number) && number > 0 ? { historyId, entryId: number } : {}) };
+  return { text: text.slice(-limit), ...(text.length > limit
+    ? { textTruncated: true as const, readTextCall: dotsTextCall(taskId, ref, text) } : {}) };
 }
 
 export function dotsTaskArtifactPreviews(artifacts?: readonly ChatArtifactDto[], keepPath = false) {
@@ -17,10 +44,10 @@ export function dotsTaskArtifactPreviews(artifacts?: readonly ChatArtifactDto[],
   });
 }
 
-function historyMessage(message: ChatMessageDto) {
+function historyMessage(message: ChatMessageDto, taskId: string, historyId?: string) {
   return {
     id: message.id, entryId: message.entryId, inputRequestId: message.inputRequestId,
-    role: message.role, ...dotsTaskMessageExcerpt(message.text, 1800), createdAt: message.createdAt,
+    role: message.role, ...dotsTaskMessageExcerpt(message, 1800, taskId, historyId), createdAt: message.createdAt,
     artifacts: dotsTaskArtifactPreviews(message.artifacts),
     attachments: message.attachments?.slice(0, 4).map(file => ({ name: file.name.slice(0, 200) })),
     tools: message.tools?.slice(-3).map(tool => ({
@@ -30,7 +57,7 @@ function historyMessage(message: ChatMessageDto) {
   };
 }
 
-export function dotsTaskHistoryPage(history: TaskHistoryDto) {
+export function dotsTaskHistoryPage(history: TaskHistoryDto, taskId: string) {
   const messages = history.messages.slice(-historyPageSize);
   const historyId = history.page?.historyId ?? history.durable?.historyId;
   // The native cursor is inclusive. When trimming a native window, resume immediately before its oldest visible row.
@@ -38,7 +65,8 @@ export function dotsTaskHistoryPage(history: TaskHistoryDto) {
   const nextBeforeEntryId = !historyId ? undefined
     : history.messages.length > messages.length && Number.isSafeInteger(first) && first > 1
       ? first - 1 : history.page ? history.page.before : history.durable?.historyBefore;
-  return { messages: messages.map(historyMessage), artifacts: dotsTaskArtifactPreviews(history.artifacts), historyPage: { historyId, nextBeforeEntryId } };
+  return { messages: messages.map(message => historyMessage(message, taskId, historyId)),
+    artifacts: dotsTaskArtifactPreviews(history.artifacts), historyPage: { historyId, nextBeforeEntryId } };
 }
 
 export function dotsTaskExecutionDiagnostics(history: TaskHistoryDto, observations: TaskDiagnosticsDto, expanded: boolean) {

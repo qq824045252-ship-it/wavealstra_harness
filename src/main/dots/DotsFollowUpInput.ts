@@ -11,13 +11,16 @@ const stopDirective = /^(?:(?:请|先|还是)\s*)*(?:停(?:一下|下|掉|止)?|
 const directionPrefix = String.raw`(?:(?:好|行|可以|确认|请|麻烦|帮我|给我|我(?:要|想让|希望)你|你|现在|先|再|顺便)[,，\s]*)*`;
 const taskReference = String.raw`(?:(?:刚才|之前|上一个|前一个|这|那|原|该)[^,，。.!！？?;；\n]{0,24}(?:任务|事项|交办|件事)|(?:剩下|余下|未完成|没做完)的(?:事|工作|部分)?)`;
 const targetBeforeAction = String.raw`(?:把|让)\s*${taskReference}\s*`;
-const workVerb = "(?:做|办|处理|完善|完成|执行|干|跑)";
+const repairVerb = "(?:修复|修正|改好)";
+const workVerb = "(?:做|办|处理|完善|完成|执行|干|跑|" + repairVerb +
+  "|(?:排查|调查|诊断|定位|分析)[^,，。.!！？?;；\\n]{0,40}(?:并(?:且)?|然后|再)\\s*" + repairVerb + ")";
 const continuationVerb = "(?:继续|接着|恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])";
 const restartVerb = "(?:恢复|重试|重跑|重新(?:跑|执行|开始|做)|再(?:跑|试)一[次遍轮])";
 const resumeDirective = new RegExp(String.raw`^${directionPrefix}(?:${targetBeforeAction}(?:${continuationVerb}\s*${workVerb}|完成|${workVerb}完)|(?:继续|接着)(?=\s*(?:${targetBeforeAction}${workVerb}|${taskReference}|${workVerb}|$|[,，。.!！]))|${restartVerb})`, "u");
 const multipleTargets = /(?:所有|每个|各个|[两二三四五六七八九十\d]+[个项件]|这[些批]|那[些批]|几个|多个)[^，。！？]{0,6}(?:任务|事项|交办)|(?:任务|事项|交办)[^，。！？]{0,12}(?:和|与|、|及)\s*[^，。！？]{0,12}(?:任务|事项|交办)/u;
 const resumeQuestion = /[?？]|(?:可否|能否|能不能|可不可以|要不要|是不是|是否|需要多久|还要多久)|(?:吗|么|如何|继续多久)[.!。！]*$/u;
 const inspectProgress = /(?:继续|接着)\s*(?:查看|查|追查|排查|诊断|调查|分析|解释|看|确认进度)|continue\s+(?:to\s+)?(?:check|look|investigat|explain)/iu;
+const repairAfterInvestigation = new RegExp("(?:排查|调查|诊断|定位|分析)[^,，。.!！？?;；\\n]{0,40}(?:并(?:且)?|然后|再)\\s*" + repairVerb, "u");
 const followUpDirective = new RegExp(String.raw`^${directionPrefix}(?:(?:跟|问)一下(?:原任务|原交办|原事项)|(?:给|向)原任务(?:再)?(?:追问|跟进)|追问|跟进|follow up\b)`, "iu");
 const englishResume = /^(?:please\s+|go ahead and\s+)?(?:resume|retry|rerun|restart|continue)\b/i;
 const reportedSpeech = /(?:这个词|是什么意思|指的是什么|怎么用|怎么做|是为什么|说过|比如|举例|假[设如]|之前先|(?:不了|还是停|失败了)[.!。]*$)/u;
@@ -72,7 +75,7 @@ function isSingleDirective(clause: string): boolean {
 
 function isResumeDirective(clause: string): boolean {
   const normalized = clause.normalize("NFKC");
-  return isSingleDirective(normalized) && !inspectProgress.test(normalized)
+  return isSingleDirective(normalized) && (!inspectProgress.test(normalized) || repairAfterInvestigation.test(normalized))
     && (resumeDirective.test(normalized) || englishResume.test(normalized));
 }
 

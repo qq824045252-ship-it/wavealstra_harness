@@ -6,13 +6,14 @@ import { matchingNativeExecutionReceipt } from "../../shared/native-execution-re
 import { WEB_ACCESS_TOOL_NAMES } from "../../shared/native-tools";
 import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactReceipt";
-import { PROJECT_CHECK_NAME_PATTERN } from "../../shared/project-check";
-import { PROJECT_VERIFY_TOOL } from "../agent/durable/DurableProjectVerification";
+import { isProjectTest, PROJECT_CHECK_NAME_PATTERN, standaloneProjectTest } from "../../shared/project-check";
+import { PROJECT_VERIFY_TOOL, type ProjectVerificationManager } from "../agent/durable/DurableProjectVerification";
 import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 
 export type DotsRecoveryKind = "continue" | "local" | "report-only" | "unknown" | "unavailable";
 export type DotsRecoveryToolScope = { kind: "report-only" } | { kind: "local-files"; files: string[] }
-  | { kind: "local-repair"; files: string[]; checks: string[]; edits: string[] };
+  | { kind: "local-repair"; files: string[]; checks: string[]; edits: string[];
+    checkManagers?: Record<string, ProjectVerificationManager[]>; commitFiles?: string[] };
 export type DotsRecoveryInspection = { kind: DotsRecoveryKind; retainedFiles: string[]; editableFiles?: string[] };
 
 const readTools = new Set(["read", "find", "glob", "grep", "ls"]);
@@ -26,7 +27,8 @@ export function dotsRecoveryAllowsTool(scope: DotsRecoveryToolScope, name: strin
   if (scope.kind === "report-only") return false;
   if (readTools.has(name) || webReads.has(name) || name === "request_user_input") return true;
   if (name === "write" || name === OFFICE_USE_TOOLS.documentCreate) return scope.files.length > 0;
-  return scope.kind === "local-repair" && (name === PROJECT_VERIFY_TOOL && scope.checks.length > 0 || name === "edit" && scope.edits.length > 0);
+  return scope.kind === "local-repair" && (name === PROJECT_VERIFY_TOOL && scope.checks.length > 0 ||
+    name === "edit" && scope.edits.length > 0 || name === DOTS_RECOVER_COMMIT && Boolean(scope.commitFiles?.length));
 }
 
 export function dotsRecoveryAllowsVerify(scope: DotsRecoveryToolScope, params: unknown): boolean {
@@ -35,9 +37,13 @@ export function dotsRecoveryAllowsVerify(scope: DotsRecoveryToolScope, params: u
   const { script, args, manager } = params as { script?: unknown; args?: unknown; manager?: unknown };
   return typeof script === "string" && namedProjectCheck.test(script) &&
     (manager === undefined || manager === "npm" || manager === "pnpm") &&
+    (!standaloneProjectTest(script) || manager !== "npm") &&
+    (!scope.checkManagers?.[script] || scope.checkManagers[script].includes(manager ?? "pnpm")) &&
     (args === undefined || Array.isArray(args) && args.length === 0) &&
-    (scope.checks.includes(script) || scope.checks.includes("test:*") && (script === "test" || script.startsWith("test:")));
+    (scope.checks.includes(script) || scope.checks.includes("test:*") && isProjectTest(script));
 }
+
+export const DOTS_RECOVER_COMMIT = "dots_recover_commit";
 
 export function validDotsRecoveryFilename(name: string): boolean {
   return /^[\p{L}\p{N}_-][\p{L}\p{N} ._-]*\.[\p{L}\p{N}]+$/u.test(name) &&
@@ -53,8 +59,15 @@ export function dotsRecoveryFileKey(name: string, snapshotPath: string): string 
 function toolRecovery(result: ToolResultMessage, receipt: ReturnType<typeof matchingNativeExecutionReceipt>): Exclude<DotsRecoveryKind, "unavailable"> {
   const name = result.toolName;
   if (receipt?.transport === "not_started" && receipt.settlement === "released") return "continue";
+  if (name === PROJECT_VERIFY_TOOL && receipt?.transport === "returned" && receipt.settlement === "consumed" && result.isError &&
+    result.content.length === 1 && result.content[0]?.type === "text") {
+    try {
+      const check = JSON.parse(result.content[0].text);
+      if (check?.unchanged === true && typeof check.executionId === "string" && check.executionId) return "continue";
+    } catch { /* No verified check result. */ }
+  }
   if (receipt?.status !== "passed" || receipt.settlement !== "consumed") return "unknown";
-  if (webReads.has(name) && receipt.verifierId === "durable-tool-result" && receipt.transport === "returned" && !result.isError) return "continue";
+  if (name === DOTS_RECOVER_COMMIT && receipt.transport === "returned") return "local";
   if (name === PROJECT_VERIFY_TOOL && receipt.transport === "returned" && result.content.length === 1 && result.content[0]?.type === "text") {
     try {
       const check = JSON.parse(result.content[0].text);
@@ -108,11 +121,11 @@ export async function inspectDotsRecovery(directory: string, taskId: string, ope
         }
         for (const message of entry.model ?? []) {
           if (message.role === "assistant") for (const call of message.content) {
-            if (call.type !== "toolCall" || readTools.has(call.name) || call.name === reportTool) continue;
+            if (call.type !== "toolCall" || readTools.has(call.name) || webReads.has(call.name) || call.name === reportTool) continue;
             if (pending.has(call.id)) return finish("unknown");
             pending.set(call.id, call.name);
           }
-          if (message.role !== "toolResult" || readTools.has(message.toolName) || message.toolName === reportTool) continue;
+          if (message.role !== "toolResult" || readTools.has(message.toolName) || webReads.has(message.toolName) || message.toolName === reportTool) continue;
           const call = pending.get(message.toolCallId);
           if (!call || call !== message.toolName || entry.byTaskId === undefined) return finish("unknown");
           pending.delete(message.toolCallId);

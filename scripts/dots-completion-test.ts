@@ -10,6 +10,8 @@ import * as XLSX from "xlsx";
 import { readDurableDotsResult } from "../src/main/agent/durable/DurableDotsResult";
 import { assertDotsWorkCompletion, dotsCompletionGaps, dotsCompletionRequirements, dotsProgressInScope } from "../src/main/dots/DotsCompletion";
 import { readDotsWorkerOutcome } from "../src/main/dots/DotsWorkerOutcome";
+import { dotsFollowUpInput, hasDotsResumeInstruction } from "../src/main/dots/DotsFollowUpInput";
+import { dotsExecutionConfiguration, type DotsExecutionCatalog } from "../src/main/dots/DotsCapabilityRequirements";
 import type { DotsDelegation } from "../src/shared/dots";
 
 const folder = await mkdtemp(join(tmpdir(), "mybuddy-dots-completion-"));
@@ -79,6 +81,26 @@ try {
   }));
   assert.throws(() => assertDotsWorkCompletion(workRequirements, completedItems.slice(0, 1)), /列出缺少的采购材料/);
   assert.doesNotThrow(() => assertDotsWorkCompletion(workRequirements, completedItems));
+  const unfinishedEvidence = completedItems.map((item, index) => ({ ...item, evidence: index ? "待处理" : "尚未执行" }));
+  assert.throws(() => assertDotsWorkCompletion(workRequirements, unfinishedEvidence), /仍缺少逐项完成依据/);
+  const emptyWorkbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(emptyWorkbook, XLSX.utils.aoa_to_sheet([]), "Sheet1");
+  const emptySnapshot = await snapshot(XLSX.write(emptyWorkbook, { type: "buffer", bookType: "xlsx" }) as Buffer);
+  assert.deepEqual(dotsCompletionRequirements("生成一份空白模板报价单.xlsx").files, ["报价单.xlsx"]);
+  const catalog: DotsExecutionCatalog = { defaultMode: "general", modes: [{ id: "general", label: "通用", presets: [] }],
+    experts: [{ id: "finance", label: "财务专家" }], connectors: [] };
+  for (const verb of ["让", "由"]) {
+    const authorizationQuote = verb + "财务专家处理";
+    assert.equal(dotsExecutionConfiguration({ expertId: "finance", authorizationQuote },
+      "新建一个任务，" + authorizationQuote, catalog).expertId, "finance");
+    assert.throws(() => dotsExecutionConfiguration({ expertId: "finance", authorizationQuote },
+      "如果新建一个任务，" + authorizationQuote + "？", catalog), /没有明确授权/);
+  }
+  for (const text of ["继续修复原任务", "继续修复原任务，不要重跑已经通过的测试", "继续排查并修复原任务"]) {
+    assert.equal(hasDotsResumeInstruction(text), true);
+    assert.match(dotsFollowUpInput([{ id: "new-user-message", entryId: 1, createdAt: 1, text }]).assignmentQuote, /修复原任务/u);
+  }
+  assert.equal(hasDotsResumeInstruction("继续排查原任务为什么失败"), false);
   assert.throws(() => dotsCompletionRequirements("不要运行 npm test", undefined, [
     { kind: "check", name: "test", quote: "运行 npm test" },
   ]), /原交办/);
@@ -100,6 +122,8 @@ try {
     ["空 XLSX 无法结项", (await check("交付报价单.xlsx", "已完成。", await snapshot(""))).gaps.length > 0],
     ["改扩展名的文本无法结项", (await check("交付报价单.xlsx", "已完成。", await snapshot("只是一段纯文本"))).gaps.length > 0],
     ["真实工作簿可以交付", (await check(quote, "已完成。", validSnapshot)).gaps.length === 0],
+    ["成品不能用合法的空工作簿交付", (await check(quote, "已完成。", emptySnapshot)).gaps[0]?.includes("工作表没有内容")],
+    ["明确交办空模板时可以交付空工作簿", (await check("生成一份空白模板报价单.xlsx", "已完成。", emptySnapshot)).gaps.length === 0],
     ["改扩展名的文本无法作为 Word 文档交付", (await check("交付" + wordFile, "已完成。", await snapshot("文本", undefined, wordFile))).gaps.length > 0],
     ["真实 Word 文档可以交付", (await check("交付" + wordFile, "已完成。", await snapshot(validWord, undefined, wordFile))).gaps.length === 0],
     ["改扩展名的工作簿无法作为演示文稿交付", (await check("交付" + presentationFile, "已完成。",
@@ -107,6 +131,10 @@ try {
     ["真实演示文稿可以交付", (await check("交付" + presentationFile, "已完成。",
       await snapshot(validPresentation, undefined, presentationFile))).gaps.length === 0],
     ["指定工作表和表头通过实物核验", (await verifyWorkbook(validSnapshot)).gaps.length === 0],
+    ["原交办指定的表头无需重复声明", (await check(assignment, "已完成。", await snapshot(wrongBytes))).gaps[0]?.includes("缺少要求的表头")],
+    ["逐项依据承认没做时不能交付", (await dotsCompletionGaps({ assignment: listedWork, requirements: workRequirements,
+      artifacts: [], result: "已完成。", completedItems: unfinishedEvidence })).missingWork.length === 2],
+    ["明确的 pytest 要求必须有回执", (await check("修复问题，运行 pytest。", "已完成。")).missingChecks.includes("pytest")],
     ["工作表缺少指定表头无法交付", (await verifyWorkbook(await snapshot(wrongBytes))).gaps[0]?.includes("缺少要求的表头")],
     ["无索引的共享字符串不能冒充表头", (await verifyWorkbook(await snapshot(brokenBytes))).gaps[0]?.includes("缺少要求的表头")],
     ["可打开的工作簿也要与登记版本一致", (await verifyWorkbook(await snapshot(valid, "0".repeat(64) + ".xlsx"))).gaps[0]?.includes("登记版本不一致")],
@@ -118,6 +146,7 @@ try {
     ["保留的未完成说明阻止交付", paper?.dotsState === "complete"
       && (await check("修复报价单的生成错误", paper.result, [], paper.executionRecord)).gaps.some(gap => gap.includes("本轮尚未完成测试"))],
     ["采购说明的等义检查可接续", dotsProgressInScope(["核对采购说明并补齐缺项"], "检查采购说明")],
+    ["核对原交办中明确涉及的导入结果可接续", dotsProgressInScope(["修复导入导出功能"], "核对导入结果", "修复导入导出功能")],
     ["接续不能拼上新的文件修改", !dotsProgressInScope(["核对采购说明并补齐缺项"], "检查采购说明并格式化本地文件")],
     ["性能排查不能拼上上传采样结果", !dotsProgressInScope(["优化系统性能"], "排查性能把采样结果上传")],
     ["只在禁止语境出现的步骤不能接续", !dotsProgressInScope(["核对到货数，确认批次后汇总，不要发送邮件"], "发送邮件")],

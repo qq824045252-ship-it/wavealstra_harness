@@ -39,6 +39,9 @@ let readFile = false;
 const weeklyReads: string[] = [];
 let weeklyLookup = false;
 let registerManualReport = false;
+const manualPaymentTerms = "付款条件：尾款在最终验收后结清。";
+const manualReport = "用户自建任务最终核算：批次 B882 净额 6821 元。" +
+  "前一批发票已复核。".repeat(350) + manualPaymentTerms + "后一批票据已登记。".repeat(310);
 let askQuestion: false | "short_text" | "confirm" = false;
 let steeringProof = false;
 let ordinaryReadResult = "";
@@ -94,7 +97,7 @@ const fixture = await createAgentDurableFixture(root, db, async (input, signal) 
     if (registerManualReport && last?.role === "toolResult") {
       assert.equal(last.isError,false,JSON.stringify(last.content));
       registerManualReport = false;
-      return [{type:"text",text:"用户自建任务最终核算：批次 B882 净额 6821 元。"}];
+      return [{type:"text",text:manualReport}];
     }
     if (steeringProof && JSON.stringify(input.messages.findLast(message => message.role === "user")?.content).includes("改为方案")) {
       if (last?.role === "toolResult" && last.toolName === "register_artifact") {
@@ -559,6 +562,27 @@ try {
     const href = /\((file:\/\/\/.+)\)$/.exec(file.link)?.[1];
     assert(href);
     assert.equal(readFileSync(pathFromMarkdownHref(href)!,"utf8"),"独立快照 6821");
+  }
+  const nativeHits = await success({ action: "deliveries", targetTaskId: manualId, query: manualPaymentTerms });
+  const nativeHit = nativeHits.results.find((row: { taskId: string }) => row.taskId === manualId);
+  const history = await success({ action: "task", targetTaskId: manualId, detail: "history" });
+  const messageHit = history.messages.find((message: { text: string; textTruncated?: boolean }) => message.textTruncated &&
+    message.text.endsWith("后一批票据已登记。"));
+  const current = await success({ action: "task", targetTaskId: manualId });
+  const currentHit = current.messages.find((message: { text: string; textTruncated?: boolean }) => message.textTruncated &&
+    message.text.endsWith("后一批票据已登记。"));
+  for (const hit of [nativeHit, messageHit, currentHit]) {
+    assert(hit?.readTextCall);
+    let request = hit.readTextCall;
+    let text = "";
+    while (request) {
+      const page = await actions.execute(DOTS_TASK_ID, undefined, request);
+      assert(page && "textLength" in page && page.text.length <= 1800);
+      assert.equal(page.offset, text.length);
+      text += page.text;
+      request = page.readTextCall;
+    }
+    assert.equal(text, manualReport);
   }
   assert(!(await success({action:"deliveries",targetTaskId:task.id,query:"批次 B882 净额"})).results.length);
   const reviewed = await agent.nativeImprovement.review();
