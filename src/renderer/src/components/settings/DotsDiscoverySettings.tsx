@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { discoverySchedule, discoveryUrl, type DiscoverySchedule, type DiscoveryStatus, type DotsDiscoveryStatus,
   type DreamSettings, type DreamTag, type RssSubscription } from "@shared/dots-discovery";
 import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
@@ -33,17 +33,23 @@ function scheduleText(rule: DiscoverySchedule) {
   return rule.mode === "new" ? `每 ${rule.minutes} 分钟检查，有新内容就推送` : `每 ${rule.minutes} 分钟汇总`;
 }
 
-function Details({ state }: { state?: DiscoveryStatus }) {
-  if (!state) return null;
+function Details({ state, showRunning = true, checking = false, openRecent }: {
+  state?: DiscoveryStatus; showRunning?: boolean; checking?: boolean; openRecent?: boolean;
+}) {
+  if (!state) return checking ? <p role="status">正在检查…</p> : null;
+  const busy = checking || Boolean(state.running && showRunning);
   return <>
-    {state.running && <p role="status">正在检查…</p>}
-    {state.message && <p className="settings-field-hint" role="status">{state.message}</p>}
+    {busy && <p role="status">正在检查…</p>}
+    {!busy && state.message && <p className="settings-field-hint" role="status">{state.message}</p>}
+    {!busy && !state.message && state.newItems !== undefined && <p className="settings-field-hint" role="status">
+      {state.newItems ? `检查完成，本次发现 ${state.newItems} 条新内容。` : "检查完成，暂无新增内容。"}
+    </p>}
     {(state.checkedAt || state.nextAt || Boolean(state.pending)) && <p className="settings-field-hint">
       {state.checkedAt && `上次检查 ${new Date(state.checkedAt).toLocaleString()} `}
       {state.nextAt && `· 下次 ${new Date(state.nextAt).toLocaleString()} `}
       {state.pending ? `· ${state.pending} 条待汇总` : ""}
     </p>}
-    {!!state.recent?.length && <details className="dots-discovery-results">
+    {!!state.recent?.length && <details className="dots-discovery-results" open={openRecent}>
       <summary>最近内容</summary>
       <ul>{state.recent.map(item => <li key={item.url}>
         <button className="btn" type="button" onClick={() => window.api?.browser?.openExternal(item.url)}>{item.title}</button>
@@ -92,7 +98,8 @@ function DreamTagEditor({ value, suggestion, tags, save, cancel }: {
     }
     save({ ...draft, name, query });
   }}>
-    <SettingsInput label="兴趣标签" required maxLength={40} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} />
+    <SettingsInput label="兴趣标签" autoFocus required maxLength={40} value={draft.name}
+      onChange={event => setDraft({ ...draft, name: event.target.value })} />
     <SettingsInput label="公开搜索关键词" maxLength={160} value={draft.query} placeholder="留空则搜索标签名称"
       onChange={event => setDraft({ ...draft, query: event.target.value })} />
     {error && <p role="alert">{error}</p>}
@@ -131,9 +138,13 @@ export default function DotsDiscoverySettings({ kind, rss, dream, saveRss, saveD
   const [status, setStatus] = useState<DotsDiscoveryStatus>();
   const [editing, setEditing] = useState<string>();
   const [running, setRunning] = useState<string>();
+  const [openRssPreview, setOpenRssPreview] = useState<string>();
   const [error, setError] = useState("");
   const [suggestions, setSuggestions] = useState<string[]>();
   const [suggestion, setSuggestion] = useState<string>();
+  const tagSection = useRef<HTMLDivElement>(null);
+  const hasEnabledTag = dream.tags.some(tag => tag.enabled);
+  const exploring = running === "dream" || status?.dream.running;
   useEffect(() => {
     if (!api) return;
     let attached = true;
@@ -147,10 +158,26 @@ export default function DotsDiscoverySettings({ kind, rss, dream, saveRss, saveD
   const run = async (id?: string) => {
     if (!api || running) return;
     setRunning(id ?? "dream");
+    setOpenRssPreview(undefined);
     setError("");
-    try { setStatus(await api.run(kind, id)); }
+    try {
+      const next = await api.run(kind, id);
+      setStatus(next);
+      if (id && !next.rss[id]?.message) setOpenRssPreview(id);
+    }
     catch (error) { setError(String(error).replace(/^.*Error: /, "")); }
     finally { setRunning(undefined); }
+  };
+  const explore = () => {
+    if (hasEnabledTag) {
+      void run();
+    } else if (dream.tags.length) {
+      tagSection.current?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.focus();
+    } else {
+      setSuggestion(undefined);
+      setEditing("new");
+      tagSection.current?.querySelector<HTMLInputElement>('input[aria-label="兴趣标签"]')?.focus();
+    }
   };
   if (!api) return <p role="alert">当前 MyBuddy 主进程尚未加载此能力，请重新启动。</p>;
   const rssEdit = rss.find(feed => feed.id === editing);
@@ -167,7 +194,7 @@ export default function DotsDiscoverySettings({ kind, rss, dream, saveRss, saveD
           <button type="button" className="btn" onClick={() => { if (editing === item.id) setEditing(undefined); void saveRss(rss.filter(feed => feed.id !== item.id)); }}>移除</button>
         </div>
       </div>
-      <Details state={status?.rss[item.id]} />
+      <Details state={status?.rss[item.id]} checking={running === item.id} openRecent={openRssPreview === item.id ? true : undefined} />
     </div>)}
     {editing ? <RssEditor key={editing} item={rssEdit} rows={rss} cancel={() => setEditing(undefined)}
       onSave={item => { const next = rssEdit ? rss.map(feed => feed.id === item.id ? item : feed) : [...rss, item];
@@ -178,13 +205,17 @@ export default function DotsDiscoverySettings({ kind, rss, dream, saveRss, saveD
     <SettingsSection title="Dream" description="按兴趣标签寻找近期公开内容。记忆只在本机辅助挑选标签，联网时发送下面设置的公开搜索词。">
       <DreamSchedule key={JSON.stringify([dream.enabled, dream.useMemory, dream.schedule])} value={dream} save={value => void saveDream(value)} />
       <div className="dots-discovery-run">
-        <button type="button" className="btn" disabled={!!running || status?.dream.running || !dream.tags.some(tag => tag.enabled)}
-          onClick={() => void run()}>现在探索</button>
-        <Details state={status?.dream} />
+        <button type="button" className="btn" disabled={!!exploring}
+          aria-describedby={hasEnabledTag ? undefined : "dots-dream-topic-hint"} onClick={explore}>现在探索</button>
+        {exploring && <p role="status">正在探索…</p>}
+        {!hasEnabledTag && <p id="dots-dream-topic-hint" className="settings-field-hint">
+          {dream.tags.length ? "启用至少一个兴趣标签后就能探索。" : "先添加一个兴趣标签，告诉 Dream 想了解什么。"}
+        </p>}
+        <Details state={status?.dream} showRunning={false} />
         {error && <p role="alert">{error}</p>}
       </div>
     </SettingsSection>
-    <SettingsSection title="兴趣标签">
+    <div ref={tagSection}><SettingsSection title="兴趣标签">
       {dream.tags.map(tag => <div className="dots-google-account" key={tag.id}>
         <label className="dots-config-check">
           <input type="checkbox" checked={tag.enabled} onChange={event => void saveDream({ ...dream,
@@ -209,6 +240,6 @@ export default function DotsDiscoverySettings({ kind, rss, dream, saveRss, saveD
         {suggestions.filter(name => !dream.tags.some(tag => tag.name === name)).map(name => <button className="btn" type="button" key={name}
           onClick={() => { setSuggestion(name); setEditing("new"); }}>{name}</button>)}
       </div> : <p className="settings-field-hint" role="status">没有可用的偏好标签建议。</p>)}
-    </SettingsSection>
+    </SettingsSection></div>
   </>;
 }

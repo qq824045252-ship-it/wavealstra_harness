@@ -16,6 +16,7 @@ export interface DiscoveryStatus {
   message?: string;
   running?: boolean;
   pending?: number;
+  newItems?: number;
   recent?: DiscoveryItem[];
 }
 export interface DotsDiscoveryStatus { rss: Record<string, DiscoveryStatus>; dream: DiscoveryStatus }

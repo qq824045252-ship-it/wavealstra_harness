@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -70,6 +70,15 @@ try {
   await until(() => host.status().rss.daily.checkedAt === clock && host.status().rss.instant.checkedAt === clock && host.status().dream.nextAt === at(10));
   assert.equal(notices.length, 0);
   assert.equal(terms.length, 0);
+  const cachedFeedPath = join(root, "rss-daily.json");
+  const cachedFeed = JSON.parse(await readFile(cachedFeedPath, "utf8"));
+  delete cachedFeed.recent;
+  delete cachedFeed.newItems;
+  await writeFile(cachedFeedPath, JSON.stringify(cachedFeed));
+  await host.run("rss", "daily");
+  assert.equal(host.status().rss.daily.recent?.[0]?.title, "既有内容", "没有新条目时，手动检查也能查看现有内容");
+  assert.equal(host.status().rss.daily.newItems, 0);
+  assert.equal(notices.length, 0, "手动预览不会将基线内容作为新增推送");
 
   feedVersion = 2;
   clock = at(8, 10);
@@ -81,7 +90,7 @@ try {
   host.refresh();
   await until(() => notices.length === 2 && host.status().rss.daily.pending === 0);
   assert.equal(notices[1].title, "Dots · RSS · 日读");
-  assert.equal(host.status().rss.daily.recent?.[0].url, "https://news.example.test/news/new");
+  assert(host.status().rss.daily.recent?.some(entry => entry.url === "https://news.example.test/news/new"));
 
   await host.close();
   host = instance();

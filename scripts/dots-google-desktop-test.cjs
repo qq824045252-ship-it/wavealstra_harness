@@ -37,12 +37,28 @@ run(async env => {
   await click("保存订阅", ".dots-config");
   await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.rss[0]?.schedule.mode === 'new')"), "RSS 推送规则已保存");
   assert.equal(await evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.rss[0].schedule.minutes)"), 8);
+  const savedFeed = await evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.rss[0])");
+  const discoveryDir = path.join(env.home, ".mybuddy", "dots", "discovery");
+  fs.mkdirSync(discoveryDir, { recursive: true });
+  fs.writeFileSync(path.join(discoveryDir, "rss-" + savedFeed.id + ".json"), JSON.stringify({
+    url: savedFeed.url, checkedAt: Date.now(), newItems: 0, recent: [{ title: "现有 RSS 文章", url: "https://feed.example.test/article" }],
+  }));
+  await until(() => evaluate("document.querySelector('.dots-discovery-row [role=status]')?.textContent.includes('暂无新增内容')"),
+    "没有新内容时显示成功回执");
+  await press("document.querySelector('.dots-discovery-row summary')", "展开 RSS 现有条目");
+  await until(() => evaluate("document.querySelector('.dots-discovery-row details[open] button')?.textContent === '现有 RSS 文章'"),
+    "可以查看已有 RSS 条目");
   await click("暂停", ".dots-discovery-row");
   await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.rss[0]?.enabled === false)"), "RSS 已暂停");
   await screenshot("dots-rss-settings");
   await click("移除", ".dots-discovery-row");
   await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.rss.length === 0)"), "RSS 已移除");
   await click("Dream", ".dots-resident-nav");
+  assert.equal(await evaluate("document.querySelector('.dots-discovery-run button')?.disabled"), false,
+    "有零个标签时，立即探索应引导用户创建标签");
+  await click("现在探索", ".dots-discovery-run");
+  await until(() => evaluate("document.activeElement?.getAttribute('aria-label') === '兴趣标签'"), "立即探索打开并聚焦标签编辑框");
+  await click("取消", ".dots-config .dots-discovery-editor");
   await evaluate(`Promise.all([
     window.api.memory.create({ kind:"preference", title:"天文摄影", content:"喜欢夜空摄影技巧。", scopeType:"task", scopeId:"mybuddy-dots" }),
     window.api.memory.create({ kind:"preference", title:"隐私隔离夹具", content:"这项偏好不属于 Dots。", scopeType:"global" })
@@ -57,6 +73,16 @@ run(async env => {
   await fill('input[aria-label="公开搜索关键词"]', "公开工业自动化项目");
   await click("保存标签", ".dots-config");
   await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.dream.tags[0]?.name === '工业自动化')"), "Dream 标签已保存");
+  const topicCheckbox = "[...document.querySelectorAll('label.dots-config-check')].find(label => label.textContent.includes('工业自动化'))?.querySelector('input')";
+  await press(topicCheckbox, "停用唯一的 Dream 标签");
+  await until(() => evaluate(`${topicCheckbox}?.checked === false`), "标签已停用");
+  await click("现在探索", ".dots-discovery-run");
+  await until(() => evaluate(`document.activeElement === ${topicCheckbox}`), "已定位到待启用的兴趣标签");
+  await press(topicCheckbox, "重新启用 Dream 标签");
+  await until(() => evaluate(`${topicCheckbox}?.checked === true`), "标签已重新启用");
+  await click("现在探索", ".dots-discovery-run");
+  await until(() => evaluate("document.querySelector('.dots-discovery-run [role=alert]')?.textContent.includes('Dots 主动跟进已暂停')"),
+    "全局暂停时仍显示探索请求的反馈");
   await fill('input[aria-label="随机窗口开始"]', "22:00");
   await fill('input[aria-label="随机窗口结束"]', "01:00");
   await click("保存 Dream 设置", ".dots-config");

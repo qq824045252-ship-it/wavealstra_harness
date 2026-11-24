@@ -109,7 +109,7 @@ export class DotsDiscovery {
     return {
       rss: Object.fromEntries(this.preferences().rss.map(feed => {
         const state = this.rssState(feed);
-        return [feed.id, { ...publicState("rss-" + feed.id, state), pending: state.queue?.length ?? 0 }];
+        return [feed.id, { ...publicState("rss-" + feed.id, state), pending: state.queue?.length ?? 0, newItems: state.newItems }];
       })),
       dream: publicState("dream", this.read<DreamState>("dream")),
     };
@@ -176,14 +176,19 @@ export class DotsDiscovery {
     const fetchDue = manual || (state.scanAt ?? 0) <= now || (state.nextAt ?? 0) <= now;
     if (fetchDue) {
       try {
-        const read = await this.fetchFeed(feed.url, { etag: state.etag, modified: state.modified }, signal);
+        // Existing subscriptions may have validators and seen IDs but no preview.
+        const validators = state.recent ? { etag: state.etag, modified: state.modified } : {};
+        const read = await this.fetchFeed(feed.url, validators, signal);
         if (!current()) return;
+        state.newItems = 0;
         if (read.entries) {
           const seen = new Set(state.seen ?? []);
           if (state.seen) {
             const unseen = read.entries.filter(entry => !seen.has(entry.id));
+            state.newItems = unseen.length;
             state.queue = [...unseen, ...(state.queue ?? [])].slice(0, 250);
-          } else if (manual) state.recent = read.entries.slice(0, 8);
+          }
+          state.recent = read.entries.slice(0, 8).map(({ title, url }) => ({ title, url }));
           state.seen = keepUnique([...read.entries.map(entry => entry.id), ...seen], 800);
         }
         state.etag = read.etag;
@@ -207,7 +212,7 @@ export class DotsDiscovery {
     const items = state.queue.slice(0, 8).map(({ title, url }) => ({ title, url }));
     this.deliver({ key: `${key}:${digest([feed.url, ...state.queue.map(item => item.id)])}`, title: `Dots · RSS · ${feed.name}`,
       body: `发现 ${state.queue.length} 条新内容。\n` + items.slice(0, 4).map(item => item.title).join("\n") });
-    this.save(key, { ...state, queue: [], recent: items });
+    this.save(key, { ...state, queue: [] });
   }
 
   private async runDream(config: DreamSettings, manual: boolean, signal: AbortSignal) {
