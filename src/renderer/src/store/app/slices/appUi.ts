@@ -24,6 +24,7 @@ export interface AppUiState {
   answerRuleTurnTarget?: { taskId: string; inputId: string };
   notificationMessageTarget?: NotificationMessageFocus & { taskId: string };
   chatLatestTarget?: string;
+  sidebarTaskTarget?: { taskId: string };
   answerRuleSeed?: { question?: string; answer?: string; projectId?: string;
     title?: string; instruction?: string; evidencePaths?: string[]; turn?: { taskId: string; inputId: string } };
   activeWorkspaceId: string | null;

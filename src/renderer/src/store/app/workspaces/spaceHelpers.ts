@@ -38,3 +38,17 @@ export function recomputeEffectiveArchived(spaces: Space[]): Space[] {
   );
   return spaces.map((s) => ({ ...s, effectiveArchived: m.get(s.id) ?? false }));
 }
+
+export function expandSpacePath(spaces: Space[], spaceId: string, expandedIds: string[]): string[] {
+  const byId = new Map(spaces.map((space) => [space.id, space]));
+  const path = new Set<string>();
+  let id: string | null = spaceId;
+  while (id !== null) {
+    const space = byId.get(id);
+    if (!space || space.archived || path.has(id)) return expandedIds;
+    path.add(id);
+    id = space.parentId ?? null;
+  }
+  const missing = [...path].filter((id) => !expandedIds.includes(id));
+  return missing.length ? [...expandedIds, ...missing] : expandedIds;
+}

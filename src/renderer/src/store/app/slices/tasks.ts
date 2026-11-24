@@ -37,11 +37,11 @@ export function createTasksActions(
 > {
   const { get, set } = storeContext;
   return {
-    setTaskFilterStatus: (s) => set({ taskFilterStatus: s }),
+    setTaskFilterStatus: (s) => set({ taskFilterStatus: s, sidebarTaskTarget: undefined }),
 
-    setTaskFilterTime: (t) => set({ taskFilterTime: t }),
+    setTaskFilterTime: (t) => set({ taskFilterTime: t, sidebarTaskTarget: undefined }),
 
     resetTaskFilters: () =>
-      set({ taskFilterStatus: "all", taskFilterTime: "all" }),
+      set({ taskFilterStatus: "all", taskFilterTime: "all", sidebarTaskTarget: undefined }),
   };
 }

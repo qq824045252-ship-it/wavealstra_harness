@@ -68,7 +68,9 @@ run(async env => {
   mkdirSync(folder);
   writeFileSync(join(folder, "check.txt"), "启动：通过\n导入：通过\n导出：失败（目标目录无写权限）\n");
   await until(() => evaluate("Boolean(window.api?.db && document.querySelector('.sidebar-dots-entry'))"), "ready for Dots");
-  await api("db.upsertSpace", { id: spaceId, name: "排版验收", path: folder });
+  const parentId = "dots-reply-layout-parent";
+  await api("db.upsertSpace", { id: parentId, name: "客户交付" });
+  await api("db.upsertSpace", { id: spaceId, parentId, name: "排版验收", path: folder });
   const foreground = liveModel && process.env.MYBUDDY_DOTS_LIVE_FOREGROUND;
   if (foreground) await api("agent.updateAppSettings", { dotsSettings: { modelId: "fixture/" + foreground } });
   const open = async () => {
@@ -209,6 +211,9 @@ run(async env => {
   await until(() => evaluate("document.querySelector('.bot-work-file-preview-body')?.textContent.includes("
     + JSON.stringify(fileProof) + ")"), "file preview shows the saved result");
 
+  await Promise.all(Array.from({ length: 40 }, (_, index) => api("db.upsertTask", {
+    id: `sidebar-scroll-task-${index}`, title: `独立验收任务 ${index + 1}`, updatedAt: Date.now(),
+  })));
   await restart();
   await open();
   assert.equal((await readDelivery("legacy-result-only")).id, legacy.id);
@@ -226,8 +231,22 @@ run(async env => {
   assert(quoteGaps.every(gap => gap >= 8), "quoted paragraphs need visible separation, got " + quoteGaps.join(", "));
   assert.equal(await evaluate("getComputedStyle(" + selector(recalled.id) + ".querySelector('blockquote')).fontStyle"), "normal");
   await screenshot("dots-recalled-original");
+  assert.equal(await evaluate("document.querySelector('.sidebar-scroll button[aria-label=展开客户交付]')?.getAttribute('aria-expanded')"), "false");
+  await click("收起模块列表", "#desktop-module-list");
+  await until(() => evaluate("document.querySelector('#desktop-module-list').hidden"), "sidebar closed before navigating");
+  await press(selector(recalled.id) + "?.querySelector('a[href^=\"mybuddy://task/\"]')", "open recalled task link");
+  await until(() => evaluate(`(() => {
+    const list = document.querySelector(".sidebar-scroll");
+    const row = list.querySelector(".task-item.active");
+    if (row?.querySelector(".task-item-title")?.textContent !== "交接核对报告") return false;
+    const viewport = list.getBoundingClientRect(), target = row.getBoundingClientRect();
+    return list.querySelector('button[aria-label="收起客户交付"]')?.getAttribute("aria-expanded") === "true"
+      && list.querySelector('button[aria-label="收起排版验收"]')?.getAttribute("aria-expanded") === "true"
+      && list.scrollTop > 0 && target.top >= viewport.top && target.bottom <= viewport.bottom;
+  })()`), "both workspace levels open and the selected task row is visible");
   report.actualControlChecks.push({ originalBodyCharacters: denseText.length, directLayout, legacyLayout, gaps,
-    literalParagraphs: 1, exactJson, fileOnly: fileProof, sameDeliveryAfterRestart: true, originalQuoteParagraphs: quoted, quoteGaps });
+    literalParagraphs: 1, exactJson, fileOnly: fileProof, sameDeliveryAfterRestart: true, originalQuoteParagraphs: quoted, quoteGaps,
+    originalTaskRevealedInSidebar: true });
 }, {
   name: recallOnly ? "dots-reply-layout-recall-live" : liveModel ? "dots-reply-layout-live" : "dots-reply-layout-desktop",
   liveModel,

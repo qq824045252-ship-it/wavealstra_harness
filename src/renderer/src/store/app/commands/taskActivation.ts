@@ -9,6 +9,8 @@ import type { ChatMessage } from "../../../types";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
 import { formatDuration } from "../format";
+import { saveSidebarExpanded } from "../persistence/uiPreferences";
+import { expandSpacePath } from "../workspaces/spaceHelpers";
 
 export function createTaskActivationActions(
   storeContext: AppContext,
@@ -50,9 +52,15 @@ export function createTaskActivationActions(
         chatLatestTarget: showLatest && !focus ? DOTS_TASK_ID : undefined,
       }));
     },
-    setActiveTask: (id, focus) => {
+    setActiveTask: (id, focus, { revealInSidebar = false } = {}) => {
       const s = get();
       const task = s.tasks.find((t) => t.id === id);
+      const sidebarTaskTarget = revealInSidebar && task && !task.archived ? { taskId: id } : undefined;
+      const pinned = task?.isFavorited || s.pinnedTaskIds.includes(id);
+      const expandedSpaceIds = sidebarTaskTarget && task?.spaceId && !pinned
+        ? expandSpacePath(s.spaces, task.spaceId, s.expandedSpaceIds)
+        : s.expandedSpaceIds;
+      if (expandedSpaceIds !== s.expandedSpaceIds) saveSidebarExpanded(expandedSpaceIds);
       // 3E：首个产物 tab 从 projection 取（task.artifacts 已退役；未 hydrate 时为空，hydrate 后事件补齐）
       const first = s.artifactProjection.artifactsByTask[id]?.[0]?.id ?? null;
       const hasMessages = (task?.messages.length ?? 0) > 0;
@@ -69,6 +77,8 @@ export function createTaskActivationActions(
         answerRuleTurnTarget: undefined,
         notificationMessageTarget: focus && { ...focus, taskId: id },
         chatLatestTarget: undefined,
+        sidebarTaskTarget,
+        expandedSpaceIds,
         // 切到具体任务 = 丢弃草稿（首条消息未发出即不存在）
         draft: null,
         // 工作空间选择跟随当前任务：独立任务清空 homeSpaceId，避免发消息时被上次空间偷绑
@@ -130,6 +140,7 @@ export function createTaskActivationActions(
           task?.modePresetId ??
           defaultModePresetId(task?.welcomeMode ?? get().welcomeMode),
       });
+      if (sidebarTaskTarget && s.sidebarCollapsed) get().toggleSidebar();
       // 打开任务 = 看过结果：清掉「已结束」绿点（持久化，重启不再亮）。仅对已结束未确认的任务写库。
       void get().ackTaskDone(id);
       const hydrateConversationRuntime = (): void => {

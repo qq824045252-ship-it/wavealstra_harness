@@ -5,7 +5,7 @@ import { DesktopSectionRow, DesktopSectionSidebar, useDesktopSectionScroll, useD
 import "./workspace/WorkspaceForeground.css";
 import { useBotWorkspaceNavigation, openWorkspaceRequest, foregroundStatus } from "@/hooks/useBotWorkspaceNavigation";
 import type { BotWorkspaceRequestDto, BotWorkspaceConversationDto } from "@shared/bot-workspace-navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useAppStore, useSidebarTasks } from "@/store/appStore";
@@ -150,6 +150,9 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
   const activeTaskId = useAppStore((s) => s.activeTaskId);
+  const sidebarTaskTarget = useAppStore((s) =>
+    s.page === "chat" && s.sidebarTaskTarget?.taskId === s.activeTaskId ? s.sidebarTaskTarget : undefined,
+  );
   const draft = useAppStore((s) => s.draft);
   const expandedSpaceIds = useAppStore((s) => s.expandedSpaceIds);
   const taskFilterStatus = useAppStore((s) => s.taskFilterStatus);
@@ -198,7 +201,9 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
 
   const tasksDto = useMemo(() => {
     const filtered = tasks.filter((t) => {
-      if (t.archived || (searchTerm && !t.title.toLowerCase().includes(searchTerm))) return false;
+      if (t.archived) return false;
+      if (t.id === sidebarTaskTarget?.taskId) return true;
+      if (searchTerm && !t.title.toLowerCase().includes(searchTerm)) return false;
       return matchesTaskFilter(t, taskFilterStatus, taskFilterTime);
     });
     return filtered.map((t) => ({
@@ -210,7 +215,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       updatedAt: stableSortAt(t.updatedAt),
       archived: Boolean(t.archived),
     })) as TaskDto[];
-  }, [tasks, taskFilterStatus, taskFilterTime, pinnedTaskIds, searchTerm]);
+  }, [tasks, taskFilterStatus, taskFilterTime, pinnedTaskIds, searchTerm, sidebarTaskTarget?.taskId]);
 
   const treeAll = useMemo(() => {
     return buildWorkspaceTree(spacesDto, tasksDtoAll, { includeArchived: false });
@@ -235,7 +240,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
   const visibleRows = useMemo((): VisibleRow[] => {
     let tasksById: Map<string, Task> | undefined;
     const rows: VisibleRow[] = [];
-    // 默认全部收起：只有用户显式展开过（expandedSpaceIds）的空间才展开
+    // 默认全部收起。手动展开和任务导航展开共用 expandedSpaceIds。
     const expandedSet = new Set(expandedSpaceIds);
     const walk = (nodes: WorkspaceTreeNode[], depth: number): void => {
       for (const n of nodes) {
@@ -358,6 +363,15 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
 
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
   const rememberScroll = useDesktopSectionScroll(sidebarScrollRef, "tasks:tree");
+  const scrolledToTarget = useRef<typeof sidebarTaskTarget>(undefined);
+  useLayoutEffect(() => {
+    if (!sidebarTaskTarget || scrolledToTarget.current === sidebarTaskTarget || sidebarCollapsed) return;
+    const list = sidebarScrollRef.current;
+    const row = list?.querySelector<HTMLElement>(".task-item.active");
+    if (!list?.clientHeight || !row) return;
+    scrolledToTarget.current = sidebarTaskTarget;
+    row.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [sidebarTaskTarget, sidebarCollapsed, visibleRows, pinnedRows]);
   const useTreeVirtual = shouldVirtualize(visibleRows.length);
   const treeVirtualizer = useVirtualizer({
     count: visibleRows.length,
@@ -835,6 +849,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}): Rea
       </div>
       {filterOpen && <TaskFilterControls query={searchQuery} onQueryChange={(value) => {
         setSearchQuery(value);
+        useAppStore.setState({ sidebarTaskTarget: undefined });
         sidebarScrollRef.current?.scrollTo({ top: 0 });
       }} onClose={() => {
         setFilterOpen(false);

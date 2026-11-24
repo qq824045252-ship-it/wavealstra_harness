@@ -31,10 +31,15 @@ export async function openDotsActivityTarget(taskId: string, focus?: Notificatio
     }
     return;
   }
+  const stillNavigating = () => {
+    const state = useAppStore.getState();
+    return !signal?.aborted && state.page === before.page &&
+      state.activeTaskId === before.activeTaskId && state.draft === before.draft;
+  };
   if (!before.tasks.some(task => task.id === taskId)) {
     const row = (await window.api?.db.listTasks())?.find(task => task.id === taskId && !task.archived);
+    if (!stillNavigating()) return;
     const state = useAppStore.getState();
-    if (signal?.aborted || state.page !== before.page || state.activeTaskId !== before.activeTaskId || state.draft !== before.draft) return;
     if (!row) throw new Error("找不到来源任务");
     if (!state.tasks.some(task => task.id === taskId)) {
       const task = mapTaskRowToTask(row, {
@@ -44,5 +49,12 @@ export async function openDotsActivityTarget(taskId: string, focus?: Notificatio
       useAppStore.setState({ tasks: [...state.tasks, task] });
     }
   }
-  openVisitedTask(taskId, focus);
+  const state = useAppStore.getState();
+  const spaceId = state.tasks.find(task => task.id === taskId)?.spaceId;
+  if (spaceId && !state.spaces.some(space => space.id === spaceId)) {
+    await state.refreshSpaces();
+    if (!stillNavigating()) return;
+  }
+  recordBoardVisit(taskId);
+  useAppStore.getState().setActiveTask(taskId, focus, { revealInSidebar: true });
 }
