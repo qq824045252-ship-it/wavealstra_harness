@@ -1,5 +1,6 @@
 import { resolveDotsMemoryLimits, type DotsMemoryLimits } from "./dots-limits";
 import { normalizeDotsGoogleRules, type DotsGoogleRules } from "./dots-google";
+import { normalizeDreamSettings, normalizeRssSubscriptions, type DreamSettings, type RssSubscription } from "./dots-discovery";
 
 /** Dots 提示词编辑器每个输入框的字符上限。 */
 export const maxDotsPromptChars = 8000;
@@ -59,6 +60,8 @@ export interface DotsSettings extends Record<DotsCapability, boolean> {
   spaceIds: string[] | null;
   operations: Partial<Record<DotsOperation, boolean>>;
   google?: DotsGoogleRules;
+  rss?: RssSubscription[];
+  dream?: DreamSettings;
 }
 
 // The former task and space toggles only gated changes. Preserve read access for existing configurations.
@@ -77,7 +80,9 @@ export function dotsOperationEnabled(settings: Partial<DotsSettings> | undefined
   return (independentReads.has(key) || settings?.[dotsOperations[op][0]] !== false) && dotsOperationFlag(settings?.operations, op) !== false;
 }
 
-export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): DotsSettings & { google: DotsGoogleRules } {
+export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): DotsSettings & {
+  google: DotsGoogleRules; rss: RssSubscription[]; dream: DreamSettings;
+} {
   const input = value && typeof value === "object" ? value as Partial<DotsSettings> : {};
   const groups = Object.fromEntries(dotsCapabilityOptions.map(({ id }) =>
     [id, typeof input[id] === "boolean" ? input[id] : fallback?.[id] ?? true],
@@ -93,6 +98,8 @@ export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): 
   const spaces = input.spaceIds === undefined ? fallback?.spaceIds : input.spaceIds;
   return { ...groups, operations,
     google: normalizeDotsGoogleRules(input.google, fallback?.google),
+    rss: normalizeRssSubscriptions(input.rss ?? fallback?.rss),
+    dream: normalizeDreamSettings(input.dream ?? fallback?.dream),
     modelId: input.modelId === null ? null : typeof input.modelId === "string" ? input.modelId.trim() || null : fallback?.modelId ?? null,
     memoryMode: ["readWrite", "readOnly", "off"].includes(memoryMode) ? memoryMode : "readWrite",
     memoryLimits: resolveDotsMemoryLimits(input.memoryLimits, fallback?.memoryLimits),

@@ -25,6 +25,10 @@ import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
 import { DotsGoogleIpc, normalizeDotsGoogleRules, type DotsGoogleAccount, type DotsGoogleStatus } from "../shared/dots-google";
 import { DotsGoogleAccounts } from "./dots/DotsGoogleAccounts";
 import { DotsGoogleMonitor } from "./dots/DotsGoogleMonitor";
+import { DotsDiscovery } from "./dots/DotsDiscovery";
+import { DotsDiscoveryIpc, normalizeDreamSettings, normalizeRssSubscriptions } from "../shared/dots-discovery";
+import { search as searchDotsPublicWeb } from "./capabilities/web-access/gemini-search";
+import { AppSettingsStore } from "./AppSettingsStore";
 import "./agent-environment";
 import type { BrowserOpenOptions } from "../shared/browser-tabs";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
@@ -392,6 +396,7 @@ let terminalHost: TerminalHost | null = null;
 let cronService: CronService;
 let dotsGoogleAccounts: DotsGoogleAccounts;
 let dotsGoogleMonitor: DotsGoogleMonitor;
+let dotsDiscovery: DotsDiscovery;
 let gatewayService: GatewayService;
 let memoryGatewayController: MemoryGatewayController | null = null;
 let externalCliMemoryBridge: ExternalCliMemoryBridge | null = null;
@@ -749,7 +754,7 @@ function createWindow(): void {
   );
 }
 
-function registerIpc(): void {
+function registerIpc(memoryKernel: MemoryService): void {
   registerFileDialogIpc();
   const taskBoard = new TaskBoardRepository(db.connection, db.runtimeAuditReader);
   const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
@@ -1469,11 +1474,15 @@ function registerIpc(): void {
       });
       return result.canceled ? undefined : result.filePaths[0];
     },
-    app.getPath("appData"),
+    [process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR, join(homedir(), ".config", "gws"),
+      process.env.APPDATA && join(process.env.APPDATA, "gws"),
+      process.env.XDG_CONFIG_HOME && join(process.env.XDG_CONFIG_HOME, "gws"),
+      join(homedir(), "Library", "Application Support", "gws")],
   );
+  const googleSettings = new AppSettingsStore();
   dotsGoogleMonitor = new DotsGoogleMonitor(dotsGoogleAccounts,
-    () => normalizeDotsGoogleRules(agentService.getAppSettings().dotsSettings?.google),
-    () => agentService.getAppSettings().dotsSettings?.followupMode === "paused",
+    () => normalizeDotsGoogleRules(googleSettings.read().dotsSettings?.google),
+    () => googleSettings.read().dotsSettings?.followupMode === "paused",
     notice => notificationService.publish({
       type: "reminder.due", level: "info", title: notice.title, body: notice.body,
       sourceType: "automation", sourceId: "dots-google", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
@@ -1484,18 +1493,91 @@ function registerIpc(): void {
     if (value !== "personal" && value !== "company") throw new Error("未知的 Google 账号位置。");
     return value;
   };
-  ipcMain.handle(DotsGoogleIpc.status, googleStatus);
-  ipcMain.handle(DotsGoogleIpc.login, async (_event, value) => {
+  const assertGoogleSettingsSender = (event: Parameters<typeof isMainAppWindowRequest>[0]) => {
+    const url = process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(__dirname, "../renderer/index.html")).href;
+    if (!isMainAppWindowRequest(event, botManagementWindow, url)) throw new Error("请从 MyBuddy 设置连接 Google。");
+  };
+  ipcMain.handle(DotsGoogleIpc.status, event => { assertGoogleSettingsSender(event); return googleStatus(); });
+  ipcMain.handle(DotsGoogleIpc.login, async (event, value) => {
+    assertGoogleSettingsSender(event);
     await dotsGoogleAccounts.login(googleAccount(value));
     dotsGoogleMonitor.refresh();
     return googleStatus();
   });
-  ipcMain.handle(DotsGoogleIpc.check, async (_event, value) => {
+  ipcMain.handle(DotsGoogleIpc.check, async (event, value) => {
+    assertGoogleSettingsSender(event);
     await dotsGoogleAccounts.check(googleAccount(value));
     dotsGoogleMonitor.refresh();
     return googleStatus();
   });
-  ipcMain.handle(DotsGoogleIpc.cancelLogin, (_event, value) => dotsGoogleAccounts.cancel(googleAccount(value)));
+  ipcMain.handle(DotsGoogleIpc.cancelLogin, (event, value) => {
+    assertGoogleSettingsSender(event);
+    dotsGoogleAccounts.cancel(googleAccount(value));
+  });
+  const dreamPreferences = () => {
+    const settings = googleSettings.read();
+    if (!settings.memoryEnabled || settings.dotsSettings?.memoryMode === "off") return [];
+    const now = Date.now();
+    return memoryKernel.listExactScope("task", DOTS_TASK_ID, ["active"], 120)
+      .filter(entry => entry.kind === "preference" && (!entry.validFrom || entry.validFrom <= now) && (!entry.validUntil || entry.validUntil >= now));
+  };
+  dotsDiscovery = new DotsDiscovery(join(getMyBuddyDir(), "dots", "discovery"),
+    () => {
+      const { dotsSettings } = googleSettings.read();
+      return { rss: normalizeRssSubscriptions(dotsSettings?.rss), dream: normalizeDreamSettings(dotsSettings?.dream),
+        paused: dotsSettings?.followupMode === "paused" };
+    },
+    notice => notificationService.publish({
+      type: "automation.completed", level: "info", title: notice.title, body: notice.body,
+      sourceType: "automation", sourceId: "dots-discovery", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
+    }),
+    async (query, signal) => {
+      const result = await searchDotsPublicWeb(query, {
+        signal, numResults: 6, recencyFilter: "week", includeContent: false,
+        budget: { remaining: 3, deadline: Date.now() + 30_000 },
+      });
+      if (!result.results.length && !result.providerRuns?.some(run => run.status === "success" || run.status === "empty"))
+        throw new Error("网页搜索没有可用结果回执。");
+      return result.results;
+    },
+    async (topic, items, signal) => {
+      const output = await agentService.generateDotsDream(JSON.stringify({
+        topic, results: items.map((item, index) => ({ index: index + 1, title: item.title, excerpt: item.summary })),
+      }), AbortSignal.any([signal, AbortSignal.timeout(45_000)]));
+      const parsed = JSON.parse(output.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")) as {
+        items?: Array<{ index: number; summary: string }>;
+      };
+      const seen = new Set<number>();
+      const selected = (Array.isArray(parsed.items) ? parsed.items : []).flatMap(item => {
+        if (!Number.isInteger(item?.index) || seen.has(item.index) || typeof item.summary !== "string" || !item.summary.trim()) return [];
+        const original = items[item.index - 1];
+        if (!original) return [];
+        seen.add(item.index);
+        return [{ ...original, summary: item.summary.trim().slice(0, 220) }];
+      }).slice(0, 3);
+      if (!selected.length) throw new Error("Dream 模型未返回可验证的条目编号。");
+      return selected;
+    },
+    tag => {
+      const words = [tag.name, ...tag.query.split(/[\s、，,]+/)].map(word => word.toLowerCase()).filter(word => word.length >= 2);
+      return dreamPreferences()
+        .filter(entry => words.some(word => `${entry.title} ${entry.content}`.toLowerCase().includes(word))).length;
+    },
+  );
+  ipcMain.handle(DotsDiscoveryIpc.status, event => { assertGoogleSettingsSender(event); return dotsDiscovery.status(); });
+  ipcMain.handle(DotsDiscoveryIpc.run, async (event, kind, id) => {
+    assertGoogleSettingsSender(event);
+    if (kind !== "rss" && kind !== "dream") throw new Error("未知的常驻能力。");
+    await dotsDiscovery.run(kind, typeof id === "string" ? id : undefined);
+    return dotsDiscovery.status();
+  });
+  ipcMain.handle(DotsDiscoveryIpc.suggestTags, event => {
+    assertGoogleSettingsSender(event);
+    const currentTags = normalizeDreamSettings(googleSettings.read().dotsSettings?.dream).tags;
+    const names = new Set(currentTags.map(tag => tag.name.toLowerCase()));
+    return [...new Set(dreamPreferences().sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
+      .map(entry => entry.title.trim().slice(0, 40)).filter(name => name && !names.has(name.toLowerCase())))].slice(0, 8);
+  });
   ipcMain.handle(AgentIpc.listConnectors, () => agentService.listConnectors());
   ipcMain.handle(AgentIpc.installConnector, (_e, id: string) =>
     agentService.installConnector(id),
@@ -1559,6 +1641,7 @@ function registerIpc(): void {
     const next = await agentService.updateAppSettings(ordinary);
     if (ordinary.dotsSettings !== undefined) {
       dotsGoogleMonitor?.refresh();
+      dotsDiscovery?.refresh();
       broadcastToWindows(DotsIpc.changed, null);
     }
     // 关闭到托盘开关实时生效
@@ -3129,6 +3212,7 @@ app.whenReady().then(async () => {
   powerMonitor.on("resume", () => {
     cronService?.resumeDotsTimers();
     dotsGoogleMonitor?.refresh();
+    dotsDiscovery?.refresh();
     cadenceEngine?.catchUp();
     cadenceEngine?.scheduleAll();
     agentService?.onSystemResume();
@@ -3715,7 +3799,7 @@ app.whenReady().then(async () => {
   for (const legacy of db.listTasks().filter(task => (task.welcomeMode as string) === "design")) {
     if (db.getTaskExecutionWorkspaceState(legacy.id)?.state !== "trashed") await taskLifecycle.trash(legacy.id);
   }
-  registerIpc();
+  registerIpc(memoryKernel);
   // Subagent 是编译内建能力：直接把 backend 接入稳定 IPC host，不扫描用户目录。
   try {
     installBuiltinSubagentIpc();
@@ -3786,6 +3870,7 @@ app.whenReady().then(async () => {
   startupMark("restoreDelivered");
   cronService.start();
   dotsGoogleMonitor.start();
+  dotsDiscovery.start();
   startupMark("cronReady");
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
   void gatewayService.restoreChannels().finally(() => startupMark("gatewayRestored"));
@@ -3851,8 +3936,7 @@ app.on("before-quit", (event) => {
     try { trayService?.dispose(); } catch { /* best effort */ }
     dotsDelegations?.close();
     await dotsActions?.closeFileWatches();
-    dotsGoogleMonitor?.close();
-    dotsGoogleAccounts?.close();
+    await Promise.allSettled([dotsGoogleMonitor?.close(), dotsGoogleAccounts?.close(), dotsDiscovery?.close()]);
     try { cronService?.stop(); } catch { /* best effort */ }
     try { cadenceEngine?.shutdown(); } catch { /* best effort */ }
     try { surfaceCoordinator.dispose(); } catch { /* best effort */ }

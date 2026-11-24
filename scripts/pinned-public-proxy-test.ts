@@ -8,7 +8,7 @@ import {join} from "node:path";
 import {once} from "node:events";
 import {fetchRemoteUrl,validateRemoteUrl,configuredPinnedProxy,PINNED_PUBLIC_PROXY} from "../src/main/capabilities/web-access/ssrf-protection";
 import {stringify} from "yaml";
-import {isPublicProxyAddress,parseExistingProxy,parsePublicDns,fetchThroughExistingPublicProxy} from "../src/main/capabilities/web-access/pinned-public-proxy";
+import {isPublicProxyAddress,parseExistingProxy,parsePublicDns,fetchThroughExistingPublicProxy,loadExistingProxy} from "../src/main/capabilities/web-access/pinned-public-proxy";
 for(const ip of ['0.0.0.0','10.0.0.1','100.64.1.1','127.0.0.1','169.254.169.254','172.16.0.1','192.168.1.1','198.18.0.1','224.0.0.1','255.255.255.255','192.0.2.1','::','::1','fc00::1','fe80::1','ff02::1','::ffff:127.0.0.1','64:ff9b::7f00:1','2002:7f00::1','2001::1','2001:db8::1','3fff::1'])assert.equal(isPublicProxyAddress(ip),false,ip);
 for(const ip of ['8.8.8.8','223.5.5.5','2606:4700::1111'])assert(isPublicProxyAddress(ip),ip);
 const config={tun:{enable:true},dns:{enable:true,'enhanced-mode':'fake-ip','fake-ip-range':'198.18.0.1/16',nameserver:['https://dns.alidns.com/dns-query']},'allow-lan':false,'mixed-port':7890};
@@ -25,16 +25,26 @@ const port=(proxy.address() as net.AddressInfo).port;
 try{
  await assert.rejects(fetchThroughExistingPublicProxy(new URL('https://example.com/'),{},{port,fakeIpRange:'198.18.0.1/16'}));
  assert(authorities.length>0);assert(authorities.every(x=>x==='CONNECT 223.5.5.5:443 HTTP/1.1'),'actual proxy CONNECT uses fixed DNS IP, never DNS hostname');
- const oldHome=process.env.HOME,oldUserProfile=process.env.USERPROFILE;const fixture=mkdtempSync(join(tmpdir(),'pinned-rebinding-'));
+ const oldHome=process.env.HOME,oldUserProfile=process.env.USERPROFILE,oldAppData=process.env.APPDATA;const fixture=mkdtempSync(join(tmpdir(),'pinned-rebinding-'));
  try {
-  process.env.HOME=fixture;process.env.USERPROFILE=fixture;const directory=join(fixture,'.local/share/com.follow.clash');mkdirSync(directory,{recursive:true});writeFileSync(join(directory,'config.yaml'),stringify({...config,'mixed-port':port}));
+  process.env.HOME=fixture;process.env.USERPROFILE=fixture;process.env.APPDATA=join(fixture,'AppData');
+  const directory=join(fixture,'.local/share/com.follow.clash');mkdirSync(directory,{recursive:true});writeFileSync(join(directory,'config.yaml'),stringify({...config,'mixed-port':port}));
   let dnsCalls=0,ordinaryFetch=0;const sequence=['198.18.0.8','8.8.8.8','127.0.0.1'];
   const lookup=async()=>[{address:sequence[Math.min(dnsCalls++,2)],family:4}];
   let ticket;try {await validateRemoteUrl('https://example.com/',{lookup});}catch(error){ticket=configuredPinnedProxy(error);}
   assert(ticket,'preflight fake-IP retains verified existing proxy');
   await assert.rejects(fetchRemoteUrl('https://example.com/',{}, {[PINNED_PUBLIC_PROXY]:ticket,lookup,fetch:async()=>{ordinaryFetch++;return new Response('must not happen');}}));
   assert.equal(dnsCalls,1,'no second local DNS after selecting pinned route');assert.equal(ordinaryFetch,0,'fake-public-private rebinding never falls back to ordinary fetch');
- }finally{if(oldHome===undefined)delete process.env.HOME;else process.env.HOME=oldHome;if(oldUserProfile===undefined)delete process.env.USERPROFILE;else process.env.USERPROFILE=oldUserProfile;rmSync(fixture,{recursive:true,force:true});}
+  const windowsDirectory = join(process.env.APPDATA, "com.follow", "clash");
+  mkdirSync(windowsDirectory, { recursive: true });
+  writeFileSync(join(windowsDirectory, "config.yaml"), stringify({ ...config, "mixed-port": 39812 }));
+  assert.deepEqual(loadExistingProxy(), { port: 39812, fakeIpRange: "198.18.0.1/16" });
+ }finally{
+   if(oldHome===undefined)delete process.env.HOME;else process.env.HOME=oldHome;
+   if(oldUserProfile===undefined)delete process.env.USERPROFILE;else process.env.USERPROFILE=oldUserProfile;
+   if(oldAppData===undefined)delete process.env.APPDATA;else process.env.APPDATA=oldAppData;
+   rmSync(fixture,{recursive:true,force:true});
+ }
  const before=authorities.length;
  for(const url of ['http://example.com/','https://127.0.0.1/','https://localhost/','https://a.local/','https://user:password@example.com/'])await assert.rejects(fetchThroughExistingPublicProxy(new URL(url),{},{port,fakeIpRange:'198.18.0.1/16'}));
  await assert.rejects(fetchThroughExistingPublicProxy(new URL('https://example.com/'),{method:'POST'},{port,fakeIpRange:'198.18.0.1/16'}));

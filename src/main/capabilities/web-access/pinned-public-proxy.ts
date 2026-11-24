@@ -29,11 +29,16 @@ export function parseExistingProxy(value: unknown): ExistingProxy | undefined {
   return {port:c["mixed-port"],fakeIpRange:c.dns["fake-ip-range"]};
 }
 export function loadExistingProxy(): ExistingProxy | undefined {
-  try {
-    const path=join(homedir(),".local/share/com.follow.clash/config.yaml");
-    if(statSync(path).size>4*1024*1024) return;
-    return parseExistingProxy(parse(readFileSync(path,"utf8"),{maxAliasCount:0}));
-  } catch { return; }
+  const windowsConfig = process.env.APPDATA && join(process.env.APPDATA, "com.follow", "clash", "config.yaml");
+  const linuxConfig = join(homedir(), ".local", "share", "com.follow.clash", "config.yaml");
+  for (const path of [windowsConfig, linuxConfig]) {
+    if (!path) continue;
+    try {
+      if (statSync(path).size > 4 * 1024 * 1024) continue;
+      const existing = parseExistingProxy(parse(readFileSync(path, "utf8"), { maxAliasCount: 0 }));
+      if (existing) return existing;
+    } catch { /* An absent or incompatible install has no pinned proxy. */ }
+  }
 }
 const normalize=(s:string)=>s.toLowerCase().replace(/\.$/,"");
 export function parsePublicDns(value: unknown, hostname: string, type:1|28): string[] {

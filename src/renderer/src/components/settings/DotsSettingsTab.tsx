@@ -6,6 +6,7 @@ import { DOTS_TASK_ID, dotsLocalSpacePath } from "@shared/dots";
 import { useAppStore } from "@/store/appStore";
 import AnswerRoutingTab from "./AnswerRoutingTab";
 import DotsGoogleSettings from "./DotsGoogleSettings";
+import DotsDiscoverySettings from "./DotsDiscoverySettings";
 import DotsPromptSection from "./DotsPromptSection";
 import MemoryKernelExplorer from "./MemoryKernelExplorer";
 import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
@@ -13,6 +14,7 @@ import "./DotsSettingsTab.css";
 import "./Memory.css";
 
 const sections = ["调度", "提示词", "模型与记忆", "专属记忆", "读取额度", "跟进与空间", "工具与操作", "常驻能力"] as const;
+const residentCapabilities = ["Google", "RSS", "Dream"] as const;
 const dotsMemoryScope = { scopeType: "task", scopeId: DOTS_TASK_ID } as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
 const memoryWrites = new Set<DotsOperation>(["memory_create", "memory_update", "memory_promote", "memory_forget"]);
@@ -59,6 +61,7 @@ function Switch({ label, subject, on, change }: {
 
 export default function DotsSettingsTab() {
   const [section, setSection] = useState<typeof sections[number]>(sections[0]);
+  const [resident, setResident] = useState<typeof residentCapabilities[number]>("Google");
   const showScheduling = section === "调度";
   const [settings, setSettings] = useState<AppSettingsDto>();
   const [models, setModels] = useState<ModelInfoDto[]>([]);
@@ -92,7 +95,8 @@ export default function DotsSettingsTab() {
       setSettings(result);
       if (patch.modelId !== undefined) await useAppStore.getState().refreshModelConfiguration();
       setSaved(label + "已保存");
-    } catch (e) { setError(String(e)); }
+      return true;
+    } catch (e) { setError(String(e)); return false; }
     finally { setSaving(false); }
   }
 
@@ -116,8 +120,16 @@ export default function DotsSettingsTab() {
     {!settings ? (!error && <p role="status">正在读取 Dots 设置…</p>) : !settings.dotsSettingsRuntime ?
       <p role="alert">当前运行的 MyBuddy 主进程还不支持这些设置。请完全退出并重开 MyBuddy。</p> : <>
       <fieldset disabled={saving}>
-      {section === "常驻能力" && <DotsGoogleSettings rules={prefs.google}
-        onSave={(source, rule) => void save(source === "gmail" ? "邮箱设置" : "日历设置", { google: { ...prefs.google, [source]: rule } })} />}
+      {section === "常驻能力" && <>
+        <nav className="dots-resident-nav" aria-label="常驻能力分类">{residentCapabilities.map(name =>
+          <button type="button" className="btn" key={name} aria-pressed={resident === name}
+            onClick={() => { setResident(name); setSaved(""); }}>{name}</button>)}</nav>
+        {resident === "Google" ? <DotsGoogleSettings rules={prefs.google}
+          onSave={(source, rule) => void save(source === "gmail" ? "邮箱设置" : "日历设置", { google: { ...prefs.google, [source]: rule } })} />
+          : <DotsDiscoverySettings key={resident} kind={resident === "RSS" ? "rss" : "dream"}
+            rss={prefs.rss} dream={prefs.dream}
+            saveRss={rss => save("RSS 订阅", { rss })} saveDream={dream => save("Dream 设置", { dream })} />}
+      </>}
       {section === "模型与记忆" && <>
         <SettingsSection title="对话模型">
           <SettingsSelect label="Dots 使用的模型" value={prefs.modelId ?? ""} onChange={e => void save("对话模型", { modelId: e.target.value || null })}>

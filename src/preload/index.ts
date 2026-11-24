@@ -6,6 +6,7 @@ import { CadCraftIpc, type CadCraftSource } from "../shared/cadcraft";
 import { GoogleWorkspaceWriteIpc, type GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import { GoogleWorkspaceIpc, type GoogleWorkspaceApi } from "../shared/google-workspace";
 import { DotsGoogleIpc, type DotsGoogleApi } from "../shared/dots-google";
+import { DotsDiscoveryIpc, type DotsDiscoveryApi } from "../shared/dots-discovery";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { ProjectNotesIpc, type ProjectNoteSaveRequest } from "../shared/project-notes";
@@ -1576,6 +1577,11 @@ const api = {
     check: account => ipcRenderer.invoke(DotsGoogleIpc.check, account),
     cancelLogin: account => ipcRenderer.invoke(DotsGoogleIpc.cancelLogin, account),
   } satisfies DotsGoogleApi,
+  dotsDiscovery: {
+    status: () => ipcRenderer.invoke(DotsDiscoveryIpc.status),
+    run: (kind, id) => ipcRenderer.invoke(DotsDiscoveryIpc.run, kind, id),
+    suggestTags: () => ipcRenderer.invoke(DotsDiscoveryIpc.suggestTags),
+  } satisfies DotsDiscoveryApi,
 
   projectNotes: {
     read: (projectId: string) => ipcRenderer.invoke(ProjectNotesIpc.read, projectId),

@@ -1,6 +1,5 @@
-import { copyFile, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { dotsGoogleAccounts, type DotsGoogleAccount, type DotsGoogleAccountStatus, type DotsGoogleConnection } from "../../shared/dots-google";
 import { createGadgetCommandRunner, type GadgetCommandOptions } from "../platform/gadget-commands";
@@ -87,15 +86,16 @@ function emailFrom(value: unknown): string | undefined {
 }
 
 export class DotsGoogleAccounts {
-  private loginAttempt?: { account: DotsGoogleAccount; controller: AbortController };
+  private loginAttempt?: { account: DotsGoogleAccount; controller: AbortController; choosingClient: boolean };
   private readonly checks = new Map<DotsGoogleAccount, AbortController>();
   private readonly messages = new Map<DotsGoogleAccount, string>();
+  private readonly operations = new Set<Promise<void>>();
 
   constructor(
     private readonly root: string,
     private readonly openBrowser: (url: string) => Promise<void>,
     private readonly chooseClient: () => Promise<string | undefined>,
-    private readonly appData: string,
+    private readonly clientDirectories: readonly (string | undefined)[],
     private readonly run: Command = runDotsGoogle,
   ) {}
 
@@ -125,13 +125,31 @@ export class DotsGoogleAccounts {
   }
 
   private async oauthClient(previous?: string) {
-    const directories = [previous, process.env[configVariable], join(homedir(), ".config", "gws"), join(this.appData, "gws")];
+    const directories = [previous, ...this.clientDirectories];
     for (const directory of directories) {
       if (!directory) continue;
       const path = join(directory, clientFile);
       if ((await stat(path).catch(() => undefined))?.isFile()) return path;
     }
+    if (this.loginAttempt) this.loginAttempt.choosingClient = true;
     return this.chooseClient();
+  }
+
+  private async writeClient(source: string, directory: string) {
+    const badClient = () => new DotsGoogleError("请选择从 Google Cloud 下载的桌面应用 OAuth 客户端 JSON。");
+    const info = await stat(source).catch(() => undefined);
+    if (!info?.isFile() || info.size > 64 * 1024) throw badClient();
+    let installed: Json;
+    try { installed = JSON.parse(await readFile(source, "utf8")).installed; }
+    catch { throw badClient(); }
+    if (!installed || typeof installed.client_id !== "string" || !installed.client_id.endsWith(".apps.googleusercontent.com")
+      || typeof installed.client_secret !== "string" || !installed.client_secret) throw badClient();
+    await writeFile(join(directory, clientFile), JSON.stringify({ installed: {
+      client_id: installed.client_id, client_secret: installed.client_secret,
+      project_id: typeof installed.project_id === "string" ? installed.project_id : "",
+      auth_uri: "https://accounts.google.com/o/oauth2/auth", token_uri: "https://oauth2.googleapis.com/token",
+      redirect_uris: ["http://localhost"],
+    } }), { mode: 0o600, flag: "wx" });
   }
 
   private async verify(directory: string, email: string, signal: AbortSignal): Promise<DotsGoogleConnection> {
@@ -151,10 +169,17 @@ export class DotsGoogleAccounts {
     };
   }
 
-  async login(account: DotsGoogleAccount) {
+  private track(operation: Promise<void>) {
+    this.operations.add(operation);
+    return operation.finally(() => this.operations.delete(operation));
+  }
+
+  login(account: DotsGoogleAccount) { return this.track(this.signIn(account)); }
+
+  private async signIn(account: DotsGoogleAccount) {
     if (this.loginAttempt || this.checks.has(account)) return;
     const controller = new AbortController();
-    this.loginAttempt = { account, controller };
+    this.loginAttempt = { account, controller, choosingClient: false };
     this.messages.delete(account);
     const previous = this.current(account);
     let staged: string | undefined;
@@ -163,10 +188,11 @@ export class DotsGoogleAccounts {
     try {
       const oauthClient = await this.oauthClient(previous?.directory);
       if (!oauthClient || controller.signal.aborted) throw new DotsGoogleError("已取消登录。");
+      this.loginAttempt.choosingClient = false;
       const parent = join(this.root, account);
       await mkdir(parent, { recursive: true, mode: 0o700 });
       staged = await mkdtemp(join(parent, "profile-"));
-      await copyFile(oauthClient, join(staged, clientFile));
+      await this.writeClient(oauthClient, staged);
       const lines = { stdout: "", stderr: "" };
       const receipt = await this.run(staged, ["auth", "login", "--scopes", scopes.join(",")], {
         timeoutMs: 300_000, signal: controller.signal,
@@ -202,7 +228,9 @@ export class DotsGoogleAccounts {
     }
   }
 
-  async check(account: DotsGoogleAccount) {
+  check(account: DotsGoogleAccount) { return this.track(this.checkConnection(account)); }
+
+  private async checkConnection(account: DotsGoogleAccount) {
     const saved = this.current(account);
     if (!saved || this.checks.has(account) || this.loginAttempt?.account === account) return;
     const controller = new AbortController();
@@ -219,8 +247,9 @@ export class DotsGoogleAccounts {
     if (this.loginAttempt?.account === account) this.loginAttempt.controller.abort();
   }
 
-  close() {
+  async close() {
     this.loginAttempt?.controller.abort();
     for (const controller of this.checks.values()) controller.abort();
+    if (!this.loginAttempt?.choosingClient) await Promise.allSettled(this.operations);
   }
 }

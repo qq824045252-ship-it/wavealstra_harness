@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { dotsGoogleAccounts, dotsGoogleSources, type DotsGoogleAccount, type DotsGoogleRule, type DotsGoogleRules,
   type DotsGoogleSource, type DotsGoogleStatus } from "../../shared/dots-google";
 import { atomicWriteJson } from "../task/TaskExecutionWorkspace";
@@ -77,7 +78,7 @@ function reminder(value: unknown): Reminder | undefined {
 
 export class DotsGoogleMonitor {
   private timer?: ReturnType<typeof setInterval>;
-  private readonly active = new Map<string, AbortController>();
+  private readonly active = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(
     private readonly accounts: DotsGoogleAccounts,
@@ -95,16 +96,24 @@ export class DotsGoogleMonitor {
     this.refresh();
   }
 
-  close() {
+  async close() {
     clearInterval(this.timer);
     this.timer = undefined;
-    for (const controller of this.active.values()) controller.abort();
+    const pending = [...this.active.values()];
+    for (const { controller } of pending) controller.abort();
+    await Promise.allSettled(pending.map(({ done }) => done));
   }
 
-  private statePath(directory: string, source: DotsGoogleSource) { return join(directory, source + "-watch.json"); }
+  private identity(email: string) {
+    return createHash("sha256").update(email.toLowerCase()).digest("hex");
+  }
 
-  private state(directory: string, source: DotsGoogleSource): ScanState {
-    try { return JSON.parse(readFileSync(this.statePath(directory, source), "utf8")) as ScanState; }
+  private statePath(directory: string, email: string, source: DotsGoogleSource) {
+    return join(dirname(directory), `${source}-${this.identity(email)}.json`);
+  }
+
+  private state(file: string): ScanState {
+    try { return JSON.parse(readFileSync(file, "utf8")) as ScanState; }
     catch { return {}; }
   }
 
@@ -115,7 +124,7 @@ export class DotsGoogleMonitor {
       for (const account of rules[source].accounts) {
         const current = this.accounts.current(account);
         if (!current) continue;
-        const { checkedAt, nextAt, message } = this.state(current.directory, source);
+        const { checkedAt, nextAt, message } = this.state(this.statePath(current.directory, current.email, source));
         status[source][account] = { checkedAt, nextAt, message };
       }
     }
@@ -134,21 +143,26 @@ export class DotsGoogleMonitor {
         const key = `${account}:${source}`;
         if (this.active.has(key)) continue;
         const controller = new AbortController();
-        this.active.set(key, controller);
-        void this.scan(account, source, rule, connection.directory, controller.signal)
+        const done = this.scan(account, source, rule, connection.directory, connection.email, controller.signal)
           .catch(() => undefined)
-          .finally(() => this.active.delete(key));
+          .finally(() => { this.active.delete(key); });
+        this.active.set(key, { controller, done });
       }
     }
   }
 
-  private async scan(account: DotsGoogleAccount, source: DotsGoogleSource, rule: DotsGoogleRule, directory: string, signal: AbortSignal) {
+  private async scan(account: DotsGoogleAccount, source: DotsGoogleSource, rule: DotsGoogleRule,
+    directory: string, email: string, signal: AbortSignal) {
     const stamp = JSON.stringify(rule);
-    const current = () => !signal.aborted && !this.paused() && this.accounts.current(account)?.directory === directory
-      && JSON.stringify(this.rules()[source]) === stamp;
+    const current = () => {
+      if (signal.aborted || this.paused() || JSON.stringify(this.rules()[source]) !== stamp) return false;
+      const connection = this.accounts.current(account);
+      return connection?.directory === directory && connection.access[source].ready;
+    };
     const now = this.now();
-    const file = this.statePath(directory, source);
-    const state = this.state(directory, source);
+    const file = this.statePath(directory, email, source);
+    const identity = `dots-google:${account}:${this.identity(email)}`;
+    const state = this.state(file);
     const query = (args: string[], params: Record<string, unknown>) =>
       this.run(directory, [...args, "--params", JSON.stringify(params)], { signal });
     if (state.stamp !== stamp || state.nextAt === undefined || state.nextAt <= now) {
@@ -157,7 +171,7 @@ export class DotsGoogleMonitor {
           const gmail = await this.scanGmail(query, state, now);
           if (!current()) return;
           if (gmail.count) this.deliver({
-            key: `dots-google:${directory}:gmail:${state.cursor}`, title: `Dots · ${accountLabel[account]}邮箱`,
+            key: `${identity}:gmail:${state.cursor}`, title: `Dots · ${accountLabel[account]}邮箱`,
             body: `收件箱有 ${gmail.count} 封新邮件。`,
           });
           state.cursor = gmail.cursor;
@@ -177,7 +191,7 @@ export class DotsGoogleMonitor {
       state.stamp = stamp;
       atomicWriteJson(file, state);
     }
-    if (source === "calendar" && current() && !state.message) this.deliverCalendar(file, state, account, directory, now);
+    if (source === "calendar" && current() && !state.message) this.deliverCalendar(file, state, account, identity, now);
   }
 
   private async scanGmail(query: (args: string[], params: Record<string, unknown>) => Promise<Record<string, unknown>>,
@@ -231,13 +245,13 @@ export class DotsGoogleMonitor {
     return events;
   }
 
-  private deliverCalendar(file: string, state: ScanState, account: DotsGoogleAccount, directory: string, now: number) {
+  private deliverCalendar(file: string, state: ScanState, account: DotsGoogleAccount, identity: string, now: number) {
     const delivered = Object.fromEntries(Object.entries(state.delivered ?? {}).filter(([, end]) => end > now - day));
     const due = state.events?.filter(event => event.dueAt <= now && (event.allDay ? event.endAt : event.startsAt) > now && !delivered[event.id]) ?? [];
     if (!due.length) return;
     for (const event of due) {
       this.deliver({
-        key: `dots-google:${directory}:calendar:${event.id}`, title: `Dots · ${accountLabel[account]}日历`,
+        key: `${identity}:calendar:${event.id}`, title: `Dots · ${accountLabel[account]}日历`,
         body: event.allDay ? `今天 · ${event.title}` : `${formatTime.format(event.startsAt)} · ${event.title}`,
       });
       delivered[event.id] = event.endAt;

@@ -101,8 +101,9 @@ export default function DotsGoogleSettings({ rules, onSave }: {
             {state?.message && <div role="alert">{state.message}</div>}
           </div>
           <div className="dots-google-account-actions">
-            <button className="btn" type="button" disabled={!status || disabled} onClick={() => void connect(account, "login")}>
-              {connection ? "重新登录" : "登录 Google"}<span className="sr-only"> · {labels[account]}</span>
+            <button className="btn" type="button" disabled={!status || disabled}
+              aria-label={labels[account] + (connection ? "重新登录 Google" : "登录 Google")} onClick={() => void connect(account, "login")}>
+              {connection ? "重新登录" : "登录 Google"}
             </button>
             {busy === "login"
               ? <button className="btn" type="button" onClick={() => void api.cancelLogin(account).catch(() => setError("取消失败，请重试。"))}>取消登录</button>

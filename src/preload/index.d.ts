@@ -2,6 +2,7 @@ import type { GatewayRegistrationProvider, GatewayRegistrationDetails, GatewayRe
 import type { GoogleWorkspaceWriteApi } from "../shared/google-workspace-write";
 import type { GoogleWorkspaceApi } from "../shared/google-workspace";
 import type { DotsGoogleApi } from "../shared/dots-google";
+import type { DotsDiscoveryApi } from "../shared/dots-discovery";
 import type { BrowserOpenOptions, BrowserTabInfo, BrowserTabsState } from "../shared/browser-tabs";
 import type { BrowserConsoleEventDto, BrowserConsoleSnapshotDto, BrowserConsoleTarget } from "../shared/browser-console";
 import type { ArchivedContentDeletionRequest, ArchivedContentDeletionResult, TrashedTaskDto } from "../shared/archive-deletion";
@@ -199,6 +200,7 @@ export interface PreloadApi {
   googleWorkspaceWrite: GoogleWorkspaceWriteApi;
   googleWorkspace: GoogleWorkspaceApi;
   dotsGoogle: DotsGoogleApi;
+  dotsDiscovery: DotsDiscoveryApi;
   plugins: {
     paths: () => Promise<import("../shared/plugin-storage").PluginStoragePathsDto>;
     openDirectory: () => Promise<{ ok: boolean; path: string; error?: string }>;

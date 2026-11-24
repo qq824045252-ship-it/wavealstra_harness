@@ -40,6 +40,17 @@
 .dots-google-rule { display: grid; justify-items: start; gap: 12px; }
 .dots-google-rule fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .dots-google-times > label { min-width: min(170px, 100%); }
+.dots-resident-nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.dots-resident-nav button[aria-pressed=true] { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.dots-discovery-editor { display: grid; gap: 10px; margin: 10px 0; }
+.dots-discovery-editor > .btn { justify-self: start; }
+.dots-discovery-row { padding: 6px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+.dots-discovery-results { margin: 8px 0; }
+.dots-discovery-results ol, .dots-discovery-results ul { margin: 8px 0; padding-left: 18px; }
+.dots-discovery-results li { margin-bottom: 6px; }
+.dots-discovery-results li p { margin: 4px 0; }
+.dots-discovery-results li .btn { white-space: normal; text-align: left; }
+.dots-discovery-run { margin-top: 12px; }
 
 .dots-prompt-editor { display: grid; gap: 14px; }
 .dots-prompt-layout { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2.3fr); align-items: start; gap: 16px; }
