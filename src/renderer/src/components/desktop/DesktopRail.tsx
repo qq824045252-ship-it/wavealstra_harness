@@ -10,7 +10,7 @@ const MODULES = [
   { page: "projects", label: "项目", glyph: "projects" },
   { page: "automation", label: "自动化", glyph: "automation" },
   { page: "experts", label: "扩展", glyph: "extensions" },
-  { page: "gadgets", label: "工作台", glyph: "workbench" },
+  { page: "gadgets", label: "工作台", glyph: "workbench-entry" },
   { page: "files", label: "任务成果", glyph: "task-results" },
 ] as const;
 
@@ -56,7 +56,7 @@ export default function DesktopRail({ onNavigate, onSettings }: {
       <DesktopNotifications onOpen={() => onNavigate("notifications")} />
       <button type="button" className="desktop-rail-icon" title="用量统计" aria-label="用量统计"
         aria-current={selected === "usage" ? "page" : undefined} onClick={() => onNavigate("usage")}><UiIcon name="usage" size={17} accent={selected !== "usage"} /></button>
-      <button type="button" className="desktop-rail-icon" title="设置" aria-label="设置" aria-current={settingsOpen ? "page" : undefined} onClick={onSettings}><UiIcon name="settings" size={16} accent={!settingsOpen} /></button>
+      <button type="button" className="desktop-rail-icon" title="设置" aria-label="设置" aria-current={settingsOpen ? "page" : undefined} onClick={onSettings}><UiIcon name="settings-entry" size={16} accent={!settingsOpen} /></button>
     </div>
   </nav>;
 }
