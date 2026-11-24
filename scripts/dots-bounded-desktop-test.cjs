@@ -12,6 +12,7 @@ const upstream = "甲项｜提供上游提交";
 const downstream = "乙项｜验证后等待上游";
 const upstreamQuote = "把甲项交给第一个任务，等我确认后提交上游文件。";
 const downstreamQuote = "把乙项交给第二个任务，做完本地检查后等待甲项交付，再验收并汇报。";
+const downstreamConclusion = "乙项已完成当前版本验收并收到甲项提交。";
 const assignment = upstreamQuote + downstreamQuote;
 const liveAssignment = "请在「本地验收工程」委派一个普通任务。修复 calc.cjs，让 double(21) 返回 42。只修改 calc.cjs。我授权在这个隔离仓库做一次本地提交。提交后用 project_verify 运行 test:fixture，报告真实 SHA 与结果，用 dots_task_end 单独结项。不要重跑已通过的同版本检查。所有文件和命令都限制在该隔离仓库，遇到问题如实回报，无需查看宿主程序源码。";
 const marker = { upstream: "WORKER_UPSTREAM", downstream: "WORKER_DOWNSTREAM" };
@@ -99,7 +100,7 @@ function fixtureModel(request) {
       assert.match(answers.at(-1)?.content ?? "", /缺少通过的验收回执/);
       return check();
     }
-    return complete("乙项已完成当前版本验收并收到甲项提交。", { checks: "[\"test:fixture\"]" });
+    return complete(downstreamConclusion, { checks: "[\"test:fixture\"]" });
   }
   return "完成。";
 }
@@ -138,17 +139,25 @@ run(async env => {
     assert(checkCount() >= 1, "registered script never ran");
     const activity = (await rows()).find(row => row.state === "delivered");
     const worker = await history(activity.taskId);
-    const trace = JSON.stringify(worker.messages);
-    assert.match(trace, /project_verify/);
-    assert.match(trace, /dots_task_end/);
+    assert(worker.messages.some(message => message.tools?.some(tool => tool.tool === "project_verify" && tool.status === "success")));
+    const conclusion = worker.messages.findLast(message => message.finalAssistantReply);
+    assert(conclusion?.tools?.some(tool => tool.tool === "dots_task_end" && tool.status === "success"));
+    assert.match(conclusion.text, /42/);
     assert.equal(worker.durable.busy, false);
-    report.actualControlChecks.push({ commit, actualScriptRuns: checkCount(), delivery: (await deliveries())[0].text });
+    await evaluate("import('/src/lib/taskBoardVisits.ts').then(m => m.openDotsActivityTarget(" + JSON.stringify(activity.taskId) + "))");
+    await until(() => evaluate("Boolean(document.getElementById(" + JSON.stringify("msg-" + conclusion.id) + ")?.querySelector('.assistant-card .md-chat'))"), "live worker conclusion is readable on its task page");
+    await press("document.querySelector('.msg-footer button[aria-label=\"查看 Dots 交付消息\"]')", "open the live model's Dots delivery from its worker");
+    const [delivery] = await deliveries();
+    await until(() => evaluate("Boolean(document.getElementById(" + JSON.stringify("msg-" + delivery.id) + ")?.querySelector('.dots-reply-body'))"), "live Dots delivery reached");
+    report.actualControlChecks.push({ commit, actualScriptRuns: checkCount(), workerConclusion: conclusion.text, delivery: delivery.text });
     return;
   }
 
   await until(async () => (await find(downstream))?.state === "dependency", "downstream parked in Dots");
   assert.equal(checkCount(), 1, "two identical checks ran more than once");
-  assert.equal((await history((await find(downstream)).taskId)).durable.busy, false);
+  const waitingWorker = await history((await find(downstream)).taskId);
+  assert.equal(waitingWorker.durable.busy, false);
+  assert(!waitingWorker.messages.some(message => message.finalAssistantReply), "waiting is not a completed worker reply");
   const downstreamCount = () => requests.filter(request => latestInput(request).includes(marker.downstream)).length;
   const parkedRounds = downstreamCount();
   await env.restart();
@@ -163,6 +172,9 @@ run(async env => {
   await until(async () => (await find(downstream))?.state === "delivered", "matching upstream commit woke the original downstream task");
   const delivered = (await deliveries()).filter(item => item.text.includes("乙项已完成"));
   assert.equal(delivered.length, 1);
+  const finishedWorker = await history((await find(downstream)).taskId);
+  assert.deepEqual(finishedWorker.messages.filter(message => message.finalAssistantReply).map(message => message.text), [downstreamConclusion]);
+  assert(finishedWorker.messages.every(message => message.text !== "模拟误用旧验收"), "a rejected completion must stay out of the reply");
   assert.equal(requests.filter(request => latestInput(request).includes("等待依赖前已完成的工作")).length, 3,
     "one continuation should reject stale proof, recheck once, then end");
   assert.equal(checkCount(), 2, "only the changed checkout should have executed a new test");

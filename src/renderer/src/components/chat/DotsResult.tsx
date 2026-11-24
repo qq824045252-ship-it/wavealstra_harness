@@ -8,6 +8,7 @@ import { openDotsActivityTarget, openDotsTask } from "@/lib/taskBoardVisits";
 import { toRendererArtifact } from "@/lib/artifactIngest";
 import { inferArtifactKind } from "@/lib/workspace";
 import { ArtifactChip } from "../common/FileBadge";
+import { IconDots } from "../common/icons";
 
 const WorkFilePreview = lazy(() => import("../pages/WorkFilePreview"));
 const labels = { pending: "已排队", running: "执行中", blocked: "需要你回复", completed: "已完成", failed: "失败", superseded: "已改向" };
@@ -42,11 +43,11 @@ export function DotsSavedFilePreview({ file, onClose }: { file: SavedArtifactReq
   </Suspense></div>;
 }
 
-export function TaskDotsDelivery({ taskId }: { taskId: string }) {
+export function useTaskDotsDelivery(taskId: string | undefined) {
   const [loaded, setLoaded] = useState<{ taskId: string; delivery?: DotsTaskDelivery }>();
   useEffect(() => {
     const api = window.api?.dots;
-    if (!api?.taskDelivery) return;
+    if (!taskId || !api?.taskDelivery) return;
     let generation = 0;
     const refresh = () => {
       const current = ++generation;
@@ -62,25 +63,21 @@ export function TaskDotsDelivery({ taskId }: { taskId: string }) {
     refresh();
     return () => { generation++; unsubscribe(); };
   }, [taskId]);
-  const delivery = loaded?.taskId === taskId ? loaded.delivery : undefined;
-  if (!delivery) return null;
-  return <TaskDeliveryContent key={delivery.deliveryKey} taskId={taskId} delivery={delivery} />;
+  return loaded?.taskId === taskId ? loaded?.delivery : undefined;
 }
 
-function TaskDeliveryContent({ taskId, delivery }: { taskId: string; delivery: DotsTaskDelivery }) {
-  const [preview, setPreview] = useState<SavedArtifactRequest>();
+export function DotsDeliveryLink({ deliveryKey }: { deliveryKey: string }) {
   const [error, setError] = useState("");
-  return <details className="task-dots-delivery dots-progress-history">
-    <summary>最近一次交付</summary>
-    {delivery.artifacts.length > 0 && <DotsDeliveryFiles row={{ taskId, title: "", artifacts: delivery.artifacts }}
-      selected={false} onPreview={setPreview} />}
-    {preview && <DotsSavedFilePreview key={preview.snapshotPath} file={preview} onClose={() => setPreview(undefined)} />}
-    <button type="button" className="md-link" onClick={() => {
-      setError("");
-      void openDotsActivityTarget(DOTS_TASK_ID, { messageId: delivery.deliveryKey }).catch(reason => setError(String(reason)));
-    }}>查看 Dots 交付消息</button>
-    {error && <div role="alert">{error}</div>}
-  </details>;
+  return <>
+    <button type="button" className="icon-btn" title="查看 Dots 交付消息" aria-label="查看 Dots 交付消息"
+      onClick={() => {
+        setError("");
+        void openDotsActivityTarget(DOTS_TASK_ID, { messageId: deliveryKey }).catch(reason => setError(String(reason)));
+      }}>
+      <IconDots size={14} />
+    </button>
+    {error && <span className="msg-generate-error" role="alert" title={error}>打开 Dots 交付失败</span>}
+  </>;
 }
 
 function TaskLink({ row, onError }: { row: {taskId: string; title: string}; onError: (error: string) => void }) {

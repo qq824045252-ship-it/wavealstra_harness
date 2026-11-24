@@ -244,9 +244,13 @@ run(async env => {
       && list.querySelector('button[aria-label="收起排版验收"]')?.getAttribute("aria-expanded") === "true"
       && list.scrollTop > 0 && target.top >= viewport.top && target.bottom <= viewport.bottom;
   })()`), "both workspace levels open and the selected task row is visible");
+  await evaluate("import('/src/lib/taskBoardVisits.ts').then(m => m.openDotsActivityTarget("
+    + JSON.stringify(exact.dotsDelivery.taskId) + "))");
+  await until(() => evaluate("document.querySelector('.assistant-card .dots-literal-json')?.textContent === "
+    + JSON.stringify(exactJson)), "the native worker's exact JSON remains literal after reopening");
   report.actualControlChecks.push({ originalBodyCharacters: denseText.length, directLayout, legacyLayout, gaps,
     literalParagraphs: 1, exactJson, fileOnly: fileProof, sameDeliveryAfterRestart: true, originalQuoteParagraphs: quoted, quoteGaps,
-    originalTaskRevealedInSidebar: true });
+    originalTaskRevealedInSidebar: true, workerExactJsonAfterRestart: true });
 }, {
   name: recallOnly ? "dots-reply-layout-recall-live" : liveModel ? "dots-reply-layout-live" : "dots-reply-layout-desktop",
   liveModel,

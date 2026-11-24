@@ -50,6 +50,8 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const { mkdirSync, readFileSync, writeFileSync } = require("node:fs");
 const marker = "报价原件 A · 137";
+const quotesResult = "报价单已生成。\n\n已核对原件编号 A · 137。";
+const continuedQuestion = "普通追问：原件编号是什么？";
 const spaceId = "dots-test-quotes";
 const retiredReplyPreference = "旧设置里的回答指令样本";
 const routingInstruction = "按工具组列出本次可用操作。";
@@ -291,15 +293,31 @@ run(async env => {
   await until(async () => await active() === "报价任务", "source task opened");
   const taskDelivery = await evaluate(`window.api.dots.taskDelivery(${JSON.stringify(job.taskId)})`);
   assert.equal(taskDelivery?.deliveryKey, delivered.dotsDelivery.deliveryKey);
+  assert.equal(taskDelivery.operationId, job.id);
   assert.deepEqual(taskDelivery.artifacts, delivered.dotsDelivery.artifacts);
-  await press("document.querySelector('.task-dots-delivery > summary')", "show latest delivery in the original task");
-  await press("document.querySelector('.task-dots-delivery .artifact-chip-main')", "preview delivery within the original task");
-  await until(() => evaluate("document.querySelector('.task-dots-delivery .bot-work-file-preview-body')?.textContent.includes('报价原件 A · 137')"), "same saved version in the original task after restart");
-  assert.equal(await active(), "报价任务");
-  await screenshot("dots-original-task-saved-delivery");
-  report.actualControlChecks.push("The original Dots conversation and its worker task opened the same immutable file after restart, despite a same-name overwrite.");
-  await dots();
-  await until(async () => (await body())?.includes("已交给"), "return to original Dots conversation");
+  const deliveryButton = "document.querySelector('.msg-footer button[aria-label=\"查看 Dots 交付消息\"]')";
+  await until(() => evaluate("Boolean(" + deliveryButton + ")"), "delivery icon in the worker reply after restart");
+  assert.equal(await evaluate(deliveryButton + ".nextElementSibling?.className"), "msg-model-badge");
+  assert.equal(await evaluate("document.querySelectorAll('.message-list .artifact-chip-main').length"), 1);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.message-list .assistant-card .md-chat p')].map(p => p.textContent)"), quotesResult.split("\n\n"));
+  assert.equal(await evaluate("document.body.textContent.includes('最近一次交付')"), false);
+  await evaluate("import('/src/store/appStore.ts').then(m => m.useAppStore.getState().setTheme('light'))");
+  await screenshot("dots-worker-conclusion");
+  await press("document.querySelector('textarea.input-textarea')", "worker chat input");
+  await rpc("Input.insertText", { text: continuedQuestion });
+  await press('document.querySelector(\'button[title="发送 (Enter)"]\')', "send an ordinary follow-up in the worker");
+  await until(() => evaluate("Array.from(document.querySelectorAll('.assistant-card .md-chat p')).some(el => el.textContent === '原件编号是 A · 137。')"), "ordinary follow-up finished");
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.message-list .assistant-card')].map(card => !!card.querySelector('button[aria-label=\"查看 Dots 交付消息\"]'))"), [true, false]);
+  await evaluate(`window.dotsDeliveryFocus = false; document.addEventListener("focusin", event => {
+    if (event.target.id === ${JSON.stringify("msg-" + delivered.id)}) window.dotsDeliveryFocus = true;
+  });`);
+  await press(deliveryButton, "jump from the worker reply to its Dots delivery");
+  await until(async () => await active() === "MyBuddy Dots", "returned to Dots from the delivery icon");
+  const deliveryMessage = "document.getElementById(" + JSON.stringify("msg-" + delivered.id) + ")";
+  await until(() => evaluate("window.dotsDeliveryFocus && Boolean(" + deliveryMessage + "?.querySelector('.artifact-chip-main'))"), "the original Dots delivery is focused");
+  await press(deliveryMessage + "?.querySelector('.artifact-chip-main')", "preview the original delivery from Dots");
+  await until(() => evaluate("document.querySelector('.dots-result .bot-work-file-preview-body')?.textContent.includes('报价原件 A · 137')"), "saved version reached from the worker icon");
+  report.actualControlChecks.push("The worker reopened with the saved conclusion, one artifact chip, and a footer icon just before the model badge. The icon stayed on the delegated reply after an ordinary follow-up and opened its Dots delivery and immutable file.");
   await press("document.querySelector('.message-list a.md-link')", "open task link in Dots reply");
   await until(async () => await active() === "报价任务", "native task link opened");
   await dots();
@@ -329,6 +347,7 @@ run(async env => {
     const names = request.tools?.map(tool => tool.function.name) ?? [];
     const last = request.messages.findLast(message => !isEvidenceSupplement(message));
     const incoming = JSON.stringify(last?.content ?? "");
+    if (last?.role === "user" && incoming.includes(continuedQuestion)) return "原件编号是 A · 137。";
     if (last?.role === "user" && incoming.includes("检查已关闭能力的工具列表")) {
       const actions = name => JSON.stringify(request.tools.find(tool => tool.function.name === name).function.parameters.properties.action);
       assert.equal(request.model, "dots-alternate");
@@ -351,7 +370,9 @@ run(async env => {
         return "能力限制已生效";
       }
       if (names.includes("dots_action")) return "已交给" + JSON.parse(last.content).link + "。";
-      return JSON.stringify({dotsState:"complete",result:""});
+      if (!request.messages.some(message => message.tool_calls?.some(call => call.function.name === "register_artifact")))
+        return { tool: { name: "register_artifact", arguments: { path: "报价.md" } } };
+      return { tool: { name: "dots_task_end", arguments: { action: "complete", result: quotesResult, deliveryText: "" } } };
     }
     if (names.includes("dots_action")) return { tool: { name: "dots_action", arguments: {
       action: "delegate", spaceId, name: "报价任务", text: "写报价.md",

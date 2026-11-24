@@ -123,7 +123,7 @@ export class DotsReplyOutbox {
     // Formal Goal delivery can select an earlier commissioning input in its accepted lineage.
     const source = reply.completion ? reply.sourceMessageId : event.source_message_id;
     if (!this.matchesReceipt(event, receipt, dotsOriginalDestination(this.db, source))) return;
-    return { deliveryKey: reply.deliveryKey, artifacts: reply.artifacts.filter(file => file.saved) };
+    return { deliveryKey: reply.deliveryKey, operationId: event.operation_id, artifacts: reply.artifacts.filter(file => file.saved) };
   }
 
   /** Rebuild incomplete projections by reading the original conversation's committed messages. */

@@ -3,7 +3,7 @@
   color: var(--fg);
   font-size: 13px;
 }
-.dots-result .md-link, .task-dots-delivery > .md-link {
+.dots-result .md-link {
   padding: 0;
   border: 0;
   background: transparent;
@@ -11,7 +11,7 @@
   font: inherit;
   cursor: pointer;
 }
-.dots-result .md-link:hover, .task-dots-delivery > .md-link:hover { text-decoration: underline; }
+.dots-result .md-link:hover { text-decoration: underline; }
 .dots-result-status { margin-inline-start: 6px; color: var(--fg-secondary); }
 .dots-result-text { margin-block: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dots-literal-json {
@@ -28,4 +28,3 @@
 .dots-progress-history > summary { width: fit-content; cursor: pointer; }
 .dots-progress-history-item { margin: 10px 0 0 5px; padding-left: 10px; border-left: 2px solid var(--border-default); }
 .dots-progress-history-item strong { color: var(--fg); }
-.task-dots-delivery { width: min(var(--chat-max, 800px), calc(100% - 32px)); margin-inline: auto; }

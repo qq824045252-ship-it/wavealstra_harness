@@ -3,34 +3,13 @@ import type { Context } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { z } from "zod";
 import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
+import { PROJECT_CHECK_NAME_PATTERN } from "../../../shared/project-check";
 import { DOTS_WORK_ITEM_ID_PATTERN } from "../../dots/DotsWorkerOutcome";
+import { DOTS_TASK_END, dotsWorkEvidenceSchema, readDotsTerminalReceipt, type DotsTerminalDependency, type DotsTerminalOutcome } from "./DurableDotsTerminal";
 import { checkDurableInputFreshness } from "./DurableInputFreshness";
 import { durableSourceInput } from "./DurableInputProvenance";
-import { PROJECT_CHECK_NAME_PATTERN } from "./DurableProjectVerification";
 
-export const DOTS_TASK_END = "dots_task_end";
-
-const dependency = z.object({
-  operationId: z.string().min(1),
-  title: z.string(),
-  deadlineAt: z.number().int().positive(),
-});
-
-const workEvidence = z.array(z.strictObject({
-  id: z.string().regex(new RegExp(DOTS_WORK_ITEM_ID_PATTERN)),
-  evidence: z.string().trim().min(1).max(1800),
-})).max(48);
-
-const outcome = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("complete"), result: z.string(), deliveryText: z.string(),
-    verifiedCommit: z.string().regex(/^[a-f0-9]{40,64}$/).optional(),
-    completedItems: workEvidence.optional(),
-    verifiedChecks: z.array(z.string().regex(new RegExp(PROJECT_CHECK_NAME_PATTERN))).max(25).optional() }),
-  z.object({ action: z.literal("wait"), progress: z.string(), dependencyWait: dependency }),
-]);
-const receipt = z.object({ dotsTerminal: z.object({ operationId: z.string(), outcome }) });
-type Dependency = z.infer<typeof dependency>;
-type TerminalOutcome = z.infer<typeof outcome>;
+export { DOTS_TASK_END } from "./DurableDotsTerminal";
 
 function decodeToolArray(value: unknown): unknown {
   // Some OpenAI-compatible model routes encode arrays as JSON strings. Pi may
@@ -50,7 +29,7 @@ const argsSchema = z.discriminatedUnion("action", [
     deliveryText: z.string().max(32000),
     checks: checkNames.optional(),
     commitSha: z.string().regex(/^[a-f0-9]{7,64}$/i).optional(),
-    completedItems: z.preprocess(decodeToolArray, workEvidence).optional(),
+    completedItems: z.preprocess(decodeToolArray, dotsWorkEvidenceSchema).optional(),
   }),
   z.object({
     action: z.literal("wait"),
@@ -67,7 +46,7 @@ type VerifyCompletion = (
 export function createDurableDotsWorker(
   taskId: string,
   isActive: (taskId: string, operationId: string) => boolean,
-  validateDependency: (taskId: string, operationId: string, dependencyOperationId: string) => Dependency,
+  validateDependency: (taskId: string, operationId: string, dependencyOperationId: string) => DotsTerminalDependency,
   verifyCompletion: VerifyCompletion,
 ): ToolRegistration {
   return {
@@ -106,7 +85,7 @@ export function createDurableDotsWorker(
       const source = await durableSourceInput(api, context, api.conversationId, live.run?.inputs ?? []);
       if (!source || !isActive(taskId, source.id))
         return toolError("当前执行没有可结束的 Dots 后台交办。");
-      let terminal: TerminalOutcome;
+      let terminal: DotsTerminalOutcome;
       try {
         if (args.action === "wait") {
           if (!args.progress.trim()) return toolError("请说明已经完成的进展和正在等待什么。");
@@ -141,7 +120,7 @@ function toolError(text: string) {
 
 /** Only a settled single-call native turn may supply a worker outcome. */
 export async function readDurableDotsTerminal(tx: Tx, input: Extract<SubmissionRecord, { type: "input" }>,
-  final: EntryRecord | undefined): Promise<TerminalOutcome | undefined> {
+  final: EntryRecord | undefined): Promise<DotsTerminalOutcome | undefined> {
   if (input.status !== "done" || final?.id !== input.answer || final.conversationId !== input.conversationId) return;
   const answer = final.model?.find(message => message.role === "assistant");
   if (answer?.stopReason !== "toolUse") return;
@@ -157,8 +136,7 @@ export async function readDurableDotsTerminal(tx: Tx, input: Extract<SubmissionR
     if (result?.role !== "toolResult" || !nativeExecutionSucceeded(result, {
       conversationId: input.conversationId, toolTaskId: entry.byTaskId, toolName: DOTS_TASK_END, callId,
     })) continue;
-    const parsed = receipt.safeParse(result.details);
-    if (parsed.success && parsed.data.dotsTerminal.operationId === input.requestId)
-      return parsed.data.dotsTerminal.outcome;
+    const terminal = readDotsTerminalReceipt(result.details);
+    if (terminal && terminal.operationId === input.requestId) return terminal.outcome;
   }
 }

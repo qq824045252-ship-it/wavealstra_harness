@@ -1,6 +1,6 @@
 import { UiIcon } from "@mybuddy/shared/icons";
 import type { SavedArtifactRequest } from "@shared/saved-artifact";
-import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, TaskDotsDelivery, useDotsDelegations } from "./DotsResult";
+import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, useDotsDelegations, useTaskDotsDelivery } from "./DotsResult";
 import { DotsAllTasks } from "./DotsActivity";
 import ChatMarkdown from "./ChatMarkdown";
 import { DOTS_TASK_ID, isDotsAutomaticInput } from "@shared/dots";
@@ -320,9 +320,10 @@ function DotsProgressHistory({ entries, preview, onPreview }: {
   </details>;
 }
 
-function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, delegations = [] }: {
+function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, taskDelivery, delegations = [] }: {
   listRef: React.Ref<HTMLDivElement>;
   delegations?: import("@shared/dots").DotsDelegation[];
+  taskDelivery?: import("@shared/dots").DotsTaskDelivery;
   taskId: string;
   messages: readonly ChatMessage[];
   artifacts: Artifact[];
@@ -389,6 +390,8 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
         return [
           <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
             {!hideMessage && <MessageItem message={msg} taskId={taskId} sourceQuestion={!automatic && !delivery && msg.role === "assistant" ? precedingUser : undefined}
+              dotsDeliveryKey={taskDelivery && msg.role === "assistant" && !msg.streaming
+                && precedingUser?.inputRequestId === taskDelivery.operationId ? taskDelivery.deliveryKey : undefined}
               deliveryQuestion={delivery?.kind === "conclusion" ? dotsQuestions.get(delivery.sourceMessageId) : undefined}
               deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} selected={Boolean(showPreview)}
                 onPreview={file => setPreview({ rowId: delivery.deliveryKey, file })} /> : undefined}
@@ -477,6 +480,7 @@ export default function ChatView(): React.JSX.Element {
     ? JSON.stringify(displayMessages.filter(message => message.role === "user").flatMap(message => [message.id, ...(message.inputRequestId ? [message.inputRequestId] : [])]))
     : undefined;
   const dotsDelegations = useDotsDelegations(dotsSources);
+  const taskDelivery = useTaskDotsDelivery(task?.id === DOTS_TASK_ID ? undefined : task?.id);
   const hasMessages = displayMessages.length > 0;
   const latestUserMessageId = useMemo(() => latestHumanMessageId(displayMessages), [displayMessages]);
   const activeChatId = task?.id;
@@ -1008,13 +1012,13 @@ export default function ChatView(): React.JSX.Element {
             listRef={messageListRef}
             onGoalCreated={setSelectedMessageGoal}
             delegations={isDots ? dotsDelegations.rows : undefined}
+            taskDelivery={taskDelivery}
             toolFocusMessageId={notificationTarget?.toolCallId ? turnMessage?.id : undefined}
             taskId={task.id}
             messages={displayMessages}
             artifacts={artifacts}
             visibleArtifacts={visibleArtifacts}
           />
-          {!isDots && <TaskDotsDelivery taskId={task.id} />}
           <div ref={tailSpaceRef} className="chat-pin-tail-space" aria-hidden="true" />
         </div>
         {/* 用户接管滚动（上拉阅读历史）时出现；点击 = 显式「回到底部」动作。

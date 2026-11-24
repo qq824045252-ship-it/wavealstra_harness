@@ -10,6 +10,7 @@ import { clockTime, nonEmptyFinalTextBlocks, useAppStore } from "@/store/appStor
 import { readableChatReply } from "@/lib/chatReplyMarkdown";
 import { allowsDotsProseLayout, layoutDotsProse } from "@/lib/dotsReplyLayout";
 import { ChatReplyOutline } from "./ChatReplyOutline";
+import { DotsDeliveryLink } from "./DotsResult";
 import { stripInjectedUserPromptTail, userPromptDisplayText } from "@shared/user-prompt-display";
 import { selectionLabelsFromPrompt } from "@shared/selection-display";
 import { requestUserInputDisplayText } from "@shared/request-user-input-fallback";
@@ -52,6 +53,7 @@ interface Props {
   sourceQuestion?: ChatMessage;
   deliveryQuestion?: ChatMessage;
   deliveryFiles?: React.ReactNode;
+  dotsDeliveryKey?: string;
   /** Only task chat supplies a local image scope; Gateway/BTW must not inherit activeTaskId. */
   taskId?: string;
   artifacts?: Artifact[];
@@ -177,8 +179,7 @@ function assistantCopyText(message: ChatMessage): string {
     .trim();
 }
 
-function literalDotsJson(message: ChatMessage): string | undefined {
-  const text = message.dotsDelivery?.kind === "conclusion" ? message.dotsDelivery.text : undefined;
+function literalDotsJson(text: string | undefined): string | undefined {
   if (!text || !/^\s*(?:\{|\[|")/u.test(text)) return;
   try {
     JSON.parse(text);
@@ -458,9 +459,14 @@ function TaskReferenceNotice({
   );
 }
 
-function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, deliveryFiles, artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, onGoalCreated, focusTool }: Props): React.JSX.Element {
+function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, deliveryFiles, dotsDeliveryKey,
+  artifacts = EMPTY_ARTIFACTS, visibleArtifacts, btw = false, gatewayStatus, onGoalCreated, focusTool }: Props): React.JSX.Element {
   const replyBody = useRef<HTMLDivElement>(null);
-  const exactDotsJson = literalDotsJson(message);
+  const dotsWorkerReply = !btw && message.finalAssistantReply && sourceQuestion?.inputRequestId?.startsWith("dots-input-");
+  const workerFinals = dotsWorkerReply && !message.streaming ? nonEmptyFinalTextBlocks(message.finalBlocks) : [];
+  const workerFinal = workerFinals.length === 1 ? workerFinals[0] : undefined;
+  const exactDotsJson = literalDotsJson(message.dotsDelivery?.kind === "conclusion" ? message.dotsDelivery.text
+    : workerFinal?.type === "text" ? workerFinal.text : undefined);
   const openLocalAbsoluteFile = useAppStore((s) => s.openLocalAbsoluteFile);
   const openWorkspaceFile = useAppStore((s) => s.openWorkspaceFile);
   const currentTask = useAppStore((s) => s.tasks.find((t) => t.id === (taskId || s.activeTaskId)));
@@ -798,7 +804,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, delive
   const dotsReply = !btw && taskId === DOTS_TASK_ID;
   const dotsFailure = dotsReply && !message.generateError ? executionFailureReason(message) : undefined;
   const layoutQuestion = message.dotsDelivery ? deliveryQuestion : sourceQuestion;
-  const reflowProse = dotsReply && !message.streaming && !message.generateError && layoutQuestion
+  const reflowProse = (dotsReply || dotsWorkerReply) && !message.streaming && !message.generateError && layoutQuestion
     && layoutQuestion.blocks.every(block => block.type !== "text" || allowsDotsProseLayout(block.text));
 
   return (
@@ -966,6 +972,7 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, delive
               </span>
             )}
             {regenerating && <span className="msg-regenerating">正在重新生成…</span>}
+            {dotsDeliveryKey && <DotsDeliveryLink key={dotsDeliveryKey} deliveryKey={dotsDeliveryKey} />}
             {message.modelName && (
               <span className="msg-model-badge">
                 <IconZap size={12} /> {message.modelName}

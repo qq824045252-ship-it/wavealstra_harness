@@ -4,11 +4,11 @@ import { join } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { PROJECT_CHECK_NAME_PATTERN } from "../../../shared/project-check";
 import { checkWorkspaceStamp, pstackCheckReceipt } from "../pstack/PstackVerificationEvidence";
 import { projectVerificationWorkspace } from "../pstack/PstackWorkspace";
 
 export const PROJECT_VERIFY_TOOL = "project_verify";
-export const PROJECT_CHECK_NAME_PATTERN = "^(?:typecheck|test(?::[a-zA-Z0-9][a-zA-Z0-9:_-]*)?)$";
 export const PROJECT_VERIFY_CHILD_KEY = "project-verification";
 export type ProjectVerificationManager = "npm" | "pnpm";
 

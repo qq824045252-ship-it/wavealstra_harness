@@ -77,7 +77,7 @@ export interface DotsAssistantReply {
   artifacts: DotsDelegation["artifacts"];
 }
 
-export type DotsTaskDelivery = Pick<DotsAssistantReply, "deliveryKey" | "artifacts">;
+export type DotsTaskDelivery = Pick<DotsAssistantReply, "deliveryKey" | "operationId" | "artifacts">;
 
 type DotsActivityTask = {
   id: string;

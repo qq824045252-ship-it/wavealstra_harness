@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { dotsReplyTimestamp, readDotsReply } from "./DurableDotsReply";
+import { DOTS_TASK_END, readDotsTerminalReceipt } from "./DurableDotsTerminal";
 import { readDotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import type { EntryRecord, TaskId } from "@earendil-works/pi-durable";
@@ -219,19 +220,25 @@ export class DurableHistoryProjection {
     const owner = ownerId && this.rows.get(ownerId);
     if (!owner) return;
     const details = resultDetails(message);
+    const terminal = message.toolName === DOTS_TASK_END && receipt?.status === "passed" && !message.isError
+      && owner.tools?.some(tool => tool.id === message.toolCallId && tool.tool === DOTS_TASK_END)
+      ? readDotsTerminalReceipt(message.details)?.outcome : undefined;
+    const completion = terminal?.action === "complete" ? terminal : undefined;
+    const conclusion = completion && (completion.deliveryText.trim() ? completion.deliveryText : completion.result);
     const calls = (details?.calls ?? []).map((call, index) => nestedToolRow(message.toolCallId, call, index));
     const tools = (owner.tools ?? []).map(tool => tool.id === message.toolCallId && tool.tool === message.toolName
       ? { ...tool, status: durableToolStatus(message, { callId: message.toolCallId, toolName: message.toolName,
-          conversationId: entry?.conversationId, toolTaskId: entry?.byTaskId }), output: durableContentText(message.content), detail: toolResultDetail(tool, message),
+          conversationId: entry?.conversationId, toolTaskId: entry?.byTaskId }), output: completion?.result || durableContentText(message.content), detail: toolResultDetail(tool, message),
           capabilityResult: capabilityResultFromDetails(message.toolName, message.details),
           webSearch: searchReportFromDetails(message.details), consult: consultReportFromDetails(message.details) } : tool);
     for (const call of calls) if (!tools.some(tool => tool.id === call.id)) tools.push(call);
     if (details?.conversationId && message.toolName === "codemode") this.children.set(message.toolCallId, details.conversationId);
     const artifacts = details?.imagePaths?.map(path => ({ id: `${message.toolCallId}:${path}`, name: basename(path), kind: "image" as const, path, content: "" }));
     const foregroundNotice = dotsForegroundNotice(message);
-    const text = foregroundNotice && !owner.text.includes(foregroundNotice)
-      ? [owner.text, foregroundNotice].filter(Boolean).join("\n\n") : owner.text;
-    this.replace({ ...owner, text, tools, ...(artifacts?.length ? { artifacts: [...owner.artifacts ?? [], ...artifacts.filter(artifact => !owner.artifacts?.some(item => item.id === artifact.id))] } : {}) });
+    const text = conclusion ?? (foregroundNotice && !owner.text.includes(foregroundNotice)
+      ? [owner.text, foregroundNotice].filter(Boolean).join("\n\n") : owner.text);
+    this.replace({ ...owner, text, tools, ...(completion ? { finalAssistantReply: true } : {}),
+      ...(artifacts?.length ? { artifacts: [...owner.artifacts ?? [], ...artifacts.filter(artifact => !owner.artifacts?.some(item => item.id === artifact.id))] } : {}) });
   }
 }
 

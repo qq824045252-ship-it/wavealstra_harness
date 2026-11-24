@@ -6,7 +6,8 @@ import { matchingNativeExecutionReceipt } from "../../shared/native-execution-re
 import { WEB_ACCESS_TOOL_NAMES } from "../../shared/native-tools";
 import { OFFICE_USE_TOOLS } from "../../shared/office-use";
 import { durableRegisteredArtifact } from "../agent/durable/DurableArtifactReceipt";
-import { PROJECT_CHECK_NAME_PATTERN, PROJECT_VERIFY_TOOL } from "../agent/durable/DurableProjectVerification";
+import { PROJECT_CHECK_NAME_PATTERN } from "../../shared/project-check";
+import { PROJECT_VERIFY_TOOL } from "../agent/durable/DurableProjectVerification";
 import { openDurablePassiveStorage } from "../agent/durable/DurableStorage";
 
 export type DotsRecoveryKind = "continue" | "local" | "report-only" | "unknown" | "unavailable";
