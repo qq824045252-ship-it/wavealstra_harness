@@ -35,7 +35,7 @@ export function createSendMessageActions(
       if (reviewTaskId && activeTaskId !== reviewTaskId) {
         return Promise.reject(new Error("任务已经切换，请回到原任务后提交审查。"));
       }
-      if (preparedTaskId && (activeTaskId || get().draft?.worktreeTaskId !== preparedTaskId)) return;
+      if (preparedTaskId !== (activeTaskId ? undefined : get().draft?.worktreeTaskId)) return;
       let materializedPlanId: string | undefined;
       if (!activeTaskId) {
         // 草稿态（点「新建任务」/召唤专家后尚未发过消息）：此刻才创建任务并激活，

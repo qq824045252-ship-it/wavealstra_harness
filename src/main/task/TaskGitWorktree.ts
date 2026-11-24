@@ -57,7 +57,7 @@ export async function prepareTaskGitWorktree(db: AppDatabase, { taskId, spaceId 
     });
   } catch (error) {
     if (error instanceof Error && /requires a clean repository|Repository became dirty/.test(error.message)) {
-      throw new Error("Git 仓库有未提交的更改。请先提交或暂存更改，再发送消息。", { cause: error });
+      throw new Error("Git 仓库有未提交的更改。请先提交更改或使用 git stash，再发送消息。", { cause: error });
     }
     if (error instanceof Error && error.message.includes("requires a Git working tree")) {
       throw new Error("所选工作空间不在 Git 仓库中。", { cause: error });

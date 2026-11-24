@@ -952,12 +952,14 @@ export default function ChatInput({
     }
     const payload = consultRequested ? requestConsultForMessage(basePayload) : basePayload;
 
-    if (worktreeTaskId) {
-      if (worktreeUnavailable || !draft?.spaceId) {
+    const origin = useAppStore.getState();
+    const requestedWorktreeId = origin.activeTaskId ? undefined : origin.draft?.worktreeTaskId;
+    if (requestedWorktreeId) {
+      const spaceId = origin.draft?.spaceId;
+      if (worktreeUnavailable || !spaceId) {
         setWorktreeError(worktreeUnavailable ?? "请先选择 Git 仓库所在的工作空间");
         return;
       }
-      const origin = useAppStore.getState();
       const preparation = window.api?.agent?.prepareTaskWorktree;
       if (!preparation) {
         setWorktreeError("工作树服务尚未就绪，请重启 MyBuddy");
@@ -968,7 +970,7 @@ export default function ChatInput({
       setPreparingWorktree(true);
       setWorktreeError("");
       try {
-        const result = await preparation({ taskId: worktreeTaskId, spaceId: draft.spaceId });
+        const result = await preparation({ taskId: requestedWorktreeId, spaceId });
         if (!result.ok) {
           setWorktreeError(result.error);
           return;
@@ -984,7 +986,7 @@ export default function ChatInput({
       const current = useAppStore.getState();
       const snapshot = composerSnapshotRef.current;
       if (current.activeTaskId || current.page !== origin.page
-        || current.draft?.worktreeTaskId !== worktreeTaskId || !textareaRef.current) return;
+        || !textareaRef.current) return;
       if (current.draft !== origin.draft || current.welcomeMode !== origin.welcomeMode
         || current.modePresetId !== origin.modePresetId || effectiveExternalAgentRef.current
         || snapshot.text !== text || snapshot.attachments !== attachments || snapshot.attachedSkills !== attachedSkills
@@ -1029,7 +1031,7 @@ export default function ChatInput({
         externalAgent
           ? { id: externalAgent.id, name: externalAgent.name, protocol: externalAgent.protocol, continueFromRunId: externalAgent.continueFromRunId }
           : undefined,
-        worktreeTaskId,
+        requestedWorktreeId,
       );
     } else {
       sendMessage(
@@ -1042,7 +1044,7 @@ export default function ChatInput({
         externalAgent
           ? { id: externalAgent.id, name: externalAgent.name, protocol: externalAgent.protocol, continueFromRunId: externalAgent.continueFromRunId }
           : undefined,
-        worktreeTaskId,
+        requestedWorktreeId,
       );
     }
     resetSentComposer();
@@ -1247,7 +1249,7 @@ export default function ChatInput({
       </div>}
       {preparingWorktree && <div className="consult-composer-notice" role="status">正在创建 Git 工作树…</div>}
       {stopNotice && stopNotice.taskId === activeTaskId && <div className="consult-composer-notice" role="status">{stopNotice.text}</div>}
-      {worktreeTaskId && worktreeError && <div className="mcp-auth-error" role="alert">{worktreeError}</div>}
+      {worktreeTaskId && worktreeError && <div className="mcp-auth-error" role="alert">消息未发送。{worktreeError}</div>}
       <div className="input-box">
         {(hasAttachChips || showStreamingMode) && (
           <div className="input-top-row">
@@ -1678,7 +1680,7 @@ export default function ChatInput({
               onClick={() => {
                 if (!worktreeTaskId && worktreeUnavailable) return;
                 useAppStore.setState((state) => state.activeTaskId || !state.draft ? {} : ({
-                  draft: { ...state.draft, worktreeTaskId: worktreeTaskId ? undefined : createTaskWorktreeId() },
+                  draft: { ...state.draft, worktreeTaskId: state.draft.worktreeTaskId ? undefined : createTaskWorktreeId() },
                 }));
               }}
             >

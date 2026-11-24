@@ -3,6 +3,7 @@ import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useAppStore } from "@/store/appStore";
 import WorkspaceIcon from "@/components/workspace/WorkspaceIcon";
 import { getWorkspaceDisplayPath, COPY } from "@/lib/workspaceDisplay";
+import { createTaskWorktreeId } from "@shared/task-worktree";
 import {
   IconCheck,
   IconChevronDown,
@@ -87,32 +88,21 @@ export default function WorkspacePicker({
   })();
 
   const pick = (id: string | null): void => {
+    const currentTaskId = taskId ?? activeTaskId;
     if (displayMode === "selection") {
       onSelectSpace?.(id);
     } else if (displayMode === "default-workspace") {
       setHomeSpaceId(id);
-    } else if (displayMode === "task-workspace") {
-      const tid = taskId ?? activeTaskId;
-      if (tid) bindTaskSpace(tid, id);
-      else {
-        // 无任务时的 task-workspace 视为改 draft
-        const cur = useAppStore.getState().draft;
-        useAppStore.setState({ draft: { ...(cur ?? {}), spaceId: id ?? undefined } as typeof cur });
-      }
+    } else if (displayMode === "task-workspace" && currentTaskId) {
+      bindTaskSpace(currentTaskId, id);
     } else {
-      // draft-workspace：仅改 draft，不碰 homeSpaceId / activeTask
-      const cur = useAppStore.getState().draft;
-      if (id == null) {
-        if (cur) useAppStore.setState({ draft: { ...cur, spaceId: undefined, worktreeTaskId: undefined } });
-        else useAppStore.setState({ draft: { spaceId: undefined } });
-        // 若 draft 仅有 spaceId，移除后置 null 保持语义
-        const after = useAppStore.getState().draft;
-        if (after && after.spaceId == null && after.projectId == null && after.expertId == null && after.title == null) {
-          useAppStore.setState({ draft: null });
-        }
-      } else {
-        useAppStore.setState({ draft: { ...cur, spaceId: id, worktreeTaskId: id === cur?.spaceId ? cur.worktreeTaskId : undefined } });
-      }
+      useAppStore.setState(({ draft }) => {
+        const spaceId = id ?? undefined;
+        const worktreeTaskId = draft?.worktreeTaskId;
+        // Provisioning receipts belong to one target. Keep the switch on with a fresh id for a new target.
+        return { draft: { ...draft, spaceId, worktreeTaskId: worktreeTaskId && spaceId !== draft?.spaceId
+          ? createTaskWorktreeId() : worktreeTaskId } };
+      });
     }
     onClose();
   };
