@@ -322,15 +322,32 @@ try {
   }
   const skill = "principle-prove-it-works";
   try {
+    const greeting = await turn("你好！", "git-greeting", []);
+    assert.equal(greeting.status, "done", JSON.stringify(greeting));
+    const greetingHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id, order: "ascending" }, 100), ctx);
+    const greetingAnswers = greetingHistory.items.flatMap(entry => (entry.model ?? []).flatMap(message =>
+      message.role === "assistant" ? message.content.flatMap(part => part.type === "text" ? [part.text] : []) : []));
+    assert.deepEqual(greetingAnswers, ["Fixture yielded."]);
+    const explanation = await turn("详细讲讲 compare.cjs 为什么会有两项输出，我只想理解代码。", "git-explain", [
+      { name: "read", arguments: { path: "compare.cjs" } },
+    ]);
+    assert.equal(explanation.status, "done", JSON.stringify(explanation));
+    const explanationHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id,
+      minEntryId: explanation.entry, order: "ascending" }, 100), ctx);
+    const explanationMessages = explanationHistory.items.flatMap(entry => entry.model ?? []);
+    assert(explanationMessages.some(message => message.role === "toolResult" && !message.isError && message.toolName === "read" &&
+      message.content.some(part => part.type === "text" && part.text.includes("console.log('A: 1, B: 2')"))));
+    assert.equal((await status())?.run ?? null, null, "explaining source does not start an implementation workflow");
     const first = await turn("把空值情况也兼容一下", "run-1", [
-      { name: "write", arguments: { path: "too-early", content: "blocked" } }, work("start", { skill }),
+      work("start", { skill }),
       work("advance", { stage: "apply", note: "Inspect project behavior" }), work("complete"), work("block", { note: "Awaiting fixture input" }),
+      { name: "write", arguments: { path: "after-block", content: "blocked" } },
     ]);
     assert.equal(first.status, "done", JSON.stringify(first));
     const initialHistory = await runtime.harness.commit(tx => tx.scanEntries({ conversationId: runtime.conversation.id, order: "ascending" }, 100), ctx);
     const initialResults = initialHistory.items.flatMap(e => e.model?.flatMap(m => m.role === "toolResult" ? [JSON.stringify(m.content).slice(0, 320)] : []) ?? []);
     assert.equal((await status())?.run?.phase, "blocked", JSON.stringify(initialResults));
-    await assert.rejects(readFile(join(cwd, "too-early")), { code: "ENOENT" });
+    await assert.rejects(readFile(join(cwd, "after-block")), { code: "ENOENT" });
     const revision = (await status())!.run!.revision;
     await runtime.close(); runtime = await open();
     assert.equal((await status())?.run?.revision, revision, "same run survives production durable reopen");
@@ -402,7 +419,7 @@ try {
       .find(e => e.includes('"verification"') && e.includes('"outcome": "workspace_changed"'));
     assert(statusReply?.includes('"exitCode": 0'), JSON.stringify(statusReply));
     assert(errors.some(e => e.includes("exited successfully") && e.includes("overlap.txt") && !e.startsWith("{")));
-    console.log("PASS gate before first write, absent evidence, explicit block, durable reopen, real nested shell exit, stale verification, completion");
+    console.log("PASS explicit workflow block, absent evidence, durable reopen, real nested shell exit, stale verification, completion");
     const readTurn = await turn("Only inspect check.cjs. Do not change project files.", "run-3", [work("start", { skill }), { name: "read", arguments: { path: "check.cjs" } },
       { name: "pstack_workflow", arguments: { action: "decision", decision: { phase: "apply", decision: "Answer", why: "Read only", evidence: "check.cjs", result: "Inspected" } } },
       work("advance", { stage: "apply", note: "Read the actual test" }), work("complete")]);
@@ -457,10 +474,15 @@ try {
       "the green step must reject success evidence for the previous file content");
     console.log("PASS actual failing TDD assertion, missing red/green gates, repaired product returns green on same command");
     const before = replies;
-    const unfinished = await turn("空值也算进去", "run-4", []);
-    assert.notEqual(unfinished.status, "done", "Unverified early yields cannot silently settle a fresh input");
+    const unfinished = await turn("你好，空值也算进去", "run-4", [work("start", { skill })]);
+    assert.notEqual(unfinished.status, "done", "An explicitly started workflow cannot settle before completion");
     assert.equal(replies - before, 3, "two native continuations, independent of message language");
-    const nested = await turn("Investigate a new change", "nested-route", [work("start", { playbook: "feature" }), work("invoke", { skill: "how" }),
+    const pendingRun = (await status())!.run!.run;
+    assert.equal((await turn("Before continuing, explain compare.cjs.", "side-question", [
+      { name: "read", arguments: { path: "compare.cjs" } },
+    ])).status, "done", "a running workflow does not take over an unrelated input");
+    assert.equal((await status())?.run?.run, pendingRun);
+    const nested = await turn("Investigate a new change", "nested-route", [work("start", { playbook: "feature", replace: true, note: "Switch to the new feature." }), work("invoke", { skill: "how" }),
       work("advance", { stage: "trace", note: "Attempt to skip nested stages" }), work("advance", { stage: "trace::how::scope", note: "Bound the investigation" }),
       work("block", { note: "Need a second investigator" })]);
     assert.equal(nested.status, "done"); assert.equal((await status())!.run!.stage, 1);
@@ -529,6 +551,20 @@ try {
     assert.equal((await turn("Question", "run-5", [])).status, "done");
     console.log("PASS actual read receipt, independent next workflow, bounded native onYield and disabled task");
   } finally { await runtime.close(); }
+  enabled = true;
+  const codeMode = await DurableBotRuntime.open({ directory: join(root, "codemode-explanation"), cwd, models,
+    model: { provider: model.provider, modelId: model.id }, toolMode: "codemode", instructions: () => "Fixture",
+    tools: host.tools, foregroundHooks: host, onSnapshot: () => {} });
+  try {
+    queue.push({ name: "codemode", arguments: { code: 'text(await tools.read({path:"compare.cjs"}));' } });
+    const input = await codeMode.submit("Explain the existing compare.cjs script.", "codemode-explain");
+    assert.equal(await codeMode.reply(input), "Fixture yielded.");
+    const history = await codeMode.harness.commit(tx => tx.scanEntries({ conversationId: codeMode.conversation.id, order: "ascending" }, 100), ctx);
+    const output = history.items.flatMap(entry => entry.model ?? []).flatMap(message => message.role === "toolResult" && message.toolName === "codemode"
+      ? message.content.flatMap(part => part.type === "text" ? [part.text] : []) : []).join("\n");
+    assert.match(output, /A: 1, B: 2/);
+    assert.equal((await codeMode.harness.snapshot(WorkflowState, codeMode.conversation.id, ctx))?.run ?? null, null);
+  } finally { await codeMode.close(); }
   const originalEnv = { HOME:process.env.HOME, USERPROFILE:process.env.USERPROFILE, PI_CODING_AGENT_DIR:process.env.PI_CODING_AGENT_DIR };
   try {
     const home=join(root,"author-profile"), workspace=join(home,"work");

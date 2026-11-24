@@ -16,7 +16,8 @@ import type { PstackCheckReceipt, VerificationOutcome } from "./PstackVerificati
 import { nativeExecutionSucceeded } from "../../../shared/native-execution-receipt";
 
 export type Api = Parameters<ToolRegistration["execute"]>[1];
-export type WorkflowOptions = { taskId: string; cwd: string; tag?: CodingTag | null; active: () => boolean; settings: () => PstackSettings; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
+export type WorkflowOptions = { taskId: string; cwd: string; tag?: CodingTag | null; active: () => boolean; settings: () => PstackSettings;
+  githubAvailable?: () => boolean; worktreeActivity?: () => import("./PstackWorktreeAudit").WorktreeTask[] };
 export const REVIEW = "thermo-nuclear-code-quality-review";
 export type DelegateReceipt = { role: string; stage: number; stageId: string; toolTaskId: number; children: string[]; models: string[]; answers: string[]; ownerReports?: OwnerReport[]; ownerAudit?: OwnerAuditTick; participants?: ContestAudit[] };
 export type WorkflowRun = {

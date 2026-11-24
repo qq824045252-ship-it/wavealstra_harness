@@ -1457,7 +1457,7 @@ export default function ModesTab(): React.JSX.Element {
       setTrace(t);
       setPreviewOpen(true);
       const mcpHidden = t.mcpFilter?.hidden?.length ?? 0;
-      const scopeNote = pane === "pstack" ? (pstackEnabled ? "代码开发基础流程：pstack + thermos" : "内置流程已关闭") : selectedPreset?.id
+      const scopeNote = pane === "pstack" ? (pstackEnabled ? "可选工作流 pstack + thermos" : "内置流程已关闭") : selectedPreset?.id
         ? `Tag「${selectedPreset.label}」`
         : "基础 Mode 策略（未选 Tag）";
       setHint(

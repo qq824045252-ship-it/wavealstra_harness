@@ -8,8 +8,8 @@ import {
 } from "../../shared/mode-profile";
 import { DRAWIO_MCP_SERVER_ID } from "../../shared/professional-tools";
 
-export const CODING_WORKFLOW_INSTRUCTIONS =
-  "代码开发使用内置 pstack + thermos。调用 pstack_workflow status 查看当前标签的 preferredPlaybook。有默认流程时直接调用 start；显示 auto 时按用户任务选择已启用的 playbook 或 skill。用户指定流程时显式传入，并遵守标签的任务范围。按当前阶段、角色和已保存的参数执行，用 advance(stage,note) 记录实际结果。写代码后用 verify 记录项目检查。只读任务在对话中交付有出处的结论。交付前用 review 查看触发原因，需要时用 pstack_delegate(purpose=thermos) 取得独立审查回执。complete 成功后回复。如果确有外部依赖，用 block(note) 记录。";
+export const CODING_TASK_INTENT_INSTRUCTIONS =
+  "按本轮话语和对话上下文判断用户的意图。普通交流直接回答。用户想理解现有代码、职责或调用链时，用只读工具优先阅读点名的文件，只查到能回答为止。在对话中解释，依据不足时说明边界。详细讲解仍可以是只读请求，不需要执行命令或修改文件。测试、报告、发布等行动也要有本轮任务授权。按用户目标和任务复杂度自行决定是否使用可选工作流。";
 
 /** Stable id keeps existing Penpot configuration and task references compatible. */
 export const PENPOT_PRESET: ModePresetDto = {

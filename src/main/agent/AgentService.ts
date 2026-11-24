@@ -2101,6 +2101,7 @@ export class AgentService {
       taskId: task.id, cwd, settings: () => workflowSettings,
       tag: codingPolicy && resolveModePreset(codingPolicy, task.modePresetId),
       active: () => this.pstackActive(this.db.getTask(task.id)),
+      githubAvailable: () => this.durableAssembly(this.db.getTask(task.id) ?? task).mcpFilter.enabled.includes("github"),
       worktreeActivity: () => this.db.listTasks().flatMap(item => {
         const directory = this.durableBots?.cwd(item.id) ?? this.registry.get(item.id)?.cwd ?? item.cwd;
         return directory ? [{ id: item.id, cwd: directory, updatedAt: item.updatedAt,
@@ -2415,16 +2416,11 @@ export class AgentService {
       connectorIds: this.expertConnectorIds(task.id, request.connectorIds),
       ...this.runtimeCapabilityAvailability(request.expertId ?? task.expertId, request.connectorIds, task.id) });
     const requiredMcpIds = new Set([...(preset?.providerMcpIds ?? []), ...(this.expertBindings.active(task.id)?.mcpIds ?? [])]);
-    const githubRequired = codingWorkflowRequiresGithub(welcomeMode, profile.policy);
-    if (githubRequired) requiredMcpIds.add("github");
     const requiredMcp = requiredMcpIds.size ? this.mcpRuntime.previewMcpFilter(welcomeMode,
       resolved.runtimePolicy.mcpPolicy, resolved.mcpPolicySources) : undefined;
     const requiredMcpDecisions = requiredMcp?.capabilities.filter(decision => requiredMcpIds.has(decision.id) && !decision.enabled) ?? [];
     this.emitPatch({ type: "capability_notices", taskId: task.id,
       notices: capabilityPolicyNotices([resolved.expertDecision, ...resolved.connectorDecisions, ...requiredMcpDecisions]) });
-    if (githubRequired && !requiredMcp?.enabled.includes("github")) {
-      throw new Error("此流程要求 GitHub MCP。请启用 GitHub MCP 并允许本场景使用，或在 pstack 任务路由中改为按需绑定。");
-    }
     const permissionMode = resolveEffectivePermission(request.permissionMode ?? task.permissionMode,
       resolved.effectiveProfile.policy.suggestedPermissionMode, this.settingsStore.read().permissionMode ?? "default");
     await ensurePresetRuntimeReadyWithRecovery({ failures: this.executionFailures, taskId: task.id,
@@ -3850,7 +3846,7 @@ export class AgentService {
       trace.warnings.push(w);
     }
     if (codingWorkflowRequiresGithub(welcomeMode, profile.policy) && !mcpPreview.enabled.includes("github")) {
-      trace.warnings.push("代码开发基础流程要求 GitHub MCP，当前场景未启用该服务。");
+      trace.warnings.push("启动 pstack 时需要 GitHub MCP，当前场景未启用该服务。");
     }
     // 重名诊断追加为 warnings（可观测，不改变装配结果）
     for (const name of shadowed) {

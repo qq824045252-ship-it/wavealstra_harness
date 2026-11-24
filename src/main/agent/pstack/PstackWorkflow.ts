@@ -62,7 +62,7 @@ const checkReply = (receipt: PstackCheckReceipt) => ({
 export function createPstackWorkflow(options: WorkflowOptions) {
   const workflow: ToolRegistration = defineTool({
     name: "pstack_workflow", replay: "safe", executionMode: "sequential",
-    description: "Host-owned pstack workflow. status lists routes or shows current phase. start with playbook or skill before changing files. skill displays instructions. invoke(skill) runs a configured supporting method within the current stage and then returns to it. advance(stage,note) records a stage outcome. verify(shell,command) runs a focused check and records the exit code and workspace version. review shows Thermos triggers and reviewer role. decision appends to the configured TSV. complete checks current evidence; multi-phase-plan also requires artifact. For a real dependency use block(note), then resume on a later input.",
+    description: "Optional pstack workflow. Choose it based on the user's intent and the task's needs, such as an explicitly requested playbook, formal review, or multi-stage change that benefits from staged verification. For ordinary chat or explaining existing code, answer directly using relevant source reads if needed. status lists available workflows and the tag's preferred playbook. start opts this input into a playbook or skill; resume opts into a paused run. skill displays instructions. invoke(skill) runs a supporting method. advance(stage,note) records a stage outcome. verify(shell,command) records a check against the workspace version. review shows Thermos triggers. decision appends to the configured TSV. complete checks current evidence. block(note) records a real dependency.",
     parameters,
     async execute(args, api, ctx) {
       try {
@@ -87,6 +87,13 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         });
         const active = await live(api, ctx);
         if (!active?.first || !active.inputs.length) throw new Error("Workflow requires a current user input.");
+        if ((action === "start" || action === "resume") && options.settings().skills["poteto-mode"]?.parameters.githubBinding === "required"
+          && !options.githubAvailable?.()) {
+          throw new Error("此流程要求 GitHub MCP。请启用 GitHub MCP 并允许本场景使用，或在 pstack 任务路由中改为按需绑定。");
+        }
+        const bindInputs = (next: WorkflowRun) => {
+          for (const input of active.inputs) if (!next.inputs.includes(input)) next.inputs.push(input);
+        };
         if (run?.operations.includes(api.taskId)) {
           const check = action === "verify" && run.checkReceipts?.find(receipt => receipt.checkIdentity.operationTaskId === api.taskId);
           return check ? checkReply(check) : success(view(run));
@@ -96,6 +103,8 @@ export function createPstackWorkflow(options: WorkflowOptions) {
             (run && run.phase !== "complete" && !args.replace ? run.playbook : defaultRoute);
           if (run && run.phase !== "complete" && !args.replace) {
             if (requested !== run.playbook) throw new Error("A workflow is already active. Finish it or resume its current stage.");
+            if (run.phase === "running" && active.inputs.some(id => !run.inputs.includes(id)))
+              return success(view(await update(options, run, api, ctx, bindInputs)));
             return success(view(run));
           }
           if (run?.inputs.some(id => active.inputs.includes(id as typeof active.inputs[number]))) throw new Error("This input already completed its workflow.");
@@ -126,7 +135,7 @@ export function createPstackWorkflow(options: WorkflowOptions) {
         }
         if (!run) throw new Error("No workflow. Call start with an enabled playbook.");
         const save = (change: (next: WorkflowRun, tx: Tx) => void | Promise<void>) => update(options, run, api, ctx, (next, tx) => {
-          for (const input of active.inputs) if (!next.inputs.includes(input)) next.inputs.push(input);
+          bindInputs(next);
           return change(next, tx);
         });
         if (action === "export-eval") {

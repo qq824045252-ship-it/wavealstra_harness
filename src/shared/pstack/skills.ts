@@ -57,7 +57,7 @@ export const PSTACK_SKILLS: PstackSkill[] = [
   method("poteto-mode", "任务路由", "选择工作剧本，按任务范围调用配套方法与原则。",
     "先核对目标、仓库规则、工具目录与授权。小任务直接处理；优先用户指定的剧本。复杂改动分出独立路径、共享状态、验收和真实使用面，遇到不确定事实先实验。写入按所有权隔离，按真实回执收齐任务。交付结果、依据和缺口。", [],
     [choice("preferredPlaybook", "默认工作剧本", "自动模式按任务路由，明确点名的剧本优先。", "auto", ["auto", ...PSTACK_PLAYBOOKS.map(book => book.id)]),
-      choice("githubBinding", "GitHub MCP 绑定", "按需使用 GitHub；选择 required 将 GitHub MCP 列为此模式的必要依赖。", "on-demand", ["on-demand", "required"]),
+      choice("githubBinding", "GitHub MCP 绑定", "选择 required 时，启动或恢复 pstack 工作流需要 GitHub MCP。", "on-demand", ["on-demand", "required"]),
       input("verificationCommands", "项目验证命令", "每行一条完整的可信项目命令，由运行时精确匹配。", "", true)]),
   ...PSTACK_PRINCIPLES,
   method("recall", "恢复工作背景", "从本工作区的记录与现状恢复上次进度。",

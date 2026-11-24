@@ -114,7 +114,7 @@ export default function PstackSettingsEditor({ value, enabled, saving, models, c
   return <fieldset className="pstack-settings" aria-label="内置工作流设置" disabled={saving}>
     <div className="pstack-top">
       <CheckField label="启用内置 pstack + thermos" checked={enabled} onChange={checked => change(value, checked)}
-        help="启用后，所有代码开发任务都会使用这套基础流程。选用其他标签时，标签的指令和权限仍会叠加生效。" />
+        help="启用后，模型可以根据本轮任务选择调用 pstack。标签继续提供各自的指令和权限。" />
     </div>
     <nav className="pstack-tabs" aria-label="工作流配置分类">
       {(Object.keys(sections) as Section[]).map(key => <button type="button" key={key} aria-label={sections[key]}

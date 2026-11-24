@@ -73,7 +73,7 @@ process.env.PI_CODING_AGENT_DIR = config;
 mkdirSync(config, { recursive: true });
 const requests: string[] = [];
 const workflowCalls: [string, Record<string, unknown>][] = [
-  ["write", { path: "too-early.txt", content: "should be blocked" }],
+  ["read", { path: "check.cjs" }],
   ["pstack_workflow", { action: "start", playbook: "runtime-forensics" }],
   ["write", { path: "tested.txt", content: "verified\n" }],
   ...["capture", "reduce", "experiment", "source", "report"].map(stage =>
@@ -178,10 +178,15 @@ const server = createServer(async (request, response) => {
   } else if (raw.includes("PSTACK_ORCH_RUN")) {
     call = orchestrationCalls[orchRound++];
     answer = "Waiting for the caller specification.";
+  } else if (raw.includes("PSTACK_REQUIRED_GITHUB")) {
+    const index = body.input.findLastIndex((item: { role?: string }) => item.role === "user" && JSON.stringify(item).includes("PSTACK_REQUIRED_GITHUB"));
+    if (!body.input.slice(index + 1).some((item: { type?: string }) => item.type === "function_call_output"))
+      call = ["pstack_workflow", { action: "start", playbook: "investigation" }];
   } else if (raw.includes("PSTACK_NATIVE_RUN") && !raw.includes("ORDINARY_AFTER_PSTACK")) {
-    // The fixture first tries to finish without calling the workflow. The host must continue the turn.
-    if (parentRounds > 0) call = workflowCalls[parentRounds - 1];
-    answer = parentRounds++ === 0 ? "已经完成。" : "PSTACK_VERIFIED";
+    // Yield once after opting into the workflow, before producing any verification evidence.
+    const round = parentRounds++;
+    if (round !== 2) call = workflowCalls[round < 2 ? round : round - 1];
+    answer = round === 2 ? "已经完成。" : "PSTACK_VERIFIED";
   }
   const item = call
     ? { type: "function_call", id: `fc_${requests.length}`, call_id: `call_${requests.length}`, name: call[0], arguments: JSON.stringify(call[1]) }
@@ -268,7 +273,8 @@ try {
   assert(!agent.getModeProfile("coding").policy.presets?.some(tag => tag.id === PSTACK_THERMOS_ID));
   assert.equal(agent.getModeProfile("coding").policy.presets?.find(tag => tag.id === legacy.id)?.promptAddon, legacy.promptAddon);
   for (const tag of [undefined, ...agent.getModeProfile("coding").policy.presets!.map(p => p.id), PSTACK_THERMOS_ID]) {
-    assert.equal(modePrompt("coding", tag).split("调用 pstack_workflow status").length, 2, "Coding base must appear exactly once: " + tag);
+    assert.match(modePrompt("coding", tag), /按用户目标和任务复杂度自行决定是否使用可选工作流/);
+    assert(!modePrompt("coding", tag).includes("pstack_workflow"), "Coding mode must not prescribe pstack: " + tag);
   }
   assert(modePrompt("coding", legacy.id).includes(legacy.promptAddon));
   assert(!modePrompt("working", PSTACK_THERMOS_ID).includes("pstack_workflow"));
@@ -282,7 +288,7 @@ try {
   writeFileSync(join(workflowRoot, "check.cjs"), "const assert = require('node:assert/strict'); assert.equal(require('fs').readFileSync('tested.txt','utf8'), 'verified\\n'); console.log('HOST_RECEIPT_CHECK_PASSED');");
   const firstCodingRequest = requests.length;
   await agent.prompt(request, { durableAdmissionOnly: false });
-  assert(requests[firstCodingRequest].includes("调用 pstack_workflow status") && requests[firstCodingRequest].includes("当前为「修 Bug」场景"));
+  assert(requests[firstCodingRequest].includes("Optional pstack workflow") && requests[firstCodingRequest].includes("当前为「修 Bug」场景"));
   assert.equal(parentRounds, workflowCalls.length + 2, "premature answer must trigger a continuation, then complete once");
   assert.deepEqual([...reviewRounds].sort(), [["reviewer-a", 2], ["reviewer-b", 4]], "only the reviewer without a machine-readable verdict must reread and correct its own receipt");
   for (const raw of requests.filter(raw => JSON.parse(raw).model !== "cron")) {
@@ -291,7 +297,6 @@ try {
     assert(!raw.includes("RUN_THE_SHELL_YOURSELF"), "The parent cannot assign shell execution to a read-only reviewer.");
   }
   assert.equal(readFileSync(join(workflowRoot, "tested.txt"), "utf8"), "verified\n");
-  assert.throws(() => readFileSync(join(workflowRoot, "too-early.txt")), /ENOENT/);
   const toolOutputs = requests.flatMap(raw => JSON.parse(raw).input ?? []).filter(item => item.type === "function_call_output").map(item => JSON.stringify(item.output));
   assert(toolOutputs.some(s => s.includes("Independent Thermos review required")));
   assert(toolOutputs.some(s => s.includes("user requested review")) && !toolOutputs.some(s => s.includes("pre-merge review")));
@@ -358,7 +363,7 @@ try {
   db.upsertTask({id:"quota",title:"Reviewer provider quota",welcomeMode:"coding",modePresetId:legacy.id,modelId:request.modelId,updatedAt:1});
   const beforeQuota=requests.length;
   await agent.prompt({...request,modePresetId:legacy.id,taskId:"quota",text:"PSTACK_QUOTA_CASE Review tested.txt. 请独立审查。",userMessageId:"quota-in",assistantMessageId:"quota-out"},{durableAdmissionOnly:false});
-  assert(requests[beforeQuota].includes(legacy.promptAddon) && requests[beforeQuota].includes("调用 pstack_workflow status"));
+  assert(requests[beforeQuota].includes(legacy.promptAddon) && requests[beforeQuota].includes("Optional pstack workflow"));
   const dependency=requests.slice(beforeQuota).flatMap(raw=>JSON.parse(raw).input ?? []).filter(i=>i.type==="function_call_output")
     .map(i=>{try{return JSON.parse(i.output);}catch{return null;}}).find(i=>i?.reviewDependency);
   assert.equal(dependency?.phase,"blocked");
@@ -430,12 +435,22 @@ try {
   assert(!JSON.parse(requests.at(-1)!).tools.some((t: {name: string}) => t.name.startsWith("pstack_")));
   flow.skills["poteto-mode"].parameters.githubBinding = "required";
   agent.saveModePolicy("coding", { ...agent.getModeProfile("coding").policy, pstackThermosEnabled: true, pstackThermos: flow });
+  const ordinaryWithMissingGithub = requests.length;
+  await agent.prompt({ ...request, text: "ORDINARY_AFTER_PSTACK Hello.", userMessageId: "github-setting-greeting",
+    assistantMessageId: "github-setting-greeting-answer" }, { durableAdmissionOnly: false });
+  assert.equal(requests.length, ordinaryWithMissingGithub + 1, "GitHub is only required if the model calls pstack");
+  assert(JSON.parse(requests.at(-1)!).tools.some((t: {name: string}) => t.name === "pstack_workflow"));
   for (const modePresetId of [null, selected.modePresetId, legacy.id]) {
-    await assert.rejects(agent.prompt({ ...request, modePresetId, userMessageId: "requires-github-" + modePresetId, assistantMessageId: "requires-github-output" },
-      { durableAdmissionOnly: false }), /要求 GitHub MCP/);
+    const taskId = "github-required-" + modePresetId;
+    db.upsertTask({ id: taskId, title: "Optional workflow", welcomeMode: "coding", modePresetId, modelId: request.modelId, updatedAt: 1 });
+    const start = requests.length;
+    await agent.prompt({ ...request, taskId, modePresetId, text: "PSTACK_REQUIRED_GITHUB Start an investigation.",
+      userMessageId: taskId + "-input", assistantMessageId: taskId + "-output" }, { durableAdmissionOnly: false });
+    assert.equal(requests.length, start + 2);
+    assert(JSON.parse(requests.at(-1)!).input.some((item: {type: string; output?: unknown}) =>
+      item.type === "function_call_output" && String(item.output).includes("要求 GitHub MCP")));
   }
-  assert.equal(requests.length, count + 1, "required missing GitHub binding must fail before a model request");
-  console.log("PASS mode-wide coding workflow, tag instructions, native completion gate and reviewers, no-tag dispatch, disable on the same task, required GitHub binding across tags");
+  console.log("PASS optional workflow, tag instructions, native completion and review, same-task disable, and GitHub checked only after opt-in");
 } finally {
   cron.stop();
   await agent.abort("scheduled");
