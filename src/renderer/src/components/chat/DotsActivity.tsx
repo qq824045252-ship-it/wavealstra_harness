@@ -39,6 +39,7 @@ const stateIcons = {
 };
 const priority = Object.keys(states) as DotsActivityItem["state"][];
 const phases = { queued: "排队中", working: "执行中", following: "等待 Dots 跟进" };
+const presentationLabels = { details: "任务详情", streaming: "流式", summary: "总结" };
 const date = new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 
 function openActivityItem(item: DotsActivityItem, signal: AbortSignal): Promise<void> {
@@ -101,15 +102,20 @@ export function DotsAllTasks() {
           const lastActivity = item.state === "running" ? item.lastActivityAt ?? item.updatedAt : item.updatedAt;
           const action = item.state === "waiting" ? "去回复" : item.state === "delivered" ? "查看交付" : "打开任务";
           const StateIcon = stateIcons[item.state];
-          return <li key={item.taskId} data-state={item.state}>
-            <button type="button" className="dots-all-tasks-row" aria-label={`${item.title}，${state}，${action}`} onClick={() => void visit(item)}>
+          const presentation = item.presentation;
+          const displayState = item.state === "running" && presentation ? presentationLabels[presentation.phase] : state;
+          return <li key={item.id} data-state={item.state} data-operation-id={item.id} data-phase={presentation?.phase}>
+            <button type="button" className="dots-all-tasks-row" aria-label={`${item.title}，${displayState}，${action}`} onClick={() => void visit(item)}>
               <span className="dots-task-state-icon" aria-hidden="true"><StateIcon size={15} /></span>
               <span className="dots-all-tasks-detail">
-                <span className="dots-all-tasks-heading"><strong>{item.title}</strong><span className="dots-all-tasks-state">{state}</span></span>
+                <span className="dots-all-tasks-heading"><strong>{item.title}</strong><span className="dots-all-tasks-state">{displayState}</span></span>
                 <small>{item.space}{item.state === "delivered" && item.fileCount > 0 ? ` · ${item.fileCount} 个文件` : ""}
                   <time dateTime={new Date(lastActivity).toISOString()}>{date.format(lastActivity)}</time>
                 </small>
-                {item.summary && <span className="dots-all-tasks-summary">{item.summary}</span>}
+                {(presentation?.text ?? item.summary) && <span className="dots-all-tasks-summary">
+                  {presentation?.text ?? item.summary}
+                  {presentation?.phase === "streaming" && presentation.active && <span className="dots-output-cursor" aria-hidden="true" />}
+                </span>}
               </span>
               <IconChevronRight size={14} aria-hidden="true" />
             </button>

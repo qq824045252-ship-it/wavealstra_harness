@@ -3,7 +3,7 @@ import type { SavedArtifactRequest } from "@shared/saved-artifact";
 import { DotsDeliveryFiles, DotsSavedFilePreview, DotsResult, useDotsDelegations, useTaskDotsDelivery } from "./DotsResult";
 import { DotsAllTasks } from "./DotsActivity";
 import ChatMarkdown from "./ChatMarkdown";
-import { DOTS_TASK_ID, isDotsAutomaticInput } from "@shared/dots";
+import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsLiveReport } from "@shared/dots";
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
 import TaskRecoveryNotice from "./TaskRecoveryNotice";
@@ -320,6 +320,30 @@ function DotsProgressHistory({ entries, preview, onPreview }: {
   </details>;
 }
 
+function DotsStreamingReport({ messages }: { messages: readonly ChatMessage[] }) {
+  const conversationId = useAppStore(state => state.tasks.find(task => task.id === DOTS_TASK_ID)?.durable?.conversationId);
+  const [draft, setDraft] = useState<DotsLiveReport | null>(null);
+  useEffect(() => {
+    const api = window.api?.dots;
+    if (!api?.onReport) return;
+    let received = false;
+    let mounted = true;
+    const remove = api.onReport(report => { received = true; setDraft(report); });
+    void api.report().then(report => { if (mounted && !received) setDraft(report); }).catch(() => {});
+    return () => { mounted = false; remove(); };
+  }, []);
+  if (!draft || (draft.origin && String(draft.origin.conversationId) !== conversationId)
+    || messages.some(message => message.dotsDelivery?.deliveryKey === draft.deliveryKey)) return null;
+  const message: ChatMessage = {
+    id: draft.deliveryKey, role: "assistant", createdAt: 0, blocks: [], streaming: true,
+    finalBlocks: [{ type: "text", text: draft.text }],
+    dotsDelivery: { ...draft, presentation: "report", artifacts: [] },
+  };
+  return <div data-dots-live-report={draft.operationId}>
+    <MessageItem message={message} taskId={DOTS_TASK_ID} />
+  </div>;
+}
+
 function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, taskDelivery, delegations = [] }: {
   listRef: React.Ref<HTMLDivElement>;
   delegations?: import("@shared/dots").DotsDelegation[];
@@ -365,7 +389,7 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
       if (message.inputRequestId) dotsQuestions.set(message.inputRequestId, message);
     }
     const delivery = message.dotsDelivery;
-    if (delivery?.kind !== "progress") continue;
+    if (delivery?.kind !== "progress" || delivery.presentation === "report") continue;
     const entries = progressBySource.get(delivery.sourceMessageId) ?? [];
     entries.push(message);
     progressBySource.set(delivery.sourceMessageId, entries);
@@ -375,7 +399,7 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
     <div className="message-list" ref={listRef}>
       {messages.flatMap((msg) => {
         const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
-        if (delivery?.kind === "progress") {
+        if (delivery?.kind === "progress" && delivery.presentation !== "report") {
           const entries = progressBySource.get(delivery.sourceMessageId);
           return entries?.at(-1) === msg ? <div key={`dots-progress:${delivery.sourceMessageId}`} id={`msg-${msg.id}`}>
             <DotsProgressHistory entries={entries} preview={preview} onPreview={setPreview} />
@@ -405,6 +429,7 @@ function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, o
             file={preview.file} onClose={() => setPreview(undefined)} />,
         ];
       })}
+      {taskId === DOTS_TASK_ID && <DotsStreamingReport messages={messages} />}
     </div>
   );
 }

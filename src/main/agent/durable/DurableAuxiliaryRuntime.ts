@@ -8,7 +8,7 @@ import { DurableBotRuntime, type DurableBotOptions } from "./DurableBotRuntime";
 import { DEFAULT_PRODUCT_COMPACTION_SETTINGS } from "./context/CompactionPolicy";
 
 const bindingSchema = z.object({
-  id: z.string().min(1), kind: z.enum(["btw", "prompt-enhance", "authoring"]),
+  id: z.string().min(1), kind: z.enum(["btw", "prompt-enhance", "authoring", "dots-report"]),
   parentTaskId: z.string().optional(), parentCwd: z.string().optional(), projectId: z.string().optional(), workspaceId: z.string().optional(),
   cwd: z.string().min(1), instructions: z.string(), snapshot: z.string().optional(), input: z.string().optional(),
   model: z.object({ provider: z.string(), modelId: z.string() }),

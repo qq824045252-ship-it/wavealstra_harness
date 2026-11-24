@@ -225,6 +225,7 @@ import { TaskTerminalService } from "./terminal/TaskTerminalService";
 import { AppDatabase } from "./db/AppDatabase";
 import { TaskBoardRepository } from "./task/TaskBoardRepository";
 import { DotsIpc, DOTS_TASK_ID } from "../shared/dots";
+import { DotsReporting } from "./dots/DotsReporting";
 import { DotsActivity } from "./dots/DotsActivity";
 import { resolveDotsPreferences } from "../shared/dots-settings";
 import { DotsDelegations } from "./dots/DotsDelegations";
@@ -738,7 +739,7 @@ function registerIpc(): void {
   registerFileDialogIpc();
   const taskBoard = new TaskBoardRepository(db.connection);
   const dots = new DotsDelegations(db.connection, (id, operation) => agentService.dotsSubmission(id, operation),
-    () => broadcastToWindows(DotsIpc.changed, null));
+    () => broadcastToWindows(DotsIpc.changed, null), true);
   dotsDelegations = dots;
   dotsActions = new DotsActions(db, agentService, {
     link: (...args) => dots.link(...args), list: () => dots.list(),
@@ -769,8 +770,13 @@ function registerIpc(): void {
   }, taskBoard);
   const actions = dotsActions;
   const activity = new DotsActivity(db.connection, id => actions.allowsResult(id) && !db.isTaskEffectiveArchived(id)
-    && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed");
-  dots.connect((job, request) => actions.followup(job, request), (reply, current) => agentService.appendDotsReply(reply, current),
+    && db.getTaskExecutionWorkspaceState(id)?.state !== "trashed", id => dots.taskLiveOutput(id));
+  const reporting = new DotsReporting(db.connection, () => agentService.isTaskBusy(DOTS_TASK_ID),
+    (prompt, signal, onText) => agentService.generateDotsReport(prompt, signal, onText),
+    (reply, current) => agentService.appendDotsReply(reply, current),
+    draft => broadcastToWindows(DotsIpc.reportChanged, draft));
+  agentService.setDotsForeground(() => reporting.beginForeground());
+  dots.connect((job, request) => actions.followup(job, request), (reply, current) => reporting.append(reply, current),
     taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
   agentService.setDotsActions(dotsActions);
   agentService.setDotsDesktopPreview(dotsDesktopPreview);
@@ -778,6 +784,7 @@ function registerIpc(): void {
   ipcMain.handle(DotsIpc.newConversation, () => agentService.newDotsConversation());
   ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
   ipcMain.handle(DotsIpc.activity, () => activity.list());
+  ipcMain.handle(DotsIpc.report, () => reporting.snapshot());
   ipcMain.handle(DotsIpc.taskDelivery, async (_event, taskId: string) => {
     const visible = () => taskId !== DOTS_TASK_ID && actions.allowsResult(taskId) && !db.isTaskEffectiveArchived(taskId)
       && db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed";

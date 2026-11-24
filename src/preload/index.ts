@@ -863,6 +863,12 @@ const api = {
     newConversation: () => ipcRenderer.invoke(DotsIpc.newConversation),
     list: sourceIds => ipcRenderer.invoke(DotsIpc.list, sourceIds),
     activity: () => ipcRenderer.invoke(DotsIpc.activity),
+    report: () => ipcRenderer.invoke(DotsIpc.report),
+    onReport: listener => {
+      const notify = (_: Electron.IpcRendererEvent, report: Parameters<typeof listener>[0]) => listener(report);
+      ipcRenderer.on(DotsIpc.reportChanged, notify);
+      return () => ipcRenderer.removeListener(DotsIpc.reportChanged, notify);
+    },
     taskDelivery: taskId => ipcRenderer.invoke(DotsIpc.taskDelivery, taskId),
     getPromptSegments: () => ipcRenderer.invoke(DotsIpc.getPromptSegments),
     onChanged: listener => {

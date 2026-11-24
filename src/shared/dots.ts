@@ -17,7 +17,8 @@ export function dotsLocalSpacePath(space: SpaceDto, parent: (id: string) => Spac
 export { DOTS_TASK_ID, DOTS_NO_CHANGE, isDotsAutomaticInput } from "../../shared/src/dots-conversation";
 export const DotsIpc = { open: "dots:open", list: "dots:list", activity: "dots:activity",
   newConversation: "dots:newConversation",
-  taskDelivery: "dots:taskDelivery", getPromptSegments: "dots:getPromptSegments", changed: "dots:changed" } as const;
+  taskDelivery: "dots:taskDelivery", getPromptSegments: "dots:getPromptSegments", changed: "dots:changed",
+  report: "dots:report", reportChanged: "dots:reportChanged" } as const;
 
 export interface DotsDependencyWait {
   operationId: string;
@@ -72,12 +73,17 @@ export interface DotsAssistantReply {
   completion?: { id: string; workId: string; intentRevision: number; stateVersion: number };
   title: string;
   kind: "conclusion" | "question" | "progress";
+  presentation?: "report";
   text: string;
   citations?: import("./chat-reply-content").ReplyCitation[];
   artifacts: DotsDelegation["artifacts"];
 }
 
 export type DotsTaskDelivery = Pick<DotsAssistantReply, "deliveryKey" | "operationId" | "artifacts">;
+export type DotsLiveReport = Pick<DotsAssistantReply, "deliveryKey" | "operationId" | "taskId" | "sourceMessageId"
+  | "title" | "text" | "origin" | "kind">;
+export type DotsWorkerObservation = { id: string; generationId: number; text: string; preview: string };
+export type DotsTaskOutput = { text: string; active: boolean };
 
 type DotsActivityTask = {
   id: string;
@@ -85,6 +91,7 @@ type DotsActivityTask = {
   title: string;
   space: string;
   summary: string;
+  presentation?: { phase: "details" | "summary"; text: string } | ({ phase: "streaming" } & DotsTaskOutput);
   updatedAt: number;
 };
 
@@ -104,4 +111,6 @@ export interface DotsApi {
   taskDelivery(taskId: string): Promise<DotsTaskDelivery | undefined>;
   getPromptSegments(): Promise<AssemblySegmentDto[]>;
   onChanged(listener: () => void): () => void;
+  report(): Promise<DotsLiveReport | null>;
+  onReport(listener: (report: DotsLiveReport | null) => void): () => void;
 }

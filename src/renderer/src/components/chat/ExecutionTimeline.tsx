@@ -12,7 +12,7 @@ import {
   groupTimelineBlocks,
   shouldRenderGroup,
 } from "./timelineFocus";
-import { thinkingConclusion } from "./thinkingConclusion";
+import { thinkingConclusion } from "@shared/thinking-conclusion";
 
 /**
  * Thinking 文本规范化：推理草稿只按自然宽度换行，不保留上游硬换行。

@@ -829,7 +829,9 @@ function MessageItem({ message, taskId, sourceQuestion, deliveryQuestion, delive
                 {message.externalAgent.verificationStatus === "workspace_observed" && <span className="assistant-source-badge" title="仅表示 MyBuddy 已观察工作目录并登记产物，不表示业务结果正确">工作目录已观察</span>}
               </>
             ) : (
-              taskId === DOTS_TASK_ID ? <span>MyBuddy Dots</span> : <span className="brand-mybuddy"><span className="brand-my">My</span><span className="brand-buddy">Buddy</span></span>
+              message.dotsDelivery?.presentation === "report"
+                ? <span data-dots-report-title>{message.dotsDelivery.title} · {message.dotsDelivery.kind === "conclusion" ? "总结" : "小结"}</span>
+                : taskId === DOTS_TASK_ID ? <span>MyBuddy Dots</span> : <span className="brand-mybuddy"><span className="brand-my">My</span><span className="brand-buddy">Buddy</span></span>
             )}
           </span>
           <ChatReplyOutline reply={replyBody} streaming={message.streaming} />

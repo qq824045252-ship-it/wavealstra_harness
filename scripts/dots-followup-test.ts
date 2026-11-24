@@ -12,6 +12,7 @@ import { getCurrentSystemPrompt, getCurrentTools, type AssistantMessage } from "
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { DOTS_TASK_ID } from "../src/shared/dots";
+import type { ChatMessageDto } from "../src/shared/agent-ipc";
 import { resolveDotsPreferences } from "../src/shared/dots-settings";
 import { readNativeExecutionReceipt } from "../src/shared/native-execution-receipt";
 const root = mkdtempSync(join(tmpdir(), "dots-followup-"));
@@ -1080,6 +1081,45 @@ try {
     "在「交付验收」空间，根据 units.txt 产出并交付「alpha.txt」和「beta.txt」。不要交付草稿.txt。"
   ).files, ["alpha.txt", "beta.txt"]);
   assert.deepEqual(dotsCompletionRequirements("", "只给 alpha.txt 和 beta.txt。").files, ["alpha.txt", "beta.txt"]);
+
+  const previewDb = new AppDatabase(join(root, "dots-preview.db"));
+  const previewTaskId = "worker-preview-generations";
+  const previewOperationId = "dots-input-preview-generations";
+  previewDb.upsertTask({ id: previewTaskId, title: "核对三份台账", updatedAt: Date.now() });
+  let observation = { id: "1:11", generationId: 10, text: "开始核对三份台账", preview: "开始核对三份台账" };
+  const previewJournal = new DotsDelegations(previewDb.connection,
+    async () => ({ status: "running", text: "", artifacts: [], observation }), () => {}, true);
+  try {
+    previewJournal.link(previewTaskId, previewOperationId, "preview-source");
+    const activity = new DotsActivity(previewDb.connection, () => true, id => previewJournal.taskLiveOutput(id));
+    const shown = () => activity.list().find(item => item.id === previewOperationId)?.presentation;
+    assert.equal(shown()?.phase, "details");
+    let revision = 0;
+    const emit = async (row: Partial<ChatMessageDto>) => {
+      previewJournal.onPatch({ type: "durable_snapshot", taskId: previewTaskId, snapshot: {
+        backend: "pi-durable", epoch: "preview", historyId: "preview", revision: revision++, conversationId: "1",
+        toolMode: "native", busy: true, status: "running", queued: 0, pendingInputs: [], compacting: false,
+        messages: [{ id: "preview", role: "assistant", text: "", createdAt: 0, streaming: true, ...row }],
+      } });
+      await previewJournal.drain();
+    };
+    await emit({ entryId: "11", text: "开始核对三份台账" });
+    await emit({ text: "正在核对第二份", dotsWorkerOutput: { operationId: previewOperationId, generationId: 20 } });
+    assert.deepEqual(shown(), { phase: "streaming", active: true, text: "正在核对第二份" });
+    await emit({ entryId: "11", text: "开始核对三份台账" });
+    assert.deepEqual(shown(), { phase: "streaming", active: true, text: "正在核对第二份" });
+    observation = { id: "1:21", generationId: 20, text: "第二份没有重复记录", preview: "第二份没有重复记录" };
+    await emit({ entryId: "21", thinking: "第二份没有重复记录" });
+    assert.deepEqual(shown(), { phase: "streaming", active: false, text: "第二份没有重复记录" });
+    observation = { id: "1:31", generationId: 30, text: "第三份有两条待核验", preview: "第三份有两条待核验" };
+    await emit({ entryId: "31", thinking: "第三份有两条待核验" });
+    assert.deepEqual(shown(), { phase: "streaming", active: false, text: "第三份有两条待核验" });
+  } finally {
+    previewJournal.close();
+    await previewJournal.drain();
+    previewDb.close();
+  }
+  console.log("PASS 右上角任务预览跨思考段更新，已结束的流式段不再显示光标");
 } catch (error) {
   console.error("Dots followup verification failed", error);
   for (const j of journal.list())

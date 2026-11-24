@@ -22,7 +22,7 @@ import {
   shouldRenderGroup,
   type TimelineGroup,
 } from "../src/renderer/src/components/chat/timelineFocus";
-import { thinkingConclusion } from "../src/renderer/src/components/chat/thinkingConclusion";
+import { thinkingConclusion } from "../src/shared/thinking-conclusion";
 import type { MessageBlock, ToolStatus } from "../src/renderer/src/types";
 
 let passed = 0;

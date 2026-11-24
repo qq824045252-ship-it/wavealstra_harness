@@ -2,7 +2,7 @@ import type { ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import { defaultAnswerRuleId, defaultDotsSchedulingPolicy, type AnswerRuleDraft, type DotsSchedulingPolicy } from "../../shared/answer-routing";
 import type Database from "better-sqlite3";
 import type { AgentUiPatch, AgentPromptRequest } from "../../shared/agent-ipc";
-import type { DotsAssistantReply, DotsDelegation, DotsDependencyWait, DotsReplyOrigin } from "../../shared/dots";
+import type { DotsAssistantReply, DotsDelegation, DotsDependencyWait, DotsReplyOrigin, DotsTaskOutput, DotsWorkerObservation } from "../../shared/dots";
 import type { ReplyCitation } from "../../shared/chat-reply-content";
 import { DOTS_TASK_ID } from "../../shared/dots";
 import { DotsReplyOutbox, type AppendDotsReply, type DotsFollowup } from "./DotsReplyOutbox";
@@ -16,6 +16,7 @@ type Result = Pick<DotsDelegation, "text" | "artifacts" | "interactionId" | "dep
   citations?: ReplyCitation[];
   acceptedGoalReceiptId?: string;
   verifiedCommit?: string;
+  observation?: DotsWorkerObservation;
 };
 type RecoverSubmit = (request: AgentPromptRequest) => Promise<{ error?: {message: string}; cancelled?: boolean }>;
 type RecoverAvailable = (taskId: string) => boolean;
@@ -50,8 +51,10 @@ export class DotsDelegations {
   private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly recoveryTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly recoveryFlights = new Set<Promise<void>>();
+  private readonly liveOutput = new Map<string, DotsTaskOutput & { generationId: number }>();
+  private liveNotify?: ReturnType<typeof setTimeout>;
   constructor(private db: Database.Database, private inspect: (taskId: string, operationId: string) => Promise<Result | undefined>,
-    private notify: () => void) {
+    private notify: () => void, private readonly reportSamples = false) {
     db.exec(`CREATE TABLE IF NOT EXISTS dots_delegations(
       seq INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, task_id TEXT NOT NULL, source_message_id TEXT NOT NULL,
       title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', text TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]',
@@ -94,6 +97,25 @@ export class DotsDelegations {
 
   latestTaskDelivery(taskId: string) {
     return this.outbox.latestTaskDelivery(taskId);
+  }
+
+  taskLiveOutput(operationId: string): DotsTaskOutput | undefined {
+    return this.liveOutput.get(operationId);
+  }
+
+  private showOutput(operationId: string, generationId: number, text: string, active: boolean) {
+    const preview = text.trim().slice(0, 1200);
+    const previous = this.liveOutput.get(operationId);
+    if (!preview || previous && previous.generationId > generationId) return;
+    if (previous?.generationId === generationId &&
+      ((!previous.active && active) || (previous.text === preview && previous.active === active))) return;
+    this.liveOutput.set(operationId, { generationId, text: preview, active });
+    if (this.liveNotify) return;
+    this.liveNotify = setTimeout(() => {
+      this.liveNotify = undefined;
+      if (!this.disposed) this.notify();
+    }, 80);
+    this.liveNotify.unref();
   }
 
   private dependencyWait(operation: string, pendingOnly = false) {
@@ -401,8 +423,16 @@ export class DotsDelegations {
     if (!("taskId" in patch)) return;
     const state = patch.type === "durable_snapshot" ? patch.snapshot : patch.type === "durable_delta" ? patch.delta.state : undefined;
     const rows = patch.type === "durable_snapshot" ? patch.snapshot.messages : patch.type === "durable_delta" ? patch.delta.upserts : [];
+    if (this.reportSamples) {
+      const live = rows.filter(row => row.dotsWorkerOutput && row.text.trim()).at(-1);
+      if (live?.dotsWorkerOutput) {
+        const { operationId, generationId } = live.dotsWorkerOutput;
+        this.showOutput(operationId, generationId, live.text, true);
+      }
+    }
     const checkpoint = rows.some(row => row.dotsWorkerProgress);
-    if (checkpoint || patch.type === "conversation_interaction_snapshot" || patch.type === "conversation_goal_snapshot"
+    const observation = this.reportSamples && rows.some(row => row.role === "assistant" && row.entryId && (row.text.trim() || row.thinking?.trim()));
+    if (checkpoint || observation || patch.type === "conversation_interaction_snapshot" || patch.type === "conversation_goal_snapshot"
       || state?.status === "waiting_input" || (state && !state.busy && (!state.queued || state.outcome !== undefined))) this.refresh(patch.taskId);
   }
 
@@ -463,6 +493,13 @@ export class DotsDelegations {
       const result = await this.inspect(taskId, row.operation_id);
       if (this.disposed) return;
       if (!result) continue;
+      const sample = this.reportSamples && result.status === "running" ? result.observation : undefined;
+      if (sample) {
+        this.showOutput(row.operation_id, sample.generationId, sample.preview, false);
+        const tracking = this.tracking(row);
+        if (tracking?.milestones) this.outbox.observeSample(toDelegation(row), sample, tracking.heartbeatMs ?? 15_000);
+      }
+      if (result.status !== "running") this.liveOutput.delete(row.operation_id);
       const changed = this.db.transaction(() => {
         const now = Date.now();
         const files = JSON.stringify(result.artifacts);
@@ -473,7 +510,7 @@ export class DotsDelegations {
           .run(row.operation_id, result.dependencyWait.operationId, result.dependencyWait.title, result.dependencyWait.deadlineAt);
         if (result.status === "completed" && result.verifiedCommit) this.db.prepare("INSERT OR IGNORE INTO dots_verified_commits VALUES(?,?)")
           .run(row.operation_id, result.verifiedCommit);
-        if (result.status !== "running" || this.tracking(update)?.milestones)
+        if (result.status !== "running" || (!sample && this.tracking(update)?.milestones))
           this.outbox.observe(toDelegation(update, undefined, result.dependencyWait), result.citations, result.acceptedGoalReceiptId);
         if (result.status !== "running")
           this.db.prepare("UPDATE dots_tool_observations SET next_at=NULL WHERE operation_id=?").run(row.operation_id);
@@ -498,6 +535,8 @@ export class DotsDelegations {
     this.disposed = true;
     if (this.observationTimer) clearTimeout(this.observationTimer);
     if (this.dependencyTimer) clearTimeout(this.dependencyTimer);
+    if (this.liveNotify) clearTimeout(this.liveNotify);
+    this.liveOutput.clear();
     this.dirty.clear();
     for (const timer of this.retries.values()) clearTimeout(timer);
     this.retries.clear();

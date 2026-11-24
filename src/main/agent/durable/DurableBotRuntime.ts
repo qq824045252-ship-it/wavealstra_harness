@@ -224,7 +224,7 @@ export class DurableBotRuntime {
   private lease?: DurableStorageLease;
   private readonly children = new Map<number, ConversationWatch>();
   private readonly history = new DurableHistoryProjection();
-  private liveDotsInput?: { id: number; worker: boolean; recoverNarrative: boolean };
+  private liveDotsInput?: { id: number; operationId?: string; recoverNarrative: boolean };
   private historyBefore?: EntryId;
   private readonly metadataByEntry = new Map<number, BotInputMetadata>();
   private readonly pendingAuditInputs = new Map<string, DurableInputAudit>();
@@ -1491,7 +1491,8 @@ export class DurableBotRuntime {
       const narrative = recoverDotsNarrativeReply(body, true);
       let dotsWorker = false;
       let recoveredReply: string | undefined;
-      if (this.options.isDotsWorkerInput && inputId !== undefined && (narrative !== undefined || /^\s*(?:\{|\x60)/u.test(body))) {
+      if (this.options.isDotsWorkerInput && inputId !== undefined &&
+        (this.options.hasDotsDelegation?.() || narrative !== undefined || /^\s*(?:\{|\x60)/u.test(body))) {
         if (this.liveDotsInput?.id !== inputId) {
           const input = await this.storage.submission(inputId, ctx);
           const requestId = input?.type === "input" ? input.requestId : undefined;
@@ -1504,12 +1505,14 @@ export class DurableBotRuntime {
             }
             recoverNarrative = allowsDotsReplyRecovery(this.metadataByEntry.get(input.entry));
           }
-          this.liveDotsInput = { id: inputId, worker, recoverNarrative };
+          this.liveDotsInput = { id: inputId, operationId: worker ? requestId : undefined, recoverNarrative };
         }
-        dotsWorker = this.liveDotsInput.worker;
+        dotsWorker = Boolean(this.liveDotsInput.operationId);
         if (this.liveDotsInput.recoverNarrative) recoveredReply = narrative;
       }
       const row = assistantRow(`durable-live-${live.run.taskId}`, live.run.taskId, live.generation.message, undefined, turnStartedAt, true, undefined, dotsWorker, recoveredReply);
+      if (dotsWorker && this.liveDotsInput?.operationId)
+        row.dotsWorkerOutput = { operationId: this.liveDotsInput.operationId, generationId: live.run.taskId };
       messages.push(row);
       for (const tool of row.tools ?? []) tools.set(tool.id, tool);
     }

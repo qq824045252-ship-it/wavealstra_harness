@@ -10,6 +10,8 @@ import { durableRegisteredArtifact } from "./DurableArtifactRegistration";
 import { readDurableDotsTerminal } from "./DurableDotsWorker";
 import { DURABLE_TURN_LIMIT_MESSAGE } from "./DurableRunLimits";
 import { durableContentText, nestedToolRow, type NestedCallDetail } from "./DurableHistoryProjection";
+import { thinkingConclusion } from "../../../shared/thinking-conclusion";
+import type { DotsWorkerObservation } from "../../../shared/dots";
 
 export function durableDotsReplySources(entry: EntryRecord, includeUser: boolean) {
   const sources: ReturnType<typeof replyToolSources> = [];
@@ -40,6 +42,7 @@ export interface DurableDotsOutcome {
   citations?: ReplyCitation[];
   dependencyWait?: import("../../../shared/dots").DotsDependencyWait;
   verifiedCommit?: string;
+  observation?: DotsWorkerObservation;
 }
 
 /** Registered files name the producing input. Intermediate statements and tool
@@ -56,6 +59,7 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
   const terminal = await readDurableDotsTerminal(tx, input, final);
   let error = "";
   let checkpoint: Extract<DotsWorkerOutcome, { dotsState: "progress" }> | undefined;
+  let observation: DurableDotsOutcome["observation"];
   let inOwnTurn = true;
   let cursor: Cursor | undefined;
   if (input.entry !== undefined) do {
@@ -77,8 +81,15 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
       const assistant = item.model?.find(m => m.role === "assistant");
       if (assistant?.errorMessage) error = assistant.errorMessage;
       if (assistant?.stopReason === "toolUse") {
-        const candidate = readDotsWorkerOutcome(durableContentText(assistant.content));
+        const body = durableContentText(assistant.content).trim();
+        const candidate = readDotsWorkerOutcome(body);
         if (candidate?.dotsState === "progress" && candidate.result.trim()) checkpoint = candidate;
+        const visibleThinking = assistant.content.find(part => part.type === "thinking")?.thinking ?? "";
+        const publicText = candidate?.dotsState === "progress" ? candidate.result.trim()
+          : candidate || /^[{[<\x60]/u.test(body) ? "" : body;
+        const caption = thinkingConclusion(visibleThinking, publicText) || publicText.slice(0, 240);
+        if (caption) observation = { id: `${input.conversationId}:${item.id}`, generationId: item.byTaskId,
+          text: caption, preview: publicText || caption };
       }
     }
     cursor = inOwnTurn || input.status === "done" ? page.next : undefined;
@@ -92,7 +103,7 @@ export async function readDurableDotsResult(tx: Tx, input: Extract<SubmissionRec
     return { status: "blocked" as const, interactionId: question.id,
       text: [checkpoint?.result, prompt].filter(Boolean).join("\n\n"), ...deliveryAssets };
   }
-  if (input.status === "placed") return { status: "running" as const, text: checkpoint ? JSON.stringify(checkpoint) : "", messageIds: [], files: [] };
+  if (input.status === "placed") return { status: "running" as const, text: checkpoint ? JSON.stringify(checkpoint) : "", messageIds: [], files: [], observation };
   // An accepted Goal can be delivered even if the worker's final composition fails.
   // Only sources retained in this native input can verify its accepted body.
   const acceptedCitations = accepted && (accepted.citations ?? collectReplyCitations(accepted.text, sources));

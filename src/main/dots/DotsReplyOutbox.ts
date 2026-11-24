@@ -21,11 +21,12 @@ function goalDeliveryKey(taskId: string, completion: { id: string; stateVersion:
   return createHash("sha256").update(JSON.stringify([taskId, completion.id, completion.stateVersion])).digest("hex");
 }
 
-function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, terminal: boolean): string {
+function deliverySnapshot({ reply, deliveredAt }: CommittedDotsDelivery, terminal: boolean, sourceConclusion?: string): string {
   return JSON.stringify({
     delivered: reply.kind,
     deliveryKey: reply.deliveryKey,
     ...(reply.completion && { completion: reply.completion }),
+    ...(sourceConclusion !== undefined && { sourceConclusion: activitySummary(sourceConclusion) }),
     ...((reply.kind !== "progress" || terminal) && { summary: activitySummary(reply.text), deliveredAt, fileCount: reply.artifacts.length }),
   });
 }
@@ -86,6 +87,21 @@ export class DotsReplyOutbox {
     const key = createHash("sha256").update(JSON.stringify([job.id, "activity", window])).digest("hex");
     return this.db.prepare(`INSERT OR IGNORE INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
       VALUES(?,?,?,'activity',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({ ...job, text })).changes > 0;
+  }
+
+  observeSample(job: DotsDelegation, observation: { id: string; text: string }, interval: number): boolean {
+    const key = createHash("sha256").update(JSON.stringify([job.id, "sample", observation.id])).digest("hex");
+    return this.db.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM dots_reply_events WHERE event_key=?").get(key)) return false;
+      const queued = this.db.prepare(`SELECT event_key, json_extract(snapshot,'$.reportAt') AS reportAt FROM dots_reply_events
+        WHERE operation_id=? AND status='sample' AND settled=0 AND reply IS NULL`).get(job.id) as
+        { event_key: string; reportAt: number } | undefined;
+      if (queued) this.db.prepare("UPDATE dots_reply_events SET settled=1,snapshot='' WHERE event_key=?").run(queued.event_key);
+      const reportAt = queued?.reportAt ?? Date.now() + interval;
+      this.db.prepare(`INSERT INTO dots_reply_events(event_key,operation_id,task_id,status,interaction_id,snapshot)
+        VALUES(?,?,?,'sample',NULL,?)`).run(key, job.id, job.taskId, JSON.stringify({ ...job, text: observation.text, reportAt }));
+      return true;
+    })();
   }
 
   targets(): string[] {
@@ -167,10 +183,10 @@ export class DotsReplyOutbox {
       LEFT JOIN works w ON w.work_id=d.goal_id WHERE d.operation_id=?`).get(event.operation_id) as
       {status:string;interaction_id:string|null;state:string|null;replaced:number;paused:number;goal_revised:number;text:string;lifecycle:string|null;closure_conclusion:string|null;task_exists:number} | undefined;
     if (!row?.task_exists || row.state === "stopped" || row.lifecycle === "closed" && row.closure_conclusion !== "succeeded" ||
-      row.replaced || row.goal_revised || row.status !== (event.status === "activity" ? "running" : event.status) ||
+      row.replaced || row.goal_revised || row.status !== (event.status === "activity" || event.status === "sample" ? "running" : event.status) ||
       row.interaction_id !== event.interaction_id ||
       (event.status === "running" && row.text !== (JSON.parse(event.snapshot) as DotsDelegation).text)) return "obsolete";
-    if ((event.status === "activity" || event.status === "running") &&
+    if ((event.status === "activity" || event.status === "running" || event.status === "sample") &&
       this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='answer_rule_turns'").get() &&
       this.db.prepare(`SELECT 1 FROM answer_rule_turns t JOIN dots_delegations d ON d.source_message_id=t.input_id
         WHERE d.operation_id=? AND t.task_id=? AND t.status='revoked'`).get(event.operation_id, DOTS_TASK_ID)) return "obsolete";
@@ -212,9 +228,13 @@ export class DotsReplyOutbox {
 
   private settle(event: Event, receipt?: CommittedDotsDelivery) {
     const changed = this.db.transaction(() => {
+      const sourceConclusion = receipt?.reply.kind === "conclusion"
+        ? this.db.prepare("SELECT json_extract(reply,'$.text') FROM dots_reply_events WHERE event_key=?").pluck()
+          .get(event.event_key) as string | null | undefined
+        : undefined;
       // The conversation owns the full reply. Keep the receipt and a short Activity summary.
       const update = this.db.prepare("UPDATE dots_reply_events SET settled=1,reply=NULL,snapshot=? WHERE event_key=? AND settled=? AND snapshot=?")
-        .run(receipt ? deliverySnapshot(receipt, event.status === "completed" || event.status === "failed") : "",
+        .run(receipt ? deliverySnapshot(receipt, event.status === "completed" || event.status === "failed", sourceConclusion ?? undefined) : "",
           event.event_key, event.settled, event.snapshot);
       if (!update.changes) return false;
       if (event.status === "activity" && receipt)
@@ -227,6 +247,7 @@ export class DotsReplyOutbox {
   }
 
   private async deliver(event: Event, alive: () => boolean, handler: NonNullable<DotsReplyOutbox["handler"]>) {
+    if (event.status === "sample" && (JSON.parse(event.snapshot) as { reportAt: number }).reportAt > Date.now()) return true;
     const disposition = this.disposition(event);
     const preparedReply = event.reply ? JSON.parse(event.reply) as DotsAssistantReply : undefined;
     if (disposition !== "active" || !handler.allowed(event.task_id) || preparedReply && !handler.allowedReply(preparedReply.kind)) {
@@ -244,7 +265,7 @@ export class DotsReplyOutbox {
     if (preparedReply) reply = preparedReply;
     else {
       const request = this.db.prepare("SELECT request FROM dots_followup_requests WHERE operation_id=?").pluck().get(job.id) as string | undefined;
-      const step = event.status === "activity" ? { kind: "progress" as const, text: job.text, artifacts: [] }
+      const step = event.status === "activity" || event.status === "sample" ? { kind: "progress" as const, text: job.text, artifacts: [] }
         : await handler.followup(job, request ? JSON.parse(request) : undefined);
       if (!alive() || (step.kind !== "continued" && this.disposition(event) === "hold")) return false;
       if (step.kind === "deferred") return false;
@@ -265,6 +286,7 @@ export class DotsReplyOutbox {
         ...(accepted && { completion: { id: accepted.id, workId: accepted.workId, intentRevision: accepted.intentRevision,
           stateVersion: accepted.stateVersion } }),
         title: job.title, kind: step.kind === "deliver" ? "conclusion" : step.kind === "progress" ? "progress" : "question", text: step.text ?? job.text,
+        ...(event.status === "sample" && { presentation: "report" }),
         artifacts: step.artifacts ?? job.artifacts,
         ...(step.kind === "deliver" && (step.text ?? job.text).trim() && replyCitations?.length ? { citations: replyCitations } : {}) };
     }
@@ -274,8 +296,10 @@ export class DotsReplyOutbox {
       reply.citations = matched.length ? matched : undefined;
     }
     const prepared = JSON.stringify(reply);
-    if (prepared !== event.reply)
+    if (prepared !== event.reply) {
       this.db.prepare("UPDATE dots_reply_events SET reply=? WHERE event_key=?").run(prepared, event.event_key);
+      if (reply.kind === "conclusion") this.changed?.(event.operation_id);
+    }
     if (!handler.allowedReply(reply.kind)) { this.settle(event); return false; }
     const acceptedCurrent = () => {
       if (!reply.completion) return true;

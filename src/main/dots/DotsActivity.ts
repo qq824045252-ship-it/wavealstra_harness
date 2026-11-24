@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { DOTS_TASK_ID, type DotsActivityItem, type DotsDelegation } from "../../shared/dots";
-import { readDotsWorkerOutcome } from "./DotsWorkerOutcome";
+import { DOTS_TASK_ID, type DotsActivityItem, type DotsDelegation, type DotsTaskOutput } from "../../shared/dots";
+import { dotsDeliveryText, readDotsWorkerOutcome } from "./DotsWorkerOutcome";
 
 type ActivityRow = {
   operation_id: string; task_id: string; title: string; space: string | null;
@@ -9,13 +9,15 @@ type ActivityRow = {
   question_description: string | null; last_activity_at: number | null;
   delivery_key: string | null; delivered: "question" | "conclusion" | "progress" | null;
   summary: string | null; delivered_at: number | null; delivered_file_count: number | null;
+  assignment: string | null; ready_text: string | null; source_conclusion: string | null;
   following: number; control: "paused" | "stopped" | null;
   goal_lifecycle: string | null; goal_conclusion: string | null;
   dependency_id: string | null; dependency_title: string | null; dependency_deadline: number | null;
 };
 
 export class DotsActivity {
-  constructor(private readonly db: Database.Database, private readonly visible: (taskId: string) => boolean) {
+  constructor(private readonly db: Database.Database, private readonly visible: (taskId: string) => boolean,
+    private readonly liveOutput: (operationId: string) => DotsTaskOutput | undefined = () => undefined) {
     db.exec("CREATE INDEX IF NOT EXISTS dots_delegations_task_seq ON dots_delegations(task_id,seq DESC)");
   }
 
@@ -27,6 +29,12 @@ export class DotsActivity {
       COALESCE(json_extract(e.snapshot,'$.deliveryKey'),e.event_key) AS delivery_key,
       json_extract(e.snapshot,'$.delivered') AS delivered,json_extract(e.snapshot,'$.summary') AS summary,
       json_extract(e.snapshot,'$.deliveredAt') AS delivered_at,json_extract(e.snapshot,'$.fileCount') AS delivered_file_count,
+      json_extract(e.snapshot,'$.sourceConclusion') AS source_conclusion,
+      (SELECT COALESCE(json_extract(p.plan,'$.goal'),json_extract(p.plan,'$.assignment'))
+        FROM dots_followup_plans p WHERE p.operation_id=d.operation_id) AS assignment,
+      (SELECT json_extract(r.reply,'$.text') FROM dots_reply_events r
+        WHERE r.operation_id=d.operation_id AND r.settled=0 AND r.reply IS NOT NULL
+        AND json_extract(r.reply,'$.kind')='conclusion' ORDER BY r.rowid DESC LIMIT 1) AS ready_text,
       EXISTS(SELECT 1 FROM dots_reply_events p WHERE p.operation_id=d.operation_id AND p.status=d.status AND p.settled=0) AS following,
       c.state AS control,w.lifecycle AS goal_lifecycle,w.closure_conclusion AS goal_conclusion,
       dw.prerequisite_id AS dependency_id,dw.title AS dependency_title,dw.deadline_at AS dependency_deadline
@@ -58,7 +66,9 @@ export class DotsActivity {
       const task = { id: row.operation_id, taskId: row.task_id, title: row.title, space: row.space ?? "独立任务",
         summary, updatedAt: row.delivered_at ?? row.updated_at };
       if (row.delivered === "conclusion" && row.delivery_key) {
-        return [{ ...task, state: "delivered", deliveryKey: row.delivery_key, fileCount: row.delivered_file_count ?? row.file_count }];
+        const text = row.source_conclusion ?? (outcome?.dotsState === "complete" ? dotsDeliveryText(outcome) : row.summary ?? row.text);
+        return [{ ...task, state: "delivered", deliveryKey: row.delivery_key, fileCount: row.delivered_file_count ?? row.file_count,
+          presentation: { phase: "summary", text } }];
       }
       if (row.control === "stopped" || row.goal_conclusion === "cancelled") return [{ ...task, state: "stopped" }];
       if (row.control === "paused" || row.goal_lifecycle === "paused") return [{ ...task, state: "paused" }];
@@ -78,7 +88,13 @@ export class DotsActivity {
       if (row.status === "failed" || row.status === "superseded") return [{ ...task, state: row.status }];
       if (row.status === "blocked" && !row.interaction_id) return [{ ...task, state: "blocked" }];
       if (row.status === "completed" && !row.following) return [{ ...task, state: "undelivered" }];
+      if (row.status === "completed" && row.ready_text !== null)
+        return [{ ...task, state: "running", phase: "following", presentation: { phase: "summary", text: activitySummary(row.ready_text) } }];
+      const live = row.status === "running" ? this.liveOutput(row.operation_id) : undefined;
       return [{ ...task, state: "running", phase: row.status === "pending" ? "queued" : row.status === "running" ? "working" : "following",
+        ...(row.status !== "completed" && { presentation: live
+          ? { phase: "streaming" as const, text: live.text, active: live.active }
+          : { phase: "details" as const, text: row.assignment ?? row.title } }),
         lastActivityAt: row.last_activity_at ?? undefined }];
     });
   }

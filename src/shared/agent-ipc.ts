@@ -2106,6 +2106,7 @@ export interface ChatToolCallDto {
 }
 
 export interface ChatMessageDto {
+  dotsWorkerOutput?: { operationId: string; generationId: number };
   /** Committed checkpoint of an assigned Dots worker. */
   dotsWorkerProgress?: boolean;
   /** Native assistant reached its final reply rather than requesting another tool round. */
