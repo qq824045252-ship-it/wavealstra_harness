@@ -1,8 +1,7 @@
 import { UiIcon } from "@mybuddy/shared/icons";
-import { DotsDeliveryFiles, DotsResult, useDotsDelegations, useTaskDotsDelivery } from "./DotsResult";
+import { useDotsDelegations, useTaskDotsDelivery } from "./DotsResult";
 import { DotsAllTasks } from "./DotsActivity";
-import ChatMarkdown from "./ChatMarkdown";
-import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsLiveReport } from "@shared/dots";
+import { DOTS_TASK_ID } from "@shared/dots";
 import { openVisitedTask } from "@/lib/taskBoardVisits";
 import { DEFAULT_WELCOME_MODE } from "@shared/mode-profile";
 import TaskRecoveryNotice from "./TaskRecoveryNotice";
@@ -13,9 +12,8 @@ import { useDismissOnClickOutside } from "@/hooks/useDismissOnClickOutside";
 import { useActiveTask, useActiveTaskArtifacts, useVisibleTaskArtifacts, useAppStore } from "@/store/appStore";
 import type { Artifact, ChatMessage, Space } from "@/types";
 import type { ConversationGoalDto } from "@shared/conversation-goal";
-import MessageItem from "./MessageItem";
 import ChatAnswerRuleDialog from "@/components/answer-routing/ChatAnswerRuleDialog";
-import { botMessagePresentation, isQuietDotsReply } from "@/lib/botMessagePresentation";
+import { botMessagePresentation } from "@/lib/botMessagePresentation";
 import ChatInput from "./ChatInput";
 import ConversationGoalChip from "./ConversationGoalChip";
 import ConversationBranchChip from "./ConversationBranchChip";
@@ -36,7 +34,7 @@ import {
   IconPanelRight,
   IconX,
 } from "@/components/common/icons";
-import type { McpServerDto, ModePresetDto, WelcomeMode } from "@shared/agent-ipc";
+import type { McpServerDto, ModePresetDto, TaskUserQuestionDto, WelcomeMode } from "@shared/agent-ipc";
 import { TASK_TITLE_MAX_CHARS } from "@shared/task-title";
 import { WELCOME_MODES, WELCOME_MODE_LABELS } from "@shared/mode-profile";
 import { buildPresetBarChips, isTaskModeLocked } from "@/lib/modePresetBar";
@@ -58,12 +56,27 @@ import {
   shouldInferUserScroll,
   type FollowState,
 } from "@/lib/scrollFollow";
-import { useFullTaskHistory } from "./useFullTaskHistory";
+import { useChatHistory } from "./useChatHistory";
+import { buildChatMessageRows, ChatMessageList } from "./ChatMessageList";
+import { useHistoryQuestions } from "./useHistoryQuestions";
 import { useDesktopShell } from "@/components/desktop/DesktopSection";
 import { chatPinPosition, latestHumanMessageId } from "@/lib/chatPinPosition";
 
 /** 新一轮用户消息置顶时距滚动容器顶的留白 */
 const TURN_TOP_OFFSET = 8;
+const RECENT_CHAT_ROWS = 100;
+const OLDER_HISTORY_EDGE_PX = 360;
+
+/** An explicit jump mounts estimated rows. Release it after the adjacent rows measure. */
+function settleChatPlacement(place: () => void, finish: () => void): () => void {
+  let remaining = 3;
+  let frame = requestAnimationFrame(function settle() {
+    place();
+    if (--remaining > 0) frame = requestAnimationFrame(settle);
+    else finish();
+  });
+  return () => cancelAnimationFrame(frame);
+}
 
 function recentSpaceLabel(spaces: Space[], spaceId: string | undefined): string {
   if (!spaceId) return COPY.independentTask;
@@ -258,168 +271,52 @@ function CollapsedSidebarActions(): React.JSX.Element | null {
   );
 }
 
-function HistoryPopup({
-  messages,
-  onClose,
-  onJumpToMessage,
-}: {
+function HistoryPopup({ messages, taskId, historyId, onClose, onJumpToMessage }: {
   messages: readonly ChatMessage[];
+  taskId: string;
+  historyId: string | undefined;
   onClose: () => void;
   onJumpToMessage: (messageId: string) => void;
-}): React.JSX.Element | null {
-  const questions = messages
-    // Host auto-continuations are not questions the user asked.
-    .filter((m) => m.role === "user" && !m.goalContinuation)
-    .map((m) => ({
-      id: m.id,
-      text: m.blocks
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join(" ")
-        .trim(),
-    }))
-    .filter((q) => q.text)
-    .reverse();
+}): React.JSX.Element {
+  const remote = useHistoryQuestions(historyId ? taskId : undefined, historyId);
+  const loaded = messages.filter(message => message.role === "user" && !message.goalContinuation).map(message => ({
+    id: message.id,
+    text: message.blocks.flatMap(block => block.type === "text" ? [block.text] : []).join(" ").trim(),
+  })).filter(question => question.text);
+  const localIds = new Set(loaded.map(question => question.id));
+  const older = (remote.index ?? []).filter(question => !localIds.has(question.id));
+  const questions: TaskUserQuestionDto[] = [...older, ...loaded].reverse();
 
   return (
     <div className="history-popup">
       <div className="history-popup-title">历史提问 ({questions.length})</div>
-      <div className="history-popup-list">
-        {questions.map((q) => (
-          <button
-            key={q.id}
-            className="history-popup-item"
-            onClick={() => {
-              onJumpToMessage(q.id);
-              onClose();
-            }}
-          >
-            {q.text}
-          </button>
+      {remote.error && <div role="status">{remote.error}</div>}
+      <div className="history-popup-list" onScroll={event => {
+        const list = event.currentTarget;
+        if (remote.hasMore && !remote.loading && list.scrollHeight - list.scrollTop - list.clientHeight < OLDER_HISTORY_EDGE_PX) remote.loadMore();
+      }}>
+        {questions.map(question => (
+          <button key={question.id} className="history-popup-item" onClick={() => {
+            onJumpToMessage(question.id);
+            onClose();
+          }}>{question.text}</button>
         ))}
       </div>
     </div>
   );
 }
 
-function DotsProgressHistory({ entries }: { entries: readonly ChatMessage[] }) {
-  const [open, setOpen] = useState(false);
-  return <details className="dots-progress-history" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>阶段进展 · {entries.length} 条</summary>
-    {open && entries.map(({ dotsDelivery: delivery }) => delivery && <div key={delivery.deliveryKey} className="dots-progress-history-item">
-      <strong>{delivery.title}</strong>
-      {delivery.text && <ChatMarkdown text={delivery.text} streaming={false} resolveTaskFiles={false} />}
-      {delivery.artifacts.length > 0 && <DotsDeliveryFiles row={delivery} />}
-    </div>)}
-  </details>;
-}
+type ReadingPosition = { messageId?: string; offset: number; following: boolean };
+const readingPositions = new Map<string, ReadingPosition>();
 
-function DotsStreamingReport({ messages }: { messages: readonly ChatMessage[] }) {
-  const conversationId = useAppStore(state => state.tasks.find(task => task.id === DOTS_TASK_ID)?.durable?.conversationId);
-  const [draft, setDraft] = useState<DotsLiveReport | null>(null);
-  useEffect(() => {
-    const api = window.api?.dots;
-    if (!api?.onReport) return;
-    let received = false;
-    let mounted = true;
-    const remove = api.onReport(report => { received = true; setDraft(report); });
-    void api.report().then(report => { if (mounted && !received) setDraft(report); }).catch(() => {});
-    return () => { mounted = false; remove(); };
-  }, []);
-  if (!draft || (draft.origin && String(draft.origin.conversationId) !== conversationId)
-    || messages.some(message => message.dotsDelivery?.deliveryKey === draft.deliveryKey)) return null;
-  const message: ChatMessage = {
-    id: draft.deliveryKey, role: "assistant", createdAt: 0, blocks: [], streaming: true,
-    finalBlocks: [{ type: "text", text: draft.text }],
-    dotsDelivery: { ...draft, presentation: "report", artifacts: [] },
-  };
-  return <div data-dots-live-report={draft.operationId}>
-    <MessageItem message={message} taskId={DOTS_TASK_ID} />
-  </div>;
-}
-
-function MessageList({ listRef, taskId, messages, artifacts, visibleArtifacts, onGoalCreated, toolFocusMessageId, taskDelivery, delegations = [] }: {
-  listRef: React.Ref<HTMLDivElement>;
-  delegations?: import("@shared/dots").DotsDelegation[];
-  taskDelivery?: import("@shared/dots").DotsTaskDelivery;
-  taskId: string;
-  messages: readonly ChatMessage[];
-  artifacts: Artifact[];
-  visibleArtifacts: Artifact[];
-  onGoalCreated: (goal: ConversationGoalDto) => void;
-  toolFocusMessageId?: string;
-}): React.JSX.Element {
-  const grouped = new Map<string, typeof delegations>();
-  if (delegations.length) {
-    const anchors = new Map<string, string>();
-    let question: ChatMessage | undefined;
-    const delivered = new Set<string>();
-    for (const msg of messages) {
-      if (msg.dotsDelivery?.kind === "progress") continue;
-      if (msg.dotsDelivery) delivered.add(msg.dotsDelivery.operationId);
-      if (msg.role === "user") question = msg;
-      else if (question && !msg.dotsDelivery) {
-        anchors.set(question.id, msg.id);
-        if (question.inputRequestId) anchors.set(question.inputRequestId, msg.id);
-      }
-      anchors.set(msg.id, msg.id);
-      if (msg.inputRequestId) anchors.set(msg.inputRequestId, msg.id);
-      for (const id of msg.sourceMessageIds ?? []) anchors.set(id, msg.id);
-    }
-    for (const entry of delegations) {
-      if (entry.status === "pending" || entry.status === "running" || entry.status === "superseded") continue;
-      if (delivered.has(entry.id)) continue;
-      const key = anchors.get(entry.sourceMessageId);
-      if (key) grouped.set(key, [...grouped.get(key) ?? [], entry]);
-    }
+function readPosition(scroller: HTMLElement, following: boolean): ReadingPosition {
+  const top = scroller.getBoundingClientRect().top;
+  for (const row of scroller.querySelectorAll<HTMLElement>(".chat-virtual-rows > [role=listitem]")) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom > top) return { messageId: row.id.slice(4), offset: rect.top - top, following };
   }
-  const progressBySource = new Map<string, ChatMessage[]>();
-  const dotsQuestions = new Map<string, ChatMessage>();
-  if (taskId === DOTS_TASK_ID) for (const message of messages) {
-    if (message.role === "user") {
-      dotsQuestions.set(message.id, message);
-      if (message.inputRequestId) dotsQuestions.set(message.inputRequestId, message);
-    }
-    const delivery = message.dotsDelivery;
-    if (delivery?.kind !== "progress" || delivery.presentation === "report") continue;
-    const entries = progressBySource.get(delivery.sourceMessageId) ?? [];
-    entries.push(message);
-    progressBySource.set(delivery.sourceMessageId, entries);
-  }
-  let precedingUser: ChatMessage | undefined;
-  return (
-    <div className="message-list" ref={listRef}>
-      {messages.map((msg) => {
-        const delivery = taskId === DOTS_TASK_ID ? msg.dotsDelivery : undefined;
-        if (delivery?.kind === "progress" && delivery.presentation !== "report") {
-          const entries = progressBySource.get(delivery.sourceMessageId);
-          return entries?.at(-1) === msg ? <div key={`dots-progress:${delivery.sourceMessageId}`} id={`msg-${msg.id}`}>
-            <DotsProgressHistory entries={entries} />
-          </div> : null;
-        }
-        if (msg.role === "user") precedingUser = msg;
-        const automatic = taskId === DOTS_TASK_ID && isDotsAutomaticInput(precedingUser?.inputRequestId ?? "");
-        const hideMessage = !msg.dotsDelivery && ((automatic && msg.role === "user") || isQuietDotsReply(msg, automatic));
-        if (hideMessage && !grouped.has(msg.id)) return null;
-        const rows = grouped.get(msg.id) ?? [];
-        return (
-          <div key={msg.presentationKey ?? msg.id} id={`msg-${msg.id}`}>
-            {!hideMessage && <MessageItem message={msg} taskId={taskId} sourceQuestion={!automatic && !delivery && msg.role === "assistant" ? precedingUser : undefined}
-              dotsDeliveryKey={taskDelivery && msg.role === "assistant" && !msg.streaming
-                && precedingUser?.inputRequestId === taskDelivery.operationId ? taskDelivery.deliveryKey : undefined}
-              deliveryQuestion={delivery?.kind === "conclusion" ? dotsQuestions.get(delivery.sourceMessageId) : undefined}
-              deliveryFiles={delivery && delivery.artifacts.length > 0 ? <DotsDeliveryFiles row={delivery} /> : undefined}
-              artifacts={artifacts} visibleArtifacts={visibleArtifacts}
-              onGoalCreated={onGoalCreated} focusTool={toolFocusMessageId === msg.id} />}
-            {rows.map(row => <DotsResult key={row.id} row={row} />)}
-          </div>
-        );
-      })}
-      {taskId === DOTS_TASK_ID && <DotsStreamingReport messages={messages} />}
-    </div>
-  );
+  return { offset: 0, following };
 }
-
-const readingPositions = new Map<string, { top: number; following: boolean }>();
 
 export default function ChatView(): React.JSX.Element {
   const task = useActiveTask();
@@ -473,7 +370,7 @@ export default function ChatView(): React.JSX.Element {
   const openedHistoryRef = useRef<string | undefined>(undefined);
   // Only a local submit, not assistant or tool updates, can request a new-turn pin.
   const pendingLocalSendRef = useRef<{ taskId: string; previousUserId: string | null } | null>(null);
-  const fullHistory = useFullTaskHistory(task);
+  const history = useChatHistory(task);
 
   useDismissOnClickOutside(historyOpen, () => setHistoryOpen(false), historyAnchorRef);
   /** 诊断弹窗绑定当前任务：切换任务即关闭，避免仍显示上一个任务的记录 */
@@ -481,11 +378,11 @@ export default function ChatView(): React.JSX.Element {
 
   const isBotTimeline = Boolean(task?.durable || task?.welcomeMode === "general" || task?.botPendingSubmissions?.length);
   const displayMessages = useMemo(() => {
-    const messages = fullHistory.messages;
-    return !fullHistory.loading && isBotTimeline
+    const messages = history.messages;
+    return !history.loading && isBotTimeline
       ? botMessagePresentation(messages, task?.durable?.pendingInputs, task?.botPendingSubmissions,
         task?.id === DOTS_TASK_ID && Boolean(task.durable?.busy || task.botPendingSubmissions?.some(input => input.submitting))) : messages;
-  }, [fullHistory.messages, fullHistory.loading, isBotTimeline, task?.id, task?.durable?.busy, task?.durable?.pendingInputs, task?.botPendingSubmissions]);
+  }, [history.messages, history.loading, isBotTimeline, task?.id, task?.durable?.busy, task?.durable?.pendingInputs, task?.botPendingSubmissions]);
   const dotsSources = task?.id === DOTS_TASK_ID
     ? JSON.stringify(displayMessages.filter(message => message.role === "user").flatMap(message => [message.id, ...(message.inputRequestId ? [message.inputRequestId] : [])]))
     : undefined;
@@ -499,6 +396,49 @@ export default function ChatView(): React.JSX.Element {
   const pendingNotificationTarget = useAppStore(s => s.notificationMessageTarget);
   const notificationTarget = pendingNotificationTarget?.taskId === activeChatId ? pendingNotificationTarget : undefined;
   const showLatest = useAppStore(s => task?.id !== undefined && s.chatLatestTarget === task.id);
+  const rows = useMemo(() => buildChatMessageRows(task?.id, displayMessages, dotsDelegations.rows, taskDelivery),
+    [task?.id, displayMessages, dotsDelegations.rows, taskDelivery]);
+  const [floor, setFloor] = useState<{ key: string; rowKey: string | null }>();
+  const savedFloor = floor?.key === readingKey ? floor : undefined;
+  const recentStart = Math.max(0, rows.length - RECENT_CHAT_ROWS);
+  const floorIndex = savedFloor?.rowKey === null ? 0 : rows.findIndex(row => row.key === savedFloor?.rowKey);
+  const startIndex = floorIndex < 0 ? recentStart : floorIndex;
+  const [historyJump, setHistoryJump] = useState<{ key: string; messageId: string; offset: number }>();
+  const pendingJump = historyJump?.key === readingKey ? historyJump : undefined;
+  const earlierRequest = useRef<symbol | undefined>(undefined);
+  const historyJumpRequest = useRef<symbol | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    earlierRequest.current = undefined;
+    historyJumpRequest.current = undefined;
+  }, [readingKey]);
+
+  useLayoutEffect(() => {
+    if (!readingKey || savedFloor || !rows.length || (rows.length < RECENT_CHAT_ROWS && history.before !== undefined)) return;
+    setFloor({ key: readingKey, rowKey: rows[recentStart].key });
+  }, [readingKey, savedFloor, rows, recentStart, history.before]);
+
+  useEffect(() => {
+    if (readingKey && !savedFloor && rows.length < RECENT_CHAT_ROWS && history.before !== undefined) {
+      void history.loadEarlier();
+    }
+  }, [readingKey, savedFloor, rows.length, history.before, history.loadEarlier]);
+
+  const requestEarlier = useCallback(() => {
+    if (!readingKey || earlierRequest.current) return;
+    if (startIndex > 0) {
+      setFloor({ key: readingKey, rowKey: rows[Math.max(0, startIndex - RECENT_CHAT_ROWS)].key });
+      return;
+    }
+    if (history.before === undefined) return;
+    const request = Symbol();
+    earlierRequest.current = request;
+    void history.loadEarlier().then(loaded => {
+      if (loaded && earlierRequest.current === request) setFloor({ key: readingKey, rowKey: null });
+    }).finally(() => {
+      if (earlierRequest.current === request) earlierRequest.current = undefined;
+    });
+  }, [readingKey, startIndex, rows, history.before, history.loadEarlier]);
   const [unresolvedNotificationAnchor, setUnresolvedNotificationAnchor] = useState<typeof notificationTarget>();
   const turnMessage = useMemo(() => {
     if (notificationTarget) {
@@ -518,6 +458,28 @@ export default function ChatView(): React.JSX.Element {
     const reply = displayMessages[index + 1];
     return reply?.role === "assistant" ? reply : displayMessages[index];
   }, [displayMessages, turnTarget, activeChatId, notificationTarget]);
+  const targetId = pendingJump?.messageId ?? turnMessage?.id;
+  const targetIndex = targetId ? rows.findIndex(row => row.message.id === targetId) : -1;
+  const firstVisibleIndex = targetIndex >= 0 ? Math.min(startIndex, targetIndex) : startIndex;
+  const visibleRows = useMemo(() => rows.slice(firstVisibleIndex), [rows, firstVisibleIndex]);
+  const [pinRequest, setPinRequest] = useState<{ key: string; id: string }>();
+  const pinTarget = pinRequest?.key === readingKey ? pinRequest?.id : undefined;
+  const lastMessageId = showLatest || pinTarget ? rows.at(-1)?.message.id : undefined;
+  const mountedTargets = useMemo(() => [targetId, pinTarget, lastMessageId], [targetId, pinTarget, lastMessageId]);
+  const [searchedTarget, setSearchedTarget] = useState<typeof notificationTarget | typeof turnTarget>();
+  const messageTarget = notificationTarget ?? (turnTarget?.taskId === activeChatId ? turnTarget : undefined);
+  const canReadEarlier = history.before !== undefined;
+  useEffect(() => {
+    if (!messageTarget || turnMessage || history.loading || !canReadEarlier || searchedTarget === messageTarget) return;
+    let cancelled = false;
+    void history.loadEarlier(message => notificationTarget
+      ? message.id === notificationTarget.messageId || message.dotsDelivery?.deliveryKey === notificationTarget.messageId
+        || message.interactions?.some(item => item.id === notificationTarget.interactionId) === true
+        || message.blocks.some(block => block.type === "tool" && block.toolCall.id === notificationTarget.toolCallId)
+      : message.role === "user" && (message.inputRequestId ?? message.id) === turnTarget?.inputId)
+      .finally(() => { if (!cancelled) setSearchedTarget(messageTarget); });
+    return () => { cancelled = true; };
+  }, [messageTarget, turnMessage, history.loading, canReadEarlier, history.loadEarlier, notificationTarget, turnTarget, searchedTarget]);
   const clearMessageTarget = () => useAppStore.setState({ answerRuleTurnTarget: undefined, notificationMessageTarget: undefined });
 
   /* ------------------------------------------------------------------
@@ -573,31 +535,60 @@ export default function ChatView(): React.JSX.Element {
     commitFollow(onHistoryJump(followStateRef.current));
     applyProgrammaticScrollTop(el.scrollTop + node.getBoundingClientRect().top - el.getBoundingClientRect().top - TURN_TOP_OFFSET);
   }, [applyProgrammaticScrollTop, commitFollow, stopFollowingLatest]);
-  const jumpToHistoryQuestion = useCallback((messageId: string): void => {
-    jumpToNode(document.getElementById(`msg-${messageId}`));
-  }, [jumpToNode]);
+  const jumpToHistoryQuestion = useCallback(async (messageId: string, offset = TURN_TOP_OFFSET): Promise<void> => {
+    if (!readingKey) return;
+    const token = Symbol();
+    historyJumpRequest.current = token;
+    const found = rows.some(row => row.message.id === messageId) || await history.loadEarlier(message => message.id === messageId);
+    if (found && historyJumpRequest.current === token) setHistoryJump({ key: readingKey, messageId, offset });
+  }, [history.loadEarlier, readingKey, rows]);
 
-  const pinUserMessageToTop = useCallback((): void => {
-    const el = scrollRef.current;
-    const spacer = tailSpaceRef.current;
-    const node = latestUserMessageId ? document.getElementById(`msg-${latestUserMessageId}`) : null;
-    if (!el || !spacer || !node || !el.contains(node)) return;
-    stopFollowingLatest();
-    const viewportTop = el.getBoundingClientRect().top + el.clientTop;
-    const position = chatPinPosition({
-      scrollTop: el.scrollTop,
-      naturalHeight: el.scrollTop + spacer.getBoundingClientRect().top - viewportTop
-        + (Number.parseFloat(getComputedStyle(el).paddingBottom) || 0),
-      viewportHeight: el.clientHeight,
-      anchorOffset: node.getBoundingClientRect().top - viewportTop,
-      topInset: TURN_TOP_OFFSET,
-    });
-    // Keep the reserve stable between explicit placements. Streaming, tool
-    // events, and assistant completion do not toggle it or write scrollTop.
-    spacer.style.height = `${position.tailSpace}px`;
-    commitFollow(onResetForTask(followStateRef.current));
-    applyProgrammaticScrollTop(position.top);
-  }, [applyProgrammaticScrollTop, commitFollow, latestUserMessageId, stopFollowingLatest]);
+  useLayoutEffect(() => {
+    if (!pendingJump || !readingKey) return;
+    if (targetIndex >= 0 && targetIndex < startIndex) {
+      setFloor({ key: readingKey, rowKey: rows[targetIndex].key });
+      return;
+    }
+    return settleChatPlacement(() => {
+      const el = scrollRef.current;
+      const node = document.getElementById(`msg-${pendingJump.messageId}`);
+      if (!el || !node || !el.contains(node)) return;
+      stopFollowingLatest();
+      commitFollow(onHistoryJump(followStateRef.current));
+      const offset = node.getBoundingClientRect().top - el.getBoundingClientRect().top;
+      applyProgrammaticScrollTop(el.scrollTop + offset - pendingJump.offset);
+      readingPositions.set(readingKey, readPosition(el, false));
+    }, () => setHistoryJump(undefined));
+  }, [pendingJump, readingKey, targetIndex, startIndex, rows, stopFollowingLatest, commitFollow, applyProgrammaticScrollTop]);
+
+  const pinUserMessageToTop = useCallback(() => {
+    if (readingKey && latestUserMessageId) setPinRequest({ key: readingKey, id: latestUserMessageId });
+  }, [readingKey, latestUserMessageId]);
+
+  useLayoutEffect(() => {
+    if (!pinTarget) return;
+    return settleChatPlacement(() => {
+      const el = scrollRef.current;
+      const spacer = tailSpaceRef.current;
+      const node = document.getElementById(`msg-${pinTarget}`);
+      if (!el || !spacer || !node || !el.contains(node)) return;
+      stopFollowingLatest();
+      const viewportTop = el.getBoundingClientRect().top + el.clientTop;
+      const position = chatPinPosition({
+        scrollTop: el.scrollTop,
+        naturalHeight: el.scrollTop + spacer.getBoundingClientRect().top - viewportTop
+          + (Number.parseFloat(getComputedStyle(el).paddingBottom) || 0),
+        viewportHeight: el.clientHeight,
+        anchorOffset: node.getBoundingClientRect().top - viewportTop,
+        topInset: TURN_TOP_OFFSET,
+      });
+      // Keep the reserve stable between explicit placements. Streaming, tool
+      // events, and assistant completion do not toggle it or write scrollTop.
+      spacer.style.height = `${position.tailSpace}px`;
+      commitFollow(onResetForTask(followStateRef.current));
+      applyProgrammaticScrollTop(position.top);
+    }, () => setPinRequest(undefined));
+  }, [applyProgrammaticScrollTop, commitFollow, pinTarget, stopFollowingLatest]);
 
   const scrollToLatest = useCallback((): void => {
     const el = scrollRef.current;
@@ -609,7 +600,7 @@ export default function ChatView(): React.JSX.Element {
     commitFollow(onResetForTask(followStateRef.current));
     const scrollToEnd = () => {
       applyProgrammaticScrollTop(el.scrollHeight);
-      readingPositions.set(readingKey, { top: el.scrollTop, following: true });
+      readingPositions.set(readingKey, { offset: 0, following: true });
     };
     scrollToEnd();
     // Delivery rows and attachments can change the height after the first layout.
@@ -621,7 +612,7 @@ export default function ChatView(): React.JSX.Element {
 
   useLayoutEffect(() => {
     if (pendingLocalSendRef.current?.taskId !== task?.id) pendingLocalSendRef.current = null;
-    if (!readingKey || !hasMessages || fullHistory.loading) {
+    if (!readingKey || !hasMessages || history.loading) {
       if (openedHistoryRef.current !== readingKey) openedHistoryRef.current = undefined;
       return;
     }
@@ -639,18 +630,17 @@ export default function ChatView(): React.JSX.Element {
     }
     if (firstOpen && !localQuestionArrived) {
       const saved = readingPositions.get(readingKey);
-      if (saved && !saved.following) {
-        commitFollow(onUserScrollUp(initialFollowState()));
-        applyProgrammaticScrollTop(saved.top);
+      if (saved?.messageId && !saved.following) {
+        void jumpToHistoryQuestion(saved.messageId, saved.offset);
         return;
       }
     }
     if (firstOpen || localQuestionArrived) pinUserMessageToTop();
-  }, [task?.id, readingKey, hasMessages, fullHistory.loading, latestUserMessageId, showLatest, notificationTarget, turnTarget?.taskId,
-    pinUserMessageToTop, scrollToLatest, commitFollow, applyProgrammaticScrollTop]);
+  }, [task?.id, readingKey, hasMessages, history.loading, latestUserMessageId, showLatest, notificationTarget, turnTarget?.taskId,
+    pinUserMessageToTop, scrollToLatest, jumpToHistoryQuestion]);
 
   useLayoutEffect(() => {
-    if (!turnMessage || fullHistory.loading) return;
+    if (!turnMessage || history.loading) return;
     const node = document.getElementById(`msg-${turnMessage.id}`);
     if (!node || !scrollRef.current?.contains(node)) return;
     const interaction = notificationTarget?.interactionId && Array.from(node.querySelectorAll<HTMLElement>("[data-interaction-id]"))
@@ -662,6 +652,7 @@ export default function ChatView(): React.JSX.Element {
       setUnresolvedNotificationAnchor(notificationTarget);
       return;
     }
+    if (readingKey && targetIndex >= 0 && targetIndex < startIndex) setFloor({ key: readingKey, rowKey: rows[targetIndex].key });
     const focus = anchor || node;
     if (focus instanceof HTMLDetailsElement) focus.open = true;
     jumpToNode(focus);
@@ -669,7 +660,7 @@ export default function ChatView(): React.JSX.Element {
     focus.addEventListener("blur", () => focus.removeAttribute("tabindex"), { once: true });
     focus.focus({ preventScroll: true });
     clearMessageTarget();
-  }, [turnMessage, fullHistory.loading, jumpToNode, notificationTarget]);
+  }, [turnMessage, history.loading, jumpToNode, notificationTarget, readingKey, targetIndex, startIndex, rows]);
 
   // 用户滚动意图监听（wheel / 指针拖动 / 键盘）+ 程序化滚动防护。
   // 判定优先「scroll position + programmatic guard」：
@@ -705,6 +696,7 @@ export default function ChatView(): React.JSX.Element {
       const prevTop = lastScrollTopRef.current;
       lastScrollTopRef.current = el.scrollTop;
       const delta = el.scrollTop - prevTop;
+      if (delta < 0 && el.scrollTop <= OLDER_HISTORY_EDGE_PX) requestEarlier();
       const s = followStateRef.current;
       if (
         !s.pointerScrolling &&
@@ -725,18 +717,23 @@ export default function ChatView(): React.JSX.Element {
       } else {
         commitFollow(next);
       }
-      if (readingKey && !fullHistory.loading) {
-        readingPositions.set(readingKey, { top: el.scrollTop, following: next.follow });
+      if (readingKey && !history.loading) {
+        readingPositions.set(readingKey, readPosition(el, next.follow));
       }
     };
     const markWheelIntent = (event: WheelEvent): void => {
       // 用户手势打断未决的程序滚动目标
-      if (event.deltaY !== 0) stopFollowingLatest();
+      if (event.deltaY !== 0) {
+        stopFollowingLatest();
+        if (pinTarget) setPinRequest(undefined);
+        if (pendingJump) setHistoryJump(undefined);
+      }
       programmaticTargetRef.current = null;
       if (event.deltaY < 0) {
         // P2-1：wheel 上滚只登记候选（触底回弹/惯性零位移不锁存）；
         // 实际向上位移由 handleScroll → onFollowScroll(scrollDelta<0) 确认锁存。
         commitFollow(onWheelUpCandidate(followStateRef.current));
+        if (element.scrollTop <= OLDER_HISTORY_EDGE_PX) requestEarlier();
       } else if (event.deltaY > 0) {
         // 向下意图：清除 wheel 上滚候选（用户实际在向下滚）并锁存方向
         commitFollow(onUserScrollDown(followStateRef.current));
@@ -745,6 +742,8 @@ export default function ChatView(): React.JSX.Element {
     const markPointerIntent = (event: PointerEvent): void => {
       // 滚动条拖动与触摸滚动：目标为容器本身，或任何触摸指针（触摸滚动任意子元素）
       if (event.target !== element && event.pointerType !== "touch") return;
+      if (pinTarget) setPinRequest(undefined);
+      if (pendingJump) setHistoryJump(undefined);
       stopFollowingLatest();
       programmaticTargetRef.current = null;
       commitFollow(onPointerDown(followStateRef.current, bottomDistance()));
@@ -770,6 +769,8 @@ export default function ChatView(): React.JSX.Element {
         (target instanceof HTMLElement && target.getAttribute?.("role") === "button");
       const intent = keyboardIntent(event.key, event.shiftKey, editable, activatesOnSpace);
       if (intent === null) return;
+      if (pinTarget) setPinRequest(undefined);
+      if (pendingJump) setHistoryJump(undefined);
       stopFollowingLatest();
       programmaticTargetRef.current = null;
       commitFollow(
@@ -797,7 +798,7 @@ export default function ChatView(): React.JSX.Element {
       document.removeEventListener("pointercancel", cancelPointerIntent);
       document.removeEventListener("keydown", markKeyboardIntent);
     };
-  }, [readingKey, hasMessages, fullHistory.loading, commitFollow, bottomDistance, stopFollowingLatest]);
+  }, [readingKey, hasMessages, history.loading, commitFollow, bottomDistance, stopFollowingLatest, requestEarlier, pinTarget, pendingJump]);
 
   // 无选中任务，或新建空任务（尚无 session）→ 首页 Hero
   // 有 sessionFile 但 messages 暂空 → 恢复中，进聊天区（避免被当成「打不开」）
@@ -872,16 +873,16 @@ export default function ChatView(): React.JSX.Element {
         </div>}
         <div className="chat-scroll">
           {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
-          {!isDots && !task.historyError && !fullHistory.error &&
+          {!isDots && !task.historyError && !history.error &&
           <div className="empty-block" style={{ margin: "48px auto" }}>
-            <div className="empty-block-title">{!fullHistory.loading && (task.durable || task.welcomeMode === "general") ? "会话" : "正在加载历史对话…"}</div>
-            <div style={{ fontSize: 12.5 }}>{!fullHistory.loading && (task.durable || task.welcomeMode === "general") ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
+            <div className="empty-block-title">{!history.loading && (task.durable || task.welcomeMode === "general") ? "会话" : "正在加载历史对话…"}</div>
+            <div style={{ fontSize: 12.5 }}>{!history.loading && (task.durable || task.welcomeMode === "general") ? "消息接受后将显示在这里" : "正在从会话文件恢复消息"}</div>
           </div>}
-          {(task.historyError || fullHistory.error) &&
+          {(task.historyError || history.error) &&
           <div className="empty-block" style={{ margin: "48px auto" }} role="alert" data-testid="history-error">
             <div className="empty-block-title">会话记录打不开</div>
-            <div style={{ fontSize: 12.5 }}>{fullHistory.error ?? task.historyError}</div>
-            {fullHistory.error && <button type="button" onClick={fullHistory.retry}>重试</button>}
+            <div style={{ fontSize: 12.5 }}>{history.error ?? task.historyError}</div>
+            {history.error && <button type="button" onClick={history.retry}>重试</button>}
           </div>}
         </div>
         {task.botInputError && <div className="durable-bot-state" role="alert">{task.botInputError}</div>}
@@ -962,6 +963,8 @@ export default function ChatView(): React.JSX.Element {
           {historyOpen && (
             <HistoryPopup
               messages={displayMessages}
+              taskId={task.id}
+              historyId={history.before === undefined ? undefined : task.durable?.historyId}
               onClose={() => setHistoryOpen(false)}
               onJumpToMessage={jumpToHistoryQuestion}
             />
@@ -977,7 +980,7 @@ export default function ChatView(): React.JSX.Element {
 
       <div className="chat-viewport">
         <div className="message-scroll" ref={scrollRef}>
-          {((turnTarget?.taskId === task.id || notificationTarget) && !fullHistory.loading && !turnMessage
+          {(messageTarget && !history.loading && !turnMessage && (searchedTarget === messageTarget || history.before === undefined)
             || notificationTarget && unresolvedNotificationAnchor === notificationTarget) && (
             <div className="conv-branch-error" role="status">
               {turnMessage ? "指定的工具或交互还未出现在这条消息中。" : "当前对话历史中找不到指定的消息。"}
@@ -985,7 +988,7 @@ export default function ChatView(): React.JSX.Element {
             </div>
           )}
           {task.historyError && <div className="conv-branch-error" role="alert">{task.historyError}</div>}
-          {fullHistory.error && <div className="conv-branch-error" role="alert">{fullHistory.error} <button type="button" onClick={fullHistory.retry}>重试</button></div>}
+          {history.error && <div className="conv-branch-error" role="alert">{history.error} <button type="button" onClick={history.retry}>重试</button></div>}
           {branchError && branchError.taskId === task.id && (
             <div className="conv-branch-error" role="alert">
               <IconAlert size={15} />
@@ -1018,11 +1021,14 @@ export default function ChatView(): React.JSX.Element {
           {/* 静态兄弟元素不要带 key：两个兄弟同时用 task.id 会让 React 复用同一
               fiber，把整条消息列表渲染两遍（看起来像「消息自己重复刷新」）。 */}
           {isDots && dotsDelegations.error && <div role="alert">{dotsDelegations.error}</div>}
-          <MessageList
+          <ChatMessageList
+            key={readingKey}
             listRef={messageListRef}
+            scrollRef={scrollRef}
+            rows={visibleRows}
+            mountedTargets={mountedTargets}
+            writeScrollTop={applyProgrammaticScrollTop}
             onGoalCreated={setSelectedMessageGoal}
-            delegations={isDots ? dotsDelegations.rows : undefined}
-            taskDelivery={taskDelivery}
             toolFocusMessageId={notificationTarget?.toolCallId ? turnMessage?.id : undefined}
             taskId={task.id}
             messages={displayMessages}

@@ -41,27 +41,36 @@ export function mergeFullTaskHistory(previous: ChatMessage[], updates: ChatMessa
   return result;
 }
 
-/** Fetch all older pages without publishing intermediate page-sized UI windows. */
+export async function readTaskHistoryPage(
+  cursor: number, historyId: string, load: (before: number) => Promise<TaskHistoryDto>, isCurrent = () => true,
+): Promise<{ before: number | undefined; messages: ChatMessage[] } | undefined> {
+  const history = await load(cursor);
+  if (!isCurrent()) return undefined;
+  if (history.historyError) throw new Error(history.historyError);
+  if (!history.page || history.page.historyId !== historyId) {
+    throw new Error("历史记录已变化，请重新加载当前对话");
+  }
+  const before = history.page.before;
+  if (before !== undefined && before >= cursor) throw new Error("历史记录游标未向前推进");
+  return { before, messages: history.messages.map(durableMessageToChatMessage) };
+}
+
+/** Read a contiguous span, ending at the earliest loaded entry during reconnect recovery. */
 export async function readFullTaskHistory(options: {
   before: number | undefined;
   historyId: string;
   load: (before: number) => Promise<TaskHistoryDto>;
   isCurrent: () => boolean;
+  stop?: (before: number) => boolean;
 }): Promise<ChatMessage[] | undefined> {
   let before = options.before;
   const pages: ChatMessage[][] = [];
-  while (before !== undefined) {
+  while (before !== undefined && !options.stop?.(before)) {
     if (!options.isCurrent()) return undefined;
-    const history = await options.load(before);
-    if (!options.isCurrent()) return undefined;
-    if (history.historyError) throw new Error(history.historyError);
-    if (!history.page || history.page.historyId !== options.historyId) {
-      throw new Error("历史记录已变化，请重新加载当前对话");
-    }
-    const next = history.page.before;
-    if (next !== undefined && next >= before) throw new Error("历史记录游标未向前推进");
-    pages.push(history.messages.map(durableMessageToChatMessage));
-    before = next;
+    const page = await readTaskHistoryPage(before, options.historyId, options.load, options.isCurrent);
+    if (!page) return undefined;
+    pages.push(page.messages);
+    before = page.before;
   }
   // Collect newest-to-oldest pages, then deduplicate once in chronological order.
   // Re-merging the growing archive for every page would make a long chat O(N²).
