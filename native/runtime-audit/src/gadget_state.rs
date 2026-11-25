@@ -1,3 +1,4 @@
+use crate::request_control::Control;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
@@ -5,14 +6,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 const FILE_NAME: &str = ".mybuddy-state.json";
 const MAX_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2048;
-/// One entry per retired invocation or generation; older entries are stale by then.
-const MAX_REVOCATIONS: usize = 1024;
 
 /// Who authorizes a state change, and until when.
 ///
@@ -224,18 +224,22 @@ struct CachedState {
     state: State,
 }
 
-#[derive(Default)]
 pub struct Store {
     cache: VecDeque<CachedState>,
-    revoked: VecDeque<Revocation>,
+    control: Arc<Control>,
+}
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            cache: VecDeque::new(),
+            control: crate::request_control::shared()
+                .cloned()
+                .unwrap_or_else(Control::memory),
+        }
+    }
 }
 
-struct Revocation {
-    generation: String,
-    /// `None` revokes every invocation of the generation.
-    invocation_id: Option<String>,
-}
-
+#[cfg(test)]
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -244,53 +248,42 @@ fn now_ms() -> u64 {
 }
 
 impl Store {
+    #[cfg(test)]
     pub fn run(&mut self, request: Request) -> Reply {
-        self.execute(request)
+        self.run_for(request, None)
+    }
+
+    pub fn run_for(&mut self, request: Request, request_id: Option<&str>) -> Reply {
+        self.execute(request, request_id)
             .unwrap_or_else(|error| Reply::Error { error })
     }
 
-    /// Revoked before the request was dispatched, or its lease has already ended.
-    fn write_allowed(&self, authorization: Option<&Authorization>, now: u64) -> StateResult<()> {
+    fn write_allowed(
+        &self,
+        authorization: Option<&Authorization>,
+        request_id: Option<&str>,
+    ) -> StateResult<()> {
         let authorization = authorization.ok_or(Fault::StaleWrite)?;
-        if authorization.generation.is_empty() || authorization.invocation_id.is_empty() {
-            return Err(Fault::StaleWrite);
-        }
-        if authorization.expires_at != 0 && authorization.expires_at <= now {
-            return Err(Fault::StaleWrite);
-        }
-        let revoked = self.revoked.iter().any(|entry| {
-            entry.generation == authorization.generation
-                && entry
-                    .invocation_id
-                    .as_deref()
-                    .is_none_or(|id| id == authorization.invocation_id)
-        });
-        if revoked {
+        if !self.control.gadget_check(
+            request_id,
+            &authorization.generation,
+            &authorization.invocation_id,
+            authorization.expires_at,
+        ) {
             return Err(Fault::StaleWrite);
         }
         Ok(())
     }
 
     fn revoke(&mut self, generation: String, invocation_id: Option<String>) -> StateResult<Reply> {
-        if generation.is_empty() || generation.len() > 128 {
-            return Err(Fault::StaleWrite);
+        if self.control.revoke_gadget(generation, invocation_id) {
+            Ok(Reply::Revoked)
+        } else {
+            Err(Fault::StaleWrite)
         }
-        if let Some(invocation_id) = &invocation_id
-            && (invocation_id.is_empty() || invocation_id.len() > 64)
-        {
-            return Err(Fault::StaleWrite);
-        }
-        self.revoked.push_back(Revocation {
-            generation,
-            invocation_id,
-        });
-        while self.revoked.len() > MAX_REVOCATIONS {
-            self.revoked.pop_front();
-        }
-        Ok(Reply::Revoked)
     }
 
-    fn execute(&mut self, request: Request) -> StateResult<Reply> {
+    fn execute(&mut self, request: Request, request_id: Option<&str>) -> StateResult<Reply> {
         match request {
             Request::Supported => Ok(Reply::Supported),
             Request::Revoke {
@@ -320,7 +313,7 @@ impl Store {
                 // A write is authorized at commit time, not when the host asked.
                 // Reads stay available so a cancelled action cannot wedge the page.
                 if matches!(action, Action::Set { .. } | Action::Delete { .. }) {
-                    self.write_allowed(authorization.as_ref(), now_ms())?;
+                    self.write_allowed(authorization.as_ref(), request_id)?;
                 }
                 ensure_directory(&path, &canonical_path)?;
                 let file = canonical_path.join(FILE_NAME);
@@ -341,7 +334,25 @@ impl Store {
                 };
                 let (reply, write_id) = state.apply(bucket, action)?;
                 if let Some(write_id) = write_id {
-                    write_file(&path, &canonical_path, &file, &write_id, &state)?;
+                    let authorization = authorization.as_ref().ok_or(Fault::StaleWrite)?;
+                    write_file(
+                        &path,
+                        &canonical_path,
+                        &file,
+                        &write_id,
+                        &state,
+                        |temp, destination| {
+                            self.control
+                                .gadget_commit(
+                                    request_id,
+                                    &authorization.generation,
+                                    &authorization.invocation_id,
+                                    authorization.expires_at,
+                                    || fs::rename(temp, destination).map_err(|_| Fault::StorageIo),
+                                )
+                                .ok_or(Fault::StaleWrite)?
+                        },
+                    )?;
                     stamp = checked_file(&file)?;
                 }
                 self.remember(CachedState {
@@ -575,6 +586,7 @@ fn write_file(
     file: &Path,
     write_id: &str,
     state: &State,
+    commit: impl FnOnce(&Path, &Path) -> StateResult<()>,
 ) -> StateResult<()> {
     if write_id.len() != 36
         || !write_id
@@ -611,7 +623,7 @@ fn write_file(
         drop(staged);
         ensure_directory(data_path, root)?;
         checked_file(file)?;
-        fs::rename(&temp, file).map_err(|_| Fault::StorageIo)
+        commit(&temp, file)
     })();
     if result.is_err() {
         let _ = fs::remove_file(temp);
@@ -656,7 +668,8 @@ mod tests {
             "mybuddy-gadget-state-{}-{nonce}",
             std::process::id()
         ));
-        fs::create_dir_all(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        fs::create_dir_all(&root)
+            .unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
         Fixture(root)
     }
 
@@ -667,7 +680,10 @@ mod tests {
             path: root.to_path_buf(),
         }) {
             Reply::Opened { canonical_path } => (store, canonical_path),
-            reply => panic!("open must succeed: {}", serde_json::to_string(&reply).expect("json")),
+            reply => panic!(
+                "open must succeed: {}",
+                serde_json::to_string(&reply).expect("json")
+            ),
         }
     }
 
@@ -780,5 +796,65 @@ mod tests {
             authorization: None,
         });
         assert!(matches!(read, Reply::Value { .. }));
+    }
+    #[test]
+    fn revocation_during_staging_prevents_the_final_rename() {
+        let fixture = fixture();
+        let control = Control::memory();
+        let root = fixture.0.canonicalize().unwrap();
+        let destination = root.join(FILE_NAME);
+        let result = write_file(
+            &fixture.0,
+            &root,
+            &destination,
+            "00000000-0000-0000-0000-000000000001",
+            &State::default(),
+            |temporary, final_path| {
+                // This hook runs AFTER serialization, temporary write and sync_all.
+                assert!(temporary.exists());
+                control.revoke_gadget("generation".into(), Some("invocation".into()));
+                control
+                    .gadget_commit(None, "generation", "invocation", 0, || {
+                        fs::rename(temporary, final_path).map_err(|_| Fault::StorageIo)
+                    })
+                    .ok_or(Fault::StaleWrite)?
+            },
+        );
+        assert!(matches!(result, Err(Fault::StaleWrite)));
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read_dir(root).unwrap().count(),
+            0,
+            "rejected staging file is cleaned"
+        );
+    }
+
+    #[test]
+    fn cancellation_while_staging_is_checked_at_the_commit_boundary() {
+        let fixture = fixture();
+        let root = fixture.0.canonicalize().unwrap();
+        let destination = root.join(FILE_NAME);
+        let control = Control::memory();
+        control
+            .register("write", "gadgetState", now_ms() + 30_000, true)
+            .unwrap_or_else(|_| panic!("admit"));
+        control.start("write").unwrap_or_else(|_| panic!("start"));
+        let result = write_file(
+            &fixture.0,
+            &root,
+            &destination,
+            "00000000-0000-0000-0000-000000000001",
+            &State::default(),
+            |temporary, final_path| {
+                control.cancel("write");
+                control
+                    .gadget_commit(Some("write"), "g", "i", 0, || {
+                        fs::rename(temporary, final_path).map_err(|_| Fault::StorageIo)
+                    })
+                    .ok_or(Fault::StaleWrite)?
+            },
+        );
+        assert!(matches!(result, Err(Fault::StaleWrite)));
+        assert!(!destination.exists());
     }
 }

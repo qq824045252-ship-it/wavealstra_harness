@@ -192,13 +192,39 @@ pub(crate) fn delete_project_spaces(
 }
 
 pub fn delete(db: &mut Connection, root: &Path, target: Target) -> Result<Value> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    prepare_staging(&tx)?;
-    if !stage_target(&tx, &target)? {
-        return Ok(json!({ "status": "scopeChanged" }));
-    }
-    let ids = apply_staged(&tx, root)?;
-    tx.commit()?;
+    let write_guard = crate::write_gate::enter()?;
+    let tx = match db.transaction_with_behavior(TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(error) => {
+            crate::request_control::known_failure();
+            return Err(error.into());
+        }
+    };
+    let staged = (|| -> Result<Option<Vec<String>>> {
+        prepare_staging(&tx)?;
+        if !stage_target(&tx, &target)? {
+            return Ok(None);
+        }
+        Ok(Some(apply_staged(&tx, root)?))
+    })();
+    let ids = match staged {
+        Ok(Some(ids)) => ids,
+        Ok(None) => {
+            tx.rollback()?;
+            return Ok(json!({ "status": "scopeChanged" }));
+        }
+        Err(error) => {
+            // No file cleanup happens before COMMIT. A SQL error with a confirmed
+            // rollback is a known failure, including triggers using RAISE(ROLLBACK).
+            let already_rolled_back = tx.is_autocommit();
+            if tx.rollback().is_ok() || already_rolled_back {
+                crate::request_control::known_failure();
+            }
+            return Err(error);
+        }
+    };
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
     if let Err(error) = drain(db, root) {
         eprintln!("Library file cleanup will retry: {error}");
     }
@@ -220,6 +246,7 @@ struct CleanupJob {
 
 pub fn drain(db: &mut Connection, root: &Path) -> Result<usize> {
     let root_key = root_key(root)?;
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let jobs = tx
         .prepare("SELECT space_id,item_id,filename FROM library_file_cleanup WHERE root=?1")?
@@ -257,7 +284,8 @@ pub fn drain(db: &mut Connection, root: &Path) -> Result<usize> {
         )?;
         completed += 1;
     }
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
     Ok(completed)
 }
 

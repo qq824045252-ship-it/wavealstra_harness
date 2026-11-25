@@ -3137,7 +3137,7 @@ app.whenReady().then(async () => {
   // 决策结果缓存于 paths 模块，后续 getters 与本次一致。
   const workspacesMigration = migrateLegacyTaskWorkspacesDirs();
   const runtimeAuditExecutable = locateRuntimeAudit(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
-  db = new AppDatabase(undefined, { runtimeAuditExecutable });
+  db = await AppDatabase.open(undefined, { runtimeAuditExecutable, runtimeAuditSupervised: true });
   const connectorStorageReady = initializeConnectorStorage(db.runtimeAuditReader);
   notificationService = new NotificationService(db);
   notificationService.setChangedListener((event) => {

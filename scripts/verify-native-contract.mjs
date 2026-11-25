@@ -31,7 +31,10 @@ const executable = join(ROOT, "out", "native", platform,
  */
 const TESTS = [
   "test:runtime-audit-native-contract", // worker 协议契约：租约/撤销/终态
+  "test:runtime-audit-lifecycle",       // 真实锁争用、队列过载、超时无写入、崩溃回执
   "test:core-supervisor",               // 3.6 第一片：租约互斥/断开仍活/崩溃接管
+  "test:core-client",                   // 生产连接路径：握手、重连、断开与进程回收
+  "test:work-host-authority",           // Rust 租约写入、真实锁争用与主循环响应
   "test:durable-task-projection",       // Durable 任务投影写入 + query_only 守卫
   "test:project-domain",
   "test:task-board",
@@ -39,6 +42,9 @@ const TESTS = [
   "test:activity-time",
   "test:workspace-notes",
   "test:task-workspace-lifecycle",
+  "test:gadget-backend-domain",
+  "test:library-domain",
+  "test:library-lifecycle-transaction",
 ];
 
 function run(command, args, options = {}) {

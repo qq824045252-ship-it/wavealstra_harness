@@ -13,6 +13,7 @@ pub fn delete(
     root: &Path,
     withdrawal: Withdrawal,
 ) -> Result<Value> {
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let prior: Option<String> = tx
         .query_row(
@@ -58,6 +59,7 @@ pub fn delete(
         "DELETE FROM project_delete_receipts WHERE rowid <= last_insert_rowid()-2048",
         [],
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
     Ok(result)
 }

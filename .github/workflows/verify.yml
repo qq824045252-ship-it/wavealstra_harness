@@ -27,7 +27,7 @@ on:
       suite:
         description: "要运行的套件"
         type: choice
-        options: [default, gui, all]
+        options: [default, native, gui, all]
         default: default
 
 concurrency:
@@ -223,8 +223,12 @@ jobs:
     # 原生路径验收：真实 worker 二进制 + 已写成 `--native` 的业务用例 + crate 自测。
     # 默认套件只跑 Host 回退，绿了也不能证明业务命中 Rust；这条 job 是那件事的唯一证据。
     # RUNTIME_AUDIT_TESTS=1 让 prepare-runtime-audit.cjs 在打包/构建前先跑 cargo test。
-    if: ${{ github.event_name != 'schedule' && (!inputs.suite || inputs.suite == 'default' || inputs.suite == 'all') }}
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'schedule' && (!inputs.suite || inputs.suite == 'default' || inputs.suite == 'native' || inputs.suite == 'all') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
       RUNTIME_AUDIT_TESTS: "1"
@@ -235,19 +239,38 @@ jobs:
         with:
           version: ${{ env.PNPM_VERSION }}
 
+      - name: Ensure pnpm store directory exists
+        shell: bash
+        run: mkdir -p "$(pnpm store path)"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
 
-      # ubuntu-latest 镜像自带 rustup/stable；缺失时这里直接失败，不要静默跳过原生验收。
+      # std::fs 的持有锁接口需要 Rust 1.89+；两个平台都验证同一当前稳定工具链。
       - name: Rust toolchain
-        run: cargo --version && cc --version
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          cargo --version
+
+      - name: Use a short path for Windows native builds
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\r | Out-Null
+          robocopy $env:GITHUB_WORKSPACE C:\r /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          exit 0
 
       - name: Install dependencies
+        working-directory: ${{ runner.os == 'Windows' && 'C:\r' || github.workspace }}
         run: pnpm install --frozen-lockfile
 
       - name: Native contract gate
+        working-directory: ${{ runner.os == 'Windows' && 'C:\r' || github.workspace }}
         run: pnpm -s test:all:native
 
   verify-windows-gui:

@@ -117,6 +117,7 @@ pub fn promote(db: &mut Connection, request: Promotion) -> Result<Reply> {
     if !library_backup::valid_filename(&filename) {
         return Err("资料文件名无效".into());
     }
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if project_write::has_receipt(&tx, &request.operation_id)? {
         return Ok(Reply::Changed);
@@ -148,7 +149,8 @@ pub fn promote(db: &mut Connection, request: Promotion) -> Result<Reply> {
         &request.item_id,
         &filename,
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
 
     let applied = apply(db, &request, &destination, &filename, &path);
     let cleanup = library_restore::recover(db, &request.root, Some(&request.operation_id));
@@ -178,6 +180,7 @@ fn apply(
 ) -> Result<Reply> {
     let chunks =
         library_index::document_chunks(&request.content, request.chunk_size, request.overlap)?;
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(current) = plan(&tx, request)? else {
         return Ok(Reply::ExistingPromotion);
@@ -241,6 +244,7 @@ fn apply(
         return Err(rusqlite::Error::StatementChangedRows(linked).into());
     }
     project_write::record_receipt(&tx, &request.operation_id)?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
     Ok(Reply::Changed)
 }

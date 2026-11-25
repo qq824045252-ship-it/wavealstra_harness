@@ -37,7 +37,10 @@ const workerSource = [
   "    if (!line.trim()) continue;",
   "    const request = JSON.parse(line);",
   '    fs.appendFileSync(path.join(directory, "requests.log"), JSON.stringify({ pid: process.pid, operation: request.operation }) + "\\n");',
-  "    if (exitOn.has(request.operation)) process.exit(3);",
+  "    if (exitOn.has(request.operation)) {",
+  "      if (!config.exitWhenReleased) process.exit(3);",
+  '      setInterval(() => { if (fs.existsSync(path.join(directory, "release-exit"))) process.exit(3); }, 5); continue;',
+  "    }",
   '    process.stdout.write(JSON.stringify({ status: "ok", data: null, replyId: request.requestId }) + "\\n");',
   "  }",
   "});",
@@ -78,6 +81,38 @@ async function queuedWriteIsDroppedAfterRetirement(): Promise<void> {
     const reached = readFileSync(join(directory, "requests.log"), "utf8");
     assert(!reached.includes("gadgetState"), "the retired write never reaches the worker");
     console.log("PASS a write queued behind a retired invocation never reaches the worker");
+  } finally {
+    await reader.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** Retirement after dispatch cannot establish whether the worker committed. */
+async function dispatchedWriteDoesNotClaimCancellation(): Promise<void> {
+  const directory = mkdtempSync(join(fixtures, "gadget-authorization-unknown-"));
+  const worker = join(directory, "fake-rust.cjs");
+  writeFileSync(worker, workerSource);
+  writeFileSync(join(directory, "config.json"), JSON.stringify({ exit: ["gadgetState"], exitWhenReleased: true }));
+  const data = join(directory, "data");
+  mkdirSync(data);
+  const reader = new RuntimeAuditReader(process.execPath, worker);
+  let retired = false;
+  try {
+    await reader.snapshots("warmup", 1);
+    const write = reader.accessGadgetState(data, realpathSync(data), "storage",
+      { operation: "set", key: [107], valueJson: "1", writeId: randomUUID() },
+      { generation: "generation-1", invocationId: "invocation-1", expiresAt: Date.now() + 60_000 },
+      () => retired);
+    await waitFor(() => readFileSync(join(directory, "requests.log"), "utf8").includes("gadgetState"),
+      2_000, "write dispatch before retirement");
+    assert.equal(reader.laneDiagnostics().inFlight.database, 1);
+    retired = true;
+    writeFileSync(join(directory, "release-exit"), "1");
+    assert.deepEqual(await write, { kind: "error", error: "STORAGE_UNAVAILABLE" },
+      "retirement cannot turn a lost dispatched write reply into proof that no commit occurred");
+    assert.equal(reader.laneDiagnostics().unconfirmed.length, 1,
+      "the dispatched write remains an unknown outcome");
+    console.log("PASS a dispatched write with a lost reply is not mislabeled as cancelled");
   } finally {
     await reader.close();
     rmSync(directory, { recursive: true, force: true });
@@ -164,6 +199,7 @@ async function abortedActionRetiresItsWrites(): Promise<void> {
 
 async function main(): Promise<void> {
   await queuedWriteIsDroppedAfterRetirement();
+  await dispatchedWriteDoesNotClaimCancellation();
   await abortedActionRetiresItsWrites();
 }
 

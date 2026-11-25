@@ -12,9 +12,9 @@ mod branch_title;
 mod code_review_data;
 mod connector_import;
 mod connector_install;
+mod connector_market;
 mod core_lease;
 mod core_supervisor;
-mod connector_market;
 mod cron_data;
 mod cron_plan;
 mod cron_write;
@@ -64,6 +64,7 @@ mod project_pins_data;
 mod project_posts_data;
 mod project_write;
 mod remote_image;
+mod request_control;
 mod scoped_notes;
 mod semantic;
 mod semantic_inference;
@@ -86,6 +87,7 @@ mod usage_live;
 mod usage_skills;
 mod work_graph_data;
 mod work_graph_integrity;
+mod work_host_lease;
 mod work_queue_data;
 mod workbench_data;
 mod workbench_write;
@@ -98,6 +100,7 @@ mod workspace_persistence;
 mod workspace_preview;
 mod workspace_scan;
 mod workspace_shared_data;
+mod write_gate;
 
 use rusqlite::{Connection, OpenFlags, types::Value as SqlValue};
 use serde::{Deserialize, Serialize};
@@ -151,6 +154,9 @@ impl SqlScope {
     rename_all_fields = "camelCase"
 )]
 enum Request {
+    WorkHostLease {
+        request: work_host_lease::Request,
+    },
     HistoryLaneSupported,
     HistoryRead {
         request_id: String,
@@ -802,6 +808,21 @@ struct WireReply<'a> {
 }
 
 fn write_reply(id: &RequestId, result: Result<Data>, inference: bool) -> Result<()> {
+    if let (Some(control), Some(id)) = (request_control::shared(), id) {
+        control.finish(
+            id,
+            result.is_ok(),
+            result
+                .as_ref()
+                .ok()
+                .and_then(|data| serde_json::to_value(data).ok()),
+            result.as_ref().err().map(ToString::to_string),
+        );
+        if let Some(frame) = control.terminal_override(id) {
+            request_control::emit(&frame)?;
+            return Ok(());
+        }
+    }
     let reply = match result {
         Ok(data) => Reply::Ok { data },
         Err(error) => {
@@ -829,6 +850,9 @@ fn write_reply(id: &RequestId, result: Result<Data>, inference: bool) -> Result<
 const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
 fn write_workspace_reply(id: &RequestId, data: Data) -> Result<()> {
+    if let (Some(control), Some(id)) = (request_control::shared(), id) {
+        control.finish(id, true, serde_json::to_value(&data).ok(), None);
+    }
     let encode = |data| {
         serde_json::to_vec(&WireReply {
             history_lane: true,
@@ -855,6 +879,21 @@ fn write_workspace_reply(id: &RequestId, data: Data) -> Result<()> {
 }
 
 fn write_maintenance_reply(id: &RequestId, result: Result<Data>) -> Result<()> {
+    if let (Some(control), Some(id)) = (request_control::shared(), id) {
+        control.finish(
+            id,
+            result.is_ok(),
+            result
+                .as_ref()
+                .ok()
+                .and_then(|data| serde_json::to_value(data).ok()),
+            result.as_ref().err().map(ToString::to_string),
+        );
+        if let Some(frame) = control.terminal_override(id) {
+            request_control::emit(&frame)?;
+            return Ok(());
+        }
+    }
     let reply = match result {
         Ok(data) => Reply::Ok { data },
         Err(error) => {
@@ -908,16 +947,19 @@ enum WorkspaceJob {
 }
 
 type WorkspaceWorker = (
-    mpsc::Sender<(RequestId, WorkspaceJob)>,
+    mpsc::SyncSender<(RequestId, WorkspaceJob)>,
     thread::JoinHandle<()>,
 );
 
 fn start_workspace_scans() -> io::Result<WorkspaceWorker> {
-    let (send, jobs) = mpsc::channel::<(RequestId, WorkspaceJob)>();
+    let (send, jobs) = mpsc::sync_channel::<(RequestId, WorkspaceJob)>(16);
     let worker = thread::Builder::new()
         .name("workspace-scan".into())
         .spawn(move || {
             for (id, job) in jobs {
+                if !request_control::begin(&id) {
+                    continue;
+                }
                 let result = match job {
                     WorkspaceJob::Scan(query) => Data::WorkspaceScan(workspace_scan::scan(query)),
                     WorkspaceJob::FileBackupList(query) => {
@@ -977,18 +1019,23 @@ fn dispatch_workspace(
     worker: &mut Option<WorkspaceWorker>,
     id: RequestId,
     job: WorkspaceJob,
-    fallback: Data,
+    _fallback: Data,
 ) -> Result<()> {
     if worker.is_none() {
         *worker = start_workspace_scans().ok();
     }
     match worker {
-        Some((sender, _)) => match sender.send((id, job)) {
+        Some((sender, _)) => match sender.try_send((id, job)) {
             Ok(()) => Ok(()),
             // The rejected job hands its id back, so even the fallback is correlated.
-            Err(mpsc::SendError((id, _))) => write_workspace_reply(&id, fallback),
+            Err(mpsc::TrySendError::Full((id, _))) => {
+                request_control::overload(&id, "OVERLOADED").map_err(Into::into)
+            }
+            Err(mpsc::TrySendError::Disconnected((id, _))) => {
+                request_control::overload(&id, "UNAVAILABLE").map_err(Into::into)
+            }
         },
-        None => write_workspace_reply(&id, fallback),
+        None => request_control::overload(&id, "UNAVAILABLE").map_err(Into::into),
     }
 }
 
@@ -1002,10 +1049,10 @@ fn start_inference(
     db_path: PathBuf,
     staged: Arc<embedding_index::StagedVectors>,
 ) -> Result<(
-    mpsc::Sender<(RequestId, InferenceJob)>,
+    mpsc::SyncSender<(RequestId, InferenceJob)>,
     thread::JoinHandle<()>,
 )> {
-    let (send, jobs) = mpsc::channel::<(RequestId, InferenceJob)>();
+    let (send, jobs) = mpsc::sync_channel::<(RequestId, InferenceJob)>(4);
     let worker = thread::Builder::new()
         .name("semantic-inference".into())
         .spawn(move || {
@@ -1013,6 +1060,9 @@ fn start_inference(
             let mut verifier = semantic_model::Verifier::default();
             let mut reader = None;
             for (id, request) in jobs {
+                if !request_control::begin(&id) {
+                    continue;
+                }
                 let result = match request {
                     InferenceJob::Embed(request) => model.run(request).map(Data::Embedding),
                     InferenceJob::Probe(probe) => {
@@ -1086,18 +1136,21 @@ enum MaintenanceJob {
 }
 
 type MaintenanceWorker = (
-    mpsc::Sender<(RequestId, MaintenanceJob)>,
+    mpsc::SyncSender<(RequestId, MaintenanceJob)>,
     thread::JoinHandle<()>,
 );
 
 fn start_maintenance(db_path: PathBuf) -> io::Result<MaintenanceWorker> {
-    let (send, jobs) = mpsc::channel::<(RequestId, MaintenanceJob)>();
+    let (send, jobs) = mpsc::sync_channel::<(RequestId, MaintenanceJob)>(8);
     let worker = thread::Builder::new()
         .name("maintenance".into())
         .spawn(move || {
             let mut writer = None;
             let mut prepared_restore = None;
             for (id, job) in jobs {
+                if !request_control::begin(&id) {
+                    continue;
+                }
                 // A panicking job replies with an error and leaves the thread serving:
                 // it must never take the shared process (or a later job) with it.
                 let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1129,14 +1182,17 @@ fn dispatch_maintenance(
         *worker = start_maintenance(db_path.to_path_buf()).ok();
     }
     match worker {
-        Some((sender, _)) => match sender.send((id, job)) {
+        Some((sender, _)) => match sender.try_send((id, job)) {
             Ok(()) => Ok(()),
             // The rejected job hands its id back, so even this reply is correlated.
-            Err(mpsc::SendError((id, _))) => {
-                write_maintenance_reply(&id, Err("maintenance thread unavailable".into()))
+            Err(mpsc::TrySendError::Full((id, _))) => {
+                request_control::overload(&id, "OVERLOADED").map_err(Into::into)
+            }
+            Err(mpsc::TrySendError::Disconnected((id, _))) => {
+                request_control::overload(&id, "UNAVAILABLE").map_err(Into::into)
             }
         },
-        None => write_maintenance_reply(&id, Err("maintenance thread unavailable".into())),
+        None => request_control::overload(&id, "UNAVAILABLE").map_err(Into::into),
     }
 }
 
@@ -1249,6 +1305,12 @@ fn read(
     staged: &embedding_index::StagedVectors,
     request: Request,
 ) -> Result<Data> {
+    if let Request::WorkHostLease { request } = request {
+        return Ok(Data::Json(serde_json::to_value(work_host_lease::run(
+            write_connection(writer, db_path)?,
+            request,
+        )?)?));
+    }
     if matches!(
         request,
         Request::NativeInferenceSupported
@@ -1801,6 +1863,7 @@ fn read(
     }
     let snapshot = db.transaction()?;
     let response = match request {
+        Request::WorkHostLease { .. } => unreachable!(),
         Request::Snapshots { task_id, limit } => {
             Data::Json(snapshots::read(&snapshot, &task_id, limit)?)
         }
@@ -2090,15 +2153,207 @@ fn read_connection(path: &Path) -> Result<Connection> {
     Ok(db)
 }
 
+fn database_write(request: &Request) -> bool {
+    match request {
+        Request::ProjectPins { request } => !request.is_read(),
+        Request::ProjectPosts { request } => !request.is_read(),
+        Request::ProjectEventData { request } => !request.is_read(),
+        Request::AnswerRoutingData { request } => !request.is_read(),
+        Request::MaterialRetrievalData { request } => !request.is_read(),
+        Request::SoulProfile { request } => !request.is_read(),
+        Request::WorkHostLease { .. }
+        | Request::PublishEmbeddings { .. }
+        | Request::ReadGadgetSource { .. }
+        | Request::ReadGadgetManifest { .. }
+        | Request::CaptureBlueprintGadget { .. }
+        | Request::RemoveGadgetFiles { .. }
+        | Request::ReconcileBlueprintStorage { .. }
+        | Request::CreateGadgetFiles { .. }
+        | Request::SaveGadgetSource { .. }
+        | Request::ReconcileGadgetStorage { .. }
+        | Request::MoveWorkspaceTree { .. }
+        | Request::SetSidebarArchive { .. }
+        | Request::UpsertWorkspace { .. }
+        | Request::DeleteWorkspace { .. }
+        | Request::WriteWorkspaceBinding { .. }
+        | Request::WriteMemoryRecord { .. }
+        | Request::AppendGatewayMessage { .. }
+        | Request::RestoreTrashedTask { .. }
+        | Request::MarkWorkCardRead { .. }
+        | Request::WriteWorkGraph { .. }
+        | Request::WriteDurableTaskProjection { .. }
+        | Request::WriteDurableWorkspaceMove { .. }
+        | Request::WriteTaskExpertBinding { .. }
+        | Request::WriteMemoryOrganizationProgress { .. }
+        | Request::ApplyWorkGraphRepair { .. }
+        | Request::WriteNotification { .. }
+        | Request::UpsertTaskRecord { .. }
+        | Request::WriteTaskContextUsage { .. }
+        | Request::DismissExecutionFailure { .. }
+        | Request::WriteWorkspaceLabel { .. }
+        | Request::AlignTrashRetention { .. }
+        | Request::PurgeTrashedTask { .. }
+        | Request::WriteArtifact { .. }
+        | Request::WriteManagedArtifact { .. }
+        | Request::WriteCronRun { .. }
+        | Request::WriteCronPlan { .. }
+        | Request::SaveScopedNote { .. }
+        | Request::WriteLibraryNote { .. }
+        | Request::SaveLibraryText { .. }
+        | Request::WriteTaskBoardAction { .. }
+        | Request::AcknowledgeTaskDone { .. }
+        | Request::SetTaskDueDate { .. }
+        | Request::EditTaskSidebar { .. }
+        | Request::WriteWorkbench { .. }
+        | Request::WriteProject { .. }
+        | Request::InstantiateBlueprint { .. }
+        | Request::PublishLibraryIndex { .. }
+        | Request::PublishLibraryDocument { .. }
+        | Request::UsageHistory { .. }
+        | Request::CaptureMemory { .. }
+        | Request::CompactSnapshots { .. }
+        | Request::MutateSnapshot { .. }
+        | Request::WriteDiagnostics { .. } => true,
+        _ => false,
+    }
+}
+fn deferred(request: &Request) -> bool {
+    database_write(request)
+        || matches!(
+            request,
+            Request::ScanPluginCatalog { .. }
+                | Request::ReadPluginConfig { .. }
+                | Request::ReplacePluginConfig { .. }
+                | Request::InstallConnector { .. }
+                | Request::RecoverConnectorInstalls { .. }
+                | Request::MaintainConnectorStorage { .. }
+                | Request::ImportConnectorMarket { .. }
+                | Request::MutateConnectorMarket { .. }
+                | Request::WorkspaceScan { .. }
+                | Request::FileBackupList { .. }
+                | Request::RestoreFileBackup { .. }
+                | Request::SubagentSettings { .. }
+                | Request::ScanWorkGraphIntegrity
+                | Request::ListTrashedTasks { .. }
+                | Request::DotsFileRevision { .. }
+                | Request::SemanticInference { .. }
+                | Request::StageEmbedding { .. }
+                | Request::SemanticModelProbe { .. }
+                | Request::CleanupArtifactFiles { .. }
+                | Request::DeleteLibrary { .. }
+                | Request::DrainLibraryCleanup { .. }
+                | Request::ExportLibraryBackup { .. }
+                | Request::PrepareLibraryRestore { .. }
+                | Request::DiscardLibraryRestore { .. }
+                | Request::RestoreLibraryBackup { .. }
+                | Request::RecoverLibraryRestores { .. }
+                | Request::DeleteProject { .. }
+                | Request::PromoteProjectEventToLibrary { .. }
+        )
+}
+fn request_may_mutate(request: &Request) -> bool {
+    database_write(request)
+        || matches!(
+            request,
+            Request::GadgetState {
+                request: gadget_state::Request::Access {
+                    action: gadget_state::Action::Set { .. } | gadget_state::Action::Delete { .. },
+                    ..
+                }
+            } | Request::ReplacePluginConfig { .. }
+                | Request::InstallConnector { .. }
+                | Request::RecoverConnectorInstalls { .. }
+                | Request::MaintainConnectorStorage { .. }
+                | Request::ImportConnectorMarket { .. }
+                | Request::MutateConnectorMarket { .. }
+                | Request::RestoreFileBackup { .. }
+                | Request::SubagentSettings { .. }
+                | Request::LibraryText { .. }
+                | Request::ExportGadgetFiles { .. }
+                | Request::CleanupArtifactFiles { .. }
+                | Request::DeleteLibrary { .. }
+                | Request::DrainLibraryCleanup { .. }
+                | Request::ExportLibraryBackup { .. }
+                | Request::PrepareLibraryRestore { .. }
+                | Request::DiscardLibraryRestore { .. }
+                | Request::RestoreLibraryBackup { .. }
+                | Request::RecoverLibraryRestores { .. }
+                | Request::DeleteProject { .. }
+                | Request::PromoteProjectEventToLibrary { .. }
+        )
+}
+
+type DatabaseWriter = (
+    mpsc::SyncSender<(RequestId, Request)>,
+    thread::JoinHandle<()>,
+);
+fn start_database_writer(
+    db_path: PathBuf,
+    staged: Arc<embedding_index::StagedVectors>,
+) -> io::Result<DatabaseWriter> {
+    let (send, jobs) = mpsc::sync_channel::<(RequestId, Request)>(32);
+    let worker = thread::Builder::new()
+        .name("database-writer".into())
+        .spawn(move || {
+            let mut reader = None;
+            let mut writer = None;
+            let mut sessions = HashMap::new();
+            for (id, request) in jobs {
+                // Wait outside the reader/input lanes. Admission remains queued until this
+                // shared write boundary is available, then the deadline is checked again.
+                let gate = match write_gate::enter() {
+                    Ok(gate) => gate,
+                    Err(error) => {
+                        let _ = write_reply(&id, Err(error), false);
+                        continue;
+                    }
+                };
+                if !request_control::begin(&id) {
+                    continue;
+                }
+                let result = (|| -> Result<Data> {
+                    if reader.is_none() {
+                        reader = Some(read_connection(&db_path)?);
+                    }
+                    read(
+                        reader.as_mut().unwrap(),
+                        &db_path,
+                        &mut sessions,
+                        &mut writer,
+                        &staged,
+                        request,
+                    )
+                })();
+                drop(gate);
+                if write_reply(&id, result, false).is_err() {
+                    break;
+                }
+            }
+        })?;
+    Ok((send, worker))
+}
+
 fn run() -> Result<()> {
     let all = std::env::args_os().skip(1).collect::<Vec<_>>();
     // Supervisor mode owns the data directory and keeps the worker alive across clients;
     // the single-argument forms below are untouched.
-    if all.first().is_some_and(|argument| argument == "--supervise") {
+    if all
+        .first()
+        .is_some_and(|argument| argument == "--supervise")
+    {
         let [_, data_dir, db_path] = all.as_slice() else {
             return Err("expected --supervise <data directory> <database path>".into());
         };
         return core_supervisor::run(Path::new(data_dir), Path::new(db_path));
+    }
+    if all
+        .first()
+        .is_some_and(|argument| argument == "--guard-core-database")
+    {
+        let [_, directory] = all.as_slice() else {
+            return Err("expected --guard-core-database <data directory>".into());
+        };
+        return core_lease::guard_database(Path::new(directory));
     }
     let mut args = all.into_iter();
     let argument = args.next().ok_or("missing database path")?;
@@ -2106,11 +2361,15 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("87");
+        println!("88");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
+    let worker_lease = core_lease::WorkerLease::from_environment(&db_path)?;
     let mut db = read_connection(&db_path)?;
+    let control = request_control::Control::open(&db_path)?;
+    request_control::install(control.clone());
+    let mut database_writer = None;
     let mut durable_sessions = HashMap::new();
     let mut writer = None;
     let mut inference = None;
@@ -2128,8 +2387,31 @@ fn run() -> Result<()> {
     }
     // The input thread owns stdin so history reads cannot queue behind the main loop. It
     // forwards the transport id with each request, which is what lets replies be correlated.
-    let (requests, input) = history_lane::route_input()?;
+    let (requests, input) = history_lane::route_input(control)?;
+    if let Some(lease) = &worker_lease {
+        lease.ready()?;
+    }
     for (id, request) in requests {
+        if request.as_ref().is_ok_and(database_write) {
+            if database_writer.is_none() {
+                database_writer = Some(start_database_writer(db_path.clone(), staged.clone())?);
+            }
+            let request = request.expect("validated write request");
+            match database_writer.as_ref().unwrap().0.try_send((id, request)) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full((id, _))) => {
+                    request_control::overload(&id, "OVERLOADED")?
+                }
+                Err(mpsc::TrySendError::Disconnected((id, _))) => {
+                    request_control::overload(&id, "UNAVAILABLE")?
+                }
+            }
+            continue;
+        }
+        if request.as_ref().is_ok_and(|request| !deferred(request)) && !request_control::begin(&id)
+        {
+            continue;
+        }
         let job = match request {
             Ok(Request::HistoryLaneSupported) => {
                 write_reply(&id, Ok(Data::Json(true.into())), false)?;
@@ -2234,7 +2516,11 @@ fn run() -> Result<()> {
                 write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
-            Ok(Request::StartDotsFileWatch { id: watch, root, file }) => {
+            Ok(Request::StartDotsFileWatch {
+                id: watch,
+                root,
+                file,
+            }) => {
                 if dots_file_watches.is_none() {
                     dots_file_watches = dots_file_watch::FileWatches::new().ok();
                 }
@@ -2325,7 +2611,13 @@ fn run() -> Result<()> {
             Ok(Request::StageEmbedding { request }) => InferenceJob::Stage(request),
             Ok(Request::SemanticModelProbe { probe }) => InferenceJob::Probe(probe),
             Ok(Request::GadgetState { request }) => {
-                write_reply(&id, Ok(Data::GadgetState(gadget_state.run(request))), false)?;
+                write_reply(
+                    &id,
+                    Ok(Data::GadgetState(
+                        gadget_state.run_for(request, id.as_deref()),
+                    )),
+                    false,
+                )?;
                 continue;
             }
             Ok(Request::ReadManagedArtifact {
@@ -2581,17 +2873,19 @@ fn run() -> Result<()> {
         if inference.is_none() {
             inference = Some(start_inference(db_path.clone(), staged.clone())?);
         }
-        match inference.as_ref().unwrap().0.send((id, job)) {
+        match inference.as_ref().unwrap().0.try_send((id, job)) {
             Ok(()) => {}
-            // The id comes back with the rejected job, so even this reply is correlated.
-            Err(mpsc::SendError((id, _))) => write_reply(
-                &id,
-                Err("semantic inference thread unavailable".into()),
-                true,
-            )?,
+            Err(mpsc::TrySendError::Full((id, _))) => request_control::overload(&id, "OVERLOADED")?,
+            Err(mpsc::TrySendError::Disconnected((id, _))) => {
+                request_control::overload(&id, "UNAVAILABLE")?
+            }
         }
     }
     input.join().map_err(|_| "input dispatcher panicked")??;
+    if let Some((sender, worker)) = database_writer {
+        drop(sender);
+        worker.join().map_err(|_| "database writer panicked")?;
+    }
     if let Some((sender, worker)) = inference {
         drop(sender);
         worker
@@ -2604,9 +2898,10 @@ fn run() -> Result<()> {
             .join()
             .map_err(|_| "workspace scan thread panicked")?;
     }
-    // Deliberately not joined: a maintenance job can be blocked in file I/O for
-    // minutes, and stdin closing must not keep the process alive that long.
-    drop(maintenance);
+    if let Some((sender, worker)) = maintenance {
+        drop(sender);
+        worker.join().map_err(|_| "maintenance worker panicked")?;
+    }
     Ok(())
 }
 
@@ -2614,5 +2909,33 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("Runtime audit read failed: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod request_classification_tests {
+    use super::*;
+
+    #[test]
+    fn library_staging_has_durable_receipt_without_application_writer() {
+        let request: Request = serde_json::from_value(serde_json::json!({
+            "operation": "libraryText", "path": "input.txt", "stagingPath": "index.db",
+            "expectedSize": 0, "chunkSize": 1024, "overlap": 32
+        }))
+        .unwrap();
+        assert!(!database_write(&request));
+        let control = request_control::Control::memory();
+        control
+            .register(
+                "staging",
+                "libraryText",
+                request_control::now_ms() + 30_000,
+                request_may_mutate(&request),
+            )
+            .unwrap_or_else(|_| panic!("admit"));
+        control.start("staging").unwrap_or_else(|_| panic!("start"));
+        control.finish("staging", false, None, Some("copy interrupted".into()));
+        assert_eq!(control.status("staging")["state"], "unknown");
+        assert_eq!(control.status("staging")["durable"], true);
     }
 }

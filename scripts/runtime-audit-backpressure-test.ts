@@ -1,9 +1,9 @@
 /**
- * The database lane is one serialized channel shared by light queries and long work.
+ * Client admission counts both waiting callers and unfinished worker operations.
  *
  * Two properties are load bearing and used to be wrong:
  *   1. a request's budget starts when the caller asks, so a queued request cannot
- *      double its wall-clock wait by waiting for its own timeout after the queue;
+ *      outlive its own budget while waiting behind a longer operation;
  *   2. the queue is bounded, so a stuck worker fails new requests fast instead of
  *      growing an unbounded backlog.
  */
@@ -51,41 +51,38 @@ const observed = (operation: string): number => {
 
 async function main(): Promise<void> {
   try {
-    // A stuck request owns the lane for its full 10s budget.
+    // Use the production entry point with short budgets; the fixture intentionally
+    // ignores cancellation so unfinished worker work remains visible after timeout.
+    const seam = reader as unknown as {
+      read(request: object, lane: string, allowAfterInferenceFailure: boolean, timeoutMs: number): Promise<unknown>;
+    };
     const startedAt = Date.now();
-    const hung = reader.snapshots("fixture-task", 1);
-    // This one is accepted into the queue behind it and must not get a second budget.
-    const queued = reader.snapshots("fixture-task", 2);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(reader.laneDiagnostics().queued.database, 2, "both requests are queued in the lane");
-
-    // Backpressure: past the bound, requests fail immediately instead of queueing.
-    const backlog = Array.from({ length: 300 }, (_unused, index) => reader.diagnostics("fixture-task", 5, index));
-    assert(reader.laneDiagnostics().queued.database <= 256, "the lane never holds more than its bound");
-    const rejected = reader.laneDiagnostics().totals.database.overloaded;
-    assert(rejected >= 40, `excess requests must be rejected, saw ${rejected}`);
-    assert.equal(reader.laneDiagnostics().recent.filter(entry => entry.outcome === "overloaded").length > 0, true);
-
-    assert.equal(await hung, undefined, "the stuck request reports no result");
-    const hungAt = Date.now();
-    assert.equal(await queued, undefined, "the queued request reports no result");
-    const queuedAt = Date.now();
-    assert(queuedAt - hungAt < 2_000,
-      `a queued request must not restart its budget after the queue (waited ${queuedAt - hungAt}ms)`);
-    assert(queuedAt - startedAt < 16_000, "the queue hold is the stuck request's budget, not two budgets");
+    const hung = seam.read({ operation: "snapshots", taskId: "fixture-task", limit: 1 }, "database", false, 800);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const backlog = Array.from({ length: 300 }, (_unused, index) =>
+      seam.read({ operation: "diagnostics", taskId: "fixture-task", limit: 5, offset: index }, "database", false, 80));
+    const initial = reader.laneDiagnostics();
+    assert(initial.waiting.database + initial.inFlight.database <= 256, "worker and waiting work share the admission bound");
+    assert(initial.totals.database.overloaded >= 40, "excess requests fail immediately");
 
     const results = await Promise.all(backlog);
-    assert(results.every(entry => entry === undefined), "an expired backlog never reaches the worker");
-    assert.equal(observed("diagnostics"), 0, "queued-past-deadline requests are not dispatched");
-    const totals = reader.laneDiagnostics().totals.database;
-    assert(totals.expiredBeforeDispatch >= 200, `expired requests are accounted (${totals.expiredBeforeDispatch})`);
-    assert.equal(reader.laneDiagnostics().queued.database, 0, "the lane drains back to zero");
-    assert.equal(reader.laneDiagnostics().queued.inference, 0);
-    assert.equal(reader.laneDiagnostics().queued.scan, 0);
-    const drained = reader.laneDiagnostics().recent.at(-1)!;
-    assert(["expired-before-dispatch", "timeout", "overloaded"].includes(drained.outcome));
-    assert.equal(drained.lane, "database");
-    console.log("PASS enqueue deadlines, bounded queue and drain accounting on the database lane");
+    assert(results.every(entry => entry === undefined));
+    assert(Date.now() - startedAt < 700, "queued callers settle before the earlier 800ms caller");
+    assert.equal(observed("diagnostics"), 0, "expired queued requests never reach the worker");
+    const drained = reader.laneDiagnostics();
+    assert(drained.totals.database.expiredBeforeDispatch >= 250);
+    assert.equal(drained.waiting.database, 0);
+    assert.equal(drained.inFlight.database, 1, "the worker is not declared idle because other callers expired");
+    assert.equal(drained.queued.database, 1, "only the first caller still awaits its own budget");
+
+    assert.equal(await hung, undefined);
+    const abandoned = reader.laneDiagnostics();
+    assert.equal(abandoned.queued.database, 0);
+    assert.equal(abandoned.inFlight.database, 1, "timeout is not a worker completion");
+    assert.equal(await seam.read({ operation: "diagnostics" }, "database", false, 40), undefined);
+    assert.equal(observed("diagnostics"), 0, "later callers cannot create a hidden Rust backlog");
+
+    console.log("PASS independent enqueue deadlines, bounded admission and unfinished-worker accounting");
   } finally {
     await reader.close();
     rmSync(directory, { recursive: true, force: true });

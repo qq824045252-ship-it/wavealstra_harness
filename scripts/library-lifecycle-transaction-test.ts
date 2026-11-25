@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { LibraryService } from "../src/main/library/LibraryService";
-import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { locateRuntimeAudit, RuntimeAuditUnknownOperationError, type RuntimeLibraryDeleteReply } from "../src/main/platform/runtime-audit";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-lifecycle-tx-"));
 // 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
@@ -134,12 +134,49 @@ async function verifyNativeDeletion() {
     database.connection.prepare("DELETE FROM fixture_reject_delete WHERE id=?").run(note.id);
     const reader = database.runtimeAuditReader!;
     const deleteWithReply = reader.deleteLibrary.bind(reader);
+    const queryReceipt = reader.queryOperation.bind(reader);
+    const pending = service.createItem({ spaceId: projectSpace.id, kind: "markdown", title: "结果尚未确认" });
+    const pendingPath = service.absolutePath(pending);
+    let deleteAttempts = 0;
+    let receiptQueries = 0;
+    let hostDeletes = 0;
+    const hostDelete = service.deleteItem.bind(service);
+    service.deleteItem = () => { hostDeletes += 1; throw new Error("unknown delete must not fall back to Host"); };
+    reader.deleteLibrary = async () => {
+      deleteAttempts += 1;
+      throw new RuntimeAuditUnknownOperationError("fixture-unconfirmed-delete", "deleteLibrary");
+    };
+    reader.queryOperation = async requestId => {
+      receiptQueries += 1;
+      return { requestId, state: "running" };
+    };
+    await assert.rejects(service.deleteItemAsync(pending.id), error =>
+      error instanceof Error && "code" in error && error.code === "RUNTIME_OPERATION_UNKNOWN"
+        && "requestId" in error && error.requestId === "fixture-unconfirmed-delete"
+        && /结果尚未确认/.test(error.message));
+    assert.equal(deleteAttempts, 1, "an unknown deletion must never be replayed");
+    assert.equal(receiptQueries, 1, "unknown outcome is checked against its operation receipt");
+    assert.equal(hostDeletes, 0, "unknown outcome must never become a second Node writer");
+    assert(service.getItem(pending.id));
+    assert(existsSync(pendingPath), "an unconfirmed operation is not reported as a completed deletion");
+    reader.deleteLibrary = deleteWithReply;
+    reader.queryOperation = queryReceipt;
+    service.deleteItem = hostDelete;
+    await service.deleteItemAsync(pending.id);
+
+    let committedReply: RuntimeLibraryDeleteReply | undefined;
     reader.deleteLibrary = async (...args) => {
-      assert.equal((await deleteWithReply(...args))?.status, "deleted");
-      return undefined;
+      committedReply = await deleteWithReply(...args);
+      assert.equal(committedReply?.status, "deleted");
+      throw new RuntimeAuditUnknownOperationError("fixture-committed-delete", "deleteLibrary");
+    };
+    reader.queryOperation = async requestId => {
+      assert.equal(requestId, "fixture-committed-delete");
+      return { requestId, state: "committed", result: committedReply };
     };
     await service.deleteItemAsync(note.id);
     reader.deleteLibrary = deleteWithReply;
+    reader.queryOperation = queryReceipt;
     assert.equal(service.getItem(note.id), null);
     assert.equal(service.listVersions(note.id).length, 0);
     assert.equal(service.listTaskReferences("task").items.length, 0);
@@ -207,7 +244,7 @@ async function verifyNativeDeletion() {
     assert.equal(existsSync(retryPath), false, "restart finishes a previously unsuccessful cleanup");
     assert.equal(service.readContent(retained.id).content, "同 ID 有效资料", "stale cleanup cannot delete an occupied path");
     assert.deepEqual(database.connection.prepare("SELECT item_id FROM library_file_cleanup").all(), []);
-    console.log("PASS Rust library deletion: files follow database commit, scope, tree, history, references, search, restart retry");
+    console.log("PASS Rust library deletion: committed/unknown receipts without replay, DB-first files, scope, tree, history, references, search, restart retry");
   } finally {
     await database.runtimeAuditReader?.close();
     database.close();

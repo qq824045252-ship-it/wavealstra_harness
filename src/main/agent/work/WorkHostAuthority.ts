@@ -24,6 +24,26 @@ export interface HostAuthorityStatus {
   holderAuthorityId?: string;
 }
 
+export interface RuntimeWorkHostLeaseRequest {
+  action: "acquire" | "heartbeat" | "release";
+  authorityId: string;
+  now: number;
+  leaseTtlMs: number;
+}
+
+export interface RuntimeWorkHostLeaseReply {
+  ok: boolean;
+  authorityId: string;
+  holderAuthorityId?: string | null;
+  heartbeatAt?: number | null;
+  acquiredAt?: number | null;
+  releasedAt?: number | null;
+}
+
+export interface WorkHostLeaseWriter {
+  workHostLease(request: RuntimeWorkHostLeaseRequest): Promise<RuntimeWorkHostLeaseReply | undefined>;
+}
+
 /**
  * Single authoritative host for Work scheduling (F14 / BW-A13).
  *
@@ -33,12 +53,22 @@ export interface HostAuthorityStatus {
  */
 export class WorkHostAuthority {
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private nativeTail: Promise<void> = Promise.resolve();
+  private nativeRefresh?: Promise<void>;
+  private nativeState?: RuntimeWorkHostLeaseReply;
+  private stopped = false;
+  private generation = 0;
+  private retryDelayMs = 100;
+  private lastWarningAt = 0;
+  private readonly acquiredListeners = new Set<() => void>();
 
   constructor(
     private readonly db: Database.Database,
     private readonly authorityId: string,
     private readonly leaseTtlMs = 60_000,
     private readonly now: () => number = () => Date.now(),
+    private readonly writer?: WorkHostLeaseWriter,
   ) {}
 
   /** Read the previous holder's watermark before `start()` overwrites the heartbeat. */
@@ -49,10 +79,13 @@ export class WorkHostAuthority {
   }
 
   start(): ReturnType<WorkHostAuthority["acquire"]> {
+    this.stopped = false;
     const acquired = this.acquire();
     if (!this.heartbeatTimer) {
       this.heartbeatTimer = setInterval(() => {
-        if (!this.heartbeat()) this.acquire();
+        if (this.writer) { void this.refreshNative(); return; }
+        try { if (!this.heartbeat()) this.acquire(); }
+        catch (error) { this.warn(error); }
       }, Math.max(1, Math.floor(this.leaseTtlMs / 3)));
       this.heartbeatTimer.unref?.();
     }
@@ -60,13 +93,30 @@ export class WorkHostAuthority {
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     this.release();
   }
 
+  /** Shutdown waits for the owner-specific release before disconnecting from Core. */
+  async flush(): Promise<void> { await this.nativeTail; }
+
+  /** Startup/recovery work waits for confirmed ownership, including a later retry. */
+  onAcquired(listener: () => void): () => void {
+    this.acquiredListeners.add(listener);
+    if (this.isAuthority()) this.notifyAcquired(listener);
+    return () => { this.acquiredListeners.delete(listener); };
+  }
+
   acquire(): { ok: boolean; previousAuthorityId?: string; message?: string } {
-    return this.db.transaction(() => {
+    if (this.writer) {
+      void this.refreshNative();
+      return { ok: this.isAuthority(), message: this.isAuthority() ? undefined : "正在确认 Work 调度权" };
+    }
+    const acquired = this.nonblockingWrite<{ ok: boolean; previousAuthorityId?: string; message?: string }>(() => this.db.transaction(() => {
       const now = this.now();
       const row = this.row();
       if (!row || row.released_at !== null || now - row.heartbeat_at > this.leaseTtlMs) {
@@ -90,30 +140,57 @@ export class WorkHostAuthority {
         previousAuthorityId: row.authority_id,
         message: `另一宿主 ${row.authority_id} 仍持有 Work 调度权，拒绝双主调度`,
       };
-    }).immediate();
+    }).immediate(), { ok: false, message: "数据库繁忙，尚未取得 Work 调度权" });
+    if (acquired.ok) for (const listener of this.acquiredListeners) this.notifyAcquired(listener);
+    return acquired;
   }
 
   heartbeat(): boolean {
-    return this.db.transaction(() => {
+    if (this.writer) { void this.refreshNative(); return this.isAuthority(); }
+    return this.nonblockingWrite(() => this.db.transaction(() => {
       const row = this.row();
       if (!row || row.released_at !== null || row.authority_id !== this.authorityId) return false;
       this.db.prepare("UPDATE work_host_lease SET heartbeat_at=? WHERE lease_id='singleton'").run(this.now());
       return true;
-    }).immediate();
+    }).immediate(), false);
   }
 
   release(): void {
-    this.db.prepare("UPDATE work_host_lease SET released_at=? WHERE lease_id='singleton' AND authority_id=?")
-      .run(this.now(), this.authorityId);
+    if (this.writer) {
+      this.generation += 1;
+      this.nativeState = undefined;
+      this.nativeRefresh = undefined;
+      const writer = this.writer;
+      this.nativeTail = this.nativeTail.then(async () => {
+        await writer.workHostLease(this.request("release"));
+      }).catch(error => this.warn(error));
+      return;
+    }
+    this.nonblockingWrite(() => {
+      this.db.prepare("UPDATE work_host_lease SET released_at=? WHERE lease_id='singleton' AND authority_id=?")
+        .run(this.now(), this.authorityId);
+    }, undefined);
   }
 
   isAuthority(): boolean {
+    if (this.writer) {
+      const state = this.nativeState;
+      return !this.stopped && state?.ok === true && state.holderAuthorityId === this.authorityId
+        && state.releasedAt == null && typeof state.heartbeatAt === "number"
+        && this.now() - state.heartbeatAt < this.leaseTtlMs;
+    }
     const row = this.row();
     if (!row || row.released_at !== null) return false;
     return row.authority_id === this.authorityId && this.now() - row.heartbeat_at <= this.leaseTtlMs;
   }
 
   status(): HostAuthorityStatus {
+    if (this.writer) {
+      const current = this.nativeState;
+      return { authorityId: this.authorityId, isAuthority: this.isAuthority(), online: this.isAuthority(),
+        heartbeatAt: current?.heartbeatAt ?? undefined, acquiredAt: current?.acquiredAt ?? undefined,
+        holderAuthorityId: current?.holderAuthorityId ?? undefined };
+    }
     const row = this.row();
     return {
       authorityId: this.authorityId,
@@ -127,5 +204,81 @@ export class WorkHostAuthority {
 
   private row(): LeaseRow | undefined {
     return this.db.prepare("SELECT * FROM work_host_lease WHERE lease_id='singleton'").get() as LeaseRow | undefined;
+  }
+
+  private request(action: RuntimeWorkHostLeaseRequest["action"]): RuntimeWorkHostLeaseRequest {
+    return { action, authorityId: this.authorityId, now: this.now(), leaseTtlMs: this.leaseTtlMs };
+  }
+
+  /** One renewal at a time. An unconfirmed reply never extends local authority. */
+  private refreshNative(): Promise<void> {
+    if (!this.writer || this.stopped) return Promise.resolve();
+    if (this.nativeRefresh) return this.nativeRefresh;
+    const writer = this.writer;
+    const generation = this.generation;
+    const refresh = this.nativeTail.then(async () => {
+      if (this.stopped || generation !== this.generation) return;
+      const action = this.isAuthority() ? "heartbeat" : "acquire";
+      const reply = await writer.workHostLease(this.request(action));
+      if (this.stopped || generation !== this.generation) return;
+      const previouslyAuthoritative = this.isAuthority();
+      this.nativeState = reply;
+      if (this.isAuthority()) {
+        this.retryDelayMs = 100;
+        if (!previouslyAuthoritative) for (const listener of this.acquiredListeners) this.notifyAcquired(listener);
+      }
+      else {
+        if (!reply) this.warn(new Error("Work lease reply is unavailable"));
+        this.scheduleRetry();
+      }
+    }).catch(error => {
+      if (generation !== this.generation) return;
+      this.nativeState = undefined;
+      this.warn(error);
+      this.scheduleRetry();
+    }).finally(() => {
+      if (this.nativeRefresh === refresh) this.nativeRefresh = undefined;
+    });
+    this.nativeRefresh = refresh;
+    this.nativeTail = refresh;
+    return refresh;
+  }
+
+  private scheduleRetry(): void {
+    if (this.stopped || this.retryTimer) return;
+    const delay = this.retryDelayMs;
+    this.retryDelayMs = Math.min(2_000, delay * 2);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.refreshNative();
+    }, delay);
+    this.retryTimer.unref?.();
+  }
+
+  private warn(error: unknown): void {
+    const now = Date.now();
+    if (now - this.lastWarningAt < 5_000) return;
+    this.lastWarningAt = now;
+    console.warn("[WorkHostAuthority] lease update unconfirmed; scheduling requires a confirmed live lease", error);
+  }
+
+  private notifyAcquired(listener: () => void): void {
+    try { listener(); }
+    catch (error) { console.warn("[WorkHostAuthority] ownership recovery callback failed", error); }
+  }
+
+  /** Host-only callers also must not block the UI on a write lock. */
+  private nonblockingWrite<T>(operation: () => T, busy: T): T {
+    const timeout = Number(this.db.pragma("busy_timeout", { simple: true }));
+    try {
+      this.db.pragma("busy_timeout = 0");
+      return operation();
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error
+          && /^SQLITE_(BUSY|LOCKED)/.test(String(error.code))) return busy;
+      throw error;
+    } finally {
+      if (this.db.open) this.db.pragma(`busy_timeout = ${timeout}`);
+    }
   }
 }

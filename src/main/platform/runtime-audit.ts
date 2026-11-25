@@ -1,9 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
+import type { Readable, Writable } from "node:stream";
+import type { EventEmitter } from "node:events";
 import type { TaskDiagnosticsDto, ToolDiagnosticEvent } from "../../shared/task-diagnostics";
 import type { SpaceDto, TaskDto, TaskSidebarEdit, TaskUserQuestionsDto } from "../../shared/agent-ipc";
 import type { TrashedTaskDto } from "../../shared/archive-deletion";
@@ -40,6 +42,7 @@ import type { RuntimeMemoryRecordsQuery, RuntimeMemoryRecordsData } from "../mem
 import type { RuntimeMemoryRecordWriteRequest, RuntimeMemoryRecordWriteReply } from "../memory/MemoryRecordWrite";
 import type { RuntimeProjectEventRequest, RuntimeProjectEventReply, RuntimeProjectPinRequest, RuntimeProjectPinReply, RuntimeProjectPostRequest, RuntimeProjectPostReply } from "../project/ProjectRepository";
 import type { RuntimeWorkQueueQuery, RuntimeWorkQueueSnapshot, RuntimeWorkCardRead, RuntimeWorkCardReadReply } from "../agent/work/WorkQueueData";
+import type { RuntimeWorkHostLeaseRequest, RuntimeWorkHostLeaseReply } from "../agent/work/WorkHostAuthority";
 import type { SpaceRow, TaskExecutionWorkspaceStateRow, TaskRow } from "../db/AppDatabase";
 import type { BotWorkspaceNavigationDto } from "../../shared/bot-workspace-navigation";
 import type { GadgetStateAction, GadgetStateAuthorization, GadgetStateBucket, GadgetStateReply } from "../gadget/GadgetState";
@@ -58,6 +61,7 @@ import type { ContentExtractionStatus } from "../library/ContentExtractorRegistr
 import type { SemanticInstallation } from "../retrieval/SemanticModelManager";
 import type { RuntimeUsageJob, RuntimeUsageReport, UsageReportResult } from "../usage/UsageStatsService";
 import { currentPlatformId } from "./index";
+import { connectCoreWorker } from "./core-client";
 
 function utf16Units(text: string): number[] {
   return Array.from({ length: text.length }, (_, index) => text.charCodeAt(index));
@@ -117,12 +121,58 @@ interface RuntimeWorkspaceData {
   navigation?: Pick<BotWorkspaceNavigationDto, "foregroundRequests" | "conversations">;
 }
 
+export interface RuntimeOperationReceipt {
+  requestId: string;
+  state: "queued" | "running" | "committed" | "cancelled" | "expired" | "failed" | "unknown";
+  result?: unknown;
+  error?: string;
+  generation?: string;
+  neverStarted?: boolean;
+}
+
+/** A dispatched write cannot be declared failed just because its reply was lost. */
+export class RuntimeAuditUnknownOperationError extends Error {
+  readonly code = "RUNTIME_OPERATION_UNKNOWN";
+  constructor(readonly requestId: string, readonly operation: string) {
+    super("操作仍在处理或结果尚未确认，请先查看操作状态，避免重复执行");
+    this.name = "RuntimeAuditUnknownOperationError";
+  }
+}
+
+/** Native declined this attempt before an effect; host writes must still respect ordering. */
+export class RuntimeAuditNotStartedOperationError extends Error {
+  readonly code = "RUNTIME_OPERATION_NOT_STARTED";
+  constructor(readonly requestId: string, readonly operation: string, readonly reason: string) {
+    super("操作尚未执行，后台暂时不可用或请求已取消，请稍后重试");
+    this.name = "RuntimeAuditNotStartedOperationError";
+  }
+}
+
+/** Execution ended with a confirmed failure; this is neither not-started nor unknown. */
+export class RuntimeAuditOperationFailedError extends Error {
+  readonly code = "RUNTIME_OPERATION_FAILED";
+  constructor(readonly requestId: string, readonly operation: string, readonly reason?: string) {
+    super("操作执行失败，未完成请求的变更，请检查后重试");
+    this.name = "RuntimeAuditOperationFailedError";
+  }
+}
+
+export interface RuntimeAuditReaderOptions {
+  /** Production opts in to the directory-owned Core. Isolated fixtures use direct stdio. */
+  coreDataDirectory?: string;
+}
+
 /** One worker per host database for read-only queries and bounded writes. */
 export class RuntimeAuditReader {
-  private readonly tails: Record<AuditLane, Promise<unknown>> = {
-    database: Promise.resolve(), inference: Promise.resolve(), maintenance: Promise.resolve(),
-    scan: Promise.resolve(),
+  private readonly queues: Record<AuditLane, AuditRequest[]> = {
+    database: [], inference: [], maintenance: [], scan: [],
   };
+  private readonly pumping = new Set<AuditLane>();
+  /** A caller may have timed out while the worker still owns this slot. */
+  private readonly executing: Partial<Record<AuditLane, AuditRequest>> = {};
+  private readonly unconfirmed = new Map<string, { operation: string; lane: AuditLane }>();
+  private connecting?: Promise<AuditSession | undefined>;
+  private recoveryTimer?: ReturnType<typeof setTimeout>;
   /** Requests accepted into each lane and not yet settled. */
   private readonly laneQueued: Record<AuditLane, number> = {
     database: 0, inference: 0, maintenance: 0, scan: 0,
@@ -144,6 +194,7 @@ export class RuntimeAuditReader {
   private modelProbeCapability?: Promise<boolean>;
   /** Every spawned Rust process is a new generation; failures belong to one generation. */
   private inferenceGeneration = 0;
+  private lastCoreGeneration?: string;
   /** Inference is blocked for the generation that failed, or after repeated failures. */
   private inferenceFailure?: { generation: number; streak: number };
   private session?: AuditSession;
@@ -249,7 +300,32 @@ export class RuntimeAuditReader {
   private connectorInstallerReady = false;
   private gatewayMessageWriteCapability?: Promise<boolean>;
 
-  constructor(private readonly executable: string | undefined, private readonly dbPath: string) {}
+  constructor(private readonly executable: string | undefined, private readonly dbPath: string,
+    private readonly options: RuntimeAuditReaderOptions = {}) {}
+
+  workHostLease(request: RuntimeWorkHostLeaseRequest): Promise<RuntimeWorkHostLeaseReply | undefined> {
+    return this.read({ operation: "workHostLease", request }, "database", false, 5_000);
+  }
+
+  async queryOperation(requestId: string): Promise<RuntimeOperationReceipt | undefined> {
+    const receipt = await this.control<RuntimeOperationReceipt>({ action: "status", targetRequestId: requestId });
+    if (receipt?.requestId === requestId) this.applyReceipt(receipt);
+    return receipt?.requestId === requestId ? receipt : undefined;
+  }
+
+  async cancelOperation(requestId: string): Promise<RuntimeOperationReceipt | undefined> {
+    for (const lane of AUDIT_LANES) {
+      const queued = this.queues[lane].find(entry => entry.id === requestId);
+      if (queued) {
+        this.removeQueued(queued);
+        this.settle(queued, "cancelled");
+        return { requestId, state: "cancelled" };
+      }
+    }
+    const receipt = await this.control<RuntimeOperationReceipt>({ action: "cancel", targetRequestId: requestId });
+    if (receipt?.requestId === requestId) this.applyReceipt(receipt);
+    return receipt?.requestId === requestId ? receipt : undefined;
+  }
 
   snapshots(taskId: string, limit: number): Promise<RuntimeSnapshotPage | undefined> {
     if (!Number.isFinite(limit)) return Promise.resolve(undefined);
@@ -361,7 +437,8 @@ export class RuntimeAuditReader {
     const id = randomUUID();
     const close = () => {
       if (!session.dotsFileWatches.delete(id)) return;
-      void this.read<boolean>({ operation: "stopDotsFileWatch", id }, "database", false, 10_000, session);
+      void this.read<boolean>({ operation: "stopDotsFileWatch", id }, "database", false, 10_000, session)
+        .catch(() => undefined);
     };
     session.dotsFileWatches.set(id, {
       changed,
@@ -1302,7 +1379,9 @@ export class RuntimeAuditReader {
       "database", false, 10_000, undefined, retired,
     ).then(
       reply => reply ?? (retired() ? { kind: "error", error: "STALE_WRITE" } : { kind: "error", error: "STORAGE_UNAVAILABLE" }),
-      () => ({ kind: "error", error: "STORAGE_UNAVAILABLE" }),
+      error => error instanceof RuntimeAuditNotStartedOperationError && retired()
+        ? { kind: "error", error: "STALE_WRITE" }
+        : { kind: "error", error: "STORAGE_UNAVAILABLE" },
     );
   }
 
@@ -1316,7 +1395,20 @@ export class RuntimeAuditReader {
   }
 
   private async revokeGadgetState(request: object): Promise<boolean> {
-    const reply = await this.read<{ kind?: string }>({ operation: "gadgetState", request });
+    const { generation, invocationId } = request as { generation: string; invocationId?: string };
+    // Retire queued invocations immediately as well as fencing running work in
+    // Core. They must not wait for an unrelated long request just to be cancelled.
+    for (const entry of [...this.queues.database]) {
+      const queued = entry.request as { operation?: string; request?: { authorization?: GadgetStateAuthorization } };
+      const authorization = queued.request?.authorization;
+      if (queued.operation === "gadgetState" && authorization?.generation === generation
+        && (invocationId === undefined || authorization.invocationId === invocationId)) {
+        this.removeQueued(entry);
+        this.settle(entry, "cancelled", { kind: "error", error: "STALE_WRITE" });
+      }
+    }
+    // Revocation is a control message, never a job behind the write it must fence.
+    const reply = await this.control<{ kind?: string }>({ action: "revokeGadget", generation, invocationId });
     return reply?.kind === "revoked";
   }
 
@@ -1626,19 +1718,18 @@ export class RuntimeAuditReader {
 
   async openDurable(path: string): Promise<RuntimeAuditDurableSnapshot | undefined> {
     if (this.closed || !this.executable || !this.dbPath || this.dbPath === ":memory:") return undefined;
-    const owner = this.session ?? this.start(this.executable);
-    // Normal replies advertise support. A cold history-only worker needs one legacy
-    // request so an older binary never receives a multiplexed request by mistake.
+    const owner = await this.obtainSession();
+    if (!owner) return undefined;
+    // Both forms are part of the current protocol: the greeting avoids making a
+    // history read wait for a database capability reply on a busy worker.
     owner.historySupport ??= Promise.race([
       owner.historyReady,
       this.read<boolean>({ operation: "historyLaneSupported" }, "database", false, 10_000, owner).then(value => value === true),
     ]);
     const separate = await owner.historySupport;
-    if (owner !== this.session) return undefined;
+    if (!separate || owner !== this.session) return undefined;
     const session = randomUUID();
-    const request = <T>(action: { action: string; [key: string]: unknown }) => separate
-      ? this.historyRequest<T>(owner, session, action)
-      : this.read<T>({ operation: "durable", session, ...action }, "database", false, 10_000, owner);
+    const request = <T>(action: { action: string; [key: string]: unknown }) => this.historyRequest<T>(owner, session, action);
     if (await request<boolean>({ action: "open", path }) !== true) return undefined;
     let closing: Promise<void> | undefined;
     return {
@@ -1663,6 +1754,7 @@ export class RuntimeAuditReader {
       const timer = setTimeout(() => {
         expired = true;
         resolve(undefined);
+        void this.control({ action: "cancel", targetRequestId: requestId }, owner);
       }, 10_000).unref();
       // Keep timed-out slots bounded and reserved until the late reply or process exit.
       owner.history.set(requestId, data => {
@@ -1672,7 +1764,8 @@ export class RuntimeAuditReader {
         }
         resolve(data as T | undefined);
       });
-      owner.child.stdin.write(JSON.stringify({ operation: "historyRead", session, requestId, ...action }) + "\n", error => {
+      owner.child.stdin.write(JSON.stringify({ operation: "historyRead", session, requestId,
+        deadlineAt: Date.now() + 10_000, lane: "history", ...action }) + "\n", error => {
         if (error) this.stop(owner);
       });
     });
@@ -1680,7 +1773,12 @@ export class RuntimeAuditReader {
 
   async close(): Promise<void> {
     this.closed = true;
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer);
+    for (const lane of AUDIT_LANES) {
+      for (const entry of this.queues[lane].splice(0)) this.settle(entry, "closed");
+    }
     if (this.session) this.stop(this.session, "closed");
+    await this.connecting;
     await this.stopping;
   }
 
@@ -1691,70 +1789,221 @@ export class RuntimeAuditReader {
     timeoutMs = lane === "inference" ? 120_000 : 10_000,
     expectedSession?: AuditSession,
     retired?: () => boolean,
+    signal?: AbortSignal,
   ): Promise<T | undefined> {
-    const executable = this.executable;
-    if (!executable || !this.dbPath || this.dbPath === ":memory:") return Promise.resolve(undefined);
-    // The budget belongs to the caller and starts now, not when the lane is free.
+    if (!this.executable || !this.dbPath || this.dbPath === ":memory:") return Promise.resolve(undefined);
     const enqueuedAt = Date.now();
-    const deadline = enqueuedAt + timeoutMs;
     const operation = typeof (request as { operation?: unknown }).operation === "string"
       ? (request as { operation: string }).operation : "unknown";
-    if (this.laneQueued[lane] >= LANE_QUEUE_LIMIT) {
+    const id = randomUUID();
+    const mutation = mutatesPersistentState(request, lane);
+    const capability = isCapabilityRequest(request);
+    const notStarted = (reason: string): Promise<undefined> => {
+      if (capability) queueMicrotask(() => this.clearCapabilities());
+      return mutation || capability
+        ? Promise.reject(new RuntimeAuditNotStartedOperationError(id, operation, reason))
+        : Promise.resolve(undefined);
+    };
+    if (this.closed || signal?.aborted) return notStarted(this.closed ? "closed" : "cancelled");
+    // Include abandoned in-flight work in admission control. Timing out its caller
+    // does not make the worker's queue shorter or authorize another write.
+    if (this.queues[lane].length + (this.executing[lane] ? 1 : 0) >= LANE_QUEUE_LIMIT) {
       this.recordOutcome(lane, operation, "overloaded", { enqueuedAt, finishedAt: enqueuedAt });
-      console.warn(`[RuntimeAudit] ${lane} 通道已满（${LANE_QUEUE_LIMIT}），本次请求未发送`);
-      return Promise.resolve(undefined);
+      return notStarted("overloaded");
     }
-    this.laneQueued[lane] += 1;
-    let settled = false;
-    const pending = this.tails[lane].then(() => new Promise<T | undefined>(resolve => {
-      const startedAt = Date.now();
-      const finish = (outcome: RuntimeAuditOutcome, value?: T): void => {
-        if (settled) return;
-        settled = true;
-        this.laneQueued[lane] -= 1;
-        this.recordOutcome(lane, operation, outcome, { enqueuedAt, startedAt, finishedAt: Date.now() });
-        resolve(value);
+    return new Promise<T | undefined>((resolve, reject) => {
+      const entry: AuditRequest = {
+        id, request, operation, lane, enqueuedAt, deadline: enqueuedAt + Math.max(0, timeoutMs),
+        expectedSession, retired, signal, allowAfterInferenceFailure,
+        mutation, capability, settled: false,
+        resolve: value => resolve(value as T | undefined), reject,
       };
-      if (this.closed) { finish("closed"); return; }
-      if (expectedSession && this.session !== expectedSession) { finish("retired"); return; }
-      if (retired && retired()) { finish("retired"); return; }
-      if (lane === "inference" && !allowAfterInferenceFailure && this.inferenceBlocked()) { finish("blocked"); return; }
-      // Queued past its own budget: never spawn a worker just to time it out again.
-      if (startedAt >= deadline) { finish("expired-before-dispatch"); return; }
-      const session = this.session ?? this.start(executable);
-      // A timed-out scan still owns its reply slot and the worker is still on it, so a
-      // new scan is refused instead of piling up behind work that may never finish.
-      // Maintenance is different: its worker queues jobs, so a new job must be able to
-      // run after an abandoned one (otherwise one slow restore wedges every later
-      // library/project write for the rest of the session).
-      if (lane === "scan" && session.pending.scan) { finish("slot-busy"); return; }
-      // Every dispatched request carries its own id, so a reply is matched to the
-      // request that sent it instead of to whichever slot its lane flag names.
-      const id = randomUUID();
-      session.pending[lane] = {
-        id,
-        resolve: (value, outcome) => finish(outcome, value as T | undefined),
-        timer: setTimeout(() => {
-          // A scan or maintenance timeout only loses the caller's result: the work may
-          // still be running, so the shared worker (and every other lane) stays up.
-          if (lane === "scan" || lane === "maintenance") {
-            finish("timeout");
-            // Release the slot: the abandoned job keeps running in the worker and its
-            // late reply is dropped by id, so later work is not blocked behind it.
-            if (session.pending[lane]?.id === id) delete session.pending[lane];
+      this.laneQueued[lane] += 1;
+      this.queues[lane].push(entry);
+      // This timer belongs to the caller and exists while it is still QUEUED.
+      // A short request behind a long one therefore returns at its own deadline.
+      entry.timer = setTimeout(() => this.expire(entry), Math.max(0, entry.deadline - Date.now())).unref();
+      if (signal) {
+        entry.abort = () => {
+          if (entry.startedAt === undefined) {
+            this.removeQueued(entry);
+            this.settle(entry, "cancelled");
+          } else {
+            this.settle(entry, "cancelled", undefined, true);
+            void this.cancelOperation(entry.id).catch(() => undefined);
           }
-          else {
-            finish("timeout");
-            this.stop(session, lane === "inference" ? "inference-timeout" : "database-timeout");
-          }
-        }, Math.max(0, deadline - startedAt)).unref(),
-      };
-      session.child.stdin.write(JSON.stringify({ ...request, requestId: id }) + "\n", error => {
-        if (error) this.stop(session, "exit");
+        };
+        signal.addEventListener("abort", entry.abort, { once: true });
+      }
+      void this.pump(lane);
+    });
+  }
+
+  private removeQueued(entry: AuditRequest): void {
+    const queue = this.queues[entry.lane];
+    const index = queue.indexOf(entry);
+    if (index >= 0) queue.splice(index, 1);
+  }
+
+  private settle(entry: AuditRequest, outcome: RuntimeAuditOutcome, value?: unknown, uncertain = false, knownFailure = false): void {
+    if (entry.settled) return;
+    if (entry.capability && outcome === "completed" && typeof value !== "boolean"
+      && !(entry.operation === "gadgetState" && (value as { kind?: string } | null)?.kind === "supported")) outcome = "failed";
+    entry.settled = true;
+    if (entry.timer) clearTimeout(entry.timer);
+    if (entry.abort) entry.signal?.removeEventListener("abort", entry.abort);
+    this.laneQueued[entry.lane] -= 1;
+    this.recordOutcome(entry.lane, entry.operation, outcome, {
+      enqueuedAt: entry.enqueuedAt, startedAt: entry.startedAt, finishedAt: Date.now(),
+    });
+    if (uncertain && entry.mutation) {
+      this.unconfirmed.set(entry.id, { operation: entry.operation, lane: entry.lane });
+      // Receipts remain queryable in Core; the UI diagnostic cache itself is bounded.
+      if (this.unconfirmed.size > 1_024) this.unconfirmed.delete(this.unconfirmed.keys().next().value!);
+      entry.reject(new RuntimeAuditUnknownOperationError(entry.id, entry.operation));
+    } else if (entry.mutation && knownFailure) {
+      entry.reject(new RuntimeAuditOperationFailedError(entry.id, entry.operation));
+    } else if ((entry.mutation || entry.capability) && outcome !== "completed" && value === undefined) {
+      if (entry.capability) this.clearCapabilities();
+      entry.reject(new RuntimeAuditNotStartedOperationError(entry.id, entry.operation, outcome));
+    } else if (entry.capability && outcome === "failed") {
+      this.clearCapabilities();
+      entry.reject(new RuntimeAuditNotStartedOperationError(entry.id, entry.operation, "invalid-capability-reply"));
+    } else entry.resolve(value);
+  }
+
+  private expire(entry: AuditRequest): void {
+    if (entry.settled) return;
+    if (entry.startedAt === undefined) {
+      this.removeQueued(entry);
+      this.settle(entry, "expired-before-dispatch");
+      return;
+    }
+    this.settle(entry, "timeout", undefined, true);
+    // Control frames bypass all business queues. Keep the worker slot until a
+    // terminal receipt arrives: cancellation requested is not cancellation done.
+    void this.cancelOperation(entry.id).catch(() => undefined);
+  }
+
+  private async pump(lane: AuditLane): Promise<void> {
+    if (this.closed || this.pumping.has(lane)) return;
+    if (this.executing[lane]) {
+      if (this.executing[lane]?.session !== this.session) this.scheduleRecovery();
+      return;
+    }
+    this.pumping.add(lane);
+    try {
+      while (!this.closed && !this.executing[lane] && this.queues[lane].length) {
+        const entry = this.queues[lane][0]!;
+        if (entry.settled) { this.removeQueued(entry); continue; }
+        if (Date.now() >= entry.deadline) { this.expire(entry); continue; }
+        if (entry.expectedSession && this.session !== entry.expectedSession) {
+          this.removeQueued(entry); this.settle(entry, "retired"); continue;
+        }
+        if (entry.retired?.()) {
+          this.removeQueued(entry); this.settle(entry, "retired"); continue;
+        }
+        if (lane === "inference" && !entry.allowAfterInferenceFailure && this.inferenceBlocked()) {
+          this.removeQueued(entry); this.settle(entry, "blocked"); continue;
+        }
+        const session = await this.obtainSession();
+        // Connection setup is asynchronous and may itself use the whole budget.
+        if (entry.settled || this.closed) continue;
+        if (!session) {
+          for (const waiting of this.queues[lane].splice(0)) this.settle(waiting, "failed");
+          break;
+        }
+        if (Date.now() >= entry.deadline) { this.expire(entry); continue; }
+        if ((entry.expectedSession && entry.expectedSession !== session) || entry.retired?.()) {
+          this.removeQueued(entry); this.settle(entry, "retired"); continue;
+        }
+        this.removeQueued(entry);
+        entry.startedAt = Date.now();
+        entry.session = session;
+        this.executing[lane] = entry;
+        session.pending[lane] = entry;
+        try {
+          session.child.stdin.write(JSON.stringify({
+            ...entry.request, requestId: entry.id, deadlineAt: entry.deadline, lane,
+          }) + "\n", error => { if (error) this.stop(session, "exit"); });
+        } catch { this.stop(session, "exit"); }
+      }
+    } finally { this.pumping.delete(lane); }
+  }
+
+  private releaseExecution(entry: AuditRequest): void {
+    if (this.executing[entry.lane] === entry) delete this.executing[entry.lane];
+    if (entry.session?.pending[entry.lane] === entry) delete entry.session.pending[entry.lane];
+    void this.pump(entry.lane);
+  }
+
+  private applyReceipt(receipt: RuntimeOperationReceipt): void {
+    if (receipt.state === "queued" || receipt.state === "running") return;
+    const entry = AUDIT_LANES.map(lane => this.executing[lane]).find(item => item?.id === receipt.requestId);
+    if (receipt.state !== "unknown") this.unconfirmed.delete(receipt.requestId);
+    if (!entry) return;
+    if (receipt.state === "committed") {
+      // The durable receipt may omit a large result. Commitment is known, but
+      // returning undefined as normal success could activate a caller's host
+      // fallback and repeat the write. Preserve an explicit unknown result.
+      if (entry.mutation && receipt.result === undefined) this.settle(entry, "failed", undefined, true);
+      else this.settle(entry, "completed", receipt.result);
+    }
+    else if (receipt.state === "cancelled" || receipt.state === "expired") this.settle(entry, "cancelled");
+    else this.settle(entry, "failed", undefined, receipt.state === "unknown",
+      receipt.state === "failed" && receipt.neverStarted !== true);
+    this.releaseExecution(entry);
+  }
+
+  private scheduleRecovery(): void {
+    if (this.closed || this.recoveryTimer) return;
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = undefined;
+      void (async () => {
+        const detached = AUDIT_LANES.map(lane => this.executing[lane])
+          .filter((entry): entry is AuditRequest => !!entry && entry.session !== this.session);
+        for (const entry of detached) await this.queryOperation(entry.id).catch(() => undefined);
+        if (AUDIT_LANES.some(lane => this.executing[lane]?.session !== undefined
+          && this.executing[lane]?.session !== this.session)) this.scheduleRecovery();
+      })();
+    }, 500).unref();
+  }
+
+  private async control<T>(request: object, owner?: AuditSession): Promise<T | undefined> {
+    if (this.closed) return undefined;
+    const session = owner ?? await this.obtainSession();
+    if (!session || session !== this.session) return undefined;
+    const action = (request as { action?: string }).action;
+    // Status polling cannot occupy every slot needed by cancellation/revocation.
+    if (action === "status" && session.controls.size >= CONTROL_QUEUE_LIMIT - 8) return undefined;
+    if (session.controls.size >= CONTROL_QUEUE_LIMIT) {
+      const expendable = [...session.controls].find(([, pending]) => pending.action === "status");
+      if (!expendable) {
+        // Losing a revocation is not an acceptable overload policy. Retiring
+        // the connection fences its Gadget generations in Core (and terminates
+        // a direct fixture worker) instead of silently dropping control.
+        this.stop(session, "control-overload");
+        return undefined;
+      }
+      session.controls.delete(expendable[0]);
+      expendable[1].resolve(undefined);
+    }
+    const requestId = randomUUID();
+    const deadlineAt = Date.now() + 5_000;
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        session.controls.delete(requestId);
+        resolve(undefined);
+      }, 5_000).unref();
+      session.controls.set(requestId, {
+        timer, action,
+        resolve: value => { clearTimeout(timer); resolve(value as T | undefined); },
       });
-    })).catch(() => { this.unavailable(); return undefined; });
-    this.tails[lane] = pending;
-    return pending;
+      try {
+        session.child.stdin.write(JSON.stringify({ ...request, operation: "control", requestId, deadlineAt }) + "\n",
+          error => { if (error) this.stop(session, "exit"); });
+      } catch { this.stop(session, "exit"); }
+    });
   }
 
   /**
@@ -1776,10 +2025,14 @@ export class RuntimeAuditReader {
   }
 
   /** Queue depth, terminal outcomes and the last few requests, per lane. */
-  laneDiagnostics(): { queued: Record<AuditLane, number>; totals: Record<AuditLane, RuntimeAuditLaneTotals>;
-    recent: RuntimeAuditLaneRecord[] } {
+  laneDiagnostics(): { queued: Record<AuditLane, number>; waiting: Record<AuditLane, number>;
+    inFlight: Record<AuditLane, number>; unconfirmed: Array<{ requestId: string; operation: string; lane: AuditLane }>;
+    totals: Record<AuditLane, RuntimeAuditLaneTotals>; recent: RuntimeAuditLaneRecord[] } {
     return {
       queued: { ...this.laneQueued },
+      waiting: Object.fromEntries(AUDIT_LANES.map(lane => [lane, this.queues[lane].length])) as Record<AuditLane, number>,
+      inFlight: Object.fromEntries(AUDIT_LANES.map(lane => [lane, this.executing[lane] ? 1 : 0])) as Record<AuditLane, number>,
+      unconfirmed: [...this.unconfirmed].map(([requestId, value]) => ({ requestId, ...value })),
       totals: {
         database: { ...this.laneTotals.database }, inference: { ...this.laneTotals.inference },
         maintenance: { ...this.laneTotals.maintenance }, scan: { ...this.laneTotals.scan },
@@ -1795,11 +2048,11 @@ export class RuntimeAuditReader {
     const counter: Record<RuntimeAuditOutcome, keyof RuntimeAuditLaneTotals | undefined> = {
       completed: "completed", failed: "failed", timeout: "timedOut",
       "expired-before-dispatch": "expiredBeforeDispatch", overloaded: "overloaded",
-      "slot-busy": "slotBusy", retired: "retired", blocked: "blocked", closed: undefined,
+      "slot-busy": "slotBusy", retired: "retired", blocked: "blocked", cancelled: "cancelled", closed: undefined,
     };
     const key = counter[outcome];
     if (key) totals[key] += 1;
-    const waitedMs = times.startedAt === undefined ? 0 : Math.max(0, times.startedAt - times.enqueuedAt);
+    const waitedMs = Math.max(0, (times.startedAt ?? times.finishedAt) - times.enqueuedAt);
     const ranMs = times.startedAt === undefined ? 0 : Math.max(0, times.finishedAt - times.startedAt);
     this.laneRecords.push({
       ...totals, lane, operation, outcome,
@@ -1816,25 +2069,50 @@ export class RuntimeAuditReader {
     }
   }
 
-  private start(executable: string): AuditSession {
-    const wasBlocked = this.inferenceBlocked();
-    this.inferenceGeneration += 1;
-    if (wasBlocked && !this.inferenceBlocked()) console.info("[RuntimeAudit] Rust restarted; native inference re-armed");
-    const child = spawn(executable, [this.dbPath], {
-      windowsHide: true,
-      env: {
-        MYBUDDY_HISTORY_HANDSHAKE: "1",
-        ...(process.env.SystemRoot && { SystemRoot: process.env.SystemRoot }),
-        ...(process.env.TZ && { TZ: process.env.TZ }),
-      },
-    });
+  private obtainSession(): Promise<AuditSession | undefined> {
+    if (this.closed || !this.executable || !this.dbPath || this.dbPath === ":memory:") return Promise.resolve(undefined);
+    if (this.session) return Promise.resolve(this.session);
+    if (this.connecting) return this.connecting;
+    this.connecting = this.start(this.executable).catch(() => {
+      this.unavailable();
+      return undefined;
+    }).finally(() => { this.connecting = undefined; });
+    return this.connecting;
+  }
+
+  private async start(executable: string): Promise<AuditSession | undefined> {
+    const child: AuditTransport = this.options.coreDataDirectory
+      ? await connectCoreWorker(executable, this.dbPath, { dataDirectory: this.options.coreDataDirectory })
+      : spawn(executable, [this.dbPath], {
+        windowsHide: true,
+        env: {
+          MYBUDDY_HISTORY_HANDSHAKE: "1",
+          ...(process.env.SystemRoot && { SystemRoot: process.env.SystemRoot }),
+          ...(process.env.TZ && { TZ: process.env.TZ }),
+        },
+      });
     const closed = new Promise<void>(resolve => child.once("close", resolve));
+    if (this.closed) {
+      child.once("error", () => undefined);
+      child.kill();
+      await closed;
+      return undefined;
+    }
+    const wasBlocked = this.inferenceBlocked();
+    if (!this.options.coreDataDirectory || child.generation !== this.lastCoreGeneration) this.inferenceGeneration += 1;
+    this.lastCoreGeneration = child.generation;
+    if (wasBlocked && !this.inferenceBlocked()) console.info("[RuntimeAudit] Rust restarted; native inference re-armed");
     let advertiseHistory!: () => void;
     const historyReady = new Promise<true>(resolve => { advertiseHistory = () => resolve(true); });
-    const session: AuditSession = { child, closed, historyReady, advertiseHistory, pending: {}, history: new Map(), chunks: [], bytes: 0, dotsFileWatches: new Map() };
+    const session: AuditSession = {
+      child, closed, historyReady, advertiseHistory, pending: {}, controls: new Map(),
+      history: new Map(), chunks: [], bytes: 0, dotsFileWatches: new Map(),
+      supervised: !!this.options.coreDataDirectory,
+    };
     this.session = session;
     child.on("error", () => this.stop(session, "exit"));
     child.on("exit", () => this.stop(session, "exit"));
+    child.on("close", () => this.stop(session, "exit"));
     child.stdin.on("error", () => this.stop(session, "exit"));
     child.stdout.on("data", (chunk: Buffer) => this.receive(session, chunk));
     child.stderr.resume();
@@ -1862,6 +2140,7 @@ export class RuntimeAuditReader {
     let reply: {
       historyRequestId?: string; historyLane?: boolean; historyReady?: boolean;
       status?: string; data?: unknown; inference?: boolean; scan?: boolean; maintenance?: boolean; replyId?: unknown;
+      neverStarted?: boolean; errorCode?: string;
       dotsFileWatches?: Array<{ id: string; lost: boolean }>;
     };
     try { reply = JSON.parse(line); } catch { this.stop(session, "protocol"); return; }
@@ -1870,10 +2149,13 @@ export class RuntimeAuditReader {
       session.historySupport ??= session.historyReady;
       return;
     }
-    if (reply.historyRequestId !== undefined) {
-      const settle = session.history.get(reply.historyRequestId);
-      if (!settle) { this.stop(session, "protocol"); return; }
-      session.history.delete(reply.historyRequestId);
+    const historyId = typeof reply.replyId === "string" && session.history.has(reply.replyId)
+      ? reply.replyId : reply.historyRequestId;
+    if (historyId !== undefined) {
+      if (reply.replyId !== historyId) { this.stop(session, "protocol"); return; }
+      const settle = session.history.get(historyId);
+      if (!settle) return;
+      session.history.delete(historyId);
       settle(reply.status === "ok" ? reply.data : undefined);
       return;
     }
@@ -1886,43 +2168,37 @@ export class RuntimeAuditReader {
       }
       return;
     }
-    const replyId = typeof reply.replyId === "string" ? reply.replyId : undefined;
-    // A correlated reply belongs to the request that named it, whatever lane that is;
-    // a reply without an id is placed by the lane it declares, as before.
-    const lane = replyId === undefined
-      ? (reply?.scan === true ? "scan" : reply?.maintenance === true ? "maintenance"
-        : reply?.inference === true ? "inference" : "database")
-      : this.correlatedLane(session, replyId);
-    // A reply that names no in-flight request is a late arrival, not a protocol fault:
-    // its request already reported a terminal state, so drop it and keep the worker.
-    if (lane === undefined) return;
-    const pending = session.pending[lane];
-    // Only an id-less reply is expected to own its lane slot; without one the stream is out of order.
-    if (!pending) { this.stop(session, "protocol"); return; }
-    if (reply?.status !== "ok" || reply.data === undefined) {
-      if (lane === "database") this.unavailable();
-      else if (lane === "inference") this.recordInferenceFailure();
+    if (typeof reply.replyId !== "string") { this.stop(session, "protocol"); return; }
+    const control = session.controls.get(reply.replyId);
+    if (control) {
+      session.controls.delete(reply.replyId);
+      control.resolve(reply.status === "ok" ? reply.data : undefined);
+      return;
     }
-    else {
+    const entry = Object.values(session.pending).find(pending => pending.id === reply.replyId);
+    // A terminal reply may follow its status receipt. Both carry the same id;
+    // neither is allowed to consume a newer operation's slot.
+    if (!entry) return;
+    const succeeded = reply.status === "ok" && reply.data !== undefined;
+    if (succeeded) {
       if (this.state !== "ready") console.info("[RuntimeAudit] Rust reader ready");
       this.state = "ready";
-      if (lane === "inference") this.inferenceFailure = undefined;
+      if (entry.lane === "inference") this.inferenceFailure = undefined;
+      this.unconfirmed.delete(entry.id);
+      this.settle(entry, "completed", reply.data);
+    } else if (reply.status === "cancelled" || reply.status === "expired") {
+      this.unconfirmed.delete(entry.id);
+      this.settle(entry, "cancelled");
+    } else {
+      if (entry.lane === "database") this.unavailable();
+      if (entry.lane === "inference") this.recordInferenceFailure();
+      const knownFailure = reply.errorCode === "FAILED" && reply.neverStarted !== true;
+      this.settle(entry, "failed", undefined, reply.neverStarted !== true && !knownFailure, knownFailure);
     }
-    clearTimeout(pending.timer);
-    delete session.pending[lane];
-    pending.resolve(reply?.status === "ok" ? reply.data : undefined, reply?.status === "ok" ? "completed" : "failed");
+    this.releaseExecution(entry);
   }
 
-  /** The lane whose in-flight request carries this id, if it is still in flight. */
-  private correlatedLane(session: AuditSession, replyId: string): AuditLane | undefined {
-    return (Object.keys(session.pending) as AuditLane[]).find(lane => session.pending[lane]?.id === replyId);
-  }
-
-  private stop(session: AuditSession, cause: AuditStopCause = "exit"): void {
-    if (this.session !== session) return;
-    this.session = undefined;
-    for (const settle of session.history.values()) settle(undefined);
-    session.history.clear();
+  private clearCapabilities(): void {
     this.inferenceCapability = undefined;
     this.embeddingIndexCapability = undefined;
     this.embeddingPlannerCapability = undefined;
@@ -1982,19 +2258,35 @@ export class RuntimeAuditReader {
     this.workspaceScanCapability = undefined;
     this.dotsFileRevisionCapability = undefined;
     this.dotsFileWatchCapability = undefined;
-    // Only inference-attributable death blocks inference. A database timeout that
-    // takes the shared process down must not disable inference across restarts.
-    if (cause === "inference-timeout" || (cause !== "database-timeout" && cause !== "closed" && session.pending.inference)) {
+    this.workspaceArtifactStreamCapability = undefined;
+    this.managedArtifactImageStreamCapability = undefined;
+    this.remoteArtifactImageCapability = undefined;
+  }
+
+  private stop(session: AuditSession, cause: AuditStopCause = "exit"): void {
+    if (this.session !== session) return;
+    const inferenceWasOnlyJob = !!session.pending.inference && !session.pending.database
+      && !session.pending.maintenance && !session.pending.scan && session.history.size === 0;
+    this.session = undefined;
+    for (const settle of session.history.values()) settle(undefined);
+    session.history.clear();
+    this.clearCapabilities();
+    // A socket loss or a concurrent database failure is not evidence that the
+    // model crashed. Only an isolated direct-worker inference death is attributed.
+    if (!session.supervised && cause === "exit" && inferenceWasOnlyJob) {
       this.recordInferenceFailure();
     }
     this.stopping = session.closed;
     if (session.child.exitCode === null && session.child.signalCode === null) session.child.kill();
     for (const pending of Object.values(session.pending)) {
-      clearTimeout(pending.timer);
-      pending.resolve(undefined, cause === "closed" ? "closed" : "retired");
+      this.settle(pending, cause === "closed" ? "closed" : "retired", undefined, true);
+      if (!session.supervised || this.closed) this.releaseExecution(pending);
     }
+    for (const control of session.controls.values()) control.resolve(undefined);
+    session.controls.clear();
     if (session.pending.database) this.unavailable();
     session.pending = {};
+    if (!this.closed && session.supervised) this.scheduleRecovery();
     const watches = [...session.dotsFileWatches.values()];
     session.dotsFileWatches.clear();
     for (const watch of watches) watch.lost();
@@ -2003,7 +2295,7 @@ export class RuntimeAuditReader {
   private unavailable(): void {
     if (this.closed || this.state === "unavailable") return;
     this.state = "unavailable";
-    console.warn("[RuntimeAudit] Rust reader unavailable, using the host reader");
+    console.warn("[RuntimeAudit] Rust reader unavailable");
   }
 
   /** Blocked inference belongs to one process generation unless failures keep repeating. */
@@ -2086,7 +2378,7 @@ export interface RuntimeLibraryTextSave extends RuntimeLibraryNoteTarget {
 type RuntimeLibraryTextSaveResult = "saved" | "unchanged" | "conflict" | "pending" | "needsHost";
 
 export type RuntimeLibraryDeleteTarget = { kind: "item" | "collection" | "space"; id: string };
-type RuntimeLibraryDeleteReply =
+export type RuntimeLibraryDeleteReply =
   | { status: "deleted"; itemIds: string[] }
   | { status: "scopeChanged" | "needsHost" };
 
@@ -2588,11 +2880,12 @@ export interface RuntimeMemoryLexicalCandidates {
 }
 
 type AuditLane = "database" | "inference" | "maintenance" | "scan";
+const AUDIT_LANES: AuditLane[] = ["database", "inference", "maintenance", "scan"];
 
-/** How a lane request ended. `timeout` retires the worker on database and inference only. */
+/** Caller outcomes. A timeout does not claim that the worker stopped or rolled back. */
 export type RuntimeAuditOutcome =
   | "completed" | "failed" | "timeout" | "expired-before-dispatch"
-  | "overloaded" | "slot-busy" | "retired" | "blocked" | "closed";
+  | "overloaded" | "slot-busy" | "retired" | "blocked" | "closed" | "cancelled";
 
 /** Per-lane accounting so a blocked channel is visible instead of looking like a model error. */
 export interface RuntimeAuditLaneTotals {
@@ -2605,6 +2898,7 @@ export interface RuntimeAuditLaneTotals {
   slotBusy: number;
   retired: number;
   blocked: number;
+  cancelled: number;
 }
 
 export interface RuntimeAuditLaneRecord extends RuntimeAuditLaneTotals {
@@ -2619,33 +2913,99 @@ export interface RuntimeAuditLaneRecord extends RuntimeAuditLaneTotals {
 }
 
 /** Why a Rust process generation is being retired; only inference faults disable inference. */
-type AuditStopCause = "exit" | "protocol" | "database-timeout" | "inference-timeout" | "closed";
+type AuditStopCause = "exit" | "protocol" | "closed" | "control-overload";
 
 /** Consecutive inference-attributed failures tolerated across process restarts. */
 const INFERENCE_FAILURE_LIMIT = 3;
 
 /** Backpressure bound per lane: past this, requests fail fast instead of growing the queue. */
 const LANE_QUEUE_LIMIT = 256;
+const CONTROL_QUEUE_LIMIT = 64;
 
 const emptyLaneTotals = (): RuntimeAuditLaneTotals => ({
   completed: 0, failed: 0, timedOut: 0,
-  expiredBeforeDispatch: 0, overloaded: 0, slotBusy: 0, retired: 0, blocked: 0,
+  expiredBeforeDispatch: 0, overloaded: 0, slotBusy: 0, retired: 0, blocked: 0, cancelled: 0,
 });
+
+interface AuditTransport extends EventEmitter {
+  stdin: Writable;
+  stdout: Readable;
+  stderr: Readable;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  generation?: string;
+  kill(): boolean;
+}
+
+interface AuditRequest {
+  id: string;
+  request: object;
+  operation: string;
+  lane: AuditLane;
+  enqueuedAt: number;
+  deadline: number;
+  startedAt?: number;
+  timer?: ReturnType<typeof setTimeout>;
+  session?: AuditSession;
+  expectedSession?: AuditSession;
+  retired?: () => boolean;
+  signal?: AbortSignal;
+  abort?: () => void;
+  allowAfterInferenceFailure: boolean;
+  mutation: boolean;
+  capability: boolean;
+  settled: boolean;
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+}
 
 interface AuditSession {
   historySupport?: Promise<boolean>;
   historyReady: Promise<true>;
   advertiseHistory(): void;
   history: Map<string, (value: unknown) => void>;
-  child: ChildProcessWithoutNullStreams;
+  child: AuditTransport;
+  supervised: boolean;
   closed: Promise<void>;
   chunks: Buffer[];
   bytes: number;
   dotsFileWatches: Map<string, { changed(): void; lost(): void }>;
-  pending: Partial<Record<AuditLane, {
-    /** Sent to the worker as `requestId`; its reply must echo it as `replyId`. */
-    id: string;
-    resolve(value: unknown, outcome: "completed" | "failed" | "retired" | "closed"): void;
+  pending: Partial<Record<AuditLane, AuditRequest>>;
+  controls: Map<string, {
     timer: ReturnType<typeof setTimeout>;
-  }>>;
+    action?: string;
+    resolve(value: unknown): void;
+  }>;
 }
+
+/** Conservative classification: an unlisted command may mutate and cannot silently replay. */
+function mutatesPersistentState(request: object, lane: AuditLane): boolean {
+  if (lane === "inference") return false;
+  const value = request as { operation?: string; request?: { kind?: string; action?: { operation?: string } } };
+  const operation = value.operation ?? "";
+  if (operation.endsWith("Supported") || READ_ONLY_OPERATIONS.has(operation)) return false;
+  if (operation === "gadgetState") {
+    return value.request?.kind === "access" && !["read", "keys"].includes(value.request.action?.operation ?? "");
+  }
+  return true;
+}
+
+function isCapabilityRequest(request: object): boolean {
+  const value = request as { operation?: string; query?: { kind?: string }; request?: { kind?: string } };
+  return value.operation?.endsWith("Supported") === true || value.query?.kind?.endsWith("Supported") === true
+    || (value.operation === "gadgetState" && value.request?.kind === "supported");
+}
+
+const READ_ONLY_OPERATIONS = new Set([
+  "snapshots", "artifactSnapshots", "readManagedArtifact", "nextManagedArtifact", "closeManagedArtifact",
+  "workspaceFilePreview", "workspaceScan", "dotsFileRevision", "startDotsFileWatch", "stopDotsFileWatch",
+  "openWorkspaceArtifact", "openManagedArtifactImage",
+  "openRemoteArtifactImage", "taskList", "workspaceData", "readWorkQueue", "readBotHistoryPage", "workspaceSharedData",
+  "readWorkGraph", "scanWorkGraphIntegrity", "fileBackupList", "readGatewayMessages", "codeReviewData",
+  "readTaskExpertBinding", "memoryOrganizationLatest", "notificationData", "executionFailures", "branchTitle",
+  "archivedTaskCandidates", "listTrashedTasks", "dueTrashedTasks", "taskBoard", "libraryMetadata", "readScopedNote",
+  "projectMetadata", "cronData", "workbenchData",
+  "captureBlueprintWorkspace", "scanPluginCatalog", "pluginCatalog", "readPluginConfig", "usageReport", "usageCsv",
+  "diagnostics", "semantic", "embeddingIndex", "memoryLexical", "memoryLexicalScores", "memoryBaselines",
+  "historyRead", "durable",
+]);

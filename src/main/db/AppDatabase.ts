@@ -23,9 +23,10 @@ import { WorkspacePathError } from "../workspace/WorkspacePathError";
 import { EXECUTION_ATTEMPT_SCHEMA } from "../agent/ExecutionAttemptRepository";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
-import { basename, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
 import { RuntimeAuditReader, type RuntimeDueTrashedTask, type RuntimeGatewayMessageWrite, type RuntimeWorkspaceLabel, type RuntimeWorkspaceQuery, type TaskArchivePurgeScope } from "../platform/runtime-audit";
+import { acquireCoreDatabaseGuard } from "../platform/core-client";
 import type { TrashedTaskDto } from "../../shared/archive-deletion";
 import type { ArchiveTaskCandidate } from "../task/ArchivedContentDeletion";
 import { insertCronRun, writeCronRun, type CronRunWrite } from "./CronRunPersistence";
@@ -266,6 +267,20 @@ function sameLegacyTaskExecutionWorkspaceStateRow(
  * deleted with its SQLite sidecars before materializing an empty current database.
  * Probe/deletion failures abort startup; they are never treated as an old schema.
  */
+function needsCoreDatabaseGuard(dbPath: string): boolean {
+  if (dbPath === ":memory:") return false;
+  if (!existsSync(dbPath)) return true;
+  const probe = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try { return Number(probe.pragma("user_version", { simple: true })) !== CURRENT_DATABASE_SCHEMA_VERSION; }
+  finally { probe.close(); }
+}
+
+const CORE_DATABASE_GUARD = Symbol("core-database-guard");
+interface AppDatabaseOptions {
+  runtimeAuditExecutable?: string;
+  runtimeAuditSupervised?: boolean;
+}
+
 function resetIncompatibleDatabaseFile(dbPath: string): void {
   if (dbPath === ":memory:") return;
   const dbExisted = existsSync(dbPath);
@@ -320,7 +335,28 @@ export class AppDatabase {
     this.expertBindingBatchReader = reader;
   }
 
-  constructor(dbPath = getDbPath(), options: { runtimeAuditExecutable?: string } = {}) {
+  /** Production creation/reset holds the same OS guards as Core through the whole
+   * schema materialization. A live background writer makes reset fail before unlink. */
+  static async open(dbPath = getDbPath(), options: AppDatabaseOptions = {}): Promise<AppDatabase> {
+    if (!options.runtimeAuditSupervised || dbPath === ":memory:") return new AppDatabase(dbPath, options);
+    if (!options.runtimeAuditExecutable) throw new Error("Rust 核心程序缺失，无法初始化数据库");
+    if (!needsCoreDatabaseGuard(dbPath)) return new AppDatabase(dbPath, options);
+    const guard = await acquireCoreDatabaseGuard(options.runtimeAuditExecutable, dirname(dbPath));
+    try { return new AppDatabase(dbPath, options, CORE_DATABASE_GUARD); }
+    finally { await guard.release(); }
+  }
+
+  constructor(dbPath = getDbPath(), options: AppDatabaseOptions = {}, guard?: typeof CORE_DATABASE_GUARD) {
+    if (options.runtimeAuditSupervised && dbPath !== ":memory:") {
+      if (!options.runtimeAuditExecutable) throw new Error("Rust 核心程序缺失，无法初始化数据库");
+    }
+    // A CLI/Host caller must not bypass protection simply by omitting native options
+    // after a directory has been owned by Core. Persistent lock files are never unlinked.
+    if (dbPath !== ":memory:" && guard !== CORE_DATABASE_GUARD
+        && (options.runtimeAuditSupervised || ["core.lock", "core.lease", "core.json"]
+          .some(name => existsSync(join(dirname(dbPath), name))))
+        && needsCoreDatabaseGuard(dbPath))
+      throw new Error("数据库创建或重建需要 Core 独占锁，请使用 AppDatabase.open");
     resetIncompatibleDatabaseFile(dbPath);
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
@@ -334,7 +370,8 @@ export class AppDatabase {
       throw new Error(`数据库初始化失败：${cause instanceof Error ? cause.message : String(cause)}`);
     }
     this.db.pragma("foreign_keys = ON");
-    if (options.runtimeAuditExecutable) this.runtimeAuditReader = new RuntimeAuditReader(options.runtimeAuditExecutable, this.db.name);
+    if (options.runtimeAuditExecutable) this.runtimeAuditReader = new RuntimeAuditReader(options.runtimeAuditExecutable, this.db.name,
+      options.runtimeAuditSupervised && this.db.name !== ":memory:" ? { coreDataDirectory: dirname(this.db.name) } : undefined);
   }
 
   /** 共享 SQLite 连接（ArtifactRepository 复用同一连接，§6：优先使用现有 SQLite） */

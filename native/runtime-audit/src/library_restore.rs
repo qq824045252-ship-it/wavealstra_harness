@@ -490,6 +490,7 @@ pub fn restore(db: &mut Connection, backup: Backup, request: Restore) -> Result<
     if interrupted {
         recover(db, &request.root, None)?;
     }
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let planned = plan(&tx, &backup, &order, &request)?;
     // Reserve exact paths before handing any files to the managed library.
@@ -506,7 +507,8 @@ pub fn restore(db: &mut Connection, backup: Backup, request: Restore) -> Result<
             )?;
         }
     }
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
 
     let applied = verify_history(&backup, &planned)
         .and_then(|()| apply(db, backup, &order, &planned, &request));
@@ -538,6 +540,7 @@ fn apply(
         let entry = &mut backup.items[destination.index];
         prepared.push(prepare_item(entry, &destination.space, request)?);
     }
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if plan(&tx, &backup, order, request)? != *planned {
         return Err("资料位置或内容已变化，请刷新后重试".into());
@@ -558,14 +561,22 @@ fn apply(
     };
     for (destination, item) in planned.items.iter().zip(prepared) {
         let entry = &backup.items[destination.index];
-        write_item(&tx, &entry.item, &destination.space, request, item, &mut receipt)?;
+        write_item(
+            &tx,
+            &entry.item,
+            &destination.space,
+            request,
+            item,
+            &mut receipt,
+        )?;
     }
     tx.execute(
         "INSERT INTO library_restore_receipts(root,operation_id,result_json) VALUES(?1,?2,?3)
          ON CONFLICT(root) DO UPDATE SET operation_id=excluded.operation_id,result_json=excluded.result_json",
         params![request.root.to_str(), &request.operation_id, serde_json::to_string(&receipt)?],
     )?;
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
     Ok(receipt)
 }
 
@@ -850,6 +861,7 @@ pub fn recover(db: &mut Connection, root: &Path, operation: Option<&str>) -> Res
         return Err("恢复清理根目录无效".into());
     }
     let root_key = root.to_str().ok_or("恢复清理路径无效")?;
+    let write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let jobs = tx
         .prepare(
@@ -880,7 +892,8 @@ pub fn recover(db: &mut Connection, root: &Path, operation: Option<&str>) -> Res
             }
         }
     }
-    tx.commit()?;
+    crate::request_control::commit(tx)?;
+    drop(write_guard);
     Ok(retained)
 }
 
@@ -973,7 +986,10 @@ mod tests {
         // Staged but never published.
         let temp = stage(&path, b"body", OPERATION, "item-1").expect("stage");
         cleanup_file(&db, &fixture.0, &job()).expect("cleanup");
-        assert!(!temp.exists() && !path.exists(), "an interrupted stage leaves nothing");
+        assert!(
+            !temp.exists() && !path.exists(),
+            "an interrupted stage leaves nothing"
+        );
 
         // Published but the row was never committed.
         stage(&path, b"body", OPERATION, "item-1").expect("stage");
@@ -987,6 +1003,9 @@ mod tests {
         db.execute("INSERT INTO library_items VALUES ('item-1')", [])
             .expect("commit row");
         cleanup_file(&db, &fixture.0, &job()).expect("cleanup");
-        assert!(path.exists() && !temp.exists(), "a committed item keeps its file");
+        assert!(
+            path.exists() && !temp.exists(),
+            "a committed item keeps its file"
+        );
     }
 }

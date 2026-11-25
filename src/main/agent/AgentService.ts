@@ -914,7 +914,7 @@ export class AgentService {
     this.botRegistry.ensureDefaultBot(LOCAL_USER_ID);
     this.botExpertBindings = new BotExpertBindingService(this.expertBindings);
     this.botSettings = new BotSettingsService(this.db, this.botRegistry, LOCAL_USER_ID, join(getMyBuddyDir(), "bot-workspaces"));
-    this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`);
+    this.workHostAuthority = new WorkHostAuthority(db.connection, `authority-${randomUUID()}`, 60_000, () => Date.now(), this.runtimeAuditReader);
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
@@ -927,9 +927,11 @@ export class AgentService {
       },
       isAuthority: () => this.workHostAuthority.isAuthority(),
     });
-    void this.workMemoryCapture.catchUp(() => !this.memoryDisposed && this.db.connection.open
-      && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
-      .catch(error => console.warn("[Work] memory catch-up deferred", error));
+    this.workHostAuthority.onAcquired(() => {
+      void this.workMemoryCapture.catchUp(() => !this.memoryDisposed && this.db.connection.open
+        && this.settingsStore.read().memoryEnabled && this.workHostAuthority.isAuthority())
+        .catch(error => console.warn("[Work] memory catch-up deferred", error));
+    });
     this.botReportImages = new BotReportImageService(db.connection, LOCAL_USER_ID, this.workService, () => this.artifactService);
     this.botHistory = new HistoricalBotReader(db, this.botRegistry, this.workService, this.botReportImages);
     this.conversationGoals = new ConversationGoalService(
@@ -5883,6 +5885,7 @@ export class AgentService {
     await Promise.all([
       this.taskDiagnostics.closeWrites(), this.runtimeSnapshots.closeWrites(), this.usageStats.closeWrites(),
       this.memoryPipeline.closeCaptureWrites(), this.contextUsageWrites.close(),
+      this.workHostAuthority.flush(),
     ]);
   }
 

@@ -7,15 +7,17 @@ import { RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 /** A deliberately stalled worker makes queue and correlation checks independent of disk speed. */
 export async function checkHistoryTransport(directory: string): Promise<void> {
   const fixture = join(directory, "history-wire.cjs");
-  writeFileSync(fixture, `
+  writeFileSync(fixture, String.raw`
 const lines = require("node:readline").createInterface({input:process.stdin});
 const held = [];
 const sessions = new Set();
 function reply(req,data) {
-  process.stdout.write(JSON.stringify({status:"ok",historyRequestId:req.requestId,data})+"\\n");
+  process.stdout.write(JSON.stringify({status:"ok",replyId:req.requestId,
+    ...(req.operation==="historyRead" ? {historyRequestId:req.requestId} : {}),data})+"\n");
 }
 lines.on("line", line => {
   const req = JSON.parse(line);
+  if(req.operation==="control") return reply(req,{requestId:req.targetRequestId,state:"running"});
   if(req.operation==="historyLaneSupported") return reply(req,true);
   if(req.operation==="snapshots") {
     if(req.taskId==="exit") return process.exit(1);

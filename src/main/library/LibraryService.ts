@@ -37,7 +37,7 @@ import { LibraryTextSaves, NATIVE_LIBRARY_SAVE_MAX_BYTES } from "./LibraryTextSa
 import { LIBRARY_CHUNK_DEFAULTS } from "./library-chunker";
 import { LARGE_LIBRARY_TEXT_BYTES, libraryTextContains, readLibraryTextParts } from "./library-text-parts";
 import { getSemanticRuntime } from "../retrieval/SemanticRuntime";
-import type { RuntimeLibraryDeleteTarget, RuntimeLibraryNoteChange, RuntimeLibraryRestoreReceipt } from "../platform/runtime-audit";
+import type { RuntimeLibraryDeleteReply, RuntimeLibraryDeleteTarget, RuntimeLibraryNoteChange, RuntimeLibraryRestoreReceipt } from "../platform/runtime-audit";
 import type { ProjectLibraryPromotion } from "../project/ProjectMutation";
 import {
   LIBRARY_CONTENT_MAX_CHARS,
@@ -1523,7 +1523,43 @@ export class LibraryService {
   private async deleteNative(target: RuntimeLibraryDeleteTarget, committed: () => boolean, fallback: () => void): Promise<void> {
     const reader = this.db.runtimeAuditReader;
     if (!reader || this.db.connection.inTransaction) return fallback();
-    const job = reader.deleteLibrary(this.textSaves.root, target).then(async (result) => {
+    const job = (async () => {
+      let result: RuntimeLibraryDeleteReply | undefined;
+      try {
+        result = await reader.deleteLibrary(this.textSaves.root, target);
+      } catch (error) {
+        const failed = () => Object.assign(new Error("资料删除失败，请刷新后重试", { cause: error }),
+          { code: "RUNTIME_OPERATION_FAILED", operation: "deleteLibrary",
+            requestId: error && typeof error === "object" && "requestId" in error ? error.requestId : undefined });
+        if (error && typeof error === "object" && "code" in error && error.code === "RUNTIME_OPERATION_FAILED")
+          throw failed();
+        if (!error || typeof error !== "object" || !("code" in error)
+            || error.code !== "RUNTIME_OPERATION_UNKNOWN" || !("requestId" in error)
+            || typeof error.requestId !== "string") throw error;
+        // A caller deadline does not prove a running deletion failed. Ask the durable
+        // operation receipt first; never replay a destructive write on an unknown reply.
+        const receipt = await reader.queryOperation(error.requestId).catch(() => undefined);
+        const reply = receipt?.result;
+        if (receipt?.state === "failed") throw failed();
+        if (receipt?.state === "committed" && reply && typeof reply === "object" && "status" in reply
+            && reply.status === "deleted" && "itemIds" in reply && Array.isArray(reply.itemIds)
+            && reply.itemIds.every(id => typeof id === "string")) {
+          result = { status: "deleted", itemIds: reply.itemIds };
+        } else if (receipt?.state === "committed" && reply && typeof reply === "object" && "status" in reply
+            && (reply.status === "scopeChanged" || reply.status === "needsHost")) {
+          result = { status: reply.status };
+        } else if (committed()) {
+          if (target.kind === "item") this.indexMaintenance.forgetItem(target.id);
+          await this.recoverFileDeletes();
+          return;
+        } else if (receipt?.state === "cancelled" || receipt?.state === "expired") {
+          throw Object.assign(new Error("资料删除已取消或过期，未提交；请刷新后重试", { cause: error }),
+            { code: "RUNTIME_OPERATION_CANCELLED", requestId: error.requestId, operation: "deleteLibrary" });
+        } else {
+          throw Object.assign(new Error(`资料删除结果尚未确认（操作 ${error.requestId}）。后台可能仍在处理，请刷新确认后再操作。`, { cause: error }),
+            { code: "RUNTIME_OPERATION_UNKNOWN", requestId: error.requestId, operation: "deleteLibrary" });
+        }
+      }
       if (result?.status === "needsHost") return fallback();
       if (result?.status === "scopeChanged") throw new Error("资料位置或归档状态已变化，请刷新后重试");
       if (result?.status === "deleted") {
@@ -1534,7 +1570,7 @@ export class LibraryService {
       } else {
         throw new Error("资料删除失败，请刷新后重试");
       }
-    });
+    })();
     await this.trackFileMutation(job);
   }
 

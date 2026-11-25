@@ -1,258 +1,377 @@
-/**
- * Fault injection for the TypeScript side of the resident Rust transport.
- *
- * The "Rust" worker here is a script executed by the same Node binary, so the
- * reader spawns it exactly as it spawns the real worker: spawn(executable, [path]).
- * Every spawned process re-reads its behaviour from a config file, which lets a
- * test fail one generation and then succeed the next without touching the reader.
- */
+/** Behavioural fault injection against the real client and a serial worker. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { RuntimeAuditReader, type RuntimeSemanticModel } from "../src/main/platform/runtime-audit";
+import { RuntimeAuditReader, RuntimeAuditUnknownOperationError, RuntimeAuditNotStartedOperationError, RuntimeAuditOperationFailedError,
+  type RuntimeSemanticModel } from "../src/main/platform/runtime-audit";
 
-const serverSource = [
-  'const fs = require("node:fs");',
-  'const path = require("node:path");',
-  "const directory = __dirname;",
-  "let config = {};",
-  'try { config = JSON.parse(fs.readFileSync(path.join(directory, "config.json"), "utf8")); } catch {}',
-  "const hang = new Set(config.hang || []);",
-  "const exitOn = new Set(config.exit || []);",
-  'const misroute = new Set(config.misroute || []);',
-  'const delayed = new Map(Object.entries(config.delayed || {}));',
-  'const inferenceLane = new Set(["semanticInference", "semanticModelProbe", "stageEmbedding"]);',
-  'const maintenanceLane = new Set(["cleanupArtifactFiles", "deleteLibrary", "drainLibraryCleanup",',
-  '  "exportLibraryBackup", "prepareLibraryRestore", "discardLibraryRestore", "restoreLibraryBackup",',
-  '  "recoverLibraryRestores", "deleteProject", "promoteProjectEventToLibrary"]);',
-  "const data = {",
-  "  nativeInferenceSupported: true, nativeEmbeddingIndexSupported: true,",
-  '  semanticInference: { vector: [0.5, 0.25] }, semanticModelProbe: { status: "ready" },',
-  '  stageEmbedding: "staged", libraryMetadata: true,',
-  '  deleteLibrary: { status: "deleted", itemIds: [] },',
-  "};",
-  "function note(request) {",
-  '  fs.appendFileSync(path.join(directory, "requests.log"), JSON.stringify({ pid: process.pid, operation: request.operation, requestId: request.requestId ?? null }) + "\\n");',
-  "}",
-  "function reply(request, value) {",
-  '  const payload = { status: "ok", data: value };',
-  '  if (request.requestId !== undefined && !config.legacy) payload.replyId = request.requestId;',
-  "  if (inferenceLane.has(request.operation)) payload.inference = true;",
-  "  if (maintenanceLane.has(request.operation)) payload.maintenance = true;",
-  '  process.stdout.write(JSON.stringify(payload) + "\\n");',
-  "}",
-  'const value = operation => Object.prototype.hasOwnProperty.call(data, operation) ? data[operation] : null;',
-  'let buffered = "";',
-  'process.stdin.setEncoding("utf8");',
-  'process.stdin.on("data", chunk => {',
-  "  buffered += chunk;",
-  "  let index;",
-  '  while ((index = buffered.indexOf("\\n")) >= 0) {',
-  "    const line = buffered.slice(0, index); buffered = buffered.slice(index + 1);",
-  "    if (!line.trim()) continue;",
-  "    let request;",
-  "    try { request = JSON.parse(line); } catch { process.exit(2); }",
-  "    const operation = request.operation;",
-  "    note(request);",
-  "    if (exitOn.has(operation)) process.exit(3);",
-  "    if (hang.has(operation)) continue;",
-  "    if (misroute.has(operation)) {",
-  '      process.stdout.write(JSON.stringify({ status: "ok", data: { stray: true }, replyId: "stale-reply" }) + "\\n");',
-  "    }",
-  "    // A late reply: the caller's budget can expire before this arrives. Delayed once",
-  "    // per operation so the lane can be proven to recover without slowing the run.",
-  "    const wait = delayed.get(operation);",
-  '    if (typeof wait === "number") {',
-  "      delayed.delete(operation);",
-  "      setTimeout(() => reply(request, value(operation)), wait);",
-  "      continue;",
-  "    }",
-  "    reply(request, value(operation));",
-  "  }",
-  "});",
-  'process.stdin.on("end", () => process.exit(0));',
-  "",
-].join("\n");
+// Work is serialized per lane, exactly like the Rust workers. Control is handled
+// immediately by the input reader, and is not held behind a business operation.
+const workerSource = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const config = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
+const receipts = new Map();
+const revoked = new Set();
+const tails = new Map();
+function log(request, stage) {
+  fs.appendFileSync(path.join(__dirname, "requests.log"), JSON.stringify({
+    pid: process.pid, operation: request.operation, action: request.action,
+    requestId: request.requestId, targetRequestId: request.targetRequestId, stage, at: Date.now(),
+  }) + "\n");
+}
+function reply(request, status, data, extra = {}) {
+  const frame = { replyId: request.requestId, status, data, ...extra };
+  if (config.omitId) delete frame.replyId;
+  process.stdout.write(JSON.stringify(frame) + "\n");
+}
+function value(request) {
+  if (request.operation.endsWith("Supported") || request.operation === "libraryMetadata") return true;
+  if (request.operation === "startDotsFileWatch" || request.operation === "stopDotsFileWatch") return true;
+  if (request.operation === "semanticInference") return { vector: [0.5, 0.25] };
+  if (request.operation === "deleteLibrary") return { status: "deleted", itemIds: ["item-1"] };
+  if (request.operation === "gadgetState") return { kind: "value", entry: { value: 1, revision: "revision-1" } };
+  return null;
+}
+require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+  const request = JSON.parse(line);
+  log(request, "received");
+  if (request.operation === "control") {
+    if (config.holdControl) return;
+    if (request.action === "revokeGadget") {
+      revoked.add(request.generation + ":" + (request.invocationId || "*"));
+      return reply(request, "ok", { kind: "revoked" });
+    }
+    const receipt = receipts.get(request.targetRequestId);
+    if (request.action === "cancel" && receipt && !config.ignoreCancel) {
+      receipt.cancelRequested = true;
+      if ((config.hang || []).includes(receipt.request.operation)) {
+        receipt.state = "cancelled";
+        reply(receipt.request, "cancelled", undefined, { neverStarted: false });
+      }
+    }
+    return reply(request, "ok", receipt
+      ? { requestId: request.targetRequestId, state: receipt.state,
+          result: config.omitReceiptResult ? undefined : receipt.result, neverStarted: false }
+      : { requestId: request.targetRequestId, state: "unknown" });
+  }
+  if (typeof request.requestId !== "string" || typeof request.deadlineAt !== "number") process.exit(4);
+  if ((config.exit || []).includes(request.operation)) process.exit(3);
+  if ((config.misroute || []).includes(request.operation)) {
+    process.stdout.write(JSON.stringify({ status: "ok", data: "stray", replyId: "retired-request" }) + "\n");
+  }
+  const receipt = { requestId: request.requestId, request, state: "queued", cancelRequested: false };
+  receipts.set(request.requestId, receipt);
+  const previous = tails.get(request.lane) || Promise.resolve();
+  const next = previous.then(async () => {
+    if (receipt.cancelRequested || Date.now() >= request.deadlineAt) {
+      receipt.state = receipt.cancelRequested ? "cancelled" : "expired";
+      return reply(request, receipt.state, undefined, { neverStarted: true });
+    }
+    receipt.state = "running";
+    log(request, "started");
+    if ((config.fail || []).includes(request.operation)) {
+      receipt.state = "failed";
+      return reply(request, "error", undefined, { errorCode: "FAILED", neverStarted: false });
+    }
+    if ((config.hang || []).includes(request.operation)) return new Promise(() => {});
+    const ms = (config.delayed || {})[request.operation] || 0;
+    if (ms) await new Promise(resolve => setTimeout(resolve, ms));
+    // ignoreCancel models non-interruptible work that has already passed its
+    // irreversible boundary. Its eventual receipt, not a timeout, tells us how it ended.
+    if (!config.ignoreCancel && (receipt.cancelRequested || Date.now() >= request.deadlineAt)) {
+      receipt.state = receipt.cancelRequested ? "cancelled" : "expired";
+      return reply(request, receipt.state);
+    }
+    if (request.operation === "gadgetState") {
+      const auth = request.request.authorization;
+      if (revoked.has(auth.generation + ":*") || revoked.has(auth.generation + ":" + auth.invocationId)) {
+        receipt.state = "committed";
+        receipt.result = { kind: "error", error: "STALE_WRITE" };
+        return reply(request, "ok", receipt.result);
+      }
+      fs.writeFileSync(path.join(__dirname, "committed.json"), "1");
+    }
+    receipt.state = "committed";
+    receipt.result = value(request);
+    log(request, "committed");
+    if ((config.holdReply || []).includes(request.operation)) return;
+    reply(request, "ok", receipt.result);
+  });
+  tails.set(request.lane, next);
+});
+`;
 
-interface LoggedRequest { pid: number; operation: string; requestId: string | null }
-
+interface LoggedRequest { pid: number; operation: string; action?: string; requestId: string; targetRequestId?: string; stage: string; at: number }
+interface ReadSeam {
+  read<T>(request: object, lane: string, allowAfterInferenceFailure: boolean, timeoutMs: number,
+    expectedSession?: undefined, retired?: () => boolean, signal?: AbortSignal): Promise<T | undefined>;
+}
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const fixtures = join(process.cwd(), "out", "tests");
 mkdirSync(fixtures, { recursive: true });
-
-/** One reader per scenario: a live worker keeps its startup behaviour, so scenarios do not share one. */
-function createFixture(name: string) {
+function fixture(name: string, config: object = {}) {
   const directory = mkdtempSync(join(fixtures, `runtime-audit-${name}-`));
   const worker = join(directory, "fake-rust.cjs");
-  const logPath = join(directory, "requests.log");
-  writeFileSync(worker, serverSource);
-  const model: RuntimeSemanticModel = {
-    libraryPath: join(directory, "onnxruntime.dll"), modelPath: join(directory, "model.onnx"),
-    tokenizerPath: join(directory, "tokenizer.json"), dimension: 2,
-  };
-  const configured = (behaviour: object): void => {
-    writeFileSync(join(directory, "config.json"), JSON.stringify(behaviour));
-  };
-  const logged = (): LoggedRequest[] => {
-    try {
-      return readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean)
-        .map(line => JSON.parse(line) as LoggedRequest);
-    } catch { return []; }
-  };
+  writeFileSync(worker, workerSource);
+  const configure = (value: object) => writeFileSync(join(directory, "config.json"), JSON.stringify(value));
+  configure(config);
   const reader = new RuntimeAuditReader(process.execPath, worker);
-  return {
-    model, reader, logged, configured,
-    inferenceRequests: () => logged().filter(entry => entry.operation === "semanticInference"),
-    close: async () => { await reader.close(); rmSync(directory, { recursive: true, force: true }); },
+  const seam = reader as unknown as ReadSeam;
+  const logged = (): LoggedRequest[] => {
+    try { return readFileSync(join(directory, "requests.log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); }
+    catch { return []; }
   };
+  const model: RuntimeSemanticModel = { libraryPath: "/fixture/onnx", modelPath: "/fixture/model", tokenizerPath: "/fixture/tokenizer", dimension: 2 };
+  return { directory, reader, seam, logged, configure, model,
+    close: async () => { await reader.close(); rmSync(directory, { recursive: true, force: true }); } };
+}
+async function until(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`timed out: ${label}`);
+    await wait(10);
+  }
 }
 
-/** Slack so a hung request is provably in the reader's pending slot before the next step. */
-const settle = (ms = 150) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function main(): Promise<void> {
-  // 1-2. A database timeout retires the shared worker while inference is in flight.
-  const recovery = createFixture("recovery");
+async function deadlinesBeginAtEnqueue(): Promise<void> {
+  const f = fixture("enqueue", { delayed: { snapshots: 600 } });
   try {
-    recovery.configured({ hang: ["snapshots", "semanticInference"] });
-    const interrupted = recovery.reader.semanticInference(recovery.model);
-    await settle();
-    assert.equal(recovery.inferenceRequests().length, 1, "the inference request reached the worker");
-    assert.match(recovery.inferenceRequests()[0]!.requestId ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-/,
-      "the inference request carries a transport id");
-    const stalledPid = recovery.inferenceRequests()[0]!.pid;
-    // The database lane times out after its 10s budget and stops the whole process.
-    assert.equal(await recovery.reader.snapshots("fixture-task", 5), undefined);
-    assert.equal(await interrupted, undefined, "in-flight inference reports an unknown result");
-    console.log("PASS database timeout retires the worker while inference is in flight");
+    let firstFinished = false;
+    const first = f.seam.read({ operation: "snapshots" }, "database", false, 2_000).then(value => { firstFinished = true; return value; });
+    await until(() => f.logged().some(row => row.stage === "started"), "first request start");
+    assert.equal(await f.seam.read({ operation: "diagnostics" }, "database", false, 80), undefined);
+    assert.equal(firstFinished, false, "the short request returns at its own deadline, before the long request ends");
+    assert.equal(f.logged().some(row => row.operation === "diagnostics"), false, "expired queued work is never dispatched");
+    assert.equal(f.reader.laneDiagnostics().waiting.database, 0);
+    assert.equal(f.reader.laneDiagnostics().inFlight.database, 1, "the first worker operation still owns its slot");
+    const abort = new AbortController();
+    const cancelled = f.seam.read({ operation: "diagnostics" }, "database", false, 2_000, undefined, undefined, abort.signal);
+    abort.abort();
+    assert.equal(await cancelled, undefined, "an explicitly cancelled queued call settles immediately");
+    assert.equal(firstFinished, false);
+    const queuedWrite = f.reader.accessGadgetState(f.directory, f.directory, "storage",
+      { operation: "set", key: [107], valueJson: "1", writeId: randomUUID() },
+      { generation: "queued-generation", invocationId: "queued-invocation", expiresAt: Date.now() + 5_000 }, () => false);
+    assert.equal(await f.reader.revokeGadgetGeneration("queued-generation"), true);
+    assert.deepEqual(await queuedWrite, { kind: "error", error: "STALE_WRITE" });
+    assert.equal(f.logged().some(row => row.operation === "gadgetState"), false, "revocation removes queued writes before dispatch");
+    await first;
+    console.log("PASS queue deadlines settle callers independently and remove expired work");
+  } finally { await f.close(); }
+}
 
-    recovery.configured({});
-    assert.deepEqual(await recovery.reader.semanticInference(recovery.model), { vector: [0.5, 0.25] },
-      "inference recovers after an unrelated restart");
-    const requests = recovery.inferenceRequests();
-    assert.equal(requests.length, 2, "the retry is a real request, not a cached failure");
-    assert.notEqual(requests[1]!.pid, stalledPid, "the retry runs in the restarted worker");
-    console.log("PASS inference is re-armed after a database-caused restart");
-  } finally {
-    await recovery.close();
-  }
-
-  // 3. A worker that keeps dying on inference is not spawned forever. Ordinary
-  //    database traffic restarts the worker between attempts, exactly as it does in the app.
-  const repeated = createFixture("repeated");
+async function maintenanceTimeoutKeepsExecution(): Promise<void> {
+  const f = fixture("maintenance", { delayed: { deleteLibrary: 600 }, ignoreCancel: true });
   try {
-    repeated.configured({ exit: ["semanticInference"] });
-    for (let attempt = 0; attempt < 3; attempt++) {
-      assert.equal(await repeated.reader.semanticInference(repeated.model), undefined,
-        "a worker that dies on inference returns no result");
-      if (attempt < 2) await repeated.reader.snapshots("fixture-task", 1);
+    await f.reader.snapshots("warmup", 1);
+    const write = { operation: "deleteLibrary", root: "/fixture", target: { kind: "item", id: "item-1" } };
+    let unknown!: RuntimeAuditUnknownOperationError;
+    await assert.rejects(f.seam.read(write, "maintenance", false, 200), error => {
+      assert(error instanceof RuntimeAuditUnknownOperationError);
+      unknown = error;
+      return true;
+    });
+    const pending = f.reader.laneDiagnostics();
+    assert.equal(pending.queued.maintenance, 0, "the caller has settled");
+    assert.equal(pending.inFlight.maintenance, 1, "the real worker is still running");
+    assert.equal(pending.unconfirmed.some(row => row.requestId === unknown.requestId), true);
+    const running = await f.reader.queryOperation(unknown.requestId);
+    assert.equal(running?.state, "running");
+    assert.equal(f.reader.laneDiagnostics().inFlight.maintenance, 1, "a nonterminal receipt cannot release the slot");
+    assert.equal(await f.seam.read({ operation: "libraryMetadata" }, "maintenance", false, 80), undefined);
+    assert.equal(f.logged().some(row => row.operation === "libraryMetadata"), false, "work cannot pile behind an abandoned operation in Rust");
+    assert.equal(await f.reader.snapshots("other-lane", 1), null, "a slow maintenance operation does not block a light read");
+    await until(() => f.reader.laneDiagnostics().inFlight.maintenance === 0, "maintenance terminal reply");
+    const complete = await f.reader.queryOperation(unknown.requestId);
+    assert.equal(complete?.state, "committed");
+    assert.deepEqual(complete?.result, { status: "deleted", itemIds: ["item-1"] });
+    assert.equal(f.reader.laneDiagnostics().unconfirmed.length, 0);
+    assert.equal(await f.seam.read({ operation: "libraryMetadata" }, "maintenance", false, 1_000), true);
+    assert.equal(new Set(f.logged().map(row => row.pid)).size, 1, "timeouts never kill unrelated lanes");
+    console.log("PASS maintenance unknown receipts retain real in-flight work and prevent hidden retries");
+  } finally { await f.close(); }
+}
+
+async function revocationBypassesWriteQueue(): Promise<void> {
+  const f = fixture("revoke", { delayed: { gadgetState: 400 } });
+  try {
+    const writing = f.reader.accessGadgetState(f.directory, f.directory, "storage",
+      { operation: "set", key: [107], valueJson: "1", writeId: randomUUID() },
+      { generation: "generation", invocationId: "invocation", expiresAt: Date.now() + 5_000 }, () => false);
+    await until(() => f.logged().some(row => row.operation === "gadgetState" && row.stage === "started"), "gadget write start");
+    assert.equal(await f.reader.revokeGadgetInvocation("generation", "invocation"), true);
+    assert.equal(f.reader.laneDiagnostics().inFlight.database, 1, "revoke is acknowledged before the write finishes");
+    assert.deepEqual(await writing, { kind: "error", error: "STALE_WRITE" });
+    assert.throws(() => readFileSync(join(f.directory, "committed.json")), /ENOENT/, "revoked write did not publish state");
+    console.log("PASS revocation control bypasses the write it cancels");
+  } finally { await f.close(); }
+}
+
+async function databaseTimeoutKeepsInference(): Promise<void> {
+  const f = fixture("inference-isolation", { hang: ["snapshots"], delayed: { semanticInference: 400 } });
+  try {
+    const inference = f.reader.semanticInference(f.model);
+    await until(() => f.logged().some(row => row.operation === "semanticInference" && row.stage === "started"), "inference start");
+    assert.equal(await f.seam.read({ operation: "snapshots" }, "database", false, 80), undefined);
+    assert.deepEqual(await inference, { vector: [0.5, 0.25] });
+    assert.equal(new Set(f.logged().map(row => row.pid)).size, 1);
+    console.log("PASS a database caller timeout does not retire concurrent inference");
+  } finally { await f.close(); }
+}
+
+async function correlationAndProtocol(): Promise<void> {
+  const f = fixture("correlation", { misroute: ["snapshots"] });
+  try {
+    assert.equal(await f.reader.snapshots("fixture", 1), null);
+    assert.equal(await f.reader.snapshots("fixture", 2), null);
+    assert.equal(new Set(f.logged().map(row => row.pid)).size, 1);
+  } finally { await f.close(); }
+  const malformed = fixture("missing-id", { omitId: true });
+  try {
+    assert.equal(await malformed.reader.snapshots("fixture", 1), undefined, "uncorrelated replies are rejected by the current protocol");
+  } finally { await malformed.close(); }
+  const failedWrite = fixture("write-exit", { exit: ["deleteLibrary"] });
+  try {
+    await assert.rejects(failedWrite.seam.read({ operation: "deleteLibrary" }, "maintenance", false, 1_000),
+      (error: unknown) => error instanceof RuntimeAuditUnknownOperationError && error.operation === "deleteLibrary");
+  } finally { await failedWrite.close(); }
+  console.log("PASS reply ids fence late messages and lost write replies remain unknown");
+}
+
+async function repeatedInferenceFailures(): Promise<void> {
+  const f = fixture("repeated", { exit: ["semanticInference"] });
+  try {
+    for (let i = 0; i < 3; i++) {
+      assert.equal(await f.reader.semanticInference(f.model), undefined);
+      if (i < 2) await f.reader.snapshots("restart", 1);
     }
-    assert.equal(repeated.inferenceRequests().length, 3, "every failure was a real attempt");
-    repeated.configured({});
-    const before = repeated.logged().length;
-    assert.equal(await repeated.reader.semanticInference(repeated.model), undefined,
-      "repeated failures stop new attempts");
-    assert.equal(repeated.logged().length, before, "blocked inference sends nothing to the worker");
-    console.log("PASS repeated inference failures stop new attempts instead of looping");
-  } finally {
-    await repeated.close();
-  }
+    const before = f.logged().length;
+    assert.equal(await f.reader.semanticInference(f.model), undefined);
+    assert.equal(f.logged().length, before);
+    console.log("PASS repeated inference-attributed failures stop new attempts");
+  } finally { await f.close(); }
+}
 
-  // 4. A reply that names no in-flight request is a late arrival, not a protocol fault:
-  //    the pending request keeps its own reply and the worker is never retired.
-  const correlation = createFixture("correlation");
+async function rejectedWritesCannotChangeWriter(): Promise<void> {
+  const f = fixture("no-host-replay", { delayed: { snapshots: 500 } });
+  let hostWrites = 0;
+  const hostFallback = (value: unknown) => { if (value === undefined) hostWrites += 1; return value; };
   try {
-    correlation.configured({ misroute: ["snapshots"] });
-    assert.equal(await correlation.reader.snapshots("fixture-task", 1), null,
-      "the correlated reply settles the request, the misaddressed one is dropped");
-    assert.equal(await correlation.reader.snapshots("fixture-task", 2), null);
-    const requests = correlation.logged();
-    assert.equal(requests.length, 2);
-    assert.equal(new Set(requests.map(entry => entry.pid)).size, 1, "a stray reply must not retire the worker");
-    assert.equal(new Set(requests.map(entry => entry.requestId)).size, 2, "every request carries its own id");
-    console.log("PASS a reply with an unknown id is dropped and leaves the worker running");
-  } finally {
-    await correlation.close();
-  }
+    const first = f.seam.read({ operation: "snapshots" }, "database", false, 2_000);
+    await until(() => f.logged().some(row => row.stage === "started"), "queue holder");
+    await assert.rejects(f.seam.read({ operation: "writeProject" }, "database", false, 40).then(hostFallback),
+      (error: unknown) => error instanceof RuntimeAuditNotStartedOperationError && error.reason === "expired-before-dispatch");
+    const backlog = Array.from({ length: 255 }, () => f.seam.read({ operation: "diagnostics" }, "database", false, 2_000));
+    await assert.rejects(f.seam.read({ operation: "writeProject" }, "database", false, 1_000).then(hostFallback),
+      (error: unknown) => error instanceof RuntimeAuditNotStartedOperationError && error.reason === "overloaded");
+    await assert.rejects(f.reader.supportsManagedStorage(),
+      (error: unknown) => error instanceof RuntimeAuditNotStartedOperationError, "a dropped probe cannot advertise needsHost");
+    assert.equal(hostWrites, 0, "a refused native write must not jump past pending writes through host fallback");
+    await first;
+    await Promise.all(backlog);
+    assert.equal(await f.reader.supportsManagedStorage(), true, "a transient probe failure is not cached as unsupported or a rejected promise");
+    assert.equal(f.logged().filter(row => row.operation === "writeProject").length, 0);
+  } finally { await f.close(); }
 
-  // 5. A worker that echoes no id is still served: its reply is placed by the lane it declares.
-  const legacy = createFixture("legacy");
+  const probe = fixture("probe-timeout", { delayed: { managedStorageSupported: 200 } });
   try {
-    legacy.configured({ legacy: true });
-    assert.deepEqual(await legacy.reader.semanticInference(legacy.model), { vector: [0.5, 0.25] },
-      "an id-less reply still settles the request waiting on its lane");
-    console.log("PASS a reply without an id still settles its lane request");
-  } finally {
-    await legacy.close();
-  }
+    await assert.rejects(probe.seam.read({ operation: "managedStorageSupported" }, "database", false, 70),
+      (error: unknown) => error instanceof RuntimeAuditNotStartedOperationError);
+    await until(() => probe.reader.laneDiagnostics().inFlight.database === 0, "probe terminal rejection");
+    assert.equal(await probe.reader.supportsManagedStorage(), true);
+    console.log("PASS overload, queue expiry and uncertain capability probes never trigger host writes");
+  } finally { await probe.close(); }
+}
 
-  // 6. A long maintenance job owns its own lane: a light query settles while the
-  //    deletion is still running, so the two never share one client-side queue.
-  const isolation = createFixture("isolation");
-  isolation.configured({ hang: ["deleteLibrary"] });
-  const deletion = isolation.reader.deleteLibrary("/library", { kind: "item", id: "item-1" });
+async function controlOverloadFencesInsteadOfDropping(): Promise<void> {
+  const f = fixture("control-overload", { delayed: { deleteLibrary: 1_000 }, holdControl: true, ignoreCancel: true });
   try {
-    await settle();
-    assert.equal(isolation.reader.laneDiagnostics().queued.maintenance, 1,
-      "the long job is counted on the maintenance lane");
-    assert.equal(isolation.reader.laneDiagnostics().queued.database, 0,
-      "no light query is queued behind it");
-    assert.equal(await isolation.reader.snapshots("fixture-task", 5), null,
-      "a light query settles while the maintenance job is still in flight");
-    const lanes = isolation.reader.laneDiagnostics();
-    assert.equal(lanes.recent.some(entry => entry.lane === "database" && entry.operation === "snapshots"
-      && entry.outcome === "completed"), true, "the light query completed on the database lane");
-    assert.equal(lanes.totals.maintenance.completed, 0, "the deletion has not completed yet");
-    assert.equal(lanes.queued.maintenance, 1, "the deletion is still in flight");
-    console.log("PASS a maintenance job does not block light queries in the client");
-  } finally {
-    await isolation.close();
-    assert.equal(await deletion, undefined, "a retired worker settles the pending maintenance request");
-    assert.equal(isolation.reader.laneDiagnostics().queued.maintenance, 0,
-      "the maintenance lane drains back to zero");
-  }
+    const writing = f.seam.read({ operation: "deleteLibrary" }, "maintenance", false, 2_000);
+    const unknown = assert.rejects(writing, (error: unknown) => error instanceof RuntimeAuditUnknownOperationError);
+    await until(() => f.logged().some(row => row.operation === "deleteLibrary" && row.stage === "started"), "write before control pressure");
+    const replies = await Promise.all(Array.from({ length: 65 }, (_, index) => f.reader.revokeGadgetGeneration(`generation-${index}`)));
+    assert(replies.every(value => value === false), "an unacknowledged revocation is never reported as successful");
+    await unknown;
+    assert.equal(f.reader.laneDiagnostics().inFlight.maintenance, 0, "a direct worker is retired instead of silently losing cancellation");
+    assert.equal(f.logged().some(row => row.stage === "committed"), false);
+    console.log("PASS exhausted control capacity retires the connection instead of dropping revocation");
+  } finally { await f.close(); }
+}
 
-  // 7. A maintenance timeout resolves the caller, keeps the session **and** releases the
-  //    lane: the worker may still finish the abandoned job, but one slow restore must not
-  //    wedge every later library/project write for the rest of the session.
-  const lateReply = createFixture("maintenance-timeout");
+async function terminalReceiptsPreserveOutcomeTruth(): Promise<void> {
+  const f = fixture("clipped-receipt", { holdReply: ["deleteLibrary"], omitReceiptResult: true });
+  let hostWrites = 0;
   try {
-    lateReply.configured({ delayed: { deleteLibrary: 700 } });
-    // Narrow seam: the same lane entry point the public methods use, with a short budget
-    // instead of its 120s production one, so the timeout is observable without the wait.
-    const laneRead = (request: object, timeoutMs: number) =>
-      (lateReply.reader as unknown as {
-        read(request: object, lane: string, allowAfterInferenceFailure: boolean, timeoutMs: number): Promise<unknown>;
-      }).read(request, "maintenance", false, timeoutMs);
-    const deletion = { operation: "deleteLibrary", root: "/library", target: { kind: "item", id: "item-1" } };
-    const startedAt = Date.now();
-    assert.equal(await laneRead(deletion, 250), undefined, "the caller gives up with no result");
-    assert(Date.now() - startedAt < 1_500, "the seam waits its own short budget");
-    const expired = lateReply.reader.laneDiagnostics();
-    assert.equal(expired.totals.maintenance.timedOut, 1, "the timeout is accounted on the new lane");
-    assert.equal(expired.queued.maintenance, 0, "the caller is no longer queued");
+    const writing = f.seam.read({ operation: "deleteLibrary" }, "maintenance", false, 2_000)
+      .then(value => { if (value === undefined) hostWrites += 1; return value; });
+    const unknown = assert.rejects(writing, (error: unknown) => error instanceof RuntimeAuditUnknownOperationError);
+    await until(() => f.logged().some(row => row.stage === "committed"), "committed work with omitted receipt result");
+    const requestId = f.logged().find(row => row.stage === "committed")!.requestId;
+    const receipt = await f.reader.queryOperation(requestId);
+    assert.equal(receipt?.state, "committed");
+    assert.equal(receipt?.result, undefined);
+    await unknown;
+    assert.equal(hostWrites, 0, "a truncated receipt cannot return undefined into host fallback");
+    assert.equal(f.reader.laneDiagnostics().inFlight.maintenance, 0, "confirmed commitment ends worker execution even when its result was omitted");
+  } finally { await f.close(); }
+  const failure = fixture("confirmed-failure", { fail: ["writeProject"] });
+  try {
+    await assert.rejects(failure.seam.read({ operation: "writeProject" }, "database", false, 1_000),
+      (error: unknown) => error instanceof RuntimeAuditOperationFailedError
+        && !(error instanceof RuntimeAuditNotStartedOperationError));
+    assert.equal(failure.reader.laneDiagnostics().inFlight.database, 0);
+    console.log("PASS omitted committed results remain explicit and executed failures are not called not-started");
+  } finally { await failure.close(); }
+}
 
-    // The abandoned job is still running in the worker, but it no longer holds the lane.
-    assert.deepEqual(await laneRead(deletion, 5_000), { status: "deleted", itemIds: [] },
-      "a timed-out maintenance job does not block the next one");
-    const afterRetry = lateReply.reader.laneDiagnostics();
-    assert.equal(afterRetry.totals.maintenance.completed, 1, "the retry completed");
-    assert.equal(afterRetry.totals.maintenance.slotBusy, 0, "the abandoned job no longer holds a slot");
-    assert.equal(lateReply.logged().filter(entry => entry.operation === "deleteLibrary").length, 2,
-      "the retry really reached the worker");
+async function recoveringFileReadsRemainMutations(): Promise<void> {
+  let hostReads = 0;
+  for (const operation of ["readGadgetSource", "readGadgetManifest", "captureBlueprintGadget"]) {
+    const f = fixture(`recover-${operation}`, { delayed: { [operation]: 300 }, ignoreCancel: true });
+    try {
+      await f.reader.snapshots("warmup", 1);
+      await assert.rejects(f.seam.read({ operation }, "database", false, 100).then(value => {
+        if (value === undefined) hostReads += 1;
+        return value;
+      }), (error: unknown) => error instanceof RuntimeAuditUnknownOperationError && error.operation === operation);
+      assert.equal(f.reader.laneDiagnostics().inFlight.database, 1, "source recovery may still be changing files after the caller times out");
+    } finally { await f.close(); }
+  }
+  assert.equal(hostReads, 0, "a host read cannot race a native journal recovery whose result is unknown");
+  console.log("PASS recovering Gadget reads keep unknown outcomes out of host fallback");
+}
 
-    await settle(700);
-    const settled = lateReply.reader.laneDiagnostics();
-    assert.equal(settled.recent.filter(entry => entry.operation === "deleteLibrary" && entry.outcome === "completed").length, 1,
-      "the reply that arrives after the caller gave up is dropped, not applied");
-    assert.equal(settled.queued.maintenance, 0, "the maintenance lane drains back to zero");
-    assert.deepEqual(await lateReply.reader.snapshots("fixture-task", 1), null,
-      "a database request still works after a maintenance timeout");
-    const pids = new Set(lateReply.logged().map(entry => entry.pid));
-    assert.equal(pids.size, 1, "a maintenance timeout must not retire the shared worker");
-    console.log("PASS a maintenance timeout keeps the session, releases the lane and drops the late reply");
+async function watchCleanupHasNoUnhandledRejection(): Promise<void> {
+  const f = fixture("watch-cleanup", { delayed: { stopDotsFileWatch: 300 } });
+  const unhandled: unknown[] = [];
+  const recordUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", recordUnhandled);
+  try {
+    const watch = await f.reader.watchDotsFile(f.directory, "watched.txt", () => {}, () => {});
+    assert(watch, "native watch was armed");
+    watch.close();
+    await f.reader.close();
+    // Rejection reporting happens after the close promise resolves.
+    await wait(20);
+    assert.deepEqual(unhandled, [], "watch disposal during reader shutdown must handle its cleanup request");
+    assert.equal(f.reader.laneDiagnostics().unconfirmed.length, 0, "ephemeral watch cleanup is not a persistent mutation");
+    console.log("PASS watch disposal and reader shutdown leave no unhandled cleanup promise");
   } finally {
-    await lateReply.close();
+    await f.close();
+    process.off("unhandledRejection", recordUnhandled);
   }
 }
 
-await main();
+await deadlinesBeginAtEnqueue();
+await maintenanceTimeoutKeepsExecution();
+await revocationBypassesWriteQueue();
+await databaseTimeoutKeepsInference();
+await correlationAndProtocol();
+await repeatedInferenceFailures();
+await rejectedWritesCannotChangeWriter();
+await controlOverloadFencesInsteadOfDropping();
+await terminalReceiptsPreserveOutcomeTruth();
+await recoveringFileReadsRemainMutations();
+await watchCleanupHasNoUnhandledRejection();

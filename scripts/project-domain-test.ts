@@ -30,7 +30,7 @@ import {
 } from "../src/shared/project-policy-editor";
 import { resolveProjectTaskDefaults } from "../src/shared/project-task-defaults";
 import { diffRuntimeAuditSnapshots, sanitizeRuntimeAuditSnapshot } from "../src/shared/runtime-audit-inspector";
-import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { locateRuntimeAudit, RuntimeAuditUnknownOperationError } from "../src/main/platform/runtime-audit";
 import { readSoulProfile, writeSoulProfile } from "../src/main/agent/SoulProfileData";
 
 const nativeFlag = process.argv.indexOf("--native");
@@ -139,7 +139,16 @@ async function checkEditorWrites(): Promise<void> {
     WHEN new.project_id='${project.id}' BEGIN SELECT RAISE(ABORT,'fixture policy failure'); END;`);
   try {
     await assert.rejects(service.updateAsync({ id: project.id, description: "must roll back", policies: { skill: { allow: ["fixture"], prefer: [], demote: [], hide: [] } } }),
-      /fixture policy failure|项目数据写入失败/);
+      native ? (error: unknown) => {
+        // The native write was dispatched, but this domain has not proved its
+        // rollback in the lifecycle receipt. Keep the uncertainty explicit even
+        // though the independent database assertions below verify this fixture.
+        assert(error instanceof RuntimeAuditUnknownOperationError);
+        assert.equal(error.code, "RUNTIME_OPERATION_UNKNOWN");
+        assert.equal(error.operation, "writeProject");
+        assert.match(error.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+        return true;
+      } : /fixture policy failure|项目数据写入失败/);
   } finally {
     db.connection.exec("DROP TRIGGER fixture_reject_project_policy");
   }

@@ -52,6 +52,7 @@ pub fn clean(db: &mut Connection, root: &Path, cleanup: Cleanup) -> Result<Repor
 
     // The walk does not hold the writer lock. Recheck ownership under the same lock
     // used to publish new managed files before removing any candidate.
+    let _write_guard = crate::write_gate::enter()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let live = registered(&tx)?;
     let mut live_targets = None;

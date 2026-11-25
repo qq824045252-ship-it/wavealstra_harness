@@ -1,30 +1,37 @@
-//! Data-directory ownership for a core process that outlives its UI client.
-//!
-//! The lease says "one core owns this data directory"; the endpoint file says "and it is
-//! reachable here". Liveness is decided by trying to connect to the recorded port, so a
-//! crashed core is recovered without guessing from timestamps or process ids.
+//! OS-held ownership of a Core and its worker. Endpoint files are discovery metadata;
+//! neither a missing endpoint nor a refused TCP connection proves that a writer died.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::hash_map::DefaultHasher,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
-    io::Write,
-    net::{SocketAddr, TcpListener, TcpStream},
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const LEASE_FILE: &str = "core.lease";
 const ENDPOINT_FILE: &str = "core.json";
+const OWNER_LOCK: &str = "core.lock";
+const WORKER_LOCK: &str = "core-worker.lock";
+pub const DATA_DIRECTORY_ENV: &str = "MYBUDDY_CORE_DATA_DIRECTORY";
+pub const GENERATION_ENV: &str = "MYBUDDY_CORE_GENERATION";
+pub const PROTOCOL: u32 = 88;
 
-/// Where a running core listens, and the token a client must present.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
     pub pid: u32,
+    pub worker_pid: u32,
     pub port: u16,
     pub token: String,
+    pub generation: String,
+    pub binary_hash: String,
+    pub protocol: u32,
     pub started_at: u64,
     pub db_path: String,
 }
@@ -38,13 +45,19 @@ struct LeaseRecord {
     db_path: String,
 }
 
-/// Owns the lease until dropped. Removing the files is best effort: a crash leaves them
-/// behind on purpose, and the next core takes them over after the connect probe fails.
+/// Never unlink OS lock files: that would let another process lock a different inode.
 #[derive(Debug)]
 pub struct Lease {
     directory: PathBuf,
     nonce: String,
-    released: bool,
+    owner: Option<File>,
+    worker_handoff: Option<File>,
+}
+
+/// This guard outlives a killed supervisor, fencing replacement writers until exit.
+pub struct WorkerLease {
+    _guard: File,
+    generation: String,
 }
 
 pub fn now_ms() -> u64 {
@@ -54,8 +67,6 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// A local control token, not a cryptographic secret: it only separates this user's
-/// processes on loopback, and it never leaves the data directory.
 pub fn random_token() -> String {
     let mut value = 0xcbf2_9ce4_8422_2325_u64;
     let seed = (
@@ -63,7 +74,7 @@ pub fn random_token() -> String {
         now_ms(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.subsec_nanos())
+            .map(|v| v.subsec_nanos())
             .unwrap_or(0),
         &value as *const u64 as usize,
     );
@@ -80,24 +91,93 @@ pub fn endpoint_path(directory: &Path) -> PathBuf {
     directory.join(ENDPOINT_FILE)
 }
 
+pub fn binary_hash(path: &Path) -> crate::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+#[cfg(test)]
 pub fn read_endpoint(directory: &Path) -> Option<Endpoint> {
-    let text = fs::read_to_string(endpoint_path(directory)).ok()?;
-    serde_json::from_str(&text).ok()
+    serde_json::from_str(&fs::read_to_string(endpoint_path(directory)).ok()?).ok()
 }
 
-pub fn endpoint_alive(endpoint: &Endpoint) -> bool {
-    let address = SocketAddr::from(([127, 0, 0, 1], endpoint.port));
-    TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
+/// A short-lived database initializer holds the very same guards as a Core and its
+/// worker. It does not need a DB file and never edits endpoint metadata. Host death
+/// closes stdin, automatically releasing both OS locks without a stale-lock heuristic.
+pub fn guard_database(directory: &Path) -> crate::Result<()> {
+    let (_owner, _worker) = initialization_guards(directory)?;
+    {
+        let mut out = std::io::stdout().lock();
+        serde_json::to_writer(
+            &mut out,
+            &serde_json::json!({"coreDatabaseGuardReady":true,"pid":std::process::id(),"protocol":PROTOCOL}),
+        )?;
+        out.write_all(b"\n")?;
+        out.flush()?;
+    }
+    let mut buffer = [0; 1024];
+    while std::io::stdin().read(&mut buffer)? != 0 {}
+    Ok(())
 }
 
-fn write_private(path: &Path, content: &str) -> Result<(), String> {
+fn initialization_guards(directory: &Path) -> crate::Result<(File, File)> {
+    fs::create_dir_all(directory)?;
+    let owner = lock_guard(
+        &directory.join(OWNER_LOCK),
+        "core already running or owner lock unavailable",
+    )?;
+    let worker = lock_guard(
+        &directory.join(WORKER_LOCK),
+        "previous core worker still running or worker lock unavailable",
+    )?;
+    // A parent may have died after spawn but before its child acquired worker.lock.
+    // Rebuilding the DB must invalidate that child's old authorization even after this
+    // guard releases. Holding both OS locks makes this metadata change exclusive.
+    match fs::remove_file(directory.join(LEASE_FILE)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok((owner, worker))
+}
+
+fn private_options() -> OpenOptions {
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.read(true).write(true).create(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
+    options
+}
+
+fn open_guard(path: &Path) -> Result<File, String> {
+    private_options()
+        .open(path)
+        .map_err(|error| format!("open {}: {error}", path.display()))
+}
+
+fn lock_guard(path: &Path, label: &str) -> Result<File, String> {
+    let guard = open_guard(path)?;
+    guard
+        .try_lock()
+        .map_err(|error| format!("{label}: {}: {error}", path.display()))?;
+    Ok(guard)
+}
+
+fn write_private(path: &Path, content: &str) -> Result<(), String> {
+    let mut options = private_options();
+    options.truncate(true);
     let mut file = options
         .open(path)
         .map_err(|error| format!("create {}: {error}", path.display()))?;
@@ -108,99 +188,103 @@ fn write_private(path: &Path, content: &str) -> Result<(), String> {
 }
 
 impl Lease {
-    /// Take the data directory, replacing a lease whose core is no longer reachable.
     pub fn acquire(directory: &Path, db_path: &Path) -> Result<Self, String> {
         fs::create_dir_all(directory)
             .map_err(|error| format!("create {}: {error}", directory.display()))?;
-        let lease_path = directory.join(LEASE_FILE);
-        let db_path = db_path.to_string_lossy().into_owned();
-        for attempt in 0..3 {
-            let nonce = random_token();
-            let record = LeaseRecord {
-                pid: std::process::id(),
-                nonce: nonce.clone(),
-                started_at: now_ms(),
-                db_path: db_path.clone(),
-            };
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&lease_path) {
-                Ok(mut file) => {
-                    let serialized = serde_json::to_string(&record).map_err(|error| error.to_string())?;
-                    file.write_all(serialized.as_bytes())
-                        .map_err(|error| format!("write {}: {error}", lease_path.display()))?;
-                    file.sync_all()
-                        .map_err(|error| format!("flush {}: {error}", lease_path.display()))?;
-                    return Ok(Lease {
-                        directory: directory.to_path_buf(),
-                        nonce,
-                        released: false,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // A previous core crashed without cleaning up: its endpoint no longer
-                    // accepts connections, so the directory is free.
-                    if read_endpoint(directory).is_some_and(|endpoint| endpoint_alive(&endpoint)) {
-                        return Err(format!("core already running for {}", directory.display()));
-                    }
-                    let _ = fs::remove_file(endpoint_path(directory));
-                    let _ = fs::remove_file(&lease_path);
-                    if attempt >= 2 {
-                        return Err(format!("could not take {}", lease_path.display()));
-                    }
-                }
-                Err(error) => return Err(format!("create {}: {error}", lease_path.display())),
-            }
+        let directory = fs::canonicalize(directory).map_err(|error| error.to_string())?;
+        let owner = lock_guard(
+            &directory.join(OWNER_LOCK),
+            "core already running or owner lock unavailable",
+        )?;
+        // No metadata may change until both the old parent and its old worker are gone.
+        let worker_handoff = lock_guard(
+            &directory.join(WORKER_LOCK),
+            "previous core worker still running or worker lock unavailable",
+        )?;
+        let nonce = random_token();
+        let record = LeaseRecord {
+            pid: std::process::id(),
+            nonce: nonce.clone(),
+            started_at: now_ms(),
+            db_path: fs::canonicalize(db_path)
+                .map_err(|error| format!("database path: {error}"))?
+                .to_string_lossy()
+                .into_owned(),
+        };
+        write_private(
+            &directory.join(LEASE_FILE),
+            &serde_json::to_string(&record).map_err(|error| error.to_string())?,
+        )?;
+        match fs::remove_file(endpoint_path(&directory)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove stale endpoint: {error}")),
         }
-        Err(format!("could not take {}", lease_path.display()))
+        Ok(Self {
+            directory,
+            nonce,
+            owner: Some(owner),
+            worker_handoff: Some(worker_handoff),
+        })
     }
 
-    #[cfg(test)]
     pub fn nonce(&self) -> &str {
         &self.nonce
     }
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
 
-    /// Publish the endpoint once the listener is bound. Clients treat this file as the
-    /// single source of truth for "a core is ready".
-    pub fn publish(&self, listener: &TcpListener, token: &str, db_path: &Path) -> Result<Endpoint, String> {
-        let port = listener
-            .local_addr()
-            .map_err(|error| format!("local_addr: {error}"))?
-            .port();
+    /// The child acquires worker.lock, then verifies our nonce before opening the DB.
+    pub fn handoff_worker(&mut self) {
+        self.worker_handoff.take();
+    }
+
+    /// Called only after the worker acquired its guard and successfully opened the DB.
+    pub fn publish(
+        &self,
+        listener: &TcpListener,
+        token: &str,
+        db_path: &Path,
+        worker_pid: u32,
+        binary_hash: &str,
+    ) -> Result<Endpoint, String> {
         let endpoint = Endpoint {
             pid: std::process::id(),
-            port,
+            worker_pid,
+            port: listener
+                .local_addr()
+                .map_err(|error| error.to_string())?
+                .port(),
             token: token.to_owned(),
+            generation: self.nonce.clone(),
+            binary_hash: binary_hash.to_owned(),
+            protocol: PROTOCOL,
             started_at: now_ms(),
-            db_path: db_path.to_string_lossy().into_owned(),
+            db_path: fs::canonicalize(db_path)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .into_owned(),
         };
         let path = endpoint_path(&self.directory);
         let staging = path.with_extension("json.tmp");
-        let serialized = serde_json::to_string(&endpoint).map_err(|error| error.to_string())?;
-        write_private(&staging, &serialized)?;
-        fs::rename(&staging, &path).map_err(|error| format!("rename {}: {error}", path.display()))?;
+        write_private(
+            &staging,
+            &serde_json::to_string(&endpoint).map_err(|error| error.to_string())?,
+        )?;
+        fs::rename(&staging, &path).map_err(|error| format!("publish endpoint: {error}"))?;
         Ok(endpoint)
     }
 
     pub fn release(&mut self) {
-        if self.released {
+        if self.owner.is_none() {
             return;
         }
-        self.released = true;
-        // Only remove what is still ours: another core may have taken over already.
-        if fs::read_to_string(self.directory.join(LEASE_FILE))
-            .ok()
-            .and_then(|text| serde_json::from_str::<LeaseRecord>(&text).ok())
-            .is_some_and(|record| record.nonce == self.nonce)
-        {
-            let _ = fs::remove_file(endpoint_path(&self.directory));
-            let _ = fs::remove_file(self.directory.join(LEASE_FILE));
-        }
+        // Keep core.lock held while clearing metadata; a replacement cannot race this.
+        let _ = fs::remove_file(endpoint_path(&self.directory));
+        let _ = fs::remove_file(self.directory.join(LEASE_FILE));
+        self.worker_handoff.take();
+        self.owner.take();
     }
 }
 
@@ -210,81 +294,168 @@ impl Drop for Lease {
     }
 }
 
+impl WorkerLease {
+    pub fn from_environment(db_path: &Path) -> crate::Result<Option<Self>> {
+        let directory = std::env::var_os(DATA_DIRECTORY_ENV);
+        let generation = std::env::var(GENERATION_ENV).ok();
+        match (directory, generation) {
+            (None, None) => Ok(None),
+            (Some(directory), Some(generation)) => {
+                Self::acquire(Path::new(&directory), db_path, &generation)
+                    .map(Some)
+                    .map_err(Into::into)
+            }
+            _ => Err("incomplete core worker ownership environment".into()),
+        }
+    }
+
+    fn acquire(directory: &Path, db_path: &Path, generation: &str) -> Result<Self, String> {
+        let guard = open_guard(&directory.join(WORKER_LOCK))?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match guard.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => return Err(format!("worker ownership unavailable: {error}")),
+            }
+        }
+        let record: LeaseRecord = serde_json::from_str(
+            &fs::read_to_string(directory.join(LEASE_FILE)).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let database = fs::canonicalize(db_path).map_err(|error| error.to_string())?;
+        if record.nonce != generation || Path::new(&record.db_path) != database {
+            return Err("core generation or database changed before worker startup".into());
+        }
+        Ok(Self {
+            _guard: guard,
+            generation: generation.to_owned(),
+        })
+    }
+
+    pub fn ready(&self) -> crate::Result<()> {
+        let frame = serde_json::json!({"coreWorkerReady":true,"generation":self.generation,
+            "workerPid":std::process::id(),"protocol":PROTOCOL});
+        let mut out = std::io::stdout().lock();
+        serde_json::to_writer(&mut out, &frame)?;
+        out.write_all(b"\n")?;
+        out.flush()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     struct Fixture(PathBuf);
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
-
     fn fixture() -> Fixture {
-        // Tests in one binary run in parallel: the name has to be unique per fixture, not
-        // just per process, or one test removes the directory another one is still using.
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "mybuddy-core-lease-{}-{}",
             std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            random_token()
         ));
-        fs::create_dir_all(&root).expect("create fixture");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("app.db"), []).unwrap();
         Fixture(root)
     }
 
     #[test]
-    fn a_reachable_core_keeps_its_lease() {
-        let fixture = fixture();
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
-        let lease = Lease::acquire(&fixture.0, &fixture.0.join("app.db")).expect("first lease");
-        lease.publish(&listener, "token-1", &fixture.0.join("app.db")).expect("publish");
-        assert_eq!(read_endpoint(&fixture.0).expect("endpoint").token, "token-1");
-        let error = Lease::acquire(&fixture.0, &fixture.0.join("app.db")).expect_err("second must fail");
-        assert!(error.contains("already running"), "{error}");
-        drop(listener);
+    fn an_unpublished_live_owner_cannot_be_stolen() {
+        let f = fixture();
+        let db = f.0.join("app.db");
+        let _first = Lease::acquire(&f.0, &db).unwrap();
+        assert!(
+            Lease::acquire(&f.0, &db)
+                .unwrap_err()
+                .contains("core already running")
+        );
     }
 
     #[test]
-    fn an_unreachable_core_is_replaced() {
-        let fixture = fixture();
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
-        let port = listener.local_addr().expect("addr").port();
+    fn unreachable_endpoint_does_not_override_an_os_lock() {
+        let f = fixture();
+        let db = f.0.join("app.db");
+        let lease = Lease::acquire(&f.0, &db).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        lease
+            .publish(&listener, "token", &db, 1, "test-hash")
+            .unwrap();
         drop(listener);
-        let endpoint = Endpoint {
-            pid: 1,
-            port,
-            token: "stale".to_owned(),
-            started_at: 1,
-            db_path: "app.db".to_owned(),
-        };
-        write_private(
-            &endpoint_path(&fixture.0),
-            &serde_json::to_string(&endpoint).expect("serialize"),
-        )
-        .expect("write endpoint");
-        write_private(
-            &fixture.0.join(LEASE_FILE),
-            r#"{"pid":1,"nonce":"stale","startedAt":1,"dbPath":"app.db"}"#,
-        )
-        .expect("write lease");
-        let lease = Lease::acquire(&fixture.0, &fixture.0.join("app.db")).expect("take over");
-        assert_ne!(lease.nonce(), "stale");
+        assert!(Lease::acquire(&f.0, &db).is_err());
     }
 
     #[test]
-    fn releasing_removes_both_files_and_only_once() {
-        let fixture = fixture();
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
-        let mut lease = Lease::acquire(&fixture.0, &fixture.0.join("app.db")).expect("lease");
-        lease.publish(&listener, "token", &fixture.0.join("app.db")).expect("publish");
-        assert!(endpoint_path(&fixture.0).exists());
+    fn worker_guard_survives_owner_release_and_blocks_takeover() {
+        let f = fixture();
+        let db = f.0.join("app.db");
+        let mut first = Lease::acquire(&f.0, &db).unwrap();
+        first.handoff_worker();
+        let worker = WorkerLease::acquire(&f.0, &db, first.nonce()).unwrap();
+        drop(first);
+        assert!(
+            Lease::acquire(&f.0, &db)
+                .unwrap_err()
+                .contains("worker still running")
+        );
+        drop(worker);
+        assert!(Lease::acquire(&f.0, &db).is_ok());
+    }
+
+    #[test]
+    fn delayed_worker_cannot_join_a_replacement_generation() {
+        let f = fixture();
+        let db = f.0.join("app.db");
+        let old = Lease::acquire(&f.0, &db).unwrap();
+        let nonce = old.nonce().to_owned();
+        drop(old);
+        let mut new = Lease::acquire(&f.0, &db).unwrap();
+        new.handoff_worker();
+        assert!(WorkerLease::acquire(&f.0, &db, &nonce).is_err());
+        assert!(WorkerLease::acquire(&f.0, &db, new.nonce()).is_ok());
+    }
+
+    #[test]
+    fn database_initializer_invalidates_a_delayed_child_generation() {
+        let f = fixture();
+        let db = f.0.join("app.db");
+        let mut old = Lease::acquire(&f.0, &db).unwrap();
+        let nonce = old.nonce().to_owned();
+        // Model parent death before its spawned child acquired the worker guard:
+        // kernel handles close, while the published lease record remains on disk.
+        old.handoff_worker();
+        old.owner.take();
+        drop(old);
+        assert!(f.0.join(LEASE_FILE).exists());
+        let guards = initialization_guards(&f.0).unwrap();
+        assert!(!f.0.join(LEASE_FILE).exists());
+        fs::write(&db, []).unwrap();
+        drop(guards);
+        assert!(WorkerLease::acquire(&f.0, &db, &nonce).is_err());
+        assert!(Lease::acquire(&f.0, &db).is_ok());
+    }
+
+    #[test]
+    fn release_keeps_lock_inodes_and_removes_discovery_files() {
+        let f = fixture();
+        let db = f.0.join("app.db");
+        let mut lease = Lease::acquire(&f.0, &db).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        lease
+            .publish(&listener, "token", &db, 1, "test-hash")
+            .unwrap();
+        assert_eq!(read_endpoint(&f.0).unwrap().token, "token");
         lease.release();
-        assert!(!endpoint_path(&fixture.0).exists());
-        assert!(!fixture.0.join(LEASE_FILE).exists());
         lease.release();
-        assert_eq!(random_token().len(), 32);
-        assert_ne!(random_token(), random_token());
+        assert!(!endpoint_path(&f.0).exists());
+        assert!(!f.0.join(LEASE_FILE).exists());
+        assert!(f.0.join(OWNER_LOCK).exists());
+        assert!(f.0.join(WORKER_LOCK).exists());
     }
 }
