@@ -198,6 +198,7 @@ export interface RemoteHistoryMessage {
   acp?: RemoteAcpRunInfo
   dotsAutomaticInput?: true
   dotsDelivery?: RemoteDotsDelivery
+  dotsProactive?: true
 }
 
 export interface RemoteTaskHistory {

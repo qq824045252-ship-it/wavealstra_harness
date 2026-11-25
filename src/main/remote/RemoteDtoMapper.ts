@@ -105,6 +105,7 @@ export function mapRemoteHistoryMessage(message: ChatMessageDto): RemoteHistoryM
     streaming: message.streaming,
     role: message.role,
     text: message.text,
+    ...(message.dotsProactive ? { dotsProactive: true } : {}),
     thinking: message.thinking,
     modelName: message.modelName,
     createdAt: message.createdAt,

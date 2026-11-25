@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, defineDoc, InboxDoc, LiveDoc, type Conversation, type ConversationId, type Cursor, type EntryId, type EntryRecord, type Harness, type SubmissionId, type Tx, type UserInput } from "@earendil-works/pi-durable";
 import type { DurableInputMetadata } from "./DurableHistoryProjection";
+import { openDurablePassiveStorage } from "./DurableStorage";
 
 type ContentFields<T> = { [Key in keyof T]: T[Key] };
 export type DurableRegenerationInput = { operationId: string; content: string | Array<ContentFields<Exclude<UserInput, string>[number]>>; metadata?: DurableInputMetadata };
@@ -9,9 +10,20 @@ export type DurableRegenerationState = { kind: "pending"; input: DurableRegenera
 /** The product's visible branch. Previous conversations remain immutable audit history. */
 export const ActiveDurableConversation = defineDoc({
   kind: "mybuddy.active-conversation", version: 1, scope: "session", checkpointWhen: () => false,
-  initial: (): { conversationId: ConversationId | null; regeneration?: DurableRegenerationState; previousDotsPages?: ConversationId[] } =>
+  initial: (): { conversationId: ConversationId | null; regeneration?: DurableRegenerationState; previousDotsPages?: ConversationId[]; dotsWorkspace?: string } =>
     ({ conversationId: null }),
 });
+
+export async function readDotsWorkspace(directory: string, context: Context): Promise<string | undefined> {
+  const storage = await openDurablePassiveStorage(directory, context);
+  if (!storage) return undefined;
+  try {
+    const address = { kind: ActiveDurableConversation.definition.kind, scope: { kind: "session" } } as const;
+    const record = await storage.findDocument(address, "current", context);
+    const value = record && (await storage.document(record.id, "current", context))?.value.dotsWorkspace;
+    return typeof value === "string" ? value : undefined;
+  } finally { await storage.close(context); }
+}
 
 export async function resolveActiveDurableConversation(harness: Harness, root: Conversation, context: Context): Promise<Conversation> {
   const active = await harness.snapshot(ActiveDurableConversation, context);
@@ -23,8 +35,8 @@ export async function resolveActiveDurableConversation(harness: Harness, root: C
 
 /** Creation and the visible pointer commit together; an unsuccessful fork never changes the user's branch. */
 export async function forkDurableConversation(harness: Harness, source: Conversation, at: EntryId | undefined, context: Context,
-  options: { regeneration?: DurableRegenerationInput; archiveDotsPage?: boolean } = {}): Promise<Conversation> {
-  const { regeneration, archiveDotsPage } = options;
+  options: { regeneration?: DurableRegenerationInput; dotsWorkspace?: string } = {}): Promise<Conversation> {
+  const { regeneration, dotsWorkspace } = options;
   const activate = async (tx: Tx, id: ConversationId) => {
     const active = await tx.doc(ActiveDurableConversation);
     if (active.conversationId !== null && active.conversationId !== source.id) throw new Error("会话分支已变化，请刷新后重试");
@@ -38,7 +50,11 @@ export async function forkDurableConversation(harness: Harness, source: Conversa
       for (const key of Object.keys(target)) Reflect.deleteProperty(target, key);
       Object.assign(target, current);
     }
-    if (archiveDotsPage) active.previousDotsPages = [...active.previousDotsPages ?? [], source.id];
+    if (dotsWorkspace !== undefined) {
+      (await tx.doc(AgentDoc, id)).cwd = dotsWorkspace;
+      active.dotsWorkspace = dotsWorkspace;
+      active.previousDotsPages = [...active.previousDotsPages ?? [], source.id];
+    }
     active.conversationId = id;
     active.regeneration = regeneration ? { kind: "pending", input: regeneration } : undefined;
   };

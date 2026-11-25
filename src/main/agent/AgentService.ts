@@ -1,4 +1,5 @@
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsCapabilityRequirement } from "../../shared/dots";
+import { createDotsWorkspace, isDotsBriefPath, validateDotsWorkspaceRoot } from "../dots/DotsWorkspace";
 import { DotsCapabilityUnavailable, type DotsExecutionCatalog, type DotsExecutionConfiguration } from "../dots/DotsCapabilityRequirements";
 import { assertDotsWorkCompletion, dotsProjectTestCheck } from "../dots/DotsCompletion";
 import { DOTS_DESKTOP_PREVIEW, DOTS_RESIDENT_READ, dotsOperationEnabled, dotsResidentSources, resolveDotsPreferences } from "../../shared/dots-settings";
@@ -85,7 +86,7 @@ import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import { app, BrowserWindow } from "electron";
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -1666,8 +1667,15 @@ export class AgentService {
       db: this.db, codeReview: this.codeReview, models: this.durableModels, agentDir: getMyBuddyDir(), mcpDir: getMcpDir(),
       assetsDir: typeof __dirname === "string" ? __dirname : undefined,
       resolveCwd: id => this.resolveTaskExecutionWorkspaceCwd(id),
+      createDotsWorkspace: () => {
+        const selected = this.settingsStore.read().dotsSettings?.workspaceRoot;
+        const root = selected ?? this.defaultDotsWorkspaceRoot();
+        if (!selected) mkdirSync(root, { recursive: true });
+        return createDotsWorkspace(validateDotsWorkspaceRoot(root));
+      },
       validateGatewayWorkspace: (id, cwd, from) => validateGatewayTaskCwd(this.db, this.taskWorkspace, id, cwd, from),
       resolveNextCwd: id => {
+        if (id === DOTS_TASK_ID) return undefined;
         if (isGatewayConversation(id)) return ensureGatewayTaskCwd(this.db, this.taskWorkspace, id);
         const task = this.db.getTask(id);
         if (task?.welcomeMode !== "general" || isTaskWorktreeId(id) || this.workService.repo.bindingForTask(id)
@@ -1865,7 +1873,7 @@ export class AgentService {
         return createAgentSettingsManager(task.cwd ?? this.resolveTaskExecutionWorkspaceCwd(task.id), getMyBuddyDir()).getModelThinkingLevel(model.provider, model.id);
       },
       projectArtifacts: async (taskId, snapshot, before, cwd, messageWorkspaces) => {
-        const messageId = snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id;
+        const messageId = snapshot.messages.filter(message => message.role === "assistant" && !message.dotsProactive).at(-1)?.id;
         if (!messageId) return;
         await this.emitChangedArtifacts(taskId, messageId, cwd, before);
         // Native tool records also expose outputs outside the workspace or beyond scan limits.
@@ -1874,8 +1882,12 @@ export class AgentService {
           if (tool.status !== "success" || !["write", "edit"].includes(tool.tool)) continue;
           const target = argsPathOf(tool.detail) ?? argsPathOf(tool.summary) ?? tool.summary;
           try {
-            const file = resolve(messageWorkspaces?.get(message.id) ?? cwd, target);
-            if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, dirname(file), file, tool.id);
+            const workspace = messageWorkspaces?.get(message.id) ?? cwd;
+            if (taskId === DOTS_TASK_ID && resolvedPathKey(workspace) !== resolvedPathKey(cwd)) continue;
+            const file = resolve(workspace, target);
+            const root = taskId === DOTS_TASK_ID ? workspace : dirname(file);
+            if (taskId === DOTS_TASK_ID) assertPathInsideTask(root, file);
+            if (existsSync(file) && statSync(file).isFile()) await this.emitArtifactFile(taskId, message.id, root, file, tool.id);
           } catch { /* Non-file results remain visible verbatim in the Durable transcript. */ }
         }
         for (const message of snapshot.messages) for (const artifact of message.artifacts ?? []) {
@@ -1940,6 +1952,11 @@ export class AgentService {
   async newDotsConversation(): Promise<void> {
     if (!this.durableBots) throw new Error("Dots 会话服务不可用");
     await this.durableBots.newDotsConversation();
+  }
+
+  async openDots() {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.openDots();
   }
 
   private botInstructions(task: TaskDto): string {
@@ -2454,6 +2471,11 @@ export class AgentService {
   async appendDotsReply(reply: import("../../shared/dots").DotsAssistantReply, isCurrent: () => boolean = () => true) {
     if (!this.durableBots) throw new Error("执行服务尚未初始化");
     return this.durableBots.appendDotsReply(reply, isCurrent);
+  }
+
+  async appendDotsProactive(key: string, text: string, isCurrent: () => boolean) {
+    if (!this.durableBots) throw new Error("执行服务尚未初始化");
+    return this.durableBots.appendDotsProactive(key, text, isCurrent);
   }
 
   async releaseDurableTask(taskId: string): Promise<void> { await this.durableBots?.release(taskId); }
@@ -4186,12 +4208,16 @@ export class AgentService {
     return this.listModels();
   }
 
+  private defaultDotsWorkspaceRoot() { return join(getMyBuddyDir(), "dots", "workspaces"); }
+
   getAppSettings(): AppSettingsDto {
     const app = this.settingsStore.read();
     const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
     return {
       ...app,
       dotsSettingsRuntime: true,
+      dotsDefaultWorkspaceRoot: this.defaultDotsWorkspaceRoot(),
+      dotsCurrentWorkspace: this.durableBots?.cwd(DOTS_TASK_ID),
       dotsSettings: resolveDotsPreferences(app.dotsSettings),
       defaultModelId: this.readSettingsDefaultModelId(piSettings) ?? "",
       enabledModels: piSettings.getEnabledModels(),
@@ -4202,7 +4228,12 @@ export class AgentService {
 
   async updateAppSettings(partial: Partial<AppSettingsDto>): Promise<AppSettingsDto> {
     const previous = this.getAppSettings();
-    const { enabledModels, defaultModelId, modelPreferences, dotsSettingsRuntime: _runtime, ...productPartial } = partial;
+    const { enabledModels, defaultModelId, modelPreferences, dotsSettingsRuntime: _runtime,
+      dotsDefaultWorkspaceRoot: _defaultRoot, dotsCurrentWorkspace: _currentWorkspace, ...productPartial } = partial;
+    if (typeof productPartial.dotsSettings?.workspaceRoot === "string") {
+      const requested = productPartial.dotsSettings.workspaceRoot.trim();
+      productPartial.dotsSettings = { ...productPartial.dotsSettings, workspaceRoot: requested ? validateDotsWorkspaceRoot(requested) : null };
+    }
     const piSettings = createAgentSettingsManager(process.cwd(), getMyBuddyDir());
 
     if (modelPreferences !== undefined) {
@@ -6321,6 +6352,7 @@ export class AgentService {
     const changed = diff.changed.filter((filePath) =>
       !emitted?.has(filePath.toLowerCase()) &&
       !isInternalTaskPath(filePath) &&
+      (taskId !== DOTS_TASK_ID || !isDotsBriefPath(taskRoot, filePath)) &&
       !isGeneratedWorkspacePath(filePath, taskRoot),
     );
     // 3C：已注册 artifact 的版本刷新（RefreshCoordinator → markFilesChanged → version++ → artifact:updated）

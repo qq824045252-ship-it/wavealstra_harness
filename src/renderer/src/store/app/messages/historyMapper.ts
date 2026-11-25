@@ -6,6 +6,7 @@ export function historyMessageToChatMessage(m: ChatMessageDto): ChatMessage {
   return {
     id: m.id,
     dotsDelivery: m.dotsDelivery,
+    dotsProactive: m.dotsProactive,
     inputRequestId: m.inputRequestId,
     goalContinuation: m.goalContinuation,
     role: m.role,

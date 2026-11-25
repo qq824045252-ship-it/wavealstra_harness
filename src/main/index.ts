@@ -27,6 +27,7 @@ import { DotsGoogleAccounts } from "./dots/DotsGoogleAccounts";
 import { DotsGoogleMonitor } from "./dots/DotsGoogleMonitor";
 import { DotsGoogleReads } from "./dots/DotsGoogleReads";
 import { DotsDiscovery } from "./dots/DotsDiscovery";
+import { DotsProactiveDelivery } from "./dots/DotsProactiveDelivery";
 import { DotsDiscoveryIpc, normalizeDreamSettings, normalizeRssSubscriptions } from "../shared/dots-discovery";
 import { search as searchDotsPublicWeb } from "./capabilities/web-access/gemini-search";
 import { AppSettingsStore } from "./AppSettingsStore";
@@ -401,6 +402,7 @@ let cronService: CronService;
 let dotsGoogleAccounts: DotsGoogleAccounts;
 let dotsGoogleMonitor: DotsGoogleMonitor;
 let dotsDiscovery: DotsDiscovery;
+let dotsProactiveDelivery: DotsProactiveDelivery;
 let gatewayService: GatewayService;
 let memoryGatewayController: MemoryGatewayController | null = null;
 let externalCliMemoryBridge: ExternalCliMemoryBridge | null = null;
@@ -804,7 +806,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     taskId => actions.allowsResult(taskId), kind => actions.allowsReply(kind));
   agentService.setDotsActions(dotsActions);
   agentService.setDotsDesktopPreview(dotsDesktopPreview);
-  ipcMain.handle(DotsIpc.open, () => db.openDots());
+  ipcMain.handle(DotsIpc.open, () => agentService.openDots());
   ipcMain.handle(DotsIpc.newConversation, () => agentService.newDotsConversation());
   ipcMain.handle(DotsIpc.list, (_event, sourceIds?: string[]) => dots.list(sourceIds).filter(row => actions.allowsResult(row.taskId)));
   ipcMain.handle(DotsIpc.activity, () => activity.list());
@@ -1487,13 +1489,19 @@ function registerIpc(memoryKernel: MemoryService): void {
       join(homedir(), "Library", "Application Support", "gws")],
   );
   const googleSettings = new AppSettingsStore();
+  dotsProactiveDelivery = new DotsProactiveDelivery(db.connection,
+    () => googleSettings.read().dotsSettings?.followupMode === "paused",
+    (key, text, current) => agentService.appendDotsProactive(key, text, current));
   dotsGoogleMonitor = new DotsGoogleMonitor(dotsGoogleAccounts,
     () => normalizeDotsGoogleRules(googleSettings.read().dotsSettings?.google),
     () => googleSettings.read().dotsSettings?.followupMode === "paused",
-    notice => notificationService.post({
-      type: "reminder.due", level: "info", title: notice.title, body: notice.body,
-      sourceType: "automation", sourceId: "dots-google", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
-    }),
+    notice => {
+      dotsProactiveDelivery.post({ ...notice, source: "Google" });
+      notificationService.post({
+        type: "reminder.due", level: "info", title: notice.title, body: notice.body,
+        sourceType: "automation", sourceId: "dots-google", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
+      });
+    },
   );
   const googleStatus = (): DotsGoogleStatus => ({ accounts: dotsGoogleAccounts.status(), sources: dotsGoogleMonitor.status() });
   const googleAccount = (value: unknown): DotsGoogleAccount => {
@@ -1534,10 +1542,13 @@ function registerIpc(memoryKernel: MemoryService): void {
       return { rss: normalizeRssSubscriptions(dotsSettings?.rss), dream: normalizeDreamSettings(dotsSettings?.dream),
         paused: dotsSettings?.followupMode === "paused" };
     },
-    notice => notificationService.post({
-      type: "automation.completed", level: "info", title: notice.title, body: notice.body,
-      sourceType: "automation", sourceId: "dots-discovery", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
-    }),
+    notice => {
+      dotsProactiveDelivery.post(notice);
+      notificationService.post({
+        type: "automation.completed", level: "info", title: notice.title, body: notice.body,
+        sourceType: "automation", sourceId: "dots-discovery", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
+      });
+    },
     async (query, signal) => {
       const result = await searchDotsPublicWeb(query, {
         signal, numResults: 6, recencyFilter: "week", includeContent: false,
@@ -1649,6 +1660,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (ordinary.dotsSettings !== undefined) {
       dotsGoogleMonitor?.refresh();
       dotsDiscovery?.refresh();
+      void dotsProactiveDelivery?.refresh();
       broadcastToWindows(DotsIpc.changed, null);
     }
     // 关闭到托盘开关实时生效
@@ -3177,6 +3189,7 @@ app.whenReady().then(async () => {
     cronService?.resumeDotsTimers();
     dotsGoogleMonitor?.refresh();
     dotsDiscovery?.refresh();
+    void dotsProactiveDelivery?.refresh();
     cadenceEngine?.catchUp();
     void cadenceEngine?.scheduleAllAsync();
     agentService?.onSystemResume();
@@ -3842,6 +3855,8 @@ app.whenReady().then(async () => {
   startupMark("restoreDelivered");
   cronService.start();
   dotsGoogleMonitor.start();
+  dotsProactiveDelivery.restoreNotifications(key => dotsDiscovery.retainedLinks(key));
+  dotsProactiveDelivery.start();
   dotsDiscovery.start();
   startupMark("cronReady");
   // 启动时恢复上次已连接的 IM 通道（Telegram 长轮询 / 飞书 / 企微 / 微信）
@@ -3908,7 +3923,7 @@ app.on("before-quit", (event) => {
     try { trayService?.dispose(); } catch { /* best effort */ }
     dotsDelegations?.close();
     await dotsActions?.closeFileWatches();
-    await Promise.allSettled([dotsGoogleMonitor?.close(), dotsGoogleAccounts?.close(), dotsDiscovery?.close()]);
+    await Promise.allSettled([dotsGoogleMonitor?.close(), dotsGoogleAccounts?.close(), dotsDiscovery?.close(), dotsProactiveDelivery?.close()]);
     try { cronService?.stop(); } catch { /* best effort */ }
     try { cadenceEngine?.shutdown(); } catch { /* best effort */ }
     try { surfaceCoordinator.dispose(); } catch { /* best effort */ }

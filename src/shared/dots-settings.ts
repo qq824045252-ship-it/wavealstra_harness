@@ -59,6 +59,7 @@ export const dotsOperations = {
 export type DotsOperation = keyof typeof dotsOperations;
 export interface DotsSettings extends Record<DotsCapability, boolean> {
   modelId: string | null;
+  workspaceRoot?: string | null;
   memoryMode: "readWrite" | "readOnly" | "off";
   memoryLimits: DotsMemoryLimits;
   followupMode: "continue" | "notify" | "paused";
@@ -107,6 +108,7 @@ export function normalizeDotsSettings(value: unknown, fallback?: DotsSettings): 
     rss: normalizeRssSubscriptions(input.rss ?? fallback?.rss),
     dream: normalizeDreamSettings(input.dream ?? fallback?.dream),
     modelId: input.modelId === null ? null : typeof input.modelId === "string" ? input.modelId.trim() || null : fallback?.modelId ?? null,
+    workspaceRoot: input.workspaceRoot === null ? null : typeof input.workspaceRoot === "string" ? input.workspaceRoot.trim() || null : fallback?.workspaceRoot ?? null,
     memoryMode: ["readWrite", "readOnly", "off"].includes(memoryMode) ? memoryMode : "readWrite",
     memoryLimits: resolveDotsMemoryLimits(input.memoryLimits, fallback?.memoryLimits),
     followupMode: ["continue", "notify", "paused"].includes(followupMode) ? followupMode : "continue",

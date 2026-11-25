@@ -126,7 +126,8 @@ export function coalesceAssistantTurnMessages(messages: LiveRemoteMessage[]): Li
   const result: LiveRemoteMessage[] = []
   for (const message of messages) {
     const previous = result.at(-1)
-    if (message.role !== 'assistant' || previous?.role !== 'assistant' || message.dotsDelivery || previous.dotsDelivery) {
+    if (message.role !== 'assistant' || previous?.role !== 'assistant' || message.dotsDelivery || previous.dotsDelivery
+      || message.dotsProactive || previous.dotsProactive) {
       result.push({ ...message, tools: message.tools?.map(x => ({ ...x })), artifacts: message.artifacts?.map(x => ({ ...x })) })
       continue
     }

@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { dotsReplyTimestamp, readDotsReply } from "./DurableDotsReply";
+import { readDotsProactive } from "./DurableDotsProactive";
 import { DOTS_TASK_END, readDotsTerminalReceipt } from "./DurableDotsTerminal";
 import { readDotsWorkerOutcome } from "../../dots/DotsWorkerOutcome";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -153,6 +154,14 @@ export class DurableHistoryProjection {
       this.newestEntry = Math.max(this.newestEntry ?? entry.id, entry.id);
       this.oldestEntry = Math.min(this.oldestEntry ?? entry.id, entry.id);
       const id = `durable-${entry.id}`;
+      const proactive = readDotsProactive(entry);
+      if (proactive) {
+        this.rows.set(id, { id, role: "assistant", entryId: String(entry.id), projectionVersion: 1,
+          text: proactive.text, createdAt: proactive.deliveredAt, dotsProactive: true });
+        this.observedAt = latestActivityTime(this.observedAt, proactive.deliveredAt);
+        this.dirty = true;
+        continue;
+      }
       const delivery = readDotsReply(entry);
       if (delivery) {
         const createdAt = dotsReplyTimestamp(entry);

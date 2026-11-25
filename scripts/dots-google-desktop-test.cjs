@@ -1,11 +1,13 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
+const Database = require("better-sqlite3");
 const { run } = require("./desktop-dev-harness.cjs");
 const { routingControls } = require("./answer-routing-desktop-controls.cjs");
 
 run(async env => {
-  const { evaluate, until, report } = env;
+  const { evaluate, until, report, rpc } = env;
   const { click, press, fill, screenshot } = routingControls(env);
   await click("MyBuddy Dots", ".sidebar-dots-entry");
   await until(() => evaluate("document.querySelector('.chat-header-title')?.textContent === 'MyBuddy Dots'"), "Dots 会话已就绪");
@@ -101,6 +103,59 @@ run(async env => {
   await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.dream.schedule.windowEnd === '01:00')"), "Dream 跨午夜窗口已保存");
   await screenshot("dots-dream-settings");
   report.actualControlChecks.push("在同一真实 Electron 设置面板添加、暂停、移除 RSS，并保存 Dream 兴趣标签和跨午夜随机窗口。");
+
+  const firstWorkspace = await evaluate("window.api.agent.getAppSettings().then(r => r.dotsCurrentWorkspace)");
+  const newRoot = path.join(env.home, "单独的 Dots 工作目录");
+  fs.mkdirSync(newRoot);
+  await click("工作目录", ".dots-config nav");
+  await fill('input[name="workspaceRoot"]', newRoot);
+  await click("保存根目录", ".dots-config");
+  await until(() => evaluate(`window.api.agent.getAppSettings().then(r => r.dotsSettings.workspaceRoot === ${JSON.stringify(fs.realpathSync(newRoot))})`),
+    "Dots 根目录已保存");
+  assert.equal(await evaluate("window.api.agent.getAppSettings().then(r => r.dotsCurrentWorkspace)"), firstWorkspace);
+  await screenshot("dots-workspace-settings");
+
+  await evaluate("window.api.agent.updateAppSettings({dotsSettings:{followupMode:'continue'}})");
+  const url = "https://news.example.test/dream";
+  const key = "dream:" + createHash("sha256").update(JSON.stringify([url])).digest("hex");
+  const title = "已留存的 Dream 原文";
+  await env.restart(() => {
+    const now = Date.now();
+    fs.writeFileSync(path.join(discoveryDir, "dream.json"), JSON.stringify({
+      checkedAt: now, recent: [{ title, url, summary: "保存在设置中的探索结果" }],
+    }));
+    const db = new Database(path.join(env.home, ".mybuddy", "app.db"), { fileMustExist: true });
+    try {
+      db.prepare(`INSERT INTO notifications
+        (id,type,level,title,body,source_type,source_id,task_id,dedupe_key,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run("retained-dream", "automation.completed", "info", "Dots · Dream · 工业自动化",
+        title, "automation", "dots-discovery", "mybuddy-dots", key, now);
+    } finally { db.close(); }
+  });
+  await click("MyBuddy Dots", ".sidebar-dots-entry");
+  await until(() => evaluate(`Array.from(document.querySelectorAll('.message-list a')).some(a =>
+    a.href === ${JSON.stringify(url)} && a.textContent === ${JSON.stringify(title)} && a.checkVisibility())`), "Dots 对话显示留存探索的原文链接");
+  const notices = await evaluate("window.api.agent.loadTaskHistory('mybuddy-dots').then(r=>r.messages.filter(m=>m.dotsProactive))");
+  assert.equal(notices.length, 1);
+  assert.match(notices[0].text, /保存在设置中的探索结果/);
+  const archived = path.join(firstWorkspace, "常驻能力", "Dream");
+  await until(() => fs.existsSync(archived) && fs.readdirSync(archived).length === 1, "Dream 简报已经落盘");
+  const files = fs.readdirSync(archived);
+  assert.equal(files.length, 1);
+  assert.match(fs.readFileSync(path.join(archived, files[0]), "utf8"), /https:\/\/news\.example\.test\/dream/);
+  await screenshot("dots-proactive-dream-chat");
+  report.actualControlChecks.push("重启后在 MyBuddy Dots 对话看到一条留存简报，含可见的原文链接和摘要。");
+
+  await press("document.querySelector('textarea.input-textarea')", "Dots 对话输入框");
+  await rpc("Input.insertText", { text: "/new" });
+  await press('document.querySelector(\'button[title="发送 (Enter)"]\')', "发送 /new");
+  await until(() => evaluate(`window.api.agent.getAppSettings().then(r => Boolean(r.dotsCurrentWorkspace && r.dotsCurrentWorkspace !== ${JSON.stringify(firstWorkspace)}))`),
+    "/new 切换到新的 Dots 工作目录");
+  const freshWorkspace = await evaluate("window.api.agent.getAppSettings().then(r => r.dotsCurrentWorkspace)");
+  assert.equal(path.dirname(path.dirname(freshWorkspace)), fs.realpathSync(newRoot));
+  assert.match(path.basename(path.dirname(freshWorkspace)), /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(fs.readdirSync(archived).length, 1);
+  report.actualControlChecks.push("在设置中更改根目录，原对话继续使用原目录，输入 /new 后新对话使用新根目录当天的子目录。");
 }, {
   name: "dots-google-settings-desktop", watchRenderer: false, isolatedDependencyCache: true,
   settings: { memoryEnabled: true, dotsSettings: { followupMode: "paused" } },

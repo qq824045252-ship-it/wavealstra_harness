@@ -67,7 +67,7 @@ export function botMessagePresentation(
     replies = [];
   };
   for (const message of messages) {
-    if (message.dotsDelivery) {
+    if (message.dotsDelivery || message.dotsProactive) {
       flush();
       result.push(message);
       afterDelivery = message.id;
@@ -97,7 +97,7 @@ export function botMessagePresentation(
   if (dotsBusy && tail?.role === "user" && !tail.submissionFailed && !tail.goalContinuation && !isDotsAutomaticInput(tail.inputRequestId ?? tail.id)) {
     result.push({ id: `dots-activity-${tail.id}`, presentationKey: `durable-turn-${tail.inputRequestId ?? tail.id}`,
       role: "assistant", createdAt: 0, blocks: [], streaming: true });
-  } else if (dotsBusy && tail?.role === "assistant" && !tail.finalAssistantReply && !tail.dotsDelivery
+  } else if (dotsBusy && tail?.role === "assistant" && !tail.finalAssistantReply && !tail.dotsDelivery && !tail.dotsProactive
     && !tail.streaming && tail.generationStats?.outcome !== "aborted" && tail.generationStats?.outcome !== "error") {
     result[result.length - 1] = { ...tail, streaming: true };
   }

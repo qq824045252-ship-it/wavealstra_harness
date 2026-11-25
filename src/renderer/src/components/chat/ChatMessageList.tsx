@@ -115,7 +115,7 @@ export function buildChatMessageRows(taskId: string | undefined, messages: reado
       key: message.presentationKey ?? message.id,
       message,
       hideMessage,
-      sourceQuestion: !automatic && !delivery && message.role === "assistant" ? precedingUser : undefined,
+      sourceQuestion: !automatic && !delivery && !message.dotsProactive && message.role === "assistant" ? precedingUser : undefined,
       deliveryQuestion: delivery?.kind === "conclusion" ? dotsQuestions.get(delivery.sourceMessageId) : undefined,
       deliveryKey: taskDelivery && message.role === "assistant" && !message.streaming
         && precedingUser?.inputRequestId === taskDelivery.operationId ? taskDelivery.deliveryKey : undefined,

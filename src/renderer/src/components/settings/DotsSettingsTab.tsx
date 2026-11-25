@@ -13,7 +13,7 @@ import { SettingsInput, SettingsSection, SettingsSelect } from "./SettingsPrimit
 import "./DotsSettingsTab.css";
 import "./Memory.css";
 
-const sections = ["调度", "提示词", "模型与记忆", "专属记忆", "读取额度", "跟进与空间", "工具与操作", "常驻能力"] as const;
+const sections = ["调度", "提示词", "模型与记忆", "专属记忆", "读取额度", "跟进与空间", "工作目录", "工具与操作", "常驻能力"] as const;
 const residentCapabilities = ["Google", "RSS", "Dream"] as const;
 const dotsMemoryScope = { scopeType: "task", scopeId: DOTS_TASK_ID } as const;
 const allOperations = Object.keys(dotsOperations) as DotsOperation[];
@@ -100,6 +100,20 @@ export default function DotsSettingsTab() {
     finally { setSaving(false); }
   }
 
+  async function chooseWorkspaceRoot() {
+    setError("");
+    try {
+      const selected = await window.api?.pickLocalFolder();
+      if (selected) await save("Dots 工作目录", { workspaceRoot: selected.path });
+    } catch (e) { setError(String(e)); }
+  }
+
+  async function openCurrentWorkspace(path: string) {
+    setError("");
+    try { await window.api?.openFolder(path); }
+    catch (e) { setError(String(e)); }
+  }
+
   const prefs = resolveDotsPreferences(settings?.dotsSettings);
   const byId = new Map(spaces.map(space => [space.id, space]));
   const selectableSpaces = spaces.flatMap(space => {
@@ -120,6 +134,25 @@ export default function DotsSettingsTab() {
     {!settings ? (!error && <p role="status">正在读取 Dots 设置…</p>) : !settings.dotsSettingsRuntime ?
       <p role="alert">当前运行的 MyBuddy 主进程还不支持这些设置。请完全退出并重开 MyBuddy。</p> : <>
       <fieldset disabled={saving}>
+      {section === "工作目录" && <SettingsSection title="Dots 工作目录">
+        <p className="settings-row-desc">每个新对话使用当天的新目录。跨天继续同一对话时，文件留在原目录。</p>
+        <form key={prefs.workspaceRoot} onSubmit={event => {
+          event.preventDefault();
+          const root = String(new FormData(event.currentTarget).get("workspaceRoot") ?? "").trim();
+          void save("Dots 工作目录", { workspaceRoot: root || null });
+        }}>
+          <SettingsInput label="Dots 根目录" name="workspaceRoot" defaultValue={prefs.workspaceRoot ?? ""}
+            placeholder={settings.dotsDefaultWorkspaceRoot} hint="留空使用默认目录。修改后从下一个新对话起生效。" />
+          <div className="dots-memory-limits-actions">
+            <button type="submit" className="btn primary">保存根目录</button>
+            <button type="button" className="btn" onClick={() => void chooseWorkspaceRoot()}>选择文件夹</button>
+          </div>
+        </form>
+        {settings.dotsCurrentWorkspace && <p className="settings-row-desc">当前对话目录 {settings.dotsCurrentWorkspace}{" "}
+          <button type="button" className="btn" onClick={() => void openCurrentWorkspace(settings.dotsCurrentWorkspace!)}>打开目录</button>
+        </p>}
+        <p className="settings-row-desc">Google、RSS 和 Dream 简报保存在当前对话的「常驻能力」目录中，各有一个子目录。</p>
+      </SettingsSection>}
       {section === "常驻能力" && <>
         <nav className="dots-resident-nav" aria-label="常驻能力分类">{residentCapabilities.map(name =>
           <button type="button" className="btn" key={name} aria-pressed={resident === name}

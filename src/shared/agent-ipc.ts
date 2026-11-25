@@ -1549,6 +1549,8 @@ export interface AppSettingsDto {
   dotsPromptAppend?: string;
   /** Read-only runtime support, independent of saved settings on disk. */
   dotsSettingsRuntime?: true;
+  dotsDefaultWorkspaceRoot?: string;
+  dotsCurrentWorkspace?: string;
   automaticSemanticRecall: boolean;
   /** External Agent Memory Gateway，默认关闭、仅 loopback。 */
   memoryGatewayEnabled?: boolean;
@@ -2129,6 +2131,7 @@ export interface ChatMessageDto {
   /** Native assistant reached its final reply rather than requesting another tool round. */
   finalAssistantReply?: boolean;
   dotsDelivery?: import("./dots").DotsAssistantReply;
+  dotsProactive?: true;
   /** Stable request identity for reconciling a locally submitted bubble with durable history. */
   inputRequestId?: string;
   /** Host-authored foreground input identity; never inferred from displayed text. */

@@ -89,6 +89,7 @@ const GUI_TESTS = new Set([
   "test:typography-desktop", // actual typography settings, glyph rendering and restart
   "test:dots-host", // two Electron mains sharing a local MyBuddy data directory
   "test:dots-desktop", // isolated Electron Dots conversation and source artifact preview
+  "test:dots-google-desktop", // isolated Electron account settings, RSS, Dream, and proactive messages
   "test:answer-routing-dev", // Electron settings, memory promotion, persistence and matching
   "test:native-hooks-dev", // Electron settings, version switching and a native tool receipt
   "test:native-improvement-dev", // Weekly review controls, scoped publication and withdrawal in Electron

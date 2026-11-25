@@ -44,13 +44,13 @@ import { readDurableContextStatus } from "./context/DurableContextStatus";
 import { DurableTaskProjection } from "./DurableTaskProjection";
 import { ToolGate } from "./ToolGate";
 import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
+import { bindDotsConversationWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { DurableWorkspaceMoves } from "./DurableWorkspaceMoves";
-import { WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { readDurableConversationHead, readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
 import type { DurableDomainTools } from "./DurableDomainTools";
 import type { DurableEvidenceOptions } from "./DurableEvidenceProjection";
-import { DurableUserEntryNotFoundError, findDurableUserEntry } from "./DurableConversationBranch";
+import { DurableUserEntryNotFoundError, findDurableUserEntry, readDotsWorkspace } from "./DurableConversationBranch";
 import { stopDurableSubagentsForTask } from "./DurableSubagents";
 import { readDurableSteerReceipts } from "./DurableSteerReceipts";
 import { durableContentText } from "./DurableHistoryProjection";
@@ -71,6 +71,14 @@ import { captureDurableBranch, resolveDurableBranch, type DurableBranchAnchor, t
 interface BotBinding { task_id: string; directory: string; cwd: string; backend: "pi-durable" }
 type AdmissionMark = (stage: string) => void;
 const STOP_SETTLEMENT_TIMEOUT_MS = 10_000;
+
+function lastConversationMessageId({ messages }: DurableBotSnapshot) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (!messages[index].dotsProactive) return messages[index].id;
+  }
+  return "";
+}
+
 class InputAdmissionStopped extends Error {
   constructor() { super("当前输入已停止"); }
 }
@@ -86,6 +94,7 @@ interface OpenBot {
   modelRepair?: BotModelRepair;
   /** Set while this runtime and its MCP clients are being torn down after a Session failure. */
   closing?: Promise<void>;
+  dotsWorkspace?: string;
 }
 export interface DurableInputOrigin {
   goalContinuation?: GoalContinuationOrigin;
@@ -101,6 +110,7 @@ export interface DurableBotServiceOptions {
   mcpDir: string;
   assetsDir?: string;
   resolveCwd: (taskId: string) => string;
+  createDotsWorkspace?: () => string;
   validateGatewayWorkspace?: (taskId: string, cwd: string, from?: string) => void;
   /** Desired organization root; undefined pins an execution-owned workspace. No projection writes. */
   resolveNextCwd?: (taskId: string) => string | undefined;
@@ -231,7 +241,7 @@ export class DurableBotService {
       db.bindTaskExecutionWorkspaceCwd(taskId, destination);
     }
   }
-  lastAssistantId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.messages.filter(message => message.role === "assistant").at(-1)?.id; }
+  lastAssistantId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.messages.filter(message => message.role === "assistant" && !message.dotsProactive).at(-1)?.id; }
   contextUsage(taskId: string) {
     const value = this.opened.get(taskId)?.runtime.snapshot.contextUsage;
     return value ? { taskId, ...value } : null;
@@ -319,6 +329,19 @@ export class DurableBotService {
         open = await this.openBound(taskId);
       }
       if (!admissionBoundary && this.admissions.get(taskId)?.size) return open;
+      if (taskId === DOTS_TASK_ID && this.options.createDotsWorkspace) {
+        if (open.dotsWorkspace || !await open.runtime.canRebindWorkspace()) return open;
+        const workspace = this.options.createDotsWorkspace();
+        await this.rememberWorkspaceHistory(taskId, open);
+        try { await bindDotsConversationWorkspace(open.runtime.conversation, workspace, context); }
+        catch (error) {
+          if (error instanceof WorkspaceMigrationBusyError) return open;
+          throw error;
+        }
+        await this.invalidate(taskId, open);
+        await this.projections.get(taskId);
+        return this.openBound(taskId);
+      }
       if (!this.options.resolveNextCwd || this.options.waitingForInput?.(taskId)) return open;
       let desired: string | undefined;
       try { desired = this.options.resolveNextCwd(taskId); }
@@ -448,18 +471,25 @@ export class DurableBotService {
     if (isGatewayConversation(taskId) && !task.gatewaySidebarChannelId) throw new Error("网关对话缺少可信渠道，无法打开会话存储");
     const prior = this.binding(taskId);
     const move = this.workspaceMoves.read(taskId);
-    const cwd = move?.toCwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
-    if (isGatewayConversation(taskId)) this.options.validateGatewayWorkspace?.(taskId, cwd, move?.fromCwd);
-    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
-    // Pending native operations retain their root; idle moves are committed below.
-    if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
-    task.cwd = cwd;
     const directoryName = createHash("sha256").update(taskId).digest("hex");
     const originalDirectory = join(agentDir, "durable", directoryName);
     const directory = isGatewayConversation(taskId) && task.gatewaySidebarChannelId
       ? gatewayConversationDirectory(db, taskId, task.gatewaySidebarChannelId, originalDirectory, prior?.directory)
       : prior?.directory ?? originalDirectory;
+    const dots = taskId === DOTS_TASK_ID && this.options.createDotsWorkspace;
+    const pinnedDotsWorkspace = dots ? await readDotsWorkspace(directory, context) : undefined;
+    const initialDotsWorkspace = dots && !prior && !pinnedDotsWorkspace ? dots() : undefined;
+    const dotsWorkspace = pinnedDotsWorkspace ?? initialDotsWorkspace;
+    const cwd = dotsWorkspace ?? move?.toCwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
+    if (isGatewayConversation(taskId)) this.options.validateGatewayWorkspace?.(taskId, cwd, move?.fromCwd);
+    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
+    // Pending native operations retain their root; idle moves are committed below.
+    if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
+    task.cwd = cwd;
     db.connection.prepare("INSERT OR IGNORE INTO durable_bot_bindings(task_id, backend, directory, cwd) VALUES (?, 'pi-durable', ?, ?)").run(taskId, directory, cwd);
+    if (pinnedDotsWorkspace && prior?.cwd !== cwd) {
+      db.connection.prepare("UPDATE durable_bot_bindings SET cwd=? WHERE task_id=?").run(cwd, taskId);
+    }
     const config = this.mcpConfiguration(taskId);
     const mcp = await DurableMcp.open(config, this.credentials, models, cwd);
     let openedRuntime: DurableBotRuntime | undefined;
@@ -515,6 +545,7 @@ export class DurableBotService {
             canReadLibrary: () => this.options.canReadAnswerEvidence?.(taskId, "library_read") ?? toolGate.allowed("library_read") }),
         },
         workspaceMigrationFrom: move?.fromCwd,
+        pinInitialDotsWorkspace: initialDotsWorkspace !== undefined,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
         beforeToolExecution: (name, args, toolCwd) => {
@@ -598,8 +629,8 @@ export class DurableBotService {
             : { type: "durable_snapshot", taskId, snapshot });
           previousSnapshot = snapshot;
           if (snapshot.contextUsage) this.options.emit({ type: "context_usage", taskId, ...snapshot.contextUsage });
-          const signature = snapshot.messages.at(-1)?.id ?? "";
-          if (!snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
+          const signature = lastConversationMessageId(snapshot);
+          if ((!dots || dotsWorkspace) && !snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
             projected = signature;
             const origins = messageWorkspaces;
             const projection = (this.projections.get(taskId) ?? Promise.resolve()).then(async () => {
@@ -610,7 +641,7 @@ export class DurableBotService {
           }
         },
         onProjected: snapshot => {
-          const key = `${snapshot.conversationId}:${snapshot.messages.at(-1)?.id ?? ""}:${snapshot.outcome ?? ""}`;
+          const key = `${snapshot.conversationId}:${lastConversationMessageId(snapshot)}:${snapshot.outcome ?? ""}`;
           if (!snapshot.busy && !snapshot.queued && snapshot.outcome && key !== settledKey) {
             settledKey = key;
             const currentInput = [...snapshot.messages].reverse().find(message => message.role === "user")?.inputRequestId;
@@ -621,7 +652,7 @@ export class DurableBotService {
       });
       openedRuntime = runtime;
       if (move) await this.workspaceMoves.write({ kind: "commit", taskId, ...move, cwd, at: Date.now() });
-      return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), ...(modelRepair ? { modelRepair } : {}) };
+      return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), dotsWorkspace, ...(modelRepair ? { modelRepair } : {}) };
     } catch (error) { await openedRuntime?.close(); await mcp.close(); throw error; }
   }
 
@@ -879,13 +910,19 @@ export class DurableBotService {
     });
   }
 
+  async openDots() {
+    this.options.db.openDots();
+    await this.open(DOTS_TASK_ID);
+    return this.options.db.getTask(DOTS_TASK_ID)!;
+  }
+
   async newDotsConversation(): Promise<void> {
+    this.options.db.openDots();
     return this.trackAdmission(DOTS_TASK_ID, async () => {
-      if (!this.binding(DOTS_TASK_ID)) return;
       const open = await this.open(DOTS_TASK_ID);
-      const snapshot = open.runtime.snapshot;
-      if (!snapshot.messages.length && snapshot.historyBefore === undefined && !snapshot.busy && !snapshot.queued) return;
-      await open.runtime.newDotsConversation();
+      if (!this.options.createDotsWorkspace) throw new Error("Dots 工作目录尚未初始化。");
+      if (open.runtime.snapshot.busy || open.runtime.snapshot.queued) throw new Error("任务仍在运行，请先停止生成");
+      await open.runtime.newDotsConversation(this.options.createDotsWorkspace());
       await this.release(DOTS_TASK_ID);
       await this.open(DOTS_TASK_ID);
     });
@@ -1267,6 +1304,11 @@ export class DurableBotService {
   async appendDotsReply(reply: DotsAssistantReply, isCurrent: () => boolean) {
     if (!this.binding(DOTS_TASK_ID)) return { status: "discarded" } as const;
     return this.withRecovery(DOTS_TASK_ID, open => open.runtime.appendDotsReply(reply, isCurrent));
+  }
+
+  async appendDotsProactive(key: string, text: string, isCurrent: () => boolean) {
+    this.options.db.openDots();
+    return this.withRecovery(DOTS_TASK_ID, open => open.runtime.appendDotsProactive(key, text, isCurrent));
   }
 
   async stopObservedRun(taskId: string, inputVersion?: string): Promise<"idle" | "stop_requested" | "intent_changed"> {

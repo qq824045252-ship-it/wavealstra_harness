@@ -1,0 +1,123 @@
+import type Database from "better-sqlite3";
+import { discoveryUrl, type DiscoveryItem } from "../../shared/dots-discovery";
+import { DOTS_TASK_ID } from "../../shared/dots";
+import type { DotsProactiveOutcome } from "../agent/durable/DurableDotsProactive";
+import { saveDotsBrief, type DotsResidentSource } from "./DotsWorkspace";
+
+export interface DotsProactiveNotice {
+  key: string;
+  source: DotsResidentSource;
+  title: string;
+  body: string;
+  items?: DiscoveryItem[];
+  intro?: string;
+}
+
+const escapeMarkdown = (text: string) => text.replace(/[\\`*_{}\[\]<>()#+.!|~]/g, "\\$&");
+
+function noticeText(notice: DotsProactiveNotice) {
+  const title = "**" + escapeMarkdown(notice.title.replace(/\s+/g, " ")) + "**";
+  const links = notice.items?.flatMap(item => {
+    const url = discoveryUrl(item.url);
+    if (!url) return [];
+    const label = escapeMarkdown(item.title.replace(/\s+/g, " "));
+    return ["- [" + label + "](<" + url + ">)"
+      + (item.summary ? " — " + escapeMarkdown(item.summary.replace(/\s+/g, " ")) : "")];
+  }) ?? [];
+  const sections = links.length ? [notice.intro && escapeMarkdown(notice.intro), links.join("\n")] : [escapeMarkdown(notice.body)];
+  return [title, ...sections].filter(Boolean).join("\n\n");
+}
+
+interface TaskNoticeRow {
+  dedupe_key: string;
+  source_id: "dots-google" | "dots-discovery";
+  title: string;
+  body: string | null;
+  created_at: number;
+}
+
+export class DotsProactiveDelivery {
+  private timer?: ReturnType<typeof setInterval>;
+  private flight?: Promise<void>;
+
+  constructor(private readonly db: Database.Database, private readonly paused: () => boolean,
+    private readonly append: (key: string, text: string, isCurrent: () => boolean) => Promise<DotsProactiveOutcome>) {
+    db.exec(`CREATE TABLE IF NOT EXISTS dots_proactive_delivery (
+      delivery_key TEXT PRIMARY KEY, source TEXT NOT NULL, text TEXT NOT NULL, queued_at INTEGER NOT NULL,
+      message_id TEXT, workspace TEXT, archived_at INTEGER, archive_retry_at INTEGER
+    )`);
+  }
+
+  private enqueue(notice: DotsProactiveNotice, timestamp: number) {
+    this.db.prepare("INSERT OR IGNORE INTO dots_proactive_delivery(delivery_key,source,text,queued_at) VALUES (?,?,?,?)")
+      .run(notice.key, notice.source, noticeText(notice), timestamp);
+  }
+
+  post(notice: DotsProactiveNotice) {
+    this.enqueue(notice, Date.now());
+    void this.refresh();
+  }
+
+  /** Recover only notices already issued to the same Dots conversation. */
+  restoreNotifications(findLinks: (key: string) => DiscoveryItem[] | undefined, now = Date.now()) {
+    const rows = this.db.prepare(`SELECT dedupe_key,source_id,title,body,created_at FROM (
+      SELECT dedupe_key,source_id,title,body,created_at FROM notifications
+      WHERE task_id=? AND source_id IN ('dots-discovery','dots-google') AND dedupe_key IS NOT NULL
+        AND dismissed_at IS NULL AND read_at IS NULL AND created_at>=?
+      ORDER BY created_at DESC LIMIT 30
+    ) ORDER BY created_at, dedupe_key`).all(DOTS_TASK_ID, now - 24 * 60 * 60_000) as TaskNoticeRow[];
+    this.db.transaction(() => {
+      for (const row of rows) this.enqueue({
+        key: row.dedupe_key, source: row.source_id === "dots-google" ? "Google" : row.dedupe_key.startsWith("dream:") ? "Dream" : "RSS",
+        title: row.title, body: row.body ?? "", items: findLinks(row.dedupe_key),
+      }, row.created_at);
+    })();
+    void this.refresh();
+  }
+
+  start() {
+    if (this.timer) return;
+    this.timer = setInterval(() => void this.refresh(), 5_000);
+    this.timer.unref();
+    void this.refresh();
+  }
+
+  refresh() {
+    if (!this.timer || this.paused()) return Promise.resolve();
+    if (this.flight) return this.flight;
+    const current = () => Boolean(this.timer) && !this.paused();
+    const drain = async () => {
+      const rows = this.db.prepare("SELECT delivery_key,text FROM dots_proactive_delivery WHERE message_id IS NULL ORDER BY queued_at,rowid LIMIT 30")
+        .all() as { delivery_key: string; text: string }[];
+      for (const row of rows) {
+        if (!current()) return;
+        const result = await this.append(row.delivery_key, row.text, current);
+        if (result.status === "pending") break;
+        this.db.prepare("UPDATE dots_proactive_delivery SET message_id=?,workspace=? WHERE delivery_key=?")
+          .run(result.messageId, result.workspace ?? null, row.delivery_key);
+      }
+      const archives = this.db.prepare(`SELECT delivery_key,source,text,workspace,queued_at FROM dots_proactive_delivery
+        WHERE workspace IS NOT NULL AND archived_at IS NULL AND coalesce(archive_retry_at,0)<=? ORDER BY queued_at,rowid LIMIT 30`)
+        .all(Date.now()) as { delivery_key: string; source: DotsResidentSource; text: string; workspace: string; queued_at: number }[];
+      for (const row of archives) {
+        if (!current()) return;
+        try { saveDotsBrief(row.workspace, row.source, row.delivery_key, row.text, row.queued_at); }
+        catch {
+          this.db.prepare("UPDATE dots_proactive_delivery SET archive_retry_at=? WHERE delivery_key=?")
+            .run(Date.now() + 60_000, row.delivery_key);
+          continue;
+        }
+        this.db.prepare("UPDATE dots_proactive_delivery SET archived_at=? WHERE delivery_key=?").run(Date.now(), row.delivery_key);
+      }
+    };
+    this.flight = drain().catch(error => console.warn("[Dots] 主动消息尚未写入对话，将稍后重试。", error))
+      .finally(() => { this.flight = undefined; });
+    return this.flight;
+  }
+
+  async close() {
+    clearInterval(this.timer);
+    this.timer = undefined;
+    await this.flight;
+  }
+}

@@ -509,7 +509,7 @@ function ChatPage() {
     const ownsTaskEntry = pinnedTask.current !== activeTaskId
     if (isDots) {
       const newest = messages.at(-1)
-      const incomingDelivery = newest?.dotsDelivery && newest.id !== lastDotsMessageId.current
+      const incomingDelivery = (newest?.dotsDelivery || newest?.dotsProactive) && newest.id !== lastDotsMessageId.current
       lastDotsMessageId.current = newest?.id
       if (!prepend && !ownSend && newest && (ownsTaskEntry || (incomingDelivery && isNearBottomRef.current))) {
         pinnedTask.current = activeTaskId

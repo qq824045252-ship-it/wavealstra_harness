@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
-import { AgentDoc, InboxDoc, LiveDoc, type Cursor, type Harness, type Tx } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, type Conversation, type Cursor, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { ActiveDurableConversation } from "./DurableConversationBranch";
 
 export class WorkspaceMigrationBusyError extends Error {
@@ -36,6 +36,16 @@ async function workspaceQuiescent(tx: Tx): Promise<boolean> {
 
 export async function canRebindDurableWorkspace(harness: Harness, context: Context): Promise<boolean> {
   return harness.commit(workspaceQuiescent, context);
+}
+
+export function bindDotsConversationWorkspace(conversation: Conversation, path: string, context: Context) {
+  return conversation.commit(async tx => {
+    const active = await tx.doc(ActiveDurableConversation);
+    if (active.dotsWorkspace !== undefined) return;
+    if (!await workspaceQuiescent(tx)) throw new WorkspaceMigrationBusyError();
+    (await tx.doc(AgentDoc, conversation.id)).cwd = path;
+    active.dotsWorkspace = path;
+  }, context);
 }
 
 /** Native transaction commits all branch bindings together; entries and historical artifacts stay untouched. */

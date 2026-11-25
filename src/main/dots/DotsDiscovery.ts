@@ -7,6 +7,7 @@ import type { WebSearchSource } from "../../shared/web-search";
 import { canonicalSearchUrl } from "../capabilities/web-access/search-aggregation";
 import { atomicWriteJson } from "../task/TaskExecutionWorkspace";
 import { readDotsRss, type RssEntry, type RssValidators } from "./DotsRss";
+import type { DotsProactiveNotice } from "./DotsProactiveDelivery";
 
 const minute = 60_000;
 const day = 86_400_000;
@@ -28,7 +29,9 @@ interface DreamState extends DiscoveryStatus {
 }
 type DreamSearch = (query: string, signal: AbortSignal) => Promise<WebSearchSource[]>;
 type DreamCurate = (topic: string, items: DiscoveryItem[], signal: AbortSignal) => Promise<DiscoveryItem[]>;
-type Deliver = (notice: { key: string; title: string; body: string }) => void;
+type Deliver = (notice: DotsProactiveNotice) => void;
+
+const dreamKey = (items: DiscoveryItem[]) => `dream:${digest(items.map(item => canonicalSearchUrl(item.url)))}`;
 
 function localClock(now: number, time: string, offset = 0) {
   const date = new Date(now);
@@ -113,6 +116,11 @@ export class DotsDiscovery {
       })),
       dream: publicState("dream", this.read<DreamState>("dream")),
     };
+  }
+
+  retainedLinks(key: string): DiscoveryItem[] | undefined {
+    const items = this.read<DreamState>("dream").recent;
+    return items?.length && dreamKey(items) === key ? items : undefined;
   }
 
   async readRss(subscription: string | undefined, signal: AbortSignal) {
@@ -251,7 +259,8 @@ export class DotsDiscovery {
     this.save(key, state);
     if (!deliveryDue || !state.queue?.length || !current()) return;
     const items = state.queue.slice(0, 8).map(({ title, url }) => ({ title, url }));
-    this.deliver({ key: `${key}:${digest([feed.url, ...state.queue.map(item => item.id)])}`, title: `Dots · RSS · ${feed.name}`,
+    this.deliver({ key: `${key}:${digest([feed.url, ...state.queue.map(item => item.id)])}`, source: "RSS", title: `Dots · RSS · ${feed.name}`,
+      intro: `发现 ${state.queue.length} 条新内容。`, items,
       body: `发现 ${state.queue.length} 条新内容。\n` + items.slice(0, 4).map(item => item.title).join("\n") });
     this.save(key, { ...state, queue: [] });
   }
@@ -327,7 +336,7 @@ export class DotsDiscovery {
   private deliverDream(state: DreamState) {
     const queue = state.queue;
     if (!queue) return;
-    this.deliver({ key: `dream:${digest(queue.items.map(item => canonicalSearchUrl(item.url)))}`,
+    this.deliver({ key: dreamKey(queue.items), source: "Dream", items: queue.items,
       title: `Dots · Dream · ${queue.tag}`,
       body: queue.items.slice(0, 3).map(item => item.title + (item.summary ? " · " + item.summary : "")).join("\n") });
     state.recent = queue.items;

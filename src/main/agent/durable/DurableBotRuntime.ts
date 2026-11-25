@@ -4,6 +4,7 @@ import { durableGoalToolEvidence } from "./DurableGoalToolEvidence";
 import { dotsInputVersion, DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import { DOTS_RECOVER_COMMIT, dotsRecoveryAllowsTool, dotsRecoveryAllowsVerify, validDotsRecoveryFilename, type DotsRecoveryToolScope } from "../../dots/DotsRecovery";
 import { appendDurableDotsReply } from "./DurableDotsReply";
+import { appendDurableDotsProactive } from "./DurableDotsProactive";
 import { DOTS_TASK_END, readDurableDotsTerminal } from "./DurableDotsWorker";
 import { PROJECT_VERIFY_CHILD_KEY, PROJECT_VERIFY_TOOL, projectVerificationShellCommand } from "./DurableProjectVerification";
 import { DURABLE_TURN_LIMIT_MESSAGE } from "./DurableRunLimits";
@@ -24,7 +25,7 @@ import { prioritizeInputAfterDeferredGoal } from "./DurableInputFreshness";
 import { DurableNativeHooks, type DurableHookBinding } from "./DurableNativeHooks";
 import { withNativeToolOrigin } from "./DurableToolLifecycle";
 import { nativeExecutionSucceeded, nativeFileReadAttemptSchema, readNativeExecutionReceipt } from "../../../shared/native-execution-receipt";
-import { canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
+import { bindDotsConversationWorkspace, canRebindDurableWorkspace, migrateDurableWorkspace, WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { realpath, writeFile } from "node:fs/promises";
@@ -121,6 +122,7 @@ export interface DurableBotOptions {
   cwd: string;
   /** Host-persisted migration source; only an idle native store may adopt cwd. */
   workspaceMigrationFrom?: string;
+  pinInitialDotsWorkspace?: boolean;
   models: Models;
   model?: { provider: string; modelId: string };
   /** Pi's persisted limit for one run. Null clears it; omission preserves the stored value. */
@@ -458,6 +460,7 @@ export class DurableBotRuntime {
         if (options.waitingForInput?.()) throw new WorkspaceMigrationBusyError();
         await migrateDurableWorkspace(harness, options.workspaceMigrationFrom, options.cwd, ctx);
       }
+      if (options.pinInitialDotsWorkspace) await bindDotsConversationWorkspace(conversation, options.cwd, ctx);
       const bound = await conversation.agent(ctx);
       if (bound.cwd && resolve(bound.cwd) !== resolve(options.cwd)) throw new Error("Bot 已绑定的工作目录与当前项目不一致");
       if (bound.model) {
@@ -781,6 +784,13 @@ export class DurableBotRuntime {
     return outcome;
   }
 
+  async appendDotsProactive(key: string, text: string, isCurrent: () => boolean) {
+    if (this.options.readOnly || this.options.taskId !== DOTS_TASK_ID) throw new Error("主动消息只能写入 Dots 会话");
+    const outcome = await appendDurableDotsProactive(this.conversation, key, text, isCurrent);
+    if (outcome.status !== "pending") await this.refresh();
+    return outcome;
+  }
+
   async submit(content: UserInput, requestId: string, whenBusy: "steer" | "followUp" = "followUp", metadata?: BotInputMetadata, mark?: (stage: string) => void, requireActiveRun = false, guard?: { inputVersion?: string; validate(): void }) {
     this.assertSessionHealthy();
     try {
@@ -1078,8 +1088,8 @@ export class DurableBotRuntime {
     return String((await forkDurableConversation(this.harness, this.conversation, entryId as EntryId | undefined, ctx)).id);
   }
 
-  async newDotsConversation(): Promise<void> {
-    await forkDurableConversation(this.harness, this.conversation, undefined, ctx, { archiveDotsPage: true });
+  async newDotsConversation(workspace: string): Promise<void> {
+    await forkDurableConversation(this.harness, this.conversation, undefined, ctx, { dotsWorkspace: workspace });
   }
 
   async regeneration(): Promise<DurableRegenerationState | undefined> {
