@@ -20,7 +20,7 @@ function verify(target, directory) {
     const result = execFileSync(executable, ["--protocol-version"], {
       encoding: "utf8", windowsHide: true, timeout: 5_000,
     }).trim();
-    if (result !== "86") throw new Error("Runtime audit executable protocol mismatch");
+    if (result !== "87") throw new Error("Runtime audit executable protocol mismatch");
   }
 }
 

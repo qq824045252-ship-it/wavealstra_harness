@@ -1,3 +1,5 @@
+import { selectedDurableSqlite } from "../src/main/agent/durable/DurableStorageFormat";
+import { checkHistoryTransport } from "./check-history-transport";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
@@ -68,6 +70,7 @@ const nativeOpen = DurableBotRuntime.open;
 let service: DurableBotService | undefined;
 let liveWriter: DurableBotRuntime | undefined;
 try {
+  await checkHistoryTransport(root);
   let runtime = await DurableBotRuntime.open(options);
   await (await runtime.submit("seed", "seed-request")).wait(ctx);
   await runtime.conversation.waitForIdle(ctx);
@@ -94,6 +97,38 @@ try {
   db.connection.prepare("INSERT INTO durable_bot_bindings VALUES (?, 'pi-durable', ?, ?)").run("task", directory, cwd);
   const history = await service.history("task");
   assert.equal(history.historyError, undefined);
+  if (passiveReader) {
+    // Keep actual native writes contending on app.db while opening the separate
+    // Durable journal through the service. Assert ordering, not a wall-clock budget.
+    const write = () => passiveReader.writeDurableTaskProjection({
+      kind: "rememberWorkspaces", taskId: "task", workspaces: [],
+    });
+    assert.equal((await write())?.status, "applied");
+    const path = selectedDurableSqlite(directory);
+    assert.ok(path);
+    const snapshot = await passiveReader.openDurable(path);
+    assert.ok(snapshot);
+    try {
+      // Rust rejects fractional conversation IDs during wire decoding. This
+      // error must never take the reply slot of the concurrent database write.
+      const [invalid, written] = await Promise.all([snapshot.head(0.5, 100), write()]);
+      assert.equal(invalid, undefined);
+      assert.equal(written?.status, "applied");
+      assert.deepEqual(await snapshot.select("SELECT 1 AS n", [], true), {n: 1});
+    } finally { await snapshot.close(); }
+    db.connection.exec("BEGIN IMMEDIATE");
+    let completed = 0;
+    const backlog = Array.from({ length: 8 }, () => write().finally(() => { completed++; }));
+    try {
+      const page = await service.history("task");
+      assert.equal(page.historyError, undefined);
+      assert.deepEqual(page.messages, history.messages);
+      assert(completed < backlog.length, "history should return before the write queue drains");
+    } finally {
+      db.connection.exec("ROLLBACK");
+      await Promise.all(backlog);
+    }
+  }
   assert.equal(factoryCalls, 0, "history must not assemble a healthy execution runtime either");
   assert.deepEqual(files(), committed);
   assert.equal(requests, initialRequests);
@@ -185,7 +220,7 @@ try {
 } finally {
   DurableBotRuntime.open = nativeOpen;
   await service?.close();
-  passiveReader?.close();
+  await passiveReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
 }

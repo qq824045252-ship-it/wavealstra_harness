@@ -32,6 +32,7 @@ mod gadget_materialize;
 mod gadget_source_save;
 mod gadget_state;
 mod gateway_message_data;
+mod history_lane;
 mod library_backup;
 mod library_delete;
 mod library_index;
@@ -102,7 +103,7 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     error::Error,
-    io::{self, BufRead, BufWriter, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
     thread,
@@ -148,6 +149,13 @@ impl SqlScope {
     rename_all_fields = "camelCase"
 )]
 enum Request {
+    HistoryLaneSupported,
+    HistoryRead {
+        request_id: String,
+        session: String,
+        #[serde(flatten)]
+        action: durable::Action,
+    },
     WorkspaceScanSupported,
     WorkspaceScan {
         query: workspace_scan::Query,
@@ -766,6 +774,8 @@ enum Reply {
 
 #[derive(Serialize)]
 struct WireReply {
+    #[serde(rename = "historyLane")]
+    history_lane: bool,
     inference: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     scan: Option<bool>,
@@ -785,6 +795,7 @@ fn write_reply(result: Result<Data>, inference: bool) -> Result<()> {
     serde_json::to_writer(
         &mut output,
         &WireReply {
+            history_lane: true,
             inference,
             scan: None,
             reply,
@@ -800,6 +811,7 @@ const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 fn write_workspace_reply(data: Data) -> Result<()> {
     let encode = |data| {
         serde_json::to_vec(&WireReply {
+            history_lane: true,
             inference: false,
             scan: Some(true),
             reply: Reply::Ok { data },
@@ -1662,7 +1674,9 @@ fn read(
         Request::AcknowledgeTaskDone { .. }
         | Request::SetTaskDueDate { .. }
         | Request::EditTaskSidebar { .. } => unreachable!(),
-        Request::Durable { .. } => unreachable!(),
+        Request::Durable { .. } | Request::HistoryRead { .. } | Request::HistoryLaneSupported => {
+            unreachable!()
+        }
         Request::LibraryText { .. } => unreachable!(),
         Request::ReadGadgetSource { .. }
         | Request::ReadGadgetManifest { .. }
@@ -1906,7 +1920,7 @@ fn run() -> Result<()> {
         return Err("unexpected argument".into());
     }
     if argument == "--protocol-version" {
-        println!("86");
+        println!("87");
         return Ok(());
     }
     let db_path = PathBuf::from(argument);
@@ -1921,9 +1935,18 @@ fn run() -> Result<()> {
     let mut index_queues = embedding_index::IndexQueues::default();
     let mut gadget_state = gadget_state::Store::default();
     let mut artifact_reads = artifact_content::Reads::default();
-    for line in io::stdin().lock().lines() {
-        let line = line?;
-        let job = match serde_json::from_str(&line) {
+    if std::env::var_os("MYBUDDY_HISTORY_HANDSHAKE").is_some() {
+        let mut output = io::stdout().lock();
+        writeln!(output, "{{\"historyReady\":true}}")?;
+        output.flush()?;
+    }
+    let (requests, input) = history_lane::route_input()?;
+    for request in requests {
+        let job = match request {
+            Ok(Request::HistoryLaneSupported) => {
+                write_reply(Ok(Data::Json(true.into())), false)?;
+                continue;
+            }
             Ok(
                 Request::PluginCatalogScanSupported
                 | Request::PluginConfigSupported
@@ -2238,6 +2261,7 @@ fn run() -> Result<()> {
             write_reply(Err("semantic inference thread unavailable".into()), true)?;
         }
     }
+    input.join().map_err(|_| "input dispatcher panicked")??;
     if let Some((sender, worker)) = inference {
         drop(sender);
         worker

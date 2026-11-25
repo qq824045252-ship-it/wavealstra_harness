@@ -1558,18 +1558,57 @@ export class RuntimeAuditReader {
   }
 
   async openDurable(path: string): Promise<RuntimeAuditDurableSnapshot | undefined> {
+    if (this.closed || !this.executable || !this.dbPath || this.dbPath === ":memory:") return undefined;
+    const owner = this.session ?? this.start(this.executable);
+    // Normal replies advertise support. A cold history-only worker needs one legacy
+    // request so an older binary never receives a multiplexed request by mistake.
+    owner.historySupport ??= Promise.race([
+      owner.historyReady,
+      this.read<boolean>({ operation: "historyLaneSupported" }, "database", false, 10_000, owner).then(value => value === true),
+    ]);
+    const separate = await owner.historySupport;
+    if (owner !== this.session) return undefined;
     const session = randomUUID();
-    const request = <T>(action: object) => this.read<T>({ operation: "durable", session, ...action });
+    const request = <T>(action: { action: string; [key: string]: unknown }) => separate
+      ? this.historyRequest<T>(owner, session, action)
+      : this.read<T>({ operation: "durable", session, ...action }, "database", false, 10_000, owner);
     if (await request<boolean>({ action: "open", path }) !== true) return undefined;
+    let closing: Promise<void> | undefined;
     return {
       select: (sql, parameters, first) => request({ action: "select", sql, parameters, first }),
       head: (conversationId, maxTokens) => request({ action: "head", conversationId, maxTokens }),
       questions: (conversationId, beforeEntryId) => request({ action: "questions", conversationId, beforeEntryId }),
-      close: async () => {
-        if (this.session && await request<boolean>({ action: "close" }) !== true && this.session) this.stop(this.session);
-        await this.stopping;
-      },
+      close: () => closing ??= (async () => {
+        if (owner === this.session && await request<boolean>({ action: "close" }) !== true) this.stop(owner);
+        // A timed-out close cannot release the host read lease while Rust still owns the SQLite view.
+        if (owner !== this.session) await owner.closed;
+      })(),
     };
+  }
+
+  private historyRequest<T>(owner: AuditSession, session: string, action: { action: string; [key: string]: unknown }): Promise<T | undefined> {
+    // Up to sixteen open snapshots may all need to close behind a full read queue.
+    const limit = action.action === "close" ? 48 : 32;
+    if (this.closed || this.session !== owner || owner.history.size >= limit) return Promise.resolve(undefined);
+    const requestId = randomUUID();
+    return new Promise(resolve => {
+      let expired = false;
+      const timer = setTimeout(() => {
+        expired = true;
+        resolve(undefined);
+      }, 10_000).unref();
+      // Keep timed-out slots bounded and reserved until the late reply or process exit.
+      owner.history.set(requestId, data => {
+        clearTimeout(timer);
+        if (expired && action.action === "open" && data === true) {
+          void this.historyRequest(owner, session, { action: "close" });
+        }
+        resolve(data as T | undefined);
+      });
+      owner.child.stdin.write(JSON.stringify({ operation: "historyRead", session, requestId, ...action }) + "\n", error => {
+        if (error) this.stop(owner);
+      });
+    });
   }
 
   async close(): Promise<void> {
@@ -1619,12 +1658,15 @@ export class RuntimeAuditReader {
     const child = spawn(executable, [this.dbPath], {
       windowsHide: true,
       env: {
+        MYBUDDY_HISTORY_HANDSHAKE: "1",
         ...(process.env.SystemRoot && { SystemRoot: process.env.SystemRoot }),
         ...(process.env.TZ && { TZ: process.env.TZ }),
       },
     });
     const closed = new Promise<void>(resolve => child.once("close", resolve));
-    const session: AuditSession = { child, closed, pending: {}, chunks: [], bytes: 0, dotsFileWatches: new Map() };
+    let advertiseHistory!: () => void;
+    const historyReady = new Promise<true>(resolve => { advertiseHistory = () => resolve(true); });
+    const session: AuditSession = { child, closed, historyReady, advertiseHistory, pending: {}, history: new Map(), chunks: [], bytes: 0, dotsFileWatches: new Map() };
     this.session = session;
     child.on("error", () => this.stop(session));
     child.on("exit", () => this.stop(session));
@@ -1653,10 +1695,24 @@ export class RuntimeAuditReader {
 
   private receiveReply(session: AuditSession, line: string): void {
     let reply: {
+      historyRequestId?: string; historyLane?: boolean; historyReady?: boolean;
       status?: string; data?: unknown; inference?: boolean; scan?: boolean;
       dotsFileWatches?: Array<{ id: string; lost: boolean }>;
     };
     try { reply = JSON.parse(line); } catch { this.stop(session); return; }
+    if (reply.historyReady === true) {
+      session.advertiseHistory();
+      session.historySupport ??= session.historyReady;
+      return;
+    }
+    if (reply.historyRequestId !== undefined) {
+      const settle = session.history.get(reply.historyRequestId);
+      if (!settle) { this.stop(session); return; }
+      session.history.delete(reply.historyRequestId);
+      settle(reply.status === "ok" ? reply.data : undefined);
+      return;
+    }
+    if (reply.historyLane === true) session.historySupport ??= Promise.resolve(true);
     if (reply.dotsFileWatches) {
       for (const notice of reply.dotsFileWatches) {
         const watch = session.dotsFileWatches.get(notice.id);
@@ -1684,6 +1740,8 @@ export class RuntimeAuditReader {
   private stop(session: AuditSession): void {
     if (this.session !== session) return;
     this.session = undefined;
+    for (const settle of session.history.values()) settle(undefined);
+    session.history.clear();
     this.inferenceCapability = undefined;
     this.embeddingIndexCapability = undefined;
     this.embeddingPlannerCapability = undefined;
@@ -2331,6 +2389,10 @@ export interface RuntimeMemoryLexicalCandidates {
 type AuditLane = "database" | "inference" | "scan";
 
 interface AuditSession {
+  historySupport?: Promise<boolean>;
+  historyReady: Promise<true>;
+  advertiseHistory(): void;
+  history: Map<string, (value: unknown) => void>;
   child: ChildProcessWithoutNullStreams;
   closed: Promise<void>;
   chunks: Buffer[];
