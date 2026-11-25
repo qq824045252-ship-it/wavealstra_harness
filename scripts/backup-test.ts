@@ -1,9 +1,10 @@
 /** Historical backup compatibility: list existing manifests and restore files/directories. */
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
 import { FileBackupService } from "../src/main/agent/FileBackupService";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-backup-test-"));
 const service = new FileBackupService(root);
@@ -37,7 +38,7 @@ function historicalFixture(
   return backupPath;
 }
 
-try {
+async function main() {
   check("Empty history does not create backup storage", () => {
     assert.deepEqual(service.listBackups(), []);
     assert.equal(existsSync(join(root, "backups")), false);
@@ -65,6 +66,91 @@ try {
     assert.equal(service.listBackups("task-1")[1].backupPath, oldFile);
     assert.equal(readFileSync(manifestPath, "utf8"), initialManifest);
   });
+
+  if (process.argv.includes("--native")) {
+    const executable = locateRuntimeAudit(process.cwd());
+    assert(executable && existsSync(executable));
+    const dbPath = join(root, "runtime.db");
+    writeFileSync(dbPath, "");
+    const runtime = new RuntimeAuditReader(executable, dbPath);
+    const listOnHost = service.listBackups;
+    service.listBackups = () => { throw new Error("Expected the resident Rust reader"); };
+    try {
+      const tiedDirectory = join(root, "backups", "task-ties");
+      mkdirSync(tiedDirectory);
+      const historicalPath = join(workspace, "历史记录.txt");
+      const entry = JSON.stringify({ absPath: historicalPath, createdAt: 2, size: 3 });
+      writeFileSync(join(tiedDirectory, "manifest.json"), `{"beta":${entry},"10":${entry},"2":${entry},"alpha":${entry}}`);
+      assert.deepEqual((await service.readBackups(runtime)).map(row => row.backupId), [
+        "other", "new", "2", "10", "beta", "alpha", "old",
+      ]);
+      assert.deepEqual((await service.readBackups(runtime, "task-ties"))[0], {
+        backupId: "2", absPath: historicalPath, relPath: "历史记录.txt", backupPath: join(tiedDirectory, "2.bak"),
+        createdAt: 2, size: 3, taskId: "task-ties", kind: "modified", isDir: false,
+      });
+      assert.deepEqual(await service.readBackups(runtime, "missing"), []);
+      results.push("PASS Resident Rust lists historical backup metadata in display order");
+
+      const restoreOnHost = service.restoreBackup;
+      service.restoreBackup = () => { throw new Error("Expected the resident Rust restore"); };
+      try {
+        const unsupportedTarget = join(workspace, "directory-where-a-file-was");
+        mkdirSync(unsupportedTarget);
+        writeFileSync(join(unsupportedTarget, "keep.txt"), "keep this directory");
+        historicalFixture("task-1", "blocked", {
+          absPath: unsupportedTarget, relPath: "directory-where-a-file-was", createdAt: 7, size: 8,
+        }, "a file");
+        const nativeManifest = readFileSync(manifestPath, "utf8");
+
+        const restored = await service.restoreWithRuntime(runtime, "task-1", "old");
+        assert.deepEqual(restored, {
+          backupId: "old", taskId: "task-1", absPath: file,
+          relPath: "notes/a.txt", backupPath: oldFile, size: 9, createdAt: 1,
+          kind: "modified", isDir: false,
+        });
+        assert.equal(readFileSync(file, "utf8"), "version-1");
+        assert.equal(readFileSync(oldFile, "utf8"), "version-1");
+        assert.deepEqual(readdirSync(dirname(file)), ["a.txt"]);
+
+        const missingTarget = join(workspace, "native-created", "恢复.txt");
+        const removedBackup = historicalFixture("task-deleted-native", "deleted", {
+          absPath: missingTarget, relPath: "native-created/恢复.txt", createdAt: 6, size: 5, kind: "deleted",
+        }, "saved");
+        assert.equal((await service.restoreWithRuntime(runtime, "task-deleted-native", "deleted")).absPath, missingTarget);
+        assert.equal(readFileSync(missingTarget, "utf8"), "saved");
+        assert.equal(readFileSync(removedBackup, "utf8"), "saved");
+        rmSync(removedBackup);
+        await assert.rejects(service.restoreWithRuntime(runtime, "task-deleted-native", "deleted"), /备份文件缺失/);
+        assert.equal(readFileSync(missingTarget, "utf8"), "saved");
+
+        await assert.rejects(service.restoreWithRuntime(runtime, "task-2", "old"), /备份不存在: old/);
+        await assert.rejects(service.restoreWithRuntime(runtime, "task-1", "blocked"), /无法还原到非文件路径/);
+        assert.equal(readFileSync(join(unsupportedTarget, "keep.txt"), "utf8"), "keep this directory");
+        assert.equal(readFileSync(manifestPath, "utf8"), nativeManifest);
+
+        writeFileSync(file, "current", "utf8");
+        writeFileSync(manifestPath, initialManifest, "utf8");
+        results.push("PASS Resident Rust restores regular files only from the selected backup scope");
+      } finally {
+        service.restoreBackup = restoreOnHost;
+      }
+
+      const directoryTarget = join(workspace, "native-directory-fallback");
+      mkdirSync(directoryTarget);
+      writeFileSync(join(directoryTarget, "stale.txt"), "replace this");
+      historicalFixture("task-directory-native", "tree", {
+        absPath: directoryTarget, relPath: "native-directory-fallback", createdAt: 8, size: 9,
+        kind: "deleted", isDir: true,
+      }, { "sub/restored.txt": "directory contents" });
+      assert.equal((await service.restoreWithRuntime(runtime, "task-directory-native", "tree")).isDir, true);
+      assert.equal(readFileSync(join(directoryTarget, "sub", "restored.txt"), "utf8"), "directory contents");
+      assert.equal(existsSync(join(directoryTarget, "stale.txt")), false);
+      results.push("PASS Resident Rust delegates directory restoration to the existing path");
+    } finally {
+      service.listBackups = listOnHost;
+      await runtime.close();
+    }
+  }
 
   check("Manual file restore preserves historical data", () => {
     const restored = service.restoreBackup("task-1", "old");
@@ -103,6 +189,12 @@ try {
     assert.equal(existsSync(join(project, "current-only.txt")), false);
   });
 
+  writeFileSync(file, "pending result", "utf8");
+  await assert.rejects(service.restoreWithRuntime({ restoreFileBackup: async () => undefined }, "task-1", "old"), /还原结果未确认/);
+  assert.equal(readFileSync(file, "utf8"), "pending result");
+  writeFileSync(file, "version-1", "utf8");
+  results.push("PASS An unconfirmed restore leaves the current file alone");
+
   check("Unknown backup cannot overwrite current data", () => {
     assert.throws(() => service.restoreBackup("task-1", "unknown"), /备份不存在/);
     assert.equal(readFileSync(file, "utf8"), "version-1");
@@ -115,6 +207,8 @@ try {
 
   console.log(results.join("\n"));
   console.log(`All ${results.length} historical backup checks passed.`);
-} finally {
-  rmSync(root, { recursive: true, force: true });
 }
+
+void main().finally(() => {
+  rmSync(root, { recursive: true, force: true });
+}).catch(error => { console.error(error); process.exitCode = 1; });

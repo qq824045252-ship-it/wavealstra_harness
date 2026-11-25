@@ -5,7 +5,8 @@
  * ★ 派生隔离（dismiss 前后 snapshot/attention 深度相等，triage 绝不进入真源）→
  * 保留淘汰/重启持久化。真实 SQLite + 注入时钟；必须经 scripts/test-guard.mjs 执行。
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -17,7 +18,9 @@ import { ProjectEventPromoter } from "../src/main/project/ProjectEventPromoter";
 import { ProjectAttentionTracker } from "../src/main/project/ProjectAttention";
 import { createProjectEventExtension } from "../src/main/project/project-event-extension";
 import { LibraryService } from "../src/main/library/LibraryService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { PROJECT_EVENT_RETENTION_PER_PROJECT } from "../src/shared/project-domain";
+import type { ProjectEventTriageStatus } from "../src/shared/project-domain";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ProjectEventExtensionBridge } from "../src/main/project/project-event-extension";
 
@@ -32,23 +35,17 @@ function ok(cond: unknown, label: string): void {
     console.error(`  ✗ ${label}`);
   }
 }
-function throws(fn: () => unknown, label: string): void {
-  try {
-    fn();
-    ok(false, label);
-  } catch {
-    ok(true, label);
-  }
-}
-
 const root = mkdtempSync(join(tmpdir(), "mybuddy-triage-"));
 // 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
 // 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 const dbPath = join(root, "app.db");
-const db = new AppDatabase(dbPath);
-const projects = new ProjectService(new ProjectRepository(db.connection), new MemoryService(db, { semantic: false }));
+const native = process.argv.includes("--native");
+const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+if (native) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable), "Rust worker executable is required");
+const db = new AppDatabase(dbPath, { runtimeAuditExecutable });
+const projects = new ProjectService(new ProjectRepository(db.connection, db.runtimeAuditReader), new MemoryService(db, { semantic: false }));
 const library = new LibraryService(db, { libraryRoot: join(root, "lib") });
 const NOW = 1_800_000_000_000;
 let clock = NOW;
@@ -67,35 +64,60 @@ function eventB(): { id: string } {
   return ingestor.ingest("proj-b", { source: "gateway", kind: "message", title: `消息 B${seq}`, ref: `t-b-${seq++}` });
 }
 
+async function triage(projectId: string, eventId: string, status: ProjectEventTriageStatus) {
+  if (native) db.connection.pragma("query_only = ON");
+  try { return await projects.writeProjectEventTriage(projectId, eventId, status); }
+  finally { if (native) db.connection.pragma("query_only = OFF"); }
+}
+
 async function main(): Promise<void> {
   /* ============ 1. 默认 open；dismiss → dismissed；reopen → open ============ */
   const ev = eventA();
   ok(ev.triageStatus === "open", "1. 新事件默认 triage=open");
-  const dismissed = projects.dismissProjectEvent("proj-a", ev.id);
+  const dismissed = await triage("proj-a", ev.id, "dismissed");
   ok(dismissed.triageStatus === "dismissed", "1b. dismiss 后 triage=dismissed");
-  ok(projects.getProjectEvent(ev.id)!.triageStatus === "dismissed", "1c. 持久化（重新读取）");
-  const reopened = projects.reopenProjectEvent("proj-a", ev.id);
+  if (native) db.connection.exec("CREATE TEMP TABLE project_events AS SELECT * FROM main.project_events WHERE 0");
+  try {
+    assert.deepEqual(await projects.readProjectEvent(ev.id), {
+      id: ev.id,
+      projectId: "proj-a",
+      source: "gateway",
+      kind: "message",
+      title: "消息 A0",
+      body: "正文",
+      ref: "t-a-0",
+      payload: {},
+      triageStatus: "dismissed",
+      createdAt: NOW + 1,
+    });
+    assert.deepEqual(await projects.readProjectEvents("proj-a", 1), [dismissed]);
+  } finally {
+    if (native) db.connection.exec("DROP TABLE temp.project_events");
+  }
+  console.log("  ✓ 1c. 持久化（读取事件详情与活动流）");
+  const reopened = await triage("proj-a", ev.id, "open");
   ok(reopened.triageStatus === "open", "1d. reopen 恢复 open");
 
   /* ============ 2. 幂等 ============ */
-  projects.dismissProjectEvent("proj-a", ev.id);
-  const again = projects.dismissProjectEvent("proj-a", ev.id);
+  await triage("proj-a", ev.id, "dismissed");
+  const again = await triage("proj-a", ev.id, "dismissed");
   ok(again.triageStatus === "dismissed", "2. 重复 dismiss 幂等");
-  projects.reopenProjectEvent("proj-a", ev.id);
-  ok(projects.reopenProjectEvent("proj-a", ev.id).triageStatus === "open", "2b. 重复 reopen 幂等");
+  await triage("proj-a", ev.id, "open");
+  ok((await triage("proj-a", ev.id, "open")).triageStatus === "open", "2b. 重复 reopen 幂等");
 
   /* ============ 3. 项目作用域：跨项目/不存在拒绝 ============ */
-  throws(() => projects.dismissProjectEvent("proj-b", ev.id), "3. A 事件在 B 项目作用域 dismiss 被拒");
-  throws(() => projects.reopenProjectEvent("proj-b", ev.id), "3b. A 事件在 B 项目作用域 reopen 被拒");
-  throws(() => projects.dismissProjectEvent("proj-a", "pevt_no_such"), "3c. 不存在事件拒绝");
+  await assert.rejects(triage("proj-b", ev.id, "dismissed"), /事件不存在或不属于该项目/);
+  await assert.rejects(triage("proj-b", ev.id, "open"), /事件不存在或不属于该项目/);
+  await assert.rejects(triage("proj-a", "pevt_no_such", "dismissed"), /事件不存在或不属于该项目/);
+  await assert.rejects(triage("absent-project", ev.id, "dismissed"), /项目不存在：absent-project/);
 
   /* ============ 4. ★ 派生隔离：dismiss 前后 snapshot/attention 深度相等 ============ */
   const evIsolation = eventA();
   const tracker = new ProjectAttentionTracker(projects);
   const snapshotBefore = JSON.stringify(projects.buildStatusSnapshot("proj-a", NOW + 3 * 24 * 3600 * 1000));
   const attentionBefore = JSON.stringify(tracker.getAttention("proj-a", NOW + 3 * 24 * 3600 * 1000));
-  projects.dismissProjectEvent("proj-a", evIsolation.id);
-  projects.dismissProjectEvent("proj-a", ev.id);
+  await triage("proj-a", evIsolation.id, "dismissed");
+  await triage("proj-a", ev.id, "dismissed");
   const snapshotAfter = JSON.stringify(projects.buildStatusSnapshot("proj-a", NOW + 3 * 24 * 3600 * 1000));
   const attentionAfter = JSON.stringify(tracker.getAttention("proj-a", NOW + 3 * 24 * 3600 * 1000));
   ok(snapshotBefore === snapshotAfter, "4. dismiss 前后 StatusSnapshot 深度相等（triage 不参与派生）");
@@ -166,6 +188,8 @@ async function main(): Promise<void> {
   // 归档项目：已有事件仍可读，但 triage 也是持久化写入，必须拒绝。
   const evArch = eventB();
   db.connection.prepare(`UPDATE projects SET archived=1 WHERE id='proj-b'`).run();
+  await assert.rejects(triage("proj-b", evArch.id, "dismissed"), /归档/);
+  assert.equal((await projects.readProjectEvent(evArch.id))?.triageStatus, "open");
   const archBridge: ProjectEventExtensionBridge = { ...bridge, resolveProjectId: () => "proj-b" };
   const archTools: RegisteredTool[] = [];
   const archApi = { registerTool: (t: never) => archTools.push(t as unknown as RegisteredTool), on: () => undefined } as unknown as ExtensionAPI;
@@ -206,8 +230,9 @@ async function main(): Promise<void> {
 
   // 洪峰之后的新事件（dismissed 与 open 各一）验证重启持久化
   const evPersistDismissed = eventA();
-  projects.dismissProjectEvent("proj-a", evPersistDismissed.id);
+  await triage("proj-a", evPersistDismissed.id, "dismissed");
   const evPersistOpen = eventA();
+  await db.runtimeAuditReader?.close();
   db.close();
   const db2 = new AppDatabase(dbPath);
   const projects2 = new ProjectService(new ProjectRepository(db2.connection), new MemoryService(db2, { semantic: false }));
@@ -226,7 +251,9 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch((err) => {
+void main().catch(async (err) => {
   console.error("project-event-triage-test: FAILED", err);
   process.exitCode = 1;
+  await db.runtimeAuditReader?.close();
+  if (db.connection.open) db.close();
 });

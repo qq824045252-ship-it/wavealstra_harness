@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { assertSubagentModelAllowed, filterSubagentModels, parseSubagentExecutionPolicy, resolveSubagentTimeout } from "../src/shared/subagent-execution-policy";
 import { assignDiverseModels, resolveSubagentSelection } from "../src/main/capabilities/subagent/selection";
+import { observeSubagentSettings, replaceSubagentSettings } from "../src/main/agent/SubagentSettingsPersistence";
+import { locateRuntimeAudit, RuntimeAuditReader } from "../src/main/platform/runtime-audit";
 
 const models = [{ id: "fixture/a" }, { id: "fixture/b" }];
 assert.deepEqual(filterSubagentModels(models, {}), models);
@@ -31,3 +37,61 @@ assert.deepEqual(parseSubagentExecutionPolicy(settings), {
   timeoutMs: 1000, allowedModels: [], roles: settings.roles, timeoutPolicy: undefined,
 });
 console.log("PASS subagent execution settings: strict parsing, empty allowlist, all model sources, diverse, fixed and per-call time limits");
+
+async function testSubagentSettingsFiles(): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "mybuddy-subagent-settings-"));
+  const settingsPath = join(root, "subagent.json");
+  let reader: RuntimeAuditReader | undefined;
+  try {
+    const nativeFlag = process.argv.indexOf("--native");
+    if (nativeFlag >= 0) {
+      const executable = locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd());
+      assert(executable && existsSync(executable), "Rust worker executable is required");
+      const dbPath = join(root, "app.db");
+      new DatabaseSync(dbPath).close();
+      reader = new RuntimeAuditReader(executable, dbPath);
+    }
+
+    const empty = await observeSubagentSettings(root, reader);
+    assert.equal(empty.kind, reader ? "native" : "host");
+    assert.equal(empty.text, null);
+    await replaceSubagentSettings(empty, '{"roles":{"review":["fixture/a"]},"operatorNote":"保留","maxConcurrency":4}');
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
+      roles: { review: ["fixture/a"] }, operatorNote: "保留", maxConcurrency: 4,
+    });
+
+    const foreignEdit = await observeSubagentSettings(root, reader);
+    writeFileSync(settingsPath, '{"roles":{"review":["fixture/b"]},"operatorNote":"保留","maxConcurrency":3}', "utf8");
+    await assert.rejects(replaceSubagentSettings(foreignEdit, '{"maxConcurrency":2}'), /changed elsewhere/);
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
+      roles: { review: ["fixture/b"] }, operatorNote: "保留", maxConcurrency: 3,
+    });
+
+    const [first, second] = await Promise.all([
+      observeSubagentSettings(root, reader),
+      observeSubagentSettings(root, reader),
+    ]);
+    const original = JSON.parse(first.text!);
+    const writes = await Promise.allSettled([
+      replaceSubagentSettings(first, JSON.stringify({ ...original, maxConcurrency: 2 })),
+      replaceSubagentSettings(second, JSON.stringify({ ...original, maxConcurrency: 7 })),
+    ]);
+    const winners = writes.flatMap((write, index) => write.status === "fulfilled" ? [index] : []);
+    assert.equal(winners.length, 1, "simultaneous saves may commit only once per observed revision");
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), {
+      roles: { review: ["fixture/b"] }, operatorNote: "保留", maxConcurrency: [2, 7][winners[0]],
+    });
+    const files = readdirSync(root);
+    assert.equal(files.includes("subagent.json"), true);
+    assert.equal(files.some(name => name.endsWith(".tmp")), false);
+    console.log(`PASS subagent settings persistence (${reader ? "Rust" : "Node"}): first save, external changes and concurrent revisions`);
+  } finally {
+    await reader?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+testSubagentSettingsFiles().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

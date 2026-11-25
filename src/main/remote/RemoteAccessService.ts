@@ -1,4 +1,4 @@
-import { RemoteImageService, type RemoteArtifactReader } from './RemoteImageService';
+import { RemoteImageService, type RemoteArtifactReader, type RemoteImageReadOptions } from './RemoteImageService';
 import {
   REMOTE_API_VERSION,
   type RemoteAcpAgentSummary,
@@ -63,7 +63,9 @@ export class RemoteAccessService {
     artifactSource: () => RemoteArtifactReader | null | undefined = () => null,
   ) { this.images = new RemoteImageService(db, artifactSource); }
 
-  image(taskId: string, artifactId: string, version?: number) { return this.images.read(taskId, artifactId, version); }
+  image(taskId: string, artifactId: string, version?: number, options?: RemoteImageReadOptions) {
+    return this.images.read(taskId, artifactId, version, options);
+  }
 
   serverInfo() {
     return { apiVersion: REMOTE_API_VERSION, service: "mybuddy-remote" as const, name: "MyBuddy", now: Date.now() };
@@ -157,9 +159,9 @@ export class RemoteAccessService {
           if (defaultId && !selectableIds.has(defaultId) && candidates[0]) {
             defaultId = (await this.agent.updateAppSettings({ defaultModelId: candidates[0].id })).defaultModelId;
           }
-          const subagent = this.agent.getSubagentConfig();
+          const subagent = await this.agent.getSubagentConfig();
           if (subagent.defaultModel && !selectableIds.has(subagent.defaultModel)) {
-            this.agent.saveSubagentConfig({ expectedRevision: subagent.revision, defaultModel: undefined, defaultReasoning: undefined });
+            await this.agent.saveSubagentConfig({ expectedRevision: subagent.revision, defaultModel: undefined, defaultReasoning: undefined });
           }
         }
       } finally {
@@ -178,14 +180,14 @@ export class RemoteAccessService {
     return {
       apiVersion: REMOTE_API_VERSION,
       server: this.serverInfo(),
-      spaces: this.db.listSpaces().map(mapRemoteSpace),
+      spaces: (await this.db.readSpaces()).map(mapRemoteSpace),
       projects: (await this.projects.readList(true)).map(mapRemoteProject),
       tasks: await this.listTasks(),
       dots: mapRemoteTask(dots, {
         busy: this.agent.isTaskBusy(dots.id),
         pendingActionCount: this.agent.listPendingActions(dots.id).length,
       }),
-      unreadNotificationCount: this.notifications.unreadCount(),
+      unreadNotificationCount: await (this.notifications.readUnreadCount?.() ?? this.notifications.unreadCount()),
       device,
       models: await this.listModels(),
       defaultModelId: settings.defaultModelId?.trim() || null,
@@ -297,11 +299,19 @@ export class RemoteAccessService {
     }));
   }
 
-  listNotifications(unreadOnly = false, limit = 100) {
-    return this.notifications.list({ unreadOnly, limit }).map(mapRemoteNotification);
+  async listNotifications(unreadOnly = false, limit = 100) {
+    const request = { unreadOnly, limit };
+    const rows = await (this.notifications.readList?.(request) ?? this.notifications.list(request));
+    return rows.map(mapRemoteNotification);
   }
 
-  markNotificationRead(id: string): void { this.notifications.markRead(id); }
-  markAllNotificationsRead(): void { this.notifications.markAllRead(); }
-  clearAllNotifications(): void { this.notifications.dismissAll(); }
+  async markNotificationRead(id: string): Promise<void> {
+    await (this.notifications.writeMarkRead?.(id) ?? this.notifications.markRead(id));
+  }
+  async markAllNotificationsRead(): Promise<void> {
+    await (this.notifications.writeMarkAllRead?.() ?? this.notifications.markAllRead());
+  }
+  async clearAllNotifications(): Promise<void> {
+    await (this.notifications.writeDismissAll?.() ?? this.notifications.dismissAll());
+  }
 }

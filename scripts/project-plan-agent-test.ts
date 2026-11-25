@@ -11,7 +11,7 @@
  *  6. 同项目 Task B 能看到 Task A 经工具更新后的计划。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,6 +20,9 @@ import { MemoryService } from "../src/main/memory/MemoryService";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { ProjectContextResolver } from "../src/main/project/ProjectContextResolver";
+import { ProjectCadence } from "../src/main/project/ProjectCadence";
+import { WorkGraphService } from "../src/main/workgraph/WorkGraphService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import {
   createProjectPlanExtension,
   type ProjectPlanExtensionBridge,
@@ -47,10 +50,13 @@ function assertOk(cond: unknown, label: string): void {
 }
 
 /* ---------------- 环境 ---------------- */
+const nativeFlag = process.argv.indexOf("--native");
+const runtimeAuditExecutable = nativeFlag < 0 ? undefined : locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd());
+if (nativeFlag >= 0) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable), "Rust worker executable is required");
 const root = mkdtempSync(join(tmpdir(), "mybuddy-project-plan-agent-"));
-const db = new AppDatabase(join(root, "app.db"));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const memory = new MemoryService(db, { semantic: false });
-const repository = new ProjectRepository(db.connection);
+const repository = new ProjectRepository(db.connection, db.runtimeAuditReader);
 const service = new ProjectService(repository, memory);
 const resolver = new ProjectContextResolver(db, repository, memory);
 
@@ -243,7 +249,7 @@ const createdId: string = await (async () => {
 
 /* 4e. 跨项目隔离（验收场景 4：Q 的任务不能读写 P 的计划） */
 {
-  const { tools } = makeBridge({ resolveProjectId: () => projectQ.id });
+  const { tools } = makeBridge({ taskId: "task-q", resolveProjectId: () => projectQ.id });
   const get = await byName(tools, "project_plan_get").execute("tc", { id: doingTech.id } as never);
   assertOk(get.isError === true && get.content[0].text.includes("不属于"), "scope: Q 任务不能 get P 的计划项");
   const update = await byName(tools, "project_plan_update").execute("tc", { id: doingTech.id, status: "todo" } as never);
@@ -432,14 +438,116 @@ const createdId: string = await (async () => {
   assertOk(roEmpty.includes("只读") && !roEmpty.includes("project_plan_create"), "render: 空计划只读变体一致");
   assertOk(renderProjectPlanContext(emptySummary, true).includes("project_plan_create"), "render: 空计划读写变体含 create");
 }
+
+await checkAsyncPlanWritesAndCadence();
+}
+
+async function checkAsyncPlanWritesAndCadence(): Promise<void> {
+  const native = db.runtimeAuditReader;
+  if (native) {
+    assert.equal(await native.supportsProjectWrites("todo"), true);
+    db.upsertTask({ id: "native-plan-rebound", title: "Rebound plan actor", updatedAt: 1, projectId: projectP.id });
+    const bridge = makeBridge({ taskId: "native-plan-rebound", resolveProjectId: () => db.getTask("native-plan-rebound")?.projectId ?? null });
+    const write = native.writeProject.bind(native);
+    native.writeProject = async (...args) => {
+      db.upsertTask({ id: "native-plan-rebound", title: "Rebound plan actor", updatedAt: 2, projectId: projectQ.id });
+      return write(...args);
+    };
+    try {
+      const result = await byName(bridge.tools, "project_plan_create").execute("rebind", { title: "Must never write to the old project" } as never);
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /项目归属已变化/);
+      assert.equal((await service.readTodos(projectP.id)).some(todo => todo.title === "Must never write to the old project"), false);
+    } finally {
+      native.writeProject = write;
+    }
+  }
+
+  const now = 1_900_000_000_000;
+  const day = 86_400_000;
+  const timers: Array<{ fn(): void; delay: number; cancelled: boolean }> = [];
+  let pending = Promise.resolve();
+  let published = 0;
+  let boundaryHits = 0;
+  const projects = new ProjectService(repository, memory, projectId => {
+    published++;
+    pending = cadence.scheduleAsync(projectId);
+  });
+  const cadence = new ProjectCadence(projects, {
+    now: () => now, onBoundary: () => { boundaryHits++; }, scheduler: {
+      schedule: (fn, delay) => {
+        const timer = { fn, delay, cancelled: false };
+        timers.push(timer);
+        return timer;
+      },
+      clear: handle => { (handle as typeof timers[number]).cancelled = true; },
+    },
+  });
+  try {
+    const project = await projects.createAsync({ name: "Desktop plan writer fixture" });
+    const todo = await projects.createTodoAsync({ projectId: project.id, title: "Inspection", dueAt: now + 5 * day });
+    await pending;
+    assert.equal(timers[0]?.delay, 2 * day);
+    if (native) assert.equal(await native.projectMetadata({ kind: "nextBoundary", projectId: project.id, now }), now + 2 * day);
+
+    await Promise.all([
+      projects.updateTodoAsync({ id: todo.id, title: "Inspection revised" }),
+      projects.updateTodoAsync({ id: todo.id, description: "Second window", dueAt: now + 8 * day }),
+    ]);
+    await pending;
+    const current = await projects.readTodo(todo.id);
+    assert.deepEqual([current?.title, current?.description, current?.dueAt], ["Inspection revised", "Second window", now + 8 * day]);
+    assert.equal(timers[0].cancelled, true);
+    assert.deepEqual(timers.filter(timer => !timer.cancelled).map(timer => timer.delay), [5 * day]);
+    timers[0].fn();
+    assert.equal(boundaryHits, 0, "a cancelled timer must not consume its replacement");
+
+    const bumped = repository.getSummary(project.id)!.updatedAt;
+    const notifications = published;
+    assert.equal((await projects.updateTodoAsync({ id: todo.id, title: " Inspection revised " })).updatedAt, current!.updatedAt);
+    assert.equal(repository.getSummary(project.id)?.updatedAt, bumped);
+    assert.equal(published, notifications);
+
+    const graph = new WorkGraphService(db);
+    graph.addEdge({ fromType: "plan", fromId: todo.id, toType: "project", toId: project.id, relation: "RELATES_TO" });
+    db.connection.exec(`CREATE TRIGGER fixture_plan_edge_failure BEFORE DELETE ON work_graph_edges
+      WHEN old.from_id='${todo.id}' BEGIN SELECT RAISE(ABORT,'fixture edge cleanup failure'); END;`);
+    try {
+      await assert.rejects(projects.deleteTodoAsync(todo.id), /fixture edge cleanup failure|项目数据写入失败/);
+    } finally {
+      db.connection.exec("DROP TRIGGER fixture_plan_edge_failure");
+    }
+    assert.equal((await projects.readTodo(todo.id))?.title, "Inspection revised");
+    assert.equal(graph.listOutgoing("plan", todo.id)[0]?.toId, project.id);
+    assert.equal(repository.getSummary(project.id)?.updatedAt, bumped);
+    assert.equal(published, notifications);
+
+    await projects.updateTodoAsync({ id: todo.id, status: "done" });
+    await pending;
+    assert.equal(cadence.activeCount(), 0);
+    await projects.deleteTodoAsync(todo.id);
+    await pending;
+    assert.equal(await projects.readTodo(todo.id), undefined);
+    assert.deepEqual(graph.listOutgoing("plan", todo.id), []);
+    assert.equal(cadence.activeCount(), 0);
+    const titles = Array.from({ length: 12 }, (_, index) => `Independent plan ${index + 1}`);
+    await Promise.all(titles.map(title => projects.createTodoAsync({ projectId: project.id, title })));
+    await pending;
+    assert.deepEqual((await projects.readTodos(project.id)).map(item => item.title).sort(), titles.sort());
+    console.log("  ✓ desktop plan writes, concurrent patches, atomic edge cleanup, and reminder rescheduling");
+  } finally {
+    cadence.shutdown();
+  }
 }
 
 void main().then(() => {
+  if (failed > 0) throw new Error(`project-plan-agent-test: ${failed} FAILED, ${passed} passed`);
+  console.log(`project-plan-agent-test: PASS (${passed})`);
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+}).finally(async () => {
+  await db.runtimeAuditReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
-  if (failed > 0) {
-    console.error(`project-plan-agent-test: ${failed} FAILED, ${passed} passed`);
-    process.exit(1);
-  }
-  console.log(`project-plan-agent-test: PASS (${passed})`);
 });

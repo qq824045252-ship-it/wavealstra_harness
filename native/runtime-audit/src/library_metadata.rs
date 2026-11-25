@@ -1,9 +1,17 @@
-use crate::{Result, sqlite_rows::records};
-use rusqlite::Connection;
+use crate::{Result, library_text, sqlite_rows::records};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
-const ITEMS: &str =
+// Keep JSON replies below the worker's line limit even for control-heavy text.
+const INLINE_TEXT_BYTES: usize = 4 * 1024 * 1024;
+
+pub(crate) const ITEMS: &str =
     "id, space_id, collection_id, kind, title, filename, mime_type, size_bytes, owner,
     favorite, url, source_type, source_task_id, source_artifact_id, original_path, content_hash,
     extract_status, created_at, updated_at, last_visited_at, trashed_at, note_metadata";
@@ -26,6 +34,21 @@ pub enum Query {
     Versions {
         item_id: String,
     },
+    VersionBody {
+        item_id: String,
+        version: i64,
+    },
+    TextBody {
+        item_id: String,
+        root: PathBuf,
+        max_chars: Option<usize>,
+    },
+    NoteWritesSupported,
+    NoteRestoresSupported,
+    TextSavesSupported,
+    DeletesSupported,
+    BackupsSupported,
+    RestoreBackupsSupported,
 }
 
 pub fn read(db: &Connection, query: Query) -> Result<Value> {
@@ -54,7 +77,110 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
                 [&item_id],
             )?.into())
         }
+        Query::VersionBody { item_id, version } => read_version_body(db, &item_id, version),
+        Query::TextBody {
+            item_id,
+            root,
+            max_chars,
+        } => read_text_body(db, &item_id, &root, max_chars),
+        Query::NoteWritesSupported
+        | Query::NoteRestoresSupported
+        | Query::TextSavesSupported
+        | Query::DeletesSupported
+        | Query::BackupsSupported
+        | Query::RestoreBackupsSupported => Ok(Value::Bool(true)),
     }
+}
+
+fn read_text_body(
+    db: &Connection,
+    item_id: &str,
+    root: &Path,
+    max_chars: Option<usize>,
+) -> Result<Value> {
+    let Some(mut item) = records(
+        db,
+        &format!("SELECT {ITEMS} FROM library_items WHERE id=?1 AND trashed_at IS NULL"),
+        [item_id],
+    )?
+    .pop() else {
+        return Ok(json!({ "status": "missingItem" }));
+    };
+    let needs_host = || json!({ "status": "needsHost" });
+    if !matches!(item["kind"].as_str(), Some("markdown" | "html" | "csv")) {
+        return Ok(needs_host());
+    }
+    let space = item["space_id"].as_str().ok_or("missing library space")?;
+    let filename = item["filename"]
+        .as_str()
+        .ok_or("missing library filename")?;
+    let path = library_text::managed_path(root, space, item_id, filename);
+    let Ok(Some(file)) = library_text::open_managed(root, &path, space, item_id) else {
+        return Ok(needs_host());
+    };
+    let cap = match max_chars {
+        Some(max) if max < INLINE_TEXT_BYTES / 4 => (max + 1) * 4,
+        Some(_) => return Ok(needs_host()),
+        None => INLINE_TEXT_BYTES + 1,
+    };
+    let mut bytes = Vec::new();
+    if file.take(cap as u64).read_to_end(&mut bytes).is_err() {
+        return Ok(needs_host());
+    }
+    let content = String::from_utf8_lossy(&bytes);
+    if let Some(max) = max_chars {
+        let mut units = 0;
+        for (offset, character) in content.char_indices() {
+            units += character.len_utf16();
+            if units > max {
+                return Ok(
+                    json!({ "status": "ok", "item": item, "content": &content[..offset], "contentTruncated": true }),
+                );
+            }
+        }
+        return Ok(
+            json!({ "status": "ok", "item": item, "content": content, "contentTruncated": false }),
+        );
+    }
+    if bytes.len() > INLINE_TEXT_BYTES {
+        return Ok(needs_host());
+    }
+    if !item["content_hash"]
+        .as_str()
+        .is_some_and(|hash| !hash.is_empty())
+    {
+        item["content_hash"] = json!(format!("{:x}", Sha256::digest(content.as_bytes())));
+    }
+    Ok(json!({ "status": "ok", "item": item, "content": content }))
+}
+
+fn read_version_body(db: &Connection, item_id: &str, version: i64) -> Result<Value> {
+    let row = db
+        .prepare_cached(
+            "SELECT v.id, v.content_hash, CASE WHEN length(v.snapshot)<=?3 THEN v.snapshot END
+         FROM library_items i LEFT JOIN library_versions v ON v.item_id=i.id AND v.version=?2
+         WHERE i.id=?1 AND i.trashed_at IS NULL",
+        )?
+        .query_row(params![item_id, version, INLINE_TEXT_BYTES], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+            ))
+        })
+        .optional()?;
+    Ok(match row {
+        None => json!({ "status": "missingItem" }),
+        Some((None, _, _)) => json!({ "status": "missingVersion" }),
+        Some((_, Some(hash), Some(bytes))) => {
+            if format!("{:x}", Sha256::digest(&bytes)) == hash {
+                json!({ "status": "ok", "content": String::from_utf8_lossy(&bytes) })
+            } else {
+                json!({ "status": "unavailable" })
+            }
+        }
+        Some(_) => json!({ "status": "needsHost" }),
+    })
 }
 
 fn catalog(

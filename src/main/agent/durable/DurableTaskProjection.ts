@@ -1,53 +1,78 @@
-import type { Database, Statement } from "better-sqlite3";
+import type { Database } from "better-sqlite3";
 import { activityTimeOrUndefined } from "../../../../shared/src/activity-time";
+import type { RuntimeAuditReader } from "../../platform/runtime-audit";
 
-/**
- * Durable snapshot → `tasks` projection writes.
- *
- * Statements are prepared once per opened Bot instead of once per snapshot. Equality lives in SQL
- * (`IS NOT`, `<`) rather than an in-memory last-value cache, so an external edit is never hidden:
- * a write happens exactly when the stored value differs, and `updated_at` can only advance.
- *
- * `recordActivity` is the **only** writer of `tasks.updated_at` for a Durable Bot. It also returns
- * the value that ended up stored, so the caller can publish that authoritative value to the UI
- * instead of letting the renderer derive one of its own from message timestamps.
- */
+interface MessageWorkspace { messageId: string; cwd: string }
+
+interface TaskProjection {
+  activityAt?: number;
+  workspaces: MessageWorkspace[];
+}
+
+export type RuntimeDurableTaskProjectionRequest = {
+  taskId: string;
+  workspaces: MessageWorkspace[];
+} & ({ kind: "snapshot"; status: string; activityAt?: number } | { kind: "rememberWorkspaces" });
+
+export type RuntimeDurableTaskProjectionReply =
+  | ({ status: "applied" } & TaskProjection)
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
+
+/** Stores MyBuddy task metadata before the corresponding Durable revision is published. */
 export class DurableTaskProjection {
-  private readonly setStatus: Statement;
-  private readonly touchUpdatedAt: Statement;
-  private readonly readUpdatedAt: Statement;
-  private readonly rememberMessage: Statement;
+  private applyOnHost?: ReturnType<typeof hostProjection>;
 
-  constructor(db: Database) {
-    this.setStatus = db.prepare("UPDATE tasks SET status = ? WHERE id = ? AND status IS NOT ?");
-    this.touchUpdatedAt = db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ? AND updated_at < ?");
-    this.readUpdatedAt = db.prepare("SELECT updated_at FROM tasks WHERE id = ?");
-    this.rememberMessage = db.prepare("INSERT OR IGNORE INTO durable_bot_message_workspaces VALUES (?, ?, ?)");
+  constructor(private readonly db: Database, private readonly rust?: Pick<RuntimeAuditReader, "writeDurableTaskProjection">) {}
+
+  /** Publish the stored activity time and the original workspace for each requested message. */
+  async writeSnapshot(taskId: string, status: string, at: unknown, workspaces: MessageWorkspace[]): Promise<TaskProjection> {
+    return this.write({ kind: "snapshot", taskId, status, activityAt: activityTimeOrUndefined(at), workspaces });
   }
 
-  /** Returns the number of rows actually rewritten (0 = projection already current). */
-  writeStatus(taskId: string, value: string): number {
-    return this.setStatus.run(value, taskId, value).changes;
+  async rememberWorkspaces(taskId: string, workspaces: MessageWorkspace[]): Promise<void> {
+    if (workspaces.length) await this.write({ kind: "rememberWorkspaces", taskId, workspaces });
   }
 
-  /**
-   * `updated_at` tracks the newest event; it must never move backwards and never hold a non-instant.
-   *
-   * Returns the value to publish: the authoritative **stored** value when the task row exists,
-   * otherwise the valid candidate itself (nothing was persisted, so nothing can be overridden).
-   * An invalid candidate never wins: on an existing row the stored instant comes back instead,
-   * and with nothing valid on offer the result is `undefined` — “no new activity evidence”.
-   */
-  recordActivity(taskId: string, at: unknown): number | undefined {
-    const candidate = activityTimeOrUndefined(at);
-    if (candidate !== undefined && this.touchUpdatedAt.run(candidate, taskId, candidate).changes > 0) return candidate;
-    const row = this.readUpdatedAt.get(taskId) as { updated_at: number } | undefined;
-    // A legacy row holding 0 is repaired by the write above, so a stored invalid value only
-    // reaches here while nothing valid is on offer; then `undefined` says "no authority today".
-    return activityTimeOrUndefined(row?.updated_at) ?? candidate;
+  private async write(request: RuntimeDurableTaskProjectionRequest): Promise<TaskProjection> {
+    if (this.rust) {
+      const result = await this.rust.writeDurableTaskProjection(request);
+      if (result?.status === "applied") return { activityAt: activityTimeOrUndefined(result.activityAt), workspaces: result.workspaces };
+      if (result?.status === "rejected") throw new Error(result.message);
+    }
+    this.applyOnHost ??= hostProjection(this.db);
+    return this.applyOnHost.immediate(request);
   }
+}
 
-  rememberWorkspace(taskId: string, messageId: string, cwd: string): number {
-    return this.rememberMessage.run(taskId, messageId, cwd).changes;
-  }
+function hostProjection(db: Database) {
+  const setStatus = db.prepare("UPDATE tasks SET status = ? WHERE id = ? AND status IS NOT ?");
+  const touchUpdatedAt = db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ? AND updated_at < ?");
+  const readUpdatedAt = db.prepare("SELECT updated_at FROM tasks WHERE id = ?");
+  const rememberMessage = db.prepare(`INSERT OR IGNORE INTO durable_bot_message_workspaces (task_id, message_id, cwd)
+    SELECT @taskId, @messageId, @cwd WHERE EXISTS (SELECT 1 FROM tasks WHERE id = @taskId)`);
+  const readWorkspace = db.prepare<{ taskId: string; messageId: string }, { cwd: string }>(
+    "SELECT cwd FROM durable_bot_message_workspaces WHERE task_id = @taskId AND message_id = @messageId",
+  );
+  return db.transaction((request: RuntimeDurableTaskProjectionRequest): TaskProjection => {
+    let activityAt: number | undefined;
+    if (request.kind === "snapshot") {
+      setStatus.run(request.status, request.taskId, request.status);
+      const candidate = request.activityAt;
+      if (candidate !== undefined && touchUpdatedAt.run(candidate, request.taskId, candidate).changes > 0) activityAt = candidate;
+      else {
+        const row = readUpdatedAt.get(request.taskId) as { updated_at: unknown } | undefined;
+        activityAt = activityTimeOrUndefined(row?.updated_at) ?? candidate;
+      }
+    }
+    for (const { messageId, cwd } of request.workspaces) rememberMessage.run({ taskId: request.taskId, messageId, cwd });
+    const workspaces: MessageWorkspace[] = [];
+    if (request.kind === "snapshot") {
+      for (const { messageId } of request.workspaces) {
+        const row = readWorkspace.get({ taskId: request.taskId, messageId });
+        if (row) workspaces.push({ messageId, cwd: row.cwd });
+      }
+    }
+    return { activityAt, workspaces };
+  });
 }

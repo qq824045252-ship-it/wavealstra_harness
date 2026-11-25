@@ -11,11 +11,13 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat"
 import { CONFIG_DIR_NAME, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { ConversationBranchAgentPort } from "../src/main/agent/ConversationBranchService";
 import type { CreateConversationBranchRequest } from "../src/shared/conversation-branch";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 
 const root = mkdtempSync(join(tmpdir(), "durable-branch-service-"));
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
+const { locateRuntimeAudit } = await import("../src/main/platform/runtime-audit");
 const { DurableBotRuntime } = await import("../src/main/agent/durable/DurableBotRuntime");
 const { DurableBotService } = await import("../src/main/agent/durable/DurableBotService");
 const { ConversationBranchService } = await import("../src/main/agent/ConversationBranchService");
@@ -28,7 +30,10 @@ const { ArtifactRegistry } = await import("../src/main/artifact/ArtifactRegistry
 const { installModelInvocationAdmission } = await import("../src/main/agent/ModelInvocationAdmission");
 const agentDir = join(root, ".mybuddy");
 mkdirSync(agentDir, { recursive: true });
-const db = new AppDatabase(join(root, "app.db"));
+const native = process.argv.includes("--native");
+const executable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+if (native) assert(executable && existsSync(executable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable: executable });
 const workspace = new TaskExecutionWorkspace(join(root, "workspaces"));
 const sourceCwd = workspace.ensureTaskExecutionWorkspace("source");
 writeFileSync(join(sourceCwd, "notes.txt"), "source notes");
@@ -94,6 +99,17 @@ const openChild = async (taskId: string) => {
   return DurableBotRuntime.open({ ...runtimeOptions, ...binding });
 };
 try {
+  db.upsertTask({ id: "archived-title", title: "Source（分支）", updatedAt: 2 });
+  db.archiveTask("archived-title", true);
+  db.upsertTask({ id: "trashed-title", title: "Source（分支 2）", updatedAt: 3 });
+  db.upsertTaskExecutionWorkspaceState({
+    taskId: "trashed-title", directoryName: "trashed-title", state: "trashed", createdAt: 3, updatedAt: 3,
+  });
+  db.openDots();
+  db.connection.prepare("UPDATE tasks SET title = ? WHERE id = ?").run("Source（分支 3）", DOTS_TASK_ID);
+  const worker = db.runtimeAuditReader;
+  if (worker) assert.equal(await worker.branchTitle("Source", DOTS_TASK_ID), "Source（分支 3）");
+
   await artifacts.register({ taskId: "source", kind: "code", title: "Before", content: "before", producerToolCallId: "before-leaf" });
   await artifacts.register({ taskId: "source", kind: "code", title: "After", content: "after", producerToolCallId: "after-leaf" });
   assert.equal((await service.preview(request())).ok, true, "a new Durable task needs no sessionFile");
@@ -106,6 +122,7 @@ try {
   assert(first.ok && duplicate.ok);
   const childId = first.result.task.id;
   assert.equal(duplicate.result.task.id, childId, "concurrent duplicate requests produce one child");
+  assert.equal(first.result.task.title, "Source（分支 3）", "archived and trashed titles count while Dots does not");
   assert.equal(first.result.task.sessionFile, undefined);
   assert.equal(first.result.inheritedArtifactCount, 1, "only artifacts before the chosen reply are inherited");
   assert.equal(first.result.task.cwd, workspace.resolveTaskExecutionWorkspaceDir(childId));
@@ -118,8 +135,19 @@ try {
   assert(!(await child.conversation.context(context)).messages.some(message => message.role === "user" && message.content === "q2"));
   await child.close();
 
+  if (worker) {
+    const nativeTitle = worker.branchTitle.bind(worker);
+    worker.branchTitle = async (title, dotsTaskId) => {
+      const proposedTitle = await nativeTitle(title, dotsTaskId);
+      assert.equal(proposedTitle, "Source（分支 4）");
+      db.upsertTask({ id: "concurrent-title", title: "Source（分支 4）", updatedAt: Date.now() });
+      worker.branchTitle = nativeTitle;
+      return proposedTitle;
+    };
+  }
   const later = await service.create(request({ entryId: String(user2.id) }));
   assert(later.ok);
+  assert.equal(later.result.task.title, worker ? "Source（分支 5）" : "Source（分支 4）");
   const laterRuntime = await openChild(later.result.task.id);
   assert.deepEqual((await laterRuntime.conversation.context(context)).messages, sourceContext.messages, "context heads survive copying");
   await laterRuntime.close();
@@ -177,4 +205,4 @@ try {
   assert.deepEqual((await reopened.conversation.context(context)).messages, sourceContext.messages, "child continuation never changes the source");
   await reopened.close();
   console.log("PASS native branches, historical store/context, inheritance, idempotency, rollback and task model policy");
-} finally { await bots.close(); db.close(); }
+} finally { await bots.close(); await db.runtimeAuditReader?.close(); db.close(); }

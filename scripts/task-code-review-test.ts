@@ -9,6 +9,7 @@ import { AppDatabase } from "../src/main/db/AppDatabase";
 import { CodeReviewService } from "../src/main/agent/CodeReviewService";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { withCodeReviewLease } from "../src/main/agent/durable/DurableToolCoordination";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { getCanbanReviewRuntime } from "../vendor/canban-review/runtime";
 import type { CodeReviewChangedEvent } from "../src/shared/code-review";
 
@@ -48,10 +49,13 @@ const models = {
   },
 } as unknown as ModelRuntime;
 
-let db = new AppDatabase(dbPath);
+const native = process.argv.includes("--native");
+const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+if (native) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable), "Native runtime audit executable is required");
+let db = new AppDatabase(dbPath, { runtimeAuditExecutable });
 for (const id of [task, otherTask]) db.upsertTask({ id, cwd, title: id, updatedAt: Date.now(), modelId: "fixture/fixture" });
 const changes: CodeReviewChangedEvent[] = [];
-let review = new CodeReviewService(db.connection, change => changes.push(change));
+let review = new CodeReviewService(db.connection, change => changes.push(change), db.runtimeAuditReader);
 const bot = new DurableBotService({
   db, codeReview: review, models, agentDir, mcpDir: join(agentDir, "mcp"),
   resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native",
@@ -76,6 +80,13 @@ const find = (file: string, taskId = task) => {
 const decide = (action: "accept" | "reject", ids: string[], taskId = task) =>
   review.decide({ taskId, action, ids }, () => cwd, withCodeReviewLease);
 
+async function verifyRead(check: () => Promise<void>): Promise<void> {
+  if (!native) return check();
+  db.connection.exec("CREATE TEMP TABLE task_code_review AS SELECT * FROM main.task_code_review WHERE 0");
+  try { await check(); }
+  finally { db.connection.exec("DROP TABLE temp.task_code_review"); }
+}
+
 try {
   assert.equal(review.pendingCount(task), 0);
   assert.equal(review.pendingCount(otherTask), 0);
@@ -98,6 +109,18 @@ try {
     { kind: " ", oldLine: 2, newLine: 2, text: "preserved dirty line" },
   ]);
   assert.deepEqual([current.kind, current.additions, current.deletions], ["modified", 1, 1]);
+  await verifyRead(async () => {
+    assert.equal(await review.readPendingCount(task), 1);
+    assert.deepEqual((await review.readList(task)).map(({ path, kind, status }) => ({ path, kind, status })), [
+      { path: "existing.txt", kind: "modified", status: "pending" },
+    ]);
+    assert.deepEqual(await review.readList(otherTask), []);
+    assert.equal(await review.detail(otherTask, current.id), null);
+    const detail = await review.detail(task, current.id);
+    assert.equal(detail?.before, original);
+    assert.equal(detail?.after, "\ufeffsecond\r\npreserved dirty line\r\n");
+    assert.match(detail?.patch ?? "", /preserved dirty line/);
+  });
   assert.equal((await decide("reject", [stale])).results[0]?.status, "conflict");
   assert.match(read("existing.txt"), /second/);
 
@@ -170,6 +193,11 @@ try {
   const largeReview = find("large.txt");
   assert.equal(largeReview.canReject, true);
   assert.match((await review.detail(task, largeReview.id))?.reason ?? "", /512 KiB/);
+  await verifyRead(async () => {
+    const detail = await review.detail(task, largeReview.id);
+    assert.deepEqual({ before: detail?.before, after: detail?.after, reason: detail?.reason },
+      { before: null, after: null, reason: "文件超过 512 KiB，无法预览文本差异" });
+  });
   assert.equal((await decide("reject", [largeReview.id])).results[0]?.status, "rejected");
   assert.equal(read("large.txt"), large);
 
@@ -190,6 +218,7 @@ try {
   assert.deepEqual(changes.at(-1), { taskId: task, pendingCount: pendingBeforeWrite });
 } finally {
   await bot.close();
+  await db.runtimeAuditReader?.close();
   db.close();
 }
 

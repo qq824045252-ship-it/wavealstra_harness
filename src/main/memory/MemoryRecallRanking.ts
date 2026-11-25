@@ -1,7 +1,7 @@
 import { setImmediate as yieldThread } from "node:timers/promises";
 import type { MemoryRecordDto, MemorySearchHit, MemorySearchRequest } from "../../shared/memory-kernel";
 import type { MemoryRepository } from "./MemoryRepository";
-import type { MemorySearchScope } from "./MemorySearchScope";
+import type { MemoryBaselineCandidate, MemorySearchScope } from "./MemorySearchScope";
 import { normalizeSearchText } from "./MemorySearchText";
 
 export function tokenSimilarity(a: string, b: string): number {
@@ -24,9 +24,26 @@ type RankingInput = {
   scoped: ReturnType<MemoryRepository["listByScopes"]>; ftsRank: ReadonlyMap<string, number>; query: string;
   request: MemorySearchRequest; scopes: Array<MemorySearchScope["scopes"][number] & { distance?: number }>;
   visible: (memory: MemoryRecordDto) => boolean;
+  textScores?: ReadonlyMap<string, number>;
 };
 
-function scoreMemoryItem(item: RankingInput["scoped"][number], { ftsRank, query, request, scopes, visible }: RankingInput, now: number, similarities: Map<string, number>): MemorySearchHit | undefined {
+type RankedMemoryMetadata = Pick<MemoryRecordDto, "kind" | "importance" | "confidence" | "explicit" | "updatedAt">;
+function addMemoryMetadataScore(memory: RankedMemoryMetadata, scopeType: MemoryBaselineCandidate["scopeType"],
+  binding: MemoryBaselineCandidate["binding"], distance: number, now: number, score: number, reasons: string[]): number {
+  score += Math.max(0, 18 - distance * 2.5);
+  reasons.push(`scope:${scopeType}${distance ? `/${distance}` : ""}`);
+  score += memory.importance * 8;
+  if (memory.importance >= 2) reasons.push(`importance:${memory.importance}`);
+  score += memory.confidence * 8;
+  if (memory.explicit) { score += 10; reasons.push("explicit"); }
+  if (memory.kind === "identity" || memory.kind === "preference") score += scopeType === "global" ? 8 : 2;
+  const ageDays = Math.max(0, (now - memory.updatedAt) / 86_400_000);
+  score += Math.max(0, 5 - Math.log2(ageDays + 1));
+  if (binding === "promoted") reasons.push("promoted");
+  return score;
+}
+
+function scoreMemoryItem(item: RankingInput["scoped"][number], { ftsRank, query, scopes, visible, textScores }: RankingInput, now: number, similarities: Map<string, number>): MemorySearchHit | undefined {
   const distance = scopes.find((scope) => scope.scopeType === item.scopeType && (scope.scopeId ?? "") === (item.scopeId ?? ""))?.distance ?? 10;
   const memory = item.memory;
   if (!visible(memory)) return;
@@ -42,9 +59,7 @@ function scoreMemoryItem(item: RankingInput["scoped"][number], { ftsRank, query,
       if (value === undefined) { value = tokenSimilarity(query, text); similarities.set(text, value); }
       return value;
     };
-    const titleSim = similarity(memory.title);
-    const contentSim = similarity(memory.content);
-    const sim = Math.max(titleSim * 1.15, contentSim);
+    const sim = textScores?.get(memory.id) ?? Math.max(similarity(memory.title) * 1.15, similarity(memory.content));
     const rank = ftsRank.get(memory.id);
     if (rank !== undefined) {
       score += 48 / (1 + Math.log2(rank + 1));
@@ -58,16 +73,7 @@ function scoreMemoryItem(item: RankingInput["scoped"][number], { ftsRank, query,
   } else {
     score += 12;
   }
-  score += Math.max(0, 18 - distance * 2.5);
-  reasons.push(`scope:${item.scopeType}${distance ? `/${distance}` : ""}`);
-  score += memory.importance * 8;
-  if (memory.importance >= 2) reasons.push(`importance:${memory.importance}`);
-  score += memory.confidence * 8;
-  if (memory.explicit) { score += 10; reasons.push("explicit"); }
-  if (memory.kind === "identity" || memory.kind === "preference") score += item.scopeType === "global" ? 8 : 2;
-  const ageDays = Math.max(0, (now - memory.updatedAt) / 86_400_000);
-  score += Math.max(0, 5 - Math.log2(ageDays + 1));
-  if (item.binding === "promoted") reasons.push("promoted");
+  score = addMemoryMetadataScore(memory, item.scopeType, item.binding, distance, now, score, reasons);
   return { memory, score, reasons, scopeDistance: distance };
 }
 
@@ -89,6 +95,39 @@ function collect(hits: Iterable<MemorySearchHit | undefined>): MemorySearchHit[]
 
 export function rankMemorySearch(input: RankingInput): MemorySearchHit[] {
   return collect(scoreMemorySearch(input)).slice(0, Math.max(1, Math.min(100, input.request.limit ?? 20)));
+}
+
+export function rankMemoryBaselines(
+  candidates: MemoryBaselineCandidate[], scopes: RankingInput["scopes"], limit: number,
+  current: (id: string) => MemoryRecordDto | undefined, visible: RankingInput["visible"],
+): MemorySearchHit[] {
+  const now = Date.now();
+  type Ranked = { candidate: MemoryBaselineCandidate; score: number; reasons: string[]; scopeDistance: number };
+  const byId = new Map<string, Ranked>();
+  const seenBindings = new Set<string>();
+  for (const candidate of candidates) {
+    const scopeKey = `${candidate.id}:${candidate.scopeType}:${candidate.scopeId ?? ""}`;
+    if (seenBindings.has(scopeKey)) continue;
+    seenBindings.add(scopeKey);
+    const scopeDistance = scopes.find(scope => scope.scopeType === candidate.scopeType && (scope.scopeId ?? "") === (candidate.scopeId ?? ""))?.distance ?? 10;
+    const reasons: string[] = [];
+    const score = addMemoryMetadataScore(candidate, candidate.scopeType, candidate.binding, scopeDistance, now, 12, reasons);
+    const prior = byId.get(candidate.id);
+    if (!prior || score > prior.score) byId.set(candidate.id, { candidate, score, reasons, scopeDistance });
+  }
+  const ranked = [...byId.values()].sort((a, b) => b.score - a.score || b.candidate.updatedAt - a.candidate.updatedAt);
+  const result: MemorySearchHit[] = [];
+  for (const { candidate, score, reasons, scopeDistance } of ranked) {
+    const memory = current(candidate.id);
+    if (!memory || memory.status !== candidate.status || !visible(memory)
+      || !memory.scopes.some(scope => scope.scopeType === candidate.scopeType
+        && (scope.scopeId ?? "") === (candidate.scopeId ?? "") && scope.binding === candidate.binding)
+      || memory.status === "active" && ((memory.validFrom !== undefined && memory.validFrom > now)
+        || (memory.validUntil !== undefined && memory.validUntil <= now))) continue;
+    result.push({ memory, score, reasons, scopeDistance });
+    if (result.length >= limit) break;
+  }
+  return result;
 }
 
 export async function rankMemorySearchAsync(input: RankingInput & { current: (id: string) => MemoryRecordDto | undefined }): Promise<MemorySearchHit[]> {

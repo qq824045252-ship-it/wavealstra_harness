@@ -12,7 +12,7 @@ interface Dependencies {
   resolve(request: HtmlEditStart): Target;
   exitCapture(): void;
   draftDir: string;
-  contentSaved(path: string): void;
+  contentSaved(path: string): void | Promise<void>;
   ai(modelId: string, html: string, instruction: string, signal: AbortSignal): Promise<string>;
 }
 interface Session {
@@ -219,7 +219,7 @@ export class HtmlEditService {
       saveHtmlFile(path, s.hash, html);
       await this.stop();
       try { unlinkSync(s.draftPath); } catch { /* harmless retained draft */ }
-      this.deps.contentSaved(path);
+      await this.deps.contentSaved(path);
       if (!target.view.webContents.isDestroyed() && target.view.webContents.getURL() === s.url) target.view.webContents.reloadIgnoringCache();
       if (!target.window.isDestroyed()) target.window.webContents.send(HtmlEditIpc.state, { active: false, target: request.target, message: "已保存到源文件，并创建备份" });
     } catch (error) {

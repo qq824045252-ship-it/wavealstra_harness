@@ -1131,7 +1131,7 @@ export class ExternalAgentRuntime {
 
   private async execute(run: ActiveRun, manifest: Manifest, request: ExternalAgentPromptRequest): Promise<void> {
     const startedAt = run.dto.startedAt;
-    const workspaceBefore = await snapshotWorkspace(run.dto.cwd);
+    const workspaceBefore = await snapshotWorkspace(run.dto.cwd, this.db.runtimeAuditReader);
     let stderr = "";
     let authMethodsSeen: acp.AuthMethod[] = [];
     try {

@@ -8,7 +8,9 @@
  * 不持有 metadata；metadata 真相在 ArtifactRepository。
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { mkdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { dirname, join, relative, sep } from "node:path";
 
 export const KIND_EXT: Record<string, string> = {
   markdown: "md",
@@ -29,20 +31,51 @@ export class ArtifactStorage {
     return this.rootDir;
   }
 
+  pathFor(taskId: string, artifactId: string, kind: string): string {
+    return join(taskId, artifactId, `index.${KIND_EXT[kind] ?? "txt"}`);
+  }
+
   /** 生成 managed-content 落盘路径（相对 root）并写入；失败抛错（materialize fail） */
   materialize(taskId: string, artifactId: string, content: string, kind: string): string {
-    const ext = KIND_EXT[kind] ?? "txt";
-    const relativePath = join(taskId, artifactId, `index.${ext}`);
+    const relativePath = this.pathFor(taskId, artifactId, kind);
     const absolute = join(this.rootDir, relativePath);
     mkdirSync(join(this.rootDir, taskId, artifactId), { recursive: true });
     writeFileSync(absolute, content, "utf-8");
     return relativePath;
   }
 
+  async materializeAsync(taskId: string, artifactId: string, content: string, kind: string): Promise<string> {
+    const storagePath = this.pathFor(taskId, artifactId, kind);
+    const absolute = this.resolve(storagePath);
+    if (absolute === null) throw new Error("成果路径不在受管目录内");
+    const directory = dirname(absolute);
+    await mkdir(directory, { recursive: true });
+    const staged = join(directory, `.artifact-${randomUUID()}.tmp`);
+    try {
+      await writeFile(staged, content, { encoding: "utf8", flag: "wx" });
+      await rename(staged, absolute);
+    } catch (error) {
+      await rm(staged, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    return storagePath;
+  }
+
   read(storagePath: string): string | null {
     const absolute = this.resolve(storagePath);
     if (absolute === null || !existsSync(absolute) || !statSync(absolute).isFile()) return null;
     return readFileSync(absolute, "utf-8");
+  }
+
+  async readAsync(storagePath: string): Promise<string | null> {
+    const absolute = this.resolve(storagePath);
+    if (absolute === null) return null;
+    try {
+      return (await stat(absolute)).isFile() ? await readFile(absolute, "utf8") : null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
   }
 
   exists(storagePath: string): boolean {
@@ -62,6 +95,17 @@ export class ArtifactStorage {
     } catch {
       return false;
     }
+  }
+
+  async removeAsync(storagePath: string): Promise<boolean> {
+    const absolute = this.resolve(storagePath);
+    if (absolute === null) return true;
+    try { await rm(absolute, { force: true }); }
+    catch { return false; }
+    for (let dir = dirname(absolute); dir.startsWith(this.rootDir + sep); dir = dirname(dir)) {
+      try { await rmdir(dir); } catch { break; }
+    }
+    return true;
   }
 
   /**

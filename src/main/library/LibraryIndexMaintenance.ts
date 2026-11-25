@@ -153,6 +153,11 @@ export class LibraryIndexMaintenance {
     this.scheduleSemanticIndex();
   }
 
+  noteTextIndexed(id: string): void {
+    this.extractCache.delete(id);
+    this.completeTextIndex(id);
+  }
+
   /** Hold the temporary index until the async publisher has finished using it. */
   async withLargeTextStage<T>(path: string, publish: (stage?: LibraryTextStage) => T | Promise<T>,
     copy?: { copyTo: string; refuseMarkdownLinks: boolean },

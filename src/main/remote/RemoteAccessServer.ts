@@ -2,6 +2,8 @@ import { RemoteImageError } from './RemoteImageService';
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { z, ZodError } from "zod";
 import { REMOTE_API_VERSION } from "../../../shared/src/remote-contract";
 import { RemotePairingError } from "./RemoteAccessPairing";
@@ -42,7 +44,8 @@ export interface RemoteWorkBridge {
   sync(request: { includeClosed: boolean; cursor?: { epoch: string; sequence: number; scope: "open" | "all" } }): unknown;
   summary(workId: string): unknown;
   diagnostics(request: { workId: string; sections?: string[]; limit?: number; cursor?: string }): unknown;
-  markCardRead(request: { workId: string; semanticCardKey: string; readAt?: number }): { ok: boolean; message?: string };
+  markCardRead(request: { workId: string; semanticCardKey: string; readAt?: number }):
+    { ok: boolean; message?: string } | Promise<{ ok: boolean; message?: string }>;
   recordFeedback(request: unknown): { ok: boolean; message?: string };
   resend(request: unknown): { ok: boolean; message?: string };
 }
@@ -278,15 +281,30 @@ export class RemoteAccessServer {
         if ([...url.searchParams.keys()].some(key => key !== 'v') || (rawVersion !== null && (!/^[1-9]\d*$/.test(rawVersion) || !Number.isSafeInteger(Number(rawVersion))))) {
           return replyJson(400, errorBody('invalid_request', '图片版本参数无效'));
         }
-        const image = await this.options.service.image(decodeURIComponent(imageMatch[1]!), decodeURIComponent(imageMatch[2]!), rawVersion === null ? undefined : Number(rawVersion));
-        response.writeHead(200, {
-          'content-type': image.mimeType, 'content-length': image.bytes.length,
-          'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
-          'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
-          'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
-          ...(origin ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {}),
-        });
-        response.end(request.method === 'HEAD' ? undefined : image.bytes);
+        if (response.destroyed) return;
+        const abort = new AbortController();
+        const onClose = () => abort.abort();
+        response.once('close', onClose);
+        try {
+          const image = await this.options.service.image(
+            decodeURIComponent(imageMatch[1]!), decodeURIComponent(imageMatch[2]!),
+            rawVersion === null ? undefined : Number(rawVersion), { head: request.method === 'HEAD', signal: abort.signal },
+          );
+          if (abort.signal.aborted) return;
+          response.writeHead(200, {
+            'content-type': image.mimeType, 'content-length': image.byteLength,
+            'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+            'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+            'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
+            ...(origin ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {}),
+          });
+          if (image.body instanceof ReadableStream) {
+            const data = Readable.fromWeb(image.body as Parameters<typeof Readable.fromWeb>[0]);
+            await pipeline(data, response);
+          } else response.end(image.body ?? undefined);
+        } finally {
+          response.off('close', onClose);
+        }
         return;
       }
       const taskMatch = /^\/v1\/tasks\/([^/]+)(?:\/(history|runtime|prompt|acp|abort|ackDone))?$/.exec(path);
@@ -329,7 +347,7 @@ export class RemoteAccessServer {
         }
         // 「已结束」绿点确认：手机端打开任务即已查看；广播 task.changed 让其它设备同步刷新
         if (request.method === "POST" && action === "ackDone") {
-          this.options.commands.ackTaskDone(taskId);
+          await this.options.commands.ackTaskDone(taskId);
           this.options.events.publish("task.changed", { taskId });
           return replyJson(200, { ok: true });
         }
@@ -361,12 +379,12 @@ export class RemoteAccessServer {
           const cursor = epoch !== null && Number.isSafeInteger(sequence) && sequence >= 0
             ? { epoch, sequence, scope: (scope === "open" || scope === "all" ? scope : "open") as "open" | "all" }
             : undefined;
-          return replyJson(200, work.sync({ includeClosed, cursor }));
+          return replyJson(200, await work.sync({ includeClosed, cursor }));
         }
         const workRead = /^\/v1\/work\/([^/]+)\/cards\/([^/]+)\/read$/.exec(path);
         if (request.method === "POST" && workRead) {
           const body = remoteWorkCardReadSchema.parse(await readJson(request));
-          const result = work.markCardRead({ workId: decodeURIComponent(workRead[1]!), semanticCardKey: decodeURIComponent(workRead[2]!),
+          const result = await work.markCardRead({ workId: decodeURIComponent(workRead[1]!), semanticCardKey: decodeURIComponent(workRead[2]!),
             readAt: body.readAt });
           return replyJson(result.ok ? 200 : 409, result);
         }
@@ -399,19 +417,19 @@ export class RemoteAccessServer {
       if (request.method === "GET" && path === "/v1/notifications") {
         const unreadOnly = url.searchParams.get("unreadOnly") === "1";
         const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 100));
-        return replyJson(200, this.options.service.listNotifications(unreadOnly, limit));
+        return replyJson(200, await this.options.service.listNotifications(unreadOnly, limit));
       }
       const notificationRead = /^\/v1\/notifications\/([^/]+)\/read$/.exec(path);
       if (request.method === "POST" && notificationRead) {
-        this.options.service.markNotificationRead(decodeURIComponent(notificationRead[1]));
+        await this.options.service.markNotificationRead(decodeURIComponent(notificationRead[1]));
         return replyJson(200, { ok: true });
       }
       if (request.method === "POST" && path === "/v1/notifications/read-all") {
-        this.options.service.markAllNotificationsRead();
+        await this.options.service.markAllNotificationsRead();
         return replyJson(200, { ok: true });
       }
       if (request.method === "POST" && path === "/v1/notifications/clear-all") {
-        this.options.service.clearAllNotifications();
+        await this.options.service.clearAllNotifications();
         return replyJson(200, { ok: true });
       }
       replyJson(404, errorBody("not_found", "route not found"));

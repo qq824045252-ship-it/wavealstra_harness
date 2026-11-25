@@ -1,7 +1,8 @@
 import { botMemorySource } from "./BotMemorySource";
 import { createHash, randomUUID } from "node:crypto";
 import type { AppDatabase } from "../db/AppDatabase";
-import type { MemoryPipelineStateDto, MemoryTurnDto, MemoryTurnExtractionState, MemoryTurnListRequest } from "../../shared/memory-kernel";
+import { LOCAL_USER_ID } from "../../shared/bot-work";
+import type { MemoryPipelineStateDto, MemorySkillLearningStatusDto, MemoryTurnDto, MemoryTurnExtractionState, MemoryTurnListRequest, MemoryTurnTaskDto } from "../../shared/memory-kernel";
 
 function hashTurn(userText: string, assistantText: string): string {
   return createHash("sha256").update(`${userText}\n\u241e\n${assistantText}`).digest("hex");
@@ -38,6 +39,25 @@ export type RuntimeMemoryCapture =
   | { kind: "durable"; taskId: string; entries: Array<{ entryId: number; turn?: PreparedTurn }> };
 
 export type DurableMemoryTurn = CaptureMemoryTurnInput & { entryId: number; skipCapture?: boolean };
+
+export type RuntimeMemoryTurnQuery =
+  | ({ kind: "list"; limit: number } & Omit<MemoryTurnListRequest, "limit">)
+  | { kind: "detail"; id: string }
+  | { kind: "tasks" }
+  | { kind: "skillLearningStatus" };
+
+type RuntimeMemoryTurnRow = Omit<MemoryTurnDto, "metadata"> & { metadataJson: string };
+type SkillLearningCounts = Omit<MemorySkillLearningStatusDto, "distillation" | "blockedSkills">;
+
+export type RuntimeMemoryTurnData =
+  | { kind: "list"; turns: RuntimeMemoryTurnRow[] }
+  | { kind: "detail"; turn: RuntimeMemoryTurnRow | null }
+  | { kind: "tasks"; tasks: MemoryTurnTaskDto[] }
+  | ({ kind: "skillLearningStatus"; latestError: string | null } & Omit<SkillLearningCounts, "latestError">);
+
+function projectRuntimeTurn({ metadataJson, ...turn }: RuntimeMemoryTurnRow): MemoryTurnDto {
+  return { ...turn, metadata: parseObject(metadataJson) };
+}
 
 export function prepareMemoryTurn(input: CaptureMemoryTurnInput): PreparedTurn {
   return {
@@ -189,6 +209,24 @@ export class MemoryTurnRepository {
     return (this.conn.prepare(sql).all(...args) as Array<Record<string, unknown>>).map((row) => this.mapTurn(row));
   }
 
+  async readList(request: MemoryTurnListRequest = {}): Promise<MemoryTurnDto[]> {
+    const limit = Math.max(1, Math.min(2000, request.limit ?? 300));
+    if (Number.isSafeInteger(limit)) {
+      const data = await this.db.runtimeAuditReader?.memoryTurnData({
+        kind: "list", limit, taskId: request.taskId?.trim(), extractionState: request.extractionState,
+        query: request.query?.trim(),
+      }, LOCAL_USER_ID);
+      if (data?.kind === "list") return data.turns.map(projectRuntimeTurn);
+    }
+    return this.list(request);
+  }
+
+  async readDetail(id: string): Promise<MemoryTurnDto | undefined> {
+    const data = await this.db.runtimeAuditReader?.memoryTurnData({ kind: "detail", id }, LOCAL_USER_ID);
+    if (data?.kind === "detail") return data.turn ? projectRuntimeTurn(data.turn) : undefined;
+    return this.get(id);
+  }
+
   /**
    * 待抽取队列：按捕获时间升序，**同毫秒用 rowid（插入顺序）兜底**。
    *
@@ -216,12 +254,51 @@ export class MemoryTurnRepository {
     return true;
   }
 
-  listTaskOptions(): import("../../shared/memory-kernel").MemoryTurnTaskDto[] {
+  async readSkillLearningCounts(): Promise<SkillLearningCounts> {
+    const data = await this.db.runtimeAuditReader?.memoryTurnData({ kind: "skillLearningStatus" }, LOCAL_USER_ID);
+    if (data?.kind === "skillLearningStatus") {
+      const { kind: _kind, latestError, ...counts } = data;
+      return { ...counts, latestError: latestError?.slice(0, 200) };
+    }
+
+    return this.conn.transaction(() => {
+      const procedures = this.conn.prepare(`SELECT COUNT(*) AS procedures, COUNT(*) FILTER (
+          WHERE EXISTS(SELECT 1 FROM memory_scopes s WHERE s.memory_id=m.id AND s.scope_type<>'task')
+        ) AS reusableProcedures FROM (
+          SELECT id FROM memory_records WHERE kind='procedure' AND status='active'
+          ORDER BY updated_at DESC,id DESC LIMIT 2000
+        ) m`).get() as Pick<SkillLearningCounts, "procedures" | "reusableProcedures">;
+      const rows = this.conn.prepare(`SELECT task_id,
+          COUNT(*) FILTER (WHERE extraction_state='failed') AS failed,
+          COUNT(*) FILTER (WHERE extraction_state='pending' OR attempt_count<3) AS pending
+        FROM memory_turns WHERE extraction_state IN ('pending','failed') GROUP BY task_id`)
+        .all() as Array<{ task_id: string; failed: number; pending: number }>;
+      const latest = this.conn.prepare(`SELECT last_error FROM memory_turns WHERE extraction_state='failed'
+        ORDER BY captured_at DESC LIMIT 1`).get() as { last_error: string | null } | undefined;
+      let failedTurns = 0;
+      let retryableFailedTurns = 0;
+      let pendingTurns = 0;
+      for (const row of rows) {
+        failedTurns += row.failed;
+        if (!this.canExtractTask(row.task_id)) continue;
+        retryableFailedTurns += row.failed;
+        pendingTurns += row.pending;
+      }
+      return { ...procedures, failedTurns, retryableFailedTurns, pendingTurns, latestError: latest?.last_error?.slice(0, 200) };
+    })();
+  }
+
+  listTaskOptions(): MemoryTurnTaskDto[] {
     return (this.conn.prepare(`SELECT DISTINCT m.task_id,t.title,w.state FROM memory_turns m
       LEFT JOIN tasks t ON t.id=m.task_id LEFT JOIN task_execution_workspace_state w ON w.task_id=m.task_id
       ORDER BY t.title,m.task_id`).all() as Array<{ task_id: string; title: string | null; state: string | null }>).map((row) => ({
       id: row.task_id, title: row.title || (botMemorySource(this.db, row.task_id) ? "Bot 对话" : "原任务已删除"), trashed: row.state === "trashed",
     }));
+  }
+
+  async readTaskOptions(): Promise<MemoryTurnTaskDto[]> {
+    const data = await this.db.runtimeAuditReader?.memoryTurnData({ kind: "tasks" }, LOCAL_USER_ID);
+    return data?.kind === "tasks" ? data.tasks : this.listTaskOptions();
   }
 
   pendingTaskIds(): string[] {

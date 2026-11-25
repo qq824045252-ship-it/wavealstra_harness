@@ -15,12 +15,17 @@ import { BlueprintResolver } from "../src/main/blueprint/BlueprintResolver";
 import { BlueprintInstantiationPlanner } from "../src/main/blueprint/BlueprintInstantiationPlanner";
 import { BlueprintService } from "../src/main/blueprint/BlueprintService";
 import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
 const root = mkdtempSync(join(tmpdir(), "gadget-domain-"));
-const db = new AppDatabase(":memory:");
-const storage = new GadgetStorage(join(root, "gadgets"));
+const db = new AppDatabase(useNative ? join(root, "app.db") : ":memory:", { runtimeAuditExecutable });
+const storage = new GadgetStorage(join(root, "gadgets"), db.runtimeAuditReader);
+if (useNative) storage.updateSource = () => { throw new Error("Native save unexpectedly used the host fallback"); };
 const registry = new GadgetRegistry();
-const runtime = new GadgetRuntime(storage, registry);
+const runtime = new GadgetRuntime(storage, registry, undefined, db.runtimeAuditReader);
 const deadline = setTimeout(() => { console.error("gadget domain test exceeded 60s"); process.exit(1); }, 60_000);
 type Tool = { name: string; parameters: { type?: string }; execute: (id: string, input: never) => Promise<{ isError?: boolean; details?: unknown; content: Array<{ text: string }> }> };
 const backend = { entry: "server/index.mjs", commands: ["node"], environment: ["LANG"], timeoutMs: 1000 };
@@ -87,7 +92,7 @@ async function main(): Promise<void> {
   assert.deepEqual(service.readSource(id).manifest.backend, changedBackend);
   assert.deepEqual(await call(id, "read"), { value: "original", theme: "dark", version: "two" });
   const copy = service.copyScope(id, { type: "workspace", workspaceId: ws.id });
-  const captured = blueprint.captureGadget(id);
+  const captured = await blueprint.captureGadget(id);
   const instance = await blueprint.instantiate({ blueprintId: captured.id, gadgetScope: { type: "workspace", workspaceId: ws.id } });
   const blueprintId = Object.values(instance.gadgetIdsByKey)[0];
   for (const clone of [copy.id, blueprintId]) {
@@ -116,11 +121,11 @@ async function main(): Promise<void> {
   assert.equal((await service.health(staticGadget.id)).status, "running");
   assert.equal(await runtime.request(staticGadget, "config", { operation: "get", key: "theme" }), "after");
   const staticSnapshot = service.readSource(staticGadget.id);
-  service.updateSource({ gadgetId: staticGadget.id, expectedRevision: staticSnapshot.revision, backend,
+  await service.updateSourceAsync({ gadgetId: staticGadget.id, expectedRevision: staticSnapshot.revision, backend,
     files: [{ path: backend.entry, content: source("added") }] });
   assert.deepEqual(await call(staticGadget.id, "read"), { value: "before-backend", theme: "after", version: "added" });
   const added = service.readSource(staticGadget.id);
-  service.updateSource({ gadgetId: staticGadget.id, expectedRevision: added.revision, backend: null,
+  await service.updateSourceAsync({ gadgetId: staticGadget.id, expectedRevision: added.revision, backend: null,
     files: [{ path: "index.html", content: "<h1>existing UI retained</h1>" }] });
   await service.health(staticGadget.id);
   assert.deepEqual(await runtime.request(staticGadget, "runtime"), { gadgetId: staticGadget.id, name: staticGadget.name, backend: false, actions: [] });
@@ -151,7 +156,7 @@ async function main(): Promise<void> {
   assert.equal(updatedProcess.isError, undefined, JSON.stringify(updatedProcess));
   assert.equal((await call(processId, "echo") as { arg: string }).arg, "updated");
   assert.equal(await runtime.request(service.get(processId)!, "storage", { operation: "get", key: "external" }), "before update");
-  const savedProcess = blueprint.captureGadget(processId);
+  const savedProcess = await blueprint.captureGadget(processId);
   const clonedProcess = await blueprint.instantiate({ blueprintId: savedProcess.id, gadgetScope: { type: "workspace", workspaceId: ws.id } });
   const clonedId = Object.values(clonedProcess.gadgetIdsByKey)[0];
   assert.equal((await call(clonedId, "echo") as { arg: string }).arg, "updated");
@@ -160,5 +165,10 @@ async function main(): Promise<void> {
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
-  try { await runtime.disposeAll(); } finally { db.close(); rmSync(root, { recursive: true, force: true }); clearTimeout(deadline); }
+  try { await runtime.disposeAll(); } finally {
+    await db.runtimeAuditReader?.close();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+    clearTimeout(deadline);
+  }
 });

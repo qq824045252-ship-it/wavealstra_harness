@@ -58,8 +58,7 @@ export function createAppConfigActions(
 
     updateSoul: (soul) => {
       set((s) => ({ soul: { ...s.soul, ...soul } }));
-      const next = { ...get().soul, ...soul };
-      void storeContext.getApi()?.db?.updateSoul(next);
+      void storeContext.getApi()?.db?.updateSoul(soul);
     },
   };
 }

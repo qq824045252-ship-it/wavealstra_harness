@@ -8,7 +8,6 @@
  */
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ARCHIVED_PROJECT_WRITE_GUIDANCE } from "../../shared/project-domain";
 import type { ProjectStatusSnapshotDto } from "../../shared/project-domain";
 import type { PermissionMode } from "../../shared/agent-ipc";
 import type { ProjectService } from "./ProjectService";
@@ -86,13 +85,6 @@ export function createProjectAutopilotExtension(bridge: ProjectAutopilotExtensio
     return projectId;
   };
 
-  const guardWritable = (projectId: string): void => {
-    const project = service.get(projectId);
-    if (project?.archived) {
-      throw new AutopilotToolError(ARCHIVED_PROJECT_WRITE_GUIDANCE);
-    }
-  };
-
   return (pi: ExtensionAPI) => {
     pi.registerTool({
       name: "project_status_get",
@@ -128,9 +120,13 @@ export function createProjectAutopilotExtension(bridge: ProjectAutopilotExtensio
       execute: async (_toolCallId: string, params: { note?: string }) => {
         try {
           const projectId = requireProject();
-          guardWritable(projectId);
-          const review = service.recordReview(projectId, params.note, `task:${bridge.taskId}`);
-          const snapshot = service.buildStatusSnapshot(projectId);
+          const review = await service.recordReviewAsync(projectId, params.note, `task:${bridge.taskId}`, {
+            taskId: bridge.taskId, projectId,
+          });
+          const snapshot = await service.readStatusSnapshot(projectId);
+          if (bridge.resolveProjectId() !== projectId) {
+            return textResult("已在写入时所属的项目记录评审。当前任务的项目归属已变化。", { review });
+          }
           return textResult(
             `已记录 review（${new Date(review.reviewedAt).toISOString()}）。当前健康度：${snapshot.health}。`,
             { projectId, review, snapshot },

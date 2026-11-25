@@ -37,7 +37,7 @@ import { AnswerRoutingIpc } from "../shared/answer-routing";
 import { NativeHooksIpc } from "../shared/native-hooks";
 import { NativeImprovementIpc } from "../shared/native-improvement";
 import { MaterialRetrievalIpc } from "../shared/materialRetrieval";
-import { getMaterialRetrievalSettings, resolveMaterialRetrievalScope, setMaterialRetrievalScope, setMaterialRetrievalSettings } from "./library/MaterialRetrievalSettings";
+import { readMaterialRetrievalSettings, readMaterialRetrievalScope, writeMaterialRetrievalScope, writeMaterialRetrievalSettings } from "./library/MaterialRetrievalSettings";
 import { ProjectNotesService } from "./project/ProjectNotesService";
 import { WorkspaceNotesIpc } from "../shared/workspace-notes";
 import { WorkspaceNotesService } from "./workspace/WorkspaceNotesService";
@@ -135,13 +135,14 @@ import { getSemanticRuntime } from "./retrieval/SemanticRuntime";
 import { runLibraryNoteOperation } from "./library/LibraryNoteOperations";
 import { registerFileDialogIpc, showOpenFileDialog, showSaveFileDialog } from "./FileDialogService";
 import { WorkspaceLibraryBindingService } from "./workspace/WorkspaceLibraryBindingService";
-import { workspaceLibraryBindingView } from "./workspace/WorkspaceLibraryBindingView";
+import { readWorkspaceLibraryBindingView } from "./workspace/WorkspaceLibraryBindingView";
 import { deleteEmptyWorkspace } from "./workspace/WorkspaceDeletion";
 import {
   WorkspaceLibraryBindingIpc,
   type WorkspaceLibraryBindingRequest,
 } from "../shared/workspace-library-binding";
 import { WorkGraphService } from "./workgraph/WorkGraphService";
+import { applyRepair, previewRepair, scanIntegrity, type IntegrityReport, type RepairPreview } from "./workgraph/WorkGraphIntegrity";
 import {
   WorkGraphIpc,
   type WorkGraphAddEdgeRequest,
@@ -253,6 +254,7 @@ import { BlueprintInstantiationPlanner } from "./blueprint/BlueprintInstantiatio
 import { BlueprintService } from "./blueprint/BlueprintService";
 import { ProjectRepository } from "./project/ProjectRepository";
 import { ProjectService } from "./project/ProjectService";
+import { deleteProjectWithLifecycle } from "./project/ProjectDeletion";
 import { ProjectFolderRelocation } from "./project/ProjectFolderRelocation";
 import { MemoryService } from "./memory/MemoryService";
 import { MemoryGatewayController } from "./memory/MemoryGatewayController";
@@ -296,6 +298,7 @@ import { isTaskWorktreeId } from "../shared/task-worktree";
 import { McpConfigService } from "./mcp/McpConfigService";
 import { PluginStorageIpc } from "../shared/plugin-storage";
 import { getPluginStorage } from "./plugins/PluginStorage";
+import { initializeConnectorStorage } from "./connectors/ConnectorService";
 import type { McpSaveServerRequest } from "../shared/agent-ipc";
 import { ProfessionalToolRuntimeService } from "./professional-tools/ProfessionalToolRuntime";
 import { TrayService } from "./TrayService";
@@ -471,7 +474,7 @@ configureCrashReporting({
 installFaultHandlers({ logger: runtimeLogger });
 const reportProcessGone = createProcessGoneReporter({
   logger: runtimeLogger,
-  publish: (notification) => notificationService?.publish(notification),
+  publish: (notification) => notificationService?.post(notification),
 });
 
 if (hostDataLease) {
@@ -523,7 +526,7 @@ function notifyProjectAttention(projectId: string): void {
         digest.atRiskCount > 0 ? `${digest.atRiskCount} 个风险` : "",
         digest.needsConfirmation > 0 ? `${digest.needsConfirmation} 项待确认` : "",
       ].filter(Boolean).join(" · ");
-      notificationService?.publish({
+      notificationService?.post({
         type: "project.attention",
         level: digest.blockerCount > 0 ? "error" : "warning",
         title: "项目需要关注",
@@ -535,7 +538,7 @@ function notifyProjectAttention(projectId: string): void {
       });
     }
   }
-  cadenceEngine?.schedule(projectId);
+  void cadenceEngine?.scheduleAsync(projectId);
 }
 
 /** 刷新/崩溃恢复前收起原生叠加层，避免 WebContentsView 盖住刚重载的空白页 */
@@ -770,19 +773,19 @@ function registerIpc(memoryKernel: MemoryService): void {
     changed: () => { dots.refresh(); broadcastToWindows(DotsIpc.changed, null); },
     failed: (...args) => dots.failed(...args),
     preferences: () => resolveDotsPreferences(agentService.getAppSettings().dotsSettings),
-    fileNotice: event => notificationService.publish({
+    fileNotice: event => notificationService.post({
       type:"reminder.due", level:"info", title:"Dots 文件订阅",
       body:`${event.file} 已变化。你可以让 Dots 继续处理。`,
       sourceType:"task", sourceId:event.taskId, taskId:DOTS_TASK_ID,
       dedupeKey:`dots-watch:${event.id}:${event.revision}`,
     }),
-    progressNotice: event => notificationService.publish({
+    progressNotice: event => notificationService.post({
       type:"reminder.due", level:"info", title:"Dots 事项进展", body:event.text,
       sourceType:"task", sourceId:event.taskId, taskId:DOTS_TASK_ID,
       dedupeKey:`dots-checkpoint:${event.operationId}`,
     }),
     // 委派在建任务之后才失败：卡片和通知都要能直接看到原因，而不是只少了一条任务。
-    failedTask: event => notificationService.publish({
+    failedTask: event => notificationService.post({
       type:"task.failed", level:"error", title:"任务派发失败",
       body:`${event.title} · ${event.reason}`,
       sourceType:"task", sourceId:event.taskId, taskId:event.taskId,
@@ -843,12 +846,12 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (pendingNotificationActivations[0] === id) pendingNotificationActivations.shift();
   });
 
-  ipcMain.handle(NotificationIpc.list, (_event, request?: NotificationListRequest) => notificationService.list(request));
-  ipcMain.handle(NotificationIpc.unreadCount, () => notificationService.unreadCount());
-  ipcMain.handle(NotificationIpc.markRead, (_event, id: string) => notificationService.markRead(id));
-  ipcMain.handle(NotificationIpc.markAllRead, () => notificationService.markAllRead());
-  ipcMain.handle(NotificationIpc.dismiss, (_event, id: string) => notificationService.dismiss(id));
-  ipcMain.handle(NotificationIpc.dismissAll, () => notificationService.dismissAll());
+  ipcMain.handle(NotificationIpc.list, (_event, request?: NotificationListRequest) => notificationService.readList(request));
+  ipcMain.handle(NotificationIpc.unreadCount, () => notificationService.readUnreadCount());
+  ipcMain.handle(NotificationIpc.markRead, (_event, id: string) => notificationService.writeMarkRead(id));
+  ipcMain.handle(NotificationIpc.markAllRead, () => notificationService.writeMarkAllRead());
+  ipcMain.handle(NotificationIpc.dismiss, (_event, id: string) => notificationService.writeDismiss(id));
+  ipcMain.handle(NotificationIpc.dismissAll, () => notificationService.writeDismissAll());
   ipcMain.handle(RemoteAccessIpc.status, () => remoteAccessController?.status());
   ipcMain.handle(RemoteAccessIpc.configure, (_event, request: RemoteConfigureRequest) => {
     if (!remoteAccessController) throw new Error("Remote Access 未初始化");
@@ -874,7 +877,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   registerSubagentIpcHost(ipcMain);
 
   // Gadget / Blueprint：Renderer 只表达业务意图；组合与进程生命周期全部留在 Main。
-  ipcMain.handle(GadgetIpc.create, (_event, request: GadgetCreateRequest) => gadgetService.create({
+  ipcMain.handle(GadgetIpc.create, (_event, request: GadgetCreateRequest) => gadgetService.createAsync({
     name: request.name,
     description: request.description,
     scope: request.scope,
@@ -886,13 +889,13 @@ function registerIpc(memoryKernel: MemoryService): void {
     metadata: request.metadata,
     // createdByTaskId / blueprintId are Main-owned provenance and are never accepted from Renderer IPC.
   }));
-  ipcMain.handle(GadgetIpc.list, (_event, request?: GadgetListRequest) => gadgetService.list(request));
-  ipcMain.handle(GadgetIpc.get, (_event, id: string) => gadgetService.get(id));
-  ipcMain.handle(GadgetIpc.update, (_event, request: GadgetUpdateRequest) => gadgetService.update(request));
-  ipcMain.handle(GadgetIpc.readSource, (_event, id: string) => gadgetService.readSource(id));
-  ipcMain.handle(GadgetIpc.updateSource, (_event, request: GadgetSourceUpdateRequest) => gadgetService.updateSource(request));
-  ipcMain.handle(GadgetIpc.copyScope, (_event, request: GadgetCopyScopeRequest) => gadgetService.copyScope(request.gadgetId, request.scope));
-  ipcMain.handle(GadgetIpc.moveScope, (_event, request: GadgetMoveScopeRequest) => gadgetService.moveScope(request.gadgetId, request.scope));
+  ipcMain.handle(GadgetIpc.list, (_event, request?: GadgetListRequest) => gadgetService.readList(request));
+  ipcMain.handle(GadgetIpc.get, (_event, id: string) => gadgetService.read(id));
+  ipcMain.handle(GadgetIpc.update, (_event, request: GadgetUpdateRequest) => gadgetService.updateAsync(request));
+  ipcMain.handle(GadgetIpc.readSource, (_event, id: string) => gadgetService.readSourceAsync(id));
+  ipcMain.handle(GadgetIpc.updateSource, (_event, request: GadgetSourceUpdateRequest) => gadgetService.updateSourceAsync(request));
+  ipcMain.handle(GadgetIpc.copyScope, (_event, request: GadgetCopyScopeRequest) => gadgetService.copyScopeAsync(request.gadgetId, request.scope));
+  ipcMain.handle(GadgetIpc.moveScope, (_event, request: GadgetMoveScopeRequest) => gadgetService.moveScopeAsync(request.gadgetId, request.scope));
   ipcMain.handle(GadgetIpc.start, (_event, id: string) => gadgetService.start(id));
   ipcMain.handle(GadgetIpc.health, (_event, id: string) => gadgetService.health(id));
   ipcMain.handle(GadgetIpc.stop, (_event, id: string) => gadgetService.stop(id));
@@ -900,14 +903,14 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(GadgetIpc.delete, async (_event, id: string) => { await gadgetService.delete(id); return { ok: true as const }; });
   ipcMain.handle(GadgetIpc.convertFromArtifact, (_event, request: GadgetConvertFromArtifactRequest) => gadgetService.convertFromArtifact(request));
   ipcMain.handle(GadgetIpc.exportArtifact, (_event, request: GadgetExportArtifactRequest) => gadgetService.exportArtifact(request));
-  ipcMain.handle(GadgetIpc.saveToTaskDirectory, (_event, request: GadgetSaveToTaskDirectoryRequest) => gadgetService.saveToTaskDirectory(request));
-  ipcMain.handle(GadgetIpc.saveAsBlueprint, (_event, request: GadgetSaveAsBlueprintRequest) => {
-    const blueprint = blueprintService.captureGadget(request.gadgetId, request);
+  ipcMain.handle(GadgetIpc.saveToTaskDirectory, (_event, request: GadgetSaveToTaskDirectoryRequest) => gadgetService.saveToTaskDirectoryAsync(request));
+  ipcMain.handle(GadgetIpc.saveAsBlueprint, async (_event, request: GadgetSaveAsBlueprintRequest) => {
+    const blueprint = await blueprintService.captureGadget(request.gadgetId, request);
     return { blueprintId: blueprint.id };
   });
 
   ipcMain.handle(BlueprintIpc.create, (_event, request: BlueprintCreateRequest) => blueprintService.create(request));
-  ipcMain.handle(BlueprintIpc.list, () => blueprintService.list());
+  ipcMain.handle(BlueprintIpc.list, () => blueprintService.readList());
   ipcMain.handle(BlueprintIpc.get, (_event, id: string) => blueprintService.get(id));
   ipcMain.handle(BlueprintIpc.update, (_event, request: BlueprintUpdateRequest) => blueprintService.update(request));
   ipcMain.handle(BlueprintIpc.resolve, (_event, id: string, registries?: TemplateCapabilityRegistries) => blueprintService.resolve(id, registries));
@@ -916,7 +919,7 @@ function registerIpc(memoryKernel: MemoryService): void {
     blueprintService.captureDefinition(request.workspaceId, request.options, request.confirmedDefinition));
   ipcMain.handle(BlueprintIpc.previewCapture, (_event, request: BlueprintCaptureRequest) => blueprintService.previewCaptureDefinition(request.workspaceId, request.options));
   ipcMain.handle(BlueprintIpc.instantiate, (_event, request: BlueprintInstantiateRequest) => blueprintService.instantiate(request));
-  ipcMain.handle(BlueprintIpc.delete, (_event, id: string) => { blueprintService.delete(id); return { ok: true as const }; });
+  ipcMain.handle(BlueprintIpc.delete, async (_event, id: string) => { await blueprintService.delete(id); return { ok: true as const }; });
 
   nativeTheme.on("updated", applyNativeChrome);
   ipcMain.on("theme:set", (_event, mode: unknown, palette: unknown) => {
@@ -1182,9 +1185,9 @@ function registerIpc(memoryKernel: MemoryService): void {
     savedArtifactPreviewService.release(event.sender.id, token);
   });
 
-  ipcMain.handle("workspace:listFiles", (_event, root: string) => listWorkspaceFiles(root));
+  ipcMain.handle("workspace:listFiles", (_event, root: string) => listWorkspaceFiles(root, 12, db.runtimeAuditReader));
   ipcMain.handle("workspace:readFile", (_event, root: string, relativePath: string, textPreview?: boolean) =>
-    readWorkspaceFile(root, relativePath, textPreview === true),
+    readWorkspaceFile(root, relativePath, textPreview === true, db.runtimeAuditReader),
   );
   ipcMain.handle("workspace:trashPath", async (_event, root: string, relativePath: string) => {
     try {
@@ -1350,7 +1353,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(AgentIpc.approveTool, (_e, req: AgentApproveToolRequest) => {
     const result = agentService.approveTool(req);
     if (result) taskBoard.follow(req.taskId, req.approved ? "批准了操作" : "拒绝了操作");
-    notificationService.markReadByDedupeKey(`task:${req.taskId}:tool:${req.toolCallId}:action`);
+    notificationService.postMarkReadByDedupeKey(`task:${req.taskId}:tool:${req.toolCallId}:action`);
     return result;
   });
   // 单个会诊参与者的直接终结：不结束整场会诊，其它模型继续。
@@ -1391,68 +1394,71 @@ function registerIpc(memoryKernel: MemoryService): void {
     agentService.restartRuntimeRequirement(providerId),
   );
   ipcMain.handle(AgentIpc.listModels, async () => agentService.listModels());
+  // Keep edits ordered with install/replace/remove for each plugin family while Rust saves the config.
+  const pluginWriteTails = new Map<"skill" | "expert" | "connector", Promise<void>>();
+  const writePlugin = <T,>(family: "skill" | "expert" | "connector", run: () => T | Promise<T>): Promise<T> => {
+    const operation = (pluginWriteTails.get(family) ?? Promise.resolve()).then(run);
+    pluginWriteTails.set(family, operation.then(() => undefined, () => undefined));
+    return operation;
+  };
   ipcMain.handle(AgentIpc.listSkills, (_e, cwd?: string) => agentService.listSkills(cwd));
-  ipcMain.handle(AgentIpc.listMarketSkills, (_e, cwd?: string) => agentService.listMarketSkills(cwd));
-  ipcMain.handle(AgentIpc.installSkill, (_e, id: string) => agentService.installSkill(id));
+  ipcMain.handle(AgentIpc.listMarketSkills, () => agentService.listMarketSkills());
+  ipcMain.handle(AgentIpc.installSkill, (_e, id: string) => writePlugin("skill", () => agentService.installSkill(id)));
   ipcMain.handle(AgentIpc.installSkillByPath, (_e, path: string) =>
-    agentService.installSkillByPath(path),
+    writePlugin("skill", () => agentService.installSkillByPath(path)),
   );
-  ipcMain.handle(AgentIpc.authorSkill, (_e, input) => agentService.authorSkill(input));
+  ipcMain.handle(AgentIpc.authorSkill, (_e, input) => writePlugin("skill", () => agentService.authorSkill(input)));
   ipcMain.handle(AgentIpc.generateSkillAuthoringDraft, (_e, input) => agentService.generateSkillAuthoringDraft(input));
   ipcMain.handle(AgentIpc.generateExpertAuthoringDraft, (_e, input) => agentService.generateExpertAuthoringDraft(input));
   ipcMain.handle(AgentIpc.runSkillEvals, (_e, input) => agentService.runSkillEvals(input));
   ipcMain.handle(AgentIpc.getSkillDetail, (_e, skillId: string) => agentService.getSkillDetail(skillId));
   ipcMain.handle(AgentIpc.generateSkillImprovementDraft, (_e, input) => agentService.generateSkillImprovementDraft(input));
-  ipcMain.handle(AgentIpc.applySkillImprovement, (_e, input) => agentService.applySkillImprovement(input));
+  ipcMain.handle(AgentIpc.applySkillImprovement, (_e, input) => writePlugin("skill", () => agentService.applySkillImprovement(input)));
   ipcMain.handle(AgentIpc.validateSkillPackage, (_e, path: string) =>
     agentService.validateSkillPackage(path),
   );
-  ipcMain.handle(AgentIpc.uninstallSkill, (_e, id: string) => {
-    agentService.uninstallSkill(id);
-  });
-  ipcMain.handle(AgentIpc.deleteMarketSkill, (_e, id: string) => {
+  ipcMain.handle(AgentIpc.uninstallSkill, (_e, id: string) => writePlugin("skill", () => agentService.uninstallSkill(id)));
+  ipcMain.handle(AgentIpc.deleteMarketSkill, (_e, id: string) => writePlugin("skill", () => {
     try {
       agentService.deleteMarketSkill(id);
     } catch (err) {
       console.error("[deleteMarketSkill]", err);
       throw err instanceof Error ? err : new Error(String(err));
     }
-  });
+  }));
   ipcMain.handle(AgentIpc.setSkillEnabled, (_e, id: string, enabled: boolean) =>
-    agentService.setSkillEnabled(id, enabled),
+    writePlugin("skill", () => agentService.setSkillEnabled(id, enabled)),
   );
-  ipcMain.handle(AgentIpc.listExperts, () => agentService.listExperts());
+  ipcMain.handle(AgentIpc.listExperts, () => agentService.readInstalledExperts());
   ipcMain.handle(AgentIpc.listMarketExperts, () => agentService.listMarketExperts());
   ipcMain.handle(AgentIpc.listExpertPrivateSkills, (_e, expertId: string) =>
     agentService.listExpertPrivateSkills(expertId),
   );
-  ipcMain.handle(AgentIpc.installExpert, (_e, id: string) => agentService.installExpert(id));
+  ipcMain.handle(AgentIpc.installExpert, (_e, id: string) => writePlugin("expert", () => agentService.installExpert(id)));
   ipcMain.handle(AgentIpc.installExpertByPath, (_e, path: string) =>
-    agentService.installExpertByPath(path),
+    writePlugin("expert", () => agentService.installExpertByPath(path)),
   );
-  ipcMain.handle(AgentIpc.authorExpert, (_e, input) => agentService.authorExpert(input));
+  ipcMain.handle(AgentIpc.authorExpert, (_e, input) => writePlugin("expert", () => agentService.authorExpert(input)));
   ipcMain.handle(AgentIpc.getExpertDetail, (_e, id: string) => agentService.getExpertDetail(id));
-  ipcMain.handle(AgentIpc.updateExpert, (_e, input) => agentService.updateExpert(input));
-  ipcMain.handle(AgentIpc.getTaskExpertBinding, (_e, taskId: string) => agentService.getTaskExpertBinding(taskId));
-  ipcMain.handle(AgentIpc.saveTaskExpertBinding, (_e, input) => agentService.saveTaskExpertBinding(input));
+  ipcMain.handle(AgentIpc.updateExpert, (_e, input) => writePlugin("expert", () => agentService.updateExpert(input)));
+  ipcMain.handle(AgentIpc.getTaskExpertBinding, (_e, taskId: string) => agentService.getTaskExpertBindingForSettings(taskId));
+  ipcMain.handle(AgentIpc.saveTaskExpertBinding, (_e, input) => agentService.saveTaskExpertBindingForSettings(input));
   ipcMain.handle(AgentIpc.cancelExpertAuthoring, (_e, requestId: string) => agentService.cancelExpertAuthoring(requestId));
   ipcMain.handle(AgentIpc.importExpertZip, (_e, zipPath: string) =>
-    agentService.importExpertZip(zipPath),
+    writePlugin("expert", () => agentService.importExpertZip(zipPath)),
   );
   ipcMain.handle(AgentIpc.exportExpert, (_e, id: string) => agentService.exportExpert(id));
-  ipcMain.handle(AgentIpc.uninstallExpert, (_e, id: string) => {
-    agentService.uninstallExpert(id);
-  });
-  ipcMain.handle(AgentIpc.deleteMarketExpert, (_e, id: string) => {
+  ipcMain.handle(AgentIpc.uninstallExpert, (_e, id: string) => writePlugin("expert", () => agentService.uninstallExpert(id)));
+  ipcMain.handle(AgentIpc.deleteMarketExpert, (_e, id: string) => writePlugin("expert", () => {
     try {
       agentService.deleteMarketExpert(id);
     } catch (err) {
       console.error("[deleteMarketExpert]", err);
       throw err instanceof Error ? err : new Error(String(err));
     }
-  });
+  }));
   ipcMain.handle(AgentIpc.setExpertEnabled, (_e, id: string, enabled: boolean) =>
-    agentService.setExpertEnabled(id, enabled),
+    writePlugin("expert", () => agentService.setExpertEnabled(id, enabled)),
   );
   ipcMain.handle(AgentIpc.switchExpert, async (_e, req: AgentSwitchExpertRequest) => {
     await agentService.switchExpert(req);
@@ -1484,7 +1490,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   dotsGoogleMonitor = new DotsGoogleMonitor(dotsGoogleAccounts,
     () => normalizeDotsGoogleRules(googleSettings.read().dotsSettings?.google),
     () => googleSettings.read().dotsSettings?.followupMode === "paused",
-    notice => notificationService.publish({
+    notice => notificationService.post({
       type: "reminder.due", level: "info", title: notice.title, body: notice.body,
       sourceType: "automation", sourceId: "dots-google", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
     }),
@@ -1528,7 +1534,7 @@ function registerIpc(memoryKernel: MemoryService): void {
       return { rss: normalizeRssSubscriptions(dotsSettings?.rss), dream: normalizeDreamSettings(dotsSettings?.dream),
         paused: dotsSettings?.followupMode === "paused" };
     },
-    notice => notificationService.publish({
+    notice => notificationService.post({
       type: "automation.completed", level: "info", title: notice.title, body: notice.body,
       sourceType: "automation", sourceId: "dots-discovery", taskId: DOTS_TASK_ID, dedupeKey: notice.key,
     }),
@@ -1581,18 +1587,18 @@ function registerIpc(memoryKernel: MemoryService): void {
     return [...new Set(dreamPreferences().sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
       .map(entry => entry.title.trim().slice(0, 40)).filter(name => name && !names.has(name.toLowerCase())))].slice(0, 8);
   });
-  ipcMain.handle(AgentIpc.listConnectors, () => agentService.listConnectors());
+  ipcMain.handle(AgentIpc.listConnectors, () => agentService.readConnectorCatalog());
   ipcMain.handle(AgentIpc.installConnector, (_e, id: string) =>
-    agentService.installConnector(id),
+    writePlugin("connector", () => agentService.installConnector(id)),
   );
   ipcMain.handle(AgentIpc.importConnectorByPath, (_e, path: string) =>
-    agentService.importConnectorByPath(path),
+    writePlugin("connector", () => agentService.importConnectorByPath(path)),
   );
   ipcMain.handle(AgentIpc.importConnectorZip, (_e, zipPath: string) =>
-    agentService.importConnectorZip(zipPath),
+    writePlugin("connector", () => agentService.importConnectorZip(zipPath)),
   );
   ipcMain.handle(AgentIpc.setConnectorEnabled, (_e, id: string, enabled: boolean) =>
-    agentService.setConnectorEnabled(id, enabled),
+    writePlugin("connector", () => agentService.setConnectorEnabled(id, enabled)),
   );
   ipcMain.handle(AgentIpc.setTaskConnectorIds, (_e, taskId: string, ids: string[]) =>
     agentService.setTaskConnectorIds(taskId, ids),
@@ -1600,17 +1606,15 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(AgentIpc.clearTaskConnectorIds, (_e, taskId: string) =>
     agentService.clearTaskConnectorIds(taskId),
   );
-  ipcMain.handle(AgentIpc.uninstallConnector, (_e, id: string) => {
-    agentService.uninstallConnector(id);
-  });
-  ipcMain.handle(AgentIpc.deleteMarketConnector, (_e, id: string) => {
+  ipcMain.handle(AgentIpc.uninstallConnector, (_e, id: string) => writePlugin("connector", () => agentService.uninstallConnector(id)));
+  ipcMain.handle(AgentIpc.deleteMarketConnector, (_e, id: string) => writePlugin("connector", async () => {
     try {
-      agentService.deleteMarketConnector(id);
+      await agentService.deleteMarketConnector(id);
     } catch (err) {
       console.error("[deleteMarketConnector]", err);
       throw err instanceof Error ? err : new Error(String(err));
     }
-  });
+  }));
   ipcMain.handle(AgentIpc.reloadModels, async (_e, providerId?: string) =>
     agentService.reloadModels(typeof providerId === "string" ? providerId : undefined),
   );
@@ -1823,23 +1827,23 @@ function registerIpc(memoryKernel: MemoryService): void {
   );
 
   // DB
-  ipcMain.handle(DbIpc.listSpaces, () => agentService.botWorkspaceNavigation().spaces);
+  ipcMain.handle(DbIpc.listSpaces, () => agentService.readWorkspaceSpaces());
   // Renderer 只接收正常/显式归档任务；安全回收（trashed）任务保留在 DB 至 purge，但不应重启后“复活”。
   ipcMain.handle(DbIpc.listTasks, () => db.readNonTrashedTasks());
   ipcMain.handle(DbIpc.listProjects, (_e, includeArchived?: boolean) =>
     projectService.readList(includeArchived === true),
   );
-  ipcMain.handle(DbIpc.getProject, (_e, id: string) => projectService.get(id));
-  ipcMain.handle(DbIpc.createProject, (_e, request: ProjectCreateRequest) => {
+  ipcMain.handle(DbIpc.getProject, (_e, id: string) => projectService.readDetails(id));
+  ipcMain.handle(DbIpc.createProject, async (_e, request: ProjectCreateRequest) => {
     try {
-      return { ok: true as const, project: projectService.create(request) };
+      return { ok: true as const, project: await projectService.createAsync(request) };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(DbIpc.updateProject, (_e, request: ProjectUpdateRequest) => {
+  ipcMain.handle(DbIpc.updateProject, async (_e, request: ProjectUpdateRequest) => {
     try {
-      const result = { ok: true as const, project: projectService.update(request) };
+      const result = { ok: true as const, project: await projectService.updateAsync(request) };
       libraryService.scheduleSemanticIndex();
       notifyProjectAttention(request.id);
       return result;
@@ -1847,36 +1851,29 @@ function registerIpc(memoryKernel: MemoryService): void {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(DbIpc.duplicateProject, (_e, request: import("../shared/project-domain").ProjectDuplicateRequest) => {
+  ipcMain.handle(DbIpc.duplicateProject, async (_e, request: import("../shared/project-domain").ProjectDuplicateRequest) => {
     try {
-      return { ok: true as const, project: projectService.duplicate(request) };
+      return { ok: true as const, project: await projectService.duplicateAsync(request) };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(DbIpc.archiveProject, (_e, id: string, archived: boolean) => {
+  ipcMain.handle(DbIpc.archiveProject, async (_e, id: string, archived: boolean) => {
     try {
-      const project = projectService.archive(id, archived);
-      if (archived) cronService.disableProject(id);
+      const project = await cronService.withPlanMaintenance(async () => {
+        const saved = await projectService.archiveAsync(id, archived);
+        if (archived) cronService.disableProject(id);
+        return saved;
+      });
       return { ok: true as const, project };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(DbIpc.deleteProject, (_e, id: string) => {
-    // 项目删除语义：级联删除该项目资料库空间（集合/条目/版本/引用/受管文件）；personal 不受影响
-    libraryService.deleteProjectLibrary(id);
-    cadenceEngine?.cancel(id);
-    cronService.removeProject(id);
-    projectService.delete(id);
-    try { workGraphService.cleanupByNode("project", id); } catch {}
-    // plan nodes are project_todos; their edges cascade via project delete cleanup of project_todos rows
-    try {
-      const conn: unknown = (db as unknown as { connection: { prepare: (sql: string) => { all: (...a: unknown[]) => Array<{ id: string }> } } }).connection;
-      // Best-effort: also remove orphan plan/artifact edges if any remain referencing deleted todos
-      void conn;
-    } catch {}
-  });
+  ipcMain.handle(DbIpc.deleteProject, (_e, id: string) => deleteProjectWithLifecycle(id, {
+    db, projects: projectService, library: libraryService, cron: cronService,
+    cancelCadence: projectId => cadenceEngine?.cancel(projectId),
+  }));
 
   const libraryResult = <T,>(fn: () => T): { ok: true; value: T } | { ok: false; error: string } => {
     try {
@@ -1908,7 +1905,10 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(LibraryIpc.renameSpace, (_e, req: LibraryRenameSpaceRequest) =>
     libraryResult(() => libraryService.renameSpace(req.id, req.name)),
   );
-  ipcMain.handle(LibraryIpc.deleteSpace, (_e, id: string) => libraryResult(() => libraryService.deleteSpace(id)));
+  ipcMain.handle(LibraryIpc.deleteSpace, async (_e, id: string) => {
+    try { await libraryService.deleteSpaceAsync(id); return { ok: true as const, value: undefined }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
   ipcMain.handle(LibraryIpc.createCollection, (_e, req: import("../shared/library-ipc").LibraryCreateCollectionRequest) =>
     libraryResult(() => libraryService.createCollection(req)),
   );
@@ -1918,20 +1918,28 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(LibraryIpc.moveCollection, (_e, req: import("../shared/library-ipc").LibraryMoveCollectionRequest) =>
     libraryResult(() => libraryService.moveCollection(req)),
   );
-  ipcMain.handle(LibraryIpc.deleteCollection, (_e, id: string) =>
-    libraryResult(() => libraryService.deleteCollection(id)),
-  );
+  ipcMain.handle(LibraryIpc.deleteCollection, async (_e, id: string) => {
+    try { await libraryService.deleteCollectionAsync(id); return { ok: true as const, value: undefined }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
   ipcMain.handle(LibraryIpc.createItem, (_e, req: LibraryCreateItemRequest) =>
     libraryResult(() => libraryService.createItem(req)),
   );
   ipcMain.handle(LibraryIpc.updateItem, (_e, req: LibraryUpdateItemRequest) =>
     libraryResult(() => libraryService.updateItem(req)),
   );
-  ipcMain.handle(LibraryIpc.deleteItem, (_e, id: string) => libraryResult(() => libraryService.deleteItem(id)));
-  ipcMain.handle(LibraryIpc.readContent, (_e, id: string) => libraryResult(() => libraryService.readContent(id)));
-  ipcMain.handle(LibraryIpc.writeContent, (_e, req: LibraryWriteContentRequest) =>
-    libraryResult(() => libraryService.writeContent(req)),
-  );
+  ipcMain.handle(LibraryIpc.deleteItem, async (_e, id: string) => {
+    try { await libraryService.deleteItemAsync(id); return { ok: true as const, value: undefined }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
+  ipcMain.handle(LibraryIpc.readContent, async (_e, id: string) => {
+    try { return { ok: true as const, value: await libraryService.readContentAsync(id) }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
+  ipcMain.handle(LibraryIpc.writeContent, async (_e, req: LibraryWriteContentRequest) => {
+    try { return { ok: true as const, value: await libraryService.writeContentAsync(req) }; }
+    catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
+  });
   ipcMain.handle(LibraryIpc.importFile, async (_e, req: LibraryImportFileRequest) => {
     try { return { ok: true as const, value: await libraryService.importFileAsync(req) }; }
     catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : String(error) }; }
@@ -2013,11 +2021,8 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(WorkspaceNotesIpc.read, (_e, workspaceId: string) => workspaceNotes.read(workspaceId));
   ipcMain.handle(WorkspaceNotesIpc.save, (_e, request: import("../shared/workspace-notes").WorkspaceNoteSaveRequest) => workspaceNotes.save(request));
 
-  const workspaceLibraryBindingList = (workspaceId: string) =>
-    workspaceLibraryBindingView(db, libraryService, workspaceLibraryBindingService, workspaceId);
-
   ipcMain.handle(WorkspaceLibraryBindingIpc.list, (_e, workspaceId: string) =>
-    workspaceLibraryBindingList(workspaceId),
+    readWorkspaceLibraryBindingView(db, libraryService, workspaceLibraryBindingService, workspaceId),
   );
 
   ipcMain.handle(WorkspaceLibraryBindingIpc.createFolder, (_e, req: { workspaceId: string; librarySpaceId: string; name: string }) =>
@@ -2029,51 +2034,26 @@ function registerIpc(memoryKernel: MemoryService): void {
       if (libraryService.getSpace(req.librarySpaceId)?.workspaceId !== workspace.id) throw new Error("请在当前工作空间的自有资料中新建文件夹");
       const folder = libraryService.createCollection({ spaceId: req.librarySpaceId, name: req.name.trim() });
       workspaceLibraryBindingService.bindCollection(req.workspaceId, req.librarySpaceId, folder.id);
-    })()),
+    }).immediate()),
   );
 
-  ipcMain.handle(WorkspaceLibraryBindingIpc.bind, (_e, req: WorkspaceLibraryBindingRequest) =>
-    libraryResult(() => {
-      const ws = req.workspaceId?.trim();
-      const ls = req.librarySpaceId?.trim();
-      const collectionId = req.collectionId?.trim();
-      if (!ws) throw new Error("工作空间不能为空");
-      if (!ls) throw new Error("资料库空间不能为空");
-      const workspace = db.getSpace(ws);
-      if (!workspace) throw new Error("工作空间不存在");
-      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
-      if (!libraryService.getSpace(ls)) throw new Error("资料库空间不存在");
-      if (collectionId) {
-        const collection = libraryService.getCollection(collectionId);
-        if (!collection || collection.spaceId !== ls) throw new Error("资料库文件夹不存在或不属于该资料库");
-        workspaceLibraryBindingService.bindCollection(ws, ls, collectionId);
-      } else {
-        workspaceLibraryBindingService.bind(ws, ls);
-      }
-    }),
-  );
-
-  ipcMain.handle(WorkspaceLibraryBindingIpc.unbind, (_e, req: WorkspaceLibraryBindingRequest) =>
-    libraryResult(() => {
-      const ws = req.workspaceId?.trim();
-      const ls = req.librarySpaceId?.trim();
-      const collectionId = req.collectionId?.trim();
-      if (!ws) throw new Error("工作空间不能为空");
-      if (!ls) throw new Error("资料库空间不能为空");
-      const workspace = db.getSpace(ws);
-      if (!workspace) throw new Error("工作空间不存在");
-      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
-      if (collectionId) workspaceLibraryBindingService.unbindCollection(ws, collectionId);
-      else workspaceLibraryBindingService.unbind(ws, ls);
-    }),
-  );
+  const writeWorkspaceLibraryBinding = async (kind: "bind" | "unbind", req: WorkspaceLibraryBindingRequest) => {
+    try {
+      await workspaceLibraryBindingService.writeTarget(kind, req);
+      return { ok: true as const, value: undefined };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  ipcMain.handle(WorkspaceLibraryBindingIpc.bind, (_e, req: WorkspaceLibraryBindingRequest) => writeWorkspaceLibraryBinding("bind", req));
+  ipcMain.handle(WorkspaceLibraryBindingIpc.unbind, (_e, req: WorkspaceLibraryBindingRequest) => writeWorkspaceLibraryBinding("unbind", req));
   ipcMain.handle(DbIpc.createProjectResource, (_e, request: ProjectResourceCreateRequest) =>
-    projectService.createResource(request),
+    projectService.createResourceAsync(request),
   );
   ipcMain.handle(DbIpc.updateProjectResource, (_e, request: ProjectResourceUpdateRequest) =>
-    projectService.updateResource(request),
+    projectService.updateResourceAsync(request),
   );
-  ipcMain.handle(DbIpc.deleteProjectResource, (_e, id: string) => projectService.deleteResource(id));
+  ipcMain.handle(DbIpc.deleteProjectResource, (_e, id: string) => projectService.deleteResourceAsync(id));
   ipcMain.handle(DbIpc.inspectProjectResources, (_e, projectId: string) =>
     projectContextResolver.inspectProjectResources(projectId),
   );
@@ -2083,54 +2063,32 @@ function registerIpc(memoryKernel: MemoryService): void {
   );
   ipcMain.handle(DbIpc.deleteProjectPost, (_e, id: string) => projectService.deletePost(id));
   ipcMain.handle(DbIpc.listProjectTodos, (_e, projectId: string) => projectService.readTodos(projectId));
-  ipcMain.handle(DbIpc.createProjectTodo, (_e, request: ProjectTodoCreateRequest) => {
-    try {
-      const todo = projectService.createTodo(request);
-      notifyProjectAttention(request.projectId);
-      return todo;
-    } catch (err) {
-      throw new Error(err instanceof Error ? err.message : String(err));
-    }
-  });
-  ipcMain.handle(DbIpc.updateProjectTodo, (_e, request: ProjectTodoUpdateRequest) => {
-    try {
-      const todo = projectService.updateTodo(request);
-      const projectId = projectService.getTodo(request.id)?.projectId ?? todo.projectId;
-      if (projectId) notifyProjectAttention(projectId);
-      return todo;
-    } catch (err) {
-      throw new Error(err instanceof Error ? err.message : String(err));
-    }
-  });
-  ipcMain.handle(DbIpc.deleteProjectTodo, (_e, id: string) => {
-    const projectId = projectService.getTodo(id)?.projectId;
-    projectService.deleteTodo(id);
-    try { workGraphService.cleanupByNode("plan", id); } catch {}
-    if (projectId) notifyProjectAttention(projectId);
-  });
+  ipcMain.handle(DbIpc.createProjectTodo, (_e, request: ProjectTodoCreateRequest) => projectService.createTodoAsync(request));
+  ipcMain.handle(DbIpc.updateProjectTodo, (_e, request: ProjectTodoUpdateRequest) => projectService.updateTodoAsync(request));
+  ipcMain.handle(DbIpc.deleteProjectTodo, (_e, id: string) => projectService.deleteTodoAsync(id));
   ipcMain.handle(DbIpc.listProjectMemory, (_e, projectId: string) =>
-    projectService.listMemory(projectId),
+    projectService.readMemoryList(projectId),
   );
-  ipcMain.handle(DbIpc.createProjectMemory, (_e, request: ProjectMemoryCreateRequest) => {
+  ipcMain.handle(DbIpc.createProjectMemory, async (_e, request: ProjectMemoryCreateRequest) => {
     try {
-      const item = projectService.createMemory(request);
+      const item = await projectService.createMemoryAsync(request);
       notifyProjectAttention(request.projectId);
       return item;
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
-  ipcMain.handle(DbIpc.updateProjectMemory, (_e, request: ProjectMemoryUpdateRequest) => {
+  ipcMain.handle(DbIpc.updateProjectMemory, async (_e, request: ProjectMemoryUpdateRequest) => {
     try {
-      const item = projectService.updateMemory(request);
+      const item = await projectService.updateMemoryAsync(request);
       notifyProjectAttention(request.projectId);
       return item;
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
-  ipcMain.handle(DbIpc.deleteProjectMemory, (_e, request: ProjectMemoryDeleteRequest) => {
-    projectService.deleteMemory(request);
+  ipcMain.handle(DbIpc.deleteProjectMemory, async (_e, request: ProjectMemoryDeleteRequest) => {
+    await projectService.deleteMemoryAsync(request);
     notifyProjectAttention(request.projectId);
   });
   ipcMain.handle(DbIpc.getProjectAttention, (_e, projectId: string) => {
@@ -2144,10 +2102,10 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(DbIpc.listProjectEvents, (_e, projectId: string, limit?: number) =>
     projectService.readProjectEvents(projectId, limit),
   );
-  ipcMain.handle(DbIpc.promoteProjectEvent, (_e, request: import("../shared/project-domain").ProjectEventPromoteRequest) => {
+  ipcMain.handle(DbIpc.promoteProjectEvent, async (_e, request: import("../shared/project-domain").ProjectEventPromoteRequest) => {
     // UI 路径固定 promotedBy=user（不信任 renderer 声明）；Agent 路径走扩展（固定 agent）
-    const result = projectEventPromoter.promote(request.eventId, { ...request, promotedBy: "user" });
-    notifyProjectAttention(result.promotion.projectId);
+    const result = await projectEventPromoter.promoteAsync(request.eventId, { ...request, promotedBy: "user" });
+    if (result.targetKind !== "todo") notifyProjectAttention(result.promotion.projectId);
     broadcastToWindows(DbIpc.projectEventsChanged, { projectId: result.promotion.projectId });
     return result;
   });
@@ -2176,13 +2134,13 @@ function registerIpc(memoryKernel: MemoryService): void {
     return result.filePaths[0];
   });
   // triage 状态（工作流元数据，不参与派生）：仅广播活动流刷新，绝不触发 attention
-  ipcMain.handle(DbIpc.dismissProjectEvent, (_e, projectId: string, eventId: string) => {
-    const updated = projectService.dismissProjectEvent(projectId, eventId);
+  ipcMain.handle(DbIpc.dismissProjectEvent, async (_e, projectId: string, eventId: string) => {
+    const updated = await projectService.writeProjectEventTriage(projectId, eventId, "dismissed");
     broadcastToWindows(DbIpc.projectEventsChanged, { projectId });
     return updated;
   });
-  ipcMain.handle(DbIpc.reopenProjectEvent, (_e, projectId: string, eventId: string) => {
-    const updated = projectService.reopenProjectEvent(projectId, eventId);
+  ipcMain.handle(DbIpc.reopenProjectEvent, async (_e, projectId: string, eventId: string) => {
+    const updated = await projectService.writeProjectEventTriage(projectId, eventId, "open");
     broadcastToWindows(DbIpc.projectEventsChanged, { projectId });
     return updated;
   });
@@ -2191,39 +2149,34 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (digest) broadcastToWindows(DbIpc.projectAttentionChanged, digest);
     return digest;
   });
-  ipcMain.handle(DbIpc.pinProjectItem, (_e, request: import("../shared/project-domain").ProjectContextPinRequest) => {
+  ipcMain.handle(DbIpc.pinProjectItem, async (_e, request: import("../shared/project-domain").ProjectContextPinRequest) => {
     try {
-      return projectService.pinProjectItem(request);
+      return await projectService.pinProjectItemAsync(request);
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
-  ipcMain.handle(DbIpc.unpinProjectItem, (_e, request: import("../shared/project-domain").ProjectContextUnpinRequest) => {
+  ipcMain.handle(DbIpc.unpinProjectItem, async (_e, request: import("../shared/project-domain").ProjectContextUnpinRequest) => {
     try {
-      projectService.unpinProjectItem(request);
+      await projectService.unpinProjectItemAsync(request);
       return { ok: true as const };
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
-  ipcMain.handle(DbIpc.listProjectPins, (_e, projectId: string) => {
+  ipcMain.handle(DbIpc.listProjectPins, async (_e, projectId: string) => {
     try {
-      return projectService.listProjectPins(projectId);
+      return await projectService.listProjectPinsAsync(projectId);
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
   ipcMain.handle(DbIpc.getProjectStatus, (_e, projectId: string) => projectService.readStatusSnapshot(projectId));
-  ipcMain.handle(DbIpc.recordProjectReview, (_e, request: { projectId: string; note?: string }) => {
+  ipcMain.handle(DbIpc.recordProjectReview, async (_e, request: { projectId: string; note?: string }) => {
     try {
-      const owner = (() => {
-        try {
-          return db.getSoul().name?.trim() || "UI";
-        } catch {
-          return "UI";
-        }
-      })();
-      return projectService.recordReview(request.projectId, request.note, owner);
+      const profile = await agentService.getSoul().catch(() => undefined);
+      const owner = profile?.name?.trim() || "UI";
+      return await projectService.recordReviewAsync(request.projectId, request.note, owner);
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
@@ -2235,9 +2188,9 @@ function registerIpc(memoryKernel: MemoryService): void {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
   });
-  ipcMain.handle(DbIpc.upsertSpace, (_e, space: SpaceDto) => {
+  ipcMain.handle(DbIpc.upsertSpace, async (_e, space: SpaceDto) => {
     try {
-      return { ok: true as const, space: db.upsertSpace(space) };
+      return { ok: true as const, space: await db.writeWorkspaceUpsert(space) };
     } catch (err) {
       return {
         ok: false as const,
@@ -2245,14 +2198,17 @@ function registerIpc(memoryKernel: MemoryService): void {
       };
     }
   });
-  const executionFailureRepository = new ExecutionFailureRepository(db.connection);
+  const executionFailureRepository = new ExecutionFailureRepository(db.connection, db.runtimeAuditReader);
   ipcMain.handle(DbIpc.listExecutionFailures, (_e, taskId: string) => executionFailureRepository.listForDisplay(taskId));
-  ipcMain.handle(DbIpc.dismissExecutionFailure, (_e, taskId: string, id: string) => executionFailureRepository.dismiss(taskId, id));
+  ipcMain.handle(DbIpc.dismissExecutionFailure, (_e, taskId: string, id: string) => executionFailureRepository.dismissForDisplay(taskId, id));
   ipcMain.handle(DbIpc.previewProjectFolder, (_e, projectId: string, path: string) => projectFolderRelocation.preview(projectId, path));
-  ipcMain.handle(DbIpc.commitProjectFolder, (_e, token: string) => { projectFolderRelocation.commit(token); return { ok: true }; });
-  ipcMain.handle(DbIpc.renameSpace, (_e, id: string, name: string) => {
+  ipcMain.handle(DbIpc.commitProjectFolder, async (_e, token: string) => {
+    await artifactDomainService.runWithArtifactWrites(() => projectFolderRelocation.commit(token));
+    return { ok: true };
+  });
+  ipcMain.handle(DbIpc.renameSpace, async (_e, id: string, name: string) => {
     try {
-      db.renameSpace(id, name);
+      await db.writeWorkspaceRename(id, name);
       return { ok: true as const };
     } catch (err) {
       return {
@@ -2262,18 +2218,27 @@ function registerIpc(memoryKernel: MemoryService): void {
     }
   });
   ipcMain.handle(DbIpc.setWorkspaceIcon, (_e, id: string, icon: NonNullable<SpaceDto["icon"]> | null) =>
-    db.setWorkspaceIcon(id, icon),
+    db.writeWorkspaceIcon(id, icon),
   );
-  ipcMain.handle(DbIpc.upsertTask, (_e, task) => {
-    // Cockpit 即时刷新：任务绑定变化（含解绑/改绑）广播新旧项目（不 bump project.updated_at，避免会话重建扰动）
-    const prevProjectId = task?.id ? db.getTask(task.id)?.projectId : undefined;
-    db.upsertTask(isTaskWorktreeId(task?.id) && !db.getTask(task.id)
-      ? { ...task, cwd: resolveTaskWorktreeCwd(task.id) }
-      : task);
-    for (const projectId of new Set([task?.projectId, prevProjectId].filter(Boolean) as string[])) {
+  const refreshTaskProjects = (...ids: Array<string | null | undefined>) => {
+    for (const projectId of new Set(ids.filter((id): id is string => Boolean(id)))) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
       notifyProjectAttention(projectId);
     }
+  };
+  ipcMain.handle(DbIpc.upsertTask, async (_e, task, expectedTitle?: string | null) => {
+    // Cockpit 即时刷新：任务绑定变化（含解绑/改绑）广播新旧项目（不 bump project.updated_at，避免会话重建扰动）
+    const prevProjectId = await db.writeTaskRecord(isTaskWorktreeId(task?.id) && !db.getTask(task.id)
+      ? { ...task, cwd: resolveTaskWorktreeCwd(task.id) }
+      : task, {
+        preserveTitle: expectedTitle !== undefined, expectedTitle: expectedTitle ?? undefined,
+        preserveWorkspace: expectedTitle !== undefined,
+      });
+    refreshTaskProjects(task?.projectId, prevProjectId);
+  });
+  ipcMain.handle(DbIpc.editTaskSidebar, async (_e, edit: import("../shared/agent-ipc").TaskSidebarEdit) => {
+    const projectId = await db.writeTaskSidebar(edit, () => isTaskWorktreeId(edit.id) ? resolveTaskWorktreeCwd(edit.id) : undefined);
+    refreshTaskProjects(projectId);
   });
   // P1.5：delete = 安全回收（不 rm -rf、不立即删 Artifact）；archive 只改状态不移动目录
   ipcMain.handle(DbIpc.deleteTask, async (_e, id: string) => {
@@ -2289,20 +2254,21 @@ function registerIpc(memoryKernel: MemoryService): void {
       notifyProjectAttention(prevProjectId);
     }
   });
-  ipcMain.handle(DbIpc.archiveTask, (_e, id: string, archived: boolean) => {
+  ipcMain.handle(DbIpc.archiveTask, async (_e, id: string, archived: boolean) => {
     if (!taskLifecycle) {
       db.archiveTask(id, archived);
-    } else if (archived) taskLifecycle.archive(id);
-    else taskLifecycle.unarchive(id);
+    } else {
+      await taskLifecycle.writeArchive(id, archived);
+    }
     dots.refresh();
     broadcastToWindows(DotsIpc.changed, null);
   });
   // 侧栏绿点确认：只写 done_acked_at（不碰 updated_at），无需经过生命周期回收流程。
-  ipcMain.handle(DbIpc.ackTaskDone, (_e, id: string, ackedAt?: number) => {
-    db.ackTaskDone(id, ackedAt);
+  ipcMain.handle(DbIpc.ackTaskDone, async (_e, id: string, ackedAt?: number) => {
+    await db.writeTaskDoneAck(id, ackedAt);
   });
-  ipcMain.handle(DbIpc.setTaskDueDate, (_e, id: string, dueAt: number | null) => {
-    const projectId = db.setTaskDueDate(id, dueAt);
+  ipcMain.handle(DbIpc.setTaskDueDate, async (_e, id: string, dueAt: number | null) => {
+    const projectId = await db.writeTaskDueDate(id, dueAt);
     if (projectId) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
       notifyProjectAttention(projectId);
@@ -2313,7 +2279,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(TrashIpc.list, () => taskLifecycle?.listTrashedTasks() ?? []);
   ipcMain.handle(TrashIpc.restore, async (_e, id: string) => {
     if (!taskLifecycle) throw new Error("TaskExecutionWorkspaceLifecycle 尚未初始化");
-    taskLifecycle.restore(id);
+    await taskLifecycle.restoreFromTrash(id);
     const restored = db.getTask(id) ?? null;
     if (restored?.projectId) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId: restored.projectId });
@@ -2322,9 +2288,8 @@ function registerIpc(memoryKernel: MemoryService): void {
     return restored;
   });
   ipcMain.handle(ArchivedContentDeletionIpc.purge, async (_e, request: ArchivedContentDeletionRequest) => {
-    const projects = new Map(db.listTasks().map((task) => [task.id, task.projectId]));
-    const result = await archivedContentDeletion.purge(request);
-    for (const projectId of new Set(result.deletedTaskIds.map((id) => projects.get(id)).filter(Boolean) as string[])) {
+    const { result, projectIds } = await archivedContentDeletion.purgeWithProjects(request);
+    for (const projectId of projectIds) {
       broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
       notifyProjectAttention(projectId);
     }
@@ -2339,15 +2304,15 @@ function registerIpc(memoryKernel: MemoryService): void {
     if (result.ok && result.warning) console.warn(`[WorkspaceDeletion] ${result.warning}`);
     return result;
   });
-  ipcMain.handle(DbIpc.archiveSpace, (_e, id: string, archived: boolean) => {
-    db.archiveSpace(id, archived);
+  ipcMain.handle(DbIpc.archiveSpace, async (_e, id: string, archived: boolean) => {
+    await db.writeSpaceArchive(id, archived);
     dots.refresh();
     broadcastToWindows(DotsIpc.changed, null);
   });
-  ipcMain.handle(DbIpc.moveSpace, (_e, req: { spaceId: string; targetParentId: string | null; targetIndex?: number }) => {
+  ipcMain.handle(DbIpc.moveSpace, async (_e, req: { spaceId: string; targetParentId: string | null; targetIndex?: number }) => {
     try {
       // P3-2：显式 pick 仅 targetIndex，不透传 targetSortOrder（DB 内兼容分支保留，但 IPC 不暴露）
-      db.moveSpace({ spaceId: req.spaceId, targetParentId: req.targetParentId, targetIndex: req.targetIndex });
+      await db.writeWorkspaceSpaceMove({ spaceId: req.spaceId, targetParentId: req.targetParentId, targetIndex: req.targetIndex });
       dots.refresh();
       libraryService.scheduleSemanticIndex();
       return { ok: true as const };
@@ -2355,10 +2320,10 @@ function registerIpc(memoryKernel: MemoryService): void {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
     }
   });
-  ipcMain.handle(DbIpc.moveTaskInWorkspaceTree, (_e, req: { taskId: string; targetSpaceId: string | null; targetIndex?: number }) => {
+  ipcMain.handle(DbIpc.moveTaskInWorkspaceTree, async (_e, req: { taskId: string; targetSpaceId: string | null; targetIndex?: number }) => {
     try {
       // P3-2：显式 pick 仅 targetIndex，不透传 targetSortOrder
-      db.moveTaskInWorkspaceTree({ taskId: req.taskId, targetSpaceId: req.targetSpaceId, targetIndex: req.targetIndex });
+      await db.writeWorkspaceTaskMove({ taskId: req.taskId, targetSpaceId: req.targetSpaceId, targetIndex: req.targetIndex });
       dots.refresh();
       return { ok: true as const };
     } catch (err) {
@@ -2383,7 +2348,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(DbIpc.updateSoul, (_e, partial) => agentService.updateSoul(partial));
 
   // Workspace Shared Context UI foundation (typed, no raw upsert bypass; single promote chain)
-  ipcMain.handle(WorkspaceIpc.getView, (_e, req: { currentSpaceId?: string | null; taskId?: string | null } | null) => {
+  ipcMain.handle(WorkspaceIpc.getView, async (_e, req: { currentSpaceId?: string | null; taskId?: string | null } | null) => {
     try {
       if (!workspaceSharedContextService) {
         return {
@@ -2406,7 +2371,7 @@ function registerIpc(memoryKernel: MemoryService): void {
       const memoryEnabled = agentService.getAppSettings().memoryEnabled;
       const currentSpaceId = (req?.currentSpaceId ?? null) as string | null;
       const taskId = (req?.taskId ?? null) as string | null;
-      return workspaceSharedContextService.getView({ currentSpaceId, taskId, memoryEnabled });
+      return await workspaceSharedContextService.readView({ currentSpaceId, taskId, memoryEnabled });
     } catch (err) {
       return {
         currentSpaceId: req?.currentSpaceId ?? null,
@@ -2427,40 +2392,31 @@ function registerIpc(memoryKernel: MemoryService): void {
     }
   });
   // Phase 6 Work Graph — typed relation (centralized validation, no Context/Permission change)
-  ipcMain.handle(WorkGraphIpc.addEdge, (_e, req: WorkGraphAddEdgeRequest) => {
+  ipcMain.handle(WorkGraphIpc.addEdge, async (_e, req: WorkGraphAddEdgeRequest) => {
     try {
-      const r = workGraphService.addEdge(req);
+      const r = await workGraphService.writeEdge(req);
       return { ok: true as const, edge: r.edge, created: r.created };
     } catch (err) { return { ok: false as const, error: err instanceof Error ? err.message : String(err) }; }
   });
-  ipcMain.handle(WorkGraphIpc.removeEdge, (_e, id: string) => {
+  ipcMain.handle(WorkGraphIpc.removeEdge, async (_e, id: string) => {
     try {
-      const removed = workGraphService.removeEdge(id);
+      const removed = await workGraphService.deleteEdge(id);
       return { ok: true as const, removed };
     } catch (err) { return { ok: false as const, error: err instanceof Error ? err.message : String(err) }; }
   });
-  ipcMain.handle(WorkGraphIpc.listOutgoing, (_e, req: WorkGraphListRequest) => {
-    try { return workGraphService.listOutgoing(req.type, req.id, req.relation); } catch (err) { throw new Error(err instanceof Error ? err.message : String(err)); }
+  ipcMain.handle(WorkGraphIpc.listOutgoing, async (_e, req: WorkGraphListRequest) => {
+    try { return await workGraphService.readEdges("outgoing", req.type, req.id, req.relation); } catch (err) { throw new Error(err instanceof Error ? err.message : String(err)); }
   });
-  ipcMain.handle(WorkGraphIpc.listIncoming, (_e, req: WorkGraphListRequest) => {
-    try { return workGraphService.listIncoming(req.type, req.id, req.relation); } catch (err) { throw new Error(err instanceof Error ? err.message : String(err)); }
+  ipcMain.handle(WorkGraphIpc.listIncoming, async (_e, req: WorkGraphListRequest) => {
+    try { return await workGraphService.readEdges("incoming", req.type, req.id, req.relation); } catch (err) { throw new Error(err instanceof Error ? err.message : String(err)); }
   });
-  ipcMain.handle(WorkGraphIpc.listRelated, (_e, req: WorkGraphListRequest) => {
-    try { return workGraphService.listRelated(req.type, req.id, req.relation); } catch (err) { throw new Error(err instanceof Error ? err.message : String(err)); }
+  ipcMain.handle(WorkGraphIpc.listRelated, async (_e, req: WorkGraphListRequest) => {
+    try { return await workGraphService.readEdges("related", req.type, req.id, req.relation); } catch (err) { throw new Error(err instanceof Error ? err.message : String(err)); }
   });
   // Phase 10: integrity / repair (explicit, previewable, reversible — never silent on boot)
-  ipcMain.handle(WorkGraphIpc.checkIntegrity, () => {
-    const { checkIntegrity } = require("./workgraph/WorkGraphIntegrity");
-    return checkIntegrity(db);
-  });
-  ipcMain.handle(WorkGraphIpc.previewRepair, (_e, report: import("../shared/work-graph").WorkGraphIntegrityReport) => {
-    const { previewRepair } = require("./workgraph/WorkGraphIntegrity");
-    return previewRepair(db, report as unknown as Parameters<typeof previewRepair>[1]);
-  });
-  ipcMain.handle(WorkGraphIpc.applyRepair, (_e, preview: import("../shared/work-graph").WorkGraphRepairPreview) => {
-    const { applyRepair } = require("./workgraph/WorkGraphIntegrity");
-    return applyRepair(db, preview as unknown as Parameters<typeof applyRepair>[1]);
-  });
+  ipcMain.handle(WorkGraphIpc.checkIntegrity, () => scanIntegrity(db));
+  ipcMain.handle(WorkGraphIpc.previewRepair, (_e, report: IntegrityReport) => previewRepair(db, report));
+  ipcMain.handle(WorkGraphIpc.applyRepair, (_e, preview: RepairPreview) => applyRepair(db, preview));
   ipcMain.handle(WorkGraphIpc.observability, () => {
     try {
       const edges = workGraphService.countAll();
@@ -2525,14 +2481,14 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(MemoryIpc.memoriesForTurn, (_e, turnId: string) => agentService.memoriesForKernelTurn(turnId));
   ipcMain.handle(MemoryIpc.search, (_e, request: MemorySearchRequest) => agentService.searchKernelMemory(request));
   ipcMain.handle(MemoryIpc.get, (_e, id: string) => agentService.getKernelMemory(id));
-  ipcMain.handle(MemoryIpc.create, (_e, request: MemoryCreateRequest) => agentService.createKernelMemory(request));
-  ipcMain.handle(MemoryIpc.update, (_e, request: MemoryUpdateRequest) => agentService.updateKernelMemory(request));
+  ipcMain.handle(MemoryIpc.create, (_e, request: MemoryCreateRequest) => agentService.createKernelMemoryAsync(request));
+  ipcMain.handle(MemoryIpc.update, (_e, request: MemoryUpdateRequest) => agentService.updateKernelMemoryAsync(request));
   ipcMain.handle(MemoryIpc.forget, (_e, ids: string | string[]) => agentService.forgetKernelMemories(Array.isArray(ids) ? ids : [ids]));
   ipcMain.handle(MemoryIpc.promote, (_e, id: string, scopeType: MemoryScopeType, scopeId?: string) => agentService.promoteKernelMemory(id, scopeType, scopeId));
   ipcMain.handle(MemoryIpc.detachScope, (_e, id: string, scopeType: MemoryScopeType, scopeId?: string) => agentService.detachKernelMemoryScope(id, scopeType, scopeId));
   ipcMain.handle(MemoryIpc.retryFailedTurns, () => agentService.retryKernelFailedTurns());
   ipcMain.handle(MemoryIpc.extractPendingTurns, () => agentService.extractKernelPendingTurns());
-  ipcMain.handle(MemoryIpc.turnTasks, () => agentService.kernelMemoryTurnTasks());
+  ipcMain.handle(MemoryIpc.turnTasks, () => agentService.readKernelMemoryTurnTasks());
   ipcMain.handle(MemoryIpc.deleteAllTurns, () => agentService.deleteAllKernelMemoryTurns());
   ipcMain.handle(MemoryIpc.deleteTurns, (_e, ids: string[]) => agentService.deleteKernelMemoryTurns(ids));
   ipcMain.handle(MemoryIpc.dismissProjection, (_e, id: string, kind: "scenario" | "profile") => agentService.dismissKernelProjection(id, kind));
@@ -2552,7 +2508,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(MemoryIpc.scenarios, (_e, limit?: number) => agentService.kernelMemoryScenarios(limit));
   ipcMain.handle(MemoryIpc.coreProfiles, (_e, limit?: number) => agentService.kernelMemoryCoreProfiles(limit));
   ipcMain.handle(MemoryIpc.skillCandidates, (_e, status?: import("../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) => agentService.kernelMemorySkillCandidates(status, limit));
-  ipcMain.handle(AnswerRoutingIpc.list, () => agentService.answerRouting.list());
+  ipcMain.handle(AnswerRoutingIpc.list, () => agentService.answerRouting.readList());
   ipcMain.handle(NativeHooksIpc.list, () => agentService.nativeHooks.list());
   ipcMain.handle(NativeImprovementIpc.report, () => agentService.nativeImprovement.report());
   ipcMain.handle(NativeImprovementIpc.child, (_e, task, conversation) => agentService.nativeImprovement.child(task,conversation));
@@ -2562,7 +2518,7 @@ function registerIpc(memoryKernel: MemoryService): void {
   ipcMain.handle(NativeHooksIpc.publish, (_e, draft, base) => agentService.nativeHooks.publish(draft, base));
   ipcMain.handle(NativeHooksIpc.activate, (_e, id, generation, revision, enabled) => agentService.nativeHooks.activate(id, generation, revision, enabled));
   ipcMain.handle(NativeHooksIpc.receipts, (_e, id) => agentService.nativeHooks.receipts(id));
-  ipcMain.handle(MaterialRetrievalIpc.getSettings, () => getMaterialRetrievalSettings(db));
+  ipcMain.handle(MaterialRetrievalIpc.getSettings, () => readMaterialRetrievalSettings(db));
   ipcMain.handle(MaterialRetrievalIpc.setSettings, async (event, patch) => {
     requireMaterialRetrievalWindow(event);
     if (patch.decisionModel != null) {
@@ -2573,23 +2529,23 @@ function registerIpc(memoryKernel: MemoryService): void {
         throw new Error("请选择已启用且可用的决策模型");
       }
     }
-    const settings = setMaterialRetrievalSettings(db, patch);
+    const settings = await writeMaterialRetrievalSettings(db, patch);
     if (patch.mode !== undefined) libraryService.scheduleSemanticIndex();
     return settings;
   });
-  ipcMain.handle(MaterialRetrievalIpc.getScope, (_e, scope) => resolveMaterialRetrievalScope(db, scope));
-  ipcMain.handle(MaterialRetrievalIpc.setScope, (event, scope, mode) => {
+  ipcMain.handle(MaterialRetrievalIpc.getScope, (_e, scope) => readMaterialRetrievalScope(db, scope));
+  ipcMain.handle(MaterialRetrievalIpc.setScope, async (event, scope, mode) => {
     requireMaterialRetrievalWindow(event);
-    const settings = setMaterialRetrievalScope(db, scope, mode);
+    const settings = await writeMaterialRetrievalScope(db, scope, mode);
     libraryService.scheduleSemanticIndex();
     return settings;
   });
-  ipcMain.handle(AnswerRoutingIpc.save, (_e, draft, version) => agentService.answerRouting.save(draft, version));
-  ipcMain.handle(AnswerRoutingIpc.remove, (_e, id, revision) => agentService.answerRouting.remove(id, revision));
-  ipcMain.handle(AnswerRoutingIpc.preview, (_e, query, projectId) => agentService.answerRouting.preview(query, projectId));
-  ipcMain.handle(AnswerRoutingIpc.history, (_e, turn) => agentService.answerRouting.history(turn));
-  ipcMain.handle(AnswerRoutingIpc.versions, (_e, id) => agentService.answerRouting.versions(id));
-  ipcMain.handle(AnswerRoutingIpc.restore, (_e, id, revision) => agentService.answerRouting.restore(id, revision));
+  ipcMain.handle(AnswerRoutingIpc.save, (_e, draft, version) => agentService.answerRouting.saveSettings(draft, version));
+  ipcMain.handle(AnswerRoutingIpc.remove, (_e, id, revision) => agentService.answerRouting.removeSettings(id, revision));
+  ipcMain.handle(AnswerRoutingIpc.preview, (_e, query, projectId) => agentService.answerRouting.readPreview(query, projectId));
+  ipcMain.handle(AnswerRoutingIpc.history, (_e, turn) => agentService.answerRouting.readHistory(turn));
+  ipcMain.handle(AnswerRoutingIpc.versions, (_e, id) => agentService.answerRouting.readVersions(id));
+  ipcMain.handle(AnswerRoutingIpc.restore, (_e, id, revision) => agentService.answerRouting.restoreSettings(id, revision));
   ipcMain.handle(AnswerRoutingIpc.suggest, (_e, teaching, question, answer) => agentService.suggestAnswerRule(teaching, question, answer));
   ipcMain.handle(MemoryIpc.skillLearningStatus, () => agentService.kernelSkillLearningStatus());
   ipcMain.handle(MemoryIpc.deleteSkillHistory, (_e, request: import("../shared/memory-kernel").MemorySkillHistoryDeleteRequest) => agentService.deleteKernelSkillHistory(request));
@@ -2608,12 +2564,11 @@ function registerIpc(memoryKernel: MemoryService): void {
 
   // Cron
   ipcMain.handle(CronIpc.list, () => cronService.readJobs());
+  ipcMain.handle(CronIpc.overview, () => cronService.readOverview());
   ipcMain.handle(CronIpc.runs, (_e, limit?: number) => cronService.listRuns(limit));
-  ipcMain.handle(CronIpc.upsert, (_e, job: CronJobDto) => cronService.upsert(job));
-  ipcMain.handle(CronIpc.setEnabled, (_e, id: string, enabled: boolean) => {
-    cronService.setUserEnabled(id, enabled);
-  });
-  ipcMain.handle(CronIpc.remove, (_e, id: string) => cronService.remove(id));
+  ipcMain.handle(CronIpc.upsert, (_e, job: CronJobDto) => cronService.saveUserPlan(job));
+  ipcMain.handle(CronIpc.setEnabled, (_e, id: string, enabled: boolean) => cronService.setUserPlanEnabled(id, enabled));
+  ipcMain.handle(CronIpc.remove, (_e, id: string) => cronService.deleteUserPlan(id));
   ipcMain.handle(CronIpc.runNow, async (_e, id: string) => {
     await cronService.runNow(id);
   });
@@ -2655,8 +2610,8 @@ function registerIpc(memoryKernel: MemoryService): void {
     const artifact = artifactDomainService.get(req.artifactId);
     return { artifact };
   });
-  ipcMain.handle(ArtifactDomainIpc.list, (_e, req: ArtifactDomainTaskRequest) => {
-    const artifacts = artifactDomainService.listByTask(req.taskId);
+  ipcMain.handle(ArtifactDomainIpc.list, async (_e, req: ArtifactDomainTaskRequest) => {
+    const artifacts = (await artifactDomainService.readTaskSnapshots([req.taskId]))[0]?.artifacts ?? [];
     return { artifacts, state: artifacts.length ? "ready" : "unloaded" };
   });
   ipcMain.handle(ArtifactDomainIpc.snapshot, async (_e, req: ArtifactDomainTaskRequest) => {
@@ -2668,7 +2623,10 @@ function registerIpc(memoryKernel: MemoryService): void {
       console.error("[ArtifactDomain] legacy migration failed:", err);
       return { taskId: req.taskId, artifacts: [], revision: 0, state: "error", error: err instanceof Error ? err.message : String(err) };
     }
-    return artifactDomainService.hydrateTask(req.taskId);
+    const [snapshot] = await artifactDomainService.readTaskSnapshots([req.taskId]);
+    if (!snapshot) return { taskId: req.taskId, artifacts: [], revision: 0, state: "ready" };
+    const { legacyMigrated: _legacyMigrated, ...current } = snapshot;
+    return current;
   });
   ipcMain.handle(ArtifactDomainIpc.snapshotBatch, (_e, req: ArtifactSnapshotBatchRequest) => {
     const ids = req?.taskIds;
@@ -2691,8 +2649,8 @@ function registerIpc(memoryKernel: MemoryService): void {
     // task 生命周期（3B.6）：DB/Registry/storage 全清理，removed 事件广播
     return artifactDomainService.removeByTask(req.taskId);
   });
-  ipcMain.handle(ArtifactDomainIpc.remove, (_e, req: ArtifactDomainRemoveRequest) => {
-    const ok = artifactDomainService.remove(req.artifactId);
+  ipcMain.handle(ArtifactDomainIpc.remove, async (_e, req: ArtifactDomainRemoveRequest) => {
+    const ok = await artifactDomainService.remove(req.artifactId);
     return { ok };
   });
 
@@ -3168,12 +3126,15 @@ app.whenReady().then(async () => {
   const workspacesMigration = migrateLegacyTaskWorkspacesDirs();
   const runtimeAuditExecutable = locateRuntimeAudit(app.getAppPath(), app.isPackaged ? process.resourcesPath : undefined);
   db = new AppDatabase(undefined, { runtimeAuditExecutable });
+  const connectorStorageReady = initializeConnectorStorage(db.runtimeAuditReader);
   notificationService = new NotificationService(db);
   notificationService.setChangedListener((event) => {
     broadcastToWindows(NotificationIpc.changed, event);
     remoteAccessController?.publishNotificationChanged(event);
   });
   libraryService = new LibraryService(db);
+  void libraryService.recoverFileDeletes().catch(error => console.warn("[Library] 启动文件清理恢复失败", error));
+  void libraryService.recoverLibraryRestores().catch(error => console.warn("[Library] 启动备份恢复清理失败", error));
   workspaceLibraryBindingService = new WorkspaceLibraryBindingService(db);
   workGraphService = new WorkGraphService(db);
   // Python 项目模式绑定：运行时服务是模块级单例、早于 DB 创建，故在此后注入。
@@ -3202,14 +3163,14 @@ app.whenReady().then(async () => {
   const memoryKernel = new MemoryService(db);
   memoryGatewayController = new MemoryGatewayController(db, memoryKernel);
   externalCliMemoryBridge = new ExternalCliMemoryBridge(memoryGatewayController);
-  projectService = new ProjectService(projectRepository, memoryKernel);
+  projectService = new ProjectService(projectRepository, memoryKernel, notifyProjectAttention);
   projectFolderRelocation = new ProjectFolderRelocation(db, (taskId) => agentService.isTaskBusy(taskId), () => artifactDomainService);
   attentionTracker = new ProjectAttentionTracker(projectService);
   // 时间边界调度：启动从真源重建；边界触发仅重算/收敛（proposal 层 + attention 广播），绝不后台执行
   cadenceEngine = new ProjectCadence(projectService, {
     onBoundary: (projectId) => notifyProjectAttention(projectId),
   });
-  cadenceEngine.scheduleAll();
+  void cadenceEngine.scheduleAllAsync();
   // 休眠/系统恢复 catch-up：先按当前时间重算全部项目（指纹去重广播，错过边界不丢），再重建未来边界。
   // 不信任旧 timeout（系统睡眠期间 Node timer 不保证按墙钟推进；时钟跳变同样由此收敛）。
   powerMonitor.on("resume", () => {
@@ -3217,7 +3178,7 @@ app.whenReady().then(async () => {
     dotsGoogleMonitor?.refresh();
     dotsDiscovery?.refresh();
     cadenceEngine?.catchUp();
-    cadenceEngine?.scheduleAll();
+    void cadenceEngine?.scheduleAllAsync();
     agentService?.onSystemResume();
   });
   powerMonitor.on("suspend", () => {
@@ -3251,6 +3212,7 @@ app.whenReady().then(async () => {
   browserHost.onHumanControlRequested = showClientInterface;
   uiAutomationService.setBrowserHost(browserHost);
   bindBrowserBridge(browserHost);
+  await connectorStorageReady;
   agentService = new AgentService(db);
   agentService.builtinCapabilities.speechStreams.onAudio(event => {
     if (botManagementWindow && !botManagementWindow.isDestroyed() && !botManagementWindow.webContents.isDestroyed()) {
@@ -3304,12 +3266,16 @@ app.whenReady().then(async () => {
       } },
     { cleanupByNode: (kind, id) => workGraphService.cleanupByNode(kind, id) },
   );
+  const notificationSink = {
+    publish: notificationService.post.bind(notificationService),
+    markReadByDedupeKey: notificationService.postMarkReadByDedupeKey.bind(notificationService),
+  };
   agentService.setTaskLifecycleListener((event) => {
     publishTaskLifecycleNotification({ event, task: db.getTask(event.taskId),
       goalId: agentService.goalForNotificationMessage(event.taskId, event.assistantMessageId),
-      workRepo: agentService.getWorkService().repo, notifications: notificationService });
+      workRepo: agentService.getWorkService().repo, notifications: notificationSink });
   });
-  agentService.onPatch(createTaskInteractionNotificationListener(id => db.getTask(id), notificationService,
+  agentService.onPatch(createTaskInteractionNotificationListener(id => db.getTask(id), notificationSink,
     (id, messageId) => agentService.goalForNotificationMessage(id, messageId)));
   // 用量统计：启动后延迟调度异步分片回填历史 session jsonl + 扫描 subagent 归档
   // （水位+size/mtime 短路；分片让出事件循环，不阻塞启动；失败仅告警）
@@ -3367,7 +3333,7 @@ app.whenReady().then(async () => {
       }
       // Ordinary trash retains lifecycle's best-effort handling; explicit archive purge uses strict shutdown.
       const errors: string[] = [];
-      cronService?.disableTask(taskId);
+      await cronService?.withPlanMaintenance(() => cronService.disableTask(taskId));
       try { await agentService.releaseTaskForDeletion(taskId); }
       catch (error) { errors.push(`任务会话：${error instanceof Error ? error.message : String(error)}`); }
       // 终端：任务删除/归档 → kill 该任务 PTY（cwd 即将移入回收区）
@@ -3376,7 +3342,7 @@ app.whenReady().then(async () => {
       if (errors.length) throw new Error(errors.join("；"));
     },
     onPurgeArtifacts: async (taskId) => {
-      const warning = artifactPurgeCleanupWarning(await artifactDomainService?.removeByTask(taskId));
+      const warning = artifactPurgeCleanupWarning(await artifactDomainService?.removeByTask(taskId, { requireTrashed: true }));
       artifactPurgeWarnings.delete(taskId);
       if (warning) artifactPurgeWarnings.set(taskId, warning);
     },
@@ -3426,15 +3392,14 @@ app.whenReady().then(async () => {
     try {
       // 策略变更后先对齐存量保留期（只缩短），否则旧的 30 天期限会让存量继续滞留。
       if (trigger === "startup") {
-        const aligned = taskLifecycle.alignTrashRetention();
+        const aligned = await taskLifecycle.alignTrashRetention();
         if (aligned > 0) console.log(`[trash] 已按 ${TRASH_RETENTION_DAYS} 天保留期对齐 ${aligned} 个存量回收条目`);
       }
-      const projectIds = new Map(db.listTasks().map((task) => [task.id, task.projectId]));
       const results = await taskLifecycle.purgeExpired();
-      const purged = results.filter((result) => result.removedTaskRow).map((result) => result.taskId);
+      const purged = results.filter((result) => result.removedTaskRow);
       if (purged.length === 0) return;
       console.log(`[trash] purgeExpired(${trigger}): 永久清理 ${purged.length} 个超期任务`);
-      for (const projectId of new Set(purged.map((id) => projectIds.get(id)).filter(Boolean) as string[])) {
+      for (const projectId of new Set(purged.flatMap(result => result.projectId ? [result.projectId] : []))) {
         broadcastToWindows(DbIpc.projectTaskChanged, { projectId });
         notifyProjectAttention(projectId);
       }
@@ -3467,7 +3432,7 @@ app.whenReady().then(async () => {
       }
     }
     if (state.phase === "failed") {
-      notificationService.publish({
+      notificationService.post({
         type: "runtime.failed",
         level: "error",
         title: "运行环境启动失败",
@@ -3564,7 +3529,7 @@ app.whenReady().then(async () => {
     },
     getSelection: () => selectionStore?.getState() ?? { descriptor: null, status: "empty", updatedAt: 0 },
     resolveSelection: (ref) => selectionStore?.resolveSelection(ref) ?? null,
-    getWorkspaceSharedContext: (artifactId) => {
+    getWorkspaceSharedContext: async (artifactId) => {
       try {
         // 统一 memoryEnabled 门控：两条链语义一致，复用 settings 真相，不引入第二开关
         if (!agentService.getAppSettings().memoryEnabled) return null;
@@ -3574,10 +3539,7 @@ app.whenReady().then(async () => {
         const taskId = artifact?.taskId ?? null;
         // standalone / missing artifact -> no workspace context (真实 AppDatabase 链路)
         if (!taskId) return null;
-        const taskRow = db.getTask(taskId) as { spaceId?: string | null } | undefined;
-        const spaceId = taskRow?.spaceId ?? null;
-        // artifact→task→space 真实链路：artifact 无 taskId 或 task 无 space 视为 standalone，仅 task 级（当前为空）
-        return workspaceSharedContextService.getDigestForTask(taskId, spaceId);
+        return await workspaceSharedContextService.readDigestForTask(taskId);
       } catch {
         return null;
       }
@@ -3604,13 +3566,13 @@ app.whenReady().then(async () => {
   });
   agentService.setArtifactDomain(artifactDomain.service, artifactDomain.coordinator);
   // Gadget 独立 Domain：SQLite descriptor truth + durable storage + Main-owned runtime。
-  const gadgetRepository = new GadgetRepository(db.connection);
-  const gadgetStorage = new GadgetStorage(getGadgetsDir());
+  const gadgetRepository = new GadgetRepository(db.connection, db.runtimeAuditReader);
+  const gadgetStorage = new GadgetStorage(getGadgetsDir(), db.runtimeAuditReader);
   const gadgetRegistry = new GadgetRegistry();
   const gadgetRuntime = new GadgetRuntime(gadgetStorage, gadgetRegistry, (state) => {
     broadcastToWindows(GadgetIpc.changed, { type: "runtime", gadgetId: state.gadgetId });
-  });
-  gadgetService = new GadgetService({
+  }, db.runtimeAuditReader);
+  const readyGadgetService = new GadgetService({
     repository: gadgetRepository,
     storage: gadgetStorage,
     registry: gadgetRegistry,
@@ -3636,12 +3598,18 @@ app.whenReady().then(async () => {
         const artifact = await artifactDomainService.register({ taskId, kind: "html", title, content });
         return { artifactId: artifact.id };
       },
+      writeFromGadget: async ({ taskId, title, source }, readOnHost) => {
+        const artifact = await artifactDomainService.registerGadgetHtml(taskId, title, { source, readOnHost });
+        return { artifactId: artifact.id };
+      },
     },
   });
+  await readyGadgetService.recoverStorage();
+  gadgetService = readyGadgetService;
   agentService.setGadgetDomain(gadgetService);
   // Blueprint 复用 project-template capability resolver，并仅协调既有 Workspace/Task/Library/Gadget 服务。
   blueprintService = new BlueprintService({
-    repository: new BlueprintRepository(db.connection),
+    repository: new BlueprintRepository(db.connection, db.runtimeAuditReader),
     resolver: new BlueprintResolver(),
     planner: new BlueprintInstantiationPlanner(),
     db,
@@ -3652,6 +3620,7 @@ app.whenReady().then(async () => {
     workspaceInstancesRoot: getBlueprintWorkspaceInstancesDir(),
     onChanged: (event) => broadcastToWindows(BlueprintIpc.changed, event),
   });
+  await blueprintService.recoverStorage();
   // 4B：WebArtifactRuntime + ArtifactProtocol 装配——资源解析唯一入口是 Domain
   // （ArtifactSourceResolver 注入；PreviewHost 不再接触 resolver/协议/磁盘路径）
   artifactRuntime = new WebArtifactRuntime({
@@ -3669,8 +3638,8 @@ app.whenReady().then(async () => {
     },
     rootOf: (artifactId) => artifactDomainService?.rootOf(artifactId) ?? null,
   });
-  artifactProtocol = new ArtifactProtocol(artifactRuntime, async (artifactId, variant) =>
-    artifactDomainService?.readImageVariant(artifactId, variant) ?? null,
+  artifactProtocol = new ArtifactProtocol(artifactRuntime, async (artifactId, variant, options) =>
+    artifactDomainService?.openImageVariant(artifactId, variant, options) ?? null,
   );
   // 4D：surface generation 变化（load/reload/close）→ SelectionStore stale 事件源
   surfaceCoordinator.onSurfaceChanged((info) => {
@@ -3755,7 +3724,7 @@ app.whenReady().then(async () => {
       }
     },
     (summary) => {
-      notificationService.publish({
+      notificationService.post({
         type: summary.status === "success" ? "automation.completed" : "automation.failed",
         level: summary.status === "success" ? "success" : "error",
         title: summary.message ? summary.jobName : summary.status === "success" ? "自动化已完成" : "自动化执行失败",
@@ -3768,7 +3737,7 @@ app.whenReady().then(async () => {
       });
     },
     agentService.nativeImprovement,
-    event => notificationService.publish({
+    event => notificationService.post({
       type:"reminder.due", level:"info", title:event.jobName, body:"定时跟进已到期。你可以让 Dots 继续处理。",
       sourceType:"automation", sourceId:event.jobId, taskId:DOTS_TASK_ID,
       dedupeKey:`dots-timer:${event.jobId}:${event.occurrence}`,
@@ -3965,7 +3934,13 @@ app.on("before-quit", (event) => {
       ].filter((pending): pending is Promise<void> => Boolean(pending)));
     } catch { /* best effort */ }
     try { await semanticIndexStopped; } catch { /* best effort */ }
+    await cronService?.flushWrites();
     await agentService?.closeAuditWrites();
+    await artifactDomainService?.flushWrites();
+    await libraryService?.flushPendingTextWrites();
+    await libraryService?.flushPendingFileMutations();
+    await db?.flushPersistenceWrites();
+    await notificationService?.flushWrites();
     await db?.runtimeAuditReader?.close();
     // Keep the data-directory mutex held until the last database writer is closed.
     db?.close();

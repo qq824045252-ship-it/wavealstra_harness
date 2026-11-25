@@ -46,7 +46,7 @@ function makeTools(projectId: string | null, permissionMode = "default"): Map<st
     on: () => undefined,
   } as unknown as ExtensionAPI;
   createProjectAutopilotExtension({
-    taskId: "task-ap",
+    taskId: "task-a1",
     resolveProjectId: () => projectId,
     projectService: projects,
     getPermissionMode: () => permissionMode as never,
@@ -115,8 +115,18 @@ async function main(): Promise<void> {
 
   /* 4. review：记录 + lastReviewedAt + 门禁 */
   ok(snap.lastReviewedAt === null, "4. 初始无 review");
-  assert.throws(() => projects.recordReview("proj-a", "x".repeat(501), "task:t"), /备注不能超过 500/);
-  projects.recordReview("proj-a", "本周评审：跟进供应商", "task:task-a1");
+  await assert.rejects(projects.recordReviewAsync("proj-a", "x".repeat(501), "task:t"), /备注不能超过 500/);
+  if (useNative) db.connection.pragma("query_only = ON");
+  try {
+    const review = await projects.recordReviewAsync("proj-a", " 本周评审：跟进供应商 ", "task:task-a1");
+    assert.equal(review.note, "本周评审：跟进供应商");
+    await assert.rejects(
+      projects.recordReviewAsync("proj-b", "跨项目评审", "task:task-a1", { taskId: "task-a1", projectId: "proj-b" }),
+      /项目归属已变化/,
+    );
+  } finally {
+    if (useNative) db.connection.pragma("query_only = OFF");
+  }
   const snapRev = await projects.readStatusSnapshot("proj-a", NOW);
   ok(snapRev.lastReviewedAt !== null, "4b. review 后 lastReviewedAt 更新（审计标记）");
   ok(projects.listReviews("proj-a").length === 1, "4c. review 历史可查");
@@ -209,19 +219,19 @@ async function main(): Promise<void> {
   assert.deepEqual(att1, tracker.computeDigest("proj-a", NOW));
   ok(att1 !== null && att1.health === "yellow" && att1.blockerCount === 0 && att1.atRiskCount > 0, "11. 风险项目 attention=yellow，非强制 blocker");
   ok(att1!.seen === false, "11b. 初始未确认");
-  ok(tracker.onChange("proj-a", NOW) === null, "11c. 无变化不重复广播（指纹去重）");
+  ok(await tracker.readChange("proj-a", NOW) === null, "11c. 无变化不重复广播（指纹去重）");
   const acked = await tracker.acknowledgeRead("proj-a", NOW);
   ok(acked !== null && acked.seen === true, "11d. 确认后 seen=true");
   ok(acked!.fingerprint === att1!.fingerprint, "11e. 确认指纹与当前一致");
   // 状态变化 → 新指纹 → 重新未确认 + 广播（完成停滞任务，blocker 减少）
   db2.upsertTask({ id: "task-a2", title: "A停滞任务", updatedAt: NOW - 20 * DAY, projectId: "proj-a", status: "completed" });
-  const att2 = tracker.onChange("proj-a", NOW);
+  const att2 = await tracker.readChange("proj-a", NOW);
   ok(att2 !== null && att2.fingerprint !== att1!.fingerprint && att2.seen === false, "11f. 状态变化后重新未确认并广播");
   ok(att2!.atRiskCount < att1!.atRiskCount, "11g1. 完成停滞任务后 atRisk 减少");
   // 再解决记忆风险 → 完全收敛（badge 消失语义）
   const riskItem = proj2.listMemory("proj-a").find((m) => m.title === "供应商风险")!;
   proj2.updateMemory({ projectId: "proj-a", id: riskItem.id, status: "resolved" });
-  const att3 = tracker.onChange("proj-a", NOW);
+  const att3 = await tracker.readChange("proj-a", NOW);
   ok(att3 !== null && att3!.blockerCount === 0 && att3!.health !== "red", "11g2. 全部阻塞解决后 attention 自动收敛");
   // 隔离：B 的 attention 独立（B 无阻塞）
   const attB = tracker.getAttention("proj-b", NOW);

@@ -40,6 +40,7 @@ import {
   type ProjectPostDto,
   type ProjectEventDto,
   type ProjectEventPromotedBy,
+  type ProjectEventPromoteResultDto,
   type ProjectEventPromotionDto,
   type ProjectEventPromotionTargetKind,
   type ProjectEventTriageStatus,
@@ -58,7 +59,9 @@ import {
 } from "../../shared/project-domain";
 import { ProjectRepository, type ProjectStatusFact } from "./ProjectRepository";
 import type { MemoryService } from "../memory/MemoryService";
-import type { MemoryRecordDto } from "../../shared/memory-kernel";
+import { memoryWithdrawalTargets } from "../memory/MemoryForgetWatermarks";
+import type { MemoryCreateRequest, MemoryRecordDto, MemorySearchRequest, MemoryUpdateRequest } from "../../shared/memory-kernel";
+import type { ProjectMemoryEdit, ProjectMemoryProjection, ProjectMemoryWrite, ProjectMutation, ProjectWriteStatus } from "./ProjectMutation";
 
 function statusIssue(fact: ProjectStatusFact): ProjectStatusIssueDto {
   const issue = { refId: fact.refId, title: fact.title };
@@ -78,7 +81,7 @@ function statusIssue(fact: ProjectStatusFact): ProjectStatusIssueDto {
   }
 }
 
-function kernelMemoryToProject(item: MemoryRecordDto, projectId: string): ProjectMemoryItemDto {
+function kernelMemoryToProject(item: ProjectMemoryProjection, projectId: string): ProjectMemoryItemDto {
   const kernelKind = ["fact", "decision", "constraint", "risk", "open_question", "progress"].includes(item.kind)
     ? item.kind as ProjectMemoryKind
     : "fact";
@@ -95,7 +98,7 @@ function kernelMemoryToProject(item: MemoryRecordDto, projectId: string): Projec
             ? "task"
             : null;
     if (!kind) return [];
-    return [{ id: ev.id, memoryId: item.id, evidenceKind: kind, refId: ev.refId, refTitle: ev.refTitle, createdAt: ev.createdAt }];
+    return [{ id: ev.id, memoryId: item.id, evidenceKind: kind, refId: ev.refId, refTitle: ev.refTitle ?? undefined, createdAt: ev.createdAt }];
   });
   return {
     id: item.id,
@@ -107,7 +110,7 @@ function kernelMemoryToProject(item: MemoryRecordDto, projectId: string): Projec
     tags,
     importance: item.importance,
     sourceType: item.sourceType === "agent" ? "agent" : "manual",
-    sourceTaskId: item.sourceTaskId,
+    sourceTaskId: item.sourceTaskId ?? undefined,
     evidence,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
@@ -253,12 +256,54 @@ function resolveResourceParent(
   return id;
 }
 
-export class ProjectService {
-  constructor(private readonly repository: ProjectRepository, private readonly memoryService: MemoryService) {}
+type PreparedProjectWrite<T> = { mutation: ProjectMutation; result: () => T | Promise<T> } | { unchanged: T };
+type ProjectWriteActor = { taskId: string; projectId: string };
+const SHARED_MEMORY_EDIT_GUIDANCE = "该记忆已共享到其他作用域，不能从项目页直接修改；请在统一记忆治理中修订";
 
-  private requireWritableProject(projectId: string): ProjectDetailsDto {
+function todoWriteValues({ tags, ...todo }: ProjectTodoDto) {
+  return { ...todo, tagsJson: JSON.stringify(tags) };
+}
+
+function memoryWriteValues({ id, kind, title, content, status, importance, confidence, explicit, sourceType,
+  sourceTaskId, contentHash, createdAt, evidence, metadata }: MemoryRecordDto): ProjectMemoryWrite {
+  return { id, kind, title, content, status, importance, confidence, explicit, sourceType, sourceTaskId,
+    contentHash, createdAt, evidence, metadataJson: JSON.stringify(metadata),
+    scopeRowId: randomUUID(), revisionId: randomUUID() };
+}
+
+function memoryEditValues({ id, kind, title, content, status, importance,
+  contentHash, updatedAt, metadata }: MemoryRecordDto, expectedRevision: number): ProjectMemoryEdit {
+  return { id, kind, title, content, status, importance,
+    contentHash, updatedAt, metadataJson: JSON.stringify(metadata), expectedRevision, revisionId: randomUUID() };
+}
+
+function assertProjectMemoryWritten(status: ProjectWriteStatus, projectId: string, eventId?: string): void {
+  if (status === "changed") return;
+  if (status === "scopeChanged") throw new Error("任务的项目归属已变化，请重新读取");
+  if (status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+  if (status === "missingEvent") throw new Error(`事件不存在：${eventId}`);
+  if (status === "missing") throw new Error(`项目不存在：${projectId}`);
+  if (status === "invalidEvidence") throw new Error("记忆证据已删除或项目归属已变化，请重新选择");
+  if (status === "missingMemory") throw new Error("记忆条目不存在");
+  if (status === "sharedMemory") throw new Error(SHARED_MEMORY_EDIT_GUIDANCE);
+  throw new Error("项目记忆写入失败");
+}
+
+export class ProjectService {
+  constructor(
+    private readonly repository: ProjectRepository,
+    private readonly memoryService: MemoryService,
+    private readonly onPlanChanged?: (projectId: string) => void,
+  ) {}
+
+  private requireProject(projectId: string): ProjectDetailsDto {
     const project = this.repository.get(projectId);
     if (!project) throw new Error(`项目不存在：${projectId}`);
+    return project;
+  }
+
+  private requireWritableProject(projectId: string): ProjectDetailsDto {
+    const project = this.requireProject(projectId);
     if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
     return project;
   }
@@ -275,7 +320,30 @@ export class ProjectService {
     return this.repository.get(id);
   }
 
+  readDetails(id: string): Promise<ProjectDetailsDto | undefined> { return this.repository.readDetails(id); }
+
+  private async readSavedProject(id: string): Promise<ProjectDetailsDto> {
+    const project = await this.readDetails(id);
+    if (!project) throw new Error(`项目不存在：${id}`);
+    return project;
+  }
+
   create(request: ProjectCreateRequest): ProjectDetailsDto {
+    const { project, policies } = this.prepareCreate(request);
+    return this.repository.create(project, policies);
+  }
+
+  createAsync(request: ProjectCreateRequest): Promise<ProjectDetailsDto> {
+    return this.commitProjectWrite(() => this.create(request), () => {
+      const { project, policies } = this.prepareCreate(request);
+      return {
+        mutation: { kind: "create", project, policiesJson: JSON.stringify(policies), resources: [] },
+        result: () => ({ ...project, policies, resources: [] }),
+      };
+    });
+  }
+
+  private prepareCreate(request: ProjectCreateRequest) {
     const name = request.name.trim();
     if (!name) throw new Error("项目名称不能为空");
     if (this.repository.findByName(name)) throw new Error(`项目名称已存在：${name}`);
@@ -293,19 +361,34 @@ export class ProjectService {
       archived: false,
       resourceBudgetChars: normalizeResourceBudget(request.resourceBudgetChars),
     };
-    return this.repository.create(project, normalizePolicies(request.policies));
+    return { project, policies: normalizePolicies(request.policies) };
   }
 
   update(request: ProjectUpdateRequest): ProjectDetailsDto {
+    const { project, policies } = this.prepareUpdate(request);
+    return this.repository.update(project, policies);
+  }
+
+  updateAsync(request: ProjectUpdateRequest): Promise<ProjectDetailsDto> {
+    return this.commitProjectWrite(() => this.update(request), () => {
+      const { project, policies, defaultSpacePath, expectedUpdatedAt } = this.prepareUpdate(request);
+      return {
+        mutation: { kind: "edit", project, expectedUpdatedAt, defaultSpacePath, policiesJson: policies ? JSON.stringify(policies) : undefined },
+        result: () => this.readSavedProject(project.id),
+      };
+    });
+  }
+
+  private prepareUpdate(request: ProjectUpdateRequest) {
     const current = this.requireWritableProject(request.id);
     const name = request.name === undefined ? current.name : request.name.trim();
     if (!name) throw new Error("项目名称不能为空");
     const duplicate = this.repository.findByName(name);
     if (duplicate && duplicate.id !== request.id) throw new Error(`项目名称已存在：${name}`);
+    const defaultSpacePath = request.defaultSpaceId == null ? undefined : this.repository.validatedDefaultSpacePath(request.defaultSpaceId);
     const project: ProjectDto = {
       ...current,
-      defaultSpaceId: request.defaultSpaceId === undefined ? current.defaultSpaceId
-        : request.defaultSpaceId === null ? undefined : this.repository.validateDefaultSpace(request.defaultSpaceId),
+      defaultSpaceId: request.defaultSpaceId === undefined ? current.defaultSpaceId : request.defaultSpaceId ?? undefined,
       name,
       description:
         request.description === undefined ? current.description : cleanOptional(request.description),
@@ -317,13 +400,26 @@ export class ProjectService {
       updatedAt: Math.max(Date.now(), current.updatedAt + 1),
       resourceBudgetChars: normalizeResourceBudget(request.resourceBudgetChars, current.resourceBudgetChars),
     };
-    return this.repository.update(
-      project,
-      request.policies ? normalizePolicies(request.policies, current.policies) : undefined,
-    );
+    const policies = request.policies ? normalizePolicies(request.policies, current.policies) : undefined;
+    return { project, policies, defaultSpacePath, expectedUpdatedAt: current.updatedAt };
   }
 
   duplicate(request: ProjectDuplicateRequest): ProjectDetailsDto {
+    const { project, policies, resources } = this.prepareDuplicate(request);
+    return this.repository.createWithResources(project, policies, resources);
+  }
+
+  duplicateAsync(request: ProjectDuplicateRequest): Promise<ProjectDetailsDto> {
+    return this.commitProjectWrite(() => this.duplicate(request), () => {
+      const { project, policies, resources, source } = this.prepareDuplicate(request);
+      return {
+        mutation: { kind: "create", project, policiesJson: JSON.stringify(policies), resources, source },
+        result: () => ({ ...project, policies, resources }),
+      };
+    });
+  }
+
+  private prepareDuplicate(request: ProjectDuplicateRequest) {
     const source = this.repository.get(request.sourceId);
     if (!source) throw new Error(`项目不存在：${request.sourceId}`);
     const requestedName = request.name?.trim();
@@ -357,16 +453,11 @@ export class ProjectService {
       updatedAt: now + index,
     }));
     const resources = orderResourcesForInsert(remapped);
-    return this.repository.createWithResources(
-      project,
-      normalizePolicies(source.policies),
-      resources,
-    );
+    return { project, policies: normalizePolicies(source.policies), resources, source: { id: source.id, updatedAt: source.updatedAt } };
   }
 
   archive(id: string, archived: boolean): ProjectDetailsDto {
-    const current = this.repository.get(id);
-    if (!current) throw new Error(`项目不存在：${id}`);
+    const current = this.requireProject(id);
     const project = this.repository.archive(
       id,
       archived,
@@ -376,17 +467,35 @@ export class ProjectService {
     return project;
   }
 
+  archiveAsync(id: string, archived: boolean): Promise<ProjectDetailsDto> {
+    return this.commitProjectWrite(() => this.archive(id, archived), () => {
+      this.requireProject(id);
+      return { mutation: { kind: "archive", id, archived, updatedAt: Date.now() }, result: () => this.readSavedProject(id) };
+    });
+  }
+
   delete(id: string): void {
     this.memoryService.detachAllInScope("project", id);
     this.repository.delete(id);
   }
 
   createResource(request: ProjectResourceCreateRequest): ProjectResourceDto {
+    return this.repository.createResource(this.prepareResourceCreate(request).resource);
+  }
+
+  createResourceAsync(request: ProjectResourceCreateRequest): Promise<ProjectResourceDto> {
+    return this.commitProjectWrite(() => this.createResource(request), () => {
+      const { resource, expectedUpdatedAt } = this.prepareResourceCreate(request);
+      return { mutation: { kind: "saveResource", resource, expectedUpdatedAt, create: true }, result: () => resource };
+    });
+  }
+
+  private prepareResourceCreate(request: ProjectResourceCreateRequest) {
     const project = this.requireWritableProject(request.projectId);
     const { title, value } = validateResourceValue(request.kind, request.title, request.value);
     const parentId = resolveResourceParent(project.resources, request.parentId);
     const now = Math.max(Date.now(), project.updatedAt + 1);
-    return this.repository.createResource({
+    const resource: ProjectResourceDto = {
       id: `pres_${randomUUID()}`,
       projectId: project.id,
       kind: request.kind,
@@ -397,10 +506,22 @@ export class ProjectService {
       parentId,
       createdAt: now,
       updatedAt: now,
-    });
+    };
+    return { resource, expectedUpdatedAt: project.updatedAt };
   }
 
   updateResource(request: ProjectResourceUpdateRequest): ProjectResourceDto {
+    return this.repository.updateResource(this.prepareResourceUpdate(request).resource);
+  }
+
+  updateResourceAsync(request: ProjectResourceUpdateRequest): Promise<ProjectResourceDto> {
+    return this.commitProjectWrite(() => this.updateResource(request), () => {
+      const { resource, expectedUpdatedAt } = this.prepareResourceUpdate(request);
+      return { mutation: { kind: "saveResource", resource, expectedUpdatedAt, create: false }, result: () => resource };
+    });
+  }
+
+  private prepareResourceUpdate(request: ProjectResourceUpdateRequest) {
     const current = this.repository.getResource(request.id);
     if (!current) throw new Error(`项目资源不存在：${request.id}`);
     const project = this.requireWritableProject(current.projectId);
@@ -413,15 +534,18 @@ export class ProjectService {
       ? current.parentId
       : resolveResourceParent(project.resources, request.parentId, current.id);
     const updatedAt = Math.max(Date.now(), current.updatedAt + 1, project.updatedAt + 1);
-    return this.repository.updateResource({
+    const sortOrder = request.sortOrder === undefined ? current.sortOrder : Math.max(0, Math.round(request.sortOrder));
+    if (!Number.isSafeInteger(sortOrder)) throw new Error("资料排序无效");
+    const resource: ProjectResourceDto = {
       ...current,
       title,
       value,
       enabled: request.enabled ?? current.enabled,
-      sortOrder: request.sortOrder === undefined ? current.sortOrder : Math.max(0, Math.round(request.sortOrder)),
+      sortOrder,
       parentId,
       updatedAt,
-    });
+    };
+    return { resource, expectedUpdatedAt: project.updatedAt };
   }
 
   deleteResource(id: string): void {
@@ -432,28 +556,80 @@ export class ProjectService {
     this.repository.deleteResource(id, current.projectId, updatedAt);
   }
 
-  listPosts(projectId: string): ProjectPostDto[] {
-    if (!this.repository.get(projectId)) throw new Error(`项目不存在：${projectId}`);
-    return this.repository.listPosts(projectId);
-  }
-
-  createPost(request: ProjectPostCreateRequest): ProjectPostDto {
-    const project = this.requireWritableProject(request.projectId);
-    const body = request.body.trim();
-    if (!body) throw new Error("留言不能为空");
-    return this.repository.createPost({
-      id: `ppost_${randomUUID()}`,
-      projectId: project.id,
-      body,
-      createdAt: Date.now(),
+  deleteResourceAsync(id: string): Promise<void> {
+    return this.commitProjectWrite(() => this.deleteResource(id), () => {
+      const resource = this.repository.getResource(id);
+      if (!resource) return { unchanged: undefined };
+      const project = this.requireWritableProject(resource.projectId);
+      return {
+        mutation: { kind: "deleteResource", id, projectId: project.id, expectedUpdatedAt: project.updatedAt,
+          updatedAt: Math.max(Date.now(), project.updatedAt + 1) },
+        result: () => undefined,
+      };
     });
   }
 
-  deletePost(id: string): void {
-    const post = this.repository.getPost(id);
-    if (!post) return;
-    this.requireWritableProject(post.projectId);
-    this.repository.deletePost(id);
+  private async commitProjectWrite<T>(fallback: () => T, prepare: () => PreparedProjectWrite<T>, domain: "project" | "todo" = "project"): Promise<T> {
+    if (!await this.repository.supportsNativeWrites(domain)) return fallback();
+    // Rebuild the patch against a fresh project and resources if another write wins first.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const prepared = this.repository.readWriteSnapshot(prepare);
+      if ("unchanged" in prepared) return prepared.unchanged;
+      const status = await this.repository.writeProject(prepared.mutation);
+      switch (status) {
+        case "changed": return prepared.result();
+        case "archived": throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+        case "invalidSpace": throw new Error("项目文件夹已移动、归档或解除关联，请重新选择");
+        case "invalidParent": throw new Error("资料的目标文件夹已变化，请刷新后重试");
+        case "scopeChanged": throw new Error("任务的项目归属已变化，请重新读取");
+        case "missingEvent": case "existingPromotion": throw new Error("项目写入返回了意外状态");
+        case "stale": case "missing": case "nameTaken": break;
+      }
+    }
+    throw new Error("项目正在被其他操作修改，请刷新后重试");
+  }
+
+  async listPosts(projectId: string): Promise<ProjectPostDto[]> {
+    const result = await this.repository.requestProjectPosts({ kind: "list", projectId });
+    if (result?.status === "listed") return result.posts;
+    if (result?.status === "rejected") throw new Error(result.message);
+    return this.repository.readWriteSnapshot(() => {
+      if (!this.repository.getSummary(projectId)) throw new Error(`项目不存在：${projectId}`);
+      return this.repository.listPosts(projectId);
+    });
+  }
+
+  async createPost(request: ProjectPostCreateRequest): Promise<ProjectPostDto> {
+    const post = {
+      id: `ppost_${randomUUID()}`,
+      projectId: request.projectId,
+      body: typeof request.body === "string" ? request.body.trim() : request.body,
+      createdAt: Date.now(),
+    };
+    const result = await this.repository.requestProjectPosts({ kind: "create", post });
+    if (result?.status === "needsHost") return this.repository.commitWriteOnHost(() => {
+      const project = this.requireWritableProjectSummary(post.projectId);
+      if (!request.body.trim()) throw new Error("留言不能为空");
+      return this.repository.createPost({ ...post, projectId: project.id });
+    });
+    if (result?.status === "saved" || (!result && this.repository.getPost(post.id))) return post;
+    if (result?.status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("留言保存未确认，请刷新后重试");
+  }
+
+  async deletePost(id: string): Promise<void> {
+    const result = await this.repository.requestProjectPosts({ kind: "delete", id });
+    if (result?.status === "needsHost") return this.repository.commitWriteOnHost(() => {
+      const post = this.repository.getPost(id);
+      if (!post) return;
+      this.requireWritableProjectSummary(post.projectId);
+      this.repository.deletePost(id);
+    });
+    if (result?.status === "saved" || (!result && !this.repository.getPost(id))) return;
+    if (result?.status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("留言删除未确认，请刷新后重试");
   }
 
   /* ---------------- Project Events（外部输入审计层；非业务真源） ---------------- */
@@ -475,6 +651,10 @@ export class ProjectService {
     return this.repository.getProjectEventById(eventId);
   }
 
+  readProjectEvent(eventId: string): Promise<ProjectEventDto | undefined> {
+    return this.repository.readProjectEventById(eventId);
+  }
+
   /** triage 状态（工作流元数据，不参与派生）：dismiss = 标记已处理（幂等）；reopen 恢复待判断 */
   private setEventTriage(projectId: string, eventId: string, status: ProjectEventTriageStatus): ProjectEventDto {
     this.requireWritableProject(projectId);
@@ -489,6 +669,18 @@ export class ProjectService {
 
   reopenProjectEvent(projectId: string, eventId: string): ProjectEventDto {
     return this.setEventTriage(projectId, eventId, "open");
+  }
+
+  async writeProjectEventTriage(projectId: string, eventId: string, status: ProjectEventTriageStatus): Promise<ProjectEventDto> {
+    const reply = await this.repository.writeProjectEventTriage(projectId, eventId, status);
+    if (typeof reply === "object") return reply;
+    if (reply === "needsHost") {
+      return this.repository.commitWriteOnHost(() => this.setEventTriage(projectId, eventId, status));
+    }
+    if (reply === "missingProject") throw new Error(`项目不存在：${projectId}`);
+    if (reply === "missingEvent") throw new Error(`事件不存在或不属于该项目：${eventId}`);
+    if (reply === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    throw new Error("事件处理状态未确认，请刷新后重试");
   }
 
   /** ingest 落库（校验在 ProjectEventIngestor；此处为薄透传） */
@@ -538,11 +730,51 @@ export class ProjectService {
     return this.repository.getTodo(id);
   }
 
+  readTodo(id: string): Promise<ProjectTodoDto | undefined> { return this.repository.readTodo(id); }
+
+  readNextCadenceBoundary(projectId: string, now: number): Promise<number | null | undefined> | undefined {
+    return this.repository.readNextCadenceBoundary(projectId, now);
+  }
+
+  private assertProjectActor(projectId: string, actor?: ProjectWriteActor): void {
+    if (actor && (actor.projectId !== projectId || !this.repository.isTaskInProject(actor.taskId, projectId))) {
+      throw new Error("任务的项目归属已变化，请重新读取");
+    }
+  }
+
+  private requireWritableProjectSummary(projectId: string, actor?: ProjectWriteActor): ProjectDto {
+    this.assertProjectActor(projectId, actor);
+    const project = this.repository.getSummary(projectId);
+    if (!project) throw new Error(`项目不存在：${projectId}`);
+    if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    return project;
+  }
+
+  private publishPlanChange(projectId: string): void {
+    try { this.onPlanChanged?.(projectId); }
+    catch (error) { console.warn("[ProjectService] plan refresh failed", error); }
+  }
+
   createTodo(request: ProjectTodoCreateRequest): ProjectTodoDto {
-    const project = this.requireWritableProject(request.projectId);
+    return this.repository.createTodo(this.prepareTodoCreate(request));
+  }
+
+  createTodoAsync(request: ProjectTodoCreateRequest, actor?: ProjectWriteActor): Promise<ProjectTodoDto> {
+    const finish = (todo: ProjectTodoDto) => { this.publishPlanChange(todo.projectId); return todo; };
+    return this.commitProjectWrite(() => finish(this.repository.createTodo(this.prepareTodoCreate(request, actor))), () => {
+      const todo = this.prepareTodoCreate(request, actor);
+      return {
+        mutation: { kind: "saveTodo", todo: todoWriteValues(todo), sourceTaskId: actor?.taskId },
+        result: () => finish(todo),
+      };
+    }, "todo");
+  }
+
+  private prepareTodoCreate(request: ProjectTodoCreateRequest, actor?: ProjectWriteActor): ProjectTodoDto {
+    const project = this.requireWritableProjectSummary(request.projectId, actor);
     const title = normalizeTodoTitle(request.title);
     const now = Date.now();
-    return this.repository.createTodo({
+    return {
       id: `ptodo_${randomUUID()}`,
       projectId: project.id,
       title,
@@ -555,13 +787,33 @@ export class ProjectService {
       dueAt: request.dueAt,
       createdAt: now,
       updatedAt: now,
-    });
+    };
   }
 
   updateTodo(request: ProjectTodoUpdateRequest): ProjectTodoDto {
+    const { todo, unchanged } = this.prepareTodoUpdate(request);
+    return unchanged ? todo : this.repository.updateTodo(todo);
+  }
+
+  updateTodoAsync(request: ProjectTodoUpdateRequest, actor?: ProjectWriteActor): Promise<ProjectTodoDto> {
+    const finish = (todo: ProjectTodoDto) => { this.publishPlanChange(todo.projectId); return todo; };
+    return this.commitProjectWrite<ProjectTodoDto>(() => {
+      const { todo, unchanged } = this.prepareTodoUpdate(request, actor);
+      return unchanged ? todo : finish(this.repository.updateTodo(todo));
+    }, () => {
+      const { todo, unchanged, expectedUpdatedAt } = this.prepareTodoUpdate(request, actor);
+      if (unchanged) return { unchanged: todo };
+      return {
+        mutation: { kind: "saveTodo", todo: todoWriteValues(todo), expectedUpdatedAt, sourceTaskId: actor?.taskId },
+        result: () => finish(todo),
+      };
+    }, "todo");
+  }
+
+  private prepareTodoUpdate(request: ProjectTodoUpdateRequest, actor?: ProjectWriteActor) {
     const current = this.repository.getTodo(request.id);
     if (!current) throw new Error("待办不存在");
-    this.requireWritableProject(current.projectId);
+    this.requireWritableProjectSummary(current.projectId, actor);
     const title = request.title === undefined ? current.title : normalizeTodoTitle(request.title);
     // 规范化后的目标值（不设新 updatedAt）：与现值完全一致时判定为 no-op，
     // 不写 DB、不 bump projects.updated_at / ProjectContext version。
@@ -586,15 +838,77 @@ export class ProjectService {
       JSON.stringify(next.tags) === JSON.stringify(current.tags) &&
       next.startAt === current.startAt &&
       next.dueAt === current.dueAt;
-    if (unchanged) return current;
-    return this.repository.updateTodo({ ...next, updatedAt: Date.now() });
+    const todo = unchanged ? current : { ...next, updatedAt: Math.max(Date.now(), current.updatedAt + 1) };
+    return { todo, unchanged, expectedUpdatedAt: current.updatedAt };
   }
 
   deleteTodo(id: string): void {
     const current = this.repository.getTodo(id);
     if (!current) return;
-    this.requireWritableProject(current.projectId);
+    this.requireWritableProjectSummary(current.projectId);
     this.repository.deleteTodo(id);
+  }
+
+  deleteTodoAsync(id: string): Promise<void> {
+    return this.commitProjectWrite(() => {
+      const todo = this.repository.getTodo(id);
+      if (!todo) return;
+      this.requireWritableProjectSummary(todo.projectId);
+      this.repository.deleteTodo(id);
+      this.publishPlanChange(todo.projectId);
+    }, () => {
+      const todo = this.repository.getTodo(id);
+      if (!todo) return { unchanged: undefined };
+      this.requireWritableProjectSummary(todo.projectId);
+      return {
+        mutation: { kind: "deleteTodo", id, projectId: todo.projectId, updatedAt: Date.now() },
+        result: () => this.publishPlanChange(todo.projectId),
+      };
+    }, "todo");
+  }
+
+  async promoteEventToTodo(
+    event: ProjectEventDto,
+    request: Omit<ProjectTodoCreateRequest, "projectId">,
+    promotedBy: ProjectEventPromotedBy,
+    createdAt: number,
+    actor?: ProjectWriteActor,
+  ): Promise<ProjectEventPromoteResultDto> {
+    const projectId = event.projectId;
+    this.requireWritableProjectSummary(projectId, actor);
+    const current = this.repository.findProjectEventPromotion(projectId, event.id, "todo");
+    if (current) return this.todoPromotionResult(current, true);
+    if (!request.title.trim()) throw new Error("提升为计划项必须显式指定标题");
+
+    const native = await this.repository.supportsNativeWrites("eventTodoPromotion");
+    const todo = this.prepareTodoCreate({ ...request, projectId }, actor);
+    const draft: ProjectEventPromotionDto = {
+      id: `pepr_${randomUUID()}`, projectId, eventId: event.id, eventTitle: event.title,
+      targetKind: "todo", targetId: todo.id, targetTitle: todo.title, promotedBy, createdAt,
+    };
+    const status = native ? await this.repository.writeProject({
+      kind: "promoteEventToTodo", todo: todoWriteValues(todo), eventId: event.id, promotionId: draft.id,
+      promotedBy, createdAt, sourceTaskId: actor?.taskId,
+    }) : this.repository.insertTodoPromotionOnHost(todo, draft, actor?.taskId);
+    if (status === "scopeChanged") throw new Error("任务的项目归属已变化，请重新读取");
+    if (status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    if (status === "missingEvent") throw new Error(`事件不存在：${event.id}`);
+    if (status === "missing") throw new Error(`项目不存在：${projectId}`);
+    if (status !== "changed" && status !== "existingPromotion") throw new Error("项目事件与计划项的关联写入失败");
+
+    if (status === "changed") this.publishPlanChange(projectId);
+    this.assertProjectActor(projectId, actor);
+    const actual = this.repository.findProjectEventPromotion(projectId, event.id, "todo");
+    if (!actual) throw new Error("项目事件与计划项的关联已被移除");
+    return this.todoPromotionResult(actual, status === "existingPromotion");
+  }
+
+  private todoPromotionResult(promotion: ProjectEventPromotionDto, reused: boolean): ProjectEventPromoteResultDto {
+    const result: ProjectEventPromoteResultDto = {
+      promotion, targetKind: "todo", targetId: promotion.targetId, targetTitle: promotion.targetTitle, reused,
+    };
+    if (reused) result.targetMissing = this.repository.getTodo(promotion.targetId)?.projectId !== promotion.projectId;
+    return result;
   }
 
   /* ---------------- Project Memory ---------------- */
@@ -604,6 +918,12 @@ export class ProjectService {
     return this.memoryService
       .listExactScope("project", projectId, ["active", "superseded", "resolved"], 2000)
       .map((item) => kernelMemoryToProject(item, projectId));
+  }
+
+  async readMemoryList(projectId: string): Promise<ProjectMemoryItemDto[]> {
+    const rows = await this.repository.readMemoryList(projectId);
+    if (rows === null) throw new Error(`项目不存在：${projectId}`);
+    return rows?.map(item => kernelMemoryToProject(item, projectId)) ?? this.listMemory(projectId);
   }
 
   getMemory(projectId: string, id: string): ProjectMemoryItemDto | undefined {
@@ -624,7 +944,78 @@ export class ProjectService {
     request: ProjectMemoryCreateRequest,
     source?: ProjectMemorySource,
   ): ProjectMemoryItemDto {
-    const project = this.requireWritableProject(request.projectId);
+    return kernelMemoryToProject(this.memoryService.create(this.prepareMemoryRequest(request, source)), request.projectId);
+  }
+
+  async createMemoryAsync(request: ProjectMemoryCreateRequest, source?: ProjectMemorySource): Promise<ProjectMemoryItemDto> {
+    const { projectId } = request;
+    const actor = source?.sourceType === "agent" && source.sourceTaskId ? { taskId: source.sourceTaskId, projectId } : undefined;
+    const native = await this.repository.supportsNativeWrites("memory");
+    this.assertProjectActor(projectId, actor);
+    if (!native) return this.createMemory(request, source);
+    const record = this.memoryService.prepareCreation(this.prepareMemoryRequest(request, source));
+    const status = await this.repository.writeProject({
+      kind: "createMemory", projectId, memory: memoryWriteValues(record), actorTaskId: actor?.taskId,
+    });
+    assertProjectMemoryWritten(status, projectId);
+    return this.publishProjectMemory(projectId, record.id);
+  }
+
+  async promoteEventToMemory(
+    event: ProjectEventDto,
+    request: () => ProjectMemoryCreateRequest,
+    source: ProjectMemorySource,
+    promotedBy: ProjectEventPromotedBy,
+    createdAt: number,
+  ): Promise<ProjectEventPromoteResultDto> {
+    const projectId = event.projectId;
+    const actor = source.sourceTaskId ? { taskId: source.sourceTaskId, projectId } : undefined;
+    this.requireWritableProjectSummary(projectId, actor);
+    const existing = this.repository.findProjectEventPromotion(projectId, event.id, "memory");
+    if (existing) return this.memoryPromotionResult(existing, true);
+
+    const native = await this.repository.supportsNativeWrites("memory");
+    const input = request();
+    const record = this.memoryService.prepareCreation(this.prepareMemoryRequest(input, source));
+    const draft: ProjectEventPromotionDto = {
+      id: `pepr_${randomUUID()}`, projectId, eventId: event.id, eventTitle: event.title, targetKind: "memory",
+      targetId: record.id, targetTitle: record.title, promotedBy, createdAt,
+    };
+    const status = native ? await this.repository.writeProject({
+      kind: "createMemory", projectId, memory: memoryWriteValues(record), actorTaskId: actor?.taskId,
+      promotion: { id: draft.id, eventId: event.id, promotedBy, createdAt },
+    }) : this.repository.insertPromotionOnHost(draft, () => {
+      this.memoryService.persistPreparedCreation(record);
+    }, actor?.taskId);
+    if (status !== "existingPromotion") {
+      assertProjectMemoryWritten(status, projectId, event.id);
+      this.publishProjectMemory(projectId, record.id);
+    }
+    this.assertProjectActor(projectId, actor);
+    const actual = this.repository.findProjectEventPromotion(projectId, event.id, "memory");
+    if (!actual) throw new Error("项目事件与记忆的关联已被移除");
+    return this.memoryPromotionResult(actual, status === "existingPromotion");
+  }
+
+  private memoryPromotionResult(promotion: ProjectEventPromotionDto, reused: boolean): ProjectEventPromoteResultDto {
+    const result: ProjectEventPromoteResultDto = {
+      promotion, targetKind: "memory", targetId: promotion.targetId, targetTitle: promotion.targetTitle, reused,
+    };
+    if (reused) result.targetMissing = !this.getMemory(promotion.projectId, promotion.targetId);
+    return result;
+  }
+
+  private publishProjectMemory(projectId: string, id: string): ProjectMemoryItemDto {
+    const stored = this.memoryService.get(id);
+    if (!stored?.scopes.some(scope => scope.scopeType === "project" && scope.scopeId === projectId)) {
+      throw new Error("已保存的项目记忆已被移除");
+    }
+    this.memoryService.publishCreatedMemory(stored);
+    return kernelMemoryToProject(stored, projectId);
+  }
+
+  private prepareMemoryRequest(request: ProjectMemoryCreateRequest, source?: ProjectMemorySource): MemoryCreateRequest {
+    const project = this.requireWritableProjectSummary(request.projectId);
     const kind = normalizeMemoryKind(request.kind);
     const title = normalizeMemoryTitle(request.title);
     const content = normalizeMemoryContent(request.content ?? "");
@@ -637,13 +1028,13 @@ export class ProjectService {
       refId: ev.refId,
       refTitle: ev.refTitle,
     }));
-    return kernelMemoryToProject(this.memoryService.create({
+    return {
       kind, title, content, status,
       importance: request.importance, confidence: source?.sourceType === "agent" ? 0.82 : 1,
       explicit: source?.sourceType !== "agent", sourceType: source?.sourceType === "agent" ? "agent" : "manual",
       sourceTaskId: source?.sourceTaskId, scopeType: "project", scopeId: request.projectId,
       metadata: { tags: normalizeMemoryTags(request.tags) }, evidence,
-    }), request.projectId);
+    };
   }
 
   /**
@@ -651,14 +1042,48 @@ export class ProjectService {
    * 真实变化经 Memory Kernel 落库，并同步推进 Project activity/version clock。
    */
   updateMemory(request: ProjectMemoryUpdateRequest): ProjectMemoryItemDto {
-    this.requireWritableProject(request.projectId);
+    const { update } = this.prepareProjectMemoryUpdate(request);
+    return kernelMemoryToProject(this.memoryService.update(update), request.projectId);
+  }
+
+  async updateMemoryAsync(request: ProjectMemoryUpdateRequest, actor?: ProjectWriteActor): Promise<ProjectMemoryItemDto> {
+    const { projectId, id } = request;
+    if (!await this.repository.supportsNativeWrites("memoryEdits")) {
+      this.assertProjectActor(projectId, actor);
+      return this.updateMemory(request);
+    }
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const draft = this.repository.readWriteSnapshot(() => {
+        const { current, update } = this.prepareProjectMemoryUpdate(request, actor);
+        const next = this.memoryService.prepareUpdate(current, update);
+        return next ? { edit: memoryEditValues(next, this.repository.memoryRevision(id)) } : { unchanged: current };
+      });
+      if (draft.unchanged) return kernelMemoryToProject(draft.unchanged, projectId);
+      const status = await this.repository.writeProject({ kind: "editMemory", projectId, edit: draft.edit, actorTaskId: actor?.taskId });
+      if (status === "stale") continue;
+      assertProjectMemoryWritten(status, projectId);
+      const saved = this.memoryService.get(id);
+      if (!saved?.scopes.some(scope => scope.scopeType === "project" && scope.scopeId === projectId)) {
+        throw new Error("记忆条目不存在");
+      }
+      this.memoryService.indexSavedMemory(saved);
+      return kernelMemoryToProject(saved, projectId);
+    }
+    throw new Error("项目记忆仍在更新，请刷新后重试");
+  }
+
+  private prepareProjectMemoryUpdate(request: ProjectMemoryUpdateRequest, actor?: ProjectWriteActor): {
+    current: MemoryRecordDto;
+    update: MemoryUpdateRequest;
+  } {
+    this.requireWritableProjectSummary(request.projectId, actor);
     const current = this.memoryService.get(request.id);
     const exactScope = current?.scopes.some(
       (scope) => scope.scopeType === "project" && scope.scopeId === request.projectId,
     );
     if (!current || !exactScope) throw new Error("记忆条目不存在");
     if (current.scopes.some((scope) => scope.scopeType !== "project" || scope.scopeId !== request.projectId)) {
-      throw new Error("该记忆已共享到其他作用域，不能从项目页直接修改；请在统一记忆治理中修订");
+      throw new Error(SHARED_MEMORY_EDIT_GUIDANCE);
     }
     const kind = request.kind === undefined ? undefined : normalizeMemoryKind(request.kind);
     const title = request.title === undefined ? undefined : normalizeMemoryTitle(request.title);
@@ -669,26 +1094,54 @@ export class ProjectService {
     const tags = request.tags === undefined
       ? (Array.isArray(current.metadata.tags) ? current.metadata.tags : [])
       : normalizeMemoryTags(request.tags);
-    return kernelMemoryToProject(this.memoryService.update({
+    const update: MemoryUpdateRequest = {
       id: request.id, kind, title, content,
       status, importance: request.importance, metadata: { ...current.metadata, tags },
       changedBy: "manual", changeReason: "project UI update",
-    }), request.projectId);
+    };
+    return { current, update };
   }
 
   /** 人手删除（UI/IPC）；Agent 工具不暴露 delete，过时用 superseded/resolved。缺省 id 幂等。 */
   deleteMemory(request: ProjectMemoryDeleteRequest): void {
-    this.requireWritableProject(request.projectId);
+    this.requireWritableProjectSummary(request.projectId);
     const current = this.memoryService.get(request.id);
     if (!current?.scopes.some((scope) => scope.scopeType === "project" && scope.scopeId === request.projectId)) return;
     this.memoryService.detachScope(request.id, "project", request.projectId);
   }
 
+  async deleteMemoryAsync(request: ProjectMemoryDeleteRequest): Promise<void> {
+    if (!await this.repository.supportsNativeWrites("memoryEdits")) return this.deleteMemory(request);
+    const { projectId, id } = request;
+    this.requireWritableProjectSummary(projectId);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const snapshot = await this.repository.readMemoryWithdrawal(projectId, id);
+      if (!snapshot) throw new Error("项目记忆读取失败，请重试");
+      const status = await this.repository.writeProject({
+        kind: "detachMemory", projectId, id,
+        withdrawal: { signature: snapshot.signature, cutoffAt: Date.now(), targets: memoryWithdrawalTargets(snapshot.records) },
+      });
+      if (status === "stale") continue;
+      if (status === "unchanged") return;
+      assertProjectMemoryWritten(status, projectId);
+      return;
+    }
+    throw new Error("项目记忆仍在更新，请稍后重试删除");
+  }
+
   searchMemory(projectId: string, query: string, limit = 20): ProjectMemoryItemDto[] {
-    if (!this.repository.get(projectId)) throw new Error(`项目不存在：${projectId}`);
-    return this.memoryService.search({
-      projectId, scopeTypes: ["project"], includeInherited: false, query, statuses: ["active"], limit,
-    }).map((hit) => kernelMemoryToProject(hit.memory, projectId));
+    return this.memoryService.search(this.memorySearchRequest(projectId, query, limit))
+      .map(hit => kernelMemoryToProject(hit.memory, projectId));
+  }
+
+  async searchMemoryAsync(projectId: string, query: string, limit = 20): Promise<ProjectMemoryItemDto[]> {
+    const hits = await this.memoryService.searchLexical(this.memorySearchRequest(projectId, query, limit));
+    return hits.map(hit => kernelMemoryToProject(hit.memory, projectId));
+  }
+
+  private memorySearchRequest(projectId: string, query: string, limit: number): MemorySearchRequest {
+    if (!this.repository.getSummary(projectId)) throw new Error(`项目不存在：${projectId}`);
+    return { projectId, scopeTypes: ["project"], includeInherited: false, query, statuses: ["active"], limit };
   }
 
   /** 项目任务（cadence/派生共用；status/updatedAt/archived） */
@@ -701,10 +1154,8 @@ export class ProjectService {
   /** 固定 Library 条目到项目上下文（只引用不复制）。personal 或本项目条目可 pin；跨项目拒绝。 */
   pinProjectItem(request: ProjectContextPinRequest): ProjectContextPinDto {
     const project = this.requireWritableProject(request.projectId);
-    const existingPins = this.repository.listPins(request.projectId);
-    if (existingPins.some((p) => p.itemId === request.itemId)) {
-      return existingPins.find((p) => p.itemId === request.itemId)!;
-    }
+    const existing = this.repository.listPins(request.projectId).find((p) => p.itemId === request.itemId);
+    if (existing) return existing;
     const scope = this.repository.getLibraryItemScope(request.itemId);
     if (!scope) throw new Error("资料条目不存在");
     if (scope.projectId !== null && scope.projectId !== project.id) {
@@ -725,13 +1176,45 @@ export class ProjectService {
     return this.repository.listPins(project.id).find((p) => p.itemId === request.itemId) ?? pin;
   }
 
+  async pinProjectItemAsync(request: ProjectContextPinRequest): Promise<ProjectContextPinDto> {
+    const result = await this.repository.requestProjectPins({
+      kind: "pin",
+      projectId: request.projectId,
+      itemId: request.itemId,
+      id: `ppin_${randomUUID()}`,
+      note: typeof request.note === "string" ? request.note.trim() || undefined : request.note,
+      createdAt: Date.now(),
+    });
+    if (result?.status === "pinned") return result.pin;
+    if (result?.status === "needsHost") return this.repository.commitWriteOnHost(() => this.pinProjectItem(request));
+    if (result?.status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("固定资料未确认，请刷新后重试");
+  }
+
   unpinProjectItem(request: ProjectContextUnpinRequest): void {
     this.requireWritableProject(request.projectId);
     this.repository.deletePin(request.projectId, request.itemId);
   }
 
+  async unpinProjectItemAsync(request: ProjectContextUnpinRequest): Promise<void> {
+    const result = await this.repository.requestProjectPins({ kind: "unpin", projectId: request.projectId, itemId: request.itemId });
+    if (result?.status === "removed") return;
+    if (result?.status === "needsHost") return this.repository.commitWriteOnHost(() => this.unpinProjectItem(request));
+    if (result?.status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("解除固定未确认，请刷新后重试");
+  }
+
   listProjectPins(projectId: string): ProjectContextPinDto[] {
     return this.repository.listPins(projectId);
+  }
+
+  async listProjectPinsAsync(projectId: string): Promise<ProjectContextPinDto[]> {
+    const result = await this.repository.requestProjectPins({ kind: "list", projectId });
+    if (result?.status === "listed") return result.pins;
+    if (result?.status === "rejected") throw new Error(result.message);
+    return this.listProjectPins(projectId);
   }
 
   /* ---------------- Project Shared Context：结构化读取/局部更新 ---------------- */
@@ -1016,21 +1499,44 @@ export class ProjectService {
   }
 
   /** 记录一次项目 review（审计/派生标记：只影响 lastReviewedAt，不影响派生计算） */
-  recordReview(projectId: string, note: string | undefined, createdBy: string): ProjectReviewDto {
-    this.requireWritableProject(projectId);
+  recordReview(projectId: string, note: string | undefined, createdBy: string, actor?: ProjectWriteActor): ProjectReviewDto {
+    return this.repository.commitWriteOnHost(() => {
+      this.requireWritableProjectSummary(projectId, actor);
+      const review = this.prepareReview(projectId, note, createdBy);
+      this.repository.insertReview(review);
+      return review;
+    });
+  }
+
+  async recordReviewAsync(projectId: string, note: string | undefined, createdBy: string, actor?: ProjectWriteActor): Promise<ProjectReviewDto> {
+    if (actor && actor.projectId !== projectId) throw new Error("任务的项目归属已变化，请重新读取");
+    const wireStrings = [projectId, createdBy, ...(note === undefined ? [] : [note]), ...(actor ? [actor.taskId] : [])];
+    if (wireStrings.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))
+        || (note?.trim().length ?? 0) > PROJECT_REVIEW_NOTE_MAX_CHARS
+        || !await this.repository.supportsNativeWrites("review")) {
+      return this.recordReview(projectId, note, createdBy, actor);
+    }
+    const review = this.prepareReview(projectId, note, createdBy);
+    const status = await this.repository.writeProject({ kind: "recordReview", review, actorTaskId: actor?.taskId });
+    if (status === "changed") return review;
+    if (status === "scopeChanged") throw new Error("任务的项目归属已变化，请重新读取");
+    if (status === "archived") throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    if (status === "missing") throw new Error(`项目不存在：${projectId}`);
+    throw new Error("项目评审写入失败，请重试");
+  }
+
+  private prepareReview(projectId: string, note: string | undefined, createdBy: string): ProjectReviewDto {
     const cleanNote = note?.trim();
     if (cleanNote && cleanNote.length > PROJECT_REVIEW_NOTE_MAX_CHARS) {
       throw new Error(`review 备注不能超过 ${PROJECT_REVIEW_NOTE_MAX_CHARS} 字符`);
     }
-    const review: ProjectReviewDto = {
+    return {
       id: `prev_${randomUUID()}`,
       projectId,
       reviewedAt: Date.now(),
       note: cleanNote || undefined,
       createdBy,
     };
-    this.repository.insertReview(review);
-    return review;
   }
 
   listReviews(projectId: string, limit = 5): ProjectReviewDto[] {

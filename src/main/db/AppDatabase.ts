@@ -25,7 +25,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
-import { RuntimeAuditReader } from "../platform/runtime-audit";
+import { RuntimeAuditReader, type RuntimeDueTrashedTask, type RuntimeWorkspaceLabel, type RuntimeWorkspaceQuery, type TaskArchivePurgeScope } from "../platform/runtime-audit";
+import type { TrashedTaskDto } from "../../shared/archive-deletion";
+import type { ArchiveTaskCandidate } from "../task/ArchivedContentDeletion";
+import { insertCronRun, writeCronRun, type CronRunWrite } from "./CronRunPersistence";
+import { encodeCronPlan, removeCronPlanRow, upsertCronPlanRow, writeCronPlan, type CronPlanWrite } from "./CronPlanPersistence";
 import {
   normalizeStoredAuditInstructions,
   runtimeAuditStorageBytes,
@@ -58,16 +62,19 @@ const CAD_MODELS_TABLE_SQL = `
 
 import type {
   CronJobDto,
+  CronOverviewDto,
   CronRunDto,
   GatewayListMessagesRequest,
   GatewayMessageDto,
   SoulDto,
   SpaceDto,
   TaskDto,
+  TaskSidebarEdit,
   WelcomeMode,
 } from "../../shared/agent-ipc";
 import { normalizeWelcomeMode } from "../../shared/mode-profile";
-import { advanceActivity } from "../../../shared/src/activity-time";
+import { activityTimeOrUndefined, advanceActivity } from "../../../shared/src/activity-time";
+import type { TaskContextUsageSnapshot } from "../agent/TaskContextUsageWrites";
 import type {
   ConversationBranchInfoDto,
   ConversationBranchPosition,
@@ -104,6 +111,13 @@ function isExistingDirectory(p: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeWorkspaceIcon(icon: WorkspaceIconAppearance | null): WorkspaceIconAppearance | null {
+  if (icon === null) return null;
+  if (!isWorkspaceIconAppearance(icon)) throw new Error("工作空间图标选项无效");
+  const { shape, color } = icon;
+  return shape === DEFAULT_WORKSPACE_ICON.shape && color === DEFAULT_WORKSPACE_ICON.color ? null : { shape, color };
 }
 
 /** tasks 表行（含迁移补列），供 getTask/listTasks 共用映射 */
@@ -146,7 +160,7 @@ interface BranchRow {
 }
 
 /** spaces 表行（V2 tree 列），供 listSpaces/getSpace/children/ancestors 共用映射 */
-interface SpaceRow {
+export interface SpaceRow {
   id: string;
   name: string;
   path: string | null;
@@ -154,7 +168,6 @@ interface SpaceRow {
   parent_id: string | null;
   sort_order: number;
   created_at: number;
-  updated_at: number;
   icon_shape: string | null;
   icon_color: string | null;
 }
@@ -291,6 +304,10 @@ function resetIncompatibleDatabaseFile(dbPath: string): void {
 export class AppDatabase {
   private readonly db: Database.Database;
   readonly runtimeAuditReader?: RuntimeAuditReader;
+  private taskDueDateTail: Promise<string | undefined> = Promise.resolve(undefined);
+  private taskSidebarTail: Promise<string | undefined> = Promise.resolve(undefined);
+  private taskRecordTail: Promise<string | undefined> = Promise.resolve(undefined);
+  private workspaceWriteTail: Promise<void> = Promise.resolve();
   private expertBindingReader?: (taskId: string) => import("../../shared/expert-binding").TaskExpertBindingDto | null;
   /** List projection reads every task's binding in one query instead of one per row. */
   private expertBindingBatchReader?: (taskIds: readonly string[]) => Map<string, import("../../shared/expert-binding").TaskExpertBindingDto | null>;
@@ -455,6 +472,10 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_gadgets_scope ON gadgets(scope_type, scope_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_gadgets_created_by_task ON gadgets(created_by_task_id);
       CREATE INDEX IF NOT EXISTS idx_gadgets_blueprint ON gadgets(blueprint_id);
+      CREATE TABLE IF NOT EXISTS gadget_source_commits (
+        gadget_id TEXT NOT NULL PRIMARY KEY REFERENCES gadgets(id) ON DELETE CASCADE,
+        operation_id TEXT NOT NULL
+      );
     `);
   }
 
@@ -472,6 +493,13 @@ export class AppDatabase {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_blueprints_kind_updated ON blueprints(kind, updated_at DESC);
+      CREATE TABLE IF NOT EXISTS workbench_write_receipts (
+        operation_id TEXT NOT NULL UNIQUE
+      );
+      CREATE TABLE IF NOT EXISTS blueprint_instance_receipts (
+        operation_id TEXT NOT NULL UNIQUE,
+        result_json TEXT NOT NULL CHECK (json_valid(result_json))
+      );
     `);
   }
 
@@ -1314,6 +1342,38 @@ export class AppDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_library_versions_item
         ON library_versions(item_id, version DESC);
+      CREATE TABLE IF NOT EXISTS library_text_saves (
+        item_id TEXT PRIMARY KEY REFERENCES library_items(id) ON DELETE CASCADE,
+        operation_id TEXT NOT NULL,
+        root TEXT NOT NULL,
+        path TEXT NOT NULL,
+        old_content BLOB,
+        old_hash TEXT,
+        new_hash TEXT NOT NULL,
+        committed INTEGER NOT NULL CHECK (committed IN (0,1))
+      );
+      CREATE INDEX IF NOT EXISTS idx_library_text_saves_pending
+        ON library_text_saves(root) WHERE committed=0;
+      CREATE TABLE IF NOT EXISTS library_file_cleanup (
+        root TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        filename TEXT,
+        PRIMARY KEY (root, space_id, item_id)
+      );
+      CREATE TABLE IF NOT EXISTS library_restore_files (
+        root TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        space_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        PRIMARY KEY (root, item_id)
+      );
+      CREATE TABLE IF NOT EXISTS library_restore_receipts (
+        root TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL,
+        result_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS task_library_references (
         task_id TEXT NOT NULL,
         item_id TEXT NOT NULL,
@@ -1786,6 +1846,8 @@ export class AppDatabase {
         task_id TEXT,
         FOREIGN KEY (job_id) REFERENCES cron_jobs(id)
       );
+      CREATE INDEX IF NOT EXISTS idx_cron_runs_job_order ON cron_runs(job_id, started_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_cron_runs_order ON cron_runs(started_at DESC, id DESC);
 
       CREATE TABLE IF NOT EXISTS gateway_sidebar_conversations (
         task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
@@ -1831,6 +1893,15 @@ export class AppDatabase {
         content TEXT NOT NULL,
         revision INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS project_write_receipts (
+        operation_id TEXT NOT NULL UNIQUE
+      );
+
+      CREATE TABLE IF NOT EXISTS project_delete_receipts (
+        operation_id TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL CHECK (json_valid(result_json))
       );
 
       CREATE TABLE IF NOT EXISTS project_expert_policy (
@@ -2392,7 +2463,7 @@ export class AppDatabase {
 
   listSpaces(): SpaceDto[] {
     const rows = this.db
-      .prepare(`${SELECT_SPACES} ORDER BY updated_at DESC`)
+      .prepare(`${SELECT_SPACES} ORDER BY updated_at DESC, spaces.rowid`)
       .all() as SpaceRow[];
     const effective = computeEffectiveArchived(
       rows.map((r) => ({ id: r.id, parentId: r.parent_id, archived: Boolean(r.archived) })),
@@ -2400,8 +2471,22 @@ export class AppDatabase {
     return rows.map((r) => this.mapSpaceRow(r, effective.get(r.id) ?? false));
   }
 
+  async readWorkspaceData(query: RuntimeWorkspaceQuery) {
+    if (this.db.inTransaction) return;
+    const data = await this.runtimeAuditReader?.workspaceData(query);
+    if (!data) return;
+    return {
+      ...data,
+      spaces: data.spaces.map(row => this.mapSpaceRow(row, row.effective_archived, row.path_missing)),
+    };
+  }
+
+  async readSpaces(): Promise<SpaceDto[]> {
+    return (await this.readWorkspaceData({ kind: "spaces" }))?.spaces ?? this.listSpaces();
+  }
+
   /** 空间行 → SpaceDto（统一映射；effectiveArchived 可选，仅 list 时计算） */
-  private mapSpaceRow(r: SpaceRow, effectiveArchived = false): SpaceDto {
+  private mapSpaceRow(r: SpaceRow, effectiveArchived = false, pathMissing = Boolean(r.path) && !isExistingDirectory(r.path)): SpaceDto {
     const icon = { shape: r.icon_shape, color: r.icon_color };
     return {
       id: r.id,
@@ -2413,7 +2498,7 @@ export class AppDatabase {
       sortOrder: r.sort_order,
       createdAt: r.created_at,
       effectiveArchived,
-      pathMissing: Boolean(r.path) && !isExistingDirectory(r.path),
+      pathMissing,
     };
   }
 
@@ -2440,26 +2525,46 @@ export class AppDatabase {
       if (space.path != null && space.path !== path) throw new Error("网关渠道空间必须使用其专属目录");
       space = { ...space, path };
     }
+    return this.db.transaction(() => this.upsertSpaceData(space)).immediate();
+  }
+
+  private upsertSpaceData(space: SpaceDto): SpaceDto {
     const now = Date.now();
     const prev = this.db
       .prepare("SELECT parent_id, sort_order FROM spaces WHERE id = ?")
       .get(space.id) as { parent_id: string | null; sort_order: number } | undefined;
     const parentId = space.parentId !== undefined ? (space.parentId ?? null) : (prev?.parent_id ?? null);
     const sortOrder = space.sortOrder !== undefined ? space.sortOrder : (prev?.sort_order ?? this.nextChildSortOrder(parentId));
-    if (parentId) this.assertSpaceExists(parentId);
-    this.db
+    if (parentId && space.parentId !== undefined) this.assertSpaceExists(parentId);
+    const saved = this.db
       .prepare(
         `INSERT INTO spaces (id, name, path, parent_id, sort_order, created_at, updated_at)
          VALUES (@id, @name, @path, @parentId, @sortOrder, @now, @now)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name,
            path = excluded.path,
-           parent_id = excluded.parent_id,
-           sort_order = excluded.sort_order,
-           updated_at = excluded.updated_at`,
+           parent_id = CASE WHEN @hasParent THEN excluded.parent_id ELSE spaces.parent_id END,
+           sort_order = CASE WHEN @hasSortOrder THEN excluded.sort_order ELSE spaces.sort_order END,
+           updated_at = max(spaces.updated_at, excluded.updated_at)
+         RETURNING parent_id, sort_order`,
       )
-      .run({ id: space.id, name: space.name, path: space.path ?? null, parentId, sortOrder, now });
-    return { id: space.id, name: space.name, path: space.path, parentId, sortOrder };
+      .get({ id: space.id, name: space.name, path: space.path ?? null, parentId, sortOrder, now,
+        hasParent: space.parentId !== undefined ? 1 : 0, hasSortOrder: space.sortOrder !== undefined ? 1 : 0 }) as
+        { parent_id: string | null; sort_order: number };
+    return { id: space.id, name: space.name, path: space.path, parentId: saved.parent_id, sortOrder: saved.sort_order };
+  }
+
+  writeWorkspaceUpsert(space: SpaceDto): Promise<SpaceDto> {
+    return this.writeWorkspaceChange(async () => {
+      if (!this.runtimeAuditReader || gatewayChannelForSpace(space.id) ||
+          (space.sortOrder != null && !Number.isFinite(space.sortOrder))) return this.upsertSpace(space);
+      const { id, name, path, parentId, sortOrder } = space;
+      const result = await this.runtimeAuditReader.upsertWorkspace({ id, name, path, parentId, sortOrder, at: Date.now() });
+      if (result?.status === "saved") return { id, name, path, parentId: result.parentId, sortOrder: result.sortOrder };
+      if (result?.status === "needsHost") return this.upsertSpace(space);
+      if (result?.status === "rejected") throw new Error(result.message);
+      throw new Error("未收到工作空间保存确认，请刷新后查看状态");
+    });
   }
 
   /**
@@ -2474,36 +2579,55 @@ export class AppDatabase {
     parentId?: string | null;
     sortOrder?: number;
   }): SpaceDto {
-    const id = input.id?.trim() || `sp-${randomUUID()}`;
-    const parentId = input.parentId ?? null;
-    const sortOrder = input.sortOrder ?? this.nextChildSortOrder(parentId);
-    return this.upsertSpace({
-      id,
-      name: input.name,
-      path: input.path ?? undefined,
-      parentId,
-      sortOrder,
-    });
+    return this.db.transaction(() => {
+      const id = input.id?.trim() || `sp-${randomUUID()}`;
+      const parentId = input.parentId ?? null;
+      const sortOrder = input.sortOrder ?? this.nextChildSortOrder(parentId);
+      return this.upsertSpace({ id, name: input.name, path: input.path ?? undefined, parentId, sortOrder });
+    }).immediate();
   }
 
   /** 重命名空间；新名称与**同父**其它空间撞名（NOCASE）时抛 SQLITE_CONSTRAINT。 */
   renameSpace(id: string, name: string): void {
     this.db
-      .prepare("UPDATE spaces SET name = ?, updated_at = ? WHERE id = ?")
+      .prepare("UPDATE spaces SET name = ?, updated_at = max(updated_at, ?) WHERE id = ?")
       .run(name, Date.now(), id);
   }
 
+  writeWorkspaceRename(id: string, name: string): Promise<void> {
+    return this.writeWorkspaceChange(async () => {
+      if (!await this.writeWorkspaceLabel({ kind: "rename", id, name, at: Date.now() })) this.renameSpace(id, name);
+    });
+  }
+
   setWorkspaceIcon(id: string, icon: WorkspaceIconAppearance | null): WorkspaceIconAppearance | null {
-    if (icon !== null && !isWorkspaceIconAppearance(icon)) throw new Error("工作空间图标选项无效");
+    const normalized = normalizeWorkspaceIcon(icon);
     this.assertSpaceExists(id);
-    if (icon === null || (icon.shape === DEFAULT_WORKSPACE_ICON.shape && icon.color === DEFAULT_WORKSPACE_ICON.color)) {
+    if (normalized === null) {
       this.db.prepare("DELETE FROM workspace_icons WHERE workspace_id = ?").run(id);
       return null;
     }
-    const { shape, color } = icon;
+    const { shape, color } = normalized;
     this.db.prepare(`INSERT INTO workspace_icons (workspace_id, shape, color) VALUES (?, ?, ?)
       ON CONFLICT(workspace_id) DO UPDATE SET shape = excluded.shape, color = excluded.color`).run(id, shape, color);
     return { shape, color };
+  }
+
+  writeWorkspaceIcon(id: string, icon: WorkspaceIconAppearance | null): Promise<WorkspaceIconAppearance | null> {
+    return this.writeWorkspaceChange(async () => {
+      const normalized = normalizeWorkspaceIcon(icon);
+      if (await this.writeWorkspaceLabel({ kind: "icon", id, icon: normalized })) return normalized;
+      return this.setWorkspaceIcon(id, normalized);
+    });
+  }
+
+  private async writeWorkspaceLabel(mutation: RuntimeWorkspaceLabel): Promise<boolean> {
+    if (!this.runtimeAuditReader) return false;
+    const result = await this.runtimeAuditReader.writeWorkspaceLabel(mutation);
+    if (result?.status === "saved") return true;
+    if (result?.status === "needsHost") return false;
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("未收到工作空间更新确认，请刷新后查看状态");
   }
 
   /** 按 id 取空间；不存在返回 undefined */
@@ -2585,6 +2709,44 @@ export class AppDatabase {
   private assertSpaceExists(id: string): void {
     const row = this.db.prepare("SELECT 1 FROM spaces WHERE id = ?").get(id);
     if (!row) throw new Error(`空间不存在：${id}`);
+  }
+
+  writeWorkspaceSpaceMove(input: Parameters<AppDatabase["moveSpace"]>[0]): Promise<void> {
+    const { spaceId, targetParentId, targetIndex, targetSortOrder } = input;
+    return this.writeWorkspaceMove({
+      kind: "space", id: spaceId, targetParentId, targetIndex, targetSortOrder, now: Date.now(), gateway: false,
+    }, () => this.moveSpace(input));
+  }
+
+  async writeWorkspaceTaskMove(input: Parameters<AppDatabase["moveTaskInWorkspaceTree"]>[0]): Promise<void> {
+    const { taskId, targetSpaceId, targetIndex, targetSortOrder } = input;
+    if (taskId === DOTS_TASK_ID) throw new Error("Dots 入口固定在主页");
+    return this.writeWorkspaceMove({
+      kind: "task", id: taskId, targetParentId: targetSpaceId, targetIndex, targetSortOrder, now: Date.now(),
+      gateway: isGatewayConversation(taskId), gatewayChannel: targetSpaceId ? gatewayChannelForSpace(targetSpaceId) : undefined,
+    }, () => this.moveTaskInWorkspaceTree(input));
+  }
+
+  private writeWorkspaceMove(movement: import("../platform/runtime-audit").RuntimeWorkspaceMove, writeOnHost: () => void): Promise<void> {
+    return this.writeWorkspaceChange(async () => {
+      const { targetParentId, targetIndex, targetSortOrder } = movement;
+      if (!this.runtimeAuditReader || targetParentId === "" ||
+          (targetIndex !== undefined && !Number.isSafeInteger(targetIndex)) ||
+          (targetSortOrder !== undefined && !Number.isSafeInteger(targetSortOrder))) {
+        return writeOnHost();
+      }
+      const result = await this.runtimeAuditReader.moveWorkspaceTree(movement);
+      if (result?.status === "saved") return;
+      if (result?.status === "needsHost") return writeOnHost();
+      if (result?.status === "rejected") throw new Error(result.message);
+      throw new Error("未收到移动确认，请刷新后查看位置");
+    });
+  }
+
+  private writeWorkspaceChange<T>(write: () => Promise<T>): Promise<T> {
+    const operation = this.workspaceWriteTail.then(write);
+    this.workspaceWriteTail = operation.then(() => undefined, () => undefined);
+    return operation;
   }
 
   /**
@@ -2739,7 +2901,9 @@ export class AppDatabase {
     if (targetSpaceId) this.assertSpaceExists(targetSpaceId);
     this.transaction(() => {
       // P1-2 DB 双层防御：已归档任务/目标空间不可移动，IPC 直调不可绕过 UI
-      if (this.isTaskEffectiveArchived(taskId)) throw new Error("已归档任务不能移动");
+      if (this.isTaskEffectiveArchived(taskId) || this.getTaskExecutionWorkspaceState(taskId)?.state === "trashed") {
+        throw new Error("已归档或已回收任务不能移动");
+      }
       if (targetSpaceId !== null && this.isSpaceEffectiveArchived(targetSpaceId)) throw new Error("不能移动到已归档空间");
       if (input.targetSortOrder !== undefined) {
         this.db
@@ -2936,6 +3100,21 @@ export class AppDatabase {
   }
 
   /** 按 id 查询任务；不存在返回 undefined（P0 §6：主进程权威 cwd 读回） */
+  async readArchivedTaskCandidates(taskIds: string[], spaceIds: string[]): Promise<ArchiveTaskCandidate[]> {
+    if (!taskIds.length && !spaceIds.length) return [];
+    const native = await this.runtimeAuditReader?.archivedTaskCandidates(DOTS_TASK_ID, taskIds, spaceIds);
+    if (native) return native;
+    const rows = this.db.prepare(`SELECT id,space_id,project_id,archived,cwd,session_file FROM tasks
+      WHERE id!=? AND (id IN (SELECT value FROM json_each(?)) OR space_id IN (SELECT value FROM json_each(?)))
+      ORDER BY updated_at DESC,rowid`).all(DOTS_TASK_ID, JSON.stringify(taskIds), JSON.stringify(spaceIds)) as Array<
+        Pick<TaskRow, "id" | "space_id" | "project_id" | "archived" | "cwd" | "session_file">
+      >;
+    return rows.map(row => ({
+      id: row.id, spaceId: row.space_id ?? undefined, projectId: row.project_id ?? undefined,
+      archived: Boolean(row.archived), cwd: row.cwd ?? undefined, sessionFile: row.session_file ?? undefined,
+    }));
+  }
+
   getTask(taskId: string): TaskDto | undefined {
     const row = this.db
       .prepare(
@@ -3061,33 +3240,48 @@ export class AppDatabase {
       .run({ id: taskId, title, updatedAt: Date.now(), cwd });
   }
 
-  upsertTask(task: TaskDto): void {
+  writeTaskRecord(task: TaskDto, options?: Parameters<AppDatabase["upsertTask"]>[1]): Promise<string | undefined> {
+    const operation = this.taskRecordTail.then(async () => {
+      const onHost = () => this.db.transaction(() => this.upsertTask(task, options)).immediate();
+      if (!this.runtimeAuditReader || task.id === DOTS_TASK_ID || isGatewayConversation(task.id) ||
+          [task.startAt, task.dueAt, task.spaceSortOrder, task.doneAckedAt].some(value => value != null && !Number.isFinite(value))) {
+        return onHost();
+      }
+      const { id, title, spaceId, projectId, status, updatedAt, sessionFile, cwd, welcomeMode, modelId,
+        permissionMode, expertId, modePresetId, startAt, dueAt, spaceSortOrder, isFavorited, doneAckedAt, externalAgentPin } = task;
+      const gatewayBot = isGatewayBotTaskId(id);
+      const result = await this.runtimeAuditReader.upsertTaskRecord({
+        id, title: title || "", spaceId, projectId, status, sessionFile, cwd,
+        welcomeMode: gatewayBot ? "general" : welcomeMode, modePresetId: gatewayBot ? "native" : modePresetId,
+        modelId, permissionMode, expertId, startAt, dueAt, spaceSortOrder, doneAckedAt,
+        isFavorited: isFavorited === undefined ? undefined : Boolean(isFavorited),
+        externalAgentPinJson: externalAgentPin === undefined ? undefined : externalAgentPin ? JSON.stringify(externalAgentPin) : null,
+        updatedAt: activityTimeOrUndefined(updatedAt), at: Date.now(),
+        preserveTitle: options?.preserveTitle === true, expectedTitle: options?.expectedTitle,
+        preserveWorkspace: options?.preserveWorkspace === true,
+      });
+      if (result?.status === "saved") return result.previousProjectId ?? undefined;
+      if (result?.status === "needsHost") return onHost();
+      if (result?.status === "rejected") throw new Error(result.message);
+      throw new Error("未收到任务保存确认，请刷新后查看状态");
+    });
+    this.taskRecordTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  upsertTask(task: TaskDto, options?: { preserveTitle: boolean; expectedTitle?: string; preserveWorkspace?: boolean }): string | undefined {
     if (task.id === DOTS_TASK_ID) {
       task = { ...task, title: "Dots", spaceId: null, projectId: null, welcomeMode: "general", modePresetId: "native", externalAgentPin: null, archived: false, isFavorited: false };
     }
-    if (isGatewayConversation(task.id)) {
-      if (task.projectId) throw new Error("网关对话不能绑定项目");
-      if (task.spaceId !== undefined) {
-        const channel = this.getTask(task.id)?.gatewaySidebarChannelId;
-        if (task.spaceId !== (channel ? gatewayChannelSpaceId(channel) : null)) throw new Error("网关对话不能绑定其他空间或解除渠道归属");
-      }
-    }
     if (isGatewayBotTaskId(task.id)) task = { ...task, welcomeMode: "general", modePresetId: "native" };
-    // UI 仍可能带 mock/遗留 spaceId；spaces 表无对应行时先解析占位，避免 FOREIGN KEY 失败
-    const hasSpaceId = task.spaceId !== undefined;
+    const preserveTitle = options?.preserveTitle === true && task.id !== DOTS_TASK_ID;
+    const preserveWorkspace = options?.preserveWorkspace === true && task.id !== DOTS_TASK_ID;
     const hasProjectId = task.projectId !== undefined;
-    let spaceId = task.spaceId ?? null;
-    if (spaceId) {
-      const exists = this.db.prepare("SELECT 1 FROM spaces WHERE id = ?").get(spaceId);
-      if (!exists) {
-        spaceId = this.resolveTaskSpaceId(spaceId, task.cwd);
-      }
-    }
     const prev = this.db
       .prepare(
         `SELECT title, space_id, project_id, status, updated_at, session_file, cwd, welcome_mode, model_id,
-                permission_mode, expert_id, mode_preset_id, start_at, due_at,
-                space_sort_order, is_favorited, external_agent_pin_json, done_acked_at FROM tasks WHERE id = ?`,
+                permission_mode, expert_id, mode_preset_id, start_at,
+                space_sort_order, external_agent_pin_json FROM tasks WHERE id = ?`,
       )
       .get(task.id) as
       | {
@@ -3104,14 +3298,24 @@ export class AppDatabase {
           expert_id: string | null;
           mode_preset_id: string | null;
           start_at: number | null;
-          due_at: number | null;
           space_sort_order: number;
-          is_favorited: number;
           external_agent_pin_json: string | null;
-          done_acked_at: number | null;
         }
       | undefined;
 
+    const hasSpaceId = task.spaceId !== undefined && !(prev && preserveWorkspace);
+    if (isGatewayConversation(task.id)) {
+      if (task.projectId) throw new Error("网关对话不能绑定项目");
+      if (hasSpaceId) {
+        const channel = this.getTask(task.id)?.gatewaySidebarChannelId;
+        if (task.spaceId !== (channel ? gatewayChannelSpaceId(channel) : null)) throw new Error("网关对话不能绑定其他空间或解除渠道归属");
+      }
+    }
+    // 新任务或显式绑定仍接受遗留的空间标识，并解析有效外键。
+    let spaceId = hasSpaceId ? task.spaceId ?? null : prev?.space_id ?? null;
+    if (hasSpaceId && spaceId && !this.db.prepare("SELECT 1 FROM spaces WHERE id = ?").get(spaceId)) {
+      spaceId = this.resolveTaskSpaceId(spaceId, task.cwd);
+    }
     const projectId = task.projectId ?? null;
     if (prev?.welcome_mode === "general" && task.welcomeMode && task.welcomeMode !== "general") {
       throw new Error("通用任务的 Durable 后端已固定，请创建新任务以选择其他模式");
@@ -3140,11 +3344,13 @@ export class AppDatabase {
                  @modelId, @permissionMode, @expertId, @modePresetId, @startAt, @dueAt,
                  @spaceSortOrder, @isFavorited, @externalAgentPinJson, @doneAckedAt)
          ON CONFLICT(id) DO UPDATE SET
-           title = excluded.title,
-           space_id = excluded.space_id,
+           title = CASE WHEN @preserveTitle AND (@expectedTitle IS NULL OR tasks.title <> @expectedTitle)
+                        THEN tasks.title ELSE excluded.title END,
+           space_id = CASE WHEN @hasSpaceId THEN excluded.space_id ELSE tasks.space_id END,
            project_id = excluded.project_id,
            status = excluded.status,
-           updated_at = excluded.updated_at,
+           updated_at = CASE WHEN typeof(tasks.updated_at) IN ('integer','real') AND tasks.updated_at > excluded.updated_at
+                             THEN tasks.updated_at ELSE excluded.updated_at END,
            session_file = excluded.session_file,
            cwd = excluded.cwd,
            welcome_mode = excluded.welcome_mode,
@@ -3153,17 +3359,20 @@ export class AppDatabase {
            expert_id = excluded.expert_id,
            mode_preset_id = excluded.mode_preset_id,
            start_at = excluded.start_at,
-           due_at = excluded.due_at,
-           space_sort_order = excluded.space_sort_order,
-           is_favorited = excluded.is_favorited,
+           due_at = CASE WHEN @hasDueAt THEN excluded.due_at ELSE tasks.due_at END,
+           space_sort_order = CASE WHEN @hasSpaceOrder THEN excluded.space_sort_order ELSE tasks.space_sort_order END,
+           is_favorited = CASE WHEN @hasFavorite THEN excluded.is_favorited ELSE tasks.is_favorited END,
            external_agent_pin_json = excluded.external_agent_pin_json,
-           done_acked_at = excluded.done_acked_at`,
+           done_acked_at = CASE WHEN @hasDoneAck THEN excluded.done_acked_at ELSE tasks.done_acked_at END`,
       )
       .run({
         id: task.id,
         title: task.title || prev?.title || "任务",
+        preserveTitle: preserveTitle ? 1 : 0,
+        expectedTitle: options?.expectedTitle ?? null,
         // null = 明确解绑；未提供 spaceId 字段时才保留旧绑定。
-        spaceId: hasSpaceId ? spaceId : (prev?.space_id ?? null),
+        spaceId,
+        hasSpaceId: hasSpaceId ? 1 : 0,
         // null = 明确解绑；undefined = 保留旧 Project 绑定。
         projectId: hasProjectId ? projectId : (prev?.project_id ?? null),
         status: task.status ?? prev?.status ?? null,
@@ -3180,20 +3389,27 @@ export class AppDatabase {
         // null = 明确清除（如非当前场景任务）；未提供字段时保留旧值
         modePresetId: task.modePresetId !== undefined ? task.modePresetId : (prev?.mode_preset_id ?? null),
         startAt: task.startAt !== undefined ? task.startAt : (prev?.start_at ?? null),
-        dueAt: task.dueAt !== undefined ? task.dueAt : (prev?.due_at ?? null),
+        // Keep the current stored values when omitted, including writes by the Rust process
+        // that committed after the earlier metadata read.
+        dueAt: task.dueAt ?? null,
+        hasDueAt: task.dueAt !== undefined ? 1 : 0,
         // V2：显式排序字段，未提供保留旧值（0 = 未显式排序，不参与 updatedAt 重排）。
         spaceSortOrder: task.spaceSortOrder !== undefined ? task.spaceSortOrder : (prev?.space_sort_order ?? 0),
+        hasSpaceOrder: task.spaceSortOrder !== undefined && !preserveWorkspace ? 1 : 0,
         // 固定/收藏持久化（修复：is_favorited 列早已存在但 upsertTask 从未写入）。
         // 未提供保留旧值；不参与 Workspace Tree 权威排序。
-        isFavorited: task.isFavorited !== undefined ? (task.isFavorited ? 1 : 0) : (prev?.is_favorited ?? 0),
+        isFavorited: task.isFavorited ? 1 : 0,
+        hasFavorite: task.isFavorited !== undefined ? 1 : 0,
         // null = 明确解除固定；未提供字段时保留旧值（发消息/重命名不丢 pin）
         externalAgentPinJson: task.externalAgentPin !== undefined
           ? (task.externalAgentPin ? JSON.stringify(task.externalAgentPin) : null)
           : (prev?.external_agent_pin_json ?? null),
         // 绿点确认水位：null = 明确重置为未确认；未提供字段时保留旧值
         // （普通 upsert 不得把已确认状态退回未确认，否则重启/发消息会让绿点复活）。
-        doneAckedAt: task.doneAckedAt !== undefined ? task.doneAckedAt : (prev?.done_acked_at ?? null),
+        doneAckedAt: task.doneAckedAt ?? null,
+        hasDoneAck: task.doneAckedAt !== undefined ? 1 : 0,
       });
+    return prev?.project_id ?? undefined;
   }
 
   deleteTask(id: string): void {
@@ -3423,7 +3639,7 @@ export class AppDatabase {
   archiveTask(id: string, archived: boolean): void {
     if (id === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
     this.db
-      .prepare("UPDATE tasks SET archived = ?, updated_at = ? WHERE id = ?")
+      .prepare("UPDATE tasks SET archived = ?, updated_at = max(updated_at, ?) WHERE id = ?")
       .run(archived ? 1 : 0, Date.now(), id);
   }
 
@@ -3432,16 +3648,73 @@ export class AppDatabase {
    * 只写 done_acked_at，**不触碰 updated_at**（读事件不是任务活动，不得让侧栏顺序/时间戳抖动）。
    * ackedAt 由渲染层给出（同一 now，便于乐观更新与持久化同戳）；缺省取当前时间。
    */
-  ackTaskDone(id: string, ackedAt?: number): void {
-    this.db
-      .prepare("UPDATE tasks SET done_acked_at = ? WHERE id = ?")
-      .run(ackedAt ?? Date.now(), id);
+  ackTaskDone(id: string, ackedAt?: number): boolean {
+    const result = this.db
+      .prepare("UPDATE tasks SET done_acked_at = max(coalesce(done_acked_at, @at), @at) WHERE id = @id")
+      .run({ id, at: ackedAt ?? Date.now() });
+    return result.changes !== 0;
   }
 
-  setTaskDueDate(id: string, dueAt: number | null): string | undefined {
+  async writeTaskDoneAck(id: string, ackedAt?: number): Promise<boolean> {
+    const at = ackedAt ?? Date.now();
+    const native = Number.isSafeInteger(at) ? await this.runtimeAuditReader?.acknowledgeTaskDone(id, at) : undefined;
+    return native ?? this.ackTaskDone(id, at);
+  }
+
+  async writeTaskSidebar(edit: TaskSidebarEdit, draftCwd?: () => string | undefined): Promise<string | undefined> {
+    if (edit.id === DOTS_TASK_ID) return;
+    const next = edit.kind === "rename" ? { ...edit, updatedAt: advanceActivity(undefined, edit.updatedAt) } : edit;
+    const operation = this.taskSidebarTail.then(async () => {
+      const native = next.kind === "favorite" || Number.isSafeInteger(next.updatedAt)
+        ? await this.runtimeAuditReader?.editTaskSidebar(next) : undefined;
+      if (native?.status === "saved") return native.projectId ?? undefined;
+      if (native?.status === "unavailable") throw new Error("任务已进入回收站");
+      return this.writeTaskSidebarOnHost(next, draftCwd);
+    });
+    this.taskSidebarTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private writeTaskSidebarOnHost(edit: TaskSidebarEdit, draftCwd?: () => string | undefined): string | undefined {
+    return this.db.transaction(() => {
+      const task = this.db.prepare(`SELECT title, updated_at, project_id,
+        EXISTS(SELECT 1 FROM task_execution_workspace_state w WHERE w.task_id=tasks.id AND w.state='trashed') AS trashed
+        FROM tasks WHERE id=?`).get(edit.id) as
+        { title: string; updated_at: number; project_id: string | null; trashed: number } | undefined;
+      if (!task) {
+        this.upsertTask({ ...edit, cwd: draftCwd?.() });
+        return;
+      }
+      if (task.trashed) throw new Error("任务已进入回收站");
+      if (edit.kind === "rename") {
+        this.db.prepare("UPDATE tasks SET title=?, updated_at=? WHERE id=?")
+          .run(edit.title || task.title, advanceActivity(task.updated_at, edit.updatedAt), edit.id);
+      } else {
+        this.db.prepare("UPDATE tasks SET is_favorited=? WHERE id=?").run(edit.isFavorited ? 1 : 0, edit.id);
+      }
+      return task.project_id ?? undefined;
+    }).immediate();
+  }
+
+  async writeTaskDueDate(id: string, dueAt: number | null): Promise<string | undefined> {
     if (dueAt !== null && (!Number.isSafeInteger(dueAt) || !Number.isFinite(new Date(dueAt).getTime()))) {
       throw new Error("截止日期无效");
     }
+    // The first instant of the following local day also works across DST boundaries.
+    const nextLocalDay = dueAt === null ? null : new Date(dueAt).setHours(24, 0, 0, 0);
+    const operation = this.taskDueDateTail.then(async () => {
+      const native = nextLocalDay === null || Number.isFinite(nextLocalDay)
+        ? await this.runtimeAuditReader?.setTaskDueDate(id, dueAt, nextLocalDay) : undefined;
+      if (native?.status === "saved") return native.projectId ?? undefined;
+      if (native?.status === "unavailable") throw new Error("任务已归档或不存在");
+      if (native?.status === "beforeStart") throw new Error("截止日期不能早于计划开始日期");
+      return this.setTaskDueDateOnHost(id, dueAt);
+    });
+    this.taskDueDateTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private setTaskDueDateOnHost(id: string, dueAt: number | null): string | undefined {
     return this.db.transaction(() => {
       const task = this.getTask(id);
       if (!task || this.isTaskEffectiveArchived(id) || this.getTaskExecutionWorkspaceState(id)?.state === "trashed") {
@@ -3452,7 +3725,7 @@ export class AppDatabase {
       }
       this.db.prepare("UPDATE tasks SET due_at = ? WHERE id = ?").run(dueAt, id);
       return task.projectId ?? undefined;
-    })();
+    }).immediate();
   }
 
   // ---------- P1.5 task_execution_workspace_state ----------
@@ -3468,25 +3741,69 @@ export class AppDatabase {
     return row ? mapTaskExecutionWorkspaceStateRow(row) : undefined;
   }
 
-  listTaskExecutionWorkspaceStates(filter?: { state?: TaskExecutionWorkspaceLifecycleState }): TaskExecutionWorkspaceStateRow[] {
-    if (filter?.state) {
-      const rows = this.db
-        .prepare(
-          `SELECT task_id, directory_name, state, created_at, updated_at,
-                  trashed_at, purge_after, trash_path
-           FROM task_execution_workspace_state WHERE state = ? ORDER BY updated_at DESC`,
-        )
-        .all(filter.state) as TaskExecutionWorkspaceStateSqlRow[];
-      return rows.map(mapTaskExecutionWorkspaceStateRow);
+  listTrashedTaskRows(): Array<Omit<TrashedTaskDto, "directoryMissing"> & { trashPath?: string }> {
+    const rows = this.db.prepare(`SELECT t.id,t.title,t.space_id,t.project_id,w.trashed_at,w.purge_after,w.trash_path
+      FROM task_execution_workspace_state w JOIN tasks t ON t.id=w.task_id
+      WHERE w.state='trashed'
+      ORDER BY coalesce(w.trashed_at,0) DESC,w.updated_at DESC,w.rowid`).all() as Array<
+        Pick<TaskRow, "id" | "title" | "space_id" | "project_id"> &
+        Pick<TaskExecutionWorkspaceStateSqlRow, "trashed_at" | "purge_after" | "trash_path">
+      >;
+    return rows.map(row => ({
+      id: row.id, title: row.title, spaceId: row.space_id ?? undefined, projectId: row.project_id ?? undefined,
+      trashedAt: row.trashed_at ?? undefined, purgeAfter: row.purge_after ?? undefined, trashPath: row.trash_path ?? undefined,
+    }));
+  }
+
+  async readDueTrashedTasks(now: number): Promise<RuntimeDueTrashedTask[]> {
+    return (await this.runtimeAuditReader?.dueTrashedTasks(now)) ?? this.db.prepare(`
+      SELECT w.task_id AS taskId,t.project_id AS projectId FROM task_execution_workspace_state w
+      LEFT JOIN tasks t ON t.id=w.task_id WHERE w.state='trashed' AND w.purge_after<=?
+      ORDER BY w.updated_at DESC,w.rowid`).all(now) as RuntimeDueTrashedTask[];
+  }
+
+  async writeTrashRetention(retentionMs: number): Promise<number> {
+    if (this.runtimeAuditReader) {
+      const result = await this.runtimeAuditReader.alignTrashRetention(retentionMs);
+      if (result?.status === "saved") return result.changed;
+      if (result?.status === "rejected") throw new Error(result.message);
+      if (result?.status !== "needsHost") throw new Error("未收到回收站保留期更新确认");
     }
-    const rows = this.db
-      .prepare(
-        `SELECT task_id, directory_name, state, created_at, updated_at,
-                trashed_at, purge_after, trash_path
-         FROM task_execution_workspace_state ORDER BY updated_at DESC`,
-      )
-      .all() as TaskExecutionWorkspaceStateSqlRow[];
-    return rows.map(mapTaskExecutionWorkspaceStateRow);
+    return this.db.prepare(`UPDATE task_execution_workspace_state
+      SET purge_after=coalesce(trashed_at,updated_at)+@retentionMs
+      WHERE state='trashed'
+      AND coalesce(trashed_at,updated_at) BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308
+      AND (purge_after IS NULL OR purge_after>coalesce(trashed_at,updated_at)+@retentionMs)`)
+      .run({ retentionMs }).changes;
+  }
+
+  async purgeTrashedTask(
+    state: TaskExecutionWorkspaceStateRow,
+    options?: { archiveScope?: TaskArchivePurgeScope; assertAllowed?: () => void },
+  ): Promise<void> {
+    const { taskId, updatedAt, trashedAt, trashPath } = state;
+    if (this.runtimeAuditReader && (!options?.assertAllowed || options.archiveScope)) {
+      options?.assertAllowed?.();
+      const result = await this.runtimeAuditReader.purgeTrashedTask({
+        taskId, updatedAt, trashedAt, trashPath, archiveScope: options?.archiveScope,
+      });
+      if (result?.status === "saved") return;
+      if (result?.status === "rejected") throw new Error(result.message);
+      if (!result) {
+        if (!this.getTask(taskId) && !this.getTaskExecutionWorkspaceState(taskId)) return;
+        throw new Error("未收到永久删除确认，请刷新后查看回收站");
+      }
+    }
+    this.db.transaction(() => {
+      options?.assertAllowed?.();
+      const current = this.getTaskExecutionWorkspaceState(taskId);
+      if (current?.state !== "trashed" || current.updatedAt !== updatedAt ||
+          current.trashedAt !== trashedAt || current.trashPath !== trashPath) {
+        throw new Error(`purge 中止：回收站条目已变化：${taskId}`);
+      }
+      this.deleteTask(taskId);
+      this.deleteTaskExecutionWorkspaceState(taskId);
+    }).immediate();
   }
 
   /**
@@ -3540,6 +3857,25 @@ export class AppDatabase {
         "UPDATE tasks SET context_used_tokens = ?, context_window_tokens = ?, context_cache_hit_rate = ? WHERE id = ?",
       )
       .run(usedTokens ?? null, contextWindow, cacheHitRate, taskId);
+  }
+
+  async writeTaskContextUsageBatch(snapshots: readonly TaskContextUsageSnapshot[]): Promise<void> {
+    if (!snapshots.length) return;
+    const nativeCompatible = snapshots.every(({ usedTokens, contextWindow, cacheHitRate }) =>
+      Number.isFinite(contextWindow) && (usedTokens == null || Number.isFinite(usedTokens)) &&
+      (cacheHitRate == null || Number.isFinite(cacheHitRate)));
+    const result = nativeCompatible ? await this.runtimeAuditReader?.writeTaskContextUsageBatch(snapshots) : undefined;
+    if (result?.status === "saved") return;
+    if (result?.status === "rejected") throw new Error(result.message);
+    this.db.transaction(() => {
+      for (const { taskId, usedTokens, contextWindow, cacheHitRate } of snapshots) {
+        this.setTaskContextUsage(taskId, usedTokens, contextWindow, cacheHitRate);
+      }
+    }).immediate();
+  }
+
+  async flushPersistenceWrites(): Promise<void> {
+    await Promise.all([this.taskRecordTail, this.workspaceWriteTail]);
   }
 
   /** 读取任务上下文用量快照；从未运行过或任务不存在返回 null */
@@ -3615,8 +3951,19 @@ export class AppDatabase {
    */
   archiveSpace(id: string, archived: boolean): void {
     this.db
-      .prepare("UPDATE spaces SET archived = ?, updated_at = ? WHERE id = ?")
+      .prepare("UPDATE spaces SET archived = ?, updated_at = max(updated_at, ?) WHERE id = ?")
       .run(archived ? 1 : 0, Date.now(), id);
+  }
+
+  writeSpaceArchive(id: string, archived: boolean): Promise<void> {
+    return this.writeWorkspaceChange(async () => {
+      if (!this.runtimeAuditReader) return this.archiveSpace(id, archived);
+      const result = await this.runtimeAuditReader.setSidebarArchive({ kind: "space", id, archived, at: Date.now() });
+      if (result?.status === "saved") return;
+      if (result?.status === "needsHost") return this.archiveSpace(id, archived);
+      if (result?.status === "rejected") throw new Error(result.message);
+      throw new Error("未收到归档确认，请刷新后查看状态");
+    });
   }
 
   /** V2 archive：explicitArchived = space.archived（读取别名，语义单一来源）。 */
@@ -3643,6 +3990,19 @@ export class AppDatabase {
       )
       .get(id);
     return Boolean(hasChildren || hasTasks || this.hasWorkspaceOwnedMaterials(id));
+  }
+
+  hasTasksInSpace(id: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE space_id=? AND id!=? LIMIT 1").get(id, DOTS_TASK_ID));
+  }
+
+  isInArchivedWorkspaceSelection(id: string | null | undefined, roots: ReadonlySet<string>): boolean {
+    const visited = new Set<string>();
+    for (let current = id; current && !visited.has(current); current = this.getSpace(current)?.parentId) {
+      visited.add(current);
+      if (roots.has(current) && this.isSpaceEffectiveArchived(current)) return true;
+    }
+    return false;
   }
 
   hasWorkspaceOwnedMaterials(workspaceId: string): boolean {
@@ -3677,19 +4037,20 @@ export class AppDatabase {
    * 有直接子空间或非 trashed 直接任务 → 抛错（禁止隐式 cascade）；仅剩 trashed 任务时先解绑后删除。
    * 显式整树删除请用 deleteSpaceTree（危险操作，绝不暴露给普通 Sidebar）。
    */
-  deleteSpace(id: string, opts?: { allowNonEmpty?: boolean }): void {
+  deleteSpace(id: string, opts?: { allowNonEmpty?: boolean; archiveRoots?: ReadonlySet<string> }): void {
     if (opts?.allowNonEmpty) {
       console.warn("[AppDatabase] deleteSpace({allowNonEmpty:true}) 已废弃，请使用 deleteSpaceTree");
       return this.deleteSpaceTree(id);
     }
-    if (this.hasSpaceDeleteBlockers(id)) {
-      const space = this.db.prepare("SELECT name FROM spaces WHERE id = ?").get(id) as { name: string } | undefined;
-      throw new Error(
-        `空间「${space?.name ?? id}」尚有子空间、任务或自有资料，拒绝删除（请先迁移或清空资料）`,
-      );
-    }
-    this.transaction(() => {
-      this.assertWorkspaceOwnedLibrariesEmpty([id]);
+    this.db.transaction(() => {
+      if (opts?.archiveRoots) {
+        if (!this.isInArchivedWorkspaceSelection(id, opts.archiveRoots)) throw new Error("空间已恢复或移动，已停止彻底删除");
+        if (this.hasTasksInSpace(id)) throw new Error("空间仍有未删除的任务、子空间或自有资料，请处理失败项后重试");
+      }
+      if (this.hasSpaceDeleteBlockers(id)) {
+        const space = this.db.prepare("SELECT name FROM spaces WHERE id = ?").get(id) as { name: string } | undefined;
+        throw new Error(`空间「${space?.name ?? id}」尚有子空间、任务或自有资料，拒绝删除（请先迁移或清空资料）`);
+      }
       // deleteTask 是 30 天安全回收：task 行仍保留且原 space_id 也保留。
       // 若空间只剩这些 trashed 行，删除空间前先解绑，否则 FK 会拒绝 DELETE spaces。
       // 后续若从回收区恢复，该任务应成为独立任务，因为原空间已经不存在。
@@ -3702,6 +4063,20 @@ export class AppDatabase {
       this.deleteWorkspaceLibraryLinks(id);
       this.deleteEmptyWorkspaceOwnedLibraries(id);
       this.db.prepare("DELETE FROM spaces WHERE id = ?").run(id);
+    }).immediate();
+  }
+
+  writeWorkspaceDelete(id: string, archiveRoots?: ReadonlySet<string>): Promise<void> {
+    return this.writeWorkspaceChange(async () => {
+      if (!this.runtimeAuditReader) return this.deleteSpace(id, { archiveRoots });
+      const result = await this.runtimeAuditReader.deleteWorkspace({
+        id, archiveRoots: archiveRoots ? [...archiveRoots] : undefined, dotsTaskId: DOTS_TASK_ID,
+      });
+      if (result?.status === "saved") return;
+      if (result?.status === "needsHost") return this.deleteSpace(id, { archiveRoots });
+      if (result?.status === "rejected") throw new Error(result.message);
+      if (!this.getSpace(id)) return;
+      throw new Error("未收到工作空间删除确认，请刷新后查看状态");
     });
   }
 
@@ -3796,65 +4171,18 @@ export class AppDatabase {
     return rows?.map(row => this.rowToCronJob(row)) ?? this.listCronJobs();
   }
 
+  async readCronOverview(limit: number): Promise<CronOverviewDto> {
+    type Row = Record<string, unknown>;
+    const rows = await this.runtimeAuditReader?.cronData<{ jobs: Row[]; runs: Row[] }>({ kind: "overview", limit });
+    if (!rows) return this.db.transaction(() => ({ jobs: this.listCronJobs(), runs: this.listCronRuns(limit) }))();
+    return {
+      jobs: rows.jobs.map(row => this.rowToCronJob(row)),
+      runs: rows.runs.map(row => this.rowToCronRun(row)),
+    };
+  }
+
   upsertCronJob(job: CronJobDto): void {
-    const executionJson = JSON.stringify({
-      reminder: job.reminder,
-      sourceTaskId: job.sourceTaskId,
-      target: job.target,
-      maxRuns: job.maxRuns,
-      restartPolicy: job.restartPolicy,
-      missedRuns: job.missedRuns,
-      cancelledAt: job.cancelledAt,
-    });
-    this.db
-      .prepare(
-        `INSERT INTO cron_jobs (
-           id, name, prompt, schedule_type, schedule_expr, timezone,
-           space_id, cwd, enabled, created_at, updated_at, last_run_at,
-           permission_mode, welcome_mode, model_id, expert_id, skill_ids_json, connector_ids_json,
-           effective_from, effective_to, project_id, execution_json
-         ) VALUES (
-           @id, @name, @prompt, @scheduleType, @scheduleExpr, @timezone,
-           @spaceId, @cwd, @enabled, @createdAt, @updatedAt, @lastRunAt,
-           @permissionMode, @welcomeMode, @modelId, @expertId, @skillIdsJson, @connectorIdsJson,
-           @effectiveFrom, @effectiveTo, @projectId, @executionJson
-         )
-         ON CONFLICT(id) DO UPDATE SET
-           name=excluded.name, prompt=excluded.prompt,
-           schedule_type=excluded.schedule_type, schedule_expr=excluded.schedule_expr,
-           timezone=excluded.timezone, space_id=excluded.space_id, cwd=excluded.cwd,
-           enabled=excluded.enabled, updated_at=excluded.updated_at, last_run_at=excluded.last_run_at,
-           permission_mode=excluded.permission_mode, welcome_mode=excluded.welcome_mode,
-           model_id=excluded.model_id,
-           expert_id=excluded.expert_id, skill_ids_json=excluded.skill_ids_json,
-           connector_ids_json=excluded.connector_ids_json,
-           effective_from=excluded.effective_from, effective_to=excluded.effective_to,
-           project_id=excluded.project_id, execution_json=excluded.execution_json`,
-      )
-      .run({
-        id: job.id,
-        name: job.name,
-        prompt: job.prompt,
-        scheduleType: job.scheduleType,
-        scheduleExpr: job.scheduleExpr,
-        timezone: job.timezone,
-        spaceId: job.spaceId ?? null,
-        cwd: job.cwd ?? null,
-        enabled: job.enabled ? 1 : 0,
-        createdAt: job.createdAt,
-        updatedAt: job.updatedAt,
-        lastRunAt: job.lastRunAt ?? null,
-        permissionMode: job.permissionMode ?? null,
-        welcomeMode: job.welcomeMode ?? null,
-        modelId: job.modelId ?? null,
-        expertId: job.expertId ?? null,
-        skillIdsJson: JSON.stringify(job.skillIds ?? []),
-        connectorIdsJson: JSON.stringify(job.connectorIds ?? []),
-        effectiveFrom: job.effectiveFrom ?? null,
-        effectiveTo: job.effectiveTo ?? null,
-        projectId: job.projectId ?? null,
-        executionJson,
-      });
+    upsertCronPlanRow(this.db, encodeCronPlan(job));
   }
 
   setCronEnabled(id: string, enabled: boolean): void {
@@ -3864,48 +4192,49 @@ export class AppDatabase {
   }
 
   removeCronJob(id: string): void {
-    this.db.prepare(`DELETE FROM cron_runs WHERE job_id = ?`).run(id);
-    this.db.prepare(`DELETE FROM cron_jobs WHERE id = ?`).run(id);
+    this.db.transaction(() => removeCronPlanRow(this.db, id)).immediate();
+  }
+
+  writeCronPlan(mutation: CronPlanWrite): boolean | Promise<boolean> {
+    const writeOnHost = () => this.db.open && writeCronPlan(this.db, mutation);
+    if (!this.runtimeAuditReader || this.db.inTransaction) return writeOnHost();
+    return this.runtimeAuditReader.writeCronPlan(mutation).then(applied => applied ?? writeOnHost());
   }
 
   getCronJob(id: string): CronJobDto | undefined {
-    const row = this.db.prepare(`
+    const row = this.getCronJobRow(id);
+    return row ? this.rowToCronJob(row) : undefined;
+  }
+
+  getCronJobForExecution(id: string): { job: CronJobDto; expectedJob: Record<string, unknown> } | undefined {
+    const row = this.getCronJobRow(id);
+    if (!row) return undefined;
+    const { run_count: _count, ...expectedJob } = row;
+    return { job: this.rowToCronJob(row), expectedJob };
+  }
+
+  private getCronJobRow(id: string): Record<string, unknown> | undefined {
+    return this.db.prepare(`
       SELECT c.*,
              (SELECT COUNT(id) FROM cron_runs WHERE job_id = c.id AND CASE WHEN json_extract(c.execution_json, '$.reminder.kind') = 'bot-reminder' THEN status = 'success' ELSE status != 'skipped' END) AS run_count
       FROM cron_jobs c
       WHERE c.id = ?
     `).get(id) as Record<string, unknown> | undefined;
-    return row ? this.rowToCronJob(row) : undefined;
   }
 
   insertCronRun(run: CronRunDto): void {
-    this.db
-      .prepare(
-        `INSERT INTO cron_runs (id, job_id, started_at, finished_at, status, error, task_id)
-         VALUES (@id, @jobId, @startedAt, @finishedAt, @status, @error, @taskId)`,
-      )
-      .run({
-        id: run.id,
-        jobId: run.jobId,
-        startedAt: run.startedAt,
-        finishedAt: run.finishedAt ?? null,
-        status: run.status,
-        error: run.error ?? null,
-        taskId: run.taskId ?? null,
-      });
+    insertCronRun(this.db, run);
   }
 
-  finishCronRun(
-    id: string,
-    status: "success" | "error" | "skipped",
-    error?: string,
-    taskId?: string,
-  ): void {
-    this.db
-      .prepare(
-        `UPDATE cron_runs SET finished_at = ?, status = ?, error = ?, task_id = COALESCE(?, task_id) WHERE id = ?`,
-      )
-      .run(Date.now(), status, error ?? null, taskId ?? null, id);
+  writeCronRun(mutation: CronRunWrite): boolean | Promise<boolean> {
+    const writeOnHost = () => this.db.open && writeCronRun(this.db, mutation, task => this.upsertTask(task));
+    const reader = this.runtimeAuditReader;
+    if (!reader) return writeOnHost();
+    // Older rows can refer to a placeholder space. The host's existing task
+    // insert resolves that binding inside the same transaction as the run.
+    const spaceId = mutation.kind === "start" ? mutation.newTask?.spaceId : undefined;
+    if (spaceId && !this.db.prepare("SELECT 1 FROM spaces WHERE id = ?").get(spaceId)) return writeOnHost();
+    return reader.writeCronRun(mutation).then(result => result ?? writeOnHost());
   }
 
   recoverCronRuns(): void {
@@ -3972,14 +4301,6 @@ export class AppDatabase {
     };
   }
 
-  touchCronLastRun(jobId: string): void {
-    this.db.prepare(`UPDATE cron_jobs SET last_run_at = ?, updated_at = ? WHERE id = ?`).run(
-      Date.now(),
-      Date.now(),
-      jobId,
-    );
-  }
-
   /** Called only from the validated Gateway admission path, not general task write IPC. */
   bindGatewayConversationSpace(taskId: string, channelId: string): void {
     if (!isGatewayConversation(taskId) || !isGatewaySidebarChannelId(channelId)) throw new Error("网关对话渠道身份无效");
@@ -4029,6 +4350,16 @@ export class AppDatabase {
          )`,
       )
       .run();
+  }
+
+  async readGatewayMessages(opts: GatewayListMessagesRequest): Promise<GatewayMessageDto[]> {
+    const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+    const rows = !this.db.inTransaction && Number.isInteger(limit) &&
+      (opts.channelId === undefined || typeof opts.channelId === "string") &&
+      (opts.chatId === undefined || typeof opts.chatId === "string")
+      ? await this.runtimeAuditReader?.readGatewayMessages({ channelId: opts.channelId, chatId: opts.chatId, limit })
+      : undefined;
+    return rows ?? this.listGatewayMessages(opts);
   }
 
   listGatewayMessages(opts: GatewayListMessagesRequest): GatewayMessageDto[] {

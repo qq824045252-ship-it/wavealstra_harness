@@ -1,27 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { WorkspaceNotesService } from "../src/main/workspace/WorkspaceNotesService";
 import { WORKSPACE_NOTE_MAX_CHARS } from "../src/shared/workspace-notes";
 import { appendWorkspaceNotes } from "../src/main/capabilities/subagent/context";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+
+void (async () => {
 
 const root = mkdtempSync(join(tmpdir(), "workspace-notes-"));
-let db = new AppDatabase(join(root, "app.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+let db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 try {
   db.createSpace({ id: "parent", name: "Parent" });
   db.createSpace({ id: "child", name: "Child", parentId: "parent" });
   db.createSpace({ id: "sibling", name: "Sibling", parentId: "parent" });
   db.upsertTask({ id: "task", title: "Task", spaceId: "child", updatedAt: 1 });
   let notes = new WorkspaceNotesService(db);
-  assert.equal(notes.read("child").revision, 0);
-  notes.save({ workspaceId: "parent", content: "# Parent\n- [ ] checklist", expectedRevision: 0 });
-  const saved = notes.save({ workspaceId: "child", content: "# Child\n**manual context**", expectedRevision: 0 });
-  notes.save({ workspaceId: "sibling", content: "sibling-private", expectedRevision: 0 });
-  assert.throws(() => notes.save({ workspaceId: "child", content: "stale", expectedRevision: 0 }), /其他窗口/);
-  assert.throws(() => notes.save({ workspaceId: "child", content: "x".repeat(WORKSPACE_NOTE_MAX_CHARS + 1), expectedRevision: saved.revision }), /最多/);
-  assert.throws(() => notes.read("missing"), /不存在/);
+  assert.equal((await notes.read("child")).revision, 0);
+  await notes.save({ workspaceId: "parent", content: "# Parent\n- [ ] checklist", expectedRevision: 0 });
+  const saved = await notes.save({ workspaceId: "child", content: "# Child\n**manual context**", expectedRevision: 0 });
+  await notes.save({ workspaceId: "sibling", content: "sibling-private", expectedRevision: 0 });
+  await assert.rejects(notes.save({ workspaceId: "child", content: "stale", expectedRevision: 0 }), /其他窗口/);
+  await assert.rejects(notes.save({ workspaceId: "child", content: "x".repeat(WORKSPACE_NOTE_MAX_CHARS + 1), expectedRevision: saved.revision }), /最多/);
+  await assert.rejects(notes.read("missing"), /不存在/);
   assert.deepEqual(notes.sources("task").map(s => s.id), ["workspace-note:child", "workspace-note:parent"]);
   assert.equal(notes.sources("unknown").length, 0);
   const prompt = appendWorkspaceNotes("Do task", notes.forSubagent("task"));
@@ -29,24 +35,32 @@ try {
   assert(prompt.includes("manual context") && prompt.includes("checklist"));
   assert(!prompt.includes("sibling-private"));
   const evidence = notes.sources("task")[0];
-  notes.save({ workspaceId: "child", content: "", expectedRevision: saved.revision });
+  await notes.save({ workspaceId: "child", content: "", expectedRevision: saved.revision });
   assert.throws(() => evidence.validate(), /已清空/);
   assert(!notes.forSubagent("task").includes("manual context"), "resumed delegation gets fresh notes");
-  notes.save({ workspaceId: "child", content: "中".repeat(WORKSPACE_NOTE_MAX_CHARS), expectedRevision: saved.revision + 1 });
+  await notes.save({ workspaceId: "child", content: "中".repeat(WORKSPACE_NOTE_MAX_CHARS), expectedRevision: saved.revision + 1 });
   assert(Buffer.byteLength(notes.forSubagent("task"), "utf8") <= 12_000);
   assert(notes.forSubagent("task").includes("截断"));
   db.connection.prepare("UPDATE spaces SET archived=1 WHERE id='parent'").run();
   assert.equal(notes.sources("task").length, 0, "archived ancestor excludes descendants");
-  assert.throws(() => notes.save({ workspaceId: "child", content: "no", expectedRevision: saved.revision + 2 }), /归档/);
+  await assert.rejects(notes.save({ workspaceId: "child", content: "no", expectedRevision: saved.revision + 2 }), /归档/);
   db.connection.prepare("UPDATE spaces SET archived=0 WHERE id='parent'").run();
+  const concurrent = await Promise.allSettled([
+    notes.save({ workspaceId: "child", content: "甲😀", expectedRevision: saved.revision + 2 }),
+    notes.save({ workspaceId: "child", content: "乙😀", expectedRevision: saved.revision + 2 }),
+  ]);
+  assert.equal(concurrent.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal((await notes.read("child")).revision, saved.revision + 3);
+  await db.runtimeAuditReader?.close();
   db.close();
-  db = new AppDatabase(join(root, "app.db"));
+  db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
   notes = new WorkspaceNotesService(db);
   assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
-  assert.equal(notes.read("parent").content, "# Parent\n- [ ] checklist", "persists after reopen without schema discard");
+  assert.equal((await notes.read("parent")).content, "# Parent\n- [ ] checklist", "persists after reopen without schema discard");
   db.deleteSpace("sibling");
   assert.equal(db.connection.prepare("SELECT 1 FROM workspace_notes WHERE workspace_id='sibling'").get(), undefined);
   db.upsertTask({ id: "task", title: "Task", spaceId: "parent", updatedAt: 2 });
   assert.deepEqual(notes.sources("task").map(s => s.id), ["workspace-note:parent"], "rebind does not retain old space");
   console.log("PASS workspace notes: persistence, conflict, isolation, inheritance, archive, deletion, subagent freshness and budget");
-} finally { db.close(); rmSync(root, { recursive: true, force: true }); }
+} finally { await db.runtimeAuditReader?.close(); db.close(); rmSync(root, { recursive: true, force: true }); }
+})();

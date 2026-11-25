@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const LIBRARY_NOTES_BACKUP_LIMIT = 256 * 1024 * 1024;
+
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const date = z.number().int().nonnegative();
 const webUrl = z.string().url().regex(/^https?:\/\//i);

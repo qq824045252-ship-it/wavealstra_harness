@@ -87,7 +87,7 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
           const scope = params.scope === "workspace"
             ? { type: "workspace" as const, workspaceId: workspaceId! }
             : { type: "task" as const, taskId: bridge.taskId };
-          const gadget = bridge.service.create({
+          const gadget = await bridge.service.createAsync({
             name: params.name,
             description: params.description,
             scope,
@@ -116,7 +116,7 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
       parameters: Type.Object({}, { additionalProperties: false }),
       execute: async () => {
         try {
-          const gadgets = bridge.service.list({ scope: { type: "task", taskId: bridge.taskId }, includeInherited: true })
+          const gadgets = (await bridge.service.readList({ scope: { type: "task", taskId: bridge.taskId }, includeInherited: true }))
             .map(({ id, name, description, scope, runtime }) => ({ id, name, description, scope, runtime }));
           return { content: [{ type: "text" as const, text: JSON.stringify({ gadgets }) }], details: { gadgets } };
         } catch (error) { return errorResult(error, "gadget_list"); }
@@ -132,7 +132,8 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
       execute: async (_id, params) => {
         try {
           bridge.service.getForTask(params.gadgetId, bridge.taskId);
-          const source = bridge.service.readSource(params.gadgetId);
+          const source = await bridge.service.readSourceAsync(params.gadgetId);
+          bridge.service.getForTask(params.gadgetId, bridge.taskId);
           const page = readGadgetSourcePage(params, source);
           return { content: [{ type: "text" as const, text: page.content }], details: page.details };
         } catch (error) { return errorResult(error, "gadget_read"); }
@@ -157,7 +158,9 @@ export function createGadgetAgentExtension(bridge: GadgetAgentBridge): Extension
             if (/\.html?$/i.test(file.path)) assertRenderableGadgetHtml(file.encoding === "base64" ? Buffer.from(file.content, "base64").toString("utf8") : file.content);
           }
           bridge.service.getForTask(params.gadgetId, bridge.taskId);
-          const source = bridge.service.updateSource(params);
+          const source = await bridge.service.updateSourceAsync(params, () => {
+            bridge.service.getForTask(params.gadgetId, bridge.taskId);
+          });
           // Saving source does not prove that its separately owned preview process
           // survived. Return current evidence rather than leaving the model with a
           // remembered port (a stopped/restarted process gets a different port).

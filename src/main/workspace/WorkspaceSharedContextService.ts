@@ -46,6 +46,13 @@ export type WorkspacePromoteResult =
   | { ok: true; targetParentId: string; promotedItem: WorkspaceSharedContextItem; alreadyExisted: boolean }
   | { ok: false; error: string };
 
+export interface RuntimeWorkspaceSharedData {
+  currentSpaceId: string | null;
+  spaces: SpaceDto[];
+  itemsBySpace: Array<{ spaceId: string; items: WorkspaceSharedContextItem[] }>;
+  taskItems: WorkspaceSharedContextItem[];
+}
+
 export class WorkspaceSharedContextService {
   private readonly memory: MemoryService;
   constructor(private readonly db: AppDatabase) {
@@ -180,6 +187,18 @@ export class WorkspaceSharedContextService {
     return formatWorkspaceSharedContextForPrompt(result);
   }
 
+  async readDigestForTask(taskId: string | null, explicitSpaceId: string | null = null): Promise<string | null> {
+    const snapshot = await this.readSnapshot(explicitSpaceId, taskId, true);
+    if (!snapshot) return this.getDigestForTask(taskId, explicitSpaceId);
+    return this.getDigest({
+      currentSpaceId: snapshot.currentSpaceId,
+      taskId: taskId ?? undefined,
+      taskItems: snapshot.taskItems,
+      spaces: snapshot.spaces,
+      itemsBySpace: new Map(snapshot.itemsBySpace.map(({ spaceId, items }) => [spaceId, items])),
+    });
+  }
+
   getDigestForTaskExcludingCurrent(taskId: string | null, explicitSpaceId?: string | null, taskItems?: WorkspaceSharedContextItem[]): string | null {
     const result = this.assembleForTask(taskId, explicitSpaceId, taskItems, { excludeCurrentSpace: true });
     return formatWorkspaceSharedContextForPrompt(result);
@@ -193,6 +212,10 @@ export class WorkspaceSharedContextService {
    * Repeated promote yields alreadyExisted=true and does not duplicate MemoryRecord or scope.
    */
   promote(itemId: string, fromSpaceId: string, opts?: { now?: number; includeArchived?: boolean }): WorkspacePromoteResult {
+    return this.db.connection.transaction(() => this.promoteInTransaction(itemId, fromSpaceId, opts)).immediate();
+  }
+
+  private promoteInTransaction(itemId: string, fromSpaceId: string, opts?: { now?: number; includeArchived?: boolean }): WorkspacePromoteResult {
     const record = this.memory.get(itemId);
     if (!record) return { ok: false, error: `来源条目不存在：${itemId}` };
     const sourceBinding = record.scopes.find((scope) => scope.scopeType === "workspace" && scope.scopeId === fromSpaceId);
@@ -220,7 +243,6 @@ export class WorkspaceSharedContextService {
    */
   getView(input: { currentSpaceId: string | null; taskId?: string | null; memoryEnabled: boolean }): WorkspaceSharedContextView {
     const spaces = this.db.listSpaces();
-    const itemsBySpace = this.loadItemsBySpace(spaces);
     // Resolve currentSpaceId via taskId when not provided (artifact→task→space authentic chain)
     let resolvedSpaceId = input.currentSpaceId;
     if (resolvedSpaceId == null && input.taskId) {
@@ -231,9 +253,35 @@ export class WorkspaceSharedContextService {
         resolvedSpaceId = null;
       }
     }
-    const taskItems = this.loadTaskItems(input.taskId ?? null);
+    const itemsBySpace = input.memoryEnabled ? this.loadItemsBySpace(spaces) : new Map<string, WorkspaceSharedContextItem[]>();
+    const taskItems = input.memoryEnabled ? this.loadTaskItems(input.taskId ?? null) : [];
+    return this.buildView({ ...input, currentSpaceId: resolvedSpaceId }, spaces, itemsBySpace, taskItems);
+  }
+
+  async readView(input: { currentSpaceId: string | null; taskId?: string | null; memoryEnabled: boolean }): Promise<WorkspaceSharedContextView> {
+    const snapshot = await this.readSnapshot(input.currentSpaceId, input.taskId ?? null, input.memoryEnabled);
+    if (!snapshot) return this.getView(input);
+    return this.buildView(
+      { ...input, currentSpaceId: snapshot.currentSpaceId },
+      snapshot.spaces,
+      new Map(snapshot.itemsBySpace.map(({ spaceId, items }) => [spaceId, items])),
+      snapshot.taskItems,
+    );
+  }
+
+  private readSnapshot(currentSpaceId: string | null, taskId: string | null, includeMemories: boolean) {
+    if (this.db.connection.inTransaction) return;
+    return this.db.runtimeAuditReader?.workspaceSharedData(currentSpaceId, taskId, includeMemories);
+  }
+
+  private buildView(
+    input: { currentSpaceId: string | null; taskId?: string | null; memoryEnabled: boolean },
+    spaces: SpaceDto[],
+    itemsBySpace: Map<string, WorkspaceSharedContextItem[]>,
+    taskItems: WorkspaceSharedContextItem[],
+  ): WorkspaceSharedContextView {
     const result = this.assemble({
-      currentSpaceId: resolvedSpaceId,
+      currentSpaceId: input.currentSpaceId,
       taskItems,
       taskId: input.taskId ?? undefined,
       spaces,
@@ -241,7 +289,7 @@ export class WorkspaceSharedContextService {
     });
     return buildWorkspaceSharedContextView({
       spaces,
-      currentSpaceId: resolvedSpaceId,
+      currentSpaceId: input.currentSpaceId,
       memoryEnabled: input.memoryEnabled,
       result,
       itemsBySpace,

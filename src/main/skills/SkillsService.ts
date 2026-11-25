@@ -19,6 +19,8 @@ import type { SkillDto } from "../../shared/agent-ipc";
 import { getExpertMarketDir, getPluginsDir, getMyBuddyDir, getSkillsDir } from "../paths";
 import { DIMAGENT_DEBUG_SKILL_ID, DIMAGENT_DEBUG_SKILL_MD } from "./BuiltinSkills";
 import { createBotComposerSkillAccess } from "../agent/work/BotComposerSkillAccess";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { editPluginConfig } from "../platform/plugin-config";
 
 export interface MarketSkillDto {
   id: string;
@@ -392,6 +394,21 @@ function writeHiddenSkillIds(ids: Set<string>): void {
   writeFileSync(hiddenMarketSkillsPath(), JSON.stringify([...ids].sort(), null, 2), "utf-8");
 }
 
+function marketSkill(name: string, dir: string, markdown: string, legacy: boolean): MarketSkillDto {
+  const { fm } = readFrontmatter(markdown);
+  const key = (fm.slug || fm.name || name).toLowerCase();
+  return {
+    id: legacy ? key.replace(/\s+/g, "-") : key.replace(/[^a-z0-9-]+/g, "-"),
+    name: fm.name || name,
+    description: fm.description || (legacy ? `来自 MyBuddy 的技能：${name}` : `MyBuddy 官方技能：${name}`),
+    author: legacy ? "MyBuddy" : "MyBuddy 官方",
+    icon: "⚡",
+    version: fm.version,
+    sourcePath: dir,
+    source: "mybuddy",
+  };
+}
+
 /**
  * 扫描旧版手放技能（~/.mybuddy/plugins/skills 根下无元信息的目录）作为可重装市场源。
  * 带 _skillhub_meta.json / _user_meta.json 的是受管安装副本（市场/本地导入/连接器旧版），
@@ -414,18 +431,7 @@ function scanLegacyMybuddySkills(): MarketSkillDto[] {
     }
     const md = findSkillMd(dir);
     if (!md) continue;
-    const raw = readFileSync(md, "utf-8");
-    const { fm } = readFrontmatter(raw);
-    out.push({
-      id: (fm.slug || fm.name || name).toLowerCase().replace(/\s+/g, "-"),
-      name: fm.name || name,
-      description: fm.description || `来自 MyBuddy 的技能：${name}`,
-      author: "MyBuddy",
-      icon: "⚡",
-      version: fm.version,
-      sourcePath: dir,
-      source: "mybuddy",
-    });
+    out.push(marketSkill(name, dir, readFileSync(md, "utf-8"), true));
   }
   return out;
 }
@@ -450,21 +456,10 @@ function scanLocalSkillMarket(): MarketSkillDto[] {
       }
       const md = findSkillMd(dir);
       if (!md) continue;
-      const raw = readFileSync(md, "utf-8");
-      const { fm } = readFrontmatter(raw);
-      const id = (fm.slug || fm.name || name).toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      out.push({
-        id,
-        name: fm.name || name,
-        description: fm.description || `MyBuddy 官方技能：${name}`,
-        author: "MyBuddy 官方",
-        icon: "⚡",
-        version: fm.version,
-        sourcePath: dir,
-        source: "mybuddy",
-      });
+      const skill = marketSkill(name, dir, readFileSync(md, "utf-8"), false);
+      if (!skill.id || seen.has(skill.id)) continue;
+      seen.add(skill.id);
+      out.push(skill);
     }
   }
   return out;
@@ -507,16 +502,31 @@ export class SkillsService {
   }
 
   listInstalled(cwd?: string, extraSkillPaths: string[] = [], context: { botId?: string } = {}): SkillDto[] {
+    return this.discoverInstalledSkills(cwd, extraSkillPaths)
+      .filter(skill => this.isLearnedSkillVisibleForBot(skill.filePath, context.botId))
+      .map(skill => this.mapLoadedSkill(skill));
+  }
+
+  listInstalledForBots(botIds: string[]): SkillDto[] {
+    const groups = new Map(botIds.map(id => [id, [] as PiSkill[]]));
+    const unscoped: PiSkill[] = [];
+    for (const skill of this.discoverInstalledSkills(undefined, [])) {
+      const owner = this.installedSkillOwner(skill.filePath);
+      if (owner === undefined) unscoped.push(skill);
+      else if (owner !== null) groups.get(owner)?.push(skill);
+    }
+    return [...unscoped, ...Array.from(groups.values()).flat()].map(skill => this.mapLoadedSkill(skill));
+  }
+
+  private discoverInstalledSkills(cwd: string | undefined, skillPaths: string[]): PiSkill[] {
     getSkillsDir();
     guardStrayRootSkillBeforeScan();
-    const { skills } = loadSkills({
+    return loadSkills({
       cwd: cwd?.trim() || process.cwd(),
       agentDir: getPluginsDir(),
-      skillPaths: extraSkillPaths,
+      skillPaths,
       includeDefaults: true,
-    });
-    return skills.filter(skill => this.isLearnedSkillVisibleForBot(skill.filePath, context.botId))
-      .map((s) => this.mapLoadedSkill(s));
+    }).skills;
   }
 
   /**
@@ -647,17 +657,28 @@ export class SkillsService {
   }
 
   listMarket(cwd?: string): MarketSkillDto[] {
+    return this.marketCatalog([...scanLegacyMybuddySkills(), ...scanLocalSkillMarket()], readHiddenSkillIds());
+  }
+
+  async readMarket(native?: RuntimeAuditReader): Promise<MarketSkillDto[]> {
+    const catalog = await native?.pluginCatalog<{
+      items: Array<{ name: string; dir: string; header: string; legacy: boolean }>;
+      hidden: string[];
+    }>({
+      kind: "skillMarket", legacyRoot: getSkillsDir(), marketRoots: findLocalSkillMarketDirs(), hiddenPath: hiddenMarketSkillsPath(),
+    });
+    if (!catalog) return this.listMarket();
+    const rows = catalog.items.map(row => marketSkill(row.name, row.dir, row.header, row.legacy));
+    return this.marketCatalog(rows, new Set(catalog.hidden));
+  }
+
+  private marketCatalog(localSkills: MarketSkillDto[], hidden: Set<string>): MarketSkillDto[] {
     // 市场源：内置 + 磁盘归档。已安装项保留在列表中，由前端展示状态
-    const hidden = readHiddenSkillIds();
     const catalog = new Map<string, MarketSkillDto>();
     for (const s of BUILTIN_MARKET) {
       if (!hidden.has(s.id.toLowerCase())) catalog.set(s.id.toLowerCase(), s);
     }
-    for (const s of scanLegacyMybuddySkills()) {
-      if (hidden.has(s.id.toLowerCase())) continue;
-      if (!catalog.has(s.id.toLowerCase())) catalog.set(s.id.toLowerCase(), s);
-    }
-    for (const s of scanLocalSkillMarket()) {
+    for (const s of localSkills) {
       if (hidden.has(s.id.toLowerCase())) continue;
       if (!catalog.has(s.id.toLowerCase())) catalog.set(s.id.toLowerCase(), s);
     }
@@ -911,9 +932,14 @@ export class SkillsService {
 
   /** Private learned packages require an explicit execution identity, including after restart. */
   isLearnedSkillVisibleForBot(filePath: string, botId?: string): boolean {
+    const owner = this.installedSkillOwner(filePath);
+    return owner === undefined || owner !== null && owner === botId;
+  }
+
+  private installedSkillOwner(filePath: string): string | null | undefined {
     const metadata = this.readLearnedSkillMetadata(filePath);
-    if (!metadata && this.hasLearnedSkillProvenance(filePath)) return false;
-    return metadata?.scopeType !== "bot" || Boolean(botId && metadata.scopeId === botId);
+    if (!metadata && this.hasLearnedSkillProvenance(filePath)) return null;
+    return metadata?.scopeType === "bot" ? metadata.scopeId ?? null : undefined;
   }
 
   /** Classification only. A copied header never grants runtime eligibility. */
@@ -1157,22 +1183,37 @@ export class SkillsService {
   }
 
   setEnabled(id: string, enabled: boolean, context: { botId?: string } = {}): SkillDto {
+    const skill = this.findToggleSkill(id, context);
+    this.writeSkillEnabledOnHost(skill, enabled);
+    return { ...skill, enabled };
+  }
+
+  async writeEnabled(id: string, enabled: boolean, context: { botId?: string }, native?: RuntimeAuditReader): Promise<SkillDto> {
+    const skill = this.findToggleSkill(id, context);
+    const saved = await editPluginConfig(native, "skill", [getSkillsDir(), join(process.cwd(), ".pi", "skills")],
+      skill.filePath, raw => this.skillEnabledText(raw ?? "", skill, enabled));
+    if (!saved) this.writeSkillEnabledOnHost(skill, enabled);
+    return { ...skill, enabled };
+  }
+
+  private findToggleSkill(id: string, context: { botId?: string }): SkillDto & { filePath: string } {
     const skill = this.listInstalled(undefined, [], context).find((s) => s.id === id || s.name === id);
-    if (!skill?.filePath || !existsSync(skill.filePath)) {
-      throw new Error(`未找到技能文件: ${id}`);
-    }
+    if (!skill?.filePath || !existsSync(skill.filePath)) throw new Error(`未找到技能文件: ${id}`);
+    return { ...skill, filePath: skill.filePath };
+  }
+
+  private writeSkillEnabledOnHost(skill: SkillDto & { filePath: string }, enabled: boolean): void {
     const raw = readFileSync(skill.filePath, "utf-8");
+    writeFileSync(skill.filePath, this.skillEnabledText(raw, skill, enabled), "utf-8");
+  }
+
+  private skillEnabledText(raw: string, skill: SkillDto, enabled: boolean): string {
     const { fm } = readFrontmatter(raw);
     // 保序写入：扁平往返会把 YAML 列表整段丢掉，用户点一次「启用」就抹掉依赖声明
-    writeFileSync(
-      skill.filePath,
-      setModelInvocationPreservingFrontmatter(raw, enabled, {
-        name: fm.name || skill.name,
-        description: fm.description || skill.description || skill.name,
-      }),
-      "utf-8",
-    );
-    return { ...skill, enabled };
+    return setModelInvocationPreservingFrontmatter(raw, enabled, {
+      name: fm.name || skill.name,
+      description: fm.description || skill.description || skill.name,
+    });
   }
 
   /**

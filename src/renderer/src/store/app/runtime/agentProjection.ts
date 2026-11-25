@@ -112,9 +112,7 @@ export function createAgentProjectionActions(
       }
 
       if (patch.type === "user_message") {
-        const needsTaskMetadataHydration = !get().tasks.some(
-          (task) => task.id === patch.taskId,
-        );
+        const previous = get().tasks.find((task) => task.id === patch.taskId);
         set((s) => {
           let tasks = s.tasks;
           let task = tasks.find((t) => t.id === patch.taskId);
@@ -156,8 +154,16 @@ export function createAgentProjectionActions(
           );
           return { tasks };
         });
-        if (needsTaskMetadataHydration)
+        if (!previous) {
           hydrateTaskMetadataFromDb(storeContext, patch.taskId);
+        } else {
+          const task = get().tasks.find((item) => item.id === patch.taskId);
+          if (task && task.title !== previous.title) {
+            void storeContext.getApi()?.db?.upsertTask({
+              id: task.id, title: task.title, updatedAt: task.updatedAt,
+            }, previous.title);
+          }
+        }
         return;
       }
 
@@ -390,7 +396,7 @@ export function createAgentProjectionActions(
             modelId: task.modelId,
             permissionMode: task.permissionMode,
             welcomeMode: task.welcomeMode,
-          });
+          }, null);
         }
       }
     },

@@ -8,7 +8,16 @@ process.env.USERPROFILE = sandbox;
 process.env.HOME = sandbox;
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { TaskExpertBindingService } = await import("../src/main/experts/TaskExpertBindingService");
-const db = new AppDatabase(join(sandbox, "app.db"));
+const { locateRuntimeAudit } = await import("../src/main/platform/runtime-audit");
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(sandbox, "app.db"), { runtimeAuditExecutable });
+async function throughSettings<T>(operation: () => Promise<T>): Promise<T> {
+  if (useNative) db.connection.pragma("query_only = ON");
+  try { return await operation(); }
+  finally { if (useNative) db.connection.pragma("query_only = OFF"); }
+}
 const privateRoot = join(sandbox, "template", "skills");
 const globalRoot = join(sandbox, "global-skill");
 mkdirSync(join(privateRoot, "calibration", "references"), { recursive: true });
@@ -201,9 +210,9 @@ try {
     const releaseIfIdle = (agent as any).sessionLifecycle.releaseIfIdle;
     (agent as any).sessionLifecycle.releaseIfIdle = () => { prematureRelease++; return "released"; };
     try {
-      const pending = agent.saveTaskExpertBinding({ taskId: "custom-ordinary", expectedRevision: runningRevision, custom: {
+      const pending = await throughSettings(() => agent.saveTaskExpertBindingForSettings({ taskId: "custom-ordinary", expectedRevision: runningRevision, custom: {
         name: "待生效身份", instructions: "PENDING_MUST_NOT_INTERRUPT_PREPARATION", skillIds: [], mcpIds: [], connectorIds: [],
-      } });
+      } }));
       assert.equal(prematureRelease, 0, "UI save must not release a session that appears native-idle during prompt preparation");
       assert.equal(pending.active!.revision, runningRevision, "saving never promotes or changes the active request identity");
       assert.equal(pending.pending, true);
@@ -222,6 +231,42 @@ try {
       assert.deepEqual((agent as any).expertSkillPaths("legacy-valid", "analyst", ["manual-connector"], false), ["manual-connector-path"], "policy-denied expert never contributes retained private skills");
     } finally { (agent as any).connectorsService.getPrivateSkillDirs = oldConnectorPaths; }
     console.log("PASS working/coding custom identity, expert policy gate and manual connector provenance");
+
+    task("settings-atomic");
+    const latestActivity = Date.now() + 60_000;
+    db.connection.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(latestActivity, "settings-atomic");
+    const settings = await throughSettings(() => agent.saveTaskExpertBindingForSettings({
+      taskId: "settings-atomic", expertId: "analyst", expectedRevision: null,
+    }));
+    assert.deepEqual([settings.desired?.instructions, settings.active, settings.pending], ["template changed", null, true]);
+    assert.equal(db.getTask("settings-atomic")?.expertId, "analyst");
+    assert.equal(db.getTask("settings-atomic")?.updatedAt, latestActivity, "saving an identity preserves newer task activity");
+    if (useNative) db.connection.exec("CREATE TEMP TABLE task_expert_bindings AS SELECT * FROM main.task_expert_bindings WHERE 0");
+    try {
+      const read = await agent.getTaskExpertBindingForSettings("settings-atomic");
+      assert.equal(read.desired?.revision, settings.desired!.revision);
+    } finally {
+      if (useNative) db.connection.exec("DROP TABLE temp.task_expert_bindings");
+    }
+    await assert.rejects(agent.getTaskExpertBindingForSettings("settings-missing"), /任务不存在/);
+    db.connection.exec(`CREATE TRIGGER abort_expert_projection BEFORE UPDATE OF expert_id ON tasks
+      WHEN OLD.id = 'settings-atomic' BEGIN SELECT RAISE(ABORT, 'expert projection failed'); END`);
+    try {
+      await assert.rejects(throughSettings(() => agent.saveTaskExpertBindingForSettings({
+        taskId: "settings-atomic", expertId: null, expectedRevision: settings.desired!.revision,
+      })), /expert projection failed/);
+      assert.equal((await agent.getTaskExpertBindingForSettings("settings-atomic")).desired?.revision, settings.desired!.revision);
+      assert.equal(db.getTask("settings-atomic")?.expertId, "analyst");
+    } finally { db.connection.exec("DROP TRIGGER abort_expert_projection"); }
+    await assert.rejects(agent.saveTaskExpertBindingForSettings({
+      taskId: "settings-atomic", expertId: null, expectedRevision: "stale",
+    }), /已被修改/);
+    const unbound = await throughSettings(() => agent.saveTaskExpertBindingForSettings({
+      taskId: "settings-atomic", expertId: null, expectedRevision: settings.desired!.revision,
+    }));
+    assert.deepEqual([unbound.desired, unbound.active, unbound.pending], [null, null, false]);
+    assert.equal(db.getTask("settings-atomic")?.expertId, undefined);
+    console.log(`PASS expert settings read, optimistic concurrency and atomic update (${useNative ? "Rust" : "host"})`);
 
   // Batch projection: the task list reads every binding in one query, and a database without the
   // binding service still lists tasks (no projection, no crash).
@@ -260,6 +305,7 @@ try {
   assert.equal(bindings.get("bound"), null);
   assert.equal(existsSync(copiedSkill), false, "permanent deletion cleans retained revisions only after the task row is deleted");
 } finally {
+  await db.runtimeAuditReader?.close();
   db.close();
 }
 console.log("Task expert binding fixtures retained at", sandbox);

@@ -23,7 +23,7 @@ export interface OfficeFileTarget {
   check(): Promise<void>;
   readVerified?(): Promise<Buffer>;
   copy?(bytes: Buffer, checkUnchanged?: () => Promise<void>): Promise<string | null>;
-  published?(): void;
+  published?(): void | Promise<void>;
 }
 
 export async function plainFile(path: string): Promise<void> {
@@ -156,7 +156,7 @@ export class OfficeFile {
       } else {
         const output = this.target.base64 ? this.prefix + bytes.toString("base64") : bytes;
         await atomicBytes(this.target.path, output, unchanged);
-        this.target.published?.();
+        await this.target.published?.();
       }
       await unlink(this.draftPath);
       if (this.savedBaseline) { await unlink(this.draftPath + ".source"); this.savedBaseline = false; }

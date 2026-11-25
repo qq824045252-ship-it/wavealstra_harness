@@ -4,8 +4,8 @@
  * 语义：external event 只是输入/审计层；要进入项目真源（Memory / Plan-Todo / Library），
  * 必须由人（UI）或 Agent（显式工具）触发 promotion。本模块是唯一提升入口：
  * - 目标项目 = 事件所属项目（只接受 eventId，不接受 projectId —— A/B 越权按构造不可能）；
- * - 写真源一律走既有 service（createMemory / createTodo / LibraryService createItem+writeContent），
- *   禁止 SQL 绕过；content/title 全部由调用方显式给出，绝不猜测；
+ * - 计划项、记忆和资料分别与其来源链接在同一事务中写入。
+ *   content/title 全部由调用方显式给出，绝不猜测；
  * - 幂等：每 (project, event, targetKind) 至多一个目标；重复 promote 返回既有目标（reused），
  *   DB UNIQUE 兜底；目标已被删除 → 不新建、返回 targetMissing 降级；
  * - 归档项目拒绝写入（ARCHIVED_PROJECT_WRITE_GUIDANCE）；事件仍可读；
@@ -14,7 +14,7 @@
  * - readonly 权限模式由 Agent 工具层拦截（与既有项目写工具一致）。
  */
 import { randomUUID } from "node:crypto";
-import { ARCHIVED_PROJECT_WRITE_GUIDANCE, type ProjectEventDto, type ProjectEventPromoteRequest, type ProjectEventPromoteResultDto, type ProjectEventPromotionDto, type ProjectEventPromotionTargetKind } from "../../shared/project-domain";
+import { ARCHIVED_PROJECT_WRITE_GUIDANCE, type ProjectEventDto, type ProjectEventPromoteRequest, type ProjectEventPromoteResultDto, type ProjectEventPromotionDto, type ProjectEventPromotionTargetKind, type ProjectMemoryCreateRequest, type ProjectTodoCreateRequest } from "../../shared/project-domain";
 import type { LibraryService } from "../library/LibraryService";
 import type { ProjectService } from "./ProjectService";
 
@@ -55,6 +55,68 @@ export class ProjectEventPromoter {
     this.now = opts.now ?? (() => Date.now());
   }
 
+  async promoteAsync(
+    eventId: string,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
+    agent?: { taskId?: string },
+  ): Promise<ProjectEventPromoteResultDto> {
+    if (!request || !["memory", "todo", "library"].includes(request.targetKind)) {
+      throw new Error(`不支持的提升目标：${String(request?.targetKind)}`);
+    }
+    const event = await this.projects.readProjectEvent(eventId);
+    if (!event) throw new Error(`事件不存在：${eventId}`);
+    const promotedBy = request.promotedBy === "agent" ? "agent" : "user";
+    if (request.targetKind === "memory") {
+      return this.projects.promoteEventToMemory(event, () => this.memoryRequest(event, request), {
+        sourceType: promotedBy === "agent" ? "agent" : "manual",
+        sourceTaskId: promotedBy === "agent" ? agent?.taskId : undefined,
+      }, promotedBy, this.now());
+    }
+    if (request.targetKind === "library") return this.promoteLibraryDocument(event, request, promotedBy, agent);
+    const actor = promotedBy === "agent" && agent?.taskId ? { taskId: agent.taskId, projectId: event.projectId } : undefined;
+    return this.projects.promoteEventToTodo(event, this.todoRequest(request), promotedBy, this.now(), actor);
+  }
+
+  private async promoteLibraryDocument(
+    event: ProjectEventDto,
+    request: Omit<ProjectEventPromoteRequest, "eventId">,
+    promotedBy: "user" | "agent",
+    agent?: { taskId?: string },
+  ): Promise<ProjectEventPromoteResultDto> {
+    const project = this.projects.get(event.projectId);
+    if (!project) throw new Error(`项目不存在：${event.projectId}`);
+    if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+    const existing = this.projects.findProjectEventPromotion(event.projectId, event.id, "library");
+    if (existing) return this.reusedPromotion(existing);
+    const document = this.libraryRequest(event, request);
+    const status = await this.library.promoteProjectEventDocument({
+      ...document, projectId: event.projectId, eventId: event.id, promotedBy,
+      actorTaskId: promotedBy === "agent" ? agent?.taskId : undefined,
+      createdAt: this.now(), spaceName: `${project.name}·项目资料`,
+    });
+    if (!status) return this.promote(event.id, request, agent);
+    const promotion = this.projects.findProjectEventPromotion(event.projectId, event.id, "library");
+    if (!promotion) throw new Error("项目事件与资料的关联已被移除");
+    if (status === "existingPromotion") return this.reusedPromotion(promotion);
+    return {
+      promotion, targetKind: "library", targetId: promotion.targetId, targetTitle: promotion.targetTitle, reused: false,
+    };
+  }
+
+  private reusedPromotion(promotion: ProjectEventPromotionDto): ProjectEventPromoteResultDto {
+    const { projectId, targetKind, targetId, targetTitle } = promotion;
+    return {
+      promotion, targetKind, targetId, targetTitle, reused: true,
+      targetMissing: !this.resolveTarget(projectId, targetKind, targetId),
+    };
+  }
+
+  private requireEvent(eventId: string): ProjectEventDto {
+    const event = this.projects.getProjectEvent(eventId);
+    if (!event) throw new Error(`事件不存在：${eventId}`);
+    return event;
+  }
+
   /**
    * 统一提升入口（IPC/Agent 工具共用）。校验顺序：
    * 事件存在 → 项目存在 → 归档门禁 → 幂等复用 → 字段齐全 → 既有 service 落真源 → 记录审计链接。
@@ -68,24 +130,14 @@ export class ProjectEventPromoter {
     if (!request || !["memory", "todo", "library"].includes(request.targetKind as string)) {
       throw new Error(`不支持的提升目标：${String((request as { targetKind?: unknown } | undefined)?.targetKind)}`);
     }
-    const event = this.projects.getProjectEvent(eventId);
-    if (!event) throw new Error(`事件不存在：${eventId}`);
+    const event = this.requireEvent(eventId);
     const project = this.projects.get(event.projectId);
     if (!project) throw new Error(`项目不存在：${event.projectId}`);
     if (project.archived) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
 
     // 幂等：同 (event, targetKind) 已提升 → 复用（目标已删则降级返回，不新建垃圾）
     const existing = this.projects.findProjectEventPromotion(event.projectId, eventId, request.targetKind);
-    if (existing) {
-      return {
-        promotion: existing,
-        targetKind: existing.targetKind,
-        targetId: existing.targetId,
-        targetTitle: existing.targetTitle,
-        reused: true,
-        targetMissing: this.resolveTarget(event.projectId, existing.targetKind, existing.targetId) === undefined,
-      };
-    }
+    if (existing) return this.reusedPromotion(existing);
 
     // 提升主体归一：仅接受显式 agent（工具层注入）；其余一律按 user（UI/IPC，不可伪造）
     const promotedBy = request.promotedBy === "agent" ? ("agent" as const) : ("user" as const);
@@ -119,14 +171,7 @@ export class ProjectEventPromoter {
         created,
         new Error(`提升链接已由另一执行写入：${promotion.id}`),
       );
-      return {
-        promotion,
-        targetKind: promotion.targetKind,
-        targetId: promotion.targetId,
-        targetTitle: promotion.targetTitle,
-        reused: true,
-        targetMissing: this.resolveTarget(event.projectId, promotion.targetKind, promotion.targetId) === undefined,
-      };
+      return this.reusedPromotion(promotion);
     }
     return {
       promotion,
@@ -181,18 +226,8 @@ export class ProjectEventPromoter {
     promotedBy: "user" | "agent",
     sourceTaskId?: string,
   ): CreatedPromotionTarget {
-    if (!request.memoryKind) throw new Error("提升为记忆必须显式指定 memoryKind（fact/decision/constraint/risk/open_question）");
-    if (!request.memoryTitle?.trim()) throw new Error("提升为记忆必须显式指定标题");
     const created = this.projects.createMemory(
-      {
-        projectId: event.projectId,
-        kind: request.memoryKind,
-        title: request.memoryTitle.trim(),
-        content: request.memoryContent?.trim() || undefined,
-        tags: request.memoryTags,
-        importance: request.memoryImportance,
-        evidenceEventId: event.id,
-      },
+      this.memoryRequest(event, request),
       {
         sourceType: promotedBy === "agent" ? "agent" : "manual",
         sourceTaskId: promotedBy === "agent" ? sourceTaskId : undefined,
@@ -205,18 +240,23 @@ export class ProjectEventPromoter {
     };
   }
 
+  private memoryRequest(event: ProjectEventDto, request: Omit<ProjectEventPromoteRequest, "eventId">): ProjectMemoryCreateRequest {
+    if (!request.memoryKind) throw new Error("提升为记忆必须显式指定 memoryKind（fact/decision/constraint/risk/open_question）");
+    if (!request.memoryTitle?.trim()) throw new Error("提升为记忆必须显式指定标题");
+    return {
+      projectId: event.projectId, kind: request.memoryKind, title: request.memoryTitle.trim(),
+      content: request.memoryContent?.trim() || undefined, tags: request.memoryTags,
+      importance: request.memoryImportance, evidenceEventId: event.id,
+    };
+  }
+
   private promoteToTodo(
     event: ProjectEventDto,
     request: Omit<ProjectEventPromoteRequest, "eventId">,
   ): CreatedPromotionTarget {
-    if (!request.todoTitle?.trim()) throw new Error("提升为计划项必须显式指定标题");
-    const created = this.projects.createTodo({
-      projectId: event.projectId,
-      title: request.todoTitle.trim(),
-      description: request.todoDescription?.trim() || undefined,
-      dueAt: request.todoDueAt,
-      priority: request.todoPriority,
-    });
+    const todo = this.todoRequest(request);
+    if (!todo.title) throw new Error("提升为计划项必须显式指定标题");
+    const created = this.projects.createTodo({ projectId: event.projectId, ...todo });
     return {
       targetId: created.id,
       targetTitle: created.title,
@@ -224,15 +264,19 @@ export class ProjectEventPromoter {
     };
   }
 
+  private todoRequest(request: Omit<ProjectEventPromoteRequest, "eventId">): Omit<ProjectTodoCreateRequest, "projectId"> {
+    return {
+      title: typeof request.todoTitle === "string" ? request.todoTitle.trim() : "",
+      description: typeof request.todoDescription === "string" ? request.todoDescription.trim() || undefined : undefined,
+      dueAt: request.todoDueAt, priority: request.todoPriority,
+    };
+  }
+
   private promoteToLibrary(
     event: ProjectEventDto,
     request: Omit<ProjectEventPromoteRequest, "eventId">,
   ): CreatedPromotionTarget {
-    if (typeof event.payload?.libraryItemId === "string") {
-      throw new Error("该事件已关联资料库条目（文件导入），无需重复保存为资料；可提升为记忆或计划。");
-    }
-    if (!request.libraryTitle?.trim()) throw new Error("提升为资料必须显式指定标题");
-    if (!request.libraryContent?.trim()) throw new Error("提升为资料必须显式指定正文");
+    const { title, content } = this.libraryRequest(event, request);
 
     const resolved = this.resolveProjectLibrarySpace(event.projectId);
     let createdId: string | undefined;
@@ -242,11 +286,11 @@ export class ProjectEventPromoter {
         spaceId: resolved.space.id,
         collectionId: null,
         kind: "markdown",
-        title: request.libraryTitle.trim(),
+        title,
       });
       createdId = created.id;
       createdTitle = created.title;
-      this.library.writeContent({ id: created.id, content: request.libraryContent.trim() });
+      this.library.writeContent({ id: created.id, content });
     } catch (error) {
       try {
         if (createdId && this.library.getItem(createdId)) this.library.deleteItem(createdId);
@@ -273,6 +317,15 @@ export class ProjectEventPromoter {
         if (resolved.created) this.deleteProjectLibrarySpaceIfEmpty(resolved.space.id);
       },
     };
+  }
+
+  private libraryRequest(event: ProjectEventDto, request: Omit<ProjectEventPromoteRequest, "eventId">) {
+    if (typeof event.payload?.libraryItemId === "string") {
+      throw new Error("该事件已关联资料库条目（文件导入），无需重复保存为资料；可提升为记忆或计划。");
+    }
+    if (!request.libraryTitle?.trim()) throw new Error("提升为资料必须显式指定标题");
+    if (!request.libraryContent?.trim()) throw new Error("提升为资料必须显式指定正文");
+    return { title: request.libraryTitle.trim(), content: request.libraryContent.trim() };
   }
 
   /** 项目资料空间：已有则取第一个；无则创建并标记 ownership，供本次失败时安全补偿。 */

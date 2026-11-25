@@ -57,7 +57,7 @@ export interface PromptContextDeps {
    * - 必须保持 Task > Current > Parent > Root 顺序，同级隔离，archived 默认排除
    * - 仅 immediate parent 显式 promote，不自动跨级
    */
-  getWorkspaceSharedContext?: (artifactId: string) => string | null;
+  getWorkspaceSharedContext?: (artifactId: string) => string | null | Promise<string | null>;
 }
 
 /** selection → context.selection（不含版本字段——版本校验在 Service 层） */
@@ -145,7 +145,7 @@ export class PromptContextService {
     let workspaceSharedContext: string | undefined;
     if (this.deps.getWorkspaceSharedContext) {
       try {
-        const digest = this.deps.getWorkspaceSharedContext(artifactId);
+        const digest = await this.deps.getWorkspaceSharedContext(artifactId);
         if (digest && digest.trim().length > 0) workspaceSharedContext = digest.trim();
       } catch (error) {
         console.warn("[PromptContextService] workspace shared context 读取失败", error);

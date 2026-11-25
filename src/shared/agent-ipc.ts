@@ -282,6 +282,7 @@ export type { CapabilityVideoJobDto } from "./media-capabilities";
 
 export const CronIpc = {
   list: "cron:list",
+  overview: "cron:overview",
   upsert: "cron:upsert",
   setEnabled: "cron:setEnabled",
   remove: "cron:remove",
@@ -562,6 +563,7 @@ export const DbIpc = {
   renameSpace: "db:renameSpace",
   setWorkspaceIcon: "db:setWorkspaceIcon",
   upsertTask: "db:upsertTask",
+  editTaskSidebar: "db:editTaskSidebar",
   deleteTask: "db:deleteTask",
   deleteSpace: "db:deleteSpace",
   archiveSpace: "db:archiveSpace",
@@ -1972,6 +1974,11 @@ export interface CronRunDto {
   taskId?: string;
 }
 
+export interface CronOverviewDto {
+  jobs: CronJobDto[];
+  runs: CronRunDto[];
+}
+
 export type {
   GatewayChannelType,
   GatewayWeixinQrLoginStateDto,
@@ -2054,6 +2061,10 @@ export interface TaskDto {
   /** ACP 外部 Agent 任务级固定：undefined = 未提供（保留旧值），null = 明确解除固定。 */
   externalAgentPin?: import("./external-agent").ExternalAgentPinDto | null;
 }
+
+export type TaskSidebarEdit =
+  | ({ kind: "rename" } & Pick<TaskDto, "id" | "title" | "spaceId" | "status" | "updatedAt">)
+  | ({ kind: "favorite"; isFavorited: boolean } & Pick<TaskDto, "id" | "title" | "updatedAt">);
 
 export interface SoulDto {
   name: string;

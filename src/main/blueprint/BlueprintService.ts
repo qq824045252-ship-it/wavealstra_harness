@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { AppDatabase } from "../db/AppDatabase";
-import type { GadgetService } from "../gadget/GadgetService";
+import type { BlueprintGadgetPlan, GadgetService } from "../gadget/GadgetService";
 import { MemoryService } from "../memory/MemoryService";
 import type { WorkspaceLibraryBindingService } from "../workspace/WorkspaceLibraryBindingService";
 import type {
@@ -27,12 +27,16 @@ import {
   BLUEPRINT_MAX_TOTAL_FILE_BYTES,
 } from "../../shared/blueprint-types";
 import { normalizeBlueprintDefinition } from "../../shared/blueprint-types";
-import type { GadgetScope } from "../../shared/gadget-types";
-import { isBlueprintSensitivePath, redactBlueprintSecrets } from "../../shared/blueprint-secret-policy";
+import type { GadgetDescriptor, GadgetScope } from "../../shared/gadget-types";
+import type { MemoryRecordDto } from "../../shared/memory-kernel";
+import { BLUEPRINT_CAPTURE_DENY_PATTERN, isBlueprintSensitivePath, redactBlueprintSecrets } from "../../shared/blueprint-secret-policy";
+import { decodeBlueprintFile } from "./capture-file";
 import type { BlueprintRepository } from "./BlueprintRepository";
 import type { BlueprintResolver } from "./BlueprintResolver";
 import type { BlueprintInstantiationPlanner } from "./BlueprintInstantiationPlanner";
 import type { BlueprintChangedEvent } from "../../shared/blueprint-ipc";
+import { gadgetInsertValues } from "../gadget/GadgetRepository";
+import { BlueprintCommitUnconfirmed, writeBlueprintInstance, type RuntimeBlueprintInstance } from "./BlueprintInstanceWrite";
 
 const CAPTURE_EXCLUDED = new Set(["node_modules", "cache", ".cache", ".next", "dist", "build", ".mybuddy-task.json"]);
 
@@ -55,11 +59,22 @@ export class BlueprintService {
   constructor(private readonly deps: BlueprintServiceDependencies) {
     this.memory = deps.memoryService ?? new MemoryService(deps.db, { semantic: false });
     mkdirSync(deps.workspaceInstancesRoot, { recursive: true });
-    this.reconcileWorkspaceInstances();
   }
 
-  create(request: BlueprintCreateRequest): BlueprintDescriptor {
-    const created = this.deps.repository.create(request);
+  async recoverStorage(): Promise<void> {
+    const reader = this.deps.db.runtimeAuditReader;
+    const failures = reader ? await reader.reconcileBlueprintStorage(resolve(this.deps.workspaceInstancesRoot)) : "needsHost";
+    if (failures === "needsHost") {
+      this.reconcileWorkspaceInstances();
+    } else if (failures) {
+      for (const error of failures) console.warn("[BlueprintService] 无法清理 orphan instance", error);
+    } else {
+      console.warn("[BlueprintService] 孤立实例目录将在下次启动清理");
+    }
+  }
+
+  async create(request: BlueprintCreateRequest): Promise<BlueprintDescriptor> {
+    const created = await this.deps.repository.create(request);
     this.emitChanged({ type: "created", blueprintId: created.id });
     return created;
   }
@@ -68,156 +83,181 @@ export class BlueprintService {
     return this.deps.repository.list();
   }
 
-  get(id: string): BlueprintDescriptor | null {
-    return this.deps.repository.get(id);
+  readList(): Promise<BlueprintDescriptor[]> {
+    return this.deps.repository.readList();
   }
 
-  update(request: BlueprintUpdateRequest): BlueprintDescriptor {
-    const updated = this.deps.repository.update(request);
+  get(id: string): Promise<BlueprintDescriptor | null> {
+    return this.deps.repository.read(id);
+  }
+
+  async update(request: BlueprintUpdateRequest): Promise<BlueprintDescriptor> {
+    const updated = await this.deps.repository.update(request);
     this.emitChanged({ type: "updated", blueprintId: updated.id });
     return updated;
   }
 
-  resolve(id: string, registries?: BlueprintInstantiateRequest["registries"]): ResolvedBlueprint {
-    return this.deps.resolver.resolve(this.require(id).definition, registries);
+  async resolve(id: string, registries?: BlueprintInstantiateRequest["registries"]): Promise<ResolvedBlueprint> {
+    return this.deps.resolver.resolve((await this.readRequired(id)).definition, registries);
   }
 
-  plan(id: string, registries?: BlueprintInstantiateRequest["registries"]): BlueprintInstantiationPlan {
-    return this.deps.planner.build(this.resolve(id, registries));
+  async plan(id: string, registries?: BlueprintInstantiateRequest["registries"]): Promise<BlueprintInstantiationPlan> {
+    return this.deps.planner.build(await this.resolve(id, registries));
   }
 
   async instantiate(request: BlueprintInstantiateRequest): Promise<BlueprintInstantiationResult> {
-    const blueprint = this.require(request.blueprintId);
+    const blueprint = await this.readRequired(request.blueprintId);
     const plan = this.deps.planner.build(this.deps.resolver.resolve(blueprint.definition, request.registries));
     const warnings = [...plan.warnings];
-    const workspaceIdsByKey: Record<string, string> = {};
-    const taskIdsByKey: Record<string, string> = {};
-    const gadgetIdsByKey: Record<string, string> = {};
-    const createdGadgets: string[] = [];
-    const createdMemoryIds: string[] = [];
-    const pendingContexts: Array<{ workspaceId: string; content: string }> = [];
+    const workspaceIdsByKey = Object.fromEntries(plan.workspaces.map(item => [item.key, `sp-${randomUUID()}`]));
+    const taskIdsByKey = Object.fromEntries(plan.tasks.map(item => [item.key, `task-${randomUUID()}`]));
+    const pathsByKey = new Map<string, string>();
+    const contexts: MemoryRecordDto[] = [];
+    const gadgets: Array<BlueprintGadgetPlan & { key: string }> = [];
+    const hostGadgets: GadgetDescriptor[] = [];
     let generatedRoot: string | null = null;
-    let rootWorkspaceId: string | null = null;
+    let hostRoot: string | null = null;
+    const materializeOnHost = () => {
+      if (generatedRoot) {
+        mkdirSync(generatedRoot);
+        hostRoot = generatedRoot;
+        for (const path of pathsByKey.values()) if (path !== hostRoot) ensureSafeDirectory(hostRoot, path);
+        for (const file of plan.files) {
+          writeSeedFile(pathsByKey.get(file.workspaceKey)!, file.path, file.content, file.encoding, hostRoot);
+        }
+      }
+      for (const gadget of gadgets) {
+        this.deps.gadgetService.materializeBlueprintGadget(gadget);
+        hostGadgets.push(gadget.descriptor);
+      }
+    };
 
     try {
-      this.deps.db.transaction(() => {
-        if (plan.workspaces.length) {
-          const first = plan.workspaces[0];
-          const rootName = request.rootName?.trim() || first.name;
-          if (rootName.length > 240) throw new Error("Blueprint instance Workspace 名称不能超过 240 字符");
-          const base = resolve(this.deps.workspaceInstancesRoot, `bp-${randomUUID()}`);
-          generatedRoot = base;
-          mkdirSync(base, { recursive: true });
-          const workspacePaths = new Set<string>();
-          for (const item of plan.workspaces) {
-            const parentId = item.parentKey ? workspaceIdsByKey[item.parentKey] : null;
-            const name = item === first ? rootName : item.name;
-            const parentPath = item.parentKey
-              ? this.deps.db.getSpace(parentId!)?.path ?? base
-              : dirname(base);
-            const workspacePath = item === first ? base : join(parentPath, safeName(name));
-            const pathKey = resolve(workspacePath).toLocaleLowerCase();
-            if (workspacePaths.has(pathKey)) throw new Error(`Blueprint Workspace 目录冲突：${workspacePath}`);
-            workspacePaths.add(pathKey);
-            if (item !== first) ensureSafeDirectory(base, workspacePath);
-            const created = this.deps.db.createSpace({ name, parentId, path: workspacePath });
-            workspaceIdsByKey[item.key] = created.id;
-            if (!rootWorkspaceId) rootWorkspaceId = created.id;
-            if (item.defaultContext) {
-              pendingContexts.push({ workspaceId: created.id, content: item.defaultContext });
-            }
-          }
-          for (const task of plan.tasks) {
-            const id = `task-${randomUUID()}`;
-            taskIdsByKey[task.key] = id;
-            this.deps.db.upsertTask({
-              id,
-              title: task.title,
-              spaceId: workspaceIdsByKey[task.workspaceKey],
-              status: task.status ?? "pending",
-              updatedAt: Date.now(),
-              ...(task.welcomeMode ? { welcomeMode: task.welcomeMode } : {}),
-            });
-          }
-          for (const binding of plan.libraryBindings) {
-            if (!this.deps.librarySpaceExists(binding.librarySpaceId)) {
-              if (binding.optional === false) throw new Error(`必需资料库 ${binding.librarySpaceId} 不存在`);
-              warnings.push(`资料库 ${binding.librarySpaceId} 不存在，已跳过绑定`);
-              continue;
-            }
-            this.deps.libraryBindings.bind(workspaceIdsByKey[binding.workspaceKey], binding.librarySpaceId);
-          }
-          for (const context of pendingContexts) {
-            const memory = this.memory.create({
-              kind: "constraint",
-              title: "Blueprint default context",
-              content: context.content,
-              scopeType: "workspace", scopeId: context.workspaceId,
-              sourceType: "import", explicit: true, confidence: 1, importance: 1,
-              metadata: { blueprintId: request.blueprintId, source: "blueprint-default-context" },
-            });
-            createdMemoryIds.push(memory.id);
-          }
-          for (const file of plan.files) {
-            const root = this.deps.db.getSpace(workspaceIdsByKey[file.workspaceKey])?.path;
-            if (!root) {
-              warnings.push(`Workspace ${file.workspaceKey} 未绑定目录，文件 ${file.path} 已跳过`);
-              continue;
-            }
-            writeSeedFile(root, file.path, file.content, file.encoding, base);
-          }
+      const workspaces: RuntimeBlueprintInstance["workspaces"] = [];
+      const first = plan.workspaces[0];
+      if (first) {
+        const rootName = request.rootName?.trim() || first.name;
+        if (rootName.length > 240) throw new Error("Blueprint instance Workspace 名称不能超过 240 字符");
+        const base = resolve(this.deps.workspaceInstancesRoot, `bp-${randomUUID()}`);
+        generatedRoot = base;
+        const workspacePaths = new Set<string>();
+        for (const item of plan.workspaces) {
+          const id = workspaceIdsByKey[item.key];
+          const parentId = item.parentKey ? workspaceIdsByKey[item.parentKey] : null;
+          const name = item === first ? rootName : item.name;
+          const path = item.parentKey ? join(pathsByKey.get(item.parentKey)!, safeName(name)) : base;
+          const pathKey = resolve(path).toLocaleLowerCase();
+          if (workspacePaths.has(pathKey)) throw new Error(`Blueprint Workspace 目录冲突：${path}`);
+          workspacePaths.add(pathKey);
+          workspaces.push({ id, name, parentId, path });
+          pathsByKey.set(item.key, path);
+          if (item.defaultContext) contexts.push(this.memory.prepareBlueprintContext(id, item.defaultContext, blueprint.id));
         }
+      }
 
-        for (const gadget of plan.gadgets) {
-          const scope = this.resolveGadgetScope(gadget, request.gadgetScope, workspaceIdsByKey, taskIdsByKey);
-          const created = this.deps.gadgetService.createFromBlueprint({
-            name: gadget.name,
-            description: gadget.description,
-            scope,
-            entry: gadget.manifest.entry,
-            files: gadget.sourceFiles,
-            defaultConfig: gadget.manifest.defaultConfig,
-            backend: gadget.manifest.backend,
-            metadata: gadget.metadata,
-            blueprintId: blueprint.id,
-          });
-          createdGadgets.push(created.id);
-          gadgetIdsByKey[gadget.key] = created.id;
+      const planned = { workspaces: new Set(Object.values(workspaceIdsByKey)), tasks: new Set(Object.values(taskIdsByKey)) };
+      for (const gadget of plan.gadgets) {
+        const scope = this.resolveGadgetScope(gadget, request.gadgetScope, workspaceIdsByKey, taskIdsByKey);
+        const plannedGadget = this.deps.gadgetService.planBlueprintGadget({
+          name: gadget.name, description: gadget.description, scope, entry: gadget.manifest.entry,
+          files: gadget.sourceFiles, defaultConfig: gadget.manifest.defaultConfig, backend: gadget.manifest.backend,
+          metadata: gadget.metadata, blueprintId: blueprint.id,
+        }, planned);
+        gadgets.push({ key: gadget.key, ...plannedGadget });
+      }
+
+      const instance: RuntimeBlueprintInstance = {
+        blueprintId: blueprint.id, createdAt: Date.now(), workspaces,
+        tasks: plan.tasks.map(task => ({ id: taskIdsByKey[task.key], workspaceId: workspaceIdsByKey[task.workspaceKey],
+          title: task.title, status: task.status ?? "pending", welcomeMode: task.welcomeMode })),
+        libraryBindings: plan.libraryBindings.map(binding => ({ workspaceId: workspaceIdsByKey[binding.workspaceKey],
+          librarySpaceId: binding.librarySpaceId, optional: binding.optional !== false })),
+        contexts: contexts.map(context => ({ id: context.id, workspaceId: context.scopes[0].scopeId!,
+          scopeId: randomUUID(), revisionId: randomUUID(), content: context.content, title: context.title,
+          contentHash: context.contentHash, metadataJson: JSON.stringify(context.metadata), createdAt: context.createdAt })),
+        gadgets: gadgets.map(gadget => gadgetInsertValues(gadget.descriptor)),
+      };
+      const nativeFiles = await this.deps.db.runtimeAuditReader?.supportsManagedStorage();
+      if (nativeFiles) {
+        instance.storage = {
+          workspaceInstancesRoot: resolve(this.deps.workspaceInstancesRoot),
+          seeds: plan.files.map(file => ({
+            workspaceId: workspaceIdsByKey[file.workspaceKey], path: normalizeCapturePath(file.path),
+            base64: file.encoding === "base64" ? file.content : Buffer.from(file.content, "utf8").toString("base64"),
+          })),
+          gadgets: gadgets.map(gadget => this.deps.gadgetService.blueprintGadgetFiles(gadget)),
+        };
+      } else {
+        materializeOnHost();
+      }
+      const status = await writeBlueprintInstance(this.deps.db, instance);
+      let skippedLibraries: string[];
+      if (!status) {
+        if (nativeFiles) materializeOnHost();
+        skippedLibraries = this.insertOnHost(instance, contexts, gadgets.map(gadget => gadget.descriptor));
+      } else {
+        switch (status.kind) {
+          case "committed": skippedLibraries = status.skippedLibraries; break;
+          case "missingBlueprint": throw new Error(`Blueprint 不存在：${blueprint.id}`);
+          case "missingLibrary": throw new Error(`必需资料库 ${status.id} 不存在`);
+          case "duplicateWorkspace": throw new Error(`工作空间名称重复：${status.name}`);
+          case "scopeChanged": throw new Error("Blueprint 的目标作用域已变化，请刷新后重试");
+          case "failed": throw new Error(`蓝图实例数据库写入失败：${status.message}`);
         }
-      });
-
-      return { blueprintId: blueprint.id, workspaceIdsByKey, taskIdsByKey, gadgetIdsByKey, warnings, missing: plan.missing };
+      }
+      warnings.push(...skippedLibraries.map(id => `资料库 ${id} 不存在，已跳过绑定`));
     } catch (error) {
-      for (const id of createdGadgets.reverse()) {
-        try { await this.deps.gadgetService.rollbackCreate(id); } catch { /* coordinated rollback best effort */ }
+      if (error instanceof BlueprintCommitUnconfirmed) throw error;
+      for (const descriptor of hostGadgets.reverse()) {
+        try { this.deps.gadgetService.discardBlueprintGadget(descriptor.id); }
+        catch (cleanupError) { console.warn(`[BlueprintService] 无法清理失败组件 ${descriptor.id}`, cleanupError); }
       }
-      for (const id of createdMemoryIds.reverse()) {
-        try { this.memory.forget(id); } catch { /* newly created L1 rollback */ }
-      }
-      for (const id of Object.values(taskIdsByKey)) {
-        try { this.deps.db.deleteTask(id); } catch { /* newly created task rollback */ }
-      }
-      if (rootWorkspaceId) {
-        try { this.deps.db.deleteSpaceTree(rootWorkspaceId); } catch { /* newly created tree rollback */ }
-      }
-      if (generatedRoot && isInside(this.deps.workspaceInstancesRoot, generatedRoot)) {
-        try { rmSync(generatedRoot, { recursive: true, force: true }); }
-        catch (cleanupError) { console.warn(`[BlueprintService] 无法清理失败实例目录 ${generatedRoot}`, cleanupError); }
+      if (hostRoot && isInside(this.deps.workspaceInstancesRoot, hostRoot)) {
+        try { rmSync(hostRoot, { recursive: true, force: true }); }
+        catch (cleanupError) { console.warn(`[BlueprintService] 无法清理失败实例目录 ${hostRoot}`, cleanupError); }
       }
       throw error;
     }
+
+    for (const { descriptor } of gadgets) this.deps.gadgetService.publishBlueprintGadget(descriptor);
+    for (const context of contexts) this.memory.indexSavedMemory(context);
+    const gadgetIdsByKey = Object.fromEntries(gadgets.map(({ key, descriptor }) => [key, descriptor.id]));
+    return { blueprintId: blueprint.id, workspaceIdsByKey, taskIdsByKey, gadgetIdsByKey, warnings, missing: plan.missing };
   }
 
-  captureDefinition(workspaceId: string, options: BlueprintCaptureOptions, confirmedDefinition?: BlueprintDefinition): BlueprintDescriptor {
+  private insertOnHost(instance: RuntimeBlueprintInstance, contexts: MemoryRecordDto[], gadgets: GadgetDescriptor[]): string[] {
+    return this.deps.db.transaction(() => {
+      if (!this.deps.repository.get(instance.blueprintId)) throw new Error(`Blueprint 不存在：${instance.blueprintId}`);
+      for (const workspace of instance.workspaces) this.deps.db.createSpace(workspace);
+      for (const task of instance.tasks) {
+        this.deps.db.upsertTask({ id: task.id, title: task.title, status: task.status as import("../../shared/agent-ipc").TaskDto["status"],
+          spaceId: task.workspaceId, welcomeMode: task.welcomeMode, updatedAt: instance.createdAt });
+      }
+      const skipped: string[] = [];
+      for (const binding of instance.libraryBindings) {
+        if (!this.deps.librarySpaceExists(binding.librarySpaceId)) {
+          if (!binding.optional) throw new Error(`必需资料库 ${binding.librarySpaceId} 不存在`);
+          skipped.push(binding.librarySpaceId);
+          continue;
+        }
+        this.deps.libraryBindings.bind(binding.workspaceId, binding.librarySpaceId);
+      }
+      for (const context of contexts) this.memory.insertBlueprintContext(context);
+      for (const gadget of gadgets) this.deps.gadgetService.insertBlueprintGadget(gadget);
+      return skipped;
+    });
+  }
+
+  async captureDefinition(workspaceId: string, options: BlueprintCaptureOptions, confirmedDefinition?: BlueprintDefinition): Promise<BlueprintDescriptor> {
     // Keep origin validation even when committing an exact preview supplied by the capture dialog.
     if (!this.deps.db.getSpace(workspaceId)) throw new Error(`工作空间不存在：${workspaceId}`);
     const definition = confirmedDefinition
       ? normalizeBlueprintDefinition(confirmedDefinition)
-      : this.previewCaptureDefinition(workspaceId, options);
+      : await this.previewCaptureDefinition(workspaceId, options);
     return this.create({ name: options.name, description: options.description, definition });
   }
 
-  previewCaptureDefinition(workspaceId: string, options: BlueprintCaptureOptions): BlueprintDefinition {
+  async previewCaptureDefinition(workspaceId: string, options: BlueprintCaptureOptions): Promise<BlueprintDefinition> {
     const root = this.deps.db.getSpace(workspaceId);
     if (!root) throw new Error(`工作空间不存在：${workspaceId}`);
     const selected = new Map<string, string>();
@@ -226,12 +266,12 @@ export class BlueprintService {
       selected.set(normalized.toLocaleLowerCase(), normalized);
     }
     if (selected.size > BLUEPRINT_MAX_FILES) throw new Error(`Blueprint 选择文件不能超过 ${BLUEPRINT_MAX_FILES} 个`);
-    const captureBudget = { totalBytes: 0 };
+    const tasks = options.includeTasks !== false ? this.deps.db.listTasks() : [];
     const capturedWorkspaceIds = new Set<string>();
     let workspaceSequence = 0;
     let taskSequence = 0;
     let gadgetSequence = 0;
-    const captureNode = (id: string): WorkspaceBlueprintNode => {
+    const captureNode = async (id: string): Promise<WorkspaceBlueprintNode> => {
       if (capturedWorkspaceIds.has(id)) throw new Error(`Workspace 树存在循环或重复引用：${id}`);
       capturedWorkspaceIds.add(id);
       const workspace = this.deps.db.getSpace(id);
@@ -239,9 +279,9 @@ export class BlueprintService {
       const workspaceKey = `workspace:${++workspaceSequence}`;
       const node: WorkspaceBlueprintNode = { key: workspaceKey, name: workspace.name };
       if (options.includeContext === true) {
-        const manualContext = this.memory.search({
+        const manualContext = (await this.memory.searchLexical({
           workspaceId: id, scopeTypes: ["workspace"], includeInherited: false, statuses: ["active"], limit: 500,
-        })
+        }))
           .map(({ memory }) => memory)
           .filter((memory) => memory.sourceType !== "agent")
           .map((memory) => redactBlueprintSecrets((memory.content ? `${memory.title} — ${memory.content}` : memory.title).trim()))
@@ -258,28 +298,34 @@ export class BlueprintService {
       }
       const bindings = this.deps.libraryBindings.listByWorkspace(id);
       if (bindings.length) node.libraryBindings = bindings.map((librarySpaceId) => ({ librarySpaceId, optional: true }));
-      if (options.includeTasks !== false) {
-        const tasks = this.deps.db.listTasks().filter((task) => task.spaceId === id && !task.archived);
-        if (tasks.length) node.tasks = tasks.map((task) => ({
-          key: `task:${++taskSequence}`,
-          title: task.title,
-          ...(task.welcomeMode ? { welcomeMode: task.welcomeMode } : {}),
-        }));
-      }
+      const workspaceTasks = tasks.filter(task => task.spaceId === id && !task.archived);
+      if (workspaceTasks.length) node.tasks = workspaceTasks.map((task) => ({
+        key: `task:${++taskSequence}`,
+        title: task.title,
+        ...(task.welcomeMode ? { welcomeMode: task.welcomeMode } : {}),
+      }));
       if (options.includeGadgets !== false) {
-        const gadgets = this.deps.gadgetService.list({ scope: { type: "workspace", workspaceId: id } });
-        if (gadgets.length) node.gadgets = gadgets.map((item) => this.gadgetDefinition(item.id, workspaceKey, `gadget:${++gadgetSequence}`));
+        const gadgets = await this.deps.gadgetService.readList({ scope: { type: "workspace", workspaceId: id } });
+        if (gadgets.length) {
+          node.gadgets = [];
+          for (const gadget of gadgets) {
+            node.gadgets.push(await this.gadgetDefinition(gadget.id, id, workspaceKey, `gadget:${++gadgetSequence}`));
+          }
+        }
       }
       if (id === workspaceId && selected.size && workspace.path) {
-        node.files = [...selected.values()].map((path) => captureSelectedFile(workspace.path!, path, captureBudget));
+        node.files = await this.captureWorkspaceFiles(id, workspace.path, [...selected.values()]);
       }
       if (options.includeChildren !== false) {
         const children = this.deps.db.getSpaceChildren(id).filter((space) => !space.effectiveArchived);
-        if (children.length) node.children = children.map((child) => captureNode(child.id));
+        if (children.length) {
+          node.children = [];
+          for (const child of children) node.children.push(await captureNode(child.id));
+        }
       }
       return node;
     };
-    const workspace = captureNode(workspaceId);
+    const workspace = await captureNode(workspaceId);
     const hasGadgets = hasWorkspaceGadgets(workspace);
     const definition: BlueprintDefinition = hasGadgets
       ? { schemaVersion: BLUEPRINT_DEFINITION_SCHEMA_VERSION, kind: "composite", workspace }
@@ -287,8 +333,18 @@ export class BlueprintService {
     return normalizeBlueprintDefinition(definition);
   }
 
-  captureGadget(gadgetId: string, input: { name?: string; description?: string } = {}): BlueprintDescriptor {
-    const captured = this.deps.gadgetService.captureSource(gadgetId);
+  private async captureWorkspaceFiles(workspaceId: string, root: string, paths: string[]): Promise<NonNullable<WorkspaceBlueprintNode["files"]>> {
+    if (this.deps.db.getSpace(workspaceId)?.path !== root) throw new Error("工作空间目录已变化，请重新预览");
+    const capture = await this.deps.db.runtimeAuditReader?.captureBlueprintWorkspace(root, paths, BLUEPRINT_CAPTURE_DENY_PATTERN);
+    if (this.deps.db.getSpace(workspaceId)?.path !== root) throw new Error("工作空间目录已变化，请重新预览");
+    if (capture?.status === "captured") return capture.files.map(decodeBlueprintFile);
+    if (capture?.status === "rejected") throw new Error(capture.message);
+    const budget = { totalBytes: 0 };
+    return paths.map(path => captureSelectedFile(root, path, budget));
+  }
+
+  async captureGadget(gadgetId: string, input: { name?: string; description?: string } = {}): Promise<BlueprintDescriptor> {
+    const captured = await this.deps.gadgetService.captureSourceAsync(gadgetId);
     const definition: GadgetBlueprintDefinition = {
       schemaVersion: BLUEPRINT_DEFINITION_SCHEMA_VERSION,
       kind: "gadget",
@@ -308,13 +364,16 @@ export class BlueprintService {
     });
   }
 
-  delete(id: string): void {
-    if (!this.deps.repository.delete(id)) throw new Error(`Blueprint 不存在：${id}`);
+  async delete(id: string): Promise<void> {
+    if (!await this.deps.repository.delete(id)) throw new Error(`Blueprint 不存在：${id}`);
     this.emitChanged({ type: "deleted", blueprintId: id });
   }
 
-  private gadgetDefinition(id: string, workspaceKey?: string, key = "gadget:root"): BlueprintGadgetDefinition {
-    const captured = this.deps.gadgetService.captureSource(id);
+  private async gadgetDefinition(id: string, workspaceId: string, workspaceKey: string, key: string): Promise<BlueprintGadgetDefinition> {
+    const captured = await this.deps.gadgetService.captureSourceAsync(id);
+    if (captured.descriptor.scope.type !== "workspace" || captured.descriptor.scope.workspaceId !== workspaceId) {
+      throw new Error("Gadget 作用域已变化，请重新预览");
+    }
     return {
       key,
       name: captured.descriptor.name,
@@ -322,7 +381,8 @@ export class BlueprintService {
       manifest: captured.manifest,
       sourceFiles: captured.sourceFiles,
       metadata: sanitizeBlueprintMetadata(captured.descriptor.metadata),
-      ...(workspaceKey ? { workspaceKey, scopeType: "workspace" as const } : {}),
+      workspaceKey,
+      scopeType: "workspace",
     };
   }
 
@@ -339,8 +399,8 @@ export class BlueprintService {
     return requested ?? { type: "global" };
   }
 
-  private require(id: string): BlueprintDescriptor {
-    const blueprint = this.deps.repository.get(id);
+  private async readRequired(id: string): Promise<BlueprintDescriptor> {
+    const blueprint = await this.deps.repository.read(id);
     if (!blueprint) throw new Error(`Blueprint 不存在：${id}`);
     return blueprint;
   }

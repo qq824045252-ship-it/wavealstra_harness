@@ -438,20 +438,38 @@ export class LibraryRepository {
       .run(this.toParams(item));
   }
 
-  updateItem(item: LibraryItemDto): void {
+  updateItem(item: LibraryItemDto, previous: LibraryItemDto): void {
+    const before = this.toParams(previous);
+    // Keep note changes committed by the Rust worker while this operation was preparing its update.
     this.db
       .prepare(
         `UPDATE library_items SET
-           collection_id = @collectionId, title = @title, filename = @filename, mime_type = @mimeType,
-           size_bytes = @sizeBytes, owner = @owner, favorite = @favorite, url = @url,
+           collection_id = CASE WHEN @collectionId IS @previousCollection THEN collection_id ELSE @collectionId END,
+           title = CASE WHEN @title = @previousTitle THEN title ELSE @title END,
+           filename = CASE WHEN @filename = @previousFilename THEN filename ELSE @filename END, mime_type = @mimeType,
+           size_bytes = CASE WHEN @sizeBytes = @previousSize THEN size_bytes ELSE @sizeBytes END,
+           owner = @owner, favorite = @favorite, url = @url,
            source_type = @sourceType, source_task_id = @sourceTaskId,
            source_artifact_id = @sourceArtifactId, original_path = @originalPath,
-           content_hash = @contentHash, extract_status = @extractStatus,
-           updated_at = @updatedAt, last_visited_at = @lastVisitedAt,
-           trashed_at = @trashedAt, note_metadata = @noteMetadata
+           content_hash = CASE WHEN @contentHash IS @previousHash THEN content_hash ELSE @contentHash END,
+           extract_status = @extractStatus,
+           updated_at = CASE WHEN updated_at = @previousUpdatedAt THEN @updatedAt ELSE max(updated_at, @updatedAt) END,
+           last_visited_at = @lastVisitedAt,
+           trashed_at = CASE WHEN @trashedAt IS @previousTrash THEN trashed_at ELSE @trashedAt END,
+           note_metadata = CASE WHEN @noteMetadata = @previousMetadata THEN note_metadata ELSE @noteMetadata END
          WHERE id = @id`,
       )
-      .run(this.toParams(item));
+      .run({
+        ...this.toParams(item),
+        previousCollection: before.collectionId,
+        previousTitle: before.title,
+        previousFilename: before.filename,
+        previousSize: before.sizeBytes,
+        previousHash: before.contentHash,
+        previousTrash: before.trashedAt,
+        previousMetadata: before.noteMetadata,
+        previousUpdatedAt: before.updatedAt,
+      });
   }
 
   deleteItem(id: string): void {

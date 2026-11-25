@@ -208,7 +208,7 @@ try {
     connectionKey: "a".repeat(64), chatId: "123", senderId: "owner", address: { chatId: "123" } },
     text: `work ${token}`, effectKey: "fixture", assertCurrent: () => {} });
   assert.equal(adapter.workText, "work [凭据已隐藏]");
-  assert(!JSON.stringify(gateway.listMessages({})).includes(token), "history/UI never persist leaked outgoing secrets");
+  assert(!JSON.stringify(await gateway.listMessages({})).includes(token), "history/UI never persist leaked outgoing secrets");
   await gateway.disconnect(adapter.id);
   assert.equal(gateway.getChannelConfig(adapter.id).config.botToken, "••••••", "disconnect keeps encrypted configuration");
   await gateway.connect(adapter.id, { botToken: "••••••", allowUsers: ["owner"] });

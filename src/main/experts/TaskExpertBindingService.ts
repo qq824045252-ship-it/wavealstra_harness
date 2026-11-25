@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import type { TaskExpertBindingDto, TaskExpertBindingSaveRequest, TaskExpertSnapshot } from "../../shared/expert-binding";
+import { normalizeWelcomeMode, type WelcomeMode } from "../../shared/mode-profile";
 import type { AppDatabase } from "../db/AppDatabase";
 import { getMyBuddyDir } from "../paths";
 import type { ExpertService } from "./ExpertService";
@@ -17,6 +18,27 @@ interface BindingRow {
   desired_skills_json: string;
   active_skills_json: string;
   warnings_json: string;
+}
+export interface RuntimeTaskExpertBindingState {
+  expertId: string | null;
+  welcomeMode: string | null;
+  binding: BindingRow | null;
+}
+export interface RuntimeTaskExpertBindingMutation {
+  taskId: string;
+  expectedDesiredJson: string | null;
+  desiredJson: string | null;
+  desiredSkillsJson: string;
+  expertId: string | null;
+  at: number;
+}
+export type RuntimeTaskExpertBindingWriteReply =
+  | { status: "saved"; state: RuntimeTaskExpertBindingState }
+  | { status: "stale" | "missing" | "needsHost" }
+  | { status: "rejected"; message: string };
+interface BindingSettings {
+  binding: TaskExpertBindingDto;
+  welcomeMode: WelcomeMode | null;
 }
 export interface TaskExpertBindingOptions {
   rootDir?: string;
@@ -158,9 +180,74 @@ export class TaskExpertBindingService {
     }
   }
 
+  private hostState(taskId: string): RuntimeTaskExpertBindingState {
+    const task = this.db.getTask(taskId);
+    if (!task) throw new Error("任务不存在");
+    return { expertId: task.expertId ?? null, welcomeMode: task.welcomeMode ?? null, binding: this.row(taskId) ?? null };
+  }
+
+  private async settingsState(taskId: string): Promise<RuntimeTaskExpertBindingState> {
+    const native = this.db.connection.inTransaction ? undefined : await this.db.runtimeAuditReader?.readTaskExpertBinding(taskId);
+    if (native === null) throw new Error("任务不存在");
+    const state = native ?? this.hostState(taskId);
+    if (state.binding || !state.expertId) return state;
+    this.ensureLegacy(taskId);
+    return this.hostState(taskId);
+  }
+
+  private settings(taskId: string, state: RuntimeTaskExpertBindingState): BindingSettings {
+    return {
+      welcomeMode: normalizeWelcomeMode(state.welcomeMode),
+      binding: state.binding ? this.decode(state.binding) : { taskId, desired: null, active: null, pending: false },
+    };
+  }
+
+  async readSettings(taskId: string): Promise<BindingSettings> {
+    return this.settings(taskId, await this.settingsState(taskId));
+  }
+
   save(request: TaskExpertBindingSaveRequest): TaskExpertBindingDto {
     if (!this.db.getTask(request.taskId)) throw new Error("任务不存在");
-    const before = this.row(request.taskId);
+    const { mutation, revisionDir } = this.prepareSave(request, this.row(request.taskId));
+    try {
+      return this.db.connection.transaction(() => {
+        this.writeDesired(mutation);
+        return this.get(request.taskId)!;
+      }).immediate();
+    } catch (error) {
+      this.discardRevision(request.taskId, revisionDir);
+      throw error;
+    }
+  }
+
+  async saveSettings(request: TaskExpertBindingSaveRequest): Promise<BindingSettings> {
+    const native = this.db.connection.inTransaction ? undefined : this.db.runtimeAuditReader;
+    const before = await this.settingsState(request.taskId);
+    const { mutation, revisionDir } = this.prepareSave(request, before.binding);
+    // Keep copied skills when transport fails after submission. The commit may already reference them.
+    const reply = native ? await native.writeTaskExpertBinding(mutation) : { status: "needsHost" as const };
+    if (!reply) throw new Error("无法确认人设保存结果，请刷新查看");
+    if (reply.status === "saved") return this.settings(request.taskId, reply.state);
+    let state: RuntimeTaskExpertBindingState;
+    try {
+      if (reply.status === "stale") throw new Error("人设已被修改，请刷新后重试");
+      if (reply.status === "missing") throw new Error("任务不存在");
+      if (reply.status === "rejected") throw new Error(reply.message);
+      state = this.db.connection.transaction(() => {
+        if (!this.db.getTask(request.taskId)) throw new Error("任务不存在");
+        this.writeDesired(mutation);
+        this.db.connection.prepare("UPDATE tasks SET expert_id=?, updated_at=MAX(updated_at, ?) WHERE id=?")
+          .run(mutation.expertId, mutation.at, request.taskId);
+        return this.hostState(request.taskId);
+      }).immediate();
+    } catch (error) {
+      this.discardRevision(request.taskId, revisionDir);
+      throw error;
+    }
+    return this.settings(request.taskId, state);
+  }
+
+  private prepareSave(request: TaskExpertBindingSaveRequest, before: BindingRow | null | undefined) {
     const prior = before && parseSnapshot(before.desired_json);
     if (request.expectedRevision !== undefined && request.expectedRevision !== revision(prior ?? null)) {
       throw new Error("人设已被修改，请刷新后重试");
@@ -206,20 +293,32 @@ export class TaskExpertBindingService {
           copies.push({ id, relativePath, origin: old?.origin ?? (privateSource ? "private" : "global") });
         }
       }
-      this.db.connection.transaction(() => {
-        // Also compare after file copying, before changing the durable desired selection.
-        const current = this.row(request.taskId);
-        if ((current?.desired_json ?? null) !== (before?.desired_json ?? null)) throw new Error("人设已被修改，请刷新后重试");
-        this.db.connection.prepare(`INSERT INTO task_expert_bindings(task_id, desired_json, active_json, desired_skills_json, active_skills_json, warnings_json, updated_at)
-          VALUES (?, ?, NULL, ?, '[]', '[]', ?) ON CONFLICT(task_id) DO UPDATE SET
-          desired_json=excluded.desired_json, desired_skills_json=excluded.desired_skills_json, warnings_json='[]', updated_at=excluded.updated_at`)
-          .run(request.taskId, snapshot ? JSON.stringify(snapshot) : null, JSON.stringify(copies), Date.now());
-      })();
-      return this.get(request.taskId)!;
+      const mutation: RuntimeTaskExpertBindingMutation = {
+        taskId: request.taskId,
+        expectedDesiredJson: before?.desired_json ?? null,
+        desiredJson: snapshot ? JSON.stringify(snapshot) : null,
+        desiredSkillsJson: JSON.stringify(copies),
+        expertId: snapshot?.sourceExpertId ?? null,
+        at: Date.now(),
+      };
+      return { mutation, revisionDir };
     } catch (error) {
-      if (revisionDir && dirname(revisionDir) === this.taskRoot(request.taskId)) rmSync(revisionDir, { recursive: true, force: true });
+      this.discardRevision(request.taskId, revisionDir);
       throw error;
     }
+  }
+
+  private writeDesired(mutation: RuntimeTaskExpertBindingMutation): void {
+    const current = this.row(mutation.taskId);
+    if ((current?.desired_json ?? null) !== mutation.expectedDesiredJson) throw new Error("人设已被修改，请刷新后重试");
+    this.db.connection.prepare(`INSERT INTO task_expert_bindings(task_id, desired_json, active_json, desired_skills_json, active_skills_json, warnings_json, updated_at)
+      VALUES (?, ?, NULL, ?, '[]', '[]', ?) ON CONFLICT(task_id) DO UPDATE SET
+      desired_json=excluded.desired_json, desired_skills_json=excluded.desired_skills_json, warnings_json='[]', updated_at=excluded.updated_at`)
+      .run(mutation.taskId, mutation.desiredJson, mutation.desiredSkillsJson, mutation.at);
+  }
+
+  private discardRevision(taskId: string, revisionDir?: string): void {
+    if (revisionDir && dirname(revisionDir) === this.taskRoot(taskId)) rmSync(revisionDir, { recursive: true, force: true });
   }
 
   /** Caller must establish a safe idle boundary; this never schedules or interrupts work. */

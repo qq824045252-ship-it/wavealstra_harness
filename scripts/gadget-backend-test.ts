@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { runInNewContext } from "node:vm";
+import Database from "better-sqlite3";
 import { GadgetStorage } from "../src/main/gadget/GadgetStorage";
 import { GadgetRegistry } from "../src/main/gadget/GadgetRegistry";
 import { GadgetRuntime } from "../src/main/gadget/GadgetRuntime";
@@ -13,11 +14,18 @@ import type { GadgetClient } from "../src/shared/gadget-backend";
 import { GADGET_MANIFEST_SCHEMA_VERSION, type GadgetDescriptor } from "../src/shared/gadget-types";
 import { currentNodePlatform } from "../src/main/platform/runtime";
 import { terminateGadgetCommands } from "../src/main/platform/gadget-commands";
+import { RuntimeAuditReader, locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-gadget-backend-"));
 const storage = new GadgetStorage(join(root, "gadgets"));
 const registry = new GadgetRegistry();
-const runtime = new GadgetRuntime(storage, registry);
+const nativeFlag = process.argv.indexOf("--native");
+const nativeExecutable = nativeFlag < 0 ? undefined : locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd());
+if (nativeFlag >= 0) assert(nativeExecutable && existsSync(nativeExecutable), "Rust worker executable is required");
+const dbPath = join(root, "app.db");
+if (nativeExecutable) new Database(dbPath).close();
+const audit = nativeExecutable ? new RuntimeAuditReader(nativeExecutable, dbPath) : undefined;
+const runtime = new GadgetRuntime(storage, registry, undefined, audit);
 const deadline = setTimeout(() => { console.error("gadget backend test exceeded 90 seconds"); process.exit(1); }, 90_000);
 const source = (version: string) => `export default async function(ctx) { return { actions: {
   version: async () => ${JSON.stringify(version)},
@@ -148,18 +156,46 @@ async function checkProcessBackend(): Promise<void> {
 async function main(): Promise<void> {
   const a = fixture("a");
   const b = fixture("b");
+  const aData = storage.paths(a.id).dataPath;
+  const stateFile = join(aData, ".mybuddy-state.json");
+  const legacyKey = "legacy-\uD800";
+  const legacyValue = { z: "\uDFFF", a: ["原值", 42] };
+  writeFileSync(stateFile, JSON.stringify({ storage: { [legacyKey]: { value: legacyValue, revision: "legacy-revision" } }, config: {} }, null, 2));
+  if (audit) {
+    const opened = await audit.openGadgetState(aData);
+    assert.equal(opened?.kind, "opened", "native acceptance requires successful Rust storage open");
+  }
   const started = await runtime.start(a);
   assert.equal(started.status, "running", started.error);
   const sdk = await client(started.url!);
   assert.equal(await sdk.call("version"), "one");
+  assert.deepEqual(await sdk.storage.read(legacyKey), { value: legacyValue, revision: "legacy-revision" });
+  assert.deepEqual(Object.keys(await sdk.storage.get(legacyKey) as object), ["z", "a"]);
+  assert.deepEqual(await sdk.storage.keys(), [legacyKey]);
   assert.equal(await sdk.config.get("theme"), "light");
   await sdk.config.set("theme", "dark");
   assert.equal(await sdk.config.get("theme"), "dark");
   const first = await sdk.storage.set("counter", { count: 1 }, null);
   assert(first.revision);
+  const raced = await Promise.allSettled([
+    sdk.storage.set("concurrent", 14, null), sdk.storage.set("concurrent", 29, null),
+  ]);
+  const wins = raced.filter(result => result.status === "fulfilled");
+  assert.equal(wins.length, 1);
+  assert.equal(await sdk.storage.get("concurrent"), wins[0].value.value);
+  const stale = raced.find(result => result.status === "rejected");
+  assert.match(String(stale?.reason), /修改|revision/i);
   await assert.rejects(sdk.storage.set("counter", 2, null), /修改|revision/i);
   await sdk.storage.set("counter", { count: 2 }, first.revision);
   assert.deepEqual(await sdk.storage.get("counter"), { count: 2 });
+  renameSync(stateFile, `${stateFile}.retained`);
+  mkdirSync(stateFile);
+  try {
+    await assert.rejects(sdk.storage.set("counter", { count: 99 }));
+  } finally {
+    rmdirSync(stateFile);
+    renameSync(`${stateFile}.retained`, stateFile);
+  }
   assert.deepEqual(await sdk.call("command", { arg: "hello world", data: { n: 7 } }), { arg: "hello world", stdin: { n: 7 } });
   await assert.rejects(sdk.call("missing"));
   for (const path of ["server/index.mjs", ".env", "secret.txt", "%2e%2e%2f.env"]) {
@@ -175,8 +211,9 @@ async function main(): Promise<void> {
   assert.equal(await runtime.request(b, "actions/version", { input: null }), "one");
   assert.equal(await slow, "done");
   const previous = storage.readSource(a.id);
-  storage.updateSource({ gadgetId: a.id, expectedRevision: previous.revision, files: [{ path: "server/index.mjs", content: source("two") }] }, () => {});
-  runtime.sourceChanged(a);
+  const saved = storage.updateSource({ gadgetId: a.id, expectedRevision: previous.revision,
+    files: [{ path: "server/index.mjs", content: source("two") }] }, () => {});
+  runtime.sourceChanged(a, Boolean(saved.manifest.backend));
   const changed = await runtime.health(a.id);
   assert.equal(changed.status, "running", changed.error);
   assert.notEqual(changed.pid, started.pid);
@@ -184,6 +221,9 @@ async function main(): Promise<void> {
   const fresh = await client(changed.url!);
   assert.deepEqual(await fresh.storage.get("counter"), { count: 2 });
   assert.equal(await fresh.config.get("theme"), "dark");
+  assert.deepEqual(await fresh.storage.read(legacyKey), { value: legacyValue, revision: "legacy-revision" });
+  await fresh.storage.delete(legacyKey, "legacy-revision");
+  assert.deepEqual(await fresh.storage.read(legacyKey), { value: null, revision: null });
   const abort = new AbortController();
   const cancelled = fresh.call("wait", { ms: 400, value: "late" }, { signal: abort.signal });
   abort.abort();
@@ -276,6 +316,10 @@ async function main(): Promise<void> {
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
-  try { await runtime.disposeAll(); } finally { rmSync(root, { recursive: true, force: true }); clearTimeout(deadline); }
+  try { await runtime.disposeAll(); } finally {
+    await audit?.close();
+    rmSync(root, { recursive: true, force: true });
+    clearTimeout(deadline);
+  }
 });
 

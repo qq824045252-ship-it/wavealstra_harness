@@ -83,12 +83,45 @@ export function memoryProjectionQuery(input: MemorySearchRequest): MemorySearchR
   return { ...input, statuses: input.statuses ?? ["active"], limit: Math.max(32, (input.limit ?? 16) * 3) };
 }
 
+type BaselineKind = "workPreferences" | "project" | "bot" | "shared" | "episode";
+const BASELINE_KINDS: BaselineKind[] = ["workPreferences", "project", "bot", "shared", "episode"];
+type MemoryContextBaselines = { version: number; hits: Partial<Record<BaselineKind, MemorySearchHit[]>> };
+
+function baselineRequests(memory: MemoryService, input: MemorySearchRequest, workScope: boolean): Partial<Record<BaselineKind, MemorySearchRequest>> {
+  const requests: Partial<Record<BaselineKind, MemorySearchRequest>> = {};
+  const preferences = PREFERENCE_KINDS.filter(kind => !input.kinds?.length || input.kinds.includes(kind));
+  const base: MemorySearchRequest = { ...input, query: undefined, statuses: ["active"] };
+  if (workScope && preferences.length) {
+    requests.workPreferences = { ...base, kinds: preferences, limit: BOT_PREFERENCE_BASELINE_LIMIT + 1 };
+  }
+  if (!input.query?.trim()) return requests;
+  if (input.projectId || input.taskId) {
+    requests.project = { ...base, scopeTypes: ["project"], limit: PROJECT_BASELINE_LIMIT };
+  }
+  if (preferences.length) {
+    const preferenceQuery = { ...base, kinds: preferences, limit: BOT_PREFERENCE_BASELINE_LIMIT };
+    if (memory.allowsPersonalBotBaseline(input)) requests.bot = { ...preferenceQuery, scopeTypes: ["bot"] };
+    const includesTask = input.taskId === DOTS_TASK_ID || Boolean(input.taskId && isGatewayConversation(input.taskId));
+    requests.shared = { ...preferenceQuery, scopeTypes: includesTask ? ["task", "team", "global"] : ["team", "global"] };
+  }
+  requests.episode = { ...base, scopeTypes: ["conversation", "work"], limit: 6 };
+  return requests;
+}
+
+export async function readMemoryContextBaselines(memory: MemoryService, input: MemorySearchRequest): Promise<MemoryContextBaselines | undefined> {
+  const requests = baselineRequests(memory, input, memory.resolveScopeChain(input).some(scope => scope.scopeType === "work"));
+  const kinds = BASELINE_KINDS.filter(kind => requests[kind] !== undefined);
+  const candidates = await memory.searchBaselines(kinds.map(kind => requests[kind]!));
+  return candidates && { version: candidates.version, hits: Object.fromEntries(kinds.map((kind, index) => [kind, candidates.hits[index]])) };
+}
+
 /** Stateless selection/serialization. Memory repositories own facts and grounding. */
 export function projectMemoryContext(
   memory: MemoryService,
   input: MemorySearchRequest & { budgetChars?: number; trackRecall?: boolean; dotsLimits?: DotsMemoryLimits },
   recalled?: MemorySearchHit[],
   delegatedSources: Array<{ id: string; revision: number }> = [],
+  baselines?: MemoryContextBaselines,
 ): ProjectedMemoryContext {
   const isDots = input.taskId === DOTS_TASK_ID;
   const dotsLimits = isDots ? input.dotsLimits ?? defaultDotsMemoryLimits : undefined;
@@ -115,6 +148,14 @@ export function projectMemoryContext(
     return true;
   };
   const chain = memory.resolveScopeChain(input);
+  const workScope = chain.some(scope => scope.scopeType === "work");
+  const requests = baselineRequests(memory, input, workScope);
+  const baseline = (kind: BaselineKind) => {
+    const request = requests[kind];
+    if (!request) return [];
+    if (baselines && baselines.hits[kind] && memory.isCurrentBaselineVersion(baselines.version)) return baselines.hits[kind];
+    return memory.search(request);
+  };
   // Use the same authoritative Work/Bot scope for derived views and L1 recall.
   // Passing taskId here would let cognition fall back to unrelated UI task metadata.
   const sources = memory.cognition.getContextSources({
@@ -140,11 +181,8 @@ export function projectMemoryContext(
   };
   // Only current typed L1 atoms may authorize inherited formatting. Query-free
   // lookup is bounded and scope-checked; historical progress snapshots never qualify.
-  const allowedPreferenceKinds = PREFERENCE_KINDS.filter(kind => !input.kinds?.length || input.kinds.includes(kind));
-  const workPreferences = chain.some(scope => scope.scopeType === "work")
-    ? allowedPreferenceKinds.length ? memory.search({ ...input, query: undefined, kinds: allowedPreferenceKinds,
-      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT + 1 }).filter(hit => visible(hit.memory.id)
-        && PREFERENCE_KINDS.includes(hit.memory.kind)) : [] : undefined;
+  const workPreferences = workScope ? baseline("workPreferences").filter(hit => visible(hit.memory.id)
+    && PREFERENCE_KINDS.includes(hit.memory.kind)) : undefined;
   const preferenceIds = new Set(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT).map(hit => hit.memory.id));
   const finishSearch = recalled ? undefined : startAnswerRoutingTiming("memorySearch");
   const queryHits = recalled ? recalled.flatMap(hit => {
@@ -207,27 +245,14 @@ export function projectMemoryContext(
   const queried = queryHits.filter(hit => visible(hit.memory.id) && (!isDots || !dotsRecordApplicability(hit.memory)));
   // Shared project cognition is a baseline for every bound task, not only for lexically similar prompts.
   const queriedIds = new Set(queried.map((hit) => hit.memory.id));
-  const projectBaseline = input.query?.trim() && (input.projectId || input.taskId)
-    ? memory.search({ ...input, query: undefined, scopeTypes: ["project"], statuses: ["active"], limit: PROJECT_BASELINE_LIMIT })
-      .filter((hit) => !queriedIds.has(hit.memory.id) && visible(hit.memory.id))
-    : [];
+  const projectBaseline = baseline("project").filter(hit => !queriedIds.has(hit.memory.id) && visible(hit.memory.id));
   // Language, units and formatting preferences apply even to an unrelated Work query.
   // Keep this bounded, current and personal; unrelated facts still require query recall.
-  const baselineKinds = PREFERENCE_KINDS;
-  const allowedBaselineKinds = baselineKinds.filter(kind => !input.kinds?.length || input.kinds.includes(kind));
-  const botBaseline = input.query?.trim() && allowedBaselineKinds.length && memory.allowsPersonalBotBaseline(input)
-    ? memory.search({ ...input, query: undefined, scopeTypes: ["bot"], kinds: allowedBaselineKinds,
-      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id))
-    : [];
+  const botBaseline = baseline("bot").filter(hit => visible(hit.memory.id));
   // Stable shared preferences and the current episode survive unrelated follow-up wording.
   // Scope-chain filtering still owns visibility; this does not expand ownership.
-  const sharedBaseline = input.query?.trim() && allowedBaselineKinds.length
-    ? memory.search({ ...input, query: undefined, scopeTypes: input.taskId === DOTS_TASK_ID || input.taskId && isGatewayConversation(input.taskId) ? ["task", "team", "global"] : ["team", "global"], kinds: allowedBaselineKinds,
-      statuses: ["active"], limit: BOT_PREFERENCE_BASELINE_LIMIT }).filter(hit => visible(hit.memory.id)
-        && (!isDots || !dotsRecordApplicability(hit.memory))) : [];
-  const episodeBaseline = input.query?.trim()
-    ? memory.search({ ...input, query: undefined, scopeTypes: ["conversation", "work"],
-      statuses: ["active"], limit: 6 }).filter(hit => visible(hit.memory.id)) : [];
+  const sharedBaseline = baseline("shared").filter(hit => visible(hit.memory.id) && (!isDots || !dotsRecordApplicability(hit.memory)));
+  const episodeBaseline = baseline("episode").filter(hit => visible(hit.memory.id));
   const hits = [...exceptionHits, ...(workPreferences?.slice(0, BOT_PREFERENCE_BASELINE_LIMIT) ?? []), ...botBaseline, ...sharedBaseline, ...episodeBaseline, ...queried, ...projectBaseline];
   const relevantIds = queriedIds;
   for (const scenario of scenarios) {

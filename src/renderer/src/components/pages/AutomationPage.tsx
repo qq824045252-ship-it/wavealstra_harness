@@ -229,10 +229,10 @@ export default function AutomationPage({
     const api = window.api?.cron;
     if (!api) return;
     const revision = ++refreshRevision.current;
-    const [j, r] = await Promise.all([api.list(), api.runs(80)]);
+    const overview = await api.overview();
     if (revision !== refreshRevision.current) return;
-    setJobs(j);
-    setRuns(r);
+    setJobs(overview.jobs);
+    setRuns(overview.runs);
     setCatalogReady(true);
   };
 

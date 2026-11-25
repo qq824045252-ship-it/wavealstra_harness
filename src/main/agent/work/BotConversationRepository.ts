@@ -17,6 +17,7 @@ import { botDelegationSourceSchema, type BotDelegationSource } from "./BotDelega
 import { settleBotCapabilityTools } from "./BotCapabilityPresentation";
 import { delegatedFeedbackText, delegatedReplyWorkIds, reconcileDelegatedFeedback } from "./BotDelegatedTaskProjection";
 import type { ChatToolCallDto } from "../../../shared/agent-ipc";
+import type { RuntimeBotHistoryFacts, RuntimeBotHistoryPage } from "./BotHistoryData";
 
 const conversationRow = z.object({ conversation_id: z.string(), bot_id: z.string(), team_id: z.string().nullable().optional(), user_id: z.string(), revision: z.number(),
   current_request_id: z.string().nullable(), archived_at: z.number().nullable(), created_at: z.number(), updated_at: z.number() });
@@ -28,6 +29,7 @@ export type BotMessageReceipt = z.infer<typeof receiptRow>;
 const messageRow = z.object({ message_id: z.string(), conversation_id: z.string(), bot_id: z.string(), request_id: z.string(),
   ordinal: z.number(), role: botMessageSchema.shape.role, text: z.string(), status: botMessageSchema.shape.status,
   work_ids_json: z.string(), error: z.string().nullable(), created_at: z.number(), updated_at: z.number() });
+type MessageRow = z.infer<typeof messageRow>;
 
 export class BotConversationRepository {
   readonly metrics: BotForegroundMetricsStore;
@@ -169,7 +171,7 @@ export class BotConversationRepository {
   history(userId: string, request: BotHistoryRequest, options: { reconcile?: boolean } = {}): BotHistoryDto {
     let conversation = this.conversation(userId, request.botId, request.inbox ? botInboxId(userId, request.botId) : request.conversationId, request.teamId);
     this.assertScope(conversation, request.teamId);
-    if (!conversation) return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
+    if (!conversation) return this.emptyHistory(request);
     // Current-format completed delegations may predate source projection. Repair
     // at most one bounded batch on initial/catch-up reads, never on older-page or
     // exact-message navigation. This neither creates a turn nor reruns Work.
@@ -214,6 +216,20 @@ export class BotConversationRepository {
     if (request.after === undefined) messages.reverse();
     return { conversationId: conversation.conversation_id, botId: request.botId, teamId: request.teamId, revision: conversation.revision,
       archived: conversation.archived_at !== null, messages, before: !request.messageIds && (request.after !== undefined || rows.length > 100) ? messages[0]?.ordinal : undefined };
+  }
+
+  projectHistoryPage(request: BotHistoryRequest, page: Exclude<RuntimeBotHistoryPage, { kind: "needsHost" }>): BotHistoryDto {
+    if (page.kind === "scopeMismatch") throw new Error("对话不属于当前团队或个人空间");
+    if (page.kind === "missing") return this.emptyHistory(request);
+    return {
+      conversationId: page.conversationId, botId: request.botId, teamId: request.teamId,
+      revision: page.revision, archived: page.archived, before: page.before ?? undefined,
+      messages: page.rows.map(row => this.mapMessage(row, row)),
+    };
+  }
+
+  private emptyHistory(request: BotHistoryRequest): BotHistoryDto {
+    return { conversationId: "", botId: request.botId, teamId: request.teamId, revision: 0, archived: false, messages: [] };
   }
 
   activeRequests(userId: string): import("../../../shared/bot-conversation").BotActiveRequestDto[] {
@@ -554,29 +570,39 @@ export class BotConversationRepository {
     return this.db.prepare("INSERT OR IGNORE INTO bot_work_feedback(message_id,metadata_json) VALUES (?,?)").run(messageId, json).changes > 0;
   }
 
-  private mapMessage(value: unknown): BotMessageDto {
-    const row = messageRow.parse(value);
-    const scope = this.db.prepare(`SELECT c.team_id,r.reference_message_id FROM bot_conversations c
+  private messageFacts(row: MessageRow): RuntimeBotHistoryFacts {
+    const scope = this.db.prepare(`SELECT c.team_id,c.user_id,r.reference_message_id FROM bot_conversations c
       LEFT JOIN bot_send_receipts r ON r.user_id=c.user_id AND r.conversation_id=c.conversation_id
         AND r.bot_id=? AND r.request_id=? AND r.assistant_message_id=?
       WHERE c.conversation_id=?`).get(row.bot_id, row.request_id, row.message_id, row.conversation_id) as {
-        team_id: string | null; reference_message_id: string | null;
-      };
+        team_id: string | null; user_id: string; reference_message_id: string | null;
+      } | undefined;
     const version = this.db.prepare('SELECT revision FROM bot_message_revisions WHERE message_id=?').get(row.message_id) as { revision: number } | undefined;
     const attachmentRow = this.db.prepare("SELECT attachments_json FROM bot_message_attachments WHERE message_id=?").get(row.message_id) as { attachments_json: string } | undefined;
-    const attachments = attachmentRow ? z.array(botAttachmentSchema).parse(JSON.parse(attachmentRow.attachments_json)) : undefined;
     const metadata = this.db.prepare("SELECT metadata_json FROM bot_work_feedback WHERE message_id=?").get(row.message_id) as { metadata_json: string } | undefined;
-    const parsed = metadata ? workFeedbackSchema.safeParse(JSON.parse(metadata.metadata_json)) : undefined;
     const activityRow = row.status === "running" ? this.db.prepare("SELECT activity_json FROM bot_message_activity WHERE message_id=?")
       .get(row.message_id) as { activity_json: string } | undefined : undefined;
-    const activity = activityRow ? botActivitySchema.safeParse(JSON.parse(activityRow.activity_json)) : undefined;
     const segmentRow = row.role === "assistant" ? this.db.prepare("SELECT segments_json FROM bot_message_segments WHERE message_id=?")
       .get(row.message_id) as { segments_json: string } | undefined : undefined;
-    const segments = segmentRow ? z.array(botReplySegmentSchema).parse(JSON.parse(segmentRow.segments_json)) : undefined;
     const toolRow = row.role === "assistant" ? this.db.prepare("SELECT task_id,tools_json FROM bot_message_tools WHERE message_id=?")
       .get(row.message_id) as { task_id: string; tools_json: string } | undefined : undefined;
-    const tools = toolRow ? settleBotCapabilityTools(JSON.parse(toolRow.tools_json) as ChatToolCallDto[], row.status) : undefined;
-    const organizationUser = row.role === "assistant" ? this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id) : undefined;
+    return {
+      team_id: scope?.team_id ?? null, user_id: scope?.user_id ?? null, reference_message_id: scope?.reference_message_id ?? null,
+      revision: version?.revision ?? 0, attachments_json: attachmentRow?.attachments_json ?? null,
+      metadata_json: metadata?.metadata_json ?? null, activity_json: activityRow?.activity_json ?? null,
+      segments_json: segmentRow?.segments_json ?? null, tool_task_id: toolRow?.task_id ?? null, tools_json: toolRow?.tools_json ?? null,
+    };
+  }
+
+  private mapMessage(value: unknown, storedFacts?: RuntimeBotHistoryFacts): BotMessageDto {
+    const row = messageRow.parse(value);
+    const facts = storedFacts ?? this.messageFacts(row);
+    const attachments = facts.attachments_json !== null ? z.array(botAttachmentSchema).parse(JSON.parse(facts.attachments_json)) : undefined;
+    const parsed = facts.metadata_json !== null ? workFeedbackSchema.safeParse(JSON.parse(facts.metadata_json)) : undefined;
+    const activity = facts.activity_json !== null ? botActivitySchema.safeParse(JSON.parse(facts.activity_json)) : undefined;
+    const segments = facts.segments_json !== null ? z.array(botReplySegmentSchema).parse(JSON.parse(facts.segments_json)) : undefined;
+    const tools = facts.tools_json !== null ? settleBotCapabilityTools(JSON.parse(facts.tools_json) as ChatToolCallDto[], row.status) : undefined;
+    const organizationUser = row.role === "assistant" ? facts.user_id : undefined;
     const organizations = typeof organizationUser === "string" ? botOrganizationsForMessage(this.db, organizationUser, row.message_id) : [];
     const peerOrigin = this.peers.origin(row.message_id);
     const collaborationResult = peerOrigin && typeof organizationUser === "string"
@@ -587,19 +613,19 @@ export class BotConversationRepository {
     // Ordinary history must not depend on the optional team-template service schema.
     // Only live interactive goals need a current-owner check.
     const clarificationGoals = clarificationRows.map(value=>JSON.parse(value.goal)).filter(goal=>goal.options);
-    const needsTeamOwner = Boolean(scope?.team_id && clarificationGoals.some(goal=>goal.state==="pending"));
-    const team = needsTeamOwner ? this.db.prepare("SELECT plan_json,deleted_at FROM work_team_templates WHERE template_id=?").get(scope.team_id) as {plan_json:string;deleted_at:number|null}|undefined : undefined;
+    const needsTeamOwner = Boolean(facts.team_id && clarificationGoals.some(goal=>goal.state==="pending"));
+    const team = needsTeamOwner ? this.db.prepare("SELECT plan_json,deleted_at FROM work_team_templates WHERE template_id=?").get(facts.team_id) as {plan_json:string;deleted_at:number|null}|undefined : undefined;
     const ownerChanged = Boolean(needsTeamOwner && (!team || team.deleted_at!==null || JSON.parse(team.plan_json).ownerBotId!==row.bot_id));
     const clarifications = clarificationGoals.flatMap(goal=>{
       const answer = this.db.prepare("SELECT m.text FROM bot_clarification_answers a JOIN bot_messages m ON m.message_id=a.answer_message_id WHERE a.question_message_id=? AND a.goal_id=?").get(row.message_id,goal.goalId) as {text:string}|undefined;
       const answered=goal.state==="pending" && Boolean(answer);
       return goal.options ? [botClarificationSchema.parse({goalId:goal.goalId,question:goal.question,options:goal.options,answerText:answer?.text,status:goal.state==="pending"&&ownerChanged ? "expired" : answered ? "answered" : goal.state})] : [];
     });
-    return { clarifications, peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: scope?.team_id ?? undefined, messageRevision: version?.revision ?? 0, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
-      referenceMessageId: row.role === "assistant" ? scope?.reference_message_id ?? undefined : undefined,
-      segments, tools, toolTaskId: toolRow?.task_id, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
+    return { clarifications, peerOrigin, collaborationResult, ...(organizations.length ? { organizations } : {}), teamId: facts.team_id ?? undefined, messageRevision: facts.revision, messageId: row.message_id, conversationId: row.conversation_id, botId: row.bot_id, requestId: row.request_id,
+      referenceMessageId: row.role === "assistant" ? facts.reference_message_id ?? undefined : undefined,
+      segments, tools, toolTaskId: facts.tool_task_id ?? undefined, botCalls: row.role === "assistant" ? this.peerCalls.list(row.message_id) : undefined,
       collaborations: row.role === "assistant" ? this.collaborations.summariesForMessage(
-        z.string().parse(this.db.prepare("SELECT user_id FROM bot_conversations WHERE conversation_id=?").pluck().get(row.conversation_id)), row.message_id) : undefined,
+        z.string().parse(facts.user_id), row.message_id) : undefined,
       metrics: this.metrics.read(row.message_id), workFeedback: parsed?.success ? parsed.data : undefined, attachments, activity: activity?.success ? activity.data : undefined,
       ordinal: row.ordinal, role: row.role, text: row.text, status: row.status,
       // A delegation's original answer and each authenticated return/request

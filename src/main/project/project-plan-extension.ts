@@ -177,8 +177,9 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
   };
 
   /** 作用域校验：计划项必须属于当前任务所在项目（防跨项目猜 id 读写） */
-  const requireScopedTodo = (projectId: string, id: string): ProjectTodoDto => {
-    const todo = bridge.service.getTodo(id);
+  const requireScopedTodo = async (projectId: string, id: string): Promise<ProjectTodoDto> => {
+    const todo = await bridge.service.readTodo(id);
+    if (requireProject() !== projectId) throw new ProjectPlanToolError("项目归属已变化，请重新读取");
     if (!todo) throw new ProjectPlanToolError(`计划项不存在：${id}`);
     if (todo.projectId !== projectId) {
       throw new ProjectPlanToolError("该计划项不属于当前任务所在项目，无法访问。");
@@ -236,7 +237,7 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
       execute: async (_toolCallId: string, params: PlanGetParams) => {
         try {
           const projectId = requireProject();
-          const todo = requireScopedTodo(projectId, params.id);
+          const todo = await requireScopedTodo(projectId, params.id);
           const lines = [
             formatProjectTodoLine(todo),
             `描述：${todo.description ?? "（无）"}`,
@@ -272,7 +273,8 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
           if (params.dueAt !== undefined) {
             request.dueAt = parsePlanDateValue(params.dueAt) ?? undefined;
           }
-          const created = bridge.service.createTodo(request);
+          const created = await bridge.service.createTodoAsync(request, { taskId: bridge.taskId, projectId });
+          if (requireProject() !== projectId) throw new ProjectPlanToolError("项目归属已变化，请重新读取");
           return textResult(
             `已新增计划项（id=${created.id}，项目「${projectLabel(projectId)}」，状态 ${STATUS_LABEL[created.status]}）：\n${formatProjectTodoLine(created)}`,
             { projectId, todo: created },
@@ -294,7 +296,7 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
         try {
           const projectId = requireProject();
           guardWritable(projectId);
-          const existing = requireScopedTodo(projectId, params.id);
+          const existing = await requireScopedTodo(projectId, params.id);
           const request: ProjectTodoUpdateRequest = { id: params.id };
           if (params.title !== undefined) request.title = params.title;
           if (params.description !== undefined) request.description = params.description;
@@ -304,7 +306,8 @@ export function createProjectPlanExtension(bridge: ProjectPlanExtensionBridge): 
           if (params.tags !== undefined) request.tags = params.tags;
           if (params.startAt !== undefined) request.startAt = parsePlanDateValue(params.startAt);
           if (params.dueAt !== undefined) request.dueAt = parsePlanDateValue(params.dueAt);
-          const updated = bridge.service.updateTodo(request);
+          const updated = await bridge.service.updateTodoAsync(request, { taskId: bridge.taskId, projectId });
+          if (requireProject() !== projectId) throw new ProjectPlanToolError("项目归属已变化，请重新读取");
           return textResult(
             `已更新计划项（${existing.title}${existing.title !== updated.title ? ` → ${updated.title}` : ""}）：\n${formatProjectTodoLine(updated)}`,
             { projectId, todo: updated },

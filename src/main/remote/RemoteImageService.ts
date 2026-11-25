@@ -8,7 +8,14 @@ import type { RemoteImageArtifact, RemoteTaskHistory } from '../../../shared/src
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const MAX_STORED_BYTES = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 1024;
 const INTERNAL_IMAGE_TOOLS = new Set(['browser_exec', 'ui_exec', 'computer_exec', 'describe_image']);
+const REMOTE_IMAGE_FAILURES = {
+  unavailable: [404, '图片文件不可用'],
+  changed: [409, '图片正在变化，请重试'],
+  tooLarge: [413, '图片超过 16 MB 预览限制'],
+  unsupported: [415, '该产物不是可预览的图片'],
+} as const;
 export type RemoteArtifactReader = Pick<ArtifactService, 'get' | 'getSnapshot' | 'entryPathOf' | 'listMessageRefs'>;
+export interface RemoteImageReadOptions { head: boolean; signal?: AbortSignal }
 export class RemoteImageError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -34,7 +41,7 @@ export function remoteRasterMime(bytes: Buffer): string | null {
 
 /** Same Artifact Domain as desktop; no URL proxy and no caller-supplied file paths. */
 export class RemoteImageService {
-  constructor(private readonly db: Pick<AppDatabase, 'getTask'>, private readonly source: () => RemoteArtifactReader | null | undefined) {}
+  constructor(private readonly db: Pick<AppDatabase, 'getTask' | 'runtimeAuditReader'>, private readonly source: () => RemoteArtifactReader | null | undefined) {}
 
   enrichHistory(taskId: string, history: RemoteTaskHistory): RemoteTaskHistory {
     const task = this.db.getTask(taskId);
@@ -66,13 +73,26 @@ export class RemoteImageService {
     }) };
   }
 
-  async read(taskId: string, artifactId: string, version?: number): Promise<{ bytes: Buffer; mimeType: string; version: number }> {
+  async read(
+    taskId: string, artifactId: string, version?: number, options: RemoteImageReadOptions = { head: false },
+  ): Promise<{ body: Buffer | ReadableStream<Uint8Array> | null; byteLength: number; mimeType: string; version: number }> {
     const source = this.source();
     const d = source?.get(artifactId);
     if (!this.db.getTask(taskId) || !source || !d || d.taskId !== taskId || !rasterCandidate(d)) throw new RemoteImageError(404, '图片产物不存在');
     if (version !== undefined && version !== d.version) throw new RemoteImageError(409, '图片版本已变化，请刷新');
     const entry = source.entryPathOf(d.id);
     if (!entry || !inside(d.source.rootDir, entry)) throw new RemoteImageError(404, '图片文件不可用');
+    const root = resolve(d.source.rootDir);
+    const native = await this.db.runtimeAuditReader?.openRemoteArtifactImage(
+      root, relative(root, entry), d.source.type === 'managed-content', options,
+    );
+    if (native?.status === "remoteImageRejected") {
+      const [status, message] = REMOTE_IMAGE_FAILURES[native.failure];
+      throw new RemoteImageError(status, message);
+    }
+    if (native?.status === "remoteImageOpened")
+      return { body: native.body, byteLength: native.bytes, mimeType: native.mimeType, version: d.version };
+
     let bytes: Buffer;
     try {
       // Resolve symlinks/junctions too. A registered path is not carte blanche to read outside its root.
@@ -112,6 +132,6 @@ export class RemoteImageService {
     if (bytes.length > MAX_IMAGE_BYTES) throw new RemoteImageError(413, '图片超过 16 MB 预览限制');
     const mimeType = remoteRasterMime(bytes);
     if (!mimeType) throw new RemoteImageError(415, '该产物不是可预览的图片');
-    return { bytes, mimeType, version: d.version };
+    return { body: options.head ? null : bytes, byteLength: bytes.length, mimeType, version: d.version };
   }
 }

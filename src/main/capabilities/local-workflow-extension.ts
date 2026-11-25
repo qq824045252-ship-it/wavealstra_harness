@@ -65,12 +65,10 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         throw new Error("只有 Dots 新建跟进计划时可以指定归属");
       if (!allowed(input.action)) throw new Error("Dots 设置已关闭「定时计划和文件订阅」");
       const visible = (id: string) => !context.currentTaskOnly || services.cron.dotsScheduleVisible(id);
+      const visibleJobs = async () => (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
       if (input.id && !visible(input.id) && input.action !== "pause" && input.action !== "cancel")
         throw new Error("计划不在 Dots 已授权的空间内");
-      if (input.action === "list") {
-        const jobs = (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
-        return { jobs, localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
-      }
+      if (input.action === "list") return { jobs: await visibleJobs(), localOnly: true, missedRuns: context.currentTaskOnly ? "per-job" : "skip" };
       if (input.action === "get") {
         if (!input.id) throw new Error("get requires id");
         return services.cron.getForTask(taskId, input.id);
@@ -96,7 +94,7 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
           input.schedule_type, input.schedule_expr, input.timezone, input.max_runs, effectiveTo, input.restart_policy,
           ...(input.missed_runs ? [input.missed_runs] : []), ...(input.owner_task_id || input.owner_space_id ? [input.owner_task_id,input.owner_space_id] : [])])).digest("hex") : undefined;
         const origin = context.sourceOrigin?.();
-        return services.cron.createForTask(taskId, taskRoot, {
+        return services.cron.createTaskPlan(taskId, taskRoot, {
           name: input.name, prompt: input.prompt, scheduleType: input.schedule_type,
           scheduleExpr: input.schedule_expr, timezone: input.timezone ?? "UTC",
           target: input.target ?? "current-task", maxRuns: input.max_runs,
@@ -109,15 +107,14 @@ export function registerLocalWorkflowTools(pi: Pick<ExtensionAPI, "registerTool"
         if (input.target !== undefined) throw new Error("update cannot change target");
         const effectiveTo = input.deadline === undefined ? undefined : Date.parse(input.deadline);
         if (effectiveTo !== undefined && (!Number.isFinite(effectiveTo) || effectiveTo <= Date.now())) throw new Error("deadline must be a future ISO timestamp");
-        return services.cron.updateForTask(taskId, input.id, {
+        return services.cron.updateTaskPlan(taskId, input.id, {
           name: input.name, prompt: input.prompt, scheduleType: input.schedule_type,
           scheduleExpr: input.schedule_expr, timezone: input.timezone,
           maxRuns: input.max_runs, effectiveTo, restartPolicy: input.restart_policy, missedRuns: input.missed_runs,
         });
       }
-      services.cron.changeForTask(taskId, input.id, input.action);
-      const jobs = (await services.cron.readJobs()).filter(job => job.sourceTaskId === taskId && visible(job.id));
-      return { id: input.id, action: input.action, jobs };
+      await services.cron.changeTaskPlan(taskId, input.id, input.action);
+      return { id: input.id, action: input.action, jobs: await visibleJobs() };
     }),
   });
   if (!context.terminalEnabled) return;

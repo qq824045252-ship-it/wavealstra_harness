@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {existsSync,mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {AppDatabase} from '../src/main/db/AppDatabase';
+import {locateRuntimeAudit} from '../src/main/platform/runtime-audit';
 import {BotRegistry} from '../src/main/agent/work/BotRegistry';
 import {WorkService,DESKTOP_USER_GRANTS} from '../src/main/agent/work/WorkService';
 import {BotConversationRepository} from '../src/main/agent/work/BotConversationRepository';
 import {BotWorkspaceNavigationService,botWorkspaceSpaceId,teamWorkspaceSpaceId} from '../src/main/agent/work/BotWorkspaceNavigationService';
 import {ensureBotInbox} from '../src/main/agent/work/WorkDeliveryTargets';
 import {LOCAL_USER_ID} from '../src/shared/bot-work';
+const useNative=process.argv.includes('--native');
+const runtimeAuditExecutable=useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if(useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable),'Rust worker executable is required');
 const root=mkdtempSync(join(tmpdir(),'bot-workspace-nav-'));
-const db=new AppDatabase(join(root,'app.db'));
+const db=new AppDatabase(join(root,'app.db'),{runtimeAuditExecutable});
 try {
  const bots=new BotRegistry(db.connection), bot=bots.ensureDefaultBot(LOCAL_USER_ID);
  const works=new WorkService(db.connection,{bots});
@@ -19,20 +23,25 @@ try {
  const legacy=botWorkspaceSpaceId(bot.botId);
  const totalChanges=()=>Number((db.connection.prepare('SELECT total_changes() n').get() as {n:number}).n);
  const initialChanges=totalChanges();
- assert.deepEqual(service.snapshot({repair:false}).spaces.map(s=>s.id),['user-bot']);
+ assert.deepEqual((await service.readSpaces()).map(s=>s.id),['user-bot']);
  assert.equal(totalChanges(),initialChanges,'reading fresh sidebar cannot create or modify spaces');
  service.ensureBot(bot.botId);
  const generated=db.getSpace(legacy)!;
  const beforeFilter=totalChanges();
- assert.deepEqual(service.snapshot({repair:false}).spaces.map(s=>s.id),['user-bot'],'generated empty Bot group is omitted; user-created Bot remains');
+ assert.deepEqual((await service.readSpaces()).map(s=>s.id),['user-bot'],'generated empty Bot group is omitted; user-created Bot remains');
+ assert.deepEqual((await service.readNavigation()).spaces.map(s=>s.id),['user-bot']);
+ if(useNative) {
+  const visible=await db.runtimeAuditReader?.workspaceData({kind:'visibleSpaces',userId:LOCAL_USER_ID});
+  assert.deepEqual(visible?.spaces.map(space=>space.id),['user-bot']);
+ }
  assert.equal(totalChanges(),beforeFilter,'omitting empty legacy shell does not delete existing rows');
  db.connection.prepare('INSERT INTO workspace_notes VALUES (?,?,?,?)').run(legacy,'keep',1,1);
- assert(service.snapshot({repair:false}).spaces.some(s=>s.id===legacy),'preserve space containing a note');
+ assert.deepEqual(new Set((await service.readSpaces()).map(s=>s.id)),new Set(['user-bot',generated.parentId,legacy]),'preserve space containing a note');
  db.connection.prepare('DELETE FROM workspace_notes WHERE workspace_id=?').run(legacy);
  db.deleteSpace(legacy); db.deleteSpace(generated.parentId!);
  const afterRemoval=totalChanges();
- assert.deepEqual(service.snapshot({repair:false}).spaces.map(s=>s.id),['user-bot']);
- assert.deepEqual(service.snapshot({repair:false}).spaces.map(s=>s.id),['user-bot']);
+ assert.deepEqual((await service.readSpaces()).map(s=>s.id),['user-bot']);
+ assert.deepEqual((await service.readNavigation()).spaces.map(s=>s.id),['user-bot']);
  assert.equal(totalChanges(),afterRemoval,'successive reads cannot regenerate deleted Bot folders');
  db.upsertSpace({id:legacy,name:`${bot.displayName} · 工作空间`,path:'/unchanged/path'});
  const messages=new BotConversationRepository(db.connection);
@@ -47,10 +56,10 @@ try {
  db.upsertTask({id:'native-task',title:'工作',cwd:'/original/running/cwd',spaceId:legacy,updatedAt:1});
  // Actual dispatch schema is initialized by WorkService; use only its required fields.
  db.connection.prepare(`INSERT INTO work_dispatch_requests(work_id,operation_id,task_id,state,created_at,bot_id,intent_revision,input_snapshot_id) VALUES (?,?,?,'pending',?,?,?,?)`).run(made.work.workId,'op-native','native-task',1,bot.botId,1,'snapshot');
- const next=messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:'personal-new',text:'新对话问题'});
+ const next=messages.accept(LOCAL_USER_ID,{botId:bot.botId,requestId:'personal-new',text:'新对话\uFEFF\n问题\u0085？'});
  assert.notEqual(next.conversationId,sent.conversationId);
  db.connection.prepare('UPDATE bot_conversations SET archived_at=11 WHERE conversation_id=?').run(teamSent.conversationId);
- const nextTeam=messages.accept(LOCAL_USER_ID,{botId:bot.botId,teamId:'team-one',requestId:'team-new',text:'团队新对话'});
+ const nextTeam=messages.accept(LOCAL_USER_ID,{botId:bot.botId,teamId:'team-one',requestId:'team-new',text:`${'字'.repeat(119)}📁更多`});
  assert.notEqual(nextTeam.conversationId,teamSent.conversationId);
  db.connection.prepare('UPDATE bot_conversations SET archived_at=12 WHERE conversation_id=?').run(next.conversationId);
  db.connection.prepare('INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES (?,?,?,?,?)').run('empty-personal',bot.botId,LOCAL_USER_ID,20,20);
@@ -67,9 +76,19 @@ try {
  const snap=service.snapshot();
  assert.equal(snap.foregroundRequests.length,5);
  const historicalChanges=totalChanges();
- const retired=service.snapshot({repair:false});
+ const retired=await service.readNavigation();
  assert.equal(retired.foregroundRequests.find(r=>r.requestId==='personal')?.archived,true);
  assert.equal(retired.foregroundRequests.find(r=>r.requestId==='team')?.spaceId,teamWorkspaceSpaceId('team-one'));
+ assert.equal(retired.conversations.find(c=>c.conversationId===next.conversationId)?.title,'新对话 问题\u0085？');
+ assert.equal(retired.conversations.find(c=>c.conversationId===nextTeam.conversationId)?.title,`${'字'.repeat(119)}\uD83D`);
+ assert.equal(retired.conversations.find(c=>c.conversationId==='empty-personal')?.title,'新对话');
+ assert.equal(retired.conversations.find(c=>c.conversationId===other.conversationId)?.spaceId,botWorkspaceSpaceId(secondBot.botId));
+ assert(!retired.conversations.some(c=>c.conversationId.startsWith('bot-inbox-')));
+ assert.deepEqual((await service.readSpaces()).map(s=>s.id),retired.spaces.map(s=>s.id));
+ if(useNative) {
+  assert.equal((await db.runtimeAuditReader?.workspaceData({kind:'navigation',userId:LOCAL_USER_ID}))?.navigation?.conversations
+   .find(c=>c.conversationId===nextTeam.conversationId)?.title,`${'字'.repeat(119)}📁`);
+ }
  assert.equal(totalChanges(),historicalChanges,'historical navigation is read-only');
  assert.equal(snap.foregroundRequests.find(r=>r.requestId==='personal')?.archived,true);
  assert.equal(snap.foregroundRequests.find(r=>r.requestId==='personal')?.status,'completed');
@@ -103,4 +122,4 @@ try {
  assert.equal(new BotWorkspaceNavigationService(db,'another-user').snapshot().foregroundRequests.length,0);
  assert.equal(new BotWorkspaceNavigationService(db,'another-user').snapshot().conversations.length,0);
  console.log('PASS workspace hierarchy: identity, collision, rename/move, completed/archived foreground, team-only native assignment, cwd preserved, no Task synthesis, user isolation');
-} finally {db.close();rmSync(root,{recursive:true,force:true});}
+} finally {await db.runtimeAuditReader?.close();db.close();rmSync(root,{recursive:true,force:true});}

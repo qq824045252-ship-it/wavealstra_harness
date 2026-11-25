@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
@@ -11,6 +11,8 @@ import { WorkspacePathError } from "../src/main/workspace/WorkspacePathError";
 import { DurableBotService } from "../src/main/agent/durable/DurableBotService";
 import { WorkspaceMigrationBusyError } from "../src/main/agent/durable/DurableWorkspaceMigration";
 import { DurableBotRuntime, type DurableBotOptions } from "../src/main/agent/durable/DurableBotRuntime";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 
 // Service orchestration test: real SQLite and folders; native idle/migration is a controlled port.
 // The separate native test exercises AgentDoc/checkpoint migration itself.
@@ -18,21 +20,33 @@ const root = mkdtempSync(join(tmpdir(), "durable-workspace-binding-"));
 process.env.HOME = root; process.env.USERPROFILE = root;
 const old = join(root, "isolated"), next = join(root, "space"), third = join(root, "other-space");
 for (const cwd of [old, next, third]) mkdirSync(cwd);
-const db = new AppDatabase(join(root, "app.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const originalOpen = DurableBotRuntime.open;
 const native = new Map<string, string>();
 const busy = new Set<string>(), waiting = new Set<string>();
 const created: Array<{ taskId: string; cwd: string; closed: boolean }> = [];
 let failAfterNative = false, lateBusy = false;
+let trashAfterNative: string | undefined;
 const compactions: string[] = [];
 const runtimeOptions = new Map<string, DurableBotOptions>();
 const history = new Map<string, string[]>();
 const fullHistory = new Map<string, Array<{ id: string; cwd: string; entries: number[] }>>();
 const projected: Array<{ taskId: string; cwd: string; messageRoots: Map<string, string> }> = [];
 let holdProjection: Promise<void> | undefined;
-function snapshot(options: DurableBotOptions, ids: string[]) {
-  options.onSnapshot({ epoch: Math.random().toString(), revision: 1, busy: false, queued: 0, outcome: "completed",
-    messages: ids.map(id => ({ id, role: "assistant", text: "completed write", createdAt: 1 })) } as any);
+async function snapshot(options: DurableBotOptions, ids: string[]) {
+  const value: DurableBotSnapshot = {
+    backend: "pi-durable", epoch: Math.random().toString(), revision: 1, historyId: "fixture",
+    conversationId: "fixture", toolMode: options.toolMode, busy: false, queued: 0, status: "completed", outcome: "completed",
+    pendingInputs: [], compacting: false,
+    messages: ids.map(id => ({ id, role: "assistant", text: "completed write", createdAt: 1 })),
+  };
+  if (useNative) db.connection.pragma("query_only = ON");
+  try { await options.prepareSnapshot?.(value); }
+  finally { if (useNative) db.connection.pragma("query_only = OFF"); }
+  options.onSnapshot(value);
 }
 DurableBotRuntime.open = async (options: DurableBotOptions) => {
   const taskId = options.taskId!;
@@ -44,9 +58,13 @@ DurableBotRuntime.open = async (options: DurableBotOptions) => {
   } else if (previous) assert.equal(options.cwd, previous);
   native.set(taskId, options.cwd);
   if (failAfterNative && options.workspaceMigrationFrom) { failAfterNative = false; throw new Error("injected native-to-SQLite crash window"); }
+  if (options.workspaceMigrationFrom && taskId === trashAfterNative) {
+    db.connection.prepare("INSERT INTO task_execution_workspace_state(task_id,directory_name,state,created_at,updated_at) VALUES (?,?, 'trashed',1,1)")
+      .run(taskId, taskId);
+  }
   const record = { taskId, cwd: options.cwd, closed: false }; created.push(record);
   runtimeOptions.set(taskId, options);
-  if (history.has(taskId)) snapshot(options, history.get(taskId)!);
+  if (history.has(taskId)) await snapshot(options, history.get(taskId)!);
   return { snapshot: { busy: busy.has(taskId), queued: busy.has(taskId) ? 1 : 0, messages: [] },
     isSessionFailed: () => false, onSessionFailed: () => {},
     canRebindWorkspace: async () => !busy.has(taskId),
@@ -93,9 +111,17 @@ function task(id: string) { db.upsertTask({ id, title: id, updatedAt: 1, welcome
 let svc = service();
 try {
   task("idle"); await open(svc, "idle"); const directory = binding("idle").directory;
+  if (useNative) db.connection.exec(`
+    CREATE TEMP TRIGGER assert_native_workspace_stage BEFORE INSERT ON main.durable_bot_workspace_moves
+    WHEN NEW.task_id='idle' BEGIN SELECT RAISE(ABORT, 'host staged move'); END;
+    CREATE TEMP TRIGGER assert_native_workspace_commit BEFORE UPDATE OF cwd ON main.durable_bot_bindings
+    WHEN NEW.task_id='idle' BEGIN SELECT RAISE(ABORT, 'host committed move'); END;
+  `);
+  db.connection.prepare("UPDATE tasks SET updated_at=? WHERE id='idle'").run(2_000_000_000_000);
   desired.set("idle", next);
   await Promise.all([open(svc, "idle"), open(svc, "idle"), open(svc, "idle")]);
   assert.equal(binding("idle").cwd, next); assert.equal(db.getTask("idle")!.cwd, next);
+  assert.equal(db.getTask("idle")!.updatedAt, 2_000_000_000_000, "workspace commit preserves newer task activity");
   assert.equal(binding("idle").directory, directory); assert.equal(intent("idle"), undefined);
   assert.equal(created.filter(item => item.taskId === "idle" && item.cwd === next).length, 1, "concurrent opens share one migration");
   assert(tools.some(item => item.taskId === "idle" && item.cwd === next && item.taskCwd === next), "tool assembly uses new root consistently");
@@ -133,6 +159,10 @@ try {
 
   task("restart-busy"); await open(svc, "restart-busy"); await svc.release("restart-busy");
   db.connection.prepare("INSERT INTO durable_bot_workspace_moves VALUES (?,?,?)").run("restart-busy", old, next);
+  if (useNative) db.connection.exec(`
+    CREATE TEMP TRIGGER assert_native_workspace_cancel BEFORE DELETE ON main.durable_bot_workspace_moves
+    WHEN OLD.task_id='restart-busy' BEGIN SELECT RAISE(ABORT, 'host cancelled move'); END;
+  `);
   desired.set("restart-busy", next); lateBusy = true;
   await open(svc, "restart-busy"); assert.equal(binding("restart-busy").cwd, old); assert.equal(intent("restart-busy"), undefined);
   busy.delete("restart-busy"); await svc.compact("restart-busy");
@@ -154,7 +184,7 @@ try {
   task("artifacts"); await open(svc, "artifacts");
   let releaseProjection!: () => void;
   holdProjection = new Promise<void>(resolve => { releaseProjection = resolve; });
-  history.set("artifacts", ["old-write"]); snapshot(runtimeOptions.get("artifacts")!, ["old-write"]);
+  history.set("artifacts", ["old-write"]); await snapshot(runtimeOptions.get("artifacts")!, ["old-write"]);
   desired.set("artifacts", next);
   let moved = false;
   const move = open(svc, "artifacts").then(() => { moved = true; });
@@ -163,7 +193,7 @@ try {
   assert.equal(binding("artifacts").cwd, old);
   holdProjection = undefined; releaseProjection(); await move;
   history.set("artifacts", ["old-write", "new-write"]);
-  snapshot(runtimeOptions.get("artifacts")!, history.get("artifacts")!);
+  await snapshot(runtimeOptions.get("artifacts")!, history.get("artifacts")!);
   await svc.release("artifacts");
   const latest = projected.filter(item => item.taskId === "artifacts").at(-1)!;
   assert.equal(latest.cwd, next);
@@ -181,10 +211,10 @@ try {
     { id: "child", cwd: childRoot, entries: [5, 6] },
   ]);
   history.set("windowed-artifacts", ["durable-4"]);
-  snapshot(runtimeOptions.get("windowed-artifacts")!, ["durable-4"]);
+  await snapshot(runtimeOptions.get("windowed-artifacts")!, ["durable-4"]);
   desired.set("windowed-artifacts", next); await open(svc, "windowed-artifacts");
-  history.set("windowed-artifacts", ["durable-1", "durable-3", "durable-5", "durable-7"]);
-  snapshot(runtimeOptions.get("windowed-artifacts")!, history.get("windowed-artifacts")!);
+  history.set("windowed-artifacts", ["durable-1", "durable-3", "durable-5", "durable-6", "durable-7"]);
+  await snapshot(runtimeOptions.get("windowed-artifacts")!, history.get("windowed-artifacts")!);
   await svc.release("windowed-artifacts");
   const windowed = projected.filter(item => item.taskId === "windowed-artifacts").at(-1)!;
   assert.equal(windowed.messageRoots.get("durable-1"), old, "window-excluded root entry retains original directory");
@@ -229,12 +259,22 @@ try {
   console.log("PASS real request preparation pins busy cwd, adopts idle move, and retains failure/recovery recording");
 
   task("sql-failure"); await open(svc, "sql-failure"); desired.set("sql-failure", next);
-  db.connection.exec("CREATE TRIGGER fail_workspace_projection BEFORE UPDATE OF cwd ON durable_bot_bindings WHEN NEW.task_id='sql-failure' BEGIN SELECT RAISE(ABORT,'injected projection failure'); END");
+  db.connection.exec("CREATE TRIGGER fail_workspace_projection BEFORE UPDATE OF cwd ON tasks WHEN NEW.id='sql-failure' BEGIN SELECT RAISE(ABORT,'injected projection failure'); END");
   await assert.rejects(open(svc, "sql-failure"), /injected projection failure/);
   assert.equal(binding("sql-failure").cwd, old); assert(intent("sql-failure"));
+  assert.equal(db.getTask("sql-failure")?.cwd, old);
   assert(created.filter(item => item.taskId === "sql-failure" && item.cwd === next).every(item => item.closed), "failed projection must release newly opened runtime lease");
   db.connection.exec("DROP TRIGGER fail_workspace_projection");
   await open(svc, "sql-failure"); assert.equal(binding("sql-failure").cwd, next); assert.equal(intent("sql-failure"), undefined);
   console.log("PASS SQLite rollback retains migration intent and closes orphan runtime");
-} finally { await svc.close(); DurableBotRuntime.open = originalOpen; db.close(); }
+
+  task("trashed-during-move"); await open(svc, "trashed-during-move"); desired.set("trashed-during-move", next);
+  trashAfterNative = "trashed-during-move";
+  await assert.rejects(open(svc, "trashed-during-move"), /任务已删除或在回收站中/);
+  assert.equal(binding("trashed-during-move").cwd, old);
+  assert.equal(db.getTask("trashed-during-move")?.cwd, old);
+  assert.equal(db.getTaskExecutionWorkspaceState("trashed-during-move")?.state, "trashed");
+  assert.deepEqual(intent("trashed-during-move"), { task_id: "trashed-during-move", from_cwd: old, to_cwd: next });
+  console.log("PASS trashing during Pi's move preserves the trash state and durable move intent");
+} finally { await svc.close(); DurableBotRuntime.open = originalOpen; await db.runtimeAuditReader?.close(); db.close(); }
 console.log("durable workspace binding service tests passed");

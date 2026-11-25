@@ -1128,14 +1128,14 @@ ${input.text}`),
         };
         checkBinding();
         if (input.action === "files") {
-          const entries = await listWorkspaceFiles(selected, 0);
+          const entries = await listWorkspaceFiles(selected, 0, this.db.runtimeAuditReader);
           checkBinding();
           const visible = this.preferences.spaceIds === null ? entries
             : entries.filter(({name}) => this.agent.dotsAnswerEvidenceAllowed({kind:"file",path:resolve(selected,name)}));
           return { files: visible.slice(offset, offset + 100).map(({name,kind}) => ({name,kind,path:relative(root,resolve(selected,name))})),
             nextOffset: visible.length > offset + 100 ? offset + 100 : undefined };
         }
-        const data = await readWorkspaceFile(root, local, true);
+        const data = await readWorkspaceFile(root, local, true, this.db.runtimeAuditReader);
         checkBinding();
         return { ...(foreground?.read ? { canonicalFile: selected } : {}), path: local, content: data.content.slice(offset, offset + 12000), more: offset + 12000 < data.content.length, truncated: data.truncated };
       }
@@ -1252,7 +1252,7 @@ ${input.text}`),
           if (space) space = this.space(space.id);
           else space = this.db.createSpace({ id: "sp-dots-" + digest(name), name, path });
         }
-        if (space.path !== path) this.db.upsertSpace({ ...space, path });
+        if (space.path !== path) this.db.upsertSpace({ id: space.id, name: space.name, path });
         return space.id;
       });
     }
@@ -1651,7 +1651,7 @@ ${input.text}`),
       const id = mutate();
       this.db.connection.prepare("INSERT INTO dots_control_receipts VALUES(?,?,'space_changed')").run(operation, id);
       return spaceLink(this.space(id));
-    })();
+    }).immediate();
     this.hooks.changed?.();
     return space;
   }

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
 import { LibraryService, LibraryUpdatePartialStateError } from "../src/main/library/LibraryService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-update-tx-"));
 // 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
@@ -120,3 +122,104 @@ try {
   db.close();
   rmSync(root, { recursive: true, force: true });
 }
+
+async function verifyNativeSave() {
+  const runtimeAuditExecutable = locateRuntimeAudit(process.cwd());
+  assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+  const fixture = mkdtempSync(join(tmpdir(), "mybuddy-native-text-save-"));
+  const libraryRoot = join(fixture, "library");
+  const openDatabase = () => new AppDatabase(join(fixture, "app.db"), { runtimeAuditExecutable });
+  let database = openDatabase();
+  try {
+    let service = new LibraryService(database, { libraryRoot });
+    const owner = { type: "personal" as const };
+    const space = service.ensureOwnedSpace(owner);
+    const note = service.createItem({ spaceId: space.id, kind: "markdown", title: "原题", content: "荒漠波纹原文😀" });
+    const id = note.id;
+    const path = service.absolutePath(note);
+    const reader = database.runtimeAuditReader!;
+    const nativeSave = reader.saveLibraryText.bind(reader);
+    reader.saveLibraryText = async (request) => {
+      const result = await nativeSave(request);
+      assert.equal(result, "saved");
+      return undefined;
+    };
+    const saved = await service.writeContentAsync({ id, content: "夜航灯塔新版😀", title: "新题", expectedContentHash: note.contentHash });
+    reader.saveLibraryText = nativeSave;
+    assert.equal(saved.title, "新题");
+    assert.equal(readFileSync(path, "utf8"), "夜航灯塔新版😀", "published at the original managed path");
+    assert.equal(await service.readVersionBody(id, 1), "荒漠波纹原文😀");
+    assert.deepEqual(service.searchOwnedScope("夜航灯塔", owner).map(hit => hit.id), [id]);
+    assert.deepEqual(service.searchOwnedScope("荒漠波纹", owner), []);
+    await service.writeContentAsync({ id, content: "夜航灯塔新版😀", expectedContentHash: saved.contentHash });
+    assert.equal((await service.readVersions(id)).length, 1);
+    await assert.rejects(service.writeContentAsync({ id, content: "过时编辑", expectedContentHash: note.contentHash }), /已在别处更新/);
+
+    database.connection.exec(`
+      CREATE TABLE fixture_note_parent(id TEXT PRIMARY KEY);
+      CREATE TABLE fixture_note_failure(parent TEXT REFERENCES fixture_note_parent(id) DEFERRABLE INITIALLY DEFERRED);
+      CREATE TRIGGER fixture_note_commit_failure AFTER UPDATE OF committed ON library_text_saves
+      WHEN new.committed=1 BEGIN
+        INSERT INTO fixture_note_failure(parent) VALUES ('absent');
+      END;
+    `);
+    await assert.rejects(service.writeContentAsync({ id, title: "不能提交的标题", content: "岛屿虚构索引", expectedContentHash: saved.contentHash }),
+      /草稿已保留/);
+    assert.equal(readFileSync(path, "utf8"), "夜航灯塔新版😀", "failed SQLite commit restores the managed file");
+    assert.equal(service.getItem(id)?.title, "新题");
+    assert.deepEqual(service.searchOwnedScope("岛屿虚构", owner), []);
+    assert.equal((await service.readVersions(id)).length, 1);
+    database.connection.exec("DROP TRIGGER fixture_note_commit_failure");
+
+    const original = readFileSync(path);
+    const interruptedContent = "文件已换、事务未提交";
+    const operationId = randomUUID();
+    const temporary = join(libraryRoot, space.id, `.mybuddy-note-${operationId}.tmp`);
+    database.connection.prepare(`
+      INSERT INTO library_text_saves(item_id,operation_id,root,path,old_content,old_hash,new_hash,committed)
+      VALUES (?,?,?,?,?,?,?,0)
+    `).run(id, operationId, libraryRoot, path, original, saved.contentHash,
+      createHash("sha256").update(interruptedContent).digest("hex"));
+    writeFileSync(path, interruptedContent);
+    writeFileSync(temporary, "partial staged content");
+    await database.runtimeAuditReader?.close();
+    database.close();
+    database = openDatabase();
+    service = new LibraryService(database, { libraryRoot });
+    assert.equal((await service.readContentAsync(id)).content, "夜航灯塔新版😀", "startup rolls back an interrupted file replacement");
+    assert.equal(existsSync(temporary), false);
+
+    const writes = await Promise.allSettled([
+      service.writeContentAsync({ id, content: "并发第一稿", expectedContentHash: saved.contentHash }),
+      service.writeContentAsync({ id, content: "并发第二稿", expectedContentHash: saved.contentHash }),
+    ]);
+    assert.equal(writes[0].status, "fulfilled");
+    assert.equal(writes[1].status, "rejected");
+    assert.equal((await service.readContentAsync(id)).content, "并发第一稿");
+    assert.deepEqual((await service.readVersions(id)).map(version => version.version), [2, 1]);
+    const large = "字".repeat(350_000) + "\n\n待桥观星记录";
+    const reopenedReader = database.runtimeAuditReader!;
+    const saveReopened = reopenedReader.saveLibraryText.bind(reopenedReader);
+    reopenedReader.saveLibraryText = async (request) => {
+      const result = await saveReopened(request);
+      assert.equal(result, "saved");
+      return result;
+    };
+    await service.writeContentAsync({ id, content: large });
+    assert.equal((await service.readContentAsync(id)).content, large);
+    assert.deepEqual(service.searchOwnedScope("待桥观星", owner).map(hit => hit.id), [id]);
+    await service.writeContentAsync({ id, content: "短正文" });
+    assert.equal(await service.readVersionBody(id, 4), large);
+    assert.deepEqual(service.searchOwnedScope("待桥观星", owner), []);
+    console.log("PASS Rust text save: managed file, history, long text search, lost reply, deferred commit failure and restart recovery");
+  } finally {
+    await database.runtimeAuditReader?.close();
+    database.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
+if (process.argv.includes("--native")) void verifyNativeSave().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

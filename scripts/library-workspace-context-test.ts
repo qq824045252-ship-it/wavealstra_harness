@@ -50,11 +50,12 @@ function insertProject(id: string, name: string): void {
   db.connection.prepare(`INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`).run(id, name, 1, 1);
 }
 
+void (async () => {
 try {
   db.createSpace({ id: "workspace-parent", name: "Parent" });
   db.createSpace({ id: "workspace-context", name: "Context", parentId: "workspace-parent" });
   db.createSpace({ id: "workspace-sibling", name: "Sibling", parentId: "workspace-parent" });
-  new WorkspaceNotesService(db).save({ workspaceId: "workspace-context", content: "# Manual workspace note", expectedRevision: 0 });
+  await new WorkspaceNotesService(db).save({ workspaceId: "workspace-context", content: "# Manual workspace note", expectedRevision: 0 });
   insertProject("proj-a", "Project A");
   insertProject("proj-b", "Project B");
   projects.update({ id: "proj-a", goal: "A goal should disappear after rebind", currentStage: "A stage" });
@@ -91,7 +92,7 @@ try {
   library.attachToTask({ itemId: personalAttached.id, taskId: "task-context" });
   assert(context.projectionSources("task-context").some(source => source.id === "workspace-note:workspace-context" && source.text.includes("Manual workspace note")), "saved notes enter actual task evidence projection");
 
-  new ProjectNotesService(db).save({ projectId: "proj-a", content: "# Shared project note", expectedRevision: 0 });
+  await new ProjectNotesService(db).save({ projectId: "proj-a", content: "# Shared project note", expectedRevision: 0 });
   assert(context.projectionSources("task-context").some(source => source.id === "project-note:proj-a" && source.text.includes("Shared project note")));
 
   const first = context.resolveTask("task-context", true);
@@ -223,3 +224,4 @@ try {
   db.close();
   rmSync(root, { recursive: true, force: true });
 }
+})();

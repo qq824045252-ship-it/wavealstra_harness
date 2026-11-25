@@ -1,33 +1,49 @@
 import type { AppDatabase } from "../db/AppDatabase";
 import { WORKSPACE_NOTE_MAX_CHARS, type WorkspaceNoteDto, type WorkspaceNoteSaveRequest } from "../../shared/workspace-notes";
 import { clipEvidence, type SupplementalEvidence } from "../agent/EvidenceBudget";
+import { ScopedNotePersistence } from "../db/ScopedNotePersistence";
+
+const errors = {
+  missing: "工作空间不存在",
+  archived: "已归档空间不能修改便签",
+  conflict: "便签已在其他窗口或任务中更新，请重新加载后合并草稿",
+};
 
 /** User-authored documents, separate from automatically extracted memory. */
 export class WorkspaceNotesService {
-  constructor(private readonly db: AppDatabase) {}
+  private readonly persistence: ScopedNotePersistence;
 
-  read(workspaceId: string): WorkspaceNoteDto {
-    if (!this.db.getSpace(workspaceId)) throw new Error("工作空间不存在");
+  constructor(private readonly db: AppDatabase) {
+    this.persistence = new ScopedNotePersistence(db.runtimeAuditReader, "workspace", WORKSPACE_NOTE_MAX_CHARS, errors);
+  }
+
+  read(workspaceId: string): Promise<WorkspaceNoteDto> {
+    return this.persistence.read(workspaceId, "workspaceId", () => this.readOnHost(workspaceId));
+  }
+
+  private readOnHost(workspaceId: string): WorkspaceNoteDto {
+    if (!this.db.getSpace(workspaceId)) throw new Error(errors.missing);
     return this.db.connection.prepare(`SELECT workspace_id AS workspaceId, content, revision, updated_at AS updatedAt
       FROM workspace_notes WHERE workspace_id = ?`).get(workspaceId) as WorkspaceNoteDto
       ?? { workspaceId, content: "", revision: 0, updatedAt: 0 };
   }
 
-  save(request: WorkspaceNoteSaveRequest): WorkspaceNoteDto {
-    if (typeof request.content !== "string" || request.content.length > WORKSPACE_NOTE_MAX_CHARS) {
-      throw new Error(`便签最多支持 ${WORKSPACE_NOTE_MAX_CHARS} 个字符`);
-    }
-    if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) throw new Error("便签版本无效，请先读取最新版本");
+  save(request: WorkspaceNoteSaveRequest): Promise<WorkspaceNoteDto> {
+    return this.persistence.save(request.workspaceId, "workspaceId", request, () => this.readOnHost(request.workspaceId),
+      (updatedAt) => this.saveOnHost(request, updatedAt));
+  }
+
+  private saveOnHost(request: WorkspaceNoteSaveRequest, updatedAt: number): WorkspaceNoteDto {
     return this.db.connection.transaction(() => {
-      const current = this.read(request.workspaceId);
-      if (this.db.getSpace(request.workspaceId)?.effectiveArchived) throw new Error("已归档空间不能修改便签");
-      if (current.revision !== request.expectedRevision) throw new Error("便签已在其他窗口或任务中更新，请重新加载后合并草稿");
-      const next = { workspaceId: request.workspaceId, content: request.content, revision: current.revision + 1, updatedAt: Date.now() };
+      const current = this.readOnHost(request.workspaceId);
+      if (this.db.getSpace(request.workspaceId)?.effectiveArchived) throw new Error(errors.archived);
+      if (current.revision !== request.expectedRevision) throw new Error(errors.conflict);
+      const next = { workspaceId: request.workspaceId, content: request.content, revision: current.revision + 1, updatedAt };
       this.db.connection.prepare(`INSERT INTO workspace_notes (workspace_id, content, revision, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(workspace_id) DO UPDATE SET content=excluded.content, revision=excluded.revision, updated_at=excluded.updated_at`)
         .run(next.workspaceId, next.content, next.revision, next.updatedAt);
       return next;
-    })();
+    }).immediate();
   }
 
   private scope(taskId: string) {
@@ -39,7 +55,7 @@ export class WorkspaceNotesService {
 
   sources(taskId: string): SupplementalEvidence[] {
     return this.scope(taskId).flatMap(space => {
-      const note = this.read(space.id);
+      const note = this.readOnHost(space.id);
       if (!note.content.trim()) return [];
       return [{
         id: `workspace-note:${space.id}`, kind: "project" as const, revision: String(note.revision),
@@ -51,7 +67,7 @@ export class WorkspaceNotesService {
   }
 
   assertAvailable(taskId: string, workspaceId: string): void {
-    if (!this.scope(taskId).some(s => s.id === workspaceId) || !this.read(workspaceId).content.trim()) {
+    if (!this.scope(taskId).some(s => s.id === workspaceId) || !this.readOnHost(workspaceId).content.trim()) {
       throw new Error("空间便签已清空或不再属于当前任务作用域");
     }
   }

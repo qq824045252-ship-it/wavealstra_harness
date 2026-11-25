@@ -6,7 +6,7 @@
  * pdf 等非文本条目返回受管路径元数据而非 utf8 乱码。
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -17,6 +17,7 @@ import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { WorkspaceLibraryBindingService } from "../src/main/workspace/WorkspaceLibraryBindingService";
 import { createLibraryExtension, type LibraryExtensionBridge } from "../src/main/library/library-extension";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { LIBRARY_PERSONAL_SPACE_ID } from "../src/shared/library-ipc";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-ext-"));
@@ -24,7 +25,10 @@ const root = mkdtempSync(join(tmpdir(), "mybuddy-library-ext-"));
 // 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
 process.env.HOME = root;
 process.env.USERPROFILE = root;
-const db = new AppDatabase(join(root, "app.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const service = new LibraryService(db, { libraryRoot: join(root, "lib") });
 // 兼容旧 personal 资料的回归测试，需要显式建立旧位置。
 service.ensureReady();
@@ -447,7 +451,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main().then(() => {
+void main().then(async () => {
+  await db.runtimeAuditReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
   if (process.exitCode) {

@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { copyFile, lstat, mkdtemp, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdtemp, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { gunzip, gzip } from "node:zlib";
 import type { AppDatabase } from "../db/AppDatabase";
 import { getLibraryDir } from "../paths";
 import { resolvedPathKey } from "../platform/paths";
@@ -15,7 +17,7 @@ import { fuseHits } from "../workspace/WorkspaceResourceLocator.semantic";
 import type { WorkspaceResourceHit } from "../../shared/workspace-resource-locator";
 import { LibraryRepository, toCollection, toItem, toSpace, toVersion, type LibraryCatalogRows } from "./LibraryRepository";
 import { runLibraryDeepSearch, type LibraryEvidenceJudge } from "./LibraryDeepSearch";
-import type { LibraryNotesBackup } from "./library-note-backup";
+import { LIBRARY_NOTES_BACKUP_LIMIT, libraryNotesBackup, type LibraryNotesBackup } from "./library-note-backup";
 import { rewriteImportedFolderLinks, scanLibraryImportFolder } from "./library-folder-import";
 import { copyWithRewrittenNoteLinks } from "./library-note-links";
 import { assertArtifactSaveOwner, ensureOwnedLibrarySpace, ownedLibraryQueryScope, type LibraryOwnerReference } from "./library-ownership";
@@ -31,9 +33,12 @@ export type { LibraryTaskScope, LibraryTaskScopeOptions } from "./library-task-s
 import { assertManagedPathSafe, assertManagedWritePathSafe, atomicCopyFileSync, atomicWriteFileSync, readUtf8Prefix, sha256File } from "./library-file-io";
 import type { ExtractionResult } from "./ContentExtractorRegistry";
 import { LibraryIndexMaintenance, type LibraryTextStage } from "./LibraryIndexMaintenance";
+import { LibraryTextSaves, NATIVE_LIBRARY_SAVE_MAX_BYTES } from "./LibraryTextSaves";
 import { LIBRARY_CHUNK_DEFAULTS } from "./library-chunker";
 import { LARGE_LIBRARY_TEXT_BYTES, libraryTextContains, readLibraryTextParts } from "./library-text-parts";
 import { getSemanticRuntime } from "../retrieval/SemanticRuntime";
+import type { RuntimeLibraryDeleteTarget, RuntimeLibraryNoteChange, RuntimeLibraryRestoreReceipt } from "../platform/runtime-audit";
+import type { ProjectLibraryPromotion } from "../project/ProjectMutation";
 import {
   LIBRARY_CONTENT_MAX_CHARS,
   LIBRARY_INLINE_FILE_MAX_BYTES,
@@ -343,6 +348,8 @@ export class LibraryService {
   private readonly repo: LibraryRepository;
   readonly root: string;
   private readonly indexMaintenance: LibraryIndexMaintenance;
+  private readonly textSaves: LibraryTextSaves;
+  private readonly pendingFileMutations = new Set<Promise<unknown>>();
 
   constructor(
     private readonly db: AppDatabase,
@@ -351,6 +358,7 @@ export class LibraryService {
     this.repo = new LibraryRepository(db.connection);
     this.root = opts?.libraryRoot ?? getLibraryDir();
     mkdirSync(this.root, { recursive: true });
+    this.textSaves = new LibraryTextSaves(this.db, this.root);
     this.indexMaintenance = new LibraryIndexMaintenance(this.db, this.repo, {
       absolutePath: (item) => this.absolutePath(item),
       assertManagedFile: (path) => this.assertManagedFile(path),
@@ -752,13 +760,8 @@ export class LibraryService {
   /* ---------------- Spaces ---------------- */
 
   createSpace(req: LibraryCreateSpaceRequest): LibrarySpaceDto {
-    if (req.projectId && req.workspaceId) throw new Error("资料空间只能归属于一个项目或工作空间");
-    if (req.projectId && !this.projectExists(req.projectId)) {
-      throw new Error("项目不存在");
-    }
-    if (req.projectId && this.isProjectArchived(req.projectId)) {
-      throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
-    }
+    const { projectId } = req;
+    if (projectId && req.workspaceId) throw new Error("资料空间只能归属于一个项目或工作空间");
     if (req.workspaceId && !this.db.getSpace(req.workspaceId)) throw new Error("工作空间不存在");
     if (req.workspaceId && this.db.isSpaceEffectiveArchived(req.workspaceId)) throw new Error("已归档工作空间的资料只可读取");
     const name = limitText(safeName(req.name), LIBRARY_NAME_MAX_CHARS, "空间名称");
@@ -775,9 +778,21 @@ export class LibraryService {
     const spacePath = this.spaceDir(space.id);
     let rowInserted = false;
     try {
-      this.repo.insertSpace(space);
-      rowInserted = true;
-      mkdirSync(spacePath, { recursive: true });
+      if (projectId || req.workspaceId) {
+        this.db.connection.transaction(() => {
+          if (projectId && !this.projectExists(projectId)) throw new Error("项目不存在");
+          if (projectId && this.isProjectArchived(projectId)) throw new Error(ARCHIVED_PROJECT_WRITE_GUIDANCE);
+          if (req.workspaceId && !this.db.getSpace(req.workspaceId)) throw new Error("工作空间不存在");
+          if (req.workspaceId && this.db.isSpaceEffectiveArchived(req.workspaceId)) throw new Error("已归档工作空间的资料只可读取");
+          this.repo.insertSpace(space);
+          mkdirSync(spacePath, { recursive: true });
+        }).immediate();
+        rowInserted = true;
+      } else {
+        this.repo.insertSpace(space);
+        rowInserted = true;
+        mkdirSync(spacePath, { recursive: true });
+      }
       return this.withOwnerName(space);
     } catch (error) {
       let retained = false;
@@ -825,36 +840,71 @@ export class LibraryService {
    * 项目资料随项目删除（deleteProjectLibrary）走同一路径，语义一致。
    */
   deleteSpace(id: string): void {
-    const space = this.repo.getSpace(id);
-    if (!space) throw new Error("空间不存在");
+    this.deleteSpaceUnchecked(this.requireDeletableSpace(id));
+  }
+
+  private requireDeletableSpace(id: string): LibrarySpaceDto {
+    const space = this.requireWritableSpace(id);
     if (space.kind === "personal") throw new Error("个人文档空间不能删除");
-    this.assertSpaceWritable(space);
-    this.deleteSpaceUnchecked(space);
+    return space;
+  }
+
+  async deleteSpaceAsync(id: string): Promise<void> {
+    this.requireDeletableSpace(id);
+    await this.flushPendingTextWrites();
+    await this.deleteNative({ kind: "space", id }, () => !this.repo.getSpace(id), () => this.deleteSpace(id));
   }
 
   private deleteSpaceUnchecked(space: LibrarySpaceDto): void {
-    const items = this.repo.listItems(space.id, undefined, true);
-    const collections = this.repo.listCollections(space.id);
-    // Durable DB state is the commit point. Files are removed only after the entire hierarchy
-    // has been deleted successfully, so a DB failure can never leave live rows pointing at missing files.
-    this.db.connection.transaction(() => {
-      for (const item of items) this.repo.deleteItem(item.id);
-      for (const collection of [...collections].reverse()) {
-        this.db.deleteLibraryCollectionLinks(collection.id);
-        this.repo.deleteCollection(collection.id);
-      }
-      this.db.deleteLibrarySpaceLinks(space.id);
-      this.repo.deleteSpace(space.id);
-    })();
-    for (const item of items) this.removeFileAfterDurableDelete(item);
-    try { rmSync(this.spaceDir(space.id), { recursive: true, force: true }); }
-    catch (error) { console.warn(`[Library] 空间 ${space.id} 已删除，但目录清理失败（orphan）`, error); }
+    const items = this.db.connection.transaction(() => this.deleteSpaceMetadata(space.id))();
+    this.removeSpaceFiles(space.id, items);
   }
+
+  private deleteSpaceMetadata(spaceId: string): LibraryItemDto[] {
+    const items = this.repo.listItems(spaceId, undefined, true);
+    const collections = this.repo.listCollections(spaceId);
+    for (const item of items) this.repo.deleteItem(item.id);
+    for (const collection of [...collections].reverse()) {
+      this.db.deleteLibraryCollectionLinks(collection.id);
+      this.repo.deleteCollection(collection.id);
+    }
+    this.db.deleteLibrarySpaceLinks(spaceId);
+    this.repo.deleteSpace(spaceId);
+    return items;
+  }
+
+  private removeSpaceFiles(spaceId: string, items: LibraryItemDto[]): void {
+    for (const item of items) this.removeFileAfterDurableDelete(item);
+    try { rmSync(this.spaceDir(spaceId), { recursive: true, force: true }); }
+    catch (error) { console.warn(`[Library] 空间 ${spaceId} 已删除，但目录清理失败（orphan）`, error); }
+  }
+
   /** 项目删除语义：级联删除该项目全部资料空间（集合/条目/版本/引用/受管文件）。personal 不受影响。 */
   deleteProjectLibrary(projectId: string): void {
-    for (const space of this.repo.listProjectSpaces(projectId)) {
-      this.deleteSpaceUnchecked(space);
-    }
+    this.withHostProjectDeletion(projectId, () => undefined);
+  }
+
+  withHostProjectDeletion<T>(projectId: string, deleteProjectData: () => T): T {
+    const { spaces, result } = this.db.connection.transaction(() => {
+      const spaces = this.repo.listProjectSpaces(projectId).map(space => ({
+        id: space.id, items: this.deleteSpaceMetadata(space.id),
+      }));
+      return { spaces, result: deleteProjectData() };
+    }).immediate();
+    for (const space of spaces) this.removeSpaceFiles(space.id, space.items);
+    return result;
+  }
+
+  async withProjectLibraryDeletion<T extends { itemIds: string[] }>(
+    remove: (root: string) => Promise<T>,
+  ): Promise<T> {
+    await this.flushPendingTextWrites();
+    await this.flushPendingFileMutations();
+    return this.trackFileMutation(remove(this.textSaves.root).then(async result => {
+      for (const id of result.itemIds) this.indexMaintenance.forgetItem(id);
+      await this.recoverFileDeletes().catch(error => console.warn("[Library] 项目资料文件清理将重试", error));
+      return result;
+    }));
   }
 
   /* ---------------- Collections ---------------- */
@@ -916,11 +966,49 @@ export class LibraryService {
     this.deleteCollectionRecursive(collection);
   }
 
+  async deleteCollectionAsync(id: string): Promise<void> {
+    const collection = this.repo.getCollection(id);
+    if (!collection) throw new Error("集合不存在");
+    this.requireWritableSpace(collection.spaceId);
+    await this.flushPendingTextWrites();
+    await this.deleteNative({ kind: "collection", id }, () => !this.repo.getCollection(id), () => this.deleteCollection(id));
+  }
+
   /* ---------------- Items ---------------- */
 
   private itemTitle(spaceId: string, input: string): string {
     const title = safeName(input);
     return this.repo.getSpace(spaceId)?.projectId ? title : limitText(title, LIBRARY_TITLE_MAX_CHARS, "标题");
+  }
+
+  async promoteProjectEventDocument(request: ProjectLibraryPromotion): Promise<"changed" | "existingPromotion" | undefined> {
+    const useHost = () => {
+      if (request.actorTaskId && !this.db.connection.prepare("SELECT 1 FROM tasks WHERE id=? AND project_id=?")
+        .get(request.actorTaskId, request.projectId)) {
+        throw new Error("任务的项目归属已变化，请重新读取");
+      }
+      return undefined;
+    };
+    const runtime = this.db.runtimeAuditReader;
+    if (!runtime || this.db.connection.inTransaction || !await runtime.supportsProjectWrites("eventLibraryPromotion")) return useHost();
+    const operationId = randomUUID();
+    const itemId = randomUUID();
+    return this.trackFileMutation(runtime.promoteProjectEventToLibrary({
+      ...request, title: safeName(request.title), spaceName: safeName(request.spaceName),
+      operationId, itemId, promotionId: `pepr_${randomUUID()}`, spaceId: randomUUID(),
+      root: this.textSaves.root, owner: this.ownerName(), savedAt: Date.now(), ...LIBRARY_CHUNK_DEFAULTS,
+    }).then(async result => {
+      if (result?.status === "needsHost") return useHost();
+      if (result?.status === "rejected") throw new Error(result.message);
+      if (result?.status === "existingPromotion") return result.status;
+      if (!result) {
+        const committed = this.db.connection.prepare("SELECT 1 FROM project_write_receipts WHERE operation_id=?").get(operationId);
+        await this.recoverLibraryRestores();
+        if (!committed) throw new Error("项目资料保存中断，请重试");
+      }
+      this.indexMaintenance.noteTextIndexed(itemId);
+      return "changed";
+    }));
   }
 
   createItem(req: LibraryCreateItemRequest, clipSource?: LibraryClipSource, tags?: string[]): LibraryItemDto {
@@ -1011,12 +1099,12 @@ export class LibraryService {
     const unchanged = next.title === item.title && next.filename === item.filename && next.collectionId === item.collectionId;
     if (unchanged) return item;
     try {
-      this.repo.updateItem(next);
+      this.repo.updateItem(next, item);
       this.refreshFts(next);
       return next;
     } catch (error) {
       const rollbackErrors: string[] = [];
-      try { this.repo.updateItem(item); }
+      try { this.repo.updateItem(item, next); }
       catch (rollbackError) { rollbackErrors.push(`metadata=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
       try { this.refreshFts(item); }
       catch (rollbackError) { rollbackErrors.push(`fts=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
@@ -1036,7 +1124,7 @@ export class LibraryService {
     if (!item) throw new Error("条目不存在");
     this.requireWritableSpace(item.spaceId);
     const next = { ...item, favorite: Boolean(req.favorite), updatedAt: Date.now() };
-    this.repo.updateItem(next);
+    this.repo.updateItem(next, item);
     return next;
   }
 
@@ -1057,6 +1145,19 @@ export class LibraryService {
     const bytes = this.versionBytes(itemId, version, LIBRARY_INLINE_FILE_MAX_BYTES);
     if (!bytes) throw new Error("此旧版本只保留了记录，正文副本已不可用");
     return bytes.toString("utf8");
+  }
+
+  async readVersionBody(itemId: string, version: number): Promise<string> {
+    const result = Number.isSafeInteger(version) ? await this.db.runtimeAuditReader?.libraryMetadata<
+      { status: "ok"; content: string } | { status: "missingItem" | "missingVersion" | "unavailable" | "needsHost" }
+    >({ kind: "versionBody", itemId, version }) : undefined;
+    switch (result?.status) {
+      case "ok": return result.content;
+      case "missingItem": throw new Error("笔记不存在或已移入回收站");
+      case "missingVersion": throw new Error("此版本不存在");
+      case "unavailable": throw new Error("此旧版本只保留了记录，正文副本已不可用");
+      default: return this.readVersion(itemId, version);
+    }
   }
 
   private versionBytes(itemId: string, version: number, maxFileBytes?: number): Buffer | null {
@@ -1083,6 +1184,78 @@ export class LibraryService {
         })) };
     });
     return { format: "mybuddy-notes", version: 1, folders, items };
+  }
+
+  async exportNoteBackup(owner: LibraryOwnerScope, destination: string): Promise<void> {
+    await this.flushPendingTextWrites();
+    await this.flushPendingFileMutations();
+    const target = resolve(destination);
+    const temporary = await mkdtemp(join(dirname(target), ".mybuddy-notes-"));
+    const staging = join(temporary, "backup.mynotes");
+    try {
+      const reader = this.db.runtimeAuditReader;
+      const status = reader && !this.db.connection.inTransaction
+        ? await reader.exportLibraryBackup(this.textSaves.root, owner, staging)
+        : "needsHost";
+      if (status === "needsHost") {
+        const archive = JSON.stringify(libraryNotesBackup.parse(this.createNoteBackup(owner)));
+        if (Buffer.byteLength(archive) > LIBRARY_NOTES_BACKUP_LIMIT) throw new Error("资料超过单份本地备份的大小上限");
+        await writeFile(staging, await promisify(gzip)(archive), { flag: "wx" });
+      } else if (status === "tooLarge") {
+        throw new Error("资料超过单份本地备份的大小上限");
+      } else if (status === "sourceUnavailable") {
+        throw new Error("受管资料无法读取或在备份期间已修改，请检查后重试");
+      } else if (status === "invalidMetadata") {
+        throw new Error("资料文件名或类型不符合备份格式，请检查后重试");
+      } else if (status !== "saved") {
+        throw new Error("笔记备份失败，请重试");
+      }
+      await rename(staging, target);
+    } finally {
+      try {
+        await rm(staging, { force: true });
+        await rmdir(temporary);
+      } catch (error) {
+        console.warn("[Library] 笔记备份临时文件清理失败", error);
+      }
+    }
+  }
+
+  async importNoteBackup(owner: LibraryOwnerScope, source: string): Promise<{ restored: number; skipped: number }> {
+    await this.flushPendingTextWrites();
+    await this.flushPendingFileMutations();
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || this.db.connection.inTransaction) return this.importNoteBackupOnHost(owner, source);
+    const operationId = randomUUID();
+    const root = this.textSaves.root;
+    return this.trackFileMutation(reader.restoreLibraryBackup({
+      source: resolve(source), root, owner, operationId, ...LIBRARY_CHUNK_DEFAULTS,
+    }, () => this.ensureOwnedSpace(owner).id).then(async (result) => {
+      if (result?.status === "needsHost") return this.importNoteBackupOnHost(owner, source);
+      if (result?.status === "rejected") throw new Error(result.message);
+      let receipt = result?.receipt;
+      if (!receipt) {
+        const saved = this.db.connection.prepare(
+          "SELECT result_json FROM library_restore_receipts WHERE root=? AND operation_id=?",
+        ).get(root, operationId) as { result_json: string } | undefined;
+        if (saved) receipt = JSON.parse(saved.result_json) as RuntimeLibraryRestoreReceipt;
+        await this.recoverLibraryRestores();
+        if (!receipt) throw new Error("备份恢复中断，请重试");
+      }
+      if (receipt.indexedText) this.indexMaintenance.scheduleSemanticIndex();
+      if (receipt.pendingExtraction) {
+        void this.indexMaintenance.recoverPendingExtractions().catch(error => console.warn("[Library] 备份恢复后的附件索引失败", error));
+      }
+      return { restored: receipt.restored, skipped: receipt.skipped };
+    }));
+  }
+
+  private async importNoteBackupOnHost(owner: LibraryOwnerScope, source: string): Promise<{ restored: number; skipped: number }> {
+    if ((await stat(source)).size > LIBRARY_NOTES_BACKUP_LIMIT) throw new Error("备份文件过大");
+    const json = await promisify(gunzip)(await readFile(source), { maxOutputLength: LIBRARY_NOTES_BACKUP_LIMIT });
+    const parsed = libraryNotesBackup.safeParse(JSON.parse(json.toString("utf8")));
+    if (!parsed.success) throw new Error("这不是有效的 MyBuddy 笔记备份");
+    return this.restoreNoteBackup(owner, parsed.data);
   }
 
   restoreNoteBackup(owner: LibraryOwnerScope, backup: LibraryNotesBackup): { restored: number; skipped: number } {
@@ -1136,7 +1309,7 @@ export class LibraryService {
           if (!next.trashedAt) this.refreshFts(next);
           restored++;
         }
-      })();
+      }).immediate();
       return { restored, skipped };
     } catch (error) {
       for (const item of written) this.removeFileAfterDurableDelete(item);
@@ -1202,34 +1375,90 @@ export class LibraryService {
     return this.previewUrl(target.id);
   }
 
-  setNoteMetadata(owner: LibraryOwnerScope, id: string, patch: { tags?: string[]; pinned?: boolean }): LibraryItemDto {
+  private setNoteMetadata(owner: LibraryOwnerScope, id: string, patch: { tags?: string[]; pinned?: boolean }): LibraryItemDto {
     const [item] = this.requireOwnedNoteItems(owner, [id]);
-    const tags = patch.tags === undefined ? item.tags : [...new Set(patch.tags.map((tag) => tag.trim()).filter(Boolean))];
-    if (tags && (tags.length > 100 || tags.some((tag) => tag.length > 80))) throw new Error("每篇笔记最多 100 个标签，每个标签最多 80 字");
+    const tags = this.normalizeNoteTags(patch.tags) ?? item.tags;
     const next = { ...item, tags, pinned: patch.pinned ?? item.pinned, updatedAt: Date.now() };
-    this.repo.updateItem(next);
+    this.repo.updateItem(next, item);
     return next;
   }
 
-  setNoteTrashed(owner: LibraryOwnerScope, ids: string[], trash: boolean): void {
+  async writeNoteMetadata(owner: LibraryOwnerScope, id: string, patch: { tags?: string[]; pinned?: boolean }): Promise<LibraryItemDto> {
+    const [item] = this.requireOwnedNoteItems(owner, [id]);
+    const tags = this.normalizeNoteTags(patch.tags);
+    if (!tags?.some(tag => /[\uD800-\uDFFF]/u.test(tag))) {
+      const result = await this.writeNativeNote({ kind: "metadata", item: { id, spaceId: item.spaceId }, tags, pinned: patch.pinned });
+      if (result) {
+        if (!result.item) throw new Error("无法读取已保存的笔记，请刷新后再试");
+        return toItem(result.item);
+      }
+    }
+    return this.setNoteMetadata(owner, id, patch);
+  }
+
+  private normalizeNoteTags(tags?: string[]): string[] | undefined {
+    if (tags === undefined) return undefined;
+    const normalized = [...new Set(tags.map(tag => tag.trim()).filter(Boolean))];
+    if (normalized.length > 100 || normalized.some(tag => tag.length > 80)) throw new Error("每篇笔记最多 100 个标签，每个标签最多 80 字");
+    return normalized;
+  }
+
+  private async writeNativeNote(change: RuntimeLibraryNoteChange) {
+    const result = await this.db.runtimeAuditReader?.writeLibraryNote<Parameters<typeof toItem>[0]>(change);
+    if (result?.status === "scopeChanged") throw new Error("资料位置或归档状态已变化，请刷新后重试");
+    if (result?.status === "folderChanged") throw new Error("只能移动到同一资料位置的文件夹");
+    if (result?.status === "sourceUnavailable") throw new Error("资料正文文件不可读取，请检查文件后重新恢复");
+    return result?.status === "updated" ? result : undefined;
+  }
+
+  private setNoteTrashedOnHost(owner: LibraryOwnerScope, ids: string[], trash: boolean): void {
     const items = this.requireOwnedNoteItems(owner, ids, true);
     this.db.connection.transaction(() => {
       for (const item of items) {
         if (Boolean(item.trashedAt) === trash) continue;
         const next = { ...item, trashedAt: trash ? Date.now() : undefined, updatedAt: Date.now() };
-        this.repo.updateItem(next);
+        this.repo.updateItem(next, item);
         if (!trash && this.repo.isTextSearchable(item.kind)) this.refreshFts(next);
       }
     })();
   }
 
-  moveNotes(owner: LibraryOwnerScope, ids: string[], collectionId: string | null): void {
+  async trashNotes(owner: LibraryOwnerScope, ids: string[]): Promise<void> {
+    const items = this.requireOwnedNoteItems(owner, ids, true).map(({ id, spaceId }) => ({ id, spaceId }));
+    if (items.length && !await this.writeNativeNote({ kind: "trash", items })) {
+      this.setNoteTrashedOnHost(owner, ids, true);
+    }
+  }
+
+  async restoreNotes(owner: LibraryOwnerScope, ids: string[]): Promise<void> {
+    const items = this.requireOwnedNoteItems(owner, ids, true).map(({ id, spaceId }) => ({ id, spaceId }));
+    if (!items.length) return;
+    const result = await this.writeNativeNote({
+      kind: "restore", items, root: this.textSaves.root, ...LIBRARY_CHUNK_DEFAULTS,
+    });
+    if (!result) {
+      this.setNoteTrashedOnHost(owner, ids, false);
+      return;
+    }
+    for (const id of result.indexed ?? []) this.indexMaintenance.noteTextIndexed(id);
+  }
+
+  async moveNotes(owner: LibraryOwnerScope, ids: string[], collectionId: string | null): Promise<void> {
+    const checked = this.requireNoteMove(owner, ids, collectionId);
+    if (!checked.length || await this.writeNativeNote({
+      kind: "move", items: checked.map(({ id, spaceId }) => ({ id, spaceId })), collectionId,
+    })) return;
+    const items = this.requireNoteMove(owner, ids, collectionId);
+    this.db.connection.transaction(() => {
+      for (const item of items) this.repo.updateItem({ ...item, collectionId, updatedAt: Date.now() }, item);
+    })();
+  }
+
+  private requireNoteMove(owner: LibraryOwnerScope, ids: string[], collectionId: string | null): LibraryItemDto[] {
     const items = this.requireOwnedNoteItems(owner, ids);
     const folder = collectionId ? this.repo.getCollection(collectionId) : null;
     if (collectionId && (!folder || items.some((item) => item.spaceId !== folder.spaceId))) throw new Error("只能移动到同一资料位置的文件夹");
-    this.db.connection.transaction(() => {
-      for (const item of items) this.repo.updateItem({ ...item, collectionId, updatedAt: Date.now() });
-    })();
+    return items;
   }
 
   mergeNotes(owner: LibraryOwnerScope, ids: string[]): LibraryItemDto {
@@ -1283,6 +1512,55 @@ export class LibraryService {
     }
   }
 
+  async deleteItemAsync(id: string): Promise<void> {
+    const item = this.repo.getItem(id);
+    if (!item) throw new Error("条目不存在");
+    this.requireWritableSpace(item.spaceId);
+    await this.textSaves.waitFor(id);
+    await this.deleteNative({ kind: "item", id }, () => !this.repo.getItem(id, true), () => this.deleteItem(id));
+  }
+
+  private async deleteNative(target: RuntimeLibraryDeleteTarget, committed: () => boolean, fallback: () => void): Promise<void> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || this.db.connection.inTransaction) return fallback();
+    const job = reader.deleteLibrary(this.textSaves.root, target).then(async (result) => {
+      if (result?.status === "needsHost") return fallback();
+      if (result?.status === "scopeChanged") throw new Error("资料位置或归档状态已变化，请刷新后重试");
+      if (result?.status === "deleted") {
+        for (const id of result.itemIds) this.indexMaintenance.forgetItem(id);
+      } else if (committed()) {
+        if (target.kind === "item") this.indexMaintenance.forgetItem(target.id);
+        await this.recoverFileDeletes();
+      } else {
+        throw new Error("资料删除失败，请刷新后重试");
+      }
+    });
+    await this.trackFileMutation(job);
+  }
+
+  private async trackFileMutation<T>(job: Promise<T>): Promise<T> {
+    this.pendingFileMutations.add(job);
+    try { return await job; }
+    finally { this.pendingFileMutations.delete(job); }
+  }
+
+  async recoverFileDeletes(): Promise<void> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || !this.db.connection.prepare("SELECT 1 FROM library_file_cleanup WHERE root=? LIMIT 1").get(this.textSaves.root)) return;
+    await this.trackFileMutation(reader.drainLibraryCleanup(this.textSaves.root));
+  }
+
+  async recoverLibraryRestores(): Promise<void> {
+    const root = this.textSaves.root;
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || !this.db.connection.prepare("SELECT 1 FROM library_restore_files WHERE root=? LIMIT 1").get(root)) return;
+    await this.trackFileMutation(reader.recoverLibraryRestores(root));
+  }
+
+  async flushPendingFileMutations(): Promise<void> {
+    while (this.pendingFileMutations.size) await Promise.allSettled(this.pendingFileMutations);
+  }
+
   /** 文本类正文；非文本返回受管路径 + requiresFileAccess，禁止 utf8 直读二进制 */
   readContent(id: string, maxChars?: number): LibraryContentDto {
     const item = this.repo.getItem(id);
@@ -1324,14 +1602,88 @@ export class LibraryService {
     return this.updateTextContent(req);
   }
 
-  /** Text update commit boundary: version + file + metadata + FTS either converge together or compensate. */
-  updateTextContent(req: LibraryWriteContentRequest): LibraryItemDto {
-    const item = this.repo.getItem(req.id);
+  async readContentAsync(id: string, maxChars?: number): Promise<LibraryContentDto> {
+    let pending = this.textSaves.waitFor(id);
+    while (pending) {
+      await pending;
+      pending = this.textSaves.waitFor(id);
+    }
+    if (maxChars === undefined || (Number.isSafeInteger(maxChars) && maxChars >= 0)) {
+      const result = await this.db.runtimeAuditReader?.libraryMetadata<
+        | { status: "ok"; item: Parameters<typeof toItem>[0]; content: string; contentTruncated?: boolean }
+        | { status: "missingItem" | "needsHost" }
+      >({ kind: "textBody", itemId: id, root: this.textSaves.root, maxChars });
+      if (result?.status === "missingItem") throw new Error("条目不存在");
+      if (result?.status === "ok") {
+        const item = toItem(result.item);
+        return maxChars === undefined
+          ? { item, content: result.content, previewUrl: item.kind === "html" ? this.previewUrl(id) : undefined }
+          : { item, content: result.content, contentTruncated: result.contentTruncated };
+      }
+    }
+    return this.readContent(id, maxChars);
+  }
+
+  async writeContentAsync(req: LibraryWriteContentRequest): Promise<LibraryItemDto> {
+    const reader = this.db.runtimeAuditReader;
+    if (!reader || this.db.connection.inTransaction) return this.updateTextContent(req);
+    return this.textSaves.enqueue(req.id, async () => {
+      const item = this.requireTextUpdate(req.id);
+      const content = req.content ?? "";
+      this.assertContentLength(item.spaceId, content);
+      const title = req.title === undefined ? undefined : this.itemTitle(item.spaceId, req.title);
+      const nextFilename = title === undefined || title === item.title ? undefined : `${title}${extname(item.filename) || extForKind(item.kind)}`;
+      const operationId = randomUUID();
+      const path = resolve(this.absolutePath(item));
+      this.assertManagedWritePath(path);
+      const createdBy = this.ownerName();
+      if (Buffer.byteLength(content) > NATIVE_LIBRARY_SAVE_MAX_BYTES
+        || [content, title, req.expectedTitle, createdBy].some(value => value && /[\uD800-\uDFFF]/u.test(value))
+        || !existsSync(dirname(path))) {
+        return this.updateTextContentOnHost(req);
+      }
+      const status = await reader.saveLibraryText({
+        id: item.id, spaceId: item.spaceId, filename: item.filename,
+        path, root: this.textSaves.root, operationId, title, nextFilename,
+        expectedTitle: req.expectedTitle, expectedContentHash: req.expectedContentHash,
+        content, createdBy, updatedAt: Date.now(), ...LIBRARY_CHUNK_DEFAULTS,
+      });
+      if (status === "needsHost") return this.updateTextContentOnHost(req);
+      if (status === "saved" || status === "unchanged" || this.textSaves.wasCommitted(item.id, operationId)) {
+        if (status !== "unchanged") this.indexMaintenance.noteTextIndexed(item.id);
+        const updated = this.repo.getItem(item.id, true);
+        if (updated) return updated;
+        throw new Error("笔记保存后已被删除");
+      }
+      try { this.textSaves.recoverItem(item.id); }
+      catch (error) {
+        throw new LibraryUpdatePartialStateError(item.id, path, "笔记保存中断",
+          error instanceof Error ? error.message : String(error));
+      }
+      if (status === "conflict") throw new Error("此笔记已在别处更新。草稿已保留，请核对最新正文后再保存。");
+      throw new Error("笔记未能保存，草稿已保留，请重试");
+    });
+  }
+
+  private requireTextUpdate(id: string): LibraryItemDto {
+    const item = this.repo.getItem(id);
     if (!item) throw new Error("条目不存在");
     this.requireWritableSpace(item.spaceId);
     if (!this.repo.isTextReadable(item.kind)) {
       throw new Error("该类型是受管文件（非文本），资料库内编辑会破坏文件；请用文件/预览工具处理");
     }
+    return item;
+  }
+
+  /** Text update commit boundary: version + file + metadata + FTS either converge together or compensate. */
+  updateTextContent(req: LibraryWriteContentRequest): LibraryItemDto {
+    if (this.textSaves.waitFor(req.id)) throw new Error("此笔记正在保存，请稍后重试");
+    return this.updateTextContentOnHost(req);
+  }
+
+  private updateTextContentOnHost(req: LibraryWriteContentRequest): LibraryItemDto {
+    this.textSaves.recoverItem(req.id);
+    const item = this.requireTextUpdate(req.id);
     const text = req.content ?? "";
     this.assertContentLength(item.spaceId, text);
     const title = req.title === undefined ? item.title : this.itemTitle(item.spaceId, req.title);
@@ -1378,7 +1730,7 @@ export class LibraryService {
         atomicWriteFileSync(abs, text);
         fileChanged = true;
       }
-      this.repo.updateItem(next);
+      this.repo.updateItem(next, item);
       metadataChanged = true;
       this.refreshFts(next);
       return next;
@@ -1393,7 +1745,7 @@ export class LibraryService {
         }
       }
       if (metadataChanged) {
-        try { this.repo.updateItem(item); }
+        try { this.repo.updateItem(item, next); }
         catch (rollbackError) { rollbackErrors.push(`metadata=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
       }
       if (versionId) {
@@ -1646,6 +1998,7 @@ export class LibraryService {
 
   /** 复用已有 artifact 条目：内容变化 → 更新副本+版本；collection 变化 → 移动；全不变 → 原样返回（no-op） */
   private refreshSavedArtifact(existing: LibraryItemDto, collectionId: string | null): LibraryItemDto {
+    if (this.textSaves.waitFor(existing.id)) throw new Error("此资料正在保存，请稍后重试");
     const collectionMoved = collectionId !== null && existing.collectionId !== collectionId;
     const sourcePath = existing.originalPath;
     if (!sourcePath || !existsSync(sourcePath)) {
@@ -1703,7 +2056,7 @@ export class LibraryService {
         next.sizeBytes = statSync(abs).size;
         next.contentHash = sourceHash;
       }
-      this.repo.updateItem(next);
+      this.repo.updateItem(next, existing);
       metadataChanged = true;
       this.refreshFts(next);
       if (backup && !fileBackedVersion) rmSync(backup, { force: true });
@@ -1719,7 +2072,7 @@ export class LibraryService {
         }
       }
       if (metadataChanged) {
-        try { this.repo.updateItem(existing); }
+        try { this.repo.updateItem(existing, next); }
         catch (rollbackError) { rollbackErrors.push(`metadata=${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
       }
       if (versionId) {
@@ -1747,7 +2100,7 @@ export class LibraryService {
     const item = this.repo.getItem(id);
     if (!item) throw new Error("条目不存在");
     const next = { ...item, lastVisitedAt: Date.now() };
-    this.repo.updateItem(next);
+    this.repo.updateItem(next, item);
     return next;
   }
 
@@ -1888,6 +2241,7 @@ export class LibraryService {
     return this.indexMaintenance.getExtractedText(item, textMaxChars);
   }
   flushPendingIndexes(): Promise<void> { return this.indexMaintenance.flushPendingIndexes(); }
+  flushPendingTextWrites(): Promise<void> { return this.textSaves.flush(); }
   recoverPendingExtractions(): Promise<number> { return this.indexMaintenance.recoverPendingExtractions(); }
 
   previewUrl(itemId: string): string {

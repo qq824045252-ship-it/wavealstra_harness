@@ -38,7 +38,9 @@ export interface ProjectCadenceOptions {
 }
 
 export class ProjectCadence {
-  private readonly timers = new Map<string, unknown>();
+  private readonly timers = new Map<string, { handle: unknown; ticket: object }>();
+  private readonly pending = new Map<string, object>();
+  private rebuild?: object;
   private readonly scheduler: CadenceScheduler;
   private readonly now: () => number;
 
@@ -91,25 +93,48 @@ export class ProjectCadence {
     } catch {
       return; // 读源失败：不保留 timer（fail-safe），后续业务写入/启动会重建
     }
+    this.arm(projectId, boundary, now, () => this.schedule(projectId));
+  }
+
+  async scheduleAsync(projectId: string, now = this.now()): Promise<void> {
+    this.cancel(projectId);
+    const request = {};
+    this.pending.set(projectId, request);
+    let boundary: number | null;
+    try {
+      const native = await this.projects.readNextCadenceBoundary(projectId, now);
+      if (this.pending.get(projectId) !== request) return;
+      boundary = native === undefined ? this.nextBoundary(projectId, now) : native;
+    } catch {
+      if (this.pending.get(projectId) === request) this.pending.delete(projectId);
+      return;
+    }
+    this.pending.delete(projectId);
+    this.arm(projectId, boundary, this.now(), () => { void this.scheduleAsync(projectId); });
+  }
+
+  private arm(projectId: string, boundary: number | null, now: number, reschedule: () => void): void {
     if (boundary === null) return;
     // 钳制到 JS timer 上限：极远边界提前触发 → fire 重算后重新调度（安全环）
     const delay = Math.min(Math.max(0, boundary - now), MAX_TIMER_DELAY_MS);
-    const handle = this.scheduler.schedule(() => this.fire(projectId), delay);
-    this.timers.set(projectId, handle);
+    const ticket = {};
+    const handle = this.scheduler.schedule(() => this.fire(projectId, ticket, reschedule), delay);
+    this.timers.set(projectId, { handle, ticket });
   }
 
   /** 取消项目边界（项目删除/归档） */
   cancel(projectId: string): void {
-    const handle = this.timers.get(projectId);
-    if (handle !== undefined) {
-      this.scheduler.clear(handle);
+    this.pending.delete(projectId);
+    const timer = this.timers.get(projectId);
+    if (timer) {
+      this.scheduler.clear(timer.handle);
       this.timers.delete(projectId);
     }
   }
 
   /** 启动/恢复：从真源重建全部边界（先清后建；已过期边界自然被忽略，状态即真源 catch-up） */
   scheduleAll(now = this.now()): void {
-    for (const projectId of [...this.timers.keys()]) this.cancel(projectId);
+    this.shutdown();
     let projects: ProjectDto[];
     try {
       projects = this.projects.list(true);
@@ -117,6 +142,21 @@ export class ProjectCadence {
       return;
     }
     for (const project of projects) this.schedule(project.id, now);
+  }
+
+  async scheduleAllAsync(now = this.now()): Promise<void> {
+    this.shutdown();
+    const request = {};
+    this.rebuild = request;
+    try {
+      const projects = await this.projects.readList(true);
+      if (this.rebuild !== request) return;
+      await Promise.all(projects.map(project => this.scheduleAsync(project.id, now)));
+    } catch (error) {
+      console.warn("[ProjectCadence] 无法重建项目提醒", error);
+    } finally {
+      if (this.rebuild === request) this.rebuild = undefined;
+    }
   }
 
   /**
@@ -146,22 +186,23 @@ export class ProjectCadence {
   }
 
   shutdown(): void {
+    this.rebuild = undefined;
+    this.pending.clear();
     for (const projectId of [...this.timers.keys()]) this.cancel(projectId);
   }
 
-  private fire(projectId: string): void {
+  private fire(projectId: string, ticket: object, reschedule: () => void): void {
     // 先释放已触发的 handle（真实 setTimeout 是 no-op；可注入 scheduler 需显式释放），
     // 再触发回调、以当前时间重算下一个边界（时钟回拨/跳变安全：不信任旧 timeout）
-    const handle = this.timers.get(projectId);
-    if (handle !== undefined) {
-      this.scheduler.clear(handle);
-      this.timers.delete(projectId);
-    }
+    const timer = this.timers.get(projectId);
+    if (timer?.ticket !== ticket) return;
+    this.scheduler.clear(timer.handle);
+    this.timers.delete(projectId);
     try {
       this.opts.onBoundary?.(projectId);
     } catch (err) {
       console.warn(`[ProjectCadence] 边界触发失败 ${projectId}：`, err);
     }
-    this.schedule(projectId);
+    if (!this.pending.has(projectId) && !this.timers.has(projectId)) reschedule();
   }
 }

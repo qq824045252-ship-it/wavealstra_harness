@@ -8,10 +8,11 @@
  * Run: pnpm run test:workspace-runtime-integration
  */
 import assertStrict from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { WorkspaceSharedContextService } from "../src/main/workspace/WorkspaceSharedContextService";
 import {
@@ -483,6 +484,62 @@ async function main(): Promise<void> {
     });
     const r2 = await svc2.collect("art-A");
     ok(r2.ok && !r2.context.workspaceSharedContext, "workspace null does not break collect");
+  }
+
+  console.log("== 11) Workspace view and artifact prompt share the persisted scope snapshot ==");
+  {
+    const native = process.argv.includes("--native");
+    const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+    if (native) assertStrict.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+    const directory = mkdtempSync(join(tmpdir(), "workspace-shared-data-"));
+    const db = new AppDatabase(join(directory, "app.db"), { runtimeAuditExecutable });
+    try {
+      db.createSpace({ id: "root", name: "Root" });
+      db.createSpace({ id: "child", name: "Child", parentId: "root" });
+      db.createSpace({ id: "origin", name: "Origin", parentId: "child" });
+      db.createSpace({ id: "sibling", name: "Sibling", parentId: "root" });
+      db.upsertTask({ id: "task", title: "Task", spaceId: "child", updatedAt: 1 });
+      const memory = new MemoryService(db, { semantic: false });
+      const shared = new WorkspaceSharedContextService(db);
+      createWorkspaceMemory(memory, "root", "root scope");
+      createWorkspaceMemory(memory, "child", "child scope");
+      createWorkspaceMemory(memory, "sibling", "unrelated scope");
+      const origin = createWorkspaceMemory(memory, "origin", "promoted text");
+      shared.promote(origin.id, "origin");
+      memory.create({ kind: "fact", title: "task scope", content: "", scopeType: "task", scopeId: "task", sourceType: "manual" });
+
+      if (native) {
+        // Only the host connection sees this empty scope table. The persisted snapshot stays intact.
+        db.connection.exec("CREATE TEMP TABLE memory_scopes AS SELECT * FROM main.memory_scopes WHERE 0");
+      }
+
+      const view = await shared.readView({ currentSpaceId: null, taskId: "task", memoryEnabled: true });
+      eq([view.currentSpaceId, view.parentName, ...view.ancestorChain], ["child", "Root", "child", "root"], "view resolves the task's workspace and live ancestors");
+      eq(view.grouped.local.map(item => item.content), ["task scope", "child scope"], "task items precede local workspace items");
+      eq(view.grouped.inherited.map(item => item.content), ["root scope"], "view includes ancestors and excludes unrelated or descendant records");
+      eq(view.grouped.promoted.map(item => [item.content, item.promotedFrom?.spaceName]), [["promoted text", "Origin"]], "view labels promoted records with their source workspace");
+
+      const prompt = new PromptContextService({
+        getArtifact: () => ({ id: "art", taskId: "task", kind: "html", source: { type: "managed-content", storagePath: "p", rootDir: "r" }, version: 1, capabilities: {}, createdAt: 0, updatedAt: 0 } as ArtifactDescriptor),
+        readContent: async () => ({ content: "<p>Example</p>", kind: "html" }),
+        getSelection: () => ({ status: "empty", descriptor: null, updatedAt: 0 }),
+        getWorkspaceSharedContext: async () => shared.readDigestForTask("task"),
+      });
+      const collected = await prompt.collect("art");
+      const digest = collected.ok ? collected.context.workspaceSharedContext ?? "" : "";
+      eq(["task scope", "child scope", "root scope", "promoted text", "unrelated scope"].filter(content => digest.includes(content)),
+        ["task scope", "child scope", "root scope", "promoted text"], "artifact prompt awaits the persisted digest and leaves sibling context out");
+
+      db.archiveSpace("root", true);
+      const archived = await shared.readView({ currentSpaceId: "child", taskId: "task", memoryEnabled: true });
+      eq([archived.effectiveArchived, ...archived.blocks.map(item => item.content)], [true, "task scope"], "archive change drops workspace context and keeps task scope");
+      const disabled = await shared.readView({ currentSpaceId: "child", taskId: "task", memoryEnabled: false });
+      eq([disabled.currentSpaceName, disabled.memoryEnabled, disabled.blocks.length], ["Child", false, 0], "disabled view retains workspace metadata without loading memory");
+    } finally {
+      await db.runtimeAuditReader?.close();
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   }
 
   console.log(`\n结果: passed=${passed} failed=${failed}`);

@@ -23,7 +23,8 @@ import { WebArtifactRuntime, type WebResourceResult } from "./WebArtifactRuntime
 export type ArtifactImageVariantResolver = (
   artifactId: string,
   variant: "thumb" | "full",
-) => Promise<{ data: Uint8Array; mimeType: string; version?: number } | null>;
+  options: { head: boolean; signal: AbortSignal },
+) => Promise<{ data: Uint8Array | ReadableStream<Uint8Array> | null; mimeType: string; version?: number; bytes?: number } | null>;
 
 /**
  * 版本化图片 URL 的内容不可变，可以长缓存。
@@ -71,7 +72,8 @@ export class ArtifactProtocol {
         if (!this.imageVariant) return this.text(404, "Not Found");
         const parsed = parseArtifactImageUrl(request.url);
         if (!parsed?.variant) return this.text(400, "Bad Request");
-        const image = await this.imageVariant(artifactId, parsed.variant);
+        const head = request.method === "HEAD";
+        const image = await this.imageVariant(artifactId, parsed.variant, { head, signal: request.signal });
         if (!image) return this.text(404, "Not Found");
         const requestedVersion = parsed.meta.version;
         const stale =
@@ -80,15 +82,20 @@ export class ArtifactProtocol {
           requestedVersion !== image.version;
         const headers: Record<string, string> = {
           "content-type": image.mimeType,
+          ...(image.bytes === undefined ? {} : { "content-length": String(image.bytes) }),
           "cache-control":
             requestedVersion === undefined || stale ? NO_CACHE : IMMUTABLE_IMAGE_CACHE,
           "x-content-type-options": "nosniff",
         };
-        // Buffer（Uint8Array）在运行时是合法 BodyInit；仅 TS 泛型不兼容
-        return new Response(request.method === "HEAD" ? null : (image.data as BodyInit), {
-          status: 200,
-          headers,
-        });
+        const stream = image.data instanceof ReadableStream ? image.data : undefined;
+        try {
+          if (head) await stream?.cancel().catch(() => {});
+          // Buffer（Uint8Array）在运行时是合法 BodyInit；仅 TS 泛型不兼容。
+          return new Response(head ? null : image.data as BodyInit, { status: 200, headers });
+        } catch (error) {
+          await stream?.cancel().catch(() => {});
+          throw error;
+        }
       }
       let subPath = "";
       if (segments.length > 1) {

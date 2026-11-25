@@ -20,6 +20,7 @@ import { needsFreshUserInput } from "../src/main/agent/durable/DurableInputFresh
 import { persistDurableImages } from "../src/main/agent/durable/DurableImages";
 import { createServer } from "node:http";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { AnswerRoutingService } from "../src/main/agent/AnswerRoutingService";
 import { DOTS_TASK_ID } from "../src/shared/dots";
 import { createMemoryExtension } from "../src/main/memory/memory-extension";
@@ -356,15 +357,23 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
 // Drop an actual emitted revision between the native writer and the desktop store.
 {
   const cwd = join(root, "desktop-sync"); await mkdir(cwd);
-  const db = new AppDatabase(join(cwd, "app.db"));
+  const nativeTaskProjection = process.argv.includes("--native-task-projection");
+  const runtimeAuditExecutable = nativeTaskProjection ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (nativeTaskProjection) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+  const db = new AppDatabase(join(cwd, "app.db"), { runtimeAuditExecutable });
   const taskId = "gap";
   db.upsertTask({ id: taskId, title: taskId, cwd, modelId: "fixture/fixture", updatedAt: 1 });
   let reads = 0, drop = false;
+  let historicMessageId: string | undefined;
+  let projectedOrigin: string | undefined;
   const desktop = createAppStore({ getApi: () => ({ agent: {
     loadTaskHistory: async (id: string) => { reads++; return service.history(id, undefined, "current"); },
   } }) as Window["api"] });
   const service = new DurableBotService({ db, agentDir: cwd, mcpDir: join(cwd, "mcp"), models: { ...models(() => text("actual reply")), refresh: async () => ({}), getAvailable: async () => [model] },
     resolveCwd: () => cwd, instructions: () => "", toolMode: () => "native", defaultModel: () => "fixture/fixture",
+    projectArtifacts: async (_task, _snapshot, _before, _cwd, origins) => {
+      if (historicMessageId) projectedOrigin = origins?.get(historicMessageId);
+    },
     emit: patch => { if (!drop) desktop.useAppStore.getState().applyAgentPatch(patch); } });
   const drain = async () => {
     const deadline = Date.now() + 5000;
@@ -388,14 +397,28 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     assert.equal(projected?.revision, (await service.history(taskId, undefined, "current")).durable?.revision);
     assert.equal((await service.history(taskId)).durable?.epoch, undefined, "stored reads beside a writer have no stream cursor");
     assert.equal(projected?.messages.at(-1)?.text, "actual reply");
+    db.connection.prepare("UPDATE tasks SET updated_at = 2000000000000, status = 'pending' WHERE id = ?").run(taskId);
+    if (nativeTaskProjection) db.connection.pragma("query_only = ON");
+    try { await service.refresh(taskId); }
+    finally { if (nativeTaskProjection) db.connection.pragma("query_only = OFF"); }
+    assert.equal(db.getTask(taskId)?.status, "completed");
+    assert.equal((await service.history(taskId, undefined, "current")).durable?.activityAt, 2_000_000_000_000);
+    assert.equal(desktop.useAppStore.getState().tasks.find(task => task.id === taskId)?.durable?.activityAt, 2_000_000_000_000);
     await service.release(taskId);
     const archive = await service.history(taskId, undefined, "current");
     assert.equal(archive.durable?.epoch, undefined, "a closed session has history but no live stream cursor");
     assert.equal(archive.messages.at(-1)?.text, "actual reply");
+    const priorCwd = join(root, "prior-workspace");
+    historicMessageId = archive.messages.at(-1)?.id;
+    assert(historicMessageId);
+    db.connection.prepare("UPDATE durable_bot_message_workspaces SET cwd=? WHERE task_id=? AND message_id=?")
+      .run(priorCwd, taskId, historicMessageId);
     const reopened = await service.inspect(taskId);
     assert(reopened && reopened.epoch !== writer.epoch && reopened.historyId === writer.historyId);
     assert.equal(desktop.useAppStore.getState().tasks[0].durable?.epoch, reopened.epoch);
-  } finally { await service.close(); db.close(); }
+    await service.release(taskId);
+    assert.equal(projectedOrigin, priorCwd, "artifact projection uses the saved workspace after reopening a task");
+  } finally { await service.close(); await db.runtimeAuditReader?.close(); db.close(); }
 }
 
 {

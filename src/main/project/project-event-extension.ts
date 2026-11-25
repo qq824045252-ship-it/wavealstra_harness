@@ -380,7 +380,8 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
             memoryContent: params.content,
             memoryImportance: params.importance,
           });
-          const result = bridge.promoter.promote(params.eventId, request, { taskId: bridge.taskId });
+          const result = await bridge.promoter.promoteAsync(params.eventId, request, { taskId: bridge.taskId });
+          if (requireProject() !== projectId) throw new ProjectEventToolError("任务的项目归属已变化，请重新读取");
           return textResult(
             result.reused
               ? `幂等复用：该事件已提升为记忆（id=${result.targetId}${result.targetMissing ? "，但目标已被删除" : ""}）`
@@ -415,7 +416,8 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
             todoDueAt: params.dueAt,
             todoPriority: params.priority,
           });
-          const result = bridge.promoter.promote(params.eventId, request, { taskId: bridge.taskId });
+          const result = await bridge.promoter.promoteAsync(params.eventId, request, { taskId: bridge.taskId });
+          if (requireProject() !== projectId) throw new ProjectEventToolError("任务的项目归属已变化，请重新读取");
           return textResult(
             result.reused
               ? `幂等复用：该事件已提升为计划项（id=${result.targetId}${result.targetMissing ? "，但目标已被删除" : ""}）`
@@ -445,7 +447,8 @@ export function createProjectEventExtension(bridge: ProjectEventExtensionBridge)
             libraryTitle: params.title,
             libraryContent: params.content,
           });
-          const result = bridge.promoter.promote(params.eventId, request, { taskId: bridge.taskId });
+          const result = await bridge.promoter.promoteAsync(params.eventId, request, { taskId: bridge.taskId });
+          if (requireProject() !== projectId) throw new ProjectEventToolError("任务的项目归属已变化，请重新读取");
           return textResult(
             result.reused
               ? `幂等复用：该事件已提升为项目资料（id=${result.targetId}${result.targetMissing ? "，但目标已被删除" : ""}）`

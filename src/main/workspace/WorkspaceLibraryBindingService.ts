@@ -8,6 +8,15 @@
  * 本服务只维护持久关联和 scope 映射；Permission / Retrieval / Prompt 由上层负责。
  */
 import type { AppDatabase } from "../db/AppDatabase";
+import type { WorkspaceLibraryBindingRequest } from "../../shared/workspace-library-binding";
+
+export interface RuntimeWorkspaceBindingMutation {
+  kind: "bind" | "unbind";
+  workspaceId: string;
+  librarySpaceId: string;
+  collectionId?: string;
+  at: number;
+}
 
 export interface WorkspaceLibraryCollectionBinding {
   librarySpaceId: string;
@@ -21,6 +30,41 @@ export interface ResolvedWorkspaceLibraryBindings {
 
 export class WorkspaceLibraryBindingService {
   constructor(private readonly db: AppDatabase) {}
+
+  async writeTarget(kind: RuntimeWorkspaceBindingMutation["kind"], request: WorkspaceLibraryBindingRequest): Promise<void> {
+    const workspaceId = request.workspaceId?.trim();
+    const librarySpaceId = request.librarySpaceId?.trim();
+    const collectionId = request.collectionId?.trim() || undefined;
+    if (!workspaceId) throw new Error("工作空间不能为空");
+    if (!librarySpaceId) throw new Error("资料库空间不能为空");
+    const mutation = { kind, workspaceId, librarySpaceId, collectionId, at: Date.now() };
+    const worker = this.db.runtimeAuditReader;
+    if (!worker || this.db.connection.inTransaction) return this.writeTargetOnHost(mutation);
+    const result = await worker.writeWorkspaceBinding(mutation);
+    if (result?.status === "saved") return;
+    if (result?.status === "needsHost") return this.writeTargetOnHost(mutation);
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("未收到资料关联保存确认，请刷新后查看状态");
+  }
+
+  private writeTargetOnHost({ kind, workspaceId, librarySpaceId, collectionId }: RuntimeWorkspaceBindingMutation): void {
+    const connection = this.db.connection;
+    connection.transaction(() => {
+      const workspace = this.db.getSpace(workspaceId);
+      if (!workspace) throw new Error("工作空间不存在");
+      if (workspace.archived || workspace.effectiveArchived) throw new Error("归档工作空间只可读取资料");
+      if (kind === "bind") {
+        if (!connection.prepare("SELECT 1 FROM library_spaces WHERE id=?").get(librarySpaceId)) throw new Error("资料库空间不存在");
+        if (collectionId) {
+          if (!connection.prepare("SELECT 1 FROM library_collections WHERE id=? AND space_id=?").get(collectionId, librarySpaceId)) {
+            throw new Error("资料库文件夹不存在或不属于该资料库");
+          }
+          this.bindCollection(workspaceId, librarySpaceId, collectionId);
+        } else this.bind(workspaceId, librarySpaceId);
+      } else if (collectionId) this.unbindCollection(workspaceId, collectionId);
+      else this.unbind(workspaceId, librarySpaceId);
+    }).immediate();
+  }
 
   /** 绑定整个资料库空间（幂等） */
   bind(workspaceId: string, librarySpaceId: string): void {

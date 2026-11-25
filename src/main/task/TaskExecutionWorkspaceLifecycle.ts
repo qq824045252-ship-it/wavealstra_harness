@@ -18,6 +18,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
 } from "node:fs";
@@ -27,6 +28,7 @@ import { currentTaskWorkspace, gatewayTaskWorkspace, validateGatewayTaskCwd } fr
 import { GATEWAY_TASK_FOLDER, isPlainDirectory, sameWorkspacePath, validatePlainTaskManifest } from "./QQTaskWorkspace";
 import { TRASH_RETENTION_MS, type TrashedTaskDto } from "../../shared/archive-deletion";
 import type { AppDatabase, TaskExecutionWorkspaceStateRow } from "../db/AppDatabase";
+import type { TaskArchivePurgeScope } from "../platform/runtime-audit";
 import { getTaskExecutionWorkspacesTrashDir } from "../paths";
 import {
   getTaskDirectoryName,
@@ -47,6 +49,12 @@ export const DEFAULT_PURGE_AFTER_MS = TRASH_RETENTION_MS;
 export class TaskLifecycleError extends TaskExecutionWorkspaceError {}
 export class TaskLifecycleConflictError extends TaskLifecycleError {}
 export class TaskLifecycleRepairRequiredError extends TaskLifecycleError {}
+
+function archiveTrashError(taskId: string, archived: boolean): TaskLifecycleError {
+  return new TaskLifecycleError(archived
+    ? `任务已在回收区，请先恢复再归档：${taskId}`
+    : `任务在回收区，请用 restore 而非 unarchive：${taskId}`);
+}
 
 export interface OrphanDirectoryReport {
   directoryName: string;
@@ -70,10 +78,39 @@ export interface RestoreResult {
   workspaceDir: string;
 }
 
+export interface RuntimeTaskTrashRestore {
+  taskId: string;
+  directoryName: string;
+  expectedUpdatedAt: number;
+  expectedTrashedAt?: number;
+  expectedTrashPath?: string;
+  cwd?: string;
+  at: number;
+}
+
+export type RuntimeTaskTrashRestoreReply =
+  | { status: "saved" | "needsHost" }
+  | { status: "rejected"; message: string };
+
+interface LocalRestoreFiles {
+  directoryName: string;
+  workspaceDir: string;
+  cwd?: string;
+  movedFrom?: string;
+  redundantCopy?: string;
+}
+
 export interface PurgeResult {
   taskId: string;
   removedTrashDir: boolean;
   removedTaskRow: boolean;
+}
+
+interface TaskPurgeOptions {
+  force?: boolean;
+  strict?: boolean;
+  assertAllowed?: () => void;
+  archiveScope?: TaskArchivePurgeScope;
 }
 
 export interface TaskExecutionWorkspaceLifecycleOptions {
@@ -103,6 +140,7 @@ export interface TaskExecutionWorkspaceLifecycleOptions {
 }
 
 export class TaskExecutionWorkspaceLifecycle {
+  private readonly pendingRestoreOrPurge = new Set<string>();
   private readonly db: AppDatabase;
   private readonly workspace: TaskExecutionWorkspace;
   private readonly trashRoot: string;
@@ -139,23 +177,12 @@ export class TaskExecutionWorkspaceLifecycle {
    * 与 AppDatabase.listNonTrashedTasks 互补：回收区任务不出现在任务/归档列表里，
    * 因此必须在这里可见，否则用户既恢复不了也清不掉（"删除黑洞"）。
    */
-  listTrashedTasks(): TrashedTaskDto[] {
-    return this.db
-      .listTaskExecutionWorkspaceStates({ state: "trashed" })
-      .flatMap((state): TrashedTaskDto[] => {
-        const task = this.db.getTask(state.taskId);
-        if (!task) return [];
-        return [{
-          id: task.id,
-          title: task.title,
-          spaceId: task.spaceId ?? undefined,
-          projectId: task.projectId ?? undefined,
-          trashedAt: state.trashedAt,
-          purgeAfter: state.purgeAfter,
-          directoryMissing: this.resolveTrashPath(state.trashPath) === undefined,
-        }];
-      })
-      .sort((a, b) => (b.trashedAt ?? 0) - (a.trashedAt ?? 0));
+  async listTrashedTasks(): Promise<TrashedTaskDto[]> {
+    const tasks = await this.db.runtimeAuditReader?.listTrashedTasks(this.trashRoot);
+    return tasks ?? this.db.listTrashedTaskRows().map(({ trashPath, ...task }) => ({
+      ...task,
+      directoryMissing: this.resolveTrashPath(trashPath) === undefined,
+    }));
   }
 
   /**
@@ -163,18 +190,8 @@ export class TaskExecutionWorkspaceLifecycle {
    * 只缩短、不延长：purgeAfter 取 min(现值, trashedAt + purgeAfterMs)，因此幂等且不会延长任何条目。
    * 返回被改写的条目数。
    */
-  alignTrashRetention(): number {
-    let changed = 0;
-    for (const state of this.db.listTaskExecutionWorkspaceStates({ state: "trashed" })) {
-      const trashedAt = state.trashedAt ?? state.updatedAt;
-      if (!Number.isFinite(trashedAt)) continue;
-      const deadline = (trashedAt as number) + this.purgeAfterMs;
-      if (state.purgeAfter === undefined || state.purgeAfter > deadline) {
-        this.db.upsertTaskExecutionWorkspaceState({ ...state, purgeAfter: deadline });
-        changed += 1;
-      }
-    }
-    return changed;
+  alignTrashRetention(): Promise<number> {
+    return this.db.writeTrashRetention(this.purgeAfterMs);
   }
 
   /* ---------------------------------------------------------------- */
@@ -183,46 +200,47 @@ export class TaskExecutionWorkspaceLifecycle {
 
   /** 归档：只改 tasks.archived + task_execution_workspace_state，目录不动 */
   archive(taskId: string): TaskExecutionWorkspaceStateRow {
-    this.assertTaskId(taskId);
-    const now = Date.now();
-    const directoryName = getTaskDirectoryName(taskId);
-    const existing = this.db.getTaskExecutionWorkspaceState(taskId);
-    if (existing?.state === "trashed") {
-      throw new TaskLifecycleError(`任务已在回收区，请先恢复再归档：${taskId}`);
-    }
-    this.db.archiveTask(taskId, true);
-    const row: TaskExecutionWorkspaceStateRow = {
-      taskId,
-      directoryName,
-      state: "archived",
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      trashedAt: undefined,
-      purgeAfter: undefined,
-      trashPath: undefined,
-    };
-    this.db.upsertTaskExecutionWorkspaceState(row);
-    return row;
+    return this.setArchiveOnHost(taskId, true);
   }
 
   /** 从归档恢复为 active（目录本就在原位） */
   unarchive(taskId: string): TaskExecutionWorkspaceStateRow {
+    return this.setArchiveOnHost(taskId, false);
+  }
+
+  async writeArchive(taskId: string, archived: boolean): Promise<void> {
     this.assertTaskId(taskId);
-    const existing = this.db.getTaskExecutionWorkspaceState(taskId);
-    if (existing?.state === "trashed") {
-      throw new TaskLifecycleError(`任务在回收区，请用 restore 而非 unarchive：${taskId}`);
+    if (taskId === DOTS_TASK_ID && archived) throw new Error("Dots 对话不能作为普通任务归档");
+    const worker = this.db.runtimeAuditReader;
+    if (worker) {
+      const result = await worker.setSidebarArchive({
+        kind: "task", id: taskId, archived, directoryName: getTaskDirectoryName(taskId), at: Date.now(),
+      });
+      if (result?.status === "saved") return;
+      if (result?.status === "trashed") throw archiveTrashError(taskId, archived);
+      if (result?.status === "rejected") throw new TaskLifecycleError(result.message);
+      if (result?.status !== "needsHost") throw new TaskLifecycleError("未收到归档确认，请刷新后查看状态");
     }
-    const now = Date.now();
-    this.db.archiveTask(taskId, false);
-    const row: TaskExecutionWorkspaceStateRow = {
-      taskId,
-      directoryName: getTaskDirectoryName(taskId),
-      state: "active",
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-    this.db.upsertTaskExecutionWorkspaceState(row);
-    return row;
+    this.setArchiveOnHost(taskId, archived);
+  }
+
+  private setArchiveOnHost(taskId: string, archived: boolean): TaskExecutionWorkspaceStateRow {
+    this.assertTaskId(taskId);
+    return this.db.connection.transaction(() => {
+      const existing = this.db.getTaskExecutionWorkspaceState(taskId);
+      if (existing?.state === "trashed") throw archiveTrashError(taskId, archived);
+      const now = Date.now();
+      const row: TaskExecutionWorkspaceStateRow = {
+        taskId,
+        directoryName: getTaskDirectoryName(taskId),
+        state: archived ? "archived" : "active",
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: Math.max(existing?.updatedAt ?? now, now),
+      };
+      this.db.archiveTask(taskId, archived);
+      this.db.upsertTaskExecutionWorkspaceState(row);
+      return row;
+    }).immediate();
   }
 
   /* ---------------------------------------------------------------- */
@@ -241,6 +259,7 @@ export class TaskExecutionWorkspaceLifecycle {
   async trash(taskId: string, options?: { strict?: boolean; assertAllowed?: () => void }): Promise<TrashResult> {
     if (taskId === DOTS_TASK_ID) throw new Error("Dots 对话不能移入任务回收站");
     this.assertTaskId(taskId);
+    this.assertNoPendingRestoreOrPurge(taskId);
     this.assertWorkspaceNotShared(taskId);
     if (this.beforeTrash) {
       const strict = options?.strict || isGatewayConversation(taskId);
@@ -257,6 +276,7 @@ export class TaskExecutionWorkspaceLifecycle {
 
     // Explicit archive purge rechecks authorization after asynchronous session shutdown.
     options?.assertAllowed?.();
+    this.assertNoPendingRestoreOrPurge(taskId);
     this.assertWorkspaceNotShared(taskId);
 
     const directoryName = getTaskDirectoryName(taskId);
@@ -376,89 +396,144 @@ export class TaskExecutionWorkspaceLifecycle {
    * 若目标已存在且 manifest 为其他 taskId → 停止，不覆盖。
    */
   restore(taskId: string): RestoreResult {
+    this.assertNoPendingRestoreOrPurge(taskId);
+    const state = this.restoreState(taskId);
+    if (isGatewayConversation(taskId)) return this.restoreGatewayWorkspace(taskId, state);
+    const files = this.prepareLocalRestore(state);
+    this.commitRestoreOnHost(state, files, Date.now());
+    return this.finishLocalRestore(taskId, files);
+  }
+
+  /** The settings action uses the resident worker for ordinary task metadata. */
+  async restoreFromTrash(taskId: string): Promise<RestoreResult> {
+    const worker = this.db.runtimeAuditReader;
+    if (!worker || this.db.connection.inTransaction || isGatewayConversation(taskId)) return this.restore(taskId);
+
+    return this.withPendingRestoreOrPurge(taskId, async () => {
+      const state = this.restoreState(taskId);
+      const files = this.prepareLocalRestore(state);
+      const at = Date.now();
+      const reply = await worker.restoreTrashedTask({
+        taskId,
+        directoryName: files.directoryName,
+        expectedUpdatedAt: state.updatedAt,
+        expectedTrashedAt: state.trashedAt,
+        expectedTrashPath: state.trashPath,
+        cwd: files.cwd,
+        at,
+      });
+      if (reply?.status === "needsHost") this.commitRestoreOnHost(state, files, at);
+      else if (reply?.status === "rejected") this.rollbackLocalRestore(state, files, new TaskLifecycleError(reply.message));
+      else if (!reply) {
+        // A lost reply may follow a successful commit. Keep the files recoverable in either case.
+        const current = this.db.getTaskExecutionWorkspaceState(taskId);
+        if (current?.state !== "active" || current.updatedAt !== at || current.directoryName !== files.directoryName) {
+          throw new TaskLifecycleRepairRequiredError("恢复写入未获确认，目录已保留；请刷新回收站后重试");
+        }
+      }
+      return this.finishLocalRestore(taskId, files);
+    });
+  }
+
+  private restoreState(taskId: string): TaskExecutionWorkspaceStateRow {
     this.assertTaskId(taskId);
+    if (taskId === DOTS_TASK_ID) throw new TaskLifecycleError("Dots 对话不能作为普通任务恢复");
     const state = this.db.getTaskExecutionWorkspaceState(taskId);
     if (!state || state.state !== "trashed") {
       throw new TaskLifecycleError(`任务不在回收区，无法 restore：${taskId} state=${state?.state ?? "none"}`);
     }
+    return state;
+  }
 
-    if (isGatewayConversation(taskId)) return this.restoreGatewayWorkspace(taskId, state);
+  private prepareLocalRestore({ taskId, trashPath: storedTrashPath }: TaskExecutionWorkspaceStateRow): LocalRestoreFiles {
     const directoryName = getTaskDirectoryName(taskId);
     const workspaceDir = this.workspace.resolveTaskExecutionWorkspaceDir(taskId);
-    // 回收区整体改名迁移后，DB 中旧 trash_path 绝对路径可能失效：按 basename 在当前回收区定位
-    const trashPath = this.resolveTrashPath(state.trashPath);
-
-    if (trashPath && existsSync(trashPath)) {
-      if (existsSync(workspaceDir)) {
-        const man = tryReadManifest(join(workspaceDir, MANIFEST_FILENAME));
-        if (man.ok && man.manifest.taskId !== taskId) {
-          throw new TaskLifecycleConflictError(
-            `恢复冲突：目标目录已被其他任务占用 manifest=${man.manifest.taskId}，期望=${taskId}，path=${workspaceDir}`,
-          );
-        }
-        if (man.ok && man.manifest.taskId === taskId) {
-          // 目标已是本任务（半恢复）：丢弃 trash 副本
-          try {
-            rmSync(trashPath, { recursive: true, force: true });
-          } catch {
-            /* 非致命 */
-          }
-        } else {
-          // 无合法本任务 manifest：仅允许空目录
-          const entries = readdirSync(workspaceDir);
-          if (entries.length > 0) {
-            throw new TaskLifecycleConflictError(
-              `恢复冲突：目标目录已存在且无合法本任务 manifest：${workspaceDir}`,
-            );
-          }
-          try {
-            rmSync(workspaceDir, { recursive: true, force: true });
-          } catch (err) {
-            throw new TaskLifecycleError(
-              `无法清理空目标目录：${workspaceDir}（${err instanceof Error ? err.message : String(err)}）`,
-            );
-          }
-          renameSync(trashPath, workspaceDir);
-        }
-      } else {
-        mkdirSync(dirname(workspaceDir), { recursive: true });
-        try {
-          renameSync(trashPath, workspaceDir);
-        } catch (err) {
-          throw new TaskLifecycleError(
-            `无法从回收区移回：${trashPath} → ${workspaceDir}（${err instanceof Error ? err.message : String(err)}）`,
-          );
-        }
-      }
-      this.assertManifestMatches(workspaceDir, taskId);
-    } else if (existsSync(workspaceDir)) {
-      const man = tryReadManifest(join(workspaceDir, MANIFEST_FILENAME));
-      if (man.ok && man.manifest.taskId !== taskId) {
-        throw new TaskLifecycleConflictError(
-          `恢复冲突：无 trash 副本且目标被其他任务占用：${workspaceDir}`,
-        );
-      }
+    this.assertDirectChildOfWorkspaces(workspaceDir, directoryName);
+    const destinationExists = isPlainDirectory(workspaceDir);
+    const destination = tryReadManifest(join(workspaceDir, MANIFEST_FILENAME));
+    if (destination.ok && destination.manifest.taskId !== taskId) {
+      throw new TaskLifecycleConflictError(
+        `恢复冲突：目标目录已被其他任务占用 manifest=${destination.manifest.taskId}，期望=${taskId}，path=${workspaceDir}`,
+      );
     }
 
-    const now = Date.now();
-    this.db.transaction(() => {
-      this.db.archiveTask(taskId, false);
-      if (existsSync(workspaceDir)) {
-        this.db.bindTaskExecutionWorkspaceCwd(taskId, workspaceDir);
+    const trashPath = this.resolveTrashPath(storedTrashPath);
+    const files = { directoryName, workspaceDir };
+    if (!trashPath) return { ...files, cwd: destinationExists ? workspaceDir : undefined };
+    this.assertTrashPathSafe(trashPath);
+    if (!isPlainDirectory(trashPath)) throw new TaskLifecycleError(`回收区目录已变化：${trashPath}`);
+    this.assertManifestMatches(trashPath, taskId);
+    if (destination.ok) return { ...files, cwd: workspaceDir, redundantCopy: trashPath };
+    if (destinationExists) {
+      if (readdirSync(workspaceDir).length > 0) {
+        throw new TaskLifecycleConflictError(`恢复冲突：目标目录已存在且无合法本任务 manifest：${workspaceDir}`);
       }
-      this.db.upsertTaskExecutionWorkspaceState({
-        taskId,
-        directoryName,
-        state: "active",
-        createdAt: state.createdAt,
-        updatedAt: now,
-        trashedAt: undefined,
-        purgeAfter: undefined,
-        trashPath: undefined,
-      });
-    });
+      rmdirSync(workspaceDir); // Preserve files that arrive after the emptiness check.
+    } else {
+      mkdirSync(dirname(workspaceDir), { recursive: true });
+    }
+    try {
+      renameSync(trashPath, workspaceDir);
+    } catch (error) {
+      throw new TaskLifecycleError(`无法从回收区移回：${trashPath} → ${workspaceDir}`, { cause: error });
+    }
+    return { ...files, cwd: workspaceDir, movedFrom: trashPath };
+  }
 
-    return { taskId, state: "active", workspaceDir };
+  private commitRestoreOnHost(state: TaskExecutionWorkspaceStateRow, files: LocalRestoreFiles, at: number): void {
+    const { taskId } = state;
+    try {
+      this.db.connection.transaction(() => {
+        if (!this.isSameTrashEntry(state)) {
+          throw new TaskLifecycleError(`恢复中止：回收站条目已变化：${taskId}`);
+        }
+        this.db.archiveTask(taskId, false);
+        if (files.cwd) this.db.bindTaskExecutionWorkspaceCwd(taskId, files.cwd);
+        this.db.upsertTaskExecutionWorkspaceState({
+          taskId, directoryName: files.directoryName, state: "active", createdAt: state.createdAt, updatedAt: at,
+        });
+      }).immediate();
+    } catch (error) {
+      this.rollbackLocalRestore(state, files, error);
+    }
+  }
+
+  private isSameTrashEntry({ taskId, updatedAt, trashedAt, trashPath }: TaskExecutionWorkspaceStateRow): boolean {
+    const current = this.db.getTaskExecutionWorkspaceState(taskId);
+    return current?.state === "trashed" && current.updatedAt === updatedAt &&
+      current.trashedAt === trashedAt && current.trashPath === trashPath;
+  }
+
+  private rollbackLocalRestore(state: TaskExecutionWorkspaceStateRow, files: LocalRestoreFiles, error: unknown): never {
+    if (files.movedFrom) {
+      try {
+        if (!this.isSameTrashEntry(state)) throw new TaskLifecycleConflictError("任务回收站状态已变化");
+        this.assertTrashPathSafe(files.movedFrom);
+        if (isPlainDirectory(files.movedFrom) || !isPlainDirectory(files.workspaceDir)) {
+          throw new TaskLifecycleConflictError("回收恢复路径已变化");
+        }
+        this.assertManifestMatches(files.workspaceDir, state.taskId);
+        renameSync(files.workspaceDir, files.movedFrom);
+      } catch (rollback) {
+        throw new TaskLifecycleRepairRequiredError("任务恢复失败且无法原路移回；未删除仍存的目录", { cause: rollback });
+      }
+    }
+    throw error;
+  }
+
+  private finishLocalRestore(taskId: string, files: LocalRestoreFiles): RestoreResult {
+    if (files.redundantCopy) {
+      try {
+        this.assertTrashPathSafe(files.redundantCopy);
+        if (isPlainDirectory(files.redundantCopy)) {
+          this.assertManifestMatches(files.redundantCopy, taskId);
+          rmSync(files.redundantCopy, { recursive: true, force: true });
+        }
+      } catch {
+        // A redundant copy remains recoverable if post-commit cleanup cannot validate it.
+      }
+    }
+    return { taskId, state: "active", workspaceDir: files.workspaceDir };
   }
 
   private activeWorkspaceDir(taskId: string): string {
@@ -518,8 +593,13 @@ export class TaskExecutionWorkspaceLifecycle {
    * 永久清理回收区任务。默认仅当 purge_after 已过或 force=true。
    * 顺序：校验 trash 路径安全 → 删 trash 目录 → onPurgeArtifacts → 删 task 行 + state。
    */
-  async purge(taskId: string, options?: { force?: boolean; strict?: boolean; assertAllowed?: () => void }): Promise<PurgeResult> {
+  purge(taskId: string, options?: TaskPurgeOptions): Promise<PurgeResult> {
+    return this.withPendingRestoreOrPurge(taskId, () => this.purgeFully(taskId, options));
+  }
+
+  private async purgeFully(taskId: string, options?: TaskPurgeOptions): Promise<PurgeResult> {
     this.assertTaskId(taskId);
+    if (taskId === DOTS_TASK_ID) throw new TaskLifecycleError("Dots 对话不能作为普通任务删除");
     options?.assertAllowed?.();
     const state = this.db.getTaskExecutionWorkspaceState(taskId);
     if (!state || state.state !== "trashed") {
@@ -576,16 +656,8 @@ export class TaskExecutionWorkspaceLifecycle {
       }
     }
 
-    // A restore/archive toggle may arrive while artifact cleanup is awaiting I/O.
-    options?.assertAllowed?.();
-    if (this.db.getTaskExecutionWorkspaceState(taskId)?.state !== "trashed") {
-      throw new TaskLifecycleError(`purge 中止：任务已离开回收区：${taskId}`);
-    }
-
-    this.db.transaction(() => {
-      this.db.deleteTask(taskId);
-      this.db.deleteTaskExecutionWorkspaceState(taskId);
-    });
+    // Recheck the same trash entry at commit, since artifact cleanup awaits I/O.
+    await this.db.purgeTrashedTask(state, options);
 
     // 永久删除后清理任务级外部配置（settings.json taskConnectorIds 等；失败只告警，不阻断）
     if (this.onPurge) {
@@ -604,18 +676,15 @@ export class TaskExecutionWorkspaceLifecycle {
   }
 
   /** 清理所有已过 purge_after 的回收任务 */
-  async purgeExpired(): Promise<PurgeResult[]> {
-    const now = Date.now();
-    const due = this.db
-      .listTaskExecutionWorkspaceStates({ state: "trashed" })
-      .filter((s) => s.purgeAfter != null && s.purgeAfter <= now);
-    const results: PurgeResult[] = [];
-    for (const s of due) {
+  async purgeExpired(): Promise<Array<PurgeResult & { projectId: string | null }>> {
+    const due = await this.db.readDueTrashedTasks(Date.now());
+    const results: Array<PurgeResult & { projectId: string | null }> = [];
+    for (const { taskId, projectId } of due) {
       try {
-        results.push(await this.purge(s.taskId));
+        results.push({ ...await this.purge(taskId), projectId });
       } catch (err) {
         console.warn(
-          `[TaskExecutionWorkspaceLifecycle] purgeExpired 跳过 ${s.taskId}:`,
+          `[TaskExecutionWorkspaceLifecycle] purgeExpired 跳过 ${taskId}:`,
           err instanceof Error ? err.message : err,
         );
       }
@@ -799,6 +868,22 @@ export class TaskExecutionWorkspaceLifecycle {
 
   private assertTaskId(taskId: string): void {
     if (!taskId?.trim()) throw new TaskLifecycleError("taskId 不能为空");
+  }
+
+  private assertNoPendingRestoreOrPurge(taskId: string): void {
+    if (this.pendingRestoreOrPurge.has(taskId)) {
+      throw new TaskLifecycleConflictError("任务回收站操作尚未结束，请稍后重试");
+    }
+  }
+
+  private async withPendingRestoreOrPurge<T>(taskId: string, run: () => Promise<T>): Promise<T> {
+    this.assertNoPendingRestoreOrPurge(taskId);
+    this.pendingRestoreOrPurge.add(taskId);
+    try {
+      return await run();
+    } finally {
+      this.pendingRestoreOrPurge.delete(taskId);
+    }
   }
 
   /** 必须是 task-workspaces root 的直接子目录，且目录名等于期望名 */

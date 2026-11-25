@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { WorkspaceNotesService } from "../src/main/workspace/WorkspaceNotesService";
 import { ProjectNotesService } from "../src/main/project/ProjectNotesService";
 import { createWorkspaceNotesExtension } from "../src/main/workspace/workspace-notes-extension";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 const root = await mkdtemp(join(tmpdir(), "notes-task-tools-"));
 process.env.HOME = root; process.env.USERPROFILE = root;
@@ -36,7 +38,10 @@ function models(reply: (context: any, options: any) => any): any {
 const text = (value: string) => [{ type: "text", text: value }];
 const call = (name: string, args: object) => [{ type: "toolCall", id: "fixture-call", name, arguments: args }];
 
-const db = new AppDatabase(join(root, "app.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 try {
   db.createSpace({ id: "space", name: "Workspace" });
   db.createSpace({ id: "other", name: "Other" });
@@ -56,8 +61,8 @@ try {
   for (const name of names) assert(registered.tools.some(tool => tool.name === name), "actual task assembly must register " + name);
   for (const mode of ["native", "codemode"] as const) {
     const cwd = join(root, mode); await mkdir(cwd);
-    const spaceRevision = workspace.read("space").revision;
-    const projectRevision = project.read("project").revision;
+    const spaceRevision = (await workspace.read("space")).revision;
+    const projectRevision = (await project.read("project")).revision;
     const calls: Array<[string, object]> = [
       ["workspace_notes_read", {}], ["project_notes_read", {}],
       ["workspace_notes_save", { content: "Workspace written by " + mode, expectedRevision: spaceRevision }],
@@ -92,10 +97,10 @@ try {
       await runtime.configure(ref, mode, undefined, registered.tools);
       const outcome = await (await runtime.submit("Update both notes", mode)).wait(ctx);
       assert.equal(outcome.status, "done", JSON.stringify({outcome, snapshot:runtime.snapshot}));
-      assert.equal(workspace.read("space").content, "Workspace written by " + mode);
-      assert.equal(project.read("project").content, "Project written by " + mode);
-      assert.equal(workspace.read("space").revision, spaceRevision + 1);
-      assert.equal(project.read("project").revision, projectRevision + 1);
+      assert.equal((await workspace.read("space")).content, "Workspace written by " + mode);
+      assert.equal((await project.read("project")).content, "Project written by " + mode);
+      assert.equal((await workspace.read("space")).revision, spaceRevision + 1);
+      assert.equal((await project.read("project")).revision, projectRevision + 1);
       console.log("PASS actual task " + mode + ": model-visible project/workspace read and save tools persist to database");
     } finally { await runtime.close(); }
   }
@@ -103,9 +108,9 @@ try {
   const tools = new Map<string, any>();
   createWorkspaceNotesExtension({ service: workspace, resolveWorkspaceId: () => db.getTask("task")?.spaceId ?? null, getPermissionMode: () => readonly ? "readonly" : "auto" })({ registerTool: (tool: any) => tools.set(tool.name, tool) } as any);
   const save = (expectedRevision: number) => tools.get("workspace_notes_save").execute("test", { content: "patched", expectedRevision, workspaceId: "other" });
-  const revision = workspace.read("space").revision;
+  const revision = (await workspace.read("space")).revision;
   assert.equal((await save(revision)).isError, undefined);
-  assert.equal(workspace.read("other").revision, 0, "cannot inject another workspace id");
+  assert.equal((await workspace.read("other")).revision, 0, "cannot inject another workspace id");
   assert.equal((await save(revision)).isError, true, "stale task cannot overwrite newer changes");
   readonly = true;
   assert.equal((await save(revision + 1)).isError, undefined);
@@ -115,9 +120,9 @@ try {
   assert.equal((await save(revision + 1)).isError, true);
   db.connection.prepare("UPDATE tasks SET space_id='other' WHERE id='task'").run();
   assert.equal((await save(0)).isError, undefined, "existing tool resolves rebound task workspace afresh");
-  assert.equal(workspace.read("other").content, "patched");
+  assert.equal((await workspace.read("other")).content, "patched");
   db.connection.prepare("UPDATE tasks SET space_id=NULL WHERE id='task'").run();
   assert.equal((await save(revision + 1)).isError, true);
   assert.equal((await tools.get("workspace_notes_read").execute("test", {})).isError, true);
   console.log("PASS workspace task write boundaries: scope, conflict, readonly, archive, unbound");
-} finally { db.close(); await rm(root, { recursive: true, force: true }); }
+} finally { await db.runtimeAuditReader?.close(); db.close(); await rm(root, { recursive: true, force: true }); }

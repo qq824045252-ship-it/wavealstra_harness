@@ -6,6 +6,31 @@ export type MemorySearchScope = {
   kinds?: MemoryRecordDto["kind"][];
 };
 
+export type MemoryBaselineCandidate = Pick<MemoryRecordDto, "id" | "kind" | "status" | "importance" | "confidence" | "explicit" | "updatedAt"> & {
+  scopeType: MemoryScopeType;
+  scopeId: string | null;
+  binding: "owned" | "promoted";
+};
+
+export function memoryListScopeWhere(input: MemorySearchScope): { sql: string; args: string[] } {
+  const args: string[] = [];
+  const scopes = input.scopes.map(scope => {
+    if (scope.scopeType === "global") return "(s.scope_type = 'global' AND s.scope_id IS NULL)";
+    args.push(scope.scopeType, scope.scopeId ?? "");
+    return "(s.scope_type = ? AND s.scope_id = ?)";
+  });
+  const where = [`(${scopes.join(" OR ") || "0"})`];
+  if (input.statuses?.length) {
+    where.push(`m.status IN (${input.statuses.map(() => "?").join(",")})`);
+    args.push(...input.statuses);
+  }
+  if (input.kinds?.length) {
+    where.push(`m.kind IN (${input.kinds.map(() => "?").join(",")})`);
+    args.push(...input.kinds);
+  }
+  return { sql: where.join(" AND "), args };
+}
+
 /** EXISTS gives each atom one candidate slot, even with several readable bindings. */
 export function memorySearchWhere(input: MemorySearchScope, now = Date.now()): { sql: string; args: (string | number)[] } {
   const args: (string | number)[] = [];

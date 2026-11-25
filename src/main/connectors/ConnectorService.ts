@@ -12,6 +12,8 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import JSZip from "jszip";
 import { getConnectorsDir, getConnectorMarketDir, getPluginsDir, getSkillsDir } from "../paths";
 import { connectorPlatformKey } from "../platform/apps";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { editPluginConfig } from "../platform/plugin-config";
 
 /**
  * 连接器（Connector）服务。
@@ -230,7 +232,96 @@ function readJson<T>(path: string): T | null {
   }
 }
 
+interface CatalogConnector {
+  name: string;
+  dir: string;
+  metadata: ConnectorMeta | null;
+  cli: CliJson | null;
+  iconPath?: string | null;
+  skillNames: string[];
+  installed: boolean;
+  registration: ConnectorRegistration | null;
+}
+
+type NativeCatalogConnector = Omit<CatalogConnector, "metadata" | "cli" | "registration"> & {
+  metadata: string | null;
+  cli: string | null;
+  registration: string | null;
+};
+
+function parseCatalogJson<T>(raw: string | null): T | null {
+  try { return raw === null ? null : JSON.parse(raw) as T; } catch { return null; }
+}
+
+function connectorDto({ name, dir, metadata, cli, iconPath, skillNames, installed, registration }: CatalogConnector): LocalConnectorDto {
+  return {
+    id: name,
+    name: metadata?.name || metadata?.name_en || name,
+    description: metadata?.description_zh || metadata?.description || metadata?.description_en || "",
+    type: metadata?.type,
+    version: metadata?.version,
+    examples: metadata?.examples_zh ?? metadata?.examples_en,
+    initCommand: cli?.init?.[platformKey()],
+    versionCheckCommand: cli?.versionCheck?.command?.[platformKey()],
+    iconPath: iconPath ?? undefined,
+    skillCount: skillNames.length,
+    installedSkillNames: skillNames,
+    installed,
+    requiresAuth: Boolean(cli?.auth),
+    installedAt: installed ? registration?.installedAt : undefined,
+    ...(installed && { enabled: registration?.enabled !== false }),
+    sourcePath: dir,
+  };
+}
+
+function compareConnectors(a: LocalConnectorDto, b: LocalConnectorDto): number {
+  return Number(b.installed) - Number(a.installed) || a.name.localeCompare(b.name, "zh");
+}
+
+export async function recoverConnectorInstallations(native?: RuntimeAuditReader): Promise<void> {
+  for (const root of [getConnectorsDir(), importedConnectorMarketRoot()]) {
+    if (!existsSync(join(dirname(root), ".mybuddy-connector-installs"))) continue;
+    const result = await native?.recoverConnectorInstalls(root);
+    if (result?.status === "recovered") {
+      for (const warning of result.warnings) console.warn("[ConnectorService] 包目录恢复失败", warning);
+    } else {
+      console.warn("[ConnectorService] 包目录待恢复", result?.status === "failed" ? result.message : root);
+    }
+  }
+}
+
+export async function initializeConnectorStorage(native?: RuntimeAuditReader): Promise<void> {
+  try {
+    await recoverConnectorInstallations(native);
+    const roots = findLocalConnectorRoots().filter(root => existsSync(join(dirname(root), ".mybuddy-connector-market-retired")));
+    if (native && roots.length) {
+      const result = await native.mutateConnectorMarket({ kind: "cleanup", roots });
+      if (result?.status === "cleaned") {
+        for (const warning of result.warnings) console.warn("[ConnectorService] 市场包清理失败", warning);
+      }
+    }
+    const migrated = await new ConnectorService().maintainLegacySkills(native);
+    if (migrated.migrated > 0 || migrated.removed > 0) {
+      console.log(`[ConnectorService] legacy connector skills: moved=${migrated.migrated} removed=${migrated.removed}`);
+    }
+  } catch (error) {
+    console.warn("[ConnectorService] 启动安装维护失败", error);
+  }
+}
+
 export class ConnectorService {
+  async readCatalog(native?: RuntimeAuditReader): Promise<LocalConnectorDto[]> {
+    const rows = await native?.pluginCatalog<NativeCatalogConnector[]>({
+      kind: "connectors", roots: findLocalConnectorRoots(), installedRoot: getConnectorsDir(),
+      hiddenPath: hiddenConnectorsPath(),
+    });
+    if (!rows) return this.list();
+    return rows.map(row => connectorDto({
+      ...row, metadata: parseCatalogJson(row.metadata), cli: parseCatalogJson(row.cli),
+      registration: parseCatalogJson(row.registration),
+    })).sort(compareConnectors);
+  }
+
   /** 扫描本地市场的全部连接器 */
   list(): LocalConnectorDto[] {
     const hidden = readHiddenConnectorIds();
@@ -288,44 +379,41 @@ export class ConnectorService {
         const iconPath = ["icon.png", "icon.jpg", "icon.jpeg", "logo.png"].find((f) =>
           existsSync(join(dir, f)),
         );
-        const initCommand = cli?.init?.[platformKey()];
-        const versionCheckCommand = cli?.versionCheck?.command?.[platformKey()];
-        out.push({
-          id: name,
-          name: meta?.name || meta?.name_en || name,
-          description: meta?.description_zh || meta?.description || meta?.description_en || "",
-          type: meta?.type,
-          version: meta?.version,
-          examples: meta?.examples_zh ?? meta?.examples_en,
-          initCommand,
-          versionCheckCommand,
+        const installed = installedIds.has(normalizedId);
+        const regDir = installed ? resolveConnectorRegDir(name) : null;
+        out.push(connectorDto({
+          name, dir, metadata: meta, cli, skillNames, installed,
           iconPath: iconPath ? join(dir, iconPath) : undefined,
-          skillCount: skillNames.length,
-          installedSkillNames: skillNames,
-          installed: installedIds.has(name.toLowerCase()),
-          // cli.json 声明 auth 能力：仅信息展示（本应用不执行 CLI，无法验证凭证/ready）
-          requiresAuth: Boolean(cli?.auth),
-          installedAt: undefined,
-          sourcePath: dir,
-        });
+          registration: regDir ? readJson<ConnectorRegistration>(join(regDir, "meta.json")) : null,
+        }));
       }
     }
-    // 已安装连接器的安装时间/启用状态（从注册 meta 读）
-    for (const dto of out) {
-      if (!dto.installed) continue;
-      const regDir = resolveConnectorRegDir(dto.id);
-      const reg = regDir ? readJson<ConnectorRegistration>(join(regDir, "meta.json")) : undefined;
-      dto.installedAt = reg?.installedAt;
-      // 缺省 enabled（旧安装无该字段）视为启用，保证不破坏旧行为
-      dto.enabled = reg?.enabled !== false;
-    }
-    return out.sort((a, b) => Number(b.installed) - Number(a.installed) || a.name.localeCompare(b.name, "zh"));
+    return out.sort(compareConnectors);
   }
 
   /** 从本地目录导入连接器包到用户市场，并立即安装其 Private Skills。 */
   importDirectory(inputDir: string): LocalConnectorDto {
     const source = findConnectorPackageDir(inputDir);
     const id = normalizeImportedConnectorId(basename(source));
+    this.copyImportedDirectoryOnHost(source, id);
+    unhideConnectorId(id);
+    this.install(id);
+    return this.importedConnector(id, this.list());
+  }
+
+  async importDirectoryInBackground(inputDir: string, native?: RuntimeAuditReader): Promise<LocalConnectorDto> {
+    if (!native) return this.importDirectory(inputDir);
+    const source = findConnectorPackageDir(inputDir);
+    const id = normalizeImportedConnectorId(basename(source));
+    if (!await this.importIntoMarket(native, { kind: "directory", source, id })) {
+      this.copyImportedDirectoryOnHost(source, id);
+    }
+    await this.unhideInBackground(id, native);
+    await this.installInBackground(id, native);
+    return this.importedConnector(id, await this.readCatalog(native));
+  }
+
+  private copyImportedDirectoryOnHost(source: string, id: string): void {
     const marketRoot = importedConnectorMarketRoot();
     const dest = join(marketRoot, id);
     mkdirSync(marketRoot, { recursive: true });
@@ -334,15 +422,44 @@ export class ConnectorService {
       rmSync(dest, { recursive: true, force: true });
       cpSync(source, dest, { recursive: true });
     }
-    unhideConnectorId(id);
-    this.install(id);
-    const imported = this.list().find((item) => item.id.toLowerCase() === id);
+  }
+
+  private importedConnector(id: string, catalog: LocalConnectorDto[]): LocalConnectorDto {
+    const imported = catalog.find((item) => item.id.toLowerCase() === id);
     if (!imported) throw new Error("连接器导入完成，但无法从市场重新加载");
     return imported;
   }
 
   /** 从 ZIP 导入连接器包到用户市场，并立即安装；支持 ZIP 根目录或单层包目录。 */
-  async importZip(zipPath: string): Promise<LocalConnectorDto> {
+  async importZip(zipPath: string, native?: RuntimeAuditReader): Promise<LocalConnectorDto> {
+    const id = await this.importIntoMarket(native, { kind: "zip", source: resolve(zipPath) })
+      ?? await this.unpackZipOnHost(zipPath);
+    await this.unhideInBackground(id, native);
+    await this.installInBackground(id, native);
+    return this.importedConnector(id, await this.readCatalog(native));
+  }
+
+  private async importIntoMarket(
+    native: RuntimeAuditReader | undefined, request: Parameters<RuntimeAuditReader["importConnectorMarket"]>[1],
+  ): Promise<string | undefined> {
+    if (!native) return;
+    const result = await native.importConnectorMarket(importedConnectorMarketRoot(), request);
+    if (result?.status === "imported") return result.id;
+    if (result?.status === "needsHost") return;
+    if (result?.status === "failed") throw new Error(`导入连接器失败：${result.message}`);
+    throw new Error("未收到连接器导入确认，请刷新查看市场状态");
+  }
+
+  private async unhideInBackground(id: string, native?: RuntimeAuditReader): Promise<void> {
+    if (!native) return unhideConnectorId(id);
+    const result = await native.mutateConnectorMarket({ kind: "unhide", id, pluginRoot: getPluginsDir() });
+    if (result?.status === "updated") return;
+    if (result?.status === "needsHost") return unhideConnectorId(id);
+    if (result?.status === "failed") throw new Error(`恢复市场连接器失败：${result.message}`);
+    throw new Error("未收到恢复市场连接器的确认");
+  }
+
+  private async unpackZipOnHost(zipPath: string): Promise<string> {
     if (!existsSync(zipPath)) throw new Error("连接器 ZIP 文件不存在");
     const zip = await JSZip.loadAsync(readFileSync(zipPath));
     const fileNames = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
@@ -380,16 +497,12 @@ export class ConnectorService {
         writeFileSync(target, await zip.files[entryName].async("nodebuffer"));
       }
       findConnectorPackageDir(dest);
-      unhideConnectorId(id);
-      this.install(id);
     } catch (error) {
       rmSync(dest, { recursive: true, force: true });
       throw error;
     }
 
-    const imported = this.list().find((item) => item.id.toLowerCase() === id);
-    if (!imported) throw new Error("连接器 ZIP 导入完成，但无法从市场重新加载");
-    return imported;
+    return id;
   }
 
   /**
@@ -400,10 +513,30 @@ export class ConnectorService {
    * 返回安装的技能名列表。
    */
   install(id: string): string[] {
-    const key = id.trim().toLowerCase();
-    const connector = this.list().find((c) => c.id.toLowerCase() === key || c.name.toLowerCase() === key);
-    if (!connector) throw new Error(`未找到连接器: ${id}`);
+    return this.installOnHost(this.findConnector(id, this.list()));
+  }
 
+  async installInBackground(id: string, native?: RuntimeAuditReader): Promise<string[]> {
+    if (!native) return this.install(id);
+    const connector = this.findConnector(id, await this.readCatalog(native));
+    const result = await native.installConnector({
+      root: getConnectorsDir(), legacySkillsRoot: getSkillsDir(), sourcePath: connector.sourcePath,
+      id: connector.id, directory: connector.id.toLowerCase(), name: connector.name, installedAt: Date.now(),
+    });
+    if (result?.status === "installed") return result.names;
+    if (result?.status === "needsHost") return this.installOnHost(connector);
+    if (result?.status === "failed") throw new Error(`安装连接器失败：${result.message}`);
+    throw new Error("未收到连接器安装确认，请刷新查看安装状态");
+  }
+
+  private findConnector(id: string, catalog: LocalConnectorDto[]): LocalConnectorDto {
+    const key = id.trim().toLowerCase();
+    const connector = catalog.find((c) => c.id.toLowerCase() === key || c.name.toLowerCase() === key);
+    if (!connector) throw new Error(`未找到连接器: ${id}`);
+    return connector;
+  }
+
+  private installOnHost(connector: LocalConnectorDto): string[] {
     // 注册安装状态：目录名统一用小写 id 落盘，并清理历史上大小写变体的遗留注册目录
     // （Windows 上 demoX/demox 指向同一目录，Linux 上会是两个目录 → 会读到过期状态）。
     const regDir = join(getConnectorsDir(), connector.id.toLowerCase());
@@ -481,9 +614,31 @@ export class ConnectorService {
     if (!regDir) {
       throw new Error(`连接器未安装: ${id}`);
     }
-    const reg = readJson<ConnectorRegistration>(join(regDir, "meta.json")) ?? {};
+    this.writeConnectorEnabledOnHost(join(regDir, "meta.json"), enabled);
+  }
+
+  async writeEnabled(id: string, enabled: boolean, native?: RuntimeAuditReader): Promise<void> {
+    const regDir = resolveConnectorRegDir(id);
+    if (!regDir) throw new Error(`连接器未安装: ${id}`);
+    const file = join(regDir, "meta.json");
+    const saved = await editPluginConfig(native, "connector", [getConnectorsDir()], file, raw => {
+      let reg: ConnectorRegistration | null = null;
+      if (raw !== null) {
+        try { reg = JSON.parse(raw) as ConnectorRegistration | null; } catch { /* recover an incomplete registration */ }
+      }
+      return this.connectorEnabledText(reg, enabled);
+    });
+    if (!saved) this.writeConnectorEnabledOnHost(file, enabled);
+  }
+
+  private writeConnectorEnabledOnHost(file: string, enabled: boolean): void {
+    writeFileSync(file, this.connectorEnabledText(readJson<ConnectorRegistration>(file), enabled), "utf-8");
+  }
+
+  private connectorEnabledText(registration: ConnectorRegistration | null, enabled: boolean): string {
+    const reg = registration ?? {};
     reg.enabled = enabled;
-    writeFileSync(join(regDir, "meta.json"), JSON.stringify(reg, null, 2), "utf-8");
+    return JSON.stringify(reg, null, 2);
   }
 
   /** Active = installed + enabled；Runtime resolution 与 Private Skills 共用此门禁。 */
@@ -514,9 +669,10 @@ export class ConnectorService {
     }
     // 旧版全局副本清理（meta 校验过才删，防误删共享技能）
     const reg = readJson<{ installedSkillNames?: string[] }>(join(regDir, "meta.json"));
-    const skillNames = reg?.installedSkillNames ?? [];
+    const skillNames = Array.isArray(reg?.installedSkillNames) ? reg.installedSkillNames : [];
     const skillsRoot = getSkillsDir();
     for (const name of skillNames) {
+      if (typeof name !== "string" || !name || name === "." || name === ".." || /[\\/\0]/.test(name)) continue;
       const skillDir = join(skillsRoot, name);
       if (!existsSync(skillDir)) continue;
       const meta = readJson<{ source?: string }>(join(skillDir, "_skillhub_meta.json"));
@@ -525,6 +681,27 @@ export class ConnectorService {
       }
     }
     rmSync(regDir, { recursive: true, force: true });
+  }
+
+  async uninstallInBackground(id: string, native?: RuntimeAuditReader): Promise<void> {
+    if (!native) return this.uninstall(id);
+    const run = (candidate: string) => native.maintainConnectorStorage(
+      getConnectorsDir(), getSkillsDir(), { kind: "uninstall", id: candidate },
+    );
+    let result = await run(id);
+    if (result?.status === "missing") {
+      const connector = (await this.readCatalog(native)).find(item => item.id === id || item.name === id);
+      if (!connector?.installed) throw new Error(`连接器未安装: ${id}`);
+      result = await run(connector.id);
+    }
+    if (result?.status === "uninstalled") {
+      if (result.warning) console.warn("[ConnectorService] 卸载后文件待清理", result.warning);
+      return;
+    }
+    if (result?.status === "needsHost") return this.uninstall(id);
+    if (result?.status === "missing") throw new Error(`连接器未安装: ${id}`);
+    if (result?.status === "failed") throw new Error(`卸载连接器失败：${result.message}`);
+    throw new Error("未收到连接器卸载确认，请刷新查看安装状态");
   }
 
   /**
@@ -623,6 +800,18 @@ export class ConnectorService {
     return stats;
   }
 
+  async maintainLegacySkills(native?: RuntimeAuditReader): Promise<{ migrated: number; removed: number; skipped: number }> {
+    if (!native) return this.migrateLegacyGlobalSkills();
+    const result = await native.maintainConnectorStorage(getConnectorsDir(), getSkillsDir(), { kind: "startup" });
+    if (result?.status === "maintained") {
+      for (const warning of result.warnings) console.warn("[ConnectorService] 启动安装维护", warning);
+      return { migrated: result.migrated, removed: result.removed, skipped: result.skipped };
+    }
+    if (result?.status === "needsHost") return this.migrateLegacyGlobalSkills();
+    if (result?.status === "failed") throw new Error(result.message);
+    throw new Error("未收到旧版连接器技能整理确认");
+  }
+
   /**
    * 从市场删除连接器包（磁盘源目录），若已安装一并卸载本地。
    * 无磁盘路径时写入隐藏列表。
@@ -685,5 +874,23 @@ export class ConnectorService {
         `删除市场连接器目录失败: ${sourcePath} · ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  async deleteFromMarketInBackground(id: string, native?: RuntimeAuditReader): Promise<void> {
+    if (!native) return this.deleteFromMarket(id);
+    const key = id.trim();
+    if (!key) throw new Error("连接器 id 为空");
+    const listed = (await this.readCatalog(native)).find(item => item.name === key || item.id.toLowerCase() === key.toLowerCase());
+    const result = await native.mutateConnectorMarket({
+      kind: "delete", id: listed?.id ?? key, roots: findLocalConnectorRoots(),
+      pluginRoot: getPluginsDir(), installedRoot: getConnectorsDir(), legacySkillsRoot: getSkillsDir(),
+    });
+    if (result?.status === "deleted") {
+      for (const warning of result.warnings) console.warn("[ConnectorService] 删除后文件待清理", warning);
+      return;
+    }
+    if (result?.status === "needsHost") return this.deleteFromMarket(id);
+    if (result?.status === "failed") throw new Error(`删除连接器失败：${result.message}`);
+    throw new Error("未收到连接器删除确认，请刷新查看市场状态");
   }
 }

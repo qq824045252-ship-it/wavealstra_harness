@@ -167,7 +167,7 @@ try {
   assert.equal(success.artifacts.length, 2);
   assert(success.paths.every(existsSync));
   assert.equal(successFixture.registered.size, 2);
-  for (const artifact of success.artifacts) successFixture.service.remove(artifact.id);
+  for (const artifact of success.artifacts) await successFixture.service.remove(artifact.id);
   for (const path of success.paths) await rm(path, { force: true });
 
   const secondInvalid = serviceFixture();

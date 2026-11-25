@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { stream as responsesStream } from "../node_modules/@earendil-works/pi-ai/dist/api/openai-responses.js";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { MemoryService } from "../src/main/memory/MemoryService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import * as sourceProjection from "../src/main/agent/EphemeralContextProjection";
 const { EphemeralContextProjection, CONTEXT_LEDGER_TYPE, CONTEXT_RESET_TYPE } = process.env.MYBUDDY_LEDGER_MODULE
   ? await import(pathToFileURL(process.env.MYBUDDY_LEDGER_MODULE).href) as typeof sourceProjection : sourceProjection;
@@ -16,11 +17,32 @@ import { bindSessionModelAdmission, installModelInvocationAdmission, setSessionR
 // Production MemoryService + projection + admission + Pi sessions/compaction + real serializer.
 // No user data, credentials or network; fake provider responses only choose native read tools.
 const root = mkdtempSync(join(tmpdir(), "mybuddy-context-ledger-"));
-const db = new AppDatabase(join(root, "app.db"));
+const nativeFlag = process.argv.indexOf("--native");
+const executable = nativeFlag < 0 ? undefined : locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd());
+if (nativeFlag >= 0) assert(executable && existsSync(executable), "Rust worker executable is required");
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable: executable });
 const memory = new MemoryService(db, { semantic: false });
 const marker = "PRIVATE_CALIBRATION_SOURCE";
 const atom = memory.create({ kind: "constraint", title: "calibration", content: `${marker}_v1 gain=2 offset=7`,
   scopeType: "global", sourceType: "user", explicit: true });
+const preference = memory.create({ kind: "preference", title: "简报格式", content: "复核结论先列要点。",
+  scopeType: "global", sourceType: "user", explicit: true });
+const runtimeReader = db.runtimeAuditReader;
+let nativeLexical = false, nativeBaseline = false;
+if (runtimeReader) {
+  const lexical = runtimeReader.memoryLexical.bind(runtimeReader);
+  runtimeReader.memoryLexical = async request => {
+    const result = await lexical(request);
+    if (result?.lexical.some(candidate => candidate.id === atom.id)) nativeLexical = true;
+    return result;
+  };
+  const baselines = runtimeReader.memoryBaselines.bind(runtimeReader);
+  runtimeReader.memoryBaselines = async queries => {
+    const result = await baselines(queries);
+    if (result?.some(list => list.some(candidate => candidate.id === preference.id))) nativeBaseline = true;
+    return result;
+  };
+}
 writeFileSync(join(root, "input.txt"), "actual native read result\n".repeat(600));
 const model: Model<any> = { id: "ledger-test", provider: "fixture", api: "openai-responses", name: "Ledger test",
   baseUrl: "http://127.0.0.1:1/v1", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096,
@@ -125,7 +147,9 @@ function ledgers(manager: SessionManager) { return manager.getBranch().filter(e 
 let session: AgentSession | undefined;
 try {
   let current = await boot(); session = current.session;
-  await prompt(session, "calibration first", false);
+  const first = await prompt(session, "calibration first", false);
+  assert(JSON.stringify(first.input).includes(preference.content), "query-independent preferences reach the first outbound request");
+  if (runtimeReader) assert(nativeLexical && nativeBaseline, "lexical-only automatic recall and its baseline query both use Rust");
   await prompt(session, "calibration unchanged");
   const forkPoint = current.manager.getLeafId()!;
   assert.equal(ledgers(current.manager).length, 2);
@@ -250,4 +274,9 @@ try {
   }
   assert.equal(transportCalls, 0);
   console.log(`PASS damaged references and restored access witnesses; ${captures.length} serialized requests, no network`);
-} finally { session?.dispose(); db.close(); rmSync(root, { recursive: true, force: true }); }
+} finally {
+  session?.dispose();
+  await runtimeReader?.close();
+  db.close();
+  rmSync(root, { recursive: true, force: true });
+}

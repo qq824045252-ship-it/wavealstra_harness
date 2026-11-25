@@ -112,7 +112,7 @@ export class RemoteTaskCommandService {
       const settings = this.settings.read();
       const modelId = await this.resolveModelId(request.modelId) ?? (settings.defaultModelId || undefined);
       const permissionMode = request.permissionMode ?? settings.permissionMode;
-      this.db.upsertTask({
+      await this.db.writeTaskRecord({
         id: taskId,
         title: titleFromPrompt(text, request.attachments),
         spaceId: request.spaceId,
@@ -171,7 +171,8 @@ export class RemoteTaskCommandService {
       // 先写附件再改任务：附件落盘失败（超限/写错误）时抛错返回，任务的模型/权限保持原值，不产生半提交
       const attachments = await this.persistAttachments(taskId, request.attachments, operation);
       if ((requestedModelId && requestedModelId !== task.modelId) || (request.permissionMode && request.permissionMode !== task.permissionMode)) {
-        this.db.upsertTask({ ...task, modelId, permissionMode });
+        await this.db.writeTaskRecord({ id: task.id, title: task.title, updatedAt: task.updatedAt, modelId, permissionMode },
+          { preserveTitle: true });
       }
       const userMessageId = `remote-user-${operation}`;
       const assistantMessageId = `remote-assistant-${operation}`;
@@ -329,7 +330,7 @@ export class RemoteTaskCommandService {
 
     const taskId = `remote-${randomUUID()}`;
     const now = Date.now();
-    this.db.upsertTask({
+    await this.db.writeTaskRecord({
       id: taskId,
       title: titleFromPrompt(text, request.attachments),
       spaceId: request.spaceId,
@@ -445,9 +446,8 @@ export class RemoteTaskCommandService {
    * 「已结束」绿点确认（手机端打开任务时调用）：写 tasks.done_acked_at，与桌面端同一条链路。
    * 只写该列、不碰 updated_at —— 读事件不得改变任务时间戳/排序。
    */
-  ackTaskDone(taskId: string): void {
-    this.requireTask(taskId);
-    this.db.ackTaskDone(taskId, Date.now());
+  async ackTaskDone(taskId: string): Promise<void> {
+    if (!await this.db.writeTaskDoneAck(taskId)) throw new RemoteNotFoundError("任务不存在");
   }
 
   /**

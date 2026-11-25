@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { WorkService, DESKTOP_USER_GRANTS } from "../src/main/agent/work/WorkService";
 import { createRemoteWorkBridge } from "../src/main/remote/work-mapper";
@@ -23,12 +24,15 @@ import { DEFAULT_BOT_ID, LOCAL_USER_ID } from "../src/shared/bot-work";
  */
 
 const root = mkdtempSync(join(tmpdir(), "remote-work-"));
-const db = new AppDatabase(join(root, "work.db"));
+const useNative = process.argv.includes("--native");
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "work.db"), { runtimeAuditExecutable });
 const bots = new BotRegistry(db.connection);
 const grants = { ...DESKTOP_USER_GRANTS };
 bots.registerBot({ botId: DEFAULT_BOT_ID, userId: LOCAL_USER_ID, displayName: DEFAULT_BOT_ID, authorization: grants });
 let clock = 1_700_000_000_000;
-const works = new WorkService(db.connection, { bots, now: () => clock });
+const works = new WorkService(db.connection, { bots, now: () => clock, runtimeAuditReader: db.runtimeAuditReader });
 const user: WorkActor = { kind: "user", userId: LOCAL_USER_ID, grants };
 const unwrap = (value: WorkControlResult) => { if (!value.ok) throw new Error(`${value.code}: ${value.message}`); return value.work; };
 const guard = (work: Pick<WorkDto, "stateVersion" | "intentRevision" | "ownerEpoch">) =>
@@ -88,11 +92,23 @@ try {
   await check("an unpaired device cannot read Work facts", async () => {
     const unauthorized = await call("GET", "/v1/work/sync", undefined, "");
     assert.equal(unauthorized.status, 401);
-    const sync = await call("GET", "/v1/work/sync?includeClosed=0");
+    const stream = db.connection.prepare("SELECT epoch,sequence FROM main.work_projection_streams WHERE user_id=?")
+      .get(LOCAL_USER_ID) as { epoch: string; sequence: number };
+    if (useNative) {
+      db.connection.exec("CREATE TEMP TABLE work_projection_streams(user_id TEXT PRIMARY KEY,epoch TEXT,sequence INTEGER)");
+      db.connection.prepare("INSERT INTO temp.work_projection_streams VALUES (?,'host-shadow',0)").run(LOCAL_USER_ID);
+    }
+    let sync;
+    try {
+      sync = await call("GET", "/v1/work/sync?includeClosed=0");
+    } finally {
+      if (useNative) db.connection.exec("DROP TABLE temp.work_projection_streams");
+    }
     assert.equal(sync.status, 200);
     const update = sync.json as RemoteWorkUpdate;
     assert.equal(update.kind, "snapshot");
     if (update.kind !== "snapshot") return;
+    assert.deepEqual(update.cursor, { ...stream, scope: "open" });
     const remote = update.works.find(item => item.workId === work.workId)!;
     assert.ok(remote, "the paired device sees the work");
     assert.equal(remote.cards.length, 1);
@@ -109,7 +125,13 @@ try {
     const versionBeforeRead = works.getWork(work.workId)!.stateVersion;
     works.markWorkCardRead(user, { workId: work.workId, semanticCardKey: card.semanticCardKey });
     const cursor = `epoch=${encodeURIComponent(snapshot.cursor.epoch)}&sequence=${snapshot.cursor.sequence}&scope=${snapshot.cursor.scope}`;
-    const delta = (await call("GET", `/v1/work/sync?includeClosed=0&${cursor}`)).json as RemoteWorkUpdate;
+    if (useNative) db.connection.exec("CREATE TEMP TABLE work_projection_events AS SELECT * FROM main.work_projection_events WHERE 0");
+    let delta: RemoteWorkUpdate;
+    try {
+      delta = (await call("GET", `/v1/work/sync?includeClosed=0&${cursor}`)).json as RemoteWorkUpdate;
+    } finally {
+      if (useNative) db.connection.exec("DROP TABLE temp.work_projection_events");
+    }
     assert.equal(delta.kind, "delta");
     if (delta.kind !== "delta") return;
     const event = delta.events.find(item => item.kind === "upsert" && item.work.workId === work.workId);
@@ -122,7 +144,16 @@ try {
   await check("the phone can mark a card read without touching the Work", async () => {
     const before = works.getWork(work.workId)!;
     clock += 5_000;
-    const read = await call("POST", `/v1/work/${work.workId}/cards/${encodeURIComponent(card.semanticCardKey)}/read`, {});
+    if (useNative) db.connection.pragma("query_only = ON");
+    const route = `/v1/work/${work.workId}/cards/${encodeURIComponent(card.semanticCardKey)}/read`;
+    let read;
+    try {
+      read = await call("POST", route, { readAt: clock + 60_000 });
+      const replay = await call("POST", route, { readAt: clock - 1_000 });
+      assert.deepEqual(replay.json, { ...read.json, replayed: true }, "earlier client timestamps cannot roll back a card read");
+    } finally {
+      if (useNative) db.connection.pragma("query_only = OFF");
+    }
     assert.equal(read.status, 200);
     assert.equal(read.json.ok, true);
     const after = works.getWork(work.workId)!;
@@ -284,7 +315,46 @@ try {
     assert.equal(accepted.intentRevision, summary.intentRevision);
   });
 
+  if (db.runtimeAuditReader) await check("a concurrent writer cannot make a Rust cursor conceal newer Work", async () => {
+    const worker = db.runtimeAuditReader!;
+    const read = worker.readWorkQueue.bind(worker);
+    let newWork: WorkDto | undefined;
+    worker.readWorkQueue = async query => {
+      const snapshot = await read(query);
+      assert.equal(snapshot?.kind, "snapshot");
+      newWork = unwrap(works.createWork(user, { operationId: "changed-during-sync", title: "快照后新增事项", authorization: grants }));
+      return snapshot;
+    };
+    try {
+      const result = await call("GET", "/v1/work/sync?includeClosed=0");
+      assert.equal(result.status, 200);
+      assert.equal(result.json.kind, "snapshot");
+      assert.deepEqual(result.json.works.map((item: RemoteWorkSummary) => [item.workId, item.title]),
+        [[newWork?.workId, "快照后新增事项"]]);
+    } finally {
+      worker.readWorkQueue = read;
+    }
+  });
+
+  if (db.runtimeAuditReader) await check("Rust returns the complete first snapshot beyond a thousand Work records", async () => {
+    const ownWork = works.getWork(work.workId)!;
+    const userId = "wide-queue-fixture";
+    db.connection.transaction(() => {
+      db.connection.prepare("INSERT INTO work_projection_streams(user_id,epoch) VALUES (?,'wide-epoch')").run(userId);
+      for (let index = 0; index < 1005; index += 1) {
+        works.repo.insertWork({ ...ownWork, userId, workId: `wide-${index}`, lifecycle: "active", updatedAt: clock + index });
+      }
+    })();
+    const snapshot = await db.runtimeAuditReader!.readWorkQueue({ userId, includeClosed: false });
+    assert.ok(snapshot?.kind === "snapshot");
+    assert.deepEqual(snapshot.cursor, { epoch: "wide-epoch", sequence: 1005, scope: "open" });
+    assert.deepEqual([snapshot.workIds.length, snapshot.workIds[0], snapshot.workIds.at(-1)], [1005, "wide-1004", "wide-0"]);
+  });
+
   console.log(`Remote Work sync: ${passes.length} passed`);
 } finally {
   await server.stop();
+  await db.runtimeAuditReader?.close();
+  db.close();
+  rmSync(root, { recursive: true, force: true });
 }

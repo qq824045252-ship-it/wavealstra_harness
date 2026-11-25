@@ -1,14 +1,14 @@
 import type { AgentUiPatch, TaskDto } from "../../shared/agent-ipc";
 import type { AgentTaskLifecycleEvent } from "../agent/AgentService";
 import type { WorkRepository } from "../agent/work/WorkRepository";
-import type { NotificationService } from "./NotificationService";
+import type { PublishNotificationInput } from "./NotificationService";
 
 /** Work completion is announced by its owner; ordinary Tasks keep their existing path. */
 export function publishTaskLifecycleNotification(input: {
   event: AgentTaskLifecycleEvent; task?: TaskDto;
   goalId?: string;
   workRepo: Pick<WorkRepository, "bindingForTask">;
-  notifications: Pick<NotificationService, "publish">;
+  notifications: { publish(input: PublishNotificationInput): void };
 }): void {
   const { event, task, workRepo, notifications } = input;
   if (event.taskId.startsWith("cron-")) return;
@@ -37,7 +37,7 @@ export function publishTaskLifecycleNotification(input: {
 
 export function createTaskInteractionNotificationListener(
   getTask: (id: string) => TaskDto | undefined,
-  notifications: Pick<NotificationService, "publish" | "markReadByDedupeKey">,
+  notifications: { publish(input: PublishNotificationInput): void; markReadByDedupeKey(dedupeKey: string): void },
   getGoalId?: (taskId: string, messageId: string) => string | undefined,
 ): (patch: AgentUiPatch) => void {
   return patch => {

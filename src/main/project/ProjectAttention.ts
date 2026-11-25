@@ -99,8 +99,16 @@ export class ProjectAttentionTracker {
    * 返回 null = 无变化/项目不可读。
    */
   onChange(projectId: string, now = Date.now()): ProjectAttentionDigestDto | null {
-    const digest = this.computeDigest(projectId, now);
+    return this.rememberChange(this.computeDigest(projectId, now));
+  }
+
+  async readChange(projectId: string, now = Date.now()): Promise<ProjectAttentionDigestDto | null> {
+    return this.rememberChange(await this.readDigest(projectId, now));
+  }
+
+  private rememberChange(digest: ProjectAttentionDigestDto | null): ProjectAttentionDigestDto | null {
     if (!digest) return null;
+    const { projectId } = digest;
     if (this.lastFingerprint.get(projectId) === digest.fingerprint) return null;
     this.lastFingerprint.set(projectId, digest.fingerprint);
     return digest;

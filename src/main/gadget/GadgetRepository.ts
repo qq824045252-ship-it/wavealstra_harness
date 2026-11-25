@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import type { GadgetDescriptor, GadgetScope } from "../../shared/gadget-types";
 import { assertGadgetScope } from "../../shared/gadget-types";
+import type { RuntimeAuditReader, RuntimeGadgetInsert, RuntimeGadgetOrigin } from "../platform/runtime-audit";
+import { writeWorkbench } from "../db/workbench-writes";
 
 interface GadgetRow {
   id: string;
@@ -54,11 +56,30 @@ function mapRow(row: GadgetRow): GadgetDescriptor {
   };
 }
 
+function descriptorValues(descriptor: GadgetDescriptor) {
+  return {
+    id: descriptor.id,
+    name: descriptor.name,
+    description: descriptor.description ?? null,
+    metadataJson: JSON.stringify(descriptor.metadata ?? {}),
+    updatedAt: descriptor.updatedAt,
+  };
+}
+
+export function gadgetInsertValues(descriptor: GadgetDescriptor): RuntimeGadgetInsert {
+  return {
+    ...descriptorValues(descriptor), scope: scopeColumns(descriptor.scope),
+    manifestPath: descriptor.manifestPath, sourcePath: descriptor.sourcePath,
+    createdByTaskId: descriptor.createdByTaskId ?? null,
+    blueprintId: descriptor.blueprintId ?? null, createdAt: descriptor.createdAt,
+  };
+}
+
 export class GadgetRepository {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly native?: RuntimeAuditReader) {}
 
   create(descriptor: GadgetDescriptor): GadgetDescriptor {
-    const { scopeType, scopeId } = scopeColumns(descriptor.scope);
+    const values = gadgetInsertValues(descriptor);
     this.db.prepare(
       `INSERT INTO gadgets (
          id, name, description, scope_type, scope_id, type, manifest_path, source_path,
@@ -68,20 +89,20 @@ export class GadgetRepository {
          @createdByTaskId, @blueprintId, @metadataJson, @createdAt, @updatedAt
        )`,
     ).run({
-      id: descriptor.id,
-      name: descriptor.name,
-      description: descriptor.description ?? null,
-      scopeType,
-      scopeId,
+      ...values,
+      ...values.scope,
       type: descriptor.type,
-      manifestPath: descriptor.manifestPath,
-      sourcePath: descriptor.sourcePath,
-      createdByTaskId: descriptor.createdByTaskId ?? null,
-      blueprintId: descriptor.blueprintId ?? null,
-      metadataJson: JSON.stringify(descriptor.metadata ?? {}),
-      createdAt: descriptor.createdAt,
-      updatedAt: descriptor.updatedAt,
     });
+    return descriptor;
+  }
+
+  async createAsync(descriptor: GadgetDescriptor, origin: RuntimeGadgetOrigin): Promise<GadgetDescriptor> {
+    const result = await writeWorkbench(this.db, this.native, {
+      kind: "createGadget", origin,
+      gadget: gadgetInsertValues(descriptor),
+    });
+    if (result === undefined) return this.create(descriptor);
+    if (result !== "changed") throw new Error("Gadget 目标或来源作用域已变化，请刷新后重试");
     return descriptor;
   }
 
@@ -90,20 +111,47 @@ export class GadgetRepository {
     return row ? mapRow(row) : null;
   }
 
+  async read(id: string): Promise<GadgetDescriptor | null> {
+    if (this.db.inTransaction) return this.get(id);
+    const rows = await this.native?.workbenchData<GadgetRow>({ kind: "gadget", id });
+    if (rows === undefined) return this.get(id);
+    return rows[0] ? mapRow(rows[0]) : null;
+  }
+
+  private async readSaved(id: string): Promise<GadgetDescriptor> {
+    const descriptor = await this.read(id);
+    if (!descriptor) throw new Error("Gadget 不存在：" + id);
+    return descriptor;
+  }
+
   update(descriptor: GadgetDescriptor): GadgetDescriptor {
     const result = this.db.prepare(
       `UPDATE gadgets
        SET name = @name, description = @description, metadata_json = @metadataJson, updated_at = @updatedAt
        WHERE id = @id`,
-    ).run({
-      id: descriptor.id,
-      name: descriptor.name,
-      description: descriptor.description ?? null,
-      metadataJson: JSON.stringify(descriptor.metadata ?? {}),
-      updatedAt: descriptor.updatedAt,
-    });
+    ).run(descriptorValues(descriptor));
     if (result.changes !== 1) throw new Error(`Gadget 不存在：${descriptor.id}`);
     return descriptor;
+  }
+
+  async updateAsync(descriptor: GadgetDescriptor): Promise<GadgetDescriptor> {
+    const result = await writeWorkbench(this.db, this.native, { kind: "updateGadget", ...descriptorValues(descriptor) });
+    if (result === undefined) return this.update(descriptor);
+    if (result !== "changed") throw new Error("Gadget 不存在：" + descriptor.id);
+    return this.readSaved(descriptor.id);
+  }
+
+  async touchAsync(id: string, updatedAt: number): Promise<GadgetDescriptor> {
+    const result = await writeWorkbench(this.db, this.native, { kind: "touchGadget", id, updatedAt });
+    const touched = result === undefined
+      ? this.db.prepare("UPDATE gadgets SET updated_at=? WHERE id=?").run(updatedAt, id).changes === 1
+      : result === "changed";
+    if (!touched) throw new Error("Gadget 不存在：" + id);
+    return this.readSaved(id);
+  }
+
+  storageIds(): ReadonlySet<string> {
+    return new Set(this.db.prepare("SELECT id FROM gadgets").pluck().all() as string[]);
   }
 
   list(scope?: GadgetScope): GadgetDescriptor[] {
@@ -119,6 +167,18 @@ export class GadgetRepository {
     return rows.map(mapRow);
   }
 
+  listScoped(scopes?: GadgetScope[]): Array<{ descriptor: GadgetDescriptor; scopeIndex: number }> {
+    if (!scopes) return this.list().map(descriptor => ({ descriptor, scopeIndex: 0 }));
+    return scopes.flatMap((scope, scopeIndex) => this.list(scope).map(descriptor => ({ descriptor, scopeIndex })));
+  }
+
+  async readScoped(scopes?: GadgetScope[]): Promise<Array<{ descriptor: GadgetDescriptor; scopeIndex: number }>> {
+    const rows = await this.native?.workbenchData<GadgetRow & { scope_index: number }>({
+      kind: "gadgets", scopes: scopes?.map(scopeColumns),
+    });
+    return rows?.map(row => ({ descriptor: mapRow(row), scopeIndex: row.scope_index })) ?? this.listScoped(scopes);
+  }
+
   moveScope(id: string, scope: GadgetScope): GadgetDescriptor {
     const { scopeType, scopeId } = scopeColumns(scope);
     const updatedAt = Date.now();
@@ -129,7 +189,20 @@ export class GadgetRepository {
     return this.get(id)!;
   }
 
+  async moveScopeAsync(id: string, scope: GadgetScope): Promise<GadgetDescriptor> {
+    const result = await writeWorkbench(this.db, this.native, { kind: "moveGadget", id, scope: scopeColumns(scope), updatedAt: Date.now() });
+    if (result === undefined) return this.moveScope(id, scope);
+    if (result === "scopeChanged") throw new Error("Gadget 目标作用域已变化，请刷新后重试");
+    if (result !== "changed") throw new Error("Gadget 不存在：" + id);
+    return this.readSaved(id);
+  }
+
   delete(id: string): boolean {
     return this.db.prepare("DELETE FROM gadgets WHERE id = ?").run(id).changes === 1;
+  }
+
+  async deleteAsync(id: string): Promise<boolean> {
+    const result = await writeWorkbench(this.db, this.native, { kind: "deleteGadget", id });
+    return result === undefined ? this.delete(id) : result === "changed";
   }
 }

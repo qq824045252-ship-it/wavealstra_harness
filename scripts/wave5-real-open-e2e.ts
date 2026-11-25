@@ -276,8 +276,8 @@ async function run(): Promise<void> {
   ipcMain.handle(ArtifactDomainIpc.removeTask, (_e, req: { taskId: string }) =>
     service.removeByTask(req.taskId),
   );
-  ipcMain.handle(ArtifactDomainIpc.remove, (_e, req: { artifactId: string }) => ({
-    ok: service.remove(req.artifactId),
+  ipcMain.handle(ArtifactDomainIpc.remove, async (_e, req: { artifactId: string }) => ({
+    ok: await service.remove(req.artifactId),
   }));
 
   // 测试 preload（真实通道子集；镜像真实 preload 的 artifactDomain 桥）

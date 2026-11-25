@@ -1,5 +1,8 @@
 use crate::Result;
-use rusqlite::{Connection, Statement, functions::FunctionFlags, types::ValueRef};
+use rusqlite::{
+    Connection, Statement, TransactionBehavior, functions::FunctionFlags, named_params, params,
+    types::ValueRef,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -45,6 +48,71 @@ pub struct Page {
     rows: Vec<Map<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionInput {
+    id: String,
+    action: BoardAction,
+    now: i64,
+    later_until: Option<i64>,
+    visibility_sql: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum BoardAction {
+    Visit,
+    Read,
+    Today,
+    Later,
+    Clear,
+}
+
+pub fn write_action(db: &mut Connection, input: ActionInput) -> Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let visible = {
+        let mut statement = tx.prepare_cached(&input.visibility_sql)?;
+        if !statement.readonly() {
+            return Err("task board visibility query is not read-only".into());
+        }
+        statement.exists(named_params! { "@id": input.id })?
+    };
+    if visible {
+        match input.action {
+            BoardAction::Visit | BoardAction::Read => {
+                let kind = if matches!(input.action, BoardAction::Visit) {
+                    "visit"
+                } else {
+                    "read"
+                };
+                tx.execute(
+                    "INSERT INTO task_board_days(id,kind,day,at,detail)
+                     VALUES(?1,?2,date(?3/1000.0,'unixepoch','localtime'),?3,'')
+                     ON CONFLICT(id,kind,day) DO UPDATE SET at=excluded.at,detail=excluded.detail
+                     WHERE excluded.at>=at",
+                    params![input.id, kind, input.now],
+                )?;
+            }
+            BoardAction::Today | BoardAction::Later => {
+                let today = matches!(input.action, BoardAction::Today).then_some(input.now);
+                let deferred_at = input.later_until.map(|_| input.now);
+                tx.execute(
+                    "INSERT INTO task_board_plans(id,day,later_until,deferred_at)
+                     VALUES(?1,date(?2/1000,'unixepoch','localtime'),?3,?4)
+                     ON CONFLICT(id) DO UPDATE SET day=excluded.day,
+                         later_until=excluded.later_until,deferred_at=excluded.deferred_at",
+                    params![input.id, today, input.later_until, deferred_at],
+                )?;
+            }
+            BoardAction::Clear => {
+                tx.execute("DELETE FROM task_board_plans WHERE id=?1", [input.id])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn bind(

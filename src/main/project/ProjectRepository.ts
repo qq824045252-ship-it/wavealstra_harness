@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import type { ProjectMemoryProjection, ProjectMutation, ProjectWriteDomain, ProjectWriteStatus } from "./ProjectMutation";
 import {
   emptyProjectPolicies,
   PROJECT_EVENT_LIST_MAX_LIMIT,
@@ -56,6 +58,36 @@ type EventRow = {
   created_at: number;
 };
 
+export type RuntimeProjectEventRequest =
+  | { kind: "read"; eventId: string }
+  | { kind: "triage"; projectId: string; eventId: string; triageStatus: ProjectEventTriageStatus };
+
+export type RuntimeProjectEventReply =
+  | { status: "found"; event: EventRow }
+  | { status: "missingProject" | "missingEvent" | "archived" | "needsHost" }
+  | { status: "rejected"; message: string };
+
+export type RuntimeProjectPostRequest =
+  | { kind: "list"; projectId: string }
+  | { kind: "create"; post: ProjectPostDto }
+  | { kind: "delete"; id: string };
+
+export type RuntimeProjectPostReply =
+  | { status: "listed"; posts: ProjectPostDto[] }
+  | { status: "saved" | "archived" | "needsHost" }
+  | { status: "rejected"; message: string };
+
+export type RuntimeProjectPinRequest =
+  | { kind: "list"; projectId: string }
+  | { kind: "pin"; projectId: string; itemId: string; id: string; note?: string; createdAt: number }
+  | { kind: "unpin"; projectId: string; itemId: string };
+
+export type RuntimeProjectPinReply =
+  | { status: "listed"; pins: ProjectContextPinDto[] }
+  | { status: "pinned"; pin: ProjectContextPinDto }
+  | { status: "removed" | "archived" | "needsHost" }
+  | { status: "rejected"; message: string };
+
 export interface ProjectStatusFact {
   kind: "blockingOverdue" | "overdue" | "nearDue" | "staleTask" | "activeRisk" | "importantQuestion";
   refId: string;
@@ -85,6 +117,13 @@ interface ProjectResourceRow {
   created_at: number;
   updated_at: number;
 }
+
+type ProjectPolicyColumns = Record<
+  | "expert_allow" | "expert_deny" | "expert_recommended"
+  | "skill_allow" | "skill_prefer" | "skill_demote" | "skill_hide"
+  | "connector_allow" | "connector_deny" | "connector_recommended" | "mcp_mode" | "mcp_allow" | "mcp_deny",
+  string | null
+>;
 
 function mapResourceRow(row: ProjectResourceRow): ProjectResourceDto {
   return {
@@ -163,6 +202,21 @@ function parseJsonObject(value: string | null | undefined): Record<string, unkno
   }
 }
 
+function mapEventRow(row: EventRow): ProjectEventDto {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    source: row.source as ProjectEventSource,
+    kind: row.kind as ProjectEventKind,
+    title: row.title,
+    body: row.body ?? undefined,
+    ref: row.ref ?? undefined,
+    payload: parseJsonObject(row.payload_json),
+    triageStatus: row.triage_status as ProjectEventTriageStatus,
+    createdAt: row.created_at,
+  };
+}
+
 interface PromotionRow {
   id: string;
   project_id: string;
@@ -211,7 +265,7 @@ function mapProject(row: ProjectRow): ProjectDto {
 export class ProjectRepository {
   constructor(private readonly db: Database.Database, private readonly runtimeAuditReader?: RuntimeAuditReader) {}
 
-  validateDefaultSpace(id: string): string {
+  validatedDefaultSpacePath(id: string): string {
     if (typeof id !== "string" || !id.trim()) throw new Error("请选择有效的项目文件夹");
     const rows = this.db.prepare(`WITH RECURSIVE chain AS (
       SELECT id, parent_id, archived, path FROM spaces WHERE id = ?
@@ -220,7 +274,36 @@ export class ProjectRepository {
     if (!rows.length || rows.some((row) => row.archived) || !rows[0].path) throw new Error("项目文件夹不存在、已归档或未关联磁盘目录");
     try { if (!statSync(rows[0].path).isDirectory()) throw new Error(); }
     catch { throw new Error("项目文件夹路径不可用，请重新关联目录"); }
-    return id;
+    return rows[0].path;
+  }
+
+  supportsNativeWrites(kind: ProjectWriteDomain = "project"): Promise<boolean> {
+    if (!this.runtimeAuditReader || this.db.inTransaction) return Promise.resolve(false);
+    return this.runtimeAuditReader.supportsProjectWrites(kind);
+  }
+
+  readWriteSnapshot<T>(read: () => T): T { return this.db.transaction(read)(); }
+
+  memoryRevision(id: string): number {
+    return this.db.prepare("SELECT coalesce(max(revision),0) FROM memory_revisions WHERE memory_id=?").pluck().get(id) as number;
+  }
+
+  readMemoryList(projectId: string) {
+    return this.runtimeAuditReader?.projectMetadata<ProjectMemoryProjection[] | null>({ kind: "memories", projectId });
+  }
+
+  readMemoryWithdrawal(projectId: string, id: string) {
+    return this.runtimeAuditReader?.readProjectWithdrawal(projectId, id);
+  }
+
+  async writeProject(mutation: ProjectMutation): Promise<ProjectWriteStatus> {
+    const operationId = randomUUID();
+    try {
+      return await this.runtimeAuditReader!.writeProject(operationId, mutation);
+    } catch (error) {
+      if (this.db.prepare("SELECT 1 FROM project_write_receipts WHERE operation_id=?").get(operationId)) return "changed";
+      throw error;
+    }
   }
 
   list(includeArchived = false): ProjectDto[] {
@@ -248,6 +331,24 @@ export class ProjectRepository {
   get(id: string): ProjectDetailsDto | undefined {
     const project = this.getSummary(id);
     return project ? { ...project, policies: this.getPolicies(id), resources: this.listResources(id) } : undefined;
+  }
+
+  async readDetails(id: string): Promise<ProjectDetailsDto | undefined> {
+    const data = await this.runtimeAuditReader?.projectMetadata<{
+      project: ProjectRow & ProjectPolicyColumns; resources: ProjectResourceRow[];
+    } | null>({ kind: "details", projectId: id });
+    if (data === undefined) return this.get(id);
+    if (!data) return;
+    const row = data.project;
+    return {
+      ...mapProject(row), resources: data.resources.map(mapResourceRow),
+      policies: {
+        expert: { allow: parseList(row.expert_allow), deny: parseList(row.expert_deny), recommended: parseList(row.expert_recommended) },
+        skill: { allow: parseList(row.skill_allow), prefer: parseList(row.skill_prefer), demote: parseList(row.skill_demote), hide: parseList(row.skill_hide) },
+        connector: { allow: parseList(row.connector_allow), deny: parseList(row.connector_deny), recommended: parseList(row.connector_recommended) },
+        mcp: { mode: row.mcp_mode === "soft" ? "soft" : "hard", allow: parseList(row.mcp_allow), deny: parseList(row.mcp_deny) },
+      },
+    };
   }
 
   getSummary(id: string): ProjectDto | undefined {
@@ -467,7 +568,7 @@ export class ProjectRepository {
       `SELECT id, project_id, kind, title, value, enabled, sort_order, parent_id, created_at, updated_at
        FROM project_resources WHERE id = ?`,
     ).get(id) as ProjectResourceRow | undefined;
-    return row ? this.listResources(row.project_id).find((item) => item.id === id) : undefined;
+    return row ? mapResourceRow(row) : undefined;
   }
 
   listPosts(projectId: string): ProjectPostDto[] {
@@ -482,6 +583,18 @@ export class ProjectRepository {
       createdAt: row.created_at,
     }));
   }
+
+  async requestProjectPosts(request: RuntimeProjectPostRequest): Promise<RuntimeProjectPostReply | undefined> {
+    const fields = request.kind === "create" ? [request.post.projectId, request.post.body]
+      : [request.kind === "list" ? request.projectId : request.id];
+    if (!this.runtimeAuditReader || this.db.inTransaction ||
+        fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))) {
+      return { status: "needsHost" };
+    }
+    return this.runtimeAuditReader.projectPosts(request);
+  }
+
+  commitWriteOnHost<T>(write: () => T): T { return this.db.transaction(write).immediate(); }
 
   createPost(post: ProjectPostDto): ProjectPostDto {
     this.db.prepare(
@@ -524,18 +637,7 @@ export class ProjectRepository {
   }
 
   private mapEventPage(rows: EventRow[], promotions: ProjectEventPromotionDto[]): ProjectEventDto[] {
-    const events: ProjectEventDto[] = rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      source: row.source as ProjectEventSource,
-      kind: row.kind as ProjectEventKind,
-      title: row.title,
-      body: row.body ?? undefined,
-      ref: row.ref ?? undefined,
-      payload: parseJsonObject(row.payload_json),
-      triageStatus: row.triage_status as ProjectEventTriageStatus,
-      createdAt: row.created_at,
-    }));
+    const events = rows.map(mapEventRow);
     // 填充提升审计链接（事件 → 已提升真实对象）
     if (promotions.length > 0) {
       const byEvent = new Map<string, ProjectEventPromotionDto[]>();
@@ -558,31 +660,8 @@ export class ProjectRepository {
         `SELECT id, project_id, source, kind, title, body, ref, payload_json, triage_status, created_at
          FROM project_events WHERE project_id = ? AND source = ? AND ref = ? LIMIT 1`,
       )
-      .get(projectId, source, ref) as {
-      id: string;
-      project_id: string;
-      source: string;
-      kind: string;
-      title: string;
-      body: string | null;
-      ref: string | null;
-      payload_json: string;
-      triage_status: string;
-      created_at: number;
-    } | undefined;
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      source: row.source as ProjectEventSource,
-      kind: row.kind as ProjectEventKind,
-      title: row.title,
-      body: row.body ?? undefined,
-      ref: row.ref ?? undefined,
-      payload: parseJsonObject(row.payload_json),
-      triageStatus: row.triage_status as ProjectEventTriageStatus,
-      createdAt: row.created_at,
-    };
+      .get(projectId, source, ref) as EventRow | undefined;
+    return row && mapEventRow(row);
   }
 
   /** 事件所属项目（提升/证据作用域校验；无则 undefined） */
@@ -606,31 +685,33 @@ export class ProjectRepository {
         `SELECT id, project_id, source, kind, title, body, ref, payload_json, triage_status, created_at
          FROM project_events WHERE id = ? LIMIT 1`,
       )
-      .get(eventId) as {
-      id: string;
-      project_id: string;
-      source: string;
-      kind: string;
-      title: string;
-      body: string | null;
-      ref: string | null;
-      payload_json: string;
-      triage_status: string;
-      created_at: number;
-    } | undefined;
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      source: row.source as ProjectEventSource,
-      kind: row.kind as ProjectEventKind,
-      title: row.title,
-      body: row.body ?? undefined,
-      ref: row.ref ?? undefined,
-      payload: parseJsonObject(row.payload_json),
-      triageStatus: row.triage_status as ProjectEventTriageStatus,
-      createdAt: row.created_at,
-    };
+      .get(eventId) as EventRow | undefined;
+    return row && mapEventRow(row);
+  }
+
+  async readProjectEventById(eventId: string): Promise<ProjectEventDto | undefined> {
+    const reply = await this.requestProjectEvent({ kind: "read", eventId });
+    if (reply?.status === "found") return mapEventRow(reply.event);
+    if (reply?.status === "missingEvent") return;
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    return this.getProjectEventById(eventId);
+  }
+
+  async writeProjectEventTriage(
+    projectId: string,
+    eventId: string,
+    triageStatus: ProjectEventTriageStatus,
+  ): Promise<ProjectEventDto | "missingProject" | "missingEvent" | "archived" | "needsHost" | undefined> {
+    const reply = await this.requestProjectEvent({ kind: "triage", projectId, eventId, triageStatus });
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    return reply?.status === "found" ? mapEventRow(reply.event) : reply?.status;
+  }
+
+  private async requestProjectEvent(request: RuntimeProjectEventRequest): Promise<RuntimeProjectEventReply | undefined> {
+    const ids = request.kind === "triage" ? [request.projectId, request.eventId] : [request.eventId];
+    if (!this.runtimeAuditReader || this.db.inTransaction ||
+        ids.some(id => typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id))) return { status: "needsHost" };
+    return this.runtimeAuditReader.projectEventData(request);
   }
 
   /**
@@ -699,6 +780,29 @@ export class ProjectRepository {
       if (existing) return existing;
       throw err;
     }
+  }
+
+  insertTodoPromotionOnHost(todo: ProjectTodoDto, promotion: ProjectEventPromotionDto, sourceTaskId?: string): ProjectWriteStatus {
+    return this.insertPromotionOnHost(promotion, () => this.createTodo(todo), sourceTaskId);
+  }
+
+  insertPromotionOnHost(promotion: ProjectEventPromotionDto, createTarget: () => void, sourceTaskId?: string): ProjectWriteStatus {
+    const { projectId, targetKind } = promotion;
+    return this.db.transaction((): ProjectWriteStatus => {
+      if (sourceTaskId && !this.isTaskInProject(sourceTaskId, projectId)) return "scopeChanged";
+      const project = this.getSummary(projectId);
+      if (!project) return "missing";
+      if (project.archived) return "archived";
+      const event = this.getProjectEventById(promotion.eventId);
+      if (!event || event.projectId !== projectId) return "missingEvent";
+      if (this.findProjectEventPromotion(projectId, event.id, targetKind)) return "existingPromotion";
+      createTarget();
+      this.insertProjectEventPromotion({ ...promotion, eventTitle: event.title });
+      if (this.findProjectEventPromotion(projectId, event.id, targetKind)?.id !== promotion.id) {
+        throw new Error("项目事件与目标的关联写入失败");
+      }
+      return "changed";
+    }).immediate();
   }
 
   /** 批量取事件提升链接（事件列表填充用；events 空 → []） */
@@ -791,9 +895,23 @@ export class ProjectRepository {
     return row ? mapTodoRow(row) : undefined;
   }
 
+  async readTodo(id: string): Promise<ProjectTodoDto | undefined> {
+    const row = await this.runtimeAuditReader?.projectMetadata<Parameters<typeof mapTodoRow>[0] | null>({ kind: "todo", id });
+    if (row === undefined) return this.getTodo(id);
+    return row ? mapTodoRow(row) : undefined;
+  }
+
+  readNextCadenceBoundary(projectId: string, now: number): Promise<number | null | undefined> | undefined {
+    return this.runtimeAuditReader?.projectMetadata<number | null>({ kind: "nextBoundary", projectId, now });
+  }
+
+  isTaskInProject(taskId: string, projectId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id=? AND project_id=?").get(taskId, projectId));
+  }
+
   createTodo(todo: ProjectTodoDto): ProjectTodoDto {
     this.db.transaction(() => {
-      this.db.prepare(
+      const result = this.db.prepare(
         `INSERT INTO project_todos (
            id, project_id, title, description, status, assignee, priority, tags_json, start_at, due_at, created_at, updated_at
          ) VALUES (
@@ -813,6 +931,7 @@ export class ProjectRepository {
         createdAt: todo.createdAt,
         updatedAt: todo.updatedAt,
       });
+      if (result.changes !== 1) throw new Error("项目计划项写入失败");
       // 计划是项目级共享 Agent 状态：变更必须驱动项目上下文版本（projects.updated_at），
       // 使绑定任务的下次装配重建（assemblyChanged/fingerprint）拿到最新计划摘要。
       this.bumpProjectUpdatedAt(todo.projectId, todo.updatedAt);
@@ -851,11 +970,9 @@ export class ProjectRepository {
     if (!row) return;
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM project_todos WHERE id = ?").run(id);
+      this.db.prepare(`DELETE FROM work_graph_edges WHERE (from_type='plan' AND from_id=?) OR (to_type='plan' AND to_id=?)`).run(id, id);
       this.bumpProjectUpdatedAt(row.project_id, Date.now());
     })();
-    try {
-      this.db.prepare(`DELETE FROM work_graph_edges WHERE (from_type='plan' AND from_id=?) OR (to_type='plan' AND to_id=?)`).run(id, id);
-    } catch {}
   }
 
   /** 单调递增地 bump 项目 updated_at（并发写也不回退版本） */
@@ -1067,6 +1184,17 @@ export class ProjectRepository {
          WHERE id = ? AND project_id = ?`,
       )
       .run(status, appliedResult ?? null, status === "applied" ? Date.now() : null, Date.now(), proposalId, projectId);
+  }
+
+  async requestProjectPins(request: RuntimeProjectPinRequest): Promise<RuntimeProjectPinReply | undefined> {
+    const fields = [request.projectId];
+    if (request.kind !== "list") fields.push(request.itemId);
+    if (request.kind === "pin" && request.note !== undefined) fields.push(request.note);
+    if (!this.runtimeAuditReader || this.db.inTransaction ||
+        fields.some(value => typeof value !== "string" || /[\uD800-\uDFFF]/u.test(value))) {
+      return { status: "needsHost" };
+    }
+    return this.runtimeAuditReader.projectPins(request);
   }
 
   listPins(projectId: string): ProjectContextPinDto[] {

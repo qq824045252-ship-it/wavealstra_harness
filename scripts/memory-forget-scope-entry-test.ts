@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
 import { BotConversationRepository } from "../src/main/agent/work/BotConversationRepository";
 import { ensureWorkTeamSchema } from "../src/main/agent/work/WorkTeamService";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { LOCAL_USER_ID } from "../src/shared/bot-work";
 import type { MemoryCandidateDto, MemoryScopeType, MemorySearchRequest, MemoryTurnDto } from "../src/shared/memory-kernel";
 
@@ -115,3 +119,58 @@ for (const scopeType of scopes) for (const layout of ["same-message", "different
 }
 assert.equal(cases, 22);
 console.log("memory-forget-scope-entry-test: PASS (22 real service/review cases; no real model or UI)");
+
+const useNative = process.argv.includes("--native");
+const executable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+if (useNative) assert(executable && existsSync(executable));
+const profile = mkdtempSync(join(tmpdir(), "mybuddy-candidate-review-"));
+const candidateDb = new AppDatabase(join(profile, "app.db"), { runtimeAuditExecutable: executable });
+try {
+  const memory = new MemoryService(candidateDb, { semantic: false });
+  for (const [id, status, createdAt] of [
+    ["to-reject", "needs_review", 19], ["pending", "pending", 21],
+    ["already-committed", "committed", 13],
+  ] as const) {
+    memory.repository.insertCandidate({
+      id, taskId: "settings-memory-task", scopeType: "project", scopeId: "training-project",
+      kind: "fact", title: id, content: "测试记录", confidence: 0.1234567890123456,
+      importance: 2, explicit: false, operationHint: "update", replaces: "previous title",
+      rawJson: "{\"sourceTurnIds\":[\"training-turn\"]}", status, createdAt,
+    });
+  }
+  if (useNative) {
+    candidateDb.connection.exec("CREATE TEMP TABLE memory_candidates AS SELECT * FROM main.memory_candidates WHERE 0");
+    candidateDb.connection.pragma("query_only = ON");
+  }
+  assert.deepEqual((await memory.readCandidates(undefined, 2)).map(candidate => candidate.id), ["pending", "to-reject"]);
+  assert.deepEqual(await memory.readCandidates("needs_review", 5), [{
+    id: "to-reject", taskId: "settings-memory-task", kind: "fact", title: "to-reject",
+    content: "测试记录", scopeType: "project", scopeId: "training-project",
+    confidence: 0.1234567890123456, importance: 2, explicit: false, operationHint: "update",
+    replaces: "previous title", status: "needs_review", rawJson: "{\"sourceTurnIds\":[\"training-turn\"]}",
+    createdAt: 19, resolvedAt: undefined,
+  }]);
+  const results = await Promise.allSettled([
+    memory.reviewSettingsCandidate("to-reject", "reject"),
+    memory.reviewSettingsCandidate("to-reject", "reject"),
+  ]);
+  const accepted = results.filter(result => result.status === "fulfilled").map(result => result.value);
+  const refused = results.filter(result => result.status === "rejected").map(result => result.reason.message);
+  assert.deepEqual(accepted, [{ status: "rejected" }]);
+  assert.deepEqual(refused, ["候选已被处置：rejected"]);
+  assert.deepEqual(await memory.reviewSettingsCandidate("pending", "reject"), { status: "rejected" });
+  await assert.rejects(memory.reviewSettingsCandidate("already-committed", "reject"), /^Error: 候选已被处置：committed$/);
+  await assert.rejects(memory.reviewSettingsCandidate("missing", "reject"), /^Error: 候选不存在：missing$/);
+  assert.deepEqual((await memory.readCandidates("rejected")).map(candidate => candidate.id), ["pending", "to-reject"]);
+  if (useNative) {
+    candidateDb.connection.pragma("query_only = OFF");
+    candidateDb.connection.exec("DROP TABLE temp.memory_candidates");
+  }
+  await assert.rejects(memory.reviewSettingsCandidate("to-reject", "approve"), /^Error: 候选已被处置：rejected$/);
+  assert.deepEqual(memory.listCandidates("committed").map(candidate => candidate.id), ["already-committed"]);
+  console.log(`PASS persisted candidate list, filtering and atomic rejection (${useNative ? "Rust" : "Node fallback"})`);
+} finally {
+  await candidateDb.runtimeAuditReader?.close();
+  candidateDb.close();
+  rmSync(profile, { recursive: true, force: true });
+}

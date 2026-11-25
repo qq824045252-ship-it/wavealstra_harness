@@ -18,6 +18,7 @@ const SYSTEM = `你是记忆整理器。输入是同一可见范围、类型和�
 interface Snapshot { record: MemoryRecordDto; stamp: string }
 interface State {
   run: MemoryOrganizationRun;
+  scanId?: string;
   sourceIds: string[];
   snapshots: Record<string, Snapshot>;
   batches: string[][];
@@ -31,6 +32,12 @@ export interface OrganizationModelInput {
   modelRuntime: ModelRuntime;
   model: NonNullable<AgentSession["model"]>;
   isEnabled: () => boolean;
+}
+export interface RuntimeMemoryOrganizationProgress {
+  id: string;
+  scanId: string;
+  updatedAt: number;
+  runJson: string;
 }
 function hash(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function scopes(record: MemoryRecordDto): string[] {
@@ -63,14 +70,10 @@ export class MemoryOrganizationService {
   private abort?: AbortController;
   constructor(private readonly db: AppDatabase, private readonly memory: MemoryService, private readonly changed: () => void = () => {}) {
     // A crashed process cannot leave a permanently running job.
-    for (const row of db.connection.prepare("SELECT state_json FROM memory_organization_runs").all() as Array<{ state_json: string }>) {
-      const state = JSON.parse(row.state_json) as State;
-      if (state.run.status === "scanning") {
-        state.run.status = "paused";
-        state.run.error = "上次整理已中断，可从已保存的进度继续。";
-        this.save(state);
-      }
-    }
+    db.connection.prepare(`UPDATE memory_organization_runs SET updated_at=@at,
+      state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',@at,'$.run.error',@error)
+      WHERE json_extract(state_json,'$.run.status')='scanning'`)
+      .run({ at: Date.now(), error: "上次整理已中断，可从已保存的进度继续。" });
   }
   private read(id: string): State | undefined {
     if (!this.db.connection.open) return undefined;
@@ -83,9 +86,30 @@ export class MemoryOrganizationService {
       ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,state_json=excluded.state_json`)
       .run(state.run.id, state.run.createdAt, state.run.updatedAt, JSON.stringify(state));
   }
+  private exists(id: string): boolean {
+    return this.db.connection.open && Boolean(this.db.connection.prepare("SELECT 1 FROM memory_organization_runs WHERE id=?").get(id));
+  }
+  private async saveProgress(run: MemoryOrganizationRun, scanId: string): Promise<boolean> {
+    if (!this.db.connection.open) return false;
+    run.updatedAt = Date.now();
+    const runtime = this.db.runtimeAuditReader;
+    const runJson = JSON.stringify(run);
+    const result = runtime && await runtime.writeMemoryOrganizationProgress({ id: run.id, scanId, updatedAt: run.updatedAt, runJson });
+    if (result !== undefined) return result;
+    if (!this.db.connection.open) return false;
+    return this.db.connection.prepare(`UPDATE memory_organization_runs
+      SET updated_at=@at,state_json=json_set(state_json,'$.run',json(@runJson))
+      WHERE id=@id AND json_extract(state_json,'$.scanId')=@scanId AND json_extract(state_json,'$.run.status')='scanning'`)
+      .run({ id: run.id, scanId, at: run.updatedAt, runJson }).changes > 0;
+  }
   latest(): MemoryOrganizationRun | null {
-    const row = this.db.connection.prepare("SELECT state_json FROM memory_organization_runs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as { state_json: string } | undefined;
-    return row ? (JSON.parse(row.state_json) as State).run : null;
+    const row = this.db.connection.prepare("SELECT json_extract(state_json,'$.run') AS run_json FROM memory_organization_runs ORDER BY created_at DESC,rowid DESC LIMIT 1").get() as { run_json: string } | undefined;
+    return row ? JSON.parse(row.run_json) as MemoryOrganizationRun : null;
+  }
+  async readLatest(): Promise<MemoryOrganizationRun | null> {
+    const runJson = await this.db.runtimeAuditReader?.memoryOrganizationLatest();
+    if (runJson === undefined) return this.latest();
+    return runJson === null ? null : JSON.parse(runJson) as MemoryOrganizationRun;
   }
   private activeRecords(): MemoryRecordDto[] {
     const records: MemoryRecordDto[] = [];
@@ -182,29 +206,41 @@ export class MemoryOrganizationService {
       }
       state = this.prepare();
     }
+    const scanId = randomUUID();
+    state.scanId = scanId;
     state.run.status = "scanning"; delete state.run.error;
     this.paused = false;
     this.abort = new AbortController();
     this.runningId = state.run.id;
     this.save(state);
-    void this.run(state, input).finally(() => { this.runningId = undefined; this.abort = undefined; this.changed(); });
-    return state.run;
+    const started = { ...state.run, proposals: [...state.run.proposals] };
+    void this.run(state, input, scanId).finally(() => { this.runningId = undefined; this.abort = undefined; this.changed(); });
+    return started;
   }
   pause(id: string): MemoryOrganizationRun {
-    const state = this.require(id, ["scanning", "paused"]);
+    const run = this.pauseSaved(id);
+    if (!run) throw new Error("整理任务不存在或状态已改变，请刷新。");
+    return run;
+  }
+  private pauseSaved(id: string): MemoryOrganizationRun | undefined {
+    const row = this.db.connection.prepare(`UPDATE memory_organization_runs SET updated_at=@at,
+      state_json=json_set(state_json,'$.run.status','paused','$.run.updatedAt',@at)
+      WHERE id=@id AND json_extract(state_json,'$.run.status') IN ('scanning','paused')
+      RETURNING json_extract(state_json,'$.run') AS run_json`)
+      .get({ id, at: Date.now() }) as { run_json: string } | undefined;
+    if (!row) return undefined;
     if (id === this.runningId) { this.paused = true; this.abort?.abort(); }
-    state.run.status = "paused";
-    this.save(state); this.changed();
-    return state.run;
+    this.changed();
+    return JSON.parse(row.run_json) as MemoryOrganizationRun;
   }
   pauseActive(): void {
-    if (this.runningId && this.read(this.runningId)) this.pause(this.runningId);
+    if (this.runningId && this.db.connection.open) this.pauseSaved(this.runningId);
   }
-  private async run(state: State, input: OrganizationModelInput): Promise<void> {
+  private async run(state: State, input: OrganizationModelInput, scanId: string): Promise<void> {
     try {
       for (let index = state.run.completedBatches; index < state.batches.length; index++) {
         if (this.paused || !input.isEnabled()) { state.run.status = "paused"; break; }
-        if (!this.read(state.run.id)) return;
+        if (!this.exists(state.run.id)) return;
         const records = state.batches[index]!.map(id => {
           const snapshot = state.snapshots[id]!;
           this.assertCurrent(snapshot);
@@ -214,7 +250,7 @@ export class MemoryOrganizationService {
           systemPrompt: SYSTEM,
           messages: [{ role: "user", content: JSON.stringify({ memories: records.map(r => ({ id: r.id, ...text(r), explicit: r.explicit, confidence: r.confidence, updatedAt: r.updatedAt })) }), timestamp: Date.now() }],
         }, { maxTokens: Math.min(input.model.maxTokens || 8192, 8192), reasoning: "low", cacheRetention: "none", signal: this.abort?.signal });
-        if (!this.read(state.run.id)) return; // Hard forget also revokes previews and backups.
+        if (!this.exists(state.run.id)) return; // Hard forget also revokes previews and backups.
         if (this.paused || !input.isEnabled()) { state.run.status = "paused"; break; }
         if (["error", "aborted", "length"].includes(response.stopReason)) throw new Error(response.errorMessage || "整理输出未完整返回，可继续重试本批。");
         for (const record of records) this.assertCurrent(state.snapshots[record.id]!);
@@ -226,14 +262,15 @@ export class MemoryOrganizationService {
         state.run.scanned += records.length;
         state.run.completedBatches = index + 1;
         state.run.afterChars += proposals.filter(p => p.action !== "conflict").reduce((n, p) => n + chars(p.after) - chars(p.before), 0);
-        this.save(state); this.changed();
+        if (!await this.saveProgress(state.run, scanId)) return;
+        this.changed();
       }
       if (state.run.status === "scanning") state.run.status = "ready";
     } catch (error) {
       state.run.status = "paused";
       if (!this.paused) state.run.error = error instanceof Error ? error.message : String(error);
     }
-    if (this.read(state.run.id)) this.save(state);
+    await this.saveProgress(state.run, scanId);
   }
   private validate(value: unknown, records: MemoryRecordDto[]): MemoryOrganizationProposal[] {
     if (!value || typeof value !== "object") throw new Error("整理结果格式无效，请重试。");

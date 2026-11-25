@@ -26,6 +26,8 @@ import { assertSingleExpertId } from "../../shared/expert-id";
 import { sanitizePrivateSkillPackage } from "../skills/SkillAuthoringService";
 import { McpConfigService, type McpServerEntry } from "../mcp/McpConfigService";
 import { readExpertFolderMcp, readExpertZipMcp } from "./ExpertPackageMcp";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { editPluginConfig } from "../platform/plugin-config";
 
 /**
  * 专家（Agent 型插件）服务。
@@ -386,7 +388,15 @@ function readStored(dir: string): StoredExpert | null {
   const metaPath = join(dir, "expert.json");
   if (!existsSync(metaPath)) return null;
   try {
-    const raw = JSON.parse(readFileSync(metaPath, "utf-8")) as Record<string, unknown>;
+    return parseStored(readFileSync(metaPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function parseStored(metadata: string): StoredExpert | null {
+  try {
+    const raw = JSON.parse(metadata) as Record<string, unknown>;
     // Legacy team definitions and team-owned member records are intentionally invisible.
     if (raw.kind === "team" || typeof raw.teamOf === "string") return null;
     return raw as unknown as StoredExpert;
@@ -585,9 +595,16 @@ function readLocalPlugin(dir: string): LocalPluginJson | null {
   try {
     const p = join(dir, ".codebuddy-plugin", "plugin.json");
     if (!existsSync(p)) return null;
-    const j = JSON.parse(readFileSync(p, "utf-8")) as LocalPluginJson;
-    if (!j?.name) return null;
-    return j;
+    return parseLocalPlugin(readFileSync(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function parseLocalPlugin(metadata: string): LocalPluginJson | null {
+  try {
+    const plugin = JSON.parse(metadata) as LocalPluginJson;
+    return plugin?.name ? plugin : null;
   } catch {
     return null;
   }
@@ -709,7 +726,9 @@ function scanLocalMarket(): LocalMarketPackage[] {
 }
 
 /** 包 → 市场专家条目（仅 agent 型；team 型在扫描后被过滤）。 */
-function packageToMarketExpert(pkg: LocalMarketPackage): MarketExpertDto {
+type ExpertMarketEntry = Pick<LocalMarketPackage, "slug" | "dir" | "plugin">;
+
+function packageToMarketExpert(pkg: ExpertMarketEntry): MarketExpertDto {
   const p = pkg.plugin;
   return {
     id: pkg.slug,
@@ -880,7 +899,24 @@ export class ExpertService {
   /* ---------- 市场 ---------- */
 
   listMarket(): MarketExpertDto[] {
-    const hidden = readHiddenExpertIds();
+    return this.marketCatalog(scanLocalMarket(), this.listInstalled(), readHiddenExpertIds());
+  }
+
+  async readMarket(native?: RuntimeAuditReader): Promise<MarketExpertDto[]> {
+    const catalog = await native?.pluginCatalog<{
+      installed: Array<{ dir: string; metadata: string }>;
+      market: Array<{ name: string; dir: string; metadata: string }>;
+      hidden: string[];
+    }>({ kind: "experts", installedRoot: getExpertsDir(), marketRoots: findLocalMarketRoots(), hiddenPath: hiddenMarketExpertsPath() });
+    if (!catalog) return this.listMarket();
+    const market = catalog.market.flatMap(({ name, dir, metadata }) => {
+      const plugin = parseLocalPlugin(metadata);
+      return plugin ? [{ slug: name, dir, plugin }] : [];
+    });
+    return this.marketCatalog(market, this.installedCatalog(catalog.installed), new Set(catalog.hidden));
+  }
+
+  private marketCatalog(market: ExpertMarketEntry[], installedExperts: ExpertDto[], hidden: Set<string>): MarketExpertDto[] {
     const catalog = new Map<string, MarketExpertDto>();
     for (const e of BUILTIN_EXPERTS) {
       if (hidden.has(e.id.toLowerCase())) continue;
@@ -888,16 +924,14 @@ export class ExpertService {
       catalog.set(e.id.toLowerCase(), dto);
     }
     // 本地市场（mybuddyskills 等专家包归档）：agent 型包 → 市场条目
-    const local = new Map<string, LocalMarketPackage>();
-    for (const pkg of scanLocalMarket()) {
-      local.set(pkg.slug.toLowerCase(), pkg);
+    for (const pkg of market) {
       if (hidden.has(pkg.slug.toLowerCase())) continue;
       if (pkg.plugin.expertType !== "team" && !catalog.has(pkg.slug.toLowerCase())) {
         catalog.set(pkg.slug.toLowerCase(), packageToMarketExpert(pkg));
       }
     }
     // 本地市场：~/.mybuddy/plugins/experts 里已安装的也可作为可重装来源
-    for (const installed of this.listInstalled()) {
+    for (const installed of installedExperts) {
       if (hidden.has(installed.id.toLowerCase())) continue;
       if (installed.source !== "builtin-market" && !catalog.has(installed.id.toLowerCase())) {
         catalog.set(installed.id.toLowerCase(), {
@@ -988,6 +1022,20 @@ export class ExpertService {
     return out.sort((a, b) => (b.installedAt ?? 0) - (a.installedAt ?? 0));
   }
 
+  async readInstalled(native?: RuntimeAuditReader): Promise<ExpertDto[]> {
+    const catalog = await native?.pluginCatalog<{ installed: Array<{ dir: string; metadata: string }> }>({
+      kind: "experts", installedRoot: getExpertsDir(),
+    });
+    return catalog ? this.installedCatalog(catalog.installed) : this.listInstalled();
+  }
+
+  private installedCatalog(rows: Array<{ dir: string; metadata: string }>): ExpertDto[] {
+    return rows.flatMap(({ dir, metadata }) => {
+      const stored = parseStored(metadata);
+      return stored ? [toExpertDto(dir, stored)] : [];
+    }).sort((a, b) => (b.installedAt ?? 0) - (a.installedAt ?? 0));
+  }
+
   getDetail(id: string): ExpertDetailDto {
     assertSingleExpertId(id);
     const expert = this.findExpertById(id.trim());
@@ -999,6 +1047,27 @@ export class ExpertService {
       instructions: readFrontmatter(readFileSync(expert.filePath, "utf-8")).body.trim(),
       skills: listPackageSkillDirs(join(dir, "skills"), expert.id),
       revision: packageRevision(dir),
+      mcpIds: capabilityIds(stored.mcpIds),
+      connectorIds: capabilityIds(stored.connectorIds),
+    };
+  }
+
+  async readDetail(id: string, native?: RuntimeAuditReader): Promise<ExpertDetailDto> {
+    assertSingleExpertId(id);
+    const dir = expertDirOf(id.trim());
+    const data = await native?.pluginCatalog<{ metadata: string; prompt: string; skills: string[]; revision: string }>({
+      kind: "expertDetail", installedRoot: dirname(dir), directory: basename(dir),
+    });
+    const stored = data && parseStored(data.metadata);
+    if (!data || !stored) return this.getDetail(id);
+    const expert = toExpertDto(dir, stored);
+    const key = id.trim();
+    if (expert.id !== key && expert.name !== key) throw new Error(`未找到已安装专家: ${id}`);
+    return {
+      ...expert,
+      instructions: readFrontmatter(data.prompt).body.trim(),
+      skills: data.skills,
+      revision: data.revision,
       mcpIds: capabilityIds(stored.mcpIds),
       connectorIds: capabilityIds(stored.connectorIds),
     };
@@ -1387,11 +1456,32 @@ export class ExpertService {
     const expert = this.listInstalled().find((e) => e.id === id || e.name === id);
     if (!expert?.filePath) throw new Error(`未找到已安装专家: ${id}`);
     const dir = join(expert.filePath, "..");
-    const stored = readStored(dir) as StoredExpert | null;
+    this.writeExpertEnabledOnHost(dir, id, enabled);
+    return { ...expert, enabled };
+  }
+
+  async writeEnabled(id: string, enabled: boolean, native?: RuntimeAuditReader): Promise<ExpertDto> {
+    assertSingleExpertId(id);
+    const expert = (await this.readInstalled(native)).find(e => e.id === id || e.name === id);
+    if (!expert?.filePath) throw new Error(`未找到已安装专家: ${id}`);
+    const dir = dirname(expert.filePath);
+    const saved = await editPluginConfig(native, "expert", [getExpertsDir()], join(dir, "expert.json"), raw => {
+      const stored = raw === null ? null : parseStored(raw);
+      if (stored && stored.id !== expert.id) throw new Error("专家配置已变化，请刷新后重试");
+      return this.expertEnabledText(stored, id, enabled);
+    });
+    if (!saved) this.writeExpertEnabledOnHost(dir, id, enabled);
+    return { ...expert, enabled };
+  }
+
+  private writeExpertEnabledOnHost(dir: string, id: string, enabled: boolean): void {
+    writeFileSync(join(dir, "expert.json"), this.expertEnabledText(readStored(dir), id, enabled), "utf-8");
+  }
+
+  private expertEnabledText(stored: StoredExpert | null, id: string, enabled: boolean): string {
     if (!stored) throw new Error(`专家元信息缺失: ${id}`);
     stored.enabled = enabled;
-    writeFileSync(join(dir, "expert.json"), JSON.stringify(stored, null, 2), "utf-8");
-    return { ...expert, enabled };
+    return JSON.stringify(stored, null, 2);
   }
 
   /* ---------- 角色注入（供 AgentService 使用） ---------- */
@@ -1491,6 +1581,23 @@ export class ExpertService {
       });
     }
     return out;
+  }
+
+  async readExpertPrivateSkills(expertId: string, native?: RuntimeAuditReader): Promise<PrivateSkillDto[]> {
+    const key = expertId.trim();
+    if (!key) return [];
+    const dir = expertDirOf(key);
+    const data = await native?.pluginCatalog<{ items: Array<{ name: string | null; markdown: string }>; globalNames: string[] }>({
+      kind: "expertPrivateSkills", installedRoot: dirname(dir), directory: basename(dir), skillRoot: getSkillsDir(),
+    });
+    if (!data) return this.listExpertPrivateSkills(expertId);
+    const global = new Set(data.globalNames);
+    return data.items.map(item => {
+      const id = (item.name ?? expertId).toLowerCase();
+      const { fm } = readFrontmatter(item.markdown);
+      const name = String(fm.name ?? id);
+      return { id, name, description: String(fm.description ?? ""), shadowed: global.has(name.toLowerCase()) };
+    });
   }
 
   /** P3-2：私有技能名是否被全局 ~/.mybuddy/plugins/skills 同名技能（大小写不敏感）覆盖 */

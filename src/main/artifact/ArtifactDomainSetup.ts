@@ -8,7 +8,7 @@
  *     等 Artifact consumer/source 迁移后再接入）。
  *
  * 启动动作（§7/§14）：
- *   - rebuildRegistry()：Registry 从 Repository 全量重建
+ *   - Registry 随任务读取增量加载
  *   - orphanGC()：非阻塞清理，不阻塞应用启动
  */
 import { BrowserWindow } from "electron";
@@ -156,8 +156,9 @@ export function createArtifactDomain(
   }, runtimeAuditReader);
   const coordinator = new ArtifactRefreshCoordinator(service);
 
-  // 启动：Registry 从 Repository 全量重建（§7 Registry 可完全重建）
-  service.rebuildRegistry();
+  // A previous process's write IDs cannot be retried by this host.
+  repository.clearWriteReceipt();
+
   // 启动：orphan GC 非阻塞（§14，失败 log，下次启动重试）
   void service
     .orphanGC()

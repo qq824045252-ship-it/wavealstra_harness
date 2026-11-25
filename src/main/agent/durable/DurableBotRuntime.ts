@@ -177,6 +177,7 @@ export interface DurableBotOptions {
   restoreTools?: (names: readonly string[]) => readonly ToolRegistration[];
   prepareCodeMode?: (code: string, context: Parameters<ToolRegistration["execute"]>[2]) => Promise<readonly ToolRegistration[]>;
   assets?: Pick<CodemodeSandboxOptions, "wasm" | "workerUrl">;
+  prepareSnapshot?: (snapshot: DurableBotSnapshot) => Promise<void>;
   onSnapshot: (snapshot: DurableBotSnapshot) => void;
   onProjected?: (snapshot: DurableBotSnapshot) => void;
   /** Only for isolated tests; production always opens its own durable JSONL directory. */
@@ -1698,6 +1699,11 @@ export class DurableBotRuntime {
           cacheReadTokens: totals.cacheRead, cacheWriteTokens: totals.cacheWrite },
           this.options.observedUsage?.(String(this.conversation.id))) } } : {}),
     };
+    if (this.options.prepareSnapshot) {
+      if (this.closeState.kind !== "open" || this.failed) return;
+      await this.options.prepareSnapshot(snapshot);
+      if (this.closeState.kind !== "open" || this.failed) return;
+    }
     this.latest = snapshot;
     this.options.onSnapshot(snapshot);
     const evidenceEntries = await this.consumerEntries(value, fresh);

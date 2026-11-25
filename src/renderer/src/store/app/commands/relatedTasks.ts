@@ -263,7 +263,7 @@ export function createRelatedTasksActions(
         welcomeMode: task.welcomeMode,
         expertId: task.expertId,
         modePresetId: task.modePresetId,
-      });
+      }, null);
 
       // 5) 发送首条消息（引用源任务；独立 session 由此建立，模式/权限/专家由主进程按 task 字段装配）
       const taskRefs: TaskReference[] = [

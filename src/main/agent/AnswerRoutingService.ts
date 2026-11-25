@@ -75,6 +75,29 @@ const historyQuerySchema = z.union([
 ]);
 type Row = { id: string; revision: number; config: string; source_hash: string | null };
 type StoredRow = Row & { enabled: number; project_id: string | null; source_id: string | null };
+type RuleRow = Pick<Row, "id" | "revision" | "config">;
+type VersionRow = { revision: number; at: number; source: AnswerRuleVersionSource; title: string; note: string | null; config: string; uses: number };
+type UseRow = Omit<AnswerRuleUse, "evidence" | "phrase" | "routeStatus" | "policy"> & {
+  evidence: string | null; phrase: string | null; routeStatus: AnswerRuleUse["routeStatus"] | null; snapshot: string | null;
+};
+type HistoryRequest = { kind: "history"; taskId?: string; inputIds: string[] };
+export type RuntimeAnswerRoutingRequest =
+  | { kind: "list" }
+  | { kind: "preview"; projectId: string | null }
+  | { kind: "versions"; id: string }
+  | HistoryRequest
+  | { kind: "save"; draft: {
+      id: string; expectedRevision?: number; projectId: string | null; title: string;
+      enabled: boolean; config: string; at: number; maxVersions: number; source: "save" | "restore";
+    } }
+  | { kind: "remove"; id: string; revision: number };
+export type RuntimeAnswerRoutingReply =
+  | { status: "rules"; rows: RuleRow[] }
+  | { status: "versions"; rows: VersionRow[] }
+  | { status: "history"; rows: UseRow[] }
+  | { status: "saved"; revision: number }
+  | { status: "removed" | "conflict" | "needsHost" }
+  | { status: "rejected"; message: string };
 const routeModeLabels: Record<string, string> = { auto: "自动", direct: "优先直答", delegate: "优先委派" };
 const readLimitText = (limits: { characters: number; sources: number; calls: number }) =>
   `${limits.characters} 字/${limits.sources} 来源/${limits.calls} 次`;
@@ -127,11 +150,12 @@ function ruleChanges(previous: AnswerRuleDraft | undefined, next: AnswerRuleDraf
   if ((previous.projectId ?? "") !== (next.projectId ?? "")) changes.push("适用范围已修改");
   return changes.length ? changes : ["设置未变化"];
 }
-const decode = (row: Row): AnswerRule => {
+const decode = (row: RuleRow): AnswerRule => {
   const { policy, ...draft } = JSON.parse(row.config) as AnswerRuleDraft;
   return { ...draft, id: row.id, revision: row.revision, ...(row.id === defaultAnswerRuleId && { policy }) };
 };
 const conflict = () => new Error("规则已变化或已删除，请刷新后重试");
+const hasLoneSurrogate = (text: string | null) => text !== null && /[\uD800-\uDFFF]/u.test(text);
 
 class EvidenceFailure extends Error {
   constructor(readonly status: "denied" | "not-found" | "failed", message: string) { super(message); }
@@ -278,7 +302,7 @@ export class AnswerRoutingService {
     }).immediate();
   }
 
-  private currentRule(row: Row, taskId?: string): AnswerRule {
+  private currentRule(row: RuleRow, taskId?: string): AnswerRule {
     const rule = decode(row);
     if (!rule.sourceMemoryId) return rule;
     const memory = this.memoryEnabled() ? this.source(rule.sourceMemoryId, taskId) : undefined;
@@ -289,7 +313,13 @@ export class AnswerRoutingService {
   }
 
   list(): AnswerRule[] {
-    return (this.db.connection.prepare("SELECT * FROM answer_rules ORDER BY rowid DESC").all() as Row[]).map(row => this.currentRule(row));
+    return (this.db.connection.prepare("SELECT id,revision,config FROM answer_rules ORDER BY rowid DESC").all() as RuleRow[])
+      .map(row => this.currentRule(row));
+  }
+
+  async readList(): Promise<AnswerRule[]> {
+    const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "list" });
+    return result?.status === "rules" ? result.rows.map(row => this.currentRule(row)) : this.list();
   }
 
   taskScope(taskId: string): string | null {
@@ -334,11 +364,39 @@ export class AnswerRoutingService {
     }).immediate();
   }
 
-  save(input: AnswerRuleDraft, expected?: { id: string; revision: number }, source: "save" | "restore" = "save"): AnswerRule {
-    const draft = expected?.id === defaultAnswerRuleId
+  private parseDraft(input: AnswerRuleDraft, expected?: { id: string; revision: number }): AnswerRuleDraft {
+    return expected?.id === defaultAnswerRuleId
       ? { ...newAnswerRule(), title: "默认调度策略", instruction: "按本轮请求和已知任务状态选择直答或委派。",
         policy: policySchema.parse(input.policy) }
       : draftSchema.parse(input);
+  }
+
+  saveSettings(input: AnswerRuleDraft, expected?: { id: string; revision: number }): Promise<AnswerRule> {
+    return this.persistSettings(input, expected, "save");
+  }
+
+  private async persistSettings(input: AnswerRuleDraft, expected: { id: string; revision: number } | undefined,
+    source: "save" | "restore"): Promise<AnswerRule> {
+    const rust = this.db.runtimeAuditReader;
+    if (!rust || this.db.connection.inTransaction) return this.save(input, expected, source);
+    const draft = this.parseDraft(input, expected);
+    const version = expected === undefined ? undefined : versionSchema.parse(expected);
+    const id = version?.id ?? randomUUID();
+    if (draft.sourceMemoryId || (version && !Number.isSafeInteger(version.revision))
+      || [id, draft.projectId, draft.title].some(hasLoneSurrogate)) return this.save(input, expected, source);
+    const result = await rust.answerRoutingData({ kind: "save", draft: {
+      id, expectedRevision: version?.revision, projectId: draft.projectId, title: draft.title,
+      enabled: draft.enabled, config: JSON.stringify(draft), at: Date.now(), maxVersions: maxAnswerRuleVersions, source,
+    } });
+    if (result?.status === "saved") return { ...draft, id, revision: result.revision };
+    if (result?.status === "needsHost") return this.save(input, expected, source);
+    if (result?.status === "conflict") throw conflict();
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("未能确认规则是否已保存，请刷新后重试");
+  }
+
+  save(input: AnswerRuleDraft, expected?: { id: string; revision: number }, source: "save" | "restore" = "save"): AnswerRule {
+    const draft = this.parseDraft(input, expected);
     const version = expected === undefined ? undefined : versionSchema.parse(expected);
     return this.db.connection.transaction(() => {
       const memory = draft.sourceMemoryId ? this.source(draft.sourceMemoryId) : undefined;
@@ -392,7 +450,17 @@ export class AnswerRoutingService {
     const rows = this.db.connection.prepare(`SELECT v.revision,v.at,v.source,v.title,v.note,v.config,
         (SELECT COUNT(*) FROM answer_rule_turns t WHERE t.rule_id=v.rule_id AND t.revision=v.revision AND t.status='applied') AS uses
       FROM answer_rule_versions v WHERE v.rule_id=? ORDER BY v.revision DESC LIMIT 200`).all(ruleId) as
-      Array<{ revision: number; at: number; source: AnswerRuleVersionSource; title: string; note: string; config: string; uses: number }>;
+      VersionRow[];
+    return this.formatVersions(ruleId, rows);
+  }
+
+  async readVersions(id: string): Promise<AnswerRuleVersion[]> {
+    const ruleId = identifier.parse(id);
+    const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "versions", id: ruleId });
+    return result?.status === "versions" ? this.formatVersions(ruleId, result.rows) : this.versions(ruleId);
+  }
+
+  private formatVersions(ruleId: string, rows: VersionRow[]): AnswerRuleVersion[] {
     const isDefault = ruleId === defaultAnswerRuleId;
     const versions: AnswerRuleVersion[] = [];
     let previous: AnswerRuleDraft | undefined;
@@ -408,6 +476,16 @@ export class AnswerRoutingService {
 
   /** 把旧版写成一个新版本。当前版与历史都不改写，所以恢复本身也可再恢复。 */
   restore(id: string, revision: number): AnswerRule {
+    const { config, expected } = this.restoration(id, revision);
+    return this.save(config, expected, "restore");
+  }
+
+  async restoreSettings(id: string, revision: number): Promise<AnswerRule> {
+    const { config, expected } = this.restoration(id, revision);
+    return this.persistSettings(config, expected, "restore");
+  }
+
+  private restoration(id: string, revision: number) {
     const target = versionSchema.parse({ id, revision });
     const current = this.db.connection.prepare("SELECT * FROM answer_rules WHERE id=?").get(target.id) as StoredRow | undefined;
     if (!current) throw new Error("规则已删除，请刷新后重试");
@@ -417,7 +495,7 @@ export class AnswerRoutingService {
     // 跟随记忆的规则内容由记忆派生，单独回退会与来源脱节。
     if (config.sourceMemoryId) throw new Error("这条规则跟随记忆来源，请在记忆中修改");
     if (target.id === defaultAnswerRuleId && !config.policy) throw new Error("这一版没有可恢复的调度策略");
-    return this.save(config, { id: target.id, revision: current.revision }, "restore");
+    return { config, expected: { id: target.id, revision: current.revision } };
   }
 
   /** 给某一版写备注，备注只属于那一版，不随恢复复制。 */
@@ -499,6 +577,19 @@ export class AnswerRoutingService {
     if (!this.db.connection.prepare("DELETE FROM answer_rules WHERE id=? AND revision=?").run(id, revision).changes) throw conflict();
   }
 
+  async removeSettings(id: string, revision: number): Promise<void> {
+    versionSchema.parse({ id, revision });
+    if (id === defaultAnswerRuleId) throw new Error("默认调度策略不可删除");
+    const rust = this.db.runtimeAuditReader;
+    if (!rust || this.db.connection.inTransaction || !Number.isSafeInteger(revision) || hasLoneSurrogate(id)) return this.remove(id, revision);
+    const result = await rust.answerRoutingData({ kind: "remove", id, revision });
+    if (result?.status === "removed") return;
+    if (result?.status === "needsHost") return this.remove(id, revision);
+    if (result?.status === "conflict") throw conflict();
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("未能确认规则是否已删除，请刷新后重试");
+  }
+
   private validSource(memory?: MemoryRecordDto): boolean {
     const now = Date.now();
     return memory?.status === "active" && memory.scopes.some(scope => scope.scopeType === "global" || (scope.scopeType === "task" && scope.scopeId === DOTS_TASK_ID))
@@ -512,7 +603,16 @@ export class AnswerRoutingService {
   }
 
   preview(query: string, projectId: string | null, taskId?: string): AnswerRuleMatch | null {
-    const rows = this.db.connection.prepare("SELECT * FROM answer_rules WHERE enabled=1 AND (project_id IS NULL OR project_id=?)").all(projectId) as Row[];
+    const rows = this.db.connection.prepare("SELECT id,revision,config FROM answer_rules WHERE enabled=1 AND (project_id IS NULL OR project_id=?)").all(projectId) as RuleRow[];
+    return this.previewRows(query, projectId, rows, taskId);
+  }
+
+  async readPreview(query: string, projectId: string | null): Promise<AnswerRuleMatch | null> {
+    const result = await this.db.runtimeAuditReader?.answerRoutingData({ kind: "preview", projectId });
+    return result?.status === "rules" ? this.previewRows(query, projectId, result.rows) : this.preview(query, projectId);
+  }
+
+  private previewRows(query: string, projectId: string | null, rows: readonly RuleRow[], taskId?: string): AnswerRuleMatch | null {
     const rules = rows.map(row => this.currentRule(row, taskId));
     const fallback = !taskId || taskId === DOTS_TASK_ID ? rules.find(rule => rule.id === defaultAnswerRuleId) : undefined;
     const legacy = () => matchAnswerRule(query, projectId, rules, rule => !rule.sourceUnavailable, !taskId)
@@ -729,12 +829,27 @@ export class AnswerRoutingService {
     return item;
   }
 
-  history(turn?: AnswerRoutingHistoryQuery): AnswerRuleUse[] {
+  private historyRequest(turn?: AnswerRoutingHistoryQuery): HistoryRequest {
     const exact = turn === undefined ? undefined : historyQuerySchema.parse(turn);
     const ids = exact ? ("inputId" in exact ? [exact.inputId] : [...new Set(exact.inputIds)]) : [];
-    if (exact && !ids.length) return [];
-    const filter = exact ? `WHERE u.task_id=? AND u.input_id IN (${ids.map(() => "?").join(",")})` : "";
-    const rows = this.db.connection.prepare(`WITH uses AS (
+    return { kind: "history", taskId: exact?.taskId, inputIds: ids };
+  }
+
+  history(turn?: AnswerRoutingHistoryQuery): AnswerRuleUse[] {
+    return this.formatHistory(this.historyRows(this.historyRequest(turn)));
+  }
+
+  async readHistory(turn?: AnswerRoutingHistoryQuery): Promise<AnswerRuleUse[]> {
+    const request = this.historyRequest(turn);
+    if (request.taskId && !request.inputIds.length) return [];
+    const result = await this.db.runtimeAuditReader?.answerRoutingData(request);
+    return this.formatHistory(result?.status === "history" ? result.rows : this.historyRows(request));
+  }
+
+  private historyRows({ taskId, inputIds }: HistoryRequest): UseRow[] {
+    if (taskId && !inputIds.length) return [];
+    const filter = taskId ? `WHERE u.task_id=? AND u.input_id IN (${inputIds.map(() => "?").join(",")})` : "";
+    return this.db.connection.prepare(`WITH uses AS (
       SELECT task_id,input_id,rule_id,title,revision,at,detail,phrase,evidence,status,snapshot FROM answer_rule_turns
       UNION ALL
       SELECT task_id,input_id,rule_id,title,revision,at,detail,NULL,NULL,NULL,NULL FROM answer_rule_uses old
@@ -742,8 +857,10 @@ export class AnswerRoutingService {
     ) SELECT u.task_id AS taskId,t.title AS taskTitle,u.input_id AS inputId,u.rule_id AS ruleId,u.title,u.revision,u.at,u.detail,
         u.phrase,u.evidence,u.status AS routeStatus,u.snapshot
       FROM uses u JOIN tasks t ON t.id=u.task_id ${filter}
-      ORDER BY u.at DESC ${exact ? "" : "LIMIT 50"}`).all(...(exact ? [exact.taskId, ...ids] : [])) as
-      (Omit<AnswerRuleUse, "evidence" | "phrase"> & { evidence: string | null; phrase: string | null; snapshot: string | null })[];
+      ORDER BY u.at DESC ${taskId ? "" : "LIMIT 50"}`).all(...(taskId ? [taskId, ...inputIds] : [])) as UseRow[];
+  }
+
+  private formatHistory(rows: UseRow[]): AnswerRuleUse[] {
     return rows.map(({ evidence, phrase, routeStatus, snapshot, ...row }) => ({ ...row, phrase: phrase ?? undefined,
       routeStatus: routeStatus ?? undefined,
       policy: snapshot ? (JSON.parse(snapshot) as AnswerRule).policy : undefined,

@@ -1,4 +1,5 @@
 import { DOTS_TASK_ID } from "../../../../../shared/dots";
+import { advanceActivity } from "../../../../../../shared/src/activity-time";
 import { isTaskDoneUnread } from "../../../utils/taskFilters";
 import type { AppActions } from "../actions";
 import type { AppContext } from "../context";
@@ -216,25 +217,27 @@ export function createTaskLifecycleActions(
         spaceId: task.spaceId,
         status,
         updatedAt,
-      });
+      }, null);
     },
 
     renameTask: (id, title) => {
       if (id === DOTS_TASK_ID) return;
+      const updatedAt = Date.now();
       set((s) => ({
         tasks: s.tasks.map((x) =>
-          x.id === id ? { ...x, title, updatedAt: Date.now() } : x,
+          x.id === id ? { ...x, title, updatedAt: advanceActivity(x.updatedAt, updatedAt) } : x,
         ),
       }));
       const task = get().tasks.find((x) => x.id === id);
       if (task && (task.messages.length > 0 || task.sessionFile)) {
-        void storeContext.getApi()?.db?.upsertTask({
+        void storeContext.getApi()?.db?.editTaskSidebar?.({
+          kind: "rename",
           id: task.id,
           title,
           spaceId: task.spaceId,
           status: task.status,
-          updatedAt: Date.now(),
-        });
+          updatedAt,
+        }).catch(error => console.error("[appStore] renameTask 持久化失败:", error));
       }
     },
 
@@ -256,7 +259,8 @@ export function createTaskLifecycleActions(
           : s.pinnedTaskIds.filter((x) => x !== id),
       }));
       try {
-        await storeContext.getApi()?.db?.upsertTask?.({
+        await storeContext.getApi()?.db?.editTaskSidebar?.({
+          kind: "favorite",
           id,
           title: task.title,
           updatedAt: task.updatedAt,

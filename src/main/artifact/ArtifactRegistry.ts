@@ -10,6 +10,7 @@ import type { ArtifactDescriptor } from "../../shared/artifact-types";
 export class ArtifactRegistry {
   private byId = new Map<string, ArtifactDescriptor>();
   private byTask = new Map<string, Set<string>>();
+  private loadedTasks = new Set<string>();
 
   upsert(descriptor: ArtifactDescriptor): void {
     this.byId.set(descriptor.id, descriptor);
@@ -31,6 +32,16 @@ export class ArtifactRegistry {
     return [...ids].map((id) => this.byId.get(id)).filter((d): d is ArtifactDescriptor => d !== undefined);
   }
 
+  hasTask(taskId: string): boolean {
+    return this.loadedTasks.has(taskId);
+  }
+
+  replaceTask(taskId: string, artifacts: ArtifactDescriptor[]): void {
+    this.invalidateTask(taskId);
+    for (const artifact of artifacts) this.upsert(artifact);
+    this.loadedTasks.add(taskId);
+  }
+
   remove(id: string): void {
     const d = this.byId.get(id);
     this.byId.delete(id);
@@ -43,6 +54,7 @@ export class ArtifactRegistry {
 
   /** task 级缓存失效（hydrate 重建用） */
   invalidateTask(taskId: string): void {
+    this.loadedTasks.delete(taskId);
     const ids = this.byTask.get(taskId);
     if (ids) {
       for (const id of ids) this.byId.delete(id);
@@ -52,14 +64,17 @@ export class ArtifactRegistry {
 
   /** 从 Repository 全量重建（启动 / 灾难恢复） */
   rebuild(all: ArtifactDescriptor[]): void {
-    this.byId.clear();
-    this.byTask.clear();
-    for (const d of all) this.upsert(d);
+    this.clear();
+    for (const d of all) {
+      this.upsert(d);
+      this.loadedTasks.add(d.taskId);
+    }
   }
 
   clear(): void {
     this.byId.clear();
     this.byTask.clear();
+    this.loadedTasks.clear();
   }
 
   get size(): number {

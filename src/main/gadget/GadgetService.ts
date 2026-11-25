@@ -12,7 +12,7 @@ import type {
   GadgetSourceUpdateRequest,
 } from "../../shared/gadget-types";
 import { assertGadgetScope, GADGET_MANIFEST_SCHEMA_VERSION, normalizeJsonRecord } from "../../shared/gadget-types";
-import { gadgetBackendSchema, type GadgetJson, type GadgetBackendInput } from "../../shared/gadget-backend";
+import { gadgetBackendSchema, type GadgetJson } from "../../shared/gadget-backend";
 import { saveGadgetToTaskDirectory } from "./saveGadgetToTaskDirectory";
 import type { GadgetSaveToTaskDirectoryRequest, GadgetSaveToTaskDirectoryResult } from "../../shared/gadget-ipc";
 import type { GadgetListRequest } from "../../shared/gadget-ipc";
@@ -21,10 +21,14 @@ import type { GadgetRepository } from "./GadgetRepository";
 import type { GadgetRegistry } from "./GadgetRegistry";
 import type { GadgetRuntime } from "./GadgetRuntime";
 import type { GadgetStorage } from "./GadgetStorage";
+import type { RuntimeGadgetArtifactSource } from "../platform/runtime-audit";
 
 export interface GadgetArtifactReader {
   read(artifactId: string): Promise<{ taskId: string; title: string; kind: string; content: string } | null>;
   write(input: { taskId: string; title: string; content: string }): Promise<{ artifactId: string }>;
+  writeFromGadget?(
+    input: { taskId: string; title: string; source: RuntimeGadgetArtifactSource }, readOnHost: () => string,
+  ): Promise<{ artifactId: string }>;
 }
 
 export interface GadgetServiceDependencies {
@@ -57,25 +61,58 @@ export class GadgetPreviewUnavailableError extends Error {
   }
 }
 
+export interface BlueprintGadgetPlan {
+  descriptor: GadgetDescriptor;
+  manifest: GadgetManifest;
+  files?: GadgetSourceFile[];
+}
+
 export class GadgetService {
   /** Only origins actually issued by this process are recoverable. Ambiguous
    * recycled ports fail closed instead of opening another Gadget. */
   private readonly previewOwners = new Map<string, string | null>();
-  constructor(private readonly deps: GadgetServiceDependencies) {
-    const descriptors = deps.repository.list();
-    deps.storage.reconcile(new Set(descriptors.map((item) => item.id)));
-    deps.registry.rebuild(descriptors);
+  private readonly mutations = new Map<string, Promise<void>>();
+  private readonly deleting = new Set<string>();
+  constructor(private readonly deps: GadgetServiceDependencies) {}
+
+  recoverStorage(): Promise<void> {
+    return this.deps.storage.recover(() => this.deps.repository.storageIds());
   }
 
   create(request: GadgetCreateRequest): GadgetDescriptor {
+    const { descriptor, manifest } = this.planCreate(request);
+    this.deps.storage.create(descriptor.id, manifest, request.files);
+    try {
+      return this.created(this.deps.repository.create(descriptor));
+    } catch (error) {
+      return this.rollbackNewGadget(descriptor.id, error);
+    }
+  }
+
+  async createAsync(request: GadgetCreateRequest): Promise<GadgetDescriptor> {
+    const { descriptor, manifest } = this.planCreate(request);
+    return this.mutate(descriptor.id, async () => {
+      if (await this.deps.storage.createNative(descriptor, manifest, { files: request.files })) {
+        return this.created(descriptor);
+      }
+      this.deps.storage.create(descriptor.id, manifest, request.files);
+      try {
+        return this.created(await this.deps.repository.createAsync(descriptor, { kind: "generated" }));
+      } catch (error) {
+        return this.rollbackNewGadget(descriptor.id, error);
+      }
+    });
+  }
+
+  private planCreate(request: GadgetCreateRequest, scopeIsStaged = false): { descriptor: GadgetDescriptor; manifest: GadgetManifest } {
     const name = request.name.trim();
     if (!name) throw new Error("Gadget 名称不能为空");
     if (name.length > 120) throw new Error("Gadget 名称不能超过 120 字符");
     if ((request.description?.length ?? 0) > 2_000) throw new Error("Gadget 描述不能超过 2000 字符");
     assertGadgetScope(request.scope);
-    this.assertScopeTarget(request.scope);
+    if (!scopeIsStaged) this.assertScopeTarget(request.scope);
     const createdByTaskId = request.createdByTaskId?.trim() || (request.scope.type === "task" ? request.scope.taskId : undefined);
-    if (createdByTaskId && !this.deps.taskExists(createdByTaskId)) throw new Error(`创建来源任务不存在：${createdByTaskId}`);
+    if (createdByTaskId && !scopeIsStaged && !this.deps.taskExists(createdByTaskId)) throw new Error(`创建来源任务不存在：${createdByTaskId}`);
     if (request.scope.type === "task" && createdByTaskId !== request.scope.taskId) {
       throw new Error("Task Gadget 的创建来源必须是同一任务");
     }
@@ -93,7 +130,7 @@ export class GadgetService {
       ...(request.defaultConfig ? { defaultConfig: request.defaultConfig } : {}),
       ...(request.backend === undefined ? {} : { backend: gadgetBackendSchema.parse(request.backend) }),
     };
-    const paths = this.deps.storage.create(id, manifest, request.files);
+    const paths = this.deps.storage.paths(id);
     const now = Date.now();
     const descriptor: GadgetDescriptor = {
       id,
@@ -109,15 +146,26 @@ export class GadgetService {
       createdAt: now,
       updatedAt: now,
     };
-    try {
-      const created = this.deps.repository.create(descriptor);
-      this.deps.registry.upsert(created);
-      this.emitChanged({ type: "created", gadgetId: created.id });
-      return created;
-    } catch (error) {
-      this.deps.storage.delete(id);
-      throw error;
-    }
+    return { descriptor, manifest };
+  }
+
+  private created(descriptor: GadgetDescriptor): GadgetDescriptor {
+    this.emitChanged({ type: "created", gadgetId: descriptor.id });
+    return descriptor;
+  }
+
+  private rollbackNewGadget(id: string, error: unknown): never {
+    try { this.deps.storage.delete(id); } catch { /* startup reconciliation retries cleanup */ }
+    throw error;
+  }
+
+  private mutate<T>(id: string, apply: () => Promise<T>): Promise<T> {
+    const pending = (this.mutations.get(id) ?? Promise.resolve()).then(apply);
+    const settled = pending.then(() => undefined, () => undefined).finally(() => {
+      if (this.mutations.get(id) === settled) this.mutations.delete(id);
+    });
+    this.mutations.set(id, settled);
+    return pending;
   }
 
   get(id: string): GadgetListItem | null {
@@ -125,13 +173,45 @@ export class GadgetService {
     return descriptor ? { ...descriptor, runtime: this.deps.registry.runtime(id) } : null;
   }
 
+  async read(id: string): Promise<GadgetListItem | null> {
+    const descriptor = await this.deps.repository.read(id);
+    return descriptor ? { ...descriptor, runtime: this.deps.registry.runtime(id) } : null;
+  }
+
   update(request: GadgetUpdateRequest): GadgetDescriptor {
-    const current = this.require(request.gadgetId);
+    const edit = this.prepareUpdate(request, this.require(request.gadgetId));
+    try {
+      if (edit.manifestChanged) this.deps.storage.writeManifest(edit.updated.id, edit.nextManifest);
+      return this.updated(this.deps.repository.update(edit.updated), request.defaultConfig !== undefined);
+    } catch (error) {
+      return this.rollbackManifest(edit, error);
+    }
+  }
+
+  async updateAsync(request: GadgetUpdateRequest): Promise<GadgetDescriptor> {
+    return this.mutate(request.gadgetId, async () => {
+      const current = await this.readRequired(request.gadgetId);
+      const nativeManifest = await this.deps.storage.readManifestNative(current.id);
+      const edit = this.prepareUpdate(request, current, nativeManifest?.manifest);
+      if (edit.manifestChanged && nativeManifest &&
+          await this.deps.storage.saveManifestNative(edit.updated, edit.nextManifest, nativeManifest.token)) {
+        return this.updated(await this.readRequired(current.id), request.defaultConfig !== undefined);
+      }
+      try {
+        if (edit.manifestChanged) this.deps.storage.writeManifest(edit.updated.id, edit.nextManifest);
+        return this.updated(await this.deps.repository.updateAsync(edit.updated), request.defaultConfig !== undefined);
+      } catch (error) {
+        return this.rollbackManifest(edit, error);
+      }
+    });
+  }
+
+  private prepareUpdate(request: GadgetUpdateRequest, current: GadgetDescriptor, manifest?: GadgetManifest) {
     const name = request.name === undefined ? current.name : request.name.trim();
     if (!name) throw new Error("Gadget 名称不能为空");
     if (name.length > 120) throw new Error("Gadget 名称不能超过 120 字符");
     if ((request.description?.length ?? 0) > 2_000) throw new Error("Gadget 描述不能超过 2000 字符");
-    const oldManifest = this.deps.storage.readManifest(current.id);
+    const oldManifest = manifest ?? this.deps.storage.readManifest(current.id);
     const manifestChanged = request.name !== undefined || request.defaultConfig !== undefined;
     const nextManifest: GadgetManifest = {
       ...oldManifest,
@@ -149,50 +229,63 @@ export class GadgetService {
       metadata: request.metadata === undefined ? current.metadata : normalizeJsonRecord(request.metadata, "Gadget metadata"),
       updatedAt: Date.now(),
     };
-    try {
-      if (manifestChanged) this.deps.storage.writeManifest(current.id, nextManifest);
-      const saved = this.deps.repository.update(updated);
-      this.deps.registry.upsert(saved);
-      if (request.defaultConfig !== undefined) this.deps.runtime.configurationChanged(saved);
-      this.emitChanged({ type: "updated", gadgetId: saved.id });
-      return saved;
-    } catch (error) {
-      if (manifestChanged) {
-        try { this.deps.storage.writeManifest(current.id, oldManifest); } catch { /* preserve original failure */ }
-      }
-      throw error;
+    return { manifestChanged, oldManifest, nextManifest, updated };
+  }
+
+  private rollbackManifest(edit: ReturnType<GadgetService["prepareUpdate"]>, error: unknown): never {
+    if (edit.manifestChanged) {
+      try { this.deps.storage.writeManifest(edit.updated.id, edit.oldManifest); } catch { /* preserve original failure */ }
     }
+    throw error;
+  }
+
+  private updated(saved: GadgetDescriptor, configChanged = false): GadgetDescriptor {
+    if (configChanged) this.deps.runtime.configurationChanged(saved);
+    this.emitChanged({ type: "updated", gadgetId: saved.id });
+    return saved;
   }
 
   list(request: GadgetListRequest = {}): GadgetListItem[] {
-    const direct = this.deps.repository.list(request.scope).map((descriptor) => ({
-      ...descriptor,
-      runtime: this.deps.registry.runtime(descriptor.id),
-    }));
-    if (!request.includeInherited || !request.scope || request.scope.type === "global") return direct;
-    const inherited: GadgetListItem[] = [];
-    const workspaceIds = request.scope.type === "workspace"
-      ? this.deps.workspaceAncestors(request.scope.workspaceId)
-      : this.visibleWorkspaceIds(request.scope.taskId);
-    for (const workspaceId of workspaceIds) {
-      for (const descriptor of this.deps.repository.list({ type: "workspace", workspaceId })) {
-        inherited.push({
-          ...descriptor,
-          runtime: this.deps.registry.runtime(descriptor.id),
+    const scopes = this.listScopes(request);
+    return this.projectList(this.deps.repository.listScoped(scopes), scopes);
+  }
+
+  async readList(request: GadgetListRequest = {}): Promise<GadgetListItem[]> {
+    const scopes = this.listScopes(request);
+    const rows = await this.deps.repository.readScoped(scopes);
+    if (request.includeInherited && request.scope && request.scope.type !== "global" &&
+        JSON.stringify(scopes?.slice(1)) !== JSON.stringify(this.listScopes(request)?.slice(1))) return this.list(request);
+    return this.projectList(rows, scopes);
+  }
+
+  private listScopes({ scope, includeInherited }: GadgetListRequest): GadgetScope[] | undefined {
+    if (!scope) return undefined;
+    assertGadgetScope(scope);
+    if (!includeInherited || scope.type === "global") return [scope];
+    const workspaceIds = scope.type === "workspace"
+      ? this.deps.workspaceAncestors(scope.workspaceId)
+      : this.visibleWorkspaceIds(scope.taskId);
+    const scopes: GadgetScope[] = [scope, ...workspaceIds.map(workspaceId => ({ type: "workspace" as const, workspaceId }))];
+    if (scope.type === "task") scopes.push({ type: "global" });
+    return scopes;
+  }
+
+  private projectList(rows: Array<{ descriptor: GadgetDescriptor; scopeIndex: number }>, scopes?: GadgetScope[]): GadgetListItem[] {
+    return rows.map(({ descriptor, scopeIndex }) => {
+      const scope = scopes?.[scopeIndex];
+      return {
+        ...descriptor,
+        runtime: this.deps.registry.runtime(descriptor.id),
+        ...(scopeIndex > 0 && {
           inherited: true,
-          inheritedFromWorkspaceId: workspaceId,
-        });
-      }
-    }
-    if (request.scope.type === "task") {
-      for (const descriptor of this.deps.repository.list({ type: "global" })) {
-        inherited.push({ ...descriptor, runtime: this.deps.registry.runtime(descriptor.id), inherited: true });
-      }
-    }
-    return [...direct, ...inherited];
+          ...(scope?.type === "workspace" && { inheritedFromWorkspaceId: scope.workspaceId }),
+        }),
+      };
+    });
   }
 
   getForTask(id: string, taskId: string): GadgetListItem {
+    if (this.deleting.has(id)) throw new Error("Gadget 正在删除：" + id);
     const gadget = this.get(id);
     if (!gadget) throw new Error(`Gadget 不存在：${id}`);
     this.assertVisibleToTask(gadget, taskId);
@@ -204,14 +297,44 @@ export class GadgetService {
     return this.deps.storage.readSource(id);
   }
 
+  async readSourceAsync(id: string): Promise<GadgetSourceSnapshot> {
+    return this.mutate(id, async () => {
+      await this.readRequired(id);
+      return this.deps.storage.readSourceAsync(id);
+    });
+  }
+
   updateSource(request: GadgetSourceUpdateRequest): GadgetSourceSnapshot {
     const current = this.require(request.gadgetId);
     const updated = { ...current, updatedAt: Date.now() };
-    const snapshot = this.deps.storage.updateSource(request, () => this.deps.repository.update(updated));
-    this.deps.registry.upsert(updated);
-    this.deps.runtime.sourceChanged(updated);
-    this.emitChanged({ type: "updated", gadgetId: current.id, sourceChanged: true });
+    const snapshot = this.deps.storage.updateSource(request, () => { this.deps.repository.update(updated); });
+    this.sourceUpdated(updated, snapshot);
     return snapshot;
+  }
+
+  async updateSourceAsync(request: GadgetSourceUpdateRequest, authorize?: () => void): Promise<GadgetSourceSnapshot> {
+    return this.mutate(request.gadgetId, async () => {
+      authorize?.();
+      const current = await this.readRequired(request.gadgetId);
+      const updatedAt = Date.now();
+      const nativeSnapshot = await this.deps.storage.updateSourceNative(request, updatedAt, authorize);
+      if (nativeSnapshot) {
+        this.sourceUpdated(await this.readRequired(current.id), nativeSnapshot);
+        return nativeSnapshot;
+      }
+      authorize?.();
+      let saved = current;
+      const snapshot = await this.deps.storage.updateSource(request, async () => {
+        saved = await this.deps.repository.touchAsync(current.id, updatedAt);
+      });
+      this.sourceUpdated(saved, snapshot);
+      return snapshot;
+    });
+  }
+
+  private sourceUpdated(saved: GadgetDescriptor, snapshot: GadgetSourceSnapshot): void {
+    this.deps.runtime.sourceChanged(saved, Boolean(snapshot.manifest.backend));
+    this.emitChanged({ type: "updated", gadgetId: saved.id, sourceChanged: true });
   }
 
   async openForTask(id: string, taskId: string): Promise<GadgetRuntimeState> {
@@ -252,17 +375,45 @@ export class GadgetService {
   copyScope(id: string, scope: GadgetScope): GadgetDescriptor {
     assertGadgetScope(scope);
     this.assertScopeTarget(scope);
-    const original = this.require(id);
-    // A task destination must already be able to see the source; never copy another task's private tool.
-    if (scope.type === "task") this.assertVisibleToTask(original, scope.taskId);
+    const descriptor = this.planCopy(this.require(id), scope);
+    this.materializeCopy(id, descriptor);
+    try { return this.created(this.deps.repository.create(descriptor)); }
+    catch (error) { return this.rollbackNewGadget(descriptor.id, error); }
+  }
+
+  async copyScopeAsync(id: string, scope: GadgetScope): Promise<GadgetDescriptor> {
+    return this.mutate(id, async () => {
+      assertGadgetScope(scope);
+      this.assertScopeTarget(scope);
+      const descriptor = this.planCopy(await this.readRequired(id), scope);
+      const source = await this.deps.storage.inspectNative(id);
+      if (source) {
+        if (!source.paths.length) throw new Error("Gadget 入口文件不存在，不能保存空源码副本");
+        if (await this.deps.storage.createNative(descriptor, source.manifest, { sourceId: id, token: source.token })) {
+          return this.created(descriptor);
+        }
+      }
+      this.materializeCopy(id, descriptor);
+      try { return this.created(await this.deps.repository.createAsync(descriptor, { kind: "copy", sourceId: id })); }
+      catch (error) { return this.rollbackNewGadget(descriptor.id, error); }
+    });
+  }
+
+  private materializeCopy(id: string, descriptor: GadgetDescriptor): void {
     const snapshot = this.deps.storage.readSource(id);
     if (snapshot.files.length === 0) throw new Error("Gadget 入口文件不存在，不能保存空源码副本");
+    this.deps.storage.create(descriptor.id, snapshot.manifest, snapshot.files);
+  }
+
+  private planCopy(original: GadgetDescriptor, scope: GadgetScope): GadgetDescriptor {
+    // A task destination must already be able to see the source; never copy another task's private tool.
+    if (scope.type === "task") this.assertVisibleToTask(original, scope.taskId);
     const metadata = normalizeJsonRecord(original.metadata, "Gadget metadata");
     const copyId = `gdt-${randomUUID()}`;
-    const paths = this.deps.storage.create(copyId, snapshot.manifest, snapshot.files);
+    const paths = this.deps.storage.paths(copyId);
     const now = Date.now();
     // createdByTaskId remains origin provenance; visibility and deletion use scope exclusively.
-    const descriptor: GadgetDescriptor = {
+    return {
       ...original,
       id: copyId,
       scope: { ...scope },
@@ -272,33 +423,26 @@ export class GadgetService {
       createdAt: now,
       updatedAt: now,
     };
-    let saved: GadgetDescriptor;
-    try {
-      saved = this.deps.repository.create(descriptor);
-    } catch (error) {
-      try { this.deps.storage.delete(copyId); } catch { /* preserve database failure; reconcile retries cleanup */ }
-      throw error;
-    }
-    this.deps.registry.upsert(saved);
-    this.emitChanged({ type: "created", gadgetId: saved.id });
-    return saved;
   }
 
   moveScope(id: string, scope: GadgetScope): GadgetDescriptor {
     assertGadgetScope(scope);
     this.assertScopeTarget(scope);
     if (!this.deps.repository.get(id)) throw new Error(`Gadget 不存在：${id}`);
-    const moved = this.deps.repository.moveScope(id, scope);
-    this.deps.registry.upsert(moved);
-    this.emitChanged({ type: "updated", gadgetId: moved.id });
-    return moved;
+    return this.updated(this.deps.repository.moveScope(id, scope));
+  }
+
+  async moveScopeAsync(id: string, scope: GadgetScope): Promise<GadgetDescriptor> {
+    return this.mutate(id, async () => {
+      assertGadgetScope(scope);
+      this.assertScopeTarget(scope);
+      await this.readRequired(id);
+      return this.updated(await this.deps.repository.moveScopeAsync(id, scope));
+    });
   }
 
   async start(id: string): Promise<GadgetRuntimeState> {
-    const state = await this.deps.runtime.start(this.require(id));
-    this.rememberPreview(state);
-    this.emitChanged({ type: "runtime", gadgetId: id });
-    return state;
+    return this.launch(id, "start");
   }
 
   /** Resolve only an observed Gadget origin, within the calling task's scope.
@@ -322,8 +466,12 @@ export class GadgetService {
     target.search = requested.search;
     target.hash = requested.hash;
     const url = target.href;
-    return { gadgetId, url, ...(url !== requested.href ? { previousUrl: requested.href } : {}),
-      revision: this.deps.storage.readSource(gadgetId).revision, runtime };
+    const { revision } = await this.readSourceAsync(gadgetId);
+    const current = this.getForTask(gadgetId, taskId);
+    if (current.runtime.status !== "running" || current.runtime.url !== runtime.url || current.runtime.pid !== runtime.pid) {
+      throw new GadgetPreviewUnavailableError(gadgetId, current.runtime);
+    }
+    return { gadgetId, url, ...(url !== requested.href ? { previousUrl: requested.href } : {}), revision, runtime };
   }
 
   private previewOrigin(url: URL): string {
@@ -346,7 +494,7 @@ export class GadgetService {
   }
 
   async health(id: string): Promise<GadgetRuntimeState> {
-    this.require(id);
+    await this.readRequired(id);
     const state = await this.deps.runtime.health(id);
     this.rememberPreview(state);
     this.emitChanged({ type: "runtime", gadgetId: id });
@@ -354,59 +502,80 @@ export class GadgetService {
   }
 
   async stop(id: string): Promise<GadgetRuntimeState> {
-    this.require(id);
+    await this.readRequired(id);
     const state = await this.deps.runtime.stop(id);
     this.emitChanged({ type: "runtime", gadgetId: id });
     return state;
   }
 
   async restart(id: string): Promise<GadgetRuntimeState> {
-    const state = await this.deps.runtime.restart(this.require(id));
+    return this.launch(id, "restart");
+  }
+
+  private async launch(id: string, action: "start" | "restart"): Promise<GadgetRuntimeState> {
+    // Reserve the descriptor read and runtime enqueue together. Startup itself
+    // runs on the runtime queue so later stop and delete requests can proceed.
+    const { pending } = await this.mutate(id, async () => ({
+      pending: this.deps.runtime[action](await this.readRequired(id)),
+    }));
+    const state = await pending;
     this.rememberPreview(state);
     this.emitChanged({ type: "runtime", gadgetId: id });
     return state;
   }
 
   async delete(id: string): Promise<void> {
-    this.require(id);
-    await this.deps.runtime.dispose(id);
-    if (!this.deps.repository.delete(id)) throw new Error(`Gadget 不存在：${id}`);
-    this.deps.registry.remove(id);
-    this.emitChanged({ type: "deleted", gadgetId: id });
-    try { this.deps.storage.delete(id); }
-    catch (error) { console.warn(`[GadgetService] Gadget ${id} storage 将在下次启动重试清理`, error); }
+    return this.mutate(id, async () => {
+      await this.readRequired(id);
+      this.deleting.add(id);
+      try {
+        await this.deps.runtime.dispose(id);
+        if (!await this.deps.repository.deleteAsync(id)) throw new Error(`Gadget 不存在：${id}`);
+        this.deps.registry.remove(id);
+        this.emitChanged({ type: "deleted", gadgetId: id });
+        try { await this.deps.storage.removeUnregistered(id); }
+        catch (error) { console.warn(`[GadgetService] Gadget ${id} storage 将在下次启动重试清理`, error); }
+      } finally {
+        this.deleting.delete(id);
+      }
+    });
   }
 
   async deleteByWorkspace(workspaceId: string): Promise<void> {
-    for (const gadget of this.deps.repository.list({ type: "workspace", workspaceId })) await this.delete(gadget.id);
+    const gadgets = await this.deps.repository.readScoped([{ type: "workspace", workspaceId }]);
+    for (const { descriptor } of gadgets) await this.delete(descriptor.id);
   }
 
   async deleteByTask(taskId: string): Promise<void> {
-    for (const gadget of this.deps.repository.list({ type: "task", taskId })) await this.delete(gadget.id);
+    const gadgets = await this.deps.repository.readScoped([{ type: "task", taskId }]);
+    for (const { descriptor } of gadgets) await this.delete(descriptor.id);
   }
 
-  /** Blueprint 外层事务失败时，DB 行可能已回滚；仍需撤销已物化的 runtime/storage/registry。 */
-  async rollbackCreate(id: string): Promise<void> {
-    await this.deps.runtime.dispose(id);
-    this.deps.repository.delete(id);
-    this.deps.registry.remove(id);
-    try { this.deps.storage.delete(id); }
-    finally { this.emitChanged({ type: "deleted", gadgetId: id }); }
+  planBlueprintGadget(input: Omit<GadgetCreateRequest, "createdByTaskId">, planned: {
+    workspaces: ReadonlySet<string>; tasks: ReadonlySet<string>;
+  }): BlueprintGadgetPlan {
+    const scope = input.scope;
+    const scopeIsStaged = scope.type === "workspace" ? planned.workspaces.has(scope.workspaceId)
+      : scope.type === "task" && planned.tasks.has(scope.taskId);
+    return { ...this.planCreate(input, scopeIsStaged), files: input.files };
   }
 
-  createFromBlueprint(input: {
-    name: string;
-    description?: string;
-    scope: GadgetScope;
-    entry: string;
-    files: GadgetSourceFile[];
-    defaultConfig?: Record<string, unknown>;
-    backend?: GadgetBackendInput;
-    metadata?: Record<string, unknown>;
-    blueprintId: string;
-  }): GadgetDescriptor {
-    return this.create({ ...input, blueprintId: input.blueprintId });
+  blueprintGadgetFiles(plan: BlueprintGadgetPlan) {
+    return this.deps.storage.blueprintFiles(plan.descriptor.id, plan.manifest, plan.files);
   }
+
+  materializeBlueprintGadget(plan: BlueprintGadgetPlan): void {
+    this.deps.storage.create(plan.descriptor.id, plan.manifest, plan.files);
+  }
+
+  insertBlueprintGadget(descriptor: GadgetDescriptor): void {
+    this.assertScopeTarget(descriptor.scope);
+    this.deps.repository.create(descriptor);
+  }
+
+  publishBlueprintGadget(descriptor: GadgetDescriptor): void { this.created(descriptor); }
+
+  discardBlueprintGadget(id: string): void { this.deps.storage.delete(id); }
 
   async convertFromArtifact(input: { artifactId: string; scope: GadgetScope; name?: string; description?: string }): Promise<GadgetDescriptor> {
     if (!this.deps.artifacts) throw new Error("Artifact Domain 尚未连接");
@@ -416,7 +585,7 @@ export class GadgetService {
     if (input.scope.type !== "task" || input.scope.taskId !== artifact.taskId) {
       throw new Error("Artifact 只能先转换为其所属任务的 Task Gadget；长期使用请在创建后保存独立副本");
     }
-    return this.create({
+    return this.createAsync({
       name: input.name?.trim() || artifact.title || "HTML Gadget",
       description: input.description,
       scope: input.scope,
@@ -428,13 +597,36 @@ export class GadgetService {
   }
 
   async exportArtifact(input: { gadgetId: string; taskId: string; title?: string }): Promise<{ artifactId: string }> {
-    if (!this.deps.artifacts) throw new Error("Artifact Domain 尚未连接");
-    if (!this.deps.taskExists(input.taskId)) throw new Error(`任务不存在：${input.taskId}`);
-    const gadget = this.require(input.gadgetId);
-    this.assertVisibleToTask(gadget, input.taskId);
-    const entry = this.deps.storage.readEntry(gadget.id);
-    if (entry.manifest.backend) throw new Error("这个 Gadget 包含后台，独立 HTML Artifact 无法运行它。请保存到任务目录或另存为 Blueprint；导出报告时请生成不依赖后台的 HTML。");
-    return this.deps.artifacts.write({ taskId: input.taskId, title: input.title?.trim() || gadget.name, content: entry.content });
+    const artifacts = this.deps.artifacts;
+    if (!artifacts) throw new Error("Artifact Domain 尚未连接");
+    return this.mutate(input.gadgetId, async () => {
+      if (!this.deps.taskExists(input.taskId)) throw new Error(`任务不存在：${input.taskId}`);
+      const gadget = this.getForTask(input.gadgetId, input.taskId);
+      const title = input.title?.trim() || gadget.name;
+      const readOnHost = () => {
+        this.getForTask(gadget.id, input.taskId);
+        const entry = this.deps.storage.readEntry(gadget.id);
+        this.assertStandaloneHtml(entry.manifest);
+        return entry.content;
+      };
+      if (artifacts.writeFromGadget) {
+        const source = await this.deps.storage.readManifestNative(gadget.id);
+        if (source) {
+          this.getForTask(gadget.id, input.taskId);
+          this.assertStandaloneHtml(source.manifest);
+          return artifacts.writeFromGadget({
+            taskId: input.taskId,
+            title,
+            source: this.deps.storage.artifactSource(gadget.id, source.manifest.entry, source.token),
+          }, readOnHost);
+        }
+      }
+      return artifacts.write({ taskId: input.taskId, title, content: readOnHost() });
+    });
+  }
+
+  private assertStandaloneHtml(manifest: GadgetManifest): void {
+    if (manifest.backend) throw new Error("这个 Gadget 包含后台，独立 HTML Artifact 无法运行它。请保存到任务目录或另存为 Blueprint；导出报告时请生成不依赖后台的 HTML。");
   }
 
   /** Only Main resolves the destination; renderer paths and active-task state are not trusted. */
@@ -445,22 +637,45 @@ export class GadgetService {
     return saveGadgetToTaskDirectory(directory, gadget, this.deps.storage.readSource(gadget.id));
   }
 
-  captureSource(id: string): { descriptor: GadgetDescriptor; manifest: GadgetManifest; sourceFiles: GadgetSourceFile[] } {
-    const descriptor = this.require(id);
-    return { descriptor, ...this.deps.storage.captureSource(id) };
+  async saveToTaskDirectoryAsync(input: GadgetSaveToTaskDirectoryRequest): Promise<GadgetSaveToTaskDirectoryResult> {
+    return this.mutate(input.gadgetId, async () => {
+      this.getForTask(input.gadgetId, input.taskId);
+      const source = await this.deps.storage.inspectNative(input.gadgetId);
+      if (!source) return this.saveToTaskDirectory(input);
+      const gadget = this.getForTask(input.gadgetId, input.taskId);
+      if (!this.deps.resolveTaskDirectory) throw new Error("任务工作目录尚未连接");
+      const directory = this.deps.resolveTaskDirectory(input.taskId);
+      return this.deps.storage.exportNative(directory, gadget, source);
+    });
+  }
+
+  async captureSourceAsync(id: string): Promise<{ descriptor: GadgetDescriptor; manifest: GadgetManifest; sourceFiles: GadgetSourceFile[] }> {
+    return this.mutate(id, async () => {
+      const descriptor = await this.readRequired(id);
+      return { descriptor, ...await this.deps.storage.captureSourceAsync(id) };
+    });
   }
 
   async disposeAll(): Promise<void> {
+    while (this.mutations.size) await Promise.allSettled(this.mutations.values());
     await this.deps.runtime.disposeAll();
   }
 
   async dispose(id: string): Promise<void> {
-    this.require(id);
+    await this.readRequired(id);
     await this.deps.runtime.dispose(id);
   }
 
   private require(id: string): GadgetDescriptor {
+    if (this.deleting.has(id)) throw new Error(`Gadget 正在删除：${id}`);
     const descriptor = this.deps.repository.get(id);
+    if (!descriptor) throw new Error(`Gadget 不存在：${id}`);
+    return descriptor;
+  }
+
+  private async readRequired(id: string): Promise<GadgetDescriptor> {
+    const descriptor = await this.deps.repository.read(id);
+    if (this.deleting.has(id)) throw new Error(`Gadget 正在删除：${id}`);
     if (!descriptor) throw new Error(`Gadget 不存在：${id}`);
     return descriptor;
   }

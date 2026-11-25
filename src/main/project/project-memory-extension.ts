@@ -215,7 +215,8 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
       execute: async (_toolCallId: string, params: PlanListParams) => {
         try {
           const projectId = requireProject();
-          const items = bridge.service.listMemory(projectId);
+          const items = await bridge.service.readMemoryList(projectId);
+          if (requireProject() !== projectId) throw new ProjectMemoryToolError("任务的项目归属已变化，请重新读取");
           let filtered = items;
           if (params.kind) filtered = filtered.filter((item) => item.kind === params.kind);
           if (params.status) filtered = filtered.filter((item) => item.status === params.status);
@@ -293,10 +294,11 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
           if (params.importance !== undefined) request.importance = params.importance;
           if (params.evidenceItemIds !== undefined) request.evidenceItemIds = params.evidenceItemIds;
           if (params.evidenceArtifactIds !== undefined) request.evidenceArtifactIds = params.evidenceArtifactIds;
-          const created = bridge.service.createMemory(request, {
+          const created = await bridge.service.createMemoryAsync(request, {
             sourceType: "agent",
             sourceTaskId: bridge.taskId,
           });
+          if (requireProject() !== projectId) throw new ProjectMemoryToolError("任务的项目归属已变化，请重新读取");
           const evidenceNote =
             created.evidence.length > 0
               ? `\n证据：${created.evidence.map((e) => `${e.evidenceKind}:${e.refId}`).join(", ")}`
@@ -327,7 +329,8 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
       execute: async (_toolCallId: string, params: { query: string; limit?: number }) => {
         try {
           const projectId = requireProject();
-          const items = bridge.service.searchMemory(projectId, params.query, params.limit ?? 10);
+          const items = await bridge.service.searchMemoryAsync(projectId, params.query, params.limit ?? 10);
+          if (requireProject() !== projectId) throw new ProjectMemoryToolError("任务的项目归属已变化，请重新读取");
           const lines = [
             `项目记忆搜索「${params.query}」（${items.length} 条）：`,
             ...items.map((item) => formatProjectMemoryLine(item, 200)),
@@ -358,7 +361,8 @@ export function createProjectMemoryExtension(bridge: ProjectMemoryExtensionBridg
           if (params.content !== undefined) request.content = params.content;
           if (params.status !== undefined) request.status = params.status;
           if (params.tags !== undefined) request.tags = params.tags;
-          const updated = bridge.service.updateMemory(request);
+          const updated = await bridge.service.updateMemoryAsync(request, { taskId: bridge.taskId, projectId });
+          if (requireProject() !== projectId) throw new ProjectMemoryToolError("任务的项目归属已变化，请重新读取");
           return textResult(
             `已更新记忆条目（${existing.title}${existing.title !== updated.title ? ` → ${updated.title}` : ""}）：\n${formatProjectMemoryLine(updated, 200)}`,
             { projectId, item: updated },

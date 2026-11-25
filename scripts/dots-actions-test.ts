@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathFromMarkdownHref } from "../src/renderer/src/lib/localFilePath";
 import { join } from "node:path";
@@ -26,7 +26,9 @@ const { createAgentDurableFixture } = await import("./agent-durable-fixture");
 const { CronService } = await import("../src/main/cron/CronService");
 const { TerminalHost } = await import("../src/main/terminal/TerminalHost");
 const { TaskTerminalService } = await import("../src/main/terminal/TaskTerminalService");
-const db = new AppDatabase(join(root, "app.db"));
+const runtimeAuditExecutable = process.env.MYBUDDY_DOTS_FILE_TEST_NATIVE;
+if (runtimeAuditExecutable) assert.ok(existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 new (await import("../src/main/artifact/ArtifactRepository")).ArtifactRepository(db.connection);
 db.openDots();
 const outputs = new Map<string, { text: string; error?: boolean }>();
@@ -176,6 +178,35 @@ async function until(check: () => boolean | Promise<boolean>, label: string) {
   assert(await check(), label);
 }
 try {
+  if (db.runtimeAuditReader) {
+    const directory = join(root, "native-file-events");
+    mkdirSync(directory);
+    const first = join(directory, "资料.txt");
+    const replacement = join(directory, "资料.tmp");
+    writeFileSync(first, "original");
+    writeFileSync(replacement, "updated");
+    const events = new Set<string>();
+    const watchA = await db.runtimeAuditReader.watchDotsFile(directory, "资料.txt", () => events.add("first"), () => events.add("lost"));
+    const watchB = await db.runtimeAuditReader.watchDotsFile(directory, "next.txt", () => events.add("second"), () => events.add("lost"));
+    try {
+      assert(watchA && watchB, "Rust must arm both files in the same directory");
+      writeFileSync(join(directory, "untouched-by-subscriptions.txt"), "unrelated");
+      renameSync(replacement, first);
+      await until(() => events.has("first"), "Rust delivered an atomic replacement");
+      assert.deepEqual([...events], ["first"]);
+      assert.equal(readFileSync(first, "utf8"), "updated");
+      watchA.close();
+      events.clear();
+      writeFileSync(first, "already unsubscribed");
+      writeFileSync(join(directory, "next.txt"), "new file");
+      await until(() => events.has("second"), "closing one subscription leaves the other active");
+      assert.deepEqual([...events], ["second"]);
+    } finally {
+      watchA?.close();
+      watchB?.close();
+    }
+    console.log("PASS Rust file notices for atomic replacement, unrelated files and shared-directory unsubscribe");
+  }
   const directive = { id: "follow-original", entryId: 100, text: "还是没看到效果啊，你追问下" };
   const screenshot = { id: "supplement", entryId: 101, text: "乱七八糟的", attachments: [{ name: "proof.png", path: join(root, "proof.png") }] };
   const expected = { source: directive, assignmentQuote: "你追问下", attachments: screenshot.attachments, captions: [screenshot.text] };
@@ -450,9 +481,19 @@ try {
   writeFileSync(join(folder,"old.txt"),"stale");
   await until(() => listWatches().some(w => w.id === superseded.id && w.state === "expired"), "a later ordinary user input supersedes the earlier file rule");
   assert.equal(await agent.findSubmission(task.id,"dots-input-file-" + superseded.id), undefined);
+  const offlinePath = join(folder, "offline.txt");
+  writeFileSync(offlinePath, "before downtime");
+  const unchangedPath = join(folder, "unchanged.txt");
+  writeFileSync(unchangedPath, "same after restart");
   const offline = await subscribe("offline.txt");
+  const unchanged = await subscribe("unchanged.txt");
+  for (const [watchId, path] of [[offline.id, offlinePath], [unchanged.id, unchangedPath]]) {
+    const stat = lstatSync(path, { bigint: true });
+    const previousFormat = [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+    assert.deepEqual(db.connection.prepare("SELECT baseline FROM dots_file_watches WHERE id=?").get(watchId), { baseline: previousFormat });
+  }
   await actions.closeFileWatches();
-  writeFileSync(join(folder,"offline.txt"),"changed during downtime");
+  writeFileSync(offlinePath,"changed during downtime");
   actions = makeActions();
   agent.setDotsActions(actions);
   actions.startFileWatches();
@@ -463,6 +504,9 @@ try {
   const offlineReceipt = await agent.findSubmission(task.id,"dots-input-file-" + offline.id);
   assert(offlineReceipt?.receipt);
   await agent.waitForSubmission(offlineReceipt.receipt);
+  assert.equal(listWatches().find(w => w.id === unchanged.id)?.state, "watching");
+  assert.equal(await agent.findSubmission(task.id, "dots-input-file-" + unchanged.id), undefined);
+  await success({action:"cancel_watch",targetTaskId:task.id,watchId:unchanged.id});
   const held = await subscribe("held.txt");
   const proactive = await success({action:"pause_proactive", spaceId:space.id});
   assert.equal(proactive.proactive,"paused");
@@ -523,7 +567,7 @@ try {
 
   const shared = agent.createKernelMemory({ title:"共享事实", content:"reference-evidence-7462", kind:"fact", sourceType:"manual", scopeType:"global" });
   const secret = agent.createKernelMemory({ title:"Dots 私人", content:"private Dots fact", kind:"fact", sourceType:"manual", scopeType:"task", scopeId: DOTS_TASK_ID });
-  const revision = agent.kernelMemoryHistory(shared.id)[0]!.revision;
+  const revision = (await agent.kernelMemoryHistory(shared.id))[0]!.revision;
   const lookup = (id: string) => id === shared.id ? { revision, content: shared.content } : undefined;
   for (const [name, args] of [["memory_search", { query: "reference-evidence-7462" }], ["memory_get", { id: shared.id }]] as const) {
     const result = await turn(args, name);
@@ -1008,5 +1052,6 @@ try {
   cron.stop();
   terminal.dispose();
   await fixture.close();
+  await db.runtimeAuditReader?.close();
   db.close();
 }

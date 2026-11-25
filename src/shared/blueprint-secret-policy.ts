@@ -3,6 +3,9 @@ const FORBIDDEN_CAPTURE_SEGMENT = /^(?:node_modules|cache|\.cache|\.next|dist|bu
 const TEMP_LOG_FILE = /\.log$/i;
 const SECRET_KEY = "api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|authorization";
 
+export const BLUEPRINT_CAPTURE_DENY_PATTERN = [SENSITIVE_FILE, FORBIDDEN_CAPTURE_SEGMENT, TEMP_LOG_FILE]
+  .map(pattern => pattern.source).join("|");
+
 export function isBlueprintSensitivePath(path: string): boolean {
   return path.replaceAll("\\", "/").split("/").some((part) =>
     SENSITIVE_FILE.test(part) || FORBIDDEN_CAPTURE_SEGMENT.test(part) || TEMP_LOG_FILE.test(part),

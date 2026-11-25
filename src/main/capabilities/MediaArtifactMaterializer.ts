@@ -181,7 +181,7 @@ export class MediaArtifactMaterializer {
         let canDeleteFile = true;
         if (entry.artifact && entry.service) {
           try {
-            entry.service.remove(entry.artifact.id);
+            await entry.service.remove(entry.artifact.id);
           } catch {
             retainedArtifactIds.push(entry.artifact.id);
             canDeleteFile = false;

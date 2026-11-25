@@ -2,10 +2,14 @@ import { DOTS_TASK_ID } from "../../shared/dots";
 import { dotsRecordApplicability, dotsScopeCondition, dotsSourcePointer, dotsSubject, groundDotsClaim, matchesDotsApplicability,
   isDotsSingleUse, matchesDotsQuote, sameDotsApplicability, type DotsRevisionSource, type DotsSourceInput } from "./DotsRevisionSource";
 import { dotsQuestionTerms, rankDotsEvidence } from "./DotsRecallRanking";
-import { memorySearchWhere } from "./MemorySearchScope";
-import { rankMemorySearch, rankMemorySearchAsync, tokenSimilarity } from "./MemoryRecallRanking";
+import { memoryListScopeWhere, memorySearchWhere } from "./MemorySearchScope";
+import { memoryRecordFromWire } from "./MemoryRecordsData";
+import { createMemoryWrite, nativeMemoryWriteCompatible, updateMemoryWrite } from "./MemoryRecordWrite";
+import { searchEpoch } from "./MemorySearchEpoch";
+import { normalizeSearchText } from "./MemorySearchText";
+import { rankMemoryBaselines, rankMemorySearch, rankMemorySearchAsync, tokenSimilarity } from "./MemoryRecallRanking";
 import { botExtractionPolicy } from "./BotMemoryExtractionPolicy";
-import { MemoryForgetWatermarks } from "./MemoryForgetWatermarks";
+import { MemoryForgetWatermarks, memoryWithdrawalTargets } from "./MemoryForgetWatermarks";
 import type { MemoryForgetSource, MemoryRemovalIntent } from "./MemoryIntent";
 import {
   MAX_INPUT_CHARS,
@@ -33,6 +37,7 @@ import { LOCAL_USER_ID } from "../../shared/bot-work";
 import {
   MEMORY_CONTENT_MAX_CHARS,
   MEMORY_EVIDENCE_KINDS,
+  MEMORY_SCOPE_TYPES,
   MEMORY_TITLE_MAX_CHARS,
   type MemoryCandidateDto,
   type MemoryCreateRequest,
@@ -92,7 +97,14 @@ export interface MemoryExtractionResult {
 /** 已完成启动期遗留候选清理的 AppDatabase：冷启动有 4 个 MemoryService 构造点，只允许清理一次。 */
 const reapedDatabases = new WeakSet<AppDatabase>();
 
+function settingsListRequest(request: MemoryListRequest | number): MemoryListRequest {
+  if (typeof request === "number") return { limit: request };
+  if (!request.query && !request.scopeType && !request.kind && !request.status) return { limit: request.limit };
+  return request;
+}
+
 export class MemoryService {
+  private settingsScopeWritesSupported?: Promise<boolean>;
   readonly repository: MemoryRepository;
   readonly cognition: MemoryCognitionService;
   readonly learning: MemorySkillLearningService;
@@ -282,12 +294,15 @@ export class MemoryService {
   }
 
   list(request: MemoryListRequest | number = {}): MemoryRecordDto[] {
-    if (typeof request === "number") return this.repository.listAll(request);
-    if (!request.query && !request.scopeType && !request.kind && !request.status) {
-      return this.repository.listAll(request.limit ?? 500);
-    }
-    return this.repository.listFiltered(request);
+    return this.repository.listFiltered(settingsListRequest(request));
   }
+
+  readList(request: MemoryListRequest | number = {}): Promise<MemoryRecordDto[]> {
+    return this.repository.readFiltered(settingsListRequest(request));
+  }
+
+  readRecord(id: string): Promise<MemoryRecordDto | undefined> { return this.repository.readDetail(id); }
+
   listExactScope(
     scopeType: MemoryScopeType,
     scopeId?: string,
@@ -298,13 +313,18 @@ export class MemoryService {
       .map((item) => item.memory);
   }
   history(id: string): MemoryRevisionDto[] { return this.repository.listRevisions(id); }
+  readHistory(id: string): Promise<MemoryRevisionDto[]> { return this.repository.readRevisions(id); }
   stats(): MemoryKernelStats { return this.repository.stats(); }
+  readStats(): Promise<MemoryKernelStats> { return this.repository.readStats(); }
   listTurns(request: MemoryTurnListRequest = {}): MemoryTurnDto[] { return new MemoryTurnRepository(this.db).list(request); }
+  readTurns(request: MemoryTurnListRequest = {}): Promise<MemoryTurnDto[]> { return new MemoryTurnRepository(this.db).readList(request); }
   historicalUserInputs(sessionId: string, taskId?: string): Array<{ id: string; userText: string }> {
     return new MemoryTurnRepository(this.db).historicalUserInputs(sessionId, taskId);
   }
   getTurn(id: string): MemoryTurnDto | undefined { return new MemoryTurnRepository(this.db).get(id); }
+  readTurn(id: string): Promise<MemoryTurnDto | undefined> { return new MemoryTurnRepository(this.db).readDetail(id); }
   memoriesForTurn(turnId: string): MemoryRecordDto[] { return this.repository.listByEvidence("conversation", turnId, 500); }
+  readMemoriesForTurn(turnId: string): Promise<MemoryRecordDto[]> { return this.repository.readForTurn(turnId); }
   retryFailedTurns(): { reset: number; taskIds: string[] } { return new MemoryTurnRepository(this.db).resetFailedTurns(); }
 
   /** Archived-project write guard exposed for callers that mutate through non-update paths (e.g. scope detach → hard delete). */
@@ -351,12 +371,18 @@ export class MemoryService {
     return this.repository.listCandidates(status, limit);
   }
 
-  private buildRecord(request: MemoryCreateRequest, now = Date.now()): MemoryRecordDto {
+  readCandidates(status?: MemoryCandidateDto["status"], limit?: number): Promise<MemoryCandidateDto[]> {
+    return this.repository.readCandidates(status, limit);
+  }
+
+  private buildRecord(request: MemoryCreateRequest, now = Date.now(), stagedWorkspace = false): MemoryRecordDto {
     const title = cleanText(request.title, MEMORY_TITLE_MAX_CHARS);
     const content = cleanMultilineText(request.content ?? "", MEMORY_CONTENT_MAX_CHARS);
     if (!title) throw new Error("记忆标题不能为空");
     if (isSensitive(`${title} ${content}`)) throw new Error("记忆包含疑似敏感秘密，拒绝保存");
-    this.assertScope(request.scopeType, request.scopeId);
+    if (!stagedWorkspace || request.scopeType !== "workspace" || !request.scopeId?.trim()) {
+      this.assertScope(request.scopeType, request.scopeId);
+    }
     const id = `mem_${randomUUID()}`;
     if ((request.evidence ?? []).some((item) => !(MEMORY_EVIDENCE_KINDS as readonly string[]).includes(item.evidenceKind))) {
       throw new Error("记忆证据类型非法");
@@ -416,25 +442,69 @@ export class MemoryService {
     for (const projectId of projectIds) touch.run(now, projectId);
   }
 
-  create(request: MemoryCreateRequest, revisionReason?: string): MemoryRecordDto {
+  prepareCreation(request: MemoryCreateRequest): MemoryRecordDto {
     if (request.sourceTaskId && request.sourceType === "agent"
       && (isGatewayConversation(request.sourceTaskId) || this.workMemoryScope(request.sourceTaskId) || this.channelBotId(request.sourceTaskId))
       && !this.canPromoteFromTask(request.sourceTaskId, request.scopeType, request.scopeId)) {
       throw new Error("记忆写入范围不属于当前 Bot、团队、项目或 Work");
     }
-    const record = this.buildRecord(request);
-    const saved = this.db.connection.transaction(() => {
+    return this.buildRecord(request);
+  }
+
+  persistPreparedCreation(record: MemoryRecordDto, revisionReason?: string): MemoryRecordDto {
+    return this.db.connection.transaction(() => {
       const inserted = this.repository.insert(record, revisionReason);
       this.invalidateProjectionScopes(inserted.scopes);
       this.touchProjectScopes(inserted.scopes, inserted.updatedAt);
       return inserted;
     })();
+  }
+
+  publishCreatedMemory(saved: MemoryRecordDto): void {
     if (saved.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([saved.id]); } catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
     }
     this.queueSemanticIndex(saved);
+  }
+
+  create(request: MemoryCreateRequest, revisionReason?: string): MemoryRecordDto {
+    const saved = this.persistPreparedCreation(this.prepareCreation(request), revisionReason);
+    this.publishCreatedMemory(saved);
     return saved;
   }
+
+  async createSettingsMemory(request: MemoryCreateRequest): Promise<MemoryRecordDto> {
+    const worker = this.db.runtimeAuditReader;
+    // Task-originated agent writes depend on live gateway and Work authorization.
+    if (!worker || this.db.connection.inTransaction || (request.sourceType === "agent" && request.sourceTaskId)) {
+      return this.create(request);
+    }
+    const prepared = this.prepareCreation(request);
+    const mutation = createMemoryWrite(prepared);
+    if (!nativeMemoryWriteCompatible(mutation)) return this.create(request);
+    const reply = await worker.writeMemoryRecord(mutation);
+    if (reply?.status === "needsHost") return this.create(request);
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    if (reply?.status !== "applied") throw new Error("记忆新建未确认，请刷新后再试");
+    const saved = memoryRecordFromWire(reply.record);
+    this.publishSettingsWrite(saved);
+    return saved;
+  }
+
+  prepareBlueprintContext(workspaceId: string, content: string, blueprintId: string): MemoryRecordDto {
+    return this.buildRecord({
+      kind: "constraint", title: "Blueprint default context", content, scopeType: "workspace", scopeId: workspaceId,
+      sourceType: "import", explicit: true, confidence: 1, importance: 1,
+      metadata: { blueprintId, source: "blueprint-default-context" },
+    }, Date.now(), true);
+  }
+
+  insertBlueprintContext(record: MemoryRecordDto): void {
+    this.assertScope(record.scopes[0].scopeType, record.scopes[0].scopeId);
+    this.repository.insert(record);
+  }
+
+  indexSavedMemory(record: MemoryRecordDto): void { this.queueSemanticIndex(record); }
 
   /** Model tools carry their host-bound task identity separately from memory provenance. */
   createFromTask(request: MemoryCreateRequest, source?: DotsSourceInput, sourceQuote?: string, applicability?: unknown): MemoryRecordDto {
@@ -547,9 +617,7 @@ export class MemoryService {
     })();
   }
 
-  update(request: MemoryUpdateRequest): MemoryRecordDto {
-    const current = this.repository.get(request.id);
-    if (!current) throw new Error(`记忆不存在：${request.id}`);
+  prepareUpdate(current: MemoryRecordDto, request: MemoryUpdateRequest): MemoryRecordDto | undefined {
     this.assertRecordWritable(current);
     const title = request.title === undefined ? current.title : cleanText(request.title, MEMORY_TITLE_MAX_CHARS);
     const content = request.content === undefined ? current.content : cleanMultilineText(request.content, MEMORY_CONTENT_MAX_CHARS);
@@ -569,8 +637,8 @@ export class MemoryService {
       status === current.status && importance === current.importance && confidence === current.confidence &&
       explicit === current.explicit && validFrom === current.validFrom && validUntil === current.validUntil &&
       contentHash === current.contentHash && JSON.stringify(metadata) === JSON.stringify(current.metadata)
-    ) return current;
-    const next: MemoryRecordDto = {
+    ) return undefined;
+    return {
       ...current,
       kind,
       title,
@@ -585,6 +653,13 @@ export class MemoryService {
       contentHash,
       updatedAt: Date.now(),
     };
+  }
+
+  update(request: MemoryUpdateRequest): MemoryRecordDto {
+    const current = this.repository.get(request.id);
+    if (!current) throw new Error(`记忆不存在：${request.id}`);
+    const next = this.prepareUpdate(current, request);
+    if (!next) return current;
     const saved = this.db.connection.transaction(() => {
       const updated = this.repository.update(next, request.changedBy ?? "manual", request.changeReason);
       this.invalidateProjectionScopes(updated.scopes, updated.id);
@@ -599,6 +674,40 @@ export class MemoryService {
     }
     this.queueSemanticIndex(saved);
     return saved;
+  }
+
+  async updateSettingsMemory(request: MemoryUpdateRequest): Promise<MemoryRecordDto> {
+    const worker = this.db.runtimeAuditReader;
+    if (!worker || this.db.connection.inTransaction) return this.update(request);
+
+    // A competing settings or Project edit may have advanced the revision while
+    // the host was cleaning the text. Reapply the user's patch to the current row.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const current = await worker.memoryRecordsData({ kind: "detail", id: request.id });
+      if (current?.kind !== "detail" || current.revision === undefined) return this.update(request);
+      if (!current.record) throw new Error(`记忆不存在：${request.id}`);
+      const previous = memoryRecordFromWire(current.record);
+      const next = this.prepareUpdate(previous, request);
+      if (!next) return previous;
+      const mutation = updateMemoryWrite(next, current.revision, request.changedBy ?? "manual", request.changeReason ?? "updated");
+      if (!nativeMemoryWriteCompatible(mutation)) return this.update(request);
+      const reply = await worker.writeMemoryRecord(mutation);
+      if (reply?.status === "stale") continue;
+      if (reply?.status === "needsHost") return this.update(request);
+      if (reply?.status === "rejected") throw new Error(reply.message);
+      if (reply?.status !== "applied") throw new Error("记忆更新未确认，请刷新后再试");
+      const saved = memoryRecordFromWire(reply.record);
+      this.publishSettingsWrite(saved);
+      return saved;
+    }
+    throw new Error("记忆已在其他位置更新，请刷新后再试");
+  }
+
+  private publishSettingsWrite(saved: MemoryRecordDto): void {
+    if (saved.scopes.some(scope => scope.scopeType === "task" && scope.scopeId === DOTS_TASK_ID)) {
+      this.cognition.queueDotsViews();
+    }
+    this.queueSemanticIndex(saved);
   }
 
   supersede(oldId: string, request: MemoryCreateRequest, replacementReason?: string): MemoryRecordDto {
@@ -650,9 +759,9 @@ export class MemoryService {
   }
 
   forget(id: string): void {
-    const current = this.repository.get(id);
-    if (current) this.assertRecordWritable(current);
-    this.db.connection.transaction(() => {
+    const current = this.db.connection.transaction(() => {
+      const current = this.repository.get(id);
+      if (current) this.assertRecordWritable(current);
       if (current) this.forgetWatermarks.withdrawRecord(current, this.repository.listRevisions(id), current.scopes);
       if (current?.id.startsWith("mem_weekly_")) this.forgetWatermarks.withdraw(current.scopes, [current.id]);
       this.cognition.projections.forgetDotsSource(id);
@@ -661,11 +770,39 @@ export class MemoryService {
         this.invalidateProjectionScopes(current.scopes);
         this.touchProjectScopes(current.scopes, Date.now());
       }
-    })();
+      return current;
+    }).immediate();
     if (current?.kind === "procedure") {
       try { this.learning.invalidateByMemoryIds([id]); }
       catch (error) { console.warn("[MemoryKernel] skill candidate invalidation failed", error); }
     }
+  }
+
+  async forgetSettingsMemory(id: string): Promise<void> {
+    const worker = this.db.runtimeAuditReader;
+    if (!worker || this.db.connection.inTransaction || typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id)) return this.forget(id);
+
+    // The write rechecks the exact facts, history, evidence and scopes before
+    // removing their sources and persisting the same withdrawal proofs.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const source = await worker.memoryRecordsData({ kind: "forgetSource", id });
+      if (source?.kind !== "forgetSource") return this.forget(id);
+      const reply = await worker.writeMemoryRecord({
+        kind: "forget", id,
+        withdrawal: {
+          signature: source.signature,
+          cutoffAt: Date.now(),
+          targets: source.record ? memoryWithdrawalTargets([source.record]) : [],
+        },
+      });
+      if (reply?.status === "stale") continue;
+      if (reply?.status === "needsHost") return this.forget(id);
+      if (reply?.status === "rejected") throw new Error(reply.message);
+      if (reply?.status !== "forgotten") throw new Error("记忆删除未确认，请刷新后再试");
+      if (reply.refreshDots) this.cognition.queueDotsViews();
+      return;
+    }
+    throw new Error("记忆已在其他位置更新，请刷新后再试");
   }
 
   latestWithdrawalAt(taskId: string): number {
@@ -727,6 +864,44 @@ export class MemoryService {
       }
     }
     return { detached: true, forgotten };
+  }
+
+  async detachSettingsScope(id: string, scopeType: MemoryScopeType, scopeId?: string): Promise<{ detached: boolean; forgotten: boolean }> {
+    const worker = await this.settingsScopeWorker(id, scopeType, scopeId);
+    if (worker) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const source = await worker.memoryRecordsData({ kind: "forgetSource", id });
+        if (source?.kind !== "forgetSource") break;
+        const reply = await worker.writeMemoryRecord({
+          kind: "detachScope", id, scopeType, scopeId, withdrawal: {
+            signature: source.signature, cutoffAt: Date.now(),
+            targets: source.record ? memoryWithdrawalTargets([source.record]) : [],
+          },
+        });
+        if (reply?.status === "stale") {
+          if (attempt === 2) throw new Error("记忆已在其他位置更新，请刷新后再试");
+          continue;
+        }
+        if (reply?.status === "needsHost") break;
+        if (reply?.status === "rejected") throw new Error(reply.message);
+        if (reply?.status !== "detached") throw new Error("作用域移除未确认，请刷新后再试");
+        if (scopeType === "task" && scopeId === DOTS_TASK_ID) this.cognition.queueDotsViews();
+        return { detached: true, forgotten: reply.forgotten };
+      }
+    }
+    return this.db.connection.transaction(() => {
+      if (scopeType === "project" && scopeId) {
+        const row = this.db.connection.prepare("SELECT archived FROM projects WHERE id=?").get(scopeId) as { archived: number } | undefined;
+        if (row?.archived) throw new Error("项目已归档（只读），不能修改其关联记忆");
+      }
+      const current = this.get(id);
+      if (current && !current.scopes.some(scope => scope.scopeType !== scopeType || (scope.scopeId ?? "") !== (scopeId ?? ""))) {
+        this.assertRecordWritable(current);
+      }
+      const result = this.detachScope(id, scopeType, scopeId);
+      if (!result.detached) throw new Error("作用域绑定不存在");
+      return result;
+    }).immediate();
   }
 
   /** Project/Workspace lifecycle cleanup. Exact scope only; inherited scopes are untouched. */
@@ -798,6 +973,30 @@ export class MemoryService {
     return promoted;
   }
 
+  async promoteSettingsScope(id: string, scopeType: MemoryScopeType, scopeId?: string): Promise<MemoryRecordDto> {
+    const worker = await this.settingsScopeWorker(id, scopeType, scopeId);
+    if (!worker) return this.promote(id, scopeType, scopeId);
+    const reply = await worker.writeMemoryRecord({
+      kind: "promoteScope", id, scope: { id: randomUUID(), scopeType, scopeId }, userId: LOCAL_USER_ID, now: Date.now(),
+    });
+    if (reply?.status === "needsHost") return this.promote(id, scopeType, scopeId);
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    if (reply?.status !== "applied") throw new Error("作用域提升未确认，请刷新后再试");
+    if (scopeType === "task" && scopeId === DOTS_TASK_ID) this.cognition.queueDotsViews();
+    return memoryRecordFromWire(reply.record);
+  }
+
+  private async settingsScopeWorker(id: string, scopeType: MemoryScopeType, scopeId?: string) {
+    const worker = this.db.runtimeAuditReader;
+    if (!worker || this.db.connection.inTransaction || !MEMORY_SCOPE_TYPES.includes(scopeType)
+      || typeof id !== "string" || /[\uD800-\uDFFF]/u.test(id)
+      || (scopeId !== undefined && (typeof scopeId !== "string" || /[\uD800-\uDFFF]/u.test(scopeId)))
+      || (scopeType === "global" && scopeId === "")) return;
+    this.settingsScopeWritesSupported ??= worker.memoryRecordsData({ kind: "scopeMutationSupport" })
+      .then(result => result?.kind === "scopeMutationSupport");
+    if (await this.settingsScopeWritesSupported) return worker;
+  }
+
   search(request: MemorySearchRequest): MemorySearchHit[] {
     const scopes = this.resolveScopeChain(request);
     const query = request.query?.trim() ?? "";
@@ -820,21 +1019,68 @@ export class MemoryService {
 
   async searchLexical(request: MemorySearchRequest): Promise<MemorySearchHit[]> {
     const query = request.query?.trim() ?? "";
-    if (!query) return this.search(request);
+    if (!query && !this.db.runtimeAuditReader) return this.search(request);
     const stamp = this.recallScopeStamp(request);
+    if (!query) {
+      const baseline = await this.searchBaselines([request]);
+      if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+      return baseline && this.isCurrentBaselineVersion(baseline.version) ? baseline.hits[0] : this.search(request);
+    }
     const scopes = this.resolveScopeChain(request);
     const canRead = this.recallVisibility(request, scopes);
-    const candidates = await this.repository.searchScopedAsync(query, { scopes,
-      statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds },
+    const scopeQuery = {
+      scopes, statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds,
+    } satisfies import("./MemorySearchScope").MemorySearchScope;
+    const candidates = await this.repository.searchScopedAsync(query, scopeQuery,
       Math.max(Math.min(request.limit ?? 20, 100) * 4, 100), canRead);
+    if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
+    const runtime = this.db.runtimeAuditReader;
+    const scores = runtime && candidates.scoped.length && !this.db.connection.inTransaction
+      ? await runtime.memoryLexicalScores({
+        scope: memorySearchWhere(scopeQuery),
+        compact: normalizeSearchText(query),
+        targets: [...new Map(candidates.scoped.map(({ memory: { id, contentHash } }) => [id, { id, contentHash }])).values()],
+      })
+      : undefined;
     if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
     const dots = request.taskId === DOTS_TASK_ID && dotsQuestionTerms(query).length > 0;
     const hits = await rankMemorySearchAsync({ scoped: candidates.scoped, ftsRank: candidates.ftsRanks, query,
+      textScores: scores && new Map(scores.map(({ id, similarity }) => [id, similarity])),
       request: dots ? { ...request, limit: 100 } : request, scopes,
       visible: canRead, current: id => this.repository.get(id) });
     if (!this.db.connection.open || this.recallScopeStamp(request) !== stamp) return [];
     const visible = hits.map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes) }));
     return dots ? this.rankDotsQuery(request, visible) : visible;
+  }
+
+  async searchBaselines(requests: MemorySearchRequest[]): Promise<{ version: number; hits: MemorySearchHit[][] } | undefined> {
+    const runtime = this.db.runtimeAuditReader;
+    const db = this.db.connection;
+    if (!runtime || !db.open || db.inTransaction) return undefined;
+    const version = searchEpoch(db, "text_version");
+    if (!requests.length) return { version, hits: [] };
+    const stamps = requests.map(request => this.recallScopeStamp(request));
+    const scopes = requests.map(request => this.resolveScopeChain(request));
+    const candidates = await runtime.memoryBaselines(requests.map((request, index) => ({
+      scope: memoryListScopeWhere({
+        scopes: scopes[index], statuses: request.statuses?.length ? request.statuses : ["active"], kinds: request.kinds,
+      }),
+      kinds: request.kinds,
+      limit: Math.max((request.limit ?? 20) * 30, 500),
+    })));
+    if (!candidates || candidates.length !== requests.length || !db.open
+      || requests.some((request, index) => this.recallScopeStamp(request) !== stamps[index])
+      || searchEpoch(db, "text_version") !== version) return undefined;
+    const hits = candidates.map((rows, index) => rankMemoryBaselines(
+      rows, scopes[index], Math.max(1, Math.min(100, requests[index].limit ?? 20)),
+      id => this.repository.get(id), this.recallVisibility(requests[index], scopes[index]),
+    ).map(hit => ({ ...hit, memory: this.forgetWatermarks.projectEvidence(hit.memory, scopes[index]) })));
+    return this.isCurrentBaselineVersion(version) ? { version, hits } : undefined;
+  }
+
+  isCurrentBaselineVersion(version: number): boolean {
+    const db = this.db.connection;
+    return db.open && searchEpoch(db, "text_version") === version;
   }
 
   private rankDotsQuery(request: MemorySearchRequest, hits: MemorySearchHit[]): MemorySearchHit[] {
@@ -1117,8 +1363,7 @@ export class MemoryService {
         // A single bad candidate (e.g. scope deleted between capture and extraction) must not
         // fail the whole batch: ordinary candidates remain reviewable; Bot candidates are rejected.
         try {
-          const apply = () => {
-            this.repository.insertCandidate(dto);
+          const reconcile = () => {
             // An in-flight pending candidate may already have been resolved from the review UI.
             if (this.repository.getCandidate(dto.id)?.status !== "pending") return;
             const freshTurns = this.forgetWatermarks.candidateSources(scope.scopeType, scope.scopeId, eligibleTurns,
@@ -1126,7 +1371,7 @@ export class MemoryService {
             if (!freshTurns.length) { this.repository.resolveCandidate(dto.id, "rejected"); return; }
             const evidenceTurns = botSource ? freshTurns
               .map(turn => ({ ...turn, userText: candidate.userEvidence!, assistantText: "" })) : freshTurns;
-            const result = this.reconcileCandidate(dto, evidenceTurns);
+            const result = this.reconcileCandidateInTransaction(dto, evidenceTurns, false);
             if (input.skillBatch && result.memoryId) createdSkills += this.learning.refreshMemory(result.memoryId).created;
             if (result.status === "committed") {
               committedCount++;
@@ -1138,12 +1383,16 @@ export class MemoryService {
           };
           // A crash must not expose this automatic Bot path as pending/needs_review.
           // Keep source validation, reconciliation and rejection in one commit.
-          if (automaticOnly) this.db.connection.transaction(apply)();
-          else apply();
+          if (automaticOnly) {
+            this.db.connection.transaction(() => { this.repository.insertCandidate(dto); reconcile(); }).immediate();
+          } else {
+            this.repository.insertCandidate(dto);
+            this.db.connection.transaction(reconcile).immediate();
+          }
         } catch (error) {
           if (input.skillBatch) throw error;
           console.warn("[MemoryKernel] candidate reconcile failed", error);
-          try { this.repository.resolveCandidate(dto.id, automaticOnly ? "rejected" : "needs_review"); } catch { /* candidate row may not exist */ }
+          try { this.repository.resolvePendingCandidate(dto.id, automaticOnly ? "rejected" : "needs_review"); } catch { /* candidate row may not exist */ }
           if (!automaticOnly) reviewCount++;
         }
       }
@@ -1180,19 +1429,34 @@ export class MemoryService {
    * confidence/overlap gates are bypassed, but physically impossible operations still fail.
    */
   resolveCandidateReview(id: string, decision: "approve" | "reject"): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {
-    const candidate = this.repository.getCandidate(id);
-    if (!candidate) throw new Error(`候选不存在：${id}`);
-    if (candidate.status !== "needs_review" && candidate.status !== "pending") {
-      throw new Error(`候选已被处置：${candidate.status}`);
-    }
-    if (decision === "reject") {
-      this.repository.resolveCandidate(id, "rejected");
-      return { status: "rejected" };
-    }
-    const sourceTurns = this.candidateSourceTurns(candidate);
-    const result = this.reconcileCandidate(candidate, sourceTurns, true);
+    const { candidate, result } = this.db.connection.transaction(() => {
+      const candidate = this.repository.getCandidate(id);
+      if (!candidate) throw new Error(`候选不存在：${id}`);
+      if (candidate.status !== "needs_review" && candidate.status !== "pending") {
+        throw new Error(`候选已被处置：${candidate.status}`);
+      }
+      if (decision === "reject") {
+        this.repository.resolveCandidate(id, "rejected");
+        return { candidate, result: { status: "rejected" as const } };
+      }
+      const sourceTurns = this.candidateSourceTurns(candidate);
+      return { candidate, result: this.reconcileCandidateInTransaction(candidate, sourceTurns, true) };
+    }).immediate();
     if (candidate.kind === "procedure" && result.status === "committed") this.learning.refresh();
     return result;
+  }
+
+  async reviewSettingsCandidate(id: string, decision: "approve" | "reject"): Promise<ReturnType<MemoryService["resolveCandidateReview"]>> {
+    const worker = this.db.runtimeAuditReader;
+    if (decision === "reject" && worker && !this.db.connection.inTransaction
+      && typeof id === "string" && !/[\uD800-\uDFFF]/u.test(id)
+      && (await worker.memoryRecordsData({ kind: "candidateReviewSupported" }))?.kind === "candidateReviewSupported") {
+      const reply = await worker.writeMemoryRecord({ kind: "rejectCandidate", id, at: Date.now() });
+      if (reply?.status === "candidateRejected") return { status: "rejected" };
+      if (reply?.status === "rejected") throw new Error(reply.message);
+      if (reply?.status !== "needsHost") throw new Error("候选拒绝未确认，请刷新后再试");
+    }
+    return this.resolveCandidateReview(id, decision);
   }
 
   private candidateSourceTurns(candidate: MemoryCandidateDto): MemoryTurnDto[] {
@@ -1204,11 +1468,6 @@ export class MemoryService {
     } catch {
       return [];
     }
-  }
-
-  private reconcileCandidate(candidate: MemoryCandidateDto, sourceTurns: readonly MemoryTurnDto[] = [], force = false): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {
-    // Scope checks and all mutations share one SQLite snapshot, including promoted atoms.
-    return this.db.connection.transaction(() => this.reconcileCandidateInTransaction(candidate, sourceTurns, force))();
   }
 
   private reconcileCandidateInTransaction(candidate: MemoryCandidateDto, sourceTurns: readonly MemoryTurnDto[], force: boolean): { status: "committed" | "rejected" | "needs_review"; memoryId?: string } {

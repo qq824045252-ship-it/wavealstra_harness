@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyModePolicy } from "../src/shared/mode-profile";
+import { LOCAL_USER_ID } from "../src/shared/bot-work";
+import { DOTS_TASK_ID } from "../src/shared/dots";
 import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-memory-drain-"));
@@ -12,7 +14,74 @@ process.env.HOME = sandbox;
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
 const { AgentService } = await import("../src/main/agent/AgentService");
 const { MemoryService } = await import("../src/main/memory/MemoryService");
+const { MemoryForgetWatermarks } = await import("../src/main/memory/MemoryForgetWatermarks");
 const { MemoryPipelineManager } = await import("../src/main/memory/MemoryPipelineManager");
+
+async function verifySettingsScopeWrites(db: InstanceType<typeof AppDatabase>, native: boolean): Promise<void> {
+  const conn = db.connection;
+  const memory = new MemoryService(db, { semantic: false });
+  const settings = Object.assign(Object.create(AgentService.prototype), {
+    db, memoryService: memory, notifyMemoryChanged: () => {},
+  }) as Pick<InstanceType<typeof AgentService>, "promoteKernelMemory" | "detachKernelMemoryScope">;
+  const fact = memory.create({
+    title: "AsterPreference", content: "AsterPreference 的标记是紫杉7319", kind: "fact", sourceType: "manual", scopeType: "global",
+  });
+  const project = "scope-settings-project";
+  const version = 9_000_000_000_000;
+  conn.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES (?,'Scope fixture',1,?)").run(project, version);
+  conn.prepare(
+    "INSERT INTO memory_scenarios(id,scope_type,scope_id,title,summary,source_memory_ids_json,content_hash,created_at,updated_at) " +
+    "VALUES ('scope-fixture-scenario','project',?,'场景','待重新生成','[]','scope-fixture-hash',1,1)",
+  ).run(project);
+  const invoke = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    if (native) conn.pragma("query_only = ON");
+    try { return await operation(); } finally { conn.pragma("query_only = OFF"); }
+  };
+  const priorText = "AsterPreference 的标记是紫杉7319；保留另一项设置。";
+  const recall = (scopeType: "project" | "global", scopeId?: string) => new MemoryForgetWatermarks(conn)
+    .sourceFilter([{ scopeType, scopeId }])(priorText, "", 1).userText;
+  const projectVersion = () => conn.prepare("SELECT updated_at FROM projects WHERE id=?").pluck().get(project);
+  const scenarioStatus = () => conn.prepare("SELECT status FROM memory_scenarios WHERE id='scope-fixture-scenario'").pluck().get();
+
+  const first = await invoke(() => settings.promoteKernelMemory(fact.id, "project", project));
+  assert.deepEqual(first.scopes.map(scope => [scope.scopeType, scope.scopeId, scope.binding]),
+    [["global", undefined, "owned"], ["project", project, "promoted"]]);
+  assert.equal(scenarioStatus(), "stale");
+  assert.equal(projectVersion(), version + 1);
+  assert.deepEqual((await invoke(() => settings.promoteKernelMemory(fact.id, "project", project)))
+    .scopes.map(scope => scope.scopeType), ["global", "project"]);
+
+  conn.prepare("UPDATE projects SET archived=1 WHERE id=?").run(project);
+  await assert.rejects(invoke(() => settings.promoteKernelMemory(fact.id, "project", project)), /项目已归档/);
+  await assert.rejects(invoke(() => settings.detachKernelMemoryScope(fact.id, "project", project)), /项目已归档/);
+  assert.equal(memory.get(fact.id)?.scopes.length, 2);
+
+  conn.prepare("UPDATE projects SET archived=0 WHERE id=?").run(project);
+  conn.exec("UPDATE memory_scenarios SET status='active' WHERE id='scope-fixture-scenario'");
+  assert.deepEqual(await invoke(() => settings.detachKernelMemoryScope(fact.id, "project", project)), { detached: true, forgotten: false });
+  assert.deepEqual(memory.get(fact.id)?.scopes.map(scope => scope.scopeType), ["global"]);
+  assert.equal(memory.get(fact.id)?.content, "AsterPreference 的标记是紫杉7319");
+  assert.equal(projectVersion(), version + 3);
+  assert.equal(scenarioStatus(), "stale");
+  assert.equal(recall("project", project), "保留另一项设置。");
+  assert.equal(recall("global"), priorText);
+  await assert.rejects(invoke(() => settings.detachKernelMemoryScope(fact.id, "project", project)), /作用域绑定不存在/);
+
+  // A promoted copy of the owned binding still counts as the same scope during removal.
+  assert.deepEqual((await invoke(() => settings.promoteKernelMemory(fact.id, "global")))
+    .scopes.map(scope => scope.binding), ["owned", "promoted"]);
+  conn.exec("CREATE TRIGGER fixture_scope_rollback BEFORE DELETE ON memory_records BEGIN SELECT RAISE(ABORT,'fixture scope rollback'); END");
+  await assert.rejects(invoke(() => settings.detachKernelMemoryScope(fact.id, "global")), /fixture scope rollback/);
+  assert.deepEqual(memory.get(fact.id)?.scopes.map(scope => scope.binding), ["owned", "promoted"]);
+  assert.equal(recall("global"), priorText);
+  conn.exec("DROP TRIGGER fixture_scope_rollback");
+
+  assert.deepEqual(await invoke(() => settings.detachKernelMemoryScope(fact.id, "global")), { detached: true, forgotten: true });
+  assert.equal(memory.get(fact.id), undefined);
+  assert.equal(recall("global"), "保留另一项设置。");
+  assert.deepEqual(memory.repository.listRevisions(fact.id), []);
+  console.log(`PASS ${native ? "Rust" : "Node"} settings scope writes honor archive, rollback and exact last-scope withdrawal`);
+}
 
 // Real extraction, queue, repositories and SQLite; replace only process/model boundaries.
 const db = new AppDatabase(":memory:");
@@ -395,11 +464,293 @@ try {
       assert.equal(await closingTurn, true);
       assert.equal(await writer.captureCompleted({ ...turn, userText: "after close" }), false);
       console.log("PASS Rust memory capture, replay, atomic rollback, deletion ordering and shutdown");
+
+      nativeDb.connection.pragma("query_only = OFF");
+      const first = writer.turns.capture({ ...turn, capturedAt: 100, userText: "统一 甲", sessionId: "saved-session" }).turn;
+      const latest = writer.turns.capture({ ...turn, capturedAt: 100, userText: "统一 乙", metadata: { raw: "\uD800" } }).turn;
+      nativeDb.connection.prepare("UPDATE memory_turns SET extraction_state='failed',last_error='stored error',attempt_count=2 WHERE id=?")
+        .run(latest.id);
+      nativeDb.upsertTaskExecutionWorkspaceState({ taskId, directoryName: taskId, state: "trashed", createdAt: 1, updatedAt: 2 });
+      const addBot = nativeDb.connection.prepare(`INSERT INTO bots (
+        bot_id,user_id,display_name,expert_profile_json,memory_scope_json,authorization_json,created_at,updated_at
+      ) VALUES (?,?,'Fixture','{}','{}','{}',1,1)`);
+      const addConversation = nativeDb.connection.prepare(`INSERT INTO bot_conversations (
+        conversation_id,bot_id,user_id,created_at,updated_at
+      ) VALUES (?,?,?,1,1)`);
+      for (const [account, owner] of [["local", LOCAL_USER_ID], ["foreign", "fixture-foreign-owner"]]) {
+        addBot.run(`${account}-bot`, owner);
+        addConversation.run(`${account}-conversation`, `${account}-bot`, owner);
+        writer.turns.capture({ ...turn, taskId: `${account}-conversation`, capturedAt: 110, userText: `${account} evidence` });
+      }
+      // A separate connection must see the committed data even when a temporary host table shadows it.
+      nativeDb.connection.exec(`CREATE TEMP TABLE memory_turns AS SELECT * FROM main.memory_turns WHERE 0;
+        INSERT INTO temp.memory_turns SELECT * FROM main.memory_turns LIMIT 1;
+        UPDATE temp.memory_turns SET id='host-only'`);
+      const inspector = Object.assign(Object.create(AgentService.prototype), {
+        memoryPipeline: writer, memoryService: new MemoryService(nativeDb, { semantic: false }),
+      }) as Pick<InstanceType<typeof AgentService>, "listKernelMemoryTurns" | "getKernelMemoryTurn" | "readKernelMemoryTurnTasks">;
+      const results = await inspector.listKernelMemoryTurns({ taskId: ` ${taskId} `, query: " 统一 % ", limit: 1 });
+      assert.deepEqual(results.map(row => [row.userText, row.taskTitle, row.taskTrashed]), [["统一 乙", "Durable fixture", true]]);
+      const pending = await inspector.listKernelMemoryTurns({ taskId, query: "统一", extractionState: "pending" });
+      assert.deepEqual(pending.map(row => [row.userText, row.sessionId]), [["统一 甲", "saved-session"]]);
+      const detail = await inspector.getKernelMemoryTurn(latest.id);
+      assert.deepEqual([detail?.userText, detail?.assistantText, detail?.extractionState, detail?.attemptCount, detail?.lastError, detail?.metadata],
+        ["统一 乙", "已完成。", "failed", 2, "stored error", { raw: "\uD800" }]);
+      assert.equal((await inspector.getKernelMemoryTurn(first.id))?.taskTitle, "Durable fixture");
+      assert.equal(await inspector.getKernelMemoryTurn("host-only"), undefined);
+      assert.deepEqual(await inspector.readKernelMemoryTurnTasks(), [
+        { id: "foreign-conversation", title: "原任务已删除", trashed: false },
+        { id: "local-conversation", title: "Bot 对话", trashed: false },
+        { id: taskId, title: "Durable fixture", trashed: true },
+      ]);
+      nativeDb.connection.exec("DROP TABLE temp.memory_turns");
+      console.log("PASS Rust L0 inspector rows, detail, task titles, audit filters and insertion ordering");
+
+      const l1 = new MemoryService(nativeDb, { semantic: false });
+      const left = nativeDb.createSpace({ id: "fixture-memory-left", name: "Left" });
+      const right = nativeDb.createSpace({ id: "fixture-memory-right", name: "Right" });
+      const add = (title: string, scopeId: string, updatedAt: number, status: "active" | "superseded" = "active") => {
+        const item = l1.create({
+          kind: "fact", title, content: "校验设置页仍能查看关联资料", status,
+          confidence: 0.12345678912345678, explicit: true, sourceType: "manual",
+          validFrom: 0.12345678912345678, scopeType: "workspace", scopeId,
+          metadata: { original: "\uD800" },
+          evidence: [{ evidenceKind: "conversation", refId: first.id, excerpt: "会话原文" }],
+        });
+        nativeDb.connection.prepare("UPDATE memory_records SET updated_at=? WHERE id=?").run(updatedAt, item.id);
+        return item;
+      };
+      const older = add("记录 \\ 100%_ 甲", left.id, 10);
+      const newer = add("记录 \\ 100%_ 乙", left.id, 20);
+      add("记录 \\ 100XY", left.id, 30);
+      add("记录 \\ 100%_ 丙", right.id, 40);
+      add("记录 \\ 100%_ 历史", left.id, 50, "superseded");
+      l1.repository.addScope({ memoryId: newer.id, scopeType: "global", binding: "promoted", createdAt: newer.createdAt + 1 });
+      l1.repository.addRelation({ id: "fixture-relation", fromMemoryId: older.id, relation: "SUPPORTS", toMemoryId: newer.id, createdAt: 30 });
+      l1.update({ id: newer.id, content: "复核过的关联资料", changeReason: "手动复核" });
+      nativeDb.connection.prepare("UPDATE memory_records SET updated_at=20 WHERE id=?").run(newer.id);
+
+      nativeDb.connection.exec(`CREATE TEMP TABLE memory_records AS SELECT * FROM main.memory_records WHERE 0;
+        CREATE TEMP TABLE memory_revisions AS SELECT * FROM main.memory_revisions WHERE 0`);
+      const explorer = Object.assign(Object.create(AgentService.prototype), {
+        memoryService: new MemoryService(nativeDb, { semantic: false }),
+      }) as Pick<InstanceType<typeof AgentService>, "listKernelMemory" | "getKernelMemory" | "kernelMemoryHistory" | "memoriesForKernelTurn" | "kernelMemoryStats">;
+      const filter = { scopeType: "workspace", scopeId: left.id, kind: "fact", status: "active", query: " \\ 100%_ ", limit: 1 } as const;
+      assert.deepEqual((await explorer.listKernelMemory(filter)).map((row) => row.title), ["记录 \\ 100%_ 乙"]);
+      assert.deepEqual((await explorer.listKernelMemory({ ...filter, offset: 1 })).map((row) => row.title), ["记录 \\ 100%_ 甲"]);
+      assert.equal((await explorer.listKernelMemory({ limit: 1, offset: 3 }))[0]?.title, "记录 \\ 100%_ 历史");
+      const saved = await explorer.getKernelMemory(newer.id);
+      assert.equal(saved?.title, "记录 \\ 100%_ 乙");
+      assert.equal(saved?.explicit, true);
+      assert.equal(saved?.confidence, 0.12345678912345678);
+      assert.equal(saved?.validFrom, 0.12345678912345678);
+      assert.deepEqual(saved?.metadata, { original: "\uD800" });
+      assert.deepEqual(saved?.scopes.map(({ scopeType, scopeId, binding }) => [scopeType, scopeId, binding]), [
+        ["workspace", "fixture-memory-left", "owned"], ["global", undefined, "promoted"],
+      ]);
+      assert.deepEqual(saved?.evidence.map(({ evidenceKind, excerpt, refTitle }) => [evidenceKind, excerpt, refTitle]), [
+        ["conversation", "会话原文", undefined],
+      ]);
+      assert.deepEqual(saved?.relations.map(({ id, relation }) => [id, relation]), [["fixture-relation", "SUPPORTS"]]);
+      assert.equal(await explorer.getKernelMemory("absent"), undefined);
+      const revisions = await explorer.kernelMemoryHistory(newer.id);
+      assert.deepEqual(revisions.map(row => [
+        row.revision, row.content, row.changedBy, row.changeReason, row.confidence, row.validFrom, row.validUntil,
+      ]), [
+        [2, "复核过的关联资料", "manual", "手动复核", 0.12345678912345678, 0.12345678912345678, undefined],
+        [1, "校验设置页仍能查看关联资料", "manual", "created", 0.12345678912345678, 0.12345678912345678, undefined],
+      ]);
+      assert.deepEqual(await explorer.kernelMemoryHistory("absent"), []);
+      assert.deepEqual((await explorer.memoriesForKernelTurn(first.id)).map((row) => row.title), [
+        "记录 \\ 100%_ 历史", "记录 \\ 100%_ 丙", "记录 \\ 100XY", "记录 \\ 100%_ 乙", "记录 \\ 100%_ 甲",
+      ]);
+      nativeDb.connection.prepare("UPDATE memory_turns SET extraction_state='failed',attempt_count=3 WHERE id=?").run(first.id);
+      const counters = await explorer.kernelMemoryStats();
+      assert.deepEqual([counters.total, counters.active, counters.byKind, counters.byScope, counters.pendingTurns, counters.failedTurns], [
+        5, 4, { fact: 5 }, { global: 1, workspace: 5 }, 4, 1,
+      ]);
+      nativeDb.connection.exec("DROP TABLE temp.memory_records; DROP TABLE temp.memory_revisions");
+      console.log("PASS Rust L1 settings list, detail, revision history, turn evidence, scope filters and counters");
+
+      const projectId = "fixture-settings-project";
+      const projectStamp = 4_000_000_000_000;
+      nativeDb.connection.prepare(
+        "INSERT INTO projects(id,name,created_at,updated_at) VALUES (?,'Fixture',1,?)",
+      ).run(projectId, projectStamp);
+      nativeDb.connection.prepare(
+        "INSERT INTO memory_scenarios(id,scope_type,scope_id,title,summary,content_hash,created_at,updated_at) " +
+        "VALUES ('fixture-settings-scenario','project',?,'现有场景','场景内容','scenario-hash',1,1)",
+      ).run(projectId);
+      nativeDb.connection.prepare(
+        "INSERT INTO memory_core_profiles(id,scope_type,scope_id,title,content,content_hash,created_at,updated_at) " +
+        "VALUES ('fixture-settings-profile','project',?,'现有画像','画像内容','profile-hash',1,1)",
+      ).run(projectId);
+      nativeDb.connection.exec("CREATE TRIGGER reject_settings_memory_revision BEFORE INSERT ON memory_revisions " +
+        "WHEN NEW.title='事务回滚探针' BEGIN SELECT RAISE(ABORT, 'fixture rejects revision'); END");
+      const settings = Object.assign(Object.create(AgentService.prototype), {
+        memoryService: l1, notifyMemoryChanged: () => {},
+      }) as Pick<InstanceType<typeof AgentService>,
+        "createKernelMemoryAsync" | "updateKernelMemoryAsync" | "forgetKernelMemories">;
+      const version = () => nativeDb.connection.prepare("SELECT updated_at FROM projects WHERE id=?").pluck().get(projectId);
+      const views = () => [
+        nativeDb.connection.prepare("SELECT status FROM memory_scenarios WHERE id='fixture-settings-scenario'").pluck().get(),
+        nativeDb.connection.prepare("SELECT status FROM memory_core_profiles WHERE id='fixture-settings-profile'").pluck().get(),
+      ];
+      nativeDb.connection.pragma("query_only = ON");
+      const manual = await settings.createKernelMemoryAsync({
+        kind: "fact", scopeType: "project", scopeId: projectId, sourceType: "manual",
+        title: "  项目手动记忆  ", content: "验收前读记录", metadata: { original: "\uD800" },
+        validFrom: 0.12345678912345678, confidence: 0.12345678912345678,
+        evidence: [
+          { evidenceKind: "conversation", refId: first.id, excerpt: "原始语句" },
+          { evidenceKind: "conversation", refId: first.id, excerpt: "重复证据" },
+        ],
+      });
+      assert.deepEqual([manual.title, manual.content, manual.confidence, manual.validFrom, manual.metadata], [
+        "项目手动记忆", "验收前读记录", 0.12345678912345678, 0.12345678912345678, { original: "\uD800" },
+      ]);
+      assert.deepEqual(manual.evidence.map(e => [e.refId, e.excerpt]), [[first.id, "原始语句"]]);
+      assert.deepEqual(views(), ["stale", "stale"]);
+      assert.equal(version(), projectStamp + 1);
+
+      nativeDb.connection.pragma("query_only = OFF");
+      nativeDb.connection.exec("UPDATE memory_scenarios SET status='active' WHERE id='fixture-settings-scenario'; " +
+        "UPDATE memory_core_profiles SET status='active' WHERE id='fixture-settings-profile'");
+      nativeDb.connection.pragma("query_only = ON");
+      await Promise.all([
+        settings.updateKernelMemoryAsync({ id: manual.id, title: "项目记忆改名", changeReason: "改标题" }),
+        settings.updateKernelMemoryAsync({ id: manual.id, content: "验收后保留证据", validFrom: null, changeReason: "改内容" }),
+      ]);
+      const after = await explorer.getKernelMemory(manual.id);
+      assert.deepEqual([after?.title, after?.content, after?.validFrom, after?.evidence[0]?.excerpt],
+        ["项目记忆改名", "验收后保留证据", undefined, "原始语句"]);
+      assert.deepEqual(l1.repository.listRevisions(manual.id).map(r => [r.revision, r.changedBy]), [
+        [3, "manual"], [2, "manual"], [1, "manual"],
+      ]);
+      assert.deepEqual(views(), ["stale", "stale"]);
+      assert.equal(version(), projectStamp + 3);
+
+      assert.equal((await settings.updateKernelMemoryAsync({ id: manual.id, title: "项目记忆改名" })).title, "项目记忆改名");
+      await assert.rejects(
+        settings.updateKernelMemoryAsync({ id: manual.id, title: "事务回滚探针" }), /fixture rejects revision/,
+      );
+      assert.equal((await explorer.getKernelMemory(manual.id))?.title, "项目记忆改名");
+      assert.equal(l1.repository.listRevisions(manual.id).length, 3);
+      assert.equal(version(), projectStamp + 3);
+
+      nativeDb.connection.pragma("query_only = OFF");
+      nativeDb.connection.prepare("UPDATE projects SET archived=1 WHERE id=?").run(projectId);
+      nativeDb.connection.pragma("query_only = ON");
+      await assert.rejects(settings.updateKernelMemoryAsync({ id: manual.id, title: "归档后改名" }), /项目已归档/);
+      await assert.rejects(settings.createKernelMemoryAsync({
+        kind: "fact", title: "归档后新增", scopeType: "project", scopeId: projectId, sourceType: "manual",
+      }), /项目已归档/);
+      assert.deepEqual((await explorer.listKernelMemory({ scopeType: "project", scopeId: projectId })).map(r => r.title), [
+        "项目记忆改名",
+      ]);
+      console.log("PASS Rust settings memory creation, concurrent edits, revision rollback, archive and project projections");
+
+      nativeDb.connection.pragma("query_only = OFF");
+      const forgetProjectId = "forget-settings-project";
+      nativeDb.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES (?,'Forget',1,?)")
+        .run(forgetProjectId, projectStamp);
+      nativeDb.upsertTask({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 });
+      const forget = l1.create({
+        title: "巡检步骤", content: "启用蓝色工位", kind: "procedure",
+        scopeType: "task", scopeId: DOTS_TASK_ID, sourceType: "manual",
+        evidence: [{ evidenceKind: "conversation", refId: first.id, excerpt: "走西侧通道" }],
+      });
+      l1.update({ id: forget.id, content: "启用绿色工位" });
+      l1.promote(forget.id, "global");
+      l1.promote(forget.id, "project", forgetProjectId);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const previouslyUsed = JSON.stringify([forget.id]);
+      const conn = nativeDb.connection;
+      conn.prepare(
+        "INSERT INTO memory_scenarios(id,scope_type,scope_id,title,summary,source_memory_ids_json,content_hash,created_at,updated_at) " +
+        "VALUES ('forget-dots-scenario','task',?,'原始场景','启用绿色工位',?,'forget-scenario',1,1), " +
+        "('forget-project-scenario','project',?,'保留场景','待重新生成','[]','retain-scenario',1,1)",
+      ).run(DOTS_TASK_ID, previouslyUsed, forgetProjectId);
+      conn.prepare(
+        "INSERT INTO memory_core_profiles(id,scope_type,scope_id,title,content,source_scenario_ids_json,content_hash,created_at,updated_at) " +
+        "VALUES ('forget-dots-profile','task',?,'旧画像','启用绿色工位','[\"forget-dots-scenario\"]','forget-profile',1,1)",
+      ).run(DOTS_TASK_ID);
+      conn.prepare(
+        "INSERT INTO memory_skill_candidates(id,slug,title,description,instructions,status,scope_type,source_memory_ids_json,source_signature,created_at,updated_at) " +
+        "VALUES ('forget-learned-skill','inspect','旧技能','description','instruction','ready','global',?,'forget-skill',1,1)",
+      ).run(previouslyUsed);
+      conn.prepare(
+        "INSERT INTO memory_candidates(id,task_id,kind,title,content,scope_type,confidence,importance,operation_hint,status,created_at,resolved_memory_id) " +
+        "VALUES ('forget-extracted',?,'procedure','旧提炼','启用绿色工位','global',1,1,'create','committed',1,?)",
+      ).run(taskId, forget.id);
+      conn.prepare("INSERT INTO memory_embeddings VALUES (?,'fixture-model','v1',?,1,x'00000000',1)")
+        .run(forget.id, forget.contentHash);
+      l1.repository.addRelation({ id: "forget-relation", fromMemoryId: forget.id, toMemoryId: manual.id, relation: "SUPPORTS", createdAt: 1 });
+      conn.exec("CREATE TRIGGER reject_settings_forget BEFORE DELETE ON memory_records " +
+        "WHEN OLD.title='巡检步骤' BEGIN SELECT RAISE(ABORT,'fixture rejects forget'); END");
+      conn.pragma("query_only = ON");
+      await assert.rejects(settings.forgetKernelMemories([forget.id]), /fixture rejects forget/);
+      assert.equal((await explorer.getKernelMemory(forget.id))?.content, "启用绿色工位");
+      assert.equal(conn.prepare("SELECT content FROM memory_core_profiles WHERE id='forget-dots-profile'").pluck().get(), "启用绿色工位");
+      assert.equal(conn.prepare("SELECT updated_at FROM projects WHERE id=?").pluck().get(forgetProjectId), projectStamp + 1);
+      assert.equal(conn.prepare("SELECT COUNT(*) FROM memory_forget_targets WHERE scope_type='project' AND scope_id=?")
+        .pluck().get(forgetProjectId), 0);
+
+      conn.pragma("query_only = OFF");
+      conn.exec("DROP TRIGGER reject_settings_forget");
+      const editOnRetry = nativeDb.runtimeAuditReader!.memoryRecordsData.bind(nativeDb.runtimeAuditReader);
+      let edited = false;
+      nativeDb.runtimeAuditReader!.memoryRecordsData = async query => {
+        const data = await editOnRetry(query);
+        if (!edited && query.kind === "forgetSource" && query.id === forget.id) {
+          edited = true;
+          conn.pragma("query_only = OFF");
+          try { conn.prepare("UPDATE memory_records SET content=? WHERE id=?").run("启用红色工位", forget.id); }
+          finally { conn.pragma("query_only = ON"); }
+        }
+        return data;
+      };
+      conn.pragma("query_only = ON");
+      try {
+        await assert.rejects(settings.forgetKernelMemories([manual.id, forget.id]), /已删除 1 条；1 条失败：项目已归档/);
+      } finally {
+        nativeDb.runtimeAuditReader!.memoryRecordsData = editOnRetry;
+        conn.pragma("query_only = OFF");
+      }
+      assert.equal((await explorer.getKernelMemory(manual.id))?.title, "项目记忆改名");
+      assert.equal(await explorer.getKernelMemory(forget.id), undefined);
+      assert.deepEqual(await explorer.kernelMemoryHistory(forget.id), []);
+      assert.deepEqual(l1.repository.get(manual.id)?.relations, []);
+      assert.equal(conn.prepare("SELECT COUNT(*) FROM memory_candidates WHERE id='forget-extracted'").pluck().get(), 0);
+      assert.equal(conn.prepare("SELECT COUNT(*) FROM memory_embeddings WHERE memory_id=?").pluck().get(forget.id), 0);
+      assert.equal(conn.prepare("SELECT COUNT(*) FROM memory_scenarios WHERE id='forget-dots-scenario'").pluck().get(), 0);
+      assert.equal(conn.prepare("SELECT COUNT(*) FROM memory_core_profiles WHERE id='forget-dots-profile'").pluck().get(), 0);
+      assert.equal(conn.prepare("SELECT status FROM memory_scenarios WHERE id='forget-project-scenario'").pluck().get(), "stale");
+      assert.equal(conn.prepare("SELECT status FROM memory_skill_candidates WHERE id='forget-learned-skill'").pluck().get(), "stale");
+      assert.equal(conn.prepare("SELECT updated_at FROM projects WHERE id=?").pluck().get(forgetProjectId), projectStamp + 2);
+      const watermarks = new MemoryForgetWatermarks(conn);
+      const previousText = "巡检步骤启用蓝色工位；巡检步骤启用绿色工位；巡检步骤启用红色工位；走西侧通道；保持南门可通行。";
+      for (const scope of [
+        { scopeType: "global" },
+        { scopeType: "task", scopeId: DOTS_TASK_ID },
+        { scopeType: "project", scopeId: forgetProjectId },
+      ] as const) {
+        const filter = watermarks.sourceFilter([scope]);
+        assert.equal(filter(previousText, "", 1).userText, "保持南门可通行。");
+        assert.equal(filter(previousText, "", projectStamp).userText, previousText);
+      }
+      conn.pragma("query_only = ON");
+      await settings.forgetKernelMemories([forget.id]);
+      assert.equal(conn.prepare("SELECT updated_at FROM projects WHERE id=?").pluck().get(forgetProjectId), projectStamp + 2);
+      console.log("PASS Rust settings forget removes dependent data and blocks old evidence in every scope");
+      conn.pragma("query_only = OFF");
+      await verifySettingsScopeWrites(nativeDb, true);
     } finally {
       await nativeDb.runtimeAuditReader?.close();
       nativeDb.close();
     }
   }
+  await verifySettingsScopeWrites(db, false);
 } finally {
   db.close();
   rmSync(sandbox, { recursive: true, force: true });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { workDeliveryFiles, workDeliveryResults } from "./WorkDeliveryArtifacts";
 import type Database from "better-sqlite3";
-import type { WorkDto, WorkDeliverableDto } from "../../../shared/bot-work";
+import type { WorkDto, WorkDeliverableDto, WorkProjectionDto } from "../../../shared/bot-work";
 import {
   capabilityOfGuarantee, externalDeliveryStatus, workCardReadRequestSchema, workDiagnosticsRequestSchema,
   workManualResendRequestSchema, type WorkCardReadResult, type WorkDeliveryGuarantee,
@@ -11,6 +11,7 @@ import type { ExpectedVersionGuard, WorkActor, WorkControlResult } from "../../.
 import { WorkResultCards } from "./WorkResultCards";
 import { WorkOwnerSummary } from "./WorkOwnerSummary";
 import type { WorkService } from "./WorkService";
+import type { RuntimeWorkCardRead, WorkQueueNativeReader } from "./WorkQueueData";
 
 const ALL_SECTIONS = ["requirements", "responsibility", "executions", "acceptance", "resources", "delivery"] as const;
 
@@ -184,21 +185,42 @@ export class WorkPhase5Facts {
    * stateVersion/intentRevision/ownerEpoch, never admit an action and never schedule work.
    */
   markRead(actor: WorkActor, input: unknown): WorkCardReadResult {
+    const prepared = this.prepareRead(actor, input);
+    return prepared.ok ? this.readOnHost(prepared.request) : prepared;
+  }
+
+  private readOnHost(request: RuntimeWorkCardRead): WorkCardReadResult {
+    return this.works.transaction((): WorkCardReadResult => {
+      const work = this.repo.getWork(request.workId);
+      if (!work || work.userId !== request.userId) return { ok: false, message: "找不到结果卡片" };
+      const result = this.cards.markRead(request);
+      if (result.ok) this.works.emitCurrentProjection(request.workId, { force: true });
+      return result;
+    });
+  }
+
+  async writeRead(actor: WorkActor, input: unknown, native?: WorkQueueNativeReader): Promise<WorkCardReadResult> {
+    const prepared = this.prepareRead(actor, input);
+    if (!prepared.ok) return prepared;
+    const { request } = prepared;
+    if (!native || this.db.inTransaction || !Number.isSafeInteger(request.readAt)) return this.readOnHost(request);
+    const response = await native.markWorkCardRead(request);
+    if (response?.status === "needsHost") return this.readOnHost(request);
+    if (response?.status === "rejected") return { ok: false, message: response.message };
+    if (!response) return { ok: false, message: "未收到结果卡片已读确认" };
+    if (response.result.ok) this.works.emitCurrentProjection(request.workId, { force: true });
+    return response.result;
+  }
+
+  private prepareRead(actor: WorkActor, input: unknown): { ok: true; request: RuntimeWorkCardRead } | { ok: false; message: string } {
     const parsed = workCardReadRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, message: parsed.error.issues[0]?.message ?? "阅读请求无效" };
     const resolved = this.works.resolveWorkActor(actor);
     if (typeof resolved === "string") return { ok: false, message: resolved };
-    const work = this.repo.getWork(parsed.data.workId);
-    if (!work || work.userId !== resolved.userId) return { ok: false, message: "找不到结果卡片" };
+    const { workId, semanticCardKey, readAt: proposed } = parsed.data;
     const now = this.now();
     // A client clock may not run ahead of the host; a future timestamp never locks others.
-    const readAt = Math.min(parsed.data.readAt ?? now, now);
-    return this.works.transaction((): WorkCardReadResult => {
-      const result = this.cards.markRead({ workId: work.workId, semanticCardKey: parsed.data.semanticCardKey,
-        userId: resolved.userId, readAt });
-      if (result.ok) this.works.emitCurrentProjection(work.workId, { force: true });
-      return result;
-    });
+    return { ok: true, request: { userId: resolved.userId, workId, semanticCardKey, readAt: Math.min(proposed ?? now, now) } };
   }
 
   /** Explicit, attributable resend of a delivery whose external outcome is unresolved. */
@@ -226,10 +248,11 @@ export class WorkPhase5Facts {
   // ------------------------------------------------------------ read views
 
   /** Decision-shaped view: no bindings, retries or ledgers. */
-  summary(userId: string, workId: string): WorkSummaryProjectionDto | undefined {
+  summary(userId: string, workId: string, existing?: WorkProjectionDto): WorkSummaryProjectionDto | undefined {
     const work = this.repo.getWork(workId);
     if (!work || work.userId !== userId) return undefined;
-    const projection = this.works.getProjection(workId);
+    const projection = existing?.workId === workId && existing.stateVersion === work.stateVersion
+      ? existing : this.works.getProjection(workId);
     if (!projection) return undefined;
     const currentCards = this.cards.list(work).filter(card => card.currency === "current");
     const notifications = this.repo.listNotifications(workId);

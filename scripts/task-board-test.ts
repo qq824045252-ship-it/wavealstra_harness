@@ -35,6 +35,14 @@ try {
   const prior = bot.accept(LOCAL_USER_ID, { botId: DEFAULT_BOT_ID, requestId: "older", text: "历史对话" });
   let board = new TaskBoardRepository(db.connection, db.runtimeAuditReader);
   const ids = async (view: Parameters<typeof board.page>[0]) => (await board.page(view, now)).rows.map((r) => r.id);
+  const act = async (...args: Parameters<typeof board.action>) => {
+    if (useNative) db.connection.pragma("query_only = ON");
+    try {
+      await board.action(...args);
+    } finally {
+      if (useNative) db.connection.pragma("query_only = OFF");
+    }
+  };
   assert.equal((await board.page({ view: "recent" }, now)).rows[0]?.request?.messageId, prior.assistantMessageId);
   db.connection.transaction(() => {
     for (let i = 0; i < 1000; i++)
@@ -50,12 +58,12 @@ try {
     .run("ask", "waiting", "run", "msg", "short_text", "使用哪种口径？", "pending", day(-40));
   board.follow("quote", "原始需求", day(-35));
   board.follow("quote", "调整含税口径", day(-1));
-  board.action("report", "visit", day(-2));
-  board.action("report", "visit", day(-2) + 60_000);
+  await act("report", "visit", day(-2));
+  await act("report", "visit", day(-2) + 60_000);
   assert.deepEqual(await ids({ view: "frequent" }), []);
-  board.action("report", "read", now);
+  await act("report", "read", now);
   assert.deepEqual(await ids({ view: "frequent" }), [], "opening a home recommendation never feeds its own rank");
-  board.action("report", "visit", now);
+  await act("report", "visit", now);
   assert.deepEqual(await ids({ view: "frequent" }), ["report"]);
   assert.equal((await board.page({ view: "frequent" })).rows[0].status, "completed");
   assert.deepEqual(await ids({ view: "recent", scope: null }), ["quote"]);
@@ -63,7 +71,7 @@ try {
   assert.deepEqual(await ids({ view: "dates", dateKind: "due", from: day(4), until: day(5) }), ["quote"]);
   assert.deepEqual(await ids({ view: "dates", dateKind: "due", from: day(3), until: day(4) }), []);
   assert.equal((await board.page({ view: "attention" }, now)).rows[0].messageId, "msg");
-  board.action("waiting", "later", now);
+  await act("waiting", "later", now);
   assert.deepEqual(await ids({ view: "attention" }), []);
   board.patch({
     type: "tool_start",
@@ -79,11 +87,32 @@ try {
     ["waiting"],
   );
   assert.equal((await board.page({ view: "attention" }, now + 1)).rows[0].messageId, "new-msg");
-  board.action("quote", "today", now);
+  await act("quote", "today", now);
   assert.ok((await ids({ view: "today" })).includes("quote"));
-  board.action("quote", "later", now);
+  await act("quote", "later", now);
   assert.ok(!(await ids({ view: "today" })).includes("quote"));
   assert.ok((await board.page({ view: "attention" }, day(1))).rows.some((r) => r.id === "quote"));
+  await act("quote", "clear", now);
+  assert.deepEqual(await ids({ view: "later" }), ["waiting"]);
+  await act("quote", "later", now);
+
+  const requestId = (await board.page({ view: "recent" }, now)).rows.find(row => row.request?.messageId === prior.assistantMessageId)!.id;
+  const requestToday = { view: "today", search: "历史对话" } as const;
+  await act(requestId, "today", now);
+  assert.deepEqual(await ids(requestToday), [requestId]);
+  await act(requestId, "clear", now);
+  assert.deepEqual(await ids(requestToday), []);
+
+  db.upsertTask({ id: "hidden-plan", title: "计划归档验收", updatedAt: now });
+  db.archiveTask("hidden-plan", true);
+  await act("hidden-plan", "today", now);
+  db.archiveTask("hidden-plan", false);
+  assert.deepEqual(await ids({ view: "all", search: "计划归档验收" }), ["hidden-plan"]);
+  assert.deepEqual(await ids({ view: "today", search: "计划归档验收" }), []);
+  await act("hidden-plan", "today", now);
+  assert.deepEqual(await ids({ view: "today", search: "计划归档验收" }), ["hidden-plan"]);
+  await act("hidden-plan", "clear", now);
+  db.archiveTask("hidden-plan", true);
   let cursor: Parameters<typeof board.page>[0]["cursor"];
   const unique = new Set<string>();
   do {
@@ -154,6 +183,15 @@ try {
   assert.equal((await board.page({ view: "review", scope: null, preview: true }, now)).total, 0, "accepted changes drop out of the pending review group");
 
   assert.deepEqual(await ids({ view: "results", preview: true }), []);
+  db.upsertTask({
+    id: "unread-result", title: "待看的结果", status: "completed", isFavorited: true, updatedAt: now,
+  });
+  const unreadResults = { view: "results", search: "待看的结果", preview: true } as const;
+  assert.deepEqual(await ids(unreadResults), ["unread-result"]);
+  await act("unread-result", "read", now);
+  assert.deepEqual(await ids(unreadResults), []);
+  db.archiveTask("unread-result", true);
+
   db.connection
     .prepare(
       "INSERT INTO cron_jobs(id,name,prompt,schedule_type,schedule_expr,created_at,updated_at) VALUES('job','库存同步','','cron','* * * * *',?,?)",

@@ -1,10 +1,8 @@
 import { shell, type BrowserWindow, type WebContents } from "electron";
 import { showOpenFileDialog, showSaveFileDialog } from "../FileDialogService";
 import { readFileSync, statSync } from "node:fs";
-import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
-import { promisify } from "node:util";
-import { gzip, gunzip } from "node:zlib";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom/worker";
 import TurndownService from "turndown";
@@ -13,7 +11,6 @@ import JSZip from "jszip";
 import { LIBRARY_INLINE_FILE_MAX_BYTES, type LibraryItemDto, type LibraryNoteOperation, type LibraryNoteOperationResults } from "../../shared/library-ipc";
 import type { BrowserHost } from "../browser/BrowserHost";
 import type { LibraryService } from "./LibraryService";
-import { libraryNotesBackup } from "./library-note-backup";
 import { rewriteNoteLinks } from "./library-note-links";
 
 const IMAGE_LIMIT = 20 * 1024 * 1024;
@@ -21,7 +18,6 @@ const NOTE_IMAGE_TYPES = new Map([
   ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"], ["gif", "image/gif"],
   ["webp", "image/webp"], ["avif", "image/avif"], ["bmp", "image/bmp"],
 ]);
-const BACKUP_LIMIT = 256 * 1024 * 1024;
 const NOTE_LINK = /^mybuddy-library:\/\/local\/([A-Za-z0-9_-]+)\/?$/;
 const printing = new WeakSet<WebContents>();
 const DOCUMENT_STYLE = "body{background:white;color:#222;font:15px/1.6 system-ui,sans-serif;max-width:820px;margin:40px auto;padding:0 20px}img{max-width:100%}pre{white-space:pre-wrap;background:#eee;padding:12px}td,th{border:1px solid #aaa;padding:4px 8px}table{border-collapse:collapse}";
@@ -35,18 +31,21 @@ clipMarkdown.use(gfm);
 export async function runLibraryNoteOperation(library: LibraryService, browser: BrowserHost, parent: BrowserWindow | null, request: LibraryNoteOperation) {
   switch (request.type) {
     case "trashList": return library.readTrashedNotes(request.owner);
-    case "metadata": return library.setNoteMetadata(request.owner, request.id, request);
-    case "trash": return library.setNoteTrashed(request.owner, request.ids, true);
-    case "restore": return library.setNoteTrashed(request.owner, request.ids, false);
+    case "metadata": return library.writeNoteMetadata(request.owner, request.id, request);
+    case "trash": return library.trashNotes(request.owner, request.ids);
+    case "restore": return library.restoreNotes(request.owner, request.ids);
     case "move": return library.moveNotes(request.owner, request.ids, request.collectionId);
-    case "merge": return library.mergeNotes(request.owner, request.ids);
+    case "merge":
+      await library.flushPendingTextWrites();
+      return library.mergeNotes(request.owner, request.ids);
     case "versions": return library.readVersions(request.id);
-    case "readVersion": return library.readVersion(request.id, request.version);
+    case "readVersion": return library.readVersionBody(request.id, request.version);
     case "noteImage": return library.noteImageUrl(request.id, request.href, request.version);
     case "restoreVersion": {
       library.requireOwnedNoteItems(request.owner, [request.id]);
-      return library.writeContent({ id: request.id, content: library.readVersion(request.id, request.version),
-        expectedContentHash: request.expectedContentHash });
+      const content = await library.readVersionBody(request.id, request.version);
+      library.requireOwnedNoteItems(request.owner, [request.id]);
+      return library.writeContentAsync({ id: request.id, content, expectedContentHash: request.expectedContentHash });
     }
     case "addImage": {
       const [note] = library.requireOwnedNoteItems(request.owner, [request.id]);
@@ -75,9 +74,7 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
       const options = { defaultPath: "MyBuddy-笔记备份.mynotes", filters: [{ name: "MyBuddy 笔记备份", extensions: ["mynotes"] }] };
       const result = await showSaveFileDialog(parent, options);
       if (result.canceled || !result.filePath) return false;
-      const archive = JSON.stringify(libraryNotesBackup.parse(library.createNoteBackup(request.owner)));
-      if (Buffer.byteLength(archive) > BACKUP_LIMIT) throw new Error("资料超过单份本地备份的大小上限");
-      await writeFile(result.filePath, await promisify(gzip)(archive));
+      await library.exportNoteBackup(request.owner, result.filePath);
       return true;
     }
     case "restoreBackup": {
@@ -85,11 +82,7 @@ export async function runLibraryNoteOperation(library: LibraryService, browser: 
       const result = await showOpenFileDialog(parent, options);
       const path = result.filePaths[0];
       if (result.canceled || !path) return null;
-      if ((await stat(path)).size > BACKUP_LIMIT) throw new Error("备份文件过大");
-      const json = await promisify(gunzip)(await readFile(path), { maxOutputLength: BACKUP_LIMIT });
-      const parsed = libraryNotesBackup.safeParse(JSON.parse(json.toString("utf8")));
-      if (!parsed.success) throw new Error("这不是有效的 MyBuddy 笔记备份");
-      return library.restoreNoteBackup(request.owner, parsed.data);
+      return library.importNoteBackup(request.owner, path);
     }
     case "export": return exportNotes(library, parent, request);
     case "clip": return clipPage(library, browser, request);
@@ -260,7 +253,7 @@ async function clipPage(library: LibraryService, browser: BrowserHost, request: 
     return { item, failedImages: [...failedImages] };
   } catch (error) {
     for (const item of createdImages) {
-      try { library.deleteItem(item.id); } catch (cleanupError) { console.warn("[Notes] 图片清理失败", cleanupError); }
+      try { await library.deleteItemAsync(item.id); } catch (cleanupError) { console.warn("[Notes] 图片清理失败", cleanupError); }
     }
     throw error;
   }
@@ -296,6 +289,7 @@ async function fetchImage(session: Electron.Session, url: string): Promise<{ byt
 }
 
 async function exportNotes(library: LibraryService, parent: BrowserWindow | null, request: Extract<LibraryNoteOperation, { type: "export" }>) {
+  await library.flushPendingTextWrites();
   const content = [...new Set(request.ids)].map((id) => library.readContent(id));
   if (!content.length || content.some((entry) => entry.item.kind !== "markdown")) throw new Error("请选择要导出的 Markdown 笔记");
   if (content.some((entry) => entry.contentTooLarge)) throw new Error("请通过「打开位置」复制大型资料原文件");

@@ -7,6 +7,16 @@ type Scope = { scopeType: MemoryScopeType; scopeId?: string };
 type Target = { fingerprint: string; text_length: number; cutoff_at: number; allowed_message_id: string | null;
   value_fingerprint: string | null; guard_fingerprint: string | null; guard_length: number | null };
 type Withdrawal = { kind: "selector" | "evidence"; value: string } | { kind: "fact"; value: string; identity: string };
+type MemoryFact = { title: string; content: string };
+type WithdrawalRecord = MemoryFact & { evidence: readonly { excerpt?: string | null }[] };
+export type MemoryWithdrawalSource = WithdrawalRecord & { id: string; revisions: MemoryFact[] };
+export type WithdrawalTarget = {
+  fingerprint: string;
+  textLength: number;
+  valueFingerprint: string;
+  guardFingerprint: string | null;
+  guardLength: number | null;
+};
 const normalize = (text: string) => text.normalize("NFKC").toLowerCase().replace(/[\p{P}\p{S}\s]+/gu, "");
 const fingerprint = (text: string) => createHash("sha256").update(text).digest("hex");
 const textFingerprint = (text: string) => fingerprint((/^[a-z0-9]+$/i.test(text.normalize("NFKC").trim()) ? "word:" : "span:") + normalize(text));
@@ -15,6 +25,78 @@ const ADVANCE_IF_NEWER = `WHERE excluded.cutoff_at > cutoff_at OR (excluded.cuto
     AND (SELECT ordinal FROM bot_messages WHERE message_id=excluded.allowed_message_id)
       >= (SELECT ordinal FROM bot_messages WHERE message_id=allowed_message_id))))`;
 
+function recordWithdrawals(record: WithdrawalRecord, revisions: readonly MemoryFact[]): Withdrawal[] {
+  const facts: Withdrawal[] = [record, ...revisions].map(fact => ({ kind: "fact", value: fact.content, identity: fact.title }));
+  const evidence: Withdrawal[] = [];
+  for (const item of record.evidence) {
+    const quote = /^用户：([\s\S]*?)(?:\s+助手：|$)/.exec(item.excerpt ?? "")?.[1] ?? item.excerpt ?? "";
+    if (normalize(quote) === normalize(record.title) || revisions.some(revision => normalize(quote) === normalize(revision.title))) continue;
+    const clauses = memoryClauses(quote);
+    if (clauses.length === 1) evidence.push({ kind: "evidence", value: clauses[0] });
+    // Match literal fact sentences AND their identity, never category titles
+    // alone or generic retention notes. A/B may legitimately have equal values.
+    for (const fact of [record, ...revisions]) {
+      const core = fact.content.replace(/（[^）]*）|\([^)]*\)/g, "");
+      const identities = [fact.title, ...(fact.title.match(/[a-z][a-z0-9_-]*/gi) ?? [])];
+      const named = new Set(identities.filter(identity => /^[a-z][a-z0-9_-]*$/i.test(identity)).map(identity => identity.toLowerCase()));
+      const fragments = [...new Set(memoryClauses(core).flatMap(part => [part,
+        ...[...part.matchAll(/[a-z][a-z0-9_-]*/gi)].filter(match => named.has(match[0].toLowerCase())).map(match => part.slice(match.index))]))]
+        .filter(part => normalize(part).length >= 4 && normalize(part) !== normalize(fact.title));
+      for (const clause of clauses) for (const fragment of fragments) {
+        if (!normalize(clause).includes(normalize(fragment))) continue;
+        const identity = identities.find(value => {
+          if (/^[a-z0-9_-]+$/i.test(value)) return (clause.match(/[a-z][a-z0-9_-]*/gi) ?? []).some(word => word.toLowerCase() === value.toLowerCase());
+          return normalize(clause).includes(normalize(value));
+        });
+        if (!identity) continue;
+        evidence.push({ kind: "fact", value: fragment, identity });
+        // Persist a second, identity-bound value proof for literal assignments.
+        // Assistant paraphrases need not retain the copula (e.g. X 的标记“V”).
+        // Only derive it from the fact body already found in original user evidence;
+        // never use a category title, a trailing number, or a retention annotation.
+        const assignment = /^(.+?)(?:是|为|[:：=]|\s+is\s+)([^。；;！!？?\n]+)$/i.exec(fragment.trim());
+        if (assignment && /^[a-z][a-z0-9_-]*$/i.test(identity) && normalize(assignment[1]).includes(normalize(identity))) {
+          const value = assignment[2].trim();
+          if (normalize(value).length >= 2 && normalize(value) !== normalize(identity)) {
+            // Guard the property as well: X.color=blue must not withdraw
+            // X.label=blue. Identity-free restatements use host lineage instead.
+            evidence.push({ kind: "fact", value, identity: assignment[1].trim() });
+          }
+        }
+      }
+    }
+  }
+  return [...facts, ...evidence];
+}
+
+function withdrawalTarget(proof: Withdrawal): WithdrawalTarget | undefined {
+  const text = normalize(proof.value);
+  if (!text) return undefined;
+  // Latin identifiers match complete words. CJK evidence can occur inside a sentence.
+  const valueFingerprint = textFingerprint(proof.value);
+  const guardFingerprint = proof.kind === "fact" ? textFingerprint(proof.identity) : null;
+  return {
+    fingerprint: guardFingerprint ? fingerprint(`${valueFingerprint}:${guardFingerprint}`) : valueFingerprint,
+    textLength: text.length,
+    valueFingerprint,
+    guardFingerprint,
+    guardLength: proof.kind === "fact" ? normalize(proof.identity).length : null,
+  };
+}
+
+export function memoryWithdrawalTargets(records: readonly MemoryWithdrawalSource[]): WithdrawalTarget[] {
+  const targets = new Map<string, WithdrawalTarget>();
+  for (const record of records) {
+    const proofs = recordWithdrawals(record, record.revisions);
+    if (record.id.startsWith("mem_weekly_")) proofs.push({ kind: "selector", value: record.id });
+    for (const proof of proofs) {
+      const target = withdrawalTarget(proof);
+      if (target && !targets.has(target.fingerprint)) targets.set(target.fingerprint, target);
+    }
+  }
+  return [...targets.values()];
+}
+
 /** Source invalidation, not a second memory store: no forgotten content or history
  * deletion. Write invalidation in the same transaction as the corresponding removal. */
 export class MemoryForgetWatermarks {
@@ -22,47 +104,7 @@ export class MemoryForgetWatermarks {
 
   withdrawRecord(record: MemoryRecordDto, revisions: readonly MemoryRevisionDto[], scopes: readonly Scope[],
     source?: MemoryForgetSource): void {
-    const facts: Withdrawal[] = [record, ...revisions].map(fact => ({ kind: "fact", value: fact.content, identity: fact.title }));
-    const evidence: Withdrawal[] = [];
-    for (const item of record.evidence) {
-      const quote = /^用户：([\s\S]*?)(?:\s+助手：|$)/.exec(item.excerpt ?? "")?.[1] ?? item.excerpt ?? "";
-      if (normalize(quote) === normalize(record.title) || revisions.some(revision => normalize(quote) === normalize(revision.title))) continue;
-      const clauses = memoryClauses(quote);
-      if (clauses.length === 1) evidence.push({ kind: "evidence", value: clauses[0] });
-      // Match literal fact sentences AND their identity, never category titles
-      // alone or generic retention notes. A/B may legitimately have equal values.
-      for (const fact of [record, ...revisions]) {
-        const core = fact.content.replace(/（[^）]*）|\([^)]*\)/g, "");
-        const identities = [fact.title, ...(fact.title.match(/[a-z][a-z0-9_-]*/gi) ?? [])];
-        const named = new Set(identities.filter(identity => /^[a-z][a-z0-9_-]*$/i.test(identity)).map(identity => identity.toLowerCase()));
-        const fragments = [...new Set(memoryClauses(core).flatMap(part => [part,
-          ...[...part.matchAll(/[a-z][a-z0-9_-]*/gi)].filter(match => named.has(match[0].toLowerCase())).map(match => part.slice(match.index))]))]
-          .filter(part => normalize(part).length >= 4 && normalize(part) !== normalize(fact.title));
-        for (const clause of clauses) for (const fragment of fragments) {
-          if (!normalize(clause).includes(normalize(fragment))) continue;
-          const identity = identities.find(value => {
-            if (/^[a-z0-9_-]+$/i.test(value)) return (clause.match(/[a-z][a-z0-9_-]*/gi) ?? []).some(word => word.toLowerCase() === value.toLowerCase());
-            return normalize(clause).includes(normalize(value));
-          });
-          if (!identity) continue;
-          evidence.push({ kind: "fact", value: fragment, identity });
-          // Persist a second, identity-bound value proof for literal assignments.
-          // Assistant paraphrases need not retain the copula (e.g. X 的标记“V”).
-          // Only derive it from the fact body already found in original user evidence;
-          // never use a category title, a trailing number, or a retention annotation.
-          const assignment = /^(.+?)(?:是|为|[:：=]|\s+is\s+)([^。；;！!？?\n]+)$/i.exec(fragment.trim());
-          if (assignment && /^[a-z][a-z0-9_-]*$/i.test(identity) && normalize(assignment[1]).includes(normalize(identity))) {
-            const value = assignment[2].trim();
-            if (normalize(value).length >= 2 && normalize(value) !== normalize(identity)) {
-              // Guard the property as well: X.color=blue must not withdraw
-              // X.label=blue. Identity-free restatements use host lineage instead.
-              evidence.push({ kind: "fact", value, identity: assignment[1].trim() });
-            }
-          }
-        }
-      }
-    }
-    this.persist(scopes, [...facts, ...evidence], source?.createdAt, source?.messageId);
+    this.persist(scopes, recordWithdrawals(record, revisions), source?.createdAt, source?.messageId);
     if (source) {
       const put = this.db.prepare(`INSERT OR IGNORE INTO memory_forget_receipts(scope_type,scope_id,source_message_id,request_fingerprint) VALUES (?,?,?,?)`);
       for (const scope of scopes) for (const clause of source.requestClauses ?? []) put.run(scope.scopeType, scope.scopeId ?? "", source.messageId, fingerprint(clause));
@@ -89,16 +131,10 @@ export class MemoryForgetWatermarks {
       VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id,fingerprint) DO UPDATE SET
       cutoff_at=excluded.cutoff_at,allowed_message_id=excluded.allowed_message_id ${ADVANCE_IF_NEWER}`);
     for (const proof of proofs) {
-      const original = proof.value;
-      const text = normalize(original);
-      if (!text) continue;
-      // Latin identifiers match complete words. Forgetting AI must not revoke
-      // RainfallGauge, while CJK evidence can still occur inside a sentence.
-      const valueHash = textFingerprint(original);
-      const guardHash = proof.kind === "fact" ? textFingerprint(proof.identity) : null;
-      const key = guardHash ? fingerprint(`${valueHash}:${guardHash}`) : valueHash;
-      for (const scope of scopes) put.run(scope.scopeType, scope.scopeId ?? "", key, text.length, cutoffAt, allowedMessageId ?? null,
-        valueHash, guardHash, proof.kind === "fact" ? normalize(proof.identity).length : null);
+      const target = withdrawalTarget(proof);
+      if (!target) continue;
+      for (const scope of scopes) put.run(scope.scopeType, scope.scopeId ?? "", target.fingerprint, target.textLength, cutoffAt,
+        allowedMessageId ?? null, target.valueFingerprint, target.guardFingerprint, target.guardLength);
     }
   }
 

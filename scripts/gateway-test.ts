@@ -4,12 +4,13 @@ import { gatewayInboundIdentity } from "../src/main/gateway/gateway-inbound-iden
  * 幂等去重守卫、白名单判断。
  * 运行：pnpm test:gateway（esbuild bundle + node 直跑，不依赖 electron）
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import Database from "better-sqlite3";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { mdToHtml, splitTelegramText, TelegramChannelAdapter } from "../src/main/gateway/channels";
 import {
   createIdempotencyGuard,
@@ -29,11 +30,14 @@ function assert(cond: boolean, label: string): void {
   }
 }
 
-function dbTest(): void {
+async function dbTest(): Promise<void> {
   console.log("== DB：gateway_messages 迁移/落库/查询 ==");
   const dir = mkdtempSync(join(tmpdir(), "gw-test-"));
   const dbPath = join(dir, "test.db");
-  const db = new AppDatabase(dbPath);
+  const native = process.argv.includes("--native");
+  const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (native && (!runtimeAuditExecutable || !existsSync(runtimeAuditExecutable))) throw new Error("Rust worker missing");
+  const db = new AppDatabase(dbPath, { runtimeAuditExecutable });
 
   // 空库可查
   assert(db.listGatewayMessages({}).length === 0, "空库 listGatewayMessages 返回 []");
@@ -74,6 +78,20 @@ function dbTest(): void {
   const limited = db.listGatewayMessages({ limit: 1 });
   assert(limited.length === 1 && limited[0].at === 3000, "limit 取最新");
 
+  if (native) {
+    db.insertGatewayMessage({ channelId: "telegram-default", chatId: "123", direction: "out", text: "同一时间", at: 2000 });
+    db.connection.exec("CREATE TEMP TABLE gateway_messages AS SELECT * FROM main.gateway_messages WHERE 0");
+    try {
+      const latest = await db.readGatewayMessages({ channelId: "telegram-default", chatId: "123", limit: 2 });
+      assert(latest.map(row => `${row.id}:${row.text}`).join(",") === "2:回复,4:同一时间", "Rust 组合筛选并保留相同时间的写入顺序");
+      const all = await db.readGatewayMessages({ channelId: "", chatId: "" });
+      assert(all[0]?.senderId === "456" && all[0]?.senderName === "alice" &&
+        all[3]?.channelId === "feishu-default", "Rust 保留发送者元数据及空筛选的跨渠道历史");
+    } finally {
+      db.connection.exec("DROP TABLE temp.gateway_messages");
+    }
+  }
+
   // 容量控制：>3000 条裁剪到 3000
   const now = Date.now();
   for (let i = 0; i < 3010; i++) {
@@ -105,6 +123,7 @@ function dbTest(): void {
   // list 语义：limit 截断时取最近 N 条、按时间升序返回（聊天历史习惯）
   assert(bulk[0].text === "msg-2010", `list 返回最近 1000 条升序（实际 ${bulk[0].text}）`);
 
+  await db.runtimeAuditReader?.close();
   db.close();
   rmSync(dir, { recursive: true, force: true });
 }
@@ -266,8 +285,8 @@ async function telegramE2eTest(): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-function main(): void {
-  dbTest();
+async function main(): Promise<void> {
+  await dbTest();
   telegramTextTest();
   idempotencyTest();
   // 等待异步过期断言完成
@@ -280,4 +299,4 @@ function main(): void {
   }, 30);
 }
 
-main();
+void main().catch(error => { console.error(error); process.exitCode = 1; });

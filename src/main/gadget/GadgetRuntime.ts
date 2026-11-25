@@ -1,16 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { get } from "node:http";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { currentNodePlatform } from "../platform/runtime";
 import { createGadgetCommandRunner, terminateGadgetCommands } from "../platform/gadget-commands";
 import { runGadgetHost, type GadgetHostOptions } from "./GadgetHost";
-import { createGadgetState } from "./GadgetState";
+import { createGadgetState, type GadgetStateAction, type GadgetStateReply } from "./GadgetState";
 import { installGadgetClient } from "./GadgetClient";
 import { startGadgetProcessBackend } from "./GadgetProcessBackend";
 import type { GadgetJson } from "../../shared/gadget-backend";
 import type { GadgetDescriptor, GadgetRuntimeDiagnostics, GadgetRuntimeState } from "../../shared/gadget-types";
 import type { GadgetStorage } from "./GadgetStorage";
 import type { GadgetRegistry } from "./GadgetRegistry";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 
 interface RuntimeInstance {
   child: ChildProcess;
@@ -20,6 +21,7 @@ interface RuntimeInstance {
   token: string;
   backend: boolean;
   commandPids: Set<number>;
+  stateCalls: Set<Promise<void>>;
 }
 
 function hostScript(options: GadgetHostOptions): string {
@@ -37,6 +39,7 @@ export class GadgetRuntime {
     private readonly storage: GadgetStorage,
     private readonly registry: GadgetRegistry,
     private readonly onState?: (state: GadgetRuntimeState) => void,
+    private readonly runtimeAudit?: RuntimeAuditReader,
   ) {}
 
   private enqueue<T>(id: string, operation: () => Promise<T>): Promise<T> {
@@ -77,8 +80,14 @@ export class GadgetRuntime {
       this.storage.materializeLegacyLocalHtmlRedirect(descriptor.id);
       const manifest = this.storage.readManifest(descriptor.id);
       const token = randomBytes(32).toString("hex");
+      const { dataPath, sourcePath } = this.storage.paths(descriptor.id);
+      const nativeState = await this.runtimeAudit?.openGadgetState(dataPath);
+      if (nativeState && nativeState.kind !== "opened") {
+        const code = nativeState.kind === "error" ? nativeState.error : "STORAGE_UNAVAILABLE";
+        throw new Error(`Gadget 持久数据无法打开（${code}）`);
+      }
       const options: GadgetHostOptions = {
-        gadgetId: descriptor.id, manifest, dataPath: this.storage.paths(descriptor.id).dataPath, token,
+        gadgetId: descriptor.id, manifest, dataPath, token, nativeState: Boolean(nativeState),
         sdkSource: `(${installGadgetClient.toString()})(${JSON.stringify(token)});`, platform: currentNodePlatform,
       };
       // Deliver source over stdin: no token in argv, no extra packaged worker asset,
@@ -90,15 +99,21 @@ export class GadgetRuntime {
       ]);
       const env = Object.fromEntries(Object.entries(process.env).filter(([name, value]) => value !== undefined && environmentNames.has(name.toUpperCase())));
       const child = spawn(process.execPath, ["-"], {
-        cwd: this.storage.paths(descriptor.id).sourcePath,
+        cwd: sourcePath,
         env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
         stdio: ["pipe", "pipe", "pipe", "ipc"], windowsHide: true,
       });
-      const owned: RuntimeInstance = { child, state: starting, stderr: "", token, backend: Boolean(manifest.backend), commandPids: new Set() };
+      const owned: RuntimeInstance = {
+        child, state: starting, stderr: "", token, backend: Boolean(manifest.backend), commandPids: new Set(), stateCalls: new Set(),
+      };
       instance = owned;
       this.instances.set(descriptor.id, owned);
       child.on("message", (message: unknown) => {
         if (!message || typeof message !== "object" || !("type" in message)) return;
+        if (message.type === "gadget-state" && nativeState?.kind === "opened") {
+          this.acceptStateCall(owned, dataPath, nativeState.canonicalPath, message);
+          return;
+        }
         if (message.type === "backend-failure" && "message" in message && typeof message.message === "string") {
           if (this.instances.get(descriptor.id) === owned && owned.state.status === "running" && !owned.termination) {
             this.fail(owned, "health_failure", message.message.slice(0, 200));
@@ -195,6 +210,27 @@ export class GadgetRuntime {
     }
   }
 
+  private acceptStateCall(instance: RuntimeInstance, dataPath: string, canonicalPath: string, message: object): void {
+    if (!("id" in message) || !Number.isSafeInteger(message.id) || !("bucket" in message)
+      || (message.bucket !== "storage" && message.bucket !== "config") || !("action" in message)
+      || !message.action || typeof message.action !== "object" || !("operation" in message.action)) return;
+    const { child, stateCalls } = instance;
+    const id = message.id;
+    const unavailable: GadgetStateReply = { kind: "error", error: "STORAGE_UNAVAILABLE" };
+    const send = (result: GadgetStateReply) => {
+      if (child.connected) child.send({ type: "gadget-state-result", id, result }, () => undefined);
+    };
+    if (!child.connected || stateCalls.size >= 32 || !this.runtimeAudit) {
+      send(unavailable);
+      return;
+    }
+    const action = message.action as GadgetStateAction;
+    const pending = this.runtimeAudit.accessGadgetState(dataPath, canonicalPath, message.bucket, { ...action, writeId: randomUUID() })
+      .then(send, () => send(unavailable));
+    stateCalls.add(pending);
+    void pending.then(() => stateCalls.delete(pending), () => stateCalls.delete(pending));
+  }
+
   private fail(instance: RuntimeInstance, reason: "health_failure" | "startup_failure", error: string): GadgetRuntimeState {
     instance.termination = {
       reason, occurredAt: Date.now(), error, pid: instance.child.pid,
@@ -287,6 +323,7 @@ export class GadgetRuntime {
         else child.kill("SIGTERM");
       }
     });
+    await Promise.allSettled(instance.stateCalls);
     await this.cleanupCommands(id);
     return this.registry.runtime(id);
   }
@@ -298,9 +335,9 @@ export class GadgetRuntime {
     });
   }
 
-  sourceChanged(descriptor: GadgetDescriptor): void {
+  sourceChanged(descriptor: GadgetDescriptor, hasBackend: boolean): void {
     const current = this.instances.get(descriptor.id);
-    if (!current || (!current.backend && !this.storage.readManifest(descriptor.id).backend)) return;
+    if (!current || (!current.backend && !hasBackend)) return;
     // Static edits retain their URL. Executable edits get a fresh process/module
     // cache and revoke outstanding calls, while the independent data/ stays put.
     this.configurationChanged(descriptor);

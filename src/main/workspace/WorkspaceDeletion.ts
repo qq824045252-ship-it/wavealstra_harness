@@ -11,9 +11,7 @@ export async function deleteEmptyWorkspace(
   cleanup: ReadonlyArray<{ name: string; run: () => void | Promise<void> }>,
 ): Promise<WorkspaceDeletionResult> {
   try {
-    // This is synchronous and rechecks owned documents inside the database transaction.
-    // No renderer request can insert documents between its check and its commit.
-    db.deleteSpace(workspaceId);
+    await db.writeWorkspaceDelete(workspaceId);
   } catch (cause) {
     const error = cause instanceof Error ? cause.message : String(cause);
     return { ok: false, reason: error.includes("尚有") || error.includes("自有资料") ? "workspace_not_empty" : "unknown", error };

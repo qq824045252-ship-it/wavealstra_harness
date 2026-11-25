@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryPipelineManager } from "../src/main/memory/MemoryPipelineManager";
@@ -14,9 +15,9 @@ import { ArtifactRegistry } from "../src/main/artifact/ArtifactRegistry";
 import { TaskExecutionWorkspace } from "../src/main/task/TaskExecutionWorkspace";
 import { TaskExecutionWorkspaceLifecycle, type TaskExecutionWorkspaceLifecycleOptions } from "../src/main/task/TaskExecutionWorkspaceLifecycle";
 
-function env(hooks: Partial<TaskExecutionWorkspaceLifecycleOptions> = {}) {
+function env(hooks: Partial<TaskExecutionWorkspaceLifecycleOptions> = {}, runtimeAuditExecutable?: string) {
   const root = mkdtempSync(join(tmpdir(), "mybuddy-archive-deletion-test-"));
-  const db = new AppDatabase(join(root, "app.db"));
+  const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
   const workspace = new TaskExecutionWorkspace(join(root, "task-workspaces"));
   const sessionsRoot = join(root, "sessions");
   mkdirSync(sessionsRoot, { recursive: true });
@@ -48,26 +49,32 @@ async function check(name: string, run: () => Promise<void>) {
 }
 
 async function main() {
+  const native = process.argv.includes("--native");
+  const executable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (native) assert.ok(executable && existsSync(executable));
   await check("ordinary deletion stays recoverable; explicit archive purge forces permanent deletion", async () => {
-    const e = env();
+    const e = env({}, executable);
     try {
       const dir = e.task("trashed");
+      e.db.connection.prepare("INSERT INTO projects(id,name,created_at,updated_at) VALUES('archive-project','Audit',1,1)").run();
+      e.db.upsertTask({ id: "trashed", title: "trashed", updatedAt: Date.now(), projectId: "archive-project" });
       await e.lifecycle.trash("trashed");
       assert.ok(e.db.getTask("trashed"));
       assert.ok(e.db.getTaskExecutionWorkspaceState("trashed")?.purgeAfter! > Date.now());
       const trashPath = e.db.getTaskExecutionWorkspaceState("trashed")!.trashPath!;
       assert.ok(existsSync(trashPath));
-      const result = await e.deletion.purge({ taskIds: ["trashed", "trashed"], spaceIds: [] });
+      const { result, projectIds } = await e.deletion.purgeWithProjects({ taskIds: ["trashed", "trashed"], spaceIds: [] });
       assert.deepEqual(result, { deletedTaskIds: ["trashed"], deletedSpaceIds: [], failures: [] });
+      assert.deepEqual(projectIds, ["archive-project"]);
       assert.equal(e.db.getTask("trashed"), undefined);
       assert.equal(e.db.getTaskExecutionWorkspaceState("trashed"), undefined);
       assert.equal(existsSync(dir), false); assert.equal(existsSync(trashPath), false);
       assert.deepEqual(e.artifacts, ["trashed"]);
-    } finally { e.close(); }
+    } finally { await e.db.runtimeAuditReader?.close(); e.close(); }
   });
 
   await check("nested inherited archive + overlapping selections purge once, preserve active and external workspaces", async () => {
-    const e = env();
+    const e = env({}, executable);
     try {
       const external = join(e.root, "linked-user-workspace"); mkdirSync(external);
       writeFileSync(join(external, "user.txt"), "user-owned");
@@ -85,6 +92,8 @@ async function main() {
       const globalMemory = e.memory.create({ kind: "fact", title: "Global", scopeType: "global", sourceType: "user" });
       const pipeline = new MemoryPipelineManager(e.db);
       const turn = pipeline.capture({ taskId: "child-task", userMessageId: "u", assistantMessageId: "a", userText: "raw", assistantText: "history" }).turn;
+      e.db.connection.prepare(`INSERT INTO memory_evidence(id,memory_id,evidence_kind,ref_id,created_at)
+        VALUES ('purge-evidence',?,'conversation',?,1)`).run(globalMemory.id, turn.id);
       const result = await e.deletion.purge({ spaceIds: ["root", "child", "active-space"], taskIds: ["child-task", "standalone", "active-task"] });
       assert.deepEqual(new Set(result.deletedTaskIds), new Set(["root-task", "child-task", "grand-task", "old-trash", "standalone"]));
       assert.deepEqual(result.deletedSpaceIds, ["grandchild", "child", "root"]);
@@ -95,7 +104,48 @@ async function main() {
       assert.ok(e.db.getTask("active-task")); assert.ok(e.db.getSpace("active-space"));
       assert.ok(existsSync(activeDir)); assert.equal(existsSync(standaloneDir), false);
       assert.equal(readFileSync(join(external, "user.txt"), "utf8"), "user-owned");
-    } finally { e.close(); }
+      assert.deepEqual(e.db.connection.prepare("SELECT excerpt FROM memory_evidence WHERE id='purge-evidence'").get(),
+        { excerpt: "用户：raw\n助手：history" });
+    } finally { await e.db.runtimeAuditReader?.close(); e.close(); }
+  });
+
+  if (executable) await check("Rust purge rechecks archive ancestry after the host authorizes deletion", async () => {
+    const e = env({}, executable);
+    try {
+      e.db.createSpace({ id: "late-parent", name: "Late parent" });
+      e.db.createSpace({ id: "late-child", name: "Late child", parentId: "late-parent" });
+      e.db.archiveSpace("late-parent", true);
+      e.task("late-task", "late-child");
+      const worker = e.db.runtimeAuditReader!;
+      const purge = worker.purgeTrashedTask.bind(worker);
+      worker.purgeTrashedTask = request => {
+        e.db.archiveSpace("late-parent", false);
+        return purge(request);
+      };
+      const result = await e.deletion.purge({ taskIds: [], spaceIds: ["late-parent"] });
+      assert.deepEqual([result.deletedTaskIds, result.deletedSpaceIds], [[], []]);
+      assert.ok(result.failures.some(failure => failure.id === "late-task" && /已恢复/.test(failure.error)));
+      assert.deepEqual([e.db.getTask("late-task")?.spaceId, e.db.getTaskExecutionWorkspaceState("late-task")?.state],
+        ["late-child", "active"]);
+    } finally { await e.db.runtimeAuditReader?.close(); e.close(); }
+  });
+
+  if (executable) await check("Rust workspace deletion rechecks archived status after the host authorizes deletion", async () => {
+    const e = env({}, executable);
+    try {
+      e.db.createSpace({ id: "late-space", name: "Late space" });
+      e.db.archiveSpace("late-space", true);
+      const worker = e.db.runtimeAuditReader!;
+      const remove = worker.deleteWorkspace.bind(worker);
+      worker.deleteWorkspace = mutation => {
+        e.db.archiveSpace("late-space", false);
+        return remove(mutation);
+      };
+      const result = await e.deletion.purge({ taskIds: [], spaceIds: ["late-space"] });
+      assert.deepEqual(result.deletedSpaceIds, []);
+      assert.ok(result.failures.some(failure => failure.id === "late-space" && /已恢复/.test(failure.error)));
+      assert.equal(e.db.getSpace("late-space")?.archived, false);
+    } finally { await e.db.runtimeAuditReader?.close(); e.close(); }
   });
 
   await check("partial filesystem failures retain their spaces and do not report a deleted task", async () => {
@@ -282,8 +332,8 @@ async function main() {
     const warnings = new Map<string, string>();
     let artifacts: ArtifactService;
     const e = env({
-      onPurgeArtifacts: (id) => {
-        const warning = artifactPurgeCleanupWarning(artifacts.removeByTask(id));
+      onPurgeArtifacts: async (id) => {
+        const warning = artifactPurgeCleanupWarning(await artifacts.removeByTask(id, { requireTrashed: true }));
         warnings.delete(id); if (warning) warnings.set(id, warning);
       },
       onPurge: (id) => { const warning = warnings.get(id); warnings.delete(id); if (warning) throw new Error(warning); },

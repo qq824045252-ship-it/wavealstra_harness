@@ -286,7 +286,8 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
             return textResult(`[url] ${item.title}\n链接：${item.url}`, { item });
           }
           const space = service.getSpace(item.spaceId);
-          const content = service.readContent(item.id, space?.projectId ? undefined : 4000);
+          const content = await service.readContentAsync(item.id, space?.projectId ? undefined : 4000);
+          requireReadable(params.id, params.explicitDirectChildSpaceId);
           if (content.requiresFileAccess) {
             const lines = [
               `[${item.kind}] ${item.title}（id=${item.id}）`,
@@ -391,11 +392,11 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
           });
           if (params.content !== undefined && params.content !== "") {
             try {
-              service.writeContent({ id: created.id, content: params.content });
+              await service.writeContentAsync({ id: created.id, content: params.content });
             } catch (err) {
               // 正文写入失败：清理半成品条目，返回明确错误（不留下种子空文档）
               try {
-                service.deleteItem(created.id);
+                await service.deleteItemAsync(created.id);
               } catch {
                 /* ignore */
               }
@@ -439,7 +440,7 @@ export function createLibraryExtension(bridge: LibraryExtensionBridge): Extensio
           }
           let updated = item;
           if (params.content !== undefined) {
-            updated = service.updateTextContent({ id: item.id, content: params.content, title: params.title?.trim() });
+            updated = await service.writeContentAsync({ id: item.id, content: params.content, title: params.title?.trim() });
           } else if (params.title !== undefined && params.title.trim() !== item.title) {
             updated = service.updateItem({ id: item.id, title: params.title.trim() });
           }

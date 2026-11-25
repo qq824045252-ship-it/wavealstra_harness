@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -30,11 +30,16 @@ import {
 } from "../src/shared/project-policy-editor";
 import { resolveProjectTaskDefaults } from "../src/shared/project-task-defaults";
 import { diffRuntimeAuditSnapshots, sanitizeRuntimeAuditSnapshot } from "../src/shared/runtime-audit-inspector";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { readSoulProfile, writeSoulProfile } from "../src/main/agent/SoulProfileData";
 
+const nativeFlag = process.argv.indexOf("--native");
+const runtimeAuditExecutable = nativeFlag < 0 ? undefined : locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd());
+if (nativeFlag >= 0) assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable), "Rust worker executable is required");
 const root = mkdtempSync(join(tmpdir(), "mybuddy-project-domain-"));
-const db = new AppDatabase(join(root, "app.db"));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const memory = new MemoryService(db, { semantic: false });
-const repository = new ProjectRepository(db.connection);
+const repository = new ProjectRepository(db.connection, db.runtimeAuditReader);
 const service = new ProjectService(repository, memory);
 
 {
@@ -81,6 +86,250 @@ const service = new ProjectService(repository, memory);
   });
 }
 
+async function checkEditorWrites(): Promise<void> {
+  const native = db.runtimeAuditReader;
+  if (native) {
+    assert.equal(await native.supportsProjectWrites(), true);
+    assert.equal(await native.projectMetadata({ kind: "details", projectId: "unknown-editor-fixture" }), null);
+  }
+  const project = await service.createAsync({ name: "Concurrent project edits", description: "original" });
+  const space = db.createSpace({ name: "Project source folder", path: root });
+  await Promise.all([
+    service.updateAsync({ id: project.id, description: "updated description", defaultSpaceId: space.id,
+      policies: { mcp: { mode: "soft", allow: ["search"], deny: [] } } }),
+    service.updateAsync({ id: project.id, goal: "updated goal",
+      policies: { expert: { allow: [], deny: [], recommended: ["review"] } } }),
+  ]);
+  const saved = (await service.readDetails(project.id))!;
+  assert.deepEqual([saved.description, saved.goal, saved.defaultSpaceId], ["updated description", "updated goal", space.id]);
+  assert.deepEqual(saved.policies.mcp, { mode: "soft", allow: ["search"], deny: [] });
+  assert.deepEqual(saved.policies.expert.recommended, ["review"]);
+
+  const folders = await Promise.all(["Reference", "Reports"].map(title =>
+    service.createResourceAsync({ projectId: project.id, kind: "folder", title, value: "" })));
+  assert.deepEqual(service.get(project.id)?.resources.map(resource => resource.sortOrder), [0, 1]);
+  const resource = await service.createResourceAsync({ projectId: project.id, kind: "text", title: "Draft", value: "Input", parentId: folders[0].id });
+  await Promise.all([
+    service.updateResourceAsync({ id: resource.id, title: "Reference draft", enabled: false }),
+    service.updateResourceAsync({ id: resource.id, value: "Revised input", sortOrder: 8 }),
+  ]);
+  const edited = repository.getResource(resource.id);
+  assert.deepEqual([edited?.title, edited?.value, edited?.sortOrder, edited?.enabled, edited?.parentId],
+    ["Reference draft", "Revised input", 8, false, folders[0].id]);
+  assert.deepEqual((await service.readDetails(project.id))?.resources.map(item => [item.title, item.sortOrder]),
+    [["Reference", 0], ["Reports", 1], ["Reference draft", 8]]);
+
+  const copies = await Promise.all([service.duplicateAsync({ sourceId: project.id }), service.duplicateAsync({ sourceId: project.id })]);
+  assert.deepEqual(copies.map(copy => copy.name).sort(), ["Concurrent project edits 副本", "Concurrent project edits 副本 2"]);
+  for (const copy of copies) {
+    const copyFolder = copy.resources.find(item => item.title === "Reference")!;
+    assert.notEqual(copyFolder.id, folders[0].id);
+    assert.equal(copy.resources.find(item => item.title === "Reference draft")?.parentId, copyFolder.id);
+    assert.deepEqual(copy.policies, saved.policies);
+  }
+
+  const moves = await Promise.allSettled([
+    service.updateResourceAsync({ id: folders[0].id, parentId: folders[1].id }),
+    service.updateResourceAsync({ id: folders[1].id, parentId: folders[0].id }),
+  ]);
+  assert.equal(moves.filter(move => move.status === "fulfilled").length, 1);
+  assert.match(String(moves.find(move => move.status === "rejected")?.reason), /自己的子目录/);
+
+  db.connection.exec(`CREATE TRIGGER fixture_reject_project_policy BEFORE UPDATE ON project_skill_policy
+    WHEN new.project_id='${project.id}' BEGIN SELECT RAISE(ABORT,'fixture policy failure'); END;`);
+  try {
+    await assert.rejects(service.updateAsync({ id: project.id, description: "must roll back", policies: { skill: { allow: ["fixture"], prefer: [], demote: [], hide: [] } } }),
+      /fixture policy failure|项目数据写入失败/);
+  } finally {
+    db.connection.exec("DROP TRIGGER fixture_reject_project_policy");
+  }
+  assert.equal(service.get(project.id)?.description, "updated description");
+  assert.deepEqual(service.get(project.id)?.policies, saved.policies);
+
+  if (native) {
+    const write = native.writeProject.bind(native);
+    native.writeProject = async (...args) => {
+      assert.equal(await write(...args), "changed");
+      throw new Error("discard reply after commit");
+    };
+    try {
+      const recovered = await service.updateAsync({ id: project.id, currentStage: "Recovered from disk" });
+      assert.equal(recovered.currentStage, "Recovered from disk");
+      assert.equal(service.get(project.id)?.currentStage, "Recovered from disk");
+    } finally {
+      native.writeProject = write;
+    }
+
+    const alternate = db.createSpace({ name: "Archived just before commit", path: root });
+    native.writeProject = async (...args) => {
+      db.archiveSpace(alternate.id, true);
+      return write(...args);
+    };
+    try {
+      await assert.rejects(service.updateAsync({ id: project.id, defaultSpaceId: alternate.id, name: "Invalid folder rename" }), /项目文件夹已移动、归档/);
+      assert.equal(service.get(project.id)?.defaultSpaceId, space.id);
+      assert.equal(service.get(project.id)?.name, project.name);
+    } finally {
+      native.writeProject = write;
+    }
+  }
+
+  assert.equal((await service.archiveAsync(project.id, true)).archived, true);
+  await assert.rejects(service.deleteResourceAsync(resource.id), /归档/);
+  assert.equal(repository.getResource(resource.id)?.title, "Reference draft");
+  assert.equal((await service.archiveAsync(project.id, false)).archived, false);
+  await service.deleteResourceAsync(folders[0].id);
+  assert.equal(repository.getResource(resource.id), undefined);
+  assert.deepEqual((await service.updateAsync({ id: project.id, defaultSpaceId: null })).defaultSpaceId, undefined);
+}
+
+async function checkDiscussionPosts(): Promise<void> {
+  const discussion = service.create({ name: "Discussion fixture" });
+  const unrelated = service.create({ name: "Separate discussion fixture" });
+  const connection = db.connection;
+  connection.prepare("UPDATE projects SET updated_at = 123 WHERE id = ?").run(discussion.id);
+  if (runtimeAuditExecutable) {
+    connection.exec("CREATE TEMP TABLE project_posts AS SELECT * FROM main.project_posts WHERE 0");
+    connection.pragma("query_only = ON");
+  }
+  try {
+    const saved = await service.createPost({ projectId: discussion.id, body: "  实测记录 📝\n下一步  " });
+    await service.createPost({ projectId: unrelated.id, body: "其他项目的留言" });
+    assert.deepEqual((await service.listPosts(discussion.id)).map(post => post.body), ["实测记录 📝\n下一步"]);
+    assert.equal(saved.body, "实测记录 📝\n下一步");
+    assert.equal(service.get(discussion.id)?.updatedAt, 123);
+    await assert.rejects(service.createPost({ projectId: discussion.id, body: "\uFEFF  " }), /留言不能为空/);
+    await assert.rejects(service.createPost({ projectId: "", body: "   " }), /项目不存在：$/);
+    await assert.rejects(service.listPosts(""), /项目不存在：$/);
+    await service.deletePost("");
+
+    if (runtimeAuditExecutable) connection.pragma("query_only = OFF");
+    service.archive(discussion.id, true);
+    if (runtimeAuditExecutable) connection.pragma("query_only = ON");
+    await assert.rejects(service.createPost({ projectId: discussion.id, body: "归档后留言" }), /已归档/);
+    await assert.rejects(service.deletePost(saved.id), /已归档/);
+    assert.deepEqual((await service.listPosts(discussion.id)).map(post => post.body), ["实测记录 📝\n下一步"]);
+
+    if (runtimeAuditExecutable) connection.pragma("query_only = OFF");
+    service.archive(discussion.id, false);
+    if (runtimeAuditExecutable) connection.pragma("query_only = ON");
+    await service.deletePost(saved.id);
+    await service.deletePost(saved.id);
+    assert.deepEqual(await service.listPosts(discussion.id), []);
+    assert.deepEqual((await service.listPosts(unrelated.id)).map(post => post.body), ["其他项目的留言"]);
+  } finally {
+    if (runtimeAuditExecutable) {
+      connection.pragma("query_only = OFF");
+      connection.exec("DROP TABLE temp.project_posts");
+    }
+  }
+  console.log("PASS  Project post creation, scoped reads, deletion and archive guards");
+}
+
+async function checkSoulProfile(): Promise<void> {
+  const initial = { name: "MyBuddy", alias: "老板", persona: "你是本地桌面助理，简洁、可靠、会动手。" };
+  const updated = { name: "项目负责人 🗂", alias: "", persona: "  带空格的描述\n第二行  " };
+  const connection = db.connection;
+  if (runtimeAuditExecutable) {
+    connection.exec("CREATE TEMP TABLE soul AS SELECT * FROM main.soul");
+    connection.exec("UPDATE temp.soul SET name = 'host-only shadow'");
+    connection.pragma("query_only = ON");
+  }
+  try {
+    assert.deepEqual(await readSoulProfile(db), initial);
+    const renamed = await writeSoulProfile(db, { name: updated.name });
+    assert.deepEqual(renamed, { ...initial, name: updated.name });
+    await Promise.all([
+      writeSoulProfile(db, { alias: updated.alias }),
+      writeSoulProfile(db, { persona: updated.persona }),
+    ]);
+    assert.deepEqual(await readSoulProfile(db), updated);
+    assert.deepEqual(await writeSoulProfile(db, {}), updated);
+  } finally {
+    if (runtimeAuditExecutable) {
+      connection.pragma("query_only = OFF");
+      connection.exec("DROP TABLE temp.soul");
+    }
+  }
+  assert.deepEqual(db.getSoul(), updated);
+  db.updateSoul(initial);
+  console.log("PASS  Soul defaults, concurrent partial updates, exact text and persisted profile");
+}
+
+async function checkProjectPins(): Promise<void> {
+  const project = service.create({ name: "Pins fixture" });
+  const other = service.create({ name: "Other pins fixture" });
+  const connection = db.connection;
+  const previousOwner = db.getSoul().name;
+  db.updateSoul({ name: "资料负责人 🗂" });
+  connection.prepare("UPDATE projects SET updated_at = 456 WHERE id = ?").run(project.id);
+  const insertSpace = connection.prepare(`INSERT INTO library_spaces
+    (id, name, kind, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1)`);
+  insertSpace.run("pins-personal-space", "Personal", "personal", null);
+  insertSpace.run("pins-other-space", "Other project", "team", other.id);
+  const insertItem = connection.prepare(`INSERT INTO library_items
+    (id, space_id, kind, title, filename, created_at, updated_at) VALUES (?, ?, 'markdown', ?, '', 1, 1)`);
+  insertItem.run("pins-personal-item", "pins-personal-space", "个人资料");
+  insertItem.run("pins-other-item", "pins-other-space", "另一项目资料");
+  if (runtimeAuditExecutable) {
+    connection.exec("CREATE TEMP TABLE project_context_pins AS SELECT * FROM main.project_context_pins WHERE 0");
+    connection.pragma("query_only = ON");
+  }
+  try {
+    const request = { projectId: project.id, itemId: "pins-personal-item" };
+    const startedAt = Date.now();
+    const pin = await service.pinProjectItemAsync({ ...request, note: "  查看第 2 页  " });
+    assert.deepEqual(
+      [pin.projectId, pin.itemId, pin.itemTitle, pin.itemKind, pin.note, pin.createdBy],
+      [project.id, "pins-personal-item", "个人资料", "markdown", "查看第 2 页", "资料负责人 🗂"],
+    );
+    assert.match(pin.id, /^ppin_/);
+    assert(pin.createdAt >= startedAt && pin.createdAt <= Date.now());
+    const otherRequest = { projectId: other.id, itemId: "pins-other-item", note: "同时固定" };
+    const [otherPin, duplicate] = await Promise.all([
+      service.pinProjectItemAsync(otherRequest),
+      service.pinProjectItemAsync(otherRequest),
+    ]);
+    assert.deepEqual([otherPin.itemId, otherPin.note, duplicate.id], ["pins-other-item", "同时固定", otherPin.id]);
+    const repeated = await Promise.all([
+      service.pinProjectItemAsync({ ...request, note: "second" }),
+      service.pinProjectItemAsync(request),
+    ]);
+    assert.deepEqual(repeated.map(({ id, note, createdAt }) => [id, note, createdAt]), [
+      [pin.id, "查看第 2 页", pin.createdAt],
+      [pin.id, "查看第 2 页", pin.createdAt],
+    ]);
+    await assert.rejects(service.pinProjectItemAsync({ projectId: project.id, itemId: "pins-other-item" }), /跨项目隔离/);
+    await assert.rejects(service.pinProjectItemAsync({ projectId: project.id, itemId: "pins-missing-item" }), /资料条目不存在/);
+    assert.deepEqual((await service.listProjectPinsAsync(project.id)).map(row => row.itemId), ["pins-personal-item"]);
+    assert.equal(service.get(project.id)?.updatedAt, 456);
+
+    if (runtimeAuditExecutable) connection.pragma("query_only = OFF");
+    service.archive(project.id, true);
+    connection.prepare("UPDATE library_items SET title = ? WHERE id = ?").run("个人资料新标题", "pins-personal-item");
+    if (runtimeAuditExecutable) connection.pragma("query_only = ON");
+    await assert.rejects(service.pinProjectItemAsync(request), /已归档/);
+    await assert.rejects(service.unpinProjectItemAsync(request), /已归档/);
+    assert.deepEqual((await service.listProjectPinsAsync(project.id)).map(row => row.itemTitle), ["个人资料新标题"]);
+
+    if (runtimeAuditExecutable) connection.pragma("query_only = OFF");
+    service.archive(project.id, false);
+    if (runtimeAuditExecutable) connection.pragma("query_only = ON");
+    await service.unpinProjectItemAsync(request);
+    await service.unpinProjectItemAsync(request);
+    assert.deepEqual(await service.listProjectPinsAsync(project.id), []);
+    assert.deepEqual((await service.listProjectPinsAsync(other.id)).map(row => row.itemTitle), ["另一项目资料"]);
+  } finally {
+    if (runtimeAuditExecutable) {
+      connection.pragma("query_only = OFF");
+      connection.exec("DROP TABLE temp.project_context_pins");
+    }
+    db.updateSoul({ name: previousOwner });
+  }
+  console.log("PASS  Project pins scope, owner, idempotence, live title and archive guards");
+}
+
+async function main(): Promise<void> {
 try {
   const created = service.create({
     name: "MyBuddy",
@@ -799,8 +1048,16 @@ try {
   } finally {
     migrated.connection.close();
   }
-  console.log("PASS  Project CRUD/policies and Task binding contract");
+  await checkEditorWrites();
+  await checkDiscussionPosts();
+  await checkSoulProfile();
+  await checkProjectPins();
+  console.log("PASS  Project CRUD/policies, Task binding and concurrent editor writes");
 } finally {
+  await db.runtimeAuditReader?.close();
   db.connection.close();
   rmSync(root, { recursive: true, force: true });
 }
+}
+
+main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -10,6 +10,8 @@ import { MemorySkillDistillation } from "../src/main/memory/MemorySkillDistillat
 import { captureProcedureExecution } from "../src/main/memory/MemoryProcedureEvidence";
 import { SkillsService } from "../src/main/skills/SkillsService";
 import { BotRegistry } from "../src/main/agent/work/BotRegistry";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { LOCAL_USER_ID } from "../src/shared/bot-work";
 // 技能聚合根已迁移到 ~/.mybuddy/plugins/skills（PluginStorage v1）；旧断言写死迁移前路径。
 import { getSkillsDir } from "../src/main/paths";
 
@@ -17,7 +19,9 @@ const sandbox = mkdtempSync(join(tmpdir(), "mybuddy-procedure-learning-"));
 process.env.USERPROFILE = sandbox;
 // POSIX：os.homedir() 读的是 HOME，只设 USERPROFILE 会让测试写进真实家目录
 process.env.HOME = sandbox;
-const db = new AppDatabase(":memory:");
+const native = process.argv.includes("--native");
+const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+const db = new AppDatabase(native ? join(sandbox, "app.db") : ":memory:", { runtimeAuditExecutable });
 const memory = new MemoryService(db, { semantic: false });
 const pipeline = new MemoryPipelineManager(db);
 const skills = new SkillsService();
@@ -83,7 +87,8 @@ try {
   console.log("PASS actual SQLite extraction, automatic candidate, bounded options and preserved tool proof");
 
   const agent = Object.create(AgentService.prototype) as any;
-  Object.assign(agent, { db, botRegistry: new BotRegistry(db.connection), memoryService: memory,
+  const botRegistry = new BotRegistry(db.connection);
+  Object.assign(agent, { db, botRegistry, memoryService: memory,
     memoryPipeline: pipeline, skillsService: skills, notifyMemoryChanged: () => {},
     skillDistillation: new MemorySkillDistillation(db, () => {}) });
   const approved = agent.approveKernelMemorySkillCandidate(candidate.id);
@@ -91,24 +96,29 @@ try {
   const skillPath = join(getSkillsDir(), candidate.slug, "SKILL.md");
   assert(existsSync(skillPath));
   assert.match(readFileSync(skillPath, "utf8"), /disable-model-invocation: true/);
-  assert(agent.kernelSkillLearningStatus().blockedSkills.some((item: any) => item.reason.includes("尚未启用")));
+  const learningStatus = () => (agent as AgentService).kernelSkillLearningStatus();
+  const initialStatus = await learningStatus();
+  assert.equal(initialStatus.procedures, 1);
+  assert.equal(initialStatus.reusableProcedures, 1);
+  assert(initialStatus.blockedSkills.some((item) => item.reason.includes("尚未启用")));
   skills.setEnabled(approved.installedSkillId, true);
   const selection = skills.resolveRuntimeSkills(sandbox, [], (skill) => agent.learnedSkillVisibleInContext(skill, { workspaceId: workspace.id }));
   assert(selection.skills.some((skill) => skill.name === candidate.slug));
   assert.equal(agent.learnedSkillVisibleInContext(skills.listInstalled().find((skill) => skill.id === approved.installedSkillId), { workspaceId: "other-workspace" }), false);
   memory.forget(procedure.id);
   assert.equal(memory.learning.isInstalledSkillRunnable(approved.installedSkillId, approved.sourceMemoryIds), false);
-  assert(agent.kernelSkillLearningStatus().blockedSkills.some((item: any) => item.reason.includes("失效")));
+  assert((await learningStatus()).blockedSkills.some((item) => item.reason.includes("失效")));
   db.connection.prepare("DELETE FROM memory_skill_candidates WHERE id=?").run(candidate.id);
-  assert(agent.kernelSkillLearningStatus().blockedSkills.some((item: any) => item.reason.includes("不存在")));
+  assert((await learningStatus()).blockedSkills.some((item) => item.reason.includes("不存在")));
   pipeline.failL1([turn], new Error("historical failure"));
-  assert.equal(agent.kernelSkillLearningStatus().retryableFailedTurns, 1);
+  assert.equal((await learningStatus()).retryableFailedTurns, 1);
   db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "archived", createdAt: Date.now(), updatedAt: Date.now() });
-  assert.equal(agent.kernelSkillLearningStatus().retryableFailedTurns, 1, "archiving a conversation preserves its memory extraction eligibility");
+  assert.equal((await learningStatus()).retryableFailedTurns, 1, "archiving a conversation preserves its memory extraction eligibility");
   db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "trashed", createdAt: Date.now(), updatedAt: Date.now() });
-  assert.equal(agent.kernelSkillLearningStatus().failedTurns, 1);
-  assert.equal(agent.kernelSkillLearningStatus().retryableFailedTurns, 0, "trashed failures stay visible but are not offered for retry");
-  assert.equal(agent.kernelSkillLearningStatus().pendingTurns, 0);
+  const trashedStatus = await learningStatus();
+  assert.equal(trashedStatus.failedTurns, 1);
+  assert.equal(trashedStatus.retryableFailedTurns, 0, "trashed failures stay visible but are not offered for retry");
+  assert.equal(trashedStatus.pendingTurns, 0);
   db.upsertTaskExecutionWorkspaceState({ taskId: "task-a", directoryName: "task-a", state: "active", createdAt: Date.now(), updatedAt: Date.now() });
   console.log("PASS real approval/file/activation/runtime selection, scope isolation and lost-source diagnosis");
 
@@ -193,8 +203,65 @@ try {
   assert.equal(calls, 4);
   assert.equal(pipeline.turns.get(history[16].id)?.extractionState, "pending");
   console.log("PASS one-click skill distillation, evidence, scope, interrupted batches and restart without reprocessing");
+
+  const connectBotConversation = db.connection.prepare(
+    "INSERT INTO bot_conversations(conversation_id,bot_id,user_id,created_at,updated_at) VALUES(?,?,?,1,1)",
+  );
+  for (const { conversationId, userId, status } of [
+    { conversationId: "local-active", userId: LOCAL_USER_ID, status: "active" },
+    { conversationId: "local-paused", userId: LOCAL_USER_ID, status: "paused" },
+    { conversationId: "external-active", userId: "other-user", status: "active" },
+  ] as const) {
+    const bot = botRegistry.registerBot({ botId: `bot-${conversationId}`, userId, displayName: conversationId, status });
+    connectBotConversation.run(conversationId, bot.botId, userId);
+  }
+  db.connection.exec(`INSERT INTO projects(id,name,created_at,updated_at)
+    VALUES('archived-fixture','Archived project',1,1)`);
+  db.upsertTask({ id: "archived-project-task", title: "Archived project task", projectId: "archived-fixture", updatedAt: 1 });
+  db.connection.exec("UPDATE projects SET archived=1 WHERE id='archived-fixture'");
+  // A known but paused Bot remains ineligible even if a matching legacy task exists.
+  db.upsertTask({ id: "local-paused", title: "Legacy paused Bot task", updatedAt: 1 });
+  db.connection.exec(`
+    DELETE FROM memory_turns;
+    WITH RECURSIVE seed(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM seed WHERE n<2000)
+    INSERT INTO memory_records(id,kind,title,content_hash,created_at,updated_at)
+      SELECT printf('fixture-learn-%04d',n),'procedure','Stored procedure',printf('fixture-%04d',n),
+        9000000000000,9000000000000 FROM seed;
+    INSERT INTO memory_scopes(id,memory_id,scope_type,scope_id,created_at)
+      SELECT id || '-scope',id,
+        CASE WHEN id IN ('fixture-learn-0000','fixture-learn-2000') THEN 'global' ELSE 'task' END,
+        CASE WHEN id IN ('fixture-learn-0000','fixture-learn-2000') THEN NULL ELSE 'distill' END,1
+      FROM memory_records WHERE id LIKE 'fixture-learn-%';
+  `);
+  const saveTurn = db.connection.prepare(`INSERT INTO memory_turns(id,task_id,user_text,assistant_text,content_hash,
+    captured_at,extraction_state,attempt_count,last_error) VALUES(?,?,'fixture','','fixture',?,?,?,?)`);
+  saveTurn.run("finished-attempts", "distill", 1, "failed", 3, "attempt budget exhausted");
+  saveTurn.run("waiting-turn", "distill", 2, "pending", 3, null);
+  saveTurn.run("archived-project-turn", "archived-project-task", 3, "failed", 1, "project archived");
+  saveTurn.run("missing-task-turn", "missing-task", 4, "failed", 1, "task missing");
+  saveTurn.run("active-bot-turn", "local-active", 5, "failed", 1, "retryable Bot turn");
+  saveTurn.run("paused-bot-turn", "local-paused", 6, "failed", 1, "Bot paused");
+  saveTurn.run("external-bot-turn", "external-active", 7, "failed", 1, "x".repeat(199) + "🧪");
+  if (native) db.connection.exec(`
+    CREATE TEMP TABLE memory_turns AS SELECT * FROM main.memory_turns WHERE 0;
+    CREATE TEMP TABLE memory_records AS SELECT * FROM main.memory_records WHERE 0;
+  `);
+  let counts: Awaited<ReturnType<typeof learningStatus>>;
+  try {
+    counts = await learningStatus();
+  } finally {
+    if (native) db.connection.exec("DROP TABLE temp.memory_turns; DROP TABLE temp.memory_records");
+  }
+  assert.equal(counts.procedures, 2000);
+  assert.equal(counts.reusableProcedures, 1, "the newest 2,000 active procedures exclude the lowest ID on a timestamp tie");
+  assert.equal(counts.failedTurns, 6);
+  assert.equal(counts.retryableFailedTurns, 2, "only the active local task and local Bot can retry");
+  assert.equal(counts.pendingTurns, 2, "exhausted failures remain retryable without counting toward pending");
+  assert.equal(counts.latestError, "x".repeat(199) + "\ud83e", "the latest failure retains its 200-code-unit display boundary");
+  console.log(`PASS learning status counts procedures, pending and retryable turns (${native ? "Rust" : "host"})`);
   console.log("memory-procedure-learning-test: PASS");
 } finally {
+  await db.runtimeAuditReader?.close();
   db.close();
   const target = resolve(sandbox);
   assert(target.startsWith(resolve(tmpdir()) + sep));

@@ -85,7 +85,7 @@ export function createSessionConfigurationActions(
           updatedAt: Date.now(),
           welcomeMode: mode,
           modePresetId: preset,
-        });
+        }, null);
       }
     },
 
@@ -125,7 +125,7 @@ export function createSessionConfigurationActions(
           title: task.title,
           updatedAt: Date.now(),
           modePresetId: presetId,
-        });
+        }, null);
       }
     },
 
@@ -229,7 +229,7 @@ export function createSessionConfigurationActions(
           title: task.title,
           updatedAt: Date.now(),
           modelId: id,
-        });
+        }, null);
       }
     },
 
@@ -285,7 +285,7 @@ export function createSessionConfigurationActions(
             title: t.title,
             updatedAt: Date.now(),
             modelId: resolved,
-          });
+          }, null);
         }
       }
     },
@@ -335,7 +335,7 @@ export function createSessionConfigurationActions(
             title: t.title,
             updatedAt: Date.now(),
             permissionMode: next,
-          });
+          }, null);
           // 已有会话立即应用（等价于显式切换；后续消息因标记已清不再发送 explicit）
           void storeContext
             .getApi()
@@ -373,7 +373,7 @@ export function createSessionConfigurationActions(
             title: task.title,
             updatedAt: Date.now(),
             permissionMode: mode,
-          });
+          }, null);
         }
         void storeContext.getApi()?.agent?.setPermissionMode?.({
           taskId,

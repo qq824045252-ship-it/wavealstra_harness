@@ -32,7 +32,7 @@ export function createTaskContextActions(
             welcomeMode: task.welcomeMode,
             cwd: task.cwd,
             expertId: task.expertId,
-          });
+          }, null);
       const binding = await api.getTaskExpertBinding(taskId);
       set((state) => ({
         tasks: state.tasks.map((task) =>
@@ -68,7 +68,7 @@ export function createTaskContextActions(
             welcomeMode: task.welcomeMode,
             cwd: task.cwd,
             expertId: task.expertId,
-          });
+          }, null);
       const binding = await api.saveTaskExpertBinding(input);
       set((state) => ({
         tasks: state.tasks.map((item) =>
@@ -147,7 +147,7 @@ export function createTaskContextActions(
         title: task.title,
         updatedAt: Date.now(),
         externalAgentPin: pin,
-      });
+      }, null);
     },
 
     bindProjectContext: (taskId, projectId) => {
@@ -166,7 +166,7 @@ export function createTaskContextActions(
         title: task.title,
         updatedAt,
         projectId,
-      });
+      }, null);
     },
   };
 }

@@ -16,13 +16,18 @@
  * 运行：pnpm test:workspace-tree
  */
 import assertStrict from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { AppDatabase, computeEffectiveArchived, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { TaskExpertBindingService } from "../src/main/experts/TaskExpertBindingService";
 import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
+import { RemoteAccessPairing } from "../src/main/remote/RemoteAccessPairing";
+import { RemoteAccessServer } from "../src/main/remote/RemoteAccessServer";
+import { RemoteAccessService } from "../src/main/remote/RemoteAccessService";
+import { RemoteDeviceStore } from "../src/main/remote/RemoteDeviceStore";
+import { RemoteEventBus } from "../src/main/remote/RemoteEventBus";
 import { DOTS_TASK_ID } from "../src/shared/dots";
 import {
   buildWorkspaceTree,
@@ -47,6 +52,7 @@ import {
   TREE_VIRTUALIZE_THRESHOLD,
 } from "../src/shared/workspace-tree";
 import type { SpaceDto, TaskDto } from "../src/shared/agent-ipc";
+import type { RemoteBootstrap, RemoteTaskSummary } from "../shared/src/remote-contract";
 
 let passed = 0;
 let failed = 0;
@@ -92,7 +98,18 @@ async function main(): Promise<void> {
     {
       const runtimeAuditExecutable = process.argv.includes("--native") ? locateRuntimeAudit(process.cwd()) : undefined;
       if (process.argv.includes("--native")) assertStrict.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
-      const db = new AppDatabase(join(dir, "visible.db"), { runtimeAuditExecutable });
+      const visibleDatabase = join(dir, "visible.db");
+      const db = new AppDatabase(visibleDatabase, { runtimeAuditExecutable });
+      const devices = new RemoteDeviceStore(join(dir, "visible-remote-devices.json"));
+      const service = new RemoteAccessService(db, {
+        isTaskBusy: (taskId: string) => taskId === "normal", listPendingActions: () => [],
+        listModels: async () => [], getModeProfile: (id: string) => ({ labelZh: id, policy: {} }),
+      } as never, { unreadCount: () => 0 } as never, { readList: async () => [] } as never,
+      { read: () => ({ permissionMode: "default" }) } as never);
+      const remoteServer = new RemoteAccessServer({
+        port: 0, staticRoot: dir, devices, service, pairing: new RemoteAccessPairing(devices),
+        commands: {} as never, events: new RemoteEventBus(),
+      });
       try {
         db.upsertTask({ id: "normal", title: "仪表复核", updatedAt: 80, isFavorited: true });
         db.upsertTask({ id: "archived", title: "旧结果", updatedAt: 90 });
@@ -102,6 +119,18 @@ async function main(): Promise<void> {
           taskId: "trashed", directoryName: "trash-fixture", state: "trashed", createdAt: 100, updatedAt: 100,
         });
         db.openDots();
+        const childPath = join(dir, "找不到的目录");
+        db.upsertSpace({ id: "parent", name: "归档父空间", path: dir, sortOrder: 1000 });
+        db.archiveSpace("parent", true);
+        db.upsertSpace({ id: "child", name: "子空间", path: childPath, parentId: "parent", sortOrder: 3000 });
+        db.connection.prepare("UPDATE spaces SET updated_at=1 WHERE id='parent'").run();
+        db.setWorkspaceIcon("child", { shape: "folder", color: "teal" });
+        assertStrict.deepEqual((await db.readSpaces()).map(space => [
+          space.id, space.parentId, space.sortOrder, space.archived, space.effectiveArchived, space.pathMissing, space.icon,
+        ]), [
+          ["child", "parent", 3000, false, true, true, { shape: "folder", color: "teal" }],
+          ["parent", null, 1000, true, true, false, undefined],
+        ]);
         const experts = new TaskExpertBindingService(db, {} as never, { rootDir: join(dir, "bindings") });
         experts.save({ taskId: "normal", custom: {
           name: "校准助手", instructions: "逐项记录读数。", skillIds: [], mcpIds: [], connectorIds: [],
@@ -112,10 +141,35 @@ async function main(): Promise<void> {
         ]);
         const binding = rows[1]?.expertBinding;
         assertStrict.deepEqual([binding?.desired?.name, binding?.active, binding?.pending], ["校准助手", null, true]);
-        const remote = await db.readNonTrashedTasks({ includeExpertBindings: false });
-        assertStrict.deepEqual(remote.map(task => [task.id, task.expertBinding?.desired?.name]), [
-          ["archived", undefined], ["normal", undefined],
+        const { host, port } = await remoteServer.start();
+        const { token } = devices.issue("Android fixture");
+        const readBootstrap = async () => {
+          const response = await fetch(`http://${host}:${port}/v1/bootstrap`, {
+            headers: { authorization: `Bearer ${token}`, origin: "https://localhost" },
+          });
+          assertStrict.equal(response.status, 200);
+          return await response.json() as RemoteBootstrap;
+        };
+        assertStrict.deepEqual((await readBootstrap()).spaces, [
+          { id: "child", name: "子空间", parentId: "parent", sortOrder: 3000, archived: false, effectiveArchived: true, pathMissing: true },
+          { id: "parent", name: "归档父空间", parentId: null, sortOrder: 1000, archived: true, effectiveArchived: true, pathMissing: false },
         ]);
+        mkdirSync(childPath);
+        db.archiveSpace("parent", false);
+        assertStrict.deepEqual((await readBootstrap()).spaces.find(space => space.id === "child"),
+          { id: "child", name: "子空间", parentId: "parent", sortOrder: 3000, archived: false, effectiveArchived: false, pathMissing: false });
+        const readPhoneTasks = async () => {
+          const response = await fetch(`http://${host}:${port}/v1/tasks`, {
+            headers: { authorization: `Bearer ${token}`, origin: "https://localhost" },
+          });
+          assertStrict.equal(response.status, 200);
+          return await response.json() as RemoteTaskSummary[];
+        };
+        const remote = await readPhoneTasks();
+        assertStrict.deepEqual(remote.map(task => [task.id, task.title, task.archived, task.busy]), [
+          ["archived", "旧结果", true, false], ["normal", "仪表复核", false, true],
+        ]);
+        assertStrict.equal(JSON.stringify(remote).includes("校准助手"), false);
         experts.promote("normal");
         db.upsertTaskExecutionWorkspaceState({
           taskId: "trashed", directoryName: "trash-fixture", state: "active", createdAt: 100, updatedAt: 110,
@@ -124,16 +178,123 @@ async function main(): Promise<void> {
         assertStrict.deepEqual(restored.map(task => [task.id, task.expertBinding?.active?.name, task.expertBinding?.pending]), [
           ["archived", undefined, undefined], ["trashed", undefined, undefined], ["normal", "校准助手", false],
         ]);
+        assertStrict.deepEqual((await readPhoneTasks()).map(task => task.id), ["archived", "trashed", "normal"]);
         if (db.runtimeAuditReader) {
           assertStrict.deepEqual(
             (await db.runtimeAuditReader.taskList(DOTS_TASK_ID, true))?.map(row => row.id),
             ["archived", "trashed", "normal"],
           );
+          const native = await db.runtimeAuditReader.workspaceData({ kind: "spaces" });
+          assertStrict.deepEqual(native?.spaces.find(space => space.id === "child")?.path, childPath);
         }
-        assert(true, "可见任务返回当前的归档、恢复及人设状态");
+        assert(true, "桌面数据和手机 HTTP 返回当前的任务、归档、空间路径及恢复状态");
+
+        db.upsertSpace({ id: "review", name: "复核空间" });
+        db.upsertSpace({ id: "review-other", name: "别的资料", parentId: "review", sortOrder: 1000 });
+        db.upsertSpace({ id: "review-doc", name: "资料" });
+        db.upsertTask({ id: "peer", title: "资料整理", updatedAt: 50, spaceId: "review", spaceSortOrder: 1000 });
+        db.upsertSpace({ id: "blocked", name: "归档下的子空间", parentId: "parent" });
+        db.archiveSpace("parent", true);
+        db.upsertTaskExecutionWorkspaceState({
+          taskId: "trashed", directoryName: "trash-fixture", state: "trashed", createdAt: 100, updatedAt: 120,
+        });
+        const reviewChildren = async () => getChildrenMixed("review", await db.readSpaces(), await db.readNonTrashedTasks());
+        const spaceIndex = mixedIndexToKindIndex(await reviewChildren(), "review-doc", "space", 2);
+        if (runtimeAuditExecutable) db.connection.pragma("query_only = ON");
+        try {
+          await db.writeWorkspaceSpaceMove({ spaceId: "review-doc", targetParentId: "review", targetIndex: spaceIndex });
+          assertStrict.deepEqual((await reviewChildren()).map(node => node.id), ["review-other", "peer", "review-doc"]);
+          await db.writeWorkspaceSpaceMove({ spaceId: "review-doc", targetParentId: "review", targetIndex: 0 });
+          await db.writeWorkspaceTaskMove({ taskId: "normal", targetSpaceId: "review", targetIndex: 0 });
+          await assertStrict.rejects(db.writeWorkspaceSpaceMove({ spaceId: "blocked", targetParentId: "review" }), /已归档空间不能移动/);
+          await assertStrict.rejects(db.writeWorkspaceSpaceMove({ spaceId: "review", targetParentId: "review-doc" }), /子孙空间/);
+          await assertStrict.rejects(db.writeWorkspaceTaskMove({ taskId: "normal", targetSpaceId: "blocked" }), /移.*已归档空间/);
+          await assertStrict.rejects(db.writeWorkspaceTaskMove({ taskId: "trashed", targetSpaceId: "review" }), /已回收/);
+          await db.writeWorkspaceTaskMove({ taskId: "peer", targetSpaceId: null });
+          await db.writeWorkspaceTaskMove({ taskId: "peer", targetSpaceId: "review", targetIndex: 1 });
+          await db.writeSpaceArchive("review", true);
+          assertStrict.deepEqual((await readBootstrap()).spaces.filter(space => ["review", "review-doc"].includes(space.id))
+            .map(space => [space.id, space.archived, space.effectiveArchived]), [["review", true, true], ["review-doc", false, true]]);
+          await db.writeSpaceArchive("review", false);
+          await assertStrict.rejects(db.writeWorkspaceRename("review-other", "资料"), /UNIQUE/);
+          await db.writeWorkspaceRename("missing", "无效目标");
+          await db.writeWorkspaceRename("review-other", "验收资料");
+          await assertStrict.rejects(db.writeWorkspaceIcon("missing", null), /空间不存在：missing/);
+          assertStrict.deepEqual(await db.writeWorkspaceIcon("review-other", { shape: "chip", color: "teal" }),
+            { shape: "chip", color: "teal" });
+          await db.writeWorkspaceIcon("review-doc", { shape: "archive", color: "orange" });
+          assertStrict.deepEqual((await db.readSpaces()).find(space => space.id === "review-doc")?.icon,
+            { shape: "archive", color: "orange" });
+          assertStrict.equal(await db.writeWorkspaceIcon("review-doc", { shape: "folder", color: "default" }), null);
+          assertStrict.equal((await db.readSpaces()).find(space => space.id === "review-doc")?.icon, undefined);
+        } finally {
+          if (runtimeAuditExecutable) db.connection.pragma("query_only = OFF");
+        }
+
+        db.upsertTask({ id: "normal", title: "旧快照", updatedAt: 130, spaceId: null, spaceSortOrder: 0 }, {
+          preserveTitle: true, preserveWorkspace: true,
+        });
+        db.upsertSpace({ id: "review-doc", name: "资料", path: childPath });
+        assertStrict.deepEqual((await reviewChildren()).map(node => node.id), ["normal", "review-doc", "review-other", "peer"]);
+        assertStrict.deepEqual((await readPhoneTasks()).find(task => task.id === "normal")?.spaceId, "review");
+        assertStrict.deepEqual((await readBootstrap()).spaces.find(space => space.id === "review-doc"), {
+          id: "review-doc", name: "资料", parentId: "review", sortOrder: 1000, archived: false, effectiveArchived: false, pathMissing: false,
+        });
+        assertStrict.equal((await readBootstrap()).spaces.find(space => space.id === "review-other")?.name, "验收资料");
+        assert(true, "侧栏移动后桌面和手机读到新位置，非法移动不生效，旧快照不覆盖移动结果");
+
+        if (runtimeAuditExecutable) db.connection.pragma("query_only = ON");
+        try {
+          const root = await db.writeWorkspaceUpsert({ id: "records", name: "档案", sortOrder: 9000 });
+          assertStrict.deepEqual([root.id, root.parentId, root.sortOrder], ["records", null, 9000]);
+
+          const siblings = await Promise.all([
+            db.writeWorkspaceUpsert({ id: "record-a", name: "Reports", parentId: "records", path: childPath }),
+            db.writeWorkspaceUpsert({ id: "record-b", name: "录入", parentId: "records" }),
+          ]);
+          assertStrict.deepEqual(siblings.map(space => [space.id, space.parentId, space.sortOrder]),
+            [["record-a", "records", 1000], ["record-b", "records", 2000]]);
+          await assertStrict.rejects(db.writeWorkspaceUpsert({ id: "duplicate", name: "reports", parentId: "records" }), /UNIQUE/);
+          await assertStrict.rejects(db.writeWorkspaceUpsert({ id: "record-b", name: "无效更新", parentId: "missing" }), /空间不存在：missing/);
+          await assertStrict.rejects(db.writeWorkspaceUpsert({
+            id: "record-b", name: "无效排序",
+            // @ts-expect-error The IPC can receive a null sort order despite the client type.
+            sortOrder: null,
+          }), /NOT NULL/);
+
+          const renamed = await db.writeWorkspaceUpsert({ id: "record-b", name: "录入复核" });
+          assertStrict.deepEqual([renamed.name, renamed.parentId, renamed.sortOrder], ["录入复核", "records", 2000]);
+          const clearedOrder = await db.writeWorkspaceUpsert({ id: "record-b", name: "录入复核", sortOrder: 0 });
+          assertStrict.deepEqual([clearedOrder.parentId, clearedOrder.sortOrder], ["records", 0]);
+          const detached = await db.writeWorkspaceUpsert({ id: "record-a", name: "Reports", parentId: null });
+          assertStrict.deepEqual([detached.parentId, detached.sortOrder], [null, 1000]);
+        } finally {
+          if (runtimeAuditExecutable) db.connection.pragma("query_only = OFF");
+        }
+
+        const recordSpaces = (await readBootstrap()).spaces;
+        assertStrict.deepEqual(["records", "record-a", "record-b"].map(id => {
+          const space = recordSpaces.find(candidate => candidate.id === id);
+          return [space?.name, space?.parentId, space?.sortOrder];
+        }), [["档案", null, 9000], ["Reports", null, 1000], ["录入复核", "records", 0]]);
+        assert(true, "桌面保存工作空间后手机可见，省略归属和排序保留旧值，显式根或排序 0 生效");
       } finally {
+        await remoteServer.stop();
         await db.runtimeAuditReader?.close();
         db.close();
+      }
+      const reopened = new AppDatabase(visibleDatabase);
+      try {
+        assertStrict.deepEqual(reopened.getSpaceChildren("review").map(space => [space.id, space.sortOrder]), [["review-doc", 1000], ["review-other", 2000]]);
+        assertStrict.deepEqual(reopened.getSpaceChildren("review").map(space => [space.name, space.icon]),
+          [["资料", undefined], ["验收资料", { shape: "chip", color: "teal" }]]);
+        assertStrict.deepEqual(reopened.listTasks().filter(task => task.spaceId === "review")
+          .map(task => [task.id, task.spaceSortOrder]), [["normal", 1000], ["peer", 2000]]);
+        assert(true, "重开数据库仍保留侧栏任务和空间顺序");
+        assertStrict.deepEqual(reopened.getSpaceChildren("records").map(space => [space.id, space.name, space.sortOrder]),
+          [["record-b", "录入复核", 0]]);
+      } finally {
+        reopened.close();
       }
     }
 

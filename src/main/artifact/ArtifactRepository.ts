@@ -17,7 +17,7 @@ import type {
   ArtifactSource,
 } from "../../shared/artifact-types";
 
-interface ArtifactRow {
+export interface ArtifactRow {
   id: string;
   task_id: string;
   space_id: string | null;
@@ -38,7 +38,7 @@ interface ArtifactRow {
 
 export type StoredArtifactSnapshot = ArtifactSnapshot & { legacyMigrated: boolean };
 
-function toDescriptor(row: ArtifactRow): ArtifactDescriptor {
+export function artifactFromRow(row: ArtifactRow): ArtifactDescriptor {
   const source: ArtifactSource =
     row.source_type === "managed-content"
       ? { type: "managed-content", storagePath: row.storage_path ?? "", rootDir: row.root_dir }
@@ -60,7 +60,7 @@ function toDescriptor(row: ArtifactRow): ArtifactDescriptor {
   };
 }
 
-function toRow(d: ArtifactDescriptor): ArtifactRow {
+export function artifactToRow(d: ArtifactDescriptor): ArtifactRow {
   const source = d.source;
   return {
     id: d.id,
@@ -105,6 +105,11 @@ const DDL = `
   CREATE TABLE IF NOT EXISTS artifact_task_revisions (
     task_id TEXT PRIMARY KEY,
     revision INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS artifact_write_receipts (
+    task_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    result_json TEXT NOT NULL
   );
   -- task 级迁移状态（3B：legacy artifact 一次性迁移 marker）
   CREATE TABLE IF NOT EXISTS artifact_task_state (
@@ -165,7 +170,7 @@ export class ArtifactRepository {
 
   /** 唯一持久 commit point（§10）：insert 事务提交 = 创建成功 */
   insert(descriptor: ArtifactDescriptor): void {
-    const row = toRow(descriptor);
+    const row = artifactToRow(descriptor);
     this.db
       .prepare(
         `INSERT INTO artifacts (id, task_id, space_id, kind, source_type, entry_file, root_dir,
@@ -180,7 +185,7 @@ export class ArtifactRepository {
 
   get(id: string): ArtifactDescriptor | null {
     const row = this.db.prepare("SELECT * FROM artifacts WHERE id = ?").get(id) as ArtifactRow | undefined;
-    return row ? toDescriptor(row) : null;
+    return row ? artifactFromRow(row) : null;
   }
 
   listByTask(taskId: string): ArtifactDescriptor[] {
@@ -188,7 +193,7 @@ export class ArtifactRepository {
     const rows = this.db
       .prepare("SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at, rowid")
       .all(taskId) as ArtifactRow[];
-    return rows.map(toDescriptor);
+    return rows.map(artifactFromRow);
   }
 
   listAll(): ArtifactDescriptor[] {
@@ -196,7 +201,7 @@ export class ArtifactRepository {
     const rows = this.db
       .prepare("SELECT * FROM artifacts ORDER BY created_at, rowid")
       .all() as ArtifactRow[];
-    return rows.map(toDescriptor);
+    return rows.map(artifactFromRow);
   }
 
   readSnapshots(taskIds: readonly string[]): StoredArtifactSnapshot[] {
@@ -226,7 +231,7 @@ export class ArtifactRepository {
       }
       if (row.id === null || snapshot.state === "error") continue;
       try {
-        snapshot.artifacts.push(toDescriptor(row));
+        snapshot.artifacts.push(artifactFromRow(row));
       } catch (error) {
         snapshots.set(taskId, { ...snapshot, artifacts: [], revision: 0, state: "error",
           error: error instanceof Error ? error.message : String(error) });
@@ -240,7 +245,7 @@ export class ArtifactRepository {
    * created_by_* 永不被 UPDATE 覆盖（P1：首次写入后不可变）。
    */
   update(descriptor: ArtifactDescriptor): void {
-    const row = toRow(descriptor);
+    const row = artifactToRow(descriptor);
     this.db
       .prepare(
         `UPDATE artifacts SET space_id=@space_id, kind=@kind, source_type=@source_type,
@@ -263,7 +268,7 @@ export class ArtifactRepository {
       .prepare("UPDATE artifacts SET version = version + 1, updated_at = ? WHERE id = ?")
       .run(now, id);
     const row = this.db.prepare("SELECT * FROM artifacts WHERE id = ?").get(id) as ArtifactRow;
-    return toDescriptor(row);
+    return artifactFromRow(row);
   }
 
   remove(id: string): boolean {
@@ -437,6 +442,21 @@ export class ArtifactRepository {
   }
 
   get inTransaction(): boolean { return this.db.inTransaction; }
+
+  getWriteReceipt<T>(taskId: string, operationId: string): T | undefined {
+    const receipt = this.db.prepare("SELECT result_json FROM artifact_write_receipts WHERE task_id=? AND operation_id=?")
+      .pluck().get(taskId, operationId) as string | undefined;
+    return receipt === undefined ? undefined : JSON.parse(receipt) as T;
+  }
+
+  canPurge(taskId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM task_execution_workspace_state WHERE task_id=? AND state='trashed'").get(taskId));
+  }
+
+  clearWriteReceipt(taskId?: string): void {
+    if (taskId === undefined) this.db.exec("DELETE FROM artifact_write_receipts");
+    else this.db.prepare("DELETE FROM artifact_write_receipts WHERE task_id=?").run(taskId);
+  }
 
   /** managed-content rows 的 storage_path 集合（orphan GC 对比用） */
   managedPaths(): Set<string> {

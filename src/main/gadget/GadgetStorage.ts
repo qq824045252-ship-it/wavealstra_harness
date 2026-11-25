@@ -13,9 +13,15 @@ import {
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
-import type { GadgetManifest, GadgetSourceFile, GadgetSourceSnapshot, GadgetSourceUpdateRequest } from "../../shared/gadget-types";
+import type { GadgetDescriptor, GadgetManifest, GadgetSourceFile, GadgetSourceSnapshot, GadgetSourceUpdateRequest } from "../../shared/gadget-types";
+import type { GadgetSaveToTaskDirectoryResult } from "../../shared/gadget-ipc";
+import type { RuntimeBlueprintGadgetFiles } from "../blueprint/BlueprintInstanceWrite";
 import { normalizeGadgetManifest } from "../../shared/gadget-types";
-import { isBlueprintSensitivePath, redactBlueprintSecrets } from "../../shared/blueprint-secret-policy";
+import { BLUEPRINT_CAPTURE_DENY_PATTERN, isBlueprintSensitivePath, redactBlueprintSecrets } from "../../shared/blueprint-secret-policy";
+import { decodeBlueprintFile } from "../blueprint/capture-file";
+import type { RuntimeAuditReader, RuntimeGadgetArtifactSource, RuntimeGadgetSourceData } from "../platform/runtime-audit";
+import { gadgetInsertValues } from "./GadgetRepository";
+import { planGadgetExport } from "./saveGadgetToTaskDirectory";
 
 const EXCLUDED = new Set(["node_modules", "cache", ".next", "dist", "build", ".mybuddy-task.json"]);
 const MAX_BLUEPRINT_FILE_BYTES = 4 * 1024 * 1024;
@@ -58,10 +64,16 @@ function safeRelativePath(raw: string): string {
   return normalized;
 }
 
+interface GadgetSourceInspection {
+  manifest: GadgetManifest;
+  paths: string[];
+  token: string;
+}
+
 export class GadgetStorage {
   private readonly canonicalRootDir: string;
 
-  constructor(private readonly rootDir: string) {
+  constructor(private readonly rootDir: string, private readonly native?: RuntimeAuditReader) {
     mkdirSync(rootDir, { recursive: true });
     this.canonicalRootDir = realpathSync(rootDir);
   }
@@ -77,8 +89,7 @@ export class GadgetStorage {
     const target = this.paths(id);
     if (existsSync(target.root)) throw new Error(`Gadget storage 已存在：${id}`);
     const normalized = normalizeGadgetManifest(manifest);
-    const materialized = files?.length ? files : [{ path: normalized.entry, content: defaultHtml(normalized.name), encoding: "utf8" as const }];
-    this.validateSourceFiles(materialized);
+    const materialized = this.materializeFiles(normalized, files);
     try {
       mkdirSync(target.sourcePath, { recursive: true });
       mkdirSync(target.dataPath, { recursive: true });
@@ -95,6 +106,77 @@ export class GadgetStorage {
       rmSync(target.root, { recursive: true, force: true });
       throw error;
     }
+  }
+
+  async createNative(
+    descriptor: GadgetDescriptor, manifest: GadgetManifest,
+    source: { files?: GadgetSourceFile[] } | { sourceId: string; token: string },
+  ): Promise<boolean> {
+    if (!this.native || !await this.native.supportsGadgetFileMutations()) return false;
+    const normalized = normalizeGadgetManifest(manifest);
+    const result = await this.native.createGadgetFiles({
+      root: this.canonicalRootDir,
+      gadget: gadgetInsertValues(descriptor),
+      manifest: `${JSON.stringify(normalized, null, 2)}\n`,
+      entry: normalized.entry,
+      backendEntry: normalized.backend && "entry" in normalized.backend ? normalized.backend.entry : undefined,
+      source: "sourceId" in source
+        ? { kind: "copy", ...source }
+        : { kind: "generated", files: this.encodeGeneratedFiles(normalized, source.files) },
+    });
+    if (result?.status === "created") return true;
+    if (result?.status === "scopeChanged") throw new Error("Gadget 目标或来源作用域已变化，请刷新后重试");
+    if (result?.status === "sourceChanged") throw new Error("Gadget 源码已被修改，请重新复制");
+    throw new Error(result?.status === "failed" ? result.message : "Gadget 创建结果未确认，请刷新列表");
+  }
+
+  blueprintFiles(id: string, manifest: GadgetManifest, files?: GadgetSourceFile[]): RuntimeBlueprintGadgetFiles {
+    const normalized = normalizeGadgetManifest(manifest);
+    return {
+      id,
+      root: this.canonicalRootDir,
+      manifest: `${JSON.stringify(normalized, null, 2)}\n`,
+      entry: normalized.entry,
+      backendEntry: normalized.backend && "entry" in normalized.backend ? normalized.backend.entry : undefined,
+      files: this.encodeGeneratedFiles(normalized, files),
+    };
+  }
+
+  private encodeGeneratedFiles(manifest: GadgetManifest, files?: GadgetSourceFile[]) {
+    return this.materializeFiles(manifest, files).map(file => ({ path: safeRelativePath(file.path), base64: sourceBase64(file) }));
+  }
+
+  private materializeFiles(manifest: GadgetManifest, files?: GadgetSourceFile[]): GadgetSourceFile[] {
+    const materialized = files?.length ? files : [{ path: manifest.entry, content: defaultHtml(manifest.name), encoding: "utf8" as const }];
+    this.validateSourceFiles(materialized);
+    return materialized;
+  }
+
+  async inspectNative(id: string): Promise<GadgetSourceInspection | undefined> {
+    if (!this.native || !await this.native.supportsGadgetFileMutations()) return undefined;
+    const source = await this.native.inspectGadgetSource(this.canonicalRootDir, id);
+    if (!source || source.status === "needsHost") return undefined;
+    if (source.status === "rejected") throw new Error(source.message);
+    this.validateSourceFiles(source.paths.map(path => ({ path, content: "" })));
+    return { manifest: normalizeGadgetManifest(JSON.parse(source.manifest)), paths: source.paths, token: source.token };
+  }
+
+  async exportNative(
+    taskDirectory: string, gadget: GadgetDescriptor, source: GadgetSourceInspection,
+  ): Promise<GadgetSaveToTaskDirectoryResult> {
+    if (!this.native) throw new Error("Gadget 存储服务已关闭");
+    const result = await this.native.exportGadgetFiles({
+      taskDirectory,
+      root: this.canonicalRootDir,
+      id: gadget.id,
+      token: source.token,
+      ...planGadgetExport(gadget, source.manifest, source.paths),
+    });
+    if (result?.status === "exported") {
+      return { directory: result.directory, entryPath: result.entryPath, fileCount: result.fileCount };
+    }
+    if (result?.status === "sourceChanged") throw new Error("Gadget 源码已被修改，请重新保存副本");
+    throw new Error(result?.status === "failed" ? result.message : "导出结果未确认，请检查任务目录");
   }
 
   writeManifest(id: string, manifest: GadgetManifest): void {
@@ -122,6 +204,36 @@ export class GadgetStorage {
     const realManifest = realpathSync(target.manifestPath);
     if (!isInside(realRoot, realManifest)) throw new Error("Gadget manifest 符号链接越界");
     return normalizeGadgetManifest(JSON.parse(readFileSync(realManifest, "utf8")));
+  }
+
+  async readManifestNative(id: string): Promise<{ manifest: GadgetManifest; token: string } | undefined> {
+    const result = await this.native?.readGadgetManifest(this.canonicalRootDir, id);
+    if (!result || result.status === "needsHost") return undefined;
+    if (result.status === "rejected") throw new Error(result.message);
+    return { manifest: normalizeGadgetManifest(JSON.parse(result.manifest)), token: result.token };
+  }
+
+  artifactSource(id: string, entry: string, token: string): RuntimeGadgetArtifactSource {
+    return { root: this.canonicalRootDir, id, entry, token };
+  }
+
+  async saveManifestNative(descriptor: GadgetDescriptor, manifest: GadgetManifest, token: string): Promise<boolean> {
+    if (!this.native) return false;
+    const fields = gadgetInsertValues(descriptor);
+    const result = await this.native.saveGadgetSource({
+      root: this.canonicalRootDir,
+      id: descriptor.id,
+      operationId: randomUUID(),
+      token,
+      updatedAt: descriptor.updatedAt,
+      files: [],
+      manifest: `${JSON.stringify(normalizeGadgetManifest(manifest), null, 2)}\n`,
+      update: { name: fields.name, description: fields.description, metadataJson: fields.metadataJson },
+    });
+    if (result?.status === "manifestSaved") return true;
+    if (result?.status === "needsHost") return false;
+    if (result?.status === "conflict") throw new Error("Gadget 配置已被修改，请刷新后重试");
+    throw new Error(`工作台数据写入失败，请重试${result?.status === "failed" ? `：${result.message}` : ""}`);
   }
 
   writeSourceFile(id: string, file: GadgetSourceFile): void {
@@ -180,35 +292,136 @@ export class GadgetStorage {
       }
     };
     walk(sourcePath);
-    this.validateSourceFiles(files);
-    const manifest = this.readManifest(id);
-    return { manifest, files, revision: createHash("sha256").update(JSON.stringify({ manifest, files })).digest("hex") };
+    return this.sourceSnapshot(this.readManifest(id), files);
   }
 
-  updateSource(request: GadgetSourceUpdateRequest, commit: () => void): GadgetSourceSnapshot {
-    const { gadgetId: id, files, expectedRevision } = request;
-    const current = this.readSource(id);
+  async readSourceAsync(id: string): Promise<GadgetSourceSnapshot> {
+    const source = await this.native?.readGadgetSource(this.canonicalRootDir, id);
+    if (!source || source.status === "needsHost") return this.readSource(id);
+    if (source.status === "rejected") throw new Error(source.message);
+    return this.nativeSnapshot(source);
+  }
+
+  private nativeSnapshot(source: RuntimeGadgetSourceData): GadgetSourceSnapshot {
+    // Match the existing per-directory localeCompare order to retain saved revisions.
+    const firstPosition = new Map<string, number>();
+    const ordered = source.files.map((file, index) => {
+      const parts = file.path.split("/");
+      const prefixes = parts.map((_, depth) => parts.slice(0, depth + 1).join("/"));
+      for (const prefix of prefixes) {
+        if (!firstPosition.has(prefix)) firstPosition.set(prefix, index);
+      }
+      return { file, parts, prefixes };
+    }).sort((a, b) => {
+      for (let depth = 0; depth < Math.min(a.parts.length, b.parts.length); depth++) {
+        if (a.parts[depth] !== b.parts[depth]) {
+          return a.parts[depth].localeCompare(b.parts[depth])
+            || firstPosition.get(a.prefixes[depth])! - firstPosition.get(b.prefixes[depth])!;
+        }
+      }
+      return a.parts.length - b.parts.length;
+    });
+    const files: GadgetSourceFile[] = ordered.map(({ file }) => ({
+      path: file.path,
+      content: file.text ? Buffer.from(file.content, "base64").toString("utf8") : file.content,
+      encoding: file.text ? "utf8" : "base64",
+    }));
+    return this.sourceSnapshot(normalizeGadgetManifest(JSON.parse(source.manifest)), files);
+  }
+
+  private sourceSnapshot(manifest: GadgetManifest, files: GadgetSourceFile[]): GadgetSourceSnapshot {
+    this.validateSourceFiles(files);
+    const hash = createHash("sha256");
+    hash.update('{"manifest":').update(JSON.stringify(manifest)).update(',"files":[');
+    for (const [index, file] of files.entries()) {
+      if (index > 0) hash.update(",");
+      hash.update(JSON.stringify(file));
+    }
+    return { manifest, files, revision: hash.update("]}").digest("hex") };
+  }
+
+  async updateSourceNative(
+    request: GadgetSourceUpdateRequest, updatedAt: number, authorize?: () => void,
+  ): Promise<GadgetSourceSnapshot | undefined> {
+    if (!this.native) return undefined;
+    const source = await this.native.readGadgetSource(this.canonicalRootDir, request.gadgetId);
+    if (!source || source.status === "needsHost") return undefined;
+    if (source.status === "rejected") throw new Error(source.message);
+    if (!source.token) return undefined;
+    const { manifest, patches } = this.prepareSourceEdit(request, this.nativeSnapshot(source));
+    authorize?.();
+    const result = await this.native.saveGadgetSource({
+      root: this.canonicalRootDir,
+      id: request.gadgetId,
+      operationId: randomUUID(),
+      token: source.token,
+      updatedAt,
+      files: patches.map(file => ({
+        path: file.path,
+        base64: sourceBase64(file),
+      })),
+      ...(request.backend === undefined ? {} : { manifest: `${JSON.stringify(manifest, null, 2)}\n` }),
+    });
+    if (result?.status === "saved") return this.nativeSnapshot(result.source);
+    if (result?.status === "needsHost") return undefined;
+    if (result?.status === "conflict") throw new Error("Gadget 已被修改，请重新读取源码后再保存");
+    throw new Error(`工作台数据写入失败，请重试${result?.status === "failed" ? `：${result.message}` : ""}`);
+  }
+
+  private prepareSourceEdit(request: GadgetSourceUpdateRequest, current: GadgetSourceSnapshot) {
+    const { files, expectedRevision } = request;
     if (!expectedRevision || current.revision !== expectedRevision) throw new Error("Gadget 已被修改，请重新读取源码后再保存");
     if (!files.length) throw new Error("请提供要修改的 Gadget 源文件");
     this.validateSourceFiles(files);
     const merged = new Map(current.files.map((file) => [file.path.toLowerCase(), file]));
-    for (const file of files) {
+    const patches = files.map(file => {
       const path = safeRelativePath(file.path);
       const old = merged.get(path.toLowerCase());
-      merged.set(path.toLowerCase(), { ...file, path: old?.path ?? path });
-    }
+      const patch = { ...file, path: old?.path ?? path };
+      merged.set(path.toLowerCase(), patch);
+      return patch;
+    });
     this.validateSourceFiles([...merged.values()]);
     const manifest = normalizeGadgetManifest({ ...current.manifest,
       ...(request.backend === undefined ? {} : { backend: request.backend === null ? undefined : request.backend }),
     });
     if (!merged.has(manifest.entry.toLowerCase())) throw new Error("Gadget 缺少入口文件");
     if (manifest.backend && "entry" in manifest.backend && !merged.has(manifest.backend.entry.toLowerCase())) throw new Error("Gadget 缺少后台入口文件");
+    return { merged, manifest, patches };
+  }
+
+  updateSource(request: GadgetSourceUpdateRequest, commit: () => Promise<void>): Promise<GadgetSourceSnapshot>;
+  updateSource(request: GadgetSourceUpdateRequest, commit: () => void): GadgetSourceSnapshot;
+  updateSource(request: GadgetSourceUpdateRequest, commit: () => void | Promise<void>): GadgetSourceSnapshot | Promise<GadgetSourceSnapshot> {
+    const id = request.gadgetId;
+    const current = this.readSource(id);
+    const { merged, manifest, patches } = this.prepareSourceEdit(request, current);
     const paths = this.paths(id);
     const next = join(paths.root, `code.next-${randomUUID()}`);
     const previous = join(paths.root, `code.previous-${randomUUID()}`);
     mkdirSync(next);
     const applied: Array<{ destination: string; backup: string | null }> = [];
     let manifestWritten = false;
+    let waitingForCommit = false;
+    const cleanupStage = () => {
+      try { rmSync(next, { recursive: true, force: true }); }
+      catch (error) { console.warn("[GadgetStorage] 保留源码暂存目录", next, error); }
+    };
+    const complete = (snapshot: GadgetSourceSnapshot) => {
+      // A cleanup failure must not report a committed source edit as failed.
+      try { rmSync(previous, { recursive: true, force: true }); }
+      catch (error) { console.warn("[GadgetStorage] 保留源码备份", previous, error); }
+      return snapshot;
+    };
+    const rollback = (error: unknown): never => {
+      for (const { destination, backup } of applied.reverse()) {
+        if (backup) renameSync(backup, destination);
+        else rmSync(destination, { force: true });
+      }
+      if (manifestWritten) this.writeManifest(id, current.manifest);
+      rmSync(previous, { recursive: true, force: true });
+      throw error;
+    };
     try {
       for (const file of merged.values()) {
         const destination = resolve(next, ...safeRelativePath(file.path).split("/"));
@@ -217,8 +430,7 @@ export class GadgetStorage {
       }
       // The running host uses code/ as cwd; Windows cannot rename that directory.
       // Stage/validate the entire tree, then replace individual files atomically.
-      for (const patch of files) {
-        const file = merged.get(safeRelativePath(patch.path).toLowerCase())!;
+      for (const file of patches) {
         const destination = resolve(paths.sourcePath, ...file.path.split("/"));
         const backup = existsSync(destination) ? resolve(previous, ...file.path.split("/")) : null;
         if (backup) {
@@ -231,22 +443,16 @@ export class GadgetStorage {
       }
       if (request.backend !== undefined) { this.writeManifest(id, manifest); manifestWritten = true; }
       const snapshot = this.readSource(id);
-      commit();
-      // A cleanup failure must not report a successful source/DB commit as a failed edit.
-      try { rmSync(previous, { recursive: true, force: true }); }
-      catch (error) { console.warn("[GadgetStorage] 保留源码备份", previous, error); }
-      return snapshot;
-    } catch (error) {
-      for (const { destination, backup } of applied.reverse()) {
-        if (backup) renameSync(backup, destination);
-        else rmSync(destination, { force: true });
+      const written = commit();
+      if (written instanceof Promise) {
+        waitingForCommit = true;
+        return written.then(() => complete(snapshot), rollback).finally(cleanupStage);
       }
-      if (manifestWritten) this.writeManifest(id, current.manifest);
-      rmSync(previous, { recursive: true, force: true });
-      throw error;
+      return complete(snapshot);
+    } catch (error) {
+      return rollback(error);
     } finally {
-      try { rmSync(next, { recursive: true, force: true }); }
-      catch (error) { console.warn("[GadgetStorage] 保留源码暂存目录", next, error); }
+      if (!waitingForCommit) cleanupStage();
     }
   }
 
@@ -318,14 +524,42 @@ export class GadgetStorage {
     return { manifest: this.readManifest(id), sourceFiles };
   }
 
+  async captureSourceAsync(id: string): Promise<{ manifest: GadgetManifest; sourceFiles: GadgetSourceFile[] }> {
+    const result = await this.native?.captureBlueprintGadget(this.canonicalRootDir, id, BLUEPRINT_CAPTURE_DENY_PATTERN);
+    if (!result || result.status === "needsHost") return this.captureSource(id);
+    if (result.status === "rejected") throw new Error(result.message);
+    return {
+      manifest: normalizeGadgetManifest(JSON.parse(result.manifest)),
+      sourceFiles: result.files.filter(file => !isBlueprintSensitivePath(file.path)).map(decodeBlueprintFile),
+    };
+  }
+
   delete(id: string): void {
     const target = this.paths(id).root;
     if (!isInside(this.rootDir, target) || target === resolve(this.rootDir)) throw new Error("拒绝删除越界 Gadget storage");
     rmSync(target, { recursive: true, force: true });
   }
 
+  async removeUnregistered(id: string): Promise<void> {
+    const result = this.native ? await this.native.removeUnregisteredGadget(this.canonicalRootDir, id) : "needsHost";
+    if (result === "needsHost") {
+      this.delete(id);
+      return;
+    }
+    if (result !== true) throw new Error("Gadget 存储清理未完成");
+  }
+
   /** SQLite descriptor 是 durable truth；清理崩溃窗口留下的未提交目录。 */
-  reconcile(validIds: ReadonlySet<string>): void {
+  async recover(validIds: () => ReadonlySet<string>): Promise<void> {
+    const failed = await this.native?.reconcileGadgetStorage(this.canonicalRootDir);
+    if (failed === undefined) {
+      this.reconcile(validIds());
+      return;
+    }
+    for (const error of failed) console.warn("[GadgetStorage] 无法清理 orphan storage", error);
+  }
+
+  private reconcile(validIds: ReadonlySet<string>): void {
     for (const entry of readdirSync(this.rootDir, { withFileTypes: true })) {
       if (!/^gdt-[a-zA-Z0-9-]+$/.test(entry.name) || validIds.has(entry.name)) continue;
       const target = resolve(this.rootDir, entry.name);
@@ -375,7 +609,14 @@ export class GadgetStorage {
       if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Gadget ${label} storage 不得是符号链接或非目录`);
       if (!isInside(this.canonicalRootDir, realpathSync(path))) throw new Error(`Gadget ${label} storage 越界`);
     }
+    if (lstatSync(join(target.root, ".mybuddy-source-save"), { throwIfNoEntry: false })) {
+      throw new Error("Gadget 源码保存尚未恢复");
+    }
   }
+}
+
+function sourceBase64(file: GadgetSourceFile): string {
+  return file.encoding === "base64" ? file.content : Buffer.from(file.content, "utf8").toString("base64");
 }
 
 function defaultHtml(name: string): string {

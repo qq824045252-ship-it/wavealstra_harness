@@ -4,7 +4,6 @@
  */
 import type { AppDatabase } from "../db/AppDatabase";
 import { WORK_GRAPH_DAG_RELATIONS, type WorkGraphEdgeDto, type WorkGraphRelation } from "../../shared/work-graph";
-import { WorkGraphRepository } from "./WorkGraphRepository";
 
 export interface IntegrityFinding {
   kind:
@@ -31,33 +30,33 @@ export interface IntegrityReport {
 }
 
 function hasEntity(db: AppDatabase, type: string, id: string): boolean {
-  const conn = db.connection as unknown as {
-    prepare: (s: string) => { get: (...a: unknown[]) => unknown };
-  };
-  try {
-    switch (type) {
-      case "workspace": return Boolean(conn.prepare(`SELECT 1 FROM spaces WHERE id=? LIMIT 1`).get(id));
-      case "task": return Boolean(conn.prepare(`SELECT 1 FROM tasks WHERE id=? LIMIT 1`).get(id));
-      case "project": return Boolean(conn.prepare(`SELECT 1 FROM projects WHERE id=? LIMIT 1`).get(id));
-      case "plan": return Boolean(conn.prepare(`SELECT 1 FROM project_todos WHERE id=? LIMIT 1`).get(id));
-      case "artifact": {
-        const hasTable = conn.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts'`).get();
-        if (!hasTable) return true;
-        return Boolean(conn.prepare(`SELECT 1 FROM artifacts WHERE id=? LIMIT 1`).get(id));
-      }
-      case "library_item": {
-        const hasTable = conn.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_items'`).get();
-        if (!hasTable) return true;
-        return Boolean(conn.prepare(`SELECT 1 FROM library_items WHERE id=? LIMIT 1`).get(id));
-      }
-      case "agent_run": return true; // ephemeral, no table
-      default: return false;
+  const conn = db.connection;
+  switch (type) {
+    case "workspace": return Boolean(conn.prepare(`SELECT 1 FROM spaces WHERE id=? LIMIT 1`).get(id));
+    case "task": return Boolean(conn.prepare(`SELECT 1 FROM tasks WHERE id=? LIMIT 1`).get(id));
+    case "project": return Boolean(conn.prepare(`SELECT 1 FROM projects WHERE id=? LIMIT 1`).get(id));
+    case "plan": return Boolean(conn.prepare(`SELECT 1 FROM project_todos WHERE id=? LIMIT 1`).get(id));
+    case "artifact": {
+      const hasTable = conn.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifacts'`).get();
+      if (!hasTable) return true;
+      return Boolean(conn.prepare(`SELECT 1 FROM artifacts WHERE id=? LIMIT 1`).get(id));
     }
-  } catch { return false; }
+    case "library_item": {
+      const hasTable = conn.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_items'`).get();
+      if (!hasTable) return true;
+      return Boolean(conn.prepare(`SELECT 1 FROM library_items WHERE id=? LIMIT 1`).get(id));
+    }
+    case "agent_run": return true; // ephemeral, no table
+    default: return false;
+  }
 }
 
-export function checkIntegrity(db: AppDatabase): IntegrityReport {
-  const repo = new WorkGraphRepository(db);
+export async function scanIntegrity(db: AppDatabase): Promise<IntegrityReport> {
+  const report = await db.runtimeAuditReader?.scanWorkGraphIntegrity();
+  return report ?? checkIntegrity(db);
+}
+
+function checkIntegrity(db: AppDatabase): IntegrityReport {
   const findings: IntegrityFinding[] = [];
   const conn = db.connection as unknown as {
     prepare: (s: string) => { all: (...a: unknown[]) => Array<Record<string, unknown>>; get: (...a: unknown[]) => unknown };
@@ -78,8 +77,9 @@ export function checkIntegrity(db: AppDatabase): IntegrityReport {
   })();
 
   for (const e of allEdges) {
-    // orphan/invalid
-    if (!hasEntity(db, e.fromType, e.fromId) || !hasEntity(db, e.toType, e.toId)) {
+    let orphan = true;
+    try { orphan = !hasEntity(db, e.fromType, e.fromId) || !hasEntity(db, e.toType, e.toId); } catch {}
+    if (orphan) {
       findings.push({
         kind: "orphan_edge",
         edgeId: e.id,
@@ -179,6 +179,16 @@ export interface RepairPreview {
   note: string;
 }
 
+interface RepairCounts {
+  deletedEdges: number;
+  deletedBindings: number;
+}
+
+export type RuntimeWorkGraphRepairReply =
+  | ({ status: "applied" } & RepairCounts)
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
+
 export function previewRepair(db: AppDatabase, report: IntegrityReport): RepairPreview {
   const willDeleteEdgeIds: string[] = [];
   const willDeleteBindingKeys: Array<{ workspaceId: string; librarySpaceId: string }> = [];
@@ -196,22 +206,39 @@ export function previewRepair(db: AppDatabase, report: IntegrityReport): RepairP
   };
 }
 
-export function applyRepair(
-  db: AppDatabase,
-  preview: RepairPreview,
-): { deletedEdges: number; deletedBindings: number } {
-  let deletedEdges = 0;
-  let deletedBindings = 0;
-  const conn = db.connection as unknown as { prepare: (s: string) => { run: (...a: unknown[]) => { changes: number } } };
-  for (const id of preview.willDeleteEdgeIds) {
-    try { deletedEdges += conn.prepare(`DELETE FROM work_graph_edges WHERE id=?`).run(id).changes; } catch {}
+export async function applyRepair(db: AppDatabase, preview: RepairPreview): Promise<RepairCounts> {
+  if (!db.runtimeAuditReader) return applyRepairOnHost(db, preview);
+  const result = await db.runtimeAuditReader.applyWorkGraphRepair(preview);
+  if (result?.status === "needsHost") return applyRepairOnHost(db, preview);
+  if (result?.status === "applied") {
+    return { deletedEdges: result.deletedEdges, deletedBindings: result.deletedBindings };
   }
-  for (const k of preview.willDeleteBindingKeys) {
-    try {
-      deletedBindings += conn
-        .prepare(`DELETE FROM workspace_library_links WHERE workspace_id=? AND library_space_id=?`)
-        .run(k.workspaceId, k.librarySpaceId).changes;
-    } catch {}
-  }
-  return { deletedEdges, deletedBindings };
+  throw new Error(result?.message ?? "无法确认工作关系图修复结果，请重新扫描");
+}
+
+function applyRepairOnHost(db: AppDatabase, preview: RepairPreview): RepairCounts {
+  const conn = db.connection;
+  return conn.transaction(() => {
+    let deletedEdges = 0;
+    let deletedBindings = 0;
+    const readEdge = conn.prepare<[string], {
+      from_type: string; from_id: string; to_type: string; to_id: string;
+    }>("SELECT from_type, from_id, to_type, to_id FROM work_graph_edges WHERE id=?");
+    const deleteEdge = conn.prepare("DELETE FROM work_graph_edges WHERE id=?");
+    for (const id of preview.willDeleteEdgeIds) {
+      const edge = readEdge.get(id);
+      if (edge && (!hasEntity(db, edge.from_type, edge.from_id) || !hasEntity(db, edge.to_type, edge.to_id))) {
+        deletedEdges += deleteEdge.run(id).changes;
+      }
+    }
+    const hasLibraryTable = conn.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_spaces'").get();
+    const validLibrary = hasLibraryTable ? "AND EXISTS(SELECT 1 FROM library_spaces WHERE id=@librarySpaceId)" : "";
+    const deleteBinding = conn.prepare(`DELETE FROM workspace_library_links
+      WHERE workspace_id=@workspaceId AND library_space_id=@librarySpaceId
+        AND NOT (EXISTS(SELECT 1 FROM spaces WHERE id=@workspaceId) ${validLibrary})`);
+    for (const { workspaceId, librarySpaceId } of preview.willDeleteBindingKeys) {
+      deletedBindings += deleteBinding.run({ workspaceId, librarySpaceId }).changes;
+    }
+    return { deletedEdges, deletedBindings };
+  }).immediate();
 }

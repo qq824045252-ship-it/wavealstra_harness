@@ -6,6 +6,7 @@ import { encodeSemanticTuple } from "../../shared/bot-work-phase5";
 import type { WorkService } from "../agent/work/WorkService";
 import { DESKTOP_USER_GRANTS } from "../agent/work/WorkService";
 import { WorkProjectionJournal } from "../agent/work/WorkProjectionJournal";
+import { readWorkQueueWithProjection, type RemoteWorkQueueRequest } from "../agent/work/WorkQueueData";
 
 /**
  * Narrow a host projection to what a paired device needs.
@@ -114,27 +115,30 @@ export function createRemoteWorkBridge(input: { db: Database.Database; works: Wo
   const journal = new WorkProjectionJournal(input.db, input.works);
   const load = (workId: string) => {
     const projection = input.works.getProjection(workId);
-    const summary = input.works.getWorkSummary(input.userId, workId);
+    const summary = input.works.getWorkSummary(input.userId, workId, projection);
     return projection && summary ? toRemoteWork(summary, (projection.cards ?? []).map(toRemoteWorkCard)) : undefined;
   };
+  // Legacy devices still receive a complete snapshot from the older route.
+  const syncOnHost = (request: RemoteWorkQueueRequest) => input.db.transaction(() => {
+    const update = journal.sync(input.userId, request);
+    if (update.kind !== "snapshot") return toRemoteWorkUpdate(update as unknown as { kind: string }, load);
+    const ids = input.db.prepare(`SELECT work_id FROM works WHERE user_id=?
+      ${request.includeClosed ? "" : "AND lifecycle != 'closed'"}
+      ORDER BY updated_at DESC,work_id ASC`).all(input.userId) as Array<{ work_id: string }>;
+    return toRemoteWorkUpdate({ ...update, works: ids.map(row => ({ workId: row.work_id })) }, load);
+  }).immediate();
+  const actor = { kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS } as const;
   return {
-    // Legacy paired devices do not implement queryWorks pagination yet. Preserve
-    // their complete snapshot contract, in the same transaction as its watermark.
-    // Desktop sync remains bounded; this compatibility path is remote-only.
-    sync: (request: { includeClosed: boolean; cursor?: { epoch: string; sequence: number; scope: "open" | "all" } }) =>
-      input.db.transaction(() => {
-        const update = journal.sync(input.userId, request);
-        if (update.kind !== "snapshot") return toRemoteWorkUpdate(update as unknown as { kind: string }, load);
-        const ids = input.db.prepare(`SELECT work_id FROM works WHERE user_id=?
-          ${request.includeClosed ? "" : "AND lifecycle != 'closed'"}
-          ORDER BY updated_at DESC,work_id ASC`).all(input.userId) as Array<{ work_id: string }>;
-        return toRemoteWorkUpdate({ ...update, works: ids.map(row => ({ workId: row.work_id })) }, load);
-      }).immediate(),
+    sync: (request: RemoteWorkQueueRequest) => input.works.nativeQueue
+      ? readWorkQueueWithProjection(input.db, input.works.nativeQueue, { ...request, userId: input.userId }, update =>
+          toRemoteWorkUpdate(update.kind === "snapshot"
+            ? { ...update, works: update.workIds.map(workId => ({ workId })) } : update, load), () => syncOnHost(request))
+      : syncOnHost(request),
     summary: (workId: string) => load(workId),
     diagnostics: (request: { workId: string; sections?: string[]; limit?: number; cursor?: string }) =>
       input.works.getWorkDiagnostics(input.userId, request),
-    markCardRead: (request: { workId: string; semanticCardKey: string; readAt?: number }) =>
-      input.works.markWorkCardRead({ kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request),
+    markCardRead: (request: { workId: string; semanticCardKey: string; readAt?: number }) => input.works.nativeQueue
+      ? input.works.writeWorkCardRead(actor, request) : input.works.markWorkCardRead(actor, request),
     recordFeedback: (request: unknown) =>
       toRemoteWorkControlResult(input.works.recordUserFeedback(
         { kind: "user", userId: input.userId, entry: "remote", grants: DESKTOP_USER_GRANTS }, request as never)),

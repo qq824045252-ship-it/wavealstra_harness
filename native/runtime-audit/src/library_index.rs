@@ -148,20 +148,24 @@ fn has_item_chunks(db: &Connection, id: &str) -> rusqlite::Result<bool> {
 }
 
 fn refresh_fts(db: &Connection, item: &ItemVersion, body: Option<&str>) -> rusqlite::Result<()> {
+    refresh_item_fts(db, &item.id, body)
+}
+
+fn refresh_item_fts(db: &Connection, id: &str, body: Option<&str>) -> rusqlite::Result<()> {
     if has_table(db, "library_fts")? {
-        db.execute("DELETE FROM library_fts WHERE item_id=?", [&item.id])?;
+        db.execute("DELETE FROM library_fts WHERE item_id=?", [id])?;
         if let Some(body) = body {
             db.execute(
                 "INSERT INTO library_fts(item_id,title,filename,body)
                  SELECT id,title,filename,? FROM library_items WHERE id=?",
-                params![body, item.id],
+                params![body, id],
             )?;
         }
     }
     Ok(())
 }
 
-fn has_table(db: &Connection, name: &str) -> rusqlite::Result<bool> {
+pub(crate) fn has_table(db: &Connection, name: &str) -> rusqlite::Result<bool> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name=?)",
         [name],
@@ -241,13 +245,14 @@ fn prune_chunks(db: &Connection, id: &str, chunk_count: usize) -> rusqlite::Resu
     Ok(())
 }
 
-struct Chunk {
+pub(crate) struct Chunk {
     content: String,
     hash: String,
     offset: usize,
 }
 
-fn document_chunks(body: &str, chunk_size: usize, overlap: usize) -> Result<Vec<Chunk>> {
+pub(crate) fn document_chunks(body: &str, chunk_size: usize, overlap: usize) -> Result<Vec<Chunk>> {
+    library_text::validate_chunk_sizes(chunk_size, overlap)?;
     let mut chunks = Vec::new();
     let units: Vec<u16> = body.encode_utf16().collect();
     let mut visit = |window: &[u16], offset: usize| -> Result<()> {
@@ -341,12 +346,86 @@ pub fn publish_document(db: &mut Connection, publication: DocumentPublication) -
     Ok(Status::Indexed)
 }
 
+pub(crate) fn index_saved_text(
+    db: &Connection,
+    id: &str,
+    body: &str,
+    chunks: &[Chunk],
+    updated_at: i64,
+) -> Result<()> {
+    let body_fts = if body.len() > library_text::LARGE_TEXT_BYTES {
+        ""
+    } else {
+        body
+    };
+    index_inline_text(db, id, body_fts, chunks, updated_at)
+}
+
+pub(crate) fn index_inline_text(
+    db: &Connection,
+    id: &str,
+    body: &str,
+    chunks: &[Chunk],
+    updated_at: i64,
+) -> Result<()> {
+    refresh_item_fts(db, id, Some(body))?;
+    if has_table(db, "library_chunks")? {
+        replace_document_chunks(db, id, chunks, updated_at)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn index_streamed_text(
+    db: &Connection,
+    id: &str,
+    file: &mut File,
+    updated_at: i64,
+    chunk_size: usize,
+    overlap: usize,
+) -> Result<()> {
+    refresh_item_fts(db, id, Some(""))?;
+    if has_table(db, "library_chunks")? {
+        let metadata = file.metadata()?;
+        write_document_chunks(db, id, updated_at, |insert| {
+            library_text::stream_document(
+                file,
+                &metadata,
+                chunk_size,
+                overlap,
+                |_| Ok(true),
+                |units, offset| {
+                    if let Some((content, hash)) = library_text::chunk_content(units)? {
+                        insert(&content, &hash, offset)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 fn replace_document_chunks(
     db: &Connection,
     item_id: &str,
     chunks: &[Chunk],
     indexed_at: i64,
-) -> rusqlite::Result<()> {
+) -> Result<()> {
+    write_document_chunks(db, item_id, indexed_at, |insert| {
+        for chunk in chunks {
+            insert(&chunk.content, &chunk.hash, chunk.offset)?;
+        }
+        Ok(())
+    })
+}
+
+fn write_document_chunks(
+    db: &Connection,
+    item_id: &str,
+    indexed_at: i64,
+    document: impl FnOnce(&mut dyn FnMut(&str, &str, usize) -> Result<()>) -> Result<()>,
+) -> Result<()> {
     let mut insert = db.prepare_cached(
         "INSERT INTO library_chunks(id,item_id,chunk_index,content,char_offset,hash,updated_at)
          VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -361,20 +440,18 @@ fn replace_document_chunks(
     } else {
         None
     };
-    for (index, chunk) in chunks.iter().enumerate() {
+    let mut index = 0;
+    document(&mut |content, hash, offset| {
         let id = format!("{item_id}#{index}");
         insert.execute(params![
-            id,
-            item_id,
-            index,
-            chunk.content,
-            chunk.offset,
-            chunk.hash,
-            indexed_at
+            id, item_id, index, content, offset, hash, indexed_at
         ])?;
         if let Some(fts) = &mut fts {
-            fts.execute(params![item_id, id, chunk.content])?;
+            fts.execute(params![item_id, id, content])?;
         }
-    }
-    prune_chunks(db, item_id, chunks.len())
+        index += 1;
+        Ok(())
+    })?;
+    prune_chunks(db, item_id, index)?;
+    Ok(())
 }

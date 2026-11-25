@@ -101,7 +101,7 @@ void (async () => {
 
   const db = new Database(":memory:"), repository = new ArtifactRepository(db), registry = new ArtifactRegistry(); let events = 0;
   const domain = new ArtifactService(new ArtifactStorage(join(root, "managed")), repository, registry, { updated: () => { events++; } });
-  const registered = await domain.register({ taskId: "test-task", kind: "html", content: "<p>managed</p>" }); domain.notifyHtmlSaved(domain.entryPathOf(registered.id)!);
+  const registered = await domain.register({ taskId: "test-task", kind: "html", content: "<p>managed</p>" }); await domain.notifyHtmlSaved(domain.entryPathOf(registered.id)!);
   assert.equal(domain.get(registered.id)!.version, 2); assert.equal(events, 1); db.close();
   console.log("PASS managed-content version and event publication");
 

@@ -55,6 +55,7 @@ import type {
   LocalConnectorDto,
   PrivateSkillDto,
   CronJobDto,
+  CronOverviewDto,
   CronRunDto,
   FileBackupInfoDto,
   GatewayChannelConfigDto,
@@ -115,6 +116,7 @@ import type {
   SoulDto,
   SpaceDto,
   TaskDto,
+  TaskSidebarEdit,
   TaskHistoryDto,
   TaskHistoryTarget,
   TaskUserQuestionsQuery,
@@ -620,7 +622,9 @@ export interface PreloadApi {
     setWorkspaceIcon: (
       id: string, icon: NonNullable<SpaceDto["icon"]> | null,
     ) => Promise<NonNullable<SpaceDto["icon"]> | null>;
-    upsertTask: (task: TaskDto) => Promise<void>;
+    /** Pass null to retain an existing title, or a string to initialize it only while it still matches. */
+    upsertTask: (task: TaskDto, expectedTitle?: string | null) => Promise<void>;
+    editTaskSidebar: (edit: TaskSidebarEdit) => Promise<void>;
     deleteTask: (id: string) => Promise<void>;
     purgeArchivedContent: (request: ArchivedContentDeletionRequest) => Promise<ArchivedContentDeletionResult>;
     archiveTask: (id: string, archived: boolean) => Promise<void>;
@@ -639,6 +643,7 @@ export interface PreloadApi {
   };
   cron: {
     list: () => Promise<CronJobDto[]>;
+    overview: () => Promise<CronOverviewDto>;
     runs: (limit?: number) => Promise<CronRunDto[]>;
     upsert: (job: CronJobDto) => Promise<CronJobDto>;
     setEnabled: (id: string, enabled: boolean) => Promise<void>;

@@ -85,7 +85,7 @@ import { prepareTaskWorkspace } from "../task/prepareTaskWorkspace";
 import "../pi-bundled-runtime";
 import { ExecutionAttemptRepository } from "./ExecutionAttemptRepository";
 import { app, BrowserWindow } from "electron";
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -95,6 +95,7 @@ import { applyMyBuddyModelAttribution } from "../../shared/usage-stats";
 import { CredentialSynchronizationError, ModelRuntime, SettingsManager, resolveModelScopeWithDiagnostics, type AgentSession, type ScopedModel } from "@earendil-works/pi-coding-agent";
 import { AgentIpc, SubagentIpc, BtwIpc, DbIpc, type AgentApproveToolRequest, type AgentPromptRequest, type AgentPromptResult, type AgentSubmissionReceipt, type AgentRegenerateRequest, type AgentRegenerateResult, type AgentDeleteUserMessageRequest, type AgentRestoreBackupRequest, type AgentSetPermissionModeRequest, type AgentSwitchExpertRequest, type AgentUiPatch, type BtwStartRequest, type BtwPromptRequest, type BtwUiPatch, type EnhancePromptRequest, type EnhancePromptResult, type CapabilityPolicyNoticeDto, type AppSettingsDto, type AuthEventDto, type AuthLoginRequest, type AuthLoginResult, type AuthLogoutResult, type AuthPromptDto, type AuthPromptRequestDto, type AuthTypeDto, type ContextUsageDto, type CredentialInfoDto, type ExpertDto, type ExpertAuthoringCreateRequest, type ExpertAuthoringCreateResult, type ExpertAuthoringDraft, type ExpertAuthoringGenerateRequest, type LocalConnectorDto, type PrivateSkillDto, type LoginProviderDto, type MarketExpertDto, type MarketSkillDto, type MemoryChangedDto, type ModelInfoDto, type ModelReloadResultDto, type ModelsFileConfigDto, type PermissionMode, type RuntimeContextInspectionDto, type RuntimeContextSnapshotDto, type SkillAuthoringCreateRequest, type SkillAuthoringCreateResult, type SkillAuthoringDraft, type SkillAuthoringGenerateRequest, type SkillEvalRunRequest, type SkillEvalRunResultDto, type SkillImprovementApplyRequest, type SkillImprovementDraftResult, type SkillDetailDto, type SkillImprovementGenerateRequest, type SkillPackageValidationDto, type SkillDto, type SoulDto, type TaskHistoryDto, type TaskHistoryTarget, type TaskUserQuestionsDto, type TaskUserQuestionsQuery, type TaskDto, type WelcomeMode, type FileBackupInfoDto, type ModeBlockId, type ModePolicyDto, type ModeProfileDto, type ModeProfileSummaryDto, type AssembleModePreviewRequest, type AssemblyTraceDto, type DiskSpaceDto, type BuiltinCapabilitiesConfigDto, type BuiltinCapabilitiesSnapshotDto, type BuiltinCapabilityId, type SaveBuiltinCredentialRequest, type SaveBuiltinCapabilitySettingsRequest, type CapabilityVideoJobDto, type TestBuiltinCapabilityResultDto, type SubagentConfigDto, type SubagentConfigPatch, type UserFontDto, type WebSearchConfigDto, type ApiKeyPoolStateDto, type SearchProviderKeyUsageDto } from "../../shared/agent-ipc";
 import { estimateTextTokens } from "../../shared/token-format";
+import { readSoulProfile, writeSoulProfile } from "./SoulProfileData";
 
 
 
@@ -155,6 +156,7 @@ import {
   type SkillAuthoringAssessment,
 } from "../skills/SkillAuthoringGenerator";
 import { ModelsConfigStore, mergeModelConfig, projectModelConfig, type ModelsFileConfig, type ModelsProviderConfig } from "./ModelsConfigStore";
+import { observeSubagentSettings, replaceSubagentSettings } from "./SubagentSettingsPersistence";
 import { registerMyBuddyProviders } from "./providers";
 import { commandCodeModelFacts } from "./providers/command-code";
 import { MAGPIE_PROVIDER_ID, magpieCatalogSnapshot, magpieScopeReferencesToDrop, reconcileMagpieModels, type MagpieGatewayConfig } from "./providers/magpie";
@@ -209,6 +211,7 @@ import { GitCodeReview } from "./GitCodeReview";
 import { withCodeReviewLease } from "./durable/DurableToolCoordination";
 import { CodeReviewIpc, type CodeReviewDecisionRequest, type CodeReviewGitComparison, type CodeReviewGitFile } from "../../shared/code-review";
 import { TaskDiagnosticsRepository } from "./TaskDiagnosticsRepository";
+import { TaskContextUsageWrites } from "./TaskContextUsageWrites";
 import { observeCacheRequestTraces } from "./CacheRequestTrace";
 import type { TaskDiagnosticsDto } from "../../shared/task-diagnostics";
 import { ConversationInteractionRepository } from "./ConversationInteractionRepository";
@@ -553,6 +556,7 @@ export class AgentService {
   private readonly runtimeAuditReader?: RuntimeAuditReader;
   private readonly codeReview: CodeReviewService;
   private readonly taskDiagnostics: TaskDiagnosticsRepository;
+  private readonly contextUsageWrites: TaskContextUsageWrites;
   private readonly conversationGoalActivity: ConversationGoalActivity;
   private readonly conversationGoalSavedArtifacts: ConversationGoalSavedArtifacts;
   private readonly stopDiagnosticObservation: () => void;
@@ -813,6 +817,7 @@ export class AgentService {
     taskWorkspace?: TaskExecutionWorkspace,
     dependencies: { models?: ModelRuntime } = {},
   ) {
+    this.contextUsageWrites = new TaskContextUsageWrites(snapshots => db.writeTaskContextUsageBatch(snapshots));
     this.modelRuntime = dependencies.models ?? null;
     this.runtimeAuditReader = db.runtimeAuditReader;
     let improvementKnowledge: ImprovementKnowledge | undefined;
@@ -892,7 +897,7 @@ export class AgentService {
     );
     this.projectService = new ProjectService(projectRepository, this.memoryService);
     this.runtimeSnapshots = new RuntimeContextSnapshotRepository(db.connection, this.runtimeAuditReader);
-    this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event));
+    this.codeReview = new CodeReviewService(db.connection, event => broadcast(CodeReviewIpc.changed, event), db.runtimeAuditReader);
     this.taskDiagnostics = new TaskDiagnosticsRepository(db.connection, this.runtimeAuditReader);
     this.conversationGoalActivity = new ConversationGoalActivity(db.connection);
     this.conversationGoalSavedArtifacts = new ConversationGoalSavedArtifacts(db.connection);
@@ -912,6 +917,7 @@ export class AgentService {
     this.workHostAuthority.start();
     this.workService = new WorkService(db.connection, {
       bots: this.botRegistry,
+      runtimeAuditReader: this.runtimeAuditReader,
       requestExpert: (work, botId) => botId === work.ownerBotId ? this.botSettings.workMessageSettings(work, botId)?.profile : undefined,
       emitProjection: (projection) => {
         if (this.settingsStore.read().memoryEnabled) {
@@ -1104,17 +1110,6 @@ export class AgentService {
       hasCredential: ref => this.builtinCapabilities.credentials.has(ref),
     });
     registerLocalCapabilityChecks(this.builtinCapabilities, this.browserAutomation, this.pythonRuntime);
-    // 旧版连接器全局技能副本安全迁移（幂等；meta 归属校验，失败不阻断启动）
-    try {
-      const migrated = this.connectorsService.migrateLegacyGlobalSkills();
-      if (migrated.migrated > 0 || migrated.removed > 0) {
-        console.log(
-          `[AgentService] legacy connector skills migrated: moved=${migrated.migrated} removed=${migrated.removed}`,
-        );
-      }
-    } catch (err) {
-      console.warn("[AgentService] connector skill migration failed", err);
-    }
     // P3-3：settings.taskConnectorIds 孤儿 key 对账（幂等）——
     // purge 删行与 onPurge 清理之间崩溃的窗口由下次启动兜底；trash/archive 行仍在不受影响。
     try {
@@ -1479,7 +1474,8 @@ export class AgentService {
     return this.goalContinuations?.read(goalId);
   }
 
-  botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).snapshot({ repair: false }); }
+  botWorkspaceNavigation() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).readNavigation(); }
+  readWorkspaceSpaces() { return new BotWorkspaceNavigationService(this.db, LOCAL_USER_ID).readSpaces(); }
   botMessageForHtmlExport(request: import('../../shared/saved-artifact').MessageHtmlRequest) {
     return this.botHistory.messageForHtmlExport(request);
   }
@@ -3174,8 +3170,8 @@ export class AgentService {
     return cwd ? this.skillsService.listInstalled(cwd) : this.ownedInstalledSkills();
   }
 
-  listMarketSkills(cwd?: string): MarketSkillDto[] {
-    return this.skillsService.listMarket(cwd);
+  listMarketSkills(): Promise<MarketSkillDto[]> {
+    return this.skillsService.readMarket(this.runtimeAuditReader);
   }
 
   installSkill(id: string): SkillDto {
@@ -3520,8 +3516,8 @@ export class AgentService {
     this.skillsService.deleteFromMarket(id);
   }
 
-  setSkillEnabled(id: string, enabled: boolean): SkillDto {
-    return this.skillsService.setEnabled(id, enabled, this.ownedSkillContext(id));
+  setSkillEnabled(id: string, enabled: boolean): Promise<SkillDto> {
+    return this.skillsService.writeEnabled(id, enabled, this.ownedSkillContext(id), this.runtimeAuditReader);
   }
 
   /* ---------- 专家（ExpertService 委托） ---------- */
@@ -3530,13 +3526,17 @@ export class AgentService {
     return this.expertsService.listInstalled();
   }
 
-  listMarketExperts(): MarketExpertDto[] {
-    return this.expertsService.listMarket();
+  readInstalledExperts(): Promise<ExpertDto[]> {
+    return this.expertsService.readInstalled(this.runtimeAuditReader);
+  }
+
+  listMarketExperts(): Promise<MarketExpertDto[]> {
+    return this.expertsService.readMarket(this.runtimeAuditReader);
   }
 
   /** 只读：已安装专家的 Private Skills 详情（名称/描述） */
-  listExpertPrivateSkills(expertId: string): PrivateSkillDto[] {
-    return this.expertsService.listExpertPrivateSkills(expertId);
+  listExpertPrivateSkills(expertId: string): Promise<PrivateSkillDto[]> {
+    return this.expertsService.readExpertPrivateSkills(expertId, this.runtimeAuditReader);
   }
 
   installExpert(id: string): ExpertDto {
@@ -3589,12 +3589,12 @@ export class AgentService {
     this.expertsService.deleteFromMarket(id);
   }
 
-  setExpertEnabled(id: string, enabled: boolean): ExpertDto {
+  setExpertEnabled(id: string, enabled: boolean): Promise<ExpertDto> {
     if (!enabled) this.preserveExpertBindings(id);
-    return this.expertsService.setEnabled(id, enabled);
+    return this.expertsService.writeEnabled(id, enabled, this.runtimeAuditReader);
   }
 
-  getExpertDetail(id: string) { return this.expertsService.getDetail(id); }
+  getExpertDetail(id: string) { return this.expertsService.readDetail(id, this.runtimeAuditReader); }
 
   updateExpert(input: ExpertUpdateRequest) {
     this.preserveExpertBindings(input.id);
@@ -3611,10 +3611,12 @@ export class AgentService {
     }
   }
 
-  getTaskExpertBinding(taskId: string): TaskExpertBindingDto {
-    const task = this.db.getTask(taskId);
-    if (!task) throw new Error("任务不存在");
-    const binding = this.expertBindings.ensureLegacy(taskId) ?? { taskId, desired: null, active: null, pending: false };
+  async getTaskExpertBindingForSettings(taskId: string): Promise<TaskExpertBindingDto> {
+    const { binding, welcomeMode } = await this.expertBindings.readSettings(taskId);
+    return this.taskExpertBindingWithWarnings(binding, welcomeMode ?? undefined);
+  }
+
+  private taskExpertBindingWithWarnings(binding: TaskExpertBindingDto, welcomeMode: TaskDto["welcomeMode"]): TaskExpertBindingDto {
     const warnings = [...binding.warnings ?? []];
     if (binding.desired?.sourceExpertId) {
       const source = this.expertsService.listInstalled().find(item => item.id === binding.desired!.sourceExpertId);
@@ -3625,21 +3627,16 @@ export class AgentService {
     for (const id of binding.desired?.connectorIds ?? []) {
       if (!connectors.some(item => item.id === id && item.installed && item.enabled !== false)) warnings.push(`连接器不可用：${id}`);
     }
-    const mode = task.welcomeMode ?? "working";
+    const mode = welcomeMode ?? "working";
     const availableMcp = new Set(this.mcpRuntime.previewMcpFilter(mode, this.modeProfiles.getProfile(mode).policy.mcpPolicy).enabled);
     for (const id of binding.desired?.mcpIds ?? []) if (!availableMcp.has(id)) warnings.push(`MCP 未安装、已停用或被当前模式限制：${id}`);
     return { ...binding, warnings };
   }
 
-  saveTaskExpertBinding(input: TaskExpertBindingSaveRequest): TaskExpertBindingDto {
-    if (!this.db.getTask(input.taskId)) throw new Error("任务不存在");
-    this.expertBindings.ensureLegacy(input.taskId);
-    const binding = this.expertBindings.save(input);
-    this.db.setTaskExpertId(input.taskId, binding.desired?.sourceExpertId ?? null);
-    // Every backend adopts desired only at the next idle input, never in a UI save or recovery.
-    // Pi can still report idle while an admitted request prepares attachments. Do not dispose
-    // that session here; the next safe promotion changes its assembly fingerprint and rebuilds it.
-    const result = this.getTaskExpertBinding(input.taskId);
+  async saveTaskExpertBindingForSettings(input: TaskExpertBindingSaveRequest): Promise<TaskExpertBindingDto> {
+    // Pi promotes the saved identity at the next safe input boundary.
+    const { binding, welcomeMode } = await this.expertBindings.saveSettings(input);
+    const result = this.taskExpertBindingWithWarnings(binding, welcomeMode ?? undefined);
     this.emitPatch({ type: "expert_binding", taskId: input.taskId, binding: result });
     return result;
   }
@@ -3650,25 +3647,29 @@ export class AgentService {
     return this.connectorsService.list();
   }
 
-  installConnector(id: string): string[] {
-    return this.connectorsService.install(id);
+  readConnectorCatalog(): Promise<LocalConnectorDto[]> {
+    return this.connectorsService.readCatalog(this.runtimeAuditReader);
   }
 
-  importConnectorByPath(path: string): LocalConnectorDto {
-    return this.connectorsService.importDirectory(path);
+  installConnector(id: string): Promise<string[]> {
+    return this.connectorsService.installInBackground(id, this.runtimeAuditReader);
+  }
+
+  importConnectorByPath(path: string): Promise<LocalConnectorDto> {
+    return this.connectorsService.importDirectoryInBackground(path, this.runtimeAuditReader);
   }
 
   importConnectorZip(zipPath: string): Promise<LocalConnectorDto> {
-    return this.connectorsService.importZip(zipPath);
+    return this.connectorsService.importZip(zipPath, this.runtimeAuditReader);
   }
 
-  uninstallConnector(id: string): void {
-    this.connectorsService.uninstall(id);
+  uninstallConnector(id: string): Promise<void> {
+    return this.connectorsService.uninstallInBackground(id, this.runtimeAuditReader);
   }
 
   /** 启用/停用已安装连接器（停用 = 私有技能不再进入候选装配） */
-  setConnectorEnabled(id: string, enabled: boolean): void {
-    this.connectorsService.setEnabled(id, enabled);
+  async setConnectorEnabled(id: string, enabled: boolean): Promise<void> {
+    await this.connectorsService.writeEnabled(id, enabled, this.runtimeAuditReader);
     // F3：已装配该连接器的会话标记 dirty —— 下一轮空闲 prompt 统一重建（忙时延迟），
     // 确保停用/重新启用后私有技能面与 UI 一致。
     const affected = this.registry.markConnectorDirty(id);
@@ -3689,8 +3690,8 @@ export class AgentService {
     this.settingsStore.clearTaskConnectorIds(taskId);
   }
 
-  deleteMarketConnector(id: string): void {
-    this.connectorsService.deleteFromMarket(id);
+  deleteMarketConnector(id: string): Promise<void> {
+    return this.connectorsService.deleteFromMarketInBackground(id, this.runtimeAuditReader);
   }
 
   /* ---------- 场景模式（ModeProfile 用户可编辑） ---------- */
@@ -3949,10 +3950,7 @@ export class AgentService {
   }
 
   private ownedInstalledSkills() {
-    const skills = this.skillsService.listInstalled();
-    for (const bot of this.botRegistry.listBots(LOCAL_USER_ID))
-      skills.push(...this.skillsService.listInstalled(undefined, [], { botId: bot.botId }));
-    return [...new Map(skills.map(skill => [skill.id, skill])).values()];
+    return this.skillsService.listInstalledForBots(this.botRegistry.listBots(LOCAL_USER_ID).map(bot => bot.botId));
   }
 
   private ownedSkillContext(id: string): { botId?: string } {
@@ -4112,7 +4110,7 @@ export class AgentService {
    */
   async switchExpert(req: AgentSwitchExpertRequest): Promise<void> {
     const expertId = assertSingleExpertId(req.expertId) ?? null;
-    this.saveTaskExpertBinding({ taskId: req.taskId, expertId });
+    await this.saveTaskExpertBindingForSettings({ taskId: req.taskId, expertId });
   }
 
   getModelsConfig(): ModelsFileConfigDto {
@@ -4500,10 +4498,13 @@ export class AgentService {
   }
 
   /** 读取 Subagent 产品配置。transportThinking 仅供 Main/CLI 内部使用，不跨 IPC。 */
-  getSubagentConfig(): SubagentConfigDto {
-    const path = join(getMyBuddyDir(), "subagent.json");
-    try {
-      const content = readFileSync(path, "utf-8");
+  async getSubagentConfig(): Promise<SubagentConfigDto> {
+    const source = await observeSubagentSettings(getMyBuddyDir(), this.runtimeAuditReader);
+    return this.projectSubagentConfig(source.path, source.text);
+  }
+
+  private projectSubagentConfig(path: string, content: string | null): SubagentConfigDto {
+    if (content !== null) {
       const raw = JSON.parse(content) as Record<string, unknown>;
       const execution = parseSubagentExecutionPolicy(raw);
       const scope = raw.agentScope;
@@ -4541,10 +4542,8 @@ export class AgentService {
         globalDefaultModelId: this.readSettingsDefaultModelId(),
         configPath: path,
       };
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-      return { ...resolveParallelLimits(), configPath: path, globalDefaultModelId: this.readSettingsDefaultModelId(), revision: createHash("sha256").update("").digest("hex") };
     }
+    return { ...resolveParallelLimits(), configPath: path, globalDefaultModelId: this.readSettingsDefaultModelId(), revision: createHash("sha256").update("").digest("hex") };
   }
 
   private configuredDotsModelId(): string | undefined {
@@ -4585,17 +4584,10 @@ export class AgentService {
   }
 
   /** 保存 Subagent：defaultReasoning 为产品真源，transportThinking 仅为 Pi CLI 内部派生值。 */
-  saveSubagentConfig(config: SubagentConfigPatch): SubagentConfigDto {
-    const path = join(getMyBuddyDir(), "subagent.json");
-    let merged: Record<string, unknown> = {};
-    let content = "";
-    try {
-      content = readFileSync(path, "utf-8");
-      merged = JSON.parse(content) as Record<string, unknown>;
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    }
-    if (config.expectedRevision !== createHash("sha256").update(content).digest("hex")) {
+  async saveSubagentConfig(config: SubagentConfigPatch): Promise<SubagentConfigDto> {
+    const source = await observeSubagentSettings(getMyBuddyDir(), this.runtimeAuditReader);
+    const merged = source.text === null ? {} : JSON.parse(source.text) as Record<string, unknown>;
+    if (config.expectedRevision !== createHash("sha256").update(source.text ?? "").digest("hex")) {
       throw new Error("Subagent settings changed elsewhere. Reload the model settings before saving.");
     }
     parseSubagentExecutionPolicy(merged);
@@ -4644,36 +4636,38 @@ export class AgentService {
       console.warn("[AgentService] Subagent reasoning transport limitations", derived.problems.join("; "));
     }
 
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    try {
-      writeFileSync(temporary, JSON.stringify(next, null, 2), { encoding: "utf-8", mode: 0o600, flag: "wx" });
-      renameSync(temporary, path);
-    } finally {
-      rmSync(temporary, { force: true });
-    }
-    return this.getSubagentConfig();
+    const content = JSON.stringify(next, null, 2);
+    await replaceSubagentSettings(source, content);
+    return this.projectSubagentConfig(source.path, content);
   }
 
-  getSoul(): SoulDto {
-    return this.db.getSoul();
+  getSoul(): Promise<SoulDto> {
+    return readSoulProfile(this.db);
   }
 
-  updateSoul(partial: Partial<SoulDto>): SoulDto {
-    return this.db.updateSoul(partial);
+  updateSoul(partial: Partial<SoulDto>): Promise<SoulDto> {
+    return writeSoulProfile(this.db, partial);
   }
 
   // Unified Memory Kernel UI/MCP facade.
   listKernelMemory(request?: import("../../shared/memory-kernel").MemoryListRequest | number) {
-    return this.memoryService.list(request ?? {});
+    return this.memoryService.readList(request ?? {});
   }
   async listKernelMemoryTurns(request?: import("../../shared/memory-kernel").MemoryTurnListRequest) {
     await this.memoryPipeline.flushCaptureWrites();
-    return this.memoryService.listTurns(request ?? {});
+    return this.memoryService.readTurns(request ?? {});
   }
-  getKernelMemoryTurn(id: string) { return this.memoryService.getTurn(id); }
+  async getKernelMemoryTurn(id: string) {
+    await this.memoryPipeline.flushCaptureWrites();
+    return this.memoryService.readTurn(id);
+  }
   kernelMemoryTurnTasks() { return this.memoryPipeline.turns.listTaskOptions(); }
-  memoriesForKernelTurn(turnId: string) { return this.memoryService.memoriesForTurn(turnId); }
-  getKernelMemory(id: string) { return this.memoryService.get(id); }
+  async readKernelMemoryTurnTasks() {
+    await this.memoryPipeline.flushCaptureWrites();
+    return this.memoryPipeline.turns.readTaskOptions();
+  }
+  memoriesForKernelTurn(turnId: string) { return this.memoryService.readMemoriesForTurn(turnId); }
+  getKernelMemory(id: string) { return this.memoryService.readRecord(id); }
   searchKernelMemory(request: import("../../shared/memory-kernel").MemorySearchRequest) { return this.memoryService.searchHybrid(request); }
   createKernelMemory(request: import("../../shared/memory-kernel").MemoryCreateRequest) {
     const memory = this.memoryService.create(request); this.notifyMemoryChanged({ scope: "settings" }); return memory;
@@ -4681,39 +4675,37 @@ export class AgentService {
   updateKernelMemory(request: import("../../shared/memory-kernel").MemoryUpdateRequest) {
     const memory = this.memoryService.update(request); this.notifyMemoryChanged({ scope: "settings" }); return memory;
   }
-  forgetKernelMemory(id: string) { this.forgetKernelMemories([id]); }
-  forgetKernelMemories(ids: string[]) {
+  async createKernelMemoryAsync(request: import("../../shared/memory-kernel").MemoryCreateRequest) {
+    const memory = await this.memoryService.createSettingsMemory(request);
+    this.notifyMemoryChanged({ scope: "settings" });
+    return memory;
+  }
+  async updateKernelMemoryAsync(request: import("../../shared/memory-kernel").MemoryUpdateRequest) {
+    const memory = await this.memoryService.updateSettingsMemory(request);
+    this.notifyMemoryChanged({ scope: "settings" });
+    return memory;
+  }
+  async forgetKernelMemories(ids: string[]): Promise<void> {
     const errors: string[] = [];
     for (const id of ids) {
-      try { this.memoryService.forget(id); }
+      try { await this.memoryService.forgetSettingsMemory(id); }
       catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
     }
     this.notifyMemoryChanged({ scope: "settings" });
     if (errors.length) throw new Error(`已删除 ${ids.length - errors.length} 条；${errors.length} 条失败：${errors[0]}`);
   }
-  resolveKernelMemoryCandidate(id: string, decision: "approve" | "reject") {
-    const result = this.memoryService.resolveCandidateReview(id, decision);
+  async resolveKernelMemoryCandidate(id: string, decision: "approve" | "reject") {
+    const result = await this.memoryService.reviewSettingsCandidate(id, decision);
     this.notifyMemoryChanged({ scope: "settings" });
     return result;
   }
-  promoteKernelMemory(id: string, scopeType: import("../../shared/memory-kernel").MemoryScopeType, scopeId?: string) {
-    const memory = this.memoryService.promote(id, scopeType, scopeId); this.notifyMemoryChanged({ scope: "settings" }); return memory;
+  async promoteKernelMemory(id: string, scopeType: import("../../shared/memory-kernel").MemoryScopeType, scopeId?: string) {
+    const memory = await this.memoryService.promoteSettingsScope(id, scopeType, scopeId);
+    this.notifyMemoryChanged({ scope: "settings" });
+    return memory;
   }
-  detachKernelMemoryScope(id: string, scopeType: import("../../shared/memory-kernel").MemoryScopeType, scopeId?: string) {
-    if (scopeType === "project" && scopeId) {
-      const row = this.db.connection.prepare("SELECT archived FROM projects WHERE id=?").get(scopeId) as { archived: number } | undefined;
-      if (row?.archived) throw new Error("项目已归档（只读），不能修改其关联记忆");
-    }
-    const current = this.memoryService.get(id);
-    if (current) {
-      const wouldForget = !current.scopes.some(
-        (scope) => !(scope.scopeType === scopeType && (scope.scopeId ?? "") === (scopeId ?? "")),
-      );
-      // Last-scope detach is a hard delete — apply the same archived guard as forget().
-      if (wouldForget) this.memoryService.assertMemoryWritable(id);
-    }
-    const result = this.memoryService.detachScope(id, scopeType, scopeId);
-    if (!result.detached) throw new Error("作用域绑定不存在");
+  async detachKernelMemoryScope(id: string, scopeType: import("../../shared/memory-kernel").MemoryScopeType, scopeId?: string) {
+    const result = await this.memoryService.detachSettingsScope(id, scopeType, scopeId);
     this.notifyMemoryChanged({ scope: "settings" });
     return result;
   }
@@ -4860,26 +4852,16 @@ export class AgentService {
     });
     return run;
   }
-  kernelMemoryHistory(id: string) { return this.memoryService.history(id); }
-  kernelMemoryCandidates(status?: import("../../shared/memory-kernel").MemoryCandidateDto["status"], limit?: number) { return this.memoryService.listCandidates(status, limit); }
-  kernelMemoryStats() { return { ...this.memoryService.stats(), latestAutomaticRecall: this.latestAutomaticRecall }; }
+  kernelMemoryHistory(id: string) { return this.memoryService.readHistory(id); }
+  kernelMemoryCandidates(status?: import("../../shared/memory-kernel").MemoryCandidateDto["status"], limit?: number) { return this.memoryService.readCandidates(status, limit); }
+  async kernelMemoryStats() { return { ...await this.memoryService.readStats(), latestAutomaticRecall: this.latestAutomaticRecall }; }
   kernelMemoryScenarios(limit?: number) { return this.memoryService.listScenarios(limit); }
   kernelMemoryCoreProfiles(limit?: number) { return this.memoryService.listCoreProfiles(limit); }
   kernelMemorySkillCandidates(status?: import("../../shared/memory-kernel").MemorySkillCandidateStatus, limit?: number) {
     return this.memoryService.listSkillCandidates(status, limit);
   }
-  kernelSkillLearningStatus(): import("../../shared/memory-kernel").MemorySkillLearningStatusDto {
-    const procedures = this.memoryService.list({ kind: "procedure", status: "active", limit: 2000 });
-    const failures = this.db.connection.prepare("SELECT COUNT(*) n FROM memory_turns WHERE extraction_state='failed'").get() as { n: number };
-    const pending = this.db.connection.prepare("SELECT task_id,extraction_state,attempt_count,COUNT(*) n FROM memory_turns WHERE extraction_state IN ('pending','failed') GROUP BY task_id,extraction_state,attempt_count").all() as Array<{ task_id: string; extraction_state: string; attempt_count: number; n: number }>;
-    let retryableFailedTurns = 0;
-    let pendingTurns = 0;
-    for (const row of pending) {
-      if (!this.memoryPipeline.turns.canExtractTask(row.task_id)) continue;
-      if (row.extraction_state === "failed") retryableFailedTurns += Number(row.n);
-      if (row.extraction_state === "pending" || row.attempt_count < 3) pendingTurns += Number(row.n);
-    }
-    const latest = this.db.connection.prepare("SELECT last_error FROM memory_turns WHERE extraction_state='failed' ORDER BY captured_at DESC LIMIT 1").get() as { last_error?: string } | undefined;
+  async kernelSkillLearningStatus(): Promise<import("../../shared/memory-kernel").MemorySkillLearningStatusDto> {
+    const counts = await this.memoryPipeline.turns.readSkillLearningCounts();
     const blockedSkills: import("../../shared/memory-kernel").MemorySkillLearningStatusDto["blockedSkills"] = [];
     for (const skill of this.ownedInstalledSkills()) {
       if (!skill.filePath) continue;
@@ -4891,8 +4873,7 @@ export class AgentService {
         : !skill.enabled ? "自动调用尚未启用，可前往技能中心启用" : undefined;
       if (reason) blockedSkills.push({ id: skill.id, title: skill.name, reason });
     }
-    return { distillation: this.skillDistillation.status(), procedures: procedures.length, reusableProcedures: procedures.filter((memory) => memory.scopes.some((scope) => scope.scopeType !== "task")).length,
-      failedTurns: Number(failures.n), retryableFailedTurns, pendingTurns, latestError: latest?.last_error?.slice(0, 200), blockedSkills };
+    return { ...counts, distillation: this.skillDistillation.status(), blockedSkills };
   }
   deleteKernelSkillHistory(request: import("../../shared/memory-kernel").MemorySkillHistoryDeleteRequest) {
     const deleted = this.memoryService.deleteSkillHistory(request);
@@ -5182,8 +5163,8 @@ export class AgentService {
       }
       // 重启后 registry 无活跃会话：回退到 prompt 结束时落库的快照，
       // 让 UI 在历史消息恢复时仍能显示上次的用量，而不是未知。
-      const snapshot = this.db.getTaskContextUsage(taskId);
-      if (!snapshot) return null;
+      const snapshot = this.contextUsageWrites.latest(taskId) ?? this.db.getTaskContextUsage(taskId);
+      if (snapshot?.usedTokens == null) return null;
       return {
         taskId,
         usedTokens: snapshot.usedTokens,
@@ -5610,11 +5591,13 @@ export class AgentService {
       if (!usage) return;
       const totals = this.sessionTokenTotals(session);
       const cacheHitRate = this.sessionCacheHitRate(totals);
+      const contextWindow = usage.contextWindow || 128_000;
+      const current = resolveContextTokenEstimate(usage.tokens, session.sessionManager.getLeafId(), this.compactionEstimates.get(taskId));
       this.emitPatch({
         type: "context_usage",
         taskId,
-        ...resolveContextTokenEstimate(usage.tokens, session.sessionManager.getLeafId(), this.compactionEstimates.get(taskId)),
-        contextWindow: usage.contextWindow || 128_000,
+        ...current,
+        contextWindow,
         percent: usage.percent ?? null,
         cacheHitRate,
         inputTokens: totals?.input ?? null,
@@ -5622,8 +5605,7 @@ export class AgentService {
         outputTokens: totals?.output ?? null,
       });
       // 落库快照：软件重启后 registry 为空，UI 靠这份快照恢复用量显示。
-      const current = resolveContextTokenEstimate(usage.tokens, session.sessionManager.getLeafId(), this.compactionEstimates.get(taskId));
-      this.db.setTaskContextUsage(taskId, current.usedTokens, usage.contextWindow || 128_000, cacheHitRate);
+      this.contextUsageWrites.enqueue({ taskId, usedTokens: current.usedTokens, contextWindow, cacheHitRate });
     } catch {
       /* ignore */
     }
@@ -5771,22 +5753,20 @@ export class AgentService {
   }
 
   /** 列出文件修改前自动备份（taskId 缺省时返回全部任务） */
-  listBackups(taskId?: string): FileBackupInfoDto[] {
-    return this.backups.listBackups(taskId);
+  listBackups(taskId?: string): Promise<FileBackupInfoDto[]> {
+    return this.backups.readBackups(this.db.runtimeAuditReader, taskId);
   }
 
-  listCodeReview(taskId: string) {
-    if (typeof taskId !== "string" || !this.db.getTask(taskId)) return [];
-    return this.codeReview.list(taskId);
+  async listCodeReview(taskId: string) {
+    return typeof taskId === "string" ? this.codeReview.readList(taskId) : [];
   }
 
-  codeReviewPendingCount(taskId: string): number {
-    return typeof taskId === "string" ? this.codeReview.pendingCount(taskId) : 0;
+  async codeReviewPendingCount(taskId: string): Promise<number> {
+    return typeof taskId === "string" ? this.codeReview.readPendingCount(taskId) : 0;
   }
 
-  codeReviewDetail(taskId: string, id: string) {
-    if (typeof taskId !== "string" || typeof id !== "string" || !this.db.getTask(taskId)) return null;
-    return this.codeReview.detail(taskId, id);
+  async codeReviewDetail(taskId: string, id: string) {
+    return typeof taskId === "string" && typeof id === "string" ? this.codeReview.detail(taskId, id) : null;
   }
 
   private async gitCodeReview(taskId: string) {
@@ -5827,13 +5807,15 @@ export class AgentService {
   }
 
   /** 将备份写回原始路径 */
-  restoreBackup(req: AgentRestoreBackupRequest): FileBackupInfoDto {
-    return this.backups.restoreBackup(req.taskId, req.backupId);
+  restoreBackup(req: AgentRestoreBackupRequest): Promise<FileBackupInfoDto> {
+    return this.backups.restoreWithRuntime(this.db.runtimeAuditReader, req.taskId, req.backupId);
   }
 
   setPermissionMode(req: AgentSetPermissionModeRequest): boolean {
     const task = this.db.getTask(req.taskId);
-    if (task) this.db.upsertTask({ ...task, permissionMode: "auto" });
+    if (task) this.db.upsertTask({
+      id: task.id, title: task.title, updatedAt: task.updatedAt, permissionMode: "auto",
+    }, { preserveTitle: true });
     const entry = this.registry.get(req.taskId);
     if (!entry) return Boolean(task);
 
@@ -5869,7 +5851,7 @@ export class AgentService {
   async closeAuditWrites(): Promise<void> {
     await Promise.all([
       this.taskDiagnostics.closeWrites(), this.runtimeSnapshots.closeWrites(), this.usageStats.closeWrites(),
-      this.memoryPipeline.closeCaptureWrites(),
+      this.memoryPipeline.closeCaptureWrites(), this.contextUsageWrites.close(),
     ]);
   }
 
@@ -5990,7 +5972,7 @@ export class AgentService {
     return model;
   }
 
-  kernelMemoryOrganization() { return this.memoryOrganization.latest(); }
+  kernelMemoryOrganization() { return this.memoryOrganization.readLatest(); }
   async startKernelMemoryOrganization(resumeId?: string) {
     const model = await this.resolveCognitionModel();
     const runtime = this.modelRuntime!;
@@ -6126,7 +6108,9 @@ export class AgentService {
     if (!resolved) return stored;
     if (resolved.repairedFrom && resolved.modelId !== stored) {
       console.warn(`[AgentService] 任务 ${task!.id} 的模型 ${stored} 已不在模型目录中，改用 ${resolved.modelId}`);
-      this.db.upsertTask({ ...task!, modelId: resolved.modelId });
+      this.db.upsertTask({
+        id: task!.id, title: task!.title, updatedAt: task!.updatedAt, modelId: resolved.modelId,
+      }, { preserveTitle: true });
     }
     return resolved.modelId;
   }
@@ -6327,7 +6311,7 @@ export class AgentService {
     // P0 §10.1：before/after 都只扫描 canonical taskRoot，且必须使用同一过滤口径。
     // 历史 bug：baseline 曾以 unfiltered:true 拍摄（.git/node_modules/out 占满 5000 上限），
     // after 却是过滤版 → 整个项目目录被判为「本轮新增」，一句「你好」就登记上千个产物。
-    const after = await snapshotWorkspace(taskRoot);
+    const after = await snapshotWorkspace(taskRoot, this.runtimeAuditReader);
     const diff = diffWorkspaceSnapshot(before, after);
     if (diff.rejected) {
       console.warn(`[AgentService][ArtifactBoundary] 跳过本轮工作区 diff：${diff.rejected} taskId=${taskId}`);
@@ -6398,40 +6382,19 @@ export class AgentService {
       }
       this.emittedArtifactPaths.get(taskId)?.add(filePath.toLowerCase());
       // 3C：Artifact 创建/刷新唯一通道 = Artifact Domain（P1：不再写 legacy artifact-index）
-      let artifactId: string | null = null;
-      const existing = this.artifactService?.findByEntryFile(taskId, filePath);
-      if (existing) {
-        artifactId = existing.id;
-        // P1：已存在 → 幂等 updated ref（tool 即时事件与回合末 snapshot 可重复调用）
-        if (messageId) {
-          try {
-            this.artifactService?.addMessageRef({
-              taskId,
-              messageId,
-              artifactId: existing.id,
-              relation: "updated",
-              toolCallId,
-            });
-          } catch (err) {
-            console.warn("[AgentService] addMessageRef(updated) failed", err);
-          }
-        }
-      } else {
-        const isCodeOrTextKind = ["code", "markdown", "html"].includes(preview.kind);
-        const lineCount = isCodeOrTextKind && preview.content ? preview.content.split("\n").length : undefined;
-        const descriptor = await this.artifactService?.register({
-          taskId,
-          kind: toDomainArtifactKind(preview.kind),
-          title: preview.name,
-          capabilities: { originalKind: preview.kind, ...(lineCount ? { lineCount } : {}) },
-          workspaceFile: { entryFile: filePath, rootDir },
-          producerMessageId: messageId || undefined,
-          producerToolCallId: toolCallId,
-        });
-        artifactId = descriptor?.id ?? null;
-      }
-      if (!artifactId) return; // register 失败：created/updated 事件由 Domain 负责，不阻塞消息
       const isCodeOrText = ["code", "markdown", "html"].includes(preview.kind);
+      const lineCount = isCodeOrText && preview.content ? preview.content.split("\n").length : undefined;
+      const descriptor = await this.artifactService?.registerWorkspaceOutput({
+        taskId,
+        kind: toDomainArtifactKind(preview.kind),
+        title: preview.name,
+        capabilities: { originalKind: preview.kind, ...(lineCount ? { lineCount } : {}) },
+        workspaceFile: { entryFile: filePath, rootDir },
+        producerMessageId: messageId || undefined,
+        producerToolCallId: toolCallId,
+      });
+      const artifactId = descriptor?.id;
+      if (!artifactId) return; // register 失败：created/updated 事件由 Domain 负责，不阻塞消息
       this.emitPatch({
         type: "artifact_ref",
         taskId,

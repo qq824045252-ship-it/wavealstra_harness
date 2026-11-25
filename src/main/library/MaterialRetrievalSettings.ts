@@ -6,6 +6,18 @@ import type {
   MaterialRetrievalSettings,
 } from "../../shared/materialRetrieval";
 
+export type RuntimeMaterialRetrievalRequest =
+  | { kind: "getSettings" }
+  | { kind: "setSettings"; mode?: MaterialRetrievalMode; setDecisionModel: boolean; decisionModel: string | null }
+  | { kind: "getScope"; scope?: MaterialRetrievalScope }
+  | { kind: "setScope"; scope: MaterialRetrievalScope; mode: MaterialRetrievalMode | null };
+
+export type RuntimeMaterialRetrievalReply =
+  | { status: "settings"; settings: MaterialRetrievalSettings }
+  | { status: "scope"; settings: MaterialRetrievalScopeSettings }
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
+
 export function ensureMaterialRetrievalTables(conn: AppDatabase["connection"]): void {
   conn.exec(`
     CREATE TABLE IF NOT EXISTS material_retrieval_settings (
@@ -35,21 +47,48 @@ function validateMode(mode: unknown): asserts mode is MaterialRetrievalMode {
   if (mode !== "keyword" && mode !== "hybrid") throw new Error("未知的资料检索方式");
 }
 
+function validateDecisionModel(model: unknown): void {
+  if (model !== null && (typeof model !== "string" || !model.trim())) {
+    throw new Error("无效的 SAG2 决策模型");
+  }
+}
+
 export function setMaterialRetrievalSettings(
   db: AppDatabase,
   patch: Partial<MaterialRetrievalSettings>,
 ): MaterialRetrievalSettings {
   const settings = { ...getMaterialRetrievalSettings(db), ...patch };
   validateMode(settings.mode);
-  if (settings.decisionModel !== null && (typeof settings.decisionModel !== "string" || !settings.decisionModel.trim())) {
-    throw new Error("无效的 SAG2 决策模型");
-  }
+  validateDecisionModel(settings.decisionModel);
   db.connection.prepare(`
     INSERT INTO material_retrieval_settings (singleton, mode, decision_model)
     VALUES (1, @mode, @decisionModel)
     ON CONFLICT(singleton) DO UPDATE SET mode = excluded.mode, decision_model = excluded.decision_model
   `).run(settings);
   return settings;
+}
+
+export async function readMaterialRetrievalSettings(db: AppDatabase): Promise<MaterialRetrievalSettings> {
+  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
+  const reply = await runtime?.materialRetrievalData({ kind: "getSettings" });
+  return reply?.status === "settings" ? reply.settings : getMaterialRetrievalSettings(db);
+}
+
+export async function writeMaterialRetrievalSettings(
+  db: AppDatabase, patch: Partial<MaterialRetrievalSettings>,
+): Promise<MaterialRetrievalSettings> {
+  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
+  if (!runtime) return setMaterialRetrievalSettings(db, patch);
+  const mode = Object.hasOwn(patch, "mode") ? patch.mode : undefined;
+  const setDecisionModel = Object.hasOwn(patch, "decisionModel");
+  if (Object.hasOwn(patch, "mode")) validateMode(mode);
+  if (setDecisionModel) validateDecisionModel(patch.decisionModel);
+  const decisionModel = setDecisionModel ? patch.decisionModel ?? null : null;
+  if (decisionModel && /[\uD800-\uDFFF]/u.test(decisionModel)) return setMaterialRetrievalSettings(db, patch);
+  const reply = await runtime.materialRetrievalData({ kind: "setSettings", mode, decisionModel, setDecisionModel });
+  if (reply?.status === "settings") return reply.settings;
+  if (reply?.status === "needsHost") return setMaterialRetrievalSettings(db, patch);
+  throw new Error(reply?.status === "rejected" ? reply.message : "资料检索设置保存未获确认，请刷新后重试");
 }
 
 type SpaceRow = { id: string; parent_id: string | null; mode: MaterialRetrievalMode | null };
@@ -128,6 +167,34 @@ export function setMaterialRetrievalScope(
     `).run(scope.id, mode);
   }
   return resolveMaterialRetrievalScope(db, scope);
+}
+
+function nativeScope(scope: MaterialRetrievalScope): boolean {
+  return typeof scope.id === "string" && !/[\uD800-\uDFFF]/u.test(scope.id);
+}
+
+export async function readMaterialRetrievalScope(
+  db: AppDatabase, scope?: MaterialRetrievalScope,
+): Promise<MaterialRetrievalScopeSettings> {
+  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
+  if (!runtime || (scope && !nativeScope(scope))) return resolveMaterialRetrievalScope(db, scope);
+  const queryScope = scope?.kind === "space" || scope?.kind === "project" ? scope : undefined;
+  const reply = await runtime.materialRetrievalData({ kind: "getScope", scope: queryScope });
+  return reply?.status === "scope" ? reply.settings : resolveMaterialRetrievalScope(db, scope);
+}
+
+export async function writeMaterialRetrievalScope(
+  db: AppDatabase, scope: MaterialRetrievalScope, mode: MaterialRetrievalMode | null,
+): Promise<MaterialRetrievalScopeSettings> {
+  const runtime = db.connection.inTransaction ? undefined : db.runtimeAuditReader;
+  if (!runtime || (scope?.kind !== "space" && scope?.kind !== "project") || !nativeScope(scope) ||
+    (mode !== null && mode !== "keyword" && mode !== "hybrid")) {
+    return setMaterialRetrievalScope(db, scope, mode);
+  }
+  const reply = await runtime.materialRetrievalData({ kind: "setScope", scope, mode });
+  if (reply?.status === "scope") return reply.settings;
+  if (reply?.status === "needsHost") return setMaterialRetrievalScope(db, scope, mode);
+  throw new Error(reply?.status === "rejected" ? reply.message : "资料检索范围保存未获确认，请刷新后重试");
 }
 
 export function hybridLibrarySpaceIds(db: AppDatabase): string[] {

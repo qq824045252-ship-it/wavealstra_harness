@@ -50,6 +50,24 @@ export class BotWorkspaceNavigationService {
     const team = this.db.connection.prepare(`SELECT o.team_id,o.team_name FROM work_team_ownership o JOIN works w ON w.work_id=o.work_id WHERE o.work_id=? AND w.user_id=?`).get(workId,this.userId) as {team_id:string;team_name:string}|undefined;
     return team ? this.ensureTeam(team.team_id,team.team_name) : this.ensureBot(botId);
   }
+
+  async readSpaces(): Promise<BotWorkspaceNavigationDto['spaces']> {
+    const data = await this.db.readWorkspaceData({ kind: 'visibleSpaces', userId: this.userId });
+    return data?.spaces ?? this.snapshot({ repair: false }).spaces;
+  }
+
+  async readNavigation(): Promise<BotWorkspaceNavigationDto> {
+    const data = await this.db.readWorkspaceData({ kind: 'navigation', userId: this.userId });
+    if (!data?.navigation) return this.snapshot({ repair: false });
+    const trimTitle = <T extends { title: string }>(row: T): T => ({ ...row, title: row.title.slice(0, 120) });
+    return {
+      spaces: data.spaces,
+      taskSpaces: [],
+      foregroundRequests: data.navigation.foregroundRequests.map(trimTitle),
+      conversations: data.navigation.conversations.map(trimTitle),
+    };
+  }
+
   // This only omits generated empty folders from the view. It never deletes user data.
   private visibleSpaces(historySpaces: ReadonlySet<string>) {
     const spaces = this.db.listSpaces();

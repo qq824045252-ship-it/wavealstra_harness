@@ -167,6 +167,7 @@ import {
   type LocalConnectorDto,
   type PrivateSkillDto,
   type CronJobDto,
+  type CronOverviewDto,
   type CronRunDto,
   type DbRenameResult,
   type DbUpsertResult,
@@ -210,6 +211,7 @@ import {
   type SoulDto,
   type SpaceDto,
   type TaskDto,
+  type TaskSidebarEdit,
   type TaskHistoryDto,
   type TaskHistoryTarget,
   type TaskUserQuestionsQuery,
@@ -1054,7 +1056,8 @@ const api = {
       ipcRenderer.invoke(DbIpc.renameSpace, id, name),
     setWorkspaceIcon: (id: string, icon: NonNullable<SpaceDto["icon"]> | null): Promise<NonNullable<SpaceDto["icon"]> | null> =>
       ipcRenderer.invoke(DbIpc.setWorkspaceIcon, id, icon),
-    upsertTask: (task: TaskDto): Promise<void> => ipcRenderer.invoke(DbIpc.upsertTask, task),
+    upsertTask: (task: TaskDto, expectedTitle?: string | null): Promise<void> => ipcRenderer.invoke(DbIpc.upsertTask, task, expectedTitle),
+    editTaskSidebar: (edit: TaskSidebarEdit): Promise<void> => ipcRenderer.invoke(DbIpc.editTaskSidebar, edit),
     deleteTask: (id: string): Promise<void> => ipcRenderer.invoke(DbIpc.deleteTask, id),
     purgeArchivedContent: (request: ArchivedContentDeletionRequest): Promise<ArchivedContentDeletionResult> =>
       ipcRenderer.invoke(ArchivedContentDeletionIpc.purge, request),
@@ -1096,6 +1099,7 @@ const api = {
 
   cron: {
     list: (): Promise<CronJobDto[]> => ipcRenderer.invoke(CronIpc.list),
+    overview: (): Promise<CronOverviewDto> => ipcRenderer.invoke(CronIpc.overview),
     runs: (limit?: number): Promise<CronRunDto[]> => ipcRenderer.invoke(CronIpc.runs, limit),
     upsert: (job: CronJobDto): Promise<CronJobDto> => ipcRenderer.invoke(CronIpc.upsert, job),
     setEnabled: (id: string, enabled: boolean): Promise<void> =>

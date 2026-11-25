@@ -106,5 +106,5 @@ export function ensureOwnedLibrarySpace(
         ?? createSpace({ workspaceId, name: `${(workspace.name ?? "工作空间").slice(0, 80)}资料` });
     }
     throw new Error("未知资料归属类型");
-  })();
+  }).immediate();
 }

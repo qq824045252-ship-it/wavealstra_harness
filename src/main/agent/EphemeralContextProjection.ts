@@ -6,7 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ExtensionFactory, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { MemoryService } from "../memory/MemoryService";
 import { MEMORY_CONTENT_MAX_CHARS, type AutomaticRecallMode, type MemorySearchHit, type MemorySearchRequest } from "../../shared/memory-kernel";
-import { memoryProjectionQuery, projectMemoryContext, renderDerivedMemoryEvidence, renderMemoryEvidence, DOTS_EVIDENCE_RENDERER, MEMORY_EVIDENCE_RENDERER, MEMORY_EVIDENCE_CONTENT_LENGTH, type MemoryEvidenceBlock, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
+import { memoryProjectionQuery, projectMemoryContext, readMemoryContextBaselines, renderDerivedMemoryEvidence, renderMemoryEvidence, DOTS_EVIDENCE_RENDERER, MEMORY_EVIDENCE_RENDERER, MEMORY_EVIDENCE_CONTENT_LENGTH, type MemoryEvidenceBlock, type WorkPreferenceState, renderWorkPreferenceState, WORK_PREFERENCE_POLICY_BUDGET, WORK_PREFERENCE_SOURCE_LIMIT } from "./MemoryContextProjection";
 import { startAnswerRoutingTiming } from "./AnswerRoutingTimings";
 import { EvidenceBudget, clipEvidence, type SupplementalEvidence, type EvidenceAccess } from "./EvidenceBudget";
 
@@ -269,23 +269,42 @@ export class EphemeralContextProjection {
     const epoch = this.turnEpoch;
     let mode: AutomaticRecallMode = "off";
     let hits: MemorySearchHit[] | undefined;
+    let baselines: Awaited<ReturnType<typeof readMemoryContextBaselines>>;
     if (!memory || !this.options.enabled()) mode = "disabled";
     else if (input.budgetChars <= 0) mode = "no-budget";
-    else if (this.options.automaticSemanticRecall?.()) {
-      mode = "hybrid";
-      const finishSearch = startAnswerRoutingTiming("memorySearch");
-      try { hits = await memory.searchHybrid(memoryProjectionQuery(input), reason => { mode = reason; }); }
-      finally {
-        finishSearch?.(() => ({ method: "hybrid", mode, userEntryId: userId, outcome: hits ? "completed" : "failed",
-          resultCount: hits?.length, returnedMemoryIds: hits?.map(hit => hit.memory.id) }));
-      }
-      if (this.disposed || this.session !== session || epoch !== this.turnEpoch || (session.model?.provider !== model.provider || session.model?.id !== model.id)
-        || scopeKey(scope) !== scopeKey(this.options.scope())) throw new Error("语义回忆期间请求上下文已变化");
+    else {
+      const read = async (hybrid: boolean) => {
+        mode = hybrid ? "hybrid" : "off";
+        const finishSearch = startAnswerRoutingTiming("memorySearch");
+        let recalled: MemorySearchHit[] | undefined;
+        try {
+          const request = memoryProjectionQuery(input);
+          recalled = hybrid
+            ? await memory.searchHybrid(request, reason => { mode = reason; })
+            : await memory.searchLexical(request);
+          return recalled;
+        } finally {
+          finishSearch?.(() => ({ method: hybrid ? "hybrid" : "lexical", mode, userEntryId: userId, outcome: recalled ? "completed" : "failed",
+            resultCount: recalled?.length, returnedMemoryIds: recalled?.map(hit => hit.memory.id) }));
+        }
+      };
+      const assertCurrent = () => {
+        if (this.disposed || this.session !== session || epoch !== this.turnEpoch
+          || session.model?.provider !== model.provider || session.model?.id !== model.id
+          || scopeKey(scope) !== scopeKey(this.options.scope())) throw new Error("记忆读取期间请求上下文已变化");
+      };
+      const hybrid = this.options.automaticSemanticRecall?.() === true;
+      [hits, baselines] = await Promise.all([read(hybrid), readMemoryContextBaselines(memory, input)]);
+      assertCurrent();
       if (!this.options.enabled()) mode = "disabled";
-      else if (!this.options.automaticSemanticRecall()) { mode = "off"; hits = undefined; }
+      else if (hybrid && !this.options.automaticSemanticRecall?.()) {
+        [hits, baselines] = await Promise.all([read(false), readMemoryContextBaselines(memory, input)]);
+        assertCurrent();
+        if (!this.options.enabled()) mode = "disabled";
+      }
     }
     const resolved = memory && mode !== "disabled" && input.budgetChars > 0
-      ? projectMemoryContext(memory, input, hits, this.options.delegatedSources?.(userId)) : undefined;
+      ? projectMemoryContext(memory, input, hits, this.options.delegatedSources?.(userId), baselines) : undefined;
     const currentPreferences = resolved?.currentPreferences
       ?? (this.options.memory?.resolveScopeChain(scope).some(item => item.scopeType === "work")
         ? { status: "unavailable" as const, sources: [] } : undefined);

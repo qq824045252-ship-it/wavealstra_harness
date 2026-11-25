@@ -12,7 +12,7 @@
  *   4. durable 历史投影：「最近活动」与投影窗口无关，且不会被 0 污染。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,6 +30,8 @@ const {
 const { relativeTime } = await import("../src/renderer/src/store/app/format");
 const { mapTaskRowToTask } = await import("../src/renderer/src/store/app/tasks/taskMapper");
 const { AppDatabase } = await import("../src/main/db/AppDatabase");
+const { TaskContextUsageWrites } = await import("../src/main/agent/TaskContextUsageWrites");
+const { locateRuntimeAudit } = await import("../src/main/platform/runtime-audit");
 const { DurableHistoryProjection } = await import("../src/main/agent/durable/DurableHistoryProjection");
 
 const INSTANT = 1_700_000_000_000;
@@ -79,7 +81,10 @@ const mapped = mapTaskRowToTask({ id: "task", title: "task", updatedAt: 0 }, {
 });
 assert.equal(isActivityTime(mapped.updatedAt), true, "a row read with a corrupt time still maps to a real instant");
 
-const db = new AppDatabase(join(sandbox, "app.db"));
+const native = process.argv.includes("--native");
+const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+if (native) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(sandbox, "app.db"), { runtimeAuditExecutable });
 try {
   db.upsertTask({ id: "fresh", title: "fresh", updatedAt: 0, welcomeMode: "general" });
   assert.equal(isActivityTime(db.getTask("fresh")?.updatedAt), true, "a brand new row never starts at epoch 0");
@@ -96,7 +101,36 @@ try {
 
   db.upsertTask({ id: "task", title: "task", updatedAt: INSTANT + 60_000, welcomeMode: "general" });
   assert.equal(db.getTask("task")?.updatedAt, INSTANT + 60_000, "a newer instant is stored");
+
+  db.setTaskContextUsage("fresh", 50, 4096, 0.5);
+  if (native) db.connection.pragma("query_only = ON");
+  const persisted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const writes = new TaskContextUsageWrites(async batch => {
+    await db.writeTaskContextUsageBatch(batch).catch(error => { persisted.reject(error); throw error; });
+    persisted.resolve();
+    await release.promise;
+  });
+  try {
+    writes.enqueue({ taskId: "task", usedTokens: 100, contextWindow: 4096, cacheHitRate: null });
+    writes.enqueue({ taskId: "task", usedTokens: 300, contextWindow: 4096, cacheHitRate: 0.25 });
+    await persisted.promise;
+    assert.deepEqual(db.getTaskContextUsage("task"), { usedTokens: 300, contextWindow: 4096, cacheHitRate: 0.25 });
+
+    writes.enqueue({ taskId: "task", usedTokens: 120, contextWindow: 8192, cacheHitRate: null });
+    writes.enqueue({ taskId: "fresh", usedTokens: null, contextWindow: 4096, cacheHitRate: null });
+    assert.deepEqual(writes.latest("task"), { taskId: "task", usedTokens: 120, contextWindow: 8192, cacheHitRate: null });
+    assert.equal(db.getTaskContextUsage("task")?.usedTokens, 300);
+  } finally {
+    release.resolve();
+    await writes.close();
+  }
+  assert.deepEqual(db.getTaskContextUsage("task"), { usedTokens: 120, contextWindow: 8192, cacheHitRate: null });
+  assert.equal(db.getTaskContextUsage("fresh"), null);
+  assert.equal(db.getTask("task")?.updatedAt, INSTANT + 60_000);
+  console.log("PASS latest context usage survives a pending write and preserves activity time");
 } finally {
+  await db.runtimeAuditReader?.close();
   db.close();
 }
 

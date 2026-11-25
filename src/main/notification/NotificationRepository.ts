@@ -1,5 +1,6 @@
 import { notificationTarget, parseNotificationTarget, type NotificationActivationTarget } from "../../shared/notification";
 import type Database from "better-sqlite3";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import type {
   NotificationDto,
   NotificationLevel,
@@ -8,7 +9,7 @@ import type {
   NotificationType,
 } from "../../shared/notification";
 
-interface NotificationSqlRow {
+export interface RuntimeNotificationSqlRow {
   id: string;
   type: string;
   level: string;
@@ -37,7 +38,48 @@ interface NotificationSqlRow {
   activation_source_type?: NotificationSourceType;
 }
 
-function mapRow(row: NotificationSqlRow): NotificationDto {
+export type RuntimeNotificationQuery = { kind: "unreadCount" } | {
+  kind: "list";
+  limit: number;
+  types?: string[];
+  query: string;
+  unreadOnly: boolean;
+  grouped: boolean;
+  before?: NotificationListRequest["before"];
+};
+
+export type RuntimeNotificationMutation =
+  | { kind: "markRead" | "dismiss"; id: string; at: number }
+  | { kind: "markReadByDedupeKey"; dedupeKey: string; at: number }
+  | { kind: "markAllRead" | "dismissAll"; at: number }
+  | { kind: "publish"; record: Omit<NotificationDto, "target" | "group">; targetJson?: string; inApp: boolean; desktop: boolean };
+
+export type RuntimeNotificationWriteReply =
+  | { status: "saved"; changed: boolean; unreadCount: number }
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
+
+export function clipNotificationText(input: string, limit: number): string {
+  // JavaScript slicing can split an emoji at the limit. SQLite's host string bind
+  // replaces lone surrogates; normalize them before sending the same text to Rust.
+  return input.trim().slice(0, limit).replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+}
+
+function normalizeList(request: NotificationListRequest): Extract<RuntimeNotificationQuery, { kind: "list" }> {
+  const requestedLimit = request.limit ?? 100;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.floor(requestedLimit))) : 100;
+  const types = Array.isArray(request.types) && request.types.length
+    ? request.types.filter(type => typeof type === "string").slice(0, 32)
+    : undefined;
+  const query = typeof request.query === "string" ? clipNotificationText(request.query, 160) : "";
+  const before = request.before;
+  return { kind: "list", limit, types, query, unreadOnly: Boolean(request.unreadOnly), grouped: Boolean(request.grouped),
+    before: typeof before?.id === "string" && Number.isFinite(before.createdAt)
+      ? { id: before.id, createdAt: before.createdAt }
+      : undefined };
+}
+
+function mapRow(row: RuntimeNotificationSqlRow): NotificationDto {
   let target: NotificationActivationTarget | null = null;
   if (row.target_json) {
     try { target = parseNotificationTarget(JSON.parse(row.target_json)); } catch { /* Invalid persisted target. */ }
@@ -77,7 +119,7 @@ function mapRow(row: NotificationSqlRow): NotificationDto {
 }
 
 export class NotificationRepository {
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: Database.Database, private readonly native?: Pick<RuntimeAuditReader, "notificationData">) {
     // Separate from bell visibility: desktop-only notifications must survive restart.
     this.db.exec(`CREATE TABLE IF NOT EXISTS notification_activation_targets (
       notification_id TEXT PRIMARY KEY, target_json TEXT NOT NULL, created_at INTEGER NOT NULL
@@ -96,7 +138,7 @@ export class NotificationRepository {
       .get(id, now - 90 * 24 * 60 * 60 * 1000) as { target_json: string } | undefined;
     if (row) { try { return parseNotificationTarget(JSON.parse(row.target_json)); } catch { return null; } }
     const legacy = this.db.prepare(`SELECT * FROM notifications WHERE id = ? AND created_at >= ?`)
-      .get(id, now - 90 * 24 * 60 * 60 * 1000) as NotificationSqlRow | undefined;
+      .get(id, now - 90 * 24 * 60 * 60 * 1000) as RuntimeNotificationSqlRow | undefined;
     return legacy ? notificationTarget(mapRow(legacy)) : null;
   }
 
@@ -137,31 +179,36 @@ export class NotificationRepository {
 
   findByDedupeKey(dedupeKey: string): NotificationDto | undefined {
     const row = this.db.prepare(`SELECT * FROM notifications WHERE dedupe_key = ? LIMIT 1`)
-      .get(dedupeKey) as NotificationSqlRow | undefined;
+      .get(dedupeKey) as RuntimeNotificationSqlRow | undefined;
     return row ? mapRow(row) : undefined;
   }
 
   list(request: NotificationListRequest = {}): NotificationDto[] {
-    const requestedLimit = request.limit ?? 100;
-    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(500, Math.floor(requestedLimit))) : 100;
+    return this.listOnHost(normalizeList(request));
+  }
+
+  async readList(request: NotificationListRequest = {}): Promise<NotificationDto[]> {
+    const query = normalizeList(request);
+    const result = await this.native?.notificationData(query);
+    return Array.isArray(result) ? result.map(mapRow) : this.listOnHost(query);
+  }
+
+  private listOnHost(request: Extract<RuntimeNotificationQuery, { kind: "list" }>): NotificationDto[] {
+    const { limit, types, query, before, unreadOnly, grouped } = request;
     const where = ["dismissed_at IS NULL"];
     const bindings: Array<string | number> = [];
-    if (request.unreadOnly) where.push("read_at IS NULL");
-    if (Array.isArray(request.types) && request.types.length) {
-      const types = request.types.filter(type => typeof type === "string").slice(0, 32);
+    if (unreadOnly) where.push("read_at IS NULL");
+    if (types) {
       if (!types.length) return [];
       where.push(`type IN (${types.map(() => "?").join(", ")})`);
       bindings.push(...types);
     }
-    const query = typeof request.query === "string" ? request.query.trim().slice(0, 160) : "";
     if (query) {
       where.push("(instr(lower(title), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0)");
       bindings.push(query, query);
     }
-    const before = request.before;
-    const cursorWhere = typeof before?.id === "string" && Number.isFinite(before.createdAt);
-    if (request.grouped) return this.listGrouped(where, bindings, limit, cursorWhere ? before : undefined);
-    if (before && cursorWhere) {
+    if (grouped) return this.listGrouped(where, bindings, limit, before);
+    if (before) {
       where.push("(created_at, id) < (?, ?)");
       bindings.push(before.createdAt, before.id);
     }
@@ -171,7 +218,7 @@ export class NotificationRepository {
       WHERE ${where.join(" AND ")}
       ORDER BY created_at DESC, id DESC
       LIMIT ?
-    `).all(...bindings, limit) as NotificationSqlRow[];
+    `).all(...bindings, limit) as RuntimeNotificationSqlRow[];
     return rows.map(mapRow);
   }
 
@@ -213,7 +260,7 @@ export class NotificationRepository {
         a.project_id AS activation_project_id, a.source_type AS activation_source_type
       FROM page p JOIN visible a ON a.id = p.activation_id
       ORDER BY p.created_at DESC, p.id DESC
-    `).all(...bindings, ...(before ? [before.createdAt, before.id] : []), limit) as NotificationSqlRow[];
+    `).all(...bindings, ...(before ? [before.createdAt, before.id] : []), limit) as RuntimeNotificationSqlRow[];
     return rows.map(mapRow);
   }
 
@@ -224,6 +271,11 @@ export class NotificationRepository {
       WHERE dismissed_at IS NULL AND read_at IS NULL
     `).get() as { count: number };
     return Number(row.count) || 0;
+  }
+
+  async readUnreadCount(): Promise<number> {
+    const result = await this.native?.notificationData({ kind: "unreadCount" });
+    return typeof result === "number" ? result : this.unreadCount();
   }
 
   markRead(id: string, at = Date.now()): boolean {

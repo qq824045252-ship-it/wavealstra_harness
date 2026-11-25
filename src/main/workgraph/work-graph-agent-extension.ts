@@ -57,10 +57,7 @@ export function createWorkGraphAgentExtension(service: WorkGraphService): Extens
         const rel = params.relation as import("../../shared/work-graph").WorkGraphRelation | undefined;
         try {
           const type = params.type as import("../../shared/work-graph").WorkGraphNodeType;
-          let edges: import("../../shared/work-graph").WorkGraphEdgeDto[] = [];
-          if (direction === "outgoing") edges = service.listOutgoing(type, params.id, rel);
-          else if (direction === "incoming") edges = service.listIncoming(type, params.id, rel);
-          else edges = service.listRelated(type, params.id, rel);
+          const edges = await service.readEdges(direction, type, params.id, rel);
           if (edges.length === 0) {
             return textResult(`无关联（${type}:${params.id}${rel ? ` / ${rel}` : ""} / ${direction}）`, { edges: [] });
           }

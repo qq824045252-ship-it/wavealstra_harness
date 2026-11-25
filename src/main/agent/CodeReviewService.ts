@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import type {
   CodeReviewChangedEvent, CodeReviewDecisionRequest, CodeReviewDecisionResult, CodeReviewDetail, CodeReviewFile,
 } from "../../shared/code-review";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 import {
   codeReviewTarget, readReviewState, restoreReviewState, reviewText, sameReviewContent, sameReviewState,
   type ReviewState, type ReviewTarget,
@@ -38,6 +39,25 @@ interface StoredReview {
   restoring: 0 | 1;
 }
 
+type FileRow = Pick<StoredReview, "id" | "relative_path" | "additions" | "deletions" | "status" | "capture_reason" | "failure_reason"> &
+  { before_present: boolean | 0 | 1; after_present: boolean | 0 | 1; stats_available: boolean | 0 | 1 };
+
+interface FileDetail {
+  file: FileRow;
+  tooLarge: boolean;
+  before: string | null;
+  after: string | null;
+}
+
+export type RuntimeCodeReviewQuery =
+  | { kind: "list" | "pendingCount"; taskId: string }
+  | { kind: "detail"; taskId: string; id: string; maxPreviewBytes: number };
+
+export type RuntimeCodeReviewData =
+  | { kind: "list"; files: FileRow[] }
+  | { kind: "pendingCount"; count: number }
+  | { kind: "detail"; detail: FileDetail | null };
+
 function state(row: StoredReview, version: "before" | "after"): ReviewState {
   return {
     present: Boolean(row[`${version}_present`]),
@@ -47,7 +67,7 @@ function state(row: StoredReview, version: "before" | "after"): ReviewState {
   };
 }
 
-function dto(row: StoredReview): CodeReviewFile {
+function dto(row: FileRow): CodeReviewFile {
   const { id, relative_path: path, additions, deletions, status } = row;
   const kind = !row.before_present ? "added" : !row.after_present ? "deleted" : "modified";
   return { id, name: basename(path), path, kind, additions, deletions, status,
@@ -70,12 +90,18 @@ export class CodeReviewService {
   constructor(
     private readonly db: Database.Database,
     private readonly onChanged?: (event: CodeReviewChangedEvent) => void,
+    private readonly reader?: RuntimeAuditReader,
   ) {}
 
   pendingCount(taskId: string): number {
     const row = this.db.prepare("SELECT COUNT(*) AS count FROM task_code_review WHERE task_id = ? AND status = 'pending'")
       .get(taskId) as { count: number };
     return row.count;
+  }
+
+  async readPendingCount(taskId: string): Promise<number> {
+    const snapshot = await this.read({ kind: "pendingCount", taskId });
+    return snapshot?.kind === "pendingCount" ? snapshot.count : this.pendingCount(taskId);
   }
 
   private notifyChanged(taskId: string): void {
@@ -87,19 +113,42 @@ export class CodeReviewService {
     const sql = `SELECT id, relative_path, before_present, after_present, additions, deletions, stats_available,
       status, capture_reason, failure_reason FROM task_code_review WHERE task_id = ?
       ORDER BY status != 'pending', relative_path`;
-    return (this.db.prepare(sql).all(taskId) as StoredReview[]).map(dto);
+    return (this.db.prepare(sql).all(taskId) as FileRow[]).map(dto);
+  }
+
+  async readList(taskId: string): Promise<CodeReviewFile[]> {
+    const snapshot = await this.read({ kind: "list", taskId });
+    if (snapshot?.kind === "list") return snapshot.files.map(dto);
+    return this.hasTask(taskId) ? this.list(taskId) : [];
   }
 
   async detail(taskId: string, id: string): Promise<CodeReviewDetail | null> {
+    const snapshot = await this.read({ kind: "detail", taskId, id, maxPreviewBytes: MAX_PREVIEW_BYTES });
+    if (snapshot?.kind === "detail") return snapshot.detail ? this.preview(snapshot.detail) : null;
+    if (!this.hasTask(taskId)) return null;
     const row = this.find(taskId, id);
     if (!row) return null;
-    if (Math.max(row.before_bytes?.length ?? 0, row.after_bytes?.length ?? 0) > MAX_PREVIEW_BYTES) {
-      const detail = dto(row);
+    const tooLarge = Math.max(row.before_bytes?.length ?? 0, row.after_bytes?.length ?? 0) > MAX_PREVIEW_BYTES;
+    return this.preview({ file: row, tooLarge,
+      before: tooLarge ? null : reviewText(state(row, "before")),
+      after: tooLarge ? null : reviewText(state(row, "after")) });
+  }
+
+  private hasTask(taskId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(taskId));
+  }
+
+  private read(query: RuntimeCodeReviewQuery): Promise<RuntimeCodeReviewData | undefined> | undefined {
+    // An existing transaction may see writes that the resident connection cannot see yet.
+    if (!this.db.inTransaction) return this.reader?.codeReviewData(query);
+  }
+
+  private async preview({ file, tooLarge, before, after }: FileDetail): Promise<CodeReviewDetail> {
+    const detail = dto(file);
+    if (tooLarge) {
       return { ...detail, before: null, after: null, reason: detail.reason ?? "文件超过 512 KiB，无法预览文本差异" };
     }
-    const before = reviewText(state(row, "before")), after = reviewText(state(row, "after"));
-    const detail = dto(row);
-    if ((before === null && row.before_present) || (after === null && row.after_present)) {
+    if ((before === null && file.before_present) || (after === null && file.after_present)) {
       return { ...detail, before, after, reason: detail.reason ?? "文件内容不支持文本差异预览" };
     }
     const patch = await snapshotGitDiff(before ?? "", after ?? "", "patch");

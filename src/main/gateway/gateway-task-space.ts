@@ -20,7 +20,7 @@ function isUniqueNameConstraint(error: unknown): boolean {
 function ensureGatewaySpace(db: AppDatabase, id: string, preferredName: string, parentId: string | null, path?: string): void {
   const existing = db.getSpace(id);
   if (existing) {
-    if (path && existing.path !== path) db.upsertSpace({ ...existing, path });
+    if (path && existing.path !== path) db.upsertSpace({ id: existing.id, name: existing.name, path });
     return;
   }
   let name = preferredName;

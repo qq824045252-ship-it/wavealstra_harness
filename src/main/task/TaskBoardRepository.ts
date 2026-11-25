@@ -32,6 +32,10 @@ const currentWaits = `board_waits AS MATERIALIZED (
     value->>3 AS detail, value->>4 AS at FROM json_each(@waits)
 )`;
 const visibility = "AND (b.space_id IS NULL OR b.space_id NOT IN (SELECT id FROM hidden))";
+const actionVisibility = `WITH RECURSIVE ${hidden},${boardSources}
+  SELECT 1 FROM board_native b WHERE b.id=@id ${visibility}
+  UNION ALL SELECT 1 FROM board_requests b WHERE b.id=@id ${visibility} LIMIT 1`;
+const boardAction = z.enum(["visit", "read", "today", "later", "clear"]);
 const latestResult =
   "(SELECT d.at FROM task_board_days d WHERE d.id=b.id AND d.kind='result' ORDER BY d.day DESC LIMIT 1)";
 const afterDeferral =
@@ -90,6 +94,7 @@ type SqlRow = {
 export class TaskBoardRepository {
   private waiting = new Set<string>();
   private activities = new Map<string, NonNullable<TaskBoardRow["activity"]>>();
+  private actionTail: Promise<void> = Promise.resolve();
 
   constructor(private db: Database.Database, private readonly runtimeAuditReader?: RuntimeAuditReader) {
     ensureTaskBoard(db);
@@ -114,17 +119,21 @@ export class TaskBoardRepository {
       .run(id, kind, at, at, detail.trim().slice(0, 120));
   }
 
-  action(id: string, action: BoardAction, now = Date.now()): void {
-    z.enum(["visit", "read", "today", "later", "clear"]).parse(action);
-    if (
-      !this.db
-        .prepare(
-          `WITH RECURSIVE ${hidden},${boardSources} SELECT 1 FROM board_native b WHERE b.id=? ${visibility}
-      UNION ALL SELECT 1 FROM board_requests b WHERE b.id=? ${visibility} LIMIT 1`,
-        )
-        .get(id, id)
-    )
-      return;
+  async action(id: string, action: BoardAction, now = Date.now()): Promise<void> {
+    boardAction.parse(action);
+    const laterUntil = action === "later" ? localOffset(now, 1) : null;
+    const operation = this.actionTail.then(async () => {
+      if (await this.runtimeAuditReader?.writeTaskBoardAction({ id, action, now, laterUntil, visibilitySql: actionVisibility })) return;
+      // Keep visibility and the fallback write in the same SQLite transaction.
+      this.db.transaction(() => {
+        if (this.db.prepare(actionVisibility).get({ id })) this.writeAction(id, action, now, laterUntil);
+      }).immediate();
+    });
+    this.actionTail = operation.catch(() => undefined);
+    await operation;
+  }
+
+  private writeAction(id: string, action: BoardAction, now: number, laterUntil: number | null): void {
     if (action === "visit" || action === "read") return this.note(id, action, "", now);
     if (action === "clear") {
       this.db.prepare("DELETE FROM task_board_plans WHERE id=?").run(id);
@@ -138,7 +147,7 @@ export class TaskBoardRepository {
       .run(
         id,
         action === "today" ? now : null,
-        action === "later" ? localOffset(now, 1) : null,
+        laterUntil,
         action === "later" ? now : null,
       );
   }

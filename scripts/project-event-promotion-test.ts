@@ -53,8 +53,9 @@ const root = mkdtempSync(join(tmpdir(), "mybuddy-promotion-"));
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 const dbPath = join(root, "app.db");
-const useNative = process.argv.includes("--native");
-const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+const nativeFlag = process.argv.indexOf("--native");
+const useNative = nativeFlag >= 0;
+const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd()) : undefined;
 if (useNative && (!runtimeAuditExecutable || !existsSync(runtimeAuditExecutable))) throw new Error("Rust helper required");
 const db = new AppDatabase(dbPath, { runtimeAuditExecutable });
 const projects = new ProjectService(new ProjectRepository(db.connection, db.runtimeAuditReader), new MemoryService(db, { semantic: false }));
@@ -81,7 +82,7 @@ function eventB(): ProjectEventDto {
 async function main(): Promise<void> {
   /* ============ 1. promote → memory：真源可见 + provenance（链接表 + memory evidence） ============ */
   const ev = eventA();
-  const r1 = promoter.promote(ev.id, {
+  const r1 = await promoter.promoteAsync(ev.id, {
     targetKind: "memory",
     memoryKind: "risk",
     memoryTitle: "验收标准未确认",
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
 
   /* ============ 2. 幂等：同事件同类型重复 promote → 复用，无重复垃圾 ============ */
   const beforeMemCount = projects.listMemory("proj-a").length;
-  const r1b = promoter.promote(ev.id, { targetKind: "memory", memoryKind: "fact", memoryTitle: "另一个标题" });
+  const r1b = await promoter.promoteAsync(ev.id, { targetKind: "memory", memoryKind: "fact", memoryTitle: "另一个标题" });
   ok(r1b.reused && r1b.targetId === r1.targetId, "2. 重复 promote 幂等复用（忽略新字段）");
   ok(projects.listMemory("proj-a").length === beforeMemCount, "2b. 不产生重复 memory");
   const linkCount = (db.connection
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
   ok(linkCount === 1, "2c. 链接唯一（UNIQUE 兜底）");
 
   /* ============ 3. promote → todo + library；跨类型允许 ============ */
-  const r2 = promoter.promote(ev.id, {
+  const r2 = await promoter.promoteAsync(ev.id, {
     targetKind: "todo",
     todoTitle: "确认交付验收标准",
     todoDueAt: NOW + 2 * DAY,
@@ -117,7 +118,7 @@ async function main(): Promise<void> {
   });
   const todo = projects.getTodo(r2.targetId);
   ok(todo !== undefined && todo.title === "确认交付验收标准" && todo.dueAt === NOW + 2 * DAY && todo.priority === "high", "3. 提升为计划项（显式字段全落真源）");
-  const r3 = promoter.promote(ev.id, { targetKind: "library", libraryTitle: "客户反馈记录", libraryContent: "客户反馈：交付验收标准需确认\n- 来源：gateway" });
+  const r3 = await promoter.promoteAsync(ev.id, { targetKind: "library", libraryTitle: "客户反馈记录", libraryContent: "客户反馈：交付验收标准需确认\n- 来源：gateway" });
   ok(!r3.reused, "3b. 提升为项目资料成功");
   const libItem = library.getItem(r3.targetId);
   ok(libItem != null && libItem.title === "客户反馈记录", "3c. 资料真源可见");
@@ -172,7 +173,7 @@ async function main(): Promise<void> {
   clock += 10_000;
   const reIngest = ingestor.ingest("proj-a", { source: "cron", kind: "run", title: "保留目标的事件", ref: "keep-1" });
   ok(reIngest.id !== evKeep.id, "8e. 淘汰窗口外同 ref 可重新落库（新事件 id）");
-  const rSurvive = promoter.promote(reIngest.id, { targetKind: "todo", todoTitle: "重启持久化 todo" });
+  const rSurvive = await promoter.promoteAsync(reIngest.id, { targetKind: "todo", todoTitle: "重启持久化 todo" });
   ok(!rSurvive.reused, "8f. 幸存事件可提升（淘汰后新事件不受旧链接约束）");
 
   /* ============ 9. ref 幂等 ingest（重复 callback 不堆事件） ============ */
@@ -213,6 +214,7 @@ async function main(): Promise<void> {
     },
     on: () => undefined,
   } as unknown as ExtensionAPI;
+  db.upsertTask({ id: "task-a", title: "Project promotion actor", projectId: "proj-a", updatedAt: 1 });
   const bridge: ProjectEventExtensionBridge = {
     taskId: "task-a",
     resolveProjectId: () => "proj-a",
@@ -288,6 +290,16 @@ async function main(): Promise<void> {
     .prepare(`SELECT promoted_by FROM project_event_promotions WHERE project_id='proj-a' AND event_id=? AND target_kind='memory'`)
     .get(evAgent.id) as { promoted_by: string }).promoted_by;
   ok(agentLink === "agent", "11j. 提升主体记录 agent");
+  const agentTodo = await byName("project_event_promote_to_todo").execute("c8", { eventId: evAgent.id, title: "Agent 确认下一步" } as never);
+  ok(!agentTodo.isError, "11k. Agent 的转计划工具成功写入");
+  const todoLink = projects.findProjectEventPromotion("proj-a", evAgent.id, "todo");
+  ok(todoLink?.promotedBy === "agent" && projects.getTodo(todoLink.targetId)?.title === "Agent 确认下一步", "11l. Agent 计划和来源链接可通过桌面读取");
+  const agentDocument = await byName("project_event_promote_to_library").execute("c9", {
+    eventId: evAgent.id, title: "Agent 决策材料", content: "验收范围确认完毕。",
+  } as never);
+  const documentLink = projects.findProjectEventPromotion("proj-a", evAgent.id, "library");
+  ok(!agentDocument.isError && documentLink?.promotedBy === "agent" &&
+    library.readContent(documentLink.targetId).content === "验收范围确认完毕。", "11m. Agent 保存资料正文及来源链接");
 
   /* ============ 12. 重启持久化（关闭重开，事件/链接/目标全在） ============ */
   await db.runtimeAuditReader?.close();
@@ -303,7 +315,7 @@ async function main(): Promise<void> {
   ok(projects2.getMemory("proj-a", r1.targetId) !== undefined, "12c. 重启后目标真源仍在");
   ok(library2.getItem(r3.targetId) !== undefined, "12d. 重启后资料条目仍在");
   const promoter2 = new ProjectEventPromoter(projects2, library2, { now: () => clock });
-  const rAgain = promoter2.promote(reIngest.id, { targetKind: "todo", todoTitle: "再点一次" });
+  const rAgain = await promoter2.promoteAsync(reIngest.id, { targetKind: "todo", todoTitle: "再点一次" });
   ok(rAgain.reused && rAgain.targetId === rSurvive.targetId, "12e. 重启后幂等仍成立");
 
   /* ============ 13. CronService 集成：project-bound run → 事件；unbound 不污染 ============ */
@@ -311,7 +323,7 @@ async function main(): Promise<void> {
   // 经 finally 停止定时器，否则 setTimeout 撑住事件循环 → 进程永不退出（历史 hang 根因）。
   let cron: CronService | undefined;
   let cronFail: CronService | undefined;
-  const cronDb = new AppDatabase(join(root, "cron.db"));
+  const cronDb = new AppDatabase(join(root, "cron.db"), { runtimeAuditExecutable });
   try {
     const runEvents: Array<{ projectId: string; summary: { runId: string; jobName: string; status: "success" | "failed"; error?: string } }> = [];
     const cronPrompts: Array<{ expertId?: string }> = [];
@@ -386,7 +398,7 @@ async function main(): Promise<void> {
     await waitFor(() => runEvents.length > 0, 3000);
     ok(runEvents.some((e) => e.projectId === "proj-cron" && e.summary.status === "success"), "13. project-bound run 成功 → 摘要事件");
     await cron.runNow(jobUnbound.id);
-    await waitFor(() => cronDb.listCronRuns(50).some((r) => r.jobId === "job-unbound"), 3000);
+    await waitFor(() => cronDb.listCronRuns(50).some((r) => r.jobId === "job-unbound" && r.status === "success"), 3000);
     ok(runEvents.every((e) => e.projectId === "proj-cron"), "13b. unbound cron 不产生项目事件（不污染）");
     // 失败路径：prompt 抛错 → failed 事件
     const failAgent = {
@@ -441,6 +453,8 @@ async function main(): Promise<void> {
   } finally {
     cron?.stop();
     cronFail?.stop();
+    await Promise.all([cron?.flushWrites(), cronFail?.flushWrites()]);
+    await cronDb.runtimeAuditReader?.close();
     cronDb.close();
   }
   db2.close();

@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { MemoryService } from "../src/main/memory/MemoryService";
 import { MemoryOrganizationService, type OrganizationModelInput } from "../src/main/memory/MemoryOrganizationService";
 import type { MemoryOrganizationRun } from "../src/shared/memory-organization";
 import type { MemoryRecordDto } from "../src/shared/memory-kernel";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 type InputRecord = Pick<MemoryRecordDto, "id" | "kind" | "title" | "content">;
 const model = { id: "fixture", provider: "fixture", maxTokens: 8192 } as OrganizationModelInput["model"];
@@ -119,7 +124,11 @@ async function main() {
     service.start(input(records => { calls++; if (calls === 2) return { reviewedIds: [], proposals: [] }; return unchanged(records); }));
     const paused = await settle(service);
     assert.equal(paused.status, "paused"); assert.equal(paused.completedBatches, 1); assert.equal(paused.scanned, 24);
+    db.connection.prepare("UPDATE memory_organization_runs SET state_json=json_set(state_json,'$.run.status','scanning') WHERE id=?").run(paused.id);
     const reopened = new MemoryOrganizationService(db, memory);
+    assert.equal(reopened.latest()?.status, "paused");
+    assert.equal(reopened.latest()?.completedBatches, 1);
+    assert.equal(reopened.latest()?.error, "上次整理已中断，可从已保存的进度继续。");
     const seen = new Set<string>();
     reopened.start(input(records => { records.forEach(r => seen.add(r.id)); return unchanged(records); }), paused.id);
     const done = await settle(reopened);
@@ -205,6 +214,56 @@ async function main() {
     assert(service.latest() === null);
     console.log("PASS incremental extraction detects exact duplicates beyond the previous 80-record window");
   }
+  if (process.argv.includes("--native")) await verifyNativeProgress();
   console.log("Memory organization tests passed.");
+}
+
+async function verifyNativeProgress() {
+  const executable = locateRuntimeAudit(process.cwd());
+  assert(executable && existsSync(executable), "Rust runtime audit executable is required");
+  const root = mkdtempSync(join(tmpdir(), "mybuddy-memory-organization-"));
+  const db = new AppDatabase(join(root, "test.db"), { runtimeAuditExecutable: executable });
+  try {
+    const memory = new MemoryService(db, { semantic: false });
+    const service = new MemoryOrganizationService(db, memory);
+    assert.equal(await service.readLatest(), null);
+    const record = fact(memory, "整理进度");
+    let finish!: (value: unknown) => void;
+    const started = service.start(input(() => new Promise(resolve => { finish = resolve; })));
+    assert.equal(started.status, "scanning");
+    db.connection.pragma("query_only = ON");
+    try {
+      finish(unchanged([record]));
+      const done = await settle(service);
+      assert.deepEqual(
+        { status: done.status, scanned: done.scanned, completedBatches: done.completedBatches },
+        { status: "ready", scanned: 1, completedBatches: 1 },
+      );
+    } finally {
+      db.connection.pragma("query_only = OFF");
+    }
+    db.connection.exec("CREATE TEMP TABLE memory_organization_runs (state_json TEXT, created_at INTEGER)");
+    try {
+      const latest = await service.readLatest();
+      assert.deepEqual(
+        { id: latest?.id, status: latest?.status, scanned: latest?.scanned },
+        { id: started.id, status: "ready", scanned: 1 },
+      );
+    } finally {
+      db.connection.exec("DROP TABLE temp.memory_organization_runs");
+    }
+    service.dismiss(started.id);
+    let finishForgotten!: (value: unknown) => void;
+    service.start(input(() => new Promise(resolve => { finishForgotten = resolve; })));
+    memory.forget(record.id);
+    finishForgotten(unchanged([record]));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(await service.readLatest(), null);
+    console.log("PASS native organization status and progress, protected forgotten runs");
+  } finally {
+    await db.runtimeAuditReader?.close();
+    db.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 4 });
+  }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => { for (const db of dbs) db.close(); });

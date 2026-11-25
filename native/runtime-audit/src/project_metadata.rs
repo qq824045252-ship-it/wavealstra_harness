@@ -16,17 +16,72 @@ const PROJECT_COLUMNS: &str =
     rename_all_fields = "camelCase"
 )]
 pub enum Query {
-    List { include_archived: bool },
-    Todos { project_id: String },
-    Events { project_id: String, limit: usize },
-    Status { project_id: String, now: i64 },
+    WritesSupported,
+    TodoWritesSupported,
+    EventTodoPromotionSupported,
+    EventLibraryPromotionSupported,
+    DeletionSupported,
+    MemoryWritesSupported,
+    MemoryEditsSupported,
+    ReviewWritesSupported,
+    WithdrawalSnapshot {
+        project_id: String,
+        memory_id: Option<String>,
+    },
+    List {
+        include_archived: bool,
+    },
+    Details {
+        project_id: String,
+    },
+    Todos {
+        project_id: String,
+    },
+    Memories {
+        project_id: String,
+    },
+    Todo {
+        id: String,
+    },
+    NextBoundary {
+        project_id: String,
+        now: f64,
+    },
+    Events {
+        project_id: String,
+        limit: usize,
+    },
+    Status {
+        project_id: String,
+        now: i64,
+    },
 }
 
 pub fn read(db: &Connection, query: Query) -> Result<Value> {
     match query {
+        Query::WritesSupported | Query::TodoWritesSupported | Query::EventTodoPromotionSupported
+        | Query::EventLibraryPromotionSupported | Query::DeletionSupported | Query::MemoryWritesSupported
+        | Query::MemoryEditsSupported | Query::ReviewWritesSupported => Ok(true.into()),
+        Query::WithdrawalSnapshot { project_id, memory_id } => crate::project_memory_forget::snapshot(db, &project_id, memory_id.as_deref()),
         Query::List { include_archived } => Ok(records(db, &format!(
             "SELECT {PROJECT_COLUMNS} FROM projects WHERE (?1 OR archived = 0) ORDER BY updated_at DESC"
         ), [include_archived])?.into()),
+        Query::Details { project_id } => details(db, &project_id),
+        Query::Memories { project_id } => memories(db, &project_id),
+        Query::Todo { id } => Ok(records(db,
+            "SELECT id,project_id,title,description,status,assignee,priority,tags_json,start_at,due_at,created_at,updated_at
+             FROM project_todos WHERE id=?1", [&id],
+        )?.pop().unwrap_or(Value::Null)),
+        Query::NextBoundary { project_id, now } => {
+            let boundary: Option<f64> = db.query_row("WITH due AS (
+                SELECT due_at FROM project_todos WHERE project_id=?1 AND status<>'done' AND due_at IS NOT NULL
+            ), candidates(at) AS (
+                SELECT due_at FROM due UNION ALL SELECT due_at-?3 FROM due
+                UNION ALL SELECT updated_at+?4 FROM tasks WHERE project_id=?1 AND archived=0
+                    AND coalesce(status,'') NOT IN ('completed','failed')
+            ) SELECT min(at) FROM candidates WHERE at>?2 AND EXISTS(SELECT 1 FROM projects WHERE id=?1)", params![project_id, now, 3*DAY, 7*DAY], |row| row.get(0))?;
+            Ok(json!(boundary))
+        }
         Query::Todos { project_id } => {
             if !exists(db, &project_id)? { return Ok(Value::Null); }
             Ok(records(db,
@@ -56,6 +111,70 @@ pub fn read(db: &Connection, query: Query) -> Result<Value> {
         }
         Query::Status { project_id, now } => status(db, &project_id, now),
     }
+}
+
+fn details(db: &Connection, project_id: &str) -> Result<Value> {
+    let Some(project) = records(db, "SELECT p.*,
+        e.allow_json AS expert_allow,e.deny_json AS expert_deny,e.recommended_json AS expert_recommended,
+        s.allow_json AS skill_allow,s.prefer_json AS skill_prefer,s.demote_json AS skill_demote,s.hide_json AS skill_hide,
+        c.allow_json AS connector_allow,c.deny_json AS connector_deny,c.recommended_json AS connector_recommended,
+        m.mode AS mcp_mode,m.allow_json AS mcp_allow,m.deny_json AS mcp_deny
+        FROM projects p
+        LEFT JOIN project_expert_policy e ON e.project_id=p.id
+        LEFT JOIN project_skill_policy s ON s.project_id=p.id
+        LEFT JOIN project_connector_policy c ON c.project_id=p.id
+        LEFT JOIN project_mcp_policy m ON m.project_id=p.id WHERE p.id=?1", [project_id])?.pop() else {
+        return Ok(Value::Null);
+    };
+    let resources = records(
+        db,
+        "SELECT id,project_id,kind,title,value,enabled,sort_order,parent_id,created_at,updated_at
+        FROM project_resources WHERE project_id=?1 ORDER BY sort_order,created_at,id",
+        [project_id],
+    )?;
+    Ok(json!({ "project": project, "resources": resources }))
+}
+
+fn memories(db: &Connection, project: &str) -> Result<Value> {
+    if !exists(db, project)? {
+        return Ok(Value::Null);
+    }
+    let rows = records(db,
+        "SELECT m.id,m.kind,m.title,m.content,m.status,m.importance,m.created_at AS createdAt,m.updated_at AS updatedAt,
+           m.source_type AS sourceType,m.source_task_id AS sourceTaskId,m.metadata_json,
+           (SELECT json_group_array(json_object('id',e.id,'evidenceKind',e.evidence_kind,
+               'refId',e.ref_id,'refTitle',e.ref_title,'createdAt',e.created_at))
+            FROM (SELECT id,evidence_kind,ref_id,ref_title,created_at FROM memory_evidence
+                  WHERE memory_id=m.id ORDER BY created_at) e) AS evidence_json
+         FROM memory_records m JOIN memory_scopes s ON s.memory_id=m.id
+         WHERE s.scope_type='project' AND s.scope_id=?1 AND m.status IN ('active','superseded','resolved')
+         ORDER BY m.importance DESC,m.explicit DESC,m.updated_at DESC LIMIT 2000", [project])?;
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for mut row in rows {
+        let item = row.as_object_mut().ok_or("invalid project memory row")?;
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("missing project memory id")?;
+        if !seen.insert(id.to_owned()) {
+            continue;
+        }
+        let metadata = item
+            .remove("metadata_json")
+            .and_then(|raw| serde_json::from_str(raw.as_str()?).ok())
+            .unwrap_or_default();
+        item.insert("metadata".into(), Value::Object(metadata));
+        let evidence = item
+            .remove("evidence_json")
+            .ok_or("missing project memory evidence")?;
+        item.insert(
+            "evidence".into(),
+            serde_json::from_str(evidence.as_str().ok_or("invalid project memory evidence")?)?,
+        );
+        result.push(row);
+    }
+    Ok(result.into())
 }
 
 fn exists(db: &Connection, id: &str) -> rusqlite::Result<bool> {

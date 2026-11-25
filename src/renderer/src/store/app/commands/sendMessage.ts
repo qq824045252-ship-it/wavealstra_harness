@@ -288,7 +288,7 @@ export function createSendMessageActions(
           modePresetId: updated.modePresetId,
           // undefined → 保留 DB 值：发送途中的 unpin 不会被本次 upsert 盖回
           externalAgentPin: updated.externalAgentPin,
-        });
+        }, isFirstMessage && updated.title !== task.title ? task.title : null);
         taskPersistence = persisted;
         if (materializedPlanId && persisted) {
           void persisted

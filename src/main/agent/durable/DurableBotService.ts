@@ -44,6 +44,7 @@ import { readDurableContextStatus } from "./context/DurableContextStatus";
 import { DurableTaskProjection } from "./DurableTaskProjection";
 import { ToolGate } from "./ToolGate";
 import { DEFAULT_DURABLE_RESUME_CONCURRENCY, ResumeAdmission, type ResumeAdmissionReport } from "./ResumeAdmission";
+import { DurableWorkspaceMoves } from "./DurableWorkspaceMoves";
 import { WorkspaceMigrationBusyError } from "./DurableWorkspaceMigration";
 import { readDurableConversationHead, readDurableReadOnlyHistory, readDurableUserQuestions } from "./DurableReadOnlyHistory";
 import { modelKey, resolveBotModel, type BotModelResolution } from "./BotModelCatalog";
@@ -179,8 +180,10 @@ export class DurableBotService {
   /** Last startup drain outcome: delivered means open+resume was handed over, not that native work finished. */
   lastResumeReport?: ResumeAdmissionReport;
   private readonly workMetrics: WorkExecutionMetricsStore;
+  private readonly workspaceMoves: DurableWorkspaceMoves;
   constructor(private readonly options: DurableBotServiceOptions) {
     this.workMetrics = new WorkExecutionMetricsStore(options.db.connection);
+    this.workspaceMoves = new DurableWorkspaceMoves(options.db);
     options.db.connection.exec(`CREATE TABLE IF NOT EXISTS durable_bot_bindings (
       task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
       backend TEXT NOT NULL CHECK(backend = 'pi-durable'), directory TEXT NOT NULL UNIQUE, cwd TEXT NOT NULL)`);
@@ -207,7 +210,7 @@ export class DurableBotService {
     return Boolean(snapshot?.busy || snapshot?.queued || this.opening.has(taskId)
       || admissions && Array.from(admissions.values()).some(controller => !controller?.signal.aborted));
   }
-  cwd(taskId: string): string | undefined { return this.workspaceMove(taskId)?.to_cwd ?? this.binding(taskId)?.cwd; }
+  cwd(taskId: string): string | undefined { return this.workspaceMoves.read(taskId)?.toCwd ?? this.binding(taskId)?.cwd; }
   liveConversationId(taskId: string): string | undefined { return this.opened.get(taskId)?.runtime.snapshot.conversationId; }
   /** Called only within a Gateway trash restore transaction. Native cwd stays authoritative until migration commits. */
   prepareGatewayTrashRestore(taskId: string, legacy: string, destination: string): void {
@@ -218,7 +221,7 @@ export class DurableBotService {
       throw new Error("渠道任务未处于可安全恢复的状态");
     }
     const binding = this.binding(taskId);
-    const pending = this.workspaceMove(taskId);
+    const pending = this.workspaceMoves.read(taskId);
     if (pending || (binding && !sameWorkspacePath(binding.cwd, legacy) && !sameWorkspacePath(binding.cwd, destination))) {
       throw new Error("渠道任务已有冲突的工作目录绑定");
     }
@@ -298,10 +301,6 @@ export class DurableBotService {
     return undefined;
   }
 
-  private workspaceMove(taskId: string): { from_cwd: string; to_cwd: string } | undefined {
-    return this.options.db.connection.prepare("SELECT from_cwd, to_cwd FROM durable_bot_workspace_moves WHERE task_id = ?").get(taskId) as { from_cwd: string; to_cwd: string } | undefined;
-  }
-
   private open(taskId: string, admissionBoundary = false): Promise<OpenBot> {
     // Reading history opens a paused native Harness but does not resume it. Keep the
     // startup queue entry: openBound deduplicates the runtime, and the drain still
@@ -313,8 +312,10 @@ export class DurableBotService {
       let open: OpenBot;
       try { open = await this.openBound(taskId); }
       catch (error) {
-        if (!(error instanceof WorkspaceMigrationBusyError) || !this.workspaceMove(taskId) || isGatewayConversation(taskId)) throw error;
-        this.options.db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
+        if (!(error instanceof WorkspaceMigrationBusyError) || isGatewayConversation(taskId)) throw error;
+        const move = this.workspaceMoves.read(taskId);
+        if (!move) throw error;
+        await this.workspaceMoves.write({ kind: "cancel", taskId, ...move });
         open = await this.openBound(taskId);
       }
       if (!admissionBoundary && this.admissions.get(taskId)?.size) return open;
@@ -336,14 +337,14 @@ export class DurableBotService {
       await this.projections.get(taskId);
       // Persist intent before mutating the native store. A restart resumes this exact migration,
       // including the crash window after native commit and before the SQLite projection commits.
-      this.options.db.connection.prepare("INSERT INTO durable_bot_workspace_moves VALUES (?, ?, ?)")
-        .run(taskId, current.cwd, desired);
+      const move = { fromCwd: current.cwd, toCwd: desired };
+      await this.workspaceMoves.write({ kind: "stage", taskId, ...move });
       try { return await this.openBound(taskId); }
       catch (error) {
         if (!(error instanceof WorkspaceMigrationBusyError)) throw error;
         // Native transaction refused before changing any cwd. Restore the original namespace
         // so pending recovery/approval remains reachable; retry the desired move after it settles.
-        this.options.db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
+        await this.workspaceMoves.write({ kind: "cancel", taskId, ...move });
         return this.openBound(taskId);
       }
     })();
@@ -356,7 +357,7 @@ export class DurableBotService {
     // UI snapshots are windowed. Record all historical branches before the first directory
     // change so a later fork/history page cannot reinterpret an older relative file path.
     const rows = await open.runtime.harness.commit(async tx => {
-      const result: Array<[string, string]> = [];
+      const result: Array<{ messageId: string; cwd: string }> = [];
       let conversations: Cursor | undefined;
       do {
         const page = await tx.scanConversations({}, 100, conversations);
@@ -365,7 +366,7 @@ export class DurableBotService {
           let entries: Cursor | undefined;
           do {
             const history = await tx.scanEntries({ conversationId: conversation.id, order: "ascending" }, 500, entries);
-            for (const entry of history.items) result.push([`durable-${entry.id}`, cwd]);
+            for (const entry of history.items) result.push({ messageId: `durable-${entry.id}`, cwd });
             entries = history.next;
           } while (entries);
         }
@@ -373,10 +374,8 @@ export class DurableBotService {
       } while (conversations);
       return result;
     }, context);
-    this.options.db.connection.transaction(() => {
-      const insert = this.options.db.connection.prepare("INSERT OR IGNORE INTO durable_bot_message_workspaces VALUES (?, ?, ?)");
-      for (const [id, cwd] of rows) insert.run(taskId, id, cwd);
-    }).immediate();
+    const { db } = this.options;
+    await new DurableTaskProjection(db.connection, db.runtimeAuditReader).rememberWorkspaces(taskId, rows);
   }
 
   private openBound(taskId: string): Promise<OpenBot> {
@@ -448,9 +447,9 @@ export class DurableBotService {
     if (!task) throw new Error("任务不存在");
     if (isGatewayConversation(taskId) && !task.gatewaySidebarChannelId) throw new Error("网关对话缺少可信渠道，无法打开会话存储");
     const prior = this.binding(taskId);
-    const move = this.workspaceMove(taskId);
-    const cwd = move?.to_cwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
-    if (isGatewayConversation(taskId)) this.options.validateGatewayWorkspace?.(taskId, cwd, move?.from_cwd);
+    const move = this.workspaceMoves.read(taskId);
+    const cwd = move?.toCwd ?? prior?.cwd ?? this.options.resolveCwd(taskId);
+    if (isGatewayConversation(taskId)) this.options.validateGatewayWorkspace?.(taskId, cwd, move?.fromCwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error(`Bot 工作目录不存在：${cwd}`);
     // Pending native operations retain their root; idle moves are committed below.
     if (!move && task.cwd !== cwd) db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
@@ -470,9 +469,9 @@ export class DurableBotService {
       // Baseline and the end-of-turn snapshot MUST use the same snapshotWorkspace filter: an
       // unfiltered baseline used to collide with a filtered after snapshot and made every
       // pre-existing project file look like a newly produced artifact of the current turn.
-      let workspaceBefore = await snapshotWorkspace(cwd);
+      let workspaceBefore = await snapshotWorkspace(cwd, this.options.db.runtimeAuditReader);
       let projected = "";
-      const messageWorkspaces = new Map((db.connection.prepare("SELECT message_id, cwd FROM durable_bot_message_workspaces WHERE task_id = ?").all(taskId) as Array<{ message_id: string; cwd: string }>).map(row => [row.message_id, row.cwd]));
+      let messageWorkspaces = new Map<string, string>();
       // 打开会话/读历史不是「发请求」：模型目录暂时解析不到也不能阻断，先沿用任务记录的坐标。
       const resolvedModel = await this.resolveTaskModelForOpen(task);
       const selected = resolvedModel?.target;
@@ -494,9 +493,7 @@ export class DurableBotService {
       let settledKey: string | undefined;
       // One task + binding read per synchronous permission phase. Approval/resource re-checks
       // land after a microtask, so the gate has already expired and they read fresh state.
-      // Prepared once per opened Bot; SQL compares the stored value so unchanged projections and
-      // external edits both behave correctly without an in-memory last-value cache.
-      const taskProjection = new DurableTaskProjection(db.connection);
+      const taskProjection = new DurableTaskProjection(db.connection, db.runtimeAuditReader);
       const toolGate = new ToolGate(
         () => db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
@@ -517,7 +514,7 @@ export class DurableBotService {
             canRead: () => this.options.canReadAnswerEvidence?.(taskId, "read") ?? toolGate.allowed("read"),
             canReadLibrary: () => this.options.canReadAnswerEvidence?.(taskId, "library_read") ?? toolGate.allowed("library_read") }),
         },
-        workspaceMigrationFrom: move?.from_cwd,
+        workspaceMigrationFrom: move?.fromCwd,
         projectionAfterEntryId: projectionCheckpoint?.entry_id ?? 0,
         toolAllowed: name => toolGate.allowed(name),
         beforeToolExecution: (name, args, toolCwd) => {
@@ -575,33 +572,39 @@ export class DurableBotService {
         onTurns: this.options.onTurns && (turns => this.options.onTurns!(taskId, turns)),
         assets: durableSandboxAssets(this.options.assetsDir),
         instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
+        prepareSnapshot: async snapshot => {
+          const workspaces: Array<{ messageId: string; cwd: string }> = [];
+          for (const message of snapshot.messages) {
+            if (!messageWorkspaces.has(message.id)) workspaces.push({ messageId: message.id, cwd });
+          }
+          // Publish the stored time, including a newer value written by another app.db operation.
+          const projection = await taskProjection.writeSnapshot(taskId, durableTaskStatus(snapshot), snapshot.activityAt, workspaces);
+          const { activityAt } = projection;
+          if (activityAt !== undefined) snapshot.activityAt = activityAt;
+          if (workspaces.length || messageWorkspaces.size !== snapshot.messages.length) {
+            const visible = new Map(projection.workspaces.map(({ messageId, cwd }) => [messageId, cwd]));
+            for (const message of snapshot.messages) {
+              const origin = messageWorkspaces.get(message.id);
+              if (origin !== undefined) visible.set(message.id, origin);
+            }
+            messageWorkspaces = visible;
+          }
+        },
         onSnapshot: snapshot => {
           this.workMetrics.project(taskId, snapshot);
-          // Projection only; this status is never consulted to resume or finish durable work.
-          taskProjection.writeStatus(taskId, durableTaskStatus(snapshot));
-          // 「最后活动时间」只有一个写入口：先让 DB 单调前进，再把库里的权威值回填给 UI。
-          // 两边不再各算一套（历史事故：占位行 createdAt=0 被渲染层当成任务时间，侧栏显示 20774 天，
-          // 而 DB 一直是对的）。快照对象在 emit 前就地回填，runtime.latest 与 IPC 看到的是同一个值。
-          const activityAt = taskProjection.recordActivity(taskId, snapshot.activityAt);
-          if (activityAt !== undefined) snapshot.activityAt = activityAt;
           const { messages: _messages, epoch: _epoch, revision: _revision, ...state } = snapshot;
           this.options.emit(previousSnapshot?.epoch === snapshot.epoch
             ? { type: "durable_delta", taskId, delta: durableDelta(previousSnapshot, snapshot, state) }
             : { type: "durable_snapshot", taskId, snapshot });
           previousSnapshot = snapshot;
           if (snapshot.contextUsage) this.options.emit({ type: "context_usage", taskId, ...snapshot.contextUsage });
-          // Relative historical write paths belong to the directory where their message was
-          // observed, not the current space. Prime old history before committing a move.
-          for (const message of snapshot.messages) if (!messageWorkspaces.has(message.id)) {
-            taskProjection.rememberWorkspace(taskId, message.id, cwd);
-            messageWorkspaces.set(message.id, cwd);
-          }
           const signature = snapshot.messages.at(-1)?.id ?? "";
           if (!snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
             projected = signature;
+            const origins = messageWorkspaces;
             const projection = (this.projections.get(taskId) ?? Promise.resolve()).then(async () => {
-              await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore, cwd, messageWorkspaces);
-              workspaceBefore = await snapshotWorkspace(cwd);
+              await this.options.projectArtifacts!(taskId, snapshot, workspaceBefore, cwd, origins);
+              workspaceBefore = await snapshotWorkspace(cwd, this.options.db.runtimeAuditReader);
             }).catch(error => console.warn("[Durable] Artifact projection failed", taskId, error));
             this.projections.set(taskId, projection);
           }
@@ -617,11 +620,7 @@ export class DurableBotService {
         },
       });
       openedRuntime = runtime;
-      if (move) db.connection.transaction(() => {
-        db.connection.prepare("UPDATE durable_bot_bindings SET cwd = ? WHERE task_id = ?").run(cwd, taskId);
-        db.bindTaskExecutionWorkspaceCwd(taskId, cwd);
-        db.connection.prepare("DELETE FROM durable_bot_workspace_moves WHERE task_id = ?").run(taskId);
-      }).immediate();
+      if (move) await this.workspaceMoves.write({ kind: "commit", taskId, ...move, cwd, at: Date.now() });
       return { runtime, mcp, mcpConfigKey: JSON.stringify(config), retiredMcp: new Set(), ...(modelRepair ? { modelRepair } : {}) };
     } catch (error) { await openedRuntime?.close(); await mcp.close(); throw error; }
   }
@@ -667,7 +666,9 @@ export class DurableBotService {
     const current = this.options.db.getTask(task.id) ?? task;
     if (current.modelId !== repair.to) {
       // updatedAt 保持不变：修复模型归属不应把任务顶到列表最前。
-      this.options.db.upsertTask({ ...current, modelId: repair.to });
+      this.options.db.upsertTask({
+        id: current.id, title: current.title, updatedAt: current.updatedAt, modelId: repair.to,
+      }, { preserveTitle: true });
       console.warn(`[Durable] 任务 ${task.id} 的模型 ${repair.from} 已不在模型目录中，改用 ${repair.to}（${resolution.reason}）`);
     }
     return resolution;
@@ -696,11 +697,13 @@ export class DurableBotService {
     const task = this.options.db.getTask(request.taskId);
     if (!task) throw new Error("任务不存在");
     // Product selections are durable task configuration, never global scene state.
-    this.options.db.upsertTask({ ...task, modelId: task.id === DOTS_TASK_ID ? task.modelId : request.modelId ?? task.modelId,
+    this.options.db.upsertTask({ id: task.id, title: task.title,
+      modelId: task.id === DOTS_TASK_ID ? task.modelId : request.modelId ?? task.modelId,
       permissionMode: request.permissionMode ?? task.permissionMode,
       welcomeMode: request.welcomeMode ?? task.welcomeMode,
       expertId: this.options.expertBindings?.get(task.id) ? task.expertId : request.expertId ?? task.expertId,
-      modePresetId: request.modePresetId !== undefined ? request.modePresetId : task.modePresetId, updatedAt: Date.now() });
+      modePresetId: request.modePresetId !== undefined ? request.modePresetId : task.modePresetId, updatedAt: Date.now() },
+    { preserveTitle: true });
     return request;
   }
 

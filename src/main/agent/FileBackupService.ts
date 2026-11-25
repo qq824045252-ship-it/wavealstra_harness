@@ -10,6 +10,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { getMyBuddyDir } from "../paths";
 import type { BackupKind, FileBackupInfoDto } from "../../shared/agent-ipc";
+import type { RuntimeAuditReader } from "../platform/runtime-audit";
 
 /**
  * 读取和手动还原旧版本留下的历史备份。
@@ -31,6 +32,17 @@ interface ManifestEntry {
   /** 备份对象是目录（删除目录时保留整棵副本） */
   isDir: boolean;
 }
+
+export interface RuntimeFileBackupRestoreRequest {
+  root: string;
+  taskId: string;
+  backupId: string;
+}
+
+export type RuntimeFileBackupRestoreReply =
+  | { status: "restored"; backup: FileBackupInfoDto }
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
 
 /** 任务 ID 中的非法路径字符替换为下划线（gw-xxx / local-xxx 本身安全，仅兜底） */
 function sanitizeTaskId(taskId: string): string {
@@ -94,6 +106,10 @@ export class FileBackupService {
   }
 
   /** 列出备份。taskId 缺省时列出全部任务的备份，按时间倒序（新 → 旧）。 */
+  async readBackups(rust?: Pick<RuntimeAuditReader, "listFileBackups">, taskId?: string): Promise<FileBackupInfoDto[]> {
+    return (await rust?.listFileBackups(this.backupRoot(), taskId)) ?? this.listBackups(taskId);
+  }
+
   listBackups(taskId?: string): FileBackupInfoDto[] {
     const root = this.backupRoot();
     if (!existsSync(root)) return [];
@@ -109,6 +125,19 @@ export class FileBackupService {
   }
 
   /** 将某份备份写回原始路径（覆盖）。备份文件缺失时抛错。 */
+  async restoreWithRuntime(
+    rust: Pick<RuntimeAuditReader, "restoreFileBackup"> | undefined,
+    taskId: string,
+    backupId: string,
+  ): Promise<FileBackupInfoDto> {
+    if (!rust) return this.restoreBackup(taskId, backupId);
+    const reply = await rust.restoreFileBackup({ root: this.backupRoot(), taskId, backupId });
+    if (reply?.status === "restored") return reply.backup;
+    if (reply?.status === "needsHost") return this.restoreBackup(taskId, backupId);
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    throw new Error("备份还原结果未确认，请检查原文件");
+  }
+
   restoreBackup(taskId: string, backupId: string): FileBackupInfoDto {
     const manifest = this.readManifest(taskId);
     const entry = manifest.get(backupId);

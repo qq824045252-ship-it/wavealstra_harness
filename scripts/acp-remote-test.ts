@@ -19,11 +19,12 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { ExternalAgentRuntime } from "../src/main/external-agent/ExternalAgentRuntime";
 import { RemoteAccessPairing } from "../src/main/remote/RemoteAccessPairing";
 import { RemoteAccessServer } from "../src/main/remote/RemoteAccessServer";
@@ -84,7 +85,10 @@ async function expectApiError(promise: Promise<unknown>, status: number, label: 
   ok(label);
 }
 
-const db = new AppDatabase(join(root, "app.db"));
+const nativeRoot = process.argv.find(arg => arg.startsWith("--native-root="))?.slice("--native-root=".length);
+const runtimeAuditExecutable = nativeRoot ? locateRuntimeAudit(nativeRoot) : undefined;
+if (nativeRoot) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
 const runtime = new ExternalAgentRuntime(db, () => workspace, async () => []);
 let behavior = "default";
 
@@ -349,11 +353,14 @@ try {
     ok("POST /abort 同时取消 ACP 外部 Agent");
 
     // ---------- 5.5 新任务直接交给 ACP（首页选中 Agent 的第一轮） ----------
+    if (runtimeAuditExecutable) db.connection.exec(`CREATE TEMP TRIGGER require_native_task_insert BEFORE INSERT ON main.tasks
+      WHEN NEW.id LIKE 'remote-%' BEGIN SELECT RAISE(ABORT, 'task insert must run in Rust'); END`);
     const created = await client.createAcpTask({
       agentId: "devin",
       text: "新任务第一轮交给 ACP",
       welcomeMode: "coding",
     });
+    if (runtimeAuditExecutable) db.connection.exec("DROP TRIGGER temp.require_native_task_insert");
     assert.match(created.task.id, /^remote-/, "电脑端落库新任务并返回");
     assert.equal(created.task.title, "新任务第一轮交给 ACP");
     assert.equal(created.run.agentId, "devin");
@@ -516,6 +523,7 @@ try {
   runtime.dispose();
   await waitFor(() => runtime.active().length === 0 ? true : undefined, "ACP runs settle", 10_000).catch(() => undefined);
   await sleep(300);
+  await db.runtimeAuditReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
 }

@@ -24,6 +24,7 @@ const { TaskExecutionWorkspace } = await import("../src/main/task/TaskExecutionW
 
 async function main(): Promise<void> {
   const db = new AppDatabase(join(root, "app.db"));
+  let runningAgent: InstanceType<typeof AgentService> | undefined;
   try {
     assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
     db.upsertTask({ id: "rev-task", title: "Revision Task", updatedAt: Date.now(), welcomeMode: "coding" });
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
     effectiveness.markTurnOutcome("rev-task", "a-v1", "failed");
 
     const agent = new AgentService(db, new TaskExecutionWorkspace(join(root, "task-workspaces")));
+    runningAgent = agent;
 
     // [1] Runtime failure is only corroborating evidence and cannot independently create a revision.
     let refresh = agent.refreshKernelSkillRevisionCandidates();
@@ -197,7 +199,13 @@ async function main(): Promise<void> {
 
     console.log("memory-skill-revision-test: PASS");
   } finally {
-    db.close();
+    try {
+      await runningAgent?.closeDurableBots();
+      runningAgent?.dispose();
+      await runningAgent?.closeAuditWrites();
+    } finally {
+      db.close();
+    }
   }
 }
 

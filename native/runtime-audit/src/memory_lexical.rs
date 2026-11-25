@@ -8,9 +8,13 @@ use icu_properties::{
 };
 use rusqlite::{Connection, params_from_iter, types::Value as Param};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 const MAX_MATCHES: usize = 100_000;
+const MAX_SCORE_TARGETS: usize = 800;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +30,27 @@ pub struct Search {
 pub struct Candidates {
     fts: Vec<String>,
     lexical: Vec<Match>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScoreTarget {
+    id: String,
+    content_hash: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scoring {
+    scope: SqlScope,
+    compact: Vec<u16>,
+    targets: Vec<ScoreTarget>,
+}
+
+#[derive(Serialize)]
+pub struct TextScore {
+    id: String,
+    similarity: f64,
 }
 
 #[derive(Serialize)]
@@ -81,6 +106,83 @@ impl NormalizedText {
         }
         text
     }
+}
+
+fn bigrams(text: &[u16]) -> HashSet<u32> {
+    text.windows(2)
+        .map(|pair| u32::from(pair[0]) << 16 | u32::from(pair[1]))
+        .collect()
+}
+
+struct Comparison {
+    units: Vec<u16>,
+    text: Option<String>,
+    grams: HashSet<u32>,
+}
+
+impl Comparison {
+    fn new(units: Vec<u16>) -> Self {
+        let text = String::from_utf16(&units).ok();
+        let grams = bigrams(&units);
+        Self { units, text, grams }
+    }
+
+    fn similarity(&self, text: &str) -> f64 {
+        if self.units.is_empty() || text.is_empty() {
+            return 0.0;
+        }
+        if let Some(query) = &self.text {
+            if query == text {
+                return 1.0;
+            }
+            if query.contains(text) || text.contains(query.as_str()) {
+                return 0.86;
+            }
+        }
+        let units: Vec<u16> = text.encode_utf16().collect();
+        if self.text.is_none()
+            && (self.units.windows(units.len()).any(|part| part == units)
+                || units
+                    .windows(self.units.len())
+                    .any(|part| part == self.units))
+        {
+            return 0.86;
+        }
+        let grams = bigrams(&units);
+        let overlap = self.grams.intersection(&grams).count();
+        overlap as f64 / (self.grams.len() + grams.len() - overlap).max(1) as f64
+    }
+}
+
+pub fn score(db: &Connection, request: Scoring) -> Result<Vec<TextScore>> {
+    if request.targets.len() > MAX_SCORE_TARGETS {
+        return Err("lexical score targets exceed their budget".into());
+    }
+    let sql = format!(
+        "SELECT m.id,m.title,m.content FROM json_each(?) t
+         JOIN memory_records m ON m.id=json_extract(t.value,'$.id')
+           AND m.content_hash=json_extract(t.value,'$.contentHash')
+         WHERE {}",
+        request.scope.sql,
+    );
+    let targets = Param::Text(serde_json::to_string(&request.targets)?);
+    let parameters = request.scope.parameters();
+    let mut statement = db.prepare(&sql)?;
+    let mut rows = statement.query(params_from_iter(std::iter::once(targets).chain(parameters)))?;
+    let comparison = Comparison::new(request.compact);
+    let mut normalized = NormalizedText::default();
+    let mut scores = Vec::new();
+    while let Some(row) = rows.next()? {
+        let title = normalized.get(row.get_ref(1)?.as_str()?);
+        let content = normalized.get(row.get_ref(2)?.as_str()?);
+        let similarity =
+            (comparison.similarity(&title) * 1.15).max(comparison.similarity(&content));
+        scores.push(TextScore {
+            id: row.get(0)?,
+            similarity,
+        });
+    }
+    Ok(scores)
 }
 
 enum Needle {

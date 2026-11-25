@@ -9,11 +9,12 @@
  * - 不改变 Workspace Context / Permission
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { WorkGraphService } from "../src/main/workgraph/WorkGraphService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import type { SpaceDto } from "../src/shared/agent-ipc";
 
 let passed = 0, failed = 0;
@@ -36,14 +37,18 @@ function addTodo(db: AppDatabase, id: string, projectId: string) {
 function mkTask(db: AppDatabase, id: string, spaceId: string | null, projectId: string | null) {
   (db as unknown as { upsertTask: (t: unknown) => void }).upsertTask({ id, title: id, updatedAt: Date.now(), spaceId, projectId });
 }
-async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void> | void) {
+async function withTmpDb(fn: (db: AppDatabase, dir: string) => Promise<void> | void, runtimeAuditExecutable?: string) {
   const dir = mkdtempSync(join(tmpdir(), "wg-"));
   // 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
   // 只把 SQLite 放进临时目录而不同时隔离 HOME，会把夹具文档写进真实用户资料库。
   process.env.HOME = dir;
   process.env.USERPROFILE = dir;
-  const db = new AppDatabase(join(dir, "test.db"));
-  try { await fn(db, dir); } finally { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
+  const db = new AppDatabase(join(dir, "test.db"), { runtimeAuditExecutable });
+  try { await fn(db, dir); } finally {
+    await db.runtimeAuditReader?.close();
+    try { db.close(); } catch {}
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -269,6 +274,35 @@ async function main() {
     svc.cleanupByNode("project", "proj1");
     ok(!svc.listRelated("project", "proj1").length, "project 清理后无 related");
   });
+
+  console.log("== 10) UI 关联保存、方向读取、撤销与环拒绝 ==");
+  const native = process.argv.includes("--native");
+  const executable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (native) assert.ok(executable && existsSync(executable));
+  await withTmpDb(async (db) => {
+    for (const id of ["a", "b", "c"]) mkTask(db, id, null, null);
+    if (native) {
+      db.connection.exec("CREATE TEMP TABLE work_graph_edges AS SELECT * FROM main.work_graph_edges WHERE 0");
+      db.connection.pragma("query_only = ON");
+    }
+    const svc = new WorkGraphService(db);
+    const dep = (fromId: string, toId: string) => ({ fromType: "task", fromId, relation: "DEPENDS_ON", toType: "task", toId }) as const;
+    const first = await svc.writeEdge({ ...dep(" a ", "b"), metadata: { reason: "blocked" } });
+    const repeated = await svc.writeEdge({ ...dep("a", "b"), metadata: { reason: "different" } });
+    eq([first.created, repeated.created, repeated.edge.id, repeated.edge.metadata],
+      [true, false, first.edge.id, { reason: "blocked" }], "异步重复保存仍返回原边和原元数据");
+    await svc.writeEdge(dep("b", "c"));
+    await assert.rejects(svc.writeEdge(dep("c", "a")), /DAG 环拒绝/);
+    await assert.rejects(svc.writeEdge(dep("a", "missing")), /task 不存在：missing/);
+    await svc.writeEdge({ ...dep("a", "a"), relation: "RELATES_TO" });
+    eq((await svc.readEdges("related", "task", "a", "RELATES_TO")).map(({ fromId, toId }) => [fromId, toId]),
+      [["a", "a"]], "相关读取只返回一次自关联");
+    eq((await svc.readEdges("incoming", "task", "b", "DEPENDS_ON")).map(({ fromId, toId }) => [fromId, toId]),
+      [["a", "b"]], "入边读取只返回指定方向与关系");
+    eq(await svc.deleteEdge(first.edge.id), true, "删除已保存的关联");
+    eq(await svc.deleteEdge(first.edge.id), false, "再次删除报告关联不存在");
+    eq(await svc.readEdges("outgoing", "task", "a", "DEPENDS_ON"), [], "删除后查询不到该依赖");
+  }, executable);
 
   console.log(`\nResult: passed=${passed} failed=${failed}`);
   if (failed > 0) process.exit(1);

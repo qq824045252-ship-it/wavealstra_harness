@@ -14,6 +14,7 @@
  * Service 提供能力，不内置 prefetch N（§24：recent N 不是 Domain contract）。
  */
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -42,8 +43,8 @@ import type {
   ArtifactLoadState,
 } from "../../shared/artifact-types";
 import { ArtifactStorage } from "./ArtifactStorage";
-import { ArtifactRepository, type StoredArtifactSnapshot } from "./ArtifactRepository";
-import type { RuntimeAuditReader } from "../platform/runtime-audit";
+import { ArtifactRepository, artifactFromRow, artifactToRow, type ArtifactRow, type StoredArtifactSnapshot } from "./ArtifactRepository";
+import type { RuntimeArtifactContent, RuntimeArtifactMutation, RuntimeAuditReader, RuntimeGadgetArtifactSource } from "../platform/runtime-audit";
 import { ArtifactRegistry } from "./ArtifactRegistry";
 import { inspectArtifactFolderRelocation, type ArtifactFolderChange } from "./ArtifactFolderRelocation";
 
@@ -76,7 +77,14 @@ export interface ArtifactEventSink {
   removed?(event: ArtifactRemovedEvent): void;
 }
 
+interface GadgetHtmlSource {
+  source: RuntimeGadgetArtifactSource;
+  readOnHost(): string;
+}
+
 export class ArtifactService {
+  private writeTail: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly storage: ArtifactStorage,
     private readonly repository: ArtifactRepository,
@@ -84,6 +92,24 @@ export class ArtifactService {
     private readonly eventSink?: ArtifactEventSink,
     private readonly runtimeAuditReader?: RuntimeAuditReader,
   ) {}
+
+  runWithArtifactWrites<T>(write: () => T | Promise<T>): Promise<T> {
+    const result = this.writeTail.then(write);
+    this.writeTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async flushWrites(): Promise<void> {
+    await this.writeTail;
+  }
+
+  private async writeArtifact<T>(taskId: string, mutation: RuntimeArtifactMutation, writeOnHost: () => T): Promise<T> {
+    const reader = this.runtimeAuditReader;
+    if (!reader || this.repository.inTransaction) return writeOnHost();
+    const operationId = randomUUID();
+    const result = await reader.writeArtifact<T>(taskId, operationId, mutation);
+    return result ?? this.repository.getWriteReceipt<T>(taskId, operationId) ?? writeOnHost();
+  }
 
   inspectFolderRelocation(oldRoot: string, newRoot: string, taskIds: ReadonlySet<string>): ArtifactFolderChange[] {
     return inspectArtifactFolderRelocation(this.repository, oldRoot, newRoot, taskIds);
@@ -121,7 +147,28 @@ export class ArtifactService {
    *   DB fail → attempt 删除已 materialize 内容；删除失败 → orphan（GC 清理）
    *   registry/event fail → DB 保留，不回滚（§12/§13）
    */
-  async register(registration: ArtifactRegistration): Promise<ArtifactDescriptor> {
+  register(registration: ArtifactRegistration): Promise<ArtifactDescriptor> {
+    return this.runWithArtifactWrites(() => this.registerArtifact(registration));
+  }
+
+  registerGadgetHtml(taskId: string, title: string, gadget: GadgetHtmlSource): Promise<ArtifactDescriptor> {
+    return this.runWithArtifactWrites(() => this.registerArtifact({ taskId, kind: "html", title }, gadget));
+  }
+
+  registerWorkspaceOutput(registration: ArtifactRegistration & Required<Pick<ArtifactRegistration, "workspaceFile">>): Promise<ArtifactDescriptor> {
+    return this.runWithArtifactWrites(() => {
+      const existing = this.findByEntryFile(registration.taskId, registration.workspaceFile.entryFile);
+      if (!existing) return this.registerArtifact(registration);
+      if (registration.producerMessageId) {
+        try { this.addMessageRef({ taskId: existing.taskId, messageId: registration.producerMessageId,
+          artifactId: existing.id, relation: "updated", toolCallId: registration.producerToolCallId }); }
+        catch (error) { console.warn("[ArtifactService] workspace output reference failed", error); }
+      }
+      return existing;
+    });
+  }
+
+  private async registerArtifact(registration: ArtifactRegistration, gadget?: GadgetHtmlSource): Promise<ArtifactDescriptor> {
     if (!registration.taskId || !registration.kind) {
       throw new Error("ArtifactRegistration 必须包含 taskId 与 kind");
     }
@@ -134,7 +181,6 @@ export class ArtifactService {
     const now = Date.now();
     const id = registration.id ?? `art-${Buffer.from(`${registration.taskId}:${now}:${Math.random().toString(36).slice(2, 8)}`).toString("base64url")}`;
 
-    // Step A：materialize（managed-content 落盘；workspace-file 不落盘）
     let source: ArtifactDescriptor["source"];
     if (registration.workspaceFile) {
       if (isChatUpload(registration.workspaceFile.entryFile)) throw new Error("聊天上传附件不能登记为任务产物");
@@ -143,18 +189,15 @@ export class ArtifactService {
         entryFile: registration.workspaceFile.entryFile,
         rootDir: registration.workspaceFile.rootDir,
       };
-    } else if (registration.content !== undefined) {
-      if (typeof registration.content !== "string" || registration.content.length === 0) {
+    } else if (gadget || registration.content !== undefined) {
+      if (!gadget && (typeof registration.content !== "string" || registration.content.length === 0)) {
         throw new Error("managed-content 注册必须提供非空 content");
       }
-      let storagePath: string;
-      try {
-        storagePath = this.storage.materialize(registration.taskId, id, registration.content, registration.kind);
-      } catch (error) {
-        // Case A：materialize 失败 → 停止，不写 metadata，不 register（§11-A）
-        throw new Error(`materialize 失败: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      source = { type: "managed-content", storagePath, rootDir: this.storage.root };
+      source = {
+        type: "managed-content",
+        storagePath: this.storage.pathFor(registration.taskId, id, registration.kind),
+        rootDir: this.storage.root,
+      };
     } else {
       throw new Error("ArtifactRegistration 必须提供 workspaceFile 或 content 之一");
     }
@@ -193,33 +236,9 @@ export class ArtifactService {
       updatedAt: now,
     };
 
-    // Step C：metadata transaction（commit point）+ task revision++ + 可选 created ref
-    let revision = 0;
-    try {
-      this.repository.transaction(() => {
-        this.repository.insert(descriptor);
-        if (producerMessageId) {
-          this.repository.addMessageRef({
-            taskId: descriptor.taskId,
-            messageId: producerMessageId,
-            artifactId: descriptor.id,
-            relation: "created",
-            toolCallId: producerToolCallId,
-          });
-        }
-        revision = this.repository.bumpTaskRevision(descriptor.taskId);
-      });
-    } catch (error) {
-      // Case B：materialize 成功但 DB 失败 → attempt 删除内容（§11-B）
-      if (source.type === "managed-content") {
-        const removed = this.storage.remove(source.storagePath);
-        if (!removed) {
-          // 删除失败 → orphan，startup GC 清理；不阻塞
-          console.error("[ArtifactService] DB 失败且内容删除失败（orphan 待 GC）:", source.storagePath);
-        }
-      }
-      throw new Error(`metadata 写入失败（已回滚内容）: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    const revision = source.type === "managed-content"
+      ? await this.registerManagedContent(descriptor, registration.content, gadget)
+      : await this.registerMetadata(descriptor);
 
     // Step D：Registry（失败不回滚 metadata，§12）
     try {
@@ -245,6 +264,103 @@ export class ArtifactService {
     return descriptor;
   }
 
+  private async registerManagedContent(descriptor: ArtifactDescriptor, text: string | undefined, gadget?: GadgetHtmlSource): Promise<number> {
+    const content: RuntimeArtifactContent = gadget ? { kind: "gadget", ...gadget.source } : { kind: "text", content: text! };
+    const revision = await this.writeManagedArtifact(descriptor, content);
+    if (revision !== undefined) return revision;
+
+    const hostContent = gadget ? gadget.readOnHost() : text!;
+    if (!hostContent.length) throw new Error("managed-content 注册必须提供非空 content");
+    let storagePath: string;
+    try {
+      storagePath = this.runtimeAuditReader
+        ? await this.storage.materializeAsync(descriptor.taskId, descriptor.id, hostContent, descriptor.kind)
+        : this.storage.materialize(descriptor.taskId, descriptor.id, hostContent, descriptor.kind);
+    } catch (error) {
+      throw new Error(`materialize 失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    descriptor.source = { type: "managed-content", storagePath, rootDir: this.storage.root };
+    try {
+      return await this.registerMetadata(descriptor);
+    } catch (error) {
+      if ((await this.removeManagedContents([storagePath])).length) {
+        console.error("[ArtifactService] DB 失败且内容删除失败（orphan 待 GC）:", storagePath);
+      }
+      throw error;
+    }
+  }
+
+  private async writeManagedArtifact(descriptor: ArtifactDescriptor, content: RuntimeArtifactContent): Promise<number | undefined> {
+    const reader = this.runtimeAuditReader;
+    if (!reader || this.repository.inTransaction || !isAbsolute(this.storage.root)) return undefined;
+    const taskId = descriptor.taskId;
+    const operationId = randomUUID();
+    const row = artifactToRow(descriptor);
+    const operation = () => reader.writeManagedArtifact(taskId, operationId, row, content);
+    const result = await operation();
+    if (result === "needsHost") return undefined;
+    if (result?.status === "saved") return result.revision;
+    if (result?.status === "failed") throw new Error(result.message);
+    const receipt = this.repository.getWriteReceipt<{ revision: number }>(taskId, operationId);
+    if (receipt) return receipt.revision;
+    const retry = await operation();
+    if (retry && retry !== "needsHost") {
+      if (retry.status === "failed") throw new Error(retry.message);
+      return retry.revision;
+    }
+    const saved = this.repository.getWriteReceipt<{ revision: number }>(taskId, operationId);
+    if (saved) return saved.revision;
+    throw new Error("成果登记结果未确认，请刷新列表");
+  }
+
+  private async registerMetadata(descriptor: ArtifactDescriptor): Promise<number> {
+    try {
+      const result = await this.writeArtifact(descriptor.taskId, { kind: "register", row: artifactToRow(descriptor) },
+        () => this.repository.transaction(() => {
+          this.repository.insert(descriptor);
+          if (descriptor.createdByMessageId) {
+            this.repository.addMessageRef({
+              taskId: descriptor.taskId,
+              messageId: descriptor.createdByMessageId,
+              artifactId: descriptor.id,
+              relation: "created",
+              toolCallId: descriptor.createdByToolCallId,
+            });
+          }
+          return { revision: this.repository.bumpTaskRevision(descriptor.taskId) };
+        }));
+      return result.revision;
+    } catch (error) {
+      throw new Error(`metadata 写入失败（已回滚内容）: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async readManagedContent(storagePath: string, inlineRaster = false): Promise<{ content: string } | { raster: true } | null> {
+    const reader = this.runtimeAuditReader;
+    const result = await reader?.readManagedArtifact(this.storage.root, storagePath, inlineRaster);
+    if (result?.status === "content") return { content: result.content };
+    if (result?.status === "raster") return { raster: true };
+    if (result?.status === "missing") return null;
+    if (result?.status === "failed") throw new Error(result.message);
+    const content = reader ? await this.storage.readAsync(storagePath) : this.storage.read(storagePath);
+    return content === null ? null : { content };
+  }
+
+  private async removeManagedContents(paths: string[]): Promise<string[]> {
+    if (!paths.length) return [];
+    const reader = this.runtimeAuditReader;
+    if (reader && !this.repository.inTransaction && isAbsolute(this.storage.root)) {
+      const cleaned = await reader.cleanupArtifactFiles(this.storage.root, { kind: "selected", paths });
+      if (cleaned !== "needsHost") return cleaned?.failed ?? paths;
+    }
+    const failed: string[] = [];
+    for (const storagePath of paths) {
+      const removed = reader ? await this.storage.removeAsync(storagePath) : this.storage.remove(storagePath);
+      if (!removed) failed.push(storagePath);
+    }
+    return failed;
+  }
+
   // ---------- 查询 ----------
 
   get(id: string): ArtifactDescriptor | null {
@@ -253,8 +369,10 @@ export class ArtifactService {
   }
 
   listByTask(taskId: string): ArtifactDescriptor[] {
-    const cached = this.registry.listByTask(taskId);
-    return cached.length > 0 ? cached : this.repository.listByTask(taskId).filter(isOutputArtifact);
+    if (this.registry.hasTask(taskId)) return this.registry.listByTask(taskId);
+    const artifacts = this.repository.listByTask(taskId).filter(isOutputArtifact);
+    this.registry.replaceTask(taskId, artifacts);
+    return artifacts;
   }
 
   /**
@@ -278,20 +396,19 @@ export class ArtifactService {
   }
 
   /** Local visual-editor commits update both managed and workspace-backed aliases. */
-  notifyHtmlSaved(path: string): void {
-    const normalized = normalizePathForComparison(path);
-    for (const descriptor of this.repository.listAll()) {
-      const entry = this.entryPathOf(descriptor.id);
-      if (!entry || normalizePathForComparison(entry) !== normalized) continue;
-      const result = this.repository.transaction(() => {
-        const next = this.repository.markChanged(descriptor.id);
-        return { next, revision: next ? this.repository.bumpTaskRevision(next.taskId) : 0 };
-      });
-      if (!result.next) continue;
-      this.registry.upsert(result.next);
-      try { this.eventSink?.updated?.({ artifactId: descriptor.id, taskId: descriptor.taskId, version: result.next.version, revision: result.revision, descriptor: result.next }); }
-      catch (error) { console.error("[ArtifactService] HTML 保存通知失败，内容和版本已更新", error); }
-    }
+  notifyHtmlSaved(path: string): Promise<void> {
+    return this.runWithArtifactWrites(async () => {
+      const normalized = normalizePathForComparison(path);
+      const matches = new Map<string, string[]>();
+      for (const descriptor of this.repository.listAll()) {
+        const entry = this.entryPathOf(descriptor.id);
+        if (!entry || normalizePathForComparison(entry) !== normalized) continue;
+        const ids = matches.get(descriptor.taskId) ?? [];
+        ids.push(descriptor.id);
+        matches.set(descriptor.taskId, ids);
+      }
+      for (const [taskId, ids] of matches) await this.refreshArtifacts(taskId, ids);
+    });
   }
 
   /**
@@ -349,33 +466,15 @@ export class ArtifactService {
 
   /** 删除（§W2.2④ 冻结顺序）：Repository delete = COMMIT POINT → Registry remove → broadcast removed
    *  → managed storage cleanup。storage 删除失败不阻塞已提交的删除；文件残留 → orphan（后续 GC）。 */
-  remove(id: string): boolean {
-    const descriptor = this.repository.get(id);
-    if (!descriptor) {
-      this.registry.remove(id);
-      return false;
-    }
-    let revision = 0;
-    this.repository.transaction(() => {
-      this.repository.remove(id);
-      revision = this.repository.bumpTaskRevision(descriptor.taskId);
-    }); // ← COMMIT POINT
-    this.registry.remove(id);
-    const removedEvent: ArtifactRemovedEvent = {
-      artifactId: id,
-      taskId: descriptor.taskId,
-      revision,
-    };
-    try {
-      this.eventSink?.removed?.(removedEvent);
-    } catch (error) {
-      console.error("[ArtifactService] removed 事件广播失败:", error);
-    }
-    if (descriptor.source.type === "managed-content") {
-      const removed = this.storage.remove(descriptor.source.storagePath);
-      if (!removed) console.error("[ArtifactService] 内容删除失败（orphan 待 GC）:", descriptor.source.storagePath);
-    }
-    return true;
+  remove(id: string): Promise<boolean> {
+    return this.runWithArtifactWrites(async () => {
+      const descriptor = this.repository.get(id);
+      if (!descriptor) {
+        this.registry.remove(id);
+        return false;
+      }
+      return (await this.removeArtifacts(descriptor.taskId, id, false)).removed > 0;
+    });
   }
 
   // ---------- hydrate（§21-23/§25） ----------
@@ -397,8 +496,7 @@ export class ArtifactService {
     try {
       const artifacts = this.repository.listByTask(taskId).filter(isOutputArtifact);
       const revision = this.repository.getTaskRevision(taskId);
-      this.registry.invalidateTask(taskId);
-      for (const d of artifacts) this.registry.upsert(d);
+      this.registry.replaceTask(taskId, artifacts);
       return { taskId, artifacts, revision, state: "ready" };
     } catch (error) {
       // hydrate 失败（§W2.2⑤）：task cache 必须 invalidate（不残留半份/旧数据），下一次允许重试
@@ -493,7 +591,11 @@ export class ArtifactService {
    * version++ 由 Repository transaction 完成（重启后正确）。
    * 同回合多个依赖仍只 +1（每个 artifact 最多一次 markChanged）。
    */
-  async markFilesChanged(event: WorkspaceChangedEvent): Promise<ArtifactUpdatedEvent[]> {
+  markFilesChanged(event: WorkspaceChangedEvent): Promise<ArtifactUpdatedEvent[]> {
+    return this.runWithArtifactWrites(() => this.markAffectedArtifacts(event));
+  }
+
+  private async markAffectedArtifacts(event: WorkspaceChangedEvent): Promise<ArtifactUpdatedEvent[]> {
     // P0 §10.2：taskId/cwd 非空；changedFiles 必须位于 event.cwd 内；manifest/内部临时文件不参与刷新
     if (!event.taskId || !event.cwd || !Array.isArray(event.changedFiles)) return [];
     const changed = event.changedFiles.filter((f) => {
@@ -506,7 +608,7 @@ export class ArtifactService {
     const eventRoot = normalizePathForComparison(event.cwd);
     const messageId = event.messageId?.trim() || undefined;
     const toolCallId = event.toolCallId?.trim() || undefined;
-    const updated: ArtifactUpdatedEvent[] = [];
+    const affected: string[] = [];
     for (const descriptor of this.listByTask(event.taskId)) {
       if (descriptor.source.type !== "workspace-file") continue;
       if (normalizePathForComparison(descriptor.source.rootDir) !== eventRoot) continue;
@@ -524,25 +626,27 @@ export class ArtifactService {
       );
       if (!entryHit && !depHit && !pptdProjectHit) continue;
 
-      // markChanged + optional updated ref + revision++ 同一事务（原子，重启后正确）
-      const result = this.repository.transaction<{ next: ArtifactDescriptor | null; revision: number }>(() => {
-        const bumped = this.repository.markChanged(descriptor.id);
-        if (bumped && messageId) {
-          this.repository.addMessageRef({
-            taskId: bumped.taskId,
-            messageId,
-            artifactId: bumped.id,
-            relation: "updated",
-            toolCallId,
-          });
-        }
-        return {
-          next: bumped,
-          revision: bumped ? this.repository.bumpTaskRevision(bumped.taskId) : 0,
-        };
-      });
-      if (!result.next) continue;
-      const { next, revision } = result;
+      affected.push(descriptor.id);
+    }
+    return this.refreshArtifacts(event.taskId, affected, messageId, toolCallId);
+  }
+
+  private async refreshArtifacts(taskId: string, ids: string[], messageId?: string, toolCallId?: string): Promise<ArtifactUpdatedEvent[]> {
+    if (!ids.length) return [];
+    const result = await this.writeArtifact<{ items: Array<{ row: ArtifactRow; revision: number }> }>(taskId, {
+      kind: "refresh", ids, messageId, toolCallId, at: Date.now(),
+    }, () => this.repository.transaction(() => {
+      const items: Array<{ row: ArtifactRow; revision: number }> = [];
+      for (const id of ids) {
+        const next = this.repository.markChanged(id);
+        if (!next) continue;
+        if (messageId) this.repository.addMessageRef({ taskId, messageId, artifactId: id, relation: "updated", toolCallId });
+        items.push({ row: artifactToRow(next), revision: this.repository.bumpTaskRevision(taskId) });
+      }
+      return { items };
+    }));
+    return result.items.map(({ row, revision }) => {
+      const next = artifactFromRow(row);
       this.registry.upsert(next);
       const evt: ArtifactUpdatedEvent = {
         artifactId: next.id,
@@ -551,14 +655,13 @@ export class ArtifactService {
         revision,
         descriptor: next,
       };
-      updated.push(evt);
       try {
         this.eventSink?.updated?.(evt);
       } catch (error) {
         console.error("[ArtifactService] updated 事件广播失败:", error);
       }
-    }
-    return updated;
+      return evt;
+    });
   }
 
   // ---------- Task 生命周期（3B.6） ----------
@@ -568,27 +671,40 @@ export class ArtifactService {
    * → removed 事件广播 → managed storage cleanup。storage 失败 → orphan（GC 后续清理）。
    * removed 事件共享同一次 bump 的 revision（reducer 对 removed 允许 >= guard，批量幂等）。
    */
-  removeByTask(taskId: string): { removed: number; orphaned: number } {
-    const descriptors = this.repository.listByTask(taskId);
-    let revision = 0;
-    this.repository.transaction(() => {
-      this.repository.removeByTask(taskId);
-      revision = this.repository.bumpTaskRevision(taskId);
-    }); // ← COMMIT POINT
-    this.registry.invalidateTask(taskId);
-    let orphaned = 0;
-    for (const d of descriptors) {
-      const evt: ArtifactRemovedEvent = { artifactId: d.id, taskId, revision };
+  removeByTask(taskId: string, options?: { requireTrashed?: boolean }): Promise<{ removed: number; orphaned: number }> {
+    return this.runWithArtifactWrites(() => this.removeArtifacts(taskId, undefined, options?.requireTrashed ?? false));
+  }
+
+  private async removeArtifacts(taskId: string, id: string | undefined, requireTrashed: boolean): Promise<{ removed: number; orphaned: number }> {
+    const result = await this.writeArtifact<{ allowed: boolean; revision: number | null; items: Array<{ id: string; storagePath: string | null }> }>(
+      taskId, { kind: "remove", id, requireTrashed }, () => this.repository.transaction(() => {
+        if (requireTrashed && !this.repository.canPurge(taskId)) return { allowed: false, revision: null, items: [] };
+        const descriptor = id ? this.repository.get(id) : undefined;
+        if (id && (!descriptor || descriptor.taskId !== taskId)) return { allowed: true, revision: null, items: [] };
+        const descriptors = descriptor ? [descriptor] : this.repository.listByTask(taskId);
+        if (id) this.repository.remove(id);
+        else this.repository.removeByTask(taskId);
+        return { allowed: true, revision: this.repository.bumpTaskRevision(taskId), items: descriptors.map(item => ({
+          id: item.id, storagePath: item.source.type === "managed-content" ? item.source.storagePath : null,
+        })) };
+      }),
+    );
+    if (!result.allowed) throw new Error(`成果清理中止：任务已离开回收区：${taskId}`);
+    if (id) this.registry.remove(id);
+    else this.registry.invalidateTask(taskId);
+    if (result.revision === null) return { removed: 0, orphaned: 0 };
+    for (const item of result.items) {
+      const evt: ArtifactRemovedEvent = { artifactId: item.id, taskId, revision: result.revision };
       try {
         this.eventSink?.removed?.(evt);
       } catch (error) {
         console.error("[ArtifactService] removed 事件广播失败:", error);
       }
-      if (d.source.type === "managed-content") {
-        if (!this.storage.remove(d.source.storagePath)) orphaned += 1;
-      }
     }
-    return { removed: descriptors.length, orphaned };
+    const failed = await this.removeManagedContents(result.items.flatMap(item => item.storagePath === null ? [] : [item.storagePath]));
+    if (id && failed.length) console.error("[ArtifactService] 内容删除失败（orphan 待 GC）:", failed[0]);
+    if (requireTrashed) this.repository.clearWriteReceipt(taskId);
+    return { removed: result.items.length, orphaned: failed.length };
   }
 
   // ---------- Legacy Migration（3B.2-3.4） ----------
@@ -663,20 +779,48 @@ export class ArtifactService {
     return existsSync(target) ? target : null;
   }
 
-  /** mybuddy-artifact:// 图片协议的唯一字节入口：字节不经 IPC、不进 renderer 内存 */
   async readImageVariant(
     id: string,
     variant: "thumb" | "full",
   ): Promise<{ data: Buffer; mimeType: string; version: number } | null> {
+    const image = await this.openImageVariant(id, variant);
+    if (!image?.data) return null;
+    const { mimeType, version } = image;
+    if (Buffer.isBuffer(image.data)) return { data: image.data, mimeType, version };
+    try {
+      const data = Buffer.from(await new Response(image.data as BodyInit).arrayBuffer());
+      return { data, mimeType, version };
+    } catch {
+      return null;
+    }
+  }
+
+  /** mybuddy-artifact:// 的原图按需读取，避免在主进程拼出整张图。 */
+  async openImageVariant(
+    id: string,
+    variant: "thumb" | "full",
+    { head = false, signal }: { head?: boolean; signal?: AbortSignal } = {},
+  ): Promise<{ data: Buffer | ReadableStream<Uint8Array> | null; mimeType: string; version: number; bytes?: number } | null> {
     const descriptor = this.get(id);
     if (!descriptor) return null;
     const version = descriptor.version;
     if (descriptor.source.type === "managed-content") {
-      // storage 里的小图/SVG 存的是 data URI：解析成字节交给协议，renderer 仍不碰 base64
-      const content = this.storage.read(descriptor.source.storagePath);
-      if (content === null) return null;
+      const image = await this.runtimeAuditReader?.openManagedArtifactImage(
+        this.storage.root, descriptor.source.storagePath, { head, signal },
+      );
+      if (image?.status === "missing" || image?.status === "failed") return null;
+      if (image?.status === "imageOpened") {
+        if (this.get(id)?.version !== version) {
+          await image.body?.cancel().catch(() => {});
+          return null;
+        }
+        return { data: image.body, mimeType: image.mimeType, version };
+      }
+      // Older readers and non-base64 data URIs use the existing decoding path.
+      const managed = await this.readManagedContent(descriptor.source.storagePath);
+      if (!managed || !("content" in managed) || this.get(id)?.version !== version) return null;
       try {
-        const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/i.exec(content.trim());
+        const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/i.exec(managed.content.trim());
         if (!match) return null;
         const mimeType = match[1] ?? "application/octet-stream";
         const raw = match[3] ?? "";
@@ -689,10 +833,21 @@ export class ArtifactService {
         return null;
       }
     }
-    const target = this.workspaceTarget(id);
+    const { entryFile, rootDir } = descriptor.source;
+    const root = resolve(rootDir);
+    const source = await this.runtimeAuditReader?.openWorkspaceArtifact(root, relative(root, entryFile), {
+      head: head && variant === "full", signal,
+    });
+    if (source && source.status !== "opened") return null;
+    const target = source ? entryFile : this.workspaceTarget(id);
     if (!target) return null;
-    const bytes = await workspaceImageVariant(target, variant);
-    return bytes ? { ...bytes, version } : null;
+    const image = await workspaceImageVariant(target, variant, rootDir, source);
+    if (this.get(id)?.version !== version) {
+      if (image?.data instanceof ReadableStream) await image.data.cancel().catch(() => {});
+      return null;
+    }
+    if (!image) return null;
+    return { ...image, version, ...(source && image.data === source.body ? { bytes: source.bytes } : {}) };
   }
 
   /**
@@ -717,12 +872,13 @@ export class ArtifactService {
     const descriptor = this.get(id);
     if (!descriptor) return null;
     if (descriptor.source.type === "managed-content") {
-      const content = this.storage.read(descriptor.source.storagePath);
-      if (content === null) return null;
-      if (options?.inline && descriptor.kind === "image" && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|x-icon);base64,/i.test(content)) {
+      const inlineRaster = options?.inline === true && descriptor.kind === "image";
+      const managed = await this.readManagedContent(descriptor.source.storagePath, inlineRaster);
+      if (!managed || this.get(id)?.version !== descriptor.version) return null;
+      if ("raster" in managed || (inlineRaster && /^data:image\/(?:png|jpeg|gif|webp|bmp|avif|x-icon);base64,/i.test(managed.content))) {
         return { content: artifactImageUrl(id, "full", { version: descriptor.version }), kind: "image", artifactVersion: descriptor.version };
       }
-      return { content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind, artifactVersion: descriptor.version };
+      return { content: managed.content, kind: (descriptor.capabilities?.originalKind as string | undefined) ?? descriptor.kind, artifactVersion: descriptor.version };
     }
     const target = this.workspaceTarget(id);
     if (!target) return null;
@@ -734,6 +890,7 @@ export class ArtifactService {
       // main 内部调用方（PromptContext/Gadget/预览宿主）不需要缩略图，别让它们等 resize
       thumbnail: Boolean(options?.inline),
       inlineImage,
+      workspace: this.runtimeAuditReader ? { root: descriptor.source.rootDir, reader: this.runtimeAuditReader } : undefined,
     });
     if (this.get(id)?.version !== descriptor.version) return null;
     const kind = (descriptor.capabilities?.originalKind as string | undefined) ?? preview.kind;
@@ -849,14 +1006,14 @@ export class ArtifactService {
     let registration: ArtifactRegistration;
 
     if (descriptor.source.type === "managed-content") {
-      const content = this.storage.read(descriptor.source.storagePath);
-      if (content === null) {
+      const managed = await this.readManagedContent(descriptor.source.storagePath);
+      if (!managed || !("content" in managed)) {
         throw new Error("源内容不可读");
       }
       registration = {
         taskId: input.childTaskId,
         kind: descriptor.kind,
-        content,
+        content: managed.content,
         title: descriptor.title,
         mimeType: descriptor.mimeType,
         producerToolCallId: descriptor.createdByToolCallId,
@@ -923,16 +1080,22 @@ export class ArtifactService {
   // ---------- Startup Orphan GC（§14） ----------
 
   /** 扫描 storage root vs repository rows；孤儿默认删除，删除失败 log，下次启动重试。不阻塞。 */
-  async orphanGC(): Promise<{ removed: string[]; failed: string[] }> {
-    const known = this.repository.managedPaths();
-    const candidates = this.storage.orphanCandidates(known);
-    const removed: string[] = [];
-    const failed: string[] = [];
-    for (const rel of candidates) {
-      if (this.storage.remove(rel)) removed.push(rel);
-      else failed.push(rel);
-    }
-    return { removed, failed };
+  orphanGC(): Promise<{ removed: string[]; failed: string[] }> {
+    return this.runWithArtifactWrites(async () => {
+      if (this.runtimeAuditReader && !this.repository.inTransaction && isAbsolute(this.storage.root)) {
+        const report = await this.runtimeAuditReader.cleanupArtifactFiles(this.storage.root, { kind: "orphans" });
+        if (report === undefined) throw new Error("Rust 成果清理未返回结果");
+        if (report !== "needsHost") return report;
+      }
+      const candidates = this.storage.orphanCandidates(this.repository.managedPaths());
+      const removed: string[] = [];
+      const failed: string[] = [];
+      for (const rel of candidates) {
+        if (this.storage.remove(rel)) removed.push(rel);
+        else failed.push(rel);
+      }
+      return { removed, failed };
+    });
   }
 
   /** 从 Repository 全量重建 Registry（启动时） */

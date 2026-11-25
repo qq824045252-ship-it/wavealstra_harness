@@ -843,8 +843,8 @@ export class GatewayService {
     return this.status();
   }
 
-  listMessages(opts: { channelId?: string; chatId?: string; limit?: number }): GatewayMessageDto[] {
-    return this.db.listGatewayMessages(opts);
+  listMessages(opts: { channelId?: string; chatId?: string; limit?: number }): Promise<GatewayMessageDto[]> {
+    return this.db.readGatewayMessages(opts);
   }
 
   private emitEvent(ev: GatewayEventDto): void {

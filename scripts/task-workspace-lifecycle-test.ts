@@ -23,6 +23,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import {
   TaskLifecycleConflictError,
   TaskLifecycleError,
@@ -48,13 +49,13 @@ async function check(name: string, fn: () => void | Promise<void>): Promise<void
   }
 }
 
-function makeEnv() {
+function makeEnv(runtimeAuditExecutable?: string) {
   const root = mkdtempSync(join(tmpdir(), "mybuddy-lifecycle-"));
   const workspacesRoot = join(root, "task-workspaces");
   const trashRoot = join(root, "task-workspaces-trash");
   mkdirSync(workspacesRoot, { recursive: true });
   mkdirSync(trashRoot, { recursive: true });
-  const db = new AppDatabase(join(root, "app.db"));
+  const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable });
   const workspace = new TaskExecutionWorkspace(workspacesRoot);
   const purged: string[] = [];
   const lifecycle = new TaskExecutionWorkspaceLifecycle({
@@ -83,24 +84,43 @@ function makeEnv() {
 
 async function main(): Promise<void> {
   await check("archive：只改状态，目录与文件不动", async () => {
-    const env = makeEnv();
+    const native = process.argv.includes("--native");
+    const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
+    if (native) assert.ok(runtimeAuditExecutable);
+    const env = makeEnv(runtimeAuditExecutable);
     try {
       const id = "life-archive";
       const dir = env.workspace.ensureTaskExecutionWorkspace(id);
       writeFileSync(join(dir, "note.md"), "keep");
       env.db.upsertTask({ id, title: "归档测", updatedAt: Date.now(), cwd: dir });
 
-      const row = env.lifecycle.archive(id);
-      assert.equal(row.state, "archived");
-      assert.ok(existsSync(join(dir, "note.md")), "归档不得移动/删除文件");
+      if (native) env.db.connection.pragma("query_only = ON");
+      await env.lifecycle.writeArchive(id, true);
+      assert.equal(readFileSync(join(dir, "note.md"), "utf8"), "keep");
       assert.equal(env.db.getTask(id)?.archived, true);
       assert.equal(env.db.getTaskExecutionWorkspaceState(id)?.state, "archived");
 
-      env.lifecycle.unarchive(id);
+      await env.lifecycle.writeArchive(id, false);
       assert.equal(env.db.getTask(id)?.archived, false);
       assert.equal(env.db.getTaskExecutionWorkspaceState(id)?.state, "active");
-      assert.ok(existsSync(join(dir, "note.md")));
+      assert.equal(readFileSync(join(dir, "note.md"), "utf8"), "keep");
+      if (native) env.db.connection.pragma("query_only = OFF");
+
+      env.db.connection.exec(`CREATE TRIGGER reject_archive BEFORE UPDATE OF archived ON tasks
+        WHEN NEW.id='life-archive' AND NEW.archived=1
+        BEGIN SELECT RAISE(ABORT, 'archive fixture failure'); END`);
+      if (native) env.db.connection.pragma("query_only = ON");
+      await assert.rejects(env.lifecycle.writeArchive(id, true), /archive fixture failure/);
+      assert.equal(env.db.getTask(id)?.archived, false);
+      assert.equal(env.db.getTaskExecutionWorkspaceState(id)?.state, "active");
+      if (native) env.db.connection.pragma("query_only = OFF");
+      env.db.connection.exec("DROP TRIGGER reject_archive");
+
+      await env.lifecycle.trash(id);
+      await assert.rejects(env.lifecycle.writeArchive(id, false), /回收区/);
+      assert.equal(env.db.getTaskExecutionWorkspaceState(id)?.state, "trashed");
     } finally {
+      await env.db.runtimeAuditReader?.close();
       env.close();
     }
   });

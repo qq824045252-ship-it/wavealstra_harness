@@ -15,6 +15,7 @@ import type { AppDatabase } from "../db/AppDatabase";
 import type { TaskDto } from "../../shared/agent-ipc";
 import type { ArtifactService } from "../artifact/ArtifactService";
 import { ConversationBranchDomainError } from "../../shared/conversation-branch";
+import { DOTS_TASK_ID } from "../../shared/dots";
 import type { DurableBranchAnchor, MaterializedDurableBranch } from "./durable/DurableTaskBranch";
 import { TaskWorkspaceBrancher } from "../task/TaskWorkspaceBrancher";
 import type {
@@ -222,8 +223,12 @@ export class ConversationBranchService {
 
     // Materialize committed history in an independent Durable store before publishing the task.
     let materialized: MaterializedDurableBranch;
+    let proposedTitle: string | undefined;
     try {
-      materialized = await this.deps.agent.materializeConversationBranch(task.id, childTaskId, childCwd, resolved);
+      [materialized, proposedTitle] = await Promise.all([
+        this.deps.agent.materializeConversationBranch(task.id, childTaskId, childCwd, resolved),
+        this.deps.db.runtimeAuditReader?.branchTitle(task.title, DOTS_TASK_ID),
+      ]);
     } catch (err) {
       this.deps.brancher.cleanupPending(childTaskId, req.requestId);
       const e = err as ConversationBranchDomainError;
@@ -231,41 +236,42 @@ export class ConversationBranchService {
     }
 
     // ---- §10.1 DB 单事务 commit point ----
-    const parentBranch = this.deps.db.getConversationBranchInfo(task.id);
-    const rootTaskId = parentBranch?.rootTaskId ?? task.id;
-    const childTask: TaskDto = {
-      id: childTaskId,
-      title: this.deriveBranchTitle(task.title),
-      spaceId: task.spaceId ?? undefined,
-      projectId: task.projectId ?? undefined,
-      // §3.4 派生状态：结束于助手消息 → completed；结束于用户消息 → pending
-      status: req.position === "after_reply" && resolved.leafEntryId !== resolved.userEntryId ? "completed" : "pending",
-      updatedAt: Date.now(),
-      cwd: childCwd,
-      welcomeMode: task.welcomeMode,
-      modelId: task.modelId,
-      permissionMode: task.permissionMode,
-      expertId: task.expertId,
-      modePresetId: task.modePresetId,
-    };
+    let childTask: TaskDto;
     try {
-      this.deps.db.connection.transaction(() => {
-      this.deps.db.createConversationBranchTask({
-        childTaskId,
-        parentTaskId: task.id,
-        rootTaskId,
-        parentTitleSnapshot: task.title,
-        sourceSessionFile: `durable:${task.id}:${resolved.conversationId}`,
-        sourceLeafEntryId: resolved.leafEntryId,
-        sourceUserMessageIndex: resolved.resolvedUserMessageIndex,
-        requestId: req.requestId,
-        position: req.position,
-        workspaceStrategy: strategy,
-        createdAt: Date.now(),
-        task: childTask,
-      });
-      this.deps.agent.commitConversationBranch(childTaskId, childCwd, materialized);
-      })();
+      childTask = this.deps.db.connection.transaction(() => {
+        const parentBranch = this.deps.db.getConversationBranchInfo(task.id);
+        const candidate: TaskDto = {
+          id: childTaskId,
+          title: this.confirmBranchTitle(task.title, proposedTitle),
+          spaceId: task.spaceId ?? undefined,
+          projectId: task.projectId ?? undefined,
+          // §3.4 派生状态：结束于助手消息 → completed；结束于用户消息 → pending
+          status: req.position === "after_reply" && resolved.leafEntryId !== resolved.userEntryId ? "completed" : "pending",
+          updatedAt: Date.now(),
+          cwd: childCwd,
+          welcomeMode: task.welcomeMode,
+          modelId: task.modelId,
+          permissionMode: task.permissionMode,
+          expertId: task.expertId,
+          modePresetId: task.modePresetId,
+        };
+        this.deps.db.createConversationBranchTask({
+          childTaskId,
+          parentTaskId: task.id,
+          rootTaskId: parentBranch?.rootTaskId ?? task.id,
+          parentTitleSnapshot: task.title,
+          sourceSessionFile: `durable:${task.id}:${resolved.conversationId}`,
+          sourceLeafEntryId: resolved.leafEntryId,
+          sourceUserMessageIndex: resolved.resolvedUserMessageIndex,
+          requestId: req.requestId,
+          position: req.position,
+          workspaceStrategy: strategy,
+          createdAt: Date.now(),
+          task: candidate,
+        });
+        this.deps.agent.commitConversationBranch(childTaskId, childCwd, materialized);
+        return candidate;
+      }).immediate();
     } catch (err) {
       // Keep an unbound store for diagnosis if publishing the task fails.
       this.deps.brancher.cleanupPending(childTaskId, req.requestId);
@@ -349,18 +355,21 @@ export class ConversationBranchService {
   }
 
   private isTrashed(taskId: string): boolean {
-    return this.deps.db
-      .listTaskExecutionWorkspaceStates({ state: "trashed" })
-      .some((s) => s.taskId === taskId);
+    return this.deps.db.getTaskExecutionWorkspaceState(taskId)?.state === "trashed";
   }
 
   /** §4.3 标题防重：{原标题}（分支）/（分支 2）/（分支 3）… */
-  private deriveBranchTitle(sourceTitle: string): string {
+  private confirmBranchTitle(sourceTitle: string, proposedTitle?: string): string {
+    const { connection } = this.deps.db;
+    // Another writer may have taken the proposed title while Rust's reply was in flight.
+    if (proposedTitle && !connection.prepare("SELECT 1 FROM tasks WHERE title = ? AND id != ? LIMIT 1")
+      .get(proposedTitle, DOTS_TASK_ID)) {
+      return proposedTitle;
+    }
     const base = sourceTitle || "新任务";
     const prefix = `${base}（分支`;
-    const siblingTitles = new Set(
-      this.deps.db.listTasks().map((t) => t.title),
-    );
+    const siblingTitles = new Set(connection.prepare("SELECT title FROM tasks WHERE id != ? AND instr(title, ?) = 1")
+      .pluck().all(DOTS_TASK_ID, prefix) as string[]);
     if (!siblingTitles.has(`${base}（分支）`)) return `${base}（分支）`;
     let n = 2;
     while (siblingTitles.has(`${prefix} ${n}）`)) n++;

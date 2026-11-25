@@ -18,10 +18,12 @@ import { WorkspaceResourceLocator } from "../src/main/workspace/WorkspaceResourc
 import { chunkText, LIBRARY_CHUNK_DEFAULTS } from "../src/main/library/library-chunker";
 import type { SpaceDto } from "../src/shared/agent-ipc";
 import {
-  getMaterialRetrievalSettings,
+  readMaterialRetrievalScope,
+  readMaterialRetrievalSettings,
   resolveMaterialRetrievalScope,
   setMaterialRetrievalScope,
-  setMaterialRetrievalSettings,
+  writeMaterialRetrievalScope,
+  writeMaterialRetrievalSettings,
 } from "../src/main/library/MaterialRetrievalSettings";
 import { getSemanticRuntime } from "../src/main/retrieval/SemanticRuntime";
 import { SEMANTIC_DIMENSION } from "../src/main/retrieval/SemanticModelManager";
@@ -73,6 +75,9 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 }
 
 async function verifyMaterialRetrievalPolicy(): Promise<void> {
+  const useNative = process.argv.includes("--native");
+  const executable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (useNative) assert(executable);
   await withTmpDb(async (db, dir) => {
     const root = { kind: "space", id: "retrieval-root" } as const;
     const leaf = { kind: "space", id: "retrieval-leaf" } as const;
@@ -81,28 +86,53 @@ async function verifyMaterialRetrievalPolicy(): Promise<void> {
     db.createSpace(mkSpace("retrieval-middle", "Middle", root.id));
     db.createSpace(mkSpace(leaf.id, "Leaf", "retrieval-middle"));
     addProject(db, project.id);
-    eq(getMaterialRetrievalSettings(db), { mode: "hybrid", decisionModel: null }, "资料检索默认混合且决策模型未配置");
-    setMaterialRetrievalSettings(db, { decisionModel: "test-provider/test-model" });
-    setMaterialRetrievalScope(db, root, "keyword");
-    eq(resolveMaterialRetrievalScope(db, project).effective, "hybrid", "无归属项目继承全局");
+    if (useNative) {
+      db.connection.exec(`
+        CREATE TEMP TABLE material_retrieval_settings (singleton INTEGER PRIMARY KEY, mode TEXT, decision_model TEXT);
+        INSERT INTO temp.material_retrieval_settings VALUES (1, 'keyword', 'host-only');
+        CREATE TEMP TABLE material_retrieval_spaces (id TEXT PRIMARY KEY, mode TEXT);
+        CREATE TEMP TABLE material_retrieval_projects (id TEXT PRIMARY KEY, mode TEXT);
+      `);
+    }
+    async function writeWhileHostReadOnly<T>(operation: () => Promise<T>): Promise<T> {
+      if (useNative) db.connection.pragma("query_only = ON");
+      try { return await operation(); } finally {
+        if (useNative) db.connection.pragma("query_only = OFF");
+      }
+    }
+    eq(await readMaterialRetrievalSettings(db), { mode: "hybrid", decisionModel: null }, "资料检索默认混合且决策模型未配置");
+    await writeWhileHostReadOnly(() => Promise.all([
+      writeMaterialRetrievalSettings(db, { decisionModel: "test-provider/test-model" }),
+      writeMaterialRetrievalSettings(db, { mode: "keyword" }),
+    ]));
+    eq(await readMaterialRetrievalSettings(db), { mode: "keyword", decisionModel: "test-provider/test-model" }, "并发修改全局设置保留两个字段");
+    await writeWhileHostReadOnly(() => writeMaterialRetrievalSettings(db, { mode: "hybrid" }));
+    await writeWhileHostReadOnly(() => writeMaterialRetrievalScope(db, root, "keyword"));
+    eq((await readMaterialRetrievalScope(db, project)).effective, "hybrid", "无归属项目继承全局");
     db.connection.prepare("UPDATE projects SET default_space_id = ? WHERE id = ?").run(leaf.id, project.id);
-    eq(resolveMaterialRetrievalScope(db, project), {
+    eq(await readMaterialRetrievalScope(db, project), {
       override: null, effective: "keyword", source: "space", sourceId: root.id,
     }, "项目沿所属空间多级向上继承");
-    setMaterialRetrievalScope(db, project, "hybrid");
+    eq(await writeWhileHostReadOnly(() => writeMaterialRetrievalScope(db, project, "hybrid")), {
+      override: "hybrid", effective: "hybrid", source: "project", sourceId: project.id,
+    }, "项目覆盖空间的检索方式");
     db.archiveSpace(root.id, true);
-    assert.throws(() => setMaterialRetrievalScope(db, leaf, "hybrid"), /归档空间/);
-    assert.throws(() => setMaterialRetrievalScope(db, project, null), /归档项目/);
+    await assert.rejects(writeWhileHostReadOnly(() => writeMaterialRetrievalScope(db, leaf, "hybrid")), /归档空间/);
+    await assert.rejects(writeWhileHostReadOnly(() => writeMaterialRetrievalScope(db, project, null)), /归档项目/);
     db.archiveSpace(root.id, false);
+    await db.runtimeAuditReader?.close();
     db.close();
 
     const path = join(dir, "test.db");
-    const reopened = new AppDatabase(path);
+    const reopened = new AppDatabase(path, { runtimeAuditExecutable: executable });
     try {
-      eq(getMaterialRetrievalSettings(reopened).decisionModel, "test-provider/test-model", "数据库重开后保留决策模型");
-      eq(resolveMaterialRetrievalScope(reopened, project).override, "hybrid", "数据库重开后保留项目覆盖");
-      eq(setMaterialRetrievalScope(reopened, project, null).sourceId, root.id, "取消项目覆盖立即恢复空间继承");
+      if (useNative) reopened.connection.pragma("query_only = ON");
+      eq((await readMaterialRetrievalSettings(reopened)).decisionModel, "test-provider/test-model", "数据库重开后保留决策模型");
+      eq((await readMaterialRetrievalScope(reopened, project)).override, "hybrid", "数据库重开后保留项目覆盖");
+      eq((await writeMaterialRetrievalScope(reopened, project, null)).sourceId, root.id, "取消项目覆盖立即恢复空间继承");
+      eq(await writeMaterialRetrievalSettings(reopened, { decisionModel: null }), { mode: "hybrid", decisionModel: null }, "清除模型不改变全局检索方式");
     } finally {
+      await reopened.runtimeAuditReader?.close();
       reopened.close();
     }
     const restored = new AppDatabase(path);
@@ -113,7 +143,7 @@ async function verifyMaterialRetrievalPolicy(): Promise<void> {
     } finally {
       restored.close();
     }
-  });
+  }, executable);
 }
 
 async function verifyMaterialRetrievalIndex(): Promise<void> {

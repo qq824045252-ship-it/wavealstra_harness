@@ -15,6 +15,7 @@ import type { WorkClosureReviewRequest } from "../../../shared/work-closure-revi
 import type { WorkResultDecision } from "./WorkResultDecision";
 import type { Fail, Mutation, ResolvedActor } from "./WorkControlTypes";
 import { WorkListQuery } from "./WorkListQuery";
+import type { WorkQueueNativeReader } from "./WorkQueueData";
 import { WorkProjectionBuilder } from "./WorkProjectionBuilder";
 import { readWorkPublishedReport } from "./WorkPublishedReport";
 import { submitDeliverableMutation, acceptDeliverableMutation, rejectDeliverableMutation, recordUserFeedbackMutation, attestCriteriaMutation } from "./WorkDeliverableMutations";
@@ -116,6 +117,7 @@ export interface WorkServiceOptions {
   computeNextWake?: WorkNextWake;
   /** Only the authoritative host may create control instructions (F14 / BW-A13). */
   isAuthority?: () => boolean;
+  runtimeAuditReader?: WorkQueueNativeReader;
 }
 const UNSETTLED_BINDING_STATUSES = new Set<WorkExecutionStatus>(["pending", "submitted", "running", "unknown"]);
 export class WorkService {
@@ -140,6 +142,7 @@ export class WorkService {
   readonly phase5: WorkPhase5Facts;
   private readonly bots: BotRegistry;
   readonly recordArchive: WorkRecordArchive;
+  readonly nativeQueue?: WorkQueueNativeReader;
   private readonly requestExpert?: WorkServiceOptions["requestExpert"];
   private readonly now: () => number;
   private readonly emit?: (projection: WorkProjectionDto) => void;
@@ -159,6 +162,7 @@ export class WorkService {
     this.emit = options.emitProjection;
     this.computeNextWake = options.computeNextWake ?? cronNextWake;
     this.authority = options.isAuthority;
+    this.nativeQueue = options.runtimeAuditReader;
     this.ingress = new WorkWatchIngress(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
     this.causal = new WorkCausalGuard(db, this, { now: this.now });
     this.scheduler = new WorkWatchScheduler(db, this, { now: this.now, isAuthority: () => !this.authority || this.authority() });
@@ -1001,12 +1005,16 @@ export class WorkService {
     return this.phase5.markRead(actor, input);
   }
 
+  writeWorkCardRead(actor: WorkActor, input: unknown): Promise<WorkCardReadResult> {
+    return this.phase5.writeRead(actor, input, this.nativeQueue);
+  }
+
   resendWorkNotification(actor: WorkActor, request: unknown): WorkControlResult {
     return this.phase5.resend(actor, request);
   }
 
-  getWorkSummary(userId: string, workId: string): WorkSummaryProjectionDto | undefined {
-    return this.phase5.summary(userId, workId);
+  getWorkSummary(userId: string, workId: string, projection?: WorkProjectionDto): WorkSummaryProjectionDto | undefined {
+    return this.phase5.summary(userId, workId, projection);
   }
 
   getWorkDiagnostics(userId: string, request: unknown): WorkExpandedDiagnosticsDto | undefined {

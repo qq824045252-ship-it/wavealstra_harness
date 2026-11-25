@@ -11,6 +11,7 @@ export interface GadgetHostOptions {
   token: string;
   sdkSource: string;
   platform: NodeJS.Platform;
+  nativeState: boolean;
 }
 
 /** This entire function runs in the owned Electron Node process, never in a webpage. */
@@ -29,7 +30,7 @@ export async function runGadgetHost(
   const invocationSignals = new AsyncLocalStorage<AbortSignal>();
   const root = fs.realpathSync(process.cwd());
   const lifetime = new AbortController();
-  const state = createState(options.dataPath, options.manifest.defaultConfig ?? {});
+  const state = createState(options.dataPath, options.manifest.defaultConfig ?? {}, options.nativeState);
   const declaration = options.manifest.backend;
   const processBackend = declaration && "kind" in declaration ? declaration : undefined;
   const commands = createCommands({

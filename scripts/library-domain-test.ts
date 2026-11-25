@@ -5,9 +5,12 @@
  * symlink/junction 逃逸拒绝、原子写、旧 schema current-only 重建策略。
  */
 import assert from "node:assert/strict";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, ftruncateSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
 import { LibraryService } from "../src/main/library/LibraryService";
 import { atomicWriteFileSync, assertManagedPathSafe, sha256File } from "../src/main/library/library-file-io";
@@ -40,12 +43,32 @@ pendingAsyncChecks.push((async () => {
     catalogDb.connection.exec("INSERT INTO projects(id,name,created_at,updated_at) VALUES ('p-catalog','项目验收',1,1)");
     const own = catalog.ensureOwnedSpace(personal);
     const folder = catalog.createCollection({ spaceId: own.id, name: "笔记分类" });
+    const unicode = catalog.createItem({ spaceId: own.id, kind: "html", title: "Unicode 正文", content: "😀字" });
+    const readOnHost = catalog.readContent.bind(catalog);
+    if (useNative) {
+      catalog.readContent = (id, maxChars) => {
+        assert.notEqual(id, unicode.id, "bounded text reads must use the Rust worker");
+        return readOnHost(id, maxChars);
+      };
+    }
+    for (const [limit, expected, truncated] of [[1, "", true], [2, "😀", true], [3, "😀字", false]] as const) {
+      const content = await catalog.readContentAsync(unicode.id, limit);
+      assert.deepEqual([content.content, content.contentTruncated], [expected, truncated]);
+    }
+    const rendered = await catalog.readContentAsync(unicode.id);
+    assert.equal(rendered.content, "😀字");
+    assert.equal(rendered.previewUrl, catalog.previewUrl(unicode.id));
+    catalog.readContent = readOnHost;
+    catalog.deleteItem(unicode.id);
     const projectSpace = catalog.ensureOwnedSpace(project);
     const secret = catalog.createItem({ spaceId: projectSpace.id, kind: "markdown", title: "项目笔记", content: "# Project" });
     const note = catalog.createItem({ spaceId: own.id, collectionId: folder.id, kind: "markdown", title: "个人笔记", content: "版本一" });
     catalog.writeContent({ id: note.id, content: "版本二" });
     catalog.writeContent({ id: note.id, content: "版本三" });
-    catalog.setNoteMetadata(personal, note.id, { tags: ["测试", "研究"], pinned: true });
+    await Promise.all([
+      catalog.writeNoteMetadata(personal, note.id, { tags: [" 测试 ", "研究", "测试"] }),
+      catalog.writeNoteMetadata(personal, note.id, { pinned: true }),
+    ]);
     catalog.markVisited(note.id);
     catalog.markVisited(secret.id);
 
@@ -53,6 +76,11 @@ pendingAsyncChecks.push((async () => {
     const loaded = visible.items.find(item => item.id === note.id);
     assert.deepEqual(visible.collections.map(entry => [entry.id, entry.name]), [[folder.id, "笔记分类"]]);
     assert.deepEqual([loaded?.tags, loaded?.pinned, loaded?.collectionId], [["测试", "研究"], true, folder.id]);
+    const projectFolder = catalog.createCollection({ spaceId: projectSpace.id, name: "项目资料夹" });
+    await assert.rejects(catalog.moveNotes(personal, [note.id], projectFolder.id), /同一资料位置/);
+    await catalog.moveNotes(personal, [note.id], null);
+    assert.equal((await catalog.readSnapshot({ owner: personal, itemId: note.id })).items[0]?.collectionId, null);
+    await catalog.moveNotes(personal, [note.id], folder.id);
     assert(visible.recent.some(entry => entry.id === note.id));
     assert(!visible.items.some(entry => entry.id === secret.id) && !visible.recent.some(entry => entry.id === secret.id));
     assert.equal(visible.storage.usedBytes, visible.items.reduce((sum, entry) => sum + entry.sizeBytes, 0));
@@ -61,27 +89,213 @@ pendingAsyncChecks.push((async () => {
     assert.equal(ownedProject.spaces[0]?.projectName, "项目验收");
     assert.deepEqual((await catalog.readSnapshot({ owner: project, itemId: note.id })).items, []);
     assert.deepEqual((await catalog.readSnapshot({ owner: personal, spaceId: projectSpace.id })).spaces, []);
+    if (useNative) {
+      const pendingTrash = catalog.trashNotes(project, [secret.id]);
+      catalogDb.connection.prepare("UPDATE projects SET archived=1 WHERE id='p-catalog'").run();
+      await assert.rejects(pendingTrash, /归档状态已变化/);
+      assert.equal((await catalog.readSnapshot({ owner: project })).items[0]?.id, secret.id);
+      catalogDb.connection.prepare("UPDATE projects SET archived=0 WHERE id='p-catalog'").run();
+    }
     const exact = await catalog.readSnapshot({ owner: personal, itemId: note.id });
     assert.deepEqual(exact.items.map(entry => entry.title), ["个人笔记"]);
     assert.deepEqual(exact.collections, []);
     assert.deepEqual((await catalog.readVersions(note.id)).map(entry => entry.version), [2, 1]);
+    assert.equal(await catalog.readVersionBody(note.id, 2), "版本二");
+    await assert.rejects(catalog.readVersionBody(note.id, 99), /此版本不存在/);
+    catalogDb.connection.prepare("UPDATE library_versions SET snapshot=? WHERE item_id=? AND version=1")
+      .run(Buffer.from("损坏快照"), note.id);
+    await assert.rejects(catalog.readVersionBody(note.id, 1), /正文副本已不可用/);
 
-    catalog.setNoteTrashed(project, [secret.id], true);
-    catalog.setNoteTrashed(personal, [note.id], true);
+    await assert.rejects(catalog.trashNotes(personal, [note.id, secret.id]), /当前查看范围/);
+    assert.deepEqual(await catalog.readTrashedNotes(personal), []);
+    await catalog.trashNotes(project, [secret.id]);
+    await catalog.trashNotes(personal, [note.id, note.id]);
     assert.deepEqual((await catalog.readTrashedNotes(personal)).map(entry => [entry.title, entry.tags]), [
       ["个人笔记", ["测试", "研究"]],
     ]);
     assert.deepEqual((await catalog.readSnapshot({ owner: personal, itemId: note.id })).items, []);
     await assert.rejects(catalog.readVersions(note.id), /笔记已不可用/);
-    catalog.setNoteTrashed(personal, [note.id], false);
+    await assert.rejects(catalog.readVersionBody(note.id, 2), /已移入回收站/);
+    await catalog.restoreNotes(personal, [note.id]);
     assert.deepEqual((await catalog.readVersions(note.id)).map(entry => entry.version), [2, 1]);
-    console.log("PASS note catalog, exact item reads, scoped trash and version metadata");
+
+    const longBody = "文".repeat(350_000) + "\n\n苇塘旧标记";
+    const longNote = catalog.createItem({ spaceId: own.id, kind: "markdown", title: "长正文恢复", content: longBody });
+    const longPath = catalog.absolutePath(longNote);
+    await catalog.trashNotes(personal, [note.id, longNote.id]);
+    writeFileSync(catalog.absolutePath(note), "棱镜桥索引");
+    rmSync(longPath);
+    const failedRestore = catalog.restoreNotes(personal, [note.id, longNote.id]);
+    if (useNative) await assert.rejects(failedRestore, /资料正文文件不可读取/);
+    else await assert.rejects(failedRestore);
+    assert.equal(catalog.getItem(note.id), null, "one missing file must roll back the entire restore");
+    await assert.rejects(catalog.readContentAsync(note.id), /条目不存在/);
+    assert.equal(catalog.getItem(longNote.id), null);
+    assert.deepEqual(catalog.searchOwnedScope("棱镜桥", personal), []);
+    writeFileSync(longPath, longBody.replace("苇塘旧标记", "月桥恢复标记"));
+
+    await catalog.restoreNotes(personal, [note.id, longNote.id, note.id]);
+    assert.deepEqual(catalog.searchOwnedScope("棱镜桥", personal).map(hit => hit.id), [note.id]);
+    assert.deepEqual(catalog.searchOwnedScope("月桥恢复", personal).map(hit => hit.id), [longNote.id]);
+    assert.deepEqual(catalog.searchOwnedScope("苇塘旧标记", personal), []);
+    assert.deepEqual(await catalog.readTrashedNotes(personal), []);
+    assert.equal(await catalog.readVersionBody(note.id, 2), "版本二", "restoring trash keeps note versions");
+    const restoredAt = catalog.getItem(longNote.id)?.updatedAt;
+    await catalog.restoreNotes(personal, [note.id, longNote.id]);
+    assert.equal(catalog.getItem(longNote.id)?.updatedAt, restoredAt, "repeating restore changes nothing");
+    console.log("PASS note catalog, exact item reads, tags, pins, moves, trash restore, streamed search and historical text");
+
+    const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4eAAAAAASUVORK5CYII=", "base64");
+    const attachment = catalog.addNoteImage(personal, own.id, folder.id, "backup.png", "image/png", imageBytes);
+    const url = catalog.createUrl({ spaceId: own.id, collectionId: folder.id, title: "备份书签", url: "https://example.com/backup" });
+    catalogDb.connection.prepare("UPDATE library_items SET note_metadata=json_set(note_metadata,'$.clipSource',json(?)) WHERE id=?")
+      .run(JSON.stringify({ title: "摘录", url: "https://example.com/clip", capturedAt: 1, internalPath: "fixture-private" }), note.id);
+    await catalog.trashNotes(personal, [url.id]);
+    const legacyArchive = JSON.parse(JSON.stringify(libraryNotesBackup.parse(catalog.createNoteBackup(personal))));
+    if (useNative) {
+      catalog.createNoteBackup = () => { throw new Error("native export must stream directly from the library"); };
+    }
+    const archivePath = join(root, "note-export.mynotes");
+    await catalog.exportNoteBackup(personal, archivePath);
+    const archiveBytes = readFileSync(archivePath);
+    const exported = JSON.parse(gunzipSync(archiveBytes).toString("utf8"));
+    const backup = libraryNotesBackup.parse(exported);
+    assert(isDeepStrictEqual(exported, legacyArchive), "gzipped v1 archive matches the old exporter including corrupt and valid history");
+    assert(!backup.items.some(({ item }) => item.id === secret.id), "other owner content is excluded");
+    assert.equal(backup.items.find(({ item }) => item.id === url.id)?.body, null);
+    const legacyPath = join(root, "legacy-note-export.mynotes");
+    writeFileSync(legacyPath, gzipSync(JSON.stringify(legacyArchive)));
+    const target = new AppDatabase(join(root, "note-export-restore.db"), { runtimeAuditExecutable });
+    try {
+      const restored = new LibraryService(target, { libraryRoot: join(root, "note-export-restore-files") });
+      const restoreReader = target.runtimeAuditReader;
+      const restoreNative = restoreReader?.restoreLibraryBackup.bind(restoreReader);
+      if (restoreReader && restoreNative) {
+        restored.restoreNoteBackup = () => { throw new Error("native restore must perform the backup mutation"); };
+        restoreReader.restoreLibraryBackup = async (...args) => {
+          assert.equal((await restoreNative(...args))?.status, "restored");
+          return undefined;
+        };
+      }
+      assert.deepEqual(await restored.importNoteBackup(personal, legacyPath), { restored: backup.items.length, skipped: 0 });
+      if (restoreReader && restoreNative) restoreReader.restoreLibraryBackup = restoreNative;
+      assert.deepEqual(await restored.importNoteBackup(personal, archivePath), { restored: 0, skipped: backup.items.length });
+      assert.equal(restored.readVersion(note.id, 2), "版本二");
+      assert.equal(restored.listTrashedNotes(personal).some((item) => item.id === url.id), true);
+      assert.deepEqual(readFileSync(restored.absolutePath(restored.getItem(attachment.id)!)), imageBytes);
+      assert.deepEqual(restored.searchOwnedScope("月桥恢复", personal).map(hit => hit.id), [longNote.id]);
+    } finally {
+      await target.runtimeAuditReader?.close();
+      target.close();
+    }
+    if (useNative) await verifyRestoreRollback(root, archivePath, note.id, runtimeAuditExecutable!);
+    if (useNative) {
+      const reader = catalogDb.runtimeAuditReader!;
+      const exportNative = reader.exportLibraryBackup.bind(reader);
+      reader.exportLibraryBackup = async (...args) => {
+        assert.equal(await exportNative(...args), "saved");
+        return undefined;
+      };
+      await assert.rejects(catalog.exportNoteBackup(personal, archivePath), /笔记备份失败/);
+      reader.exportLibraryBackup = exportNative;
+      assert.deepEqual(readFileSync(archivePath), archiveBytes, "an unacknowledged export never publishes its staged file");
+      catalogDb.connection.prepare("UPDATE library_items SET mime_type='text/plain; invalid' WHERE id=?").run(note.id);
+      await assert.rejects(catalog.exportNoteBackup(personal, archivePath), /不符合备份格式/);
+      assert.deepEqual(readFileSync(archivePath), archiveBytes);
+      catalogDb.connection.prepare("UPDATE library_items SET mime_type=? WHERE id=?").run(note.mimeType, note.id);
+    }
+    rmSync(longPath);
+    await assert.rejects(catalog.exportNoteBackup(personal, archivePath));
+    assert.deepEqual(readFileSync(archivePath), archiveBytes);
+    if (useNative) {
+      const fd = openSync(longPath, "w");
+      try { ftruncateSync(fd, 192 * 1024 * 1024 + 1); }
+      finally { closeSync(fd); }
+      await assert.rejects(catalog.exportNoteBackup(personal, archivePath), /超过单份本地备份的大小上限/);
+      assert.deepEqual(readFileSync(archivePath), archiveBytes, "oversized export never replaces a good backup");
+    }
+    assert.equal(readdirSync(root).some(name => name.startsWith(".mybuddy-notes-")), false);
+    console.log("PASS library v1 backup format, scoped streaming export, compatible restore and atomic replacement");
   } finally {
     await catalog.flushPendingIndexes();
     await catalogDb.runtimeAuditReader?.close();
     catalogDb.close();
   }
 })());
+
+async function verifyRestoreRollback(root: string, archive: string, itemId: string, runtimeAuditExecutable: string) {
+  const libraryRoot = join(root, "restore-rollback-files");
+  const owner = { type: "personal" as const };
+  const dbPath = join(root, "restore-rollback.db");
+  const options = { runtimeAuditExecutable };
+  let db = new AppDatabase(dbPath, options);
+  try {
+    let library = new LibraryService(db, { libraryRoot });
+    const badGzip = join(root, "invalid-notes.mynotes");
+    writeFileSync(badGzip, "invalid gzip");
+    await assert.rejects(library.importNoteBackup(owner, badGzip), /这不是有效的 MyBuddy 笔记备份/);
+    assert.deepEqual((await library.readSnapshot({ owner })).spaces, []);
+
+    const corrupt = libraryNotesBackup.parse(JSON.parse(gunzipSync(readFileSync(archive)).toString("utf8")));
+    corrupt.items.find(({ item }) => item.id === itemId)!.history[0].body = Buffer.from("不匹配的历史").toString("base64");
+    const corruptPath = join(root, "invalid-history.mynotes");
+    writeFileSync(corruptPath, gzipSync(JSON.stringify(corrupt)));
+    await assert.rejects(library.importNoteBackup(owner, corruptPath), /备份版本校验失败/);
+    assert.equal(library.getItem(itemId), null);
+
+    db.connection.exec(`
+      CREATE TABLE fixture_restore_parent(id TEXT PRIMARY KEY);
+      CREATE TABLE fixture_restore_failure(parent TEXT REFERENCES fixture_restore_parent(id) DEFERRABLE INITIALLY DEFERRED);
+      CREATE TRIGGER fixture_restore_commit_failure AFTER INSERT ON library_restore_receipts
+      BEGIN INSERT INTO fixture_restore_failure VALUES ('absent'); END;
+    `);
+    await assert.rejects(library.importNoteBackup(owner, archive), /FOREIGN KEY/);
+    const storedItem = db.connection.prepare("SELECT 1 FROM library_items WHERE id=?");
+    assert(corrupt.items.every(({ item }) => storedItem.get(item.id) === undefined));
+    const space = library.ensureOwnedSpace(owner);
+    const dir = join(libraryRoot, space.id);
+    assert(readdirSync(dir).every(name => !name.startsWith(".mybuddy-restore-") && !name.startsWith(itemId)));
+    assert.deepEqual(db.connection.prepare("SELECT item_id FROM library_restore_files").all(), []);
+    db.connection.exec("DROP TRIGGER fixture_restore_commit_failure");
+
+    const operation = randomUUID();
+    const interrupted = randomUUID();
+    const staged = join(dir, `.mybuddy-restore-${operation}-${interrupted}.tmp`);
+    const destination = join(dir, `${interrupted}.md`);
+    writeFileSync(staged, "已发布但数据库尚未提交");
+    linkSync(staged, destination);
+    db.connection.prepare("INSERT INTO library_restore_files VALUES (?,?,?,?,?)")
+      .run(libraryRoot, operation, space.id, interrupted, "pending.md");
+    const occupied = randomUUID();
+    const unrelatedStage = join(dir, `.mybuddy-restore-${operation}-${occupied}.tmp`);
+    const unrelatedTarget = join(dir, `${occupied}.md`);
+    writeFileSync(unrelatedStage, "内容相同但不是同一个文件");
+    writeFileSync(unrelatedTarget, "内容相同但不是同一个文件");
+    db.connection.prepare("INSERT INTO library_restore_files VALUES (?,?,?,?,?)")
+      .run(libraryRoot, operation, space.id, occupied, "occupied.md");
+    const committed = library.createItem({ spaceId: space.id, kind: "markdown", title: "已提交", content: "保留已提交的文件" });
+    const committedStage = join(dir, `.mybuddy-restore-${operation}-${committed.id}.tmp`);
+    linkSync(library.absolutePath(committed), committedStage);
+    db.connection.prepare("INSERT INTO library_restore_files VALUES (?,?,?,?,?)")
+      .run(libraryRoot, operation, space.id, committed.id, committed.filename);
+    await db.runtimeAuditReader?.close();
+    db.close();
+    db = new AppDatabase(dbPath, options);
+    library = new LibraryService(db, { libraryRoot });
+    await library.recoverLibraryRestores();
+    assert.equal(existsSync(staged), false);
+    assert.equal(existsSync(destination), false);
+    assert.equal(existsSync(unrelatedStage), false);
+    assert.equal(existsSync(unrelatedTarget), true, "recovery removes only its own linked file");
+    assert.equal(existsSync(committedStage), false);
+    assert.equal(library.readContent(committed.id).content, "保留已提交的文件");
+    assert.deepEqual(db.connection.prepare("SELECT item_id FROM library_restore_files").all(), []);
+    assert.equal((await library.importNoteBackup(owner, archive)).restored, corrupt.items.length);
+  } finally {
+    await db.runtimeAuditReader?.close();
+    db.close();
+  }
+}
 
 {
   assert.equal(db.schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION);
@@ -254,7 +468,7 @@ pendingAsyncChecks.push((async () => {
 }
 
 /* ---- 独立笔记：附件、版本、长正文检索、回收站与本地备份 ---- */
-{
+pendingAsyncChecks.push((async () => {
   const owner = { type: "personal" as const };
   const space = service.ensureOwnedSpace(owner);
   const folder = service.createCollection({ spaceId: space.id, name: "验收笔记" });
@@ -268,12 +482,12 @@ pendingAsyncChecks.push((async () => {
   assert.equal(service.noteImageUrl(note.id, service.previewUrl(image.id), 1), service.previewUrl(image.id));
   assert.ok(service.searchOwnedScope("凛星", owner).some((hit) => hit.id === note.id));
   assert.ok(service.retrieve("凛星浮墨", { spaceIds: new Set([space.id]) }).some((hit) => hit.itemId === note.id));
-  service.setNoteMetadata(owner, note.id, { tags: ["  工作 ", "工作"], pinned: true });
-  service.setNoteTrashed(owner, [note.id], true);
+  await service.writeNoteMetadata(owner, note.id, { tags: ["  工作 ", "工作"], pinned: true });
+  await service.trashNotes(owner, [note.id]);
   assert.equal(service.getItem(note.id), null);
   assert.equal(service.retrieve("凛星浮墨", { spaceIds: new Set([space.id]) }).length, 0);
   assert.ok(service.listTrashedNotes(owner).some((entry) => entry.id === note.id));
-  service.setNoteTrashed(owner, [note.id], false);
+  await service.restoreNotes(owner, [note.id]);
   assert.equal(service.readVersion(note.id, 1), before);
   assert.deepEqual(service.getItem(note.id)?.tags, ["工作"]);
 
@@ -292,7 +506,7 @@ pendingAsyncChecks.push((async () => {
   service.deleteItem(note.id);
   service.deleteItem(image.id);
   service.deleteCollection(folder.id);
-}
+})());
 
 /* ---- 导入本地文件夹 ---- */
 const largeFileSize = 256 * 1024 * 1024 + 5;

@@ -1246,10 +1246,10 @@ async function main(): Promise<void> {
     assert(after === before + 1, "重新生成恰执行一次原生模型调用");
     assert(requests.at(-1)?.instructions.includes("gamma"), "重新生成保留连接器私有技能");
     assert((await agent.regenerate(retry)).ok && requests.length === after, "重试原生回执不会重复生成");
-    agent.setConnectorEnabled("demoX", false);
+    await agent.setConnectorEnabled("demoX", false);
     await fixture.prompt({ ...initial, userMessageId: "disabled-user", assistantMessageId: "disabled-answer" });
     assert(!requests.at(-1)?.instructions.includes("gamma"), "停用连接器后下一轮移除私有技能");
-    agent.setConnectorEnabled("demoX", true);
+    await agent.setConnectorEnabled("demoX", true);
     await fixture.prompt({ ...initial, userMessageId: "enabled-user", assistantMessageId: "enabled-answer" });
     assert(requests.at(-1)?.instructions.includes("gamma"), "重新启用后下一轮恢复连接器技能");
 

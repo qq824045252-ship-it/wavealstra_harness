@@ -8,19 +8,26 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase, CURRENT_DATABASE_SCHEMA_VERSION } from "../src/main/db/AppDatabase";
-import { checkIntegrity, previewRepair, applyRepair } from "../src/main/workgraph/WorkGraphIntegrity";
+import { scanIntegrity, previewRepair, applyRepair } from "../src/main/workgraph/WorkGraphIntegrity";
 import { WorkGraphService } from "../src/main/workgraph/WorkGraphService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import type { SpaceDto } from "../src/shared/agent-ipc";
 
 let passed = 0, failed = 0;
+const native = process.argv.includes("--native");
+const runtimeAuditExecutable = native ? locateRuntimeAudit(process.cwd()) : undefined;
 function ok(cond: unknown, msg: string) { if (cond) { passed++; console.log(`  ✓ ${msg}`); } else { failed++; console.error(`  ✗ ${msg}`); } }
 function eq<T>(a: T, b: T, msg: string) { try { assert.deepStrictEqual(a, b); passed++; console.log(`  ✓ ${msg}`); } catch (e: unknown) { const m = e instanceof Error ? e.message : String(e); failed++; console.error(`  ✗ ${msg}\n    expected ${JSON.stringify(b)}\n    actual ${JSON.stringify(a)}\n    ${m}`); } }
 function mkSpace(id: string, parentId: string | null): SpaceDto { return { id, name: id, parentId, sortOrder: 1000, createdAt: 1 } as SpaceDto; }
 function mkTask(db: AppDatabase, id: string, spaceId: string | null) { (db as unknown as { upsertTask: (t: unknown) => void }).upsertTask({ id, title: id, updatedAt: Date.now(), spaceId, projectId: null }); }
 async function withTmpDb(fn: (db: AppDatabase) => Promise<void> | void) {
   const dir = mkdtempSync(join(tmpdir(), "wg-hard-"));
-  const db = new AppDatabase(join(dir, "test.db"));
-  try { await fn(db); } finally { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
+  const db = new AppDatabase(join(dir, "test.db"), { runtimeAuditExecutable });
+  try { await fn(db); } finally {
+    await db.runtimeAuditReader?.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 async function main() {
   console.log("== 1) Integrity：orphan_edge ==");
@@ -32,15 +39,28 @@ async function main() {
     // 注入孤儿：直接插一条指向不存在 task 的边（绕过校验）
     const conn = db.connection as unknown as { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
     conn.prepare(`INSERT INTO work_graph_edges (id, from_type, from_id, relation, to_type, to_id, metadata_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?, ?, ?)`).run("orphan-1", "task", "t1", "RELATES_TO", "task", "ghost", "{}", Date.now(), Date.now());
-    const rep = checkIntegrity(db);
-    ok(rep.findings.some((f) => f.kind === "orphan_edge" && f.edgeId === "orphan-1"), "检测到 orphan_edge");
+    if (native) db.connection.exec("CREATE TEMP TABLE work_graph_edges (id TEXT)");
+    const rep = await scanIntegrity(db);
+    if (native) db.connection.exec("DROP TABLE temp.work_graph_edges");
+    eq(rep.findings, [{
+      kind: "orphan_edge",
+      edgeId: "orphan-1",
+      relation: "RELATES_TO",
+      fromType: "task",
+      fromId: "t1",
+      toType: "task",
+      toId: "ghost",
+      detail: "orphan: task:t1 --RELATES_TO--> task:ghost",
+    }], "巡检返回缺失任务的完整关系");
+    eq(rep.summary, { orphan_edge: 1 }, "巡检汇总记录孤儿关系");
     const preview = previewRepair(db, rep as unknown as Parameters<typeof previewRepair>[1]);
     ok(preview.willDeleteEdgeIds.includes("orphan-1"), "preview 含 orphan");
     // 未 apply 前，边仍在
     ok(svc.listRelated("task", "t1").some((e) => e.id === "orphan-1"), "未 repair 前孤儿仍在");
-    const applied = applyRepair(db, preview);
-    ok(applied.deletedEdges === 1, "repair 删除 1 orphan");
-    const rep2 = checkIntegrity(db);
+    if (native) db.connection.pragma("query_only = ON");
+    const applied = await applyRepair(db, preview);
+    eq(applied, { deletedEdges: 1, deletedBindings: 0 }, "repair 删除 1 orphan");
+    const rep2 = await scanIntegrity(db);
     ok(!rep2.findings.some((f) => f.edgeId === "orphan-1"), "repair 后无该 orphan");
   });
 
@@ -49,12 +69,13 @@ async function main() {
     db.createSpace(mkSpace("ws", null));
     const conn = db.connection as unknown as { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
     conn.prepare(`INSERT INTO workspace_library_links (workspace_id, library_space_id, created_at) VALUES (?,?,?)`).run("ws", "ghost-lib", Date.now());
-    const rep = checkIntegrity(db);
+    const rep = await scanIntegrity(db);
     ok(rep.findings.some((f) => f.kind === "broken_library_binding"), "检测到 broken_library_binding");
     const preview = previewRepair(db, rep as unknown as Parameters<typeof previewRepair>[1]);
     ok(preview.willDeleteBindingKeys.some((k) => k.librarySpaceId === "ghost-lib"), "preview 含 binding");
-    applyRepair(db, preview);
-    const rep2 = checkIntegrity(db);
+    if (native) db.connection.pragma("query_only = ON");
+    eq(await applyRepair(db, preview), { deletedEdges: 0, deletedBindings: 1 }, "repair 删除失效资料绑定");
+    const rep2 = await scanIntegrity(db);
     ok(!rep2.findings.some((f) => f.kind === "broken_library_binding" && (f as unknown as { librarySpaceId: string }).librarySpaceId === "ghost-lib"), "repair 后无该 broken binding");
   });
 
@@ -67,11 +88,45 @@ async function main() {
     for (const [from, to] of [["ca","cb"],["cb","cc"],["cc","ca"]] as const) {
       conn.prepare(`INSERT INTO work_graph_edges (id, from_type, from_id, relation, to_type, to_id, metadata_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?, ?, ?)`).run(`cyc-${from}-${to}`, "task", from, "DEPENDS_ON", "task", to, "{}", Date.now(), Date.now());
     }
-    const rep = checkIntegrity(db);
-    ok(rep.findings.some((f) => f.kind === "dag_cycle" && f.relation === "DEPENDS_ON"), "检测到 DAG cycle");
+    const rep = await scanIntegrity(db);
+    eq(rep.findings, [{
+      kind: "dag_cycle",
+      relation: "DEPENDS_ON",
+      detail: "cycle DEPENDS_ON: task:ca -> task:cb -> task:cc -> task:ca",
+    }], "巡检返回循环依赖的路径");
     const preview = previewRepair(db, rep as unknown as Parameters<typeof previewRepair>[1]);
     // DAG cycle 不在 preview 自动删除中（需人工决定删哪条边）
     ok(!preview.willDeleteEdgeIds.some((id) => id.startsWith("cyc-")), "cycle 不自动进入 preview（需人工）");
+  });
+
+  console.log("== Repair：过期预览、重复提交与回滚 ==");
+  await withTmpDb(async (db) => {
+    db.createSpace(mkSpace("ws", null));
+    mkTask(db, "t1", "ws");
+    db.connection.exec(`
+      INSERT INTO work_graph_edges (id, from_type, from_id, relation, to_type, to_id, created_at, updated_at)
+        VALUES ('orphan', 'task', 't1', 'RELATES_TO', 'task', 'missing', 1, 1),
+               ('recently-restored', 'task', 't1', 'RELATES_TO', 'task', 'restored', 1, 1);
+      INSERT INTO workspace_library_links (workspace_id, library_space_id, created_at)
+        VALUES ('ws', 'broken-library', 1), ('ws', 'restored-library', 1);
+    `);
+    const preview = previewRepair(db, await scanIntegrity(db));
+    mkTask(db, "restored", "ws");
+    db.connection.exec(`
+      INSERT INTO library_spaces (id, name, kind, created_at, updated_at)
+        VALUES ('restored-library', 'Restored', 'team', 1, 1);
+      CREATE TRIGGER reject_repair BEFORE DELETE ON workspace_library_links
+        WHEN OLD.library_space_id='broken-library'
+        BEGIN SELECT RAISE(ABORT, 'repair fixture rejected'); END;
+    `);
+    await assert.rejects(applyRepair(db, preview), /repair fixture rejected/);
+    eq((await scanIntegrity(db)).summary, { orphan_edge: 1, broken_library_binding: 1 }, "绑定删除失败回滚本次孤儿边删除");
+    db.connection.exec("DROP TRIGGER reject_repair");
+    if (native) db.connection.pragma("query_only = ON");
+    eq(await applyRepair(db, preview), { deletedEdges: 1, deletedBindings: 1 }, "只删除预览中仍然失效的关联");
+    eq(await applyRepair(db, preview), { deletedEdges: 0, deletedBindings: 0 }, "重复提交不会再删除记录");
+    eq(db.connection.prepare("SELECT id FROM work_graph_edges ORDER BY id").all(), [{ id: "recently-restored" }], "保留预览后恢复的关系");
+    eq(db.connection.prepare("SELECT library_space_id FROM workspace_library_links").all(), [{ library_space_id: "restored-library" }], "保留预览后恢复的资料绑定");
   });
 
   console.log("== 4) Schema：current-only 直接建库 ==");

@@ -13,6 +13,14 @@ import type { CronJobDto, CronRunDto } from "../src/shared/agent-ipc";
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+async function waitFor(predicate: () => boolean, description: string): Promise<void> {
+  const deadline = performance.now() + 2500;
+  while (!predicate()) {
+    assert(performance.now() < deadline, description);
+    await flush();
+  }
+}
+
 export async function testAutomationLifecycle(dbOptions: { runtimeAuditExecutable?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "automation-lifecycle-"));
   const db = new AppDatabase(join(root, "app.db"), dbOptions);
@@ -66,6 +74,13 @@ export async function testAutomationLifecycle(dbOptions: { runtimeAuditExecutabl
     const scoped = (await invoke({ action: "runs" })).details as CronRunDto[];
     assert.deepEqual(scoped.map(run => run.id), ["c", "b", "a"]);
     assert.deepEqual((await cron.listRuns(2)).map(run => run.id), ["different", "c"]);
+    const overview = await cron.readOverview();
+    assert.deepEqual(overview.runs.map(run => [run.id, run.status]), [
+      ["different", "success"], ["c", "skipped"], ["b", "error"], ["a", "success"],
+    ]);
+    assert.deepEqual(overview.jobs.map(job => [job.name, job.runCount]).sort(), [
+      ["due", 0], ["history", 2], ["second own plan", 0], ["unrelated", 1],
+    ]);
     type RunPage = Awaited<ReturnType<CronService["runPageForTask"]>>;
     const first = (await invoke({ action: "runs", id: history.id, limit: 2 })).details as RunPage;
     assert.deepEqual(first.runs.map(r => r.id), ["c", "b"]);
@@ -85,6 +100,7 @@ export async function testAutomationLifecycle(dbOptions: { runtimeAuditExecutabl
     mock.timers.tick(3599999); await flush();
     cron.changeForTask("source", near.id, "cancel");
     mock.timers.tick(1); await flush();
+    await waitFor(() => starts >= 2, "both authorized plans started");
     assert.equal(starts, 2, "only the other two scheduled plans start; near-boundary cancellation stays stopped");
     assert.equal(cron.getForTask("source", near.id).activeRun, null);
     const running = cron.getForTask("source", due.id);
@@ -103,6 +119,9 @@ export async function testAutomationLifecycle(dbOptions: { runtimeAuditExecutabl
     await assert.rejects(cron.runNow(due.id), /cannot be run/);
     assert.throws(() => cron.upsert({ ...due, enabled: true }), /cannot be enabled/);
     release(); await flush();
+    await waitFor(() => cron.getForTask("source", due.id).latestRun?.status === "success", "running plan kept its completion");
+    await waitFor(() => cron.getForTask("source", history.id).latestRun?.status === "success", "the other plan also finished before advancing the clock");
+    await cron.flushWrites();
     assert.equal(cron.getForTask("source", due.id).latestRun?.id, runningId);
     assert.equal(cron.getForTask("source", due.id).latestRun?.status, "success");
     assert.equal(cron.getForTask("source", due.id).activeRun, null);
@@ -117,7 +136,8 @@ export async function testAutomationLifecycle(dbOptions: { runtimeAuditExecutabl
     } finally { reopened.close(); }
     console.log("PASS automation detail, scoped tied-timestamp paging, durable soft-cancel, and in-flight completion");
   } finally {
-    release(); await flush(); cron.stop(); await db.runtimeAuditReader?.close(); db.close(); mock.timers.reset();
+    release(); await flush(); cron.stop(); await cron.flushWrites();
+    await db.runtimeAuditReader?.close(); db.close(); mock.timers.reset();
     rmSync(root, { recursive: true, force: true });
   }
 }

@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PendingActionRegistry } from "../src/main/agent/PendingActionRegistry";
+import { ArtifactRegistry } from "../src/main/artifact/ArtifactRegistry";
+import { ArtifactRepository } from "../src/main/artifact/ArtifactRepository";
+import { ArtifactService } from "../src/main/artifact/ArtifactService";
+import { ArtifactStorage } from "../src/main/artifact/ArtifactStorage";
+import { AppDatabase } from "../src/main/db/AppDatabase";
+import { TaskExpertBindingService } from "../src/main/experts/TaskExpertBindingService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { mapRemoteSpace, mapRemoteTask } from "../src/main/remote/RemoteDtoMapper";
 import { RemoteEventBus, mapAgentPatchToRemoteEvent } from "../src/main/remote/RemoteEventBus";
 import { RemoteDeviceStore } from "../src/main/remote/RemoteDeviceStore";
@@ -25,7 +32,7 @@ const modeProfiles = {
 };
 
 const catalogService = new RemoteAccessService({
-  listSpaces: () => [], readNonTrashedTasks: async () => [],
+  readSpaces: async () => [], readNonTrashedTasks: async () => [],
   getTask: () => undefined, openDots: () => ({ id: DOTS_TASK_ID, title: "Dots", updatedAt: 1 }),
 } as any,
   { listModels: async () => [], isTaskBusy: () => false, listPendingActions: () => [],
@@ -280,6 +287,153 @@ try {
   const base = `http://127.0.0.1:${address.port}`;
   assert.equal((await fetch(`${base}/healthz`)).status, 200);
 
+  const useNative = process.argv.includes("--native");
+  const executable = useNative ? locateRuntimeAudit(process.cwd()) : undefined;
+  if (useNative) assert.ok(executable && existsSync(executable));
+
+  {
+    const db = new AppDatabase(join(root, "sidebar.db"), { runtimeAuditExecutable: executable });
+    const sidebarHost = new RemoteAccessService(
+      db,
+      { isTaskBusy: () => false, listPendingActions: () => [], listModels: async () => [],
+        getModeProfile: (id: keyof typeof modeProfiles) => modeProfiles[id] } as never,
+      { unreadCount: () => 0 } as never, { readList: async () => [] } as never,
+      { read: () => ({ permissionMode: "default" }) } as never,
+    );
+    const sidebarServer = new RemoteAccessServer({
+      port: 0, staticRoot: webRoot, devices, pairing, service: sidebarHost, commands: commands as never, events,
+    });
+    try {
+      db.openDots();
+      db.upsertTask({ id: "archived", title: "上周报告", updatedAt: 10 });
+      db.archiveTask("archived", true);
+      db.upsertTask({ id: "active", title: "本周报告", updatedAt: Date.now() + 60_000, isFavorited: true });
+      db.upsertTask({ id: "trashed", title: "删除的报告", updatedAt: 30 });
+      db.upsertTaskExecutionWorkspaceState({
+        taskId: "trashed", directoryName: "sidebar-fixture-trash", state: "trashed",
+        createdAt: 1, updatedAt: 30, trashedAt: 30, purgeAfter: 100,
+      });
+      const bindings = new TaskExpertBindingService(db, {} as never, { rootDir: join(root, "sidebar-experts") });
+      bindings.save({ taskId: "active", custom: {
+        name: "验收专家", instructions: "保留原始数据。", skillIds: [], connectorIds: [], mcpIds: [],
+      } });
+      bindings.promote("active");
+      bindings.save({ taskId: "active", custom: {
+        name: "待生效专家", instructions: "汇总本周数据。", skillIds: [], connectorIds: [], mcpIds: [],
+      } });
+
+      const summarize = (rows: Array<{ id: string; title: string; archived?: boolean; isFavorited?: boolean }>) =>
+        rows.map(task => [task.id, task.title, task.archived, task.isFavorited]);
+      const expected = [["active", "本周报告", false, true], ["archived", "上周报告", true, false]];
+      const desktop = await db.readNonTrashedTasks();
+      assert.deepEqual(summarize(desktop), expected);
+      assert.deepEqual(desktop.map(({ expertBinding }) => expertBinding
+        ? [expertBinding.active?.name, expertBinding.desired?.name, expertBinding.pending]
+        : null), [["验收专家", "待生效专家", true], null]);
+
+      const { port } = await sidebarServer.start();
+      const url = `http://127.0.0.1:${port}`;
+      const response = await fetch(url + "/v1/tasks", { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(response.status, 200);
+      const mobile = await response.json() as Parameters<typeof summarize>[0];
+      assert.deepEqual(summarize(mobile), expected);
+      assert.equal(Object.hasOwn(mobile[0], "expertBinding"), false);
+      const bootstrap = await new RemoteClient(url, token).bootstrap();
+      assert.deepEqual(summarize(bootstrap.tasks), expected);
+      assert.equal(bootstrap.dots?.title, "Dots");
+      console.log("PASS sidebar data: task visibility, expert binding and real phone HTTP responses");
+    } finally {
+      await sidebarServer.stop();
+      await db.runtimeAuditReader?.close();
+      db.close();
+    }
+  }
+
+  {
+    const db = new AppDatabase(join(root, "remote-image.db"), { runtimeAuditExecutable: executable });
+    const artifacts = new ArtifactService(new ArtifactStorage(join(root, "managed-images")),
+      new ArtifactRepository(db.connection), new ArtifactRegistry(), undefined, db.runtimeAuditReader);
+    const imageHost = new RemoteAccessService(db, {} as never, {} as never, {} as never, {} as never, undefined, () => artifacts);
+    const imageServer = new RemoteAccessServer({ port: 0, staticRoot: webRoot, devices, pairing, service: imageHost, commands: commands as never, events });
+    try {
+      db.upsertTask({ id: "photo-task", title: "图片成果", updatedAt: 1 });
+      db.upsertTask({ id: "other-task", title: "其他任务", updatedAt: 2 });
+      const work = join(root, "image-workspace");
+      mkdirSync(work);
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jW9kAAAAASUVORK5CYII=", "base64");
+      const photo = Buffer.alloc(2 * 1024 * 1024 + 11, 0x4a);
+      png.copy(photo);
+      const path = join(work, "图.jpg");
+      writeFileSync(path, photo);
+      const workspaceImage = await artifacts.register({
+        taskId: "photo-task", kind: "image", mimeType: "image/jpeg", workspaceFile: { entryFile: path, rootDir: work },
+      });
+      const fileRootImage = await artifacts.register({
+        taskId: "photo-task", kind: "image", workspaceFile: { entryFile: path, rootDir: path },
+      });
+      const encoded = photo.toString("base64");
+      const managedImage = await artifacts.register({
+        taskId: "photo-task", kind: "image", content: " \ufeff DATA:image/jpg;BASE64,"
+          + encoded.slice(0, 5) + "\r\n\u202f" + encoded.slice(5) + " ",
+      });
+      const invalidImage = await artifacts.register({
+        taskId: "photo-task", kind: "image", content: "data:image/png;base64,AA_A",
+      });
+      const largePath = join(work, "大图.png");
+      writeFileSync(largePath, png);
+      truncateSync(largePath, 16 * 1024 * 1024 + 1);
+      const largeImage = await artifacts.register({
+        taskId: "photo-task", kind: "image", workspaceFile: { entryFile: largePath, rootDir: work },
+      });
+      const outside = join(root, "outside-workspace");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "outside.png"), png);
+      symlinkSync(outside, join(work, "outside"), "junction");
+      const linkedImage = await artifacts.register({
+        taskId: "photo-task", kind: "image", workspaceFile: { entryFile: join(work, "outside", "outside.png"), rootDir: work },
+      });
+
+      const { port } = await imageServer.start();
+      const imageUrl = (artifactId: string, taskId = "photo-task", version = 1) =>
+        `http://127.0.0.1:${port}/v1/tasks/${taskId}/artifacts/${artifactId}/image?v=${version}`;
+      const headers = { authorization: `Bearer ${token}` };
+      const phone = new RemoteClient(`http://127.0.0.1:${port}`, token);
+      for (const item of [workspaceImage, managedImage, fileRootImage]) {
+        const blob = await phone.image("photo-task", item.id, 1);
+        assert.equal(blob.type, "image/png");
+        assert.deepEqual(Buffer.from(await blob.arrayBuffer()), photo);
+        const head = await fetch(imageUrl(item.id), { method: "HEAD", headers });
+        assert.equal(head.status, 200);
+        assert.equal(head.headers.get("content-length"), "2097163");
+        assert.equal(head.headers.get("cache-control"), "no-store");
+        assert.equal((await head.arrayBuffer()).byteLength, 0);
+      }
+      for (const [url, status] of [
+        [imageUrl(workspaceImage.id, "other-task"), 404],
+        [imageUrl(workspaceImage.id, "photo-task", 2), 409],
+        [imageUrl(largeImage.id), 413],
+        [imageUrl(invalidImage.id), 415],
+        [imageUrl(linkedImage.id), 404],
+      ] as const) {
+        const response = await fetch(url, { headers });
+        assert.equal(response.status, status);
+        assert.equal((await response.json()).error.code, "image_unavailable");
+      }
+      const cancelled = await fetch(imageUrl(workspaceImage.id), { headers });
+      const body = cancelled.body!.getReader();
+      assert.deepEqual(Buffer.from((await body.read()).value!).subarray(0, png.length), png);
+      await body.cancel();
+      const retried = await phone.image("photo-task", workspaceImage.id, 1);
+      assert.deepEqual(Buffer.from(await retried.arrayBuffer()), photo);
+      console.log(`PASS phone image HTTP: exact workspace and managed bytes, HEAD, task scope, version, size and type (${useNative ? "Rust" : "Node"})`);
+    } finally {
+      await imageServer.stop();
+      await artifacts.flushWrites();
+      await db.runtimeAuditReader?.close();
+      db.close();
+    }
+  }
+
   // P0-1：Origin 白名单——未知浏览器来源 403，不回显 CORS；可信来源放行并回显
   assert.equal((await httpJson(address.port, "GET", "/v1/bootstrap", { origin: `http://evil.example:${address.port}` })).status, 403);
   assert.equal((await httpJson(address.port, "POST", "/v1/pair/exchange", { origin: `http://evil.example:${address.port}` })).status, 403, "未配对写接口同样受 Origin 管控");
@@ -390,9 +544,9 @@ try {
         savedTasks.set(DOTS_TASK_ID, dots);
         return dots;
       },
-      listSpaces: () => [],
+      readSpaces: async () => [],
       readNonTrashedTasks: async () => Array.from(savedTasks.values()).filter(task => task.id !== DOTS_TASK_ID),
-      upsertTask: (task: Record<string, unknown>) => { upsertCalls.push(task); savedTasks.set(String(task.id), task); },
+      writeTaskRecord: async (task: Record<string, unknown>) => { upsertCalls.push(task); savedTasks.set(String(task.id), task); },
       isTaskEffectiveArchived: () => false,
       getSpace: () => undefined,
       deleteTask: (id: string) => { savedTasks.delete(id); },

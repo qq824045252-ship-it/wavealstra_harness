@@ -11,12 +11,13 @@
  *  7. prompt 段读写/只读变体与空记忆变体。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { MemoryService } from "../src/main/memory/MemoryService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 import { ProjectRepository } from "../src/main/project/ProjectRepository";
 import { ProjectService } from "../src/main/project/ProjectService";
 import { ProjectContextResolver } from "../src/main/project/ProjectContextResolver";
@@ -51,9 +52,12 @@ function assertOk(cond: unknown, label: string): void {
 
 /* ---------------- 环境 ---------------- */
 const root = mkdtempSync(join(tmpdir(), "mybuddy-project-memory-agent-"));
-const db = new AppDatabase(join(root, "app.db"));
+const nativeFlag = process.argv.indexOf("--native");
+const executable = nativeFlag < 0 ? undefined : locateRuntimeAudit(process.argv[nativeFlag + 1] ?? process.cwd());
+if (nativeFlag >= 0) assert(executable && existsSync(executable), "Rust worker executable is required");
+const db = new AppDatabase(join(root, "app.db"), { runtimeAuditExecutable: executable });
 const memory = new MemoryService(db, { semantic: false });
-const repository = new ProjectRepository(db.connection);
+const repository = new ProjectRepository(db.connection, db.runtimeAuditReader);
 const service = new ProjectService(repository, memory);
 const resolver = new ProjectContextResolver(db, repository, memory);
 
@@ -197,6 +201,29 @@ async function mainTools(): Promise<void> {
   assertOk((resolved.details as { total: number }).total === 1, "list: status 过滤");
   const query = await list.execute("tc", { query: "乙腈" } as never);
   assertOk((query.details as { total: number }).total === 1, "list: query 搜内容");
+  const search = await byName(tools, "project_memory_search").execute("tc", { query: "客户介质" } as never);
+  assertOk(!search.isError && search.content[0].text.includes("耐腐蚀要求高"), "search: 任务可检索当前项目正文");
+}
+
+if (db.runtimeAuditReader) {
+  const reader = db.runtimeAuditReader;
+  const scoring = reader.memoryLexicalScores.bind(reader);
+  const { tools } = makeBridge({ resolveProjectId: () => db.getTask("task-a")?.projectId ?? null });
+  let scored = false;
+  reader.memoryLexicalScores = async input => {
+    const result = await scoring(input);
+    assert(result?.length, "Rust must perform similarity scoring");
+    scored = true;
+    db.upsertTask({ id: "task-a", title: "Task A", updatedAt: 2, projectId: projectQ.id });
+    return result;
+  };
+  try {
+    const search = await byName(tools, "project_memory_search").execute("tc", { query: "客户介质" } as never);
+    assertOk(scored && search.isError && !search.content[0].text.includes("乙腈"), "search: Rust 评分期间任务改绑后拒绝返回旧项目内容");
+  } finally {
+    reader.memoryLexicalScores = scoring;
+    db.upsertTask({ id: "task-a", title: "Task A", updatedAt: 3, projectId: projectP.id, welcomeMode: "coding" });
+  }
 }
 
 /* 4b. create：来源自动注入 agent+taskId */
@@ -231,7 +258,7 @@ async function mainTools(): Promise<void> {
 
 /* 4d. 跨项目隔离（验收场景 4） */
 {
-  const { tools } = makeBridge({ resolveProjectId: () => projectQ.id });
+  const { tools } = makeBridge({ taskId: "task-q", resolveProjectId: () => projectQ.id });
   const get = await byName(tools, "project_memory_get").execute("tc", { id: qId } as never);
   assertOk(get.isError === true && get.content[0].text.includes("不存在"), "scope: Q 任务不能 get P 的条目且不泄露存在性");
   const update = await byName(tools, "project_memory_update").execute("tc", { id: qId, status: "active" } as never);
@@ -351,9 +378,11 @@ async function mainTools(): Promise<void> {
 }
 }
 
-void mainTools().then(() => {
+void mainTools().finally(async () => {
+  await db.runtimeAuditReader?.close();
   db.close();
   rmSync(root, { recursive: true, force: true });
+}).then(() => {
   if (failed > 0) {
     console.error(`project-memory-agent-test: ${failed} FAILED, ${passed} passed`);
     process.exit(1);

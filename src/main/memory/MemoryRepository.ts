@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { AppDatabase } from "../db/AppDatabase";
-import type { MemorySearchScope } from "./MemorySearchScope";
+import { memoryListScopeWhere, type MemorySearchScope } from "./MemorySearchScope";
 import { buildMemoryFtsQuery, normalizeSearchText } from "./MemorySearchText";
 import { MemoryQueryCandidates } from "./MemoryQueryCandidates";
+import { memoryListQuery, memoryMetadata, memoryRecordFromWire } from "./MemoryRecordsData";
 import type {
   MemoryCandidateDto,
   MemoryEvidenceDto,
+  MemoryKernelStats,
   MemoryListRequest,
   MemoryRecordDto,
   MemoryRelationDto,
@@ -36,15 +38,6 @@ interface MemoryRow {
   last_recalled_at: number | null;
   recall_count: number;
   metadata_json: string;
-}
-
-function parseObject(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
 }
 
 const normalizedConnections = new WeakSet<object>();
@@ -77,11 +70,10 @@ export class MemoryRepository {
     return row ? this.hydrate(row) : undefined;
   }
 
-  listAll(limit = 500): MemoryRecordDto[] {
-    const rows = this.conn
-      .prepare("SELECT * FROM memory_records ORDER BY updated_at DESC, id DESC LIMIT ?")
-      .all(Math.max(1, Math.min(5000, limit))) as MemoryRow[];
-    return rows.map((row) => this.hydrate(row));
+  async readDetail(id: string): Promise<MemoryRecordDto | undefined> {
+    const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "detail", id });
+    if (data?.kind !== "detail") return this.get(id);
+    return data.record ? memoryRecordFromWire(data.record) : undefined;
   }
 
   listByEvidence(evidenceKind: MemoryEvidenceDto["evidenceKind"], refId: string, limit = 200): MemoryRecordDto[] {
@@ -96,25 +88,29 @@ export class MemoryRepository {
     return rows.map((row) => this.hydrate(row));
   }
 
+  async readForTurn(turnId: string): Promise<MemoryRecordDto[]> {
+    const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "forTurn", turnId });
+    return data?.kind === "forTurn"
+      ? data.records.map(memoryRecordFromWire)
+      : this.listByEvidence("conversation", turnId, 500);
+  }
+
   /** Cross-scope browse query for the settings explorer; filters apply to the whole store, not a scope chain. */
   listFiltered(input: MemoryListRequest = {}): MemoryRecordDto[] {
+    const { recordKind, status, scopeType, scopeId, pattern, limit, offset } = memoryListQuery(input);
     const where: string[] = [];
     const args: unknown[] = [];
-    if (input.kind) { where.push("m.kind = ?"); args.push(input.kind); }
-    if (input.status) { where.push("m.status = ?"); args.push(input.status); }
-    if (input.scopeType) {
-      where.push(`EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id = m.id AND s.scope_type = ?${input.scopeId !== undefined ? " AND s.scope_id = ?" : ""})`);
-      args.push(input.scopeType);
-      if (input.scopeId !== undefined) args.push(input.scopeId);
+    if (recordKind) { where.push("m.kind = ?"); args.push(recordKind); }
+    if (status) { where.push("m.status = ?"); args.push(status); }
+    if (scopeType) {
+      where.push(`EXISTS (SELECT 1 FROM memory_scopes s WHERE s.memory_id = m.id AND s.scope_type = ?${scopeId !== undefined ? " AND s.scope_id = ?" : ""})`);
+      args.push(scopeType);
+      if (scopeId !== undefined) args.push(scopeId);
     }
-    const q = input.query?.trim();
-    if (q) {
+    if (pattern) {
       where.push("(m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\')");
-      const escaped = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
-      args.push(escaped, escaped);
+      args.push(pattern, pattern);
     }
-    const limit = Math.max(1, Math.min(5000, input.limit ?? 500));
-    const offset = Math.max(0, input.offset ?? 0);
     const rows = this.conn.prepare(
       `SELECT m.* FROM memory_records m
        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -122,6 +118,15 @@ export class MemoryRepository {
        LIMIT ? OFFSET ?`,
     ).all(...args, limit, offset) as MemoryRow[];
     return rows.map((row) => this.hydrate(row));
+  }
+
+  async readFiltered(input: MemoryListRequest): Promise<MemoryRecordDto[]> {
+    const query = memoryListQuery(input);
+    if (Number.isSafeInteger(query.limit) && Number.isSafeInteger(query.offset)) {
+      const data = await this.db.runtimeAuditReader?.memoryRecordsData(query);
+      if (data?.kind === "list") return data.records.map(memoryRecordFromWire);
+    }
+    return this.listFiltered(input);
   }
 
   /** Complete exact-scope enumeration for reconciliation; never a top-N sample. */
@@ -140,25 +145,9 @@ export class MemoryRepository {
     limit?: number;
   }): Array<{ memory: MemoryRecordDto; scopeType: MemoryScopeType; scopeId?: string; binding: "owned" | "promoted" }> {
     if (input.scopes.length === 0) return [];
-    const scopeClauses: string[] = [];
-    const args: unknown[] = [];
-    for (const scope of input.scopes) {
-      if (scope.scopeType === "global") {
-        scopeClauses.push("(s.scope_type = 'global' AND s.scope_id IS NULL)");
-      } else {
-        scopeClauses.push("(s.scope_type = ? AND s.scope_id = ?)");
-        args.push(scope.scopeType, scope.scopeId ?? "");
-      }
-    }
-    const where = [`(${scopeClauses.join(" OR ")})`];
-    if (input.statuses?.length) {
-      where.push(`m.status IN (${input.statuses.map(() => "?").join(",")})`);
-      args.push(...input.statuses);
-    }
-    if (input.kinds?.length) {
-      where.push(`m.kind IN (${input.kinds.map(() => "?").join(",")})`);
-      args.push(...input.kinds);
-    }
+    const scope = memoryListScopeWhere(input);
+    const args: Array<string | number> = scope.args;
+    const where = [scope.sql];
     const q = input.query?.trim();
     if (q) {
       where.push("(m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\')");
@@ -336,11 +325,21 @@ export class MemoryRepository {
   }
 
   addScope(scope: MemoryScopeDto): void {
-    this.conn.prepare(
+    const insert = () => this.conn.prepare(
       `INSERT OR IGNORE INTO memory_scopes
        (id, memory_id, scope_type, scope_id, binding, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(randomUUID(), scope.memoryId, scope.scopeType, scope.scopeId ?? null, scope.binding, scope.createdAt);
+    if (scope.scopeType !== "project") {
+      insert();
+      return;
+    }
+    this.conn.transaction(() => {
+      const project = this.conn.prepare("SELECT archived FROM projects WHERE id=?").get(scope.scopeId) as { archived: number } | undefined;
+      if (!project) throw new Error(`项目不存在：${scope.scopeId}`);
+      if (project.archived) throw new Error("项目已归档（只读），不能写入项目记忆");
+      insert();
+    }).immediate();
   }
 
   removeScope(memoryId: string, scopeType: MemoryScopeType, scopeId?: string): void {
@@ -396,6 +395,15 @@ export class MemoryRepository {
     }));
   }
 
+  async readRevisions(memoryId: string): Promise<MemoryRevisionDto[]> {
+    const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "history", id: memoryId });
+    return data?.kind === "history"
+      ? data.revisions.map(({ validFrom, validUntil, changeReason, ...revision }) => ({
+          ...revision, validFrom: validFrom ?? undefined, validUntil: validUntil ?? undefined, changeReason: changeReason ?? undefined,
+        }))
+      : this.listRevisions(memoryId);
+  }
+
   hardDelete(id: string): void {
     this.conn.transaction(() => {
       this.conn.prepare("DELETE FROM memory_relations WHERE from_memory_id=? OR to_memory_id=?").run(id, id);
@@ -440,6 +448,11 @@ export class MemoryRepository {
     ).run(status, Date.now(), resolvedMemoryId ?? null, id);
   }
 
+  resolvePendingCandidate(id: string, status: "rejected" | "needs_review"): void {
+    this.conn.prepare(`UPDATE memory_candidates SET status=?, resolved_at=?, resolved_memory_id=NULL
+      WHERE id=? AND status='pending'`).run(status, Date.now(), id);
+  }
+
   getCandidate(id: string): MemoryCandidateDto | undefined {
     const row = this.conn.prepare("SELECT * FROM memory_candidates WHERE id=?").get(id) as Record<string, unknown> | undefined;
     return row ? this.mapCandidate(row) : undefined;
@@ -458,6 +471,14 @@ export class MemoryRepository {
       ? this.conn.prepare("SELECT * FROM memory_candidates WHERE status=? ORDER BY created_at DESC LIMIT ?").all(status, limit)
       : this.conn.prepare("SELECT * FROM memory_candidates ORDER BY created_at DESC LIMIT ?").all(limit)) as Array<Record<string, unknown>>;
     return rows.map((row) => this.mapCandidate(row));
+  }
+
+  async readCandidates(status?: MemoryCandidateDto["status"], limit = 200): Promise<MemoryCandidateDto[]> {
+    if (!this.conn.inTransaction && Number.isSafeInteger(limit)) {
+      const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "candidateList", status, limit });
+      if (data?.kind === "candidateList") return data.candidates.map(row => this.mapCandidate(row));
+    }
+    return this.listCandidates(status, limit);
   }
 
   private mapCandidate(row: Record<string, unknown>): MemoryCandidateDto {
@@ -481,7 +502,12 @@ export class MemoryRepository {
     };
   }
 
-  stats(): { total: number; active: number; recalled: number; byKind: Record<string, number>; byScope: Record<string, number>; candidates: Record<string, number>; l0Turns: number; pendingTurns: number; failedTurns: number; scenarios: number; coreProfiles: number; skillCandidates: number; readySkillCandidates: number; skillExposures: number; skillInvocations: number; skillNegativeFeedback: number; skillRevisionCandidates: number; readySkillRevisionCandidates: number } {
+  async readStats(): Promise<MemoryKernelStats> {
+    const data = await this.db.runtimeAuditReader?.memoryRecordsData({ kind: "stats" });
+    return data?.kind === "stats" ? data.stats : this.stats();
+  }
+
+  stats(): MemoryKernelStats {
     const total = Number((this.conn.prepare("SELECT COUNT(1) n FROM memory_records").get() as { n: number }).n);
     const active = Number((this.conn.prepare("SELECT COUNT(1) n FROM memory_records WHERE status='active'").get() as { n: number }).n);
     const recalled = Number((this.conn.prepare("SELECT COALESCE(SUM(recall_count),0) n FROM memory_records").get() as { n: number }).n);
@@ -547,7 +573,7 @@ export class MemoryRepository {
       updatedAt: row.updated_at,
       lastRecalledAt: row.last_recalled_at ?? undefined,
       recallCount: row.recall_count,
-      metadata: parseObject(row.metadata_json),
+      metadata: memoryMetadata(row.metadata_json),
       scopes,
       evidence,
       relations,

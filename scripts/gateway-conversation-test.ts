@@ -536,7 +536,7 @@ try {
   assert.throws(() => db.moveTaskInWorkspaceTree({ taskId: alice, targetSpaceId: null }));
   assert.throws(() => db.upsertTask({ id: alice, title: "detach", updatedAt: Date.now(), spaceId: null }));
   assert.throws(() => db.upsertTask({ id: alice, title: "wrong channel", updatedAt: Date.now(), spaceId: "sp-gw-telegram-default" }));
-  assert.equal(bridge.gateway.listMessages({ channelId }).filter(event =>
+  assert.equal((await bridge.gateway.listMessages({ channelId })).filter(event =>
     event.direction === "system" && event.text.includes("发送者")).length, 2);
 
   await bridge.gateway.stop(); bridge = undefined;

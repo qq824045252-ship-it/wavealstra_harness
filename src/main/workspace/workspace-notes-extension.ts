@@ -14,9 +14,9 @@ export function createWorkspaceNotesExtension(bridge: {
     if (!id) throw new Error("当前任务未绑定空间，无法访问空间便签");
     return id;
   };
-  const result = (run: () => unknown): { content: { type: "text"; text: string }[]; details: unknown; isError?: boolean } => {
+  const result = async (run: () => Promise<unknown>): Promise<{ content: { type: "text"; text: string }[]; details: unknown; isError?: boolean }> => {
     try {
-      const note = run();
+      const note = await run();
       return { content: [{ type: "text" as const, text: JSON.stringify(note) }], details: { note } };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

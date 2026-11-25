@@ -112,7 +112,7 @@ try {
   await test("resumed task declares newly registered product tools and executes gadget_list without losing native selection", async () => {
     let lists = 0;
     const extension = createGadgetAgentExtension({ taskId: "resumed-gadgets", getPermissionMode: () => "auto",
-      service: { list: () => { lists++; return []; } } } as any);
+      service: { readList: async () => { lists++; return []; } } } as any);
     const manager = SessionManager.create(cwd, join(root, "gadget-sessions"));
     manager.appendMessage({ role: "system", content: "Previously saved task tool selection", timestamp: Date.now(),
       toolsAdded: [{ name: "gadget_create", description: "Create a Gadget", parameters: { type: "object", properties: {} } }]

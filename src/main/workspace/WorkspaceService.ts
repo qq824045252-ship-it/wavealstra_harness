@@ -1,4 +1,4 @@
-import { cp, open, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { cp, open, lstat, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import JSZip from "jszip";
 import { cadCraftExtension } from "../../shared/cadcraft";
@@ -9,6 +9,7 @@ import type {
   WorkspaceFilePreviewDto,
   WorkspaceFileThumbnailDto,
 } from "../../shared/agent-ipc";
+import type { RuntimeAuditReader, RuntimeWorkspaceScanNode } from "../platform/runtime-audit";
 
 /** 任务目录内部元数据/临时文件：不进文件树、不进快照（§5.4/§10.1） */
 function isInternalTaskFile(name: string): boolean {
@@ -274,6 +275,7 @@ export interface PreviewWorkspaceFileOptions {
   thumbnail?: boolean;
   /** 内联链路：不生成原图 base64，content 由 Artifact Domain 换成协议 URL */
   inlineImage?: boolean;
+  workspace?: { root: string; reader: RuntimeAuditReader };
 }
 
 interface ThumbnailBytes {
@@ -432,14 +434,36 @@ function thumbnailBytesFor(
 export async function workspaceImageVariant(
   filePath: string,
   variant: "thumb" | "full",
-): Promise<{ data: Buffer; mimeType: string } | null> {
+  root: string,
+  source?: { body: ReadableStream<Uint8Array> | null; bytes: number; modifiedMs: number | null },
+): Promise<{ data: Buffer | ReadableStream<Uint8Array> | null; mimeType: string } | null> {
   try {
-    const buffer = await readFile(filePath);
     const ext = extname(filePath).toLowerCase();
     const mimeType = imageMime(ext);
-    if (variant === "full") return { data: buffer, mimeType };
-    const st = await stat(filePath);
-    const thumb = await thumbnailBytesFor(buffer, ext, thumbnailCacheKey(filePath, st));
+    const resize = variant === "thumb" && THUMBNAILABLE_IMAGE_EXTENSIONS.has(ext);
+    if (source && (!source.body || !resize)) return { data: source.body, mimeType };
+
+    let buffer: Buffer;
+    let cacheKey: string | undefined;
+    if (source?.body) {
+      if (source.modifiedMs !== null) {
+        cacheKey = thumbnailCacheKey(filePath, { mtimeMs: source.modifiedMs, size: source.bytes });
+        const cached = thumbnailCache.get(cacheKey);
+        if (cached) {
+          touchThumbnailCache(cacheKey, cached);
+          await source.body.cancel();
+          return { data: cached.data, mimeType: cached.mimeType };
+        }
+      }
+      buffer = Buffer.from(await new Response(source.body as BodyInit).arrayBuffer());
+    } else {
+      const [realRoot, realFile] = await Promise.all([realpath(root), realpath(filePath)]);
+      assertInsideRoot(realRoot, realFile);
+      buffer = await readFile(realFile);
+      if (resize) cacheKey = thumbnailCacheKey(filePath, await stat(realFile));
+    }
+    if (!cacheKey) return { data: buffer, mimeType };
+    const thumb = await thumbnailBytesFor(buffer, ext, cacheKey);
     return thumb ? { data: thumb.data, mimeType: thumb.mimeType } : { data: buffer, mimeType };
   } catch {
     return null;
@@ -453,6 +477,23 @@ export async function previewWorkspaceFile(
   const name = basename(filePath);
   const ext = extname(name).toLowerCase();
   const kind = artifactKindForFile(filePath);
+  const metadata = { path: filePath, name, kind, language: ext.slice(1) || undefined };
+  if (kind === "image" && options?.inlineImage && options.workspace) {
+    const root = resolve(options.workspace.root);
+    const header = await options.workspace.reader.workspaceFilePreview(root, relative(root, filePath), "imageHeader");
+    if (header?.status === "failed") throw new Error(header.message);
+    if (header?.status === "missing") throw new Error("文件不存在");
+    if (header?.status === "imageHeader") {
+      const size = imageIntrinsicSize(Buffer.from(header.base64, "base64"));
+      if (size) {
+        const mimeType = imageMime(ext);
+        return {
+          ...metadata, ...size, mimeType, content: "", bytes: header.bytes,
+          ...(options.thumbnail ? { thumbnail: { ...size, mimeType, bytes: header.bytes } } : {}),
+        };
+      }
+    }
+  }
   const buffer = await readFile(filePath);
   let content: string;
   let thumbnail: WorkspaceFileThumbnailDto | undefined;
@@ -501,11 +542,8 @@ export async function previewWorkspaceFile(
     content = `data:application/octet-stream;base64,${buffer.toString("base64")}`;
   } else content = buffer.toString("utf-8");
   return {
-    path: filePath,
-    name,
-    kind,
+    ...metadata,
     content,
-    language: ext.slice(1) || undefined,
     bytes: buffer.length,
     ...(kind === "image" ? { mimeType: imageMime(ext) } : {}),
     ...(size ? { width: size.width, height: size.height } : {}),
@@ -708,13 +746,26 @@ export async function previewWorkspaceFileForEditor(filePath: string): Promise<W
   };
 }
 
-export async function readWorkspaceFile(root: string, relativePath: string, textPreview = false): Promise<WorkspaceFilePreviewDto> {
+export async function readWorkspaceFile(
+  root: string, relativePath: string, textPreview = false, reader?: RuntimeAuditReader,
+): Promise<WorkspaceFilePreviewDto> {
   const target = resolve(root, relativePath);
   assertInsideRoot(root, target);
   if (!textPreview) return previewWorkspaceFileForEditor(target);
   // Result cards only need bounded plain text, never full binary hydration.
+  const native = await reader?.workspaceFilePreview(resolve(root), relative(resolve(root), target), "text");
+  if (native?.status === "failed") throw new Error(native.message);
+  if (native?.status === "missing") throw new Error("文件不存在");
+  if (native?.status === "text") {
+    return {
+      path: target, name: basename(target), kind: "code",
+      content: native.content, bytes: native.bytes, truncated: native.truncated,
+    };
+  }
   if (!(await lstat(target)).isFile()) throw new Error("不是普通文件");
-  const handle = await open(target, "r");
+  const [realRoot, realTarget] = await Promise.all([realpath(root), realpath(target)]);
+  assertInsideRoot(realRoot, realTarget);
+  const handle = await open(realTarget, "r");
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new Error("不是普通文件");
@@ -741,8 +792,33 @@ export async function readWorkspaceFile(root: string, relativePath: string, text
 // for every sibling comparison in a large workspace tree.
 const compareWorkspaceFileNames = new Intl.Collator("zh-CN", { numeric: true }).compare;
 
-export async function listWorkspaceFiles(root: string, maxDepth = 12): Promise<WorkspaceFileNodeDto[]> {
+function compareWorkspaceNodes(a: WorkspaceFileNodeDto, b: WorkspaceFileNodeDto): number {
+  return a.kind === b.kind ? compareWorkspaceFileNames(a.name, b.name) : a.kind === "folder" ? -1 : 1;
+}
+
+function workspaceNodes(nodes: RuntimeWorkspaceScanNode[], prefix = ""): WorkspaceFileNodeDto[] {
+  return nodes.map((node): WorkspaceFileNodeDto => {
+    const path = prefix ? `${prefix}/${node.name}` : node.name;
+    return node.kind === "folder"
+      ? { name: node.name, path, kind: "folder", children: workspaceNodes(node.children, path) }
+      : { ...node, path };
+  }).sort(compareWorkspaceNodes);
+}
+
+function scanWorkspace(reader: RuntimeAuditReader | undefined, root: string, kind: "tree" | "snapshot", maxDepth: number) {
+  if (!reader || !Number.isInteger(maxDepth) || maxDepth < 0 || maxDepth > 12) return undefined;
+  return reader.workspaceScan({
+    root, kind, maxDepth,
+    fileLimit: kind === "snapshot" ? WORKSPACE_SNAPSHOT_FILE_LIMIT : 5000,
+    excludedDirectories: kind === "snapshot" ? [...IGNORED_DIRECTORIES, ...GENERATED_DIRECTORIES] : [...IGNORED_DIRECTORIES],
+    internalName: MANIFEST_FILENAME, internalSuffix: MANIFEST_TMP_SUFFIX,
+  });
+}
+
+export async function listWorkspaceFiles(root: string, maxDepth = 12, reader?: RuntimeAuditReader): Promise<WorkspaceFileNodeDto[]> {
   const resolvedRoot = resolve(root);
+  const native = await scanWorkspace(reader, resolvedRoot, "tree", maxDepth);
+  if (native?.kind === "tree") return workspaceNodes(native.nodes);
   const rootStat = await stat(resolvedRoot);
   if (!rootStat.isDirectory()) throw new Error("工作区路径不是文件夹");
   let seen = 0;
@@ -765,7 +841,7 @@ export async function listWorkspaceFiles(root: string, maxDepth = 12): Promise<W
         nodes.push({ name: entry.name, path: relativePath, kind: "file" });
       }
     }
-    return nodes.sort((a, b) => a.kind === b.kind ? compareWorkspaceFileNames(a.name, b.name) : a.kind === "folder" ? -1 : 1);
+    return nodes.sort(compareWorkspaceNodes);
   };
   return walk(resolvedRoot);
 }
@@ -776,7 +852,12 @@ export async function listWorkspaceFiles(root: string, maxDepth = 12): Promise<W
  * 没有 unfiltered 参数：baseline（会话打开/回合开始）与 after（回合结束）必须走完全相同的
  * 过滤规则，否则两份快照的路径集合不重叠，既有项目文件会被整体误判为「本轮新增产物」。
  */
-export async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
+export async function snapshotWorkspace(root: string, reader?: RuntimeAuditReader): Promise<Map<string, string>> {
+  const resolvedRoot = resolve(root);
+  const native = await scanWorkspace(reader, resolvedRoot, "snapshot", 12);
+  if (native?.kind === "snapshot") {
+    return new Map(native.files.map(([path, size, mtimeMs]) => [resolve(resolvedRoot, path), `${size}:${mtimeMs}`]));
+  }
   const snapshot = new Map<string, string>();
   const files: string[] = [];
   const visit = async (dir: string, depth = 0): Promise<void> => {
@@ -796,7 +877,7 @@ export async function snapshotWorkspace(root: string): Promise<Map<string, strin
       else if (entry.isFile()) files.push(fullPath);
     }
   };
-  await visit(resolve(root));
+  await visit(resolvedRoot);
 
   // 元数据读取是 workspace snapshot 的主要 I/O 成本。目录遍历保持串行、可预测；
   // 文件 stat 采用有限并发，避免 5000 个串行 await，也避免 Promise.all(5000) 瞬时打满文件系统。

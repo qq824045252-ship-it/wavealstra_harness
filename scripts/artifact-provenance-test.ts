@@ -383,7 +383,7 @@ async function main(): Promise<void> {
         artifactId: d.id,
         relation: "referenced",
       });
-      assert.ok(h.service.remove(d.id));
+      assert.ok(await h.service.remove(d.id));
       assert.equal(h.service.listMessageRefs("t1").length, 0);
       assert.equal(h.service.listFileDependencies(d.id).length, 0);
     } finally {

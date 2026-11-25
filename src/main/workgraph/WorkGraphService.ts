@@ -29,6 +29,25 @@ import { WorkGraphRepository } from "./WorkGraphRepository";
 const NODE_TYPES = new Set<string>(WORK_GRAPH_NODE_TYPES as unknown as string[]);
 const RELATIONS = new Set<string>(WORK_GRAPH_RELATIONS as unknown as string[]);
 
+type WorkGraphDirection = "outgoing" | "incoming" | "related";
+
+export interface RuntimeWorkGraphQuery {
+  direction: WorkGraphDirection;
+  type: WorkGraphNodeType;
+  id: string;
+  relation?: WorkGraphRelation;
+}
+
+export type RuntimeWorkGraphMutation =
+  | { kind: "add"; edge: Omit<WorkGraphAddEdgeRequest, "metadata"> & { id: string; at: number; metadataJson: string } }
+  | { kind: "remove"; id: string };
+
+export type RuntimeWorkGraphReply =
+  | { status: "added"; edge: WorkGraphEdgeDto; created: boolean }
+  | { status: "removed"; removed: boolean }
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
+
 export class WorkGraphService {
   private readonly repo: WorkGraphRepository;
 
@@ -38,6 +57,25 @@ export class WorkGraphService {
 
   /** Add typed edge with full validation; returns existing edge on duplicate (idempotent). */
   addEdge(req: WorkGraphAddEdgeRequest): { edge: WorkGraphEdgeDto; created: boolean } {
+    return this.db.connection.transaction(() => this.insertValidatedEdge(req)).immediate();
+  }
+
+  async writeEdge(req: WorkGraphAddEdgeRequest): Promise<{ edge: WorkGraphEdgeDto; created: boolean }> {
+    const runtime = this.db.runtimeAuditReader;
+    if (!runtime) return this.addEdge(req);
+    const edge = this.validateEdge(req);
+    let metadataJson: string | undefined;
+    try { metadataJson = JSON.stringify(this.normalizeMetadata(req.metadata)); }
+    catch { return this.addEdge(req); }
+    if (metadataJson === undefined) return this.addEdge(req);
+    const reply = await runtime.writeWorkGraph({ kind: "add", edge: { ...edge, metadataJson, id: randomUUID(), at: Date.now() } });
+    if (reply?.status === "added") return { edge: reply.edge, created: reply.created };
+    if (reply?.status === "needsHost") return this.addEdge(req);
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    throw new Error("关联写入未确认，请刷新后再试");
+  }
+
+  private validateEdge(req: WorkGraphAddEdgeRequest): Omit<WorkGraphAddEdgeRequest, "metadata"> {
     const fromType = this.requireNodeType(req.fromType);
     const toType = this.requireNodeType(req.toType);
     const relation = this.requireRelation(req.relation);
@@ -46,9 +84,12 @@ export class WorkGraphService {
     if (fromType === toType && fromId === toId && relation === "DEPENDS_ON") {
       throw new Error("DEPENDS_ON 不允许自环");
     }
-    // Phase 7 shape validation
     this.assertRelationShape(fromType, toType, relation);
+    return { fromType, fromId, relation, toType, toId };
+  }
 
+  private insertValidatedEdge(req: WorkGraphAddEdgeRequest): { edge: WorkGraphEdgeDto; created: boolean } {
+    const { fromType, fromId, relation, toType, toId } = this.validateEdge(req);
     this.assertEntityExists(fromType, fromId);
     this.assertEntityExists(toType, toId);
 
@@ -87,9 +128,37 @@ export class WorkGraphService {
   }
 
   removeEdge(id: string): boolean {
-    const trimmed = id?.trim();
-    if (!trimmed) throw new Error("id 不能为空");
-    return this.repo.deleteById(trimmed) > 0;
+    return this.repo.deleteById(this.requireNonEmpty(id, "id")) > 0;
+  }
+
+  async deleteEdge(id: string): Promise<boolean> {
+    const runtime = this.db.runtimeAuditReader;
+    if (!runtime) return this.removeEdge(id);
+    const reply = await runtime.writeWorkGraph({ kind: "remove", id: this.requireNonEmpty(id, "id") });
+    if (reply?.status === "removed") return reply.removed;
+    if (reply?.status === "needsHost") return this.removeEdge(id);
+    if (reply?.status === "rejected") throw new Error(reply.message);
+    throw new Error("关联删除未确认，请刷新后再试");
+  }
+
+  async readEdges(
+    direction: WorkGraphDirection,
+    type: WorkGraphNodeType,
+    id: string,
+    relation?: WorkGraphRelation,
+  ): Promise<WorkGraphEdgeDto[]> {
+    this.requireNodeType(type);
+    const nid = this.requireNonEmpty(id, "id");
+    if (relation) this.requireRelation(relation);
+    const edges = await this.db.runtimeAuditReader?.readWorkGraph({ direction, type, id: nid, relation: relation || undefined });
+    if (edges) {
+      return direction === "related" ? edges.sort(compareRelatedEdges) : edges;
+    }
+    switch (direction) {
+      case "outgoing": return this.repo.listOutgoing(type, nid, relation);
+      case "incoming": return this.repo.listIncoming(type, nid, relation);
+      case "related": return this.listRelated(type, nid, relation);
+    }
   }
 
   listOutgoing(
@@ -127,7 +196,7 @@ export class WorkGraphService {
     // Dedup by id (should not overlap except self-loop appearing in both)
     const map = new Map<string, WorkGraphEdgeDto>();
     for (const e of [...out, ...inn]) map.set(e.id, e);
-    return [...map.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    return [...map.values()].sort(compareRelatedEdges);
   }
 
   /** Explicit cleanup when an entity is deleted. Call from deleteTask/deleteSpace/deleteProject etc. */
@@ -367,4 +436,8 @@ export class WorkGraphService {
       updatedAt: row.updated_at,
     };
   }
+}
+
+function compareRelatedEdges(a: WorkGraphEdgeDto, b: WorkGraphEdgeDto): number {
+  return a.createdAt - b.createdAt || a.id.localeCompare(b.id);
 }

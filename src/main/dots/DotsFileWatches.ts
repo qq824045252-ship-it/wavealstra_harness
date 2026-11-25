@@ -1,7 +1,7 @@
 import { DOTS_NO_CHANGE } from "../../shared/dots";
 import { followupInstructions } from "./DotsFollowup";
 import { createHash } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import { watch } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { AppDatabase } from "../db/AppDatabase";
@@ -31,14 +31,22 @@ const contained = (root: string, path: string) => {
   const ref = relative(root, path);
   return ref !== ".." && !ref.startsWith(".." + sep) && !isAbsolute(ref);
 };
-async function revision(root: string, file: string) {
+const REVISION_REJECTIONS = {
+  rootChanged: "空间目录已替换为链接",
+  parentChanged: "订阅文件的目录链接或归属已变化",
+  notFile: "订阅对象已不是普通文件",
+} as const;
+
+async function hostRevision(root: string, file: string, verifyRoot: boolean) {
+  if (verifyRoot && resolvedPathKey(await realpath(root)) !== resolvedPathKey(root))
+    throw new DotsIntentChanged(REVISION_REJECTIONS.rootChanged);
   const target = resolve(root, file);
   const parent = await realpath(dirname(target));
   if (!contained(root, parent) || resolvedPathKey(parent) !== resolvedPathKey(dirname(target)))
-    throw new DotsIntentChanged("订阅文件的目录链接或归属已变化");
+    throw new DotsIntentChanged(REVISION_REJECTIONS.parentChanged);
   try {
     const entry = await lstat(target, { bigint: true });
-    if (!entry.isFile()) throw new DotsIntentChanged("订阅对象已不是普通文件");
+    if (!entry.isFile()) throw new DotsIntentChanged(REVISION_REJECTIONS.notFile);
     return [entry.dev, entry.ino, entry.size, entry.mtimeNs, entry.ctimeNs].join(":");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
@@ -49,7 +57,7 @@ async function revision(root: string, file: string) {
 /** One-shot workspace file events. Metadata is the revision, including create, replace and delete.
  * The native watcher is a wake-up hint. SQLite retains the original baseline across downtime. */
 export class DotsFileWatches {
-  private readonly handles = new Map<string, FSWatcher>();
+  private readonly handles = new Map<string, { close(): void }>();
   private readonly flights = new Map<string, Promise<void>>();
   private readonly dirty = new Set<string>();
   private timer?: ReturnType<typeof setInterval>;
@@ -65,6 +73,13 @@ export class DotsFileWatches {
 
   private get(id: string) {
     return this.db.connection.prepare("SELECT * FROM dots_file_watches WHERE id=?").get(id) as FileWatch | undefined;
+  }
+
+  private async revision(root: string, file: string, verifyRoot = false): Promise<string> {
+    const result = await this.db.runtimeAuditReader?.dotsFileRevision(root, file);
+    if (result?.status === "observed") return result.value;
+    if (result?.status === "rejected") throw new DotsIntentChanged(REVISION_REJECTIONS[result.reason]);
+    return hostRevision(root, file, verifyRoot);
   }
 
   private project(row: FileWatch) {
@@ -87,7 +102,7 @@ export class DotsFileWatches {
     if (isAbsolute(file) || !contained(root, target) || target === root) throw new Error("请选择绑定空间内的相对文件路径");
     if (this.host.pathAllowed?.(target) === false) throw new Error("文件属于未授权给 Dots 的空间");
     const local = relative(root, target);
-    const baseline = await revision(root, local);
+    const baseline = await this.revision(root, local);
     const version = await this.host.inputVersion(taskId);
     if (resolvedPathKey(this.host.root(taskId, spaceId)) !== resolvedPathKey(root)) throw new Error("订阅时空间绑定已变化");
     this.db.connection.prepare(`INSERT OR IGNORE INTO dots_file_watches
@@ -168,15 +183,31 @@ export class DotsFileWatches {
     if (result.changes) this.host.changed();
   }
 
-  private arm(row: FileWatch) {
+  private async arm(row: FileWatch) {
     if (this.handles.has(row.id)) return;
+    let native: { close(): void } | undefined;
+    native = await this.db.runtimeAuditReader?.watchDotsFile(row.root, row.file, () => this.wake(row.id), () => {
+      if (native && this.handles.get(row.id) === native) {
+        this.handles.delete(row.id);
+        this.wake(row.id);
+      }
+    });
+    const current = this.get(row.id);
+    if (!this.started || !current || !active(current)) {
+      native?.close();
+      return;
+    }
+    if (native) {
+      this.handles.set(row.id, native);
+      return;
+    }
     const path = resolve(row.root, row.file);
     const handle = watch(dirname(path), { persistent: false }, (_event, name) => {
       if (!name || resolvedPathKey(resolve(dirname(path), name)) === resolvedPathKey(path)) this.wake(row.id);
     });
     handle.on("error", () => {
       handle.close();
-      this.handles.delete(row.id);
+      if (this.handles.get(row.id) === handle) this.handles.delete(row.id);
     });
     this.handles.set(row.id, handle);
   }
@@ -206,17 +237,18 @@ export class DotsFileWatches {
       if (previous?.receipt) { this.update(id, "dispatched", "原任务已接收该触发"); return; }
     }
     this.validateRoot(row);
-    if (resolvedPathKey(await realpath(row.root)) !== resolvedPathKey(row.root)) throw new DotsIntentChanged("空间目录已替换为链接");
-    const current = await revision(row.root, row.file);
+    const current = await this.revision(row.root, row.file, true);
     if (!this.started || !active(this.get(id)!)) return;
-    try { this.arm(row); }
+    try { await this.arm(row); }
     catch (error) {
       // Some filesystems support stat but not native notifications. The ordinary
       // reconciliation scan still compares their recorded file revisions.
-      this.update(id, row.state, "正在定期核对文件版本：" + String(error));
+      const current = this.get(id);
+      if (!this.started || !current || !active(current)) return;
+      this.update(id, current.state, "正在定期核对文件版本：" + String(error));
     }
     // Close the registration gap: re-read after installing the native watcher.
-    const observed = current === row.baseline ? await revision(row.root, row.file) : current;
+    const observed = current === row.baseline ? await this.revision(row.root, row.file) : current;
     if (!this.started || !active(this.get(id)!) || (observed === row.baseline && row.state === "watching")
       || this.host.pathAllowed?.(resolve(row.root,row.file)) === false) return;
     if (this.host.proactivePaused(row.space_id)) {

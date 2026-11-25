@@ -1,8 +1,8 @@
 {
   "scope": "src/main/**",
-  "mainRegistrations": 567,
-  "allRegistrations": 589,
-  "uniqueChannels": 567,
+  "mainRegistrations": 583,
+  "allRegistrations": 605,
+  "uniqueChannels": 583,
   "channels": [
     "agent:abort",
     "agent:abortCompaction",
@@ -134,6 +134,7 @@
     "artifact-domain:remove",
     "artifact-domain:removeTask",
     "artifact-domain:snapshot",
+    "artifact-domain:snapshotBatch",
     "artifact:close",
     "artifact:hardReload",
     "artifact:openInBrowser",
@@ -166,12 +167,15 @@
     "browser:navigate",
     "browser:open",
     "browser:openExternal",
+    "browser:previewTaskTab",
     "browser:reload",
     "browser:removeBlocker",
+    "browser:returnControl",
     "browser:selectTab",
     "browser:setRect",
     "browser:show",
     "browser:tabs",
+    "browser:takeControl",
     "btw:abort",
     "btw:close",
     "btw:keepalive",
@@ -204,6 +208,7 @@
     "conversationBranch:listChildren",
     "conversationBranch:preview",
     "cron:list",
+    "cron:overview",
     "cron:remove",
     "cron:runNow",
     "cron:runs",
@@ -231,6 +236,7 @@
     "db:dismissExecutionFailure",
     "db:dismissProjectEvent",
     "db:duplicateProject",
+    "db:editTaskSidebar",
     "db:getProject",
     "db:getProjectActions",
     "db:getProjectAttention",
@@ -275,10 +281,19 @@
     "db:updateSoul",
     "db:upsertSpace",
     "db:upsertTask",
+    "dots-discovery:run",
+    "dots-discovery:status",
+    "dots-discovery:suggest-tags",
+    "dots-google:cancel-login",
+    "dots-google:check",
+    "dots-google:login",
+    "dots-google:status",
     "dots:activity",
     "dots:getPromptSegments",
     "dots:list",
+    "dots:newConversation",
     "dots:open",
+    "dots:report",
     "dots:taskDelivery",
     "enhance:prompt",
     "external-agent:active",
@@ -510,6 +525,7 @@
     "runtimeConsole:snapshot",
     "saved-artifact:open-system",
     "saved-artifact:prepare",
+    "saved-artifact:prepare-binary",
     "saved-artifact:release",
     "saved-artifact:save-as",
     "saved-artifact:save-message-html",
@@ -589,7 +605,7 @@
       {
         "channel": "artifact-domain:get",
         "entries": [
-          "src/main/index.ts:2489",
+          "src/main/index.ts:2623",
           "scripts/wave5-real-open-e2e.ts:273"
         ],
         "foreign": [
@@ -599,7 +615,7 @@
       {
         "channel": "artifact-domain:list",
         "entries": [
-          "src/main/index.ts:2493",
+          "src/main/index.ts:2627",
           "scripts/wave5-real-open-e2e.ts:269"
         ],
         "foreign": [
@@ -609,7 +625,7 @@
       {
         "channel": "artifact-domain:snapshot",
         "entries": [
-          "src/main/index.ts:2497",
+          "src/main/index.ts:2631",
           "scripts/wave5-real-open-e2e.ts:266"
         ],
         "foreign": [
@@ -619,7 +635,7 @@
       {
         "channel": "artifact-domain:register",
         "entries": [
-          "src/main/index.ts:2508",
+          "src/main/index.ts:2653",
           "scripts/wave5-real-open-e2e.ts:265"
         ],
         "foreign": [
@@ -629,7 +645,7 @@
       {
         "channel": "artifact-domain:readContent",
         "entries": [
-          "src/main/index.ts:2512",
+          "src/main/index.ts:2657",
           "scripts/wave5-real-open-e2e.ts:261"
         ],
         "foreign": [
@@ -639,7 +655,7 @@
       {
         "channel": "artifact-domain:removeTask",
         "entries": [
-          "src/main/index.ts:2517",
+          "src/main/index.ts:2662",
           "scripts/wave5-real-open-e2e.ts:276"
         ],
         "foreign": [
@@ -649,7 +665,7 @@
       {
         "channel": "artifact-domain:remove",
         "entries": [
-          "src/main/index.ts:2521",
+          "src/main/index.ts:2666",
           "scripts/wave5-real-open-e2e.ts:279"
         ],
         "foreign": [
@@ -671,7 +687,7 @@
       {
         "channel": "agent:abort",
         "entries": [
-          "src/main/index.ts:1308",
+          "src/main/index.ts:1353",
           "scripts/browser-stop-ui-electron-test.ts:42"
         ],
         "foreign": [
@@ -681,7 +697,7 @@
       {
         "channel": "agent:getAppSettings",
         "entries": [
-          "src/main/index.ts:1465",
+          "src/main/index.ts:1634",
           "scripts/browser-stop-ui-electron-test.ts:41"
         ],
         "foreign": [
@@ -691,7 +707,7 @@
       {
         "channel": "agent:loadTaskHistory",
         "entries": [
-          "src/main/index.ts:1597",
+          "src/main/index.ts:1771",
           "scripts/browser-stop-ui-electron-test.ts:43"
         ],
         "foreign": [
@@ -701,7 +717,7 @@
       {
         "channel": "agent:getModeProfile",
         "entries": [
-          "src/main/index.ts:1630",
+          "src/main/index.ts:1804",
           "scripts/browser-stop-ui-electron-test.ts:40"
         ],
         "foreign": [

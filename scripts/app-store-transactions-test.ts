@@ -7,7 +7,7 @@ import type { Task } from "../src/renderer/src/types";
 import type { ArtifactDescriptor } from "../src/shared/artifact-types";
 import type { DurableBotSnapshot } from "../src/shared/durable-bot";
 import { durableDelta } from "../shared/src/durable-sync";
-import type { TaskDto, TaskHistoryDto } from "../src/shared/agent-ipc";
+import type { TaskDto, TaskHistoryDto, TaskSidebarEdit } from "../src/shared/agent-ipc";
 import { loadRuntimeBootstrap } from "../src/renderer/src/store/app/runtime/bootstrap";
 import { mapTaskRowToTask } from "../src/renderer/src/store/app/tasks/taskMapper";
 import { recomputeEffectiveArchived } from "../src/renderer/src/store/app/workspaces/spaceHelpers";
@@ -674,6 +674,7 @@ async function gatewaySidebarOriginHydratesKnownTask(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await sidebarEditsPreserveVisibleTaskState();
   await gatewaySidebarOriginHydratesKnownTask();
   const tests = [
     dotsModelMenuOnlyChangesDotsPreferences,
@@ -702,6 +703,24 @@ async function main(): Promise<void> {
   console.log(
     `[app-store-transactions] ${tests.length} behavior groups passed`,
   );
+}
+
+async function sidebarEditsPreserveVisibleTaskState(): Promise<void> {
+  const writes: TaskSidebarEdit[] = [];
+  const { useAppStore: api } = store({ db: {
+    editTaskSidebar: async (edit: TaskSidebarEdit) => { writes.push(edit); },
+  } });
+  const updatedAt = Date.now() + 60_000;
+  api.setState({ tasks: [task("editable", { title: "原名", updatedAt, spaceSortOrder: 700 })] });
+  api.getState().renameTask("editable", "新名称");
+  await api.getState().togglePinTask("editable");
+  const saved = api.getState().tasks[0];
+  assert.deepEqual([saved.title, saved.status, saved.updatedAt, saved.spaceSortOrder, saved.isFavorited],
+    ["新名称", "in_progress", updatedAt, 700, true]);
+  assert.deepEqual(api.getState().pinnedTaskIds, ["editable"]);
+  assert.deepEqual(writes.map(({ kind, id, title }) => [kind, id, title]), [
+    ["rename", "editable", "新名称"], ["favorite", "editable", "新名称"],
+  ]);
 }
 
 async function sidebarSelectorSkipsUnchangedTaskRederivation(): Promise<void> {

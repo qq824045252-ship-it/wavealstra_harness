@@ -6,13 +6,20 @@ import type { AppDatabase } from "../db/AppDatabase";
 import { isPathInsideOrEqual, normalizePathForComparison } from "./TaskExecutionWorkspace";
 import type { TaskExecutionWorkspaceLifecycle } from "./TaskExecutionWorkspaceLifecycle";
 
+export type ArchiveTaskCandidate = Pick<TaskDto, "id" | "spaceId" | "projectId" | "archived" | "cwd" | "sessionFile">;
+
 interface ArchivedContentDeletionOptions {
   db: AppDatabase;
   lifecycle: TaskExecutionWorkspaceLifecycle;
   /** Reversible preparation only. Irreversible cleanup belongs in afterDeleteSpace. */
   beforeDeleteSpace?: (spaceId: string) => void | Promise<void>;
   afterDeleteSpace?: (spaceId: string) => void | Promise<void>;
-  afterDeleteTask?: (task: TaskDto, sessionFiles: string[]) => void | Promise<void>;
+  afterDeleteTask?: (task: ArchiveTaskCandidate, sessionFiles: string[]) => void | Promise<void>;
+}
+
+interface ArchivePurgeOutcome {
+  result: ArchivedContentDeletionResult;
+  projectIds: string[];
 }
 
 /** Archive management's explicit hard delete, serialized to avoid duplicate purge races. */
@@ -22,22 +29,27 @@ export class ArchivedContentDeletion {
   constructor(private readonly options: ArchivedContentDeletionOptions) {}
 
   purge(request: ArchivedContentDeletionRequest): Promise<ArchivedContentDeletionResult> {
+    return this.purgeWithProjects(request).then(({ result }) => result);
+  }
+
+  purgeWithProjects(request: ArchivedContentDeletionRequest): Promise<ArchivePurgeOutcome> {
     const input = validateRequest(request);
     const operation = this.queue.then(() => this.execute(input));
     this.queue = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
-  private async execute(request: ArchivedContentDeletionRequest): Promise<ArchivedContentDeletionResult> {
+  private async execute(request: ArchivedContentDeletionRequest): Promise<ArchivePurgeOutcome> {
     const { db, lifecycle } = this.options;
     const result: ArchivedContentDeletionResult = { deletedTaskIds: [], deletedSpaceIds: [], failures: [] };
+    const projectIds = new Set<string>();
     const fail = (kind: "task" | "space", id: string, error: unknown) => {
       result.failures.push({ kind, id, error: error instanceof Error ? error.message : String(error) });
     };
     const selectedRoots = new Set<string>();
     const selectedSpaces = new Set<string>();
     const selectedSubtrees = new Map<string, Set<string>>();
-    const spaces = db.listSpaces();
+    const spaces = await db.readSpaces();
     const children = new Map<string, string[]>();
     for (const space of spaces) {
       if (space.parentId) children.set(space.parentId, [...(children.get(space.parentId) ?? []), space.id]);
@@ -80,18 +92,11 @@ export class ArchivedContentDeletion {
       if (!db.isTaskEffectiveArchived(id)) { fail("task", id, "任务已恢复，拒绝彻底删除未归档任务"); continue; }
       directTasks.add(id);
     }
-    // listTasks deliberately includes trashed rows: a deleted space must leave no restorable tasks behind.
-    const tasks = db.listTasks().filter((task) => directTasks.has(task.id) || Boolean(task.spaceId && selectedSpaces.has(task.spaceId)));
-    const isInSelectedArchivedTree = (spaceId: string | null | undefined): boolean => {
-      const visited = new Set<string>();
-      let current = spaceId;
-      while (current && !visited.has(current)) {
-        visited.add(current);
-        if (selectedRoots.has(current) && db.isSpaceEffectiveArchived(current)) return true;
-        current = db.getSpace(current)?.parentId ?? undefined;
-      }
-      return false;
-    };
+    // Include trashed rows so a deleted space leaves no restorable tasks behind.
+    const tasks = await db.readArchivedTaskCandidates([...directTasks], [...selectedSpaces]);
+    const archiveRootIds = [...selectedRoots];
+    const isInSelectedArchivedTree = (spaceId: string | null | undefined) =>
+      db.isInArchivedWorkspaceSelection(spaceId, selectedRoots);
     for (const task of tasks) {
       const wasTrashed = db.getTaskExecutionWorkspaceState(task.id)?.state === "trashed";
       // A surviving branch owns its source; once its final child is also purged the source can be cleaned.
@@ -113,7 +118,13 @@ export class ArchivedContentDeletion {
         assertAllowed();
         // Re-run shutdown even for existing trash entries; a stale runtime may still own that task.
         await lifecycle.trash(task.id, { strict: true, assertAllowed });
-        await lifecycle.purge(task.id, { force: true, strict: true, assertAllowed });
+        await lifecycle.purge(task.id, {
+          force: true, strict: true, assertAllowed,
+          archiveScope: {
+            direct: directTasks.has(task.id) ? (task.archived === true ? "explicit" : "inherited") : "none",
+            selectedRoots: archiveRootIds,
+          },
+        });
         if (db.getTask(task.id) || db.getTaskExecutionWorkspaceState(task.id)) throw new Error("任务永久删除后校验失败");
       } catch (error) {
         fail("task", task.id, !db.getTask(task.id) ? `任务已删除，附属内容清理失败：${error instanceof Error ? error.message : String(error)}` : error);
@@ -132,6 +143,7 @@ export class ArchivedContentDeletion {
       // Post-DB cleanup failures must not resurrect a task in the renderer.
       if (!db.getTask(task.id) && !db.getTaskExecutionWorkspaceState(task.id)) {
         result.deletedTaskIds.push(task.id);
+        if (task.projectId) projectIds.add(task.projectId);
         try { await this.options.afterDeleteTask?.(task, sessionFiles); }
         catch (error) { fail("task", task.id, `任务已删除，附属内容清理失败：${error instanceof Error ? error.message : String(error)}`); }
       }
@@ -148,7 +160,7 @@ export class ArchivedContentDeletion {
     for (const id of [...selectedSpaces].sort((a, b) => depth(b) - depth(a))) {
       const assertEmptyArchived = () => {
         if (!db.getSpace(id) || !isInSelectedArchivedTree(id)) throw new Error("空间已恢复或移动，已停止彻底删除");
-        if (db.hasSpaceDeleteBlockers(id) || db.listTasks().some((task) => task.spaceId === id)) {
+        if (db.hasSpaceDeleteBlockers(id) || db.hasTasksInSpace(id)) {
           throw new Error("空间仍有未删除的任务、子空间或自有资料，请处理失败项后重试");
         }
       };
@@ -156,13 +168,13 @@ export class ArchivedContentDeletion {
         assertEmptyArchived();
         await this.options.beforeDeleteSpace?.(id);
         assertEmptyArchived();
-        db.deleteSpace(id);
+        await db.writeWorkspaceDelete(id, selectedRoots);
         if (db.getSpace(id)) throw new Error("空间永久删除后校验失败");
         await this.options.afterDeleteSpace?.(id);
       } catch (error) { fail("space", id, error); }
       if (!db.getSpace(id)) result.deletedSpaceIds.push(id);
     }
-    return result;
+    return { result, projectIds: [...projectIds] };
   }
 }
 
@@ -178,7 +190,7 @@ function validateRequest(request: ArchivedContentDeletionRequest): ArchivedConte
 }
 
 /** Remove only Pi-owned JSONL history; linked user files and shared branch sources remain intact. */
-export function removeManagedTaskSession(db: AppDatabase, task: TaskDto, sessionsRoot: string): void {
+export function removeManagedTaskSession(db: AppDatabase, task: Pick<TaskDto, "id" | "sessionFile">, sessionsRoot: string): void {
   if (!task.sessionFile || extname(task.sessionFile).toLowerCase() !== ".jsonl") return;
   const file = resolve(task.sessionFile);
   const root = resolve(sessionsRoot);

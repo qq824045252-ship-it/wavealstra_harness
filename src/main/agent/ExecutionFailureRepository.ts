@@ -3,6 +3,22 @@ import type Database from "better-sqlite3";
 import type { ExecutionFailureDto } from "../../shared/execution-recovery";
 import { isAutomationObservationFailure } from "./AutomationObservationFailure";
 
+export interface ExecutionFailureRow {
+  recordJson: string;
+  resolvedAt: number | null;
+  dismissedAt: number | null;
+}
+
+export type ExecutionFailureDismissReply =
+  | { status: "saved"; dismissed: boolean }
+  | { status: "rejected"; message: string }
+  | { status: "needsHost" };
+
+interface ExecutionFailureNativeStore {
+  executionFailures(taskId: string): Promise<ExecutionFailureRow[] | undefined>;
+  dismissExecutionFailure(taskId: string, id: string, at: number): Promise<ExecutionFailureDismissReply | undefined>;
+}
+
 /**
  * 已完成 schema 保障与一次性遗留清理的连接。
  * 同一连接重复构造（组合根与 AgentService 各持一份）不得重放构造副作用：下面那条遗留清理
@@ -11,7 +27,7 @@ import { isAutomationObservationFailure } from "./AutomationObservationFailure";
 const initializedConnections = new WeakSet<Database.Database>();
 
 export class ExecutionFailureRepository {
-  constructor(private readonly db: Database.Database) {
+  constructor(private readonly db: Database.Database, private readonly native?: ExecutionFailureNativeStore) {
     if (initializedConnections.has(db)) return;
     db.exec(`CREATE TABLE IF NOT EXISTS execution_failures (
       id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, cause_code TEXT NOT NULL,
@@ -45,12 +61,16 @@ export class ExecutionFailureRepository {
   }
 
   list(taskId: string, { includeDismissed = false, limit = 100 } = {}): ExecutionFailureDto[] {
-    const rows = this.db.prepare(`SELECT record_json, resolved_at, dismissed_at FROM execution_failures
+    const rows = this.db.prepare(`SELECT record_json AS recordJson, resolved_at AS resolvedAt, dismissed_at AS dismissedAt FROM execution_failures
       WHERE task_id = ? AND (? OR dismissed_at IS NULL) ORDER BY created_at DESC, rowid DESC LIMIT ?`)
-      .all(taskId, Number(includeDismissed), limit) as Array<{ record_json: string; resolved_at: number | null; dismissed_at: number | null }>;
+      .all(taskId, Number(includeDismissed), limit) as ExecutionFailureRow[];
+    return this.projectRows(taskId, rows);
+  }
+
+  private projectRows(taskId: string, rows: ExecutionFailureRow[]): ExecutionFailureDto[] {
     return rows.flatMap((row) => {
       try {
-        const record = JSON.parse(row.record_json) as ExecutionFailureDto;
+        const record = JSON.parse(row.recordJson) as ExecutionFailureDto;
         if (record.taskId !== taskId || typeof record.id !== "string" || typeof record.message !== "string"
           || typeof record.causeCode !== "string" || typeof record.nextAction !== "string"
           || !["retryable", "recoverable", "requires-user-action", "terminal"].includes(record.recovery)
@@ -59,13 +79,14 @@ export class ExecutionFailureRepository {
         // Apply the same classification to existing rows. Retain their tool
         // history and database evidence without claiming the failure resolved.
         if (isAutomationObservationFailure(record)) return [];
-        return [{ ...record, resolvedAt: row.resolved_at ?? undefined, dismissedAt: row.dismissed_at ?? undefined }];
+        return [{ ...record, resolvedAt: row.resolvedAt ?? undefined, dismissedAt: row.dismissedAt ?? undefined }];
       } catch { return []; } // Keep the original corrupt row for diagnosis.
     });
   }
 
   async listForDisplay(taskId: string): Promise<ExecutionFailureDto[]> {
-    const records = this.list(taskId);
+    const rows = await this.native?.executionFailures(taskId);
+    const records = rows === undefined ? this.list(taskId) : this.projectRows(taskId, rows);
     const candidates = records.filter(row => !row.resolvedAt && row.phase === "verify" && row.recovery === "recoverable"
       && row.sideEffects !== "unknown" && row.executionId?.startsWith(`durable:${taskId}:`)
       && ["computer-semantic-verification-failed", "computer-semantic-verification-unavailable"].includes(row.causeCode)
@@ -90,6 +111,15 @@ export class ExecutionFailureRepository {
   dismiss(taskId: string, id: string): boolean {
     const change = this.db.prepare("UPDATE execution_failures SET dismissed_at = ? WHERE id = ? AND task_id = ? AND resolved_at IS NULL AND dismissed_at IS NULL").run(Date.now(), id, taskId);
     return change.changes > 0;
+  }
+
+  async dismissForDisplay(taskId: string, id: string): Promise<boolean> {
+    if (!this.native) return this.dismiss(taskId, id);
+    const result = await this.native.dismissExecutionFailure(taskId, id, Date.now());
+    if (result?.status === "saved") return result.dismissed;
+    if (result?.status === "needsHost") return this.dismiss(taskId, id);
+    if (result?.status === "rejected") throw new Error(result.message);
+    throw new Error("无法确认恢复提示已隐藏");
   }
 
   resolveMatching(taskId: string, input: { target?: string; causeCodes?: readonly string[]; sideEffects?: ExecutionFailureDto["sideEffects"] }): number {

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppDatabase } from "../src/main/db/AppDatabase";
 import { LibraryService } from "../src/main/library/LibraryService";
+import { locateRuntimeAudit } from "../src/main/platform/runtime-audit";
 
 const root = mkdtempSync(join(tmpdir(), "mybuddy-library-lifecycle-tx-"));
 // 隔离 HOME：LibraryService 把资料库文件写到 ~/.mybuddy/library（POSIX 的 os.homedir() 读 HOME），
@@ -92,3 +93,129 @@ try {
   db.close();
   rmSync(root, { recursive: true, force: true });
 }
+
+async function verifyNativeDeletion() {
+  const runtimeAuditExecutable = locateRuntimeAudit(process.cwd());
+  assert(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
+  const fixture = mkdtempSync(join(tmpdir(), "mybuddy-native-library-delete-"));
+  const libraryRoot = join(fixture, "library");
+  const openDatabase = () => new AppDatabase(join(fixture, "app.db"), { runtimeAuditExecutable });
+  let database = openDatabase();
+  try {
+    let service = new LibraryService(database, { libraryRoot });
+    database.connection.exec(`
+      INSERT INTO projects(id,name,created_at,updated_at) VALUES ('p1','项目',1,1);
+      CREATE TABLE fixture_reject_delete(id TEXT PRIMARY KEY);
+      CREATE TRIGGER fixture_delete_rejected BEFORE DELETE ON library_items
+      WHEN EXISTS(SELECT 1 FROM fixture_reject_delete WHERE id=old.id)
+      BEGIN SELECT RAISE(ABORT,'fixture library deletion rejected'); END;
+    `);
+    const projectSpace = service.createSpace({ name: "项目资料", projectId: "p1" });
+    database.upsertTask({ id: "task", title: "任务", updatedAt: 1, projectId: "p1" });
+    const note = service.createItem({ spaceId: projectSpace.id, kind: "markdown", title: "待删除资料", content: "首版" });
+    await service.writeContentAsync({ id: note.id, content: "墨岩索引关键字" });
+    service.attachToTask({ itemId: note.id, taskId: "task" });
+    const path = service.absolutePath(note);
+    const versionsDir = path + ".versions";
+    mkdirSync(versionsDir);
+    writeFileSync(join(versionsDir, "old.md"), "历史文件");
+    const chunk = database.connection.prepare("SELECT id,hash FROM library_chunks WHERE item_id=? LIMIT 1")
+      .get(note.id) as { id: string; hash: string };
+    database.connection.prepare(`
+      INSERT INTO library_chunk_embeddings(chunk_id,model_id,model_version,chunk_hash,dimension,embedding,created_at)
+      VALUES (?, 'fixture', '1', ?, 1, ?, 1)
+    `).run(chunk.id, chunk.hash, Buffer.alloc(4));
+    database.connection.prepare("INSERT INTO fixture_reject_delete VALUES (?)").run(note.id);
+    await assert.rejects(service.deleteItemAsync(note.id), /资料删除失败/);
+    assert.equal(service.getItem(note.id)?.title, "待删除资料");
+    assert.equal(service.readVersion(note.id, 1), "首版");
+    assert.equal(existsSync(path), true, "failed SQLite transaction keeps the file");
+    assert.equal(service.search("墨岩索引关键字")[0]?.id, note.id);
+    database.connection.prepare("DELETE FROM fixture_reject_delete WHERE id=?").run(note.id);
+    const reader = database.runtimeAuditReader!;
+    const deleteWithReply = reader.deleteLibrary.bind(reader);
+    reader.deleteLibrary = async (...args) => {
+      assert.equal((await deleteWithReply(...args))?.status, "deleted");
+      return undefined;
+    };
+    await service.deleteItemAsync(note.id);
+    reader.deleteLibrary = deleteWithReply;
+    assert.equal(service.getItem(note.id), null);
+    assert.equal(service.listVersions(note.id).length, 0);
+    assert.equal(service.listTaskReferences("task").items.length, 0);
+    assert.deepEqual(service.search("墨岩索引关键字"), []);
+    assert.equal(database.connection.prepare("SELECT 1 FROM library_chunk_embeddings WHERE chunk_id=?").get(chunk.id), undefined);
+    assert.equal(existsSync(path), false);
+    assert.equal(existsSync(versionsDir), false);
+
+    const folder = service.createCollection({ spaceId: projectSpace.id, name: "目录" });
+    const child = service.createCollection({ spaceId: projectSpace.id, name: "子目录", parentId: folder.id });
+    const descendant = service.createItem({ spaceId: projectSpace.id, collectionId: child.id, kind: "markdown", title: "已回收条目" });
+    await service.trashNotes({ type: "project", projectId: "p1" }, [descendant.id]);
+    database.connection.prepare("INSERT INTO workspace_library_collection_links VALUES ('w1',?,?,1)").run(projectSpace.id, child.id);
+    database.connection.prepare("INSERT INTO fixture_reject_delete VALUES (?)").run(descendant.id);
+    await assert.rejects(service.deleteCollectionAsync(folder.id), /资料删除失败/);
+    assert(service.getCollection(child.id));
+    assert(existsSync(service.absolutePath(descendant)));
+    assert(database.connection.prepare("SELECT 1 FROM workspace_library_collection_links WHERE collection_id=?").get(child.id));
+    database.connection.prepare("DELETE FROM fixture_reject_delete WHERE id=?").run(descendant.id);
+    await service.deleteCollectionAsync(folder.id);
+    assert.equal(service.getCollection(child.id), null);
+    assert.deepEqual(await service.readTrashedNotes({ type: "project", projectId: "p1" }), []);
+    assert.equal(existsSync(service.absolutePath(descendant)), false);
+    assert.equal(database.connection.prepare("SELECT 1 FROM workspace_library_collection_links WHERE collection_id=?").get(child.id), undefined);
+    assert(service.getSpace(projectSpace.id));
+
+    const standalone = service.createSpace({ name: "待删除独立资料" });
+    const asset = service.createItem({ spaceId: standalone.id, kind: "markdown", title: "独立空间条目" });
+    const outside = join(fixture, "outside-library");
+    mkdirSync(outside);
+    const sentinel = join(outside, "keep.txt");
+    writeFileSync(sentinel, "keep");
+    symlinkSync(outside, join(libraryRoot, standalone.id, "linked-directory"), process.platform === "win32" ? "junction" : "dir");
+    await service.deleteSpaceAsync(standalone.id);
+    assert.equal(service.getSpace(standalone.id), null);
+    assert.equal(existsSync(service.absolutePath(asset)), false);
+    assert.equal(existsSync(sentinel), true, "space cleanup never follows a link outside the managed directory");
+    const projectAsset = service.createItem({ spaceId: projectSpace.id, kind: "markdown", title: "项目资料待清理" });
+    database.connection.prepare("UPDATE projects SET archived=1 WHERE id='p1'").run();
+    await assert.rejects(service.deleteItemAsync(projectAsset.id), /归档/);
+    await assert.rejects(service.deleteSpaceAsync(projectSpace.id), /归档/);
+    assert.equal(existsSync(service.absolutePath(projectAsset)), true);
+
+    const personal = service.ensureReady();
+    const retry = service.createItem({ spaceId: personal.id, kind: "markdown", title: "待重试清理" });
+    const retryPath = service.absolutePath(retry);
+    rmSync(retryPath);
+    mkdirSync(retryPath);
+    await service.deleteItemAsync(retry.id);
+    assert.equal(service.getItem(retry.id), null, "metadata deletion commits independently of file cleanup");
+    assert(database.connection.prepare("SELECT 1 FROM library_file_cleanup WHERE item_id=?").get(retry.id));
+    assert.equal(existsSync(retryPath), true);
+    rmdirSync(retryPath);
+    writeFileSync(retryPath, "尚未删除的旧文件");
+    const retained = service.createItem({ spaceId: personal.id, kind: "markdown", title: "保留文件", content: "同 ID 有效资料" });
+    database.connection.prepare("INSERT INTO library_file_cleanup VALUES (?,?,?,?)")
+      .run(libraryRoot, retained.spaceId, retained.id, retained.filename);
+
+    await database.runtimeAuditReader?.close();
+    database.close();
+    database = openDatabase();
+    service = new LibraryService(database, { libraryRoot });
+    await service.recoverFileDeletes();
+    await service.recoverFileDeletes();
+    assert.equal(existsSync(retryPath), false, "restart finishes a previously unsuccessful cleanup");
+    assert.equal(service.readContent(retained.id).content, "同 ID 有效资料", "stale cleanup cannot delete an occupied path");
+    assert.deepEqual(database.connection.prepare("SELECT item_id FROM library_file_cleanup").all(), []);
+    console.log("PASS Rust library deletion: files follow database commit, scope, tree, history, references, search, restart retry");
+  } finally {
+    await database.runtimeAuditReader?.close();
+    database.close();
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}
+
+if (process.argv.includes("--native")) void verifyNativeDeletion().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

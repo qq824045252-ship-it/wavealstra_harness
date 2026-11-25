@@ -37,6 +37,14 @@ const runtimeAuditExecutable = useNative ? locateRuntimeAudit(process.cwd()) : u
 if (useNative) assert.ok(runtimeAuditExecutable && existsSync(runtimeAuditExecutable));
 const root = mkdtempSync(join(tmpdir(), "mybuddy-remote-done-ack-"));
 const db = new AppDatabase(useNative ? join(root, "app.db") : ":memory:", { runtimeAuditExecutable });
+const persist = async <T>(operation: () => Promise<T>): Promise<T> => {
+  if (useNative) db.connection.pragma("query_only = ON");
+  try {
+    return await operation();
+  } finally {
+    if (useNative) db.connection.pragma("query_only = OFF");
+  }
+};
 const now = Date.now();
 db.upsertTask({ id: "t-done", title: "已完成任务", status: "completed", updatedAt: now - 60_000 });
 db.upsertTask({ id: "t-running", title: "进行中任务", status: "in_progress", updatedAt: now - 1_000 });
@@ -87,7 +95,7 @@ try {
     check(tasks.find((task) => task.id === "t-done")!.doneAckedAt === null, "GET /v1/tasks 同样透出该字段");
 
     // 2. 手机端点开任务 → ackDone 写库（与桌面端同一条链路）
-    const ackResponse = await fetch(`${base}/v1/tasks/t-done/ackDone`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" });
+    const ackResponse = await persist(() => fetch(`${base}/v1/tasks/t-done/ackDone`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" }));
     check(ackResponse.status === 200, "POST /v1/tasks/:id/ackDone → 200");
     const acked = db.getTask("t-done")!;
     check(typeof acked.doneAckedAt === "number" && acked.doneAckedAt >= now - 60_000, "ackDone 写入 tasks.done_acked_at");
@@ -95,6 +103,12 @@ try {
     const afterSummary = (await service.listTasks()).find((task) => task.id === "t-done")!;
     check(taskStatusDot(afterSummary, 0) === null, "确认后手机端判定 → 不显示绿点");
     check(mapRemoteTask(acked, { busy: false, pendingActionCount: 0 }).doneAckedAt === acked.doneAckedAt, "DTO 映射与 DB 值一致");
+    assert.deepEqual((await service.listTasks()).map(task => task.id), ["t-running", "t-done"]);
+    const desktopAck = now + 60_000;
+    await persist(() => Promise.all([db.writeTaskDoneAck("t-done", desktopAck), db.writeTaskDoneAck("t-done", now)]));
+    db.upsertTask({ id: "t-done", title: "已完成任务改名", updatedAt: now - 60_000 });
+    const desktopRows = await db.readNonTrashedTasks();
+    assert.deepEqual(desktopRows.map(task => [task.id, task.doneAckedAt]), [["t-running", null], ["t-done", desktopAck]]);
 
     // 3. 异常路径
     const missing = await fetch(`${base}/v1/tasks/t-missing/ackDone`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" });
@@ -106,8 +120,90 @@ try {
 
     // 4. 手机端 RemoteClient 走的就是这条路由
     const client = new RemoteClient(base, token);
-    await client.ackDone("t-running");
+    await persist(() => client.ackDone("t-running"));
     check(typeof db.getTask("t-running")!.doneAckedAt === "number", "RemoteClient.ackDone 命中同一路由");
+
+    // The desktop date editor allows the start day, rejects previous days and can clear the date.
+    const start = new Date(2026, 2, 8, 12, 30);
+    const startDay = new Date(2026, 2, 8).getTime();
+    db.upsertSpace({ id: "due-parent", name: "父空间" });
+    db.upsertSpace({ id: "due-child", name: "子空间", parentId: "due-parent" });
+    db.upsertTask({ id: "t-due", title: "带截止日期的任务", updatedAt: 1000, projectId: "p-active",
+      spaceId: "due-child", startAt: start.getTime() });
+    await assert.rejects(() => persist(() => db.writeTaskDueDate("t-due", startDay - 1)), /截止日期不能早于计划开始日期/);
+    assert.equal(await persist(() => db.writeTaskDueDate("t-due", startDay)), "p-active");
+    db.upsertTask({ id: "t-due", title: "任务改名", updatedAt: 1000 });
+    assert.deepEqual(
+      (await client.bootstrap()).tasks.filter(task => task.id === "t-due").map(task => [task.title, task.dueAt, task.updatedAt]),
+      [["任务改名", startDay, 1000]],
+    );
+    db.archiveSpace("due-parent", true);
+    await assert.rejects(() => persist(() => db.writeTaskDueDate("t-due", null)), /任务已归档或不存在/);
+    db.archiveSpace("due-parent", false);
+    await persist(() => db.writeTaskDueDate("t-due", null));
+    assert.deepEqual((await client.bootstrap()).tasks.filter(task => task.id === "t-due").map(task => task.dueAt), [null]);
+    db.upsertTaskExecutionWorkspaceState({
+      taskId: "t-due", directoryName: "due-fixture-trash", state: "trashed", createdAt: 1000, updatedAt: 2000,
+    });
+    await assert.rejects(() => persist(() => db.writeTaskDueDate("t-due", startDay)), /任务已归档或不存在/);
+    console.log("PASS desktop due date: valid day, project, persistence, clear, archived space and trash");
+
+    await persist(() => db.writeTaskRecord({ id: "sidebar", title: "最初标题", status: "in_progress", projectId: "p-active",
+      spaceId: "due-child", spaceSortOrder: 3000, updatedAt: 1000 }));
+    assert.equal(await persist(() => db.writeTaskSidebar({
+      kind: "favorite", id: "sidebar", title: "旧快照标题", updatedAt: 700, isFavorited: true,
+    })), "p-active");
+    const pinned = db.getTask("sidebar");
+    assert.deepEqual([pinned?.title, pinned?.updatedAt, pinned?.spaceSortOrder, pinned?.isFavorited],
+      ["最初标题", 1000, 3000, true]);
+    await persist(() => db.writeTaskSidebar({
+      kind: "rename", id: "sidebar", title: "手动改名", updatedAt: 2500, spaceId: null, status: "planning",
+    }));
+    assert.equal(await persist(() => db.writeTaskRecord({
+      id: "sidebar", title: "后台旧快照", updatedAt: 1200, status: "completed", spaceId: null, spaceSortOrder: 0,
+    }, { preserveTitle: true, preserveWorkspace: true })), "p-active");
+    await persist(() => db.writeTaskRecord({ id: "sidebar", title: "迟到的自动标题", updatedAt: 1300 }, {
+      preserveTitle: true, expectedTitle: "最初标题",
+    }));
+    const edited = db.getTask("sidebar");
+    assert.deepEqual([edited?.title, edited?.status, edited?.spaceId, edited?.updatedAt, edited?.isFavorited],
+      ["手动改名", "completed", "due-child", 2500, true]);
+    const mobileSidebar = (await client.bootstrap()).tasks.find(task => task.id === "sidebar");
+    assert.deepEqual([mobileSidebar?.title, mobileSidebar?.status, mobileSidebar?.isFavorited],
+      ["手动改名", "completed", true]);
+    const pendingRename = db.writeTaskSidebar({
+      kind: "rename", id: "sidebar", title: "并发改名", updatedAt: 2600, status: "planning",
+    });
+    db.upsertTask({ id: "sidebar", title: "手动改名", status: "in_progress", updatedAt: 2700 }, { preserveTitle: true });
+    await pendingRename;
+    const concurrent = db.getTask("sidebar");
+    assert.deepEqual([concurrent?.title, concurrent?.status, concurrent?.updatedAt, concurrent?.isFavorited],
+      ["并发改名", "in_progress", 2700, true]);
+    await assert.rejects(() => persist(() => db.writeTaskSidebar({
+      kind: "rename", id: "t-due", title: "回收站不能改名", updatedAt: 9999,
+    })), /任务已进入回收站/);
+
+    await db.writeTaskSidebar({ kind: "favorite", id: "draft-pin", title: "新任务", updatedAt: 3000, isFavorited: true });
+    db.upsertTask({ id: "draft-pin", title: "第一条消息", updatedAt: 3100 }, {
+      preserveTitle: true, expectedTitle: "新任务",
+    });
+    const draft = db.getTask("draft-pin");
+    assert.deepEqual([draft?.title, draft?.updatedAt, draft?.isFavorited], ["第一条消息", 3100, true]);
+    console.log("PASS desktop task rename and favorite: preserves workspace, activity and background status; mobile sees it");
+
+    await assert.rejects(() => persist(() => db.writeTaskRecord({ id: "sidebar", title: "无效改绑", updatedAt: 3000,
+      projectId: "p-archived" })), /归档项目/);
+    assert.equal(await persist(() => db.writeTaskRecord({ id: "sidebar", title: "并发改名", updatedAt: 0,
+      projectId: null, spaceId: null, dueAt: startDay, startAt: null })), "p-active");
+    const detached = (await client.bootstrap()).tasks.find(task => task.id === "sidebar");
+    assert.deepEqual([detached?.title, detached?.projectId, detached?.spaceId, detached?.dueAt,
+      detached?.startAt, detached?.updatedAt, detached?.isFavorited],
+    ["并发改名", null, null, startDay, null, 2700, true]);
+    await persist(() => db.writeTaskRecord({ id: "fixed-durable", title: "通用任务", updatedAt: 4000, welcomeMode: "general" }));
+    await assert.rejects(() => persist(() => db.writeTaskRecord({ id: "fixed-durable", title: "尝试改模式",
+      updatedAt: 5000, welcomeMode: "coding" })), /Durable 后端已固定/);
+    assert.equal(db.getTask("fixed-durable")?.title, "通用任务");
+    console.log("PASS desktop task record writes: explicit clears, title and activity fences, and mode and project validation");
   } finally {
     await server.stop();
   }
