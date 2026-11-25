@@ -21,6 +21,10 @@
 
 产品/渠道的具体接入入口见项目 README；独立 Bot 已删除，不再把旧 Bot 说明当成可用功能。
 
+## Rust 后台迁移执行计划
+
+[执行顺序与验收要求](rust-backend-execution-and-acceptance.md) 以 `a46f864` 为代码基线，规定先闭合基础契约，再迁应用写入、调度、渠道与 Gadget，最后抽离 Pi Node 宿主并收薄 Electron Main。包含十步先后依赖、逐步出口门禁、故障与双平台验收；它是后续执行规范，不代表整体迁移已完成。已有基础修复实测见 [2026-11-25 评审](reviews/rust-core-contracts-2026-11-25.md)。
+
 ## 发布与数据安全
 
 - 当前数据库 schema 为 36。v0.1.108→v0.1.109 没有提高 schema，但这不是所有历史版本无损升级保证。旧 schema 不匹配时删除数据库及 sidecar 后重建，不自动备份；读取失败不应冒充旧版本。升级前退出应用及托盘后台，私下冷备份完整实际数据目录，不只复制 `app.db`。默认目录为 Windows `%USERPROFILE%\.mybuddy`、Linux `~/.mybuddy`；外部工作区与系统凭据另计。
