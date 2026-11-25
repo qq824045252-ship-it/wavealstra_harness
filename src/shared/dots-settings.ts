@@ -5,6 +5,9 @@ import { normalizeDreamSettings, normalizeRssSubscriptions, type DreamSettings, 
 /** Dots 提示词编辑器每个输入框的字符上限。 */
 export const maxDotsPromptChars = 8000;
 export const DOTS_DESKTOP_PREVIEW = "dots_desktop_preview";
+export const DOTS_RESIDENT_READ = "dots_resident_read";
+export const dotsResidentSources = ["gmail", "calendar", "rss", "dream"] as const;
+export type DotsResidentSourceId = typeof dotsResidentSources[number];
 export const dotsSummaryInterval = { defaultSeconds: 15, minSeconds: 1, maxSeconds: 86_400 } as const;
 
 export const dotsPromptCategories = [
@@ -23,6 +26,7 @@ export const dotsCapabilityOptions = [
   { id: "spaceManagement", label: "管理工作空间", description: "绑定目录、创建子空间和重命名空间。" },
   { id: "workspaceReading", label: "读取文件和资料", description: "浏览工作空间目录，搜索资料并读取内容。" },
   { id: "desktopPreview", label: "桌面预览", description: "根据本轮指令，在已授权工作空间启动已有的 MyBuddy 工作树预览，并核对版本和截图。" },
+  { id: "residentReads", label: "常驻工具调用", description: "允许 Dots 在对话里直接使用已配置的常驻能力。后台推送按各自的设置运行。" },
   { id: "scheduling", label: "定时计划和文件订阅", description: "让 Dots 新建、修改或恢复定时计划与文件订阅。关闭后仍可查看、暂停或取消已有计划。" },
   { id: "answerRouting", label: "调度", description: "允许 Dots 按保存的流程和规则为本轮对话选择处理方式，并使用对话中的规则工具。" },
   { id: "memoryTools", label: "记忆工具", description: "允许 Dots 主动查询、保存、更正和遗忘统一记忆。" },
@@ -41,6 +45,8 @@ export const dotsOperations = {
   files: ["workspaceReading", "浏览目录"], read_file: ["workspaceReading", "读取文件内容"],
   materials: ["workspaceReading", "搜索资料库"], read_material: ["workspaceReading", "读取资料及历史版本"],
   [DOTS_DESKTOP_PREVIEW]: ["desktopPreview", "打开并核对桌面预览"],
+  "resident.gmail": ["residentReads", "查询 Gmail 邮箱"], "resident.calendar": ["residentReads", "查询 Google 日历"],
+  "resident.rss": ["residentReads", "读取 RSS 订阅"], "resident.dream": ["residentReads", "查看和运行 Dream 探索"],
   watch_file: ["scheduling", "订阅文件变化"], resume_proactive: ["scheduling", "恢复主动跟进"],
   "schedule.create": ["scheduling", "创建定时计划"], "schedule.update": ["scheduling", "修改定时计划"],
   "schedule.resume": ["scheduling", "恢复定时计划"],

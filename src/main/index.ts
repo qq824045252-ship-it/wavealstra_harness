@@ -25,6 +25,7 @@ import { googleWorkspaceService } from "./connectors/GoogleWorkspaceService";
 import { DotsGoogleIpc, normalizeDotsGoogleRules, type DotsGoogleAccount, type DotsGoogleStatus } from "../shared/dots-google";
 import { DotsGoogleAccounts } from "./dots/DotsGoogleAccounts";
 import { DotsGoogleMonitor } from "./dots/DotsGoogleMonitor";
+import { DotsGoogleReads } from "./dots/DotsGoogleReads";
 import { DotsDiscovery } from "./dots/DotsDiscovery";
 import { DotsDiscoveryIpc, normalizeDreamSettings, normalizeRssSubscriptions } from "../shared/dots-discovery";
 import { search as searchDotsPublicWeb } from "./capabilities/web-access/gemini-search";
@@ -1564,6 +1565,8 @@ function registerIpc(memoryKernel: MemoryService): void {
         .filter(entry => words.some(word => `${entry.title} ${entry.content}`.toLowerCase().includes(word))).length;
     },
   );
+  agentService.setDotsResident({ discovery: dotsDiscovery,
+    google: new DotsGoogleReads(dotsGoogleAccounts, () => normalizeDotsGoogleRules(googleSettings.read().dotsSettings?.google)) });
   ipcMain.handle(DotsDiscoveryIpc.status, event => { assertGoogleSettingsSender(event); return dotsDiscovery.status(); });
   ipcMain.handle(DotsDiscoveryIpc.run, async (event, kind, id) => {
     assertGoogleSettingsSender(event);

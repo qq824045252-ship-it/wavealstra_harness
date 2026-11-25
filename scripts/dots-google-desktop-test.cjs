@@ -26,6 +26,18 @@ run(async env => {
   assert.deepEqual(pair, ["interval", "daily", "09:17"]);
   await screenshot("dots-google-settings");
   report.actualControlChecks.push("打开 Google 常驻能力，检查两个账号的反馈，并分别保存 Gmail 轮询与日历定时。");
+  await click("工具与操作", ".dots-config nav");
+  const residentTools = "[...document.querySelectorAll('.dots-tool-group')].find(group => group.querySelector('summary')?.textContent.includes('常驻工具调用'))";
+  await press(`${residentTools}?.querySelector('summary')`, "展开常驻工具调用");
+  const gmailToggle = `[...(${residentTools})?.querySelectorAll('label') ?? []].find(label => label.textContent.trim() === '查询 Gmail 邮箱')?.querySelector('input')`;
+  await press(gmailToggle, "关闭 Gmail 聊天调用");
+  await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.operations['resident.gmail'] === false)"), "已保存 Gmail 聊天调用开关");
+  assert.equal(await evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.google.gmail.intervalMinutes)"), 7);
+  await screenshot("dots-resident-tools-settings");
+  await press(gmailToggle, "重新启用 Gmail 聊天调用");
+  await until(() => evaluate("window.api.agent.getAppSettings().then(r => r.dotsSettings.operations['resident.gmail'] === true)"), "已恢复 Gmail 聊天调用");
+  await click("常驻能力", ".dots-config nav");
+  report.actualControlChecks.push("在现有工具设置中单独关闭和恢复 Gmail 聊天调用，邮箱轮询间隔保持不变。");
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.dots-resident-nav button')].map(button => button.textContent.trim())"),
     ["Google", "RSS", "Dream"]);
   await click("RSS", ".dots-resident-nav");

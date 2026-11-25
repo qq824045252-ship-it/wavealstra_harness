@@ -115,6 +115,47 @@ export class DotsDiscovery {
     };
   }
 
+  async readRss(subscription: string | undefined, signal: AbortSignal) {
+    const name = subscription?.trim().toLowerCase();
+    const all = this.preferences().rss;
+    const feeds = name ? all.filter(feed => feed.id.toLowerCase() === name || feed.name.toLowerCase() === name) : all.filter(feed => feed.enabled);
+    if (!feeds.length) return { feeds: [], subscriptions: all.map(({ name }) => name), message: "没有找到对应的 RSS 订阅。" };
+    const results = await Promise.all(feeds.slice(0, 6).map(async feed => {
+      const state = this.rssState(feed);
+      try {
+        const result = await this.fetchFeed(feed.url, {}, signal);
+        signal.throwIfAborted();
+        const seen = state.seen && new Set(state.seen);
+        return { name: feed.name, items: (result.entries ?? []).slice(0, 5).map(({ id, title, url }) => ({ title, url,
+          newSinceLastCheck: seen ? !seen.has(id) || state.queue?.some(item => item.id === id) === true : undefined })) };
+      } catch {
+        signal.throwIfAborted();
+        return { name: feed.name, message: "暂时无法读取这条订阅。" };
+      }
+    }));
+    return { feeds: results, moreFeeds: feeds.length > results.length };
+  }
+
+  readDream() {
+    const { checkedAt, recent, message } = this.read<DreamState>("dream");
+    return { checkedAt, items: recent ?? [], message: message ?? (recent?.length ? undefined : "还没有保存过 Dream 探索结果。") };
+  }
+
+  async exploreDream(signal: AbortSignal) {
+    const config = this.preferences().dream;
+    const now = this.now(), state = this.read<DreamState>("dream");
+    const tag = this.chooseDreamTag(config, state, now);
+    if (!tag) return { items: [], message: "请先在 Dream 设置中启用至少一个兴趣标签。" };
+    try {
+      const { items, summaryFailed } = await this.findDreamItems(tag, state, now, signal);
+      signal.throwIfAborted();
+      return { tag: tag.name, checkedAt: now, items, message: summaryFailed ? "AI 摘要暂不可用，已保留来源。" : items.length ? undefined : "本次没有新的相关内容。" };
+    } catch {
+      signal.throwIfAborted();
+      return { items: [], message: "搜索未完成，请检查 Web Search 服务配置。" };
+    }
+  }
+
   private launch(key: string, work: (signal: AbortSignal) => Promise<void>) {
     const existing = this.active.get(key);
     if (existing) return existing.done;
@@ -230,34 +271,10 @@ export class DotsDiscovery {
     }
     if (state.queue && current()) this.deliverDream(state);
     if (!manual && (state.nextAt ?? Infinity) > now) return;
-    const topics = config.tags.filter(item => item.enabled).map(item => {
-      const last = state.explored?.[item.id] ?? 0;
-      const weight = config.useMemory ? Math.min(4, Math.max(0, this.preferenceScore(item))) : 0;
-      return { item, priority: (now - last) * (1 + weight / 4) };
-    });
-    const tag = topics.sort((a, b) => b.priority - a.priority)[0]?.item;
+    const tag = this.chooseDreamTag(config, state, now);
     if (!tag) return;
     try {
-      const seen = new Set(state.seen ?? []);
-      const fresh: DiscoveryItem[] = [];
-      for (const result of await this.search(tag.query, signal)) {
-        const url = discoveryUrl(result.canonicalUrl || result.url);
-        if (!url || !result.title || result.duplicateOf) continue;
-        const published = result.publishedAt ? Date.parse(result.publishedAt) : NaN;
-        if (Number.isFinite(published) && published < now - 7 * day) continue;
-        const id = canonicalSearchUrl(url);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        fresh.push({ title: result.title.slice(0, 160), url, summary: result.snippet?.slice(0, 500) });
-        if (fresh.length === 5) break;
-      }
-      if (!current()) return;
-      let items = fresh;
-      let summaryFailed = false;
-      if (fresh.length) {
-        try { items = await this.curate(tag.name, fresh, signal); }
-        catch { summaryFailed = true; }
-      }
+      const { items, summaryFailed } = await this.findDreamItems(tag, state, now, signal, current);
       if (!current()) return;
       if (items.length) {
         state.queue = { tag: tag.name, items };
@@ -277,6 +294,34 @@ export class DotsDiscovery {
       Object.assign(state, nextDiscoveryRun(config.schedule, scheduleFrom, this.random));
     this.save(key, state);
     if (state.queue && current()) this.deliverDream(state);
+  }
+
+  private chooseDreamTag(config: DreamSettings, state: DreamState, now: number) {
+    const topics = config.tags.filter(item => item.enabled).map(item => {
+      const last = state.explored?.[item.id] ?? 0;
+      const weight = config.useMemory ? Math.min(4, Math.max(0, this.preferenceScore(item))) : 0;
+      return { item, priority: (now - last) * (1 + weight / 4) };
+    });
+    return topics.sort((a, b) => b.priority - a.priority)[0]?.item;
+  }
+
+  private async findDreamItems(tag: DreamTag, state: DreamState, now: number, signal: AbortSignal, current = () => !signal.aborted) {
+    const seen = new Set(state.seen ?? []);
+    const fresh: DiscoveryItem[] = [];
+    for (const result of await this.search(tag.query, signal)) {
+      const url = discoveryUrl(result.canonicalUrl || result.url);
+      if (!url || !result.title || result.duplicateOf) continue;
+      const published = result.publishedAt ? Date.parse(result.publishedAt) : NaN;
+      if (Number.isFinite(published) && published < now - 7 * day) continue;
+      const id = canonicalSearchUrl(url);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      fresh.push({ title: result.title.slice(0, 160), url, summary: result.snippet?.slice(0, 500) });
+      if (fresh.length === 5) break;
+    }
+    if (!fresh.length || !current()) return { items: fresh, summaryFailed: false };
+    try { return { items: await this.curate(tag.name, fresh, signal), summaryFailed: false }; }
+    catch { return { items: fresh, summaryFailed: true }; }
   }
 
   private deliverDream(state: DreamState) {

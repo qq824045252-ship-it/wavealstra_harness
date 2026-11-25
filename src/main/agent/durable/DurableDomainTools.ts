@@ -1,5 +1,5 @@
 import { DOTS_TASK_ID, isDotsAutomaticInput } from "../../../shared/dots";
-import { DOTS_DESKTOP_PREVIEW } from "../../../shared/dots-settings";
+import { DOTS_DESKTOP_PREVIEW, DOTS_RESIDENT_READ } from "../../../shared/dots-settings";
 import { GadgetPreviewEntry, gadgetPreviewIdentities } from "./DurableGadgetPreviewIdentity";
 import { durableExtensionDiagnostics } from "./DurableToolDiagnostics";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -96,7 +96,7 @@ export async function durableDomainTools(factories: readonly InlineExtension[], 
           const source = (goalCompletion || personalWrite || tool.name === "conversation_goal_create" || tool.name === "dots_action" || (tool.name === "automation_exec" && capabilities.taskId === DOTS_TASK_ID))
             ? await durableSourceInput(native, context, conversationId, live?.run?.inputs ?? [], goalCompletion) : undefined;
           if (personalWrite && (!source || isDotsAutomaticInput(source.id))) throw new Error("更改个人记忆或对话规则需要本轮用户输入");
-          const dotsForegroundTool = capabilities.taskId === DOTS_TASK_ID && (tool.name === "dots_action" || tool.name === DOTS_DESKTOP_PREVIEW);
+          const dotsForegroundTool = capabilities.taskId === DOTS_TASK_ID && ["dots_action", DOTS_DESKTOP_PREVIEW, DOTS_RESIDENT_READ].includes(tool.name);
           const includeAttachments = tool.name === "dots_action" && args !== null && typeof args === "object"
             && "action" in args && (args.action === "follow_up" || args.action === "task");
           const foregroundInputs = dotsForegroundTool

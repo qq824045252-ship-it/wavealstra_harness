@@ -8,7 +8,7 @@ import { normalizeDotsSettings } from "../src/shared/dots-settings";
 
 const plain = assembleDotsPrompt("readWrite", "", "");
 assert.deepEqual(plain.map(segment => segment.title), [
-  "身份与办事范围", "查资料与文件", "记忆与偏好", "交办与跟进", "回复与交付", "通用回复规范", "Dots 默认回复结构",
+  "身份与办事范围", "查资料与文件", "记忆与偏好", "交办与跟进", "回复与交付", "通用回复规范", "常驻工具调用", "Dots 默认回复结构",
 ]);
 assert.deepEqual(assembleDotsPrompt("readWrite", " \n ", "   \n "), plain, "空白沿用默认，并省略追加段");
 const edited = assembleDotsPrompt("readWrite", "", "", { delivery: "  在原对话只交付一个文件。 " });
@@ -19,7 +19,7 @@ assert.deepEqual(edited.slice(5), plain.slice(5));
 assert.deepEqual(assembleDotsPrompt("readWrite", "", "", { delivery: " \n " }), plain);
 
 const prompt = assembleDotsPrompt("readOnly", "  你是仓库值班助理。\n", "  先给结论。\n数字注明来源。\n");
-assert.deepEqual(prompt.map(segment => segment.source), ["user", "runtime", "seed", "seed", "user"]);
+assert.deepEqual(prompt.map(segment => segment.source), ["user", "runtime", "seed", "runtime", "seed", "user"]);
 assert.equal(prompt[0].content, "你是仓库值班助理。");
 assert.match(prompt[1].content, /只读/);
 const append = prompt.at(-1)!;

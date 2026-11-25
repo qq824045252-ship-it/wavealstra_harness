@@ -1,7 +1,7 @@
 import { InboxDoc, ToolTask, type Cursor, type EntryId, type Harness, type HookApi, type TaskId, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapper";
-import { DOTS_DESKTOP_PREVIEW } from "../../../shared/dots-settings";
+import { DOTS_DESKTOP_PREVIEW, DOTS_RESIDENT_READ } from "../../../shared/dots-settings";
 import { classifyMcpToolCall } from "../../security/McpSideEffectPolicy";
 import { workShellRead } from "../work/WorkShellRead";
 import { durableMcpToolName } from "./DurableMcp";
@@ -46,7 +46,7 @@ export function needsFreshUserInput(name: string, args: unknown): boolean {
   const mcp = classifyMcpToolCall(name, args);
   if (mcp) return mcp.sideEffect;
   if (publicationTools.has(name)) return true;
-  if (name === DOTS_DESKTOP_PREVIEW || name === "dots_action" && args && typeof args === "object" &&
+  if (name === DOTS_DESKTOP_PREVIEW || name === DOTS_RESIDENT_READ || name === "dots_action" && args && typeof args === "object" &&
     ("deferredId" in args || "action" in args && ["delegate", "follow_up", "defer", "steer"].includes(String(args.action)))) return true;
   if (name === "conversation_goal_update" && args && typeof args === "object" && "status" in args)
     return args.status === "cancelled" || args.status === "achieved";

@@ -10,6 +10,7 @@ import { checkCurrentToolInput } from "../agent/durable/DurableToolInputScope";
 import { DotsForegroundUnavailable } from "./DotsForegroundReads";
 import { dotsDeferredInstruction, dotsFollowUpInput, dotsForwardingDenied, dotsInstructionText, dotsResumeInput, dotsRetryApprovalInput, hasDotsResumeInstruction } from "./DotsFollowUpInput";
 import { DOTS_REPLY_STYLE } from "./DotsReplyStyle";
+import { dotsResidentInstructions, standaloneDotsResidentRead } from "./DotsResidentExtension";
 import type { DotsActions, DotsActionInput } from "./DotsActions";
 
 export const DOTS_ACTION = "dots_action";
@@ -83,6 +84,7 @@ export function assembleDotsPrompt(memoryMode: DotsSettings["memoryMode"], overr
     add("dotsMemoryMode", "长期记忆模式", "runtime", "本轮 Dots 长期记忆为只读，可以查看已有记忆。");
   }
   add("chatReply", "通用回复规范", "seed", CHAT_REPLY_INSTRUCTIONS);
+  add("dotsResidentTools", "常驻工具调用", "runtime", dotsResidentInstructions);
   add("dotsReplyStyle", "Dots 默认回复结构", "seed", DOTS_REPLY_STYLE + "\n\n" + [
     "查回已交办的结果时，以原任务的已交付正文、状态和登记成果为准。普通查询先用一句说明状态和关键结论，再另起一行给原任务与相关成果入口。问完成没有时，回复围绕是否完成和确有影响的问题。多项结果一项一行，执行日志、逐项验证和绝对路径按需展开。",
     "用户要原文时，把交付正文单独放在「原任务原文」标题下，以 Markdown 引用或原有 Markdown 结构展示，并另起一行给原任务入口。保留原文字句和现有结构，可以把长纯文本按句分段。带有 textTruncated 的内容只是摘录，明确标为摘录并给完整内容的入口。用户约定只要精确文本或某种格式时，按约定交付。",
@@ -175,6 +177,16 @@ export function dotsExtension(actions: DotsActions, settings: () => Partial<Dots
     execute: async (_id, input: DotsActionInput) => {
       const invocation = currentDurableInvocation();
       if (!invocation) throw new Error("缺少原生工具调用身份");
+      if (input.action === "delegate") {
+        const latest = invocation.foregroundInputs?.at(-1);
+        const resident = standaloneDotsResidentRead(latest?.text ?? invocation.sourceDisplayText ?? "");
+        if (resident && !isDotsAutomaticInput(latest?.id ?? invocation.sourceUserMessageId ?? "")) {
+          const enabled = dotsOperationEnabled(settings(), `resident.${resident}`);
+          const details = { status: "direct_read_required", source: resident, message: enabled
+            ? "请调用 dots_resident_read 获取结果并在本对话回复。" : "这项常驻工具调用已关闭，请告知用户可在 Dots 设置 → 工具与操作中启用。" };
+          return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+        }
+      }
       const reading = ["files", "materials", "read_file", "read_material"].includes(input.action);
       const toolResult = (details: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(details) }], details });
       const canFollowUp = actionAllowed("follow_up", settings());

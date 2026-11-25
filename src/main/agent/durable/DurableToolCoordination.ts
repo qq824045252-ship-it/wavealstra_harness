@@ -4,7 +4,7 @@ import { withoutAbortSignal } from "@earendil-works/chord/context";
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import { isDangerousTool, isSideEffectTool } from "../../../shared/pi-event-mapper";
 import { WEB_ACCESS_TOOL_NAMES } from "../../../shared/native-tools";
-import { DOTS_DESKTOP_PREVIEW } from "../../../shared/dots-settings";
+import { DOTS_DESKTOP_PREVIEW, DOTS_RESIDENT_READ } from "../../../shared/dots-settings";
 import { OFFICE_USE_TOOLS } from "../../../shared/office-use";
 import { CAD_USE_TOOLS } from "../../../shared/cadcraft";
 import { DRAWIO_USE_TOOLS } from "../../../shared/drawio-use";
@@ -31,7 +31,7 @@ const mcpEnvelope = z.object({ server: z.string(), tool: z.string(), arguments: 
 // Nested calls acquire their own resource leases. Holding an outer unknown-write lease would deadlock them.
 const containers = new Set(["codemode", "subagent", "subagent_list", "subagent_steer", "multi_model_consult", "request_user_input", "pstack_workflow", "pstack_delegate", "pstack_orchestrate"]);
 const fileReads = new Set(["read", "ls", "find", "grep", "glob"]);
-const independentReads = new Set<string>([...WEB_ACCESS_TOOL_NAMES,
+const independentReads = new Set<string>([...WEB_ACCESS_TOOL_NAMES, DOTS_RESIDENT_READ,
   DRAWIO_USE_TOOLS.shapes, DRAWIO_USE_TOOLS.reference,
   "pstack_watch_pr", "pstack_worktrees",
   "tool_search", "mcp_list_tools", "mcp_list_resources", "mcp_read_resource", "mcp_status"]);

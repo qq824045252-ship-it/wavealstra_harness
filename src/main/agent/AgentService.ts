@@ -1,12 +1,13 @@
 import { DOTS_TASK_ID, isDotsAutomaticInput, type DotsCapabilityRequirement } from "../../shared/dots";
 import { DotsCapabilityUnavailable, type DotsExecutionCatalog, type DotsExecutionConfiguration } from "../dots/DotsCapabilityRequirements";
 import { assertDotsWorkCompletion, dotsProjectTestCheck } from "../dots/DotsCompletion";
-import { DOTS_DESKTOP_PREVIEW, dotsOperationEnabled, resolveDotsPreferences } from "../../shared/dots-settings";
+import { DOTS_DESKTOP_PREVIEW, DOTS_RESIDENT_READ, dotsOperationEnabled, dotsResidentSources, resolveDotsPreferences } from "../../shared/dots-settings";
 import { CHAT_REPLY_INSTRUCTIONS } from "../../shared/chat-reply-content";
 import { createAnswerRuleExtension } from "./answer-rule-extension";
 import { registerLocalWorkflowTools } from "../capabilities/local-workflow-extension";
 import type { DotsActions } from "../dots/DotsActions";
 import { DOTS_ACTION, DOTS_MEMORY_READ_TOOLS, DOTS_MEMORY_TOOLS, assembleDotsPrompt, dotsExtension } from "../dots/DotsExtension";
+import { dotsResidentEnabled, dotsResidentExtension, type DotsResidentServices } from "../dots/DotsResidentExtension";
 import type { DotsDesktopPreview } from "../dots/DotsDesktopPreview";
 import { dotsDesktopPreviewExtension } from "../dots/DotsDesktopPreviewExtension";
 import { dotsCalendarContext } from "../dots/DotsCalendar";
@@ -583,9 +584,11 @@ export class AgentService {
   private localWorkflow?: Omit<LocalWorkflowBridge, "getPermissionMode">;
 
   private dotsActions?: DotsActions;
+  private dotsResident?: DotsResidentServices;
   private dotsDesktopPreview?: DotsDesktopPreview;
 
   setDotsActions(actions: DotsActions): void { this.dotsActions = actions; }
+  setDotsResident(services: DotsResidentServices): void { this.dotsResident = services; }
   setDotsDesktopPreview(preview: DotsDesktopPreview): void { this.dotsDesktopPreview = preview; }
 
   dotsMemoryReferenceCurrent(taskId: string, id: string, revision: number): boolean {
@@ -2075,6 +2078,7 @@ export class AgentService {
       const workflow = this.localWorkflow;
       const preview = this.dotsDesktopPreview;
       return durableDomainTools([dotsExtension(actions, () => this.settingsStore.read().dotsSettings), createAnswerRuleExtension(task.id, this.answerRouting),
+        ...(this.dotsResident ? [dotsResidentExtension(this.dotsResident, () => this.settingsStore.read().dotsSettings)] : []),
         ...(preview ? [dotsDesktopPreviewExtension({
           preview,
           enabled: () => dotsOperationEnabled(this.settingsStore.read().dotsSettings, DOTS_DESKTOP_PREVIEW),
@@ -2261,6 +2265,8 @@ export class AgentService {
     if (task.id === DOTS_TASK_ID) {
       if (name === DOTS_ACTION || name === "automation_exec") return true;
       const settings = this.settingsStore.read();
+      if (name === DOTS_RESIDENT_READ)
+        return Boolean(this.dotsResident) && dotsResidentSources.some(source => dotsResidentEnabled(settings.dotsSettings, source));
       if (!dotsOperationEnabled(settings.dotsSettings, name)) return false;
       if (name === DOTS_DESKTOP_PREVIEW) return Boolean(this.dotsDesktopPreview);
       if (["answer_rule_list", "answer_rule_save", "answer_rule_test"].includes(name)) {
@@ -2269,7 +2275,7 @@ export class AgentService {
       const memoryMode = this.dotsMemoryMode(settings);
       return memoryMode === "readWrite" ? DOTS_MEMORY_TOOLS.has(name) : memoryMode === "readOnly" && DOTS_MEMORY_READ_TOOLS.has(name);
     }
-    if (name === DOTS_ACTION) return false;
+    if (name === DOTS_ACTION || name === DOTS_RESIDENT_READ) return false;
     if (name === DOTS_TASK_END) return this.dotsWorkerActive(task.id);
     if (name === DOTS_RECOVER_COMMIT) return this.dotsWorkerActive(task.id) && task.permissionMode !== "readonly"
       && this.durableToolAllowed(task, "bash");
