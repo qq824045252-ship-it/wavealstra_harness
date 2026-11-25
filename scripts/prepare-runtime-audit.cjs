@@ -24,6 +24,16 @@ function verify(target, directory) {
   }
 }
 
+// The packed worker is the only copy of the state/restore protocol, so its own tests
+// gate the build. They run on CI (or with RUNTIME_AUDIT_TESTS=1) because they need a
+// writable temp dir and a C toolchain, which local dev shells do not always have.
+function verifyCrateTests(target, build) {
+  if (!process.env.CI && process.env.RUNTIME_AUDIT_TESTS !== "1") return;
+  execFileSync("cargo", [
+    "test", "--locked", "--release", "--target", platforms[target].target, "--target-dir", build,
+  ], { cwd: crate, stdio: "inherit", windowsHide: true, timeout: 900_000 });
+}
+
 function prepare(target) {
   if (target !== host) throw new Error(`Build runtime audit on its native host (${target})`);
   const { executable, target: triple } = platforms[target];
@@ -35,6 +45,8 @@ function prepare(target) {
   const fingerprint = createHash("sha256");
   for (const file of files) fingerprint.update(file).update("\0").update(fs.readFileSync(path.join(crate, file))).update("\0");
   const digest = fingerprint.digest("hex");
+  // Runs before the cache check: a cached binary still has to prove its tests pass.
+  verifyCrateTests(target, build);
   if (fs.existsSync(path.join(output, executable)) && fs.existsSync(receipt)
       && fs.readFileSync(receipt, "utf8") === digest) return;
   execFileSync("cargo", [

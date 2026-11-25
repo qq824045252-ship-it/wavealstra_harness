@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { currentNodePlatform } from "../platform/runtime";
 import { createGadgetCommandRunner, terminateGadgetCommands } from "../platform/gadget-commands";
 import { runGadgetHost, type GadgetHostOptions } from "./GadgetHost";
-import { createGadgetState, type GadgetStateAction, type GadgetStateReply } from "./GadgetState";
+import { createGadgetState, type GadgetStateAction, type GadgetStateAuthorization, type GadgetStateReply } from "./GadgetState";
 import { installGadgetClient } from "./GadgetClient";
 import { startGadgetProcessBackend } from "./GadgetProcessBackend";
 import type { GadgetJson } from "../../shared/gadget-backend";
@@ -22,6 +22,11 @@ interface RuntimeInstance {
   backend: boolean;
   commandPids: Set<number>;
   stateCalls: Set<Promise<void>>;
+  /** Identifies this host process; state writes carry it and are revoked with it. */
+  generation: string;
+  /** Invocations whose queued writes must no longer commit. */
+  retiredInvocations: Set<string>;
+  retired: boolean;
 }
 
 function hostScript(options: GadgetHostOptions): string {
@@ -80,6 +85,7 @@ export class GadgetRuntime {
       this.storage.materializeLegacyLocalHtmlRedirect(descriptor.id);
       const manifest = this.storage.readManifest(descriptor.id);
       const token = randomBytes(32).toString("hex");
+      const generation = randomUUID();
       const { dataPath, sourcePath } = this.storage.paths(descriptor.id);
       const nativeState = await this.runtimeAudit?.openGadgetState(dataPath);
       if (nativeState && nativeState.kind !== "opened") {
@@ -89,6 +95,7 @@ export class GadgetRuntime {
       const options: GadgetHostOptions = {
         gadgetId: descriptor.id, manifest, dataPath, token, nativeState: Boolean(nativeState),
         sdkSource: `(${installGadgetClient.toString()})(${JSON.stringify(token)});`, platform: currentNodePlatform,
+        generation,
       };
       // Deliver source over stdin: no token in argv, no extra packaged worker asset,
       // and no Windows command-line length limit for the embedded host.
@@ -105,6 +112,7 @@ export class GadgetRuntime {
       });
       const owned: RuntimeInstance = {
         child, state: starting, stderr: "", token, backend: Boolean(manifest.backend), commandPids: new Set(), stateCalls: new Set(),
+        generation, retiredInvocations: new Set(), retired: false,
       };
       instance = owned;
       this.instances.set(descriptor.id, owned);
@@ -112,6 +120,10 @@ export class GadgetRuntime {
         if (!message || typeof message !== "object" || !("type" in message)) return;
         if (message.type === "gadget-state" && nativeState?.kind === "opened") {
           this.acceptStateCall(owned, dataPath, nativeState.canonicalPath, message);
+          return;
+        }
+        if (message.type === "gadget-invocation-retired" && "invocationId" in message && typeof message.invocationId === "string") {
+          this.retireInvocation(owned, message.invocationId);
           return;
         }
         if (message.type === "backend-failure" && "message" in message && typeof message.message === "string") {
@@ -132,6 +144,7 @@ export class GadgetRuntime {
       child.once("close", (code, signal) => {
         if (this.instances.get(descriptor.id) !== owned) return;
         this.instances.delete(descriptor.id);
+        this.retireGeneration(owned);
         if (owned.commandPids.size) {
           this.commandCleanup.set(descriptor.id, { pids: new Set(owned.commandPids) });
           void this.cleanupCommands(descriptor.id).catch(error => console.warn("[GadgetRuntime] command cleanup failed", error));
@@ -225,13 +238,51 @@ export class GadgetRuntime {
       return;
     }
     const action = message.action as GadgetStateAction;
-    const pending = this.runtimeAudit.accessGadgetState(dataPath, canonicalPath, message.bucket, { ...action, writeId: randomUUID() })
-      .then(send, () => send(unavailable));
+    const authorization = this.authorizationOf(instance, message);
+    if (!authorization) {
+      send({ kind: "error", error: "STORAGE_UNAVAILABLE" });
+      return;
+    }
+    const pending = this.runtimeAudit.accessGadgetState(
+      dataPath, canonicalPath, message.bucket, { ...action, writeId: randomUUID() }, authorization,
+      // Evaluated when the request leaves the queue, not when it arrived here.
+      () => instance.retired || instance.retiredInvocations.has(authorization.invocationId),
+    ).then(send, () => send(unavailable));
     stateCalls.add(pending);
     void pending.then(() => stateCalls.delete(pending), () => stateCalls.delete(pending));
   }
 
+  /** Only this generation may write, and only with an authorization it actually issued. */
+  private authorizationOf(instance: RuntimeInstance, message: object): GadgetStateAuthorization | undefined {
+    if (!("authorization" in message) || !message.authorization || typeof message.authorization !== "object") return undefined;
+    const { generation, invocationId, expiresAt } = message.authorization as Record<string, unknown>;
+    if (generation !== instance.generation) return undefined;
+    if (typeof invocationId !== "string" || !invocationId || invocationId.length > 64) return undefined;
+    if (typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt < 0) return undefined;
+    return { generation, invocationId, expiresAt };
+  }
+
+  private retireInvocation(instance: RuntimeInstance, invocationId: string): void {
+    if (instance.retired || instance.retiredInvocations.has(invocationId)) return;
+    // Bound the set: a long-lived host retires one entry per cancelled action.
+    if (instance.retiredInvocations.size >= 256) {
+      const [oldest] = instance.retiredInvocations;
+      instance.retiredInvocations.delete(oldest);
+    }
+    instance.retiredInvocations.add(invocationId);
+    void this.runtimeAudit?.revokeGadgetInvocation(instance.generation, invocationId).catch(() => undefined);
+  }
+
+  /** Nothing this host process queued may commit once it is gone. */
+  private retireGeneration(instance: RuntimeInstance): void {
+    if (instance.retired) return;
+    instance.retired = true;
+    instance.retiredInvocations.clear();
+    void this.runtimeAudit?.revokeGadgetGeneration(instance.generation).catch(() => undefined);
+  }
+
   private fail(instance: RuntimeInstance, reason: "health_failure" | "startup_failure", error: string): GadgetRuntimeState {
+    this.retireGeneration(instance);
     instance.termination = {
       reason, occurredAt: Date.now(), error, pid: instance.child.pid,
       url: instance.state.url, stderr: instance.stderr,
@@ -309,6 +360,8 @@ export class GadgetRuntime {
     instance.termination ??= {
       reason, occurredAt: Date.now(), pid: instance.child.pid, url: instance.state.url,
     };
+    // Retire before the child goes away: nothing it queued may commit afterwards.
+    this.retireGeneration(instance);
     await new Promise<void>((resolve, reject) => {
       const child = instance.child;
       const finish = (): void => { clearTimeout(force); clearTimeout(deadline); resolve(); };

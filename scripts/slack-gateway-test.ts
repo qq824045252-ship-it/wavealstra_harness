@@ -402,6 +402,7 @@ try {
       listGatewayChannels: () => stored ? [stored] : [],
       upsertGatewayChannel: (row: any) => { if (failSave) throw new Error("fixture store failure"); stored = { ...row }; },
       insertGatewayMessage: () => undefined,
+      writeGatewayMessage: async () => undefined,
       getTask: () => ({ id: "native-task", welcomeMode: "coding", sessionFile: "fixture-session.jsonl" }),
     };
     const agent: GatewayAgentPort = {

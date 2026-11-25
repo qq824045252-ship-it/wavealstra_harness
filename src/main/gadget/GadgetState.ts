@@ -1,6 +1,19 @@
 import type { GadgetJson, GadgetStoredValue, GadgetValues } from "../../shared/gadget-backend";
 
 export type GadgetStateBucket = "storage" | "config";
+
+/**
+ * Who is allowed to commit a state change, and until when.
+ *
+ * A gadget action (or page request) gets its own `invocationId` and a deadline;
+ * backend/background activity uses `invocationId: "runtime"` with `expiresAt: 0`
+ * because it is revoked together with the runtime generation.
+ */
+export interface GadgetStateAuthorization {
+  generation: string;
+  invocationId: string;
+  expiresAt: number;
+}
 export type GadgetStateAction =
   | { operation: "keys" }
   | { operation: "read"; key: number[] }
@@ -16,7 +29,8 @@ export type GadgetStateReply =
   | { kind: "error"; error: string };
 
 /** Serialized into the owned Node host. Keep runtime dependencies inside this function. */
-export function createGadgetState(dataPath: string, defaults: Record<string, unknown>, native = false): {
+export function createGadgetState(dataPath: string, defaults: Record<string, unknown>, native = false,
+  authorize: () => GadgetStateAuthorization | undefined = () => undefined): {
   storage: GadgetValues;
   config: GadgetValues;
 } {
@@ -71,13 +85,15 @@ export function createGadgetState(dataPath: string, defaults: Record<string, unk
       const id = ++sequence;
       const reply = await new Promise<GadgetStateReply>((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        send({ type: "gadget-state", id, bucket, action }, (error) => {
+        send({ type: "gadget-state", id, bucket, action, authorization: authorize() }, (error) => {
           if (error && pending.delete(id)) reject(unavailable());
         });
       });
       if (reply.kind === "error") {
         const message = reply.error === "REVISION_CONFLICT" ? "数据已被修改，请重新读取后再保存"
-          : reply.error === "STORAGE_LIMIT" ? "Gadget 持久数据超过容量限制" : "Gadget 持久数据操作失败";
+          : reply.error === "STORAGE_LIMIT" ? "Gadget 持久数据超过容量限制"
+          : reply.error === "STALE_WRITE" ? "写入已失效，未提交（操作已结束或已取消）"
+          : "Gadget 持久数据操作失败";
         return fail(reply.error, message);
       }
       return reply;

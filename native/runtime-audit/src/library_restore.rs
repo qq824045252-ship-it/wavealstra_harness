@@ -530,6 +530,14 @@ fn apply(
     planned: &Plan,
     request: &Restore,
 ) -> Result<Receipt> {
+    // Everything slow happens before the write transaction opens: decode, flush the
+    // file body, chunk text and decode version snapshots. The transaction below only
+    // writes rows and links, so it cannot hold the database write lock behind file I/O.
+    let mut prepared = Vec::with_capacity(planned.items.len());
+    for destination in &planned.items {
+        let entry = &mut backup.items[destination.index];
+        prepared.push(prepare_item(entry, &destination.space, request)?);
+    }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if plan(&tx, &backup, order, request)? != *planned {
         return Err("资料位置或内容已变化，请刷新后重试".into());
@@ -548,9 +556,9 @@ fn apply(
         indexed_text: false,
         pending_extraction: false,
     };
-    for destination in &planned.items {
-        let entry = &mut backup.items[destination.index];
-        apply_item(&tx, entry, &destination.space, request, &mut receipt)?;
+    for (destination, item) in planned.items.iter().zip(prepared) {
+        let entry = &backup.items[destination.index];
+        write_item(&tx, &entry.item, &destination.space, request, item, &mut receipt)?;
     }
     tx.execute(
         "INSERT INTO library_restore_receipts(root,operation_id,result_json) VALUES(?1,?2,?3)
@@ -561,22 +569,94 @@ fn apply(
     Ok(receipt)
 }
 
-fn apply_item(
-    db: &Connection,
-    entry: &mut Entry,
-    space: &str,
-    request: &Restore,
-    receipt: &mut Receipt,
-) -> Result<()> {
+/// Everything that is expensive or touches the filesystem, computed before the transaction.
+struct PreparedItem {
+    size: i64,
+    content_hash: Option<String>,
+    staged: bool,
+    text: Option<PreparedText>,
+    versions: Vec<PreparedVersion>,
+}
+
+struct PreparedText {
+    /// Empty for large documents: their bodies stay out of FTS, as before.
+    body: String,
+    chunks: Vec<library_index::Chunk>,
+}
+
+struct PreparedVersion {
+    id: String,
+    version: i64,
+    content_hash: String,
+    created_by: String,
+    created_at: i64,
+    snapshot: Option<Vec<u8>>,
+}
+
+fn prepare_item(entry: &mut Entry, space: &str, request: &Restore) -> Result<PreparedItem> {
     let item = &entry.item;
     let path = library_text::managed_path(&request.root, space, &item.id, &item.filename);
-    let bytes = entry
-        .body
-        .take()
-        .map(|body| decode_base64(&body))
-        .transpose()?;
-    if let Some(bytes) = &bytes {
-        publish(&path, bytes, &request.operation_id, &item.id)?;
+    let bytes = entry.body.as_deref().map(decode_base64).transpose()?;
+    let staged = match &bytes {
+        Some(bytes) => Some(stage(&path, bytes, &request.operation_id, &item.id)?),
+        None => None,
+    };
+    let size = bytes.as_ref().map_or(0, Vec::len) as i64;
+    let visible = item.trashed_at.unwrap_or(0) == 0;
+    let text = if visible && matches!(item.kind.as_str(), "markdown" | "html" | "csv") {
+        if size as usize > library_text::LARGE_TEXT_BYTES {
+            let temp = staged.as_deref().ok_or("备份缺少资料内容")?;
+            let mut file = File::open(temp)?;
+            Some(PreparedText {
+                body: String::new(),
+                chunks: library_index::stage_streamed_text(
+                    &mut file,
+                    request.chunk_size,
+                    request.overlap,
+                )?,
+            })
+        } else {
+            let body = String::from_utf8_lossy(bytes.as_deref().unwrap_or_default()).into_owned();
+            let chunks =
+                library_index::document_chunks(&body, request.chunk_size, request.overlap)?;
+            Some(PreparedText { body, chunks })
+        }
+    } else {
+        None
+    };
+    let mut versions = Vec::with_capacity(entry.history.len());
+    for version in entry.history.drain(..) {
+        versions.push(PreparedVersion {
+            snapshot: version.body.map(|body| decode_base64(&body)).transpose()?,
+            id: version.id,
+            version: version.version,
+            content_hash: version.content_hash,
+            created_by: version.created_by,
+            created_at: version.created_at,
+        });
+    }
+    Ok(PreparedItem {
+        size,
+        content_hash: bytes
+            .as_ref()
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes))),
+        staged: staged.is_some(),
+        text,
+        versions,
+    })
+}
+
+fn write_item(
+    db: &Connection,
+    item: &Item,
+    space: &str,
+    request: &Restore,
+    prepared: PreparedItem,
+    receipt: &mut Receipt,
+) -> Result<()> {
+    let path = library_text::managed_path(&request.root, space, &item.id, &item.filename);
+    if prepared.staged {
+        commit_staged(&path, &request.operation_id, &item.id)?;
     }
     let visible = item.trashed_at.unwrap_or(0) == 0;
     let text = matches!(item.kind.as_str(), "markdown" | "html" | "csv");
@@ -594,44 +674,27 @@ fn apply_item(
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             &item.id, space, &item.collection_id, &item.kind, &item.title, &item.filename, &item.mime_type,
-            bytes.as_ref().map_or(0, Vec::len), &item.owner, item.favorite, &item.url,
+            prepared.size, &item.owner, item.favorite, &item.url,
             item.source_type.as_deref().unwrap_or("created"),
-            bytes.as_deref().map(|bytes| format!("{:x}", Sha256::digest(bytes))), extraction_status,
+            prepared.content_hash.as_deref(), extraction_status,
             item.created_at, item.updated_at, item.last_visited_at, item.trashed_at, serde_json::to_string(&item.note)?,
         ],
     )?;
-    if visible && text {
-        let bytes = bytes.as_deref().unwrap_or_default();
-        if bytes.len() > library_text::LARGE_TEXT_BYTES {
-            library_index::index_streamed_text(
-                db,
-                &item.id,
-                &mut File::open(&path)?,
-                item.updated_at,
-                request.chunk_size,
-                request.overlap,
-            )?;
-        } else {
-            let body = String::from_utf8_lossy(bytes);
-            let chunks =
-                library_index::document_chunks(&body, request.chunk_size, request.overlap)?;
-            library_index::index_inline_text(db, &item.id, &body, &chunks, item.updated_at)?;
-        }
+    if let Some(text) = &prepared.text {
+        library_index::index_inline_text(db, &item.id, &text.body, &text.chunks, item.updated_at)?;
         receipt.indexed_text = true;
     }
-    drop(bytes);
     receipt.pending_extraction |= extract;
-    for version in entry.history.drain(..) {
-        let snapshot = version.body.map(|body| decode_base64(&body)).transpose()?;
-        let version_path = if item.kind == "url" {
-            ""
-        } else {
-            path.to_str().ok_or("历史版本路径无效")?
-        };
+    let version_path = if item.kind == "url" {
+        ""
+    } else {
+        path.to_str().ok_or("历史版本路径无效")?
+    };
+    for version in prepared.versions {
         db.execute(
             "INSERT INTO library_versions(id,item_id,version,content_hash,path,created_by,created_at,snapshot)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![version.id, &item.id, version.version, version.content_hash, version_path, version.created_by, version.created_at, snapshot],
+            params![version.id, &item.id, version.version, version.content_hash, version_path, version.created_by, version.created_at, version.snapshot],
         )?;
     }
     Ok(())
@@ -668,7 +731,11 @@ pub(crate) fn reserve_file(
     Ok(())
 }
 
-pub(crate) fn publish(path: &Path, bytes: &[u8], operation: &str, item: &str) -> Result<()> {
+/// Write and flush a body before the caller opens its write transaction.
+///
+/// The staged link stays in place until `commit_staged`, so crash recovery can still
+/// prove which operation owns the destination file.
+pub(crate) fn stage(path: &Path, bytes: &[u8], operation: &str, item: &str) -> Result<PathBuf> {
     let parent = path.parent().ok_or("恢复目录不存在")?;
     if let Err(error) = fs::create_dir(parent) {
         if error.kind() != ErrorKind::AlreadyExists {
@@ -687,6 +754,13 @@ pub(crate) fn publish(path: &Path, bytes: &[u8], operation: &str, item: &str) ->
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
+    Ok(temp)
+}
+
+/// Publish a staged file inside the write transaction: one link plus a directory flush.
+pub(crate) fn commit_staged(path: &Path, operation: &str, item: &str) -> Result<()> {
+    let temp = staging_path(path, operation, item);
+    path.parent().ok_or("恢复目录不存在")?;
     match fs::hard_link(&temp, path) {
         Ok(()) => {}
         Err(error)
@@ -698,8 +772,13 @@ pub(crate) fn publish(path: &Path, bytes: &[u8], operation: &str, item: &str) ->
         Err(error) => return Err(error.into()),
     }
     #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
+    File::open(path.parent().ok_or("恢复目录不存在")?)?.sync_all()?;
     Ok(())
+}
+
+pub(crate) fn publish(path: &Path, bytes: &[u8], operation: &str, item: &str) -> Result<()> {
+    stage(path, bytes, operation, item)?;
+    commit_staged(path, operation, item)
 }
 
 struct RestoreFile {
@@ -803,4 +882,111 @@ pub fn recover(db: &mut Connection, root: &Path, operation: Option<&str>) -> Res
     }
     tx.commit()?;
     Ok(retained)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// `cleanup_file` only accepts real operation ids (36 hex/dash characters).
+    const OPERATION: &str = "00000000-0000-0000-0000-000000000000";
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> Fixture {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "mybuddy-library-restore-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)
+            .unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        Fixture(root)
+    }
+
+    fn reservation_db(root: &Path) -> Connection {
+        let db = Connection::open_in_memory().expect("open memory database");
+        db.execute_batch(
+            "CREATE TABLE library_items(id TEXT PRIMARY KEY);
+             CREATE TABLE library_spaces(id TEXT PRIMARY KEY);
+             CREATE TABLE library_restore_files(root TEXT, operation_id TEXT, space_id TEXT, item_id TEXT, filename TEXT);
+             INSERT INTO library_spaces VALUES ('space-1');",
+        )
+        .expect("create schema");
+        db.execute(
+            "INSERT INTO library_restore_files VALUES (?1,'{}','space-1','item-1','note.md')",
+            params![root.to_str().expect("root path")],
+        )
+        .expect("reserve file");
+        db
+    }
+
+    fn job() -> RestoreFile {
+        RestoreFile {
+            operation: OPERATION.to_owned(),
+            space: "space-1".to_owned(),
+            item: "item-1".to_owned(),
+            filename: "note.md".to_owned(),
+        }
+    }
+
+    fn managed(root: &Path) -> PathBuf {
+        library_text::managed_path(root, "space-1", "item-1", "note.md")
+    }
+
+    #[test]
+    fn a_staged_body_is_only_published_by_commit() {
+        let fixture = fixture();
+        let path = managed(&fixture.0);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create managed folder");
+        let temp = stage(&path, b"body", OPERATION, "item-1").expect("stage");
+        assert!(temp.exists() && !path.exists(), "staging must not publish");
+        commit_staged(&path, OPERATION, "item-1").expect("commit");
+        assert_eq!(fs::read(&path).expect("read"), b"body");
+        assert!(
+            same_file::is_same_file(&temp, &path).expect("same file"),
+            "publish links the staged file, it does not copy it"
+        );
+        fs::remove_file(&temp).expect("remove staging link");
+        assert!(
+            commit_staged(&path, OPERATION, "item-1").is_err(),
+            "a missing staging link must not overwrite the destination"
+        );
+    }
+
+    #[test]
+    fn recovery_removes_staged_and_uncommitted_files() {
+        let fixture = fixture();
+        let db = reservation_db(&fixture.0);
+        let path = managed(&fixture.0);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create managed folder");
+
+        // Staged but never published.
+        let temp = stage(&path, b"body", OPERATION, "item-1").expect("stage");
+        cleanup_file(&db, &fixture.0, &job()).expect("cleanup");
+        assert!(!temp.exists() && !path.exists(), "an interrupted stage leaves nothing");
+
+        // Published but the row was never committed.
+        stage(&path, b"body", OPERATION, "item-1").expect("stage");
+        commit_staged(&path, OPERATION, "item-1").expect("commit");
+        cleanup_file(&db, &fixture.0, &job()).expect("cleanup");
+        assert!(!path.exists(), "a file without its row is cleaned up");
+
+        // Committed: the file stays, only the staging link goes.
+        let temp = stage(&path, b"body", OPERATION, "item-1").expect("stage");
+        commit_staged(&path, OPERATION, "item-1").expect("commit");
+        db.execute("INSERT INTO library_items VALUES ('item-1')", [])
+            .expect("commit row");
+        cleanup_file(&db, &fixture.0, &job()).expect("cleanup");
+        assert!(path.exists() && !temp.exists(), "a committed item keeps its file");
+    }
 }

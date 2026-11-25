@@ -238,6 +238,8 @@ const DATASET_TESTS = new Set([
   "test:dots-memory-scale",
   "test:dots-memory-longmemeval",
   "test:durable-context-cold-store", // Explicit large generated JSONL corpus (1K/10K/100K), not a per-edit default run.
+  "test:runtime-audit-native-contract", // Real native worker binary (prepare-runtime-audit.cjs); missing binary must fail.
+  "test:core-supervisor", // Same binary; proves the supervisor keeps the worker alive across clients.
   "test:google-workspace-write", // Existing POSIX Python runtime required for isolated SDK subprocess fixtures.
   // node-pty 原生模块 + 真实 pty。
   "test:terminal",

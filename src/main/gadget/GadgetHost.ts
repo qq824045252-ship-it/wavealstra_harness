@@ -1,7 +1,7 @@
 import type { GadgetBackend, GadgetBackendContext, GadgetJson, GadgetValues } from "../../shared/gadget-backend";
 import type { GadgetManifest } from "../../shared/gadget-types";
 import type { createGadgetCommandRunner } from "../platform/gadget-commands";
-import type { createGadgetState } from "./GadgetState";
+import type { GadgetStateAuthorization, createGadgetState } from "./GadgetState";
 import type { startGadgetProcessBackend } from "./GadgetProcessBackend";
 
 export interface GadgetHostOptions {
@@ -12,6 +12,8 @@ export interface GadgetHostOptions {
   sdkSource: string;
   platform: NodeJS.Platform;
   nativeState: boolean;
+  /** Identifies this host process; state writes are revoked with the generation. */
+  generation: string;
 }
 
 /** This entire function runs in the owned Electron Node process, never in a webpage. */
@@ -25,12 +27,19 @@ export async function runGadgetHost(
   const fs: typeof import("node:fs") = require("node:fs");
   const path: typeof import("node:path") = require("node:path");
   const { pathToFileURL }: typeof import("node:url") = require("node:url");
-  const { timingSafeEqual }: typeof import("node:crypto") = require("node:crypto");
+  const { timingSafeEqual, randomUUID }: typeof import("node:crypto") = require("node:crypto");
   const { AsyncLocalStorage }: typeof import("node:async_hooks") = require("node:async_hooks");
-  const invocationSignals = new AsyncLocalStorage<AbortSignal>();
+  type InvocationScope = { signal: AbortSignal; authorization: GadgetStateAuthorization };
+  const invocationScopes = new AsyncLocalStorage<InvocationScope>();
+  // Backend and background activity is authorized by the runtime, not by one action.
+  const runtimeAuthorization: GadgetStateAuthorization = {
+    generation: options.generation, invocationId: "runtime", expiresAt: 0,
+  };
+  const currentAuthorization = (): GadgetStateAuthorization =>
+    invocationScopes.getStore()?.authorization ?? runtimeAuthorization;
   const root = fs.realpathSync(process.cwd());
   const lifetime = new AbortController();
-  const state = createState(options.dataPath, options.manifest.defaultConfig ?? {}, options.nativeState);
+  const state = createState(options.dataPath, options.manifest.defaultConfig ?? {}, options.nativeState, currentAuthorization);
   const declaration = options.manifest.backend;
   const processBackend = declaration && "kind" in declaration ? declaration : undefined;
   const commands = createCommands({
@@ -57,7 +66,7 @@ export async function runGadgetHost(
     if (logs.length > 100) logs.shift();
   }
   function context(signal: AbortSignal): GadgetBackendContext {
-    const currentSignal = (): AbortSignal => invocationSignals.getStore() ?? signal;
+    const currentSignal = (): AbortSignal => invocationScopes.getStore()?.signal ?? signal;
     function values(bucket: typeof state.storage): typeof state.storage {
       return {
         async get(key) { currentSignal().throwIfAborted(); return bucket.get(key); },
@@ -150,20 +159,29 @@ export async function runGadgetHost(
     const controller = new AbortController();
     active.add(controller);
     const signal = AbortSignal.any([controller.signal, lifetime.signal]);
+    const budget = options.manifest.backend?.timeoutMs ?? 30_000;
+    const authorization: GadgetStateAuthorization = {
+      generation: options.generation, invocationId: randomUUID(), expiresAt: Date.now() + budget,
+    };
+    // A cancelled or timed-out action must not commit whatever it queued earlier.
+    const retire = (reason: string): void => {
+      process.send?.({ type: "gadget-invocation-retired", invocationId: authorization.invocationId, reason });
+    };
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let rejectCancelled: (reason: unknown) => void = () => undefined;
     const cancelled = new Promise<never>((_resolve, reject) => { rejectCancelled = reject; });
     const onAbort = () => {
       rejectCancelled(signal.reason);
+      retire("aborted");
       // A non-cooperative handler must not keep mutating data after cancellation.
       watchdog = setTimeout(() => { void shutdown(1); }, 300);
     };
     signal.addEventListener("abort", onAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(failure("ACTION_TIMEOUT", "后台操作超时；不会自动重放", 504)), options.manifest.backend?.timeoutMs ?? 30_000);
+    const timeout = setTimeout(() => controller.abort(failure("ACTION_TIMEOUT", "后台操作超时；不会自动重放", 504)), budget);
     const disconnected = () => { if (!response.writableEnded) controller.abort(failure("CANCELLED", "请求已取消；远端写入结果可能未知", 499)); };
     response.once("close", disconnected);
     note("info", `开始 ${name}`);
-    const operation = Promise.resolve().then(() => invocationSignals.run(signal, () => {
+    const operation = Promise.resolve().then(() => invocationScopes.run({ signal, authorization }, () => {
       signal.throwIfAborted();
       // input originates exclusively from parsed JSON.
       return action((input === undefined ? null : input) as GadgetJson, context(signal));
@@ -217,7 +235,18 @@ export async function runGadgetHost(
         if (route.startsWith("/__mybuddy/actions/")) { await invoke(route.slice("/__mybuddy/actions/".length), input.input, response); return; }
         if (route === "/__mybuddy/storage" || route === "/__mybuddy/config") {
           const values = route.endsWith("/config") ? state.config : state.storage;
-          respond(response, 200, await valueOperation(values, input)); return;
+          // page requests are bounded by the server's own 15s request budget
+          const authorization: GadgetStateAuthorization = {
+            generation: options.generation, invocationId: randomUUID(), expiresAt: Date.now() + 15_000,
+          };
+          const retire = (): void => {
+            process.send?.({ type: "gadget-invocation-retired", invocationId: authorization.invocationId, reason: "page-request" });
+          };
+          response.once("close", retire);
+          const result = await invocationScopes.run({ signal: lifetime.signal, authorization },
+            () => valueOperation(values, input));
+          response.off("close", retire);
+          respond(response, 200, result); return;
         }
         throw failure("NOT_FOUND", "接口不存在", 404);
       }

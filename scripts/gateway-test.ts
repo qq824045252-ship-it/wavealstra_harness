@@ -90,6 +90,32 @@ async function dbTest(): Promise<void> {
     } finally {
       db.connection.exec("DROP TABLE temp.gateway_messages");
     }
+    // A read-only host connection makes a stored row proof that the worker wrote it.
+    const nativeMessage = {
+      channelId: "telegram-default", chatId: "native", direction: "out" as const,
+      senderId: "456", senderName: "alice", text: "worker 写入", at: 4001,
+    };
+    db.connection.pragma("query_only = ON");
+    try {
+      let hostRefused = false;
+      try {
+        db.insertGatewayMessage({ channelId: "telegram-default", chatId: "native", direction: "out", text: "宿主直写", at: 4000 });
+      } catch {
+        hostRefused = true;
+      }
+      assert(hostRefused, "宿主连接 query_only 后直接写入被拒绝（夹具自检）");
+      await db.writeGatewayMessage(nativeMessage);
+      const written = db.listGatewayMessages({ channelId: "telegram-default", chatId: "native" });
+      assert(written.length === 1 && written[0].text === "worker 写入" &&
+        written[0].senderId === "456" && written[0].senderName === "alice",
+      "query_only 下 writeGatewayMessage 仍落库且发送者字段完整（由 Rust 写入）");
+      await db.writeGatewayMessage(nativeMessage);
+      assert(db.listGatewayMessages({ channelId: "telegram-default", chatId: "native" }).length === 1, "重放相同事件不重复落库");
+      await db.writeGatewayMessage({ ...nativeMessage, text: "同一时刻另一条" });
+      assert(db.listGatewayMessages({ channelId: "telegram-default", chatId: "native" }).length === 2, "同一时刻不同文本仍然追加");
+    } finally {
+      db.connection.pragma("query_only = OFF");
+    }
   }
 
   // 容量控制：>3000 条裁剪到 3000
@@ -126,6 +152,52 @@ async function dbTest(): Promise<void> {
   await db.runtimeAuditReader?.close();
   db.close();
   rmSync(dir, { recursive: true, force: true });
+}
+
+async function gatewayMessageWriteTest(): Promise<void> {
+  console.log("== 消息写入：Rust 优先 / needsHost 回退 / 未知结果拒绝 ==");
+  const dir = mkdtempSync(join(tmpdir(), "gw-write-"));
+  const db = new AppDatabase(join(dir, "write.db"));
+  const withWriter = (appendGatewayMessage: (message: unknown) => Promise<unknown>): void => {
+    Object.assign(db, { runtimeAuditReader: { appendGatewayMessage, close: async () => undefined } });
+  };
+  const row = (chatId: string) => db.listGatewayMessages({ channelId: "telegram-default", chatId });
+  try {
+    // The writer owns the row: the host copy must stay empty, otherwise a replay doubles it.
+    let calls = 0;
+    withWriter(async () => { calls++; return { status: "saved" }; });
+    await db.writeGatewayMessage({ channelId: "telegram-default", chatId: "saved", direction: "in", text: "worker", at: 1000 });
+    assert(calls === 1 && row("saved").length === 0, "worker 回 saved 时宿主不再重复写入");
+
+    // An unknown outcome is not permission to write the host copy.
+    withWriter(async () => undefined);
+    let rejected = "";
+    await db.writeGatewayMessage({ channelId: "telegram-default", chatId: "unknown", direction: "in", text: "未知", at: 2000 })
+      .catch(error => { rejected = String((error as Error)?.message ?? error); });
+    assert(rejected.includes("未收到消息保存确认"), `结果未知时报错，实际：${rejected}`);
+    assert(row("unknown").length === 0, "结果未知时宿主表没有写入");
+
+    // An explicit needsHost is the only path that writes through the host primitive.
+    calls = 0;
+    withWriter(async () => { calls++; return { status: "needsHost" }; });
+    await db.writeGatewayMessage({
+      channelId: "telegram-default", chatId: "fallback", direction: "in", senderName: "alice", text: "宿主", at: 3000,
+    });
+    const fallback = row("fallback");
+    assert(calls === 1 && fallback.length === 1 && fallback[0].text === "宿主" && fallback[0].senderName === "alice",
+      "writer 明确 needsHost 时由宿主原语落库");
+
+    // Inside a host transaction the worker is skipped, so the row joins that transaction.
+    calls = 0;
+    withWriter(async () => { calls++; return { status: "saved" }; });
+    db.transaction(() => {
+      void db.writeGatewayMessage({ channelId: "telegram-default", chatId: "transaction", direction: "in", text: "事务内", at: 4000 });
+    });
+    assert(calls === 0 && row("transaction").length === 1, "宿主事务内跳过 worker，直接随事务落库");
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function telegramTextTest(): void {
@@ -287,6 +359,7 @@ async function telegramE2eTest(): Promise<void> {
 
 async function main(): Promise<void> {
   await dbTest();
+  await gatewayMessageWriteTest();
   telegramTextTest();
   idempotencyTest();
   // 等待异步过期断言完成

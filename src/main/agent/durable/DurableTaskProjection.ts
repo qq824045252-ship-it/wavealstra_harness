@@ -39,6 +39,14 @@ export class DurableTaskProjection {
       const result = await this.rust.writeDurableTaskProjection(request);
       if (result?.status === "applied") return { activityAt: activityTimeOrUndefined(result.activityAt), workspaces: result.workspaces };
       if (result?.status === "rejected") throw new Error(result.message);
+      // Only an explicit "needsHost" may fall back. A missing reply means the native
+      // write may or may not have committed, so a second host write would publish a
+      // conflicting projection (for example a stale status or a lost workspace origin).
+      if (result?.status !== "needsHost") {
+        throw Object.assign(new Error("Durable 任务投影结果未知：原生写入未确认，不会回退到 Node 写入"), {
+          code: "DURABLE_PROJECTION_UNKNOWN",
+        });
+      }
     }
     this.applyOnHost ??= hostProjection(this.db);
     return this.applyOnHost.immediate(request);
@@ -46,7 +54,11 @@ export class DurableTaskProjection {
 }
 
 function hostProjection(db: Database) {
-  const setStatus = db.prepare("UPDATE tasks SET status = ? WHERE id = ? AND status IS NOT ?");
+  // A projection that arrives late with an older activity time must not move the status
+  // backwards; disconnects and retries deliver snapshots out of order.
+  const setStatus = db.prepare(
+    "UPDATE tasks SET status = @status WHERE id = @taskId AND status IS NOT @status AND (@activityAt IS NULL OR @activityAt >= updated_at)",
+  );
   const touchUpdatedAt = db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ? AND updated_at < ?");
   const readUpdatedAt = db.prepare("SELECT updated_at FROM tasks WHERE id = ?");
   const rememberMessage = db.prepare(`INSERT OR IGNORE INTO durable_bot_message_workspaces (task_id, message_id, cwd)
@@ -57,7 +69,10 @@ function hostProjection(db: Database) {
   return db.transaction((request: RuntimeDurableTaskProjectionRequest): TaskProjection => {
     let activityAt: number | undefined;
     if (request.kind === "snapshot") {
-      setStatus.run(request.status, request.taskId, request.status);
+      // Only a positive activity time orders the write; anything else carries no ordering.
+      const ordering = typeof request.activityAt === "number" && Number.isFinite(request.activityAt) && request.activityAt > 0
+        ? request.activityAt : null;
+      setStatus.run({ status: request.status, taskId: request.taskId, activityAt: ordering });
       const candidate = request.activityAt;
       if (candidate !== undefined && touchUpdatedAt.run(candidate, request.taskId, candidate).changes > 0) activityAt = candidate;
       else {

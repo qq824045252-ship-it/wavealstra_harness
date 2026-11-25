@@ -870,7 +870,7 @@ export class AgentService {
       emitLifecycle: (event) => this.emitTaskLifecycle(event),
     });
     // Project 域：resolver（上下文装配）与 service（计划工具 CRUD）共享同一 repository
-    const projectRepository = new ProjectRepository(db.connection);
+    const projectRepository = new ProjectRepository(db.connection, this.runtimeAuditReader);
     this.memoryService = new MemoryService(db);
     this.workMemoryCapture = new WorkMemoryCapture(db, this.memoryService, () => this.notifyMemoryChanged({ scope: "settings" }));
     this.memoryOrganization = new MemoryOrganizationService(db, this.memoryService, () => {

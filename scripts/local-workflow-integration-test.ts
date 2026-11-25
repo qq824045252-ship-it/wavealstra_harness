@@ -341,7 +341,7 @@ try {
     userMessageId: "pstack-input", assistantMessageId: "pstack-output" };
   db.upsertTask({ id: request.taskId, title: "Workflow", ...selected, modelId: request.modelId, updatedAt: 1 });
   const workflowRoot = workspaces.ensureTaskExecutionWorkspace(request.taskId);
-  writeFileSync(join(workflowRoot, "check.cjs"), "const assert = require('node:assert/strict'); assert.equal(require('fs').readFileSync('tested.txt','utf8'), 'verified\\n'); console.log('HOST_RECEIPT_CHECK_PASSED');");
+  writeFileSync(join(workflowRoot, "check.cjs"), "const assert = require('node:assert/strict'); assert.equal(require('fs').readFileSync('tested.txt','utf8').replace(/\\r\\n/g,'\\n'), 'verified\\n'); console.log('HOST_RECEIPT_CHECK_PASSED');");
   const firstCodingRequest = requests.length;
   await agent.prompt(request, { durableAdmissionOnly: false });
   assert(requests[firstCodingRequest].includes("Optional pstack workflow") && requests[firstCodingRequest].includes("按本轮话语和对话上下文判断用户的意图"));
@@ -500,7 +500,11 @@ try {
   assert.equal(reviewer.workspace.kind,"worktree");
   assert.equal(reviewer.probes.length,1);
   assert.equal(reviewer.probes[0].command,interrogateCommand);
-  assert.equal(reviewer.probes[0].exitCode,0);
+  assert.equal(reviewer.probes[0].exitCode,0, JSON.stringify({
+    command: reviewer.probes[0].command,
+    output: reviewer.probes[0].output,
+    workspace: reviewer.workspace,
+  }));
   assert.match(reviewer.probes[0].executionId,/./);
   assert.deepEqual(reviewer.findings,[]);
   assert(explicitReviewBodies.some(body=>body.model==="observer" && body.tools.some((tool:{name:string})=>tool.name===interrogateShell)),

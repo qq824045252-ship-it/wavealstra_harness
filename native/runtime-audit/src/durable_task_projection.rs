@@ -79,9 +79,14 @@ fn apply(
             activity_at,
             workspaces,
         } => {
-            tx.prepare_cached("UPDATE tasks SET status = ?2 WHERE id = ?1 AND status IS NOT ?2")?
-                .execute(params![task_id, status])?;
             let candidate = activity_at.filter(|value| value.is_finite() && *value > 0.0);
+            // Ordering guard: a projection that arrives late with an older activity time must
+            // not move the status backwards (disconnects and retries deliver out of order).
+            tx.prepare_cached(
+                "UPDATE tasks SET status = ?2 WHERE id = ?1 AND status IS NOT ?2
+                   AND (?3 IS NULL OR ?3 >= updated_at)",
+            )?
+            .execute(params![task_id, status, candidate])?;
             let advanced = match candidate {
                 Some(value) => {
                     tx.prepare_cached(

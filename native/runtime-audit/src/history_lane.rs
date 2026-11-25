@@ -45,7 +45,9 @@ fn history_worker() -> io::Result<(SyncSender<Job>, thread::JoinHandle<io::Resul
     Ok((tx, handle))
 }
 
-type Input = Receiver<serde_json::Result<Request>>;
+/// Each item carries the transport id sent with the request (absent when the caller
+/// omitted it), so replies can be correlated instead of relying on lane order.
+type Input = Receiver<(Option<String>, serde_json::Result<Request>)>;
 pub(super) fn route_input() -> io::Result<(Input, thread::JoinHandle<io::Result<()>>)> {
     let (tx, rx) = mpsc::sync_channel(8);
     let input = thread::Builder::new()
@@ -54,7 +56,19 @@ pub(super) fn route_input() -> io::Result<(Input, thread::JoinHandle<io::Result<
             let mut history = None;
             for line in io::stdin().lock().lines() {
                 let line = line?;
-                match serde_json::from_str(&line) {
+                // Read the id before the typed request: no operation variant declares it.
+                let value: Value = match serde_json::from_str(&line) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if tx.send((None, Err(error))).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let transport: Option<String> =
+                    value.get("requestId").and_then(Value::as_str).map(str::to_owned);
+                match serde_json::from_value::<Request>(value) {
                     Ok(Request::HistoryRead {
                         request_id,
                         session,
@@ -93,12 +107,12 @@ pub(super) fn route_input() -> io::Result<(Input, thread::JoinHandle<io::Result<
                             if let Some(id) = request_id {
                                 reply(id, None)?;
                             }
-                        } else if tx.send(Err(error)).is_err() {
+                        } else if tx.send((transport, Err(error))).is_err() {
                             break;
                         }
                     }
                     other => {
-                        if tx.send(other).is_err() {
+                        if tx.send((transport, other)).is_err() {
                             break;
                         }
                     }

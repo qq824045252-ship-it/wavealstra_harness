@@ -375,6 +375,36 @@ pub(crate) fn index_inline_text(
     Ok(())
 }
 
+/// Chunk a streamed document without touching the database, so a caller that must
+/// hold a write transaction can keep it to row inserts only.
+pub(crate) fn stage_streamed_text(
+    file: &mut File,
+    chunk_size: usize,
+    overlap: usize,
+) -> Result<Vec<Chunk>> {
+    library_text::validate_chunk_sizes(chunk_size, overlap)?;
+    let metadata = file.metadata()?;
+    let mut chunks = Vec::new();
+    library_text::stream_document(
+        file,
+        &metadata,
+        chunk_size,
+        overlap,
+        |_| Ok(true),
+        |units, offset| {
+            if let Some((content, hash)) = library_text::chunk_content(units)? {
+                chunks.push(Chunk {
+                    content,
+                    hash,
+                    offset,
+                });
+            }
+            Ok(())
+        },
+    )?;
+    Ok(chunks)
+}
+
 pub(crate) fn index_streamed_text(
     db: &Connection,
     id: &str,

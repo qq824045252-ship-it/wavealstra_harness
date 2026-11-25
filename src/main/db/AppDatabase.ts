@@ -25,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { getDbPath, getLibraryDir, mapLegacyRootPath } from "../paths";
-import { RuntimeAuditReader, type RuntimeDueTrashedTask, type RuntimeWorkspaceLabel, type RuntimeWorkspaceQuery, type TaskArchivePurgeScope } from "../platform/runtime-audit";
+import { RuntimeAuditReader, type RuntimeDueTrashedTask, type RuntimeGatewayMessageWrite, type RuntimeWorkspaceLabel, type RuntimeWorkspaceQuery, type TaskArchivePurgeScope } from "../platform/runtime-audit";
 import type { TrashedTaskDto } from "../../shared/archive-deletion";
 import type { ArchiveTaskCandidate } from "../task/ArchivedContentDeletion";
 import { insertCronRun, writeCronRun, type CronRunWrite } from "./CronRunPersistence";
@@ -3657,18 +3657,27 @@ export class AppDatabase {
 
   async writeTaskDoneAck(id: string, ackedAt?: number): Promise<boolean> {
     const at = ackedAt ?? Date.now();
-    const native = Number.isSafeInteger(at) ? await this.runtimeAuditReader?.acknowledgeTaskDone(id, at) : undefined;
-    return native ?? this.ackTaskDone(id, at);
+    const reader = this.runtimeAuditReader;
+    if (!reader || !Number.isSafeInteger(at)) return this.ackTaskDone(id, at);
+    const native = await reader.acknowledgeTaskDone(id, at);
+    if (native !== undefined) return native;
+    // `max(done_acked_at, at)` makes the replay converge; record that it happened.
+    reader.noteFallback("taskDoneAck");
+    return this.ackTaskDone(id, at);
   }
 
   async writeTaskSidebar(edit: TaskSidebarEdit, draftCwd?: () => string | undefined): Promise<string | undefined> {
     if (edit.id === DOTS_TASK_ID) return;
     const next = edit.kind === "rename" ? { ...edit, updatedAt: advanceActivity(undefined, edit.updatedAt) } : edit;
     const operation = this.taskSidebarTail.then(async () => {
-      const native = next.kind === "favorite" || Number.isSafeInteger(next.updatedAt)
-        ? await this.runtimeAuditReader?.editTaskSidebar(next) : undefined;
-      if (native?.status === "saved") return native.projectId ?? undefined;
-      if (native?.status === "unavailable") throw new Error("任务已进入回收站");
+      const attempted = next.kind === "favorite" || Number.isSafeInteger(next.updatedAt);
+      if (attempted && this.runtimeAuditReader) {
+        const native = await this.runtimeAuditReader.editTaskSidebar(next);
+        if (native?.status === "saved") return native.projectId ?? undefined;
+        if (native?.status === "unavailable") throw new Error("任务已进入回收站");
+        // `missing` is a definite answer; silence replays the same monotonic edit on the host.
+        if (native === undefined) this.runtimeAuditReader.noteFallback("taskSidebar");
+      }
       return this.writeTaskSidebarOnHost(next, draftCwd);
     });
     this.taskSidebarTail = operation.catch(() => undefined);
@@ -4198,7 +4207,13 @@ export class AppDatabase {
   writeCronPlan(mutation: CronPlanWrite): boolean | Promise<boolean> {
     const writeOnHost = () => this.db.open && writeCronPlan(this.db, mutation);
     if (!this.runtimeAuditReader || this.db.inTransaction) return writeOnHost();
-    return this.runtimeAuditReader.writeCronPlan(mutation).then(applied => applied ?? writeOnHost());
+    return this.runtimeAuditReader.writeCronPlan(mutation).then(applied => {
+      if (applied !== undefined) return applied;
+      // A guarded upsert replay converges, so recovering on the host is safe — but it is a
+      // fallback, and it must be visible instead of looking like a normal plan write.
+      this.runtimeAuditReader?.noteFallback("cronPlan");
+      return writeOnHost();
+    });
   }
 
   getCronJob(id: string): CronJobDto | undefined {
@@ -4234,7 +4249,11 @@ export class AppDatabase {
     // insert resolves that binding inside the same transaction as the run.
     const spaceId = mutation.kind === "start" ? mutation.newTask?.spaceId : undefined;
     if (spaceId && !this.db.prepare("SELECT 1 FROM spaces WHERE id = ?").get(spaceId)) return writeOnHost();
-    return reader.writeCronRun(mutation).then(result => result ?? writeOnHost());
+    return reader.writeCronRun(mutation).then(result => {
+      if (result !== undefined) return result;
+      reader.noteFallback("cronRun");
+      return writeOnHost();
+    });
   }
 
   recoverCronRuns(): void {
@@ -4319,15 +4338,7 @@ export class AppDatabase {
     upsertGatewayChannel(this.db, channel);
   }
 
-  insertGatewayMessage(msg: {
-    channelId: string;
-    chatId: string;
-    direction: string;
-    senderId?: string;
-    senderName?: string;
-    text: string;
-    at: number;
-  }): void {
+  insertGatewayMessage(msg: RuntimeGatewayMessageWrite): void {
     this.db
       .prepare(
         `INSERT INTO gateway_messages (channel_id, chat_id, direction, sender_id, sender_name, text, created_at)
@@ -4350,6 +4361,22 @@ export class AppDatabase {
          )`,
       )
       .run();
+  }
+
+  /**
+   * Appends one gateway log row through the resident worker. The host insert runs only
+   * after the writer declines with `needsHost`; an unknown outcome throws instead of
+   * writing a second copy that a transport retry would then keep as a duplicate.
+   */
+  async writeGatewayMessage(msg: RuntimeGatewayMessageWrite): Promise<void> {
+    const native = this.runtimeAuditReader;
+    // Inside a host transaction the worker's connection would queue behind our own
+    // write lock, so the row joins the transaction that is already open.
+    if (!native || this.db.inTransaction) return this.insertGatewayMessage(msg);
+    const result = await native.appendGatewayMessage(msg);
+    if (result?.status === "saved") return;
+    if (result?.status === "needsHost") return this.insertGatewayMessage(msg);
+    throw new Error("未收到消息保存确认");
   }
 
   async readGatewayMessages(opts: GatewayListMessagesRequest): Promise<GatewayMessageDto[]> {

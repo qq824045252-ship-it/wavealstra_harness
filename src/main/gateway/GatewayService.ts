@@ -850,9 +850,10 @@ export class GatewayService {
   private emitEvent(ev: GatewayEventDto): void {
     ev = { ...ev, text: this.secrets.redact(ev.text),
       ...(ev.senderName ? { senderName: this.secrets.redact(ev.senderName) } : {}) };
-    // 落库（历史可查、重启不丢）
-    try {
-      this.db.insertGatewayMessage({
+    // Persisted so history survives a restart: the resident worker owns the write, and a
+    // failure is only logged — the transport never waits for it.
+    void this.db
+      .writeGatewayMessage({
         channelId: ev.channelId,
         chatId: ev.chatId ?? "",
         direction: ev.direction,
@@ -860,10 +861,10 @@ export class GatewayService {
         senderName: ev.senderName,
         text: ev.text,
         at: ev.at,
+      })
+      .catch((err) => {
+        console.warn("[Gateway] 消息落库失败", this.secrets.error(err));
       });
-    } catch (err) {
-      console.warn("[Gateway] 消息落库失败", this.secrets.error(err));
-    }
     broadcast(GatewayIpc.event, ev);
     try { this.workNotificationWake?.(); }
     catch { /* Observation failure cannot roll back a committed transport action. */ }

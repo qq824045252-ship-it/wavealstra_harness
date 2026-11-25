@@ -12,6 +12,8 @@ mod branch_title;
 mod code_review_data;
 mod connector_import;
 mod connector_install;
+mod core_lease;
+mod core_supervisor;
 mod connector_market;
 mod cron_data;
 mod cron_plan;
@@ -179,6 +181,10 @@ enum Request {
     },
     ReadGatewayMessages {
         query: gateway_message_data::Query,
+    },
+    GatewayMessageWriteSupported,
+    AppendGatewayMessage {
+        message: gateway_message_data::Append,
     },
     CodeReviewData {
         query: code_review_data::Query,
@@ -722,6 +728,7 @@ enum Data {
     MaterialRetrievalData(material_retrieval_data::Reply),
     TaskTrashRestore(task_trash_restore::Reply),
     GatewayMessages(Option<Vec<gateway_message_data::Message>>),
+    GatewayMessageWrite(gateway_message_data::WriteReply),
     WorkGraphRepair(work_graph_integrity::RepairReply),
     DurableTaskProjection(durable_task_projection::Reply),
     DurableWorkspaceMove(durable_workspace_move_data::Reply),
@@ -772,18 +779,29 @@ enum Reply {
     Error,
 }
 
+/// The id a request was dispatched with. Absent when the caller sent none; such a
+/// request is still served, and its reply simply carries no `replyId`.
+type RequestId = Option<String>;
+
 #[derive(Serialize)]
-struct WireReply {
+#[serde(rename_all = "camelCase")]
+struct WireReply<'a> {
+    /// Every reply advertises the multiplexed history lane (origin's handshake).
     #[serde(rename = "historyLane")]
     history_lane: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_id: Option<&'a str>,
     inference: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     scan: Option<bool>,
+    /// Set only by the maintenance thread, so an id-less reply still names its lane.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maintenance: Option<bool>,
     #[serde(flatten)]
     reply: Reply,
 }
 
-fn write_reply(result: Result<Data>, inference: bool) -> Result<()> {
+fn write_reply(id: &RequestId, result: Result<Data>, inference: bool) -> Result<()> {
     let reply = match result {
         Ok(data) => Reply::Ok { data },
         Err(error) => {
@@ -796,8 +814,10 @@ fn write_reply(result: Result<Data>, inference: bool) -> Result<()> {
         &mut output,
         &WireReply {
             history_lane: true,
+            reply_id: id.as_deref(),
             inference,
             scan: None,
+            maintenance: None,
             reply,
         },
     )?;
@@ -808,12 +828,14 @@ fn write_reply(result: Result<Data>, inference: bool) -> Result<()> {
 
 const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
-fn write_workspace_reply(data: Data) -> Result<()> {
+fn write_workspace_reply(id: &RequestId, data: Data) -> Result<()> {
     let encode = |data| {
         serde_json::to_vec(&WireReply {
             history_lane: true,
+            reply_id: id.as_deref(),
             inference: false,
             scan: Some(true),
+            maintenance: None,
             reply: Reply::Ok { data },
         })
     };
@@ -827,6 +849,31 @@ fn write_workspace_reply(data: Data) -> Result<()> {
     }
     let mut output = io::stdout().lock();
     output.write_all(&line)?;
+    output.write_all(b"\n")?;
+    output.flush()?;
+    Ok(())
+}
+
+fn write_maintenance_reply(id: &RequestId, result: Result<Data>) -> Result<()> {
+    let reply = match result {
+        Ok(data) => Reply::Ok { data },
+        Err(error) => {
+            eprintln!("Runtime audit maintenance failed: {error}");
+            Reply::Error
+        }
+    };
+    let mut output = BufWriter::new(io::stdout().lock());
+    serde_json::to_writer(
+        &mut output,
+        &WireReply {
+            history_lane: true,
+            reply_id: id.as_deref(),
+            inference: false,
+            scan: None,
+            maintenance: Some(true),
+            reply,
+        },
+    )?;
     output.write_all(b"\n")?;
     output.flush()?;
     Ok(())
@@ -860,14 +907,17 @@ enum WorkspaceJob {
     },
 }
 
-type WorkspaceWorker = (mpsc::Sender<WorkspaceJob>, thread::JoinHandle<()>);
+type WorkspaceWorker = (
+    mpsc::Sender<(RequestId, WorkspaceJob)>,
+    thread::JoinHandle<()>,
+);
 
 fn start_workspace_scans() -> io::Result<WorkspaceWorker> {
-    let (send, jobs) = mpsc::channel();
+    let (send, jobs) = mpsc::channel::<(RequestId, WorkspaceJob)>();
     let worker = thread::Builder::new()
         .name("workspace-scan".into())
         .spawn(move || {
-            for job in jobs {
+            for (id, job) in jobs {
                 let result = match job {
                     WorkspaceJob::Scan(query) => Data::WorkspaceScan(workspace_scan::scan(query)),
                     WorkspaceJob::FileBackupList(query) => {
@@ -915,7 +965,7 @@ fn start_workspace_scans() -> io::Result<WorkspaceWorker> {
                         Data::TrashedTasks(task_trash::check_directories(&root, rows))
                     }
                 };
-                if write_workspace_reply(result).is_err() {
+                if write_workspace_reply(&id, result).is_err() {
                     break;
                 }
             }
@@ -925,19 +975,21 @@ fn start_workspace_scans() -> io::Result<WorkspaceWorker> {
 
 fn dispatch_workspace(
     worker: &mut Option<WorkspaceWorker>,
+    id: RequestId,
     job: WorkspaceJob,
     fallback: Data,
 ) -> Result<()> {
     if worker.is_none() {
         *worker = start_workspace_scans().ok();
     }
-    if !worker
-        .as_ref()
-        .is_some_and(|(sender, _)| sender.send(job).is_ok())
-    {
-        write_workspace_reply(fallback)?;
+    match worker {
+        Some((sender, _)) => match sender.send((id, job)) {
+            Ok(()) => Ok(()),
+            // The rejected job hands its id back, so even the fallback is correlated.
+            Err(mpsc::SendError((id, _))) => write_workspace_reply(&id, fallback),
+        },
+        None => write_workspace_reply(&id, fallback),
     }
-    Ok(())
 }
 
 enum InferenceJob {
@@ -949,15 +1001,18 @@ enum InferenceJob {
 fn start_inference(
     db_path: PathBuf,
     staged: Arc<embedding_index::StagedVectors>,
-) -> Result<(mpsc::Sender<InferenceJob>, thread::JoinHandle<()>)> {
-    let (send, jobs) = mpsc::channel();
+) -> Result<(
+    mpsc::Sender<(RequestId, InferenceJob)>,
+    thread::JoinHandle<()>,
+)> {
+    let (send, jobs) = mpsc::channel::<(RequestId, InferenceJob)>();
     let worker = thread::Builder::new()
         .name("semantic-inference".into())
         .spawn(move || {
             let mut model = semantic_inference::Inference::default();
             let mut verifier = semantic_model::Verifier::default();
             let mut reader = None;
-            for request in jobs {
+            for (id, request) in jobs {
                 let result = match request {
                     InferenceJob::Embed(request) => model.run(request).map(Data::Embedding),
                     InferenceJob::Probe(probe) => {
@@ -979,12 +1034,211 @@ fn start_inference(
                 if result.is_err() {
                     model = semantic_inference::Inference::default();
                 }
-                if write_reply(result, true).is_err() {
+                if write_reply(&id, result, true).is_err() {
                     break;
                 }
             }
         })?;
     Ok((send, worker))
+}
+
+/// Long database/file work. It owns its own writer so a multi-second job never
+/// waits behind, or blocks, the lane the light queries use.
+enum MaintenanceJob {
+    CleanupArtifactFiles {
+        root: PathBuf,
+        cleanup: artifact_cleanup::Cleanup,
+    },
+    DeleteLibrary {
+        root: PathBuf,
+        target: library_delete::Target,
+    },
+    DrainLibraryCleanup {
+        root: PathBuf,
+    },
+    ExportLibraryBackup {
+        root: PathBuf,
+        owner: library_backup::Owner,
+        staging: PathBuf,
+    },
+    PrepareLibraryRestore {
+        operation_id: String,
+        source: PathBuf,
+    },
+    DiscardLibraryRestore {
+        operation_id: String,
+    },
+    RestoreLibraryBackup {
+        restore: library_restore::Restore,
+    },
+    RecoverLibraryRestores {
+        root: PathBuf,
+    },
+    DeleteProject {
+        operation_id: String,
+        id: String,
+        root: PathBuf,
+        withdrawal: project_memory_forget::Withdrawal,
+    },
+    PromoteProjectEventToLibrary {
+        promotion: project_library_promotion::Promotion,
+    },
+}
+
+type MaintenanceWorker = (
+    mpsc::Sender<(RequestId, MaintenanceJob)>,
+    thread::JoinHandle<()>,
+);
+
+fn start_maintenance(db_path: PathBuf) -> io::Result<MaintenanceWorker> {
+    let (send, jobs) = mpsc::channel::<(RequestId, MaintenanceJob)>();
+    let worker = thread::Builder::new()
+        .name("maintenance".into())
+        .spawn(move || {
+            let mut writer = None;
+            let mut prepared_restore = None;
+            for (id, job) in jobs {
+                // A panicking job replies with an error and leaves the thread serving:
+                // it must never take the shared process (or a later job) with it.
+                let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_maintenance(&db_path, &mut writer, &mut prepared_restore, job)
+                })) {
+                    Ok(result) => result,
+                    Err(_) => Err("maintenance job panicked".into()),
+                };
+                if result.is_err() {
+                    // A half-open transaction must not outlive its job.
+                    writer = None;
+                    prepared_restore = None;
+                }
+                if write_maintenance_reply(&id, result).is_err() {
+                    break;
+                }
+            }
+        })?;
+    Ok((send, worker))
+}
+
+fn dispatch_maintenance(
+    worker: &mut Option<MaintenanceWorker>,
+    db_path: &Path,
+    id: RequestId,
+    job: MaintenanceJob,
+) -> Result<()> {
+    if worker.is_none() {
+        *worker = start_maintenance(db_path.to_path_buf()).ok();
+    }
+    match worker {
+        Some((sender, _)) => match sender.send((id, job)) {
+            Ok(()) => Ok(()),
+            // The rejected job hands its id back, so even this reply is correlated.
+            Err(mpsc::SendError((id, _))) => {
+                write_maintenance_reply(&id, Err("maintenance thread unavailable".into()))
+            }
+        },
+        None => write_maintenance_reply(&id, Err("maintenance thread unavailable".into())),
+    }
+}
+
+fn run_maintenance(
+    db_path: &Path,
+    writer: &mut Option<Connection>,
+    prepared_restore: &mut Option<(String, library_restore::Backup)>,
+    job: MaintenanceJob,
+) -> Result<Data> {
+    match job {
+        MaintenanceJob::CleanupArtifactFiles { root, cleanup } => {
+            artifact_cleanup::clean(write_connection(writer, db_path)?, &root, cleanup)
+                .map(Data::ArtifactCleanup)
+        }
+        MaintenanceJob::DeleteLibrary { root, target } => {
+            library_delete::delete(write_connection(writer, db_path)?, &root, target)
+                .map(Data::Json)
+        }
+        MaintenanceJob::DrainLibraryCleanup { root } => {
+            library_delete::drain(write_connection(writer, db_path)?, &root)
+                .map(|completed| Data::Json(completed.into()))
+        }
+        MaintenanceJob::ExportLibraryBackup {
+            root,
+            owner,
+            staging,
+        } => {
+            let status =
+                library_backup::export(write_connection(writer, db_path)?, &root, owner, &staging)?;
+            Ok(Data::Json(serde_json::to_value(status)?))
+        }
+        // Preparing and discarding only touch files and this thread's own state.
+        MaintenanceJob::PrepareLibraryRestore {
+            operation_id,
+            source,
+        } => Ok(Data::Json(match library_restore::prepare(&source) {
+            Ok(backup) => {
+                *prepared_restore = Some((operation_id, backup));
+                serde_json::json!({ "status": "prepared" })
+            }
+            Err(error) => serde_json::json!({ "status": "rejected", "message": error.to_string() }),
+        })),
+        MaintenanceJob::DiscardLibraryRestore { operation_id } => {
+            if prepared_restore
+                .as_ref()
+                .is_some_and(|(id, _)| id == &operation_id)
+            {
+                prepared_restore.take();
+            }
+            Ok(Data::Json(true.into()))
+        }
+        MaintenanceJob::RestoreLibraryBackup { restore } => {
+            if prepared_restore
+                .as_ref()
+                .is_none_or(|(id, _)| id != &restore.operation_id)
+            {
+                return Ok(Data::Json(
+                    serde_json::json!({ "status": "rejected", "message": "备份恢复已中断，请重试" }),
+                ));
+            }
+            let (_, backup) = prepared_restore
+                .take()
+                .ok_or("missing prepared library backup")?;
+            Ok(Data::Json(
+                match library_restore::restore(write_connection(writer, db_path)?, backup, restore)
+                {
+                    Ok(Some(receipt)) => {
+                        serde_json::json!({ "status": "restored", "receipt": receipt })
+                    }
+                    Ok(None) => serde_json::json!({ "status": "needsHost" }),
+                    Err(error) => {
+                        serde_json::json!({ "status": "rejected", "message": error.to_string() })
+                    }
+                },
+            ))
+        }
+        MaintenanceJob::RecoverLibraryRestores { root } => {
+            library_restore::recover(write_connection(writer, db_path)?, &root, None)
+                .map(|count| Data::Json(count.into()))
+        }
+        MaintenanceJob::DeleteProject {
+            operation_id,
+            id,
+            root,
+            withdrawal,
+        } => project_delete::delete(
+            write_connection(writer, db_path)?,
+            &operation_id,
+            &id,
+            &root,
+            withdrawal,
+        )
+        .map(Data::Json),
+        MaintenanceJob::PromoteProjectEventToLibrary { promotion } => {
+            let result =
+                project_library_promotion::promote(write_connection(writer, db_path)?, promotion)
+                    .unwrap_or_else(|error| project_library_promotion::Reply::Rejected {
+                        message: error.to_string(),
+                    });
+            Ok(Data::Json(serde_json::to_value(result)?))
+        }
+    }
 }
 
 fn read(
@@ -993,7 +1247,6 @@ fn read(
     durable_sessions: &mut HashMap<String, Connection>,
     writer: &mut Option<Connection>,
     staged: &embedding_index::StagedVectors,
-    prepared_restore: &mut Option<(String, library_restore::Backup)>,
     request: Request,
 ) -> Result<Data> {
     if matches!(
@@ -1127,6 +1380,7 @@ fn read(
             | Request::NotificationDataSupported
             | Request::DurableTaskProjectionSupported
             | Request::DurableTaskOriginsSupported
+            | Request::GatewayMessageWriteSupported
             | Request::MemoryRecordWriteSupported
             | Request::FileBackupListSupported
             | Request::FileBackupRestoreSupported
@@ -1217,6 +1471,10 @@ fn read(
     }
     if let Request::ReadGatewayMessages { query } = request {
         return gateway_message_data::read(db, query).map(Data::GatewayMessages);
+    }
+    if let Request::AppendGatewayMessage { message } = request {
+        return gateway_message_data::append(write_connection(writer, db_path)?, &message)
+            .map(Data::GatewayMessageWrite);
     }
     if let Request::CodeReviewData { query } = request {
         return code_review_data::read(db, query).map(Data::Json);
@@ -1428,10 +1686,6 @@ fn read(
     if let Request::ArtifactCleanupSupported = request {
         return Ok(Data::Json(true.into()));
     }
-    if let Request::CleanupArtifactFiles { root, cleanup } = request {
-        return artifact_cleanup::clean(write_connection(writer, db_path)?, &root, cleanup)
-            .map(Data::ArtifactCleanup);
-    }
     if let Request::WriteCronRun { mutation } = request {
         return cron_write::write(write_connection(writer, db_path)?, mutation)
             .map(|saved| Data::Json(saved.into()));
@@ -1450,14 +1704,6 @@ fn read(
     }
     if let Request::SaveLibraryText { save } = request {
         return library_text_save::write(write_connection(writer, db_path)?, save).map(Data::Json);
-    }
-    if let Request::DeleteLibrary { root, target } = request {
-        return library_delete::delete(write_connection(writer, db_path)?, &root, target)
-            .map(Data::Json);
-    }
-    if let Request::DrainLibraryCleanup { root } = request {
-        return library_delete::drain(write_connection(writer, db_path)?, &root)
-            .map(|completed| Data::Json(completed.into()));
     }
     if let Request::WriteTaskBoardAction { input } = request {
         return task_board::write_action(write_connection(writer, db_path)?, input)
@@ -1502,30 +1748,6 @@ fn read(
         return project_write::write(write_connection(writer, db_path)?, &operation_id, mutation)
             .and_then(|status| Ok(Data::Json(serde_json::to_value(status)?)));
     }
-    if let Request::PromoteProjectEventToLibrary { promotion } = request {
-        let result =
-            project_library_promotion::promote(write_connection(writer, db_path)?, promotion)
-                .unwrap_or_else(|error| project_library_promotion::Reply::Rejected {
-                    message: error.to_string(),
-                });
-        return Ok(Data::Json(serde_json::to_value(result)?));
-    }
-    if let Request::DeleteProject {
-        operation_id,
-        id,
-        root,
-        withdrawal,
-    } = request
-    {
-        return project_delete::delete(
-            write_connection(writer, db_path)?,
-            &operation_id,
-            &id,
-            &root,
-            withdrawal,
-        )
-        .map(Data::Json);
-    }
     if let Request::InstantiateBlueprint {
         operation_id,
         instance,
@@ -1537,56 +1759,6 @@ fn read(
             instance,
         )
         .and_then(|status| Ok(Data::Json(serde_json::to_value(status)?)));
-    }
-    if let Request::PrepareLibraryRestore {
-        operation_id,
-        source,
-    } = request
-    {
-        return Ok(Data::Json(match library_restore::prepare(&source) {
-            Ok(backup) => {
-                *prepared_restore = Some((operation_id, backup));
-                serde_json::json!({ "status": "prepared" })
-            }
-            Err(error) => serde_json::json!({ "status": "rejected", "message": error.to_string() }),
-        }));
-    }
-    if let Request::DiscardLibraryRestore { operation_id } = request {
-        if prepared_restore
-            .as_ref()
-            .is_some_and(|(id, _)| id == &operation_id)
-        {
-            prepared_restore.take();
-        }
-        return Ok(Data::Json(true.into()));
-    }
-    if let Request::RestoreLibraryBackup { restore } = request {
-        if prepared_restore
-            .as_ref()
-            .is_none_or(|(id, _)| id != &restore.operation_id)
-        {
-            return Ok(Data::Json(
-                serde_json::json!({ "status": "rejected", "message": "备份恢复已中断，请重试" }),
-            ));
-        }
-        let (_, backup) = prepared_restore
-            .take()
-            .ok_or("missing prepared library backup")?;
-        return Ok(Data::Json(
-            match library_restore::restore(write_connection(writer, db_path)?, backup, restore) {
-                Ok(Some(receipt)) => {
-                    serde_json::json!({ "status": "restored", "receipt": receipt })
-                }
-                Ok(None) => serde_json::json!({ "status": "needsHost" }),
-                Err(error) => {
-                    serde_json::json!({ "status": "rejected", "message": error.to_string() })
-                }
-            },
-        ));
-    }
-    if let Request::RecoverLibraryRestores { root } = request {
-        return library_restore::recover(write_connection(writer, db_path)?, &root, None)
-            .map(|count| Data::Json(count.into()));
     }
     if let Request::PublishLibraryIndex { publication } = request {
         return library_index::publish(write_connection(writer, db_path)?, publication)
@@ -1656,13 +1828,7 @@ fn read(
             Data::ArtifactSnapshots(artifact_snapshots::read(&snapshot, &task_ids)?)
         }
         Request::LibraryMetadata { query } => Data::Json(library_metadata::read(&snapshot, query)?),
-        Request::ExportLibraryBackup {
-            root,
-            owner,
-            staging,
-        } => Data::Json(serde_json::to_value(library_backup::export(
-            &snapshot, &root, owner, &staging,
-        )?)?),
+        Request::ExportLibraryBackup { .. } => unreachable!(),
         Request::ReadScopedNote { scope, id } => {
             Data::Json(scoped_notes::read(&snapshot, scope, &id)?)
         }
@@ -1734,6 +1900,8 @@ fn read(
         | Request::WorkQueueSupported
         | Request::ReadWorkQueue { .. }
         | Request::ReadGatewayMessages { .. }
+        | Request::GatewayMessageWriteSupported
+        | Request::AppendGatewayMessage { .. }
         | Request::CodeReviewData { .. }
         | Request::MaterialRetrievalSupported
         | Request::MaterialRetrievalData { .. }
@@ -1888,13 +2056,10 @@ fn read_recovered_gadget_source(
     })
 }
 
-fn write_connection<'a>(
-    connection: &'a mut Option<Connection>,
-    path: &Path,
-) -> Result<&'a mut Connection> {
-    if let Some(db) = connection {
-        return Ok(db);
-    }
+/// The one place a writer connection is configured. Both the main loop and the
+/// maintenance thread open their own connection through it, so busy_timeout and
+/// pragmas cannot drift between them.
+fn open_write_connection(path: &Path) -> Result<Connection> {
     let db = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
@@ -1902,7 +2067,19 @@ fn write_connection<'a>(
     db.busy_timeout(Duration::from_millis(100))?;
     db.pragma_update(None, "foreign_keys", true)?;
     task_board::install_functions(&db)?;
-    Ok(connection.insert(db))
+    Ok(db)
+}
+
+fn write_connection<'a>(
+    connection: &'a mut Option<Connection>,
+    path: &Path,
+) -> Result<&'a mut Connection> {
+    if connection.is_none() {
+        *connection = Some(open_write_connection(path)?);
+    }
+    connection
+        .as_mut()
+        .ok_or_else(|| "write connection unavailable".into())
 }
 
 fn read_connection(path: &Path) -> Result<Connection> {
@@ -1914,7 +2091,16 @@ fn read_connection(path: &Path) -> Result<Connection> {
 }
 
 fn run() -> Result<()> {
-    let mut args = std::env::args_os().skip(1);
+    let all = std::env::args_os().skip(1).collect::<Vec<_>>();
+    // Supervisor mode owns the data directory and keeps the worker alive across clients;
+    // the single-argument forms below are untouched.
+    if all.first().is_some_and(|argument| argument == "--supervise") {
+        let [_, data_dir, db_path] = all.as_slice() else {
+            return Err("expected --supervise <data directory> <database path>".into());
+        };
+        return core_supervisor::run(Path::new(data_dir), Path::new(db_path));
+    }
+    let mut args = all.into_iter();
     let argument = args.next().ok_or("missing database path")?;
     if args.next().is_some() {
         return Err("unexpected argument".into());
@@ -1927,8 +2113,8 @@ fn run() -> Result<()> {
     let mut db = read_connection(&db_path)?;
     let mut durable_sessions = HashMap::new();
     let mut writer = None;
-    let mut prepared_restore = None;
     let mut inference = None;
+    let mut maintenance = None;
     let mut workspace_scans = None;
     let mut dots_file_watches = None;
     let staged = Arc::new(embedding_index::StagedVectors::default());
@@ -1940,11 +2126,13 @@ fn run() -> Result<()> {
         writeln!(output, "{{\"historyReady\":true}}")?;
         output.flush()?;
     }
+    // The input thread owns stdin so history reads cannot queue behind the main loop. It
+    // forwards the transport id with each request, which is what lets replies be correlated.
     let (requests, input) = history_lane::route_input()?;
-    for request in requests {
+    for (id, request) in requests {
         let job = match request {
             Ok(Request::HistoryLaneSupported) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(
@@ -1955,12 +2143,13 @@ fn run() -> Result<()> {
                 | Request::ConnectorMarketImportSupported
                 | Request::ConnectorMarketMutationSupported,
             ) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::ScanPluginCatalog { query }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::PluginCatalog(query),
                     Data::Json(Value::Null),
                 )?;
@@ -1969,6 +2158,7 @@ fn run() -> Result<()> {
             Ok(Request::ReadPluginConfig { target }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::ReadPluginConfig(target),
                     Data::PluginConfig(plugin_config::Reply::NeedsHost),
                 )?;
@@ -1981,6 +2171,7 @@ fn run() -> Result<()> {
             }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::ReplacePluginConfig {
                         target,
                         version,
@@ -1993,6 +2184,7 @@ fn run() -> Result<()> {
             Ok(Request::InstallConnector { install }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::InstallConnector(install),
                     Data::ConnectorInstall(connector_install::Reply::NeedsHost),
                 )?;
@@ -2001,6 +2193,7 @@ fn run() -> Result<()> {
             Ok(Request::RecoverConnectorInstalls { root }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::RecoverConnectorInstalls(root),
                     Data::ConnectorInstall(connector_install::Reply::NeedsHost),
                 )?;
@@ -2009,6 +2202,7 @@ fn run() -> Result<()> {
             Ok(Request::MaintainConnectorStorage { task }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::MaintainConnectorStorage(task),
                     Data::ConnectorInstall(connector_install::Reply::NeedsHost),
                 )?;
@@ -2017,6 +2211,7 @@ fn run() -> Result<()> {
             Ok(Request::ImportConnectorMarket { request }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::ImportConnectorMarket(request),
                     Data::ConnectorImport(connector_import::Reply::NeedsHost),
                 )?;
@@ -2025,6 +2220,7 @@ fn run() -> Result<()> {
             Ok(Request::MutateConnectorMarket { action }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::MutateConnectorMarket(action),
                     Data::ConnectorMarket(connector_market::Reply::NeedsHost),
                 )?;
@@ -2035,29 +2231,30 @@ fn run() -> Result<()> {
                 | Request::DotsFileRevisionSupported
                 | Request::DotsFileWatchSupported,
             ) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
-            Ok(Request::StartDotsFileWatch { id, root, file }) => {
+            Ok(Request::StartDotsFileWatch { id: watch, root, file }) => {
                 if dots_file_watches.is_none() {
                     dots_file_watches = dots_file_watch::FileWatches::new().ok();
                 }
                 let started = dots_file_watches
                     .as_mut()
-                    .is_some_and(|watches| watches.start(id, &root, &file));
-                write_reply(Ok(Data::Json(started.into())), false)?;
+                    .is_some_and(|watches| watches.start(watch, &root, &file));
+                write_reply(&id, Ok(Data::Json(started.into())), false)?;
                 continue;
             }
-            Ok(Request::StopDotsFileWatch { id }) => {
+            Ok(Request::StopDotsFileWatch { id: watch }) => {
                 if let Some(watches) = dots_file_watches.as_mut() {
-                    watches.stop(&id);
+                    watches.stop(&watch);
                 }
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::WorkspaceScan { query }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::Scan(query),
                     Data::WorkspaceScan(workspace_scan::Scan::NeedsHost),
                 )?;
@@ -2066,6 +2263,7 @@ fn run() -> Result<()> {
             Ok(Request::FileBackupList { query }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::FileBackupList(query),
                     Data::FileBackupList(None),
                 )?;
@@ -2074,6 +2272,7 @@ fn run() -> Result<()> {
             Ok(Request::RestoreFileBackup { request }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::RestoreFileBackup(request),
                     Data::FileBackupRestore(file_backup_restore::Reply::NeedsHost),
                 )?;
@@ -2082,6 +2281,7 @@ fn run() -> Result<()> {
             Ok(Request::SubagentSettings { request }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::SubagentSettings(request),
                     Data::PluginConfig(plugin_config::Reply::NeedsHost),
                 )?;
@@ -2090,6 +2290,7 @@ fn run() -> Result<()> {
             Ok(Request::ScanWorkGraphIntegrity) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::WorkGraphIntegrity(db_path.clone()),
                     Data::Json(Value::Null),
                 )?;
@@ -2100,19 +2301,21 @@ fn run() -> Result<()> {
                 match task_trash::list(&db) {
                     Ok(rows) => dispatch_workspace(
                         &mut workspace_scans,
+                        id,
                         WorkspaceJob::CheckTrashedDirectories {
                             root: trash_root,
                             rows,
                         },
                         null,
                     )?,
-                    Err(_) => write_workspace_reply(null)?,
+                    Err(_) => write_workspace_reply(&id, null)?,
                 }
                 continue;
             }
             Ok(Request::DotsFileRevision { root, file }) => {
                 dispatch_workspace(
                     &mut workspace_scans,
+                    id,
                     WorkspaceJob::FileRevision { root, file },
                     Data::DotsFileRevision(dots_file_revision::Revision::NeedsHost),
                 )?;
@@ -2122,7 +2325,7 @@ fn run() -> Result<()> {
             Ok(Request::StageEmbedding { request }) => InferenceJob::Stage(request),
             Ok(Request::SemanticModelProbe { probe }) => InferenceJob::Probe(probe),
             Ok(Request::GadgetState { request }) => {
-                write_reply(Ok(Data::GadgetState(gadget_state.run(request))), false)?;
+                write_reply(&id, Ok(Data::GadgetState(gadget_state.run(request))), false)?;
                 continue;
             }
             Ok(Request::ReadManagedArtifact {
@@ -2132,6 +2335,7 @@ fn run() -> Result<()> {
                 inline_raster,
             }) => {
                 write_reply(
+                    &id,
                     Ok(Data::ManagedArtifactContent(artifact_reads.start(
                         &root,
                         &storage_path,
@@ -2144,6 +2348,7 @@ fn run() -> Result<()> {
             }
             Ok(Request::NextManagedArtifact { cursor }) => {
                 write_reply(
+                    &id,
                     Ok(Data::ManagedArtifactContent(artifact_reads.next(&cursor))),
                     false,
                 )?;
@@ -2151,23 +2356,23 @@ fn run() -> Result<()> {
             }
             Ok(Request::CloseManagedArtifact { cursor }) => {
                 artifact_reads.close(&cursor);
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::WorkspaceFilePreviewSupported) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::WorkspaceArtifactStreamSupported) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::ManagedArtifactImageStreamSupported) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::RemoteArtifactImageSupported) => {
-                write_reply(Ok(Data::Json(true.into())), false)?;
+                write_reply(&id, Ok(Data::Json(true.into())), false)?;
                 continue;
             }
             Ok(Request::OpenRemoteArtifactImage {
@@ -2177,6 +2382,7 @@ fn run() -> Result<()> {
                 cursor,
             }) => {
                 write_reply(
+                    &id,
                     Ok(Data::ManagedArtifactContent(
                         artifact_reads.start_remote_image(&root, &relative_path, managed, cursor),
                     )),
@@ -2190,6 +2396,7 @@ fn run() -> Result<()> {
                 cursor,
             }) => {
                 write_reply(
+                    &id,
                     Ok(Data::ManagedArtifactContent(artifact_reads.start_image(
                         &root,
                         &storage_path,
@@ -2205,6 +2412,7 @@ fn run() -> Result<()> {
                 cursor,
             }) => {
                 write_reply(
+                    &id,
                     Ok(Data::ManagedArtifactContent(
                         artifact_reads.start_workspace(&root, &relative_path, cursor),
                     )),
@@ -2218,6 +2426,7 @@ fn run() -> Result<()> {
                 kind,
             }) => {
                 write_reply(
+                    &id,
                     Ok(Data::WorkspaceFilePreview(workspace_preview::read(
                         &root,
                         &relative_path,
@@ -2229,20 +2438,135 @@ fn run() -> Result<()> {
             }
             Ok(Request::EmbeddingIndex { query }) => {
                 write_reply(
+                    &id,
                     index_queues.query(&mut db, query).map(Data::EmbeddingIndex),
                     false,
                 )?;
                 continue;
             }
+            Ok(Request::CleanupArtifactFiles { root, cleanup }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::CleanupArtifactFiles { root, cleanup },
+                )?;
+                continue;
+            }
+            Ok(Request::DeleteLibrary { root, target }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::DeleteLibrary { root, target },
+                )?;
+                continue;
+            }
+            Ok(Request::DrainLibraryCleanup { root }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::DrainLibraryCleanup { root },
+                )?;
+                continue;
+            }
+            Ok(Request::ExportLibraryBackup {
+                root,
+                owner,
+                staging,
+            }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::ExportLibraryBackup {
+                        root,
+                        owner,
+                        staging,
+                    },
+                )?;
+                continue;
+            }
+            Ok(Request::PrepareLibraryRestore {
+                operation_id,
+                source,
+            }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::PrepareLibraryRestore {
+                        operation_id,
+                        source,
+                    },
+                )?;
+                continue;
+            }
+            Ok(Request::DiscardLibraryRestore { operation_id }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::DiscardLibraryRestore { operation_id },
+                )?;
+                continue;
+            }
+            Ok(Request::RestoreLibraryBackup { restore }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::RestoreLibraryBackup { restore },
+                )?;
+                continue;
+            }
+            Ok(Request::RecoverLibraryRestores { root }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::RecoverLibraryRestores { root },
+                )?;
+                continue;
+            }
+            Ok(Request::DeleteProject {
+                operation_id,
+                id: project_id,
+                root,
+                withdrawal,
+            }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::DeleteProject {
+                        operation_id,
+                        id: project_id,
+                        root,
+                        withdrawal,
+                    },
+                )?;
+                continue;
+            }
+            Ok(Request::PromoteProjectEventToLibrary { promotion }) => {
+                dispatch_maintenance(
+                    &mut maintenance,
+                    &db_path,
+                    id,
+                    MaintenanceJob::PromoteProjectEventToLibrary { promotion },
+                )?;
+                continue;
+            }
             Ok(request) => {
                 write_reply(
+                    &id,
                     read(
                         &mut db,
                         &db_path,
                         &mut durable_sessions,
                         &mut writer,
                         &staged,
-                        &mut prepared_restore,
                         request,
                     ),
                     false,
@@ -2250,15 +2574,21 @@ fn run() -> Result<()> {
                 continue;
             }
             Err(error) => {
-                write_reply(Err(error.into()), false)?;
+                write_reply(&id, Err(error.into()), false)?;
                 continue;
             }
         };
         if inference.is_none() {
             inference = Some(start_inference(db_path.clone(), staged.clone())?);
         }
-        if inference.as_ref().unwrap().0.send(job).is_err() {
-            write_reply(Err("semantic inference thread unavailable".into()), true)?;
+        match inference.as_ref().unwrap().0.send((id, job)) {
+            Ok(()) => {}
+            // The id comes back with the rejected job, so even this reply is correlated.
+            Err(mpsc::SendError((id, _))) => write_reply(
+                &id,
+                Err("semantic inference thread unavailable".into()),
+                true,
+            )?,
         }
     }
     input.join().map_err(|_| "input dispatcher panicked")??;
@@ -2274,6 +2604,9 @@ fn run() -> Result<()> {
             .join()
             .map_err(|_| "workspace scan thread panicked")?;
     }
+    // Deliberately not joined: a maintenance job can be blocked in file I/O for
+    // minutes, and stdin closing must not keep the process alive that long.
+    drop(maintenance);
     Ok(())
 }
 

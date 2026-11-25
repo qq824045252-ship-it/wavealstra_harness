@@ -11,6 +11,20 @@ const FILE_NAME: &str = ".mybuddy-state.json";
 const MAX_BYTES: usize = 20 * 1024 * 1024;
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2048;
+/// One entry per retired invocation or generation; older entries are stale by then.
+const MAX_REVOCATIONS: usize = 1024;
+
+/// Who authorizes a state change, and until when.
+///
+/// `expires_at == 0` means the authorization lives as long as its runtime generation
+/// (backend/background activity); action and page requests always carry a deadline.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Authorization {
+    generation: String,
+    invocation_id: String,
+    expires_at: u64,
+}
 
 #[derive(Deserialize)]
 #[serde(
@@ -28,6 +42,13 @@ pub enum Request {
         canonical_path: PathBuf,
         bucket: Bucket,
         action: Action,
+        #[serde(default)]
+        authorization: Option<Authorization>,
+    },
+    Revoke {
+        generation: String,
+        #[serde(default)]
+        invocation_id: Option<String>,
     },
 }
 
@@ -79,6 +100,7 @@ pub enum Reply {
     Value { entry: Option<Entry> },
     Keys { keys: Vec<Box<RawValue>> },
     Deleted,
+    Revoked,
     Error { error: Fault },
 }
 
@@ -92,6 +114,8 @@ pub enum Fault {
     StorageUnsafe,
     StorageLimit,
     StorageIo,
+    /// The writer's lease ended or its invocation/generation was revoked.
+    StaleWrite,
 }
 
 type StateResult<T> = Result<T, Fault>;
@@ -203,6 +227,20 @@ struct CachedState {
 #[derive(Default)]
 pub struct Store {
     cache: VecDeque<CachedState>,
+    revoked: VecDeque<Revocation>,
+}
+
+struct Revocation {
+    generation: String,
+    /// `None` revokes every invocation of the generation.
+    invocation_id: Option<String>,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl Store {
@@ -211,9 +249,54 @@ impl Store {
             .unwrap_or_else(|error| Reply::Error { error })
     }
 
+    /// Revoked before the request was dispatched, or its lease has already ended.
+    fn write_allowed(&self, authorization: Option<&Authorization>, now: u64) -> StateResult<()> {
+        let authorization = authorization.ok_or(Fault::StaleWrite)?;
+        if authorization.generation.is_empty() || authorization.invocation_id.is_empty() {
+            return Err(Fault::StaleWrite);
+        }
+        if authorization.expires_at != 0 && authorization.expires_at <= now {
+            return Err(Fault::StaleWrite);
+        }
+        let revoked = self.revoked.iter().any(|entry| {
+            entry.generation == authorization.generation
+                && entry
+                    .invocation_id
+                    .as_deref()
+                    .is_none_or(|id| id == authorization.invocation_id)
+        });
+        if revoked {
+            return Err(Fault::StaleWrite);
+        }
+        Ok(())
+    }
+
+    fn revoke(&mut self, generation: String, invocation_id: Option<String>) -> StateResult<Reply> {
+        if generation.is_empty() || generation.len() > 128 {
+            return Err(Fault::StaleWrite);
+        }
+        if let Some(invocation_id) = &invocation_id
+            && (invocation_id.is_empty() || invocation_id.len() > 64)
+        {
+            return Err(Fault::StaleWrite);
+        }
+        self.revoked.push_back(Revocation {
+            generation,
+            invocation_id,
+        });
+        while self.revoked.len() > MAX_REVOCATIONS {
+            self.revoked.pop_front();
+        }
+        Ok(Reply::Revoked)
+    }
+
     fn execute(&mut self, request: Request) -> StateResult<Reply> {
         match request {
             Request::Supported => Ok(Reply::Supported),
+            Request::Revoke {
+                generation,
+                invocation_id,
+            } => self.revoke(generation, invocation_id),
             Request::Open { path } => {
                 let canonical_path = checked_directory(&path)?;
                 self.cache.retain(|entry| entry.root != canonical_path);
@@ -232,7 +315,13 @@ impl Store {
                 canonical_path,
                 bucket,
                 action,
+                authorization,
             } => {
+                // A write is authorized at commit time, not when the host asked.
+                // Reads stay available so a cancelled action cannot wedge the page.
+                if matches!(action, Action::Set { .. } | Action::Delete { .. }) {
+                    self.write_allowed(authorization.as_ref(), now_ms())?;
+                }
                 ensure_directory(&path, &canonical_path)?;
                 let file = canonical_path.join(FILE_NAME);
                 let mut stamp = checked_file(&file)?;
@@ -545,4 +634,151 @@ fn encode_bucket(content: &mut Vec<u8>, entries: &BTreeMap<Key, Entry>) -> State
     }
     content.push(b'}');
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture() -> Fixture {
+        let nonce = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "mybuddy-gadget-state-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        Fixture(root)
+    }
+
+    /// The host opens the data directory first and only ever sends its canonical form.
+    fn opened(root: &Path) -> (Store, PathBuf) {
+        let mut store = Store::default();
+        match store.run(Request::Open {
+            path: root.to_path_buf(),
+        }) {
+            Reply::Opened { canonical_path } => (store, canonical_path),
+            reply => panic!("open must succeed: {}", serde_json::to_string(&reply).expect("json")),
+        }
+    }
+
+    fn authorization(generation: &str, invocation_id: &str, expires_at: u64) -> Authorization {
+        Authorization {
+            generation: generation.to_owned(),
+            invocation_id: invocation_id.to_owned(),
+            expires_at,
+        }
+    }
+
+    fn write(
+        store: &mut Store,
+        root: &Path,
+        canonical: &Path,
+        authorization: Option<Authorization>,
+    ) -> Reply {
+        store.run(Request::Access {
+            path: root.to_path_buf(),
+            canonical_path: canonical.to_path_buf(),
+            bucket: Bucket::Storage,
+            action: Action::Set {
+                key: vec![u16::from(b'k')],
+                value_json: "{\"value\":1}".to_owned(),
+                expected: None,
+                write_id: "00000000-0000-0000-0000-000000000000".to_owned(),
+            },
+            authorization,
+        })
+    }
+
+    fn is_stale(reply: &Reply) -> bool {
+        matches!(
+            reply,
+            Reply::Error {
+                error: Fault::StaleWrite,
+            }
+        )
+    }
+
+    #[test]
+    fn a_write_needs_a_live_authorization() {
+        let fixture = fixture();
+        let (mut store, canonical) = opened(&fixture.0);
+        let file = canonical.join(FILE_NAME);
+        assert!(is_stale(&write(&mut store, &fixture.0, &canonical, None)));
+        let expired = authorization("g", "i", now_ms().saturating_sub(1));
+        assert!(is_stale(&write(
+            &mut store,
+            &fixture.0,
+            &canonical,
+            Some(expired)
+        )));
+        assert!(!file.exists(), "a rejected write must not touch the file");
+        let live = authorization("g", "i", now_ms() + 60_000);
+        assert!(matches!(
+            write(&mut store, &fixture.0, &canonical, Some(live)),
+            Reply::Value { .. }
+        ));
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn revoked_invocations_and_generations_cannot_write() {
+        let fixture = fixture();
+        let (mut store, canonical) = opened(&fixture.0);
+        let generation = "generation-1";
+        assert!(matches!(
+            store.run(Request::Revoke {
+                generation: generation.to_owned(),
+                invocation_id: Some("invocation-1".to_owned()),
+            }),
+            Reply::Revoked
+        ));
+        // A cancelled action cannot commit, but its sibling and the backend still can.
+        let retired = authorization(generation, "invocation-1", 0);
+        assert!(is_stale(&write(
+            &mut store,
+            &fixture.0,
+            &canonical,
+            Some(retired)
+        )));
+        let sibling = authorization(generation, "invocation-2", 0);
+        assert!(matches!(
+            write(&mut store, &fixture.0, &canonical, Some(sibling)),
+            Reply::Value { .. }
+        ));
+        assert!(matches!(
+            store.run(Request::Revoke {
+                generation: generation.to_owned(),
+                invocation_id: None,
+            }),
+            Reply::Revoked
+        ));
+        let background = authorization(generation, "runtime", 0);
+        assert!(is_stale(&write(
+            &mut store,
+            &fixture.0,
+            &canonical,
+            Some(background)
+        )));
+        // Reads stay available: revoking a writer must not wedge the page.
+        let read = store.run(Request::Access {
+            path: fixture.0.clone(),
+            canonical_path: canonical.clone(),
+            bucket: Bucket::Storage,
+            action: Action::Read {
+                key: vec![u16::from(b'k')],
+            },
+            authorization: None,
+        });
+        assert!(matches!(read, Reply::Value { .. }));
+    }
 }

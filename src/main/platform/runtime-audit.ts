@@ -42,7 +42,7 @@ import type { RuntimeProjectEventRequest, RuntimeProjectEventReply, RuntimeProje
 import type { RuntimeWorkQueueQuery, RuntimeWorkQueueSnapshot, RuntimeWorkCardRead, RuntimeWorkCardReadReply } from "../agent/work/WorkQueueData";
 import type { SpaceRow, TaskExecutionWorkspaceStateRow, TaskRow } from "../db/AppDatabase";
 import type { BotWorkspaceNavigationDto } from "../../shared/bot-workspace-navigation";
-import type { GadgetStateAction, GadgetStateBucket, GadgetStateReply } from "../gadget/GadgetState";
+import type { GadgetStateAction, GadgetStateAuthorization, GadgetStateBucket, GadgetStateReply } from "../gadget/GadgetState";
 import type { RuntimeBlueprintInstance, RuntimeBlueprintInstanceStatus } from "../blueprint/BlueprintInstanceWrite";
 import type {
   ProjectDeletionResult, ProjectLibraryPromotionReply, ProjectMutation, ProjectWithdrawal, ProjectWithdrawalSnapshot,
@@ -98,6 +98,20 @@ export type RuntimeWorkspaceQuery =
   | { kind: "spaces" }
   | { kind: "visibleSpaces" | "navigation"; userId: string };
 
+/** One gateway log row as the Rust writer appends it. */
+export interface RuntimeGatewayMessageWrite {
+  channelId: string;
+  chatId: string;
+  direction: string;
+  senderId?: string;
+  senderName?: string;
+  text: string;
+  at: number;
+}
+
+/** `needsHost` is the writer declining ownership; a missing reply stays unknown. */
+export type RuntimeGatewayMessageWriteReply = { status: "saved" } | { status: "needsHost" };
+
 interface RuntimeWorkspaceData {
   spaces: Array<SpaceRow & { effective_archived: boolean; path_missing: boolean }>;
   navigation?: Pick<BotWorkspaceNavigationDto, "foregroundRequests" | "conversations">;
@@ -106,13 +120,32 @@ interface RuntimeWorkspaceData {
 /** One worker per host database for read-only queries and bounded writes. */
 export class RuntimeAuditReader {
   private readonly tails: Record<AuditLane, Promise<unknown>> = {
-    database: Promise.resolve(), inference: Promise.resolve(), scan: Promise.resolve(),
+    database: Promise.resolve(), inference: Promise.resolve(), maintenance: Promise.resolve(),
+    scan: Promise.resolve(),
   };
+  /** Requests accepted into each lane and not yet settled. */
+  private readonly laneQueued: Record<AuditLane, number> = {
+    database: 0, inference: 0, maintenance: 0, scan: 0,
+  };
+  private readonly laneTotals: Record<AuditLane, RuntimeAuditLaneTotals> = {
+    database: emptyLaneTotals(), inference: emptyLaneTotals(), maintenance: emptyLaneTotals(),
+    scan: emptyLaneTotals(),
+  };
+  private readonly laneRecords: RuntimeAuditLaneRecord[] = [];
+  private readonly laneWarnedAt: Record<AuditLane, number> = {
+    database: 0, inference: 0, maintenance: 0, scan: 0,
+  };
+  /** Writes the caller had to replay on the host because the worker never confirmed them. */
+  private readonly fallbacks = new Map<string, number>();
+  private fallbackWarnedAt = 0;
   private inferenceCapability?: Promise<boolean>;
   private embeddingIndexCapability?: Promise<boolean>;
   private embeddingPlannerCapability?: Promise<boolean>;
   private modelProbeCapability?: Promise<boolean>;
-  private inferenceFailed = false;
+  /** Every spawned Rust process is a new generation; failures belong to one generation. */
+  private inferenceGeneration = 0;
+  /** Inference is blocked for the generation that failed, or after repeated failures. */
+  private inferenceFailure?: { generation: number; streak: number };
   private session?: AuditSession;
   private closed = false;
   private state?: "ready" | "unavailable";
@@ -214,6 +247,7 @@ export class RuntimeAuditReader {
   private connectorMarketMutationCapability?: Promise<boolean>;
   private connectorMarketMutationReady = false;
   private connectorInstallerReady = false;
+  private gatewayMessageWriteCapability?: Promise<boolean>;
 
   constructor(private readonly executable: string | undefined, private readonly dbPath: string) {}
 
@@ -443,7 +477,7 @@ export class RuntimeAuditReader {
       .then(supported => supported === true);
     if (!await this.artifactCleanupCapability) return "needsHost";
     const result = await this.read<RuntimeArtifactCleanup>(
-      { operation: "cleanupArtifactFiles", root, cleanup }, "database", false, 120_000,
+      { operation: "cleanupArtifactFiles", root, cleanup }, "maintenance", false, 120_000,
     );
     if (!result) await this.stopping;
     return result;
@@ -644,6 +678,14 @@ export class RuntimeAuditReader {
     if (Array.isArray(rows)) return rows.map(row => ({
       ...row, senderId: row.senderId ?? undefined, senderName: row.senderName ?? undefined,
     }));
+  }
+
+  async appendGatewayMessage(message: RuntimeGatewayMessageWrite): Promise<RuntimeGatewayMessageWriteReply | undefined> {
+    this.gatewayMessageWriteCapability ??= this.read<boolean>({ operation: "gatewayMessageWriteSupported" }).then(result => result === true);
+    if (!await this.gatewayMessageWriteCapability) return { status: "needsHost" };
+    const reply = await this.read<RuntimeGatewayMessageWriteReply>({ operation: "appendGatewayMessage", message });
+    if (reply === undefined) await this.stopping;
+    return reply?.status === "saved" || reply?.status === "needsHost" ? reply : undefined;
   }
 
   async codeReviewData(query: RuntimeCodeReviewQuery): Promise<RuntimeCodeReviewData | undefined> {
@@ -939,7 +981,7 @@ export class RuntimeAuditReader {
 
   async deleteLibrary(root: string, target: RuntimeLibraryDeleteTarget): Promise<RuntimeLibraryDeleteReply | undefined> {
     if (!await this.supportsLibraryDelete()) return { status: "needsHost" };
-    const result = await this.read<RuntimeLibraryDeleteReply>({ operation: "deleteLibrary", root, target }, "database", false, 120_000);
+    const result = await this.read<RuntimeLibraryDeleteReply>({ operation: "deleteLibrary", root, target }, "maintenance", false, 120_000);
     if (result === undefined) await this.stopping;
     if (result?.status === "deleted" && !this.libraryDeleteReady) {
       this.libraryDeleteReady = true;
@@ -950,7 +992,7 @@ export class RuntimeAuditReader {
 
   async drainLibraryCleanup(root: string): Promise<number | undefined> {
     if (!await this.supportsLibraryDelete()) return undefined;
-    const result = await this.read<number>({ operation: "drainLibraryCleanup", root }, "database", false, 120_000);
+    const result = await this.read<number>({ operation: "drainLibraryCleanup", root }, "maintenance", false, 120_000);
     if (result === undefined) await this.stopping;
     return result;
   }
@@ -960,7 +1002,7 @@ export class RuntimeAuditReader {
       operation: "libraryMetadata", query: { kind: "backupsSupported" },
     }).then(supported => supported === true);
     if (!await this.libraryBackupCapability) return "needsHost";
-    const result = await this.read<RuntimeLibraryBackupResult>({ operation: "exportLibraryBackup", root, owner, staging }, "database", false, 120_000);
+    const result = await this.read<RuntimeLibraryBackupResult>({ operation: "exportLibraryBackup", root, owner, staging }, "maintenance", false, 120_000);
     if (result === undefined) await this.stopping;
     if (result === "saved" && !this.libraryBackupExporterReady) {
       this.libraryBackupExporterReady = true;
@@ -981,7 +1023,7 @@ export class RuntimeAuditReader {
       const { source, operationId, ...restore } = input;
       const prepared = await this.read<
         { status: "prepared" } | { status: "rejected"; message: string }
-      >({ operation: "prepareLibraryRestore", source, operationId }, "database", false, 120_000);
+      >({ operation: "prepareLibraryRestore", source, operationId }, "maintenance", false, 120_000);
       if (prepared?.status !== "prepared") {
         if (!prepared) await this.stopping;
         return prepared;
@@ -990,12 +1032,12 @@ export class RuntimeAuditReader {
       try {
         defaultSpaceId = chooseDestination();
       } catch (error) {
-        await this.read<boolean>({ operation: "discardLibraryRestore", operationId });
+        await this.read<boolean>({ operation: "discardLibraryRestore", operationId }, "maintenance");
         throw error;
       }
       const result = await this.read<RuntimeLibraryRestoreResult>({
         operation: "restoreLibraryBackup", restore: { ...restore, operationId, defaultSpaceId },
-      }, "database", false, 120_000);
+      }, "maintenance", false, 120_000);
       if (result === undefined) await this.stopping;
       if (result?.status === "restored" && !this.libraryRestoreReady) {
         this.libraryRestoreReady = true;
@@ -1009,7 +1051,7 @@ export class RuntimeAuditReader {
 
   async recoverLibraryRestores(root: string): Promise<number | undefined> {
     if (!await this.supportsLibraryRestore()) return undefined;
-    const result = await this.read<number>({ operation: "recoverLibraryRestores", root }, "database", false, 120_000);
+    const result = await this.read<number>({ operation: "recoverLibraryRestores", root }, "maintenance", false, 120_000);
     if (result === undefined) await this.stopping;
     return result;
   }
@@ -1222,7 +1264,7 @@ export class RuntimeAuditReader {
   async promoteProjectEventToLibrary(promotion: RuntimeProjectLibraryPromotion): Promise<ProjectLibraryPromotionReply | undefined> {
     const result = await this.read<ProjectLibraryPromotionReply>({
       operation: "promoteProjectEventToLibrary", promotion,
-    }, "database", false, 120_000);
+    }, "maintenance", false, 120_000);
     if (result === undefined) await this.stopping;
     return result;
   }
@@ -1230,7 +1272,7 @@ export class RuntimeAuditReader {
   async deleteProject(operationId: string, id: string, root: string, withdrawal: ProjectWithdrawal): Promise<ProjectDeletionResult> {
     const result = await this.read<ProjectDeletionResult>({
       operation: "deleteProject", operationId, id, root, withdrawal,
-    }, "database", false, 120_000);
+    }, "maintenance", false, 120_000);
     if (result !== undefined) return result;
     await this.stopping;
     throw new Error("项目删除失败，请重试");
@@ -1249,8 +1291,33 @@ export class RuntimeAuditReader {
     return status;
   }
 
-  accessGadgetState(path: string, canonicalPath: string, bucket: GadgetStateBucket, action: GadgetStateAction & { writeId: string }): Promise<GadgetStateReply> {
-    return this.runGadgetState({ kind: "access", path, canonicalPath, bucket, action });
+  accessGadgetState(path: string, canonicalPath: string, bucket: GadgetStateBucket,
+    action: GadgetStateAction & { writeId: string }, authorization: GadgetStateAuthorization,
+    retired: () => boolean): Promise<GadgetStateReply> {
+    if (retired()) return Promise.resolve({ kind: "error", error: "STALE_WRITE" });
+    // `retired` runs again when the request leaves the lane, so a write the host
+    // queued before it was cancelled never reaches the worker.
+    return this.read<GadgetStateReply>(
+      { operation: "gadgetState", request: { kind: "access", path, canonicalPath, bucket, action, authorization } },
+      "database", false, 10_000, undefined, retired,
+    ).then(
+      reply => reply ?? (retired() ? { kind: "error", error: "STALE_WRITE" } : { kind: "error", error: "STORAGE_UNAVAILABLE" }),
+      () => ({ kind: "error", error: "STORAGE_UNAVAILABLE" }),
+    );
+  }
+
+  /** The worker also refuses writes whose lease expired, so a blocked worker cannot commit late. */
+  async revokeGadgetInvocation(generation: string, invocationId: string): Promise<boolean> {
+    return await this.revokeGadgetState({ kind: "revoke", generation, invocationId }) === true;
+  }
+
+  async revokeGadgetGeneration(generation: string): Promise<boolean> {
+    return await this.revokeGadgetState({ kind: "revoke", generation }) === true;
+  }
+
+  private async revokeGadgetState(request: object): Promise<boolean> {
+    const reply = await this.read<{ kind?: string }>({ operation: "gadgetState", request });
+    return reply?.kind === "revoked";
   }
 
   private async runGadgetState(request: object): Promise<GadgetStateReply> {
@@ -1444,7 +1511,7 @@ export class RuntimeAuditReader {
   }
 
   async semanticInference(model: RuntimeSemanticModel, text?: string | number[]): Promise<RuntimeSemanticEmbedding | undefined> {
-    if (this.inferenceFailed) return undefined;
+    if (this.inferenceBlocked()) return undefined;
     this.inferenceCapability ??= this.read<boolean>({ operation: "nativeInferenceSupported" }).then(value => value === true);
     if (!await this.inferenceCapability) return undefined;
     return this.read({ operation: "semanticInference", request: { model, text } }, "inference");
@@ -1463,7 +1530,7 @@ export class RuntimeAuditReader {
 
   async stageEmbedding(model: RuntimeSemanticModel, modelId: string, modelVersion: string,
     source: RuntimeEmbeddingSource): Promise<RuntimeEmbeddingStage | undefined> {
-    if (this.inferenceFailed) return undefined;
+    if (this.inferenceBlocked()) return undefined;
     this.embeddingIndexCapability ??= this.read<boolean>({ operation: "nativeEmbeddingIndexSupported" })
       .then(value => value === true);
     if (!await this.embeddingIndexCapability) return undefined;
@@ -1579,7 +1646,7 @@ export class RuntimeAuditReader {
       head: (conversationId, maxTokens) => request({ action: "head", conversationId, maxTokens }),
       questions: (conversationId, beforeEntryId) => request({ action: "questions", conversationId, beforeEntryId }),
       close: () => closing ??= (async () => {
-        if (owner === this.session && await request<boolean>({ action: "close" }) !== true) this.stop(owner);
+        if (owner === this.session && await request<boolean>({ action: "close" }) !== true) this.stop(owner, "closed");
         // A timed-out close cannot release the host read lease while Rust still owns the SQLite view.
         if (owner !== this.session) await owner.closed;
       })(),
@@ -1613,7 +1680,7 @@ export class RuntimeAuditReader {
 
   async close(): Promise<void> {
     this.closed = true;
-    if (this.session) this.stop(this.session);
+    if (this.session) this.stop(this.session, "closed");
     await this.stopping;
   }
 
@@ -1623,38 +1690,136 @@ export class RuntimeAuditReader {
     allowAfterInferenceFailure = false,
     timeoutMs = lane === "inference" ? 120_000 : 10_000,
     expectedSession?: AuditSession,
+    retired?: () => boolean,
   ): Promise<T | undefined> {
     const executable = this.executable;
     if (!executable || !this.dbPath || this.dbPath === ":memory:") return Promise.resolve(undefined);
+    // The budget belongs to the caller and starts now, not when the lane is free.
+    const enqueuedAt = Date.now();
+    const deadline = enqueuedAt + timeoutMs;
+    const operation = typeof (request as { operation?: unknown }).operation === "string"
+      ? (request as { operation: string }).operation : "unknown";
+    if (this.laneQueued[lane] >= LANE_QUEUE_LIMIT) {
+      this.recordOutcome(lane, operation, "overloaded", { enqueuedAt, finishedAt: enqueuedAt });
+      console.warn(`[RuntimeAudit] ${lane} 通道已满（${LANE_QUEUE_LIMIT}），本次请求未发送`);
+      return Promise.resolve(undefined);
+    }
+    this.laneQueued[lane] += 1;
+    let settled = false;
     const pending = this.tails[lane].then(() => new Promise<T | undefined>(resolve => {
-      if (this.closed || (expectedSession && this.session !== expectedSession) ||
-        (lane === "inference" && this.inferenceFailed && !allowAfterInferenceFailure)) {
-        resolve(undefined);
-        return;
-      }
-      const session = this.session ?? this.start(executable);
-      // A timed-out scan still owns its reply slot. Leave the database and
-      // inference lanes running while the filesystem finishes or recovers.
-      if (lane === "scan" && session.pending.scan) {
-        resolve(undefined);
-        return;
-      }
-      session.pending[lane] = {
-        resolve: value => resolve(value as T | undefined),
-        timer: setTimeout(() => {
-          if (lane === "scan") resolve(undefined);
-          else this.stop(session);
-        }, timeoutMs).unref(),
+      const startedAt = Date.now();
+      const finish = (outcome: RuntimeAuditOutcome, value?: T): void => {
+        if (settled) return;
+        settled = true;
+        this.laneQueued[lane] -= 1;
+        this.recordOutcome(lane, operation, outcome, { enqueuedAt, startedAt, finishedAt: Date.now() });
+        resolve(value);
       };
-      session.child.stdin.write(JSON.stringify(request) + "\n", error => {
-        if (error) this.stop(session);
+      if (this.closed) { finish("closed"); return; }
+      if (expectedSession && this.session !== expectedSession) { finish("retired"); return; }
+      if (retired && retired()) { finish("retired"); return; }
+      if (lane === "inference" && !allowAfterInferenceFailure && this.inferenceBlocked()) { finish("blocked"); return; }
+      // Queued past its own budget: never spawn a worker just to time it out again.
+      if (startedAt >= deadline) { finish("expired-before-dispatch"); return; }
+      const session = this.session ?? this.start(executable);
+      // A timed-out scan still owns its reply slot and the worker is still on it, so a
+      // new scan is refused instead of piling up behind work that may never finish.
+      // Maintenance is different: its worker queues jobs, so a new job must be able to
+      // run after an abandoned one (otherwise one slow restore wedges every later
+      // library/project write for the rest of the session).
+      if (lane === "scan" && session.pending.scan) { finish("slot-busy"); return; }
+      // Every dispatched request carries its own id, so a reply is matched to the
+      // request that sent it instead of to whichever slot its lane flag names.
+      const id = randomUUID();
+      session.pending[lane] = {
+        id,
+        resolve: (value, outcome) => finish(outcome, value as T | undefined),
+        timer: setTimeout(() => {
+          // A scan or maintenance timeout only loses the caller's result: the work may
+          // still be running, so the shared worker (and every other lane) stays up.
+          if (lane === "scan" || lane === "maintenance") {
+            finish("timeout");
+            // Release the slot: the abandoned job keeps running in the worker and its
+            // late reply is dropped by id, so later work is not blocked behind it.
+            if (session.pending[lane]?.id === id) delete session.pending[lane];
+          }
+          else {
+            finish("timeout");
+            this.stop(session, lane === "inference" ? "inference-timeout" : "database-timeout");
+          }
+        }, Math.max(0, deadline - startedAt)).unref(),
+      };
+      session.child.stdin.write(JSON.stringify({ ...request, requestId: id }) + "\n", error => {
+        if (error) this.stop(session, "exit");
       });
     })).catch(() => { this.unavailable(); return undefined; });
     this.tails[lane] = pending;
     return pending;
   }
 
+  /**
+   * A caller is about to redo an idempotent write on the host because the worker's answer was
+   * unknown. The replay converges, but a silent fallback hides a whole class of degradation.
+   */
+  noteFallback(domain: string): void {
+    this.fallbacks.set(domain, (this.fallbacks.get(domain) ?? 0) + 1);
+    const now = Date.now();
+    if (now - this.fallbackWarnedAt >= 5_000) {
+      this.fallbackWarnedAt = now;
+      console.warn(`[RuntimeAudit] host fallback for ${domain} after an unconfirmed worker write`);
+    }
+  }
+
+  /** How often each domain had to recover on the host. */
+  fallbackTotals(): Record<string, number> {
+    return Object.fromEntries(this.fallbacks);
+  }
+
+  /** Queue depth, terminal outcomes and the last few requests, per lane. */
+  laneDiagnostics(): { queued: Record<AuditLane, number>; totals: Record<AuditLane, RuntimeAuditLaneTotals>;
+    recent: RuntimeAuditLaneRecord[] } {
+    return {
+      queued: { ...this.laneQueued },
+      totals: {
+        database: { ...this.laneTotals.database }, inference: { ...this.laneTotals.inference },
+        maintenance: { ...this.laneTotals.maintenance }, scan: { ...this.laneTotals.scan },
+      },
+      recent: this.laneRecords.map(entry => ({ ...entry })),
+    };
+  }
+
+  private recordOutcome(lane: AuditLane, operation: string, outcome: RuntimeAuditOutcome, times: {
+    enqueuedAt: number; startedAt?: number; finishedAt: number;
+  }): void {
+    const totals = this.laneTotals[lane];
+    const counter: Record<RuntimeAuditOutcome, keyof RuntimeAuditLaneTotals | undefined> = {
+      completed: "completed", failed: "failed", timeout: "timedOut",
+      "expired-before-dispatch": "expiredBeforeDispatch", overloaded: "overloaded",
+      "slot-busy": "slotBusy", retired: "retired", blocked: "blocked", closed: undefined,
+    };
+    const key = counter[outcome];
+    if (key) totals[key] += 1;
+    const waitedMs = times.startedAt === undefined ? 0 : Math.max(0, times.startedAt - times.enqueuedAt);
+    const ranMs = times.startedAt === undefined ? 0 : Math.max(0, times.finishedAt - times.startedAt);
+    this.laneRecords.push({
+      ...totals, lane, operation, outcome,
+      enqueuedAt: times.enqueuedAt, startedAt: times.startedAt, finishedAt: times.finishedAt, waitedMs, ranMs,
+    });
+    if (this.laneRecords.length > 64) this.laneRecords.shift();
+    // A stuck lane can expire a whole backlog; report it once per window.
+    if (outcome === "expired-before-dispatch" || outcome === "overloaded" || outcome === "slot-busy") {
+      const now = Date.now();
+      if (now - this.laneWarnedAt[lane] >= 5_000) {
+        this.laneWarnedAt[lane] = now;
+        console.warn(`[RuntimeAudit] ${lane} ${operation} ${outcome} after ${waitedMs}ms wait (further drops are counted, not logged)`);
+      }
+    }
+  }
+
   private start(executable: string): AuditSession {
+    const wasBlocked = this.inferenceBlocked();
+    this.inferenceGeneration += 1;
+    if (wasBlocked && !this.inferenceBlocked()) console.info("[RuntimeAudit] Rust restarted; native inference re-armed");
     const child = spawn(executable, [this.dbPath], {
       windowsHide: true,
       env: {
@@ -1668,9 +1833,9 @@ export class RuntimeAuditReader {
     const historyReady = new Promise<true>(resolve => { advertiseHistory = () => resolve(true); });
     const session: AuditSession = { child, closed, historyReady, advertiseHistory, pending: {}, history: new Map(), chunks: [], bytes: 0, dotsFileWatches: new Map() };
     this.session = session;
-    child.on("error", () => this.stop(session));
-    child.on("exit", () => this.stop(session));
-    child.stdin.on("error", () => this.stop(session));
+    child.on("error", () => this.stop(session, "exit"));
+    child.on("exit", () => this.stop(session, "exit"));
+    child.stdin.on("error", () => this.stop(session, "exit"));
     child.stdout.on("data", (chunk: Buffer) => this.receive(session, chunk));
     child.stderr.resume();
     return session;
@@ -1682,7 +1847,7 @@ export class RuntimeAuditReader {
       const newline = chunk.indexOf(10, offset);
       const part = chunk.subarray(offset, newline < 0 ? chunk.length : newline + 1);
       session.bytes += part.length;
-      if (session.bytes > 32 * 1024 * 1024) { this.stop(session); return; }
+      if (session.bytes > 32 * 1024 * 1024) { this.stop(session, "protocol"); return; }
       session.chunks.push(part);
       if (newline < 0) return;
       const line = Buffer.concat(session.chunks, session.bytes).toString("utf8");
@@ -1696,10 +1861,10 @@ export class RuntimeAuditReader {
   private receiveReply(session: AuditSession, line: string): void {
     let reply: {
       historyRequestId?: string; historyLane?: boolean; historyReady?: boolean;
-      status?: string; data?: unknown; inference?: boolean; scan?: boolean;
+      status?: string; data?: unknown; inference?: boolean; scan?: boolean; maintenance?: boolean; replyId?: unknown;
       dotsFileWatches?: Array<{ id: string; lost: boolean }>;
     };
-    try { reply = JSON.parse(line); } catch { this.stop(session); return; }
+    try { reply = JSON.parse(line); } catch { this.stop(session, "protocol"); return; }
     if (reply.historyReady === true) {
       session.advertiseHistory();
       session.historySupport ??= session.historyReady;
@@ -1707,7 +1872,7 @@ export class RuntimeAuditReader {
     }
     if (reply.historyRequestId !== undefined) {
       const settle = session.history.get(reply.historyRequestId);
-      if (!settle) { this.stop(session); return; }
+      if (!settle) { this.stop(session, "protocol"); return; }
       session.history.delete(reply.historyRequestId);
       settle(reply.status === "ok" ? reply.data : undefined);
       return;
@@ -1721,23 +1886,39 @@ export class RuntimeAuditReader {
       }
       return;
     }
-    const lane = reply?.scan === true ? "scan" : reply?.inference === true ? "inference" : "database";
+    const replyId = typeof reply.replyId === "string" ? reply.replyId : undefined;
+    // A correlated reply belongs to the request that named it, whatever lane that is;
+    // a reply without an id is placed by the lane it declares, as before.
+    const lane = replyId === undefined
+      ? (reply?.scan === true ? "scan" : reply?.maintenance === true ? "maintenance"
+        : reply?.inference === true ? "inference" : "database")
+      : this.correlatedLane(session, replyId);
+    // A reply that names no in-flight request is a late arrival, not a protocol fault:
+    // its request already reported a terminal state, so drop it and keep the worker.
+    if (lane === undefined) return;
     const pending = session.pending[lane];
-    if (!pending) { this.stop(session); return; }
+    // Only an id-less reply is expected to own its lane slot; without one the stream is out of order.
+    if (!pending) { this.stop(session, "protocol"); return; }
     if (reply?.status !== "ok" || reply.data === undefined) {
       if (lane === "database") this.unavailable();
-      else if (lane === "inference") this.inferenceFailed = true;
+      else if (lane === "inference") this.recordInferenceFailure();
     }
     else {
       if (this.state !== "ready") console.info("[RuntimeAudit] Rust reader ready");
       this.state = "ready";
+      if (lane === "inference") this.inferenceFailure = undefined;
     }
     clearTimeout(pending.timer);
     delete session.pending[lane];
-    pending.resolve(reply?.status === "ok" ? reply.data : undefined);
+    pending.resolve(reply?.status === "ok" ? reply.data : undefined, reply?.status === "ok" ? "completed" : "failed");
   }
 
-  private stop(session: AuditSession): void {
+  /** The lane whose in-flight request carries this id, if it is still in flight. */
+  private correlatedLane(session: AuditSession, replyId: string): AuditLane | undefined {
+    return (Object.keys(session.pending) as AuditLane[]).find(lane => session.pending[lane]?.id === replyId);
+  }
+
+  private stop(session: AuditSession, cause: AuditStopCause = "exit"): void {
     if (this.session !== session) return;
     this.session = undefined;
     for (const settle of session.history.values()) settle(undefined);
@@ -1792,6 +1973,7 @@ export class RuntimeAuditReader {
     this.durableTaskProjectionCapability = undefined;
     this.memoryRecordWriteCapability = undefined;
     this.notificationDataCapability = undefined;
+    this.gatewayMessageWriteCapability = undefined;
     this.taskRecordsCapability = undefined;
     this.taskContextUsageCapability = undefined;
     this.executionFailuresCapability = undefined;
@@ -1800,12 +1982,16 @@ export class RuntimeAuditReader {
     this.workspaceScanCapability = undefined;
     this.dotsFileRevisionCapability = undefined;
     this.dotsFileWatchCapability = undefined;
-    if (session.pending.inference) this.inferenceFailed = true;
+    // Only inference-attributable death blocks inference. A database timeout that
+    // takes the shared process down must not disable inference across restarts.
+    if (cause === "inference-timeout" || (cause !== "database-timeout" && cause !== "closed" && session.pending.inference)) {
+      this.recordInferenceFailure();
+    }
     this.stopping = session.closed;
     if (session.child.exitCode === null && session.child.signalCode === null) session.child.kill();
     for (const pending of Object.values(session.pending)) {
       clearTimeout(pending.timer);
-      pending.resolve(undefined);
+      pending.resolve(undefined, cause === "closed" ? "closed" : "retired");
     }
     if (session.pending.database) this.unavailable();
     session.pending = {};
@@ -1818,6 +2004,21 @@ export class RuntimeAuditReader {
     if (this.closed || this.state === "unavailable") return;
     this.state = "unavailable";
     console.warn("[RuntimeAudit] Rust reader unavailable, using the host reader");
+  }
+
+  /** Blocked inference belongs to one process generation unless failures keep repeating. */
+  private inferenceBlocked(): boolean {
+    const failure = this.inferenceFailure;
+    return failure !== undefined &&
+      (failure.streak >= INFERENCE_FAILURE_LIMIT || failure.generation >= this.inferenceGeneration);
+  }
+
+  private recordInferenceFailure(): void {
+    const streak = (this.inferenceFailure?.streak ?? 0) + 1;
+    this.inferenceFailure = { generation: this.inferenceGeneration, streak };
+    if (streak === INFERENCE_FAILURE_LIMIT) {
+      console.warn("[RuntimeAudit] Rust inference is not retried after repeated failures");
+    }
   }
 }
 
@@ -2386,7 +2587,50 @@ export interface RuntimeMemoryLexicalCandidates {
   lexical: RuntimeMemoryLexicalMatch[];
 }
 
-type AuditLane = "database" | "inference" | "scan";
+type AuditLane = "database" | "inference" | "maintenance" | "scan";
+
+/** How a lane request ended. `timeout` retires the worker on database and inference only. */
+export type RuntimeAuditOutcome =
+  | "completed" | "failed" | "timeout" | "expired-before-dispatch"
+  | "overloaded" | "slot-busy" | "retired" | "blocked" | "closed";
+
+/** Per-lane accounting so a blocked channel is visible instead of looking like a model error. */
+export interface RuntimeAuditLaneTotals {
+  completed: number;
+  failed: number;
+  timedOut: number;
+  expiredBeforeDispatch: number;
+  overloaded: number;
+  /** A scan or maintenance request that timed out still owns its reply slot; new ones are refused until it lands. */
+  slotBusy: number;
+  retired: number;
+  blocked: number;
+}
+
+export interface RuntimeAuditLaneRecord extends RuntimeAuditLaneTotals {
+  lane: AuditLane;
+  operation: string;
+  outcome: RuntimeAuditOutcome;
+  enqueuedAt: number;
+  startedAt?: number;
+  finishedAt: number;
+  waitedMs: number;
+  ranMs: number;
+}
+
+/** Why a Rust process generation is being retired; only inference faults disable inference. */
+type AuditStopCause = "exit" | "protocol" | "database-timeout" | "inference-timeout" | "closed";
+
+/** Consecutive inference-attributed failures tolerated across process restarts. */
+const INFERENCE_FAILURE_LIMIT = 3;
+
+/** Backpressure bound per lane: past this, requests fail fast instead of growing the queue. */
+const LANE_QUEUE_LIMIT = 256;
+
+const emptyLaneTotals = (): RuntimeAuditLaneTotals => ({
+  completed: 0, failed: 0, timedOut: 0,
+  expiredBeforeDispatch: 0, overloaded: 0, slotBusy: 0, retired: 0, blocked: 0,
+});
 
 interface AuditSession {
   historySupport?: Promise<boolean>;
@@ -2399,7 +2643,9 @@ interface AuditSession {
   bytes: number;
   dotsFileWatches: Map<string, { changed(): void; lost(): void }>;
   pending: Partial<Record<AuditLane, {
-    resolve(value: unknown): void;
+    /** Sent to the worker as `requestId`; its reply must echo it as `replyId`. */
+    id: string;
+    resolve(value: unknown, outcome: "completed" | "failed" | "retired" | "closed"): void;
     timer: ReturnType<typeof setTimeout>;
   }>>;
 }

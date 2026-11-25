@@ -219,6 +219,37 @@ jobs:
           TEST_ALL_JOBS: "2"
         run: pnpm -s test:all:artifacts
 
+  verify-native:
+    # 原生路径验收：真实 worker 二进制 + 已写成 `--native` 的业务用例 + crate 自测。
+    # 默认套件只跑 Host 回退，绿了也不能证明业务命中 Rust；这条 job 是那件事的唯一证据。
+    # RUNTIME_AUDIT_TESTS=1 让 prepare-runtime-audit.cjs 在打包/构建前先跑 cargo test。
+    if: ${{ github.event_name != 'schedule' && (!inputs.suite || inputs.suite == 'default' || inputs.suite == 'all') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUNTIME_AUDIT_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # ubuntu-latest 镜像自带 rustup/stable；缺失时这里直接失败，不要静默跳过原生验收。
+      - name: Rust toolchain
+        run: cargo --version && cc --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Native contract gate
+        run: pnpm -s test:all:native
+
   verify-windows-gui:
     # GUI 套件：默认套件 + GUI 类（真实 Electron 窗口/Tray/桌面自动化），
     # 只在 schedule 或手动 suite=gui/all 时运行；不加 continue-on-error，
