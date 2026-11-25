@@ -181,7 +181,8 @@ export interface DurableBotOptions {
   assets?: Pick<CodemodeSandboxOptions, "wasm" | "workerUrl">;
   prepareSnapshot?: (snapshot: DurableBotSnapshot) => Promise<void>;
   onSnapshot: (snapshot: DurableBotSnapshot) => void;
-  onProjected?: (snapshot: DurableBotSnapshot) => void;
+  onProjected?: (snapshot: DurableBotSnapshot) => void | Promise<void>;
+  drainTaskProjection?: () => Promise<void>;
   /** Only for isolated tests; production always opens its own durable JSONL directory. */
   storage?: Storage;
 }
@@ -1320,6 +1321,7 @@ export class DurableBotRuntime {
       catch (error) { if (!this.failed) throw error; }
       await Promise.allSettled([...this.children.values()].map(watch => watch.stop()));
       await this.projection.catch(() => {});
+      await this.options.drainTaskProjection?.();
       // 关闭前把节流中的上下文状态强制落盘一次（失败只影响跨重启恢复）。
       try {
         await this.contextManager?.flush(ctx);
@@ -1759,7 +1761,7 @@ export class DurableBotRuntime {
     const retainedChildren = new Set(this.history.children.values());
     for (const id of this.nestedHistory.keys()) if (!retainedChildren.has(id)) this.nestedHistory.delete(id);
     for (const [id, child] of this.children) if (!retainedChildren.has(id)) { await child.stop(); this.children.delete(id); }
-    this.options.onProjected?.(snapshot);
+    await this.options.onProjected?.(snapshot);
   }
 }
 

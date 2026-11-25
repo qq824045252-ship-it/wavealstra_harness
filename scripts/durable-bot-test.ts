@@ -10,6 +10,7 @@ import { getCurrentTools } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-durable";
+import { DurableTaskProjection } from "../src/main/agent/durable/DurableTaskProjection";
 import { DurableBotRuntime } from "../src/main/agent/durable/DurableBotRuntime";
 import { createDurableDotsWorker, DOTS_TASK_END } from "../src/main/agent/durable/DurableDotsWorker";
 import { DURABLE_TURN_LIMIT_MESSAGE } from "../src/main/agent/durable/DurableRunLimits";
@@ -352,6 +353,67 @@ assert(artifactVisibleForDisplay("pages/a.html", policy.artifactPolicy, ["deck.p
     const afterRevocation = new AnswerRoutingService(db, () => undefined, undefined, () => library);
     await assert.rejects(prepare("new-revision", afterRevocation), /原始调度快照/);
   } finally { db.close(); }
+}
+
+// A slow app.db writer must not hold the first body, but settlement must observe
+// its confirmed terminal index. Gate the real writer without relying on a latency threshold.
+{
+  const cwd = join(root, "blocked-task-projection");
+  await mkdir(cwd);
+  const db = new AppDatabase(join(cwd, "app.db"));
+  const taskId = "projection-order";
+  db.upsertTask({ id: taskId, title: taskId, cwd, modelId: "fixture/fixture", updatedAt: 1 });
+  let unblock!: () => void;
+  const gate = new Promise<void>(resolve => { unblock = resolve; });
+  let bodyEmitted!: () => void;
+  const body = new Promise<void>(resolve => { bodyEmitted = resolve; });
+  let blocked = false;
+  let released = false;
+  let settledStatus: string | undefined;
+  let finish!: () => void;
+  const settled = new Promise<void>(resolve => { finish = resolve; });
+  const write = DurableTaskProjection.prototype.writeSnapshot;
+  DurableTaskProjection.prototype.writeSnapshot = async function(id, status, at, origins) {
+    if (id === taskId && status === "in_progress" && !released) {
+      blocked = true;
+      await gate;
+    }
+    return write.call(this, id, status, at, origins);
+  };
+  const service = new DurableBotService({
+    db, agentDir: cwd, mcpDir: join(cwd, "mcp"), resolveCwd: () => cwd, instructions: () => "",
+    toolMode: () => "native", defaultModel: () => "fixture/fixture",
+    models: { ...models(() => text("first body")), refresh: async () => ({}), getAvailable: async () => [model] },
+    emit: patch => {
+      const rows = patch.type === "durable_delta" ? patch.delta.upserts
+        : patch.type === "durable_snapshot" ? patch.snapshot.messages : [];
+      if (rows.some(row => row.role === "assistant" && row.text === "first body")) bodyEmitted();
+    },
+    onSettled: () => { settledStatus = db.getTask(taskId)?.status; finish(); },
+  });
+  try {
+    const prompt = service.prompt({ taskId, text: "test", userMessageId: "q", assistantMessageId: "a" }, false);
+    await Promise.race([body, prompt.then(() => body), new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("first body waited for the blocked task index")), 5000).unref();
+    })]);
+    assert.equal(blocked, true);
+    assert.equal(settledStatus, undefined);
+    released = true;
+    unblock();
+    await prompt;
+    await Promise.race([settled, new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("terminal index did not settle")), 5000).unref();
+    })]);
+    assert.equal(settledStatus, "completed");
+    assert.equal(db.getTask(taskId)?.status, "completed");
+    console.log("PASS first body precedes blocked task projection and settlement observes terminal index");
+  } finally {
+    released = true;
+    unblock();
+    DurableTaskProjection.prototype.writeSnapshot = write;
+    await service.close();
+    db.close();
+  }
 }
 
 // Drop an actual emitted revision between the native writer and the desktop store.

@@ -1,3 +1,4 @@
+import { latestActivityTime } from "../../../../shared/src/activity-time";
 import { DotsIntentChanged } from "../../dots/DotsNativeIntent";
 import type { DotsRecoveryToolScope } from "../../dots/DotsRecovery";
 import { DotsCapabilityUnavailable } from "../../dots/DotsCapabilityRequirements";
@@ -524,6 +525,38 @@ export class DurableBotService {
       // One task + binding read per synchronous permission phase. Approval/resource re-checks
       // land after a microtask, so the gate has already expired and they read fresh state.
       const taskProjection = new DurableTaskProjection(db.connection, db.runtimeAuditReader);
+      const readActivity = db.connection.prepare("SELECT updated_at FROM tasks WHERE id = ?").pluck();
+      const pendingOrigins = new Map<string, string>();
+      let pendingSnapshot: DurableBotSnapshot | undefined;
+      let writer: Promise<void> | undefined;
+      let projectionError: unknown;
+
+      // A writer belongs to one opened task/epoch. A newer revision replaces only
+      // pending metadata; every not-yet-confirmed origin survives coalescing.
+      async function writePending(): Promise<void> {
+        while (pendingSnapshot) {
+          const next = pendingSnapshot;
+          pendingSnapshot = undefined;
+          const workspaces = Array.from(pendingOrigins, ([messageId, cwd]) => ({ messageId, cwd }));
+          try {
+            const result = await taskProjection.writeSnapshot(taskId, durableTaskStatus(next), next.activityAt, workspaces);
+            const visible = new Map(result.workspaces.map(row => [row.messageId, row.cwd]));
+            for (const row of next.messages) {
+              const known = messageWorkspaces.get(row.id);
+              if (known !== undefined) visible.set(row.id, known);
+            }
+            messageWorkspaces = visible;
+            for (const row of workspaces) pendingOrigins.delete(row.messageId);
+            projectionError = undefined;
+          } catch (error) {
+            // Do not replay an uncertain native mutation on the host. A later
+            // authoritative revision (including reopen) can rebuild the index.
+            projectionError = error;
+            console.warn("[Durable] Task index projection failed", taskId, next.revision, error);
+          }
+        }
+        writer = undefined;
+      }
       const toolGate = new ToolGate(
         () => db.getTask(taskId) ?? task,
         (candidate, name) => this.options.toolAllowed?.(candidate, name) ?? true,
@@ -604,23 +637,13 @@ export class DurableBotService {
         assets: durableSandboxAssets(this.options.assetsDir),
         instructions: () => this.options.instructions(db.getTask(taskId) ?? task),
         prepareSnapshot: async snapshot => {
-          const workspaces: Array<{ messageId: string; cwd: string }> = [];
+          snapshot.activityAt = latestActivityTime(snapshot.activityAt, readActivity.get(taskId));
           for (const message of snapshot.messages) {
-            if (!messageWorkspaces.has(message.id)) workspaces.push({ messageId: message.id, cwd });
+            if (!messageWorkspaces.has(message.id)) pendingOrigins.set(message.id, cwd);
           }
-          // Publish the stored time, including a newer value written by another app.db operation.
-          const projection = await taskProjection.writeSnapshot(taskId, durableTaskStatus(snapshot), snapshot.activityAt, workspaces);
-          const { activityAt } = projection;
-          if (activityAt !== undefined) snapshot.activityAt = activityAt;
-          if (workspaces.length || messageWorkspaces.size !== snapshot.messages.length) {
-            const visible = new Map(projection.workspaces.map(({ messageId, cwd }) => [messageId, cwd]));
-            for (const message of snapshot.messages) {
-              const origin = messageWorkspaces.get(message.id);
-              if (origin !== undefined) visible.set(message.id, origin);
-            }
-            messageWorkspaces = visible;
-          }
+          pendingSnapshot = snapshot;
         },
+        drainTaskProjection: async () => { await writer; },
         onSnapshot: snapshot => {
           this.workMetrics.project(taskId, snapshot);
           const { messages: _messages, epoch: _epoch, revision: _revision, ...state } = snapshot;
@@ -628,7 +651,15 @@ export class DurableBotService {
             ? { type: "durable_delta", taskId, delta: durableDelta(previousSnapshot, snapshot, state) }
             : { type: "durable_snapshot", taskId, snapshot });
           previousSnapshot = snapshot;
+          writer ??= Promise.resolve().then(writePending);
           if (snapshot.contextUsage) this.options.emit({ type: "context_usage", taskId, ...snapshot.contextUsage });
+        },
+        onProjected: async snapshot => {
+          if (snapshot.busy || snapshot.queued) return;
+          await writer;
+          // The Durable snapshot owns the conversation outcome. Consumers that
+          // require a committed app.db index run only after a confirmed write.
+          if (projectionError) return;
           const signature = lastConversationMessageId(snapshot);
           if ((!dots || dotsWorkspace) && !snapshot.busy && signature && signature !== projected && this.options.projectArtifacts) {
             projected = signature;
@@ -639,8 +670,6 @@ export class DurableBotService {
             }).catch(error => console.warn("[Durable] Artifact projection failed", taskId, error));
             this.projections.set(taskId, projection);
           }
-        },
-        onProjected: snapshot => {
           const key = `${snapshot.conversationId}:${lastConversationMessageId(snapshot)}:${snapshot.outcome ?? ""}`;
           if (!snapshot.busy && !snapshot.queued && snapshot.outcome && key !== settledKey) {
             settledKey = key;
